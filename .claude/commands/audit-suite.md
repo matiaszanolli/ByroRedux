@@ -67,6 +67,23 @@ After M40 world streaming / M41 NPC spawn changes:
 2. `/audit-concurrency --focus 6`
 3. `/audit-safety`
 
+### `--preset audio-deep`
+After M44 audio (kira backend) changes — emitter/listener pose sync, spatial sub-track lifecycle, reverb send, streaming music:
+1. `/audit-audio`
+2. `/audit-concurrency --focus 4,6`
+3. `/audit-safety`
+
+### `--preset normals-deep`
+After M-NORMALS / tangent-space changes (Sessions 26–29):
+1. `/audit-renderer --focus 6,16`
+2. `/audit-nif --focus 1,4`
+3. `/audit-safety`
+
+### `--preset glass-deep`
+After IOR refraction / glass-passthrough / Frisvad changes (Sessions 27–29):
+1. `/audit-renderer --focus 9,10`
+2. `/audit-safety`
+
 ### `--preset comprehensive`
 Full audit coverage (longest — run monthly or before major milestones):
 1. `/audit-renderer`
@@ -75,8 +92,9 @@ Full audit coverage (longest — run monthly or before major milestones):
 4. `/audit-nif`
 5. `/audit-performance`
 6. `/audit-concurrency`
-7. `/audit-legacy-compat`
-8. `/audit-regression`
+7. `/audit-audio`
+8. `/audit-legacy-compat`
+9. `/audit-regression`
 
 ### `--preset nif-all-games`
 Test NIF parser against all available game data:

@@ -21,6 +21,7 @@ FaceGen (M41):   crates/facegen/src/                  (.tri/.egt morph + texture
 Physics (M28):   crates/physics/src/                  (Rapier3D bridge)
 Papyrus (M30):   crates/papyrus/src/                  (.psc lexer + Pratt parser → AST)
 Scripting (M12): crates/scripting/src/                (ECS-native events, timers, cleanup)
+Audio (M44):     crates/audio/src/lib.rs              (byroredux-audio: kira backend, AudioWorld resource, AudioListener/AudioEmitter/OneShotSound components, audio_system, SoundCache, streaming music, global reverb send)
 Debug Protocol:  crates/debug-protocol/src/           (wire types, component registry)
 Debug Server:    crates/debug-server/src/             (TCP server + DebugDrainSystem)
 Renderer:        crates/renderer/src/vulkan/

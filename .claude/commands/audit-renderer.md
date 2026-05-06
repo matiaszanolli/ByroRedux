@@ -13,12 +13,12 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,7`). Default: all 15.
+- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,7`). Default: all 16.
 - `--depth shallow|deep`: `shallow` = check patterns only; `deep` = trace data flow and validate invariants. Default: `deep`.
 
 ## Extra Per-Finding Fields
 
-- **Dimension**: Vulkan Sync | GPU Memory | Pipeline State | Render Pass | Command Recording | Shader Correctness | Resource Lifecycle | Acceleration Structures | RT Ray Queries | Denoiser & Composite | TAA | GPU Skinning | Caustics | Material Table (R1) | Sky/Weather/Exterior Lighting
+- **Dimension**: Vulkan Sync | GPU Memory | Pipeline State | Render Pass | Command Recording | Shader Correctness | Resource Lifecycle | Acceleration Structures | RT Ray Queries | Denoiser & Composite | TAA | GPU Skinning | Caustics | Material Table (R1) | Sky/Weather/Exterior Lighting | Tangent-Space & Normal Maps (M-NORMALS)
 
 ## Phase 1: Setup
 
@@ -164,9 +164,12 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - GI bounce rays: cosine-weighted hemisphere sampling — correct tangent-space construction
 - GI bounce rays: distance cutoff (1500 units from camera) — check applied correctly
 - GI miss: sky fill contribution — no NaN or inf from miss
-- Window portal rays: through-ray direction, 2000-unit distance limit
+- Window portal rays: through-ray direction, 2000-unit distance limit; window-portal demote path on glass that would otherwise infinite-loop (#789 — texture-equality identity check breaks the IOR refraction self-passthrough on coincident glass surfaces)
+- IOR refraction: roughness spread basis built via Frisvad orthonormal basis (#820 / REN-D9-NEW-01) — the legacy `cross(N, world-up)` construction degenerates near vertical surfaces; verify Frisvad is in use and tangent/bitangent are unit-length
+- IOR refraction: ray budget is `GLASS_RAY_BUDGET = 8192` (raised from 512 in 9a4dc15) — verify cap is wired and not silently exceeded; sky-tint fallback on miss is replaced by cell-ambient for interiors (bb53fd5 — no more open-sky tint inside dungeons)
+- IOR refraction diagnostics: `DBG_VIZ_GLASS_PASSTHRU = 0x80` flag exposes the passthrough decision per-fragment for bisecting glass loops; verify it's still wired in `triangle.frag:1517+, 1568, 1717` and not stripped by a refactor
 - Interleaved gradient noise: frame counter seeded correctly, no visible patterns
-- All ray queries: `rayQueryInitializeEXT` flags (gl_RayFlagsTerminateOnFirstHitEXT for shadows)
+- All ray queries: `rayQueryInitializeEXT` flags (gl_RayFlagsTerminateOnFirstHitEXT for shadows + reflection + glass)
 - All ray queries: TLAS binding is the correct descriptor (set 1, binding 2)
 **Output**: `/tmp/audit/renderer/dim_9.md`
 
@@ -234,16 +237,18 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Output added to direct lighting only — never doubled into the indirect path that SVGF already denoised
 **Output**: `/tmp/audit/renderer/dim_13.md`
 
-### Dimension 14: Material Table (R1 Refactor — closed 2026-05-01)
-**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer.rs` (GpuInstance), `byroredux/src/render.rs` (build_render_data), all 3 shaders (`triangle.vert/frag`, `ui.vert`)
+### Dimension 14: Material Table (R1 Refactor — closed 2026-05-01, hardened 2026-05-04/05)
+**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer.rs` (GpuInstance, MAX_MATERIALS = 4096), `byroredux/src/render.rs` (build_render_data), all 3 shaders (`triangle.vert/frag`, `ui.vert`)
 **Checklist**:
-- `GpuMaterial` is exactly 272 bytes (`gpu_material_size_is_272_bytes` test pins it). Any field add/remove must update both Rust + GLSL `struct GpuMaterial` in lockstep
+- `GpuMaterial` is exactly **260 bytes** (`gpu_material_size_is_260_bytes` test pins it; was 272 B until #804 / R1-N4 dropped the unread `avg_albedo_r/g/b` field). Any field add/remove must update both Rust + GLSL `struct GpuMaterial` in lockstep
+- Per-field offset pinning (`gpu_material_field_offsets_match_shader_contract`, #806): all 65 named-field offsets across 16 vec4 slots are asserted; size-only pin cannot catch within-vec4 reorders (e.g. swapping `texture_index ↔ normal_map_index`). Any new field must add a matching offset assertion
 - ALL `GpuMaterial` fields are scalar (f32/u32) — NEVER `[f32; 3]`. std430 vec3 alignment would silently desync byte-Hash dedup
 - Hash + Eq impls treat `GpuMaterial` as raw bytes; named pad fields explicitly zeroed at construction (no uninit bytes from `MaybeUninit`)
-- `MaterialTable::intern` produces stable `material_id`s within a frame; identical materials collapse to one entry
-- Per-frame MaterialBuffer SSBO uploaded once, sized to current intern count (no over-allocation, no reuse-without-resize bug)
+- `MaterialTable::intern` produces stable `material_id`s within a frame; identical materials collapse to one entry. **Cap**: over-cap interns return id `0` (sharing the first material's record) with a one-shot `warn!` — verify the warn fires and over-cap entries do NOT corrupt SSBO indexing (#797 SAFE-22)
+- Per-frame MaterialBuffer SSBO uploaded once, sized to `min(intern_count, MAX_MATERIALS)`; truncation at the upload site is the safety net, capping at intern is the source of truth (no over-allocation, no reuse-without-resize bug)
+- Dedup-ratio telemetry exposed (#780 PERF-N1): unique material count vs placement count surfaced via console — Prospector baseline 1200 placements → 87 unique (~14× hit rate). Regression = audit finding even if correctness holds
 - `GpuInstance.material_id: u32` ships in the Phase 3+ instance struct; legacy per-instance fields confirmed dropped from Phases 4–6 already-migrated slices
-- Shader-side `materials[instance.material_id].foo` reads use the same offsets as the Rust struct (Phase 4–5 mechanical migration check)
+- Shader-side `materials[instance.material_id].foo` reads use the same offsets as the Rust struct (Phase 4–5 mechanical migration check). The #785 R-N1 regression of `ui.vert` reading the wrong MaterialBuffer offset is a recurring trap — verify `ui.vert` is in lockstep with the offset-pin contract, not just `triangle.frag`
 - All 3 shaders updated in lockstep — `triangle.vert`, `triangle.frag`, `ui.vert` (per `feedback_shader_struct_sync.md`)
 - Identity invariant: render output for a scene with N copies of the same material must be byte-identical pre/post R1 dedup
 - Phase status check: any per-instance fields that R1 did NOT migrate yet should be flagged (Phase 6 was the closeout — verify nothing remains in DrawCommand/GpuInstance that should now live in GpuMaterial)
@@ -264,6 +269,19 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Disabled-WTHR fallback: when no weather record loaded, defaults must produce neutral lighting (no NaN, no pitch-black)
 - M40 streaming interaction: cell transition does not strobe TOD (palette is per-worldspace + global TOD clock, not per-cell)
 **Output**: `/tmp/audit/renderer/dim_15.md`
+
+### Dimension 16: Tangent-Space & Normal Maps (M-NORMALS, Sessions 26–29)
+**Entry points**: `crates/nif/src/import/mesh.rs` (extract_tangents_from_extra_data, synthesize_tangents, BSTriShape inline-tangent decode), `crates/nif/src/blocks/tri_shape.rs` (VF_TANGENTS = 0x010, packed-vertex tangent stride), `crates/renderer/shaders/triangle.frag` (perturbNormal, DBG_BYPASS_NORMAL_MAP / DBG_VIZ_NORMALS / DBG_VIZ_TANGENT)
+**Checklist**:
+- Oblivion / FO3 / FNV path: per-vertex tangents pulled from `NiBinaryExtraData` named `"Tangent space (binormal & tangent vectors)"` — Bethesda's blob is `[tangents..., bitangents...]` Z-up, but their "tangent" field is actually `∂P/∂V` and "bitangent" is `∂P/∂U` (`CalcTangentSpace` swap). The decoder MUST read the **bitangent half** (offset `num_verts * 12`) into `Vertex.tangent.xyz` and use the tangent half to derive the bitangent sign — handedness regression here was #786 (fixed 5dde345). Audit for any new path that re-reads the blob without honoring the swap
+- FO4+ BSTriShape inline tangents: when `VF_TANGENTS | VF_NORMALS` are both set on the packed-vertex flag (`tri_shape.rs:695`), tangents ship inline in the packed-vertex blob, NOT in a separate `NiBinaryExtraData`. This is distinct from the Skyrim path; verify the FO4 inline decode (#795 / #796, b63ab0c) still fires and is not gated behind the wrong BSVER
+- Synthesized fallback: when the authored blob is missing or malformed (size mismatch warns, see `mesh.rs:87`), the importer falls through to nifly's `CalcTangentSpace` synthesis (`synthesize_tangents`). Verify the fallback path produces unit-length tangents and consistent bitangent signs
+- Bitangent sign convention: `B = bitangent_sign * cross(N, T)` — the sign is reconstructed shader-side from `Vertex.tangent.w`. Verify the convention is consistent across the three import paths (Bethesda authored, FO4 inline, synthesized)
+- Coordinate conversion: Z-up (Gamebryo) → Y-up (renderer) applied to tangent xyz components in lockstep with normal conversion (no path that converts N but not T, or vice versa)
+- `perturbNormal` is **default-on** (#787 / #788, b8ab477) with the Path-1 transform fixed; `DBG_BYPASS_NORMAL_MAP = 0x10` is the runtime opt-out for bisecting (`triangle.frag:863`). Verify the bit is still recognized
+- Permanent diagnostic bit catalog (`triangle.frag:628-686`): `DBG_BYPASS_POM = 0x1`, `DBG_BYPASS_DETAIL = 0x2`, `DBG_VIZ_NORMALS = 0x4`, `DBG_VIZ_TANGENT = 0x8`, `DBG_BYPASS_NORMAL_MAP = 0x10`, `DBG_FORCE_NORMAL_MAP = 0x20`, `DBG_VIZ_RENDER_LAYER = 0x40`, `DBG_VIZ_GLASS_PASSTHRU = 0x80`. Audit for drift: any added bit must not collide; any dropped bit must not orphan shader code
+- "Chrome posterized walls" red herring: per `feedback_chrome_means_missing_textures.md`, that artifact is the magenta-checker placeholder × a (correctly loaded) tangent-space normal map. Audit findings claiming a tangent-space bug from chrome fragments alone are stale — the audit MUST run `tex.missing` first before recommending a tangent-space fix
+**Output**: `/tmp/audit/renderer/dim_16.md`
 
 ## Phase 3: Merge
 

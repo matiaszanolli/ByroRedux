@@ -60,10 +60,25 @@ Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 - SPIR-V reflection (`reflect.rs::validate_set_layout`): Rust descriptor layout MUST match shader-declared bindings — reflection mismatch is the only sound layer for catching binding drift before runtime
 
 ### 8. R1 Material Table Safety
-- `GpuMaterial` size pinned at 272 B by `gpu_material_size_is_272_bytes` test — failure means GPU-side struct is reading wrong bytes
+- `GpuMaterial` size pinned at **260 B** by `gpu_material_size_is_260_bytes` test (was 272 B until #804 / R1-N4 dropped `avg_albedo`) — failure means GPU-side struct is reading wrong bytes
+- Per-field offset pin (`gpu_material_field_offsets_match_shader_contract`, #806): every named field's byte offset asserted against the shader contract. Size-only pin cannot catch within-vec4 reorders (e.g. swap `texture_index ↔ normal_map_index` is invisible to size, lethal at runtime). Adding a field WITHOUT updating this assertion is a regression
 - ALL fields scalar f32/u32 — never `[f32; 3]` (std430 vec3 alignment ≠ tightly-packed Rust)
 - Named pad fields explicitly zeroed (no uninit bytes leak into byte-Hash dedup)
 - `material_id` bounds: GpuInstance.material_id used as SSBO index — CPU must guarantee in-range; GPU has no bounds check
+- `MaterialTable::intern` cap (#797 SAFE-22): over `MAX_MATERIALS = 4096` distinct interns return id `0` with one-shot warn — no SSBO over-index, no DEVICE_LOST. Verify the cap fires AND the SSBO upload at `scene_buffer.rs:~975` truncates to `MAX_MATERIALS`. Mismatch between intern cap and upload truncation is the class of bug the cap was added to prevent
+- `ui.vert` MaterialBuffer read offsets stay in lockstep with `triangle.frag` (#785 R-N1 was a stale-hunk regression of #776 reading wrong bytes — name `ui.vert` explicitly in any R1 audit)
+
+### 9. RT IOR-Refraction Safety (Sessions 27–29)
+- Glass-passthrough infinite loop (#789): texture-equality identity check at the refraction hit prevents unbounded recursion when two coincident glass surfaces share the same albedo/normal-map descriptor pair. Verify the check is still in place — a regression here is a frame-time hang under any cell with paired glass
+- Frisvad orthonormal basis (#820 / REN-D9-NEW-01): the `cross(N, world-up)` construction degenerates near vertical surfaces (zero-length basis → NaN ray). Verify Frisvad is the active code path for IOR refraction roughness spread
+- Glass ray budget bounded: `GLASS_RAY_BUDGET = 8192` (raised from 512 in 9a4dc15) — the cap exists to prevent runaway recursion, not as a quality knob. Verify the budget is enforced at every call site
+- IOR miss fallback for interiors uses cell-ambient (bb53fd5), NOT the global sky tint — open-sky leakage into dungeons is a visible regression
+- `DBG_VIZ_GLASS_PASSTHRU = 0x80` debug bit kept as a permanent diagnostic; verify the bit position has not collided with new debug-flag additions (full catalog: `triangle.frag:628-686`)
+
+### 10. NPC / Animation Spawn Safety (M41.0 long-tail)
+- B-spline pose-fallback (#772): NPC vanishing under FNV `BSPSysSimpleColorModifier` particle stacks that share keyframe time-zero with the actor's animation player must be gated on a `FLT_MAX` sentinel. Removing the gate causes whole-NPC disappearance, not just a stuck pose — verify the sentinel is still wired
+- AnimationClipRegistry dedup (#790): registry deduplicates by lowercased path so cell streaming does not grow it unboundedly. Without dedup, one full keyframe set leaks per cell load — observable as steady RAM growth across exterior streaming. Verify case-insensitive interning is preserved
+- B-splines are reachable on FNV / FO3 too (`feedback_bspline_not_skyrim_only.md`) — do NOT rule out `NiBSplineCompTransformInterpolator` audits by game era. Skyrim-only assumption is a stale premise that has bitten this audit before
 
 ## Process
 
@@ -72,5 +87,7 @@ Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 3. Check Vulkan resource pairing with Drop implementations
 4. Check RT-specific safety (acceleration structures, device addresses, SSBO indexing)
 5. Check new-compute-pipeline safety (TAA, caustic, skin compute)
-6. Check R1 material table layout invariants
-7. Save report to `docs/audits/AUDIT_SAFETY_<TODAY>.md`
+6. Check R1 material table layout invariants (260 B size pin + per-field offset pin + intern cap)
+7. Check IOR-refraction safety (glass loop, Frisvad, ray budget, interior fallback)
+8. Check NPC / animation spawn safety (B-spline FLT_MAX, AnimationClipRegistry dedup)
+9. Save report to `docs/audits/AUDIT_SAFETY_<TODAY>.md`

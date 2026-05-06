@@ -17,7 +17,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 |---------------------|-----------------------------------------------------------------------------------------|
 | NIF format          | v20.2.0.7 (BSVER 34)                                                                    |
 | BSA format          | v104 ✓                                                                                  |
-| ESM parser          | 23 record types + 13 684 structured records (items, NPCs, factions, globals, settings)  |
+| ESM parser          | Long-tail dispatch closed — `unknown_records` bucket cleared by #808 (PROJ + EFSH + IMOD + ARMA + BPTD), #809 (REPU + EXPL + CSTY + IDLE + IPCT + IPDS + COBJ), #810 (31 long-tail records bulk-dispatched). Audit guard: any FNV record landing in `unknown_records` is a regression. |
 | Parse rate          | 100.00% (14881 / 14881)                                                                 |
 | Interior cells      | ✓ — Prospector Saloon: 809 entities, 48 FPS with full RT shadows + 25 point lights     |
 | Exterior cells      | ✓ — WastelandNV 3×3 / 7×7 grid, M32 landscape, M33 sky/clouds, M34 sun                 |
@@ -67,10 +67,14 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 **Checklist**: Run `cargo run -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior --bsa Meshes.bsa --textures-bsa Textures.bsa --textures-bsa Textures2.bsa --debug` and capture `/cmd stats` at T+3s. Compare entity / mesh / texture / draw-call counts vs roadmap numbers (809 entities, 784 draws at 48 FPS target). Run exterior: `--grid <x>,<y> --radius 3` for a WastelandNV cell. Capture screenshots for visual regression baseline. Validate `tex.missing` + `tex.loaded` debug commands return sensible output (session 10).
 **Output**: `/tmp/audit/fnv/dim_5.md`
 
-### Dimension 6: Animation & Skinning (FNV)
+### Dimension 6: Animation & Skinning (FNV) + M41 NPC Spawn Long-Tail
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/anim.rs`, `crates/core/src/animation/`, `byroredux/src/anim_convert.rs`
+**Entry points**: `crates/nif/src/anim.rs`, `crates/core/src/animation/`, `byroredux/src/anim_convert.rs`, `byroredux/src/npc_spawn.rs`
 **Checklist**: `.kf` file loading from BSA (`--kf meshes/anim.kf`). AnimationClipRegistry populated correctly. NiTransformInterpolator + NiFloatInterpolator + NiBoolInterpolator channels sample correctly. Text key events collected from NiTextKeyExtraData. Cycle types Clamp / Loop / Reverse all honored. KFM state machine parser. FixedString interning at clip load time (#340) — no per-frame StringPool locks. Skinning data extraction from NiSkinData sparse weights — ready for M29 GPU skinning. #178 SkinnedMesh palette computed correctly.
+**M41.0 long-tail regression guards (Session 29)**:
+- B-spline pose-fallback (#772, 3c32a5e): gated on a `FLT_MAX` sentinel. Without the gate, NPCs vanish under FNV `BSPSysSimpleColorModifier` particle stacks that share keyframe time-zero with the actor's animation player. **Note**: B-splines (`NiBSplineCompTransformInterpolator`) ARE reachable on FNV/FO3 (`feedback_bspline_not_skyrim_only.md`) — do not rule them out by game era.
+- AnimationClipRegistry dedup (#790, da99d15): registry deduplicates by lowercased path so cell streaming doesn't grow it unboundedly. Without dedup, one full keyframe set leaks per cell load (observable as steady RAM growth on exterior streaming).
+- NPC hand-mesh load (#793 / M41-HANDS, da8d7e2): `lefthand.nif` + `righthand.nif` loaded alongside `upperbody.nif` on kf-era NPCs. Audit any NPC body assembly that loads only `upperbody` — every Doc Mitchell, Sunny Smiles, Megaton dweller would otherwise render with no hands.
 **Output**: `/tmp/audit/fnv/dim_6.md`
 
 ## Phase 3: Merge

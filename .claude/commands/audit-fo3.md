@@ -75,8 +75,13 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 6: Blockers & Game-Specific Quirks
 **Subagent**: `general-purpose`
-**Entry points**: `ROADMAP.md`, `byroredux/src/cell_loader.rs`
+**Entry points**: `ROADMAP.md`, `byroredux/src/cell_loader.rs`, `byroredux/src/npc_spawn.rs`
 **Checklist**: Can Fallout 3 cells be loaded end-to-end via the same `--esm Fallout3.esm --cell <id>` CLI as FNV? Any hardcoded FNV-only paths in the cell loader? Weather (WTHR) / CLMT records — FO3 has them; are they pulled from the FNV-shared parser correctly? Exterior worldspace loading — FO3's Wasteland is a different WRLD form ID; any FNV-hardcoded assumptions (e.g. specific worldspace names, origin coords)? FO3-specific CLMT sun position curves.
+**M41.0 long-tail regression guards (shared with FNV — Session 29)**:
+- B-spline pose-fallback (#772, 3c32a5e): gated on `FLT_MAX` sentinel. B-splines are reachable on FO3 just as on FNV (`feedback_bspline_not_skyrim_only.md`).
+- AnimationClipRegistry dedup (#790, da99d15): case-insensitive interning by lowercased path; without it, one keyframe set leaks per cell load.
+- NPC hand-mesh load (#793 / M41-HANDS, da8d7e2): `lefthand.nif` + `righthand.nif` loaded alongside `upperbody.nif` on kf-era NPCs. Megaton dwellers depend on this — bodies with no hands = #793 regression.
+- Megaton parse-side baseline (Session 12, #455+): 929 REFRs (down from 1609 post-NIF-expand). Cell-loader stale-comment cleanup landed in #822 FNV-D3-DOC (ca6be24). Any audit citing the 1609 number is referencing pre-expand stats — confirm against current `cell_loader.rs` comments before reporting.
 **Output**: `/tmp/audit/fo3/dim_6.md`
 
 ## Phase 3: Merge

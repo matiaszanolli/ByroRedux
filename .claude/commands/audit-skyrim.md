@@ -18,21 +18,25 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 | NIF format        | v20.2.0.7 (BSVER 83 / 100)                                                         |
 | BSA format        | v105 ✓ (LZ4 compression)                                                           |
 | ESM parser        | Stub — Skyrim.esm not yet parsed                                                   |
-| Parse rate        | 100.00% (18862 / 18862)                                                            |
+| Parse rate        | 100.00% (18862 / 18862) — Meshes0 sweep is `100.00% clean / 0 truncated / 0 recovered / 0 realignment WARN` post #836–#838 |
 | Rendering         | Individual meshes ✓ — Sweetroll demo ~3000-5000 FPS (2026-04-22, RTX 4070 Ti @ 1280×720) |
 | Cell loading      | Not wired (requires Skyrim ESM parser)                                             |
 | Reference data    | `/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/`             |
 
 ### Known Specifics
 
-- **BSTriShape** — packed vertex format with u16 half-precision positions/normals, optional skinning (VF_SKINNED), optional full-precision (VF_FULL_PRECISION).
+- **BSTriShape** — packed vertex format with u16 half-precision positions/normals, optional skinning (VF_SKINNED), optional full-precision (VF_FULL_PRECISION). Per-vertex tangents ship inline in the packed-vertex blob when `VF_TANGENTS | VF_NORMALS` are set (Skyrim convention; FO4+ shares the same inline path — see #795 / #796).
 - **BSLightingShaderProperty** — 8 shader-type variants: None, EnvironmentMap, GlowShader (SkinTint for hair?), HairTint, ParallaxOcc, MultiLayerParallax, SparkleSnow, EyeEnvmap.
 - **BSEffectShaderProperty** — soft falloff depth, greyscale texture, lighting influence, env map min LOD.
-- **BSDynamicTriShape** (facegen) + **BSLODTriShape** (DLC LOD) + **BSMeshLODTriShape** + **BSSubIndexTriShape**.
+- **BSDynamicTriShape** (facegen) + **BSLODTriShape** (DLC LOD — see architectural note below) + **BSMeshLODTriShape** + **BSSubIndexTriShape**.
+- **`NiLodTriShape`** (#838 SK-D5-NEW-07, 8d416cc) — **architecturally distinct** from BSTriShape: inherits from `NiTriBasedGeom` per nif.xml, NOT from BSTriShape. Routed through a dedicated `NiLodTriShape` wrapper with `NiTriShape + 3 LOD-size u32s`. Pre-#838 dispatch through BSTriShape produced a 23-byte over-read on every Skyrim tree LOD. Audit guard: any audit that proposes "fold BSLODTriShape back into BSTriShape" is a regression of #838.
+- **`BsLagBoneController`** + **`BsProceduralLightningController`** (#837 SK-D5-NEW-03) — both have dedicated parsers. Without them, ~120 by-design `block_size` WARN events fire per Meshes0 sweep.
+- **BSTriShape `data_size` warning gate** (#836 SK-D5-NEW-02) — gated on `num_vertices != 0`. Removing the gate fires 67 false-positive WARNs/parse on the SSE skinned-body reconstruction path.
 - **BSTreeNode** — SpeedTree wind-bone lists.
 - **BSPackedCombined[Shared]GeomDataExtra** — distant LOD batches.
 - **BsDismemberSkinInstance** — dismemberment data on skinned meshes.
 - Windowed shader trailing fields are fully parsed (N23.2).
+- **Meshes0 sweep baseline (post #836–#838)**: `100.00% clean / 0 truncated / 0 recovered / 0 realignment WARNs`. Any audit observing realignment WARNs on a clean Skyrim Meshes0 corpus has hit a regression.
 
 ## Parameters (from $ARGUMENTS)
 
@@ -67,8 +71,8 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 4: BSEffectShaderProperty + Specialty Nodes
 **Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/blocks/properties.rs` (BSEffectShaderProperty), `crates/nif/src/import/walk.rs`
-**Checklist**: BSEffectShaderProperty soft_falloff_depth, greyscale_texture, lighting_influence, env_map_min_lod. BSDynamicTriShape (facegen dynamic verts). BSLODTriShape vs BSMeshLODTriShape vs BSSubIndexTriShape — distinct block types with distinct trailing data; dispatch + import must not confuse them. BSTreeNode wind-bone list parsing (SpeedTree). BSPackedCombined[Shared]GeomDataExtra — distant LOD batch layout. `as_ni_node` walker unwraps Skyrim NiNode subclasses (BSFadeNode, BSBlastNode, BSDamageStage, BSMultiBoundNode, BSTreeNode).
+**Entry points**: `crates/nif/src/blocks/properties.rs` (BSEffectShaderProperty), `crates/nif/src/import/walk.rs`, `crates/nif/src/blocks/mod.rs` (NiLodTriShape / BsLagBoneController / BsProceduralLightningController dispatch)
+**Checklist**: BSEffectShaderProperty soft_falloff_depth, greyscale_texture, lighting_influence, env_map_min_lod. BSDynamicTriShape (facegen dynamic verts). **`NiLodTriShape`** (Skyrim DLC tree LOD): inherits from NiTriBasedGeom per nif.xml — distinct wrapper, NOT routed through BSTriShape (#838 regression guard, 8d416cc). BSLODTriShape vs BSMeshLODTriShape vs BSSubIndexTriShape — distinct block types with distinct trailing data; dispatch + import must not confuse them. **`BsLagBoneController`** + **`BsProceduralLightningController`** (#837): dedicated parsers — without them ~120 by-design `block_size` WARN events fire per Meshes0 sweep. BSTreeNode wind-bone list parsing (SpeedTree). BSPackedCombined[Shared]GeomDataExtra — distant LOD batch layout. `as_ni_node` walker unwraps Skyrim NiNode subclasses (BSFadeNode, BSBlastNode, BSDamageStage, BSMultiBoundNode, BSTreeNode).
 **Output**: `/tmp/audit/skyrim/dim_4.md`
 
 ### Dimension 5: Real-Data Validation & Rendering

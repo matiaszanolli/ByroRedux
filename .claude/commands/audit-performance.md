@@ -24,6 +24,10 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 
 `ScratchTelemetry` resource is refreshed per-frame; surface via `ctx.scratch` console command. Five tracked scratches: `gpu_instances`, `batches`, `indirect_draws`, `terrain_tile`, `tlas_instances`. Prospector baseline (1200 ent / 773 draws): 337 KB total, 320 B wasted. Use for diffing M40 cell transitions and R1 dedup wins.
 
+## Known Infrastructure Gap (2026-05-04)
+
+**dhat / alloc-counter regression coverage is NOT wired.** The 2026-05-04 batch shipped 5 perf fixes (#823–#828, #830–#833) without quantitative regression guards for allocation counts. Audits proposing alloc-reduction findings MUST flag this gap explicitly: a fix that improves allocation behavior today can silently regress tomorrow. Until dhat-infra lands, "estimated" / "expected" allocation savings in fix commits are the only baseline. Treat any new alloc-hot-path finding as warranting a follow-up "wire dhat for this site" issue.
+
 ## Phase 1: Setup
 
 1. Parse `$ARGUMENTS` for `--focus`, `--depth`
@@ -49,18 +53,29 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/performance/dim_3.md`
 
 ### Dimension 4: ECS Query Patterns
-**Entry points**: `byroredux/src/systems.rs` (all system functions), `crates/core/src/ecs/world.rs`, `crates/core/src/ecs/query.rs`
+**Entry points**: `byroredux/src/systems.rs` (all system functions), `crates/core/src/ecs/world.rs`, `crates/core/src/ecs/query.rs`, `crates/core/src/ecs/lock_tracker.rs`
 **Checklist**: Query lock duration (held across I/O or GPU ops?), redundant queries in same system, name index rebuild frequency, animation_system per-frame HashMap builds, transform_propagation_system BFS efficiency.
+**2026-05-04 baseline (must not regress)**:
+- `lock_tracker::held_others` Vec collection is `cfg(debug_assertions)`-gated (#823 ECS-PERF-01) — release builds were paying ~100 small allocs/frame for a no-op. Re-enabling for release is a regression
+- `NameIndex.map` is refilled in place (HashMap::clear + insert), NOT replaced via `HashMap::new() + std::mem::swap` (#824 ECS-PERF-02) — the swap path costs ~3 ms cell-stream-in spike
+- `transform_propagation_system` caches the root entity set keyed on `(Transform::len, Parent::len, next_entity_id)` (#825 ECS-PERF-03) — saves ~250 µs/frame at Megaton scale
+- `animation_system` hoists `events` / `seen_labels` scratches out of the per-entity loop and uses `clone` instead of `mem::take` so capacity persists across iterations (#828 ECS-PERF-06)
+- `World::despawn` poisoned-lock panic uses a `type_names` side-table to name the offending component (#466 E-03) — regression test must continue to pin the panic message format
 **Output**: `/tmp/audit/performance/dim_4.md`
 
 ### Dimension 5: NIF Parse Performance
-**Entry points**: `crates/nif/src/lib.rs` (parse_nif), `crates/nif/src/import.rs`, `crates/nif/src/blocks/`
+**Entry points**: `crates/nif/src/lib.rs` (parse_nif), `crates/nif/src/import/`, `crates/nif/src/blocks/`, `crates/nif/src/stream.rs` (allocate_vec, read_pod_vec), `byroredux/src/streaming.rs` (pre_parse_cell with rayon)
 **Checklist**: Per-block allocation count, string cloning vs borrowing, Vec preallocation, SVD decomposition frequency (nalgebra overhead), block_size skip vs full parse for unused blocks.
+**2026-05-04 baseline (must not regress)**:
+- `pre_parse_cell` parallelises the model loop with rayon's `into_par_iter` (#830 NIF-PERF-06, `streaming.rs:286`) — drops cell-stream latency ~6-7× on FNV/SE exterior grids. Serial fallback is a regression
+- `stream.allocate_vec::<T>(n)?;` is `#[must_use]` — bound-check-only call sites that discard the empty Vec are a leak/no-op pattern that #831 NIF-PERF-03 fixed at 9 sites; the `must_use` attribute prevents recurrence
+- 6 NIF bulk-array readers go through `read_pod_vec<T>` to collapse double allocation (#833 NIF-PERF-02). Direct allocate-then-loop-and-fill is the regression pattern. The helper has a top-of-module compile-error gate for big-endian hosts; bytemuck path was rejected because bytemuck is NOT a workspace dep despite some audits claiming it
+- Per-block parse-loop counters use `entry().get_mut() / insert` split, NOT `entry().or_insert(name.to_string())` (#832 NIF-PERF-01) — the to_string path leaked ~150 KB/cell of throwaway short-string allocations on Oblivion
 **Output**: `/tmp/audit/performance/dim_5.md`
 
 ### Dimension 6: CPU Allocation Hot Paths
 **Entry points**: `byroredux/src/systems.rs` (animation_system, transform_propagation_system), `byroredux/src/render.rs` (build_render_data)
-**Checklist**: Per-frame Vec allocations (should use pre-allocated buffers?), String allocations in name lookups (already fixed with FixedString?), HashMap rebuilds, temporary Vec<DrawCommand> growth, scratch reuse vs realloc — diff against `ScratchTelemetry` baseline (337 KB / 320 B wasted on Prospector).
+**Checklist**: Per-frame Vec allocations (should use pre-allocated buffers?), String allocations in name lookups (already fixed with FixedString?), HashMap rebuilds, temporary Vec<DrawCommand> growth, scratch reuse vs realloc — diff against `ScratchTelemetry` baseline (337 KB / 320 B wasted on Prospector). Allocation findings should explicitly call out the dhat-infra gap (see Known Infrastructure Gap above) and note whether the proposed fix is testable today.
 **Output**: `/tmp/audit/performance/dim_6.md`
 
 ### Dimension 7: TAA & GPU Skinning Cost (M37.5 + M29.5)

@@ -13,7 +13,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3`). Default: all 5.
+- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3`). Default: all 6.
 - `--game <name>`: Focus on specific game variant: `fnv`, `fo3`, `skyrim`, `oblivion`, `fo4`, `fo76`, `starfield`. Default: all detected.
 - `--corpus <path>`: Path to a directory of extracted NIF files for bulk testing.
 
@@ -34,6 +34,12 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 ### Dimension 1: Block Parsing Correctness
 **Entry points**: `crates/nif/src/blocks/*.rs` (all block parsers)
 **Checklist**: Every field read matches nif.xml spec (compare struct fields vs nif.xml `<add>` elements), NiObjectNETData.parse() called correctly by all blocks, NiAVObjectData.parse() vs parse_no_properties() used correctly, BSShaderPropertyData.parse_fo3() used by FO3-era shaders only, block_size adjustment warnings (compile list from real NIF files if corpus available), boolean type correctness (read_bool vs read_byte_bool per nif.xml type annotation).
+**2026-05-04/05 architectural pins (regression guards)**:
+- **`NiLodTriShape`** (#838 SK-D5-NEW-07): inherits from `NiTriBasedGeom`, NOT from `BSTriShape`. nif.xml is authoritative. Routing it through `BSTriShape` produces a 23-byte over-read on every Skyrim tree LOD. The wrapper layout is `NiTriShape + 3 LOD-size u32s`. If the dispatch in `blocks/mod.rs` reverts to BSTriShape, Skyrim Meshes0 sweep loses its `100.00% / 0 truncated / 0 recovered / 0 realignment WARN` baseline
+- **`BsLagBoneController`** + **`BsProceduralLightningController`** (#837 SK-D5-NEW-03): both have dedicated parsers. Without them, ~120 by-design `block_size` WARN events fire per Skyrim Meshes0 sweep
+- **BSTriShape `data_size` warning** (#836 SK-D5-NEW-02): gated on `num_vertices != 0`. Removing the gate fires 67 false-positive WARNs/parse on the SSE skinned-body reconstruction path
+- **`DecalData`** (#813 / #814): FO4 TXST `DODT` sub-record + `DNAM` flags must be parsed; without them, 207/382 (DODT) and 382/382 (DNAM) vanilla TXSTs silently drop their authoring
+- **FO4+ BSTriShape inline tangents** (#795 / #796, b63ab0c): when `VF_TANGENTS | VF_NORMALS` are both set, tangents ship inline in the packed-vertex blob (NOT in a separate `NiBinaryExtraData`). Distinct from the Skyrim path; FO4 inline decode lives in `tri_shape.rs:695`. The Bethesda authored-blob path (Oblivion / FO3 / FNV) reads from `NiBinaryExtraData` named `"Tangent space (binormal & tangent vectors)"` and MUST honor the `[tangents..., bitangents...]` swap (`tangents` field actually holds ∂P/∂V — see #786 / 5dde345)
 **Output**: `/tmp/audit/nif/dim_1.md`
 
 ### Dimension 2: Version Handling
@@ -56,6 +62,16 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 **Entry points**: `crates/nif/src/blocks/mod.rs` (parse_block dispatch), `docs/legacy/nif.xml`
 **Checklist**: List all block type names that appear in real game NIFs (from corpus or BSA listing) but are not in the parse_block dispatch table, count NiUnknown fallbacks per game, identify which missing block types cause cascading failures (blocks without block_size in Oblivion format), estimate coverage percentage per game.
 **Output**: `/tmp/audit/nif/dim_5.md`
+
+### Dimension 6: Stream Allocation Hygiene (PERF — 2026-05-04 batch)
+**Entry points**: `crates/nif/src/stream.rs` (allocate_vec, read_pod_vec), all `blocks/*.rs` callers
+**Checklist**:
+- `stream.allocate_vec::<T>(n)?;` carries `#[must_use]`. Bound-check-only call sites that discard the empty Vec are a leak/no-op pattern fixed at 9 sites by #831 NIF-PERF-03; the attribute prevents recurrence — verify it's still on
+- 6 NIF bulk-array readers go through `read_pod_vec<T>` to collapse double allocation (#833 NIF-PERF-02). Direct allocate-then-loop-and-fill is the regression. The helper has a top-of-module compile-error gate for big-endian hosts; bytemuck is NOT a workspace dep despite some audits claiming it
+- Per-block parse-loop counters use `entry().get_mut() / insert` split, NOT `entry().or_insert(name.to_string())` (#832 NIF-PERF-01) — the to_string path leaks ~150 KB/cell of throwaway short-string allocations on Oblivion
+- #408 blanket `allocate_vec` sweep (60+ sites across 12 NIF files, Session 12): any new bulk-read site MUST use `allocate_vec` or `read_pod_vec`, NOT `Vec::with_capacity` + per-element read in a loop
+- Note the dhat-infra gap (see Performance audit): there's no allocation-counter regression test for these fixes today. Audits proposing further allocation-reduction findings should flag the gap.
+**Output**: `/tmp/audit/nif/dim_6.md`
 
 ## Phase 3: Merge
 

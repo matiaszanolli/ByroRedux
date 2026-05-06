@@ -49,7 +49,16 @@ Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 - Scripting events (`crates/scripting/src/events.rs`): transient marker components (ActivateEvent, HitEvent, TimerExpired) are removed by `event_cleanup_system` (Late stage) — verify single-frame lifetime
 - ScriptTimer (`crates/scripting/src/timer.rs`): `timer_tick_system` decrements per-frame, fires TimerExpired marker on hit — verify no negative-time accumulation
 - Animation controller (`crates/core/src/animation/controller.rs`): controller component lifecycle vs AnimationPlayer — verify no dangling clip references after unload
+- AnimationClipRegistry (`crates/core/src/animation/registry.rs`): #790 dedupes by lowercased path so cell streaming doesn't grow it unboundedly. Without case-folding interning, one full keyframe set leaks per cell load — observable as steady RAM growth across exterior streaming
 - DebugDrainSystem (`crates/debug-server/src/system.rs`): Late-stage exclusive — verify no World mutation outside drain (per-client TCP threads must enqueue commands, not mutate)
+- AudioWorld resource (`crates/audio/src/lib.rs`, M44): `audio_system` runs Late-stage; `OneShotSound` markers are removed by `prune_stopped_sounds` once the kira playback transitions to `PlaybackState::Stopped` — verify no infinite-marker leak path. `AudioListener` / `AudioEmitter` lifecycle: spatial sub-track handle drop must precede listener handle drop (kira invariant)
+
+### 8. ECS Hot-Path Performance Invariants (2026-05-04 batch — regression guards)
+- `lock_tracker::held_others` Vec collection is `cfg(debug_assertions)`-gated (#823 ECS-PERF-01). Re-enabling for release rebuilds ~100 small allocs/frame for a no-op
+- `NameIndex.map` is refilled in place via `HashMap::clear` + reinsert (#824 ECS-PERF-02). The `HashMap::new() + std::mem::swap` pattern costs ~3 ms cell-stream-in spike — a regression test should pin the in-place refill
+- `transform_propagation_system` caches the root entity set keyed on `(Transform::len, Parent::len, next_entity_id)` (#825 ECS-PERF-03). Recomputing roots every frame is the ~250 µs/frame regression at Megaton scale
+- `animation_system` hoists `events` / `seen_labels` scratches out of the per-entity loop and uses `clone` (not `mem::take`) so capacity persists (#828 ECS-PERF-06). Per-iteration allocation is the regression pattern
+- `World::despawn` poisoned-lock panic uses a `type_names` side-table to name the offending component (#466 E-03). Removing the side-table means panic messages lose the type name — bisecting takes 10× longer
 
 ## Process
 

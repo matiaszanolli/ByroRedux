@@ -16,8 +16,8 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 | Aspect            | State                                                                                |
 |-------------------|--------------------------------------------------------------------------------------|
 | NIF format        | BSVER 130 (and Next-Gen patches)                                                     |
-| BA2 format        | v1 ✓ / v7 / v8 (Next-Gen reverts to v1 header), GNRL + DX10 variants, zlib           |
-| ESM parser        | Stub + SCOL / MOVS / PKIN / TXST records added in session 10                         |
+| BA2 format        | v1 ✓ / v2 / v3 / v7 ✓ / v8 ✓ exhaustive `match` over `{1, 2, 3, 7, 8}` (#811 FO4-D2-NEW-01, f480337) — unknown majors bail at `open()` time, no silent v1-fallback. GNRL + DX10 variants. |
+| ESM parser        | Stub + SCOL / MOVS / PKIN / TXST records added in session 10. TXST DODT decal-data sub-record + DNAM flags now parsed (#813 / #814, 6941da6 — was silently dropping authoring on 207/382 (DODT) + 382/382 (DNAM) vanilla TXSTs). |
 | Parse rate        | 100.00% (34995 / 34995)                                                              |
 | Rendering         | Individual mesh + material diagnostics; cell loading not wired                       |
 | Reference data    | `/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/`                            |
@@ -30,6 +30,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 - **BGSM / BGEM materials** — FO4 stores PBR-ish material parameters in external `.bgsm` / `.bgem` files. `BSLightingShaderProperty.net.name` holds the path; the parser **stops and returns a material-reference stub** when BSVER ≥ 155 and Name is a BGSM/BGEM path. BGSM parser itself is out of scope — the Name path flows through `ImportedMesh.material_path` for diagnostics.
 - **Architecture records** — `SCOL` (static collections / prefabs), `MOVS` (movable statics), `PKIN` (packins), `TXST` (texture sets). Added in session 10; semantics of how SCOL placements expand into individual statics still needs the cell loader to understand them.
 - **Specialty blocks** — BSSubIndexTriShape, BSClothExtraData, BSConnectPoint::Parents/Children, BSBehaviorGraphExtraData, BSInvMarker, BSSkin::Instance / BSSkin::BoneData.
+- **Inline per-vertex tangents** (#795 / #796, b63ab0c) — when `VF_TANGENTS | VF_NORMALS` are both set on the packed-vertex flag, FO4+ BSTriShape ships tangents inline in the packed-vertex blob, NOT in a separate `NiBinaryExtraData`. Distinct from the Skyrim-via-`NiBinaryExtraData` path of Oblivion / FO3 / FNV (#786 / 5dde345). Any FO4 audit proposing to consolidate the two paths into one is a regression of #795/#796.
 
 ## Parameters (from $ARGUMENTS)
 
@@ -50,22 +51,22 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 **Checklist**: VF_FULL_PRECISION flag resolution — default-half unless set. Half-float decode matches IEEE 754 binary16 (including denormals and NaN). BSSubIndexTriShape segment data walked correctly (FO4 uses this extensively for actors). Skinned-vertex bone indices + weights extraction honors packed layout. BSVER 130 trailing fields on BSLightingShaderProperty: subsurface, rimlight, backlight, fresnel, wetness (Unknown 1 for BSVER > 130). Next-Gen patch NIFs (slightly different BSVER values) still dispatch correctly.
 **Output**: `/tmp/audit/fo4/dim_1.md`
 
-### Dimension 2: BA2 Reader — GNRL + DX10 Variants
+### Dimension 2: BA2 Reader — GNRL + DX10 Variants (Exhaustive Version Match)
 **Subagent**: `general-purpose`
 **Entry points**: `crates/bsa/src/ba2.rs`
-**Checklist**: BA2 v1 header (standard FO4) and v7/v8 (Next-Gen) — differ only in magic/version, revert to v1 layout. GNRL (general files — meshes, scripts): extract a mesh and a script and verify byte-exact. DX10 (textures): DDS header reconstruction from width/height/format/mip count. DXT1/DXT5/BC5/BC7 format encoding in `dxgi_format`. Mip chunk assembly — mip0 (largest) vs mip_last (smallest) ordering. Compression flag per-archive (zlib vs uncompressed). Verify against the ROADMAP claim of 100% on 34995 NIFs + the Textures archives.
+**Checklist**: Version dispatch is now an **exhaustive `match` over `{1, 2, 3, 7, 8}`** (#811 FO4-D2-NEW-01, f480337) — unknown majors bail at `open()` time, no silent v1-fallback. Audit any reintroduction of cascading `if v == 1 { ... } else if v == 7 { ... }` chains: that pattern is the regression. Mirrors the BSA reader's allowlist discipline at `archive.rs:165`. GNRL (general files — meshes, scripts): extract a mesh and a script and verify byte-exact. DX10 (textures): DDS header reconstruction from width/height/format/mip count. DXT1/DXT5/BC5/BC7 format encoding in `dxgi_format`. Mip chunk assembly — mip0 (largest) vs mip_last (smallest) ordering. Compression flag per-archive (zlib vs uncompressed). Verify against the ROADMAP claim of 100% on 34995 NIFs + the Textures archives.
 **Output**: `/tmp/audit/fo4/dim_2.md`
 
 ### Dimension 3: FO4 Shader Flags & BGSM Material Reference
 **Subagent**: `renderer-specialist`
 **Entry points**: `crates/nif/src/blocks/properties.rs` (BSLightingShaderProperty), `crates/nif/src/import/material.rs`
-**Checklist**: Shader flags — u32 pair read correctly (shader_flags_1 + shader_flags_2, two separate fields). Flag bit positions for FO4 differ from Skyrim — verify decal, alpha-test, skinned, glow, window, refraction, parallax, facegen bits are read from the correct mask + bit. BSLightingShaderProperty stopcond on BGSM Name path — when the material is external, parser returns early without reading the Phong trailing fields (those belong in the BGSM). `ImportedMesh.material_path` flows through to `Material.material_path` so diagnostics show BGSM references. `mesh.info <entity_id>` debug command surfaces material_path when texture_path is absent (session 10 behavior).
+**Checklist**: Shader flags — u32 pair read correctly (shader_flags_1 + shader_flags_2, two separate fields). Flag bit positions for FO4 differ from Skyrim — verify decal, alpha-test, skinned, glow, window, refraction, parallax, facegen bits are read from the correct mask + bit. BSLightingShaderProperty stopcond on BGSM Name path — when the material is external, parser returns early without reading the Phong trailing fields (those belong in the BGSM). `ImportedMesh.material_path` flows through to `Material.material_path` so diagnostics show BGSM references. `mesh.info <entity_id>` debug command surfaces material_path when texture_path is absent (session 10 behavior). **BSShaderTextureSet slot routing on `BSLightingShaderType`** (#563, d9bc363): SkinTint and HairTint sample from different slots than the default LSP path — verify the per-shader-type slot map is in lockstep with what the fragment shader reads.
 **Output**: `/tmp/audit/fo4/dim_3.md`
 
 ### Dimension 4: ESM Architecture Records (SCOL / MOVS / PKIN / TXST)
 **Subagent**: `general-purpose`
 **Entry points**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell.rs`
-**Checklist**: SCOL record structure — a prefab that contains placements of child statics + scale/rotation per instance. Are these parsed into a structure the cell loader can expand? MOVS — movable statics (physics-driven). PKIN — packins (grouped content bundles). TXST — texture sets referenced by NIF material paths. The `unreachable_patterns` warning at `crates/plugin/src/esm/cell.rs:211` suggests `b"TXST"` matches before reaching the intended arm — investigate. How many SCOL / MOVS / PKIN / TXST records exist in `Fallout4.esm`? Minimum record set needed for a hello-world FO4 cell load.
+**Checklist**: SCOL record structure — a prefab that contains placements of child statics + scale/rotation per instance. Are these parsed into a structure the cell loader can expand? MOVS — movable statics (physics-driven). PKIN — packins (grouped content bundles). TXST — texture sets referenced by NIF material paths. **TXST DODT + DNAM** (#813 / #814, 6941da6): decal-data sub-record + flags now parsed via `DecalData`. Pre-fix: 207/382 (DODT) + 382/382 (DNAM) vanilla TXSTs silently dropped their authoring. Audit any path that reads TXST without `DecalData` — that's the regression pattern. The `unreachable_patterns` warning at `crates/plugin/src/esm/cell.rs:211` (if still present) suggests `b"TXST"` matches before reaching the intended arm — investigate. How many SCOL / MOVS / PKIN / TXST records exist in `Fallout4.esm`? Minimum record set needed for a hello-world FO4 cell load. **FO4-architecture map exposure**: 5 FO4-architecture maps must surface in `categories()` index (#817 FO4-D4-NEW-05, af9f4de) — missing entries hide the records from any caller iterating by category. Real-data FO4 ESM parse-rate harness lives at `#819 FO4-D4-NEW-07` (d8f859d) — re-run before reporting parse-rate findings.
 **Output**: `/tmp/audit/fo4/dim_4.md`
 
 ### Dimension 5: Real-Data Validation
