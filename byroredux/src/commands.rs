@@ -2,9 +2,11 @@
 
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::{
-    AccessConflict, Camera, ConflictKind, DebugStats, Material, MeshHandle, SchedulerAccessReport,
-    ScratchTelemetry, TextureHandle, Transform, World,
+    AccessConflict, Camera, ConflictKind, DebugStats, GlobalTransform, Material, MeshHandle, Name,
+    SchedulerAccessReport, ScratchTelemetry, SkinnedMesh, TextureHandle, Transform, World,
 };
+use byroredux_core::math::Mat4;
+use byroredux_core::string::StringPool;
 use std::collections::HashMap;
 
 use byroredux_core::ecs::SystemList;
@@ -464,6 +466,197 @@ fn short(name: &str) -> &str {
     name.rsplit("::").next().unwrap_or(name)
 }
 
+/// `skin.list` — enumerate every entity carrying [`SkinnedMesh`].
+///
+/// Companion to [`SkinDumpCommand`] (#841): operators run `skin.list`
+/// to find the entity_id of the actor whose body is misrendering, then
+/// `skin.dump <id>` to inspect its palette.
+struct SkinListCommand;
+impl ConsoleCommand for SkinListCommand {
+    fn name(&self) -> &str {
+        "skin.list"
+    }
+    fn description(&self) -> &str {
+        "List all SkinnedMesh entities (id, bone_count, skeleton_root, name)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(skin_q) = world.query::<SkinnedMesh>() else {
+            return CommandOutput::line("No SkinnedMesh components found");
+        };
+        let pool = world.try_resource::<StringPool>();
+        let name_q = world.query::<Name>();
+        let mut lines = vec![format!("{} skinned mesh entities:", skin_q.len())];
+        lines.push(format!(
+            "  {:>8}  {:>5}  {:>13}  name",
+            "entity", "bones", "skeleton_root"
+        ));
+        let mut rows: Vec<(u32, usize, Option<u32>, String)> = Vec::new();
+        for (entity, skin) in skin_q.iter() {
+            let name = name_q
+                .as_ref()
+                .and_then(|q| q.get(entity))
+                .and_then(|n| pool.as_ref().and_then(|p| p.resolve(n.0)))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "(no Name)".to_string());
+            rows.push((entity, skin.bones.len(), skin.skeleton_root, name));
+        }
+        rows.sort_by_key(|r| r.0);
+        for (entity, bone_count, root, name) in rows {
+            let root_str = match root {
+                Some(r) => format!("{}", r),
+                None => "(none)".to_string(),
+            };
+            lines.push(format!(
+                "  {:>8}  {:>5}  {:>13}  {}",
+                entity, bone_count, root_str, name
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+/// `skin.dump <entity_id>` — dump per-bone palette state for one
+/// skinned mesh entity. Phase 1b.x diagnostic for the body-spike
+/// artifact (#841): for each bone slot, prints its resolved entity,
+/// `Name`, current `GlobalTransform`, baked `bind_inverse`, and the
+/// composed palette matrix `world × bind_inverse`. Decomposition
+/// (translation + rotation as quat + scale) is the readable form;
+/// full 16-float matrices follow on continuation lines so a
+/// hand-computation against `skinning_e2e`'s working baseline can
+/// pinpoint the diverging slot.
+///
+/// Pairs with the [`SKIN_DROPOUT_DUMPED`] Once-gated warn at
+/// `render.rs:348` — that path emits a one-shot `(slot, was_None)`
+/// summary; this command emits the full palette on demand.
+///
+/// Lock pattern: read-only on `SkinnedMesh` + `GlobalTransform` +
+/// `Name` (matches `animation_system`'s declared accesses), so safe
+/// to invoke from the debug-server CLI mid-frame.
+///
+/// `[`SKIN_DROPOUT_DUMPED`]: crate::render::SKIN_DROPOUT_DUMPED
+struct SkinDumpCommand;
+impl ConsoleCommand for SkinDumpCommand {
+    fn name(&self) -> &str {
+        "skin.dump"
+    }
+    fn description(&self) -> &str {
+        "Dump per-bone palette for one entity: skin.dump <entity_id> (#841)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let entity: u32 = match args.trim().parse() {
+            Ok(v) => v,
+            Err(_) => return CommandOutput::line("Usage: skin.dump <entity_id>"),
+        };
+        let Some(skin) = world.get::<SkinnedMesh>(entity) else {
+            return CommandOutput::line(format!(
+                "Entity {} has no SkinnedMesh component",
+                entity
+            ));
+        };
+        let lines = format_skin_dump(world, entity, &skin);
+        CommandOutput::lines(lines)
+    }
+}
+
+/// Pure formatter — kept separate from the command impl so the test
+/// can drive it without standing up a `ConsoleCommand` dispatcher.
+fn format_skin_dump(world: &World, entity: u32, skin: &SkinnedMesh) -> Vec<String> {
+    let pool = world.try_resource::<StringPool>();
+    let mut lines = vec![format!(
+        "SkinnedMesh dump for entity {} ({} bones):",
+        entity,
+        skin.bones.len()
+    )];
+    if let Some(root) = skin.skeleton_root {
+        lines.push(format!("  skeleton_root: entity {}", root));
+    } else {
+        lines.push("  skeleton_root: (none)".to_string());
+    }
+    if skin.global_skin_transform != Mat4::IDENTITY {
+        lines.push(format!(
+            "  global_skin_transform: NON-IDENTITY (informational; not multiplied at runtime)"
+        ));
+        lines.push(format!("    {}", format_mat4_row(&skin.global_skin_transform)));
+    } else {
+        lines.push("  global_skin_transform: identity".to_string());
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "  {:>4} {:>10} {:<24} {:<11} {:<11} {:<11}",
+        "slot", "entity", "name", "world(T)", "bind_inv(T)", "palette(T)"
+    ));
+    for (i, (maybe_bone, bind_inv)) in skin
+        .bones
+        .iter()
+        .zip(skin.bind_inverses.iter())
+        .enumerate()
+    {
+        let (entity_str, name_str, world_mat) = match maybe_bone {
+            Some(bone_e) => {
+                let name = world
+                    .get::<Name>(*bone_e)
+                    .and_then(|n| pool.as_ref().and_then(|p| p.resolve(n.0)))
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "(no Name)".to_string());
+                let world_mat = world
+                    .get::<GlobalTransform>(*bone_e)
+                    .map(|gt| gt.to_matrix());
+                (format!("{}", bone_e), name, world_mat)
+            }
+            None => ("(None)".to_string(), "(unresolved)".to_string(), None),
+        };
+        let world_t = world_mat
+            .map(|m| format_translation(&m))
+            .unwrap_or_else(|| "(no GT)".to_string());
+        let bind_t = format_translation(bind_inv);
+        let palette = world_mat
+            .map(|w| w * *bind_inv)
+            .unwrap_or(Mat4::IDENTITY);
+        let pal_t = format_translation(&palette);
+        lines.push(format!(
+            "  {:>4} {:>10} {:<24} {:<11} {:<11} {:<11}",
+            i, entity_str, truncate(&name_str, 24), world_t, bind_t, pal_t
+        ));
+        // Continuation lines: full matrices (one row of `world`,
+        // `bind_inverse`, `palette`). Operators copy these into a
+        // diff against `skinning_e2e`'s working baseline to find
+        // the diverging slot per the #841 plan.
+        if let Some(w) = world_mat {
+            lines.push(format!("       world:   {}", format_mat4_row(&w)));
+        }
+        lines.push(format!("       bind_inv:{}", format_mat4_row(bind_inv)));
+        lines.push(format!("       palette: {}", format_mat4_row(&palette)));
+    }
+    lines
+}
+
+fn format_translation(m: &Mat4) -> String {
+    let t = m.w_axis;
+    format!("({:.2},{:.2},{:.2})", t.x, t.y, t.z)
+}
+
+fn format_mat4_row(m: &Mat4) -> String {
+    // Print matrix in row-major order on one line for grep/diff
+    // friendliness. Column-vector convention — column N is
+    // m.{x,y,z,w}_axis.
+    let c = m.to_cols_array();
+    format!(
+        "[{:>7.3} {:>7.3} {:>7.3} {:>7.3} | {:>7.3} {:>7.3} {:>7.3} {:>7.3} | {:>7.3} {:>7.3} {:>7.3} {:>7.3} | {:>7.3} {:>7.3} {:>7.3} {:>7.3}]",
+        c[0], c[4], c[8], c[12],
+        c[1], c[5], c[9], c[13],
+        c[2], c[6], c[10], c[14],
+        c[3], c[7], c[11], c[15],
+    )
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max - 1])
+    }
+}
+
 /// `mem.frag` — compute and emit a per-block GPU memory fragmentation
 /// report. Pulls the live `gpu_allocator` report through the
 /// `AllocatorResource` newtype the binary inserts at engine init, so
@@ -514,6 +707,110 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MeshCacheCommand);
     registry.register(CtxScratchCommand);
     registry.register(SysAccessesCommand);
+    registry.register(SkinListCommand);
+    registry.register(SkinDumpCommand);
     registry.register(MemFragCommand);
     registry
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::ecs::components::{GlobalTransform, Name, SkinnedMesh, Transform};
+    use byroredux_core::ecs::World;
+    use byroredux_core::math::{Quat, Vec3};
+
+    /// `skin.dump` regression for #841 — the dump must surface the
+    /// resolved bone entity, its `Name`, the per-bone `bind_inverse`
+    /// translation, and the composed palette translation in the
+    /// summary table. Identity-fallback bones (no GT for the bone
+    /// entity) print `(no GT)` and `palette: identity` so the
+    /// `SKIN_DROPOUT_DUMPED` slots are obvious in the dump.
+    #[test]
+    fn skin_dump_renders_resolved_bone_with_world_and_palette() {
+        let mut world = World::new();
+        let mut pool = StringPool::new();
+        let bip01 = pool.intern("Bip01 Spine");
+        world.insert_resource(pool);
+
+        // Bone entity: positioned at world (0, 5, 0), with a Name.
+        let bone = world.spawn();
+        world.insert(bone, Transform::from_translation(Vec3::new(0.0, 5.0, 0.0)));
+        world.insert(
+            bone,
+            GlobalTransform::new(Vec3::new(0.0, 5.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(bone, Name(bip01));
+
+        // Skinned mesh: one bone, bind_inverse cancels the bind-pose
+        // translation so palette = world * bind_inv = identity (the
+        // canonical "bone hasn't moved relative to bind" case).
+        let bind_inv = Mat4::from_translation(Vec3::new(0.0, -5.0, 0.0));
+        let skin_entity = world.spawn();
+        let skin = SkinnedMesh::new(Some(bone), vec![Some(bone)], vec![bind_inv]);
+        let lines = format_skin_dump(&world, skin_entity, &skin);
+        let dump = lines.join("\n");
+
+        // Header — dump is for the right entity and bone count.
+        assert!(
+            dump.contains(&format!("dump for entity {} (1 bones)", skin_entity)),
+            "header missing or wrong: {}",
+            dump
+        );
+        // Bone slot 0 row: shows resolved bone entity + Name +
+        // world_t (0, 5, 0) + bind_inv_t (0, -5, 0) + palette_t (0, 0, 0).
+        assert!(dump.contains("bip01 spine"), "Name missing: {}", dump);
+        assert!(
+            dump.contains("(0.00,5.00,0.00)"),
+            "world translation missing: {}",
+            dump
+        );
+        assert!(
+            dump.contains("(0.00,-5.00,0.00)"),
+            "bind_inv translation missing: {}",
+            dump
+        );
+        // palette = T(0,5,0) * T(0,-5,0) = identity → translation (0,0,0).
+        assert!(
+            dump.contains("(0.00,0.00,0.00)"),
+            "palette translation missing: {}",
+            dump
+        );
+    }
+
+    #[test]
+    fn skin_dump_marks_unresolved_bone_slots() {
+        // Phase 1b.x DROPOUT scenario — a bone slot that didn't
+        // resolve to an entity must show up as `(None)` /
+        // `(unresolved)` so the operator can correlate against the
+        // SKIN_DROPOUT_DUMPED warn.
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        let skin_entity = world.spawn();
+        let skin = SkinnedMesh::new(None, vec![None], vec![Mat4::IDENTITY]);
+        let lines = format_skin_dump(&world, skin_entity, &skin);
+        let dump = lines.join("\n");
+        assert!(dump.contains("(None)"), "unresolved entity missing: {}", dump);
+        assert!(dump.contains("(unresolved)"), "unresolved name missing: {}", dump);
+    }
+
+    #[test]
+    fn skin_dump_reports_non_identity_global_skin_transform() {
+        // A non-identity `global_skin_transform` is informational
+        // (not multiplied at runtime) but its presence is exactly
+        // the kind of authoring quirk #841 surfaced on Doc Mitchell;
+        // the dump must call it out so it isn't missed.
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        let skin_entity = world.spawn();
+        let global = Mat4::from_quat(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2));
+        let skin = SkinnedMesh::new_with_global(None, vec![], vec![], global);
+        let lines = format_skin_dump(&world, skin_entity, &skin);
+        let dump = lines.join("\n");
+        assert!(
+            dump.contains("global_skin_transform: NON-IDENTITY"),
+            "non-identity global must be flagged: {}",
+            dump
+        );
+    }
 }
