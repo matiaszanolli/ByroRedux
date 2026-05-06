@@ -33,6 +33,13 @@ pub struct ContainerRecord {
     pub model_path: String,
     /// Total weight (used as carry-weight cap for player containers).
     pub weight: f32,
+    /// CONT DATA flags byte. FNV layout is `weight (f32) + flags (u8)`
+    /// = 5 bytes; pre-#376 the parser gated at `>= 4` and never read
+    /// this byte. Bit 0 = respawns (vendor restock + cell-reset loot
+    /// refresh), bit 1 = reserved/unknown. `0` on Oblivion (4-byte
+    /// DATA) and on any record where the byte was missing — the field
+    /// is the absence of the respawn flag, not an unknown state.
+    pub flags: u8,
     /// Open/close sound form IDs.
     pub open_sound: u32,
     pub close_sound: u32,
@@ -40,6 +47,12 @@ pub struct ContainerRecord {
     pub script_form_id: u32,
     pub contents: Vec<InventoryEntry>,
 }
+
+/// CONT DATA flag bits (FNV / FO3 / Skyrim+; absent on Oblivion).
+/// Container respawns on cell reset — vendor restock, looted-chest
+/// refresh on the cycle the cell loader applies. Pre-#376 invisible
+/// to gameplay systems.
+pub const CONT_FLAG_RESPAWNS: u8 = 0x01;
 
 #[derive(Debug, Clone)]
 pub struct LeveledList {
@@ -59,6 +72,7 @@ pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
         full_name: String::new(),
         model_path: String::new(),
         weight: 0.0,
+        flags: 0,
         open_sound: 0,
         close_sound: 0,
         script_form_id: 0,
@@ -82,10 +96,19 @@ pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
                     count,
                 });
             }
-            // DATA: weight(f32) + flags(u8)
+            // DATA: weight(f32) + flags(u8). FNV / FO3 / Skyrim+ ship
+            // 5 bytes; Oblivion is 4 bytes (no flags trailer). Read
+            // weight from the canonical 4-byte prefix and surface the
+            // optional flags byte when present. Pre-#376 (F2-02) the
+            // gate read only the weight half — the respawn bit on
+            // every vanilla FNV trash bag / loot crate was invisible
+            // to gameplay systems.
             b"DATA" if sub.data.len() >= 4 => {
                 record.weight =
                     f32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
+                if sub.data.len() >= 5 {
+                    record.flags = sub.data[4];
+                }
             }
             // SNAM: open sound form ID
             b"SNAM" if sub.data.len() >= 4 => {
@@ -184,6 +207,67 @@ mod tests {
         assert_eq!(r.contents[0].item_form_id, 0x100);
         assert_eq!(r.contents[0].count, 5);
         assert_eq!(r.contents[1].count, -1);
+        // Synthetic flags=0 above; the dedicated #376 / F2-02
+        // regression tests below cover non-zero respawn.
+        assert_eq!(r.flags, 0);
+    }
+
+    /// Regression for #376 / F2-02: the FNV CONT DATA `flags` byte
+    /// (5th byte of the 5-byte payload) must surface as
+    /// `ContainerRecord.flags`. Pre-fix the gate at `>= 4` ignored
+    /// it. `GenericTrashbag01`-class containers carry bit 0 to mark
+    /// "respawns on cell reset", driving vendor restock and looted-
+    /// chest refresh — invisible to gameplay systems pre-#376.
+    #[test]
+    fn cont_data_extracts_fnv_5byte_flags_byte() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&12.5f32.to_le_bytes());
+        data.push(CONT_FLAG_RESPAWNS); // 0x01 — respawns on cell reset
+
+        let subs = vec![
+            sub(b"EDID", b"GenericTrashbag01\0"),
+            sub(b"DATA", &data),
+        ];
+        let r = parse_cont(0xCAFE, &subs);
+        assert!((r.weight - 12.5).abs() < 1e-6);
+        assert_eq!(
+            r.flags & CONT_FLAG_RESPAWNS,
+            CONT_FLAG_RESPAWNS,
+            "FNV trash-bag respawn flag must round-trip through CONT DATA",
+        );
+    }
+
+    /// Oblivion CONT DATA is 4 bytes (no flags trailer). The parser
+    /// must accept the shorter shape, populate weight, and leave
+    /// `flags = 0` rather than reading past end-of-data. The default
+    /// is the *absence* of any flag, not an unknown state.
+    #[test]
+    fn cont_data_handles_oblivion_4byte_payload_without_overrun() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&5.0f32.to_le_bytes()); // 4 bytes, no flags
+
+        let subs = vec![sub(b"EDID", b"OblivionChest\0"), sub(b"DATA", &data)];
+        let r = parse_cont(0x1234, &subs);
+        assert!((r.weight - 5.0).abs() < 1e-6);
+        assert_eq!(
+            r.flags, 0,
+            "Oblivion 4-byte DATA must leave flags = 0, not panic on length",
+        );
+    }
+
+    /// Bit 1 (reserved/unknown per UESP) — defensive round-trip so a
+    /// future "what does bit 1 mean" investigation doesn't have to
+    /// re-instrument the parser. Validates that the byte goes
+    /// through verbatim, not just bit 0.
+    #[test]
+    fn cont_data_preserves_full_flags_byte_not_just_bit_zero() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+        data.push(0b0000_0011); // bit 0 + bit 1
+
+        let subs = vec![sub(b"DATA", &data)];
+        let r = parse_cont(0, &subs);
+        assert_eq!(r.flags, 0b0000_0011);
     }
 
     #[test]
