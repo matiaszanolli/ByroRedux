@@ -1999,8 +1999,100 @@ fn spawn_placed_instances(
         world.insert(entity, coll.body.clone());
     }
 
+    // #882 / CELL-PERF-05 — single StringPool lock acquisition for the
+    // whole spawn loop. Pre-fix the loop took one read lock per mesh
+    // (10 path-slot resolves) AND one write lock per mesh (the
+    // `mesh.name` intern), so Megaton's hundreds of placements paid
+    // hundreds of `RwLock` CAS pairs on the cell-load critical path.
+    // The borrow-checker forbids hoisting the guard across the spawn
+    // loop (`world.spawn()` / `world.insert()` need `&mut world` while
+    // `resource_mut` borrows `&world`), so we resolve every path slot
+    // + intern every name in this single pre-pass and let the spawn
+    // loop below read the pre-computed values. Mirrors the #523
+    // batched-commit pattern already in use one level up at
+    // `load_references`.
+    //
+    // Local `fn resolve_to_owned` (not a closure) so the inline
+    // resolves don't capture `&pool` for longer than a statement and
+    // the trailing `pool.intern(...)` can re-borrow as `&mut`.
+    struct ResolvedMeshPaths {
+        texture_path: Option<String>,
+        normal_map: Option<String>,
+        glow_map: Option<String>,
+        gloss_map: Option<String>,
+        parallax_map: Option<String>,
+        env_map: Option<String>,
+        env_mask: Option<String>,
+        material_path: Option<String>,
+        detail_map: Option<String>,
+        dark_map: Option<String>,
+        name_sym: Option<byroredux_core::string::FixedString>,
+    }
+    fn resolve_to_owned(
+        pool: &byroredux_core::string::StringPool,
+        sym: Option<byroredux_core::string::FixedString>,
+    ) -> Option<String> {
+        sym.and_then(|s| pool.resolve(s)).map(|s| s.to_string())
+    }
+    let resolved_paths: Vec<ResolvedMeshPaths> = {
+        let ov = refr_overlay;
+        let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+        imported
+            .iter()
+            .map(|mesh| {
+                // Effective texture slot paths. REFR overlay
+                // (XATO/XTNM/XTXR) wins over the NIF-authored paths
+                // when present; for slots the overlay left empty the
+                // cached NIF's texture rides through. `None` on both
+                // sides means the slot has no texture. See #584.
+                let texture_path =
+                    resolve_to_owned(&pool, ov.and_then(|o| o.diffuse).or(mesh.texture_path));
+                let normal_map =
+                    resolve_to_owned(&pool, ov.and_then(|o| o.normal).or(mesh.normal_map));
+                let glow_map =
+                    resolve_to_owned(&pool, ov.and_then(|o| o.glow).or(mesh.glow_map));
+                let gloss_map =
+                    resolve_to_owned(&pool, ov.and_then(|o| o.specular).or(mesh.gloss_map));
+                let parallax_map =
+                    resolve_to_owned(&pool, ov.and_then(|o| o.height).or(mesh.parallax_map));
+                let env_map = resolve_to_owned(&pool, ov.and_then(|o| o.env).or(mesh.env_map));
+                let env_mask =
+                    resolve_to_owned(&pool, ov.and_then(|o| o.env_mask).or(mesh.env_mask));
+                let material_path = resolve_to_owned(
+                    &pool,
+                    ov.and_then(|o| o.material_path).or(mesh.material_path),
+                );
+                // Detail/dark slots come straight from the NIF
+                // (no REFR-overlay path for these today).
+                let detail_map = resolve_to_owned(&pool, mesh.detail_map);
+                let dark_map = resolve_to_owned(&pool, mesh.dark_map);
+                // Intern the mesh name in the same lock — see #882's
+                // second hotspot. `mesh.name: Option<Arc<str>>`. The
+                // `pool.intern` call must follow the resolves so the
+                // `&pool` borrows from `resolve_to_owned` end before
+                // the `&mut pool` re-borrow.
+                let name_sym = mesh.name.as_deref().map(|n| pool.intern(n));
+                ResolvedMeshPaths {
+                    texture_path,
+                    normal_map,
+                    glow_map,
+                    gloss_map,
+                    parallax_map,
+                    env_map,
+                    env_mask,
+                    material_path,
+                    detail_map,
+                    dark_map,
+                    name_sym,
+                }
+            })
+            .collect()
+        // pool guard dropped here at end of block.
+    };
+
     let mut blas_specs: Vec<(u32, u32, u32)> = Vec::new();
     for (sub_mesh_index, mesh) in imported.iter().enumerate() {
+        let paths = &resolved_paths[sub_mesh_index];
         let num_verts = mesh.positions.len();
         let sub_mesh_index_u32 = sub_mesh_index as u32;
 
@@ -2102,40 +2194,26 @@ fn spawn_placed_instances(
             handle
         };
 
-        // Effective texture slot paths. REFR overlay (XATO/XTNM/XTXR)
-        // wins over the NIF-authored paths when present; for slots the
-        // overlay left empty the cached NIF's texture rides through.
-        // `None` on both sides means this slot has no texture. See #584.
-        //
-        // Both inputs hold `FixedString` handles (#609). Resolve through
-        // the engine `StringPool` once here so the per-slot Material
-        // construction below can stay on `Option<String>` paths.
-        // Resolved strings are owned `String`s — one allocation per
-        // populated slot per entity, much better than the pre-#609
-        // ~3-allocations-per-slot per entity from the redundant
-        // ImportedMesh.clone path.
-        let ov = refr_overlay;
-        let pool_read = world.resource::<byroredux_core::string::StringPool>();
-        let resolve_owned = |sym: Option<byroredux_core::string::FixedString>| -> Option<String> {
-            sym.and_then(|s| pool_read.resolve(s))
-                .map(|s| s.to_string())
-        };
-        let eff_texture_path =
-            resolve_owned(ov.and_then(|o| o.diffuse).or(mesh.texture_path));
-        let eff_normal_map = resolve_owned(ov.and_then(|o| o.normal).or(mesh.normal_map));
-        let eff_glow_map = resolve_owned(ov.and_then(|o| o.glow).or(mesh.glow_map));
-        let eff_gloss_map = resolve_owned(ov.and_then(|o| o.specular).or(mesh.gloss_map));
-        let eff_parallax_map = resolve_owned(ov.and_then(|o| o.height).or(mesh.parallax_map));
-        let eff_env_map = resolve_owned(ov.and_then(|o| o.env).or(mesh.env_map));
-        let eff_env_mask = resolve_owned(ov.and_then(|o| o.env_mask).or(mesh.env_mask));
-        let eff_material_path =
-            resolve_owned(ov.and_then(|o| o.material_path).or(mesh.material_path));
-        // The detail/dark slots come straight from `mesh`; resolve the
-        // same way so the downstream `resolve` closure that walks them
-        // stays uniform.
-        let eff_detail_map = resolve_owned(mesh.detail_map);
-        let eff_dark_map = resolve_owned(mesh.dark_map);
-        drop(pool_read);
+        // Pre-resolved texture slot paths from the single-lock
+        // pre-pass above (#882). Cloned per-mesh because the Material
+        // ECS component owns its `Option<String>` fields and the
+        // resolved-paths Vec stays alive across this iteration; the
+        // alternative — moving paths out of `resolved_paths[i]` — would
+        // need a swap-with-default to keep the Vec indexable for the
+        // texture-handle resolves below. Per-slot clone is one
+        // allocation per populated slot per mesh, same as the pre-fix
+        // `resolve_owned(...).clone()` pattern at the Material struct
+        // construction site.
+        let eff_texture_path = paths.texture_path.clone();
+        let eff_normal_map = paths.normal_map.clone();
+        let eff_glow_map = paths.glow_map.clone();
+        let eff_gloss_map = paths.gloss_map.clone();
+        let eff_parallax_map = paths.parallax_map.clone();
+        let eff_env_map = paths.env_map.clone();
+        let eff_env_mask = paths.env_mask.clone();
+        let eff_material_path = paths.material_path.clone();
+        let eff_detail_map = paths.detail_map.clone();
+        let eff_dark_map = paths.dark_map.clone();
 
         // Load texture (shared resolve: cache → BSA → fallback).
         // #610 — pass the diffuse-slot `TexClampMode` so the bindless
@@ -2221,10 +2299,12 @@ fn spawn_placed_instances(
         // Pre-#544 the cell-loader path skipped this insert, so even
         // if `Parent` had been wired the channels would have failed
         // their name lookup and silently no-op'd.
-        if let Some(ref name) = mesh.name {
-            let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
-            let sym = pool.intern(name);
-            drop(pool);
+        //
+        // Pre-#882 this site re-acquired a `world.resource_mut::<
+        // StringPool>()` write lock per mesh. The intern is now done
+        // in the pre-pass above; this site only consumes the cached
+        // `FixedString`.
+        if let Some(sym) = paths.name_sym {
             world.insert(entity, Name(sym));
         }
         world.insert(entity, MeshHandle(mesh_handle));
