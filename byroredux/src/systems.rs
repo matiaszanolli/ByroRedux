@@ -985,6 +985,11 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
     let mut roots: Vec<EntityId> = Vec::new();
     let mut post_order: Vec<EntityId> = Vec::new();
     let mut stack: Vec<(EntityId, bool)> = Vec::new();
+    // (GlobalTransform::len(), Parent::len(), World::next_entity_id()) —
+    // generation key for the cached `roots` set. Mirrors the
+    // `transform_propagation_system` pattern from #825 — same root
+    // discovery anti-pattern, different storage. See #826.
+    let mut last_seen_roots: Option<(usize, usize, EntityId)> = None;
 
     move |world: &World, _dt: f32| {
         // Acquire Children and LocalBound once — used by both passes.
@@ -1024,7 +1029,6 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
         // bound assigned. Entities that already have a LocalBound are
         // leaves in this sense (their bound comes from pass 1) and are
         // skipped here.
-        roots.clear();
         post_order.clear();
         stack.clear();
 
@@ -1033,14 +1037,30 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
                 return;
             };
             let parent_q = world.query::<Parent>();
-            for (entity, _) in tq.iter() {
-                let is_root = parent_q
-                    .as_ref()
-                    .map(|pq| pq.get(entity).is_none())
-                    .unwrap_or(true);
-                if is_root {
-                    roots.push(entity);
+            // Cache the root set across frames; re-scan only when the
+            // (GlobalTransform::len, Parent::len, next_entity_id) key
+            // moves. Steady-state interior cells touch ~6 k
+            // GlobalTransforms with ~30 roots — pre-#826 this rescanned
+            // every frame at ~250 µs, on top of the same waste in
+            // transform_propagation_system (#825). Same generation
+            // pattern as `NameIndex` / `transform_propagation`.
+            let key = (
+                tq.len(),
+                parent_q.as_ref().map(|q| q.len()).unwrap_or(0),
+                world.next_entity_id(),
+            );
+            if last_seen_roots != Some(key) {
+                roots.clear();
+                for (entity, _) in tq.iter() {
+                    let is_root = parent_q
+                        .as_ref()
+                        .map(|pq| pq.get(entity).is_none())
+                        .unwrap_or(true);
+                    if is_root {
+                        roots.push(entity);
+                    }
                 }
+                last_seen_roots = Some(key);
             }
         }
 
@@ -1796,6 +1816,116 @@ mod bound_propagation_tests {
         let wb_q = world.query::<WorldBound>().unwrap();
         let wb = wb_q.get(e).unwrap();
         assert_eq!(wb.radius, 0.0);
+    }
+
+    /// Regression test for #826: the cached root set must invalidate
+    /// when the scene-graph topology changes between frames. Mirrors
+    /// the sibling test for `transform_propagation_system` (#825). All
+    /// three transitions (new root spawned, child-gains-Parent,
+    /// child-loses-Parent) move the
+    /// `(GlobalTransform::len, Parent::len, next_entity_id)` key, so
+    /// each must trigger a rescan and a corrected post-order walk.
+    #[test]
+    fn root_cache_invalidates_on_topology_change() {
+        let mut world = World::new();
+        // Initial: one root with one child leaf at (-10, 0, 0) r=1.
+        let parent = world.spawn();
+        world.insert(parent, GlobalTransform::IDENTITY);
+        world.insert(parent, WorldBound::ZERO);
+
+        let leaf =
+            spawn_leaf(&mut world, Vec3::new(-10.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
+        world.insert(leaf, Parent(parent));
+        world.insert(parent, Children(vec![leaf]));
+
+        let mut sys = make_world_bound_propagation_system();
+        sys(&world, 0.016);
+        let parent_wb_initial = *world.query::<WorldBound>().unwrap().get(parent).unwrap();
+        assert!((parent_wb_initial.center - Vec3::new(-10.0, 0.0, 0.0)).length() < 1e-5);
+
+        // 1) Spawn a NEW top-level root (unrelated). Cache key
+        //    (GlobalTransform::len) bumps; rescan must include it
+        //    even though `parent` already had an entry.
+        let new_root =
+            spawn_leaf(&mut world, Vec3::new(50.0, 0.0, 0.0), 1.0, Vec3::ZERO, 2.0);
+        sys(&world, 0.016);
+        let new_root_wb = *world.query::<WorldBound>().unwrap().get(new_root).unwrap();
+        assert!(
+            (new_root_wb.center - Vec3::new(50.0, 0.0, 0.0)).length() < 1e-5,
+            "new root must be discovered after cache invalidation, got {:?}",
+            new_root_wb.center
+        );
+
+        // 2) Add a SECOND child to `parent` — Parent::len bumps. The
+        //    parent's WorldBound must re-fold to enclose both leaves.
+        let leaf2 =
+            spawn_leaf(&mut world, Vec3::new(10.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
+        world.insert(leaf2, Parent(parent));
+        world.insert(parent, Children(vec![leaf, leaf2]));
+        sys(&world, 0.016);
+        let parent_wb = *world.query::<WorldBound>().unwrap().get(parent).unwrap();
+        assert!(
+            (parent_wb.center - Vec3::ZERO).length() < 1e-5,
+            "parent center should be midpoint after second child added, got {:?}",
+            parent_wb.center
+        );
+        assert!(
+            (parent_wb.radius - 11.0).abs() < 1e-5,
+            "parent radius should enclose both leaves (r=11), got {}",
+            parent_wb.radius
+        );
+
+        // 3) Promote `leaf2` to root by removing its Parent. Parent::len
+        //    drops; rescan must include it. After the walk, `parent`'s
+        //    WorldBound should fall back to enclosing only `leaf`.
+        world.remove::<Parent>(leaf2);
+        world.insert(parent, Children(vec![leaf]));
+        sys(&world, 0.016);
+        let parent_wb_after = *world.query::<WorldBound>().unwrap().get(parent).unwrap();
+        assert!(
+            (parent_wb_after.center - Vec3::new(-10.0, 0.0, 0.0)).length() < 1e-5,
+            "parent should re-fold to single child after promote, got {:?}",
+            parent_wb_after.center
+        );
+    }
+
+    /// Steady-state cache hit: with no topology change, the cached
+    /// root set must still drive a correct post-order walk so leaf
+    /// transform changes propagate up to parent bounds (the
+    /// counterpart to `root_cache_steady_state_still_runs_propagation`
+    /// in #825 — confirms cache hits don't stall pass 2).
+    #[test]
+    fn root_cache_steady_state_still_refolds_parent_bounds() {
+        let mut world = World::new();
+        let parent = world.spawn();
+        world.insert(parent, GlobalTransform::IDENTITY);
+        world.insert(parent, WorldBound::ZERO);
+
+        let leaf =
+            spawn_leaf(&mut world, Vec3::new(-10.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
+        world.insert(leaf, Parent(parent));
+        world.insert(parent, Children(vec![leaf]));
+
+        let mut sys = make_world_bound_propagation_system();
+        sys(&world, 0.016);
+        let initial = *world.query::<WorldBound>().unwrap().get(parent).unwrap();
+        assert!((initial.center - Vec3::new(-10.0, 0.0, 0.0)).length() < 1e-5);
+
+        // Move the leaf without any topology change — the cache key
+        // stays valid, but pass 1 (leaf bound) and pass 2 (parent
+        // fold) must still re-execute against the cached root.
+        {
+            let mut gq = world.query_mut::<GlobalTransform>().unwrap();
+            let g = gq.get_mut(leaf).unwrap();
+            g.translation = Vec3::new(20.0, 0.0, 0.0);
+        }
+        sys(&world, 0.016);
+        let after = *world.query::<WorldBound>().unwrap().get(parent).unwrap();
+        assert!(
+            (after.center - Vec3::new(20.0, 0.0, 0.0)).length() < 1e-5,
+            "parent bound must re-fold against cached root after leaf moved, got {:?}",
+            after.center
+        );
     }
 }
 
