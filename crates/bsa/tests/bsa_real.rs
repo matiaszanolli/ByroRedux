@@ -9,8 +9,15 @@
 //! The pre-#587 unit tests cover synthetic v104 / v105 records but
 //! never touch a vanilla archive. These tests close that gap by
 //! exercising the version dispatch + extract paths against real game
-//! files. Gated `#[ignore]` on `BYROREDUX_FNV_DATA` /
-//! `BYROREDUX_SKYRIMSE_DATA`; opt-in via:
+//! files. v103 coverage was added under #690 — without it a
+//! "simplification" that removes the `if version == 105 { 24 } else
+//! { 16 }` folder-record branch (or breaks the `version >= 104`
+//! embed-name gate, or routes v103 down a non-zlib codec path) would
+//! slip past `cargo test -- --ignored` even on a fully-installed
+//! dev box.
+//!
+//! Gated `#[ignore]` on `BYROREDUX_OBLIVION_DATA` /
+//! `BYROREDUX_FNV_DATA` / `BYROREDUX_SKYRIMSE_DATA`; opt-in via:
 //! ```sh
 //! cargo test -p byroredux-bsa --test bsa_real -- --ignored
 //! ```
@@ -34,6 +41,13 @@ fn data_dir(env_var: &str, fallback: &str) -> Option<PathBuf> {
     }
 }
 
+fn oblivion_data_dir() -> Option<PathBuf> {
+    data_dir(
+        "BYROREDUX_OBLIVION_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+    )
+}
+
 fn fnv_data_dir() -> Option<PathBuf> {
     data_dir(
         "BYROREDUX_FNV_DATA",
@@ -46,6 +60,62 @@ fn skyrimse_data_dir() -> Option<PathBuf> {
         "BYROREDUX_SKYRIMSE_DATA",
         "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
     )
+}
+
+/// Oblivion ships v103 BSAs (zlib compression, 16-byte folder
+/// records, u32 offsets, no `embed_file_names` flag — the
+/// `version >= 104` gate at `archive.rs:188` excludes v103). Open
+/// the meshes archive, extract a NIF, assert it carries the Gamebryo
+/// magic header. This test exists to close the v103 disk-coverage
+/// gap surfaced by AUDIT_OBLIVION_2026-04-25 (#690): v103 was
+/// empirically validated through `nif_stats` (8,032 NIFs) and the
+/// `oblivion_extract` example, but neither runs under
+/// `cargo test -p byroredux-bsa`.
+#[test]
+#[ignore]
+fn oblivion_meshes_bsa_v103_extracts_nif_with_gamebryo_magic() {
+    let Some(data) = oblivion_data_dir() else {
+        eprintln!("Skipping: BYROREDUX_OBLIVION_DATA not set and default path missing");
+        return;
+    };
+    let archive_path = data.join("Oblivion - Meshes.bsa");
+    if !archive_path.is_file() {
+        eprintln!("Skipping: {archive_path:?} not found");
+        return;
+    }
+
+    let archive = BsaArchive::open(&archive_path).expect("open Oblivion - Meshes.bsa");
+    assert_eq!(
+        archive.version(),
+        103,
+        "Oblivion - Meshes.bsa must be v103"
+    );
+    assert!(
+        archive.file_count() > 1000,
+        "Oblivion meshes BSA ships ~20k entries; got {}",
+        archive.file_count()
+    );
+
+    let entry = archive
+        .list_files()
+        .into_iter()
+        .find(|p| p.ends_with(".nif"))
+        .map(|s| s.to_string())
+        .expect("Oblivion meshes BSA must ship at least one NIF");
+    let bytes = archive
+        .extract(&entry)
+        .unwrap_or_else(|e| panic!("extract '{entry}' failed: {e}"));
+    assert!(
+        bytes.len() >= 20,
+        "NIF '{entry}' decompressed to {} bytes — too small",
+        bytes.len()
+    );
+    assert_eq!(
+        &bytes[..4],
+        b"Game",
+        "extracted '{entry}' lacks Gamebryo magic; got {:?}",
+        &bytes[..4]
+    );
 }
 
 /// FNV ships v104 BSAs (zlib compression, 16-byte folder records, u32
