@@ -9,6 +9,7 @@ mod helpers;
 mod npc_spawn;
 mod render;
 mod scene;
+mod scene_import_cache;
 mod streaming;
 mod systems;
 
@@ -279,6 +280,17 @@ impl App {
         // Persists across cell transitions so repeat visits don't re-
         // parse every clutter mesh. See #381.
         world.insert_resource(crate::cell_loader::NifImportRegistry::new());
+
+        // #880 / CELL-PERF-02 — companion cache for the hierarchical
+        // scene-import path used by NPC spawn (`load_nif_bytes_with_
+        // skeleton`). Pre-fix every NPC re-parsed the same skeleton +
+        // body + hand NIFs from BSA bytes (~280 redundant parses /
+        // Megaton load). Different output shape from `CachedNifImport`
+        // — that one is the flat-import variant for REFR placements;
+        // this one carries the hierarchical `ImportedScene` with its
+        // `nodes: Vec<ImportedNode>` so the bone hierarchy spawns
+        // correctly.
+        world.insert_resource(crate::scene_import_cache::SceneImportCache::new());
 
         // Pre-register component storages that the physics sync system
         // queries on the first frame (before anything has been inserted).

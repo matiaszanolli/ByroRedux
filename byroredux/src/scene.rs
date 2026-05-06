@@ -1255,6 +1255,45 @@ pub(crate) fn load_nif_bytes(
     (count, root)
 }
 
+/// Parse + import + BGSM-merge a NIF scene from raw bytes. Shared
+/// helper for [`load_nif_bytes_with_skeleton`]'s cache-miss path
+/// (where the result is wrapped in `Arc` and inserted into
+/// [`crate::scene_import_cache::SceneImportCache`]) and its
+/// hook-bypass path (where the per-NPC `pre_spawn_hook` then mutates
+/// the result before spawn). Returns `None` on parse failure so the
+/// caller can record a negative cache entry. See #880 / CELL-PERF-02.
+fn parse_import_and_merge(
+    world: &mut World,
+    data: &[u8],
+    label: &str,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+) -> Option<byroredux_nif::import::ImportedScene> {
+    let scene = match byroredux_nif::parse_nif(data) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("Failed to parse NIF '{}': {}", label, e);
+            return None;
+        }
+    };
+    let mut pool = world.resource_mut::<StringPool>();
+    let mut imported = byroredux_nif::import::import_nif_scene_with_resolver(
+        &scene,
+        &mut pool,
+        Some(tex_provider),
+    );
+    // FO4+ external material resolution (#493). NIF fields take
+    // precedence; only empty slots fill in from the resolved
+    // BGSM/BGEM chain. The merge interns through the same pool so
+    // REFR overlays and per-mesh imports share the dedup table (#609).
+    if let Some(provider) = mat_provider {
+        for mesh in &mut imported.meshes {
+            merge_bgsm_into_mesh(mesh, provider, &mut pool);
+        }
+    }
+    Some(imported)
+}
+
 /// Variant of [`load_nif_bytes`] used by NPC spawn (M41.0 Phase 1b)
 /// when assembling skeleton + body + head from three separate NIFs.
 ///
@@ -1293,42 +1332,83 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     Option<EntityId>,
     std::collections::HashMap<std::sync::Arc<str>, EntityId>,
 ) {
-    let scene = match byroredux_nif::parse_nif(data) {
-        Ok(s) => s,
-        Err(e) => {
-            log::error!("Failed to parse NIF '{}': {}", label, e);
-            return (0, None, std::collections::HashMap::new());
-        }
-    };
+    // #880 / CELL-PERF-02 — cache the parse + import + BGSM-merge
+    // pipeline by lowercased path. Pre-fix every NPC spawn re-parsed
+    // skeleton + body + hand NIFs from BSA bytes (~280 redundant
+    // parses for Megaton-scale interiors). The cache is bypassed
+    // when a `pre_spawn_hook` is provided (head-with-FaceGen-morph
+    // path) because each NPC's morph is unique — caching the
+    // already-morphed scene would hand the same face to every NPC.
+    // The skeleton/body/hand calls all pass `pre_spawn_hook: None`,
+    // so they hit the cache.
+    let cache_key = label.to_ascii_lowercase();
+    let cached_arc: Option<std::sync::Arc<byroredux_nif::import::ImportedScene>>;
+    let mut owned_for_hook: Option<byroredux_nif::import::ImportedScene> = None;
 
-    let imported = {
-        let mut pool = world.resource_mut::<StringPool>();
-        let mut imported = byroredux_nif::import::import_nif_scene_with_resolver(
-            &scene,
-            &mut pool,
-            Some(tex_provider),
-        );
-        // FO4+ external material resolution (#493). NIF fields take precedence;
-        // only empty slots fill in from the resolved BGSM/BGEM chain. The
-        // BGSM merge interns through the same pool so REFR overlays and
-        // per-mesh imports share the dedup table. See #609.
-        if let Some(provider) = mat_provider {
-            for mesh in &mut imported.meshes {
-                merge_bgsm_into_mesh(mesh, provider, &mut pool);
-            }
-        }
-        imported
-    };
-
-    // M41.0 Phase 3b — pre-spawn hook fires after import + BGSM
-    // merge but before any node / mesh spawning. NPC head spawn
-    // uses this hook to apply FaceGen FGGS / FGGA slider deltas to
-    // `imported.meshes[head].positions` so the per-NPC unique face
-    // shape lands in the GPU upload below.
-    let mut imported = imported;
     if let Some(hook) = pre_spawn_hook {
+        // M41.0 Phase 3b — pre-spawn hook bypass. NPC head spawn
+        // uses this hook to apply FaceGen FGGS / FGGA slider deltas
+        // to `imported.meshes[head].positions` so the per-NPC unique
+        // face shape lands in the GPU upload below. Recorded as a
+        // bypass-parse so the cache's `parses` counter still
+        // reflects total parse_nif invocations.
+        {
+            let mut cache = world.resource_mut::<crate::scene_import_cache::SceneImportCache>();
+            cache.record_bypass_parse();
+        }
+        let mut imported =
+            match parse_import_and_merge(world, data, label, tex_provider, mat_provider) {
+                Some(s) => s,
+                None => return (0, None, std::collections::HashMap::new()),
+            };
         hook(&mut imported);
+        owned_for_hook = Some(imported);
+        cached_arc = None;
+    } else {
+        // Cache routing: read-lock probe → parse + import + insert
+        // on miss. Three-tier shape mirrors `cell_loader::load_references`
+        // (#523). Negative-cache entries (failed parses) short-circuit
+        // subsequent NPC spawns of the same path so the warning log
+        // doesn't spam.
+        let cached = {
+            let mut cache = world.resource_mut::<crate::scene_import_cache::SceneImportCache>();
+            cache.get(&cache_key)
+        };
+        cached_arc = match cached {
+            Some(Some(arc)) => Some(arc),
+            Some(None) => {
+                // Negative-cached parse failure — propagate the empty
+                // result without re-parsing.
+                return (0, None, std::collections::HashMap::new());
+            }
+            None => {
+                let imported_opt =
+                    parse_import_and_merge(world, data, label, tex_provider, mat_provider);
+                let arc_opt = imported_opt.map(std::sync::Arc::new);
+                let mut cache =
+                    world.resource_mut::<crate::scene_import_cache::SceneImportCache>();
+                let stored = cache.insert(cache_key, arc_opt);
+                match stored {
+                    Some(arc) => Some(arc),
+                    None => return (0, None, std::collections::HashMap::new()),
+                }
+            }
+        };
     }
+
+    // Bind a single `&ImportedScene` reference for the rest of the
+    // function — the spawn loops only read. The borrow is anchored
+    // in either `cached_arc` (cache hit / cache-miss insert) or
+    // `owned_for_hook` (per-NPC FaceGen morph path); whichever one
+    // is `Some` holds the live data.
+    let imported: &byroredux_nif::import::ImportedScene = if let Some(ref s) = owned_for_hook {
+        s
+    } else {
+        cached_arc
+            .as_ref()
+            .expect("either hook bypass or cache lookup must populate one branch")
+            .as_ref()
+    };
 
     // Phase 1: Spawn node entities (NiNode hierarchy).
     // node_index → EntityId mapping.
