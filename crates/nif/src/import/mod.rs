@@ -424,8 +424,10 @@ pub struct ImportedMesh {
     /// dropped it on the way out, so the renderer had no way to
     /// branch on SkinTint / HairTint / EyeEnvmap / SparkleSnow /
     /// MultiLayerParallax. Variant rendering wiring inside the
-    /// fragment shader is per-variant follow-up work.
-    pub material_kind: u8,
+    /// fragment shader is per-variant follow-up work. Widened to
+    /// `u32` per #570 (SK-D3-03); see `MaterialInfo::material_kind`
+    /// for the rationale.
+    pub material_kind: u32,
     /// Raw `NiAVObject.flags` value (sibling of `ImportedNode.flags`).
     /// Consumers emit a `SceneFlags` component per shape entity. See #222.
     pub flags: u32,

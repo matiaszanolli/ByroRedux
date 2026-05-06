@@ -218,6 +218,34 @@ fn hair_tint_does_not_remap_material_kind() {
     assert_eq!(info.material_kind, 6);
 }
 
+/// Regression for #570 / SK-D3-03: `material_kind` is `u32` end-to-
+/// end (parser's `BSLightingShaderProperty.shader_type` is `u32`,
+/// `GpuMaterial.material_kind` is `u32`). Pre-fix the importer
+/// narrowed through `MaterialInfo.material_kind: u8` and re-widened
+/// at scene-builder time, silently masking any `shader_type ≥ 256`.
+/// All known Bethesda values today are 0–20 + engine 100/101, but
+/// any future Starfield / FO4 DLC variant in the high-byte range
+/// would have routed silently to the wrong shader branch.
+///
+/// Assert that values 256 and 0x10001 (a third-byte set, beyond
+/// what `as u8` would have masked to 0) round-trip verbatim.
+#[test]
+fn material_kind_round_trips_values_above_u8_max() {
+    let mut info = MaterialInfo::default();
+    info.material_kind = 256;
+    assert_eq!(
+        info.material_kind, 256,
+        "post-#570 material_kind must accept values ≥ 256 verbatim",
+    );
+    info.material_kind = 0x10001; // bit 16 + bit 0
+    assert_eq!(
+        info.material_kind, 0x10001,
+        "post-#570 material_kind must accept values ≥ 65536 verbatim",
+    );
+    info.material_kind = u32::MAX;
+    assert_eq!(info.material_kind, u32::MAX);
+}
+
 #[test]
 fn hair_tint_writes_rgb() {
     let mut info = MaterialInfo::default();

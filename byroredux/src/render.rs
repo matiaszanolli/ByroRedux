@@ -689,7 +689,7 @@ pub(crate) fn build_render_data(
                 //     wood=0.7, fabric=0.95) cleanly separates actual
                 //     transparent-refractive materials from
                 //     alpha-blend-for-edges. See follow-up to #515.
-                let base_material_kind = mat.map(|m| m.material_kind as u32).unwrap_or(0);
+                let base_material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
                 // Engine-synthesized kinds (>= 100) are pre-classified
                 // upstream and must win over the heuristic Glass branch.
                 // Today: BSEffectShaderProperty meshes arrive with
@@ -1831,7 +1831,7 @@ mod variant_pack_gating_tests {
     /// dispatches; the test caller picks 0 (default) to prove the
     /// gate skips the pack, or 5/6/14 to prove the gate lets the
     /// matching variant through.
-    fn world_with_variant_material(material_kind: u8) -> World {
+    fn world_with_variant_material(material_kind: u32) -> World {
         let mut world = World::new();
 
         // Camera entity — ActiveCamera is required by build_render_data.

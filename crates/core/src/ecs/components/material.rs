@@ -99,15 +99,21 @@ pub struct Material {
     /// 10–12. 0=ALWAYS, 1=LESS, 2=EQUAL, 3=LESSEQUAL, 4=GREATER,
     /// 5=NOTEQUAL, 6=GREATEREQUAL (default), 7=NEVER. See #263.
     pub alpha_test_func: u8,
-    /// Raw `BSLightingShaderProperty.shader_type` enum value (0–19).
-    /// Plumbed through to `GpuInstance.material_kind` so the fragment
-    /// shader can branch on the variant (SkinTint / HairTint /
-    /// EyeEnvmap / SparkleSnow / MultiLayerParallax / …). 0 = Default
-    /// lit — the safe fall-through for non-Skyrim+ meshes that have
-    /// no BSLightingShaderProperty backing. Variant-specific shading
-    /// is per-variant follow-up; this field just exposes the data so
-    /// the next renderer milestone has something to consume. See #344.
-    pub material_kind: u8,
+    /// Raw `BSLightingShaderProperty.shader_type` enum value (0–20
+    /// vanilla; 100+ engine-synthesized: `MATERIAL_KIND_GLASS`,
+    /// `MATERIAL_KIND_EFFECT_SHADER`). Plumbed through to
+    /// `GpuInstance.material_kind` so the fragment shader can branch
+    /// on the variant (SkinTint / HairTint / EyeEnvmap / SparkleSnow
+    /// / MultiLayerParallax / …). 0 = Default lit — the safe fall-
+    /// through for non-Skyrim+ meshes that have no
+    /// BSLightingShaderProperty backing. Variant-specific shading is
+    /// per-variant follow-up; this field just exposes the data so the
+    /// next renderer milestone has something to consume. See #344.
+    /// Widened to `u32` per #570 (SK-D3-03) — both ends of the
+    /// pipeline (`shader_type` u32 → GPU u32) match now; the
+    /// pre-fix `as u8` cast in the importer silently masked any value
+    /// ≥ 256.
+    pub material_kind: u32,
     /// Depth test enabled (`NiZBufferProperty.z_test`). Default true.
     /// Forwarded into the per-batch `vkCmdSetDepthTestEnable` call
     /// in the draw loop. See #398 (OBL-D4-H1).

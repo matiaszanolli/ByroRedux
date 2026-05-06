@@ -447,9 +447,18 @@ pub(super) struct MaterialInfo {
     // branch on `material_kind` without re-reading the NIF. Renderer-
     // side dispatch is tracked separately (SK-D3-02); until that lands
     // these values ride unused on `MaterialInfo`.
-    /// Raw `BSLightingShaderProperty.shader_type` (0–19). 0 when the
-    /// shape has no BSLightingShaderProperty (pre-Skyrim).
-    pub material_kind: u8,
+    /// Raw `BSLightingShaderProperty.shader_type`. Values 0–20 are the
+    /// vanilla Bethesda enum (Default, EnvironmentMap, GlowShader,
+    /// Parallax, FaceTint, SkinTint, HairTint, ParallaxOcc,
+    /// MultiLayerParallax, ..., Dismemberment); 100+ is engine-
+    /// synthesized (MATERIAL_KIND_GLASS, MATERIAL_KIND_EFFECT_SHADER).
+    /// 0 when the shape has no BSLightingShaderProperty (pre-Skyrim).
+    /// Widened to `u32` per #570 (SK-D3-03) — the parser keeps
+    /// `shader_type` as `u32` and the GPU `GpuMaterial.material_kind`
+    /// is `u32`, so narrowing through this struct silently masked
+    /// values ≥ 256. Future Starfield / FO4 DLC variants are now
+    /// safe to plumb without a type-width regression.
+    pub material_kind: u32,
     /// SkinTint (type 5) — race/character skin color. FO76 variant
     /// stores alpha in `skin_tint_alpha`.
     pub skin_tint_color: Option<[f32; 3]>,

@@ -276,7 +276,11 @@ pub(crate) fn extract_material_info_from_refs(
             info.uv_scale = shader.uv_scale;
             info.has_uv_transform = true;
             info.alpha = shader.alpha;
-            info.material_kind = shader.shader_type as u8;
+            // No narrowing here — pre-#570 the cast was `as u8` which
+            // silently masked any `shader_type >= 256`. Both sides of
+            // the pipeline are u32 now (parser → ImportedMesh → ECS
+            // Material → GpuMaterial); see #570 (SK-D3-03).
+            info.material_kind = shader.shader_type;
             apply_shader_type_data(&mut info, &shader.shader_type_data);
             info.has_material_data = true;
         }
