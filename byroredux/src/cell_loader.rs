@@ -1484,6 +1484,34 @@ fn load_references(
         );
     }
 
+    // #881 / CELL-PERF-03 — drain queued DDS uploads with ONE
+    // batched submit + ONE fence-wait. Pre-fix every fresh DDS
+    // texture in this cell paid its own `with_one_time_commands`
+    // (submit + fence-wait), accumulating ~50–100 ms of stall on
+    // worldspace edge crossings. The cell-load completion gate is
+    // the right place: every REFR has been spawned with its
+    // bindless handle attached (descriptor temporarily redirected
+    // to the fallback), and the next draw must see real images.
+    let pending_uploads = ctx.texture_registry.pending_dds_upload_count();
+    if pending_uploads > 0 {
+        match ctx.texture_registry.flush_pending_uploads(
+            &ctx.device,
+            ctx.allocator
+                .as_ref()
+                .expect("VulkanContext.allocator initialised before cell load"),
+            &ctx.graphics_queue,
+            ctx.transfer_pool,
+            &ctx.transfer_fence,
+        ) {
+            Ok(n) => log::info!(
+                "  Cell texture upload batch: {n}/{pending_uploads} DDS textures uploaded",
+            ),
+            Err(e) => log::warn!(
+                "Cell texture upload batch failed ({pending_uploads} pending): {e}",
+            ),
+        }
+    }
+
     RefLoadResult {
         entity_count,
         // Mesh-bearing entities spawned this load. Pre-#477 this was

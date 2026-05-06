@@ -38,6 +38,41 @@ struct PendingSetWrite {
     sampler: vk::Sampler,
 }
 
+/// One queued DDS upload waiting for the next batched
+/// `flush_pending_uploads` call. Pre-#881 every fresh DDS paid its
+/// own `with_one_time_commands` (submit + fence-wait); the queue
+/// collects them so a cell-load completion gate can drain N uploads
+/// with ONE submit + ONE fence-wait. The DDS bytes are owned (boxed
+/// `Vec<u8>`) because the parser holds borrowed slices and we don't
+/// retain the source `BsaArchive` extraction past `acquire_by_path`'s
+/// return. See `flush_pending_uploads` for the drain side.
+struct PendingDdsUpload {
+    handle: TextureHandle,
+    dds_bytes: Vec<u8>,
+    clamp_mode: u8,
+    /// Lowercased path — for diagnostic logging only. The path_map
+    /// entry is set up by `enqueue_dds_with_clamp` at queue time.
+    path: String,
+}
+
+/// Outcome of [`TextureRegistry::queue_or_hit`]. Distinguishes a
+/// fresh reservation (caller must redirect the descriptor to the
+/// fallback) from a cache hit (descriptor already wired). Both
+/// variants carry the resulting bindless handle.
+#[derive(Debug, Clone, Copy)]
+enum EnqueueOutcome {
+    Reserved(TextureHandle),
+    Hit(TextureHandle),
+}
+
+impl EnqueueOutcome {
+    fn handle(&self) -> TextureHandle {
+        match self {
+            EnqueueOutcome::Reserved(h) | EnqueueOutcome::Hit(h) => *h,
+        }
+    }
+}
+
 struct TextureEntry {
     /// Live texture, or `None` after the handle has been dropped via
     /// [`TextureRegistry::drop_texture`]. Bindless indexing still works
@@ -116,6 +151,16 @@ pub struct TextureRegistry {
     /// descriptor writes target `bindless_sets[current_slot]`; writes
     /// for every other slot go into `pending_set_writes[other]`.
     current_slot: usize,
+    /// DDS uploads queued by `enqueue_dds_with_clamp` and drained by
+    /// `flush_pending_uploads` (#881 / CELL-PERF-03). Each entry's
+    /// bindless slot is already reserved (with the descriptor
+    /// redirected to the fallback texture) so callers can attach the
+    /// returned `TextureHandle` to a placement immediately; the
+    /// real image upload — and the descriptor write that points the
+    /// slot at it — happens during the batched flush. Mirrors the
+    /// `pending_set_writes` deferred-flush pattern (#92), extended
+    /// from descriptor writes to the upload itself.
+    pending_dds_uploads: Vec<PendingDdsUpload>,
 }
 
 impl TextureRegistry {
@@ -329,6 +374,7 @@ impl TextureRegistry {
             staging_pool,
             pending_set_writes: vec![Vec::new(); MAX_FRAMES_IN_FLIGHT],
             current_slot: 0,
+            pending_dds_uploads: Vec::new(),
         })
     }
 
@@ -430,6 +476,273 @@ impl TextureRegistry {
         self.path_map.insert(normalized, handle);
 
         Ok(handle)
+    }
+
+    /// Enqueue a DDS upload for batched flush. Counterpart of
+    /// [`Self::load_dds_with_clamp`]: same cache hit semantics
+    /// (returns the existing handle with refcount bumped on hit) but
+    /// the miss path defers the GPU upload + descriptor write until
+    /// the next [`Self::flush_pending_uploads`] call. The bindless
+    /// slot is reserved eagerly with `texture: None` and the
+    /// descriptor redirected to the fallback so any draw issued
+    /// before the flush degrades gracefully (sees the checkerboard,
+    /// not garbage). See #881 / CELL-PERF-03.
+    ///
+    /// `dds_bytes` is moved into the queue — the caller must not
+    /// retain a reference. Cell-load callers route through
+    /// `asset_provider::resolve_texture_with_clamp` which already
+    /// owns the bytes via `tex_provider.extract(path)`.
+    pub fn enqueue_dds_with_clamp(
+        &mut self,
+        device: &ash::Device,
+        path: &str,
+        dds_bytes: Vec<u8>,
+        clamp_mode: u8,
+    ) -> Result<TextureHandle> {
+        let outcome = self.queue_or_hit(path, dds_bytes, clamp_mode)?;
+        // For a fresh enqueue, redirect the freshly-reserved
+        // descriptor to the fallback checkerboard. Any
+        // GpuInstance.texture_index that resolves to this handle
+        // before the flush samples the checkerboard instead of an
+        // unbound descriptor — same defence `drop_texture` uses on
+        // the release side. Cache hits skip this step (the existing
+        // entry already has its real descriptor wired).
+        if matches!(outcome, EnqueueOutcome::Reserved(_)) {
+            let fallback_idx = self.fallback_handle as usize;
+            if fallback_idx < self.textures.len() {
+                if let Some(fallback) = self.textures[fallback_idx].texture.as_ref() {
+                    let image_view = fallback.image_view;
+                    let sampler = fallback.sampler;
+                    let handle = outcome.handle();
+                    self.apply_descriptor_write(device, handle, image_view, sampler);
+                }
+            }
+        }
+        Ok(outcome.handle())
+    }
+
+    /// Pure-Rust queueing core — slot reservation, refcount bumping,
+    /// path_map maintenance, and queue insertion. Split out of
+    /// [`Self::enqueue_dds_with_clamp`] so the unit tests can
+    /// exercise the bookkeeping (cache miss reserves a fresh slot
+    /// vs. cache hit bumps an existing refcount, queue length
+    /// transitions, path_map membership) without needing an
+    /// `ash::Device` for the fallback descriptor redirect. See
+    /// `enqueue_*` tests in the `tests` module below.
+    fn queue_or_hit(
+        &mut self,
+        path: &str,
+        dds_bytes: Vec<u8>,
+        clamp_mode: u8,
+    ) -> Result<EnqueueOutcome> {
+        let clamp_mode = clamp_mode.min(3);
+        let normalized = clamp_keyed_path(path, clamp_mode);
+
+        // Cache hit: same shape as `load_dds_with_clamp` — bump
+        // refcount and return the existing handle without touching
+        // the queue.
+        if let Some(&handle) = self.path_map.get(&normalized) {
+            if let Some(entry) = self.textures.get_mut(handle as usize) {
+                entry.ref_count = entry.ref_count.saturating_add(1);
+            }
+            return Ok(EnqueueOutcome::Hit(handle));
+        }
+
+        // Reject before paying the queueing cost if the bindless
+        // array is full.
+        self.check_slot_available()?;
+
+        // Reserve the bindless slot eagerly. `texture: None` until
+        // the flush populates it; refcount = 1 mirrors the immediate
+        // upload path so a single `drop_texture` symmetrically
+        // releases.
+        let handle = self.textures.len() as TextureHandle;
+        self.textures.push(TextureEntry {
+            texture: None,
+            pending_destroy: VecDeque::new(),
+            ref_count: 1,
+        });
+        self.path_map.insert(normalized, handle);
+        self.pending_dds_uploads.push(PendingDdsUpload {
+            handle,
+            dds_bytes,
+            clamp_mode,
+            path: path.to_string(),
+        });
+        Ok(EnqueueOutcome::Reserved(handle))
+    }
+
+    /// Number of DDS uploads currently queued. Surfaced for the
+    /// regression test (#881) and for telemetry / debug commands —
+    /// non-zero between cell-load enqueue calls and the matching
+    /// `flush_pending_uploads`.
+    pub fn pending_dds_upload_count(&self) -> usize {
+        self.pending_dds_uploads.len()
+    }
+
+    /// Drain the queued DDS uploads with ONE batched submit + ONE
+    /// fence-wait. Pre-#881 each `Texture::from_dds_with_mip_chain`
+    /// paid its own `vkQueueSubmit` + `vkWaitForFences(.., u64::MAX)`,
+    /// so a worldspace edge crossing with 100 fresh DDS textures
+    /// burned ~100 sync stalls (~50–100 ms) on the main thread. The
+    /// queueing path collapses those to one stall covering all
+    /// queued uploads.
+    ///
+    /// Returns the number of textures uploaded (≥ 0). On any
+    /// recording error the queue is left intact so a retry is
+    /// possible; the partial command buffer is freed without submit.
+    /// On submit/fence error the staging buffers leak into the pool
+    /// (the GPU may still be reading them) — a future-proof
+    /// alternative would defer-destroy them, but cell-load failure is
+    /// already a fatal-style error path.
+    ///
+    /// Empty queue → no-op (returns `Ok(0)` without allocating a
+    /// command buffer or touching the queue mutex).
+    pub fn flush_pending_uploads(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+        transfer_fence: &std::sync::Mutex<vk::Fence>,
+    ) -> Result<usize> {
+        if self.pending_dds_uploads.is_empty() {
+            return Ok(0);
+        }
+
+        // Move the queue out so we can borrow `&mut self` across the
+        // record loop without aliasing the field. Any pending entries
+        // not flushed (recording error mid-loop) are pushed back at
+        // the end so a retry sees a non-empty queue.
+        let pending = std::mem::take(&mut self.pending_dds_uploads);
+        let count = pending.len();
+
+        // Per-upload outputs assembled during recording; consumed
+        // after the submit + wait completes.
+        struct StagedUpload {
+            handle: TextureHandle,
+            texture: super::vulkan::texture::Texture,
+            staging: super::vulkan::buffer::StagingGuard,
+            staging_capacity: vk::DeviceSize,
+        }
+        let mut staged: Vec<StagedUpload> = Vec::with_capacity(count);
+
+        // Use the persistent transfer fence (#302) so we don't pay a
+        // per-flush vk::Fence create/destroy. `with_one_time_commands_reuse_fence`
+        // resets + locks the fence for the duration.
+        let record_result = super::vulkan::texture::with_one_time_commands_reuse_fence(
+            device,
+            queue,
+            command_pool,
+            transfer_fence,
+            |cmd| {
+                for upload in &pending {
+                    let meta = match super::vulkan::dds::parse_dds(&upload.dds_bytes) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to parse DDS '{}': {} — dropping queued upload",
+                                upload.path,
+                                e,
+                            );
+                            continue;
+                        }
+                    };
+                    let pixel_data = &upload.dds_bytes[meta.data_offset..];
+                    let sampler = self.samplers[upload.clamp_mode as usize];
+                    let (texture, staging, staging_capacity) =
+                        match super::vulkan::texture::Texture::record_dds_upload(
+                            device,
+                            allocator,
+                            cmd,
+                            &meta,
+                            pixel_data,
+                            sampler,
+                            self.staging_pool.as_mut(),
+                        ) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to record DDS upload '{}': {} — dropping queued upload",
+                                    upload.path,
+                                    e,
+                                );
+                                continue;
+                            }
+                        };
+                    staged.push(StagedUpload {
+                        handle: upload.handle,
+                        texture,
+                        staging,
+                        staging_capacity,
+                    });
+                }
+                Ok(())
+            },
+        );
+
+        // Submit + wait done by `with_one_time_commands_reuse_fence`.
+        // After it returns successfully, every recorded upload's GPU
+        // work has retired, so each StagingGuard can be released +
+        // each Texture installed into its slot's descriptor.
+        if let Err(e) = record_result {
+            // Recording failure path: nothing was submitted. Best-
+            // effort destroy of any partially-staged textures so
+            // their VkImage / staging buffer don't leak. The pending
+            // queue is gone (we `take`d it); future enqueues will
+            // re-populate.
+            log::warn!(
+                "flush_pending_uploads recording failed ({} uploads dropped): {}",
+                staged.len(),
+                e,
+            );
+            for mut s in staged {
+                s.texture.destroy(device, allocator);
+                s.staging.destroy();
+            }
+            return Err(e);
+        }
+
+        // Install textures + write real descriptors. Replaces the
+        // fallback redirect installed at enqueue time.
+        let staged_count = staged.len();
+        for s in staged {
+            let StagedUpload {
+                handle,
+                texture,
+                staging,
+                staging_capacity,
+            } = s;
+
+            // Write descriptor for the real image view + sampler.
+            let image_view = texture.image_view;
+            let sampler = texture.sampler;
+            self.apply_descriptor_write(device, handle, image_view, sampler);
+
+            // Move the texture into its reserved slot.
+            if let Some(entry) = self.textures.get_mut(handle as usize) {
+                entry.texture = Some(texture);
+            } else {
+                log::warn!(
+                    "flush_pending_uploads: handle {handle} out of bounds; dropping texture"
+                );
+            }
+
+            // Release staging back to the pool (or destroy if no
+            // pool). The fence-wait above guarantees the GPU is done.
+            if let Some(pool) = self.staging_pool.as_mut() {
+                staging.release_to(pool, staging_capacity);
+            } else {
+                staging.destroy();
+            }
+        }
+
+        log::info!(
+            "Flushed {} queued DDS uploads ({} originally enqueued)",
+            staged_count,
+            count,
+        );
+        Ok(staged_count)
     }
 
     /// Look up a cached texture by path. Returns `None` if not loaded.
@@ -1123,6 +1436,7 @@ mod tests {
             staging_pool: None,
             pending_set_writes: vec![Vec::new(); MAX_FRAMES_IN_FLIGHT],
             current_slot: 0,
+            pending_dds_uploads: Vec::new(),
         }
     }
 
@@ -1404,5 +1718,121 @@ mod tests {
             queue.clear();
         }
         assert!(reg.pending_set_writes.iter().all(|q| q.is_empty()));
+    }
+
+    // ── #881 pending DDS upload queue mechanics ────────────────────
+
+    /// Regression for #881 / CELL-PERF-03: the queueing core
+    /// (`queue_or_hit`) reserves a fresh bindless slot on cache miss
+    /// and pushes the upload onto the queue. The slot's `texture`
+    /// stays `None` until `flush_pending_uploads` populates it; the
+    /// queue mechanics — slot reservation, refcount = 1, path_map
+    /// entry, queue length — are exercisable without an
+    /// `ash::Device`. The fallback descriptor redirect on top of this
+    /// (in `enqueue_dds_with_clamp`) is gated on the fallback
+    /// entry's `texture` being `Some` — it's a no-op in production
+    /// when the fallback is uninitialised, so the queueing core is
+    /// what actually drives behaviour.
+    #[test]
+    fn enqueue_reserves_slot_and_queues_upload_on_miss() {
+        let mut reg = make_registry_with_entry("placeholder.dds", 1);
+        // Pre-state: 2 entries (fallback + the seeded `placeholder.dds`).
+        assert_eq!(reg.textures.len(), 2);
+        assert_eq!(reg.pending_dds_upload_count(), 0);
+
+        // Miss path: `chair.dds` not in path_map → reserves slot 2.
+        let bytes = vec![0u8; 128];
+        let outcome = reg
+            .queue_or_hit("chair.dds", bytes, 3)
+            .expect("enqueue must succeed under non-overflow fixture");
+        assert!(matches!(outcome, EnqueueOutcome::Reserved(2)));
+        assert_eq!(reg.textures.len(), 3, "slot was pushed");
+        assert!(
+            reg.textures[2].texture.is_none(),
+            "queued slot has no GPU image yet — flush populates it",
+        );
+        assert_eq!(
+            reg.textures[2].ref_count, 1,
+            "fresh enqueue starts at refcount 1 — symmetric with sync load_dds",
+        );
+        assert!(
+            reg.path_map.contains_key("textures/chair.dds|3"),
+            "path_map must point at the new handle so a sibling enqueue dedupes",
+        );
+        assert_eq!(reg.pending_dds_upload_count(), 1);
+    }
+
+    /// Repeat enqueue of the same `(path, clamp_mode)` pair must hit
+    /// the path_map and bump the refcount instead of reserving a
+    /// second slot — the cache-hit shape is the SAME as
+    /// `acquire_by_path_with_clamp`.
+    #[test]
+    fn enqueue_cache_hit_bumps_refcount_no_queue_growth() {
+        let mut reg = make_registry_with_entry("chair.dds", 1);
+        // The seeded fixture entry sits at handle 1.
+        let outcome = reg
+            .queue_or_hit("chair.dds", vec![0u8; 8], 3)
+            .expect("cache hit must not allocate");
+        assert!(
+            matches!(outcome, EnqueueOutcome::Hit(1)),
+            "cache hit returns the existing handle without queueing",
+        );
+        assert_eq!(reg.textures[1].ref_count, 2, "refcount bumped");
+        assert_eq!(
+            reg.pending_dds_upload_count(),
+            0,
+            "cache hit must NOT enqueue (no upload work to do)",
+        );
+    }
+
+    /// 100 distinct DDS files queue 100 pending uploads — the count
+    /// is the number of `with_one_time_commands` calls
+    /// `flush_pending_uploads` collapses into ONE submit. This is the
+    /// invariant the audit's ~50–100 ms cell-load stall reduction
+    /// depends on. Pre-#881 each enqueue would have paid its own
+    /// fence-wait inline.
+    #[test]
+    fn one_hundred_uploads_queue_to_one_flush_batch() {
+        let mut reg = make_registry_with_entry("placeholder.dds", 1);
+        // Pad max_textures up to comfortably hold the test load.
+        reg.max_textures = 256;
+
+        for i in 0..100u32 {
+            let path = format!("clutter_{i:03}.dds");
+            let _ = reg
+                .queue_or_hit(&path, vec![0u8; 64], 3)
+                .expect("enqueue under non-overflow fixture must succeed");
+        }
+        assert_eq!(
+            reg.pending_dds_upload_count(),
+            100,
+            "all 100 distinct paths must queue (the cell-load batched-flush invariant)",
+        );
+        // Sibling: 100 fresh slots reserved, all with `texture: None`.
+        assert_eq!(reg.textures.len(), 102, "fallback + seed + 100 queued");
+        for i in 2..102 {
+            assert!(reg.textures[i].texture.is_none());
+            assert_eq!(reg.textures[i].ref_count, 1);
+        }
+    }
+
+    /// Sibling: `queue_or_hit` rejects when the bindless array is at
+    /// the max bound. Mirrors the existing `slot_rejected_at_exact_bound`
+    /// guard for the synchronous `load_dds_with_clamp` path. Without
+    /// the rejection, an enqueue would push past the bindless array
+    /// limit and corrupt descriptor state once the flush ran.
+    #[test]
+    fn enqueue_rejects_when_bindless_array_full() {
+        let mut reg = make_registry_with_entry("placeholder.dds", 1);
+        reg.max_textures = 2; // exact size the fixture has occupied.
+        let err = reg
+            .queue_or_hit("chair.dds", vec![0u8; 16], 3)
+            .expect_err("full registry must refuse enqueue");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("TextureRegistry is full"),
+            "unexpected error: {msg}",
+        );
+        assert_eq!(reg.pending_dds_upload_count(), 0, "queue must stay empty on rejection");
     }
 }

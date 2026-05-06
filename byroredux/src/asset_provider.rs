@@ -352,26 +352,29 @@ pub(crate) fn resolve_texture_with_clamp(
         return cached;
     }
     if let Some(dds_bytes) = tex_provider.extract(tex_path) {
-        let alloc = ctx.allocator.as_ref().unwrap();
-        match ctx.texture_registry.load_dds_with_clamp(
-            &ctx.device,
-            alloc,
-            &ctx.graphics_queue,
-            ctx.transfer_pool,
-            tex_path,
-            &dds_bytes,
-            clamp_mode,
-        ) {
+        // #881 / CELL-PERF-03 — enqueue rather than upload
+        // synchronously. The bindless slot is reserved eagerly with
+        // the descriptor pointing at the fallback so this REFR's
+        // material can attach the returned handle immediately; the
+        // real GPU upload + descriptor write happens in the batched
+        // `flush_pending_uploads` call at the end of the cell load
+        // (`load_references`). Pre-fix every fresh DDS paid its own
+        // `with_one_time_commands` (submit + fence-wait) — ~50 ms
+        // per ~100-DDS edge crossing.
+        match ctx
+            .texture_registry
+            .enqueue_dds_with_clamp(&ctx.device, tex_path, dds_bytes, clamp_mode)
+        {
             Ok(h) => {
-                log::info!(
-                    "Loaded DDS texture: '{}' (clamp_mode {})",
+                log::debug!(
+                    "Queued DDS texture: '{}' (clamp_mode {}, handle {h})",
                     tex_path,
                     clamp_mode,
                 );
                 return h;
             }
             Err(e) => {
-                log::warn!("Failed to load DDS '{}': {}", tex_path, e);
+                log::warn!("Failed to enqueue DDS '{}': {}", tex_path, e);
             }
         }
     } else {

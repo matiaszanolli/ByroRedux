@@ -310,6 +310,86 @@ impl Texture {
         sampler: vk::Sampler,
         mut staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
+        // Self-contained wrapper around [`Self::record_dds_upload`].
+        // Records the upload into a one-time command buffer, submits +
+        // fence-waits ONCE, then releases the staging buffer. Used by
+        // call sites that want the legacy synchronous semantics
+        // (single-NIF render, debug paths).
+        //
+        // Cell-load and other bulk paths should instead route through
+        // `TextureRegistry::enqueue_dds_with_clamp` +
+        // `flush_pending_uploads` so dozens of textures share ONE
+        // submit + fence-wait. See #881.
+        let mut texture_holder: Option<Self> = None;
+        let mut staging_holder: Option<StagingGuard> = None;
+        let mut image_size_holder: vk::DeviceSize = 0;
+
+        with_one_time_commands(device, queue, command_pool, |cmd| {
+            let (texture, staging, image_size) = Self::record_dds_upload(
+                device,
+                allocator,
+                cmd,
+                meta,
+                pixel_data,
+                sampler,
+                staging_pool.as_deref_mut(),
+            )?;
+            texture_holder = Some(texture);
+            staging_holder = Some(staging);
+            image_size_holder = image_size;
+            Ok(())
+        })?;
+
+        let texture = texture_holder.expect("record_dds_upload populated texture");
+        let staging = staging_holder.expect("record_dds_upload populated staging");
+
+        // Release staging — back to pool (reuse) or destroy. Safe to
+        // do here because the fence wait inside `with_one_time_commands`
+        // has already returned, so the GPU is done reading the staging
+        // buffer.
+        if let Some(pool) = staging_pool {
+            let capacity = staging
+                .allocation
+                .as_ref()
+                .map(|a| a.size())
+                .unwrap_or(image_size_holder);
+            staging.release_to(pool, capacity);
+        } else {
+            staging.destroy();
+        }
+
+        Ok(texture)
+    }
+
+    /// Record-only stage of a DDS upload — allocates the GPU image,
+    /// allocates a staging buffer, copies CPU pixel data into staging,
+    /// and RECORDS the layout-transition + copy pair into the provided
+    /// command buffer. Returns the partially-built `Texture`
+    /// (image + view + sampler), the `StagingGuard` the caller MUST
+    /// retain until after the submit + fence-wait completes, and the
+    /// staging buffer's effective size (for `StagingGuard::release_to`).
+    ///
+    /// Stage B (submit + wait) and Stage C (release staging) are the
+    /// caller's responsibility. Use this entry point when batching
+    /// many DDS uploads into ONE submit (see
+    /// `TextureRegistry::flush_pending_uploads`); for a single-shot
+    /// upload, use [`Self::from_dds_with_mip_chain`] instead which
+    /// bundles all three stages.
+    ///
+    /// SAFETY: the command buffer must be in the recording state. The
+    /// returned StagingGuard's underlying VkBuffer is referenced by
+    /// the recorded `cmd_copy_buffer_to_image`, so dropping it before
+    /// the GPU has finished executing the cmd would produce a
+    /// use-after-free. See #881 / CELL-PERF-03.
+    pub(crate) fn record_dds_upload(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        cmd: vk::CommandBuffer,
+        meta: &super::dds::DdsMetadata,
+        pixel_data: &[u8],
+        sampler: vk::Sampler,
+        mut staging_pool: Option<&mut StagingPool>,
+    ) -> Result<(Self, StagingGuard, vk::DeviceSize)> {
         use super::dds;
 
         let total_size = dds::total_data_size(meta);
@@ -451,88 +531,74 @@ impl Texture {
             buffer_offset += mip_bytes as vk::DeviceSize;
         }
 
-        // 3-5. Layout transitions + copy.
-        with_one_time_commands(device, queue, command_pool, |cmd| {
-            let barrier_to_dst = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: meta.mip_count,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .src_access_mask(vk::AccessFlags::empty())
-                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+        // 3-5. Record layout transitions + copy into the provided cmd.
+        // Per-image barriers (not global) so multiple uploads recorded
+        // into the same cmd don't serialise on each other unnecessarily.
+        let barrier_to_dst = vk::ImageMemoryBarrier::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: meta.mip_count,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
 
-            unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[barrier_to_dst],
-                );
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier_to_dst],
+            );
 
-                device.cmd_copy_buffer_to_image(
-                    cmd,
-                    staging.buffer,
-                    image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &regions,
-                );
-            }
-
-            let barrier_to_read = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: meta.mip_count,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ);
-
-            unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::FRAGMENT_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[barrier_to_read],
-                );
-            }
-            Ok(())
-        })?;
-
-        // 6. Release staging — back to pool (reuse) or destroy. Guard
-        //    ensures cleanup on error above regardless.
-        if let Some(pool) = staging_pool {
-            let capacity = staging
-                .allocation
-                .as_ref()
-                .map(|a| a.size())
-                .unwrap_or(image_size);
-            staging.release_to(pool, capacity);
-        } else {
-            staging.destroy();
+            device.cmd_copy_buffer_to_image(
+                cmd,
+                staging.buffer,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &regions,
+            );
         }
 
-        // 7. Image view.
+        let barrier_to_read = vk::ImageMemoryBarrier::default()
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: meta.mip_count,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ);
+
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier_to_read],
+            );
+        }
+
+        // 7. Image view (CPU-only, independent of GPU work).
         let view_info = vk::ImageViewCreateInfo::default()
             .image(image)
             .view_type(vk::ImageViewType::TYPE_2D)
@@ -552,21 +618,25 @@ impl Texture {
         };
 
         log::info!(
-            "DDS texture uploaded: {}x{}, {:?}, {} mips",
+            "DDS texture recorded: {}x{}, {:?}, {} mips",
             meta.width,
             meta.height,
             meta.format,
             meta.mip_count,
         );
 
-        Ok(Self {
-            image,
-            image_view,
-            sampler,
-            allocation: Some(image_alloc),
-            device: device.clone(),
-            allocator: allocator.clone(),
-        })
+        Ok((
+            Self {
+                image,
+                image_view,
+                sampler,
+                allocation: Some(image_alloc),
+                device: device.clone(),
+                allocator: allocator.clone(),
+            },
+            staging,
+            image_size,
+        ))
     }
 
     /// Create a texture from DDS file bytes (header + pixel data).
