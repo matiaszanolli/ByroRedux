@@ -337,35 +337,68 @@ impl Default for MaterialTable {
 
 impl MaterialTable {
     pub fn new() -> Self {
-        Self {
+        let mut t = Self {
             materials: Vec::new(),
             index: HashMap::new(),
             interned_count: 0,
-        }
+        };
+        t.seed_neutral_default();
+        t
     }
 
     /// Reset for a new frame. Retains the underlying allocation so
-    /// per-frame churn doesn't hit the heap.
+    /// per-frame churn doesn't hit the heap. Re-seeds slot 0 with the
+    /// neutral-lit default so `material_id == 0` always resolves to
+    /// a safe-to-read GpuMaterial — see [`Self::seed_neutral_default`].
     pub fn clear(&mut self) {
         self.materials.clear();
         self.index.clear();
         self.interned_count = 0;
+        self.seed_neutral_default();
+    }
+
+    /// #807 — pre-push `GpuMaterial::default()` into slot 0 so the id
+    /// is reserved as the "neutral default" rather than being
+    /// overloaded with three distinct meanings (default-init UI quad,
+    /// first-interned user material, over-cap fallback). Subsequent
+    /// `intern` calls of a byte-equal default dedup to slot 0 instead
+    /// of pushing again; user-interned distinct materials start at
+    /// id 1. Over-cap interns still return 0, which now legitimately
+    /// resolves to the neutral material rather than aliasing whatever
+    /// happened to be interned first.
+    ///
+    /// `interned_count` is NOT bumped — the seed is internal accounting,
+    /// not a producer-driven intern call. The `len / interned_count`
+    /// dedup ratio in telemetry stays comparable to pre-#807 frames
+    /// when at least one user material is interned (one extra slot in
+    /// the numerator on no-user-material frames; trivial for the
+    /// dedup-quality signal #780 / PERF-N1 watches for).
+    fn seed_neutral_default(&mut self) {
+        let neutral = GpuMaterial::default();
+        self.materials.push(neutral);
+        self.index.insert(neutral, 0);
     }
 
     /// Insert a material (or return the existing id if byte-equal to
     /// one already in the table). Returns the `material_id` the GPU
     /// will use to look it up.
     ///
+    /// Slot 0 is reserved for the neutral-lit `GpuMaterial::default()`
+    /// (see [`Self::seed_neutral_default`] / #807); user-interned
+    /// distinct materials start at id 1 and grow up to (but not past)
+    /// [`MAX_MATERIALS`].
+    ///
     /// Capped at [`MAX_MATERIALS`] entries — over-cap interns return
-    /// id `0` and share the first-interned material's record for the
+    /// id `0` and share the neutral-default material's record for the
     /// rest of the frame. See #797 / SAFE-22: the upload at
     /// `scene_buffer.rs:975` truncates the buffer to `MAX_MATERIALS`
     /// entries, so without this cap a `DrawCommand` carrying an over-
     /// cap `material_id` would index past the SSBO end on the GPU
     /// (implementation-defined OOB read; AMD returns zeros, NVIDIA
     /// returns last-valid-page contents, Intel may DEVICE_LOST).
-    /// The pairing also makes the upload's warn message
-    /// (`"silently default to material 0"`) truthful.
+    /// The over-cap → neutral mapping is now semantically clean —
+    /// pre-#807 it aliased "the first user-interned material this
+    /// frame," which was an overload.
     ///
     /// Real interior cells dedup to 50–200 unique materials and a
     /// 3×3 exterior grid lands at 300–600 — well under the 4096 cap
@@ -381,8 +414,8 @@ impl MaterialTable {
             INTERN_OVERFLOW_WARNED.call_once(|| {
                 log::warn!(
                     "MaterialTable: unique-material count exceeded MAX_MATERIALS \
-                     ({}); over-cap entries share material 0 for the rest of \
-                     the session. See #797 / SAFE-22.",
+                     ({}); over-cap entries share the neutral-default material 0 \
+                     for the rest of the session. See #797 / SAFE-22 + #807.",
                     MAX_MATERIALS,
                 );
             });
@@ -584,6 +617,43 @@ mod tests {
         assert_eq!(m.falloff_start_opacity, 1.0);
     }
 
+    /// #807 — `MaterialTable::new()` reserves slot 0 for the neutral
+    /// `GpuMaterial::default()` so `material_id == 0` is always a
+    /// safe-to-read fallback rather than aliasing whichever user
+    /// material happened to intern first.
+    #[test]
+    fn new_seeds_neutral_default_at_slot_zero() {
+        let table = MaterialTable::new();
+        assert_eq!(table.len(), 1, "slot 0 must be pre-seeded");
+        // GpuMaterial has byte-PartialEq but no Debug, so use assert!.
+        assert!(
+            table.materials()[0] == GpuMaterial::default(),
+            "slot 0 must hold the neutral-lit default"
+        );
+        // No user-driven intern calls yet — telemetry stays honest.
+        assert_eq!(table.interned_count(), 0);
+    }
+
+    /// #807 — `clear()` re-seeds slot 0 so the per-frame contract
+    /// (id 0 == neutral default) holds at frame start, not just at
+    /// engine boot.
+    #[test]
+    fn clear_re_seeds_neutral_default() {
+        let mut table = MaterialTable::new();
+        let mut user = GpuMaterial::default();
+        user.roughness = 0.7;
+        table.intern(user); // slot 1
+        assert_eq!(table.len(), 2);
+
+        table.clear();
+        assert_eq!(table.len(), 1, "clear must leave slot 0 seeded");
+        assert!(
+            table.materials()[0] == GpuMaterial::default(),
+            "clear must re-seed the neutral-lit default at slot 0"
+        );
+        assert_eq!(table.interned_count(), 0);
+    }
+
     #[test]
     fn identical_materials_dedup_to_same_id() {
         let mut table = MaterialTable::new();
@@ -591,24 +661,32 @@ mod tests {
         let id_a = table.intern(mat);
         let id_b = table.intern(mat);
         assert_eq!(id_a, id_b);
+        // Slot 0 (neutral default) absorbs both interns — the table
+        // already had 1 entry seeded, so len stays at 1. #807.
+        assert_eq!(id_a, 0, "default GpuMaterial must dedup to slot 0");
         assert_eq!(table.len(), 1);
     }
 
     #[test]
     fn distinct_materials_get_distinct_ids() {
         let mut table = MaterialTable::new();
-        let mut a = GpuMaterial::default();
+        let a = GpuMaterial::default();
         let mut b = GpuMaterial::default();
         b.roughness = 0.7;
 
         let id_a = table.intern(a);
         let id_b = table.intern(b);
         assert_ne!(id_a, id_b);
+        // `a` dedupes to the seeded slot 0; `b` is distinct → slot 1.
+        // Total len = 2 (seeded neutral + one user material). #807.
+        assert_eq!(id_a, 0);
+        assert_eq!(id_b, 1);
         assert_eq!(table.len(), 2);
 
         // Repeats still dedup to the original id.
-        a.roughness = 0.5; // same as default
-        assert_eq!(table.intern(a), id_a);
+        let mut a2 = GpuMaterial::default();
+        a2.roughness = 0.5; // same as default
+        assert_eq!(table.intern(a2), id_a);
         assert_eq!(table.intern(b), id_b);
         assert_eq!(table.len(), 2);
     }
@@ -626,7 +704,8 @@ mod tests {
         a.texture_index = 7;
         b.texture_index = 8;
         assert_ne!(table.intern(a), table.intern(b));
-        assert_eq!(table.len(), 2);
+        // Slot 0 = seeded neutral, slot 1 = `a`, slot 2 = `b`. #807.
+        assert_eq!(table.len(), 3);
     }
 
     /// Float-bit equality check — two materials whose only difference
@@ -645,6 +724,9 @@ mod tests {
     #[test]
     fn clear_resets_table_but_keeps_capacity() {
         let mut table = MaterialTable::new();
+        // Loop interns 10 materials. i=0 hits the seeded neutral slot;
+        // i=1..9 each push a fresh slot. Total len = 1 (neutral) + 9
+        // (user) = 10. #807.
         for i in 0..10 {
             let mut m = GpuMaterial::default();
             m.texture_index = i;
@@ -653,7 +735,14 @@ mod tests {
         assert_eq!(table.len(), 10);
         let cap_before = table.materials.capacity();
         table.clear();
-        assert!(table.is_empty());
+        // Post-clear the seeded neutral default is re-pushed (#807),
+        // so `len()` is 1 — not 0. The underlying allocation
+        // capacity stays at the pre-clear size.
+        assert_eq!(table.len(), 1);
+        assert!(
+            table.materials()[0] == GpuMaterial::default(),
+            "post-clear slot 0 must hold the seeded neutral default"
+        );
         assert!(table.materials.capacity() >= cap_before);
     }
 
@@ -661,24 +750,31 @@ mod tests {
     /// (hits AND misses) so the dedup ratio `len / interned_count` is
     /// computable from telemetry. `clear` resets it in lockstep with
     /// the materials Vec so the per-frame snapshot is honest.
+    ///
+    /// Post-#807: `intern(GpuMaterial::default())` is now a HIT on the
+    /// seeded slot 0 (not a miss as it was pre-fix). `interned_count`
+    /// still ticks because the producer-side `intern` call rate is
+    /// unchanged — only the dedup hit/miss accounting shifts.
     #[test]
     fn interned_count_increments_on_hit_and_miss() {
         let mut table = MaterialTable::new();
         assert_eq!(table.interned_count(), 0);
+        // Seed counts as a slot but NOT a producer intern (#807).
+        assert_eq!(table.len(), 1);
 
-        let mut a = GpuMaterial::default();
+        let a = GpuMaterial::default();
         let mut b = GpuMaterial::default();
         b.roughness = 0.7;
 
-        table.intern(a); // miss
+        table.intern(a); // hit on seeded slot 0
         assert_eq!(table.interned_count(), 1);
         assert_eq!(table.len(), 1);
 
-        table.intern(a); // hit — count still ticks
+        table.intern(a); // hit again — count still ticks
         assert_eq!(table.interned_count(), 2);
         assert_eq!(table.len(), 1);
 
-        table.intern(b); // miss
+        table.intern(b); // miss → push slot 1
         assert_eq!(table.interned_count(), 3);
         assert_eq!(table.len(), 2);
 
@@ -689,16 +785,18 @@ mod tests {
         assert_eq!(table.interned_count(), 8);
         assert_eq!(table.len(), 2);
 
-        // Tweaking `a` after-the-fact must not retroactively count.
-        a.roughness = 0.5; // same as default — still a hit on the
-                           // first interned `a` (byte-equal).
-        table.intern(a);
+        // Tweaking a fresh local must not retroactively count against
+        // the original — byte-equal to default still hits slot 0.
+        let mut a2 = GpuMaterial::default();
+        a2.roughness = 0.5; // same as default
+        table.intern(a2);
         assert_eq!(table.interned_count(), 9);
         assert_eq!(table.len(), 2);
 
         table.clear();
         assert_eq!(table.interned_count(), 0);
-        assert_eq!(table.len(), 0);
+        // Post-clear the seeded neutral persists (#807).
+        assert_eq!(table.len(), 1);
     }
 
     #[test]
@@ -712,31 +810,44 @@ mod tests {
             table.intern(*m);
         }
         let slice = table.materials();
-        assert_eq!(slice.len(), 3);
-        assert_eq!(slice[0].texture_index, 100);
-        assert_eq!(slice[1].texture_index, 200);
-        assert_eq!(slice[2].texture_index, 300);
+        // Slot 0 is the seeded neutral default (#807); user materials
+        // start at slot 1 in insertion order.
+        assert_eq!(slice.len(), 4);
+        assert!(slice[0] == GpuMaterial::default(), "slot 0 = neutral");
+        assert_eq!(slice[1].texture_index, 100);
+        assert_eq!(slice[2].texture_index, 200);
+        assert_eq!(slice[3].texture_index, 300);
     }
 
-    /// #797 / SAFE-22 — over-cap interns return id `0` and share the
-    /// first material's record. Without this cap a DrawCommand
-    /// carrying the over-cap id would index past the MaterialBuffer
-    /// SSBO end on the GPU (implementation-defined OOB read).
+    /// #797 / SAFE-22 + #807 — over-cap interns return id `0` and
+    /// share the neutral-default material's record (slot 0 is reserved
+    /// for the neutral default per #807, which makes the over-cap
+    /// fallback semantically clean: "use the neutral material" rather
+    /// than "alias whichever user material happened to intern first").
+    /// Without this cap a DrawCommand carrying the over-cap id would
+    /// index past the MaterialBuffer SSBO end on the GPU
+    /// (implementation-defined OOB read).
     ///
     /// Builds a fresh table, fills it to `MAX_MATERIALS` distinct
     /// entries (each varying by `texture_index`), then asserts:
-    ///   1. The 4097th distinct intern returns id `0`
-    ///   2. The table's stored count never exceeds `MAX_MATERIALS`
-    ///   3. The reverse-lookup map's count also stays bounded
+    ///   1. The first `intern` of `texture_index = 0` HITS the seeded
+    ///      neutral slot (id 0), and `intern` of `texture_index = i`
+    ///      for `i >= 1` pushes a distinct slot at id `i` — total
+    ///      table grows to exactly `MAX_MATERIALS` slots.
+    ///   2. The next over-cap intern returns id `0` (the neutral).
+    ///   3. The reverse-lookup map's count also stays bounded.
     ///   4. A subsequent intern of an already-interned material
-    ///      (one of the first `MAX_MATERIALS`) still returns its
-    ///      original id — the cap doesn't poison the dedup map
+    ///      still returns its original id — the cap doesn't poison
+    ///      the dedup map.
     #[test]
     fn intern_overflow_returns_material_zero() {
         let mut table = MaterialTable::new();
         // Fill the table to exactly `MAX_MATERIALS` distinct entries.
         // `texture_index` is part of the byte-Hash dedup so each
-        // increment produces a fresh GpuMaterial.
+        // increment produces a fresh GpuMaterial. Lucky alignment:
+        // `texture_index = i` lands at slot `i` because the seeded
+        // neutral has `texture_index = 0`, and `intern` of i=0 hits
+        // it. Subsequent i=1..MAX_MATERIALS-1 each push a fresh slot.
         for i in 0..MAX_MATERIALS as u32 {
             let mut m = GpuMaterial::default();
             m.texture_index = i;
@@ -798,11 +909,15 @@ mod tests {
         assert_eq!(table.intern(overflow), 0);
 
         table.clear();
-        // After clear the table starts empty — first intern returns 0
-        // by normal sequential assignment, not by overflow.
+        // After clear the seeded neutral default re-occupies slot 0
+        // (#807). A user intern of a material distinct from neutral
+        // pushes at slot 1 — NOT slot 0, since slot 0 is reserved.
         let mut first = GpuMaterial::default();
         first.texture_index = 1;
-        assert_eq!(table.intern(first), 0);
-        assert_eq!(table.len(), 1);
+        assert_eq!(table.intern(first), 1);
+        assert_eq!(table.len(), 2);
+
+        // Interning the neutral default itself dedupes to slot 0.
+        assert_eq!(table.intern(GpuMaterial::default()), 0);
     }
 }

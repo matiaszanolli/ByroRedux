@@ -247,9 +247,13 @@ impl Default for GpuInstance {
             index_offset: 0,
             vertex_count: 0,
             flags: 0,
-            // R1 — `0` is a valid material id (the first slot in the
-            // per-frame table; also the neutral-lit default material
-            // when no real one was interned).
+            // #807 — slot 0 is reserved by `MaterialTable::new()` /
+            // `clear()` for the neutral-lit `GpuMaterial::default()`.
+            // Default-initialised instances (UI quad, debug overlays,
+            // future synthetic / editor-preview meshes) safely read
+            // `materials[0]` and get a sane neutral record rather than
+            // aliasing whichever user material happened to intern
+            // first. User-interned distinct materials start at id 1.
             material_id: 0,
             _pad_id0: 0.0,
             avg_albedo_r: 0.5,
@@ -1626,10 +1630,14 @@ mod gpu_instance_layout_tests {
     /// from `inst.textureIndex` (per-instance), NOT from
     /// `materials[inst.materialId].textureIndex`. The UI quad is
     /// appended at `draw.rs` with `..GpuInstance::default()`, which
-    /// leaves `materialId = 0`; `materials[0]` is the first scene
-    /// material interned that frame, so the UI overlay samples an
-    /// arbitrary interior surface. See `scene_buffer.rs:172-176` for
-    /// the contract and `feedback_shader_struct_sync.md` for the
+    /// leaves `materialId = 0`. Post-#807 `materials[0]` is the
+    /// reserved neutral default — a UI shader that read it would
+    /// pull a neutral GpuMaterial (not an arbitrary scene material
+    /// as in the pre-#807 days), but the texture index would still
+    /// be wrong (the UI texture lives in `inst.textureIndex`, not
+    /// in any GpuMaterial slot). The guard stays as defense-in-depth
+    /// against future drift. See `scene_buffer.rs:172-176` for the
+    /// contract and `feedback_shader_struct_sync.md` for the
     /// broader invariant.
     ///
     /// #785 was a stale-hunk regression of #776 introduced by an
