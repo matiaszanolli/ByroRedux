@@ -141,6 +141,62 @@ pub struct ImportedNode {
     /// etc.) so gameplay-side systems can branch on them instead of
     /// re-reading the source NIF. See #222.
     pub flags: u32,
+    /// `BSValueNode` numeric metadata `(value, value_flags)` when this
+    /// node is a `BSValueNode`. FO3/FNV used the value field for
+    /// LOD-distance overrides + billboard-mode hints on subtree roots;
+    /// persisted into Skyrim chains. Pre-#625 the walker called
+    /// `as_ni_node` which dropped the trailing fields — this surfaces
+    /// them so a future LOD/billboard consumer can read them off the
+    /// imported node instead of re-walking the NIF. `None` on plain
+    /// `NiNode` and other subclasses. See #625 (SK-D4-02).
+    pub bs_value_node: Option<BsValueNodeData>,
+    /// `BSOrderedNode` draw-order metadata when this node is a
+    /// `BSOrderedNode`. Children of an ordered node SHOULD render in
+    /// sibling-index order (alpha-sorted UI / HUD overlays, Dragonborn
+    /// banner stacks, FO3/FNV transparent stacks); the depth-only sort
+    /// in `byroredux/src/render.rs::build_render_data` ignores this,
+    /// producing alpha bleed on banner stacks. Pre-#625 the walker
+    /// dropped `alpha_sort_bound` + `is_static_bound` along with the
+    /// type identity. Renderer consumption (a `RenderOrderHint`
+    /// component on each child + a sort-key tweak) is deferred — the
+    /// data plumbing lands here so the eventual fix has the source
+    /// material to work from. `None` on plain `NiNode` and other
+    /// subclasses. See #625 (SK-D4-03).
+    pub bs_ordered_node: Option<BsOrderedNodeData>,
+}
+
+/// `BSValueNode` numeric payload — surfaced on the matching
+/// [`ImportedNode`] entry. Pre-#625 the walker dropped these fields
+/// when it unwrapped the wrapper to plain `NiNode`. Future consumers:
+/// LOD-distance override (FO3/FNV), billboard-mode hint on subtree
+/// roots, gameplay-side cell-marker metadata.
+#[derive(Debug, Clone, Copy)]
+pub struct BsValueNodeData {
+    /// Raw `BSValueNode.value` u32. Semantics depend on the parent
+    /// subtree's gameplay role; the importer captures the wire value
+    /// verbatim and lets consumers interpret.
+    pub value: u32,
+    /// `BSValueNode.value_flags` byte. Pre-#625 dropped along with
+    /// `value`.
+    pub flags: u8,
+}
+
+/// `BSOrderedNode` draw-order metadata — surfaced on the matching
+/// [`ImportedNode`] entry. Pre-#625 the walker dropped both fields
+/// when it unwrapped the wrapper to plain `NiNode`. Future renderer
+/// consumption: tag children with `RenderOrderHint(sibling_index)` so
+/// `build_render_data`'s sort prefers parent-supplied order over
+/// `Transform.translation.z`. Carry `alpha_sort_bound` separately if
+/// the renderer grows occlusion / culling on the bound.
+#[derive(Debug, Clone, Copy)]
+pub struct BsOrderedNodeData {
+    /// Alpha-sort bounding sphere `[x, y, z, radius]` in node-local
+    /// space, lifted from the BSOrderedNode wire format.
+    pub alpha_sort_bound: [f32; 4],
+    /// `true` when the bound is fixed (doesn't update with animation).
+    /// Lets the renderer skip per-frame bound recomputation for static
+    /// containers like a stack of inn-room banners.
+    pub is_static_bound: bool,
 }
 
 /// SpeedTree bone metadata surfaced from a [`BSTreeNode`] — bone
@@ -1811,6 +1867,81 @@ mod tests {
         let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
         assert_eq!(meshes.len(), 1);
         assert_eq!(meshes[0].name, Some(Arc::from("ValueChild")));
+    }
+
+    /// Regression for #625 / SK-D4-02: the BSValueNode `(value,
+    /// value_flags)` pair survives the `as_ni_node` unwrap and lands
+    /// on the matching `ImportedNode.bs_value_node`. Pre-fix the
+    /// walker dropped these alongside the type identity, hiding LOD-
+    /// distance overrides + billboard hints from the scene builder.
+    #[test]
+    fn bs_value_node_value_and_flags_are_surfaced_on_imported_node() {
+        use crate::blocks::node::BsValueNode;
+
+        let inner_node = make_ni_node(identity_transform(), vec![]);
+        let value_node = BsValueNode {
+            base: inner_node,
+            value: 0xCAFEBABE,
+            value_flags: 0x07,
+        };
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![Box::new(value_node)];
+        let scene = scene_from_blocks(blocks);
+        let mut pool = StringPool::new();
+        let imported = import_nif_scene(&scene, &mut pool);
+        assert_eq!(imported.nodes.len(), 1);
+        let payload = imported.nodes[0]
+            .bs_value_node
+            .expect("BsValueNode must surface bs_value_node payload (#625 / SK-D4-02)");
+        assert_eq!(payload.value, 0xCAFEBABE);
+        assert_eq!(payload.flags, 0x07);
+        // Plain NiNode siblings stay None — the field is only populated
+        // for the matching subclass.
+        assert!(imported.nodes[0].bs_ordered_node.is_none());
+    }
+
+    /// Regression for #625 / SK-D4-03: BSOrderedNode `alpha_sort_bound`
+    /// + `is_static_bound` survive the walker unwrap. Renderer-side
+    /// consumption (a `RenderOrderHint` component on each child + a
+    /// sort-key tweak in `build_render_data`) is deferred per the
+    /// no-speculative-Vulkan-fixes policy — this test pins the data-
+    /// plumbing half so the eventual renderer fix has the source
+    /// material to read.
+    #[test]
+    fn bs_ordered_node_alpha_sort_bound_is_surfaced_on_imported_node() {
+        use crate::blocks::node::BsOrderedNode;
+
+        let inner_node = make_ni_node(identity_transform(), vec![]);
+        let ordered = BsOrderedNode {
+            base: inner_node,
+            alpha_sort_bound: [1.0, 2.0, 3.0, 7.5],
+            is_static_bound: true,
+        };
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![Box::new(ordered)];
+        let scene = scene_from_blocks(blocks);
+        let mut pool = StringPool::new();
+        let imported = import_nif_scene(&scene, &mut pool);
+        assert_eq!(imported.nodes.len(), 1);
+        let payload = imported.nodes[0]
+            .bs_ordered_node
+            .expect("BsOrderedNode must surface bs_ordered_node payload (#625 / SK-D4-03)");
+        assert_eq!(payload.alpha_sort_bound, [1.0, 2.0, 3.0, 7.5]);
+        assert!(payload.is_static_bound);
+        assert!(imported.nodes[0].bs_value_node.is_none());
+    }
+
+    /// Plain `NiNode` (no subclass payload) keeps both fields `None`.
+    /// Guards against a future regression where the walker
+    /// inadvertently fabricates default payloads on every node.
+    #[test]
+    fn plain_ni_node_has_no_bs_subclass_payloads() {
+        let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
+            vec![Box::new(make_ni_node(identity_transform(), vec![]))];
+        let scene = scene_from_blocks(blocks);
+        let mut pool = StringPool::new();
+        let imported = import_nif_scene(&scene, &mut pool);
+        assert_eq!(imported.nodes.len(), 1);
+        assert!(imported.nodes[0].bs_value_node.is_none());
+        assert!(imported.nodes[0].bs_ordered_node.is_none());
     }
 
     /// Build a synthetic NIF scene where the root NiNode has a single

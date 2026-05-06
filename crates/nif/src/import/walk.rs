@@ -173,6 +173,11 @@ pub(super) fn walk_node_hierarchical(
         // None here. See #363 / #364.
         let range_kind = extract_range_kind(block);
         let tree_bones = extract_tree_bones(scene, block);
+        // BSValueNode + BSOrderedNode subclass-specific fields (#625).
+        // NiSwitchNode / NiLODNode never overlap with these, so both
+        // stay None here.
+        let bs_value_node = extract_bs_value_node(block);
+        let bs_ordered_node = extract_bs_ordered_node(block);
 
         let this_node_idx = out.nodes.len();
         out.nodes.push(ImportedNode {
@@ -186,6 +191,8 @@ pub(super) fn walk_node_hierarchical(
             tree_bones,
             range_kind,
             flags: node.av.flags,
+            bs_value_node,
+            bs_ordered_node,
         });
 
         let prev_len = inherited_props.len();
@@ -257,6 +264,11 @@ pub(super) fn walk_node_hierarchical(
         // (#363). Both default to None for plain NiNode.
         let range_kind = extract_range_kind(block);
         let tree_bones = extract_tree_bones(scene, block);
+        // BSValueNode value+flags (#625 / SK-D4-02) and BSOrderedNode
+        // alpha_sort_bound (#625 / SK-D4-03). Both default to None for
+        // plain NiNode and non-matching subclasses.
+        let bs_value_node = extract_bs_value_node(block);
+        let bs_ordered_node = extract_bs_ordered_node(block);
 
         let this_node_idx = out.nodes.len();
         out.nodes.push(ImportedNode {
@@ -270,6 +282,8 @@ pub(super) fn walk_node_hierarchical(
             tree_bones,
             range_kind,
             flags: node.av.flags,
+            bs_value_node,
+            bs_ordered_node,
         });
 
         // Merge this node's properties with the inherited set via stack
@@ -914,6 +928,34 @@ pub(super) fn extract_tree_bones(scene: &NifScene, block: &dyn NiObject) -> Opti
 /// for any other block type. See #364.
 pub(super) fn extract_range_kind(block: &dyn NiObject) -> Option<BsRangeKind> {
     block.as_any().downcast_ref::<BsRangeNode>().map(|n| n.kind)
+}
+
+/// Extract a `BSValueNode`'s `(value, value_flags)` pair. Pre-#625
+/// `as_ni_node` unwrapped the wrapper to plain `NiNode`, dropping
+/// these fields. Returns `None` for any block that isn't a
+/// `BsValueNode`. See #625 (SK-D4-02).
+pub(super) fn extract_bs_value_node(block: &dyn NiObject) -> Option<super::BsValueNodeData> {
+    block
+        .as_any()
+        .downcast_ref::<crate::blocks::node::BsValueNode>()
+        .map(|n| super::BsValueNodeData {
+            value: n.value,
+            flags: n.value_flags,
+        })
+}
+
+/// Extract a `BSOrderedNode`'s draw-order metadata. Pre-#625
+/// `as_ni_node` unwrapped the wrapper to plain `NiNode`, dropping
+/// `alpha_sort_bound` + `is_static_bound`. Returns `None` for any
+/// block that isn't a `BsOrderedNode`. See #625 (SK-D4-03).
+pub(super) fn extract_bs_ordered_node(block: &dyn NiObject) -> Option<super::BsOrderedNodeData> {
+    block
+        .as_any()
+        .downcast_ref::<BsOrderedNode>()
+        .map(|n| super::BsOrderedNodeData {
+            alpha_sort_bound: n.alpha_sort_bound,
+            is_static_bound: n.is_static_bound,
+        })
 }
 
 /// Solve `1 / (const + lin·d + quad·d²) = THRESHOLD` for distance.
