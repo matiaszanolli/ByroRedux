@@ -663,9 +663,17 @@ fn import_nif_scene_impl(
     pool: &mut StringPool,
     resolver: Option<&dyn MeshResolver>,
 ) -> ImportedScene {
+    // Pre-size the collection Vecs from the scene block count to
+    // avoid the 0→4→8→…→N realloc chain during the walk (#835). Every
+    // ImportedNode / ImportedMesh comes from at most one block, so
+    // `blocks.len()` is a safe upper bound for `nodes`. Shapes are
+    // typically ~¼ of blocks; emitters are rare (most NIFs have 0).
+    // The audit accepts a slight VM-commit over-allocation in exchange
+    // for zero realloc churn at typical NIF sizes.
+    let cap = scene.blocks.len();
     let mut imported = ImportedScene {
-        nodes: Vec::new(),
-        meshes: Vec::new(),
+        nodes: Vec::with_capacity(cap),
+        meshes: Vec::with_capacity(cap / 4),
         particle_emitters: Vec::new(),
         bsx_flags: None,
         bs_bound: None,
@@ -750,7 +758,8 @@ fn import_nif_impl(
     pool: &mut StringPool,
     resolver: Option<&dyn MeshResolver>,
 ) -> Vec<ImportedMesh> {
-    let mut meshes = Vec::new();
+    // Pre-size from block count; shapes are typically ~¼ of blocks. See #835.
+    let mut meshes = Vec::with_capacity(scene.blocks.len() / 4);
 
     let Some(root_idx) = scene.root_index else {
         return meshes;
@@ -843,8 +852,12 @@ fn import_nif_with_collision_impl(
     pool: &mut StringPool,
     resolver: Option<&dyn MeshResolver>,
 ) -> (Vec<ImportedMesh>, Vec<ImportedCollision>) {
-    let mut meshes = Vec::new();
-    let mut collisions = Vec::new();
+    // Pre-size from block count: shapes are ~¼ of blocks, collision
+    // blocks are rare (most NIFs carry 0-3 bhk* shapes — small floor
+    // is enough to avoid the first realloc). See #835.
+    let cap = scene.blocks.len();
+    let mut meshes = Vec::with_capacity(cap / 4);
+    let mut collisions = Vec::with_capacity(cap / 16);
 
     let Some(root_idx) = scene.root_index else {
         return (meshes, collisions);
