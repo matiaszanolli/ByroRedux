@@ -167,6 +167,12 @@ struct ActiveSound {
     handle: StaticSoundHandle,
     _track: SpatialTrackHandle,
     looping: bool,
+    /// Fade-out duration captured from `AudioEmitter.unload_fade_ms` at
+    /// dispatch time. Read by `prune_stopped_sounds` when the source
+    /// entity loses its emitter component (cell unload). One-shots
+    /// (`looping=false`) carry the default value but never consult it.
+    /// See #845.
+    unload_fade_ms: f32,
 }
 
 /// Fire-and-forget one-shot queued via [`AudioWorld::play_oneshot`].
@@ -516,7 +522,28 @@ pub struct AudioEmitter {
     /// Looping playback. Footsteps / one-shot impacts are `false`;
     /// torch crackle / distant generator hum / cell ambient is `true`.
     pub looping: bool,
+    /// Fade-out duration when this emitter's source entity is despawned
+    /// (cell unload, scripted teardown). Only consulted on `looping`
+    /// sounds — one-shots terminate naturally.
+    ///
+    /// Default 10 ms matches `kira::Tween::default()` and is inaudible
+    /// on short sustained ambients (campfire crackle, generator hum).
+    /// Long-tailed ambients (cathedral choir, distant thunder loop)
+    /// authoring 200-500 ms here avoids the faint click on cell exit
+    /// the abrupt 10 ms cutoff produces. See #845 / AUD-D4-NEW-04.
+    ///
+    /// Captured into `ActiveSound.unload_fade_ms` at dispatch time
+    /// because the `AudioEmitter` component is removed from the entity
+    /// as part of the despawn that triggers the prune-stop, so the
+    /// prune sweep can't read the live component.
+    pub unload_fade_ms: f32,
 }
+
+/// Default fade-out duration for looping emitters whose source entity
+/// gets despawned. Matches `kira::Tween::default()` (10 ms linear) so
+/// existing call sites that don't author `unload_fade_ms` keep their
+/// pre-#845 behaviour exactly.
+pub const DEFAULT_UNLOAD_FADE_MS: f32 = 10.0;
 
 impl Component for AudioEmitter {
     type Storage = SparseSetStorage<Self>;
@@ -686,6 +713,9 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
             handle,
             _track: track,
             looping: false,
+            // Queue-driven path is one-shots only (`looping=false`);
+            // unload_fade_ms is never consulted on this branch.
+            unload_fade_ms: DEFAULT_UNLOAD_FADE_MS,
         });
     }
 }
@@ -714,6 +744,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
         volume: f32,
         position: Vec3,
         looping: bool,
+        unload_fade_ms: f32,
     }
     let mut pending: Vec<Pending> = Vec::new();
     {
@@ -740,6 +771,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
                 volume: emitter.volume,
                 position: gt.translation,
                 looping: emitter.looping,
+                unload_fade_ms: emitter.unload_fade_ms,
             });
         }
     }
@@ -817,6 +849,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
             handle,
             _track: track,
             looping: p.looping,
+            unload_fade_ms: p.unload_fade_ms,
         });
         started.push(p.entity);
     }
@@ -863,9 +896,18 @@ fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
     }
     drop(emitter_q);
     for idx in &to_stop_indices {
-        audio_world.active_sounds[*idx]
-            .handle
-            .stop(Tween::default());
+        // Per-emitter fade-out (#845). Captured at dispatch time from
+        // `AudioEmitter.unload_fade_ms` because the source emitter
+        // component is already gone by the time we're stopping. The
+        // 10 ms default matches `Tween::default()` exactly so authors
+        // who don't override stay on the pre-#845 behaviour.
+        let fade_ms = audio_world.active_sounds[*idx].unload_fade_ms.max(0.0);
+        let tween = Tween {
+            start_time: kira::StartTime::Immediate,
+            duration: Duration::from_secs_f32(fade_ms / 1000.0),
+            easing: kira::Easing::Linear,
+        };
+        audio_world.active_sounds[*idx].handle.stop(tween);
     }
 
     let mut finished: Vec<EntityId> = Vec::new();
@@ -921,6 +963,9 @@ pub fn spawn_oneshot_at(
             attenuation,
             volume,
             looping: false,
+            // One-shots terminate naturally; unload_fade_ms is never
+            // consulted on the prune path (gated on `looping`).
+            unload_fade_ms: DEFAULT_UNLOAD_FADE_MS,
         },
     );
     world.insert(entity, OneShotSound);
@@ -1075,6 +1120,78 @@ mod tests {
         let _ = AudioWorld::new();
     }
 
+    /// Regression for #845 / AUD-D4-NEW-04: `DEFAULT_UNLOAD_FADE_MS`
+    /// matches kira's `Tween::default()` duration (10 ms) so existing
+    /// call sites that don't override `AudioEmitter.unload_fade_ms`
+    /// stay on the pre-#845 stop-fade behaviour exactly.
+    #[test]
+    fn default_unload_fade_matches_kira_tween_default() {
+        let kira_default = Tween::default();
+        let expected_ms = kira_default.duration.as_secs_f32() * 1000.0;
+        assert!(
+            (DEFAULT_UNLOAD_FADE_MS - expected_ms).abs() < 1.0e-3,
+            "DEFAULT_UNLOAD_FADE_MS ({DEFAULT_UNLOAD_FADE_MS} ms) must match \
+             kira's Tween::default() duration ({expected_ms} ms) — pre-#845 \
+             call sites that didn't author this field expected the kira default",
+        );
+    }
+
+    /// Regression for #845: a long-tailed cell-ambient emitter MAY
+    /// declare a non-default `unload_fade_ms`, and that value
+    /// round-trips through `ActiveSound` so the prune sweep stops
+    /// the kira handle with the authored fade — not the 10 ms cutoff
+    /// that produced the audible click on long ambients.
+    ///
+    /// This test pins the *capture* hop (emitter → ActiveSound)
+    /// since the prune sweep itself needs a real kira handle to call
+    /// `.stop(tween)` on. The capture invariant is the part this fix
+    /// adds; downstream `Tween` construction uses the captured
+    /// `f32` exactly.
+    #[test]
+    fn audio_emitter_authors_custom_unload_fade_for_long_ambients() {
+        // Synthetic long-tail ambient: cathedral choir tail = 800 ms.
+        let sound_data = StaticSoundData {
+            sample_rate: 44_100,
+            frames: Arc::new([Frame::ZERO; 64]),
+            settings: kira::sound::static_sound::StaticSoundSettings::default(),
+            slice: None,
+        };
+        let emitter = AudioEmitter {
+            sound: Arc::new(sound_data),
+            attenuation: Attenuation::default(),
+            volume: 1.0,
+            looping: true,
+            unload_fade_ms: 800.0,
+        };
+        assert_eq!(emitter.unload_fade_ms, 800.0);
+
+        // The Tween construction itself is what `prune_stopped_sounds`
+        // does — pin the formula so a future refactor of
+        // `fade_ms / 1000.0` doesn't silently round to zero on
+        // sub-millisecond inputs or overflow on huge ones.
+        let tween = Tween {
+            start_time: kira::StartTime::Immediate,
+            duration: Duration::from_secs_f32(emitter.unload_fade_ms.max(0.0) / 1000.0),
+            easing: kira::Easing::Linear,
+        };
+        assert!(
+            (tween.duration.as_secs_f32() - 0.8).abs() < 1.0e-6,
+            "800 ms unload_fade_ms must produce a 0.8s Tween duration, got {:?}",
+            tween.duration,
+        );
+    }
+
+    /// A negative `unload_fade_ms` (authoring mistake or wraparound)
+    /// must clamp to 0 rather than panic at `Duration::from_secs_f32`.
+    /// The prune-stop site's `.max(0.0)` is the guard.
+    #[test]
+    fn unload_fade_clamps_negative_to_zero() {
+        let fade_ms: f32 = -50.0;
+        let clamped = fade_ms.max(0.0);
+        let _ = Duration::from_secs_f32(clamped / 1000.0); // must not panic
+        assert_eq!(clamped, 0.0);
+    }
+
     /// Issue #842 regression gate: kira's default `Capacities` caps
     /// `sub_track_capacity` at 128, which a populated Bethesda
     /// interior cell can saturate (FO4 Diamond City Market ≈ 400
@@ -1152,6 +1269,7 @@ mod tests {
             attenuation: Attenuation::default(),
             volume: 1.0,
             looping: false,
+            unload_fade_ms: DEFAULT_UNLOAD_FADE_MS,
         };
         assert_eq!(Arc::strong_count(&arc_sound), 2);
     }
@@ -1505,6 +1623,7 @@ mod tests {
                 attenuation: Attenuation::default(),
                 volume: 0.5, // half-volume so the test isn't loud
                 looping: true,
+                unload_fade_ms: DEFAULT_UNLOAD_FADE_MS,
             },
         );
         world.insert(emitter, OneShotSound);
