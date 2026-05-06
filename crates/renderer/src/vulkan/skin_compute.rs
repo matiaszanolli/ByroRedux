@@ -313,7 +313,7 @@ impl SkinComputePipeline {
         // it can push the allocation onto a smaller heap. Re-add the
         // flag in the same commit that lands the raster bind path.
         // See #681 / MEM-2-6.
-        let output_buffer = GpuBuffer::create_device_local_uninit(
+        let mut output_buffer = GpuBuffer::create_device_local_uninit(
             device,
             allocator,
             output_size,
@@ -324,15 +324,25 @@ impl SkinComputePipeline {
         .context("allocate skin slot output buffer")?;
 
         // One descriptor set per frame-in-flight.
+        // #871 — pool exhaustion at >32 simultaneously-skinned entities
+        // returns Err here AFTER `output_buffer` is already allocated;
+        // explicit rollback below avoids a one-time GPU-memory leak per
+        // exhaustion event. `GpuBuffer::Drop` is warn-only by design
+        // (C3-10 leak-on-drop pattern), so the natural-Drop pass on the
+        // `output_buffer` local does NOT free the device-local memory.
         let layouts = [self.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
-        let allocated = unsafe {
-            device
-                .allocate_descriptor_sets(
-                    &vk::DescriptorSetAllocateInfo::default()
-                        .descriptor_pool(self.descriptor_pool)
-                        .set_layouts(&layouts),
-                )
-                .context("allocate skin slot descriptor sets")?
+        let allocated = match unsafe {
+            device.allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(self.descriptor_pool)
+                    .set_layouts(&layouts),
+            )
+        } {
+            Ok(sets) => sets,
+            Err(e) => {
+                output_buffer.destroy(device, allocator);
+                return Err(e).context("allocate skin slot descriptor sets");
+            }
         };
         let mut descriptor_sets = [vk::DescriptorSet::null(); MAX_FRAMES_IN_FLIGHT];
         for (i, set) in allocated.iter().enumerate() {
