@@ -360,3 +360,53 @@ fn lru_eviction_drops_clip_handle_for_victim() {
     // Surviving entries' handles untouched.
     assert_eq!(reg.clip_handle_for("b.nif"), Some(2));
 }
+
+/// Regression for #862 / FNV-D3-NEW-03: the cell-stream worker filters
+/// its `model_paths` against `NifImportRegistry::snapshot_keys()` so a
+/// 7×7 grid traversal in WastelandNV doesn't re-extract+parse every
+/// shared rock / roadway / junkpile NIF on every cell crossing. The
+/// snapshot must contain every cached key (positive AND negative
+/// entries — known-failed parses don't get re-tried either).
+#[test]
+fn snapshot_keys_includes_positive_and_negative_cache_entries() {
+    let mut reg = NifImportRegistry::new();
+    reg.insert("rock_cliff.nif".into(), Some(dummy_cached()));
+    reg.insert("missing_model.nif".into(), None); // negative cache
+    reg.insert("junkpile.nif".into(), Some(dummy_cached()));
+
+    let snap = reg.snapshot_keys();
+    assert_eq!(snap.len(), 3);
+    assert!(snap.contains("rock_cliff.nif"));
+    assert!(snap.contains("missing_model.nif"));
+    assert!(snap.contains("junkpile.nif"));
+}
+
+#[test]
+fn snapshot_keys_returns_empty_set_for_fresh_registry() {
+    let reg = NifImportRegistry::new();
+    assert!(reg.snapshot_keys().is_empty());
+}
+
+#[test]
+fn snapshot_keys_decoupled_from_registry_after_capture() {
+    // Snapshot captures keys at call time; subsequent registry
+    // mutations don't appear in the previously-returned Arc. This
+    // matters because the cell-stream worker holds the snapshot
+    // across its rayon parse loop while the main thread keeps
+    // inserting new payloads — without decoupling, the worker would
+    // see a moving target and produce non-deterministic skip
+    // decisions.
+    let mut reg = NifImportRegistry::new();
+    reg.insert("a.nif".into(), Some(dummy_cached()));
+    let snap_before = reg.snapshot_keys();
+    assert_eq!(snap_before.len(), 1);
+
+    reg.insert("b.nif".into(), Some(dummy_cached()));
+    // The previously-captured snapshot must NOT see "b.nif".
+    assert_eq!(snap_before.len(), 1);
+    assert!(!snap_before.contains("b.nif"));
+    // A fresh snapshot DOES see it.
+    let snap_after = reg.snapshot_keys();
+    assert_eq!(snap_after.len(), 2);
+    assert!(snap_after.contains("b.nif"));
+}

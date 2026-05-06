@@ -64,6 +64,16 @@ pub struct LoadCellRequest {
     pub generation: u64,
     pub wctx: Arc<ExteriorWorldContext>,
     pub tex_provider: Arc<TextureProvider>,
+    /// Snapshot of `NifImportRegistry`'s cached keys at request-build
+    /// time. The worker skips BSA-extract + parse for any model path
+    /// already in this set — main-thread cache will spawn it through
+    /// [`crate::cell_loader::load_one_exterior_cell`] without needing
+    /// the worker to re-produce the import. See #862. Includes
+    /// negative-cache entries so known-failed parses aren't re-tried.
+    /// May lag the registry by a few ms (more cache entries can land
+    /// between snapshot and worker dispatch); that's harmless — at
+    /// worst the worker over-extracts, never under-skips.
+    pub cached_keys: Arc<std::collections::HashSet<String>>,
 }
 
 /// Worker output — pre-parsed scenes for every NIF the cell references.
@@ -223,9 +233,10 @@ fn cell_pre_parse_worker(
             generation,
             wctx,
             tex_provider,
+            cached_keys,
         } = req;
         let payload = pre_parse_cell_panic_safe(gx, gy, generation, || {
-            pre_parse_cell(gx, gy, generation, &wctx, &tex_provider)
+            pre_parse_cell(gx, gy, generation, &wctx, &tex_provider, &cached_keys)
         });
         if payload_tx.send(payload).is_err() {
             // Receiver dropped — main thread is shutting down; exit cleanly.
@@ -266,16 +277,23 @@ where
 /// extract NIF bytes from the texture provider's mesh archives, and
 /// run the pool-free portion of the NIF import pipeline.
 ///
+/// `cached_keys` is the main-thread snapshot of
+/// [`crate::cell_loader::NifImportRegistry`] at request-build time;
+/// any model path it contains is skipped here — the drain step's
+/// `load_one_exterior_cell` will spawn the cell's REFRs against the
+/// cached entries directly, no re-parse needed. See #862.
+///
 /// Returns a populated [`LoadCellPayload`] (which may have an empty
-/// `parsed` map if the cell doesn't exist or has no references — the
-/// main-thread drain still applies the empty payload so the pending
-/// entry is cleared).
+/// `parsed` map if the cell doesn't exist, has no references, or
+/// every model path was already cached — the main-thread drain still
+/// applies the empty payload so the pending entry is cleared).
 fn pre_parse_cell(
     gx: i32,
     gy: i32,
     generation: u64,
     wctx: &ExteriorWorldContext,
     tex_provider: &TextureProvider,
+    cached_keys: &HashSet<String>,
 ) -> LoadCellPayload {
     let mut parsed: HashMap<String, Option<PartialNifImport>> = HashMap::new();
     let cells_map = match wctx.record_index.cells.exterior_cells.get(&wctx.worldspace_key) {
@@ -288,8 +306,14 @@ fn pre_parse_cell(
 
     // Unique lowercased model paths in this cell. Reuse across
     // duplicate placements — chairs, lanterns, rocks all share one
-    // model path each.
+    // model path each. Filter out paths already in the main-thread
+    // cache snapshot — the drain's `load_one_exterior_cell` spawns
+    // them directly from cache without needing the worker to
+    // re-produce the import (#862). 7×7 grid traversal in WastelandNV
+    // typically sees ~95% cache hits on shared statics, so this slash
+    // is dominant for the steady-state workload.
     let mut model_paths: HashSet<String> = HashSet::new();
+    let mut skipped_cached = 0usize;
     for refr in &cell.references {
         let Some(model_path) = wctx
             .record_index
@@ -301,7 +325,21 @@ fn pre_parse_cell(
         else {
             continue;
         };
-        model_paths.insert(model_path.to_ascii_lowercase());
+        let key = model_path.to_ascii_lowercase();
+        if cached_keys.contains(&key) {
+            skipped_cached += 1;
+            continue;
+        }
+        model_paths.insert(key);
+    }
+    if skipped_cached > 0 {
+        log::debug!(
+            "[stream-worker] cell ({},{}): {} cached models skipped, {} unique to parse",
+            gx,
+            gy,
+            skipped_cached,
+            model_paths.len(),
+        );
     }
 
     // Extract + parse each unique NIF in parallel via rayon. Each path

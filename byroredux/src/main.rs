@@ -549,6 +549,17 @@ impl App {
 
         // Dispatch new loads — non-blocking send, worker picks them up
         // off-thread.
+        //
+        // Snapshot the NifImportRegistry's cached keys ONCE per
+        // dispatch batch (i.e. per cell-crossing) so every request
+        // shares the same view. Worker filters its model_paths
+        // against this set so >95% of typical exterior statics
+        // (rocks, roadways, junkpiles) skip BSA-extract + parse
+        // entirely on cell crossings. See #862.
+        let cached_keys = self
+            .world
+            .resource::<cell_loader::NifImportRegistry>()
+            .snapshot_keys();
         for (gx, gy) in deltas.to_load {
             // Skip if a load is already in flight or the cell is
             // already loaded (the diff already filtered loaded, but a
@@ -566,6 +577,7 @@ impl App {
                 generation,
                 wctx: state.wctx.clone(),
                 tex_provider: state.tex_provider.clone(),
+                cached_keys: cached_keys.clone(),
             };
             if state.request_tx.send(req).is_err() {
                 log::error!(

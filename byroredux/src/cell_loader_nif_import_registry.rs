@@ -195,6 +195,21 @@ impl NifImportRegistry {
         self.cache.get(key)
     }
 
+    /// Snapshot every cached key (positive + negative entries) into an
+    /// `Arc<HashSet<String>>` the cell-stream worker can consult to
+    /// skip BSA-extract + parse for models the main thread already
+    /// holds. See #862 / FNV-D3-NEW-03 — without this, a 7×7 grid
+    /// crossing in WastelandNV re-parses every shared rock / roadway /
+    /// junkpile NIF on every cell boundary even though >95% are
+    /// cached. Snapshot building is O(N) on registry size and runs at
+    /// most once per cell-crossing batch, so the cost is bounded.
+    ///
+    /// Negative entries (`Some(None)` — failed parses) are included so
+    /// the worker doesn't pointlessly retry a known-failed parse.
+    pub(crate) fn snapshot_keys(&self) -> std::sync::Arc<std::collections::HashSet<String>> {
+        std::sync::Arc::new(self.cache.keys().cloned().collect())
+    }
+
     /// Bump the access tick for every key in `keys` so freshly-hit
     /// entries are protected from LRU eviction. Called from the
     /// end-of-load batched commit (one write lock instead of one per

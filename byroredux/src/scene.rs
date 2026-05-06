@@ -516,6 +516,16 @@ fn stream_initial_radius(
     // ticks per request so a future re-load on the same cell (e.g.
     // after a scripted teleport in M40 Phase 2) can distinguish stale
     // payloads from the new one.
+    //
+    // Snapshot the NifImportRegistry's cached keys once for the
+    // batch so the worker can skip already-cached models (#862). On
+    // initial-radius dispatch the cache is normally empty, so this
+    // typically returns an empty set and the worker parses
+    // everything — but the same plumbing handles a warm cache after
+    // a future M40 Phase 2 hot-reload.
+    let cached_keys = world
+        .resource::<crate::cell_loader::NifImportRegistry>()
+        .snapshot_keys();
     for (gx, gy) in &deltas.to_load {
         let coord = (*gx, *gy);
         let generation = state.next_generation;
@@ -527,6 +537,7 @@ fn stream_initial_radius(
             generation,
             wctx: state.wctx.clone(),
             tex_provider: state.tex_provider.clone(),
+            cached_keys: cached_keys.clone(),
         };
         if state.request_tx.send(req).is_err() {
             log::error!(
