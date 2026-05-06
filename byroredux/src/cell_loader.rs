@@ -1570,6 +1570,27 @@ pub(crate) fn finish_partial_import(
     partial: crate::streaming::PartialNifImport,
 ) {
     let cache_key = model_path.to_ascii_lowercase();
+    // Already-cached early-out (#864). The streaming worker
+    // pre-filters its model_paths against `NifImportRegistry`'s
+    // cached-keys snapshot (#862), but the snapshot is captured at
+    // request-build time and can lag the registry by a few ms — a
+    // payload from request A finishing while request B is in flight
+    // can populate the cache before B's worker runs, so B's payload
+    // still arrives carrying paths that are now cached. Skipping
+    // here prevents:
+    //   * a redundant `import_nif_with_collision` walk + BGSM merge,
+    //   * a stale `convert_nif_clip` + `clip_reg.add` (which would
+    //     leak the previous clip handle and overwrite the cache
+    //     entry's clip mapping), and
+    //   * an `Arc<CachedNifImport>` rebuild that ends up mostly the
+    //     same content as the existing arc.
+    // Both positive (`Some(Some(_))`) and negative (`Some(None)`)
+    // cache hits short-circuit — re-attempting a previously-failed
+    // parse is also wasted, and the worker already filters those
+    // out at request time.
+    if world.resource::<NifImportRegistry>().get(&cache_key).is_some() {
+        return;
+    }
     // Editor markers — pre-warmed scene gets cached as `None` so future
     // placements skip silently. Matches the `parse_and_import_nif` skip
     // semantics.
@@ -2355,6 +2376,10 @@ mod euler_zup_to_quat_yup_tests;
 #[cfg(test)]
 #[path = "cell_loader_nif_import_registry_tests.rs"]
 mod nif_import_registry_tests;
+
+#[cfg(test)]
+#[path = "cell_loader_finish_partial_tests.rs"]
+mod finish_partial_tests;
 
 #[cfg(test)]
 #[path = "cell_loader_refr_texture_overlay_tests.rs"]
