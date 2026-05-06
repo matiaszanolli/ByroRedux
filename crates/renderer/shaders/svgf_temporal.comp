@@ -83,9 +83,16 @@ void main() {
     // history across a glass-stable-depth flip produces visible
     // ghosting ahead of the alpha-blend surface. Phase 1 of Tier C
     // glass plan.
+    //
+    // #675 — moments.b = 0 marks "never accumulate" so Phase 4's
+    // spatial filter (and the next-frame reprojection's `histAge`
+    // weighted-average at line 156) doesn't treat sky / alpha-blend
+    // taps as having 1 frame of trustworthy history. The no-history
+    // fallback at the end of this shader writes `1.0` for the
+    // distinct "first frame, will accumulate next frame" case.
     if (currID == 0u || (currID & 0x8000u) != 0u) {
         imageStore(outIndirect, p, vec4(currInd, 1.0));
-        imageStore(outMoments, p, vec4(currLum, currLum2, 1.0, 0.0));
+        imageStore(outMoments, p, vec4(currLum, currLum2, 0.0, 0.0));
         return;
     }
 
