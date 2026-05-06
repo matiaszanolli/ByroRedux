@@ -124,7 +124,7 @@ use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
 use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
 use kira::sound::{FromFileError, PlaybackState};
 use kira::track::{SendTrackBuilder, SendTrackHandle, SpatialTrackBuilder, SpatialTrackHandle};
-use kira::{AudioManager, AudioManagerSettings, DefaultBackend, Mix, Tween};
+use kira::{AudioManager, AudioManagerSettings, Capacities, DefaultBackend, Mix, Tween};
 use std::time::Duration;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -136,6 +136,18 @@ use std::sync::Arc;
 // owner of the audio-engine surface.
 pub use kira::sound::static_sound::{StaticSoundData as Sound, StaticSoundSettings as SoundSettings};
 pub use kira::Frame;
+
+// Headroom over kira's defaults. Each active spatial sound (entity-
+// path one-shot, queue-path one-shot, looping emitter) holds one
+// spatial sub-track for the duration of playback; populated Bethesda
+// interiors (FO4 Diamond City Market sits ~400 emitters in vanilla)
+// blow past kira's default 128 cap once Phase 3.5b FOOT records and
+// Phase 4 REGN ambients land. 512 + 32 give comfortable headroom and
+// still fit on a couple kilobytes of manager state. Pinned here so
+// the cap is one-line-greppable; see issue #842 for the failure
+// mode the bump prevents (silent-drop on `ResourceLimitReached`).
+pub(crate) const SUB_TRACK_CAPACITY: usize = 512;
+pub(crate) const SEND_TRACK_CAPACITY: usize = 32;
 
 /// One currently-playing sound. The `_track` field keeps the spatial
 /// sub-track alive — dropping it would tear down playback even if the
@@ -228,21 +240,32 @@ impl AudioWorld {
     /// without `cpal`-supported backend), logs at WARN and returns an
     /// audioless world that no-ops cleanly.
     pub fn new() -> Self {
-        let mut manager =
-            match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
-                Ok(manager) => {
-                    log::info!("M44 Phase 1: AudioManager initialised (default backend)");
-                    Some(manager)
-                }
-                Err(e) => {
-                    log::warn!(
-                        "M44 Phase 1: AudioManager init failed ({e}); engine continues \
-                         without audio. This is expected in headless/CI environments and \
-                         on systems without a working audio device."
-                    );
-                    None
-                }
-            };
+        let settings = AudioManagerSettings::<DefaultBackend> {
+            capacities: Capacities {
+                sub_track_capacity: SUB_TRACK_CAPACITY,
+                send_track_capacity: SEND_TRACK_CAPACITY,
+                ..Capacities::default()
+            },
+            ..Default::default()
+        };
+        let mut manager = match AudioManager::<DefaultBackend>::new(settings) {
+            Ok(manager) => {
+                log::info!(
+                    "M44 Phase 1: AudioManager initialised (default backend, \
+                     sub_track_capacity={SUB_TRACK_CAPACITY}, \
+                     send_track_capacity={SEND_TRACK_CAPACITY})"
+                );
+                Some(manager)
+            }
+            Err(e) => {
+                log::warn!(
+                    "M44 Phase 1: AudioManager init failed ({e}); engine continues \
+                     without audio. This is expected in headless/CI environments and \
+                     on systems without a working audio device."
+                );
+                None
+            }
+        };
         // Phase 6: create a send track with a reverb effect at full
         // wet output. Per-spatial-track send levels (in dB) control
         // how much of each sound goes through. Default-disabled at
@@ -1050,6 +1073,32 @@ mod tests {
     #[test]
     fn audio_world_constructs_without_panic_on_any_environment() {
         let _ = AudioWorld::new();
+    }
+
+    /// Issue #842 regression gate: kira's default `Capacities` caps
+    /// `sub_track_capacity` at 128, which a populated Bethesda
+    /// interior cell can saturate (FO4 Diamond City Market ≈ 400
+    /// emitters in vanilla). Once we hit the cap, kira returns
+    /// `ResourceLimitReached` from `add_spatial_sub_track` and the
+    /// dispatch path silently drops the sound with only a `warn!`.
+    /// This test pins the override; a "simplify back to default"
+    /// refactor will trip it.
+    #[test]
+    fn manager_capacities_exceed_kira_defaults() {
+        let defaults = Capacities::default();
+        assert!(
+            SUB_TRACK_CAPACITY > defaults.sub_track_capacity,
+            "SUB_TRACK_CAPACITY={SUB_TRACK_CAPACITY} must exceed kira default \
+             {} or populated cells will silently drop sounds (#842)",
+            defaults.sub_track_capacity,
+        );
+        assert!(
+            SEND_TRACK_CAPACITY > defaults.send_track_capacity,
+            "SEND_TRACK_CAPACITY={SEND_TRACK_CAPACITY} must exceed kira default \
+             {} (Phase 4 REGN ambients will need additional send tracks beyond \
+             the single global reverb)",
+            defaults.send_track_capacity,
+        );
     }
 
     /// Default attenuation is in the "interior cell" range — a
