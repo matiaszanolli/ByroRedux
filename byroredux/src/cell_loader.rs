@@ -58,17 +58,19 @@ pub struct CellLoadResult {
     pub center: Vec3,
     /// Interior cell lighting (ambient + directional).
     pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
-    /// Weather data for exterior cells (from WRLD→CLMT→WTHR chain).
-    pub weather: Option<byroredux_plugin::esm::records::WeatherRecord>,
-    /// Climate record for exterior cells (sunrise/sunset timing bytes +
-    /// weather probability table). Drives the time-of-day interpolator
-    /// in `weather_system` so Capital Wasteland and Mojave run on their
-    /// own schedules. See #463.
-    pub climate: Option<byroredux_plugin::esm::records::ClimateRecord>,
     /// Owner token for every entity this load produced. Pass to
     /// [`unload_cell`] to tear the cell down (despawn entities + free
     /// mesh/BLAS/texture resources). See #372.
     pub cell_root: EntityId,
+    // Pre-#860 this struct also carried `weather: Option<WeatherRecord>`
+    // and `climate: Option<ClimateRecord>` fields. The producer
+    // (`load_cell_with_masters`) is the interior-only entry point and
+    // unconditionally emitted `None` for both, and no consumer ever
+    // read them — exterior weather flows through
+    // `apply_worldspace_weather()` reading `wctx.default_weather`
+    // directly off the [`ExteriorWorldContext`]. Re-added at the
+    // point a real consumer (e.g. interior scripted-weather override)
+    // appears, with a populated producer to match.
 }
 
 /// Stamp every entity spawned in `first..last` (exclusive) with
@@ -382,8 +384,6 @@ pub fn load_cell_with_masters(
         mesh_count: result.mesh_count,
         center: result.center,
         lighting: resolved_lighting,
-        weather: None,
-        climate: None,
         cell_root,
     })
 }
