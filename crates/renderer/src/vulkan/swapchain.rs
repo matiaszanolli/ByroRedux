@@ -199,11 +199,20 @@ fn create_image_views(
 
 impl SwapchainState {
     /// Destroy swapchain resources. Must be called before dropping.
-    pub unsafe fn destroy(&self, device: &ash::Device) {
+    ///
+    /// #655 — clears `image_views` and nulls `swapchain` after the
+    /// destroy calls so a hypothetical second `destroy` (e.g. a future
+    /// panic-cleanup path) is a no-op against `VK_NULL_HANDLE` rather
+    /// than a double-free of every view + the swapchain itself.
+    pub unsafe fn destroy(&mut self, device: &ash::Device) {
         for &view in &self.image_views {
             device.destroy_image_view(view, None);
         }
-        self.swapchain_loader
-            .destroy_swapchain(self.swapchain, None);
+        self.image_views.clear();
+        if self.swapchain != vk::SwapchainKHR::null() {
+            self.swapchain_loader
+                .destroy_swapchain(self.swapchain, None);
+            self.swapchain = vk::SwapchainKHR::null();
+        }
     }
 }
