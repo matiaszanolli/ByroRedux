@@ -141,14 +141,15 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         .and_then(|mut idx| idx.map.remove(&cell_root))
         .unwrap_or_default();
 
-    // Gather mesh handles (HashSet — per-cell mesh buffers are unique,
-    // a HashSet is only guarding against double-drops within one cell).
-    //
-    // Texture handles use a Vec instead: each entity's `resolve_texture`
-    // bumped the registry's refcount by one; symmetric release means
-    // one `drop_texture` call per component holder, no dedup. See
-    // #524.
-    let mut mesh_handles: HashSet<u32> = HashSet::new();
+    // Gather mesh handles. Pre-#879 this used a `HashSet<u32>` because
+    // every REFR placement uploaded its own `MeshHandle` and one
+    // `drop_mesh` per unique handle was sufficient. Post-#879 the
+    // refcounted dedup means N placements share one handle: each
+    // holder must contribute one decrement so the registry can free
+    // the GPU buffers exactly when the last placement releases.
+    // Mirrors the existing texture-handle pattern (#524) which has
+    // always used a Vec for the same reason.
+    let mut mesh_drops: Vec<u32> = Vec::new();
     let mut texture_drops: Vec<u32> = Vec::new();
     let mut terrain_tile_slots: HashSet<u32> = HashSet::new();
     let fallback_tex = ctx.texture_registry.fallback();
@@ -160,7 +161,7 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     if let Some(mq) = world.query::<MeshHandle>() {
         for &eid in &victims {
             if let Some(mh) = mq.get(eid) {
-                mesh_handles.insert(mh.0);
+                mesh_drops.push(mh.0);
             }
         }
     }
@@ -246,13 +247,32 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         }
     }
 
-    // Free GPU resources. BLAS entries are keyed by mesh handle, so
-    // `drop_blas` runs first over the same set. Order matters: BLAS
-    // must be detached from any TLAS before its mesh's VkBuffer is
-    // queued for destruction — both use the same MAX_FRAMES_IN_FLIGHT
-    // countdown, which covers the overlap.
+    // Free GPU resources. With refcounted mesh dedup (#879), a handle
+    // shared across N placements must receive N drops before its
+    // VkBuffer is freed. Identify the handles whose refcount will
+    // reach zero after this cell releases its share — those are the
+    // ones whose BLAS we drop. Cross-cell shared handles (refcount >
+    // count) keep their BLAS so the resident cell still renders.
+    //
+    // Order matters: BLAS must be detached from any TLAS before its
+    // mesh's VkBuffer is queued for destruction — both use the same
+    // MAX_FRAMES_IN_FLIGHT countdown, which covers the overlap. We
+    // keep the original (drop_blas, then drop_mesh) order; the pre-
+    // pass tells us *which* handles to drop_blas without yet mutating
+    // the mesh refcounts.
+    let mut handle_drop_count: HashMap<u32, u32> = HashMap::new();
+    for &mh in &mesh_drops {
+        *handle_drop_count.entry(mh).or_insert(0) += 1;
+    }
+    let freed_meshes: Vec<u32> = handle_drop_count
+        .iter()
+        .filter_map(|(&h, &c)| match ctx.mesh_registry.refcount(h) {
+            Some(rc) if rc == c => Some(h),
+            _ => None,
+        })
+        .collect();
     if let Some(ref mut accel) = ctx.accel_manager {
-        for &mh in &mesh_handles {
+        for &mh in &freed_meshes {
             accel.drop_blas(mh);
         }
         // #495 — the shared BLAS build scratch buffer is grow-only
@@ -272,7 +292,11 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
             }
         }
     }
-    for &mh in &mesh_handles {
+    // One drop per holder. The handles in `freed_meshes` will hit
+    // refcount 0 on their final drop and queue their VkBuffers for
+    // deferred destruction; cross-cell shared handles stay live with
+    // a positive refcount.
+    for &mh in &mesh_drops {
         ctx.mesh_registry.drop_mesh(mh);
     }
     for &th in &texture_drops {
@@ -286,9 +310,10 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     }
 
     log::info!(
-        "Cell unload: {} entities, {} meshes, {} texture refs released (cell_root {})",
+        "Cell unload: {} entities, {} mesh refs ({} freed), {} texture refs released (cell_root {})",
         victim_count,
-        mesh_handles.len(),
+        mesh_drops.len(),
+        freed_meshes.len(),
         texture_drops.len(),
         cell_root,
     );
@@ -1276,6 +1301,7 @@ fn load_references(
                 refr_overlay.as_ref(),
                 clip_handle,
                 stat.record_type.render_layer(),
+                Some(cache_key.as_str()),
             );
             entity_count += count;
             mesh_entity_count += count;
@@ -1748,6 +1774,14 @@ fn light_radius_or_default(radius: f32) -> f32 {
 /// REFR placement transform. `cached` is produced by
 /// `parse_and_import_nif` and shared across all placements of the same
 /// model via `Arc`.
+///
+/// `mesh_cache_key` is the lowercased model path used to dedup GPU
+/// uploads across REFR placements (#879). When `Some`, the mesh
+/// uploader first asks `MeshRegistry::acquire_cached` for an existing
+/// handle (refcount-bumped) and only falls through to a fresh upload
+/// on a miss. `None` keeps the legacy fresh-upload-per-call path —
+/// callers that don't share placements (terrain-tile / single-NIF CLI
+/// view) keep the old shape.
 fn spawn_placed_instances(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -1765,6 +1799,7 @@ fn spawn_placed_instances(
     // `RenderLayer::Decal` at the spawn site below; the caller passes
     // the unescalated base layer.
     base_layer: byroredux_core::ecs::components::RenderLayer,
+    mesh_cache_key: Option<&str>,
 ) -> usize {
     use byroredux_core::ecs::{Name, Parent};
     use byroredux_renderer::Vertex;
@@ -1965,68 +2000,107 @@ fn spawn_placed_instances(
     }
 
     let mut blas_specs: Vec<(u32, u32, u32)> = Vec::new();
-    for mesh in imported {
+    for (sub_mesh_index, mesh) in imported.iter().enumerate() {
         let num_verts = mesh.positions.len();
-        let vertices: Vec<Vertex> = (0..num_verts)
-            .map(|i| {
-                // Drop alpha — current `Vertex` color is 3-channel; the
-                // alpha lane lives on `ImportedMesh::colors[i][3]` for
-                // when the renderer extends to a 4-channel vertex (#618).
-                let color3 = if i < mesh.colors.len() {
-                    let c = mesh.colors[i];
-                    [c[0], c[1], c[2]]
-                } else {
-                    [1.0, 1.0, 1.0]
-                };
-                let mut v = Vertex::new(
-                    mesh.positions[i],
-                    color3,
-                    if i < mesh.normals.len() {
-                        mesh.normals[i]
-                    } else {
-                        [0.0, 1.0, 0.0]
-                    },
-                    if i < mesh.uvs.len() {
-                        mesh.uvs[i]
-                    } else {
-                        [0.0, 0.0]
-                    },
-                );
-                // #783 / M-NORMALS — propagate authored tangent
-                // (NiBinaryExtraData "Tangent space ..." for Oblivion
-                // / FO3 / FNV cell-loader content). Empty mesh.tangents
-                // → zero, which the fragment shader's perturbNormal
-                // detects and routes to its screen-space derivative
-                // fallback.
-                if i < mesh.tangents.len() {
-                    v.tangent = mesh.tangents[i];
-                }
-                v
-            })
-            .collect();
+        let sub_mesh_index_u32 = sub_mesh_index as u32;
 
-        let mesh_handle = {
+        // #879 / CELL-PERF-01 — refcounted GPU mesh dedup. First
+        // placement of `chair.nif` uploads the vertex/index pair and
+        // registers it under `(model_path, sub_mesh_index)`; the next
+        // 39 chair placements bump the entry's refcount and reuse
+        // the same `mesh_handle` (and the same BLAS — skipping the
+        // batched BLAS build entry for the cached hit). Without
+        // `mesh_cache_key` (terrain / single-NIF CLI view) the cache
+        // is bypassed and we keep the legacy fresh-upload-per-call
+        // shape.
+        let cache_hit_handle = mesh_cache_key.and_then(|key| {
+            ctx.mesh_registry.acquire_cached(key, sub_mesh_index_u32)
+        });
+
+        let mesh_handle = if let Some(handle) = cache_hit_handle {
+            // Cached: skip the CPU vertex-build, the GPU upload, AND
+            // the BLAS batch entry. The existing BLAS for this handle
+            // is already attached to live placements in earlier cells
+            // (or earlier in this same cell).
+            handle
+        } else {
+            let vertices: Vec<Vertex> = (0..num_verts)
+                .map(|i| {
+                    // Drop alpha — current `Vertex` color is 3-channel; the
+                    // alpha lane lives on `ImportedMesh::colors[i][3]` for
+                    // when the renderer extends to a 4-channel vertex (#618).
+                    let color3 = if i < mesh.colors.len() {
+                        let c = mesh.colors[i];
+                        [c[0], c[1], c[2]]
+                    } else {
+                        [1.0, 1.0, 1.0]
+                    };
+                    let mut v = Vertex::new(
+                        mesh.positions[i],
+                        color3,
+                        if i < mesh.normals.len() {
+                            mesh.normals[i]
+                        } else {
+                            [0.0, 1.0, 0.0]
+                        },
+                        if i < mesh.uvs.len() {
+                            mesh.uvs[i]
+                        } else {
+                            [0.0, 0.0]
+                        },
+                    );
+                    // #783 / M-NORMALS — propagate authored tangent
+                    // (NiBinaryExtraData "Tangent space ..." for Oblivion
+                    // / FO3 / FNV cell-loader content). Empty mesh.tangents
+                    // → zero, which the fragment shader's perturbNormal
+                    // detects and routes to its screen-space derivative
+                    // fallback.
+                    if i < mesh.tangents.len() {
+                        v.tangent = mesh.tangents[i];
+                    }
+                    v
+                })
+                .collect();
+
             let alloc = ctx.allocator.as_ref().unwrap();
-            match ctx.mesh_registry.upload_scene_mesh(
-                &ctx.device,
-                alloc,
-                &ctx.graphics_queue,
-                ctx.transfer_pool,
-                &vertices,
-                &mesh.indices,
-                ctx.device_caps.ray_query_supported,
-                None,
-            ) {
+            let upload_result = match mesh_cache_key {
+                Some(key) => ctx.mesh_registry.register_scene_mesh_keyed(
+                    &ctx.device,
+                    alloc,
+                    &ctx.graphics_queue,
+                    ctx.transfer_pool,
+                    &vertices,
+                    &mesh.indices,
+                    ctx.device_caps.ray_query_supported,
+                    None,
+                    key,
+                    sub_mesh_index_u32,
+                ),
+                None => ctx.mesh_registry.upload_scene_mesh(
+                    &ctx.device,
+                    alloc,
+                    &ctx.graphics_queue,
+                    ctx.transfer_pool,
+                    &vertices,
+                    &mesh.indices,
+                    ctx.device_caps.ray_query_supported,
+                    None,
+                ),
+            };
+            let handle = match upload_result {
                 Ok(h) => h,
                 Err(e) => {
                     log::warn!("Failed to upload mesh: {}", e);
                     continue;
                 }
-            }
-        };
+            };
 
-        // Collect BLAS specs for batched build after the loop.
-        blas_specs.push((mesh_handle, num_verts as u32, mesh.indices.len() as u32));
+            // Fresh upload — this handle needs a BLAS. Subsequent
+            // cache hits for the same `(path, sub_mesh_index)` reuse
+            // this BLAS entry without re-submitting.
+            blas_specs.push((handle, num_verts as u32, mesh.indices.len() as u32));
+            handle
+        };
 
         // Effective texture slot paths. REFR overlay (XATO/XTNM/XTXR)
         // wins over the NIF-authored paths when present; for slots the

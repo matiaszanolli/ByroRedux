@@ -5,6 +5,15 @@ use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::{GpuBuffer, StagingPool};
 use anyhow::Result;
 use ash::vk;
+use std::collections::HashMap;
+
+/// Cache key for the refcounted scene-mesh dedup layer (#879). The
+/// `path` is the lowercased model path (matches
+/// `cell_loader::nif_import_registry`'s key); `sub_mesh_index` indexes
+/// into a multi-mesh NIF so two `chair.nif` placements share the same
+/// handle while a `corpse.nif`'s body + helmet sub-meshes get distinct
+/// entries.
+pub type MeshCacheKey = (String, u32);
 
 /// A mesh stored on the GPU: vertex + index buffers and index count.
 pub struct GpuMesh {
@@ -59,6 +68,36 @@ pub struct MeshRegistry {
     /// be safely destroyed (must survive MAX_FRAMES_IN_FLIGHT frames to
     /// guarantee no in-flight command buffer references them).
     deferred_destroy: Vec<(Option<GpuBuffer>, Option<GpuBuffer>, u32)>,
+    /// Refcounted scene-mesh dedup keyed by `(model_path,
+    /// sub_mesh_index)` — populated by
+    /// [`Self::register_scene_mesh_keyed`] and consulted by
+    /// [`Self::acquire_cached`]. Mirror of
+    /// `TextureRegistry.path_map` (#524). Pre-#879 every REFR
+    /// placement re-uploaded its NIF's vertex/index buffers as a
+    /// fresh GPU pair even when the underlying `Arc<CachedNifImport>`
+    /// was already shared on the CPU side: 40 chairs in Megaton →
+    /// 80 fence-waits per cell load. With this cache, those 40
+    /// placements share one upload + one BLAS build, and unloads
+    /// only free the GPU resources when the last placement releases.
+    mesh_cache: HashMap<MeshCacheKey, u32>,
+    /// Live reference counts, parallel-indexed by mesh handle (slot
+    /// `i` of `mesh_ref_counts` holds the refcount for the entry at
+    /// `meshes[i]`). Each placement holding a mesh through
+    /// `MeshHandle` contributes 1; `drop_mesh` decrements once per
+    /// holder and only queues the GPU buffers for deferred
+    /// destruction when the count reaches 0. Single-owner uploads
+    /// (terrain tiles, CLI single-NIF view, UI overlays) start at
+    /// 1 so the legacy "drop once → free" path is preserved.
+    /// Refcounted dedup
+    /// (`acquire_cached` / `register_scene_mesh_keyed`) bumps the
+    /// count per placement.
+    ///
+    /// Stored as a parallel vec rather than a field on `GpuMesh` so
+    /// the `#[cfg(test)] mod refcount_tests` block can exercise the
+    /// bookkeeping without synthesising a `GpuMesh` (which contains
+    /// `ash::Device` Arc fields whose validity invariants forbid
+    /// zero-initialisation). See #879 / CELL-PERF-01.
+    mesh_ref_counts: Vec<u32>,
 }
 
 impl MeshRegistry {
@@ -72,6 +111,8 @@ impl MeshRegistry {
             geometry_dirty: false,
             ssbo_vertex_count: 0,
             deferred_destroy: Vec::new(),
+            mesh_cache: HashMap::new(),
+            mesh_ref_counts: Vec::new(),
         }
     }
 
@@ -168,6 +209,8 @@ impl MeshRegistry {
             vertex_count: vertices.len() as u32,
             is_scene_mesh: false,
         }));
+        // Parallel-indexed refcount; lockstep with `meshes` push.
+        self.mesh_ref_counts.push(1);
 
         Ok(id)
     }
@@ -224,38 +267,139 @@ impl MeshRegistry {
         Ok(id)
     }
 
-    /// Drop a mesh. Its per-mesh vertex/index buffers are queued for
-    /// deferred destruction (2 frames, matching `MAX_FRAMES_IN_FLIGHT`)
-    /// so no in-flight command buffer that still references them can
-    /// use-after-free. Scene meshes additionally mark the global SSBO
-    /// dirty — the next `rebuild_geometry_ssbo` call will compact the
-    /// dead mesh's range out of `pending_vertices`/`pending_indices`
-    /// and rewrite live meshes' offsets. See #372.
+    /// Acquire a previously-cached scene mesh by `(model_path,
+    /// sub_mesh_index)`. Bumps the entry's refcount on hit, returning
+    /// the handle so the caller can attach it to a new placement
+    /// without re-uploading. Returns `None` when the key has never
+    /// been registered or the entry has already been freed (last
+    /// holder released it). Mirror of
+    /// [`crate::texture_registry::TextureRegistry::acquire_by_path`]
+    /// (#524). See #879 / CELL-PERF-01.
+    pub fn acquire_cached(&mut self, model_path: &str, sub_mesh_index: u32) -> Option<u32> {
+        let key = (model_path.to_string(), sub_mesh_index);
+        let &handle = self.mesh_cache.get(&key)?;
+        let rc = self.mesh_ref_counts.get_mut(handle as usize)?;
+        if *rc == 0 {
+            // Stale cache entry pointing at a freed slot; treat as
+            // miss so the caller falls through to a fresh upload.
+            return None;
+        }
+        *rc = rc.saturating_add(1);
+        Some(handle)
+    }
+
+    /// Upload a scene mesh AND register it in the refcounted dedup
+    /// cache under `(model_path, sub_mesh_index)`. The first placement
+    /// of a NIF takes this path; subsequent placements of the same
+    /// NIF should hit [`Self::acquire_cached`] instead and skip the
+    /// upload entirely. Initial refcount is `1` so the caller's
+    /// matching `drop_mesh` (paired with the first placement's
+    /// despawn) leaves the entry at zero unless other placements have
+    /// since acquired it. See #879 / CELL-PERF-01.
+    pub fn register_scene_mesh_keyed(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+        vertices: &[Vertex],
+        indices: &[u32],
+        rt_enabled: bool,
+        staging_pool: Option<&mut StagingPool>,
+        model_path: &str,
+        sub_mesh_index: u32,
+    ) -> Result<u32> {
+        let handle = self.upload_scene_mesh(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            vertices,
+            indices,
+            rt_enabled,
+            staging_pool,
+        )?;
+        self.mesh_cache
+            .insert((model_path.to_string(), sub_mesh_index), handle);
+        Ok(handle)
+    }
+
+    /// Live refcount for `handle`, or `None` if the slot is empty
+    /// (never allocated or already freed — refcount == 0). Read-only
+    /// — used by the cell-unload pre-pass (#879) to decide whether
+    /// dropping all holders in this cell will actually free the GPU
+    /// buffer (so it can run BLAS detach exactly once for those
+    /// handles, preserving the BLAS-before-mesh ordering invariant
+    /// from #372).
+    pub fn refcount(&self, handle: u32) -> Option<u32> {
+        self.mesh_ref_counts
+            .get(handle as usize)
+            .copied()
+            .filter(|&rc| rc > 0)
+    }
+
+    /// Decrement a holder's reference. Returns `true` iff this call
+    /// took the refcount from 1 → 0 and queued the GPU buffers for
+    /// deferred destruction. Returns `false` when other holders still
+    /// reference the mesh (refcount stayed positive) or the handle is
+    /// already dropped / never allocated.
+    ///
+    /// Per-mesh vertex/index buffers are queued for deferred
+    /// destruction (2 frames, matching `MAX_FRAMES_IN_FLIGHT`) on the
+    /// last release so no in-flight command buffer that still
+    /// references them can use-after-free. Scene meshes additionally
+    /// mark the global SSBO dirty — the next `rebuild_geometry_ssbo`
+    /// call will compact the dead mesh's range out of
+    /// `pending_vertices`/`pending_indices` and rewrite live meshes'
+    /// offsets. See #372 (handle stability) and #879 (refcount).
     ///
     /// Handles stay stable: the dropped slot holds `None` forever.
     /// Re-using a handle would re-enter the same `GpuInstance.mesh_id`
     /// for a different mesh and produce silent data corruption.
-    /// No-op if the handle was never allocated or is already dropped.
-    pub fn drop_mesh(&mut self, handle: u32) {
+    pub fn drop_mesh(&mut self, handle: u32) -> bool {
         let idx = handle as usize;
-        let Some(slot) = self.meshes.get_mut(idx) else {
-            return;
+        let rc = match self.mesh_ref_counts.get_mut(idx) {
+            Some(rc) => rc,
+            None => return false,
         };
-        let Some(mesh) = slot.take() else {
-            return;
-        };
+        if *rc == 0 {
+            log::warn!(
+                "drop_mesh({}) on already-released handle (ref_count was 0)",
+                handle,
+            );
+            return false;
+        }
+        *rc -= 1;
+        if *rc > 0 {
+            return false;
+        }
 
-        let was_scene_mesh = mesh.is_scene_mesh;
-        // Stage the GPU buffers for deferred destruction. Countdown of
-        // MAX_FRAMES_IN_FLIGHT frames matches the existing SSBO rebuild
-        // pattern — safe because any command buffer referencing the
-        // buffer is at most MAX_FRAMES_IN_FLIGHT frames old.
-        self.deferred_destroy
-            .push((Some(mesh.vertex_buffer), Some(mesh.index_buffer), 2));
-
+        // Last holder released — perform the GPU-side drop. Take the
+        // owned buffers (if present) and queue for 2-frame deferred
+        // destruction. The `meshes` slot may be empty in test-only
+        // synthetic scenarios that populate `mesh_ref_counts` /
+        // `mesh_cache` directly without uploading real GPU buffers;
+        // the production `upload` paths always push a paired entry.
+        let mut was_scene_mesh = false;
+        if let Some(slot) = self.meshes.get_mut(idx) {
+            if let Some(mesh) = slot.take() {
+                was_scene_mesh = mesh.is_scene_mesh;
+                self.deferred_destroy
+                    .push((Some(mesh.vertex_buffer), Some(mesh.index_buffer), 2));
+            }
+        }
         if was_scene_mesh {
             self.geometry_dirty = true;
         }
+
+        // Purge any cache entries pointing at this freed handle so a
+        // subsequent `acquire_cached` for the same path doesn't return
+        // a dangling slot. Linear scan is fine: cell unloads are rare
+        // relative to per-frame draws. Mirrors
+        // `TextureRegistry::release_ref`'s `path_map.retain`.
+        self.mesh_cache.retain(|_, &mut h| h != handle);
+
+        true
     }
 
     /// Compact `pending_vertices`/`pending_indices` to contain only live
@@ -427,6 +571,10 @@ impl MeshRegistry {
             }
         }
         self.meshes.clear();
+        // Refcount table is parallel-indexed; clear in lockstep with
+        // `meshes`. Leaving the counts populated would let a stale
+        // cache lookup post-shutdown bump a refcount on a freed slot.
+        self.mesh_ref_counts.clear();
         if let Some(ref mut vb) = self.global_vertex_buffer {
             vb.destroy(device, allocator);
         }
@@ -435,6 +583,11 @@ impl MeshRegistry {
         }
         self.global_vertex_buffer = None;
         self.global_index_buffer = None;
+        // The shared mesh-cache map only holds handle indices; the
+        // backing GPU buffers were already torn down by the per-slot
+        // `mesh.destroy` loop above. Clear the map so a post-shutdown
+        // `acquire_cached` can't hand out a dangling handle. See #879.
+        self.mesh_cache.clear();
         // Drain deferred-destroy list. #732 factored the body into
         // `drain_deferred_destroy` so the App-level shutdown sweep can
         // call the same drain explicitly before `Drop`.
@@ -729,5 +882,155 @@ mod drain_tests {
         // shutdown-correctness invariant).
         reg.deferred_destroy.clear();
         assert_eq!(reg.deferred_destroy_count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod refcount_tests {
+    //! Regression tests for #879 / CELL-PERF-01: the refcounted
+    //! GPU-mesh dedup layer (`acquire_cached` /
+    //! `register_scene_mesh_keyed` / `drop_mesh` returning bool).
+    //!
+    //! Real `register_scene_mesh_keyed` requires a live
+    //! `VkDevice` + `SharedAllocator`; these tests bypass the GPU
+    //! storage entirely by populating only the parallel
+    //! `mesh_ref_counts` vec + `mesh_cache` map. Because `ref_count`
+    //! lives in its own vec (rather than as a field on `GpuMesh`),
+    //! the bookkeeping is exercisable without synthesising a
+    //! `GpuMesh` (whose `ash::Device` Arc fields can't be safely
+    //! zero-initialised). The end-to-end integration is covered by
+    //! the live cell-load path (`spawn_placed_instances`) every
+    //! time the engine loads a real cell.
+    use super::*;
+
+    /// Install a synthetic refcount slot for `(model_path,
+    /// sub_mesh_index)`. Returns the assigned handle. The
+    /// corresponding `meshes` slot is left absent (None) — production
+    /// `drop_mesh` handles the missing-buffer case gracefully so the
+    /// pure-Rust refcount path still exercises end-to-end.
+    fn install_synthetic_slot(
+        reg: &mut MeshRegistry,
+        model_path: &str,
+        sub_mesh_index: u32,
+        initial_ref_count: u32,
+    ) -> u32 {
+        let handle = reg.mesh_ref_counts.len() as u32;
+        reg.mesh_ref_counts.push(initial_ref_count);
+        reg.mesh_cache
+            .insert((model_path.to_string(), sub_mesh_index), handle);
+        handle
+    }
+
+    /// Empty registry: every probe returns the no-op.
+    #[test]
+    fn empty_registry_returns_none_for_all_probes() {
+        let mut reg = MeshRegistry::new();
+        assert_eq!(reg.acquire_cached("chair.nif", 0), None);
+        assert_eq!(reg.refcount(0), None);
+        assert!(!reg.drop_mesh(0), "drop on unknown handle is a no-op");
+    }
+
+    /// 40 chairs sharing one `chair.nif` cache entry: the first
+    /// `register_scene_mesh_keyed` (simulated via direct slot
+    /// install at refcount 1) is followed by 39 `acquire_cached`
+    /// hits that bump the count to 40 without re-uploading. Each
+    /// placement's `drop_mesh` decrements once; the 40th finally
+    /// frees and returns `true` so the unload path runs `drop_blas`
+    /// for that handle exactly once.
+    #[test]
+    fn shared_cache_hits_bump_refcount_and_only_last_drop_frees() {
+        let mut reg = MeshRegistry::new();
+        // First placement: ref_count = 1.
+        let handle = install_synthetic_slot(&mut reg, "chair.nif", 0, 1);
+        assert_eq!(reg.refcount(handle), Some(1));
+
+        // 39 subsequent placements share the cached handle.
+        for expected in 2..=40u32 {
+            let h = reg
+                .acquire_cached("chair.nif", 0)
+                .expect("cache hit must return the same handle");
+            assert_eq!(h, handle, "shared placements must dedup to one handle");
+            assert_eq!(reg.refcount(handle), Some(expected));
+        }
+
+        // First 39 drops decrement but DO NOT free. `drop_mesh`
+        // returns false so the unload path skips `drop_blas` for
+        // these calls — preserving the BLAS for the 40th holder.
+        for expected in (1..40u32).rev() {
+            assert!(
+                !reg.drop_mesh(handle),
+                "intermediate drop must not free (refcount > 0)",
+            );
+            assert_eq!(reg.refcount(handle), Some(expected));
+        }
+
+        // 40th drop hits zero. Returns true → unload signals
+        // `drop_blas` exactly once. The cache entry is purged so a
+        // future `acquire_cached` for the same path can never
+        // return this freed handle.
+        assert!(reg.drop_mesh(handle), "last drop must free");
+        assert_eq!(reg.refcount(handle), None);
+        assert_eq!(reg.acquire_cached("chair.nif", 0), None);
+    }
+
+    /// Multi-mesh NIF (`(path, sub_mesh_index)` pairs): two distinct
+    /// sub-meshes get distinct handles even when they share a path.
+    /// Pins that the cache key disambiguates sub-meshes correctly.
+    #[test]
+    fn distinct_sub_mesh_indices_get_distinct_handles() {
+        let mut reg = MeshRegistry::new();
+        let body = install_synthetic_slot(&mut reg, "corpse.nif", 0, 1);
+        let helmet = install_synthetic_slot(&mut reg, "corpse.nif", 1, 1);
+        assert_ne!(body, helmet, "different sub_mesh_index → different handle");
+
+        // Acquiring sub_mesh 0 must not affect sub_mesh 1.
+        let body2 = reg
+            .acquire_cached("corpse.nif", 0)
+            .expect("sub_mesh 0 cache hit");
+        assert_eq!(body2, body);
+        assert_eq!(reg.refcount(body), Some(2));
+        assert_eq!(reg.refcount(helmet), Some(1));
+
+        // Drop body twice (initial install + acquire) → freed.
+        assert!(!reg.drop_mesh(body));
+        assert!(reg.drop_mesh(body));
+        assert_eq!(reg.refcount(body), None);
+        // Helmet untouched.
+        assert_eq!(reg.refcount(helmet), Some(1));
+    }
+
+    /// `drop_mesh` past zero is a logged no-op (returns false), not
+    /// a panic. Pre-fix `drop_mesh` had no refcount and panicked on
+    /// `slot.take()` when called twice on the same handle; the new
+    /// path returns false on a 0-refcount probe.
+    #[test]
+    fn drop_past_zero_is_a_warning_not_a_panic() {
+        let mut reg = MeshRegistry::new();
+        let handle = install_synthetic_slot(&mut reg, "stub.nif", 0, 1);
+        assert!(reg.drop_mesh(handle));
+        // Second call: refcount already 0, slot already empty.
+        assert!(!reg.drop_mesh(handle));
+    }
+
+    /// After the last release, an attempt to `acquire_cached` on
+    /// the same key must NOT bump the count back from zero — that
+    /// would resurrect a freed handle. The path is treated as a
+    /// miss so the caller falls through to a fresh upload. The
+    /// purge in `drop_mesh` removes the cache entry, but this also
+    /// pins the secondary defence: a stale lookup that races with
+    /// the purge still observes refcount == 0 and bails.
+    #[test]
+    fn stale_cache_lookup_does_not_resurrect_freed_handle() {
+        let mut reg = MeshRegistry::new();
+        let handle = install_synthetic_slot(&mut reg, "stale.nif", 0, 1);
+        assert!(reg.drop_mesh(handle), "last release frees the slot");
+
+        // Re-insert a stale cache entry (simulating a hypothetical
+        // race where the cache map outlived the purge). The 0-rc
+        // gate must reject it.
+        reg.mesh_cache
+            .insert(("stale.nif".to_string(), 0), handle);
+        assert_eq!(reg.acquire_cached("stale.nif", 0), None);
+        assert_eq!(reg.refcount(handle), None);
     }
 }
