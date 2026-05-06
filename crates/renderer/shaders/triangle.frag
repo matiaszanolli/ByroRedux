@@ -963,6 +963,15 @@ void main() {
     // sibling sites that originally inherited the pre-#668 raw-`N`
     // bias — fire from the same V-aligned origin. Self-shadow acne
     // on bump-mapped grazing geometry was the visible symptom.
+    //
+    // Intentional asymmetry: the window-portal escape ray (#421 / line
+    // ~1318) does NOT use `N_bias`. Its contract requires starting
+    // OUTSIDE the pane (the side away from the camera), which is `-N`
+    // with raw `N`. Substituting `N_bias` there would invert the bias
+    // direction at every surviving fragment and break portal escape.
+    // The `windowFacing > 0.1` gate above the portal site guarantees
+    // raw `-N` always points away from the camera at that location.
+    // See REN-D9-NEW-02 / #821.
     vec3 N_bias = dot(N, V) < 0.0 ? -N : N;
 
     bool rtEnabled = sceneFlags.x > 0.5;
@@ -1315,6 +1324,16 @@ void main() {
         float windowFacing = dot(-V, N);
         bool hitsInterior = true; // pessimistic default → alpha-blend path.
         if (windowFacing > 0.1) {
+            // NOTE: this site is the ONLY RT ray in this shader that
+            // biases AGAINST the V-aligned `N_bias` hoisted at the top
+            // of the function. The window-portal contract requires
+            // starting OUTSIDE the pane (the side away from the camera),
+            // which is `-N` with raw `N`. The `windowFacing > 0.1` gate
+            // above guarantees `dot(-V, N) > 0.1` so `-N` always points
+            // away from the camera at this code location. Do NOT replace
+            // `N` here with `N_bias` — that would invert the bias
+            // direction at every surviving fragment and break portal
+            // escape. See REN-D9-NEW-02 / #821.
             vec3 throughDir = -N;
             rayQueryEXT windowRQ;
             rayQueryInitializeEXT(
