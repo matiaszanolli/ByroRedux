@@ -105,6 +105,23 @@ impl Component for TerrainTileSlot {
 // SystemList moved to byroredux_core::ecs::resources::SystemList
 
 /// Cell lighting from the ESM (ambient + directional + fog).
+///
+/// The base block (`ambient`/`directional_*`/`fog_*`) is populated for
+/// every cell — interior XCLL on `load_cell_with_masters`, exterior
+/// WTHR on `apply_worldspace_weather`, or engine-default constants
+/// when no plugin data is available.
+///
+/// The optional Skyrim/FNV extended block (`directional_fade` ..
+/// `fresnel_power`) is populated only when the source cell carries an
+/// XCLL with the matching tail length. Pre-#861 every consumer dropped
+/// these on the floor at the renderer-facing boundary even though the
+/// plugin parser had been extracting them since #379 (FNV) / #367
+/// (Skyrim). Now flowed through end-to-end on the CPU side; shader
+/// consumption follows in #865 (fog curve) and a future Skyrim
+/// ambient-cube uniform. Per-field `#[allow(dead_code)]` is the
+/// staged-rollout marker — removed in lockstep with each shader-side
+/// consumer landing, so an unused-after-shader-lands field surfaces
+/// as a warning instead of silently growing dead.
 pub(crate) struct CellLightingRes {
     pub(crate) ambient: [f32; 3],
     pub(crate) directional_color: [f32; 3],
@@ -120,8 +137,241 @@ pub(crate) struct CellLightingRes {
     pub(crate) fog_near: f32,
     /// Fog far distance (game units).
     pub(crate) fog_far: f32,
+    // ── Extended XCLL fields (FNV 40-byte tail + Skyrim 92-byte tail) ──
+    // Each `#[allow(dead_code)]` is removed in lockstep with the
+    // matching shader-side consumer landing (see #865 for fog curve;
+    // ambient-cube + light-fade + specular follow as their own issues).
+    /// Directional light fade multiplier — bytes 28-31 of the XCLL.
+    /// FNV+ XCLL.
+    #[allow(dead_code)]
+    pub(crate) directional_fade: Option<f32>,
+    /// Cubic-fog clip distance — bytes 32-35. FNV+ XCLL. Used together
+    /// with `fog_power` to drive a non-linear fog curve in place of
+    /// the linear `fog_near..fog_far` ramp. See #865.
+    #[allow(dead_code)]
+    pub(crate) fog_clip: Option<f32>,
+    /// Cubic-fog falloff exponent — bytes 36-39. FNV+ XCLL. See #865.
+    #[allow(dead_code)]
+    pub(crate) fog_power: Option<f32>,
+    /// Fog far color (RGB 0-1) — bytes 72-74. Skyrim+ XCLL. Distinct
+    /// from `fog_color` (which is the near-distance fog tint).
+    #[allow(dead_code)]
+    pub(crate) fog_far_color: Option<[f32; 3]>,
+    /// Maximum fog opacity — bytes 76-79. Skyrim+ XCLL.
+    #[allow(dead_code)]
+    pub(crate) fog_max: Option<f32>,
+    /// Light fade begin distance — bytes 80-83. Skyrim+ XCLL.
+    #[allow(dead_code)]
+    pub(crate) light_fade_begin: Option<f32>,
+    /// Light fade end distance — bytes 84-87. Skyrim+ XCLL.
+    #[allow(dead_code)]
+    pub(crate) light_fade_end: Option<f32>,
+    /// Directional ambient cube — `[+X, -X, +Y, -Y, +Z, -Z]` RGB
+    /// triplets from bytes 40-63. Drives the per-cell ambient probe;
+    /// ±Z asymmetry is what makes Skyrim cave floors read warm while
+    /// ceilings read cool without a dedicated IBL pass. Skyrim+ XCLL.
+    #[allow(dead_code)]
+    pub(crate) directional_ambient: Option<[[f32; 3]; 6]>,
+    /// Specular tint (RGB) — bytes 64-66. Skyrim+ XCLL.
+    #[allow(dead_code)]
+    pub(crate) specular_color: Option<[f32; 3]>,
+    /// Specular alpha — byte 67. Stored separately so consumers can
+    /// decide whether the RGBA packing was intentional or padding.
+    #[allow(dead_code)]
+    pub(crate) specular_alpha: Option<f32>,
+    /// Fresnel power exponent — bytes 68-71. Skyrim+ XCLL.
+    #[allow(dead_code)]
+    pub(crate) fresnel_power: Option<f32>,
 }
+
+impl CellLightingRes {
+    /// Construct a `CellLightingRes` from a fully-resolved
+    /// [`byroredux_plugin::esm::cell::CellLighting`] (the plugin
+    /// layer's parser output) plus the renderer-facing direction
+    /// vector and the interior/exterior flag. Carries the 9 extended
+    /// XCLL fields through verbatim — see #861. Producers in
+    /// `scene.rs` use this helper for the interior `--esm --cell`
+    /// arm; exterior weather (`apply_worldspace_weather`) and the
+    /// engine-default constant path build the struct directly with
+    /// `extended_*` set to `None`.
+    pub(crate) fn from_cell_lighting(
+        lit: &byroredux_plugin::esm::cell::CellLighting,
+        directional_dir: [f32; 3],
+        is_interior: bool,
+    ) -> Self {
+        Self {
+            ambient: lit.ambient,
+            directional_color: lit.directional_color,
+            directional_dir,
+            is_interior,
+            fog_color: lit.fog_color,
+            fog_near: lit.fog_near,
+            fog_far: lit.fog_far,
+            directional_fade: lit.directional_fade,
+            fog_clip: lit.fog_clip,
+            fog_power: lit.fog_power,
+            fog_far_color: lit.fog_far_color,
+            fog_max: lit.fog_max,
+            light_fade_begin: lit.light_fade_begin,
+            light_fade_end: lit.light_fade_end,
+            directional_ambient: lit.directional_ambient,
+            specular_color: lit.specular_color,
+            specular_alpha: lit.specular_alpha,
+            fresnel_power: lit.fresnel_power,
+        }
+    }
+}
+
 impl Resource for CellLightingRes {}
+
+#[cfg(test)]
+mod cell_lighting_res_tests {
+    //! Regression for #861 — extended XCLL fields propagate through the
+    //! `CellLighting → CellLightingRes` boundary (FNV 40-byte tail and
+    //! Skyrim 92-byte tail). Pre-fix every Optional past the 3 base
+    //! fog fields was dropped on the floor at the renderer-facing
+    //! resource layer.
+    use super::*;
+    use byroredux_plugin::esm::cell::CellLighting;
+
+    fn fnv_xcll_with_fog_curve() -> CellLighting {
+        // Mirrors the FNV 40-byte fixture in
+        // crates/plugin/src/esm/cell/tests.rs:1683-1740 — directional_fade,
+        // fog_clip, fog_power populated; Skyrim-only fields stay None.
+        CellLighting {
+            ambient: [0.10, 0.10, 0.12],
+            directional_color: [1.0, 0.95, 0.80],
+            directional_rotation: [0.0, 0.0],
+            fog_color: [0.50, 0.45, 0.30],
+            fog_near: 100.0,
+            fog_far: 8000.0,
+            directional_fade: Some(0.80),
+            fog_clip: Some(7500.0),
+            fog_power: Some(2.0),
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
+        }
+    }
+
+    fn skyrim_xcll_with_full_extension() -> CellLighting {
+        CellLighting {
+            ambient: [0.05, 0.05, 0.06],
+            directional_color: [0.8, 0.85, 1.0],
+            directional_rotation: [0.5, 0.3],
+            fog_color: [0.20, 0.25, 0.35],
+            fog_near: 50.0,
+            fog_far: 5000.0,
+            directional_fade: Some(0.65),
+            fog_clip: Some(4500.0),
+            fog_power: Some(1.5),
+            fog_far_color: Some([0.10, 0.10, 0.15]),
+            fog_max: Some(0.85),
+            light_fade_begin: Some(800.0),
+            light_fade_end: Some(2400.0),
+            directional_ambient: Some([
+                [0.20, 0.18, 0.15], // +X
+                [0.18, 0.16, 0.13], // -X
+                [0.10, 0.10, 0.10], // +Y
+                [0.05, 0.05, 0.05], // -Y
+                [0.25, 0.25, 0.30], // +Z (warmer ceiling)
+                [0.15, 0.13, 0.10], // -Z (cooler floor)
+            ]),
+            specular_color: Some([0.30, 0.30, 0.32]),
+            specular_alpha: Some(1.0),
+            fresnel_power: Some(2.5),
+        }
+    }
+
+    #[test]
+    fn from_cell_lighting_propagates_fnv_fog_curve_fields() {
+        let lit = fnv_xcll_with_fog_curve();
+        let res = CellLightingRes::from_cell_lighting(&lit, [0.0, 1.0, 0.0], true);
+
+        // Base block.
+        assert_eq!(res.ambient, [0.10, 0.10, 0.12]);
+        assert_eq!(res.directional_color, [1.0, 0.95, 0.80]);
+        assert_eq!(res.directional_dir, [0.0, 1.0, 0.0]);
+        assert!(res.is_interior);
+        assert_eq!(res.fog_color, [0.50, 0.45, 0.30]);
+        assert_eq!(res.fog_near, 100.0);
+        assert_eq!(res.fog_far, 8000.0);
+
+        // FNV 40-byte tail — must be Some(...) and round-trip exactly.
+        assert_eq!(res.directional_fade, Some(0.80));
+        assert_eq!(res.fog_clip, Some(7500.0));
+        assert_eq!(res.fog_power, Some(2.0));
+
+        // Skyrim 92-byte tail — must stay None on a 40-byte FNV XCLL.
+        assert!(res.fog_far_color.is_none());
+        assert!(res.fog_max.is_none());
+        assert!(res.light_fade_begin.is_none());
+        assert!(res.light_fade_end.is_none());
+        assert!(res.directional_ambient.is_none());
+        assert!(res.specular_color.is_none());
+        assert!(res.specular_alpha.is_none());
+        assert!(res.fresnel_power.is_none());
+    }
+
+    #[test]
+    fn from_cell_lighting_propagates_skyrim_92byte_extension() {
+        let lit = skyrim_xcll_with_full_extension();
+        let res = CellLightingRes::from_cell_lighting(&lit, [0.1, 0.9, -0.3], true);
+
+        // FNV 40-byte tail.
+        assert_eq!(res.directional_fade, Some(0.65));
+        assert_eq!(res.fog_clip, Some(4500.0));
+        assert_eq!(res.fog_power, Some(1.5));
+
+        // Skyrim 92-byte tail.
+        assert_eq!(res.fog_far_color, Some([0.10, 0.10, 0.15]));
+        assert_eq!(res.fog_max, Some(0.85));
+        assert_eq!(res.light_fade_begin, Some(800.0));
+        assert_eq!(res.light_fade_end, Some(2400.0));
+        let cube = res.directional_ambient.expect("Skyrim XCLL ambient cube");
+        assert_eq!(cube[4], [0.25, 0.25, 0.30], "+Z (ceiling) face");
+        assert_eq!(cube[5], [0.15, 0.13, 0.10], "-Z (floor) face");
+        assert_eq!(res.specular_color, Some([0.30, 0.30, 0.32]));
+        assert_eq!(res.specular_alpha, Some(1.0));
+        assert_eq!(res.fresnel_power, Some(2.5));
+    }
+
+    #[test]
+    fn from_cell_lighting_handles_pre_skyrim_xcll_with_no_extension() {
+        // Oblivion-shape XCLL (28-byte head, no tail at all) — every
+        // optional must stay None even though the parser emits the
+        // CellLighting struct with the same field set.
+        let lit = CellLighting {
+            ambient: [0.30, 0.30, 0.30],
+            directional_color: [0.90, 0.90, 0.85],
+            directional_rotation: [0.0, 0.0],
+            fog_color: [0.40, 0.40, 0.50],
+            fog_near: 200.0,
+            fog_far: 4000.0,
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
+        };
+        let res = CellLightingRes::from_cell_lighting(&lit, [0.0, 1.0, 0.0], true);
+        assert!(res.directional_fade.is_none());
+        assert!(res.fog_clip.is_none());
+        assert!(res.fog_power.is_none());
+        assert!(res.directional_ambient.is_none());
+    }
+}
 
 /// Sky rendering parameters from WTHR records (exterior cells).
 /// Stored as an ECS resource so the render loop can read it per-frame.

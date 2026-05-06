@@ -2317,6 +2317,18 @@ mod weather_interior_gate_tests {
             fog_color: INTERIOR_FOG_COLOR,
             fog_near: INTERIOR_FOG_NEAR,
             fog_far: INTERIOR_FOG_FAR,
+            // Test fixture — extended XCLL fields not exercised here.
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
         });
 
         world.insert_resource(GameTimeRes {

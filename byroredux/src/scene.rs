@@ -245,6 +245,20 @@ fn apply_worldspace_weather(
             fog_color: fog_col,
             fog_near: wthr.fog_day_near,
             fog_far: wthr.fog_day_far,
+            // WTHR-driven exterior lighting; the XCLL extended block
+            // applies only to interior cells (and exterior cells with
+            // overridden lighting templates, not yet wired). See #861.
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
         });
         // Resolve all 4 WTHR cloud layers via the shared per-WTHR
         // helper (#529 — derives tile_scale from authored DDS width).
@@ -418,6 +432,19 @@ fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [f32; 3]) {
         fog_color: FOG_COLOR,
         fog_near: FOG_NEAR,
         fog_far: FOG_FAR,
+        // Engine-default fallback (no plugin data) — extended XCLL
+        // fields stay None. See #861.
+        directional_fade: None,
+        fog_clip: None,
+        fog_power: None,
+        fog_far_color: None,
+        fog_max: None,
+        light_fade_begin: None,
+        light_fade_end: None,
+        directional_ambient: None,
+        specular_color: None,
+        specular_alpha: None,
+        fresnel_power: None,
     });
     world.insert_resource(SkyParamsRes {
         zenith_color: ZENITH,
@@ -736,18 +763,19 @@ pub(crate) fn setup_scene(
                         let quat = cell_loader::euler_zup_to_quat_yup(rx, ry, 0.0);
                         let dir_v = quat * Vec3::new(1.0, 0.0, 0.0);
                         let dir = [dir_v.x, dir_v.y, dir_v.z];
-                        world.insert_resource(CellLightingRes {
-                            ambient: lit.ambient,
-                            directional_color: lit.directional_color,
-                            directional_dir: dir,
-                            // load_cell() only handles interior cells —
-                            // the directional will be skipped as a scene
-                            // light to prevent wall light leakage.
-                            is_interior: true,
-                            fog_color: lit.fog_color,
-                            fog_near: lit.fog_near,
-                            fog_far: lit.fog_far,
-                        });
+                        // load_cell() only handles interior cells —
+                        // `is_interior: true` skips the directional as
+                        // a scene light to prevent wall light leakage.
+                        // The 9 extended XCLL fields (`fog_clip`,
+                        // `directional_ambient`, etc.) are propagated
+                        // by `from_cell_lighting` even though the
+                        // renderer doesn't yet consume them — #861
+                        // establishes the data plumbing; #865 + a
+                        // future Skyrim ambient-cube uniform are the
+                        // shader-side follow-ups.
+                        world.insert_resource(CellLightingRes::from_cell_lighting(
+                            lit, dir, true,
+                        ));
                         log::info!(
                             "Cell lighting: ambient={:?} directional={:?} dir={:?} fog={:?} near={:.0} far={:.0}",
                             lit.ambient,
