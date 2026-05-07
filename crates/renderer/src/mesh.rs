@@ -1,5 +1,6 @@
 //! Mesh registry — maps MeshHandle IDs to GPU buffers.
 
+use crate::deferred_destroy::{DeferredDestroyQueue, DEFAULT_COUNTDOWN};
 use crate::vertex::{UiVertex, Vertex};
 use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::{GpuBuffer, StagingPool};
@@ -63,11 +64,13 @@ pub struct MeshRegistry {
     /// Number of vertices in the SSBO at last build. Used to detect
     /// whether a rebuild is needed vs. the current pending state.
     ssbo_vertex_count: usize,
-    /// Old SSBOs awaiting deferred destruction. Each entry is a pair of
-    /// (vertex, index) buffers and a countdown of frames before they can
-    /// be safely destroyed (must survive MAX_FRAMES_IN_FLIGHT frames to
-    /// guarantee no in-flight command buffer references them).
-    deferred_destroy: Vec<(Option<GpuBuffer>, Option<GpuBuffer>, u32)>,
+    /// Old per-mesh GPU buffers awaiting deferred destruction. Each
+    /// entry is a `(vertex, index)` pair (both `Option` because some
+    /// drop paths take only one buffer at a time). The countdown is
+    /// owned by the queue primitive — it survives
+    /// MAX_FRAMES_IN_FLIGHT frames before destruction so no in-flight
+    /// command buffer can reference the freed memory.
+    deferred_destroy: DeferredDestroyQueue<(Option<GpuBuffer>, Option<GpuBuffer>)>,
     /// Refcounted scene-mesh dedup keyed by `(model_path,
     /// sub_mesh_index)` — populated by
     /// [`Self::register_scene_mesh_keyed`] and consulted by
@@ -110,7 +113,7 @@ impl MeshRegistry {
             global_index_buffer: None,
             geometry_dirty: false,
             ssbo_vertex_count: 0,
-            deferred_destroy: Vec::new(),
+            deferred_destroy: DeferredDestroyQueue::new(),
             mesh_cache: HashMap::new(),
             mesh_ref_counts: Vec::new(),
         }
@@ -120,18 +123,12 @@ impl MeshRegistry {
     /// SSBOs whose countdown has reached zero (safe because all in-flight
     /// command buffers referencing them have completed).
     pub fn tick_deferred_destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        self.deferred_destroy.retain_mut(|(vb, ib, countdown)| {
-            if *countdown == 0 {
-                if let Some(mut b) = vb.take() {
-                    b.destroy(device, allocator);
-                }
-                if let Some(mut b) = ib.take() {
-                    b.destroy(device, allocator);
-                }
-                false // remove from list
-            } else {
-                *countdown -= 1;
-                true // keep
+        self.deferred_destroy.tick(|(vb, ib)| {
+            if let Some(mut b) = vb {
+                b.destroy(device, allocator);
+            }
+            if let Some(mut b) = ib {
+                b.destroy(device, allocator);
             }
         });
     }
@@ -146,14 +143,14 @@ impl MeshRegistry {
         device: &ash::Device,
         allocator: &SharedAllocator,
     ) {
-        for (mut vb, mut ib, _countdown) in self.deferred_destroy.drain(..) {
-            if let Some(ref mut b) = vb {
+        self.deferred_destroy.drain(|(vb, ib)| {
+            if let Some(mut b) = vb {
                 b.destroy(device, allocator);
             }
-            if let Some(ref mut b) = ib {
+            if let Some(mut b) = ib {
                 b.destroy(device, allocator);
             }
-        }
+        });
     }
 
     /// Number of pairs currently waiting in `deferred_destroy`. Surfaced
@@ -384,8 +381,10 @@ impl MeshRegistry {
         if let Some(slot) = self.meshes.get_mut(idx) {
             if let Some(mesh) = slot.take() {
                 was_scene_mesh = mesh.is_scene_mesh;
-                self.deferred_destroy
-                    .push((Some(mesh.vertex_buffer), Some(mesh.index_buffer), 2));
+                self.deferred_destroy.push(
+                    (Some(mesh.vertex_buffer), Some(mesh.index_buffer)),
+                    DEFAULT_COUNTDOWN,
+                );
             }
         }
         if was_scene_mesh {
@@ -536,8 +535,7 @@ impl MeshRegistry {
         let old_vb = self.global_vertex_buffer.take();
         let old_ib = self.global_index_buffer.take();
         if old_vb.is_some() || old_ib.is_some() {
-            // Countdown of 2 frames (MAX_FRAMES_IN_FLIGHT) ensures safety.
-            self.deferred_destroy.push((old_vb, old_ib, 2));
+            self.deferred_destroy.push((old_vb, old_ib), DEFAULT_COUNTDOWN);
         }
 
         log::info!(
@@ -862,25 +860,29 @@ mod drain_tests {
     /// by the integration path in
     /// `byroredux::main::WindowEvent::CloseRequested`; this is the
     /// pure-Rust pin against the counter accessor's accuracy.
+    ///
+    /// Generic queue mechanics (tick / drain semantics across mixed
+    /// countdowns) are exercised by `deferred_destroy::tests` since
+    /// the consolidation into `DeferredDestroyQueue<T>`. This test
+    /// pins that `MeshRegistry`'s `deferred_destroy_count()` accessor
+    /// stays in lockstep with the underlying queue's `len()` —
+    /// shutdown telemetry consumes it.
     #[test]
     fn deferred_destroy_count_pins_to_queue_length() {
         let mut reg = MeshRegistry::new();
         assert_eq!(reg.deferred_destroy_count(), 0);
-        // Push three placeholder rows with countdowns 2 / 1 / 0.
-        // `(None, None, n)` is the legitimate row shape for a mesh
+        // Push three placeholder rows with mixed countdowns.
+        // `(None, None)` is the legitimate row shape for a mesh
         // whose vertex/index buffers were already taken — the queue
-        // still tracks the row's countdown until the next tick or
-        // drain.
-        reg.deferred_destroy.push((None, None, 2));
-        reg.deferred_destroy.push((None, None, 1));
-        reg.deferred_destroy.push((None, None, 0));
+        // still tracks the row until the next tick or drain.
+        reg.deferred_destroy.push((None, None), 2);
+        reg.deferred_destroy.push((None, None), 1);
+        reg.deferred_destroy.push((None, None), 0);
         assert_eq!(reg.deferred_destroy_count(), 3);
 
-        // Simulate the drain's post-condition (real drain calls
-        // `destroy(device, allocator)` on each Some payload, which
-        // needs Vulkan; the queue-clear half of the drain is the
-        // shutdown-correctness invariant).
-        reg.deferred_destroy.clear();
+        // Drain via the primitive's `drain` (no destroyer side
+        // effects needed here — the rows hold no GPU resources).
+        reg.deferred_destroy.drain(|_| ());
         assert_eq!(reg.deferred_destroy_count(), 0);
     }
 }

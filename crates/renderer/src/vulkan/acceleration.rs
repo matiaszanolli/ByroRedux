@@ -7,6 +7,7 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use crate::deferred_destroy::{DeferredDestroyQueue, DEFAULT_COUNTDOWN};
 use crate::mesh::GpuMesh;
 use crate::vertex::Vertex;
 use crate::vulkan::context::DrawCommand;
@@ -171,7 +172,7 @@ pub struct AccelerationManager {
     /// TLAS build. Each entry carries a countdown measured in
     /// `MAX_FRAMES_IN_FLIGHT` frames; when it hits zero the underlying
     /// `VkAccelerationStructureKHR` + buffer are finally destroyed. See #372.
-    pending_destroy_blas: Vec<(BlasEntry, u32)>,
+    pending_destroy_blas: DeferredDestroyQueue<BlasEntry>,
     /// Monotonic counter bumped whenever the `blas_entries` map mutates
     /// (add via [`build_blas`] / [`build_blas_batched`], remove via
     /// [`drop_blas`] / [`evict_unused_blas`]). Each [`TlasState`] caches
@@ -447,7 +448,7 @@ impl AccelerationManager {
             frame_counter: 0,
             total_blas_bytes: 0,
             blas_budget_bytes,
-            pending_destroy_blas: Vec::new(),
+            pending_destroy_blas: DeferredDestroyQueue::new(),
             blas_map_generation: 0,
             skinned_blas: std::collections::HashMap::new(),
             scratch_align,
@@ -491,8 +492,7 @@ impl AccelerationManager {
             return;
         };
         self.total_blas_bytes = self.total_blas_bytes.saturating_sub(entry.size_bytes);
-        // Two-frame countdown matches the existing SSBO rebuild pattern.
-        self.pending_destroy_blas.push((entry, 2));
+        self.pending_destroy_blas.push(entry, DEFAULT_COUNTDOWN);
         // BLAS map mutated — bump generation so the next build_tlas
         // can short-circuit the per-instance zip-compare. #300.
         self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
@@ -507,20 +507,20 @@ impl AccelerationManager {
     /// zero. Call once per frame alongside
     /// `MeshRegistry::tick_deferred_destroy`.
     pub fn tick_deferred_destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        self.pending_destroy_blas.retain_mut(|(entry, countdown)| {
-            if *countdown == 0 {
-                // SAFETY: the countdown guarantees no in-flight command
-                // buffer still references this acceleration structure.
-                unsafe {
-                    self.accel_loader
-                        .destroy_acceleration_structure(entry.accel, None);
-                }
-                entry.buffer.destroy(device, allocator);
-                false
-            } else {
-                *countdown -= 1;
-                true
+        // Split borrow so the closure can capture `&accel_loader`
+        // while the tick borrows `&mut pending_destroy_blas`.
+        let Self {
+            accel_loader,
+            pending_destroy_blas,
+            ..
+        } = self;
+        pending_destroy_blas.tick(|mut entry| {
+            // SAFETY: the countdown guarantees no in-flight command
+            // buffer still references this acceleration structure.
+            unsafe {
+                accel_loader.destroy_acceleration_structure(entry.accel, None);
             }
+            entry.buffer.destroy(device, allocator);
         });
     }
 
@@ -545,13 +545,17 @@ impl AccelerationManager {
         device: &ash::Device,
         allocator: &SharedAllocator,
     ) {
-        for (mut entry, _countdown) in self.pending_destroy_blas.drain(..) {
+        let Self {
+            accel_loader,
+            pending_destroy_blas,
+            ..
+        } = self;
+        pending_destroy_blas.drain(|mut entry| {
             unsafe {
-                self.accel_loader
-                    .destroy_acceleration_structure(entry.accel, None);
+                accel_loader.destroy_acceleration_structure(entry.accel, None);
             }
             entry.buffer.destroy(device, allocator);
-        }
+        });
     }
 
     /// Number of entries currently waiting in `pending_destroy_blas`.
@@ -1177,7 +1181,7 @@ impl AccelerationManager {
         if let Some(entry) = self.skinned_blas.remove(&entity_id) {
             self.total_blas_bytes = self.total_blas_bytes.saturating_sub(entry.size_bytes);
             self.pending_destroy_blas
-                .push((entry, MAX_FRAMES_IN_FLIGHT as u32));
+                .push(entry, MAX_FRAMES_IN_FLIGHT as u32);
             self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
         }
     }

@@ -1,3 +1,4 @@
+pub(crate) mod deferred_destroy;
 pub mod mesh;
 pub mod texture_registry;
 pub mod vertex;
