@@ -354,6 +354,15 @@ pub struct SceneBuffers {
     /// migrate the rest and finally drop the redundant per-instance
     /// copies. Sized for [`MAX_MATERIALS`] entries.
     material_buffers: Vec<GpuBuffer>,
+    /// Per-frame-in-flight content hash of the most recent
+    /// successful `upload_materials` write. The next call computes
+    /// the hash of the new slice and skips the
+    /// `copy_nonoverlapping + flush_if_needed` pair when it matches
+    /// — a static interior cell where `build_render_data` produces
+    /// a byte-identical materials slice each frame is the steady-
+    /// state case. `None` until the first upload so the cold path
+    /// is unconditional. See #878 / DIM8-01.
+    last_uploaded_material_hash: [Option<u64>; MAX_FRAMES_IN_FLIGHT],
     /// One `INDIRECT_BUFFER`-usage buffer per frame-in-flight for
     /// `vkCmdDrawIndexedIndirect`. Holds
     /// `VkDrawIndexedIndirectCommand` entries uploaded CPU-side each
@@ -862,6 +871,7 @@ impl SceneBuffers {
             descriptor_set_layout,
             descriptor_sets,
             tlas_written: vec![false; MAX_FRAMES_IN_FLIGHT],
+            last_uploaded_material_hash: [None; MAX_FRAMES_IN_FLIGHT],
         })
     }
 
@@ -1014,6 +1024,20 @@ impl SceneBuffers {
         if count == 0 {
             return Ok(());
         }
+
+        // #878 / DIM8-01 — dirty-gate via content hash. Static
+        // interior cells produce a byte-identical materials slice
+        // every frame; skipping the copy + flush in steady state
+        // saves ~3 MB/s sustained PCIe traffic at 60 fps with 200
+        // unique materials. The hash is computed over the clamped
+        // prefix actually written to the buffer (`materials[..count]`)
+        // so an overflow that drops trailing materials still
+        // re-uploads when the kept prefix changes.
+        let hash = hash_material_slice(&materials[..count]);
+        if self.last_uploaded_material_hash[frame_index] == Some(hash) {
+            return Ok(());
+        }
+
         let buf = &mut self.material_buffers[frame_index];
         let mapped = buf.mapped_slice_mut()?;
         let byte_size = std::mem::size_of::<super::material::GpuMaterial>() * count;
@@ -1027,7 +1051,12 @@ impl SceneBuffers {
                 byte_size,
             );
         }
-        buf.flush_if_needed(device)
+        buf.flush_if_needed(device)?;
+        // Stamp the hash AFTER a successful flush — a flush failure
+        // leaves the buffer in an indeterminate state, so we want
+        // the next call to re-upload rather than skip.
+        self.last_uploaded_material_hash[frame_index] = Some(hash);
+        Ok(())
     }
 
     /// Upload `VkDrawIndexedIndirectCommand` entries for the current
@@ -1423,6 +1452,38 @@ impl SceneBuffers {
     }
 }
 
+/// Content hash of a `GpuMaterial` slice for the dirty-gate in
+/// [`SceneBuffers::upload_materials`] (#878 / DIM8-01). Uses
+/// `std::collections::hash_map::DefaultHasher` (SipHash-1-3) — its
+/// state is documented stable across `new()` calls within one
+/// process, so two identical slices in the same run produce the
+/// same `u64` and the upload skip is byte-content-addressable.
+///
+/// SipHash on a 200-material slice (~52 KB) takes ~30 µs, well under
+/// the per-frame budget at 60 fps. xxh3 would be ~10× faster but
+/// would require a new dependency; the hash itself is well below
+/// the signal floor either way.
+///
+/// Routed through `GpuMaterial::as_bytes`-equivalent slice cast so
+/// the same byte view used by `GpuMaterial`'s `Hash`/`Eq` impls
+/// (`vulkan/material.rs:280-309`) drives the slice hash too —
+/// padding handling stays consistent.
+pub(super) fn hash_material_slice(materials: &[super::material::GpuMaterial]) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let byte_size = std::mem::size_of::<super::material::GpuMaterial>() * materials.len();
+    // SAFETY: `GpuMaterial` is `#[repr(C)]` with f32/u32 fields and
+    // explicit padding fields the producer always initialises (see
+    // `GpuMaterial::as_bytes` doc at vulkan/material.rs:281-294).
+    // The slice view is contiguous because `[T]` storage is too;
+    // `byte_size` matches the slice's footprint exactly.
+    let bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(materials.as_ptr() as *const u8, byte_size)
+    };
+    hasher.write(bytes);
+    hasher.finish()
+}
+
 #[cfg(test)]
 mod gpu_instance_layout_tests {
     use super::*;
@@ -1796,5 +1857,96 @@ mod gpu_instance_layout_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod material_hash_tests {
+    //! Regression tests for #878 / DIM8-01: the dirty-gate in
+    //! `upload_materials` skips the per-frame `copy_nonoverlapping +
+    //! flush_if_needed` when the new materials slice is byte-
+    //! identical to the last upload. The hash function is the part
+    //! that's testable without a real Vulkan device — the upload
+    //! itself needs `mapped_slice_mut` / `flush_if_needed`. These
+    //! tests pin the hash's content-addressing contract:
+    //!
+    //!   1. Two identical slices produce the same hash → skip fires.
+    //!   2. A single byte change anywhere produces a different hash
+    //!      → skip stays off and the upload runs.
+    //!   3. Empty slice has its own deterministic hash (the `count
+    //!      == 0` early-out returns before reaching the hash, but
+    //!      the hash itself is still well-defined).
+    use super::hash_material_slice;
+    use super::super::material::GpuMaterial;
+
+    fn sample_material(seed: u32) -> GpuMaterial {
+        let mut m = GpuMaterial::default();
+        // Touch a representative subset of fields so the hash
+        // depends on real material content rather than padding.
+        m.material_flags = seed;
+        m.material_kind = (seed & 0xff) as u32;
+        m
+    }
+
+    /// Pin: identical slices produce identical hashes — the steady-
+    /// state case the dirty-gate is designed to detect.
+    #[test]
+    fn identical_slices_hash_to_same_value() {
+        let mats: Vec<GpuMaterial> =
+            (0..16).map(sample_material).collect();
+        let h1 = hash_material_slice(&mats);
+        let h2 = hash_material_slice(&mats);
+        assert_eq!(
+            h1, h2,
+            "identical slice contents must hash to the same value — \
+             the dirty-gate skip relies on this",
+        );
+    }
+
+    /// Pin: a single-bit change in one material produces a different
+    /// hash. Without this, a real material change would silently
+    /// skip the upload and the GPU would render with stale data.
+    #[test]
+    fn single_field_change_changes_hash() {
+        let mut mats: Vec<GpuMaterial> =
+            (0..16).map(sample_material).collect();
+        let h_before = hash_material_slice(&mats);
+        mats[7].material_flags ^= 1;
+        let h_after = hash_material_slice(&mats);
+        assert_ne!(
+            h_before, h_after,
+            "a single field change must shift the hash — \
+             else the upload would skip a real material update",
+        );
+    }
+
+    /// Pin: a length-only change (one extra zero-default material
+    /// appended) produces a different hash even when every existing
+    /// entry is byte-identical. Without this, growing the table by
+    /// adding a default-material slot would silently skip the
+    /// upload.
+    #[test]
+    fn length_change_changes_hash() {
+        let mats: Vec<GpuMaterial> =
+            (0..16).map(sample_material).collect();
+        let mut grown = mats.clone();
+        grown.push(GpuMaterial::default());
+        assert_ne!(
+            hash_material_slice(&mats),
+            hash_material_slice(&grown),
+            "length change must shift the hash",
+        );
+    }
+
+    /// Empty-slice hash is deterministic. Production callers route
+    /// the `count == 0` case through an early-out before the hash
+    /// computation, so this is documentary — but pinning the hash's
+    /// behaviour at the boundary stops drift if the early-out is
+    /// ever moved.
+    #[test]
+    fn empty_slice_hash_is_deterministic() {
+        let h1 = hash_material_slice(&[]);
+        let h2 = hash_material_slice(&[]);
+        assert_eq!(h1, h2);
     }
 }
