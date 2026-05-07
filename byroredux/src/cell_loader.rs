@@ -418,6 +418,7 @@ pub fn load_cell_with_masters(
     let result = load_references(
         &cell.references,
         &index.cells,
+        &index,
         &index.npcs,
         &index.races,
         index.game,
@@ -792,6 +793,7 @@ pub fn load_one_exterior_cell(
     let result = load_references(
         &cell.references,
         index,
+        &wctx.record_index,
         &wctx.record_index.npcs,
         &wctx.record_index.races,
         wctx.record_index.game,
@@ -852,6 +854,7 @@ struct RefLoadResult {
 fn load_references(
     refs: &[esm::cell::PlacedRef],
     index: &esm::cell::EsmCellIndex,
+    record_index: &byroredux_plugin::esm::records::EsmIndex,
     npcs: &HashMap<u32, byroredux_plugin::esm::records::NpcRecord>,
     races: &HashMap<u32, byroredux_plugin::esm::records::RaceRecord>,
     game: byroredux_plugin::esm::reader::GameKind,
@@ -1065,6 +1068,7 @@ fn load_references(
                         ref_pos,
                         ref_rot,
                         ref_scale,
+                        record_index,
                     );
                     if spawned.is_some() {
                         npc_spawned += 1;

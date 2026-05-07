@@ -8,13 +8,15 @@
 
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::animation::AnimationPlayer;
-use byroredux_core::ecs::components::{GlobalTransform, Name, Parent, Transform};
+use byroredux_core::ecs::components::{
+    EquipmentSlots, GlobalTransform, Inventory, ItemStack, Name, Parent, Transform,
+};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
 use byroredux_plugin::esm::reader::GameKind;
-use byroredux_plugin::esm::records::{NpcRecord, RaceRecord};
+use byroredux_plugin::esm::records::{EsmIndex, ItemKind, NpcRecord, RaceRecord};
 use byroredux_renderer::VulkanContext;
 
 use crate::anim_convert::convert_nif_clip;
@@ -316,6 +318,7 @@ pub fn spawn_npc_entity(
     ref_pos: Vec3,
     ref_rot: Quat,
     ref_scale: f32,
+    index: &EsmIndex,
 ) -> Option<EntityId> {
     // Phase 1b only handles the kf-era path. The pre-baked-FaceGen
     // dispatch (Skyrim / FO4 / FO76 / Starfield) lands in Phase 4.
@@ -595,7 +598,7 @@ pub fn spawn_npc_entity(
                     &head_data,
                     head_path.as_ref(),
                     tex_provider,
-                    mat_provider,
+                    mat_provider.as_deref_mut(),
                     Some(&skel_map),
                     pre_spawn,
                 );
@@ -633,6 +636,123 @@ pub fn spawn_npc_entity(
     // mesh in Phase 3b. Phase 1b leaves the head at its race-default
     // shape — every NPC of the same race renders identical until
     // Phase 3 lands.
+
+    // 4.5. Equipment (M41 Phase 2 / #896 — Phase A.1).
+    //
+    // Walk `npc.inventory`, populate the ECS `Inventory` component on
+    // the placement_root, and for any entry that resolves to an ARMO
+    // base record with a model path, load the armor NIF parented under
+    // placement_root via the same `external_skeleton: Some(&skel_map)`
+    // path the body uses. Skel-shared skin means armor's skinned
+    // vertices follow the same bones as the body, so KF idle
+    // animation drives both visibly.
+    //
+    // **Phase A.1 scope**: armor renders ON TOP of the base body NIF
+    // (z-fight on overlapping vertices is acceptable for the visible-
+    // progress milestone). Phase A.2 will skip the body NIF when any
+    // equipped armor's biped slot mask covers the torso bit, once the
+    // game-specific BipedObject bit constants are verified against
+    // source rather than guessed.
+    //
+    // The walk also populates `EquipmentSlots.occupants` from each
+    // armor's `slot_mask`, even though no consumer reads it yet —
+    // M45 save round-trip + M42 AI equip-eval are the eventual
+    // consumers, and threading the data through now keeps the
+    // foundation honest.
+    let mut npc_inventory = Inventory::new();
+    let mut equipment_slots = EquipmentSlots::new();
+    let mut equipped_armor_count = 0u32;
+    for entry in npc.inventory.iter() {
+        // Negative parsed counts are remove-from-inventory deltas, not
+        // live state — clamp at runtime per `ItemStack::count` docs.
+        let runtime_count = entry.count.max(0) as u32;
+        if runtime_count == 0 {
+            continue;
+        }
+        let stack = ItemStack::new(entry.item_form_id, runtime_count);
+        let inv_idx = npc_inventory.push(stack);
+
+        // Resolve the base record. Non-armor inventory entries (food,
+        // ammo, weapons, MISC) still get an `Inventory` row but no
+        // visible mesh dispatch — ARMO is the only kind that spawns
+        // skinned geometry in Phase A.1. WEAP visibility is a separate
+        // follow-up (one-handed pose offset, equipped vs holstered).
+        let Some(item) = index.items.get(&entry.item_form_id) else {
+            continue;
+        };
+        let ItemKind::Armor {
+            biped_flags,
+            slot_mask,
+            ..
+        } = item.kind
+        else {
+            continue;
+        };
+
+        // Mark the slot mask occupied. `equip()` returns displaced
+        // indices for "armor-replacing-armor" cases; an NPC at spawn
+        // time normally lays out one armor per slot, so displacement
+        // is rare. Logged-only at debug level to flag suspicious
+        // load-order conflicts (two armors in inventory both claiming
+        // UpperBody — happens with mod overrides).
+        let displaced = equipment_slots.equip(biped_flags, inv_idx);
+        if !displaced.is_empty() {
+            log::debug!(
+                "NPC {:08X} ({}): armor {:08X} displaced inventory slots {:?} \
+                 on biped mask {:#010x}",
+                npc.form_id,
+                npc.editor_id,
+                entry.item_form_id,
+                displaced,
+                biped_flags,
+            );
+        }
+        let _ = slot_mask;
+
+        let model_path = item.common.model_path.as_str();
+        if model_path.is_empty() {
+            continue;
+        }
+        match tex_provider.extract_mesh(model_path) {
+            Some(armor_data) => {
+                let (_count, armor_root, _map) = load_nif_bytes_with_skeleton(
+                    world,
+                    ctx,
+                    &armor_data,
+                    model_path,
+                    tex_provider,
+                    mat_provider.as_deref_mut(),
+                    Some(&skel_map),
+                    None,
+                );
+                if let Some(ar) = armor_root {
+                    world.insert(ar, Parent(placement_root));
+                    add_child(world, placement_root, ar);
+                    equipped_armor_count += 1;
+                }
+            }
+            None => {
+                log::debug!(
+                    "NPC {:08X} ({}): armor {:08X} model '{}' not in archives",
+                    npc.form_id,
+                    npc.editor_id,
+                    entry.item_form_id,
+                    model_path,
+                );
+            }
+        }
+    }
+    if equipped_armor_count > 0 {
+        log::info!(
+            "NPC {:08X} ({}): equipped {} armor mesh(es) from {} inventory entries",
+            npc.form_id,
+            npc.editor_id,
+            equipped_armor_count,
+            npc_inventory.len(),
+        );
+    }
+    world.insert(placement_root, npc_inventory);
+    world.insert(placement_root, equipment_slots);
 
     // 5. Idle animation (M41.0 Phase 2). The clip handle is
     //    pre-registered once per cell load by `load_idle_clip` and
