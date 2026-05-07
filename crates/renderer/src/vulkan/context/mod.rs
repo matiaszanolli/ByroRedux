@@ -334,6 +334,116 @@ impl DrawCommand {
             _pad_falloff: 0.0,
         }
     }
+
+    /// Hash of the material-relevant DrawCommand fields, in lockstep
+    /// with [`super::material::hash_gpu_material_fields`]. Fed to
+    /// [`super::material::MaterialTable::intern_by_hash`] to skip the
+    /// `to_gpu_material` construction on the ~97% dedup-hit path.
+    /// See #781 / PERF-N4.
+    ///
+    /// **Lockstep contract**: this function MUST walk the same fields
+    /// `to_gpu_material` reads, in the same order, mapping the
+    /// `DrawCommand` source to the `GpuMaterial` destination 1:1. A
+    /// drift between this walk and `to_gpu_material` would silently
+    /// produce a hash that doesn't match `hash_gpu_material_fields(&cmd
+    /// .to_gpu_material())`, causing dedup misses (perf regression) or
+    /// — under collision in the index — silent miscoloring. The
+    /// pinning test
+    /// `material_hash_matches_gpu_material_field_hash` walks a fully-
+    /// populated DrawCommand through both sides and asserts the hashes
+    /// agree; debug builds also assert it inside `intern_by_hash`.
+    pub fn material_hash(&self) -> u64 {
+        use std::hash::Hasher;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // PBR scalars + flags
+        h.write_u32(self.roughness.to_bits());
+        h.write_u32(self.metalness.to_bits());
+        h.write_u32(self.emissive_mult.to_bits());
+        let material_flags = if self.vertex_color_emissive {
+            super::material::material_flag::VERTEX_COLOR_EMISSIVE
+        } else {
+            0
+        };
+        h.write_u32(material_flags);
+        // Emissive RGB + specular_strength
+        h.write_u32(self.emissive_color[0].to_bits());
+        h.write_u32(self.emissive_color[1].to_bits());
+        h.write_u32(self.emissive_color[2].to_bits());
+        h.write_u32(self.specular_strength.to_bits());
+        // Specular RGB + alpha_threshold
+        h.write_u32(self.specular_color[0].to_bits());
+        h.write_u32(self.specular_color[1].to_bits());
+        h.write_u32(self.specular_color[2].to_bits());
+        h.write_u32(self.alpha_threshold.to_bits());
+        // Texture indices group A
+        h.write_u32(self.texture_handle);
+        h.write_u32(self.normal_map_index);
+        h.write_u32(self.dark_map_index);
+        h.write_u32(self.glow_map_index);
+        // Texture indices group B
+        h.write_u32(self.detail_map_index);
+        h.write_u32(self.gloss_map_index);
+        h.write_u32(self.parallax_map_index);
+        h.write_u32(self.env_map_index);
+        // env_mask + alpha_test_func + material_kind + material_alpha
+        h.write_u32(self.env_mask_index);
+        h.write_u32(self.alpha_test_func);
+        h.write_u32(self.material_kind);
+        h.write_u32(self.material_alpha.to_bits());
+        // Parallax POM + UV offset
+        h.write_u32(self.parallax_height_scale.to_bits());
+        h.write_u32(self.parallax_max_passes.to_bits());
+        h.write_u32(self.uv_offset[0].to_bits());
+        h.write_u32(self.uv_offset[1].to_bits());
+        // UV scale + diffuse RG
+        h.write_u32(self.uv_scale[0].to_bits());
+        h.write_u32(self.uv_scale[1].to_bits());
+        h.write_u32(self.diffuse_color[0].to_bits());
+        h.write_u32(self.diffuse_color[1].to_bits());
+        // diffuse_b + ambient RGB
+        h.write_u32(self.diffuse_color[2].to_bits());
+        h.write_u32(self.ambient_color[0].to_bits());
+        h.write_u32(self.ambient_color[1].to_bits());
+        h.write_u32(self.ambient_color[2].to_bits());
+        // Skyrim+ skin tint A/R/G/B (note GpuMaterial layout puts A
+        // first within its vec4 for std430 packing — this walk
+        // preserves that order to stay byte-equal-safe).
+        h.write_u32(self.skin_tint_rgba[3].to_bits()); // A
+        h.write_u32(self.skin_tint_rgba[0].to_bits()); // R
+        h.write_u32(self.skin_tint_rgba[1].to_bits()); // G
+        h.write_u32(self.skin_tint_rgba[2].to_bits()); // B
+        // hair tint RGB + multi_layer_envmap_strength
+        h.write_u32(self.hair_tint_rgb[0].to_bits());
+        h.write_u32(self.hair_tint_rgb[1].to_bits());
+        h.write_u32(self.hair_tint_rgb[2].to_bits());
+        h.write_u32(self.multi_layer_envmap_strength.to_bits());
+        // Eye left + eye_cubemap_scale
+        h.write_u32(self.eye_left_center[0].to_bits());
+        h.write_u32(self.eye_left_center[1].to_bits());
+        h.write_u32(self.eye_left_center[2].to_bits());
+        h.write_u32(self.eye_cubemap_scale.to_bits());
+        // Eye right + multi_layer_inner_thickness
+        h.write_u32(self.eye_right_center[0].to_bits());
+        h.write_u32(self.eye_right_center[1].to_bits());
+        h.write_u32(self.eye_right_center[2].to_bits());
+        h.write_u32(self.multi_layer_inner_thickness.to_bits());
+        // refraction + multi_layer_inner_scale UV + sparkle_r
+        h.write_u32(self.multi_layer_refraction_scale.to_bits());
+        h.write_u32(self.multi_layer_inner_scale[0].to_bits());
+        h.write_u32(self.multi_layer_inner_scale[1].to_bits());
+        h.write_u32(self.sparkle_rgba[0].to_bits()); // sparkle_r
+        // sparkle GB + sparkle_intensity + falloff_start_angle
+        h.write_u32(self.sparkle_rgba[1].to_bits()); // sparkle_g
+        h.write_u32(self.sparkle_rgba[2].to_bits()); // sparkle_b
+        h.write_u32(self.sparkle_rgba[3].to_bits()); // intensity
+        h.write_u32(self.effect_falloff[0].to_bits()); // falloff_start_angle
+        // falloff_stop + opacities + soft_falloff_depth
+        h.write_u32(self.effect_falloff[1].to_bits()); // falloff_stop_angle
+        h.write_u32(self.effect_falloff[2].to_bits()); // start_opacity
+        h.write_u32(self.effect_falloff[3].to_bits()); // stop_opacity
+        h.write_u32(self.effect_falloff[4].to_bits()); // soft_falloff_depth
+        h.finish()
+    }
 }
 
 /// Sky rendering parameters passed per-frame to the composite shader.
@@ -1750,3 +1860,173 @@ use helpers::{
     destroy_main_framebuffers, destroy_render_pass_pipelines, find_depth_format,
     load_or_create_pipeline_cache, save_pipeline_cache,
 };
+
+#[cfg(test)]
+mod draw_command_tests {
+    use super::*;
+    use super::super::material::{hash_gpu_material_fields, MaterialTable};
+
+    /// Build a fully-populated `DrawCommand` with distinct, non-default
+    /// values for every material-relevant field. Used by the lockstep
+    /// contract test below — distinct values per field guarantee that
+    /// any drift between `material_hash` and `to_gpu_material` shows up
+    /// (a missing field on either walk would produce a hash mismatch).
+    fn fully_populated_draw_command() -> DrawCommand {
+        DrawCommand {
+            // Per-DRAW state (NOT material-relevant; whatever values).
+            mesh_handle: 7,
+            texture_handle: 0xCAFE_F00D,
+            model_matrix: [0.0; 16],
+            alpha_blend: true,
+            src_blend: 6,
+            dst_blend: 7,
+            two_sided: false,
+            is_decal: false,
+            render_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
+            bone_offset: 0,
+            // Material-relevant fields — every one distinct.
+            normal_map_index: 11,
+            dark_map_index: 12,
+            glow_map_index: 13,
+            detail_map_index: 14,
+            gloss_map_index: 15,
+            parallax_map_index: 16,
+            parallax_height_scale: 0.07,
+            parallax_max_passes: 8.0,
+            env_map_index: 17,
+            env_mask_index: 18,
+            alpha_threshold: 0.42,
+            alpha_test_func: 4,
+            roughness: 0.31,
+            metalness: 0.79,
+            emissive_mult: 1.5,
+            emissive_color: [0.11, 0.22, 0.33],
+            specular_strength: 0.91,
+            specular_color: [0.44, 0.55, 0.66],
+            diffuse_color: [0.71, 0.72, 0.73],
+            ambient_color: [0.81, 0.82, 0.83],
+            vertex_offset: 0,
+            index_offset: 0,
+            vertex_count: 0,
+            sort_depth: 0,
+            in_tlas: false,
+            in_raster: true,
+            avg_albedo: [0.0; 3],
+            material_kind: 5,
+            z_test: true,
+            z_write: true,
+            z_function: 3,
+            terrain_tile_index: None,
+            entity_id: 99,
+            uv_offset: [0.125, 0.250],
+            uv_scale: [1.5, 2.5],
+            material_alpha: 0.875,
+            skin_tint_rgba: [0.91, 0.92, 0.93, 0.94],
+            hair_tint_rgb: [0.61, 0.62, 0.63],
+            multi_layer_envmap_strength: 0.37,
+            eye_left_center: [1.1, 1.2, 1.3],
+            eye_cubemap_scale: 0.55,
+            eye_right_center: [2.1, 2.2, 2.3],
+            multi_layer_inner_thickness: 0.018,
+            multi_layer_refraction_scale: 0.022,
+            multi_layer_inner_scale: [3.5, 4.5],
+            sparkle_rgba: [0.81, 0.82, 0.83, 0.84],
+            effect_falloff: [0.10, 0.20, 0.30, 0.40, 0.50],
+            material_id: 0,
+            vertex_color_emissive: true,
+        }
+    }
+
+    /// Lockstep contract for #781 / PERF-N4. `DrawCommand::material_hash`
+    /// MUST produce the same u64 as `hash_gpu_material_fields(&cmd
+    /// .to_gpu_material())` for any DrawCommand. A drift between the
+    /// two field walks (e.g. adding a field to `to_gpu_material` but
+    /// forgetting it in `material_hash`) breaks dedup correctness:
+    /// distinct DrawCommands that build the same GpuMaterial would hash
+    /// differently and never collapse. Pin the invariant on a fully-
+    /// populated DrawCommand so every live field contributes.
+    #[test]
+    fn material_hash_matches_gpu_material_field_hash() {
+        let cmd = fully_populated_draw_command();
+        let h_cmd = cmd.material_hash();
+        let h_mat = hash_gpu_material_fields(&cmd.to_gpu_material());
+        assert_eq!(
+            h_cmd, h_mat,
+            "DrawCommand::material_hash drifted from hash_gpu_material_fields \
+             (cmd hash {:#018x}, gpu_material hash {:#018x}). One walk has a \
+             field the other doesn't — update both in lockstep.",
+            h_cmd, h_mat,
+        );
+    }
+
+    /// Two DrawCommands with identical material fields must dedup to
+    /// the same id through the `intern_by_hash` path, even when their
+    /// per-DRAW state (mesh_handle, model_matrix, sort_depth) differs.
+    /// That's the whole point of the table.
+    #[test]
+    fn intern_by_hash_dedups_identical_materials() {
+        let mut table = MaterialTable::new();
+        let mut a = fully_populated_draw_command();
+        a.mesh_handle = 1;
+        a.entity_id = 100;
+        let mut b = fully_populated_draw_command();
+        b.mesh_handle = 999;
+        b.entity_id = 200;
+        // Same material fields → same hash → same id.
+        let id_a = table.intern_by_hash(a.material_hash(), || a.to_gpu_material());
+        let id_b = table.intern_by_hash(b.material_hash(), || b.to_gpu_material());
+        assert_eq!(id_a, id_b, "identical materials must collapse to one id");
+        // Slot 0 is the seeded neutral default; user's material is fresh.
+        assert_ne!(id_a, 0, "user material distinct from neutral default");
+        // Hit + miss = 2 user interns; len = 2 (neutral + user).
+        assert_eq!(table.interned_count(), 2);
+        assert_eq!(table.len(), 2);
+    }
+
+    /// Two DrawCommands with different material fields must NOT dedup.
+    /// Verified by tweaking a single field on one command and asserting
+    /// the resulting ids differ.
+    #[test]
+    fn intern_by_hash_distinguishes_distinct_materials() {
+        let mut table = MaterialTable::new();
+        let a = fully_populated_draw_command();
+        let mut b = fully_populated_draw_command();
+        b.roughness = 0.99; // single-field difference
+        let id_a = table.intern_by_hash(a.material_hash(), || a.to_gpu_material());
+        let id_b = table.intern_by_hash(b.material_hash(), || b.to_gpu_material());
+        assert_ne!(id_a, id_b, "distinct materials must get distinct ids");
+        assert_eq!(table.len(), 3); // neutral + a + b
+    }
+
+    /// On a hit, `intern_by_hash` MUST NOT invoke the factory closure
+    /// in release builds — that's the whole perf win. Use a `Cell`
+    /// counter to verify. (In debug builds the closure DOES run for
+    /// the byte-equality assert, which is fine — we exercise debug
+    /// behaviour separately via the contract test.)
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn intern_by_hash_skips_factory_on_hit_in_release() {
+        use std::cell::Cell;
+        let mut table = MaterialTable::new();
+        let cmd = fully_populated_draw_command();
+        let h = cmd.material_hash();
+        // First insert (miss) — factory runs.
+        let calls = Cell::new(0);
+        table.intern_by_hash(h, || {
+            calls.set(calls.get() + 1);
+            cmd.to_gpu_material()
+        });
+        assert_eq!(calls.get(), 1, "miss path must invoke factory once");
+        // Second insert with the same hash (hit) — factory must NOT run.
+        table.intern_by_hash(h, || {
+            calls.set(calls.get() + 1);
+            cmd.to_gpu_material()
+        });
+        assert_eq!(
+            calls.get(),
+            1,
+            "hit path must skip factory in release; calls jumped to {}",
+            calls.get(),
+        );
+    }
+}

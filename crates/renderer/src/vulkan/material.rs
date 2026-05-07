@@ -302,10 +302,105 @@ impl PartialEq for GpuMaterial {
 
 impl Eq for GpuMaterial {}
 
-impl std::hash::Hash for GpuMaterial {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write(self.as_bytes());
-    }
+/// Canonical material hash — std SipHash 1-3 over the 50 live scalar
+/// fields of [`GpuMaterial`] in declaration order. Used by
+/// [`MaterialTable::intern_by_hash`] to dedup without hashing the full
+/// 260-byte struct.
+///
+/// **Lockstep contract** (#781 / PERF-N4): [`DrawCommand::material_hash`]
+/// walks the same field sequence, in the same order, against the
+/// `DrawCommand` source fields that `to_gpu_material` reads. Drift
+/// between the two walks is caught by
+/// `material_hash_matches_gpu_material_field_hash` in
+/// `vulkan::context::draw_command_tests`. Any new GpuMaterial field
+/// MUST be added to BOTH walks (and to the contract test).
+///
+/// `_pad_falloff` is intentionally excluded — it's always 0.0; including
+/// it would only re-hash a constant.
+pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    // PBR scalars + flags
+    h.write_u32(mat.roughness.to_bits());
+    h.write_u32(mat.metalness.to_bits());
+    h.write_u32(mat.emissive_mult.to_bits());
+    h.write_u32(mat.material_flags);
+    // Emissive RGB + specular_strength
+    h.write_u32(mat.emissive_r.to_bits());
+    h.write_u32(mat.emissive_g.to_bits());
+    h.write_u32(mat.emissive_b.to_bits());
+    h.write_u32(mat.specular_strength.to_bits());
+    // Specular RGB + alpha_threshold
+    h.write_u32(mat.specular_r.to_bits());
+    h.write_u32(mat.specular_g.to_bits());
+    h.write_u32(mat.specular_b.to_bits());
+    h.write_u32(mat.alpha_threshold.to_bits());
+    // Texture indices group A
+    h.write_u32(mat.texture_index);
+    h.write_u32(mat.normal_map_index);
+    h.write_u32(mat.dark_map_index);
+    h.write_u32(mat.glow_map_index);
+    // Texture indices group B
+    h.write_u32(mat.detail_map_index);
+    h.write_u32(mat.gloss_map_index);
+    h.write_u32(mat.parallax_map_index);
+    h.write_u32(mat.env_map_index);
+    // env_mask + alpha_test_func + material_kind + material_alpha
+    h.write_u32(mat.env_mask_index);
+    h.write_u32(mat.alpha_test_func);
+    h.write_u32(mat.material_kind);
+    h.write_u32(mat.material_alpha.to_bits());
+    // Parallax POM + UV offset
+    h.write_u32(mat.parallax_height_scale.to_bits());
+    h.write_u32(mat.parallax_max_passes.to_bits());
+    h.write_u32(mat.uv_offset_u.to_bits());
+    h.write_u32(mat.uv_offset_v.to_bits());
+    // UV scale + diffuse RG
+    h.write_u32(mat.uv_scale_u.to_bits());
+    h.write_u32(mat.uv_scale_v.to_bits());
+    h.write_u32(mat.diffuse_r.to_bits());
+    h.write_u32(mat.diffuse_g.to_bits());
+    // diffuse_b + ambient RGB
+    h.write_u32(mat.diffuse_b.to_bits());
+    h.write_u32(mat.ambient_r.to_bits());
+    h.write_u32(mat.ambient_g.to_bits());
+    h.write_u32(mat.ambient_b.to_bits());
+    // Skyrim+ skin tint A/R/G/B
+    h.write_u32(mat.skin_tint_a.to_bits());
+    h.write_u32(mat.skin_tint_r.to_bits());
+    h.write_u32(mat.skin_tint_g.to_bits());
+    h.write_u32(mat.skin_tint_b.to_bits());
+    // hair tint RGB + multi_layer_envmap_strength
+    h.write_u32(mat.hair_tint_r.to_bits());
+    h.write_u32(mat.hair_tint_g.to_bits());
+    h.write_u32(mat.hair_tint_b.to_bits());
+    h.write_u32(mat.multi_layer_envmap_strength.to_bits());
+    // Eye left + eye_cubemap_scale
+    h.write_u32(mat.eye_left_center_x.to_bits());
+    h.write_u32(mat.eye_left_center_y.to_bits());
+    h.write_u32(mat.eye_left_center_z.to_bits());
+    h.write_u32(mat.eye_cubemap_scale.to_bits());
+    // Eye right + multi_layer_inner_thickness
+    h.write_u32(mat.eye_right_center_x.to_bits());
+    h.write_u32(mat.eye_right_center_y.to_bits());
+    h.write_u32(mat.eye_right_center_z.to_bits());
+    h.write_u32(mat.multi_layer_inner_thickness.to_bits());
+    // refraction + multi_layer_inner_scale UV + sparkle_r
+    h.write_u32(mat.multi_layer_refraction_scale.to_bits());
+    h.write_u32(mat.multi_layer_inner_scale_u.to_bits());
+    h.write_u32(mat.multi_layer_inner_scale_v.to_bits());
+    h.write_u32(mat.sparkle_r.to_bits());
+    // sparkle GB + sparkle_intensity + falloff_start_angle
+    h.write_u32(mat.sparkle_g.to_bits());
+    h.write_u32(mat.sparkle_b.to_bits());
+    h.write_u32(mat.sparkle_intensity.to_bits());
+    h.write_u32(mat.falloff_start_angle.to_bits());
+    // falloff_stop + opacities + soft_falloff_depth
+    h.write_u32(mat.falloff_stop_angle.to_bits());
+    h.write_u32(mat.falloff_start_opacity.to_bits());
+    h.write_u32(mat.falloff_stop_opacity.to_bits());
+    h.write_u32(mat.soft_falloff_depth.to_bits());
+    h.finish()
 }
 
 /// Per-frame deduplicated material table. Cleared at frame start, populated
@@ -313,12 +408,20 @@ impl std::hash::Hash for GpuMaterial {
 ///
 /// Identical materials (byte-equal `GpuMaterial`) collapse to the same id;
 /// distinct materials get fresh ids in insertion order. The reverse map
-/// (`HashMap<GpuMaterial, u32>`) keeps `intern` O(1) amortised.
+/// (`HashMap<u64, u32>` keyed on [`hash_gpu_material_fields`]) keeps
+/// `intern` O(1) amortised. Pre-#781 the index keyed on `GpuMaterial`
+/// itself, requiring a 260-byte byte-hash on every lookup AND forcing
+/// the caller to construct the full `GpuMaterial` even on dedup hits.
+/// The fast path now goes through [`Self::intern_by_hash`], which takes
+/// a precomputed u64 + a closure that produces the `GpuMaterial` only
+/// on miss.
 pub struct MaterialTable {
     /// Insertion-ordered material storage, indexed by `material_id`.
     materials: Vec<GpuMaterial>,
-    /// Reverse lookup for dedup. Cleared in lockstep with `materials`.
-    index: HashMap<GpuMaterial, u32>,
+    /// Reverse lookup for dedup, keyed on
+    /// [`hash_gpu_material_fields`]'s u64 output. Cleared in lockstep
+    /// with `materials`. See #781 / PERF-N4.
+    index: HashMap<u64, u32>,
     /// R1 telemetry — total `intern()` calls this frame (one per
     /// `DrawCommand`). Read alongside `len()` to compute the dedup
     /// ratio and surfaced via `ctx.scratch`. The counter exists so a
@@ -375,8 +478,9 @@ impl MaterialTable {
     /// dedup-quality signal #780 / PERF-N1 watches for).
     fn seed_neutral_default(&mut self) {
         let neutral = GpuMaterial::default();
+        let hash = hash_gpu_material_fields(&neutral);
         self.materials.push(neutral);
-        self.index.insert(neutral, 0);
+        self.index.insert(hash, 0);
     }
 
     /// Insert a material (or return the existing id if byte-equal to
@@ -406,8 +510,49 @@ impl MaterialTable {
     /// today only on modded / synthetic / future Starfield-FO76
     /// large-exterior content.
     pub fn intern(&mut self, material: GpuMaterial) -> u32 {
+        let hash = hash_gpu_material_fields(&material);
+        self.intern_by_hash(hash, || material)
+    }
+
+    /// Hot-path intern entry: take a precomputed u64 hash + a closure
+    /// that produces the [`GpuMaterial`] only on dedup miss. The
+    /// closure is NOT invoked when the hash already maps to a stored
+    /// material — `to_gpu_material` (the dominant 260-byte construction
+    /// cost) is skipped on the ~97% dedup-hit path. See #781 / PERF-N4.
+    ///
+    /// **Hash quality contract**: callers must produce a u64 that is a
+    /// pure function of the same fields [`hash_gpu_material_fields`]
+    /// reads, in the same order. The lockstep is pinned by
+    /// `vulkan::context::draw_command_tests::material_hash_matches_gpu_material_field_hash`
+    /// for [`DrawCommand::material_hash`]; any other producer must
+    /// uphold the same invariant or risk silent miscoloring.
+    ///
+    /// **Collision policy**: in debug builds we construct the
+    /// `GpuMaterial` even on hits and assert it byte-equals the stored
+    /// one — a hash collision (or a drift between the producer hash
+    /// and `hash_gpu_material_fields`) fires a panic with the colliding
+    /// hash in the message. In release we trust the hash; collisions
+    /// (vanishingly unlikely with SipHash 1-3 on 50 scalar fields)
+    /// would silently alias to the first-seen material at that hash.
+    pub fn intern_by_hash(
+        &mut self,
+        hash: u64,
+        material_factory: impl FnOnce() -> GpuMaterial,
+    ) -> u32 {
         self.interned_count += 1;
-        if let Some(&id) = self.index.get(&material) {
+        if let Some(&id) = self.index.get(&hash) {
+            #[cfg(debug_assertions)]
+            {
+                let mat = material_factory();
+                debug_assert!(
+                    self.materials[id as usize] == mat,
+                    "MaterialTable hash collision: hash {:#018x} maps to two distinct \
+                     GpuMaterial values (this is either a hasher quality issue or — \
+                     more likely — drift between the producer hash and \
+                     `hash_gpu_material_fields`).",
+                    hash,
+                );
+            }
             return id;
         }
         if self.materials.len() >= MAX_MATERIALS {
@@ -421,9 +566,10 @@ impl MaterialTable {
             });
             return 0;
         }
+        let mat = material_factory();
         let id = self.materials.len() as u32;
-        self.materials.push(material);
-        self.index.insert(material, id);
+        self.materials.push(mat);
+        self.index.insert(hash, id);
         id
     }
 

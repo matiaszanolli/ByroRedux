@@ -911,7 +911,11 @@ pub(crate) fn build_render_data(
                     // colors (`Ignore`).
                     vertex_color_emissive: mat.is_some_and(|m| m.vertex_color_mode == 1),
                 };
-                cmd.material_id = material_table.intern(cmd.to_gpu_material());
+                // #781 / PERF-N4 — `intern_by_hash` skips the
+                // `to_gpu_material()` 260-byte construction on the
+                // dedup-hit path (~97% of calls on Prospector).
+                cmd.material_id =
+                    material_table.intern_by_hash(cmd.material_hash(), || cmd.to_gpu_material());
                 draw_commands.push(cmd);
             }
         }
@@ -1066,7 +1070,9 @@ pub(crate) fn build_render_data(
                         // per-vertex emissive payload (#695).
                         vertex_color_emissive: false,
                     };
-                    cmd.material_id = material_table.intern(cmd.to_gpu_material());
+                    // #781 / PERF-N4 — see SIBLING note above.
+                    cmd.material_id = material_table
+                        .intern_by_hash(cmd.material_hash(), || cmd.to_gpu_material());
                     draw_commands.push(cmd);
                 }
             }
