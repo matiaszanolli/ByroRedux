@@ -22,6 +22,13 @@
 //!   consumer wiring.
 //! - `FNAM` — optional u32 flag bits (bit 1 = "Location Reference
 //!   Type", bit 2 = "Perk" per xEdit comments). Captured verbatim.
+//! - `FLTR` — optional flat u32 array of filter form IDs that gate
+//!   workshop build-mode visibility. 230 of 872 vanilla Fallout4.esm
+//!   PKINs ship `FLTR`; pre-#815 the parser silently dropped them.
+//!   Layout matches the SCOL-side `FLTR` decode (#405) — kept the
+//!   two parsers byte-for-byte aligned so a future MOVS parser
+//!   (which xEdit also documents as carrying FLTR) can copy the
+//!   same arm without divergence.
 //!
 //! Vanilla Fallout4.esm ships 872 PKIN records. Pre-#589 the cell
 //! parser routed PKIN through the MODL-only catch-all at `cell.rs:521`
@@ -55,6 +62,12 @@ pub struct PkinRecord {
     /// `FNAM` flag bits (xEdit comments: bit 1 = "Location Reference
     /// Type", bit 2 = "Perk"). `0` when the record omits the sub.
     pub flags: u32,
+    /// `FLTR` workshop build-mode filter form IDs — flat u32 array,
+    /// authoring order preserved. 230 of 872 vanilla Fallout4.esm
+    /// PKINs ship a non-empty FLTR. Empty when the record omits the
+    /// sub. Layout matches `ScolRecord::filter` (#405) so the two
+    /// parsers stay aligned. See #815.
+    pub filter: Vec<u32>,
 }
 
 /// Parse a PKIN record from its sub-record list. Unknown sub-records
@@ -69,6 +82,7 @@ pub fn parse_pkin(form_id: u32, subs: &[SubRecord]) -> PkinRecord {
     let mut contents: Vec<u32> = Vec::new();
     let mut vnam_form_id = 0u32;
     let mut flags = 0u32;
+    let mut filter: Vec<u32> = Vec::new();
 
     let read_u32 = |bytes: &[u8]| -> Option<u32> {
         if bytes.len() < 4 {
@@ -94,6 +108,24 @@ pub fn parse_pkin(form_id: u32, subs: &[SubRecord]) -> PkinRecord {
                     flags = bits;
                 }
             }
+            b"FLTR" => {
+                // Flat array of u32 form IDs — length / 4. Mirrors
+                // `parse_scol`'s FLTR decode at scol.rs:158-175 so
+                // the two parsers stay aligned (#405 / #815).
+                let id_count = sub.data.len() / 4;
+                filter.reserve(id_count);
+                for i in 0..id_count {
+                    let off = i * 4;
+                    if off + 4 <= sub.data.len() {
+                        filter.push(u32::from_le_bytes([
+                            sub.data[off],
+                            sub.data[off + 1],
+                            sub.data[off + 2],
+                            sub.data[off + 3],
+                        ]));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -105,6 +137,7 @@ pub fn parse_pkin(form_id: u32, subs: &[SubRecord]) -> PkinRecord {
         contents,
         vnam_form_id,
         flags,
+        filter,
     }
 }
 
@@ -130,7 +163,8 @@ mod tests {
     }
 
     /// Baseline: a vanilla-shape PKIN (EDID + single CNAM + VNAM +
-    /// FNAM) round-trips with every field populated.
+    /// FNAM) round-trips with every field populated. FLTR is
+    /// absent so `filter` is the empty Vec.
     #[test]
     fn parse_pkin_single_cnam_round_trip() {
         let subs = vec![
@@ -145,6 +179,10 @@ mod tests {
         assert_eq!(rec.contents, vec![0x0010_1234]);
         assert_eq!(rec.vnam_form_id, 0x0002_5678);
         assert_eq!(rec.flags, 0x0000_0002);
+        assert!(
+            rec.filter.is_empty(),
+            "absent FLTR sub-record yields an empty filter Vec",
+        );
     }
 
     /// Multi-CNAM defensive path — a mod-authored PKIN that ships
@@ -178,6 +216,62 @@ mod tests {
         assert!(rec.contents.is_empty());
         assert_eq!(rec.vnam_form_id, 0);
         assert_eq!(rec.flags, 0);
+    }
+
+    /// Regression for #815 / FO4-D4-NEW-03: 230 of 872 vanilla
+    /// `Fallout4.esm` PKIN records ship `FLTR` workshop build-mode
+    /// filter form IDs. Pre-fix the parser silently dropped them.
+    /// Layout matches `parse_scol`'s FLTR decode (#405) — flat u32
+    /// array, length / 4. A 2-id FLTR round-trips with both IDs in
+    /// authoring order.
+    #[test]
+    fn parse_pkin_fltr_round_trips_two_ids() {
+        let mut fltr_data = Vec::new();
+        fltr_data.extend_from_slice(&0x0000_1111u32.to_le_bytes());
+        fltr_data.extend_from_slice(&0x0000_2222u32.to_le_bytes());
+        let subs = vec![
+            edid("PackIn_Filtered"),
+            cnam(0x0010_1234),
+            mk_sub(b"FLTR", fltr_data),
+        ];
+        let rec = parse_pkin(0x0055_0010, &subs);
+        assert_eq!(rec.contents, vec![0x0010_1234]);
+        assert_eq!(
+            rec.filter,
+            vec![0x0000_1111, 0x0000_2222],
+            "FLTR form IDs round-trip in authoring order, mirroring SCOL (#405)",
+        );
+    }
+
+    /// Edge case: a record that ships only a FLTR sub (no CNAM) —
+    /// captures the filter list without panicking on the missing
+    /// content array. Mirrors the
+    /// `parse_pkin_without_cnam_yields_empty_contents` shape on the
+    /// CNAM side.
+    #[test]
+    fn parse_pkin_fltr_only_yields_empty_contents() {
+        let mut fltr_data = Vec::new();
+        fltr_data.extend_from_slice(&0x0001_2345u32.to_le_bytes());
+        let subs = vec![edid("PackIn_FltrOnly"), mk_sub(b"FLTR", fltr_data)];
+        let rec = parse_pkin(0x0055_0011, &subs);
+        assert!(rec.contents.is_empty());
+        assert_eq!(rec.filter, vec![0x0001_2345]);
+    }
+
+    /// FLTR shorter than 4 bytes is dropped (no surviving id);
+    /// FLTR with a trailing partial id is truncated to the
+    /// well-formed prefix. Mirrors the SCOL-side defensive policy
+    /// for malformed authoring.
+    #[test]
+    fn parse_pkin_fltr_partial_payload_drops_remainder() {
+        // 4 valid bytes + 3 trailing partial bytes → only the
+        // first id should survive (length / 4 = 1 surviving id).
+        let mut fltr_data = Vec::new();
+        fltr_data.extend_from_slice(&0xAABB_CCDDu32.to_le_bytes());
+        fltr_data.extend_from_slice(&[0x11, 0x22, 0x33]); // truncated tail
+        let subs = vec![edid("PackIn_TruncFltr"), mk_sub(b"FLTR", fltr_data)];
+        let rec = parse_pkin(0x0055_0012, &subs);
+        assert_eq!(rec.filter, vec![0xAABB_CCDD]);
     }
 
     /// Truncated CNAM (< 4 bytes) is silently dropped rather than

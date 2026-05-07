@@ -19,6 +19,11 @@ fn mk_pkin(form_id: u32, editor_id: &str, contents: Vec<u32>) -> PkinRecord {
         contents,
         vnam_form_id: 0,
         flags: 0,
+        // #815 — FLTR (workshop build-mode filter) defaults to
+        // empty for the placement-expansion tests; the cell loader
+        // doesn't consult `filter` today (pre-render), so the test
+        // shape is unchanged.
+        filter: Vec::new(),
     }
 }
 
