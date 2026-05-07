@@ -1987,35 +1987,49 @@ void main() {
                 atten = 1.0;
             }
 
-            float NdotL = max(dot(N, L), 0.0);
-
-            // Half-Lambert wrap-lighting for the interior-fill
-            // directional (uploaded with `radius == -1` per
-            // `render.rs::compute_directional_upload`). The XCLL
-            // directional is meant as an aesthetic fill, not a
-            // physical sun — but the legacy Lambert path drove
-            // grooves of corrugated normal maps to NdotL = 0 →
-            // pitch-black stripes between bright ridges (Nellis
-            // Museum repro). Wrap-lighting (Valve's "half-Lambert",
-            // L4D2 commentary) maps `dot(N,L)` from `[-1, 1]` to
-            // `[0, 1]` via `dot * 0.5 + 0.5`, so back-facing surfaces
-            // get ~0% and perpendicular surfaces get 50% — eliminates
-            // the dark-grooves pathology while preserving subtle
-            // directional bias. Specular keeps plain `NdotL` so the
-            // GGX lobe stays correct (no fake highlights on
-            // back-facing fragments). Gated on `DBG_DISABLE_HALF_
-            // LAMBERT_FILL = 0x200` for A/B.
+            // Interior-fill directional (uploaded with
+            // `radius == -1` per `compute_directional_upload`) is the
+            // XCLL "subtle aesthetic fill" — explicitly NOT a
+            // physical sun. The previous Lambert + GGX path made
+            // every per-fragment normal-map perturbation (corrugated
+            // metal, brick mortar, tile grout, fence cutouts) bias
+            // the output: bright stripes on ridges + dark stripes in
+            // grooves, regardless of whether the diffuse term was
+            // plain Lambert (commit 96b1f30 era) or half-Lambert
+            // (commit cdc3b01). Half-Lambert helped the diffuse
+            // term but not the GGX specular lobe, which still
+            // banded on metalness > 0 walls — the visible Quonset
+            // hut regression (Nellis Museum). Spec AA was the wrong
+            // knob for the pathology too (texel-scale, not
+            // sub-pixel).
+            //
+            // The actual semantic of "subtle aesthetic fill" is
+            // normal-INDEPENDENT injection: every fragment receives
+            // `lightColor * albedo * factor` regardless of where its
+            // normal points, so the high-frequency normal map can't
+            // amplify into stripes. Skip the BRDF entirely for the
+            // interior-fill case. The legacy Lambert path is
+            // preserved behind the existing `0x200` debug bit for
+            // A/B against this isotropic-fill change.
             bool isInteriorFill = radius < 0.0;
-            bool useWrapDiffuse = isInteriorFill
-                && (dbgFlags & DBG_DISABLE_HALF_LAMBERT_FILL) == 0u;
-            float diffuseFactor = useWrapDiffuse
-                ? max(dot(N, L) * 0.5 + 0.5, 0.0)
-                : NdotL;
-            // Per-light early-out — uses the same factor that drives
-            // the diffuse term so wrap-lit fills don't get culled on
-            // back-facing fragments (the wrap can still contribute
-            // there).
-            float contribution = diffuseFactor * atten;
+            if (isInteriorFill
+                && (dbgFlags & DBG_DISABLE_HALF_LAMBERT_FILL) == 0u) {
+                // INTERIOR_FILL_AMBIENT_FACTOR — `0.4` rebalances the
+                // dropped Lambert term so a fragment with `NdotL ≈ 0.5`
+                // (the half-Lambert "midpoint") receives roughly the
+                // same brightness it did pre-isotropic. The exact
+                // value is tunable; raising it brightens interiors
+                // uniformly, lowering it darkens. Pinned here in the
+                // shader so a future operator-tuning UI can surface
+                // the same scalar.
+                const float INTERIOR_FILL_AMBIENT_FACTOR = 0.4;
+                Lo += lightColor * atten * albedo
+                    * INTERIOR_FILL_AMBIENT_FACTOR;
+                continue;
+            }
+
+            float NdotL = max(dot(N, L), 0.0);
+            float contribution = NdotL * atten;
             if (contribution < 0.001) {
                 continue;
             }
@@ -2040,12 +2054,7 @@ void main() {
             vec3 kD = (1.0 - F) * (1.0 - metalness);
             vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
             vec3 unshadowedRadiance = lightColor * atten;
-            // Diffuse uses `diffuseFactor` (wrap on interior fill,
-            // plain Lambert otherwise); specular keeps `NdotL` so the
-            // GGX lobe doesn't fire on back-facing geometry.
-            vec3 brdfResult =
-                kD * albedo * diffuseFactor
-                + specular * specStrength * specColor * NdotL;
+            vec3 brdfResult = (kD * albedo + specular * specStrength * specColor) * NdotL;
 
             // Accumulate as if unshadowed.
             Lo += brdfResult * unshadowedRadiance;
@@ -2066,11 +2075,13 @@ void main() {
             // band where soft cell ambient produces soft output.
             Lo += lightColor * atten * albedo * 0.02;
 
-            // Stream this light into every reservoir (WRS).
-            // `isInteriorFill` is the same `radius < 0` test we used
-            // for the half-Lambert gate above — interior fills must
-            // not cast shadow rays (the `radius == -1` contract from
-            // `compute_directional_upload`).
+            // Stream this light into every reservoir (WRS). Interior
+            // fill (`radius < 0`) already `continue`'d before
+            // reaching this block, so `!isInteriorFill` is
+            // belt-and-suspenders — kept explicit so a future edit
+            // that changes the early-exit doesn't silently start
+            // casting shadow rays for fill lights (the `radius == -1`
+            // contract from `compute_directional_upload`).
             if (rtEnabled && !isInteriorFill && shadowFade > 0.01) {
                 vec3 shadowableRadiance = brdfResult * unshadowedRadiance;
                 // Target pdf: luminance of the to-be-subtracted radiance.

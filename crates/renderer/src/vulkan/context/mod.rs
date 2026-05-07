@@ -540,17 +540,18 @@ pub struct VulkanContext {
     ///            distance (Nellis Museum was the canonical
     ///            regression). Set the bit to A/B against suspected
     ///            spec-AA-introduced softness.
-    ///   `0x200` — disable half-Lambert wrap on the interior-fill
-    ///            directional (`DBG_DISABLE_HALF_LAMBERT_FILL`).
-    ///            The default-on path uses `dot(N,L) * 0.5 + 0.5`
-    ///            for the diffuse term when the directional is
+    ///   `0x200` — disable isotropic-ambient interior-fill path
+    ///            (`DBG_DISABLE_HALF_LAMBERT_FILL`, name kept for
+    ///            backward compat with the original half-Lambert
+    ///            iteration). The default-on path skips the
+    ///            Lambert + GGX BRDF entirely for directionals
     ///            uploaded with `radius == -1` (interior cells'
-    ///            "subtle aesthetic fill" via
-    ///            `compute_directional_upload`); specular keeps
-    ///            plain `NdotL`. Eliminates pitch-black grooves on
-    ///            corrugated normal maps under interior fill —
-    ///            Nellis Museum's wall-stripe regression. Set the
-    ///            bit to revert to legacy Lambert for A/B.
+    ///            "subtle aesthetic fill") and accumulates as
+    ///            `lightColor * albedo * INTERIOR_FILL_AMBIENT_FACTOR`
+    ///            — normal-INDEPENDENT injection so corrugated /
+    ///            high-frequency normal maps can't band into stripes
+    ///            (Nellis Museum was the canonical regression). Set
+    ///            the bit to revert to legacy Lambert + GGX for A/B.
     /// Env values are parsed as `0xN` hex or plain decimal; absent /
     /// invalid → 0 (all paths active, zero overhead). For ad-hoc
     /// bisection of texture / lighting artifacts. See engineering
