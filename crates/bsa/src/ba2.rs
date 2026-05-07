@@ -486,7 +486,24 @@ fn decompress_chunk(
             let mut buf = Vec::with_capacity(unpacked_size);
             decoder.read_to_end(&mut buf)?;
             if buf.len() != unpacked_size {
-                log::debug!(
+                // #812 / FO4-D2-NEW-02 — the LZ4 branch hard-errors
+                // on the same condition (lz4_flex inherently size-
+                // checks); zlib's `read_to_end` honours deflate's
+                // self-terminating end-of-stream marker mid-buffer
+                // so a truncated archive returns a short blob.
+                // Promoted from `log::debug!` so operators see the
+                // mismatch in standard log output without changing
+                // the lenient semantics — a synthetic `unpacked_size
+                // = 100 / actual stream = 20` archive currently
+                // pivots into the NIF / DDS parser at the wrong
+                // size with no signalling above debug-log noise.
+                // Sibling of #622's BSA-side hardening
+                // (SK-D2-04). The optional `Strict` mode that
+                // would convert this to an `InvalidData` error is
+                // gated on #598's investigation of vanilla
+                // `Fallout4 - Meshes.ba2`'s `packed_size >
+                // unpacked_size` anomaly.
+                log::warn!(
                     "BA2 zlib decompressed {} bytes but record declared {}",
                     buf.len(),
                     unpacked_size
@@ -1014,6 +1031,51 @@ mod tests {
 
         let result = decompress_chunk(&compressed, original.len(), Ba2Compression::Zlib).unwrap();
         assert_eq!(result, original);
+    }
+
+    /// Regression for #812 / FO4-D2-NEW-02: a zlib stream whose
+    /// actual decompressed length differs from the record's declared
+    /// `unpacked_size` returns the actual decompressed bytes (lenient
+    /// path, matches openMW's `Z_OK + short return`-style fallback)
+    /// AND emits a warn-level diagnostic. Pre-#812 the diagnostic was
+    /// debug-level and invisible in standard logs while the LZ4
+    /// branch hard-errored on the same condition.
+    ///
+    /// This pins the LENIENT-mode behaviour: the buffer length is
+    /// what zlib actually decoded, and `decompress_chunk` returns
+    /// `Ok` rather than `Err`. Once the strictness toggle from the
+    /// fix-sketch's stage 3 lands (gated on #598), a sibling test
+    /// will pin the `Err(InvalidData)` path.
+    #[test]
+    fn decompress_chunk_zlib_short_stream_returns_actual_length() {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        // Compress 20 bytes; declare unpacked_size = 100 to force
+        // the size-mismatch branch.
+        let actual_payload = b"twenty-bytes-payloadx";
+        assert_eq!(actual_payload.len(), 21, "fixture sanity check");
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(actual_payload).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let result = decompress_chunk(&compressed, 100, Ba2Compression::Zlib)
+            .expect("lenient mode: short zlib stream must NOT error");
+        // Buffer length is what zlib actually decoded, NOT the
+        // declared `unpacked_size`. Downstream parsers (NIF, DDS)
+        // see the actual short payload — exactly the gap #812
+        // surfaces. The warn-level log is the operator-visible
+        // signal that this happened (not directly assertable here
+        // without a test logger; behaviour pinned by the
+        // log::warn! call site at decompress_chunk).
+        assert_eq!(
+            result.len(),
+            actual_payload.len(),
+            "lenient zlib path returns the actual decoded length, \
+             not the record-declared unpacked_size",
+        );
+        assert_eq!(result.as_slice(), actual_payload);
     }
 
     #[test]
