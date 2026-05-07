@@ -158,36 +158,48 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
             sink.push(handle);
         }
     };
-    if let Some(mq) = world.query::<MeshHandle>() {
-        for &eid in &victims {
+    // #883 / CELL-PERF-06 — single victim walk that fans out to
+    // every per-component lookup. Pre-fix this was six independent
+    // `for &eid in &victims` loops, each re-acquiring a read lock on
+    // a different SparseSet header. The per-victim inner cost is
+    // unchanged (still six hash lookups per entity), but the
+    // SparseSet header walk happens once instead of six times.
+    //
+    // Holding six read locks across the walk is safe — they're
+    // independent SparseSets (different component TypeIds) and
+    // `unload_cell` takes `&mut World`, so no concurrent writer can
+    // exist. The TypeId-sort lock-order invariant (CLAUDE.md #4) is
+    // about combined read+write multi-component queries where a
+    // mixed acquire order could deadlock; six pure reads have no
+    // such risk.
+    let mq = world.query::<MeshHandle>();
+    let tq = world.query::<TextureHandle>();
+    let nq = world.query::<NormalMapHandle>();
+    let dq = world.query::<DarkMapHandle>();
+    let eq = world.query::<ExtraTextureMaps>();
+    let ttq = world.query::<TerrainTileSlot>();
+    for &eid in &victims {
+        if let Some(mq) = &mq {
             if let Some(mh) = mq.get(eid) {
                 mesh_drops.push(mh.0);
             }
         }
-    }
-    if let Some(tq) = world.query::<TextureHandle>() {
-        for &eid in &victims {
+        if let Some(tq) = &tq {
             if let Some(th) = tq.get(eid) {
                 push_tex_drop(th.0, &mut texture_drops);
             }
         }
-    }
-    if let Some(nq) = world.query::<NormalMapHandle>() {
-        for &eid in &victims {
+        if let Some(nq) = &nq {
             if let Some(nh) = nq.get(eid) {
                 push_tex_drop(nh.0, &mut texture_drops);
             }
         }
-    }
-    if let Some(dq) = world.query::<DarkMapHandle>() {
-        for &eid in &victims {
+        if let Some(dq) = &dq {
             if let Some(dh) = dq.get(eid) {
                 push_tex_drop(dh.0, &mut texture_drops);
             }
         }
-    }
-    if let Some(eq) = world.query::<ExtraTextureMaps>() {
-        for &eid in &victims {
+        if let Some(eq) = &eq {
             if let Some(extra) = eq.get(eid) {
                 push_tex_drop(extra.glow, &mut texture_drops);
                 push_tex_drop(extra.detail, &mut texture_drops);
@@ -197,14 +209,17 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
                 push_tex_drop(extra.env_mask, &mut texture_drops);
             }
         }
-    }
-    if let Some(ttq) = world.query::<TerrainTileSlot>() {
-        for &eid in &victims {
+        if let Some(ttq) = &ttq {
             if let Some(slot) = ttq.get(eid) {
                 terrain_tile_slots.insert(slot.0);
             }
         }
     }
+    // Drop query guards before the texture/mesh registry mutations
+    // below — those don't touch component SparseSets but releasing
+    // the locks early keeps the lock-hold window scoped to the
+    // walk.
+    drop((mq, tq, nq, dq, eq, ttq));
 
     // Sky textures live on `SkyParamsRes` (a Resource), not an ECS
     // component, so the per-victim sweep above can't reach them. The
