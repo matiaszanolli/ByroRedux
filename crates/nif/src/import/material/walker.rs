@@ -530,6 +530,26 @@ pub(crate) fn extract_material_info_from_refs(
             if info.parallax_map.is_none() {
                 info.parallax_map =
                     tex_desc_source_path(scene, tex_prop.parallax_texture.as_ref(), pool);
+                // #725 / NIF-D4-06 — when a NiTexturingProperty parallax
+                // slot binds WITHOUT a co-bound BSShaderPPLightingProperty
+                // (rare on FO3 / FNV with an Oblivion-style property
+                // chain), the scalar pair stays None and the consumer's
+                // `unwrap_or(0.04, 4.0)` fallback (`render.rs:573`,
+                // `cell_loader.rs:2463`, `scene.rs:1917`) compensates.
+                // Setting the engine defaults at the producer-side keeps
+                // the import-side `Option` semantics honest: "Some =
+                // import committed to a value, None = no parallax
+                // authoring at all". Defaults match `GpuMaterial`'s
+                // `parallax_height_scale = 0.04, parallax_max_passes =
+                // 4.0` (`renderer/src/vulkan/material.rs:216-217`).
+                if info.parallax_map.is_some() {
+                    if info.parallax_max_passes.is_none() {
+                        info.parallax_max_passes = Some(4.0);
+                    }
+                    if info.parallax_height_scale.is_none() {
+                        info.parallax_height_scale = Some(0.04);
+                    }
+                }
             }
             // NOTE: NiTexturingProperty decal slots 0..=3 are NOT
             // copied to MaterialInfo. #705 / O4-07 removed the

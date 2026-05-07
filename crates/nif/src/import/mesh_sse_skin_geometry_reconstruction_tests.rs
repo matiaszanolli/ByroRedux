@@ -445,3 +445,111 @@ fn sse_global_buffer_skin_payload_reaches_imported_skin() {
     assert_eq!(skin.vertex_bone_weights[1][2], 0.0);
     assert_eq!(skin.vertex_bone_indices[1], [1, 7, 0, 0]);
 }
+
+/// Regression for #725 / NIF-D4-04: a partition triangle whose
+/// partition-local index lands outside the partition's `vertex_map`
+/// must be DROPPED from the index list, not aliased to the raw
+/// `local as u16` cast. Pre-fix the silent fallback let truncated
+/// or malformed NIFs reach the GPU with collapsed faces; post-fix
+/// the triangle is skipped (with a debug log) and only well-formed
+/// triangles survive into `ImportedMesh.indices`.
+///
+/// Test shape: 3 vertices, partition.vertex_map = [0, 1] (length
+/// 2), two triangles — `[0, 1, 0]` (all indices in range) and
+/// `[0, 1, 2]` (last index = 2, out of range). Pre-fix: 6 indices
+/// emitted (the second triangle's `2` aliased to a raw `2u16`,
+/// which happens to match a real vertex here but in general points
+/// at undefined data). Post-fix: 3 indices emitted (only the
+/// well-formed triangle survives).
+#[test]
+fn partition_triangle_with_out_of_range_vertex_map_index_is_dropped() {
+    let zup_positions = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let (vertex_desc, vertex_size, raw_bytes) = pack_position_only(&zup_positions);
+
+    let shape = BsTriShape {
+        av: NiAVObjectData {
+            net: empty_net(),
+            flags: 0,
+            transform: crate::types::NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        center: NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        radius: 0.0,
+        skin_ref: BlockRef(1),
+        shader_property_ref: BlockRef::NULL,
+        alpha_property_ref: BlockRef::NULL,
+        vertex_desc,
+        num_triangles: 0,
+        num_vertices: 0,
+        vertices: Vec::new(),
+        uvs: Vec::new(),
+        normals: Vec::new(),
+        vertex_colors: Vec::new(),
+        triangles: Vec::new(),
+        bone_weights: Vec::new(),
+        bone_indices: Vec::new(),
+        tangents: Vec::new(),
+        kind: BsTriShapeKind::Plain,
+        data_size: 0,
+    };
+
+    let skin_instance = NiSkinInstance {
+        data_ref: BlockRef::NULL,
+        skin_partition_ref: BlockRef(2),
+        skeleton_root_ref: BlockRef::NULL,
+        bone_refs: Vec::new(),
+    };
+
+    // vertex_map deliberately shorter than the highest local index
+    // referenced by the second triangle. The first triangle uses
+    // only locals 0 and 1, both in range; the second triangle's
+    // local `2` is out of range (vertex_map.len() == 2).
+    let partition = SkinPartitionEntry {
+        num_vertices: 2,
+        num_triangles: 2,
+        bones: Vec::new(),
+        num_weights_per_vertex: 0,
+        vertex_map: vec![0, 1],
+        vertex_weights: Vec::new(),
+        triangles: vec![[0, 1, 0], [0, 1, 2]],
+        bone_indices: Vec::new(),
+    };
+
+    let skin_partition = NiSkinPartition {
+        partitions: vec![partition],
+        global_vertex_data: Some(SseSkinGlobalBuffer {
+            vertex_desc,
+            vertex_size,
+            raw_bytes,
+        }),
+    };
+
+    let mut scene = NifScene::default();
+    scene.blocks.push(Box::new(shape));
+    scene.blocks.push(Box::new(skin_instance));
+    scene.blocks.push(Box::new(skin_partition));
+
+    let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
+    let mesh = extract_bs_tri_shape(
+        &scene,
+        shape_ref,
+        &crate::types::NiTransform::default(),
+        &mut byroredux_core::string::StringPool::new(),
+    )
+    .expect("at least one well-formed triangle survives the drop");
+
+    // Only the in-range triangle (3 indices) survives. Pre-fix this
+    // would have been 6 — including the aliased-to-`2u16` fallback
+    // index from the malformed second triangle.
+    assert_eq!(
+        mesh.indices.len(),
+        3,
+        "out-of-range triangle must be DROPPED, not aliased through the raw u16 cast",
+    );
+    assert_eq!(mesh.indices, vec![0, 1, 0]);
+}

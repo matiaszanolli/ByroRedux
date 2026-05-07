@@ -1227,15 +1227,47 @@ fn try_reconstruct_sse_geometry(
 
     // Concatenate partition triangles, remapping each partition-local
     // index through the partition's vertex_map.
+    //
+    // #725 / NIF-D4-04 — when a partition-local index falls outside
+    // its `vertex_map`'s range, drop the whole triangle rather than
+    // alias to the raw cast `local as u16`. The aliased fallback
+    // confines damage to malformed content (vanilla Bethesda BSAs
+    // always supply complete vertex_maps) but produced collapsed
+    // faces on truncated NIFs instead of clean drops. Mirrors the
+    // partition-local index policy in
+    // `remap_bs_tri_shape_bone_indices`.
     let mut indices = Vec::new();
+    let mut dropped_triangles: u32 = 0;
     for part in &partition.partitions {
         for tri in &part.triangles {
-            for &local in tri {
-                let local = local as usize;
-                let global = part.vertex_map.get(local).copied().unwrap_or(local as u16);
-                indices.push(global as u32);
+            // Resolve all three indices first; commit none of them
+            // unless every lookup landed inside vertex_map.
+            let mut globals = [0u16; 3];
+            let mut ok = true;
+            for (i, &local) in tri.iter().enumerate() {
+                match part.vertex_map.get(local as usize).copied() {
+                    Some(g) => globals[i] = g,
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                indices.push(globals[0] as u32);
+                indices.push(globals[1] as u32);
+                indices.push(globals[2] as u32);
+            } else {
+                dropped_triangles = dropped_triangles.saturating_add(1);
             }
         }
+    }
+    if dropped_triangles > 0 {
+        log::debug!(
+            "BSTriShape SSE reconstruct: dropped {} triangle(s) with \
+             out-of-range vertex_map indices (truncated/malformed NIF)",
+            dropped_triangles,
+        );
     }
     if indices.is_empty() {
         return None;

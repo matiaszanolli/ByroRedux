@@ -952,3 +952,119 @@ fn eye_envmap_keeps_default_slot_4_envmap_routing() {
         "EyeEnvmap doesn't reference the detail slot"
     );
 }
+
+/// Regression for #725 / NIF-D4-06: when the legacy
+/// `NiTexturingProperty.parallax_texture` slot is bound WITHOUT a
+/// co-bound `BSShaderPPLightingProperty` (rare on FO3/FNV with an
+/// Oblivion-style property chain), the producer must default
+/// `parallax_max_passes` / `parallax_height_scale` to the engine's
+/// expected values (4.0 passes / 0.04 scale — same constants the
+/// `GpuMaterial::default()` uses at
+/// `renderer/src/vulkan/material.rs:216-217` and the consumer-side
+/// fallback at `cell_loader.rs:2463`). Pre-fix the scalars stayed
+/// `None`, requiring every consumer to repeat the `unwrap_or` —
+/// the producer-side default keeps the `Option` semantics honest:
+/// "Some = import committed to a value, None = no parallax
+/// authoring at all".
+#[test]
+fn ni_texturing_property_parallax_slot_defaults_scalars_when_no_pp_lighting() {
+    use crate::blocks::properties::{NiTexturingProperty, TexDesc};
+    use crate::blocks::texture::NiSourceTexture;
+
+    // Block layout:
+    //   [0] NiSourceTexture for parallax_texture
+    //   [1] NiTexturingProperty with parallax_texture = block 0
+    // No BSShaderPPLightingProperty in the chain — the only
+    // parallax-authoring source is the NiTexturingProperty slot.
+    let parallax_src = NiSourceTexture {
+        net: empty_net(),
+        use_external: true,
+        filename: Some(Arc::from("textures\\stone_p.dds")),
+        pixel_data_ref: BlockRef::NULL,
+        pixel_layout: 0,
+        use_mipmaps: 0,
+        alpha_format: 0,
+        is_static: true,
+    };
+    let tex = NiTexturingProperty {
+        net: empty_net(),
+        flags: 0,
+        texture_count: 8,
+        base_texture: None,
+        dark_texture: None,
+        detail_texture: None,
+        gloss_texture: None,
+        glow_texture: None,
+        bump_texture: None,
+        normal_texture: None,
+        parallax_texture: Some(TexDesc {
+            source_ref: BlockRef(0),
+            flags: 0,
+            transform: None,
+        }),
+        parallax_offset: 0.0,
+        decal_textures: Vec::new(),
+    };
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(parallax_src), Box::new(tex)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = make_tri_shape_with_props(vec![BlockRef(1)]);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_path(&pool, info.parallax_map, "textures\\stone_p.dds");
+    assert_eq!(
+        info.parallax_max_passes,
+        Some(4.0),
+        "NiTexturingProperty parallax slot must default parallax_max_passes to the engine value (4.0) \
+         when no BSShaderPPLightingProperty is co-bound — pre-#725 stayed None and relied on \
+         consumer-side `unwrap_or` fallbacks",
+    );
+    assert_eq!(
+        info.parallax_height_scale,
+        Some(0.04),
+        "NiTexturingProperty parallax slot must default parallax_height_scale to the engine value \
+         (0.04) when no BSShaderPPLightingProperty is co-bound",
+    );
+}
+
+/// Sibling: an absent parallax slot must NOT trigger the default
+/// — `info.parallax_max_passes` / `parallax_height_scale` stay
+/// `None` when no parallax authoring was found anywhere in the
+/// property chain. Pins the `Option` semantics: defaults fire only
+/// when the slot is actually bound.
+#[test]
+fn ni_texturing_property_without_parallax_slot_leaves_scalars_none() {
+    use crate::blocks::properties::NiTexturingProperty;
+
+    let tex = NiTexturingProperty {
+        net: empty_net(),
+        flags: 0,
+        texture_count: 0,
+        base_texture: None,
+        dark_texture: None,
+        detail_texture: None,
+        gloss_texture: None,
+        glow_texture: None,
+        bump_texture: None,
+        normal_texture: None,
+        parallax_texture: None,
+        parallax_offset: 0.0,
+        decal_textures: Vec::new(),
+    };
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(tex)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert!(info.parallax_map.is_none());
+    assert!(
+        info.parallax_max_passes.is_none(),
+        "absent parallax slot must NOT trigger the engine default — stays None",
+    );
+    assert!(info.parallax_height_scale.is_none());
+}
