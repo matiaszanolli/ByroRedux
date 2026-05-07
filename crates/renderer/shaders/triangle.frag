@@ -1806,9 +1806,37 @@ void main() {
     // term per-material. Default `[1.0; 3]` is a no-op; meshes with
     // authored ambient response (lit-from-within glass, occluded
     // alcoves) attenuate the cell ambient by their own factor.
-    vec3 ambient = sceneFlags.yzw
-                   * vec3(mat.ambientR, mat.ambientG, mat.ambientB)
-                   * (1.0 - metalness);
+    //
+    // Two-track ambient model:
+    //
+    //   * Dielectric track — `cell_ambient × mat_ambient × (1 - metalness)`.
+    //     Standard PBR diffuse ambient: insulators absorb + re-radiate
+    //     environment light through their albedo (re-applied in the
+    //     composite pass).
+    //
+    //   * Metallic track — `cell_ambient × albedo × metalness × 0.5`.
+    //     Metals don't have diffuse, so the dielectric formula
+    //     multiplies by `(1 - metalness) → 0` and on conductors with
+    //     no working RT reflection (roughness > 0.6, RT off, or
+    //     out-of-LOD) every fragment goes pitch black in any region
+    //     not directly hit by `NdotL`. That was the Nellis Museum
+    //     corrugated-steel signature: bright Lambert ridges + black
+    //     grooves with no fill, reading as painterly stripes
+    //     instead of soft reflective metal. This term provides a
+    //     cheap IBL-style approximation by tinting `cell_ambient`
+    //     with the metal's F0 (≈ albedo for conductors) at
+    //     half-strength — enough to fill the grooves with the
+    //     metal's expected colour without overwhelming the direct
+    //     specular response on lit ridges. A future irradiance probe
+    //     would replace the `0.5` with a real cosine-weighted
+    //     hemisphere integral; for now, the constant matches
+    //     dielectric ambient's perceptual magnitude on common cell
+    //     ambient values.
+    vec3 dielectricAmbient = sceneFlags.yzw
+                             * vec3(mat.ambientR, mat.ambientG, mat.ambientB)
+                             * (1.0 - metalness);
+    vec3 metallicAmbient = sceneFlags.yzw * albedo * metalness * 0.5;
+    vec3 ambient = dielectricAmbient + metallicAmbient;
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
 
     // ── RT reflection for metallic/glossy surfaces ──────────────────
@@ -2214,7 +2242,29 @@ void main() {
             float n1 = interleavedGradientNoise(gl_FragCoord.xy, giSeed);
             float n2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(73.7, 191.3), giSeed + 37.0);
 
-            vec3 giDir = cosineWeightedHemisphere(N, n1, n2);
+            // GI hemisphere ray uses the GEOMETRIC normal, not the
+            // per-fragment perturbed `N`. The normal-mapped corrugation
+            // (Quonset hut walls, brick mortar, fence cutouts, every
+            // tile grout pattern) is fake geometry — the underlying
+            // mesh is flat, but the per-pixel `N` swings ±90° to
+            // imply 3D bumps. Sampling the hemisphere along that
+            // perturbed `N` aims a third of the rays straight INTO
+            // the imaginary groove-sidewall (`hitDist` ≈ 0 against
+            // the very same flat plane the fragment lives on),
+            // collapsing `rtAO` to its minimum 0.3 in every "groove"
+            // pixel and producing the painterly bright/dark stripe
+            // signature when the resulting `combinedAO * ambient`
+            // multiplies the cell ambient by a third only in
+            // grooves. The Nellis Museum corrugated steel was the
+            // canonical regression. Geometric normal samples the
+            // hemisphere over the actual macro geometry, so AO sees
+            // "open room" uniformly across the wall and ambient fills
+            // the grooves with the cell's authored colour. Light
+            // direction in the GI hit's incoming-radiance lookup is
+            // already noise-jittered, so trading a tiny per-pixel
+            // directional bias for correct AO is a net win at 1-SPP.
+            vec3 N_geom = normalize(fragNormal);
+            vec3 giDir = cosineWeightedHemisphere(N_geom, n1, n2);
             vec3 giOrigin = fragWorldPos + N_bias * 0.1;
 
             // tMin = 0.05 matches the bias and the rest of the ray sites
