@@ -355,6 +355,13 @@ impl App {
         // world transforms (including billboard rotations). See #217.
         scheduler.add_exclusive(Stage::PostUpdate, make_world_bound_propagation_system());
         scheduler.add_to(Stage::Physics, byroredux_physics::physics_sync_system);
+        // M44 Phase 6 — cell-acoustics → reverb send (#846). Runs
+        // before `audio_system` so any new spatial track constructed
+        // this frame picks up the right send level. Already-playing
+        // sounds keep their construction-time send (kira contract);
+        // long-running ambients across interior/exterior transitions
+        // are tracked separately in AUD-D5-NEW-06.
+        scheduler.add_to(Stage::Late, crate::systems::reverb_zone_system);
         // M44 Phase 1 — audio update runs in Stage::Late so it sees
         // final world transforms after propagation. The Phase 1 body
         // is a stub (see byroredux_audio::audio_system); future

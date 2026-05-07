@@ -761,6 +761,77 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
 // to change. See issue #81.
 pub(crate) use byroredux_core::ecs::make_transform_propagation_system;
 
+/// M44 Phase 6 — cell-acoustics → reverb send wiring (#846 / AUD-D5-NEW-05).
+///
+/// Watches [`CellLightingRes::is_interior`] and updates
+/// [`byroredux_audio::AudioWorld::set_reverb_send_db`] so interior
+/// cells get a subtle wet send (`-12 dB`) and exteriors stay dry
+/// (`f32::NEG_INFINITY`). Pre-fix the setter existed but no caller
+/// flipped it, so every cell sounded identically dry regardless of
+/// interior/exterior. The audit's Phase 6 promise (interior reverb
+/// detector) lands here.
+///
+/// Idempotent — only writes on transitions (the bit-equality check
+/// handles `NEG_INFINITY` cleanly), so the system is cheap to leave
+/// running every frame and only touches `AudioWorld` on actual cell
+/// type changes.
+///
+/// **Kira semantics**: already-playing sounds keep their construction-
+/// time send level — the change applies to sounds dispatched AFTER
+/// the call. For cell-load handoffs that's by design (the new cell's
+/// ambients & one-shots get the new reverb routing). A long-running
+/// ambient that survives an interior→exterior transition keeps its
+/// original send level until it ends naturally; that's a known
+/// limitation tracked in AUD-D5-NEW-06 (per-cell acoustic data).
+///
+/// No-ops cleanly when:
+///   - `CellLightingRes` resource isn't registered yet (engine boot
+///     before any cell load — the default send is already
+///     `NEG_INFINITY`, so dry is correct).
+///   - `AudioWorld` resource isn't registered (engine started without
+///     audio wiring).
+///
+/// Runs in `Stage::Late` alongside `audio_system` (registered first
+/// in main.rs so the level is in place before any new spatial track
+/// gets constructed this frame).
+pub(crate) fn reverb_zone_system(world: &World, _dt: f32) {
+    /// Subtle interior wet — matches `set_reverb_send_db` doc.
+    /// `-6 dB` is more pronounced; `-12 dB` is the audit's call.
+    const INTERIOR_REVERB_SEND_DB: f32 = -12.0;
+    /// Exteriors stay dry — silent send (well below the `-60 dB`
+    /// `with_send` cutoff in the audio crate).
+    const EXTERIOR_REVERB_SEND_DB: f32 = f32::NEG_INFINITY;
+
+    let is_interior = {
+        let Some(cell_lit) = world.try_resource::<CellLightingRes>() else {
+            return;
+        };
+        cell_lit.is_interior
+    };
+    let target_db = if is_interior {
+        INTERIOR_REVERB_SEND_DB
+    } else {
+        EXTERIOR_REVERB_SEND_DB
+    };
+
+    let Some(mut audio_world) = world.try_resource_mut::<byroredux_audio::AudioWorld>() else {
+        return;
+    };
+    // Bit-equality so `NEG_INFINITY → NEG_INFINITY` short-circuits
+    // without touching the field. (`==` would also work — IEEE 754
+    // says `inf == inf` — but `to_bits()` makes the no-op intent
+    // explicit and dodges any future signaling-NaN edge case.)
+    if audio_world.reverb_send_db().to_bits() == target_db.to_bits() {
+        return;
+    }
+    audio_world.set_reverb_send_db(target_db);
+    log::info!(
+        "M44 Phase 6: reverb send → {:.1} dB (interior={})",
+        target_db,
+        is_interior,
+    );
+}
+
 /// M44 Phase 3.5 — footstep gameplay loop.
 ///
 /// Walks every entity with a `FootstepEmitter`, accumulates horizontal
@@ -3243,5 +3314,150 @@ mod footstep_system_tests {
 
         let aw = world.resource::<byroredux_audio::AudioWorld>();
         assert_eq!(aw.pending_oneshot_count(), 0);
+    }
+}
+
+// ── M44 Phase 6 — reverb_zone_system regression tests (#846) ──────
+#[cfg(test)]
+mod reverb_zone_system_tests {
+    use super::*;
+    use crate::components::CellLightingRes;
+    use byroredux_core::ecs::World;
+
+    /// Build a synthetic CellLightingRes with the specified
+    /// interior/exterior flag. All extended-XCLL fields stay `None`
+    /// — the system only reads `is_interior`, so the rest is
+    /// irrelevant.
+    fn cell_lit(is_interior: bool) -> CellLightingRes {
+        CellLightingRes {
+            ambient: [0.1, 0.1, 0.1],
+            directional_color: [1.0, 1.0, 1.0],
+            directional_dir: [0.0, 1.0, 0.0],
+            is_interior,
+            fog_color: [0.5, 0.5, 0.5],
+            fog_near: 100.0,
+            fog_far: 1000.0,
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
+        }
+    }
+
+    /// Interior cell flips the reverb send to a subtle wet level.
+    /// Pre-fix this was `NEG_INFINITY` regardless of cell type — the
+    /// audit's "every cell sounds dry" complaint.
+    #[test]
+    fn interior_cell_sets_subtle_reverb_send() {
+        let mut world = World::new();
+        world.insert_resource(byroredux_audio::AudioWorld::default());
+        world.insert_resource(cell_lit(true));
+
+        // Pre-condition: default AudioWorld boots with NEG_INFINITY.
+        assert!(
+            world
+                .resource::<byroredux_audio::AudioWorld>()
+                .reverb_send_db()
+                .is_infinite(),
+            "default AudioWorld must boot with NEG_INFINITY reverb send"
+        );
+
+        reverb_zone_system(&world, 0.016);
+
+        let aw = world.resource::<byroredux_audio::AudioWorld>();
+        assert_eq!(
+            aw.reverb_send_db(),
+            -12.0,
+            "interior cell must set the subtle-wet reverb send level"
+        );
+    }
+
+    /// Exterior cell keeps the send dry (NEG_INFINITY). Default
+    /// already is, but verify the system doesn't accidentally trip
+    /// to a finite value on exterior.
+    #[test]
+    fn exterior_cell_keeps_dry_send() {
+        let mut world = World::new();
+        world.insert_resource(byroredux_audio::AudioWorld::default());
+        world.insert_resource(cell_lit(false));
+
+        reverb_zone_system(&world, 0.016);
+
+        let db = world
+            .resource::<byroredux_audio::AudioWorld>()
+            .reverb_send_db();
+        assert!(
+            db.is_infinite() && db.is_sign_negative(),
+            "exterior cell must leave reverb send at NEG_INFINITY (got {db})"
+        );
+    }
+
+    /// Interior → exterior transition flips the send back to dry.
+    /// Pin the round trip so a future regression that breaks the
+    /// exterior branch (e.g. wrong sign, wrong constant) shows up.
+    #[test]
+    fn interior_to_exterior_transition_resets_send_to_dry() {
+        let mut world = World::new();
+        world.insert_resource(byroredux_audio::AudioWorld::default());
+
+        // Tick 1 — interior: send = -12 dB.
+        world.insert_resource(cell_lit(true));
+        reverb_zone_system(&world, 0.016);
+        assert_eq!(
+            world
+                .resource::<byroredux_audio::AudioWorld>()
+                .reverb_send_db(),
+            -12.0,
+        );
+
+        // Tick 2 — exterior cell load: send must drop back to dry.
+        world.insert_resource(cell_lit(false));
+        reverb_zone_system(&world, 0.016);
+        let db = world
+            .resource::<byroredux_audio::AudioWorld>()
+            .reverb_send_db();
+        assert!(
+            db.is_infinite() && db.is_sign_negative(),
+            "interior → exterior transition must reset send to NEG_INFINITY (got {db})"
+        );
+    }
+
+    /// No `CellLightingRes` (engine boot before any cell load) → the
+    /// system must no-op without panic. Default AudioWorld send stays
+    /// at NEG_INFINITY (= dry, which is the correct safe default).
+    #[test]
+    fn no_cell_lighting_resource_is_safe_noop() {
+        let mut world = World::new();
+        world.insert_resource(byroredux_audio::AudioWorld::default());
+        // Deliberately omit CellLightingRes.
+
+        reverb_zone_system(&world, 0.016);
+
+        let db = world
+            .resource::<byroredux_audio::AudioWorld>()
+            .reverb_send_db();
+        assert!(
+            db.is_infinite() && db.is_sign_negative(),
+            "no-CellLightingRes path must leave default send untouched"
+        );
+    }
+
+    /// No `AudioWorld` (engine started without audio wiring) → the
+    /// system must no-op without panic when the resource is absent.
+    #[test]
+    fn no_audio_world_is_safe_noop() {
+        let mut world = World::new();
+        world.insert_resource(cell_lit(true));
+        // Deliberately omit AudioWorld.
+
+        reverb_zone_system(&world, 0.016);
+        // Survival is the assertion — no panic, no aborted run.
     }
 }
