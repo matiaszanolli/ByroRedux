@@ -15,6 +15,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
+use byroredux_plugin::equip::armor_covers_main_body;
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind, NpcRecord, RaceRecord};
 use byroredux_renderer::VulkanContext;
@@ -392,6 +393,32 @@ pub fn spawn_npc_entity(
         );
     }
 
+    // Phase A.2 — pre-scan inventory for "armor covers main body."
+    // The base `upperbody.nif` ships with the vanilla T-shirt-and-
+    // briefs body texture; vanilla armors (button-up + slacks for Doc
+    // Mitchell, NCR Trooper armor, etc.) include the actor's exposed
+    // body parts inline rather than overlaying the base body. Loading
+    // both produces z-fight on the overlapping vertices AND a 2×
+    // skinned bone palette load. Skipping the base body when any
+    // equipped armor occupies the game's main-body biped slot is the
+    // canonical shape — verified against xEdit `dev-4.1.6` definitions.
+    //
+    // Hands stay loaded regardless — vanilla FNV armors typically
+    // include arms but not the finger geometry from `lefthand.nif` /
+    // `righthand.nif`, which the gun-grip animation poses against.
+    let body_covered = npc.inventory.iter().any(|entry| {
+        if entry.count.max(0) == 0 {
+            return false;
+        }
+        let Some(item) = index.items.get(&entry.item_form_id) else {
+            return false;
+        };
+        let ItemKind::Armor { biped_flags, .. } = item.kind else {
+            return false;
+        };
+        armor_covers_main_body(game, biped_flags)
+    });
+
     // 3. Body. Hardcoded vanilla paths (`upperbody.nif` + per-hand
     //    NIFs); the RACE record's MODL fields are head models on FNV /
     //    FO3, not body. Each missing NIF is skipped silently — modded
@@ -400,6 +427,13 @@ pub fn spawn_npc_entity(
     //    of the body was actually loadable. Pre-#793 only `upperbody`
     //    shipped, so every kf-era NPC rendered handless.
     for body_path in humanoid_body_paths(game, gender) {
+        if body_covered && body_path.ends_with("upperbody.nif") {
+            log::info!(
+                "NPC {:08X} ({}): equipped armor covers torso — skipping {}",
+                npc.form_id, npc.editor_id, body_path,
+            );
+            continue;
+        }
         match tex_provider.extract_mesh(body_path) {
             Some(body_data) => {
                 // M41.0 Phase 1b.x — body skinning catastrophically
