@@ -290,6 +290,26 @@ impl Ba2Archive {
         self.files.len()
     }
 
+    /// Iterate `(path, packed_size, unpacked_size)` for every GNRL
+    /// entry. DX10 entries are skipped — their packed/unpacked sizes
+    /// live on each mip chunk and the archive-level "single file size"
+    /// abstraction doesn't apply.
+    ///
+    /// Used by `examples/ba2_ratio_anomaly.rs` (#598) to surface GNRL
+    /// records where `packed_size > unpacked_size` — a ratio impossible
+    /// for well-formed deflate, and worth investigating as either a
+    /// benign block-alignment quirk or a parser mis-interpretation.
+    pub fn iter_general_sizes(&self) -> impl Iterator<Item = (&str, u32, u32)> + '_ {
+        self.files.iter().filter_map(|(name, entry)| match entry {
+            Ba2Entry::General {
+                packed_size,
+                unpacked_size,
+                ..
+            } => Some((name.as_str(), *packed_size, *unpacked_size)),
+            Ba2Entry::Dx10 { .. } => None,
+        })
+    }
+
     /// Extract a file from the archive.
     ///
     /// For GNRL entries, returns the raw (decompressed if needed) bytes.
