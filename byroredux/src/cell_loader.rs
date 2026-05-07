@@ -995,7 +995,7 @@ fn load_references(
             placed_ref.position[2],
             -placed_ref.position[1],
         );
-        let outer_rot = euler_zup_to_quat_yup(
+        let outer_rot = euler_zup_to_quat_yup_refr(
             placed_ref.rotation[0],
             placed_ref.rotation[1],
             placed_ref.rotation[2],
@@ -2614,6 +2614,67 @@ fn spawn_placed_instances(
 /// math inline and drifting from the authored intent.
 pub(crate) fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
     Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx)
+}
+
+/// Diagnostic switch for the REFR Euler→Y-up quaternion conversion.
+///
+/// The current shipping conversion (mode 0) assumes the on-disk REFR
+/// Euler triple is **CW-positive, decomposed `Rz · Ry · Rx`** (yaw
+/// outermost). This convention is asserted in the docstring of
+/// [`euler_zup_to_quat_yup`] above and in the `gamebryo_cw_rotation`
+/// memory note, but it is NOT empirically verified for REFR specifically
+/// — the citation is to Gamebryo's `NiMatrix3.h` which documents the
+/// NIF runtime utility class, not the REFR ESM decode path. xEdit's
+/// `EulerToM33` uses `Rx · Ry · Rz` (CCW) for NIF preview rendering,
+/// which is a different composition.
+///
+/// Symptom: large statics (architectural shells, FO4 SCOLs) with
+/// non-axis-aligned REFR rotations land in 90°-quantised wrong
+/// poses with X/Y-only positioning drift. For axis-aligned rotations
+/// (only one non-zero among rx/ry/rz) all four candidates produce
+/// the same matrix, so the bug doesn't surface on simple cases.
+///
+/// `--rotation-mode 0..=3` (set via `set_refr_rotation_mode_diag`)
+/// switches between the four (CW/CCW × XYZ/ZYX) candidates so an
+/// operator can screenshot each on a known-good cell and pick the
+/// match. Default 0 is the shipping behavior.
+///
+/// **This is a diagnostic only — it stays in tree until the REFR
+/// composition is empirically pinned, then collapses to the winning
+/// formula.**
+static REFR_ROTATION_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_refr_rotation_mode_diag(mode: u8) {
+    REFR_ROTATION_MODE.store(mode, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Diagnostic-mode-aware variant of [`euler_zup_to_quat_yup`] used
+/// only on the REFR placement code path. Other call sites (XCLL
+/// directional lighting in `scene.rs`) keep going through the
+/// shipping helper so a mode change doesn't accidentally rotate the
+/// sun direction along with the statics.
+pub(crate) fn euler_zup_to_quat_yup_refr(rx: f32, ry: f32, rz: f32) -> Quat {
+    use std::sync::atomic::Ordering;
+    match REFR_ROTATION_MODE.load(Ordering::Relaxed) {
+        // Mode 0 — current shipping behavior. CW + ZYX-product (yaw outermost).
+        // R_zup = Rz_cw · Ry_cw · Rx_cw  ⇒  R_yup = Ry(-rz) · Rz(ry) · Rx(-rx).
+        0 => Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx),
+        // Mode 1 — CW + XYZ-product (roll outermost). xEdit's NIF
+        // preview composition. R_zup = Rx_cw · Ry_cw · Rz_cw.
+        // C-conjugation: Rx → Rx, Ry → Rz(-, double negate), Rz → Ry.
+        // R_yup = Rx(-rx) · Rz(ry) · Ry(-rz).
+        1 => Quat::from_rotation_x(-rx) * Quat::from_rotation_z(ry) * Quat::from_rotation_y(-rz),
+        // Mode 2 — CCW + ZYX-product. R_zup = Rz · Ry · Rx (no
+        // angle negation). C-conjugation: Rx → Rx, Ry → Rz(-),
+        // Rz → Ry. R_yup = Ry(rz) · Rz(-ry) · Rx(rx).
+        2 => Quat::from_rotation_y(rz) * Quat::from_rotation_z(-ry) * Quat::from_rotation_x(rx),
+        // Mode 3 — CCW + XYZ-product. R_zup = Rx · Ry · Rz.
+        // R_yup = Rx(rx) · Rz(-ry) · Ry(rz).
+        3 => Quat::from_rotation_x(rx) * Quat::from_rotation_z(-ry) * Quat::from_rotation_y(rz),
+        // Unknown mode — fall back to shipping behavior rather than
+        // panic. The CLI parser should clamp to 0..=3.
+        _ => Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx),
+    }
 }
 
 #[path = "cell_loader_terrain.rs"]

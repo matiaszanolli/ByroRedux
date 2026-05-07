@@ -27,7 +27,7 @@ use byroredux_plugin::esm;
 
 use crate::asset_provider::MaterialProvider;
 
-use super::euler_zup_to_quat_yup;
+use super::euler_zup_to_quat_yup_refr;
 
 /// Per-REFR texture overlay computed from XATO / XTNM / XTXR sub-records
 /// (#584). A populated overlay overrides specific texture slots of the
@@ -359,7 +359,7 @@ pub(crate) fn expand_scol_placements(
             // Z-up Bethesda → Y-up renderer, matching the outer REFR
             // conversion policy in `load_references`.
             let local_pos = Vec3::new(p.pos[0], p.pos[2], -p.pos[1]);
-            let local_rot = euler_zup_to_quat_yup(p.rot[0], p.rot[1], p.rot[2]);
+            let local_rot = euler_zup_to_quat_yup_refr(p.rot[0], p.rot[1], p.rot[2]);
             let final_pos = outer_rot * (outer_scale * local_pos) + outer_pos;
             let final_rot = outer_rot * local_rot;
             let final_scale = outer_scale * p.scale;
