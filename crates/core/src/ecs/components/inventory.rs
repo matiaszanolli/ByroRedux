@@ -32,7 +32,6 @@
 
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
-use crate::form_id::FormId;
 use std::num::NonZeroU32;
 
 /// Index into the per-world [`ItemInstancePool`](crate::ecs::resources::ItemInstancePool).
@@ -51,8 +50,15 @@ pub struct ItemInstanceId(pub NonZeroU32);
 /// per-world pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemStack {
-    /// Base record this stack is an instance of (ARMO / WEAP / MISC / etc.).
-    pub base_form_id: FormId,
+    /// Base record this stack is an instance of (ARMO / WEAP / MISC /
+    /// etc.). Raw plugin-scoped form ID — same shape the cell loader
+    /// and `EsmIndex` use throughout. Refactored to a stable
+    /// content-addressed identity (`FormId` interned through
+    /// `FormIdPool`) when M45 save lands and the rest of the engine
+    /// switches over in one pass; using `u32` here today avoids
+    /// threading `FormIdPool` through every spawn site for a slice
+    /// that doesn't yet need cross-load identity.
+    pub base_form_id: u32,
     /// Stack count. Always non-negative at runtime — the parsed CNTO's
     /// `i32` is normalised to `u32` at the spawn boundary (negative
     /// counts on disk are remove-from-inventory deltas, never live
@@ -67,7 +73,7 @@ impl ItemStack {
     /// Build a stack of `count` items of `base_form_id` with no per-
     /// instance state. Use this for any item that doesn't yet need an
     /// instance pool slot — which is the overwhelming majority.
-    pub const fn new(base_form_id: FormId, count: u32) -> Self {
+    pub const fn new(base_form_id: u32, count: u32) -> Self {
         Self {
             base_form_id,
             count,
@@ -207,21 +213,10 @@ impl Component for EquipmentSlots {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
-
-    fn fid(local: u32) -> FormId {
-        // Helper: intern a FormId for tests via a fresh pool. Tests
-        // only need stable identity within a single assertion.
-        let mut pool = FormIdPool::default();
-        pool.intern(FormIdPair {
-            plugin: PluginId(0),
-            local: LocalFormId(local),
-        })
-    }
 
     #[test]
     fn item_stack_defaults_to_no_instance() {
-        let s = ItemStack::new(fid(1), 5);
+        let s = ItemStack::new(0x0001_F4A0, 5);
         assert_eq!(s.count, 5);
         assert!(s.instance.is_none());
     }
@@ -229,8 +224,8 @@ mod tests {
     #[test]
     fn inventory_push_returns_sequential_indices() {
         let mut inv = Inventory::new();
-        let a = inv.push(ItemStack::new(fid(1), 1));
-        let b = inv.push(ItemStack::new(fid(2), 2));
+        let a = inv.push(ItemStack::new(0x0001_F4A0, 1));
+        let b = inv.push(ItemStack::new(0x0001_F4A1, 2));
         assert_eq!(a, InventoryIndex(0));
         assert_eq!(b, InventoryIndex(1));
         assert_eq!(inv.get(a).unwrap().count, 1);
