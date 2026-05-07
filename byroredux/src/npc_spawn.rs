@@ -25,28 +25,11 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::helpers::add_child;
 use crate::scene::load_nif_bytes_with_skeleton;
 
-/// NPC gender as recorded by the ACBS sub-record's flags field.
-///
-/// Bit 0 of `acbs_flags` is the canonical "Female" flag across every
-/// targeted Bethesda game from Oblivion through Starfield (per UESP
-/// ACBS documentation). NPC_ and CREA records share the layout, so a
-/// single helper is sufficient.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Gender {
-    Male,
-    Female,
-}
-
-impl Gender {
-    /// Decode the gender bit from an `NpcRecord::acbs_flags` value.
-    pub fn from_acbs_flags(flags: u32) -> Self {
-        if flags & 0x0000_0001 != 0 {
-            Self::Female
-        } else {
-            Self::Male
-        }
-    }
-}
+// Gender lives in the plugin crate since the equip resolver
+// (`resolve_armor_mesh`) needs it for ARMA dispatch and shouldn't
+// depend on the binary. Re-exported here so existing call sites
+// continue to use `npc_spawn::Gender`.
+pub use byroredux_plugin::equip::Gender;
 
 /// Path inside the meshes archive for the default humanoid skeleton.
 ///
@@ -743,10 +726,17 @@ pub fn spawn_npc_entity(
         }
         let _ = slot_mask;
 
-        let model_path = item.common.model_path.as_str();
-        if model_path.is_empty() {
+        // Per-game ARMO → worn-mesh dispatch lives in
+        // `byroredux_plugin::equip::resolve_armor_mesh` (Phase B.1).
+        // On FNV/FO3/Oblivion the resolver returns
+        // `armor.common.model_path`; on Skyrim+/FO4 it walks the
+        // ARMA list and picks the race-matched gender-appropriate
+        // biped mesh. Either way the spawn site stays uniform.
+        let Some(model_path) =
+            byroredux_plugin::equip::resolve_armor_mesh(item, gender, npc.race_form_id, index, game)
+        else {
             continue;
-        }
+        };
         match tex_provider.extract_mesh(model_path) {
             Some(armor_data) => {
                 let (_count, armor_root, _map) = load_nif_bytes_with_skeleton(
@@ -874,6 +864,7 @@ pub fn spawn_prebaked_npc_entity(
     ref_pos: Vec3,
     ref_rot: Quat,
     ref_scale: f32,
+    index: &EsmIndex,
 ) -> Option<EntityId> {
     if !game.uses_prebaked_facegen() {
         return None;
@@ -954,7 +945,7 @@ pub fn spawn_prebaked_npc_entity(
         &facegen_data,
         &facegen_path,
         tex_provider,
-        mat_provider,
+        mat_provider.as_deref_mut(),
         Some(&skel_map),
         None,
     );
@@ -962,6 +953,130 @@ pub fn spawn_prebaked_npc_entity(
         world.insert(fr, Parent(placement_root));
         add_child(world, placement_root, fr);
     }
+
+    // 4. Equipment (M41 Phase 2 / #896 Phase B.2 — Skyrim+/FO4 path).
+    //
+    // Walks the actor's default outfit (`DOFT` → `OTFT` → ARMO list)
+    // and any directly-equipped inventory armor, populates ECS
+    // `Inventory` / `EquipmentSlots` on the placement root, and loads
+    // each piece's worn mesh via `byroredux_plugin::equip::resolve_armor_mesh`
+    // — which dispatches per-game: Skyrim+ walks the ARMA list,
+    // race-matches, and picks the gender-appropriate biped path.
+    //
+    // **Body suppression NOT applied here.** The pre-baked FaceGen
+    // NIF is one combined head+body skinned mesh; selectively hiding
+    // body sub-shapes requires per-shape `BSDismemberSkinInstance`
+    // partition inspection. Phase B.2 renders armor on top of the
+    // FaceGen body and accepts whatever clipping happens — same
+    // compromise Phase A.1 made before A.2 added the kf-era body-skip.
+    // SSE armor-clipping refinement is a separate follow-up.
+    //
+    // **LVLI entries skipped.** Outfit `INAM` arrays can reference
+    // either ARMO (direct) or LVLI (leveled item — random roll vs
+    // actor level). Phase B.2 only spawns ARMO matches; LVLI
+    // dispatch (random pick + level gating) is its own slice.
+    let mut npc_inventory = Inventory::new();
+    let mut equipment_slots = EquipmentSlots::new();
+    let mut equipped_armor_count = 0u32;
+    let mut equip_form_ids: Vec<u32> = Vec::new();
+    if let Some(otft_fid) = npc.default_outfit {
+        if let Some(otft) = index.outfits.get(&otft_fid) {
+            equip_form_ids.extend(otft.items.iter().copied());
+        } else {
+            log::debug!(
+                "NPC {:08X} ({}): DOFT {:08X} unresolved — \
+                 outfit not in EsmIndex",
+                npc.form_id,
+                npc.editor_id,
+                otft_fid,
+            );
+        }
+    }
+    for entry in npc.inventory.iter() {
+        let runtime_count = entry.count.max(0) as u32;
+        if runtime_count > 0 {
+            equip_form_ids.push(entry.item_form_id);
+        }
+    }
+    for form_id in equip_form_ids {
+        let stack = ItemStack::new(form_id, 1);
+        let inv_idx = npc_inventory.push(stack);
+
+        let Some(item) = index.items.get(&form_id) else {
+            // LVLI entries land here too — they're indexed in
+            // `leveled_items`, not `items`. Silent skip is correct
+            // until LVLI dispatch lands.
+            continue;
+        };
+        let ItemKind::Armor {
+            biped_flags,
+            ..
+        } = item.kind
+        else {
+            continue;
+        };
+
+        let displaced = equipment_slots.equip(biped_flags, inv_idx);
+        if !displaced.is_empty() {
+            log::debug!(
+                "NPC {:08X} ({}): armor {:08X} displaced inventory slots {:?}",
+                npc.form_id,
+                npc.editor_id,
+                form_id,
+                displaced,
+            );
+        }
+
+        let Some(model_path) = byroredux_plugin::equip::resolve_armor_mesh(
+            item,
+            gender,
+            npc.race_form_id,
+            index,
+            game,
+        ) else {
+            continue;
+        };
+        match tex_provider.extract_mesh(model_path) {
+            Some(armor_data) => {
+                let (_count, armor_root, _map) = load_nif_bytes_with_skeleton(
+                    world,
+                    ctx,
+                    &armor_data,
+                    model_path,
+                    tex_provider,
+                    mat_provider.as_deref_mut(),
+                    Some(&skel_map),
+                    None,
+                );
+                if let Some(ar) = armor_root {
+                    world.insert(ar, Parent(placement_root));
+                    add_child(world, placement_root, ar);
+                    equipped_armor_count += 1;
+                }
+            }
+            None => {
+                log::debug!(
+                    "NPC {:08X} ({}): armor {:08X} model '{}' not in archives",
+                    npc.form_id,
+                    npc.editor_id,
+                    form_id,
+                    model_path,
+                );
+            }
+        }
+    }
+    if equipped_armor_count > 0 {
+        log::info!(
+            "NPC {:08X} ({}): equipped {} armor mesh(es) on pre-baked path \
+             ({} inventory entries)",
+            npc.form_id,
+            npc.editor_id,
+            equipped_armor_count,
+            npc_inventory.len(),
+        );
+    }
+    world.insert(placement_root, npc_inventory);
+    world.insert(placement_root, equipment_slots);
 
     // Face-tint texture override (Phase 4.x): the per-NPC face-tint
     // DDS at `textures\actors\character\facegendata\facetint\

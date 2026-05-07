@@ -1103,6 +1103,7 @@ fn load_references(
                         ref_pos,
                         ref_rot,
                         ref_scale,
+                        record_index,
                     );
                     if spawned.is_some() {
                         npc_spawned += 1;
