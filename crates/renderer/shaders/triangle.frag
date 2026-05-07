@@ -466,6 +466,37 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+// Specular antialiasing — Kaplanyan & Hoffman 2016
+// ("Stable Geometric Specular Antialiasing With Projected-Space NDF
+// Filtering", Siggraph Talks). At distance, a single fragment can
+// cover many normal-map periods (corrugated metal, brick mortar,
+// fence cutouts, etc.). The plain GGX lobe stays narrow and adjacent
+// pixels swing between bright specular hit and dark miss — the
+// "soft lighting + distance" striping that read as a recurring bug
+// class on Quonset / industrial interiors (Nellis Museum was the
+// canonical regression).
+//
+// Estimate the per-fragment normal-vector variance from screen-space
+// derivatives, then widen `roughness²` by `2 × kernel_variance`. The
+// lobe smears the bright/dark across pixels at exactly the rate
+// the underlying normal aliases — converging back to the authored
+// roughness on smooth surfaces (small variance) so close-range
+// specular highlights stay sharp.
+//
+// Returns the filtered roughness (already `sqrt`'d so the caller
+// can pass it straight to [`distributionGGX`] / [`geometrySmith`]).
+// `roughness` clamp at `0.025` mirrors what the BSLightingShader
+// gloss path reaches at maximum gloss; the `min(.., 1.0)` upper
+// bound is the GGX validity ceiling.
+float specularAaRoughness(vec3 N, float roughness) {
+    vec3 dNdx = dFdx(N);
+    vec3 dNdy = dFdy(N);
+    float kernelVariance = 0.25 * (dot(dNdx, dNdx) + dot(dNdy, dNdy));
+    float roughness2 = roughness * roughness;
+    float filteredR2 = clamp(roughness2 + 2.0 * kernelVariance, 0.025 * 0.025, 1.0);
+    return sqrt(filteredR2);
+}
+
 // ── Parallax occlusion mapping ──────────────────────────────────────
 //
 // Standard step + linear-interpolate POM using screen-space derivatives
@@ -684,6 +715,17 @@ const uint INST_RENDER_LAYER_MASK  = 0x3u;
 //             sampled from a glass surface, not real scene geometry.
 // Set BYROREDUX_RENDER_DEBUG=0x80 to enable.
 const uint DBG_VIZ_GLASS_PASSTHRU = 0x80u;
+
+// 0x100 — disable specular antialiasing (`specularAaRoughness`).
+//
+// Every per-light + RT-reflection BRDF site widens the authored
+// `roughness` by the screen-space normal-variance kernel before
+// feeding it to GGX/Smith. Setting this bit returns to the raw
+// authored roughness so the bug-class fixed by Kaplanyan-Hoffman
+// 2016 (corrugated normal map → bright/dark stripes at distance)
+// can be A/B'd against a regression suspect that turns out to be
+// the spec-AA itself. Default is enabled; the bit is opt-OUT.
+const uint DBG_DISABLE_SPECULAR_AA = 0x100u;
 
 void main() {
     // Decode debug-bypass flags (zero on production runs).
@@ -1819,8 +1861,15 @@ void main() {
         float NdotH = max(dot(N, H), 0.0);
         float HdotV = max(dot(H, V), 0.0);
 
-        float D = distributionGGX(NdotH, roughness);
-        float G = geometrySmith(NdotV, NdotL, roughness);
+        // Specular AA — widen roughness by per-fragment normal
+        // variance (Kaplanyan-Hoffman 2016). Smears bright/dark
+        // banding across pixels on corrugated / high-frequency-
+        // normal-map surfaces at distance.
+        float aaRoughness = ((dbgFlags & DBG_DISABLE_SPECULAR_AA) != 0u)
+            ? roughness
+            : specularAaRoughness(N, roughness);
+        float D = distributionGGX(NdotH, aaRoughness);
+        float G = geometrySmith(NdotV, NdotL, aaRoughness);
         vec3 F = fresnelSchlick(HdotV, F0);
 
         vec3 kD = (1.0 - F) * (1.0 - metalness);
@@ -1936,8 +1985,16 @@ void main() {
             float NdotH = max(dot(N, H), 0.0);
             float HdotV = max(dot(H, V), 0.0);
 
-            float D = distributionGGX(NdotH, roughness);
-            float G = geometrySmith(NdotV, NdotL, roughness);
+            // Specular AA — see fallback-directional path above for
+            // the Kaplanyan-Hoffman 2016 derivation. Widening the
+            // roughness fed to D + G is the part that suppresses the
+            // bright/dark stripe aliasing on corrugated walls; F
+            // depends only on `HdotV` so it stays unchanged.
+            float aaRoughness = ((dbgFlags & DBG_DISABLE_SPECULAR_AA) != 0u)
+                ? roughness
+                : specularAaRoughness(N, roughness);
+            float D = distributionGGX(NdotH, aaRoughness);
+            float G = geometrySmith(NdotV, NdotL, aaRoughness);
             vec3 F = fresnelSchlick(HdotV, F0);
 
             vec3 kD = (1.0 - F) * (1.0 - metalness);

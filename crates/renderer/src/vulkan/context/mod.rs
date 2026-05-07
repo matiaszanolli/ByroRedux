@@ -493,8 +493,8 @@ fn parse_render_debug_flags_env() -> u32 {
     };
     match parsed {
         Some(v) => {
-            log::info!("BYROREDUX_RENDER_DEBUG = 0x{:x} (POM bypass={}, detail bypass={}, normals viz={}, tangent viz={}, normal-map bypass={}, normal-map force-on={}, render-layer viz={}, glass-passthru viz={})",
-                v, v & 1 != 0, v & 2 != 0, v & 4 != 0, v & 8 != 0, v & 0x10 != 0, v & 0x20 != 0, v & 0x40 != 0, v & 0x80 != 0);
+            log::info!("BYROREDUX_RENDER_DEBUG = 0x{:x} (POM bypass={}, detail bypass={}, normals viz={}, tangent viz={}, normal-map bypass={}, normal-map force-on={}, render-layer viz={}, glass-passthru viz={}, specular-AA disable={})",
+                v, v & 1 != 0, v & 2 != 0, v & 4 != 0, v & 8 != 0, v & 0x10 != 0, v & 0x20 != 0, v & 0x40 != 0, v & 0x80 != 0, v & 0x100 != 0);
             v
         }
         None => {
@@ -532,6 +532,14 @@ pub struct VulkanContext {
     ///            cyan=passthru ×2 + non-self terminus,
     ///            magenta=budget exhausted with terminus still on
     ///            same-texture glass.
+    ///   `0x100` — disable specular antialiasing
+    ///            (`DBG_DISABLE_SPECULAR_AA`, Kaplanyan-Hoffman 2016).
+    ///            The default-on path widens GGX `roughness` by the
+    ///            per-fragment normal-variance kernel so corrugated
+    ///            normal maps don't band into bright/dark stripes at
+    ///            distance (Nellis Museum was the canonical
+    ///            regression). Set the bit to A/B against suspected
+    ///            spec-AA-introduced softness.
     /// Env values are parsed as `0xN` hex or plain decimal; absent /
     /// invalid → 0 (all paths active, zero overhead). For ad-hoc
     /// bisection of texture / lighting artifacts. See engineering
