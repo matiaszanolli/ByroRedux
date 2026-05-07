@@ -64,6 +64,16 @@ glam = { version = "0.29", features = ["mint"] }
 log = "0.4"
 env_logger = "0.11"
 
+# Profiling / tracing — wall-clock span ladder for the cell-load
+# critical path (#886 / INFRA-PERF-01). `tracing` is a zero-cost
+# no-op when no subscriber is installed, so the macros impose only a
+# function-pointer check on default builds. The Tracy subscriber +
+# client are gated behind the binary's `tracing-tracy` feature so
+# default builds don't pull them in.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "registry"] }
+tracing-tracy = { version = "0.11", default-features = false, features = ["enable", "system-tracing"] }
+
 # Error handling
 anyhow = "1"
 thiserror = "2"

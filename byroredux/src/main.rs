@@ -55,6 +55,41 @@ use byroredux_core::ecs::SystemList;
 /// reset windows. See #801 / STRM-N1.
 const SVGF_TAA_STREAMING_RECOVERY_FRAMES: u32 = 8;
 
+/// Install a `tracing` subscriber for the cell-load span ladder
+/// (#886 / INFRA-PERF-01). Default builds register a no-op subscriber
+/// — `#[tracing::instrument]` macros expand to function-pointer-check
+/// stubs that drop the span data, so there's no measurable overhead
+/// on the hot path. With `--features tracing-tracy`, spans are piped
+/// into the Tracy profiler instead, giving wall-clock visibility for
+/// findings like #877 (BSA mutex contention), #879 (REFR mesh upload
+/// fence-waits), #880 (NPC NIF re-parse), #881 (texture upload
+/// budget), #882 (StringPool intern), #883 (multi-walk unload).
+///
+/// `env_logger` stays the canonical log path; tracing here is
+/// strictly for span-based wall-clock profiling, not logging
+/// duplication.
+fn init_tracing() {
+    // Default-build path: no fmt layer, no Tracy — `instrument` macros
+    // become noop spans. Even the no-op `set_global_default` is
+    // cheap; we skip it entirely so default builds are byte-identical
+    // pre-this-commit at the subscriber level.
+    #[cfg(feature = "tracing-tracy")]
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let registry = tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")))
+            .with(tracing_tracy::TracyLayer::default());
+        registry.init();
+        log::info!(
+            "tracing-tracy: spans → Tracy profiler (run `tracy-capture -o run.tracy` \
+             before launching to capture)"
+        );
+    }
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let debug_mode = args.iter().any(|a| a == "--debug");
@@ -90,6 +125,7 @@ fn main() -> Result<()> {
         );
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    init_tracing();
 
     log::info!("ByroRedux starting");
     log::info!("{}", byroredux_cxx_bridge::ffi::native_hello());
@@ -626,6 +662,11 @@ impl App {
 /// `&mut self.renderer.as_mut().unwrap()` without aliasing — `App`
 /// method signatures take `&mut self` whole, which conflicts with the
 /// drain loop's `&mut self.renderer` borrow.
+#[tracing::instrument(
+    name = "consume_streaming_payload",
+    skip_all,
+    fields(gx = payload.gx, gy = payload.gy, generation = payload.generation),
+)]
 fn consume_streaming_payload(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,

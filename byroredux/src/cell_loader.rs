@@ -129,6 +129,7 @@ fn stamp_cell_root(world: &mut World, cell_root: EntityId, first: EntityId, last
 /// this — without it, cell A's unload would flip cell B's shared
 /// clutter textures to the checkerboard.
 #[allow(dead_code)] // exposed for scripting / doorwalking wiring (M40)
+#[tracing::instrument(name = "unload_cell", skip_all, fields(cell_root = ?cell_root))]
 pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: EntityId) {
     // Drain victims from the `CellRootIndex` inverted map (#791). Pre-#791
     // this filtered the entire `CellRoot` SparseSet to find victims of a
@@ -351,6 +352,11 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
 /// On unresolved REFR `base_form_id` lookups, the warning summary now
 /// names the missing plugin so the failure mode is diagnosable
 /// instead of silent. See M46.0 / #561.
+#[tracing::instrument(
+    name = "load_cell_with_masters",
+    skip_all,
+    fields(esm = esm_path, cell = cell_editor_id, master_count = masters.len()),
+)]
 pub fn load_cell_with_masters(
     masters: &[String],
     esm_path: &str,
@@ -710,6 +716,11 @@ pub fn build_exterior_world_context(
 ///     streaming system passes `None` because cells stream in one at
 ///     a time; the per-cell submit overhead is negligible compared to
 ///     the parse cost the worker just paid.
+#[tracing::instrument(
+    name = "load_one_exterior_cell",
+    skip_all,
+    fields(gx = gx, gy = gy),
+)]
 pub fn load_one_exterior_cell(
     wctx: &ExteriorWorldContext,
     gx: i32,
@@ -833,6 +844,11 @@ struct RefLoadResult {
 /// callers; the cell loader entry points (`load_cell_with_masters`,
 /// `load_exterior_cells_with_masters`) thread the real load order.
 /// See M46.0 / #561.
+#[tracing::instrument(
+    name = "load_references",
+    skip_all,
+    fields(ref_count = refs.len(), npc_count = npcs.len(), race_count = races.len(), game = ?game, label = label),
+)]
 fn load_references(
     refs: &[esm::cell::PlacedRef],
     index: &esm::cell::EsmCellIndex,
@@ -1653,6 +1669,11 @@ fn parse_and_import_nif(
 /// later issue batched `touch_keys` LRU updates if desired. The
 /// streaming drain doesn't currently bother — pre-warmed entries
 /// touch naturally on first placement.
+#[tracing::instrument(
+    name = "finish_partial_import",
+    skip_all,
+    fields(model = model_path),
+)]
 pub(crate) fn finish_partial_import(
     world: &mut World,
     mat_provider: Option<&mut MaterialProvider>,
@@ -1825,6 +1846,11 @@ fn light_radius_or_default(radius: f32) -> f32 {
 /// on a miss. `None` keeps the legacy fresh-upload-per-call path —
 /// callers that don't share placements (terrain-tile / single-NIF CLI
 /// view) keep the old shape.
+#[tracing::instrument(
+    name = "spawn_placed_instances",
+    skip_all,
+    fields(ref_scale = ref_scale, mesh_count = cached.meshes.len()),
+)]
 fn spawn_placed_instances(
     world: &mut World,
     ctx: &mut VulkanContext,

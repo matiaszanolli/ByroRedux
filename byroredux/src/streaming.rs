@@ -287,6 +287,11 @@ where
 /// `parsed` map if the cell doesn't exist, has no references, or
 /// every model path was already cached — the main-thread drain still
 /// applies the empty payload so the pending entry is cleared).
+#[tracing::instrument(
+    name = "pre_parse_cell",
+    skip_all,
+    fields(gx = gx, gy = gy, generation = generation, cached_count = cached_keys.len()),
+)]
 fn pre_parse_cell(
     gx: i32,
     gy: i32,
