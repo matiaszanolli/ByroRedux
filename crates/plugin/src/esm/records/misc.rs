@@ -1083,7 +1083,10 @@ pub fn parse_imod(form_id: u32, subs: &[SubRecord]) -> ImodRecord {
 /// audits `FNV-D2-NEW-01` / #808 (initial stub) and #896 (Phase B
 /// extension for Skyrim+/FO4 actor-worn meshes).
 ///
-/// Per-game sub-record meanings (xEdit `dev-4.1.6` 2026-05-07):
+/// Per-game sub-record meanings sourced from the xEdit project (by
+/// ElminsterAU and the xEdit team, MPL-2.0,
+/// <https://github.com/TES5Edit/TES5Edit>) at tag `dev-4.1.6`
+/// (2026-05-07):
 ///
 /// | sub  | FNV / FO3 ARMA          | Skyrim+ ARMA              |
 /// |------|-------------------------|---------------------------|

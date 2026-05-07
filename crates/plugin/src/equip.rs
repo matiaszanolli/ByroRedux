@@ -1,13 +1,18 @@
 //! Per-game biped-slot bitmask constants and helpers for ARMO records.
 //!
-//! Sourced verbatim from xEdit's `wbDefinitionsTES4.pas` /
-//! `wbDefinitionsFNV.pas` / `wbDefinitionsTES5.pas` /
-//! `wbDefinitionsFO4.pas` at tag `dev-4.1.6` (commit valid 2026-05-07).
+//! Sourced verbatim from the xEdit project (TES5Edit / FNVEdit /
+//! TES4Edit / FO4Edit), by ElminsterAU and the xEdit team, MPL-2.0
+//! licensed:
 //!
-//! Bethesda doesn't ship public BipedObject enum headers, so xEdit is
-//! the canonical community reference — the same definitions every
-//! mod-tooling pipeline (TES5Edit, FO3Edit, FNVEdit, FO4Edit, SSEEdit)
-//! reads.
+//!   <https://github.com/TES5Edit/TES5Edit>
+//!
+//! Specifically `wbDefinitionsTES4.pas` / `wbDefinitionsFNV.pas` /
+//! `wbDefinitionsTES5.pas` / `wbDefinitionsFO4.pas` at tag
+//! `dev-4.1.6` (commit valid 2026-05-07).
+//!
+//! Bethesda doesn't ship public `BipedObject` enum headers for any of
+//! the targeted games, so xEdit is the canonical community reference
+//! — the same definitions every mod-tooling pipeline reads.
 //!
 //! The bit mappings are NOT consistent across games; FO4 in particular
 //! reorganised the layout. Always go through these helpers rather than

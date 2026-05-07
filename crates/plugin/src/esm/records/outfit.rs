@@ -15,9 +15,14 @@
 //! consumer dereferences against `EsmIndex.items` / `leveled_items`
 //! and walks accordingly.
 //!
-//! Sourced from xEdit `wbDefinitionsTES5.pas:7749-7752` (tag
-//! `dev-4.1.6`, 2026-05-07). Same shape on Skyrim / Skyrim SE / FO4
-//! / FO76 / Starfield.
+//! Record shape sourced from the xEdit project (by ElminsterAU and
+//! the xEdit team, MPL-2.0):
+//!
+//!   <https://github.com/TES5Edit/TES5Edit>
+//!
+//! Specifically `Core/wbDefinitionsTES5.pas:7749-7752` at tag
+//! `dev-4.1.6` (commit valid 2026-05-07). Same shape on Skyrim /
+//! Skyrim SE / FO4 / FO76 / Starfield.
 
 use crate::esm::reader::SubRecord;
 use crate::esm::records::common::{read_u32_at, read_zstring};
