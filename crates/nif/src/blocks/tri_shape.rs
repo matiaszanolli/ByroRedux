@@ -647,22 +647,33 @@ impl BsTriShape {
                 if vertex_attrs & VF_VERTEX != 0 {
                     let full_precision =
                         stream.bsver() < 130 || vertex_attrs & VF_FULL_PRECISION != 0;
+                    let has_tangents = vertex_attrs & VF_TANGENTS != 0;
                     if full_precision {
                         let pos = stream.read_ni_point3()?;
                         vertices.push(pos);
-                        // `Bitangent X` is f32 in full-precision per
-                        // nif.xml `BSVertexData`. Captured here so the
-                        // tangent assembler at the end of the loop
-                        // can stitch it together with bitangent_y/z.
-                        bitangent_x = Some(stream.read_f32_le()?);
+                        // Trailing 4-byte slot per nif.xml `BSVertexData`:
+                        // `Bitangent X` (f32) when VF_TANGENTS is set,
+                        // else `Unused W` (uint, discarded). Same byte
+                        // width either way so stream stays aligned.
+                        if has_tangents {
+                            bitangent_x = Some(stream.read_f32_le()?);
+                        } else {
+                            stream.skip(4)?;
+                        }
                     } else {
                         // Half-float positions (FO4 default)
                         let x = half_to_f32(stream.read_u16_le()?);
                         let y = half_to_f32(stream.read_u16_le()?);
                         let z = half_to_f32(stream.read_u16_le()?);
                         vertices.push(NiPoint3 { x, y, z });
-                        // `Bitangent X` is hfloat in half-precision.
-                        bitangent_x = Some(half_to_f32(stream.read_u16_le()?));
+                        // Trailing 2-byte slot: `Bitangent X` (hfloat)
+                        // when VF_TANGENTS is set, else `Unused W`
+                        // (half, discarded).
+                        if has_tangents {
+                            bitangent_x = Some(half_to_f32(stream.read_u16_le()?));
+                        } else {
+                            stream.skip(2)?;
+                        }
                     }
                 }
 

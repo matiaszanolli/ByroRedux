@@ -1220,3 +1220,76 @@ fn bs_tri_shape_data_size_mismatch_uses_derived_stride() {
          per-vertex loop with the data_size payload"
     );
 }
+
+/// Regression: #887 / SK-D1-NN-01 — when `VF_TANGENTS` is clear, the
+/// 4-byte trailing slot after the position triplet is `Unused W` per
+/// nif.xml `BSVertexData`, NOT `Bitangent X`. Pre-fix the parser
+/// unconditionally read the slot into `bitangent_x`. Output was
+/// fortunately gated on `bitangent_z` (only set under
+/// `VF_TANGENTS && VF_NORMALS`), so the stray value never reached the
+/// `tangents` Vec — but the dual semantic was invisible to the code,
+/// and any future consumer that read `bitangent_x` outside the
+/// assembly gate would silently take garbage on non-tangented meshes.
+///
+/// Fixture: SSE BSTriShape (bsver < 130 → full-precision implicit)
+/// with `VF_VERTEX` set, `VF_TANGENTS` clear, 1 vertex. Stuff a
+/// sentinel f32 (NaN-encoded `0xDEAD_BEEF`) in the trailing slot
+/// where pre-fix `bitangent_x` would have absorbed it. Post-fix the
+/// slot is consumed via `stream.skip(4)` and the assembler never sees
+/// it. Pin: `shape.tangents` must remain empty (no spurious tangent
+/// reconstruction).
+#[test]
+fn bs_tri_shape_unused_w_slot_does_not_pollute_tangents() {
+    let header = test_header();
+    let mut bytes = minimal_bs_tri_shape_bytes();
+
+    // Patch vertex_desc (offset 100, 8 bytes): vertex_size_quads = 4
+    // (16 bytes/vertex), VF_VERTEX = 0x001 (no tangents, no normals).
+    let vertex_desc: u64 = 4 | (0x001u64 << 44);
+    let vd_offset = 100;
+    bytes[vd_offset..vd_offset + 8].copy_from_slice(&vertex_desc.to_le_bytes());
+    // num_vertices = 1.
+    let nv_offset = 110;
+    bytes[nv_offset..nv_offset + 2].copy_from_slice(&1u16.to_le_bytes());
+    // data_size = 16 (1 × 16-byte vertex, 0 triangles).
+    let ds_offset = 112;
+    bytes[ds_offset..ds_offset + 4].copy_from_slice(&16u32.to_le_bytes());
+
+    // Splice the 16-byte vertex BEFORE the trailing particle_data_size
+    // (offset 116) — same pattern as the data_size-mismatch test above.
+    let particle_size_offset = 116;
+    let mut vertex_payload = Vec::with_capacity(16);
+    vertex_payload.extend_from_slice(&7.0f32.to_le_bytes()); // x
+    vertex_payload.extend_from_slice(&8.0f32.to_le_bytes()); // y
+    vertex_payload.extend_from_slice(&9.0f32.to_le_bytes()); // z
+    // `Unused W` sentinel — pre-fix this would have been absorbed
+    // into `bitangent_x` and (if `VF_TANGENTS` were also set
+    // somewhere downstream) propagated into the tangent buffer.
+    let sentinel = f32::from_bits(0xDEAD_BEEF);
+    vertex_payload.extend_from_slice(&sentinel.to_le_bytes());
+    bytes.splice(particle_size_offset..particle_size_offset, vertex_payload);
+
+    let mut stream = crate::stream::NifStream::new(&bytes, &header);
+    let block = parse_block("BSTriShape", &mut stream, Some(bytes.len() as u32))
+        .expect("BSTriShape with VF_VERTEX (no tangents) must parse");
+    let shape = block
+        .as_any()
+        .downcast_ref::<BsTriShape>()
+        .expect("BSTriShape did not downcast");
+
+    assert_eq!(shape.vertices.len(), 1);
+    assert!((shape.vertices[0].x - 7.0).abs() < 1e-6);
+    assert!((shape.vertices[0].y - 8.0).abs() < 1e-6);
+    assert!((shape.vertices[0].z - 9.0).abs() < 1e-6);
+    assert!(
+        shape.tangents.is_empty(),
+        "no-tangents BSTriShape must not produce tangent data; \
+         pre-fix the Unused W sentinel was leaking into bitangent_x"
+    );
+    assert_eq!(
+        stream.position() as usize,
+        bytes.len(),
+        "stream must consume exactly — the Unused W byte must be \
+         skipped (not silently captured)"
+    );
+}

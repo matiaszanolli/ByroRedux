@@ -1359,24 +1359,30 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
         // same packed format the inline parser walks, so the same
         // three-slot capture (bitangent_x, bitangent_y, tangent_xyz +
         // bitangent_z) applies. #796 / SK-D1-04 (sibling of SK-D1-03).
-        // `bitangent_x` is unconditionally read with the position
-        // (full-precision SSE always carries the f32 trailing slot)
-        // so it's `Some` directly; the others stay `Option` because
-        // their conditional flags can leave them unread.
+        // All four `Option`s stay `None` until their respective flag
+        // gates fire — the SSE trailing slot (Bitangent X / Unused W)
+        // is only `Some` when VF_TANGENTS is set, mirroring the inline
+        // parser at `tri_shape.rs::BsTriShape::parse`. See #887.
+        let mut bitangent_x: Option<f32> = None;
         let mut bitangent_y: Option<f32> = None;
         let mut tangent_xyz: Option<[f32; 3]> = None;
         let mut bitangent_z: Option<f32> = None;
         let mut normal_zup: Option<[f32; 3]> = None;
 
-        // Position: 3 × f32 + bitangent_x (f32) — 16 bytes total.
+        // Position: 3 × f32 + trailing 4-byte slot — 16 bytes total.
         // SSE always uses full-precision per inline-decoder's
-        // `bsver < 130 || VF_FULL_PRECISION` rule.
+        // `bsver < 130 || VF_FULL_PRECISION` rule. Trailing slot per
+        // nif.xml `BSVertexDataSSE`: `Bitangent X` (f32) when
+        // VF_TANGENTS is set, else `Unused W` (uint, discarded). Same
+        // 4 bytes either way so the +16 advance is unconditional.
         let x = read_f32_le(bytes, off)?;
         let y = read_f32_le(bytes, off + 4)?;
         let z = read_f32_le(bytes, off + 8)?;
         // Z-up → Y-up: (x, z, -y).
         positions.push([x, z, -y]);
-        let bitangent_x: f32 = read_f32_le(bytes, off + 12)?;
+        if has_tangents {
+            bitangent_x = Some(read_f32_le(bytes, off + 12)?);
+        }
         off += 16;
 
         // UV: 2 × f16.
@@ -1461,10 +1467,9 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
         // axis swap as the inline parser's importer-side helper. Sign
         // is rotation-invariant so the swap doesn't flip it. See
         // #796 / SK-D1-04.
-        if let (Some(by), Some(bz), Some(t_xyz), Some(n)) =
-            (bitangent_y, bitangent_z, tangent_xyz, normal_zup)
+        if let (Some(bx), Some(by), Some(bz), Some(t_xyz), Some(n)) =
+            (bitangent_x, bitangent_y, bitangent_z, tangent_xyz, normal_zup)
         {
-            let bx = bitangent_x;
             let cnx = n[1] * t_xyz[2] - n[2] * t_xyz[1];
             let cny = n[2] * t_xyz[0] - n[0] * t_xyz[2];
             let cnz = n[0] * t_xyz[1] - n[1] * t_xyz[0];
