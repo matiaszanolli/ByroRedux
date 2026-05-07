@@ -1,4 +1,8 @@
-# NIF-PERF-05: Arc::from(type_name) per NiUnknown placeholder allocates instead of refcount-bump
+# Issue #834 (OPEN): NIF-PERF-05: Arc::from(type_name) per NiUnknown placeholder allocates instead of refcount-bump
+
+URL: https://github.com/matiaszanolli/ByroRedux/issues/834
+
+---
 
 ## Description
 
