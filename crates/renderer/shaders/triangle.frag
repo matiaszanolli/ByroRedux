@@ -727,6 +727,19 @@ const uint DBG_VIZ_GLASS_PASSTHRU = 0x80u;
 // the spec-AA itself. Default is enabled; the bit is opt-OUT.
 const uint DBG_DISABLE_SPECULAR_AA = 0x100u;
 
+// 0x200 — disable half-Lambert wrap on interior-fill directional.
+//
+// Interior cells upload the XCLL directional with `radius == -1`
+// as a "subtle aesthetic fill" (`render.rs::compute_directional_upload`).
+// The default-on path uses half-Lambert (`dot(N,L) * 0.5 + 0.5`) for
+// the diffuse term so corrugated normal maps don't produce pitch-
+// black grooves where `NdotL → 0` (Nellis Museum was the canonical
+// regression — bright/dark stripes following corrugation period
+// across the entire hut interior). Specular still uses plain
+// `NdotL` so back-facing fragments don't get fake highlights.
+// Set this bit to A/B against the legacy Lambert path.
+const uint DBG_DISABLE_HALF_LAMBERT_FILL = 0x200u;
+
 void main() {
     // Decode debug-bypass flags (zero on production runs).
     uint dbgFlags = floatBitsToUint(jitter.z);
@@ -1975,7 +1988,34 @@ void main() {
             }
 
             float NdotL = max(dot(N, L), 0.0);
-            float contribution = NdotL * atten;
+
+            // Half-Lambert wrap-lighting for the interior-fill
+            // directional (uploaded with `radius == -1` per
+            // `render.rs::compute_directional_upload`). The XCLL
+            // directional is meant as an aesthetic fill, not a
+            // physical sun — but the legacy Lambert path drove
+            // grooves of corrugated normal maps to NdotL = 0 →
+            // pitch-black stripes between bright ridges (Nellis
+            // Museum repro). Wrap-lighting (Valve's "half-Lambert",
+            // L4D2 commentary) maps `dot(N,L)` from `[-1, 1]` to
+            // `[0, 1]` via `dot * 0.5 + 0.5`, so back-facing surfaces
+            // get ~0% and perpendicular surfaces get 50% — eliminates
+            // the dark-grooves pathology while preserving subtle
+            // directional bias. Specular keeps plain `NdotL` so the
+            // GGX lobe stays correct (no fake highlights on
+            // back-facing fragments). Gated on `DBG_DISABLE_HALF_
+            // LAMBERT_FILL = 0x200` for A/B.
+            bool isInteriorFill = radius < 0.0;
+            bool useWrapDiffuse = isInteriorFill
+                && (dbgFlags & DBG_DISABLE_HALF_LAMBERT_FILL) == 0u;
+            float diffuseFactor = useWrapDiffuse
+                ? max(dot(N, L) * 0.5 + 0.5, 0.0)
+                : NdotL;
+            // Per-light early-out — uses the same factor that drives
+            // the diffuse term so wrap-lit fills don't get culled on
+            // back-facing fragments (the wrap can still contribute
+            // there).
+            float contribution = diffuseFactor * atten;
             if (contribution < 0.001) {
                 continue;
             }
@@ -2000,7 +2040,12 @@ void main() {
             vec3 kD = (1.0 - F) * (1.0 - metalness);
             vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
             vec3 unshadowedRadiance = lightColor * atten;
-            vec3 brdfResult = (kD * albedo + specular * specStrength * specColor) * NdotL;
+            // Diffuse uses `diffuseFactor` (wrap on interior fill,
+            // plain Lambert otherwise); specular keeps `NdotL` so the
+            // GGX lobe doesn't fire on back-facing geometry.
+            vec3 brdfResult =
+                kD * albedo * diffuseFactor
+                + specular * specStrength * specColor * NdotL;
 
             // Accumulate as if unshadowed.
             Lo += brdfResult * unshadowedRadiance;
@@ -2022,8 +2067,11 @@ void main() {
             Lo += lightColor * atten * albedo * 0.02;
 
             // Stream this light into every reservoir (WRS).
-            bool unshadowed = radius < 0.0;
-            if (rtEnabled && !unshadowed && shadowFade > 0.01) {
+            // `isInteriorFill` is the same `radius < 0` test we used
+            // for the half-Lambert gate above — interior fills must
+            // not cast shadow rays (the `radius == -1` contract from
+            // `compute_directional_upload`).
+            if (rtEnabled && !isInteriorFill && shadowFade > 0.01) {
                 vec3 shadowableRadiance = brdfResult * unshadowedRadiance;
                 // Target pdf: luminance of the to-be-subtracted radiance.
                 // Sampling proportional to this approximates the optimal
