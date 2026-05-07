@@ -9,6 +9,7 @@ pub mod collision;
 pub mod form_id;
 pub mod global_transform;
 pub mod hierarchy;
+pub mod inventory;
 pub mod light;
 pub mod local_bound;
 pub mod material;
@@ -35,6 +36,9 @@ pub use collision::{CollisionShape, MotionType, RigidBodyData};
 pub use form_id::FormIdComponent;
 pub use global_transform::GlobalTransform;
 pub use hierarchy::{Children, Parent};
+pub use inventory::{
+    EquipmentSlots, Inventory, InventoryIndex, ItemInstanceId, ItemStack, MAX_BIPED_SLOTS,
+};
 pub use light::LightSource;
 pub use local_bound::LocalBound;
 pub use material::Material;

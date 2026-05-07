@@ -1,6 +1,8 @@
 //! Built-in engine resources.
 
+use super::components::ItemInstanceId;
 use super::resource::Resource;
+use std::num::NonZeroU32;
 
 /// System names stored as a resource for debug and console queries.
 pub struct SystemList(pub Vec<String>);
@@ -223,6 +225,106 @@ impl ScratchTelemetry {
     }
 }
 
+/// Per-stack divergent state.
+///
+/// Allocated only when an [`ItemStack`](super::components::ItemStack)
+/// can't be represented by `(base_form_id, count)` alone — modlists,
+/// condition deltas, charge state, named items. Most inventory rows
+/// don't need one; the stack-only common case keeps `instance` at
+/// `None`.
+///
+/// Fields are open-ended: future equip mechanics (FO4 OMOD, weapon
+/// charge, food spoilage) extend this struct rather than parallel
+/// inventory types. Phase A of #896 ships it minimal; Phase B/C and
+/// M45 fill in real fields.
+#[derive(Debug, Default, Clone)]
+pub struct ItemInstance {
+    /// Reserved for now. Real fields land alongside the consuming
+    /// gameplay system (M45 save round-trip; FO4 OMOD wiring).
+    _reserved: (),
+}
+
+/// Sparse arena for [`ItemInstance`]s with a free-list for slot reuse.
+///
+/// The free-list is what prevents Bethesda's pickup-drop-pickup save-
+/// bloat tail. When an `ItemInstance` is released, its slot returns
+/// to `free` and the next allocation reuses it. Save format dumps
+/// `instances` + `free` verbatim — bounded, not log-shaped.
+///
+/// Slot 0 is reserved as a sentinel so [`ItemInstanceId`] (which
+/// wraps `NonZeroU32`) can encode "no instance" as the absence of
+/// the option without burning a u32 niche.
+#[derive(Debug)]
+pub struct ItemInstancePool {
+    instances: Vec<Option<ItemInstance>>,
+    free: Vec<u32>,
+}
+
+impl Resource for ItemInstancePool {}
+
+impl Default for ItemInstancePool {
+    fn default() -> Self {
+        // Pre-fill slot 0 as the reserved sentinel.
+        Self {
+            instances: vec![None],
+            free: Vec::new(),
+        }
+    }
+}
+
+impl ItemInstancePool {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Allocate an instance, reusing a freed slot if available.
+    pub fn allocate(&mut self, inst: ItemInstance) -> ItemInstanceId {
+        if let Some(slot) = self.free.pop() {
+            self.instances[slot as usize] = Some(inst);
+            ItemInstanceId(NonZeroU32::new(slot).expect("free-list never holds slot 0"))
+        } else {
+            let slot = self.instances.len();
+            // `usize::MAX` would wrap; in practice the cap is u32::MAX
+            // entries, far above any realistic save's instance count.
+            assert!(slot <= u32::MAX as usize, "ItemInstancePool overflow");
+            self.instances.push(Some(inst));
+            ItemInstanceId(NonZeroU32::new(slot as u32).expect("slot >= 1 since slot 0 is reserved"))
+        }
+    }
+
+    /// Release a slot back to the free-list. Returns the freed
+    /// instance if it was live, `None` if the slot was already free
+    /// or out of bounds (defensive — duplicate-free is a logic bug
+    /// elsewhere but we don't want to corrupt the arena over it).
+    pub fn release(&mut self, id: ItemInstanceId) -> Option<ItemInstance> {
+        let slot = id.0.get();
+        let cell = self.instances.get_mut(slot as usize)?;
+        let taken = cell.take()?;
+        // Avoid double-pushing onto `free` if release is called twice
+        // for the same id (the `cell.take` above guards the live state
+        // but the free-list contract still needs deduping).
+        if !self.free.contains(&slot) {
+            self.free.push(slot);
+        }
+        Some(taken)
+    }
+
+    pub fn get(&self, id: ItemInstanceId) -> Option<&ItemInstance> {
+        self.instances
+            .get(id.0.get() as usize)
+            .and_then(|cell| cell.as_ref())
+    }
+
+    /// Number of live instances (excludes free slots and the sentinel).
+    pub fn live_count(&self) -> usize {
+        self.instances
+            .iter()
+            .skip(1) // skip the sentinel
+            .filter(|c| c.is_some())
+            .count()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +401,50 @@ mod tests {
             elem_size_bytes: 8,
         };
         assert_eq!(row.wasted_bytes(), 0);
+    }
+
+    #[test]
+    fn item_instance_pool_allocate_starts_at_one() {
+        let mut pool = ItemInstancePool::new();
+        let id = pool.allocate(ItemInstance::default());
+        // Slot 0 is reserved; first allocation must land at 1.
+        assert_eq!(id.0.get(), 1);
+        assert_eq!(pool.live_count(), 1);
+    }
+
+    #[test]
+    fn item_instance_pool_release_reclaims_slot() {
+        let mut pool = ItemInstancePool::new();
+        let a = pool.allocate(ItemInstance::default());
+        let b = pool.allocate(ItemInstance::default());
+        assert_eq!(pool.live_count(), 2);
+        let released = pool.release(a);
+        assert!(released.is_some());
+        assert_eq!(pool.live_count(), 1);
+        // Next allocation reuses `a`'s slot (LIFO from free-list).
+        let c = pool.allocate(ItemInstance::default());
+        assert_eq!(c, a);
+        assert_eq!(pool.live_count(), 2);
+        // `b` stays valid throughout.
+        assert!(pool.get(b).is_some());
+    }
+
+    #[test]
+    fn item_instance_pool_double_release_does_not_corrupt_free_list() {
+        let mut pool = ItemInstancePool::new();
+        let a = pool.allocate(ItemInstance::default());
+        let _ = pool.allocate(ItemInstance::default());
+        assert!(pool.release(a).is_some());
+        // Second release of the same id is a no-op rather than a
+        // duplicate free-list entry.
+        assert!(pool.release(a).is_none());
+        let c = pool.allocate(ItemInstance::default());
+        // Should reuse `a`'s slot exactly once.
+        assert_eq!(c, a);
+        let d = pool.allocate(ItemInstance::default());
+        // `d` lands at a fresh slot — would be slot 1's reuse if the
+        // free-list were corrupted with a duplicate entry.
+        assert_ne!(d, a);
     }
 
     #[test]
