@@ -19,6 +19,16 @@
 //!                     the recovery path on at least one instance.
 //!                     Highlights regressions; suppresses the bulk of
 //!                     fully-parsed type rows.
+//!   `--all`           Disable the top-20 caps on the human-readable
+//!                     "Unparsed types" and "Block type histogram"
+//!                     sections. Without this, a FO4-specific block
+//!                     type that always falls into NiUnknown recovery
+//!                     can hide in the long tail past row 20. See #601.
+//!                     "Types with partial unknown" is always printed
+//!                     uncapped — it's the most direct R3 signal.
+//!   `--min-count N`   Trim every histogram to entries with `total >=
+//!                     N` (default 0). Combine with `--all` to surface
+//!                     the long tail without flooding the summary.
 //!
 //! Per-block-type histogram (R3 — `parsed` vs `unknown`):
 //!   Each block in the scene is attributed to its **header-advertised**
@@ -191,7 +201,7 @@ impl Stats {
             .count()
     }
 
-    fn print(&self, unknown_only: bool) {
+    fn print(&self, unknown_only: bool, show_all: bool, min_count: usize) {
         let failures = self.total - self.clean - self.truncated;
         println!();
         println!("─── Parse stats ──────────────────────────────────────────────");
@@ -227,10 +237,12 @@ impl Stats {
 
             // Always print the regression-signal block first: types
             // where dispatch sometimes succeeds and sometimes falls
-            // into the recovery path.
+            // into the recovery path. Always uncapped — this is the
+            // most direct R3 signal and there are usually only a
+            // handful even on a full-archive sweep.
             let partial: Vec<&(&String, &BlockCounts)> = sorted
                 .iter()
-                .filter(|(_, c)| c.parsed > 0 && c.unknown > 0)
+                .filter(|(_, c)| c.parsed > 0 && c.unknown > 0 && c.total() >= min_count)
                 .collect();
             if !partial.is_empty() {
                 println!();
@@ -244,33 +256,61 @@ impl Stats {
             // Pure-unknown types: dispatch table doesn't know them at
             // all. Not regressions — usually new types or legacy
             // edge-cases — but useful telemetry for parser priorities.
+            // Top-20 cap by default; `--all` uncaps. See #601 — without
+            // this, a FO4-specific block type that always falls into
+            // NiUnknown can hide in the long tail past row 20.
             let pure_unknown: Vec<&(&String, &BlockCounts)> = sorted
                 .iter()
-                .filter(|(_, c)| c.parsed == 0 && c.unknown > 0)
+                .filter(|(_, c)| c.parsed == 0 && c.unknown > 0 && c.total() >= min_count)
                 .collect();
             if !pure_unknown.is_empty() {
                 println!();
                 println!("─── Unparsed types (no dispatch entry) ────────────────────────");
                 println!("  {:>8}  {}", "unknown", "type");
-                for (name, counts) in pure_unknown.iter().take(20) {
+                let limit = if show_all { pure_unknown.len() } else { 20 };
+                for (name, counts) in pure_unknown.iter().take(limit) {
                     println!("  {:>8}  {}", counts.unknown, name);
                 }
-                if pure_unknown.len() > 20 {
+                if pure_unknown.len() > limit {
                     println!(
-                        "  ... and {} more pure-unknown types",
-                        pure_unknown.len() - 20
+                        "  ... and {} more pure-unknown types (use --all to show)",
+                        pure_unknown.len() - limit
                     );
                 }
             }
 
             if !unknown_only {
+                let filtered: Vec<&(&String, &BlockCounts)> =
+                    sorted.iter().filter(|(_, c)| c.total() >= min_count).collect();
+                let header = if show_all {
+                    "─── Block type histogram (full) ────────────────────────────────"
+                } else {
+                    "─── Block type histogram (top 20 by total) ────────────────────"
+                };
                 println!();
-                println!("─── Block type histogram (top 20 by total) ────────────────────");
+                println!("{}", header);
                 println!("  {:>8} {:>8}  {}", "parsed", "unknown", "type");
-                for (name, counts) in sorted.iter().take(20) {
+                let limit = if show_all { filtered.len() } else { 20 };
+                for (name, counts) in filtered.iter().take(limit) {
                     println!("  {:>8} {:>8}  {}", counts.parsed, counts.unknown, name);
                 }
-                println!("  ({} distinct block types)", sorted.len());
+                if filtered.len() > limit {
+                    println!(
+                        "  ... and {} more types (use --all to show)",
+                        filtered.len() - limit
+                    );
+                }
+                let trimmed = sorted.len() - filtered.len();
+                if trimmed > 0 {
+                    println!(
+                        "  ({} distinct block types; {} below --min-count {})",
+                        sorted.len(),
+                        trimmed,
+                        min_count,
+                    );
+                } else {
+                    println!("  ({} distinct block types)", sorted.len());
+                }
             }
         }
 
@@ -440,15 +480,36 @@ fn main() {
     let mut path_arg: Option<String> = None;
     let mut tsv = false;
     let mut unknown_only = false;
-    for arg in std::env::args().skip(1) {
+    let mut show_all = false;
+    let mut min_count: usize = 0;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--tsv" => tsv = true,
             "--unknown-only" => unknown_only = true,
+            "--all" => show_all = true,
+            "--min-count" => {
+                let Some(val) = args.next() else {
+                    eprintln!("--min-count requires a value");
+                    std::process::exit(2);
+                };
+                match val.parse::<usize>() {
+                    Ok(n) => min_count = n,
+                    Err(_) => {
+                        eprintln!("invalid --min-count value: {}", val);
+                        std::process::exit(2);
+                    }
+                }
+            }
             "-h" | "--help" => {
-                eprintln!("usage: nif_stats <path> [--tsv] [--unknown-only]");
+                eprintln!(
+                    "usage: nif_stats <path> [--tsv] [--unknown-only] [--all] [--min-count N]"
+                );
                 eprintln!("  <path>          .nif file, directory, .bsa, or .ba2");
                 eprintln!("  --tsv           emit machine-readable per-type histogram");
                 eprintln!("  --unknown-only  human summary: skip fully-parsed types");
+                eprintln!("  --all           uncap top-20 unparsed/histogram tables (#601)");
+                eprintln!("  --min-count N   trim entries with total < N");
                 std::process::exit(0);
             }
             other if other.starts_with("--") => {
@@ -465,7 +526,9 @@ fn main() {
         }
     }
     let Some(path_arg) = path_arg else {
-        eprintln!("usage: nif_stats <path> [--tsv] [--unknown-only]");
+        eprintln!(
+            "usage: nif_stats <path> [--tsv] [--unknown-only] [--all] [--min-count N]"
+        );
         eprintln!("  <path> may be a .nif file, a directory, a .bsa, or a .ba2 archive");
         std::process::exit(2);
     };
@@ -506,7 +569,7 @@ fn main() {
     if tsv {
         stats.print_tsv();
     } else {
-        stats.print(unknown_only);
+        stats.print(unknown_only, show_all, min_count);
     }
 
     let threshold = min_success_rate();
