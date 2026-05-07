@@ -8,6 +8,7 @@ mod components;
 mod helpers;
 mod npc_spawn;
 mod render;
+mod parsed_nif_cache;
 mod scene;
 mod scene_import_cache;
 mod streaming;

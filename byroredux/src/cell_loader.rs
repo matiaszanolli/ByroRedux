@@ -849,7 +849,7 @@ fn load_references(
     // counters by snapshotting them at entry.
     let (cache_hits_at_entry, cache_misses_at_entry, cache_size_at_entry) = {
         let reg = world.resource::<NifImportRegistry>();
-        (reg.hits, reg.misses, reg.len())
+        (reg.core.hits(), reg.core.misses(), reg.len())
     };
     let mut bounds_min = Vec3::splat(f32::INFINITY);
     let mut bounds_max = Vec3::splat(f32::NEG_INFINITY);
@@ -1319,8 +1319,8 @@ fn load_references(
     let (this_cell_hits, this_cell_misses, this_cell_unique, lifetime_hit_rate, freed_clip_handles) = {
         let mut reg = world.resource_mut::<NifImportRegistry>();
         let mut freed: Vec<u32> = Vec::new();
-        reg.hits += this_call_hits;
-        reg.misses += this_call_misses;
+        reg.accumulate_hits(this_call_hits);
+        reg.accumulate_misses(this_call_misses);
         reg.touch_keys(pending_hits.iter().map(String::as_str));
         for (key, entry) in pending_new {
             // #863 — accumulate LRU-evicted clip handles from each
@@ -1337,8 +1337,8 @@ fn load_references(
         }
         let new_entries = reg.len().saturating_sub(cache_size_at_entry);
         (
-            reg.hits.saturating_sub(cache_hits_at_entry),
-            reg.misses.saturating_sub(cache_misses_at_entry),
+            reg.core.hits().saturating_sub(cache_hits_at_entry),
+            reg.core.misses().saturating_sub(cache_misses_at_entry),
             new_entries,
             reg.hit_rate_pct(),
             freed,

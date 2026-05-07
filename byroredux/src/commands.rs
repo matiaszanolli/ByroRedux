@@ -267,12 +267,12 @@ impl ConsoleCommand for MeshCacheCommand {
             format!(
                 "  entries:       {} ({} parsed, {} failed)",
                 reg.len(),
-                reg.parsed_count,
-                reg.failed_count,
+                reg.core.parsed_count(),
+                reg.core.failed_count(),
             ),
             format!("  capacity:      {}", cap_str),
-            format!("  lifetime hits: {}", reg.hits),
-            format!("  lifetime miss: {}", reg.misses),
+            format!("  lifetime hits: {}", reg.core.hits()),
+            format!("  lifetime miss: {}", reg.core.misses()),
             format!("  evictions:     {}", reg.evictions),
             format!("  hit rate:      {:.1}%", reg.hit_rate_pct()),
         ])

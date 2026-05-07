@@ -7,7 +7,14 @@
 //! a real BSA + ESM); instead verifies the registry's hit/miss
 //! counters and `hit_rate_pct` math, which is the contract the
 //! `mesh.cache` debug command surfaces.
+//!
+//! Bookkeeping primitives (parsed/failed counter math, hit/miss
+//! accumulation, clear_entries) are exercised by the
+//! `parsed_nif_cache::tests` module; this file covers the wrapper-
+//! specific machinery (LRU eviction, clip-handle release, snapshot
+//! decoupling).
 use super::*;
+use crate::parsed_nif_cache::ParsedNifCache;
 
 fn dummy_cached() -> Arc<CachedNifImport> {
     Arc::new(CachedNifImport {
@@ -23,10 +30,10 @@ fn dummy_cached() -> Arc<CachedNifImport> {
 fn fresh_registry_has_zero_counters_and_zero_hit_rate() {
     let reg = NifImportRegistry::new();
     assert_eq!(reg.len(), 0);
-    assert_eq!(reg.hits, 0);
-    assert_eq!(reg.misses, 0);
-    assert_eq!(reg.parsed_count, 0);
-    assert_eq!(reg.failed_count, 0);
+    assert_eq!(reg.core.hits(), 0);
+    assert_eq!(reg.core.misses(), 0);
+    assert_eq!(reg.core.parsed_count(), 0);
+    assert_eq!(reg.core.failed_count(), 0);
     // Avoid NaN when no lookups have happened.
     assert_eq!(reg.hit_rate_pct(), 0.0);
 }
@@ -36,35 +43,37 @@ fn hit_rate_reflects_hit_miss_ratio() {
     let mut reg = NifImportRegistry::new();
     // Simulate the cell-loader workflow: 1 miss + 3 hits on the
     // same model path → 75% lifetime hit rate.
-    reg.cache.insert("torch.nif".into(), Some(dummy_cached()));
-    reg.misses += 1;
-    reg.parsed_count += 1;
+    let _ = reg.insert("torch.nif".into(), Some(dummy_cached()));
+    reg.core.record_miss();
     for _ in 0..3 {
-        reg.hits += 1;
+        reg.core.record_hit();
     }
-    assert_eq!(reg.hits, 3);
-    assert_eq!(reg.misses, 1);
+    assert_eq!(reg.core.hits(), 3);
+    assert_eq!(reg.core.misses(), 1);
     assert!((reg.hit_rate_pct() - 75.0).abs() < 1e-6);
 }
 
 #[test]
 fn clear_drops_entries_but_preserves_lifetime_counters() {
     let mut reg = NifImportRegistry::new();
-    reg.cache.insert("a".into(), Some(dummy_cached()));
-    reg.cache.insert("b".into(), None);
-    reg.parsed_count = 1;
-    reg.failed_count = 1;
-    reg.hits = 5;
-    reg.misses = 2;
+    let _ = reg.insert("a".into(), Some(dummy_cached()));
+    let _ = reg.insert("b".into(), None);
+    // 5 hits + 2 misses to mimic a busy lifetime ahead of the clear.
+    for _ in 0..5 {
+        reg.core.record_hit();
+    }
+    for _ in 0..2 {
+        reg.core.record_miss();
+    }
 
     reg.clear();
     assert_eq!(reg.len(), 0);
-    assert_eq!(reg.parsed_count, 0);
-    assert_eq!(reg.failed_count, 0);
+    assert_eq!(reg.core.parsed_count(), 0);
+    assert_eq!(reg.core.failed_count(), 0);
     // Lifetime counters survive — debug command can still report
     // historical activity after a forced cache flush.
-    assert_eq!(reg.hits, 5);
-    assert_eq!(reg.misses, 2);
+    assert_eq!(reg.core.hits(), 5);
+    assert_eq!(reg.core.misses(), 2);
 }
 
 #[test]
@@ -74,16 +83,14 @@ fn failed_parse_entry_is_remembered_and_reused() {
     // Verifies the cache contract that lookups distinguish "not yet
     // tried" from "tried, failed".
     let mut reg = NifImportRegistry::new();
-    reg.cache.insert("broken.nif".into(), None);
-    reg.misses += 1;
-    reg.failed_count += 1;
+    let _ = reg.insert("broken.nif".into(), None);
 
     // Subsequent get → Some(None) (entry exists, value is None) —
     // distinct from None (entry doesn't exist).
-    let entry = reg.cache.get("broken.nif");
+    let entry = reg.get("broken.nif");
     assert!(matches!(entry, Some(None)));
-    assert_eq!(reg.failed_count, 1);
-    assert_eq!(reg.parsed_count, 0);
+    assert_eq!(reg.core.failed_count(), 1);
+    assert_eq!(reg.core.parsed_count(), 0);
 }
 
 /// #635 / FNV-D3-05 — opt-in LRU eviction. With `max_entries == 0`
@@ -98,7 +105,21 @@ fn unlimited_mode_never_evicts() {
     }
     assert_eq!(reg.len(), 100);
     assert_eq!(reg.evictions, 0);
-    assert_eq!(reg.parsed_count, 100);
+    assert_eq!(reg.core.parsed_count(), 100);
+}
+
+/// Build a registry with an explicit LRU cap and otherwise-default
+/// state. Used by every test that exercises eviction without
+/// reading `BYRO_NIF_CACHE_MAX` from the environment.
+fn registry_with_cap(max_entries: usize) -> NifImportRegistry {
+    NifImportRegistry {
+        core: ParsedNifCache::new(),
+        access_tick: HashMap::new(),
+        next_tick: 0,
+        max_entries,
+        evictions: 0,
+        clip_handles: HashMap::new(),
+    }
 }
 
 /// #635 / FNV-D3-05 — explicit cap evicts the least-recently inserted
@@ -106,18 +127,7 @@ fn unlimited_mode_never_evicts() {
 /// session that touches more meshes than fit in the configured budget.
 #[test]
 fn lru_cap_evicts_least_recently_inserted_entry() {
-    let mut reg = NifImportRegistry {
-        cache: HashMap::new(),
-        access_tick: HashMap::new(),
-        next_tick: 0,
-        max_entries: 3,
-        hits: 0,
-        misses: 0,
-        parsed_count: 0,
-        failed_count: 0,
-        evictions: 0,
-        clip_handles: HashMap::new(),
-    };
+    let mut reg = registry_with_cap(3);
     let _ = reg.insert("a.nif".into(), Some(dummy_cached()));
     let _ = reg.insert("b.nif".into(), Some(dummy_cached()));
     let _ = reg.insert("c.nif".into(), Some(dummy_cached()));
@@ -128,11 +138,11 @@ fn lru_cap_evicts_least_recently_inserted_entry() {
     let _ = reg.insert("d.nif".into(), Some(dummy_cached()));
     assert_eq!(reg.len(), 3);
     assert_eq!(reg.evictions, 1);
-    assert!(!reg.cache.contains_key("a.nif"), "a.nif must have been evicted");
-    assert!(reg.cache.contains_key("b.nif"));
-    assert!(reg.cache.contains_key("c.nif"));
-    assert!(reg.cache.contains_key("d.nif"));
-    assert_eq!(reg.parsed_count, 3, "evicted slot drops parsed_count");
+    assert!(!reg.core.cache.contains_key("a.nif"), "a.nif must have been evicted");
+    assert!(reg.core.cache.contains_key("b.nif"));
+    assert!(reg.core.cache.contains_key("c.nif"));
+    assert!(reg.core.cache.contains_key("d.nif"));
+    assert_eq!(reg.core.parsed_count(), 3, "evicted slot drops parsed_count");
 }
 
 /// #635 / FNV-D3-05 — `touch_keys` bumps the access tick of hit keys
@@ -143,18 +153,7 @@ fn lru_cap_evicts_least_recently_inserted_entry() {
 /// can't afford.
 #[test]
 fn touch_keys_protects_recently_hit_entries_from_lru() {
-    let mut reg = NifImportRegistry {
-        cache: HashMap::new(),
-        access_tick: HashMap::new(),
-        next_tick: 0,
-        max_entries: 3,
-        hits: 0,
-        misses: 0,
-        parsed_count: 0,
-        failed_count: 0,
-        evictions: 0,
-        clip_handles: HashMap::new(),
-    };
+    let mut reg = registry_with_cap(3);
     let _ = reg.insert("door.nif".into(), Some(dummy_cached())); // tick 0
     let _ = reg.insert("wall.nif".into(), Some(dummy_cached())); // tick 1
     let _ = reg.insert("sky.nif".into(), Some(dummy_cached()));  // tick 2
@@ -166,10 +165,10 @@ fn touch_keys_protects_recently_hit_entries_from_lru() {
     // Adding a fresh entry now evicts wall.nif (now the oldest tick).
     let _ = reg.insert("table.nif".into(), Some(dummy_cached()));
     assert_eq!(reg.evictions, 1);
-    assert!(reg.cache.contains_key("door.nif"), "touched key must survive");
-    assert!(!reg.cache.contains_key("wall.nif"), "untouched-and-oldest is the victim");
-    assert!(reg.cache.contains_key("sky.nif"));
-    assert!(reg.cache.contains_key("table.nif"));
+    assert!(reg.core.cache.contains_key("door.nif"), "touched key must survive");
+    assert!(!reg.core.cache.contains_key("wall.nif"), "untouched-and-oldest is the victim");
+    assert!(reg.core.cache.contains_key("sky.nif"));
+    assert!(reg.core.cache.contains_key("table.nif"));
 }
 
 /// #635 / FNV-D3-05 — `insert` keeps `parsed_count` and `failed_count`
@@ -181,19 +180,19 @@ fn touch_keys_protects_recently_hit_entries_from_lru() {
 fn insert_overwrite_transitions_parsed_failed_counters() {
     let mut reg = NifImportRegistry::new();
     let _ = reg.insert("broken.nif".into(), None);
-    assert_eq!(reg.parsed_count, 0);
-    assert_eq!(reg.failed_count, 1);
+    assert_eq!(reg.core.parsed_count(), 0);
+    assert_eq!(reg.core.failed_count(), 1);
 
     // Replace with a successful parse.
     let _ = reg.insert("broken.nif".into(), Some(dummy_cached()));
-    assert_eq!(reg.parsed_count, 1);
-    assert_eq!(reg.failed_count, 0);
+    assert_eq!(reg.core.parsed_count(), 1);
+    assert_eq!(reg.core.failed_count(), 0);
     assert_eq!(reg.len(), 1);
 
     // Replace with a failed parse again (e.g., the BSA file rotted).
     let _ = reg.insert("broken.nif".into(), None);
-    assert_eq!(reg.parsed_count, 0);
-    assert_eq!(reg.failed_count, 1);
+    assert_eq!(reg.core.parsed_count(), 0);
+    assert_eq!(reg.core.failed_count(), 1);
 }
 
 #[test]
@@ -208,7 +207,6 @@ fn batched_commit_matches_per_iteration_semantics() {
 
     let mut this_call_hits: u64 = 0;
     let mut this_call_misses: u64 = 0;
-    let mut this_call_parsed: u64 = 0;
     let mut pending_new: HashMap<String, Option<Arc<CachedNifImport>>> = HashMap::new();
 
     let refs = [
@@ -222,31 +220,29 @@ fn batched_commit_matches_per_iteration_semantics() {
         let key = path.to_string();
         if pending_new.contains_key(&key) {
             this_call_hits += 1;
-        } else if reg.cache.contains_key(&key) {
+        } else if reg.core.cache.contains_key(&key) {
             this_call_hits += 1;
         } else {
             // Simulate a successful parse.
             pending_new.insert(key, Some(dummy_cached()));
             this_call_misses += 1;
-            this_call_parsed += 1;
         }
     }
 
     // Batched commit — mirrors the `resource_mut` write-lock scope
     // at the end of `load_references`.
-    reg.hits += this_call_hits;
-    reg.misses += this_call_misses;
-    reg.parsed_count += this_call_parsed;
+    reg.accumulate_hits(this_call_hits);
+    reg.accumulate_misses(this_call_misses);
     for (k, v) in pending_new {
-        reg.cache.insert(k, v);
+        let _ = reg.insert(k, v);
     }
 
-    assert_eq!(reg.hits, 3, "3 subsequent encounters (2 chairs + 1 lamp)");
-    assert_eq!(reg.misses, 2, "2 unique parses");
-    assert_eq!(reg.parsed_count, 2);
+    assert_eq!(reg.core.hits(), 3, "3 subsequent encounters (2 chairs + 1 lamp)");
+    assert_eq!(reg.core.misses(), 2, "2 unique parses");
+    assert_eq!(reg.core.parsed_count(), 2);
     assert_eq!(reg.len(), 2);
-    assert!(reg.cache.contains_key("chair.nif"));
-    assert!(reg.cache.contains_key("lamp.nif"));
+    assert!(reg.core.cache.contains_key("chair.nif"));
+    assert!(reg.core.cache.contains_key("lamp.nif"));
     assert!(
         (reg.hit_rate_pct() - 60.0).abs() < 1e-6,
         "3 hits / 5 lookups = 60.0%, got {}",
@@ -302,9 +298,7 @@ fn set_clip_handle_overwrite_replaces_previous_value() {
 #[test]
 fn clear_drops_clip_handles_alongside_cache() {
     let mut reg = NifImportRegistry::new();
-    reg.cache
-        .insert("torch.nif".into(), Some(dummy_cached()));
-    reg.parsed_count = 1;
+    let _ = reg.insert("torch.nif".into(), Some(dummy_cached()));
     reg.set_clip_handle("torch.nif".into(), 12);
     assert_eq!(reg.clip_handle_for("torch.nif"), Some(12));
 
@@ -325,18 +319,7 @@ fn clear_drops_clip_handles_alongside_cache() {
 /// in #635.
 #[test]
 fn lru_eviction_drops_clip_handle_for_victim() {
-    let mut reg = NifImportRegistry {
-        cache: HashMap::new(),
-        access_tick: HashMap::new(),
-        next_tick: 0,
-        max_entries: 2,
-        hits: 0,
-        misses: 0,
-        parsed_count: 0,
-        failed_count: 0,
-        evictions: 0,
-        clip_handles: HashMap::new(),
-    };
+    let mut reg = registry_with_cap(2);
     let _ = reg.insert("a.nif".into(), Some(dummy_cached()));
     reg.set_clip_handle("a.nif".into(), 1);
     let _ = reg.insert("b.nif".into(), Some(dummy_cached()));
@@ -356,7 +339,7 @@ fn lru_eviction_drops_clip_handle_for_victim() {
 
     assert_eq!(reg.evictions, 1);
     assert!(
-        !reg.cache.contains_key("a.nif"),
+        !reg.core.cache.contains_key("a.nif"),
         "a.nif must have been evicted"
     );
     assert!(
@@ -389,18 +372,7 @@ fn insert_returns_empty_vec_when_no_eviction() {
 /// entries that actually had a clip handle leak when un-released.
 #[test]
 fn insert_only_returns_freed_handles_for_evicted_entries_with_clips() {
-    let mut reg = NifImportRegistry {
-        cache: HashMap::new(),
-        access_tick: HashMap::new(),
-        next_tick: 0,
-        max_entries: 2,
-        hits: 0,
-        misses: 0,
-        parsed_count: 0,
-        failed_count: 0,
-        evictions: 0,
-        clip_handles: HashMap::new(),
-    };
+    let mut reg = registry_with_cap(2);
     // Two entries; `a.nif` has a clip handle, `b.nif` doesn't.
     let _ = reg.insert("a.nif".into(), Some(dummy_cached()));
     reg.set_clip_handle("a.nif".into(), 7);

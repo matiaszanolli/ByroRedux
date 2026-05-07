@@ -13,9 +13,11 @@
 //!   one model — meshes, collisions, lights, particle emitters, the
 //!   embedded animation clip — wrapped in `Arc` so REFR placements
 //!   share the same allocation.
-//! * [`NifImportRegistry`] is the keyed `HashMap<String,
-//!   Option<Arc<…>>>` plus an LRU-eviction tick map and per-key
-//!   memoised animation-clip handles (#544).
+//! * [`NifImportRegistry`] is the `World` resource that owns a shared
+//!   [`ParsedNifCache`] (the bookkeeping core — keys + lifetime
+//!   counters) plus the LRU machinery (`access_tick`, `evictions`)
+//!   and per-key animation-clip handle memoisation
+//!   (`clip_handles`, #544 / #863).
 //!
 //! See #381 (process-lifetime promotion), #635 (LRU cap via
 //! `BYRO_NIF_CACHE_MAX`), #523 (batched touch invariant), and #544
@@ -25,6 +27,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use byroredux_core::ecs::Resource;
+
+use crate::parsed_nif_cache::ParsedNifCache;
 
 /// Parsed + imported NIF scene data cached per unique model path.
 pub(crate) struct CachedNifImport {
@@ -59,8 +63,9 @@ pub(crate) struct CachedNifImport {
 /// `import_cache` (#383) to a world-resource so cell-to-cell traversal
 /// re-uses every previously-parsed mesh.
 ///
-/// `None` entries record a model that failed to parse (or had zero
-/// useful geometry) so re-parses don't fire on every placement.
+/// `None` entries (in `core.cache`) record a model that failed to
+/// parse (or had zero useful geometry) so re-parses don't fire on
+/// every placement.
 ///
 /// **Memory bound:** opt-in LRU via `BYRO_NIF_CACHE_MAX` env var (#635
 /// / FNV-D3-05). Default `0` = unlimited, matching pre-#635 behaviour
@@ -72,11 +77,13 @@ pub(crate) struct CachedNifImport {
 /// the cap — the engine's other registries (texture, mesh) are
 /// similarly unbounded today.
 pub(crate) struct NifImportRegistry {
-    pub(super) cache: HashMap<String, Option<Arc<CachedNifImport>>>,
+    /// Shared bookkeeping core — entries, hits, misses, parsed/failed
+    /// counts. Counterpart of `SceneImportCache.core`.
+    pub(crate) core: ParsedNifCache<CachedNifImport>,
     /// Monotonic access tick per cached key. Bumped on every batched
     /// touch (insert + hit-set commits at end-of-load). Larger value =
     /// more recently accessed. Eviction picks the entry with the
-    /// smallest tick when `cache.len() > max_entries`.
+    /// smallest tick when `core.len() > max_entries`.
     pub(super) access_tick: HashMap<String, u64>,
     /// Next access tick value to assign. Wraps at u64::MAX (~10^19
     /// touches — the cache will OOM long before this overflows).
@@ -84,14 +91,6 @@ pub(crate) struct NifImportRegistry {
     /// LRU cap; `0` = unlimited (default). Read once at construction
     /// from the `BYRO_NIF_CACHE_MAX` env var.
     pub(super) max_entries: usize,
-    pub(crate) hits: u64,
-    pub(crate) misses: u64,
-    /// Successfully-parsed entries currently in the cache. Mirrors
-    /// `cache.values().filter(|v| v.is_some()).count()` for O(1) reads
-    /// from the `mesh.cache` debug command.
-    pub(crate) parsed_count: u64,
-    /// Failed-parse entries currently in the cache (`None` entries).
-    pub(crate) failed_count: u64,
     /// LRU evictions across the process lifetime. Stays at 0 when
     /// `max_entries == 0` (unlimited mode).
     pub(crate) evictions: u64,
@@ -101,7 +100,7 @@ pub(crate) struct NifImportRegistry {
     /// handle is stashed here so subsequent REFRs of the same model —
     /// within this cell or any future cell — re-use the same clip
     /// without re-converting the channel arrays. Cleared in lockstep
-    /// with `cache` and `access_tick` on `clear()` / LRU eviction so a
+    /// with `core` and `access_tick` on `clear()` / LRU eviction so a
     /// stale handle can never reach the player after the underlying
     /// cache entry has been dropped.
     pub(super) clip_handles: HashMap<String, u32>,
@@ -124,14 +123,10 @@ impl NifImportRegistry {
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(0);
         Self {
-            cache: HashMap::new(),
+            core: ParsedNifCache::new(),
             access_tick: HashMap::new(),
             next_tick: 0,
             max_entries,
-            hits: 0,
-            misses: 0,
-            parsed_count: 0,
-            failed_count: 0,
             evictions: 0,
             clip_handles: HashMap::new(),
         }
@@ -142,11 +137,9 @@ impl NifImportRegistry {
     /// command can still display historical activity.
     #[allow(dead_code)]
     pub(crate) fn clear(&mut self) {
-        self.cache.clear();
+        self.core.clear_entries();
         self.access_tick.clear();
         self.clip_handles.clear();
-        self.parsed_count = 0;
-        self.failed_count = 0;
     }
 
     /// Look up a previously-registered embedded-clip handle for `key`.
@@ -167,9 +160,10 @@ impl NifImportRegistry {
         self.clip_handles.insert(key, handle);
     }
 
-    /// Total number of cached entries (parsed + failed).
+    /// Total number of cached entries (parsed + failed). Delegates to
+    /// the shared core.
     pub(crate) fn len(&self) -> usize {
-        self.cache.len()
+        self.core.len()
     }
 
     /// Configured LRU cap (`0` = unlimited).
@@ -177,22 +171,20 @@ impl NifImportRegistry {
         self.max_entries
     }
 
-    /// Hit rate as a percentage `[0, 100]`. `0.0` when no lookups have
-    /// happened yet (avoid NaN).
+    /// Hit rate as a percentage `[0, 100]`. Delegates to the shared
+    /// core. `0.0` when no lookups have happened yet (avoid NaN).
     pub(crate) fn hit_rate_pct(&self) -> f64 {
-        let total = self.hits + self.misses;
-        if total == 0 {
-            0.0
-        } else {
-            100.0 * self.hits as f64 / total as f64
-        }
+        self.core.hit_rate_pct()
     }
 
     /// Look up `key` in the cache (read-only). Access-tick updates
     /// happen via [`Self::touch_keys`] in the batched end-of-load
-    /// commit so the read path can stay on a shared lock.
+    /// commit so the read path can stay on a shared lock. Hit/miss
+    /// tracking is also batched (see [`Self::accumulate_hits`] /
+    /// [`Self::accumulate_misses`]) — `get` itself does NOT bump
+    /// the lifetime counters.
     pub(crate) fn get(&self, key: &str) -> Option<&Option<Arc<CachedNifImport>>> {
-        self.cache.get(key)
+        self.core.get(key)
     }
 
     /// Snapshot every cached key (positive + negative entries) into an
@@ -207,7 +199,7 @@ impl NifImportRegistry {
     /// Negative entries (`Some(None)` — failed parses) are included so
     /// the worker doesn't pointlessly retry a known-failed parse.
     pub(crate) fn snapshot_keys(&self) -> std::sync::Arc<std::collections::HashSet<String>> {
-        std::sync::Arc::new(self.cache.keys().cloned().collect())
+        std::sync::Arc::new(self.core.keys().cloned().collect())
     }
 
     /// Bump the access tick for every key in `keys` so freshly-hit
@@ -224,12 +216,24 @@ impl NifImportRegistry {
         }
     }
 
+    /// Add a per-call hit tally to the lifetime counter. Used by
+    /// `cell_loader::load_references` to commit a whole cell's
+    /// accumulated hit count under a single resource write lock at
+    /// end-of-load (#523).
+    pub(crate) fn accumulate_hits(&mut self, n: u64) {
+        self.core.accumulate_hits(n);
+    }
+
+    /// Add a per-call miss tally to the lifetime counter (companion
+    /// of [`Self::accumulate_hits`]).
+    pub(crate) fn accumulate_misses(&mut self, n: u64) {
+        self.core.accumulate_misses(n);
+    }
+
     /// Insert (or overwrite) a cache entry, refresh its access tick,
-    /// adjust `parsed_count` / `failed_count` to reflect the
-    /// post-insert state, and evict LRU entries while
-    /// `len > max_entries`. The eviction loop is a no-op when
-    /// `max_entries == 0` (unlimited mode), so the default path stays
-    /// O(1) per insert.
+    /// and evict LRU entries while `len > max_entries`. The eviction
+    /// loop is a no-op when `max_entries == 0` (unlimited mode), so
+    /// the default path stays O(1) per insert.
     ///
     /// Returns a `Vec<u32>` of `AnimationClipRegistry` handles whose
     /// owning cache entries were evicted by this call — the caller
@@ -248,34 +252,15 @@ impl NifImportRegistry {
         key: String,
         value: Option<Arc<CachedNifImport>>,
     ) -> Vec<u32> {
-        // Adjust parsed/failed state so they stay in lockstep with
-        // `cache.values().filter(|v| v.is_some()).count()`.
-        match (self.cache.get(&key), &value) {
-            (None, Some(_)) => {
-                self.parsed_count = self.parsed_count.saturating_add(1);
-            }
-            (None, None) => {
-                self.failed_count = self.failed_count.saturating_add(1);
-            }
-            (Some(Some(_)), None) => {
-                self.parsed_count = self.parsed_count.saturating_sub(1);
-                self.failed_count = self.failed_count.saturating_add(1);
-            }
-            (Some(None), Some(_)) => {
-                self.failed_count = self.failed_count.saturating_sub(1);
-                self.parsed_count = self.parsed_count.saturating_add(1);
-            }
-            // Same-state overwrite: counts unchanged.
-            (Some(Some(_)), Some(_)) | (Some(None), None) => {}
-        }
-        self.cache.insert(key.clone(), value);
+        // Core handles parsed/failed counter adjustment + map insertion.
+        self.core.insert(key.clone(), value);
         let t = self.next_tick;
         self.next_tick = self.next_tick.wrapping_add(1);
         self.access_tick.insert(key, t);
 
         let mut freed_clip_handles: Vec<u32> = Vec::new();
         if self.max_entries > 0 {
-            while self.cache.len() > self.max_entries {
+            while self.core.len() > self.max_entries {
                 // O(N) sweep over `access_tick`. For caches sized in
                 // the low thousands this is ~50 ns × N. A min-heap
                 // would bookkeep on every touch for the unlimited
@@ -288,7 +273,7 @@ impl NifImportRegistry {
                 let Some(victim_key) = victim else {
                     break;
                 };
-                let removed = self.cache.remove(&victim_key);
+                let _ = self.core.remove(&victim_key);
                 self.access_tick.remove(&victim_key);
                 // #544 — drop the memoised clip handle in lockstep so
                 // a future re-parse of the same key registers a fresh
@@ -303,15 +288,6 @@ impl NifImportRegistry {
                 // leaked.
                 if let Some(handle) = self.clip_handles.remove(&victim_key) {
                     freed_clip_handles.push(handle);
-                }
-                match removed {
-                    Some(Some(_)) => {
-                        self.parsed_count = self.parsed_count.saturating_sub(1);
-                    }
-                    Some(None) => {
-                        self.failed_count = self.failed_count.saturating_sub(1);
-                    }
-                    None => {}
                 }
                 self.evictions = self.evictions.saturating_add(1);
             }
