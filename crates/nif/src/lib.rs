@@ -549,8 +549,8 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
     if !recovered_by_type.is_empty() {
         log::warn!(
             "NIF parse recovered {} block(s) via block_size / runtime-cache / \
-             oblivion_skip_sizes paths: {} (per-block detail at debug level — \
-             see #565)",
+             oblivion_skip_sizes paths: {} (set \
+             RUST_LOG=byroredux_nif=debug for per-block detail)",
             recovered_blocks,
             format_type_count_map(&recovered_by_type),
         );
@@ -559,8 +559,8 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         let drift_total: u32 = drifted_by_type.values().sum();
         log::warn!(
             "NIF parse: {} block(s) parsed Ok but consumed != block_size; \
-             stream realigned by header size table: {} (per-block detail at \
-             debug level — under-/over-consume bugs tracked in #615)",
+             stream realigned by header size table: {} (set \
+             RUST_LOG=byroredux_nif=debug for per-block detail)",
             drift_total,
             format_type_count_map(&drifted_by_type),
         );
@@ -906,7 +906,7 @@ mod tests {
             assert!(
                 is_ni_node_subclass(name),
                 "{name} must be recognised as a NiNode-subclass for root \
-                 selection — see #611"
+                 selection in is_ni_node_subclass()"
             );
         }
 
