@@ -22,6 +22,7 @@ pub mod list_record;
 pub mod misc;
 pub mod movs;
 pub mod mswp;
+pub mod outfit;
 pub mod pkin;
 pub mod scol;
 pub mod script;
@@ -30,6 +31,7 @@ pub mod weather;
 pub use list_record::{parse_flst, FlstRecord};
 pub use movs::{parse_movs, MovableStaticRecord};
 pub use mswp::{parse_mswp, MaterialSwapEntry, MaterialSwapRecord};
+pub use outfit::{parse_otft, OtftRecord};
 pub use pkin::{parse_pkin, PkinRecord};
 pub use scol::{parse_scol, ScolPart, ScolPlacement, ScolRecord};
 
@@ -225,6 +227,12 @@ pub struct EsmIndex {
     /// variants for ARMO. Drives ARMO → ARMA → race-specific MODL
     /// rendering chain on non-default-race NPCs.
     pub armor_addons: HashMap<u32, ArmaRecord>,
+    /// `OTFT` outfit records (Skyrim+) — flat lists of armor or
+    /// leveled-item FormIDs that compose an NPC's default-equipped
+    /// set. Referenced via `NPC_.DOFT` / `NPC_.SOFT`. Empty on
+    /// pre-Skyrim games (those equip from inventory directly).
+    /// See #896.
+    pub outfits: HashMap<u32, OtftRecord>,
     /// `BPTD` body-part-data records — per-NPC dismemberment
     /// routing (head, torso, limbs) + biped slot count.
     pub body_parts: HashMap<u32, BptdRecord>,
@@ -405,6 +413,7 @@ impl EsmIndex {
             ("effect_shaders", |s| s.effect_shaders.len()),
             ("item_mods", |s| s.item_mods.len()),
             ("armor_addons", |s| s.armor_addons.len()),
+            ("outfits", |s| s.outfits.len()),
             ("body_parts", |s| s.body_parts.len()),
             // #809 / FNV-D2-NEW-02 stubs.
             ("reputations", |s| s.reputations.len()),
@@ -1011,7 +1020,13 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 index.item_mods.insert(fid, parse_imod(fid, subs));
             })?,
             b"ARMA" => extract_records(&mut reader, end, b"ARMA", &mut |fid, subs| {
-                index.armor_addons.insert(fid, parse_arma(fid, subs));
+                index.armor_addons.insert(fid, parse_arma(fid, subs, game));
+            })?,
+            // OTFT — Skyrim+ outfit (default-equipped armor list).
+            // Pre-Skyrim plugins don't ship OTFT groups; the walker
+            // skips them silently when absent (no group hit).
+            b"OTFT" => extract_records(&mut reader, end, b"OTFT", &mut |fid, subs| {
+                index.outfits.insert(fid, parse_otft(fid, subs));
             })?,
             b"BPTD" => extract_records(&mut reader, end, b"BPTD", &mut |fid, subs| {
                 index.body_parts.insert(fid, parse_bptd(fid, subs));
@@ -2201,6 +2216,7 @@ mod tests {
                 voice_form_id: 0,
                 factions: Vec::new(),
                 inventory: Vec::new(),
+                default_outfit: None,
                 ai_packages: Vec::new(),
                 death_item_form_id: 0,
                 level: 1,
@@ -2294,7 +2310,9 @@ mod tests {
         //   texture_sets, scols, packins, movables, material_swaps —
         //   were silently uncovered by `category_breakdown()` and
         //   would let regressions slip through CI).
+        // Bumped 87 → 88 in #896 (Phase B: outfits — Skyrim+ OTFT
+        //   record map for the equip pipeline).
         // Bump in lockstep with the struct + `categories()` edits.
-        assert_eq!(EsmIndex::categories().len(), 87);
+        assert_eq!(EsmIndex::categories().len(), 88);
     }
 }

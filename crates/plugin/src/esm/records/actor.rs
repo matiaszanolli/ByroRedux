@@ -180,6 +180,12 @@ pub struct NpcRecord {
     pub factions: Vec<FactionMembership>,
     /// Inventory list (`CNTO` sub-records).
     pub inventory: Vec<NpcInventoryEntry>,
+    /// Default outfit FormID (Skyrim+ `DOFT`). Resolves to an `OTFT`
+    /// record whose `INAM` array names the actor's default-equipped
+    /// armor pieces. `None` on FO3 / FNV / Oblivion (those games
+    /// equip from the inventory list directly). `None` on Skyrim+
+    /// when the NPC ships no DOFT — generic settlers etc.
+    pub default_outfit: Option<u32>,
     /// AI packages (`PKID` sub-records, in priority order).
     pub ai_packages: Vec<u32>,
     /// Death item leveled list (DEST in some games, INAM in others).
@@ -284,6 +290,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
         voice_form_id: 0,
         factions: Vec::new(),
         inventory: Vec::new(),
+        default_outfit: None,
         ai_packages: Vec::new(),
         death_item_form_id: 0,
         level: 1,
@@ -335,6 +342,13 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
                 record
                     .ai_packages
                     .push(read_u32_at(&sub.data, 0).unwrap_or(0));
+            }
+            // DOFT — Skyrim+ default outfit FormID. Pre-Skyrim games
+            // don't emit DOFT (NPCs equip directly from inventory).
+            // Stored as Option so the equip pipeline can dispatch on
+            // presence without ambiguity vs the null-form sentinel.
+            b"DOFT" if sub.data.len() >= 4 => {
+                record.default_outfit = read_u32_at(&sub.data, 0);
             }
             b"INAM" if sub.data.len() >= 4 => {
                 record.death_item_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);

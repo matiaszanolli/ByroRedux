@@ -9,7 +9,7 @@
 //! Adding more fields later is straightforward; the parsers walk sub-records
 //! by 4-char code and ignore anything they don't recognize.
 
-use super::common::CommonItemFields;
+use super::common::{read_u32_at, CommonItemFields};
 use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
@@ -79,6 +79,13 @@ pub enum ItemKind {
         /// Skyrim+: armor type from BOD2 second u32 (0=light, 1=clothing,
         /// 2=heavy). `None` on pre-Skyrim games.
         armor_type: Option<u32>,
+        /// Skyrim+ Armature RArray — FormID references to ARMA records
+        /// that supply the actual worn mesh paths (per-race, per-gender).
+        /// Empty on Oblivion / FO3 / FNV (those use `common.model_path`
+        /// directly as the worn mesh). Populated from successive `MODL`
+        /// sub-records on Skyrim+ ARMO records, where MODL is overloaded
+        /// to carry 4-byte FormID payloads instead of path strings.
+        armatures: Vec<u32>,
     },
     /// WEAP: weapon.
     Weapon {
@@ -262,6 +269,11 @@ pub fn parse_armo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
     let mut slot_mask = 0u16;
     let mut armor_rating_x100 = 0u32;
     let mut armor_type: Option<u32> = None;
+    let mut armatures: Vec<u32> = Vec::new();
+    let is_skyrim_or_later = matches!(
+        game,
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
+    );
 
     for sub in subs {
         match &sub.sub_type {
@@ -316,6 +328,17 @@ pub fn parse_armo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
                     }
                 }
             }
+            // Skyrim+ overloads MODL to carry the Armature RArray —
+            // each MODL is a 4-byte FormID pointing at an ARMA record
+            // (the actual worn mesh + race-specific bindings live
+            // there). On pre-Skyrim games MODL is the worn mesh path
+            // string; `CommonItemFields::from_subs` already captured
+            // it into `common.model_path`, so we leave it alone there.
+            b"MODL" if is_skyrim_or_later => {
+                if let Some(id) = read_u32_at(&sub.data, 0) {
+                    armatures.push(id);
+                }
+            }
             // DNAM exists on FO3/FNV/FO4 (DT/DR, 8 bytes) and Skyrim+
             // (armor_rating × 100, 4 bytes). Oblivion has no DNAM —
             // armor rating lives in DATA (handled above).
@@ -336,6 +359,13 @@ pub fn parse_armo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
         }
     }
 
+    // On Skyrim+, the path-string read of MODL by `from_subs` produced
+    // garbage (MODL is a 4-byte FormID payload there, not a zstring).
+    // Clear it so consumers don't try to load a non-path as a mesh.
+    if is_skyrim_or_later {
+        common.model_path.clear();
+    }
+
     ItemRecord {
         form_id,
         common,
@@ -347,6 +377,7 @@ pub fn parse_armo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
             slot_mask,
             armor_rating_x100,
             armor_type,
+            armatures,
         },
     }
 }

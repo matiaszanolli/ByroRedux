@@ -24,7 +24,7 @@
 //! lands alongside the consuming system.
 
 use super::common::{read_f32_at, read_lstring_or_zstring, read_u32_at, read_zstring};
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{GameKind, SubRecord};
 
 /// Water record — referenced by `CELL.XCWT` (water type form ID on a
 /// cell). Pre-fix every XCWT reference dangled at cell load.
@@ -1078,31 +1078,68 @@ pub fn parse_imod(form_id: u32, subs: &[SubRecord]) -> ImodRecord {
 /// rendering on non-default-race NPCs (Vipers, Ghouls, Super Mutants,
 /// Centaurs, Deathclaws, etc.).
 ///
-/// Stub captures EDID + biped flags (BMDT) + DT/DR (DNAM). The MOD2 /
-/// MOD3 / MOD4 / MOD5 male/female + 1st/3rd person mesh paths flow
-/// through `cells.statics` via the existing MODL catch-all. See
-/// audit `FNV-D2-NEW-01` / #808.
+/// Stub captures EDID + biped flags + DT/DR + the male/female biped
+/// model paths the Skyrim+ equip pipeline dispatches against. See
+/// audits `FNV-D2-NEW-01` / #808 (initial stub) and #896 (Phase B
+/// extension for Skyrim+/FO4 actor-worn meshes).
+///
+/// Per-game sub-record meanings (xEdit `dev-4.1.6` 2026-05-07):
+///
+/// | sub  | FNV / FO3 ARMA          | Skyrim+ ARMA              |
+/// |------|-------------------------|---------------------------|
+/// | BMDT | biped_flags + general   | (replaced by BOD2)        |
+/// | BOD2 | n/a                     | biped_flags + armor_type  |
+/// | RNAM | n/a                     | race FormID               |
+/// | MODL | male **biped** path     | additional-races FormID[] |
+/// | MOD2 | male world model path   | male **biped** path       |
+/// | MOD3 | female biped path       | female biped path         |
+/// | MOD4 | female world model path | male 1st-person biped     |
+///
+/// The `male_biped_model` / `female_biped_model` fields below
+/// normalise across games: they always hold the *worn* mesh paths,
+/// regardless of which sub-record code carried them on disk.
 #[derive(Debug, Clone, Default)]
 pub struct ArmaRecord {
     pub form_id: u32,
     pub editor_id: String,
-    /// `BMDT` offset 0..4 — biped slot bitfield (head, hair, hands,
-    /// torso, legs, etc.). Drives the ARMO → ARMA biped-slot routing.
+    /// `BMDT` (FNV/FO3) or `BOD2` (Skyrim+) offset 0..4 — biped slot
+    /// bitfield. Drives the ARMO → ARMA biped-slot routing.
     pub biped_flags: u32,
     /// `BMDT` offset 4..8 — general flags (Heavy / Medium / Light,
-    /// power armor, etc.). Decoded lazily per-game.
+    /// power armor, etc.). Decoded lazily per-game. 0 on Skyrim+
+    /// (BOD2 carries `armor_type` instead, captured below).
     pub general_flags: u32,
     /// `DNAM` offset 0..2 — Damage Threshold (i16, FNV-specific).
     pub dt: i16,
-    /// `DNAM` offset 2..4 — Damage Resistance (i16).
+    /// `DNAM` offset 2..4 — Damage Resistance (i16, FNV-specific).
     pub dr: i16,
+    /// `RNAM` — race FormID this addon is for (Skyrim+ only).
+    /// 0 on Oblivion/FO3/FNV — race linkage there flows through
+    /// ARMO records or per-race world models, not ARMA.
+    pub race_form_id: u32,
+    /// `MODL` (FNV/FO3 — male biped) or `MOD2` (Skyrim+ — male
+    /// biped). Normalised: always the male worn mesh path.
+    pub male_biped_model: String,
+    /// `MOD3` on every supported game — female worn mesh path.
+    pub female_biped_model: String,
+    /// Skyrim+ only: additional race FormIDs from the `Additional
+    /// Races` MODL FormID array. Empty on FNV/FO3 (MODL there is the
+    /// male biped path, captured into `male_biped_model`).
+    pub additional_races: Vec<u32>,
 }
 
-pub fn parse_arma(form_id: u32, subs: &[SubRecord]) -> ArmaRecord {
+/// Parse an ARMA record. Game-aware because MODL has different
+/// meanings (string path vs FormID list) on Skyrim+ vs FNV/FO3.
+pub fn parse_arma(form_id: u32, subs: &[SubRecord], game: GameKind) -> ArmaRecord {
     let mut out = ArmaRecord {
         form_id,
         ..Default::default()
     };
+    let is_skyrim_or_later = matches!(
+        game,
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
+    );
+
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
@@ -1110,9 +1147,37 @@ pub fn parse_arma(form_id: u32, subs: &[SubRecord]) -> ArmaRecord {
                 out.biped_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
                 out.general_flags = read_u32_at(&sub.data, 4).unwrap_or(0);
             }
-            b"DNAM" if sub.data.len() >= 4 => {
+            b"BOD2" if is_skyrim_or_later && sub.data.len() >= 4 => {
+                out.biped_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
+            }
+            b"DNAM" if !is_skyrim_or_later && sub.data.len() >= 4 => {
                 out.dt = i16::from_le_bytes([sub.data[0], sub.data[1]]);
                 out.dr = i16::from_le_bytes([sub.data[2], sub.data[3]]);
+            }
+            b"RNAM" if is_skyrim_or_later && sub.data.len() >= 4 => {
+                out.race_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
+            }
+            b"MODL" => {
+                if is_skyrim_or_later {
+                    // Skyrim+ ARMA additional-races: 4-byte FormID per
+                    // entry. Multiple MODL sub-records can appear.
+                    if let Some(id) = read_u32_at(&sub.data, 0) {
+                        out.additional_races.push(id);
+                    }
+                } else if out.male_biped_model.is_empty() {
+                    // FNV/FO3 ARMA male biped — first MODL only;
+                    // ignore subsequent MODT (texture variant) refs.
+                    out.male_biped_model = read_zstring(&sub.data);
+                }
+            }
+            b"MOD2" if is_skyrim_or_later && out.male_biped_model.is_empty() => {
+                // Skyrim+ male biped model lives at MOD2 (FNV's MOD2
+                // is the world/drop model — uninteresting for the
+                // worn-mesh consumer).
+                out.male_biped_model = read_zstring(&sub.data);
+            }
+            b"MOD3" if out.female_biped_model.is_empty() => {
+                out.female_biped_model = read_zstring(&sub.data);
             }
             _ => {}
         }
@@ -1971,7 +2036,7 @@ mod tests {
             sub(b"BMDT", &bmdt),
             sub(b"DNAM", &dnam),
         ];
-        let a = parse_arma(0x0006_2103, &subs);
+        let a = parse_arma(0x0006_2103, &subs, GameKind::Fallout3NV);
         assert_eq!(a.editor_id, "MetalArmor");
         assert_eq!(a.biped_flags, 0x0000_000C);
         assert_eq!(a.general_flags, 0x0000_0001);
