@@ -107,6 +107,19 @@ pub enum DebugResponse {
         /// one (FO4+ BSSkin paths). Stored on `SkinnedMesh` for the
         /// Phase 1b.x palette-formula investigation.
         global_skin_transform: [f32; 16],
+        /// Per-bone resolved `GlobalTransform.to_matrix()` at the moment
+        /// of the dump. `None` when the bone resolved to no entity at
+        /// scene-import time, or when the bone entity carries no
+        /// `GlobalTransform` (which on a populated cell means the
+        /// transform-propagation BFS skipped it — itself a bug). Pairs
+        /// 1:1 with `bones` and `bind_inverses`.
+        bone_world_matrices: Vec<Option<[f32; 16]>>,
+        /// `palette[i] = bone_world × bind_inverses[i]`, or identity for
+        /// dropout slots (matches `compute_palette_into` exactly). This
+        /// is the matrix the renderer actually pushes to the GPU; an
+        /// external probe diffs this against the M29 standalone path
+        /// to localize the spike-artifact divergence (#841).
+        palette: Vec<[f32; 16]>,
     },
     /// An error message.
     Error { message: String },

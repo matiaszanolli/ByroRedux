@@ -79,7 +79,7 @@ pub fn evaluate(
 
 fn eval_inspect_skinned_mesh(world: &World, entity: u32) -> DebugResponse {
     use byroredux_core::ecs::components::Name;
-    use byroredux_core::ecs::SkinnedMesh;
+    use byroredux_core::ecs::{GlobalTransform, SkinnedMesh};
 
     let Some(skin_q) = world.query::<SkinnedMesh>() else {
         return DebugResponse::error("no SkinnedMesh storage");
@@ -105,12 +105,40 @@ fn eval_inspect_skinned_mesh(world: &World, entity: u32) -> DebugResponse {
         .map(|m| m.to_cols_array())
         .collect();
 
+    // Resolve each bone to its current GlobalTransform mat4. This is the
+    // input to the palette formula (`palette[i] = bone_world ×
+    // bind_inverses[i]`); capturing it makes the renderer's view of the
+    // skeleton reproducible from outside the engine — the missing piece
+    // for the #841 spike-artifact diff against the M29 standalone path.
+    let gt_q = world.query::<GlobalTransform>();
+    let bone_world_matrices: Vec<Option<[f32; 16]>> = skin
+        .bones
+        .iter()
+        .map(|b| {
+            b.and_then(|e| gt_q.as_ref().and_then(|q| q.get(e)))
+                .map(|gt| gt.to_matrix().to_cols_array())
+        })
+        .collect();
+
+    // Compute the palette through the same code path the renderer uses,
+    // so a discrepancy in the field above (None world) shows up here as
+    // an identity slot — matching `SKIN_DROPOUT_DUMPED`'s definition.
+    let mut palette_buf: Vec<byroredux_core::math::Mat4> = Vec::with_capacity(skin.bones.len());
+    skin.compute_palette_into(&mut palette_buf, |bone_entity| {
+        gt_q.as_ref()
+            .and_then(|q| q.get(bone_entity))
+            .map(|gt| gt.to_matrix())
+    });
+    let palette: Vec<[f32; 16]> = palette_buf.iter().map(|m| m.to_cols_array()).collect();
+
     DebugResponse::SkinnedMesh {
         skeleton_root: skin.skeleton_root,
         bones: skin.bones.clone(),
         bone_names,
         bind_inverses,
         global_skin_transform: skin.global_skin_transform.to_cols_array(),
+        bone_world_matrices,
+        palette,
     }
 }
 

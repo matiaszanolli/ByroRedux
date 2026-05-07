@@ -108,21 +108,60 @@ pub fn print_response(response: &DebugResponse) {
             bone_names,
             bind_inverses,
             global_skin_transform: _,
+            bone_world_matrices,
+            palette,
         } => {
             println!("skeleton_root: {:?}", skeleton_root);
-            println!("{} bones:", bones.len());
-            for (i, ((b, name), bind)) in bones
+            println!(
+                "{} bones (col 1 bind.t · col 2 world.t · col 3 palette.t · ✗ = identity):",
+                bones.len()
+            );
+            // Column 4x4 matrix translation lives at indices 12/13/14.
+            let t_of = |m: &[f32; 16]| (m[12], m[13], m[14]);
+            let is_identity = |m: &[f32; 16]| {
+                (m[0] - 1.0).abs() < 1e-5
+                    && (m[5] - 1.0).abs() < 1e-5
+                    && (m[10] - 1.0).abs() < 1e-5
+                    && (m[15] - 1.0).abs() < 1e-5
+                    && m[12].abs() < 1e-5
+                    && m[13].abs() < 1e-5
+                    && m[14].abs() < 1e-5
+            };
+            let mut dropouts = 0usize;
+            for (i, ((((b, name), bind), world), pal)) in bones
                 .iter()
                 .zip(bone_names.iter())
                 .zip(bind_inverses.iter())
+                .zip(bone_world_matrices.iter())
+                .zip(palette.iter())
                 .enumerate()
             {
                 let nm = name.as_deref().unwrap_or("?");
-                let t = (bind[12], bind[13], bind[14]);
+                let bt = t_of(bind);
+                let wt = world.map(|m| t_of(&m));
+                let pt = t_of(pal);
+                let pal_drop = is_identity(pal);
+                if pal_drop {
+                    dropouts += 1;
+                }
+                let world_str = match wt {
+                    Some((x, y, z)) => format!("({:>7.2},{:>7.2},{:>7.2})", x, y, z),
+                    None => "(   none           )".to_string(),
+                };
                 println!(
-                    "  [{:>3}] entity={:?} name={:?} bind.t=({:.3},{:.3},{:.3})",
-                    i, b, nm, t.0, t.1, t.2
+                    "  [{:>3}] entity={:>10} name={:<24} bind=({:>7.2},{:>7.2},{:>7.2}) world={} pal=({:>7.2},{:>7.2},{:>7.2}){}",
+                    i,
+                    b.map(|e| e.to_string()).unwrap_or_else(|| "None".to_string()),
+                    format!("{:?}", nm),
+                    bt.0, bt.1, bt.2,
+                    world_str,
+                    pt.0, pt.1, pt.2,
+                    if pal_drop { "  ✗" } else { "" }
                 );
+            }
+            if dropouts > 0 {
+                println!("({} of {} palette slots are IDENTITY — likely #841 dropout)",
+                    dropouts, bones.len());
             }
         }
         DebugResponse::Error { message } => {
@@ -142,6 +181,7 @@ pub fn print_help() {
     println!("  entities(Comp)     List entities with a specific component");
     println!("  screenshot          Capture screenshot (auto-named)");
     println!("  screenshot path    Capture screenshot to specific file");
+    println!("  skin <id>          Dump SkinnedMesh palette + per-bone world (#841 diag)");
     println!("  ping               Check connection");
     println!("  .help              This help");
     println!("  .quit              Exit");

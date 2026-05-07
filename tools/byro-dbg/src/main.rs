@@ -111,6 +111,16 @@ fn parse_shorthand(input: &str) -> Option<DebugRequest> {
                     Some(arg.to_string())
                 };
                 Some(DebugRequest::ListEntities { component })
+            } else if lower.starts_with("skin ") || lower.starts_with("skin(") {
+                // `skin <id>` — InspectSkinnedMesh dump (#841 spike-artifact
+                // diagnostic). Dumps per-bone bind / world / palette matrices
+                // in one round-trip so an external probe can diff against the
+                // M29 standalone working baseline.
+                let arg = input["skin".len()..].trim();
+                let arg = arg.trim_start_matches('(').trim_end_matches(')').trim();
+                arg.parse::<u32>()
+                    .ok()
+                    .map(|entity| DebugRequest::InspectSkinnedMesh { entity })
             } else {
                 None
             }
