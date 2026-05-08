@@ -2042,14 +2042,23 @@ void main() {
             bool isInteriorFill = radius < 0.0;
             if (isInteriorFill
                 && (dbgFlags & DBG_DISABLE_HALF_LAMBERT_FILL) == 0u) {
-                // INTERIOR_FILL_AMBIENT_FACTOR — `0.4` rebalances the
-                // dropped Lambert term so a fragment with `NdotL ≈ 0.5`
-                // (the half-Lambert "midpoint") receives roughly the
-                // same brightness it did pre-isotropic. The exact
-                // value is tunable; raising it brightens interiors
-                // uniformly, lowering it darkens. Pinned here in the
-                // shader so a future operator-tuning UI can surface
-                // the same scalar.
+                // INTERIOR_FILL_AMBIENT_FACTOR — half-Lambert + GGX
+                // was dropped above (BRDF skipped for interior fill).
+                // `0.4` was tuned by visual judgment on the
+                // corrugated-metal regression bench, NOT derived to
+                // match a specific NdotL midpoint. Cumulative interior
+                // fill at the surface is `directional × 0.6 (CPU
+                // `INTERIOR_FILL_SCALE` in
+                // `compute_directional_upload`) × 0.4 (this) × albedo
+                // = 0.24 × directional × albedo` — visibly dimmer than
+                // the legacy half-Lambert path at any NdotL but
+                // uniform across the surface. The dim-down is
+                // intentional: uniform low-key fill beats banded
+                // "chrome" stripes on high-frequency normal maps
+                // (Nellis Museum was the canonical regression).
+                // Tunable: raise to brighten interiors, lower to
+                // darken. Pinned here so a future operator-tuning UI
+                // can surface the scalar.
                 const float INTERIOR_FILL_AMBIENT_FACTOR = 0.4;
                 Lo += lightColor * atten * albedo
                     * INTERIOR_FILL_AMBIENT_FACTOR;

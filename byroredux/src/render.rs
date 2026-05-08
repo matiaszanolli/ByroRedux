@@ -132,6 +132,12 @@ const SUN_INTENSITY_PEAK: f32 = 4.0;
 /// Interior arm: 0.6× constant fill, `radius = -1` so the shader skips
 /// shadow rays (sealed-wall leak protection). Independent of `sun_intensity`
 /// because interior XCLL is a subtle aesthetic fill — not a physical sun.
+/// The fragment shader applies an additional 0.4× isotropic factor on
+/// top (`INTERIOR_FILL_AMBIENT_FACTOR` in `triangle.frag`), so the
+/// surface receives `directional × 0.24 × albedo` — uniform low-key
+/// fill, no Lambert wrap. The cumulative dim-down vs the legacy
+/// half-Lambert path is intentional; see the shader-side comment for
+/// the corrugated-metal regression context.
 ///
 /// Exterior arm: ramp the contribution by `sun_intensity / SUN_INTENSITY_PEAK`
 /// so surfaces fade in lockstep with the composite sun disc
