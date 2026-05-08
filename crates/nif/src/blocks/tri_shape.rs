@@ -1212,7 +1212,11 @@ impl BsSubIndexTriShapeData {
 /// half-floats per nif.xml BSVertexData_F / BSVertexDataSSE.
 ///
 /// Exposed as a standalone helper so the skinning read can be unit-tested
-/// without having to construct a full BSTriShape byte stream.
+/// without having to construct a full BSTriShape byte stream. The
+/// returned weights are renormalized via [`renormalize_skin_weights`]
+/// so the inline path matches the SSE-buffer twin in
+/// `import/mesh.rs` and the NiSkinData `densify_sparse_weights`
+/// path. See #889.
 #[inline]
 fn read_vertex_skin_data(stream: &mut NifStream) -> io::Result<([f32; 4], [u8; 4])> {
     let w0 = half_to_f32(stream.read_u16_le()?);
@@ -1223,7 +1227,31 @@ fn read_vertex_skin_data(stream: &mut NifStream) -> io::Result<([f32; 4], [u8; 4
     let i1 = stream.read_u8()?;
     let i2 = stream.read_u8()?;
     let i3 = stream.read_u8()?;
-    Ok(([w0, w1, w2, w3], [i0, i1, i2, i3]))
+    Ok((renormalize_skin_weights([w0, w1, w2, w3]), [i0, i1, i2, i3]))
+}
+
+/// Renormalize a 4-influence weight tuple to unit sum so half-float
+/// quantization drift can't accumulate per-frame jitter on the GPU
+/// skinning path.
+///
+/// `triangle.vert` computes the matrix-palette result as a straight
+/// weighted sum without dividing by `wsum` (it only uses `wsum` to
+/// detect the rigid-fallback case `wsum < 0.001`). Half-float
+/// quantization produces ~1-part-in-1024 error per component, so a
+/// 4-influence vertex can drift up to ~0.4% off unit sum and the
+/// rendered skin position drifts the same fraction.
+///
+/// Skip the renormalization when the sum is already within `1e-4`
+/// of `1.0` (well-formed content) or below `1e-6` (the rigid-fallback
+/// path the vertex shader detects). See #889.
+#[inline]
+pub(crate) fn renormalize_skin_weights(w: [f32; 4]) -> [f32; 4] {
+    let sum = w[0] + w[1] + w[2] + w[3];
+    if (sum - 1.0).abs() <= 1e-4 || sum <= 1e-6 {
+        return w;
+    }
+    let inv = 1.0 / sum;
+    [w[0] * inv, w[1] * inv, w[2] * inv, w[3] * inv]
 }
 
 /// Convert IEEE 754 half-precision float (u16) to f32.
@@ -1822,3 +1850,56 @@ mod ni_additional_geometry_data_tests;
 #[cfg(test)]
 #[path = "tri_shape_bsvertex_flag_constant_tests.rs"]
 mod bsvertex_flag_constant_tests;
+
+#[cfg(test)]
+mod renormalize_skin_weights_tests {
+    use super::renormalize_skin_weights;
+
+    /// Regression for #889: a 4-influence vertex with weights
+    /// summing to 0.997 (typical sub-unit drift after half-float
+    /// decode) must round-trip with a sum of 1.0 ± 1e-4.
+    #[test]
+    fn drifted_weights_renormalize_to_unit_sum() {
+        let drift: [f32; 4] = [0.30, 0.30, 0.30, 0.097];
+        let normed = renormalize_skin_weights(drift);
+        let sum: f32 = normed.iter().sum();
+        assert!(
+            (sum - 1.0).abs() <= 1e-4,
+            "post-renorm sum {sum} not within 1e-4 of 1.0"
+        );
+        // Ratios preserved.
+        let ratio = normed[0] / normed[3];
+        let original_ratio = drift[0] / drift[3];
+        assert!((ratio - original_ratio).abs() < 1e-3);
+    }
+
+    /// Already-unit-sum weights pass through untouched (no float
+    /// noise injected on well-formed content).
+    #[test]
+    fn unit_sum_weights_pass_through_unchanged() {
+        let exact: [f32; 4] = [0.5, 0.25, 0.15, 0.10];
+        let normed = renormalize_skin_weights(exact);
+        assert_eq!(normed, exact);
+    }
+
+    /// Within-tolerance drift (0.99995) is treated as unit-sum and
+    /// passes through unchanged — avoids touching content that's
+    /// already within float error of well-formed.
+    #[test]
+    fn within_tolerance_drift_passes_through() {
+        let near_unit: [f32; 4] = [0.49998, 0.24999, 0.15, 0.09998];
+        let normed = renormalize_skin_weights(near_unit);
+        assert_eq!(normed, near_unit);
+    }
+
+    /// Rigid-fallback weights (sum below 1e-6) pass through so the
+    /// vertex shader's `wsum < 0.001` rigid-fallback branch still
+    /// triggers. Renormalising would push them to spurious unit
+    /// sum and break the fallback.
+    #[test]
+    fn near_zero_weights_preserve_rigid_fallback_path() {
+        let zeroish: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
+        let normed = renormalize_skin_weights(zeroish);
+        assert_eq!(normed, zeroish);
+    }
+}

@@ -874,15 +874,21 @@ fn bs_tri_shape_variants_stamp_their_kind() {
     }
 }
 
-/// IEEE-754 half-float for 1.0 is 0x3C00; for 0.5 is 0x3800; for 0.0 is 0x0000.
-/// These are the constants the read_vertex_skin_data helper will decode.
+/// IEEE-754 half-float for 1.0 is 0x3C00; for 0.0 is 0x0000.
+/// These are the constants the read_vertex_skin_data helper will
+/// decode. Input is a unit-sum tuple so the post-#889
+/// renormalization in `read_vertex_skin_data` is a no-op and the
+/// assertions stay focused on pure-decode correctness — separate
+/// drift-renormalization tests live in
+/// `renormalize_skin_weights_tests` in `tri_shape.rs`.
 #[test]
 fn read_vertex_skin_data_weights_and_indices() {
     let header = test_header();
     let mut data = Vec::new();
-    // Weights: 1.0, 0.5, 0.0, 0.0 as half-floats.
+    // Weights: 1.0, 0.0, 0.0, 0.0 as half-floats — unit sum, so
+    // the helper's renormalize call passes through untouched.
     data.extend_from_slice(&0x3C00u16.to_le_bytes()); // 1.0
-    data.extend_from_slice(&0x3800u16.to_le_bytes()); // 0.5
+    data.extend_from_slice(&0x0000u16.to_le_bytes()); // 0.0
     data.extend_from_slice(&0x0000u16.to_le_bytes()); // 0.0
     data.extend_from_slice(&0x0000u16.to_le_bytes()); // 0.0
                                                       // Indices: 0, 1, 0, 0
@@ -892,7 +898,7 @@ fn read_vertex_skin_data_weights_and_indices() {
     let (weights, indices) = read_vertex_skin_data(&mut stream).unwrap();
 
     assert!((weights[0] - 1.0).abs() < 1e-4);
-    assert!((weights[1] - 0.5).abs() < 1e-4);
+    assert_eq!(weights[1], 0.0);
     assert_eq!(weights[2], 0.0);
     assert_eq!(weights[3], 0.0);
     assert_eq!(indices, [0, 1, 0, 0]);

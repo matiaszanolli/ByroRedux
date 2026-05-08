@@ -1445,7 +1445,14 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
             let w1 = half_to_f32(read_u16_le(bytes, off + 2)?);
             let w2 = half_to_f32(read_u16_le(bytes, off + 4)?);
             let w3 = half_to_f32(read_u16_le(bytes, off + 6)?);
-            bone_weights.push([w0, w1, w2, w3]);
+            // Renormalize to unit sum — the inline BSTriShape skin
+            // path runs the same helper. `triangle.vert` does not
+            // divide by `wsum`, so half-float quantization drift
+            // (~0.4% on a 4-influence vertex) bleeds straight onto
+            // the GPU as per-frame skin jitter. See #889.
+            bone_weights.push(crate::blocks::tri_shape::renormalize_skin_weights([
+                w0, w1, w2, w3,
+            ]));
             bone_indices.push([
                 bytes[off + 8],
                 bytes[off + 9],
