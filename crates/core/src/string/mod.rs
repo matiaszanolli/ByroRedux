@@ -58,8 +58,17 @@ impl StringPool {
     }
 
     /// Resolve a symbol back to its string slice.
-    /// Returns the lowercased canonical form — the original case is
-    /// not preserved (#895).
+    ///
+    /// **Returns the lowercased canonical form** — the case the caller
+    /// originally passed to [`StringPool::intern`] is *not* preserved.
+    /// This is intentional (every engine consumer of resolved strings —
+    /// asset paths, EDIDs, animation channel names — is
+    /// case-insensitive), but it means this API is wrong for any
+    /// case-preserving use such as book/UI text or paths surfaced to
+    /// mod authors. Those sites carry an `Arc<str>` alongside the
+    /// `FixedString` (see `ImportedNode` / `ImportedMesh` in
+    /// `crates/nif/src/import/`). See #895 for the divergence vs
+    /// Gamebryo's case-preserving `NiFixedString`.
     pub fn resolve(&self, sym: FixedString) -> Option<&str> {
         self.0.resolve(sym)
     }

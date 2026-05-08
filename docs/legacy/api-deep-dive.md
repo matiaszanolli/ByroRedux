@@ -29,6 +29,16 @@ for equality, O(1). We're already aligned here.
 Our FixedString requires explicit `pool.resolve(sym)`. This is intentionally safer —
 no dangling pointer risk.
 
+**Case-folding divergence (#895):** Gamebryo's `NiFixedString` preserves authored case;
+case-insensitive comparison is opt-in via `EqualsNoCase` / `ContainsNoCase`. Redux's
+`StringPool` lowercases on `intern` so `"Bip01 Head"`, `"bip01 head"` and `"BIP01 HEAD"`
+collapse onto the same symbol, and `resolve` returns the lowercased canonical form. This
+is correct for path/animation/EDID matching (every consumer treats those as
+case-insensitive), but the original case is not recoverable from the pool. Sites that
+need case-preserving display (book/UI text, asset paths surfaced to mod authors) carry
+an `Arc<str>` alongside the `FixedString` — see `ImportedNode` / `ImportedMesh` in
+`crates/nif/src/import/`.
+
 ---
 
 ## NiTransform — Transform Data
