@@ -108,7 +108,12 @@ void main() {
     ivec2 prevPix = ivec2(prevUv * params.screen.xy);
     prevPix = clamp(prevPix, ivec2(0), dim - 1);
     uint prevMid = texelFetch(uPrevMeshId, prevPix, 0).r;
-    bool disocclusion = (currMid != prevMid);
+    // #904 — bit 15 is `ALPHA_BLEND_NO_HISTORY` (helpers.rs:54-62), not part
+    // of the instance ID. Mask to bits 0-14 so a same-instance opacity
+    // transition (alpha-blended ↔ opaque) doesn't force a one-frame
+    // history reset on bit-15 toggle alone. The dedicated `alphaBlend`
+    // path below covers the actual transparency case.
+    bool disocclusion = ((currMid & 0x7FFFu) != (prevMid & 0x7FFFu));
 
     // Alpha-blend opt-out: bit 15 of the mesh_id is set on transparent
     // fragments by triangle.frag. History reprojection would sample
@@ -149,6 +154,17 @@ void main() {
 
     // Catmull-Rom history in RGB, then convert.
     vec3 histRgb = sample_history_catmull_rom(uPrevHistory, prevUv, texel);
+    // #903 — drop NaN/Inf from the history sample BEFORE the YCoCg clamp.
+    // The clamp `min(max(..., yMin), yMax)` would otherwise rely on
+    // implementation-defined GLSL `min`/`max` semantics for NaN
+    // propagation (most desktop drivers return the non-NaN argument so
+    // the clamp is an implicit NaN filter, but a future driver emitting
+    // strict IEEE 754 propagation would let NaN through and
+    // self-perpetuate via the temporal blend below). No live NaN source
+    // today; the guard is dormant defence-in-depth.
+    if (any(isnan(histRgb)) || any(isinf(histRgb))) {
+        histRgb = currRgb;
+    }
     vec3 histYc  = rgb_to_ycocg(histRgb);
     histYc = clamp(histYc, yMin, yMax);
     vec3 clampedHist = ycocg_to_rgb(histYc);

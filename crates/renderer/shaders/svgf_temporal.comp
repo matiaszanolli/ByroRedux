@@ -133,7 +133,13 @@ void main() {
             ivec2 q = base + offs[i];
             if (q.x < 0 || q.y < 0 || q.x >= int(screen.x) || q.y >= int(screen.y)) continue;
             uint prevID = texelFetch(prevMeshIdTex, q, 0).r;
-            if (prevID != currID) continue;
+            // #904 — bit 15 is `ALPHA_BLEND_NO_HISTORY` (helpers.rs:54-62),
+            // not part of the instance ID. The early-out at line 93 already
+            // skips the case where currID's bit 15 is set, but the
+            // current-opaque / prev-alpha-blended case still reaches here
+            // and would reject the bilinear tap on bit-15 toggle alone
+            // even when the 15-bit instance ID matches. Mask to bits 0-14.
+            if ((prevID & 0x7FFFu) != (currID & 0x7FFFu)) continue;
             // #650 / SH-5 — same-mesh disocclusion rejection. mesh_id
             // alone misses the case where the camera orbit reveals a
             // previously-self-occluded part of a long static wall:
@@ -147,6 +153,18 @@ void main() {
 
             vec3 sInd = texelFetch(prevIndirectHistTex, q, 0).rgb;
             vec4 sMom = texelFetch(prevMomentsHistTex, q, 0);
+            // #903 — drop NaN/Inf history taps BEFORE the weighted sum.
+            // Unlike TAA's YCoCg variance clamp (which acts as an implicit
+            // NaN filter on the same-named driver behaviour), SVGF does a
+            // plain weighted blend at line 152-153 — NaN here propagates
+            // unconditionally into `histInd` / `histMom` and self-perpetuates
+            // through the next frame's history read. No live NaN source
+            // today; dormant defence-in-depth against a future RT branch
+            // producing NaN in the indirect / moments writes.
+            if (any(isnan(sInd)) || any(isinf(sInd))
+                || any(isnan(sMom)) || any(isinf(sMom))) {
+                continue;
+            }
 
             float w = bilinear[i];
             histInd += w * sInd;
