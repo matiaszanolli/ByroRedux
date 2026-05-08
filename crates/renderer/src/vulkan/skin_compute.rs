@@ -245,8 +245,15 @@ impl SkinComputePipeline {
 
         // Descriptor pool — sized for max_slots × MAX_FRAMES_IN_FLIGHT
         // descriptor sets, each consuming 3 storage buffers (input,
-        // palette, output). max_slots == 32 (matches MAX_TOTAL_BONES /
-        // MAX_BONES_PER_MESH) covers every realistic interior cell.
+        // palette, output). The chosen `max_slots` is the cell-load
+        // ceiling for skinned entities — see the rationale comment at
+        // `context/mod.rs::SKIN_MAX_SLOTS`. The architectural ceiling
+        // is `MAX_TOTAL_BONES / MAX_BONES_PER_MESH = 32768 / 128 = 256`
+        // (the bone-palette SSBO ceiling) — picking a smaller cap
+        // keeps it as a pressure signal. (The pre-#900 comment here
+        // claimed `max_slots == 32 (matches MAX_TOTAL_BONES /
+        // MAX_BONES_PER_MESH)` — that math was wrong; the ratio is
+        // 256, not 32.)
         let pool_total = max_slots * (MAX_FRAMES_IN_FLIGHT as u32);
         let pool_sizes = [vk::DescriptorPoolSize {
             ty: vk::DescriptorType::STORAGE_BUFFER,

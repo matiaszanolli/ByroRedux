@@ -497,8 +497,18 @@ impl VulkanContext {
                         if !needs_slot && !needs_blas {
                             continue;
                         }
-                        // Create slot if missing.
+                        // Create slot if missing. Skip retry on entities
+                        // whose previous attempt failed — `failed_skin_slots`
+                        // is cleared on any LRU eviction (capacity opened),
+                        // so a real change in pool occupancy un-suppresses
+                        // the retry naturally. Pre-#900 the failure path
+                        // re-fired `create_slot` every frame and re-logged
+                        // the WARN, observed at 58 WARN / 300 frames on
+                        // post-M41-EQUIP Prospector.
                         if needs_slot {
+                            if self.failed_skin_slots.contains(&entity_id) {
+                                continue;
+                            }
                             match skin_pipeline.create_slot(&self.device, alloc, vertex_count) {
                                 Ok(slot) => {
                                     self.skin_slots.insert(entity_id, slot);
@@ -508,6 +518,7 @@ impl VulkanContext {
                                         "skin_compute create_slot failed for entity {entity_id}: {e} \
                                          — skinned RT shadow disabled for this entity (raster unaffected)"
                                     );
+                                    self.failed_skin_slots.insert(entity_id);
                                     continue;
                                 }
                             }
@@ -713,6 +724,15 @@ impl VulkanContext {
                             }
                             accel.drop_skinned_blas(eid);
                         }
+                        // Capacity opened up — un-suppress retry on every
+                        // entity that previously failed. Cheap (the set
+                        // caps at `skinned_count - SKIN_MAX_SLOTS`, zero
+                        // on healthy scenes) and correct: each cleared
+                        // entry will retry once next frame; if its
+                        // retry succeeds, it allocates a slot, otherwise
+                        // it re-enters the cache via the failure path.
+                        // See #900.
+                        self.failed_skin_slots.clear();
                     }
                 }
             }

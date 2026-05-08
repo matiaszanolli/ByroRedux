@@ -736,6 +736,16 @@ pub struct VulkanContext {
         byroredux_core::ecs::storage::EntityId,
         super::skin_compute::SkinSlot,
     >,
+    /// Entities whose `create_slot` call returned `OUT_OF_POOL_MEMORY`
+    /// (or otherwise errored) on a prior frame — gate the retry path
+    /// in `draw_frame` against this set so a single failure logs one
+    /// WARN instead of N (one per frame for the duration of the
+    /// bench, observed at 58 WARN / 300 frames pre-fix on Prospector
+    /// post-#896 B.2). Cleared whenever any LRU eviction frees a
+    /// slot, since capacity opening up means a previously-failing
+    /// entity's next attempt could now succeed. `EntityId` is
+    /// generational so an entry can't poison a re-issued id. See #900.
+    pub failed_skin_slots: std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
     pub ssao: Option<SsaoPipeline>,
     pub composite: Option<CompositePipeline>,
     pub gbuffer: Option<GBuffer>,
@@ -1099,7 +1109,19 @@ impl VulkanContext {
         // path enforces in `build_render_data`. Buffer bindings are
         // deferred to per-dispatch (cell-transition robustness).
         let skin_compute = if device_caps.ray_query_supported {
-            const SKIN_MAX_SLOTS: u32 = 32;
+            // 64 slots covers M41-EQUIP Prospector load (NPC body + per-
+            // slot armor pieces from #896 B.2 land ~30 skinned entities;
+            // ~2× headroom). The bone-palette SSBO is sized for
+            // `MAX_TOTAL_BONES / MAX_BONES_PER_MESH = 256` simultaneous
+            // skinned meshes (`scene_buffer.rs:33` / `skinned_mesh.rs:29`),
+            // so 64 stays well below the architectural ceiling and the
+            // cap remains a pressure signal rather than a no-op. Each
+            // slot costs `3 × MAX_FRAMES_IN_FLIGHT = 6` storage-buffer
+            // descriptors. Pre-#900 this was `32` and Prospector
+            // overflowed by 2 entities every frame, retrying the
+            // failed `create_slot` call (and re-emitting a WARN) on
+            // each frame for the duration of the bench. See #900.
+            const SKIN_MAX_SLOTS: u32 = 64;
             match super::skin_compute::SkinComputePipeline::new(
                 &device,
                 pipeline_cache,
@@ -1446,6 +1468,7 @@ impl VulkanContext {
             cluster_cull,
             skin_compute,
             skin_slots: std::collections::HashMap::new(),
+            failed_skin_slots: std::collections::HashSet::new(),
             ssao,
             composite,
             gbuffer,
