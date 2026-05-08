@@ -126,7 +126,7 @@ use kira::sound::{FromFileError, PlaybackState};
 use kira::track::{SendTrackBuilder, SendTrackHandle, SpatialTrackBuilder, SpatialTrackHandle};
 use kira::{AudioManager, AudioManagerSettings, Capacities, DefaultBackend, Mix, Tween};
 use std::time::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -207,8 +207,10 @@ pub struct AudioWorld {
     /// Queued fire-and-forget one-shots from [`Self::play_oneshot`].
     /// Drained at the start of each `audio_system` tick so callers
     /// who can't allocate entities (Systems) can still trigger
-    /// sounds. Phase 3.5.
-    pending_oneshots: Vec<PendingOneShot>,
+    /// sounds. Phase 3.5. Stored as a `VecDeque` so the cap-eviction
+    /// path in `play_oneshot` is O(1) `pop_front` rather than O(n)
+    /// `Vec::remove(0)` shift-down. See #852.
+    pending_oneshots: VecDeque<PendingOneShot>,
     /// Single-slot music handle (Phase 5). Music is non-spatial —
     /// it routes through the main track, not a spatial sub-track.
     /// Calling `play_music` while a track is already playing fades
@@ -298,7 +300,7 @@ impl AudioWorld {
         });
         Self {
             active_sounds: Vec::new(),
-            pending_oneshots: Vec::new(),
+            pending_oneshots: VecDeque::new(),
             music: None,
             reverb_send,
             reverb_send_db: f32::NEG_INFINITY,
@@ -360,9 +362,11 @@ impl AudioWorld {
                  audio_system may not be running, or the queue is being filled \
                  faster than it's drained."
             );
-            self.pending_oneshots.remove(0);
+            // O(1) front-pop — `Vec::remove(0)` was O(n) shift-down
+            // for the 256-element queue. See #852.
+            self.pending_oneshots.pop_front();
         }
-        self.pending_oneshots.push(PendingOneShot {
+        self.pending_oneshots.push_back(PendingOneShot {
             sound,
             position,
             attenuation,
@@ -657,6 +661,19 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
     if audio_world.pending_oneshots.is_empty() {
         return;
     }
+    // Manager-active gate moves *before* the `mem::take` (#851).
+    // Pre-fix the take ran first, so on a hypothetical `manager =
+    // None` re-entry the drained Vec would be silently dropped — the
+    // `// Inactive — queue cleared` branch below was reachable in
+    // theory and would have lost the queued one-shots forever. In
+    // practice the parent `audio_system` early-returns at
+    // `is_active()` before calling this helper, so the manager is
+    // always `Some` here, but the defensive ordering keeps the
+    // contract local: we only consume the queue once we know we can
+    // dispatch its contents.
+    let Some(mgr) = audio_world.manager.as_mut() else {
+        return;
+    };
     let pending = std::mem::take(&mut audio_world.pending_oneshots);
     if pending.len() > 32 {
         log::warn!(
@@ -666,12 +683,6 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
             pending.len()
         );
     }
-    let Some(mgr) = audio_world.manager.as_mut() else {
-        // Inactive — queue cleared (see drop above) since pending
-        // entries can't dispatch and queueing them indefinitely
-        // would grow the Vec forever.
-        return;
-    };
     for p in pending {
         let mut track_builder = SpatialTrackBuilder::new()
             .distances(p.attenuation.min_distance..=p.attenuation.max_distance);
@@ -1032,6 +1043,19 @@ pub fn load_streaming_sound_from_file(
 /// trade load latency for memory we don't need to save. If a future
 /// scenario surfaces (1000+ unique sounds, or platform memory
 /// pressure), bolt on an LRU here without touching the call sites.
+///
+/// **Dormant API (#859):** the engine binary currently has zero
+/// call sites for `SoundCache`. The footstep dispatch path at
+/// `byroredux/src/asset_provider.rs::resolve_footstep_sound` writes
+/// directly into `FootstepConfig.default_sound: Option<Arc<Sound>>`,
+/// bypassing the cache; the decoded `Arc` is held by exactly one
+/// `Resource` (`FootstepConfig`) for the engine lifetime. The "no
+/// eviction → unbounded growth" concern surfaces only when a future
+/// commit wires a real consumer (FOOT records, REGN ambient,
+/// multi-sound SFX dispatch). Until then `len() == 0` is the steady
+/// state. The decoupled API + tests stay so a producer can land
+/// without a structural rewrite — but anyone wiring the first real
+/// consumer should also wire eviction at the same time.
 pub struct SoundCache {
     map: HashMap<String, Arc<StaticSoundData>>,
 }
@@ -1406,7 +1430,7 @@ mod tests {
         // `AudioWorld::new()` produces when init fails.
         let inactive = AudioWorld {
             active_sounds: Vec::new(),
-            pending_oneshots: Vec::new(),
+            pending_oneshots: VecDeque::new(),
             music: None,
             reverb_send: None,
             reverb_send_db: f32::NEG_INFINITY,
@@ -1462,7 +1486,7 @@ mod tests {
     fn set_reverb_send_db_persists() {
         let mut world = AudioWorld {
             active_sounds: Vec::new(),
-            pending_oneshots: Vec::new(),
+            pending_oneshots: VecDeque::new(),
             music: None,
             reverb_send: None,
             reverb_send_db: f32::NEG_INFINITY,
@@ -1487,7 +1511,7 @@ mod tests {
         // and stop_music are also pinned along the inactive path.
         let mut audio_world = AudioWorld {
             active_sounds: Vec::new(),
-            pending_oneshots: Vec::new(),
+            pending_oneshots: VecDeque::new(),
             music: None,
             reverb_send: None,
             reverb_send_db: f32::NEG_INFINITY,
@@ -1679,7 +1703,7 @@ mod tests {
         use kira::sound::static_sound::StaticSoundSettings;
         let mut audio_world = AudioWorld {
             active_sounds: Vec::new(),
-            pending_oneshots: Vec::new(),
+            pending_oneshots: VecDeque::new(),
             music: None,
             reverb_send: None,
             reverb_send_db: f32::NEG_INFINITY,
