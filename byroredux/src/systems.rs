@@ -1393,6 +1393,40 @@ pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
     ]
 }
 
+/// Map a TOD slot to its `night_factor` contribution in `[0.0, 1.0]`
+/// (`0.0 = full daytime fog distance, 1.0 = full night fog distance`).
+/// Used by `weather_system` to lerp fog distance through the same TOD
+/// slot pair the colour interpolator just walked, keeping palette and
+/// fog in lockstep.
+///
+/// Pre-#897 the fog distance used hardcoded hour breakpoints (6, 18,
+/// 20, 4) while colours used the climate-driven `build_tod_keys` table.
+/// On non-default-hour CLMTs (FO3 Capital Wasteland's `[5.333, 10, 17,
+/// 22]` is the canonical case) the palette transitioned at the
+/// authored hours while fog snapped at 6/18 — palette and fog
+/// disagreed on "day" vs "transitioning" for ~0.3-2h windows. See #897
+/// / REN-D15-01.
+///
+/// Slot mapping:
+/// - `TOD_DAY`, `TOD_HIGH_NOON` → `0.0` (full day fog)
+/// - `TOD_NIGHT`, `TOD_MIDNIGHT` → `1.0` (full night fog)
+/// - `TOD_SUNRISE`, `TOD_SUNSET` → `0.5` (half-transitioned — the
+///   per-key lerp toward the adjacent DAY/NIGHT slot completes the
+///   smooth transition)
+pub(crate) fn tod_slot_night_factor(slot: usize) -> f32 {
+    use byroredux_plugin::esm::records::weather::*;
+    if slot == TOD_DAY || slot == TOD_HIGH_NOON {
+        0.0
+    } else if slot == TOD_NIGHT || slot == TOD_MIDNIGHT {
+        1.0
+    } else {
+        // TOD_SUNRISE / TOD_SUNSET — half-transitioned. The lerp
+        // through `(slot_a, slot_b, t)` covers [0.5, 0.0] (sunrise→day)
+        // and [0.5, 1.0] (sunset→night) smoothly.
+        0.5
+    }
+}
+
 /// Weather & time-of-day system: advances game clock, interpolates WTHR
 /// NAM0 sky colors, computes sun arc, and updates SkyParamsRes + CellLightingRes.
 ///
@@ -1526,17 +1560,17 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         t,
     );
 
-    // Fog distance: interpolate between day and night based on
-    // how "night-like" the current hour is (0 = full day, 1 = full night).
-    let night_factor = if (6.0..=18.0).contains(&hour) {
-        0.0 // daytime
-    } else if hour >= 20.0 || hour <= 4.0 {
-        1.0 // full night
-    } else if hour > 18.0 {
-        (hour - 18.0) / 2.0 // sunset transition
-    } else {
-        (6.0 - hour) / 2.0 // sunrise transition
-    };
+    // Fog distance: lerp between day and night fog based on the same
+    // TOD slot pair the colour interpolator just walked. Pre-#897 this
+    // used hardcoded hour breakpoints (6, 18, 20, 4) which disagreed
+    // with the climate-driven colour breakpoints on non-default CLMTs
+    // (FO3 Capital Wasteland's earlier sunrise was the canonical case
+    // — palette transitioned at hour 5.333 while fog snapped at 6.0).
+    // Sharing `(slot_a, slot_b, t)` keeps fog distance in lockstep with
+    // sky palette across every shipped CLMT. See #897 / REN-D15-01.
+    let night_a = tod_slot_night_factor(slot_a);
+    let night_b = tod_slot_night_factor(slot_b);
+    let night_factor = night_a + (night_b - night_a) * t;
     let fog_near = wd.fog[0] + (wd.fog[2] - wd.fog[0]) * night_factor;
     let fog_far = wd.fog[1] + (wd.fog[3] - wd.fog[1]) * night_factor;
 
@@ -2113,6 +2147,106 @@ mod weather_tod_keys_tests {
             afternoon_cool > day_anchor,
             "afternoon_cool ({afternoon_cool:.2}) must be strictly after \
              sunrise_end ({day_anchor:.2}) to keep keys monotonic"
+        );
+    }
+
+    /// `tod_slot_night_factor` — the per-slot fog-distance contribution
+    /// that pairs with `build_tod_keys` to keep fog in lockstep with
+    /// the sky palette. DAY-class slots map to 0, NIGHT-class to 1,
+    /// transition slots to 0.5 so the per-key lerp covers the
+    /// half-transitioned span smoothly. See #897 / REN-D15-01.
+    #[test]
+    fn night_factor_full_day_slots_are_zero() {
+        assert_eq!(tod_slot_night_factor(TOD_DAY), 0.0);
+        assert_eq!(tod_slot_night_factor(TOD_HIGH_NOON), 0.0);
+    }
+
+    #[test]
+    fn night_factor_full_night_slots_are_one() {
+        assert_eq!(tod_slot_night_factor(TOD_NIGHT), 1.0);
+        assert_eq!(tod_slot_night_factor(TOD_MIDNIGHT), 1.0);
+    }
+
+    #[test]
+    fn night_factor_transition_slots_are_half() {
+        // The midpoint values let the per-key lerp through
+        // `(slot_a, slot_b, t)` cover SUNRISE→DAY (0.5→0.0) and
+        // SUNSET→NIGHT (0.5→1.0) smoothly.
+        assert_eq!(tod_slot_night_factor(TOD_SUNRISE), 0.5);
+        assert_eq!(tod_slot_night_factor(TOD_SUNSET), 0.5);
+    }
+
+    /// Regression for #897 / REN-D15-01.
+    ///
+    /// Pre-fix: at hour 5.7 with FO3 Capital Wasteland-style climate
+    /// (`tod_hours = [5.333, 10.0, 17.0, 22.0]`), the colour
+    /// interpolator landed in the `(SUNRISE, DAY)` slot pair (palette
+    /// = sunrise) while the hardcoded fog `night_factor` returned
+    /// `(6.0 - 5.7) / 2.0 = 0.15` (fog mostly day) — palette and fog
+    /// disagreed on "day" vs "transitioning" by ~0.3 h window.
+    ///
+    /// Post-fix: fog uses the same `(slot_a, slot_b, t)` tuple and the
+    /// `tod_slot_night_factor` helper. At hour 5.7 the lerp from
+    /// SUNRISE (0.5) toward DAY (0.0) at `t = (5.7 - 5.333) / (10.0
+    /// - 5.333) ≈ 0.0786` produces `night_factor ≈ 0.461` —
+    /// half-transitioned, matching the SUNRISE-class palette.
+    #[test]
+    fn fo3_wasteland_sunrise_fog_lockstep_with_palette() {
+        let keys = build_tod_keys([5.333, 10.0, 17.0, 22.0]);
+        let h = 5.7_f32;
+        // Walk the keys exactly the way `weather_system` does.
+        let mut slot_a = keys[keys.len() - 1].1;
+        let mut slot_b = keys[0].1;
+        let mut t = 0.0_f32;
+        for i in 0..keys.len() - 1 {
+            let (h0, s0) = keys[i];
+            let (h1, s1) = keys[i + 1];
+            if h >= h0 && h < h1 {
+                slot_a = s0;
+                slot_b = s1;
+                t = (h - h0) / (h1 - h0);
+                break;
+            }
+        }
+        assert_eq!(slot_a, TOD_SUNRISE, "slot_a at FO3 hour 5.7 must be SUNRISE");
+        assert_eq!(slot_b, TOD_DAY, "slot_b at FO3 hour 5.7 must be DAY");
+        let na = tod_slot_night_factor(slot_a);
+        let nb = tod_slot_night_factor(slot_b);
+        let night_factor = na + (nb - na) * t;
+        assert!(
+            night_factor > 0.4 && night_factor < 0.5,
+            "night_factor at FO3 hour 5.7 must be half-transitioned \
+             (in [0.4, 0.5]) so fog tracks the SUNRISE-class palette. \
+             Pre-#897 hardcoded hours produced 0.15 here. \
+             Got {night_factor:.3}",
+        );
+    }
+
+    /// Default FNV-style climate at noon must yield zero night_factor
+    /// (the easy case — both sides DAY-class, lerp stays at 0).
+    #[test]
+    fn fnv_default_noon_fog_is_full_day() {
+        let keys = build_tod_keys([6.0, 10.0, 18.0, 22.0]);
+        let h = 12.0_f32;
+        let mut slot_a = keys[0].1;
+        let mut slot_b = keys[0].1;
+        let mut t = 0.0_f32;
+        for i in 0..keys.len() - 1 {
+            let (h0, s0) = keys[i];
+            let (h1, s1) = keys[i + 1];
+            if h >= h0 && h < h1 {
+                slot_a = s0;
+                slot_b = s1;
+                t = (h - h0) / (h1 - h0);
+                break;
+            }
+        }
+        let na = tod_slot_night_factor(slot_a);
+        let nb = tod_slot_night_factor(slot_b);
+        let night_factor = na + (nb - na) * t;
+        assert_eq!(
+            night_factor, 0.0,
+            "noon must produce full-day fog (both endpoints DAY-class)"
         );
     }
 }
