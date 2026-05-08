@@ -173,6 +173,15 @@ struct ActiveSound {
     /// (`looping=false`) carry the default value but never consult it.
     /// See #845.
     unload_fade_ms: f32,
+    /// Set to `true` once `prune_stopped_sounds` has issued the
+    /// fade-out `stop` call for this looping emitter. The handle's
+    /// `state()` won't report `Stopped` until the fade completes, so
+    /// without this flag the prune walk would re-mark the same entry
+    /// every tick during the fade window — kira treats repeated
+    /// `stop` as idempotent in effect, but the redundant ringbuf
+    /// commands and re-walk cost are unnecessary. Becomes more
+    /// visible if the fade duration is tuned up. See #844.
+    stop_issued: bool,
 }
 
 /// Fire-and-forget one-shot queued via [`AudioWorld::play_oneshot`].
@@ -234,6 +243,12 @@ pub struct AudioWorld {
     /// kira manager. `None` means no audio device was acquired; every
     /// audio operation no-ops.
     manager: Option<AudioManager<DefaultBackend>>,
+    /// One-shot debounce for the multi-`AudioListener` diagnostic
+    /// (#843). Set to `true` the first frame `sync_listener_pose`
+    /// observes more than one entity carrying the marker; suppresses
+    /// per-frame log spam during third-person camera transitions or
+    /// fly-cam swaps where two listener entities briefly coexist.
+    multi_listener_warned: bool,
 }
 
 impl Default for AudioWorld {
@@ -306,6 +321,7 @@ impl AudioWorld {
             reverb_send_db: f32::NEG_INFINITY,
             listener: None,
             manager,
+            multi_listener_warned: false,
         }
     }
 
@@ -457,6 +473,21 @@ impl AudioWorld {
     /// ~-60 dB) to silence reverb. `-12.0` is a subtle interior
     /// reverb; `-6.0` is more pronounced; `0.0` is full wet (rare —
     /// the dry-too-wet ratio normally wants the wet attenuated).
+    ///
+    /// **Limitation (#847):** kira 0.10's `with_send` is build-time
+    /// only on `SpatialTrackBuilder` — there is no
+    /// `SpatialTrackHandle::set_send_volume`, so a level change
+    /// cannot retro-apply to already-playing tracks. Long-running
+    /// looping ambients (cathedral chant, generator hum, REGN
+    /// wind layer) spawned *before* this call keep their construction-
+    /// time send level until they're stopped and re-dispatched. For
+    /// short SFX (footsteps, gunshots, dialogue lines) the level
+    /// naturally refreshes as new sounds replace old ones; for long
+    /// ambients, a future cell-load reverb-flip handler must re-issue
+    /// each looping emitter through the dispatch path with the new
+    /// send level for the change to take effect. Until that handler
+    /// lands, callers should treat `set_reverb_send_db` as a "next-
+    /// dispatch" knob, not a live mixer fader.
     pub fn set_reverb_send_db(&mut self, db: f32) {
         self.reverb_send_db = db;
     }
@@ -611,9 +642,30 @@ fn sync_listener_pose(world: &World, audio_world: &mut AudioWorld) {
         let Some(q) = world.query::<AudioListener>() else {
             return;
         };
-        let Some((entity, _)) = q.iter().next() else {
+        // Diagnose multi-listener scenarios on the *first* frame the
+        // count exceeds 1, then debounce so third-person camera
+        // transitions / fly-cam swaps don't spam the log per-frame
+        // for the brief window where two listener entities coexist.
+        // The crate docstring on `AudioListener` documents the
+        // "first wins" iteration policy; this surfaces it. See #843.
+        let mut iter = q.iter();
+        let Some((entity, _)) = iter.next() else {
             return;
         };
+        if iter.next().is_some() && !audio_world.multi_listener_warned {
+            // We've already pulled two; count remaining for an
+            // accurate total in the warn message.
+            let extra = iter.count();
+            let total = 2 + extra;
+            log::warn!(
+                "M44: multiple AudioListener entities found ({total}); \
+                 using whichever the query iteration produced first \
+                 ({entity:?}). Cell-load / fly-cam swap usually leaves \
+                 only the active camera tagged — check for a stale \
+                 marker on a despawning entity."
+            );
+            audio_world.multi_listener_warned = true;
+        }
         entity
     };
     let pose = {
@@ -727,6 +779,9 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
             // Queue-driven path is one-shots only (`looping=false`);
             // unload_fade_ms is never consulted on this branch.
             unload_fade_ms: DEFAULT_UNLOAD_FADE_MS,
+            // Queue-driven path is one-shots only — never enters the
+            // looping `prune_stopped_sounds` re-stop branch. See #844.
+            stop_issued: false,
         });
     }
 }
@@ -861,6 +916,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
             _track: track,
             looping: p.looping,
             unload_fade_ms: p.unload_fade_ms,
+            stop_issued: false,
         });
         started.push(p.entity);
     }
@@ -894,6 +950,15 @@ fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
         if !s.looping {
             continue;
         }
+        // Don't re-mark entries whose stop has already been issued —
+        // the handle is fading out asynchronously and won't report
+        // `Stopped` until the tween completes. Pre-fix every prune
+        // tick during the fade window re-walked + re-pushed the
+        // ringbuf `stop` command (idempotent in effect, wasted CPU
+        // on the active-list walk). See #844.
+        if s.stop_issued {
+            continue;
+        }
         let Some(entity) = s.entity else {
             continue;
         };
@@ -919,6 +984,10 @@ fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
             easing: kira::Easing::Linear,
         };
         audio_world.active_sounds[*idx].handle.stop(tween);
+        // Mark so subsequent prune ticks skip the re-stop until the
+        // handle actually transitions to `Stopped` and `retain`
+        // drops the entry. See #844.
+        audio_world.active_sounds[*idx].stop_issued = true;
     }
 
     let mut finished: Vec<EntityId> = Vec::new();
@@ -1436,6 +1505,7 @@ mod tests {
             reverb_send_db: f32::NEG_INFINITY,
             listener: None,
             manager: None,
+            multi_listener_warned: false,
         };
         world.insert_resource(inactive);
 
@@ -1492,6 +1562,7 @@ mod tests {
             reverb_send_db: f32::NEG_INFINITY,
             listener: None,
             manager: None,
+            multi_listener_warned: false,
         };
         world.set_reverb_send_db(-12.0);
         assert!((world.reverb_send_db() - (-12.0)).abs() < 1e-6);
@@ -1517,6 +1588,7 @@ mod tests {
             reverb_send_db: f32::NEG_INFINITY,
             listener: None,
             manager: None,
+            multi_listener_warned: false,
         };
         assert!(!audio_world.is_music_active());
         audio_world.stop_music(0.5); // No-op on no-music + no-manager.
@@ -1709,6 +1781,7 @@ mod tests {
             reverb_send_db: f32::NEG_INFINITY,
             listener: None,
             manager: None,
+            multi_listener_warned: false,
         };
         let sound = Arc::new(StaticSoundData {
             sample_rate: 22_050,
