@@ -509,6 +509,14 @@ pub(super) struct MaterialInfo {
     /// is follow-up work (tracked separately alongside the BSEffect
     /// soft-falloff hookup under SK-D3-02).
     pub no_lighting_falloff: Option<NoLightingFalloff>,
+    /// `NiStencilProperty` test/write state captured at import time.
+    /// `None` when the material has no `NiStencilProperty`. The
+    /// 95% two-sided-only case lands `Some(state)` with
+    /// `state.enabled = false` — `draw_mode` (consumed via
+    /// `is_two_sided()`) carries the backface-culling intent
+    /// separately. Renderer-side stencil pipeline variants are
+    /// deferred — see [`StencilState`] docs and #337.
+    pub stencil_state: Option<StencilState>,
     /// Diffuse-slot `TexClampMode` (`0..=3`, see nif.xml's enum) —
     /// captured from `NiTexturingProperty.base_texture.flags` (Oblivion
     /// / FO3 / FNV statics) or `BSEffectShaderProperty.texture_clamp_mode`
@@ -522,6 +530,52 @@ pub(super) struct MaterialInfo {
     /// `extract_material_info` mirrors the value here so the
     /// importer's per-mesh export needs only one field.
     pub texture_clamp_mode: u8,
+}
+
+/// Stencil-test state captured from `NiStencilProperty`. Mirrors the
+/// seven non-`draw_mode` fields the parser reads (`draw_mode` is
+/// consumed separately by `MaterialInfo::two_sided` via
+/// `NiStencilProperty::is_two_sided()`).
+///
+/// **Renderer-side gap (#337):** every pipeline-create site at
+/// `crates/renderer/src/vulkan/pipeline.rs` currently hardcodes
+/// `stencil_test_enable(false)`, and `find_depth_format` prefers
+/// `D32_SFLOAT` (no stencil bits) over the stencil-capable formats.
+/// Wiring stencil pipeline variants therefore needs both a depth-
+/// format flip (gated on a real workload — D32 has better precision
+/// when no consumer needs stencil) AND per-`MaterialKind` pipeline
+/// variants honouring the captured ops. Until that lands, the
+/// captured state rides on `MaterialInfo` so the silent drop at the
+/// importer boundary is closed and a future renderer-side fix has
+/// one grep target. The `>95%`-of-vanilla `NiStencilProperty` usage
+/// for two-sided rendering already works through the `is_two_sided()`
+/// path in the walker (`draw_mode` 0 / 3); this struct covers the
+/// long-tail stencil-masked decals, portals, and shadow volumes
+/// that author the other fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StencilState {
+    /// `true` when the stencil test is active for this material. The
+    /// 95% two-sided-only case lands `false` here — `draw_mode` is
+    /// what the importer consumes for backface culling.
+    pub enabled: bool,
+    /// Stencil compare function. Maps to Gamebryo's `TestFunction`
+    /// enum (`0=NEVER, 1=LESS, 2=EQUAL, 3=LESSEQUAL, 4=GREATER,
+    /// 5=NOTEQUAL, 6=GREATEREQUAL, 7=ALWAYS`). Default `7=ALWAYS`
+    /// from the parser.
+    pub function: u32,
+    /// Reference value compared against `(stencil_value & mask)`.
+    pub reference: u32,
+    /// Read mask `AND`-ed with both the reference and the stored
+    /// stencil value before comparison.
+    pub mask: u32,
+    /// Action when the stencil test fails. Maps to
+    /// Gamebryo's `Action` enum (`0=KEEP, 1=ZERO, 2=REPLACE,
+    /// 3=INCREMENT, 4=DECREMENT, 5=INVERT`).
+    pub fail_action: u32,
+    /// Action when the stencil test passes but the depth test fails.
+    pub z_fail_action: u32,
+    /// Action when both stencil and depth tests pass.
+    pub pass_action: u32,
 }
 
 /// Soft-falloff cone captured from `BSShaderNoLightingProperty` (FO3/FNV
@@ -646,6 +700,7 @@ impl Default for MaterialInfo {
             sparkle_parameters: None,
             effect_shader: None,
             no_lighting_falloff: None,
+            stencil_state: None,
             // 3 = WRAP_S_WRAP_T per nif.xml — pre-#610 hardcoded
             // default. Walker overwrites with the diffuse-slot value
             // when the material's authoring source carries one.
@@ -762,3 +817,13 @@ mod texture_slot_3_4_5_tests;
 /// unaffected.
 #[cfg(test)]
 mod double_sided_tests;
+
+/// Regression tests for #337 (D4-NEW-01) — `NiStencilProperty` test
+/// state must round-trip into `MaterialInfo.stencil_state` so the
+/// silent drop at the importer boundary is closed. Pre-fix the walker
+/// only consumed `is_two_sided()`; the seven non-`draw_mode` fields
+/// were dropped on the floor. Renderer-side stencil pipeline variants
+/// stay deferred (depth-format dependency + per-`MaterialKind` variant
+/// rollout); see `pipeline.rs`'s cross-reference comments.
+#[cfg(test)]
+mod stencil_state_capture_tests;

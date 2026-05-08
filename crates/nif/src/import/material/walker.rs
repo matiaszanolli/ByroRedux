@@ -736,12 +736,23 @@ pub(crate) fn extract_material_info_from_refs(
         }
 
         // NiStencilProperty — proper parser replaces NiUnknown heuristic.
-        if !info.two_sided {
-            if let Some(stencil) = scene.get_as::<NiStencilProperty>(idx) {
-                if stencil.is_two_sided() {
-                    info.two_sided = true;
-                }
+        // Two-sided promotion is the 95% case (`draw_mode` 0 / 3); the
+        // remaining stencil test/write fields ride on
+        // `info.stencil_state` for the future renderer-side pipeline-
+        // variant landing. See [`StencilState`] docs and #337.
+        if let Some(stencil) = scene.get_as::<NiStencilProperty>(idx) {
+            if !info.two_sided && stencil.is_two_sided() {
+                info.two_sided = true;
             }
+            info.stencil_state = Some(super::StencilState {
+                enabled: stencil.stencil_enabled,
+                function: stencil.stencil_function,
+                reference: stencil.stencil_ref,
+                mask: stencil.stencil_mask,
+                fail_action: stencil.fail_action,
+                z_fail_action: stencil.z_fail_action,
+                pass_action: stencil.pass_action,
+            });
         }
 
         // NiFlagProperty subtypes: bit 0 of `flags` is the enable toggle for

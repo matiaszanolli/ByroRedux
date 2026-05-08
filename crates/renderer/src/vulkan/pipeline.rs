@@ -293,6 +293,12 @@ fn triangle_pipeline_inner(
     // depth_test/write/compare_op are all dynamic (#398); these static values are
     // ignored at runtime but must match the dynamic default to prevent silent breakage
     // if the dynamic-state declaration is ever dropped.
+    // `stencil_test_enable(false)` is hardcoded — the stencil state
+    // captured by the importer at `MaterialInfo.stencil_state` is
+    // dormant until per-material stencil pipeline variants land.
+    // Wiring those needs a depth-format flip too: `find_depth_format`
+    // prefers `D32_SFLOAT` (no stencil bits) which is the better
+    // precision pick when no consumer reads stencil. See #337.
     let depth_stencil_opaque = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(true)
         .depth_write_enable(true)
@@ -454,6 +460,10 @@ pub fn create_blend_pipeline(
     // other translucents at the same depth and keeps opaque geometry
     // visible behind glass / decals.
     // LESS_OR_EQUAL matches draw.rs:cmd_set_depth_compare_op (the live source of truth).
+    // `stencil_test_enable(false)` matches the opaque path — see the
+    // stencil-deferral comment there. The blend pipeline would also
+    // need stencil variants wired before #337's portal / shadow-volume
+    // / mask-decal future work could land.
     let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(true)
         .depth_write_enable(false)
@@ -594,6 +604,9 @@ pub fn create_ui_pipeline(
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
     // No depth test — UI renders on top of everything.
+    // `stencil_test_enable(false)` is correct for UI (no stencil
+    // semantics on Scaleform / SWF overlays); world-geometry stencil
+    // dispatch lives in the opaque + blend pipelines above. See #337.
     let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(false)
         .depth_write_enable(false)
