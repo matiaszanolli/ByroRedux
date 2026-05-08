@@ -1752,17 +1752,24 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             (clouds.cloud_scroll_1[0] - cloud_scroll_rate * 1.35 * dt).rem_euclid(1.0);
         clouds.cloud_scroll_1[1] =
             (clouds.cloud_scroll_1[1] + cloud_scroll_rate * 0.5 * dt).rem_euclid(1.0);
-        // Layer 2 (WTHR ANAM) — same direction as layer 0 (M33.1).
+        // Layer 2 (WTHR ANAM) and layer 3 (BNAM) used to mirror layer 0
+        // and layer 1 verbatim — when ANAM/BNAM resolved to the same
+        // texture as DNAM/CNAM (or were absent), the four-layer composite
+        // collapsed to two visually identical pairs. Until WTHR ONAM
+        // (4 B, looks f32-ish) and INAM (304 B per-image transition data)
+        // are decoded as the authoritative per-weather scroll source,
+        // pick distinct multipliers so the four layers always have four
+        // visibly different drifts. Slower base U on the high layers
+        // matches the conventional cirrus-vs-stratus authoring pattern
+        // (cirrus drifts slowly relative to the lower deck). #899.
         clouds.cloud_scroll_2[0] =
-            (clouds.cloud_scroll_2[0] + cloud_scroll_rate * dt).rem_euclid(1.0);
+            (clouds.cloud_scroll_2[0] + cloud_scroll_rate * 0.85 * dt).rem_euclid(1.0);
         clouds.cloud_scroll_2[1] =
-            (clouds.cloud_scroll_2[1] + cloud_scroll_rate * 0.3 * dt).rem_euclid(1.0);
-        // Layer 3 (WTHR BNAM) — same opposite-direction pattern as
-        // layer 1 (M33.1).
+            (clouds.cloud_scroll_2[1] + cloud_scroll_rate * 0.45 * dt).rem_euclid(1.0);
         clouds.cloud_scroll_3[0] =
-            (clouds.cloud_scroll_3[0] - cloud_scroll_rate * 1.35 * dt).rem_euclid(1.0);
+            (clouds.cloud_scroll_3[0] - cloud_scroll_rate * 1.15 * dt).rem_euclid(1.0);
         clouds.cloud_scroll_3[1] =
-            (clouds.cloud_scroll_3[1] + cloud_scroll_rate * 0.5 * dt).rem_euclid(1.0);
+            (clouds.cloud_scroll_3[1] + cloud_scroll_rate * 0.6 * dt).rem_euclid(1.0);
     }
 
     // Update CellLightingRes — exterior cells only. Interior cells own
