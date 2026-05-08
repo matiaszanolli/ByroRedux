@@ -637,6 +637,21 @@ pub fn audio_system(world: &World, _dt: f32) {
 /// Find the (first) `AudioListener` entity in the world, read its
 /// `GlobalTransform`, and either lazy-create the kira listener or
 /// push a pose update through the existing handle.
+///
+/// **Listener handle reuse contract (#849):** the kira listener
+/// handle (`audio_world.listener`) is created lazily on the first
+/// frame an `AudioListener` is observed and **never cleared**.
+/// When the entity carrying the marker is despawned this function
+/// early-returns at the first `iter.next()`; on the next respawn
+/// (third-person camera transition, fly-cam swap, save-load cycle)
+/// the existing handle's pose is updated rather than a fresh
+/// `add_listener` call. This is intentional: kira's
+/// `listener_capacity` is 8 (kira-0.10's manager settings cap),
+/// so a "clear on missing entity → re-add on respawn" simplification
+/// would burn through that capacity on a bursty
+/// debug-fly-cam-destroy-create loop and lock out future spawns.
+/// Future maintainers must keep the `listener` field sticky across
+/// entity churn.
 fn sync_listener_pose(world: &World, audio_world: &mut AudioWorld) {
     let listener_entity = {
         let Some(q) = world.query::<AudioListener>() else {

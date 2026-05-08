@@ -53,6 +53,15 @@ pub struct ParseOptions {
     /// 2.3 headers, nif_stats corpus analysis, modder documentation) but
     /// whose full schema has not been implemented yet. See #224.
     pub oblivion_skip_sizes: HashMap<String, u32>,
+    /// Run [`crate::scene::NifScene::validate_refs`] after parse and
+    /// store the dangling-ref count in `scene.link_errors`. Off by
+    /// default — the walk visits every block once and follows every
+    /// trait-exposed `BlockRef` plus `NiNode.children` / `effects`,
+    /// so on a 1k-block NIF it adds a few µs to the parse path.
+    /// Useful for debug builds, `nif_stats`, and the
+    /// `tests/parse_real_nifs.rs` integration sweep that wants a
+    /// link-integrity histogram. See #892.
+    pub validate_links: bool,
 }
 
 /// Animation block type names that can be skipped in geometry-only mode.
@@ -594,13 +603,34 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         None
     };
 
-    Ok(NifScene {
+    let mut scene = NifScene {
         blocks,
         root_index,
         truncated,
         dropped_block_count,
         recovered_blocks,
-    })
+        link_errors: 0,
+    };
+    // Opt-in dangling-ref walk (#892). Off by default; debug builds,
+    // `nif_stats`, and integration sweeps flip
+    // `ParseOptions::validate_links` to surface link-integrity drift
+    // that the parse-rate gate alone wouldn't catch (a parser
+    // regression that produces technically-Ok scenes with
+    // semantically-broken `BlockRef`s would otherwise only show up
+    // as a render artifact).
+    if options.validate_links {
+        let errors = scene.validate_refs();
+        if !errors.is_empty() {
+            log::warn!(
+                "parse_nif: validate_links found {} dangling BlockRef(s) \
+                 — first 3: {:?}",
+                errors.len(),
+                errors.iter().take(3).collect::<Vec<_>>(),
+            );
+        }
+        scene.link_errors = errors.len();
+    }
+    Ok(scene)
 }
 
 /// Return `true` when `block_type_name` is `NiNode` or any specialised
@@ -800,10 +830,12 @@ mod tests {
             truncated: true,
             dropped_block_count: 3,
             recovered_blocks: 0,
+            link_errors: 0,
         };
         assert!(scene.truncated);
         assert_eq!(scene.dropped_block_count, 3);
         assert_eq!(scene.recovered_blocks, 0);
+        assert_eq!(scene.link_errors, 0);
         assert!(scene.is_empty());
     }
 

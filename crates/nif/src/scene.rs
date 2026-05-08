@@ -42,6 +42,15 @@ pub struct NifScene {
     /// clean" rate. Pre-#568 the recovery path warned but didn't
     /// surface anywhere observable.
     pub recovered_blocks: usize,
+    /// Number of dangling `BlockRef`s found by [`Self::validate_refs`]
+    /// when [`crate::ParseOptions::validate_links`] was set on the
+    /// parse call. Zero for parses that didn't request validation
+    /// (default) or that produced a link-clean scene. A regression
+    /// that produces technically-Ok scenes with semantically-broken
+    /// links would surface here without any caller doing the walk
+    /// itself; before this field landed only debug-build / nif_stats
+    /// callers ran the walk explicitly. See #892.
+    pub link_errors: usize,
 }
 
 impl Default for NifScene {
@@ -52,6 +61,7 @@ impl Default for NifScene {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            link_errors: 0,
         }
     }
 }
@@ -281,6 +291,7 @@ mod validate_refs_tests {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            link_errors: 0,
         };
         assert!(scene.validate_refs().is_empty());
     }
@@ -298,6 +309,7 @@ mod validate_refs_tests {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            link_errors: 0,
         };
         assert!(scene.validate_refs().is_empty());
     }
@@ -312,6 +324,7 @@ mod validate_refs_tests {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            link_errors: 0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
@@ -334,6 +347,7 @@ mod validate_refs_tests {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            link_errors: 0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 2);
@@ -354,6 +368,7 @@ mod validate_refs_tests {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            link_errors: 0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
@@ -370,6 +385,7 @@ mod validate_refs_tests {
             truncated: false,
             dropped_block_count: 0,
             recovered_blocks: 0,
+            link_errors: 0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
