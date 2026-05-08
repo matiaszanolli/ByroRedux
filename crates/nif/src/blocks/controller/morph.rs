@@ -3,6 +3,7 @@
 //! Lead types: NiGeomMorpherController, MorphWeight, MorphTarget, NiMorphData.
 
 use super::*;
+use crate::types::NiPoint3;
 
 /// Morph target controller — drives facial animation and mesh deformation.
 ///
@@ -111,8 +112,13 @@ impl NiGeomMorpherController {
 pub struct MorphTarget {
     /// Name of this morph frame (e.g., "Blink", "JawOpen").
     pub name: Option<Arc<str>>,
-    /// Vertex position deltas (one per mesh vertex).
-    pub vectors: Vec<[f32; 3]>,
+    /// Vertex position deltas (one per mesh vertex). Stored as
+    /// `NiPoint3` rather than `[f32; 3]` so the bulk-read result
+    /// from `read_ni_point3_array` is consumed in place — no
+    /// throwaway memcpy on the cell-load critical path. Layout is
+    /// bitwise identical (`#[repr(C)]` 3×f32, no padding); consumers
+    /// access `.x / .y / .z` the same as the rest of the parser. #875.
+    pub vectors: Vec<NiPoint3>,
 }
 
 /// Morph target data — vertex deltas for facial animation.
@@ -218,8 +224,9 @@ impl NiMorphData {
             // Vertex deltas — `read_ni_point3_array` validates
             // `num_vertices * 12 <= remaining` via its internal
             // `check_alloc`, which also enforces the hard cap (#408 / #831).
-            let points = stream.read_ni_point3_array(num_vertices as usize)?;
-            let vectors: Vec<[f32; 3]> = points.into_iter().map(|p| [p.x, p.y, p.z]).collect();
+            // Result is moved into the field directly (no axis swap or
+            // collect — `MorphTarget.vectors` is `Vec<NiPoint3>`). #875.
+            let vectors = stream.read_ni_point3_array(num_vertices as usize)?;
 
             morphs.push(MorphTarget { name, vectors });
         }

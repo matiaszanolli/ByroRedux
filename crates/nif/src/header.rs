@@ -171,10 +171,13 @@ impl NifHeader {
                     ),
                 ));
             }
-            let mut indices = Vec::with_capacity(num_blocks as usize);
-            for _ in 0..num_blocks {
-                indices.push(read_u16_le(&mut cursor)?);
-            }
+            // Bulk read — single `read_exact` into a typed Vec rather
+            // than `num_blocks` per-element calls. Same allocation
+            // count, fewer syscall-shaped boundary checks. The
+            // byte-budget guard above already gates the count, so this
+            // mirrors what `NifStream::read_pod_vec` does internally
+            // for the post-header arrays. #876.
+            let indices = read_pod_vec_from_cursor::<u16>(&mut cursor, num_blocks as usize)?;
             (types, indices)
         } else {
             (Vec::new(), Vec::new())
@@ -197,11 +200,8 @@ impl NifHeader {
                     ),
                 ));
             }
-            let mut sizes = Vec::with_capacity(num_blocks as usize);
-            for _ in 0..num_blocks {
-                sizes.push(read_u32_le(&mut cursor)?);
-            }
-            sizes
+            // Same bulk pattern as block_type_indices above. #876.
+            read_pod_vec_from_cursor::<u32>(&mut cursor, num_blocks as usize)?
         } else {
             Vec::new()
         };
@@ -297,6 +297,50 @@ fn read_u32_le(cursor: &mut Cursor<&[u8]>) -> io::Result<u32> {
     let mut buf = [0u8; 4];
     cursor.read_exact(&mut buf)?;
     Ok(u32::from_le_bytes(buf))
+}
+
+/// Read `count` POD values directly into a zero-initialized typed
+/// `Vec<T>` via a single `read_exact`, then return the populated
+/// vector. Mirrors `NifStream::read_pod_vec` for the header parser,
+/// which executes *before* the `NifStream` wrapper exists and so
+/// can't call the streamed version directly.
+///
+/// Caller must satisfy: `T` is `Copy + Default` and has no padding
+/// bytes / no validity invariants beyond "any bit pattern is sound"
+/// (true for `u16`, `u32`, `f32`, `[f32; N]`). LE host required —
+/// the `target_endian = "big"` compile-error gate at the top of
+/// `stream.rs` covers the whole crate.
+///
+/// Caller is responsible for the byte-budget bounds check on
+/// `count * size_of::<T>()` — every header call site already does
+/// this against `total_bytes - cursor.position()` (see #388).
+fn read_pod_vec_from_cursor<T: Copy + Default>(
+    cursor: &mut Cursor<&[u8]>,
+    count: usize,
+) -> io::Result<Vec<T>> {
+    let byte_count = count
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "read_pod_vec_from_cursor: byte count overflow ({count} × {} bytes)",
+                    std::mem::size_of::<T>(),
+                ),
+            )
+        })?;
+    let mut out: Vec<T> = vec![T::default(); count];
+    // SAFETY: same invariants as `NifStream::read_pod_vec` —
+    // `out.as_mut_ptr()` is non-null, the region is exactly
+    // `byte_count` bytes (Vec contiguous-storage guarantee),
+    // `read_exact` writes exactly that many bytes, and `T`'s
+    // any-byte-pattern soundness contract makes the post-read bytes
+    // valid `T` values. LE-host gate is the module-level compile
+    // error in stream.rs.
+    let byte_slice: &mut [u8] =
+        unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_count) };
+    cursor.read_exact(byte_slice)?;
+    Ok(out)
 }
 
 fn read_sized_string(cursor: &mut Cursor<&[u8]>) -> io::Result<String> {
