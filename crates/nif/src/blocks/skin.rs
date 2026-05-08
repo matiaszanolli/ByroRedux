@@ -312,11 +312,10 @@ impl NiSkinPartition {
                         stream.skip(len as u64 * 2)?;
                     }
                 } else {
-                    let flat = stream.read_u16_array(num_triangles as usize * 3)?;
-                    triangles = flat
-                        .chunks_exact(3)
-                        .map(|tri| [tri[0], tri[1], tri[2]])
-                        .collect();
+                    // Single bulk read into `Vec<[u16; 3]>`; replaces the
+                    // prior `read_u16_array(N*3)` + `chunks_exact(3).map(...)`
+                    // rebuild. #874.
+                    triangles = stream.read_u16_triple_array(num_triangles as usize)?;
                 }
             }
 

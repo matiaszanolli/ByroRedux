@@ -60,6 +60,9 @@ impl traits::HasObjectNET for NiTriShape {
     fn name(&self) -> Option<&str> {
         self.av.net.name.as_deref()
     }
+    fn name_arc(&self) -> Option<&std::sync::Arc<str>> {
+        self.av.net.name.as_ref()
+    }
     fn extra_data_refs(&self) -> &[BlockRef] {
         &self.av.net.extra_data_refs
     }
@@ -370,6 +373,9 @@ impl traits::HasObjectNET for BsTriShape {
     fn name(&self) -> Option<&str> {
         self.av.net.name.as_deref()
     }
+    fn name_arc(&self) -> Option<&std::sync::Arc<str>> {
+        self.av.net.name.as_ref()
+    }
     fn extra_data_refs(&self) -> &[BlockRef] {
         &self.av.net.extra_data_refs
     }
@@ -611,7 +617,10 @@ impl BsTriShape {
             uvs = stream.allocate_vec(nv_u32)?;
             normals = stream.allocate_vec(nv_u32)?;
             vertex_colors = stream.allocate_vec(nv_u32)?;
-            triangles = stream.allocate_vec(num_triangles)?;
+            // No pre-allocation for `triangles` — the bulk
+            // `read_u16_triple_array` below does its own #408
+            // check_alloc, and the prior `allocate_vec` here was a
+            // dead store under that path. #874.
             if is_skinned {
                 bone_weights = stream.allocate_vec(nv_u32)?;
                 bone_indices = stream.allocate_vec(nv_u32)?;
@@ -771,13 +780,14 @@ impl BsTriShape {
                 }
             }
 
-            // Triangle indices — bulk read 3 u16s per triangle.
-            {
-                let flat = stream.read_u16_array(num_triangles as usize * 3)?;
-                for tri in flat.chunks_exact(3) {
-                    triangles.push([tri[0], tri[1], tri[2]]);
-                }
-            }
+            // Triangle indices — single bulk read into `Vec<[u16; 3]>`.
+            // Replaces the prior `read_u16_array(N*3)` +
+            // `chunks_exact(3).map(...).collect()` rebuild with one
+            // `read_exact` and zero per-element allocations. The
+            // `allocate_vec(num_triangles)` reservation above stays as
+            // the pre-allocation cap-check; the bulk read overwrites
+            // the empty `triangles` Vec it produced. #874.
+            triangles = stream.read_u16_triple_array(num_triangles as usize)?;
         }
 
         // Skyrim SE: particle data size is **unconditionally** present per
@@ -1461,11 +1471,11 @@ impl NiTriShapeData {
         } else {
             num_triangles > 0
         };
+        // Single bulk read — `[u16; 3]` is POD so the prior
+        // `read_u16_array(N*3)` + `chunks_exact(3).map(...).collect()`
+        // is replaced by one `read_pod_vec::<[u16; 3]>` cast. #874.
         let triangles = if has_triangles {
-            let flat = stream.read_u16_array(num_triangles * 3)?;
-            flat.chunks_exact(3)
-                .map(|tri| [tri[0], tri[1], tri[2]])
-                .collect()
+            stream.read_u16_triple_array(num_triangles)?
         } else {
             Vec::new()
         };

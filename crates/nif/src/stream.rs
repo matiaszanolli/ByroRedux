@@ -342,6 +342,16 @@ impl<'a> NifStream<'a> {
         self.read_pod_vec::<u16>(count)
     }
 
+    /// Read `count` triangles (3×u16 each) in one bulk read.
+    /// Saves the `chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect()`
+    /// rebuild that the parser used to do after `read_u16_array(count *
+    /// 3)` — `[u16; 3]` is POD, alignment 2 ≥ 1, all bit patterns sound,
+    /// so the underlying `read_pod_vec` cast is identical to the
+    /// existing `[f32; 2]` / `[f32; 4]` / `NiPoint3` cases. #874.
+    pub fn read_u16_triple_array(&mut self, count: usize) -> io::Result<Vec<[u16; 3]>> {
+        self.read_pod_vec::<[u16; 3]>(count)
+    }
+
     /// Read `count` u32 values in one bulk read.
     pub fn read_u32_array(&mut self, count: usize) -> io::Result<Vec<u32>> {
         self.read_pod_vec::<u32>(count)
