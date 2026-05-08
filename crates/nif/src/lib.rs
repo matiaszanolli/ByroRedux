@@ -244,18 +244,21 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
     }
 
     for i in 0..header.num_blocks as usize {
-        // Resolve block type name: from header table (Gamebryo+) or inline string (pre-Gamebryo).
-        let inline_name: String;
-        let type_name: &str = if inline_type_names {
+        // Resolve block type name: from header table (Gamebryo+) or
+        // inline string (pre-Gamebryo). The four `NiUnknown` recovery
+        // sites below clone the `Arc<str>` produced here rather than
+        // calling `Arc::from(&str)` per dispatch failure (#834). The
+        // header-table path refcount-clones the header's existing
+        // `Arc<str>` storage; the (rare) inline path allocates one
+        // fresh `Arc<str>` per block since each inline name lives
+        // for one block only.
+        let type_name_arc: Arc<str> = if inline_type_names {
             // Pre-Gamebryo: each block is prefixed by a u32-length-prefixed type name string.
             // Use truncation rather than hard-Err if the inline name read fails (e.g. a
             // corrupt-by-design debug NIF whose type-name length field overflows the alloc
             // cap — #698 Oblivion `marker_radius.nif`).
             match stream.read_sized_string() {
-                Ok(name) => {
-                    inline_name = name;
-                    &inline_name
-                }
+                Ok(name) => Arc::from(name),
                 Err(e) => {
                     log::warn!(
                         "Block {} inline type-name read failed: {} — truncating (keeping {} blocks)",
@@ -267,8 +270,8 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                 }
             }
         } else {
-            match header.block_type_name(i) {
-                Some(name) => name,
+            match header.block_type_name_arc(i) {
+                Some(arc) => Arc::clone(arc),
                 None => {
                     log::warn!(
                         "Block {} has no type name in header table — truncating (keeping {} blocks)",
@@ -280,6 +283,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                 }
             }
         };
+        let type_name: &str = type_name_arc.as_ref();
 
         let block_size = header.block_sizes.get(i).copied();
         let start_pos = stream.position();
@@ -289,7 +293,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
             if let Some(size) = block_size {
                 stream.skip(size as u64)?;
                 blocks.push(Box::new(blocks::NiUnknown {
-                    type_name: Arc::from(type_name),
+                    type_name: Arc::clone(&type_name_arc),
                     data: Vec::new(), // Don't store data — just a placeholder
                 }));
                 continue;
@@ -421,7 +425,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                     );
                     stream.set_position(start_pos + size as u64);
                     blocks.push(Box::new(blocks::NiUnknown {
-                        type_name: Arc::from(type_name),
+                        type_name: Arc::clone(&type_name_arc),
                         data: Vec::new(),
                     }));
                     recovered_blocks += 1;
@@ -459,7 +463,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                                 e
                             );
                             blocks.push(Box::new(blocks::NiUnknown {
-                                type_name: Arc::from(type_name),
+                                type_name: Arc::clone(&type_name_arc),
                                 data: Vec::new(),
                             }));
                             recovered_blocks += 1;
@@ -484,7 +488,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                             e
                         );
                         blocks.push(Box::new(blocks::NiUnknown {
-                            type_name: Arc::from(type_name),
+                            type_name: Arc::clone(&type_name_arc),
                             data: Vec::new(),
                         }));
                         recovered_blocks += 1;

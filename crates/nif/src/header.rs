@@ -21,7 +21,11 @@ pub struct NifHeader {
     /// Number of object blocks in the file.
     pub num_blocks: u32,
     /// RTTI class name table (e.g., "NiNode", "NiTriShape").
-    pub block_types: Vec<String>,
+    /// Stored as `Arc<str>` so the per-block-recovery NiUnknown
+    /// allocation path (`crates/nif/src/lib.rs`) can refcount-bump
+    /// rather than allocate a fresh `Arc<str>` for every dispatch
+    /// failure. See #834.
+    pub block_types: Vec<Arc<str>>,
     /// Maps each block index to its type in `block_types`.
     pub block_type_indices: Vec<u16>,
     /// Byte size of each serialized block.
@@ -154,9 +158,12 @@ impl NifHeader {
                     ),
                 ));
             }
-            let mut types = Vec::with_capacity(num_block_types);
+            let mut types: Vec<Arc<str>> = Vec::with_capacity(num_block_types);
             for _ in 0..num_block_types {
-                types.push(read_sized_string(&mut cursor)?);
+                // Allocation happens once per distinct type name during
+                // header parse — the dispatch loop later
+                // refcount-clones into NiUnknown stubs. #834.
+                types.push(Arc::from(read_sized_string(&mut cursor)?));
             }
             // Each block_type_index entry is a u16; the indices array
             // must fit in what's left of the file.
@@ -274,8 +281,18 @@ impl NifHeader {
 
     /// Get the type name of a block by its index.
     pub fn block_type_name(&self, block_index: usize) -> Option<&str> {
+        Some(self.block_type_name_arc(block_index)?.as_ref())
+    }
+
+    /// Borrow the `Arc<str>` storage backing the type-name table for
+    /// a block. Callers that build owned `Arc<str>` values (notably
+    /// the dispatch loop's NiUnknown recovery path) should prefer
+    /// this over `block_type_name` so they can `Arc::clone` the
+    /// existing entry instead of paying a fresh `Arc::from(&str)`
+    /// allocation per block. See #834.
+    pub fn block_type_name_arc(&self, block_index: usize) -> Option<&Arc<str>> {
         let type_idx = *self.block_type_indices.get(block_index)? as usize;
-        self.block_types.get(type_idx).map(|s| s.as_str())
+        self.block_types.get(type_idx)
     }
 }
 
@@ -491,7 +508,8 @@ mod tests {
         let (header, _offset) = NifHeader::parse(&buf).unwrap();
 
         assert_eq!(header.num_blocks, 2);
-        assert_eq!(header.block_types, vec!["NiNode", "NiTriShape"]);
+        let block_types: Vec<&str> = header.block_types.iter().map(|s| s.as_ref()).collect();
+        assert_eq!(block_types, vec!["NiNode", "NiTriShape"]);
         assert_eq!(header.block_type_indices, vec![0, 1]);
         assert_eq!(header.block_sizes, vec![100, 200]);
         assert_eq!(header.strings.len(), 2);
@@ -586,7 +604,8 @@ mod tests {
 
         let (header, offset) = NifHeader::parse(&buf).unwrap();
         assert_eq!(header.block_sizes, vec![100]);
-        assert_eq!(header.block_types, vec!["NiNode"]);
+        let block_types: Vec<&str> = header.block_types.iter().map(|s| s.as_ref()).collect();
+        assert_eq!(block_types, vec!["NiNode"]);
         assert_eq!(offset, buf.len());
     }
 }
