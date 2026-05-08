@@ -1185,6 +1185,16 @@ const VF_TANGENTS: u16 = 0x010;
 const VF_VERTEX_COLORS: u16 = 0x020;
 const VF_SKINNED: u16 = 0x040;
 const VF_EYE_DATA: u16 = 0x100;
+/// nif.xml `BSVertexDesc` flag: positions are 3 × f32 rather than
+/// 3 × f16. SSE-era buffers are unconditionally full-precision
+/// (the flag bit may or may not be set on the descriptor; the
+/// schema-struct identity guarantees the layout). FO4 (bsver
+/// 130+) gates full-precision on `(ARG & 0x401) == 0x401`. The
+/// SSE-only packed-buffer decoder relies on the SSE-band invariant
+/// — see `decode_sse_packed_buffer`'s "SSE-only contract" docstring
+/// and #888. Constant kept for the future FO4-extension branch.
+#[allow(dead_code)]
+const VF_FULL_PRECISION: u16 = 0x400;
 
 /// Resolve `shape.skin_ref` → `NiSkinInstance` (or
 /// `BsDismemberSkinInstance`) → `NiSkinPartition` and reconstruct
@@ -1316,6 +1326,22 @@ struct DecodedPackedBuffer {
 /// are 4 × u8. Tangent / skin / eye data slots are skipped per the
 /// `vertex_attrs` mask. Returns `None` when the buffer is malformed
 /// (size mismatch, vertex_size == 0, or VF_VERTEX clear).
+///
+/// **SSE-only contract (#888).** The position read at the head of
+/// each vertex hard-codes the 16-byte layout `3 × f32 +
+/// (Bitangent X / Unused W)` per nif.xml `BSVertexDataSSE`. This
+/// is sound today: `try_reconstruct_sse_geometry` is gated on
+/// bsver in `[100, 130)` (Skyrim SE) where `BSVertexDataSSE` is
+/// unconditionally f32 by schema-struct identity. Extending the
+/// reconstructor to FO4 (bsver 130+) requires either:
+/// 1. mirroring the inline parser's `bsver < 130 ||
+///    vertex_attrs & VF_FULL_PRECISION` rule and producing a
+///    half-precision branch (FO4's `BSVertexData` is conditional
+///    on `(ARG & 0x401) == 0x401`); or
+/// 2. keeping the upstream `try_reconstruct_sse_geometry` gate
+///    locked to the SSE band so this decoder never sees FO4 input.
+/// Without either, FO4 meshes that ship without `VF_FULL_PRECISION`
+/// (the common case) would silently mis-decode every vertex.
 fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPackedBuffer> {
     let vertex_size = buffer.vertex_size as usize;
     if vertex_size == 0 || buffer.raw_bytes.len() % vertex_size != 0 {
