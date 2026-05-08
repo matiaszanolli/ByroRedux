@@ -34,7 +34,7 @@
 //! See `byroredux::cell_loader::expand_scol_placements` (#585).
 
 use crate::esm::reader::SubRecord;
-use crate::esm::records::common::read_string_sub;
+use crate::esm::records::common::{read_lstring_or_zstring, read_string_sub};
 
 /// One per-child placement inside an SCOL — position / rotation
 /// (Euler XYZ, radians) / uniform scale.
@@ -102,11 +102,21 @@ pub struct ScolRecord {
     /// exclude the SCOL from certain lighting / shadow passes. We
     /// only retain the IDs; actual filtering is downstream work.
     pub filter: Vec<u32>,
+    /// Localised display name from the FULL sub-record. 124 of 2617
+    /// vanilla FO4 SCOLs ship one (e.g. "Cambridge Deco Storefront
+    /// 01"); empty on the rest. On localised plugins (master flag
+    /// `LOCALIZED`) FULL is a 4-byte lstring index, surfaced as
+    /// `<lstring 0x…>` placeholder via `read_lstring_or_zstring` —
+    /// matches the convention used by `PkinRecord::full_name` and
+    /// item records' `full_name` (#348). No render impact today;
+    /// preserved for editor-mode and audit tooling. See #816.
+    pub full_name: String,
 }
 
 /// Parse an SCOL record from its sub-record list. Unknown sub-records
-/// (OBND, MODT, FLTR format variants, FULL, PTRN, MODS) are ignored —
+/// (OBND, MODT, FLTR format variants, PTRN, MODS) are ignored —
 /// the renderer / cell loader only needs EDID / MODL / ONAM-DATA.
+/// FULL is preserved for editor-mode display (see `ScolRecord::full_name`).
 /// Wire format is FO4-and-later; earlier games don't emit SCOL.
 pub fn parse_scol(form_id: u32, subs: &[SubRecord]) -> ScolRecord {
     let editor_id = read_string_sub(subs, b"EDID").unwrap_or_default();
@@ -115,9 +125,18 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord]) -> ScolRecord {
     let mut parts: Vec<ScolPart> = Vec::new();
     let mut current_base: Option<u32> = None;
     let mut filter: Vec<u32> = Vec::new();
+    let mut full_name = String::new();
 
     for sub in subs {
         match sub.sub_type.as_slice() {
+            b"FULL" => {
+                // #816 — localised display name. On localised plugins
+                // FULL is a 4-byte lstring index resolved at runtime
+                // via the strings table; non-localised plugins ship
+                // the inline cstring. Same routing as `PkinRecord::
+                // full_name` and item records' `full_name`.
+                full_name = read_lstring_or_zstring(&sub.data);
+            }
             b"ONAM" => {
                 if sub.data.len() >= 4 {
                     current_base = Some(u32::from_le_bytes([
@@ -195,6 +214,7 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord]) -> ScolRecord {
         model_path,
         parts,
         filter,
+        full_name,
     }
 }
 
@@ -349,5 +369,55 @@ mod tests {
         let rec = parse_scol(0x1111_2222, &subs);
         assert_eq!(rec.parts.len(), 1);
         assert_eq!(rec.parts[0].placements, vec![p]);
+    }
+
+    /// Regression for #816: FULL is now captured as
+    /// `ScolRecord::full_name`, routed through
+    /// `read_lstring_or_zstring` so non-localised plugins land the
+    /// inline cstring and localised plugins surface the 4-byte
+    /// lstring index as `<lstring 0x…>` placeholder.
+    #[test]
+    fn parse_scol_full_inline_cstring_round_trips() {
+        let mut full_bytes = b"Cambridge Deco Storefront 01".to_vec();
+        full_bytes.push(0); // null-terminate inline cstring
+        let subs = vec![
+            edid("CambridgeDecoStorefront01"),
+            modl("SCOL\\Fallout4.esm\\CM00012345.NIF"),
+            mk_sub(b"FULL", full_bytes),
+        ];
+        let rec = parse_scol(0x0001_2345, &subs);
+        assert_eq!(rec.full_name, "Cambridge Deco Storefront 01");
+        assert_eq!(rec.editor_id, "CambridgeDecoStorefront01");
+    }
+
+    /// Localised plugin: 4-byte lstring index → placeholder. Matches
+    /// `PkinRecord::full_name` shape for FO4 localised content. The
+    /// localised-plugin flag is process-global; toggle, run, untoggle
+    /// to keep the flag-leak test guard the rest of the module
+    /// depends on.
+    #[test]
+    fn parse_scol_full_lstring_index_surfaces_placeholder() {
+        use crate::esm::records::common::set_localized_plugin;
+        set_localized_plugin(true);
+        let lstring_index: u32 = 0x0001_2345;
+        let subs = vec![
+            edid("LocalisedScol"),
+            mk_sub(b"FULL", lstring_index.to_le_bytes().to_vec()),
+        ];
+        let rec = parse_scol(0xDEAD_BEEF, &subs);
+        set_localized_plugin(false);
+        assert_eq!(rec.full_name, "<lstring 0x00012345>");
+    }
+
+    /// Records without a FULL sub-record leave `full_name` empty —
+    /// this is the common case (2493 / 2617 vanilla FO4 SCOLs).
+    #[test]
+    fn parse_scol_no_full_leaves_name_empty() {
+        let subs = vec![
+            edid("NoFullScol"),
+            modl("SCOL\\Fallout4.esm\\CM00099999.NIF"),
+        ];
+        let rec = parse_scol(0x9999_AAAA, &subs);
+        assert_eq!(rec.full_name, "");
     }
 }
