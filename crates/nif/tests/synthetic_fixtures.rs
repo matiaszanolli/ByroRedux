@@ -329,7 +329,7 @@ fn synthetic_skyrim_header_version() {
     assert_eq!(header.user_version_2, 100);
     assert_eq!(header.num_blocks, 1);
     assert_eq!(header.block_types.len(), 1);
-    assert_eq!(header.block_types[0], "NiNode");
+    assert_eq!(&*header.block_types[0], "NiNode");
     assert_eq!(header.strings.len(), 1);
     assert_eq!(&*header.strings[0], "Scene Root");
 }
