@@ -105,9 +105,10 @@ fn stamp_cell_root(world: &mut World, cell_root: EntityId, first: EntityId, last
         let entry = idx.map.entry(cell_root).or_insert_with(Vec::new);
         let span = last.saturating_sub(first) as usize;
         entry.reserve(span + 1);
-        for eid in first..last {
-            entry.push(eid);
-        }
+        // `extend` over a known-size `Copy` range lets the compiler
+        // inline as a typed memcpy and elide per-push bounds checks
+        // — same final layout as the prior per-eid push loop. #885.
+        entry.extend(first..last);
         entry.push(cell_root);
     }
 }
