@@ -27,5 +27,8 @@ pub fn start(_world: &mut World, scheduler: &mut Scheduler, port: u16) {
 
     scheduler.add_exclusive(Stage::Late, drain_system);
 
+    // Hostname here mirrors `listener_loop`'s `TcpListener::bind`
+    // hardcoded `127.0.0.1` — both must move in lockstep if a
+    // future host arg lands. See #857.
     log::info!("Debug server listening on 127.0.0.1:{}", port);
 }

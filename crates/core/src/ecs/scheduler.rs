@@ -270,6 +270,48 @@ impl Scheduler {
     }
 
     /// Run all systems: stages in order, parallel within each stage.
+    ///
+    /// # Re-entry
+    ///
+    /// `run` takes `&mut self`. Systems receive `&World` (interior-
+    /// mutable via `RwLock`) and have no safe path to reach the
+    /// `Scheduler` instance — `Scheduler` is owned by the `App`
+    /// struct and is intentionally **not** stored as a `Resource`.
+    /// Re-entry is therefore structurally impossible from inside
+    /// any system body. Future maintainers must keep `Scheduler`
+    /// out of the resource map (and out of `Arc<Mutex<_>>` wrappers
+    /// behind hot-reload schemes); promoting it would compile, but
+    /// `system → scheduler.run` would then panic at `BorrowMutError`
+    /// because the outer `&mut self` is held across the inner call.
+    /// See #868.
+    ///
+    /// # Panic propagation
+    ///
+    /// A panic in any system aborts the *current frame*; the
+    /// scheduler does not isolate or recover. Specifics differ by
+    /// build:
+    ///
+    /// - **`parallel-scheduler` enabled (default)**: rayon's
+    ///   `par_iter_mut().for_each` does not cancel sibling tasks on
+    ///   panic. Every parallel system in the *current* stage runs
+    ///   to completion (or panics independently); rayon then
+    ///   propagates the *first* observed panic to this thread when
+    ///   the for_each returns. Subsequent stages and the current
+    ///   stage's exclusive phase do not run for the rest of the
+    ///   frame. See rayon-core's panic policy.
+    /// - **`parallel-scheduler` disabled**: the plain `for` loop
+    ///   short-circuits on the first panic. Remaining parallel-phase
+    ///   systems and *all* exclusive-phase systems in the same
+    ///   stage do not run for that frame, identical to subsequent
+    ///   stages.
+    ///
+    /// In either build, a panic propagates out of `run` to the
+    /// caller's frame loop. The engine's main loop today doesn't
+    /// catch it — a panicking system terminates the process. If a
+    /// future build adds per-frame `catch_unwind` recovery, the
+    /// recovered frame will see partial state from the failed stage
+    /// (some parallel systems ran, some didn't; mid-stage exclusive
+    /// systems are guaranteed to have not run). See #867.
     pub fn run(&mut self, world: &World, dt: f32) {
         for (_stage, data) in &mut self.stages {
             // Phase 1: run parallel systems concurrently.

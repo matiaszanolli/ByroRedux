@@ -37,6 +37,11 @@ pub fn spawn(port: u16) -> (DebugDrainSystem, JoinHandle<()>) {
 }
 
 fn listener_loop(port: u16, queue: CommandQueue) {
+    // Bind hostname is currently hardcoded to 127.0.0.1 — debug
+    // server is loopback-only by design (no exposed port to the
+    // network). The matching log line in `lib.rs::start` says the
+    // same thing; both must move in lockstep if a future feature
+    // adds a host argument. See #857.
     let listener = match TcpListener::bind(format!("127.0.0.1:{}", port)) {
         Ok(l) => l,
         Err(e) => {
