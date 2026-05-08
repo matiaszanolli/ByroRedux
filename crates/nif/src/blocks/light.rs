@@ -107,6 +107,9 @@ impl NiLightBase {
     fn name_opt(&self) -> Option<&str> {
         self.av.net.name.as_deref()
     }
+    fn name_arc_opt(&self) -> Option<&std::sync::Arc<str>> {
+        self.av.net.name.as_ref()
+    }
     fn transform_ref(&self) -> &NiTransform {
         &self.av.transform
     }
@@ -133,6 +136,9 @@ macro_rules! impl_light_bases {
         impl HasObjectNET for $ty {
             fn name(&self) -> Option<&str> {
                 self.$base.name_opt()
+            }
+            fn name_arc(&self) -> Option<&std::sync::Arc<str>> {
+                self.$base.name_arc_opt()
             }
             fn extra_data_refs(&self) -> &[BlockRef] {
                 &self.$base.av.net.extra_data_refs
@@ -251,6 +257,9 @@ impl NiObject for NiSpotLight {
 impl HasObjectNET for NiSpotLight {
     fn name(&self) -> Option<&str> {
         self.point.base.name_opt()
+    }
+    fn name_arc(&self) -> Option<&std::sync::Arc<str>> {
+        self.point.base.name_arc_opt()
     }
     fn extra_data_refs(&self) -> &[BlockRef] {
         &self.point.base.av.net.extra_data_refs

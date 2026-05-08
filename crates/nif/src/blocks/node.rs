@@ -71,6 +71,9 @@ impl HasObjectNET for NiNode {
     fn name(&self) -> Option<&str> {
         self.av.net.name.as_deref()
     }
+    fn name_arc(&self) -> Option<&std::sync::Arc<str>> {
+        self.av.net.name.as_ref()
+    }
     fn extra_data_refs(&self) -> &[BlockRef] {
         &self.av.net.extra_data_refs
     }
@@ -659,6 +662,9 @@ impl NiObject for NiCamera {
 impl HasObjectNET for NiCamera {
     fn name(&self) -> Option<&str> {
         self.av.net.name.as_deref()
+    }
+    fn name_arc(&self) -> Option<&std::sync::Arc<str>> {
+        self.av.net.name.as_ref()
     }
     fn extra_data_refs(&self) -> &[BlockRef] {
         &self.av.net.extra_data_refs

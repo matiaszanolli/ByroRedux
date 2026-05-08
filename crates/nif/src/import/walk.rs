@@ -868,6 +868,18 @@ fn resolve_affected_node_names(scene: &NifScene, ptrs: &[u32]) -> Vec<std::sync:
         let Some(net) = block.as_object_net() else {
             continue;
         };
+        // Refcount-bump the existing `Arc<str>` storage when the
+        // implementor exposes it (every NiObjectNET-backed block
+        // does — default trait impl returns None as the safety
+        // hatch). Falls back to allocating a fresh `Arc<str>` from
+        // the `&str` accessor only for impls that don't override.
+        // #872.
+        if let Some(arc) = net.name_arc() {
+            if !arc.is_empty() {
+                out.push(std::sync::Arc::clone(arc));
+            }
+            continue;
+        }
         let Some(name) = net.name() else {
             continue;
         };
@@ -893,6 +905,14 @@ fn resolve_block_ref_names(scene: &NifScene, refs: &[BlockRef]) -> Vec<std::sync
         let Some(net) = block.as_object_net() else {
             continue;
         };
+        // Same Arc<str> refcount-bump path as
+        // `resolve_affected_node_names` above. #872.
+        if let Some(arc) = net.name_arc() {
+            if !arc.is_empty() {
+                out.push(std::sync::Arc::clone(arc));
+            }
+            continue;
+        }
         let Some(name) = net.name() else { continue };
         if name.is_empty() {
             continue;
