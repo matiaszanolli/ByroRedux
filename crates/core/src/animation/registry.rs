@@ -28,8 +28,16 @@ pub struct AnimationClipRegistry {
     clips: Vec<AnimationClip>,
     /// Path-keyed memoisation. Populated by
     /// [`Self::get_or_insert_by_path`] and read by callers that want
-    /// the cheap early-out before paying the parse cost. Keys are
-    /// caller-normalised (typically a lowercased archive path).
+    /// the cheap early-out before paying the parse cost.
+    ///
+    /// Keys are stored ASCII-lowercased — both
+    /// [`Self::get_or_insert_by_path`] and [`Self::get_by_path`]
+    /// case-fold the caller-supplied key before hash lookup, so
+    /// `"Meshes\\IDLE.KF"` and `"meshes\\idle.kf"` collapse onto the
+    /// same handle. This matches the pool-wide case-insensitive
+    /// convention (see #895) and removes a foot-gun for future
+    /// IDLE-record / Papyrus-routed callers that hand in
+    /// user-authored paths without explicit normalisation (#866).
     ///
     /// Without this map, repeated registration of the same KF clip
     /// (one per cell load with NPCs) grew the registry unboundedly —
@@ -57,8 +65,16 @@ impl AnimationClipRegistry {
     /// Look up a previously-memoised handle for `key`. Returns `None`
     /// when the key has never been seen (or was registered via plain
     /// [`Self::add`] without a key).
+    ///
+    /// Case-insensitive: the key is ASCII-lowercased before hash
+    /// lookup so callers can pass any case (#866). Allocation-free
+    /// when `key` is already lowercase — the common case for
+    /// statically-authored paths.
     pub fn get_by_path(&self, key: &str) -> Option<u32> {
-        self.clip_handles_by_path.get(key).copied()
+        match canonicalise(key) {
+            CanonKey::Borrowed(k) => self.clip_handles_by_path.get(k).copied(),
+            CanonKey::Owned(k) => self.clip_handles_by_path.get(&k).copied(),
+        }
     }
 
     /// Path-keyed memoising insert. Returns the existing handle if `key`
@@ -70,10 +86,28 @@ impl AnimationClipRegistry {
     /// so callers can short-circuit the BSA extract + NIF parse on a
     /// hit. Without that, every cell load would re-parse the same KF
     /// just to throw it away on dedup. See #790.
+    ///
+    /// Case-insensitive: `key` is ASCII-lowercased internally before
+    /// hash lookup / insert, so future callers handing in
+    /// user-authored paths from IDLE records or Papyrus
+    /// `Debug.SendAnimationEvent` re-routes don't accidentally split
+    /// the dedup map across case variants (#866).
     pub fn get_or_insert_by_path<F>(&mut self, key: String, build_clip: F) -> u32
     where
         F: FnOnce() -> AnimationClip,
     {
+        // Avoid the lowercase allocation when the caller already
+        // passed a canonical key (the production hot path —
+        // `npc_spawn::ensure_idle_clip` hands in a static lowercase
+        // literal). When upper-case bytes are present, fold in place
+        // on the owned `String` rather than allocating a second copy.
+        let key = if key.bytes().any(|b| b.is_ascii_uppercase()) {
+            let mut k = key;
+            k.make_ascii_lowercase();
+            k
+        } else {
+            key
+        };
         if let Some(&handle) = self.clip_handles_by_path.get(&key) {
             return handle;
         }
@@ -163,6 +197,24 @@ impl Default for AnimationClipRegistry {
     }
 }
 
+/// Lookup-key canonicalisation result for [`AnimationClipRegistry::get_by_path`].
+/// Borrowed when the caller's key is already ASCII-lowercase (zero
+/// allocation — common case for static literals); owned when an
+/// upper-case byte forced the case-fold copy.
+enum CanonKey<'a> {
+    Borrowed(&'a str),
+    Owned(String),
+}
+
+#[inline]
+fn canonicalise(key: &str) -> CanonKey<'_> {
+    if key.bytes().any(|b| b.is_ascii_uppercase()) {
+        CanonKey::Owned(key.to_ascii_lowercase())
+    } else {
+        CanonKey::Borrowed(key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +282,34 @@ mod tests {
         assert_eq!(reg.get_by_path("_male\\idle.kf"), Some(h_male));
         assert_eq!(reg.get_by_path("_female\\idle.kf"), Some(h_female));
         assert_eq!(reg.get_by_path("missing.kf"), None);
+    }
+
+    /// Regression for #866: keys differing only in case must collapse
+    /// onto the same handle. Pre-fix the registry took the caller's
+    /// key verbatim; a future IDLE-record or Papyrus-routed caller
+    /// handing in a user-authored path without `.to_ascii_lowercase()`
+    /// would have silently split the dedup map and resurrected the
+    /// #790 leak.
+    #[test]
+    fn get_or_insert_by_path_is_case_insensitive() {
+        let mut reg = AnimationClipRegistry::new();
+        let h_lower =
+            reg.get_or_insert_by_path("meshes\\idle.kf".to_string(), empty_clip);
+        let h_upper = reg.get_or_insert_by_path("MESHES\\IDLE.KF".to_string(), || {
+            panic!("build_clip must not be called — case variant should hit the memo")
+        });
+        let h_mixed = reg.get_or_insert_by_path("Meshes\\Idle.KF".to_string(), || {
+            panic!("build_clip must not be called — case variant should hit the memo")
+        });
+
+        assert_eq!(h_lower, h_upper);
+        assert_eq!(h_upper, h_mixed);
+        assert_eq!(reg.len(), 1, "all case variants must share one slot");
+
+        // get_by_path canonicalises too — any case round-trips.
+        assert_eq!(reg.get_by_path("MESHES\\IDLE.KF"), Some(h_lower));
+        assert_eq!(reg.get_by_path("Meshes\\Idle.KF"), Some(h_lower));
+        assert_eq!(reg.get_by_path("meshes\\idle.kf"), Some(h_lower));
     }
 
     /// `add()` (the un-keyed path) doesn't populate the path map —
