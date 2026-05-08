@@ -888,6 +888,29 @@ impl BsTriShape {
             }
         }
         shape.kind = BsTriShapeKind::Dynamic;
+        // #571 / SK-D1-02: surface the silent-import path. Vanilla
+        // Skyrim SE facegen ships `data_size > 0` (real triangles
+        // packed alongside the placeholder positions), so this
+        // branch is dormant on shipped content. A malformed or
+        // aggressively stripped-down mod facegen NIF that ships
+        // `data_size == 0` would land here — `parse()` skipped both
+        // the vertex and the triangle reads, `parse_dynamic`
+        // populated `vertices` from the trailing Vector4 array but
+        // `triangles` is still empty, and `extract_bs_tri_shape`
+        // would then bail at the `triangles.is_empty()` early
+        // return with zero log signal. Match the existing
+        // "verbose at import boundary" idiom and warn so the
+        // failure is audible.
+        if !shape.vertices.is_empty() && shape.triangles.is_empty() {
+            log::warn!(
+                "BSDynamicTriShape produced {} vertices but 0 triangles \
+                 (data_size==0 on the BSTriShape body skipped the \
+                  triangle read; on shipped vanilla content this never \
+                  fires) — mesh will silently fail to render at the \
+                  import boundary",
+                shape.vertices.len()
+            );
+        }
         Ok(shape)
     }
 
