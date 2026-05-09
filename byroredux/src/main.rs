@@ -399,23 +399,25 @@ impl App {
         scheduler.add_to(Stage::Early, weather_system);
         scheduler.add_to(Stage::Early, byroredux_scripting::timer_tick_system);
         scheduler.add_to(Stage::Update, animation_system);
-        // M44 Phase 3.5: footstep dispatch. Runs in Stage::Update so
-        // it sees the post-fly-camera Transform (which the camera
-        // system writes in Stage::Early) but BEFORE
-        // transform_propagation in Stage::PostUpdate — so the
-        // GlobalTransform we read is one frame stale relative to the
-        // camera's Transform. That's acceptable for footstep position
-        // accuracy at human movement speeds (~1 frame at 60 FPS = 17
-        // ms = ~3 cm of motion). If a future tick rate or speed
-        // mode surfaces a glitch, this can move to PostUpdate after
-        // propagation.
-        scheduler.add_to(Stage::Update, footstep_system);
         scheduler.add_to_with_access(
             Stage::Update,
             spin_system,
             Access::new().reads::<Spinning>().writes::<Transform>(),
         );
         scheduler.add_to(Stage::PostUpdate, make_transform_propagation_system());
+        // M44 Phase 3.5: footstep dispatch. Reads `GlobalTransform`
+        // for the world-space spawn position, so it MUST run after
+        // `make_transform_propagation_system()` — otherwise the
+        // footstep lands at last-frame's pose. Pre-#848 this was
+        // registered in `Stage::Update`, ahead of propagation; the
+        // commit comment claimed "~3 cm of motion" stale but that
+        // underestimated by ~100× for fly-cam boost (~3 game units
+        // / frame at 60 FPS, audible spatial-pan offset on a
+        // ~50-200-unit interior cell). Registered as exclusive so
+        // it sequences AFTER the PostUpdate parallel batch — same
+        // pattern as `particle_system` / `billboard_system` /
+        // `world_bound_propagation_system` below. See #848.
+        scheduler.add_exclusive(Stage::PostUpdate, footstep_system);
         // Particle simulation runs after transform propagation so emitter
         // entities have their final world-space spawn origin (#401).
         scheduler.add_exclusive(Stage::PostUpdate, particle_system);
