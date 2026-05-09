@@ -846,6 +846,7 @@ impl CompositePipeline {
     /// their size matches the swapchain. Caller must also pass the new
     /// indirect + albedo views (SVGF/GBuffer just recreated them).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn recreate_on_resize(
         &mut self,
         device: &ash::Device,
@@ -856,6 +857,8 @@ impl CompositePipeline {
         albedo_views: &[vk::ImageView],
         depth_view: vk::ImageView,
         caustic_views: &[vk::ImageView],
+        volumetric_views: &[vk::ImageView],
+        bloom_views: &[vk::ImageView],
         width: u32,
         height: u32,
     ) -> Result<()> {
@@ -970,7 +973,18 @@ impl CompositePipeline {
                     .sampler(self.caustic_sampler)
                     .image_view(caustic_views[i])
                     .image_layout(vk::ImageLayout::GENERAL)];
-                let writes = [
+                let volumetric_info = [vk::DescriptorImageInfo::default()
+                    .sampler(self.hdr_sampler)
+                    .image_view(volumetric_views[i])
+                    .image_layout(vk::ImageLayout::GENERAL)];
+                let bloom_info = [vk::DescriptorImageInfo::default()
+                    .sampler(self.hdr_sampler)
+                    .image_view(bloom_views[i])
+                    .image_layout(vk::ImageLayout::GENERAL)];
+                // Typed [_; 8] array — compile catches divergence from
+                // the 8-binding layout (#905). Init path mirrors this
+                // exact shape at lines 633-674.
+                let writes: [vk::WriteDescriptorSet; 8] = [
                     vk::WriteDescriptorSet::default()
                         .dst_set(self.descriptor_sets[i])
                         .dst_binding(0)
@@ -1001,6 +1015,16 @@ impl CompositePipeline {
                         .dst_binding(5)
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .image_info(&caustic_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.descriptor_sets[i])
+                        .dst_binding(6)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(&volumetric_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.descriptor_sets[i])
+                        .dst_binding(7)
+                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                        .image_info(&bloom_info),
                 ];
                 unsafe { device.update_descriptor_sets(&writes, &[]) };
             }

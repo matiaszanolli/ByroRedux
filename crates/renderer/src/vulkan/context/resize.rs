@@ -368,9 +368,75 @@ impl VulkanContext {
             None => mesh_id_views_in.clone(),
         };
 
+        // Recreate bloom pipeline (#905). Bloom's down/up mip pyramid
+        // is sized from screen_extent; the old mips are stuck at the
+        // pre-resize extent and would alias when sampled by composite.
+        // Mirrors the SSAO destroy+new pattern above. Pipelines/layouts
+        // /sampler/pool aren't extent-dependent but get rebuilt anyway
+        // — this is the simpler path; recreate is rare. Failing closed:
+        // composite needs SOME bloom view for binding 7, so a recreate
+        // failure is fatal (matches init behaviour at mod.rs:1422-1426).
+        if let Some(ref mut old_bloom) = self.bloom {
+            let allocator = self
+                .allocator
+                .as_ref()
+                .expect("allocator missing during resize");
+            unsafe { old_bloom.destroy(&self.device, allocator) };
+            self.bloom = None;
+            match super::super::bloom::BloomPipeline::new(
+                &self.device,
+                allocator,
+                self.pipeline_cache,
+                self.swapchain_state.extent,
+            ) {
+                Ok(new_bloom) => {
+                    if let Err(e) = unsafe {
+                        new_bloom.initialize_layouts(
+                            &self.device,
+                            &self.graphics_queue,
+                            self.transfer_pool,
+                        )
+                    } {
+                        log::warn!("Bloom layout re-init after resize failed: {e}");
+                    }
+                    self.bloom = Some(new_bloom);
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "Bloom pipeline re-creation failed during resize: {e} \
+                         — composite binding 7 would dangle. See #905."
+                    ));
+                }
+            }
+        }
+
+        // Snapshot bloom + volumetric output views — composite binding 6
+        // (volumetric) and binding 7 (bloom) need to be (re-)written.
+        // Volumetric is fixed froxel size (160×90×128 per volumetrics.rs)
+        // so its views survive resize untouched; we still re-bind for
+        // canonical lockstep with init. See #905.
+        let bloom_views: Vec<vk::ImageView> = match self.bloom.as_ref() {
+            Some(b) => b.output_views(),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Bloom pipeline absent during resize — \
+                     composite binding 7 cannot be bound. See #905."
+                ));
+            }
+        };
+        let volumetric_views: Vec<vk::ImageView> = match self.volumetrics.as_ref() {
+            Some(v) => v.integrated_views(),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Volumetrics pipeline absent during resize — \
+                     composite binding 6 cannot be bound. See #905."
+                ));
+            }
+        };
+
         // Recreate composite pipeline's HDR images + swapchain framebuffers
         // with the new extent. Also rewrites descriptor sets to point at
-        // the new indirect + albedo + caustic views.
+        // the new indirect + albedo + caustic + volumetric + bloom views.
         if let Some(ref mut composite) = self.composite {
             composite.recreate_on_resize(
                 &self.device,
@@ -383,6 +449,8 @@ impl VulkanContext {
                 &albedo_views,
                 self.depth_image_view,
                 &caustic_views,
+                &volumetric_views,
+                &bloom_views,
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;
