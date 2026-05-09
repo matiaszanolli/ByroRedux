@@ -2955,3 +2955,98 @@ fn bs_position_data_hostile_num_vertices_returns_err_not_panic() {
         "expected `allocate_vec` budget rejection, got: {msg}"
     );
 }
+
+/// Regression for #720 / NIF-D5-04. `BSEyeCenterExtraData` is an FO4
+/// / FO76 extra-data block carrying eye-pivot positions consumed by
+/// FaceGen + dialogue-camera framing. Pre-fix it had no dispatch arm
+/// — 625 vanilla instances (623 in `Fallout4 - Meshes.ba2`, 2 in
+/// `SeventySix - Meshes.ba2`) fell into NiUnknown, so dialogue
+/// eye-tracking pointed at the NIF origin instead of the eye centroid.
+/// Synthetic FO4-shaped header + the canonical 4-float payload
+/// (left+right eye XY) round-trip through dispatch + decode.
+#[test]
+fn bs_eye_center_extra_data_dispatches_and_decodes_4_floats() {
+    use crate::blocks::extra_data::BsEyeCenterExtraData;
+
+    // FO4 header: v20.2.0.7, user_version=12, user_version_2=130 (FO4 BSVER).
+    let header = NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: 130,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        // BSEyeCenterExtraData reads NiObjectNET's name via the string
+        // table on v >= 20.1.0.1; supply slot 0 so the read succeeds.
+        strings: vec![Arc::from("EyeCenter")],
+        max_string_length: 16,
+        num_groups: 0,
+    };
+
+    let mut data = Vec::new();
+    // NiObjectNET name string-table index = 0 → "EyeCenter".
+    data.extend_from_slice(&0i32.to_le_bytes());
+    // num_floats = 4 (canonical: left.x, left.y, right.x, right.y).
+    data.extend_from_slice(&4u32.to_le_bytes());
+    for f in [-2.5f32, 4.0, 2.5, 4.0] {
+        data.extend_from_slice(&f.to_le_bytes());
+    }
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block("BSEyeCenterExtraData", &mut stream, Some(data.len() as u32))
+        .expect("BSEyeCenterExtraData must dispatch (#720)");
+    assert_eq!(block.block_type_name(), "BSEyeCenterExtraData");
+    let eye = block
+        .as_any()
+        .downcast_ref::<BsEyeCenterExtraData>()
+        .expect("dispatch must produce BsEyeCenterExtraData");
+
+    assert_eq!(eye.name.as_deref(), Some("EyeCenter"));
+    assert_eq!(eye.floats, vec![-2.5, 4.0, 2.5, 4.0]);
+
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "BSEyeCenterExtraData must consume exactly {} bytes",
+        data.len()
+    );
+}
+
+/// Companion: hostile `num_floats = 0xFFFFFFFF` must error out via
+/// the `allocate_vec` budget guard, not OOM-allocate ~16 GB before
+/// the inner `read_f32_le` fails. Per the issue's ALLOCATE_VEC
+/// completeness check (#764 sweep).
+#[test]
+fn bs_eye_center_extra_data_hostile_num_floats_returns_err_not_panic() {
+    let header = NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: 130,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: vec![Arc::from("Hostile")],
+        max_string_length: 8,
+        num_groups: 0,
+    };
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&0i32.to_le_bytes()); // name index
+    data.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // hostile num_floats
+
+    let mut stream = NifStream::new(&data, &header);
+    let result = parse_block("BSEyeCenterExtraData", &mut stream, Some(data.len() as u32));
+    assert!(
+        result.is_err(),
+        "hostile num_floats must error gracefully, not panic"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("only") && msg.contains("bytes remain"),
+        "expected `allocate_vec` budget rejection, got: {msg}"
+    );
+}

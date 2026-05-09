@@ -44,7 +44,7 @@ use controller::{
 use extra_data::{
     BsAnimNote, BsAnimNotes, BsBehaviorGraphExtraData, BsBound, BsClothExtraData,
     BsConnectPointChildren, BsConnectPointParents, BsDecalPlacementVectorExtraData,
-    BsFurnitureMarker, BsInvMarker, BsPositionData, BsWArray, NiExtraData,
+    BsEyeCenterExtraData, BsFurnitureMarker, BsInvMarker, BsPositionData, BsWArray, NiExtraData,
 };
 use interpolator::{
     NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
@@ -476,6 +476,13 @@ pub fn parse_block(
         // data — capes / flags / dismemberment effects reverted to
         // default rigid behaviour.
         "BSPositionData" => Ok(Box::new(BsPositionData::parse(stream)?)),
+        // #720 / NIF-D5-04 — FO4 / FO76 BSEyeCenterExtraData. Eye-pivot
+        // positions consumed by FaceGen + dialogue-camera framing.
+        // Pre-fix 625 vanilla instances (623 in `Fallout4 - Meshes.ba2`,
+        // 2 in `SeventySix - Meshes.ba2`) fell into NiUnknown — close-up
+        // dialogue framing pointed at the NIF origin instead of the
+        // eye centroid (cross-eyed NPCs in cinematics).
+        "BSEyeCenterExtraData" => Ok(Box::new(BsEyeCenterExtraData::parse(stream)?)),
         "BSDecalPlacementVectorExtraData" => {
             Ok(Box::new(BsDecalPlacementVectorExtraData::parse(stream)?))
         }

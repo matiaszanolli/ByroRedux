@@ -421,6 +421,62 @@ impl BsPositionData {
     }
 }
 
+// ── BSEyeCenterExtraData ──────────────────────────────────────────
+
+/// `BSEyeCenterExtraData` (FO4 / FO76, nif.xml line 8369) — eye-pivot
+/// positions used by FaceGen and the dialogue camera framing system
+/// to compute eye-tracking targets. Pre-#720 the block was undispatched
+/// (625 instances across vanilla `Fallout4 - Meshes.ba2` (623) +
+/// `SeventySix - Meshes.ba2` (2) fell into `NiUnknown`), so dialogue /
+/// cinematic eye-tracking pointed at the NIF origin instead of the
+/// actual eye centroid. Visible as cross-eyed NPCs in close-ups.
+///
+/// Layout per nif.xml `<niobject name="BSEyeCenterExtraData"
+/// inherit="NiExtraData" module="BSMain" versions="#FO4# #F76#">`:
+///
+/// ```text
+/// uint num_floats
+/// f32[num_floats] floats   // typically 4: left+right eye XY in mesh space
+/// ```
+///
+/// `num_floats` is captured raw on the struct so consumers can branch
+/// on the (rare) non-4 case without re-reading the array length. Most
+/// shipped content lands at exactly 4 (one (X, Y) pair per eye).
+#[derive(Debug)]
+pub struct BsEyeCenterExtraData {
+    pub name: Option<Arc<str>>,
+    /// Eye-pivot positions in mesh space. Typically 4 floats — left-eye
+    /// XY then right-eye XY — but the layout is "Float[Num]" per
+    /// nif.xml so consumers must check `floats.len()` before indexing.
+    pub floats: Vec<f32>,
+}
+
+impl NiObject for BsEyeCenterExtraData {
+    fn block_type_name(&self) -> &'static str {
+        "BSEyeCenterExtraData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsEyeCenterExtraData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // NiExtraData base: name — gated since 10.0.1.0 per nif.xml.
+        // FO4 / FO76 sit at 20.2.0.7, well past the boundary.
+        let name = stream.read_extra_data_name()?;
+        // Num Floats: u32 — file-driven count, route through
+        // `allocate_vec` per the #408 sweep so a corrupt 0xFFFFFFFF
+        // can't OOM-allocate before the inner reads fail.
+        let num_floats = stream.read_u32_le()?;
+        let mut floats = stream.allocate_vec::<f32>(num_floats)?;
+        for _ in 0..num_floats {
+            floats.push(stream.read_f32_le()?);
+        }
+        Ok(Self { name, floats })
+    }
+}
+
 // ── BSDecalPlacementVectorExtraData ────────────────────────────────
 
 /// A block of decal placement vectors (points + normals).
