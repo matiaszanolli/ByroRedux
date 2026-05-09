@@ -79,6 +79,55 @@ pub enum LightKind {
     Spot,
 }
 
+/// One projected-texture effect extracted from a NIF scene, positioned
+/// in world space. Populated from `NiTextureEffect` blocks during the
+/// flat walk.
+///
+/// `NiTextureEffect` is a `NiDynamicEffect` subclass — same shape as
+/// `ImportedLight` — that attaches a projected texture (sphere map /
+/// env map / projected light cookie / projected shadow / fog) to its
+/// `Affected Nodes` list. The legacy Gamebryo equivalent of a
+/// projector light. The parser landed in #163 with all 12 wire fields,
+/// but pre-#891 every block was parsed, validated, and silently
+/// discarded — no consumer in `import/`, `byroredux/`, or `renderer/`
+/// queried `scene.blocks` for `NiTextureEffect` downcasts.
+///
+/// Phase 1 (this struct) lights up the import-side capture so the
+/// data is available to a future renderer-side projector pass without
+/// needing a parser-side change. Phase 2 (renderer projector pipeline)
+/// is deferred — currently no infrastructure exists.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportedTextureEffect {
+    /// World-space position (Y-up).
+    pub translation: [f32; 3],
+    /// World-space rotation as quaternion `[x, y, z, w]` (Y-up).
+    pub rotation: [f32; 4],
+    /// Y-up uniform scale.
+    pub scale: f32,
+    /// Texture path interned through the engine `StringPool`. `None`
+    /// when `source_texture_ref` was null or didn't resolve to a
+    /// `NiSourceTexture` with an external filename (embedded
+    /// `NiPixelData` is not supported here — same convention as
+    /// `tex_desc_source_path` in `import/material/mod.rs`).
+    pub texture_path: Option<FixedString>,
+    /// `texture_type` per nif.xml `TextureEffectType` enum:
+    /// 0 = ProjectedLight, 1 = ProjectedShadow, 2 = Environment,
+    /// 3 = FogMap. Renderer-side dispatch branches on this when the
+    /// projector pass lands.
+    pub texture_type: u32,
+    /// `coordinate_generation_type` per nif.xml `CoordGenType` enum:
+    /// 0 = WorldParallel, 1 = WorldPerspective, 2 = SphereMap,
+    /// 3 = SpecularCubeMap, 4 = DiffuseCubeMap. Drives the projection
+    /// math the renderer applies when sampling the projected texture.
+    pub coordinate_generation_type: u32,
+    /// Names of the scene-graph nodes this effect is restricted to,
+    /// resolved from the `NiDynamicEffect.Affected Nodes` Ptr list.
+    /// Same shape as [`ImportedLight::affected_node_names`] (#335) —
+    /// empty `Vec` means "no restriction" (the projection affects
+    /// every nearby surface).
+    pub affected_node_names: Vec<Arc<str>>,
+}
+
 /// Collision data extracted from a NiNode, positioned in world space.
 ///
 /// Used by the flat import path to return collision alongside geometry,
@@ -890,6 +939,37 @@ pub fn import_nif_lights(scene: &NifScene) -> Vec<ImportedLight> {
     };
     walk::walk_node_lights(scene, root_idx, &NiTransform::default(), &mut lights);
     lights
+}
+
+/// Walk a parsed scene graph and surface every `NiTextureEffect`
+/// projection (env map / projected light / projected shadow / fog) as
+/// an [`ImportedTextureEffect`] with world-space pose + resolved
+/// affected-node names + interned texture path. Mirrors
+/// [`import_nif_lights`] for the `NiDynamicEffect` sibling that wasn't
+/// previously imported. See #891.
+///
+/// Phase 1 capture only — the renderer-side projector pass is deferred.
+/// Vanilla Oblivion / FO3 / FNV ship a small handful of these per
+/// cell (sun gobos, light cookies, magic-FX env maps); Skyrim+ /
+/// FO4 land most of the same effect surface through dedicated
+/// `BSEffectShaderProperty` / `BSLightingShaderProperty` shader
+/// variants and rarely use `NiTextureEffect` directly.
+pub fn import_nif_texture_effects(
+    scene: &NifScene,
+    pool: &mut StringPool,
+) -> Vec<ImportedTextureEffect> {
+    let mut effects = Vec::new();
+    let Some(root_idx) = scene.root_index else {
+        return effects;
+    };
+    walk::walk_node_texture_effects(
+        scene,
+        root_idx,
+        &NiTransform::default(),
+        pool,
+        &mut effects,
+    );
+    effects
 }
 
 /// Flat import with collision data.

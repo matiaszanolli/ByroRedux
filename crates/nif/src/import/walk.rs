@@ -848,6 +848,94 @@ fn imported_light_from_base(
     }
 }
 
+/// Recursively walk the scene graph accumulating world-space transforms
+/// and collecting any `NiTextureEffect` block encountered. Mirrors
+/// [`walk_node_lights`] one-for-one — the only difference is the
+/// downcast type and the data captured at the leaf. See #891.
+pub(super) fn walk_node_texture_effects(
+    scene: &NifScene,
+    block_idx: usize,
+    parent_transform: &NiTransform,
+    pool: &mut byroredux_core::string::StringPool,
+    out: &mut Vec<crate::import::ImportedTextureEffect>,
+) {
+    let Some(block) = scene.get(block_idx) else {
+        return;
+    };
+
+    // NiSwitchNode / NiLODNode: only walk the active children (#718).
+    if let Some((node, active_children)) = switch_active_children(block) {
+        if node.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(node.av.net.name.as_deref()) {
+            return;
+        }
+        let world_transform = compose_transforms(parent_transform, &node.av.transform);
+        for idx in active_children {
+            walk_node_texture_effects(scene, idx, &world_transform, pool, out);
+        }
+        return;
+    }
+
+    if let Some(node) = as_ni_node(block) {
+        if node.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(node.av.net.name.as_deref()) {
+            return;
+        }
+        let world_transform = compose_transforms(parent_transform, &node.av.transform);
+        for child_ref in &node.children {
+            if let Some(idx) = child_ref.index() {
+                walk_node_texture_effects(scene, idx, &world_transform, pool, out);
+            }
+        }
+        return;
+    }
+
+    // NiTextureEffect leaf — extract using the world transform composed
+    // from the parent chain plus the effect's own local transform.
+    if let Some(eff) = block
+        .as_any()
+        .downcast_ref::<crate::blocks::texture::NiTextureEffect>()
+    {
+        let world = compose_transforms(parent_transform, &eff.av.transform);
+        let translation = zup_point_to_yup(&world.translation);
+        let rotation = zup_matrix_to_yup_quat(&world.rotation);
+        let scale = world.scale;
+
+        // Resolve source_texture_ref → NiSourceTexture → filename →
+        // interned FixedString. Same `tex_desc_source_path` shape used
+        // by material slots (#609 / D6-NEW-01); centralised here rather
+        // than re-importing the helper because that one takes a TexDesc.
+        let texture_path = eff
+            .source_texture_ref
+            .index()
+            .and_then(|idx| scene.get_as::<crate::blocks::texture::NiSourceTexture>(idx))
+            .and_then(|src| src.filename.as_deref())
+            .and_then(|name| {
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(pool.intern(name))
+                }
+            });
+
+        let affected_node_names = resolve_affected_node_names(scene, &eff.affected_nodes);
+
+        out.push(crate::import::ImportedTextureEffect {
+            translation,
+            rotation,
+            scale,
+            texture_path,
+            texture_type: eff.texture_type,
+            coordinate_generation_type: eff.coordinate_generation_type,
+            affected_node_names,
+        });
+    }
+}
+
 /// Resolve the `NiDynamicEffect.Affected Nodes` Ptr list to a list of
 /// node names. The on-disk values are 4-byte `Ptr<NiAVObject>` entries:
 /// `u32::MAX` = null pointer, otherwise a block index. Names are
@@ -1142,6 +1230,186 @@ mod affected_nodes_tests {
         let names = resolve_affected_node_names(&scene, &[0u32, u32::MAX, 99u32]);
         assert_eq!(names.len(), 1);
         assert_eq!(&*names[0], "OnlyValid");
+    }
+}
+
+#[cfg(test)]
+mod texture_effect_import_tests {
+    //! Regression tests for #891 / LC-D2-NEW-01 — `NiTextureEffect`
+    //! blocks must surface as `ImportedTextureEffect` after the import
+    //! walk, with world-space pose, interned texture path, and
+    //! resolved affected-node names. Pre-fix the parser captured all
+    //! 12 wire fields but no consumer read them, so vanilla Oblivion
+    //! sun gobos / FO3 / FNV light cookies parsed and were silently
+    //! discarded.
+    use super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::node::NiNode;
+    use crate::blocks::texture::{NiSourceTexture, NiTextureEffect};
+    use crate::import::ImportedTextureEffect;
+    use crate::types::{BlockRef, NiMatrix3, NiTransform};
+    use byroredux_core::string::StringPool;
+    use std::sync::Arc;
+
+    fn node_named(name: &str, children: Vec<BlockRef>) -> NiNode {
+        NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from(name)),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children,
+            effects: Vec::new(),
+        }
+    }
+
+    fn make_texture_effect(
+        affected: Vec<u32>,
+        source_ref: BlockRef,
+        texture_type: u32,
+        coord_gen: u32,
+    ) -> NiTextureEffect {
+        NiTextureEffect {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from("SunGobo")),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            switch_state: true,
+            affected_nodes: affected,
+            model_projection_matrix: NiMatrix3::default(),
+            model_projection_translation: [0.0; 3],
+            texture_filtering: 0,
+            max_anisotropy: 1,
+            texture_clamping: 0,
+            texture_type,
+            coordinate_generation_type: coord_gen,
+            source_texture_ref: source_ref,
+            enable_plane: false,
+            plane: [0.0; 4],
+            ps2_l: 0,
+            ps2_k: 0,
+        }
+    }
+
+    fn make_source_texture(filename: &str) -> NiSourceTexture {
+        NiSourceTexture {
+            net: NiObjectNETData {
+                name: None,
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            use_external: true,
+            filename: Some(Arc::from(filename)),
+            pixel_data_ref: BlockRef::NULL,
+            pixel_layout: 0,
+            use_mipmaps: 1,
+            alpha_format: 0,
+            is_static: true,
+        }
+    }
+
+    /// Happy path: a NIF with one NiNode root + one NiTextureEffect
+    /// child that references a NiSourceTexture and lists two affected
+    /// nodes. The walker must produce one `ImportedTextureEffect`
+    /// with: interned texture path, both texture-type and
+    /// coord-gen-type fields preserved, and both affected-node names
+    /// resolved through the same `resolve_affected_node_names` path
+    /// `ImportedLight` uses.
+    #[test]
+    fn import_texture_effect_round_trips_path_and_affected_nodes() {
+        // Build the scene blocks:
+        //   0 = root NiNode (has child #1)
+        //   1 = NiTextureEffect (refs source #2, affects nodes #3, #4)
+        //   2 = NiSourceTexture (filename = "textures\\sun_gobo.dds")
+        //   3 = NiNode "SunDiscBone"
+        //   4 = NiNode "CloudsBone"
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(node_named("Scene Root", vec![BlockRef(1)])));
+        scene.blocks.push(Box::new(make_texture_effect(
+            vec![3, 4],
+            BlockRef(2),
+            0, // ProjectedLight
+            1, // WorldPerspective
+        )));
+        scene.blocks.push(Box::new(make_source_texture("textures\\sun_gobo.dds")));
+        scene.blocks.push(Box::new(node_named("SunDiscBone", Vec::new())));
+        scene.blocks.push(Box::new(node_named("CloudsBone", Vec::new())));
+        scene.root_index = Some(0);
+
+        let mut pool = StringPool::new();
+        let effects = crate::import::import_nif_texture_effects(&scene, &mut pool);
+        assert_eq!(effects.len(), 1, "one NiTextureEffect → one ImportedTextureEffect");
+        let eff = &effects[0];
+
+        // Texture path interned through the pool — resolve back for
+        // the comparison; the pool lower-cases on intern.
+        let path = eff
+            .texture_path
+            .and_then(|fs| pool.resolve(fs).map(str::to_owned));
+        assert_eq!(path.as_deref(), Some("textures\\sun_gobo.dds"));
+
+        assert_eq!(eff.texture_type, 0, "ProjectedLight roundtrip");
+        assert_eq!(eff.coordinate_generation_type, 1, "WorldPerspective roundtrip");
+
+        assert_eq!(eff.affected_node_names.len(), 2);
+        assert_eq!(&*eff.affected_node_names[0], "SunDiscBone");
+        assert_eq!(&*eff.affected_node_names[1], "CloudsBone");
+    }
+
+    /// A NiTextureEffect whose `source_texture_ref` is null leaves
+    /// `texture_path` as `None` — empty paths must drop rather than
+    /// intern an empty string into the pool. Same convention the
+    /// material walker uses for empty texture slots (#609).
+    #[test]
+    fn texture_effect_with_null_source_ref_leaves_path_none() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(node_named("Scene Root", vec![BlockRef(1)])));
+        scene.blocks.push(Box::new(make_texture_effect(
+            Vec::new(),
+            BlockRef::NULL,
+            2, // Environment
+            2, // SphereMap
+        )));
+        scene.root_index = Some(0);
+
+        let mut pool = StringPool::new();
+        let effects: Vec<ImportedTextureEffect> =
+            crate::import::import_nif_texture_effects(&scene, &mut pool);
+        assert_eq!(effects.len(), 1);
+        assert!(
+            effects[0].texture_path.is_none(),
+            "null source_texture_ref must produce no path"
+        );
+        assert_eq!(effects[0].texture_type, 2);
+        assert_eq!(effects[0].coordinate_generation_type, 2);
+    }
+
+    /// A NIF without any `NiTextureEffect` blocks must produce an
+    /// empty result. NO_REGRESSION check from the issue's
+    /// completeness checklist — non-texture-effect scenes must not
+    /// be perturbed by the new walker.
+    #[test]
+    fn scene_without_texture_effects_returns_empty() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(node_named("Scene Root", Vec::new())));
+        scene.root_index = Some(0);
+
+        let mut pool = StringPool::new();
+        let effects = crate::import::import_nif_texture_effects(&scene, &mut pool);
+        assert!(effects.is_empty());
     }
 }
 
