@@ -39,6 +39,7 @@ use std::num::NonZeroU32;
 /// `NonZeroU32` so `Option<ItemInstanceId>` is one `u32` wide. The
 /// pool's slot 0 is reserved as a sentinel; legal IDs start at 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ItemInstanceId(pub NonZeroU32);
 
 /// One row in an [`Inventory`].
@@ -49,6 +50,7 @@ pub struct ItemInstanceId(pub NonZeroU32);
 /// [`ItemInstance`](crate::ecs::resources::ItemInstance) in the
 /// per-world pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ItemStack {
     /// Base record this stack is an instance of (ARMO / WEAP / MISC /
     /// etc.). Raw plugin-scoped form ID — same shape the cell loader
@@ -89,6 +91,7 @@ impl ItemStack {
 /// representable (two distinct instances of the same base armor with
 /// different condition values).
 #[derive(Debug, Default, Clone)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct Inventory {
     pub items: Vec<ItemStack>,
 }
@@ -125,6 +128,7 @@ impl Component for Inventory {
 
 /// Index into an [`Inventory::items`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct InventoryIndex(pub u32);
 
 /// The number of biped-slot bits an actor's equipment can occupy.
@@ -145,6 +149,7 @@ pub const MAX_BIPED_SLOTS: usize = 32;
 /// in the overlapping bits — visualisation responsibility, not save-
 /// state churn.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct EquipmentSlots {
     pub occupants: [Option<InventoryIndex>; MAX_BIPED_SLOTS],
 }

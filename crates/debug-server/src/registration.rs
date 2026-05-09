@@ -187,4 +187,16 @@ pub fn register_all(registry: &mut ComponentRegistry) {
         ],
     );
     register_component::<AnimationStack>(registry, "AnimationStack", vec!["layers", "root_entity"]);
+
+    // M41 Phase 2 equip slice (#896 / be4663b). Surfaces NPC inventory
+    // contents + biped-slot occupants to byro-dbg so the smoke-test
+    // workflow (`cargo run -- … --bench-frames N --bench-hold` then
+    // `cargo run -p byro-dbg`) can verify visible-content equipping —
+    // `find Inventory` lights up every actor with a populated outfit,
+    // `find EquipmentSlots` shows the biped bitmask coverage. Without
+    // this, the M41 close-out QA is structural-only (counts entities
+    // but can't introspect the equip state). See M41 Phase 2 close-out
+    // and `docs/smoke-tests/m41-equip.sh`.
+    register_component::<Inventory>(registry, "Inventory", vec!["items"]);
+    register_component::<EquipmentSlots>(registry, "EquipmentSlots", vec!["occupants"]);
 }

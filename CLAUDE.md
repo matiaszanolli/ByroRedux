@@ -19,6 +19,14 @@ cargo run -p byro-dbg                       # Connect to running engine (port 98
 BYRO_DEBUG_PORT=8080 cargo run -p byro-dbg  # Custom port
 ```
 
+### Smoke tests
+Manual end-to-end checks that need a Vulkan device + on-disk game data
+(out of `cargo test` scope). All follow the same `--bench-hold` →
+`byro-dbg`-attach pattern documented in
+[`docs/smoke-tests/README.md`](docs/smoke-tests/README.md). Currently:
+[`docs/smoke-tests/m41-equip.sh`](docs/smoke-tests/m41-equip.sh)
+verifies Skyrim+ / FO4 NPC outfit equip end-to-end.
+
 ### Shader Compilation
 ```bash
 cd crates/renderer/shaders
