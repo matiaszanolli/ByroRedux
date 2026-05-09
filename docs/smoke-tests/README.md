@@ -38,6 +38,28 @@ Inventory` returned nothing.
 |--------|-----------|----------|
 | [`m41-equip.sh`](m41-equip.sh) | M41 Phase 2 close-out | Skyrim+ / FO4 NPCs spawn with their default outfit (LVLI dispatch via OTFT walks resolves to base ARMO refs; `Inventory` + `EquipmentSlots` are populated; armor meshes load without `tex.missing` overflow). |
 
+### Assertion shape
+
+Each script splits checks into **hard** (script exits non-zero on
+miss) and **soft** (logs `WARN`, no exit code change). The split
+matches the audit-severity model: hard fails point at engine
+regressions; soft warnings point at environment / archive-coverage
+drift that doesn't indicate a code bug.
+
+For `m41-equip.sh`:
+
+| Check | Class | Threshold (FO4 / Skyrim) | Source |
+|-------|-------|--------------------------|--------|
+| `bench: entities=N` | hard | 5000 / 1200 | engine `bench:` summary line |
+| `bench: draws=N` | hard | 4000 / 700 | engine `bench:` summary line |
+| `entities Inventory` count | soft | > 0 | byro-dbg `(N entities)` line |
+| `entities EquipmentSlots` count | soft | > 0 | byro-dbg `(N entities)` line |
+| `tex.missing` unique count | soft | ≤ 20 / 30 | byro-dbg JSON header |
+
+Thresholds are intentionally below observed values (the 2026-05-08
+FO4 baseline saw 10809 entities / 8162 draws) so vanilla mod-load-
+order drift doesn't trip false positives.
+
 ## Environment
 
 Each script reads game-data paths from environment variables and

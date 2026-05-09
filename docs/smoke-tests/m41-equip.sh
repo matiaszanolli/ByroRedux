@@ -56,8 +56,14 @@ trap 'rm -rf "$LOG_DIR"' EXIT
 
 # Returns the PID of the background engine on success; cleans up on
 # bench failure.
+#
+# Args: $1 = label, $2 = entity floor (hard), $3 = draws floor (hard),
+#       $4 = tex.missing ceiling (soft warn), then engine CLI args.
 run_cell () {
     local label="$1" ; shift
+    local entities_floor="$1" ; shift
+    local draws_floor="$1" ; shift
+    local tex_miss_ceiling="$1" ; shift
     local engine_log="$LOG_DIR/$label.engine.log"
     local dbg_log="$LOG_DIR/$label.dbg.log"
 
@@ -115,18 +121,81 @@ EOF
 
     echo "smoke[$label]: byro-dbg session complete, captured to $dbg_log"
 
-    # Capture-and-display only — `byro-dbg` output isn't strictly
-    # machine-readable today, so the smoke is "eyeball the counts."
-    # Hard pass/fail thresholds (entity floor, tex.missing ceiling)
-    # are a follow-up once the format stabilises.
     echo
     echo "── byro-dbg session log [$label] ───────────────────────────────"
     cat "$dbg_log"
     echo "── engine bench summary [$label] ───────────────────────────────"
-    grep "^bench:" "$engine_log.stdout" || echo "  (no bench: line found)"
+    local bench_line
+    bench_line=$(grep "^bench:" "$engine_log.stdout" || true)
+    if [[ -z "$bench_line" ]]; then
+        echo "  (no bench: line found)"
+        eval "$kill_engine"
+        echo "smoke[$label]: FAIL — no bench summary"
+        return 1
+    fi
+    echo "$bench_line"
     echo
 
+    # ── HARD assertions on the engine bench line ──────────────────
+    # Format is space-separated `key=value` tokens (see
+    # `byroredux/src/main.rs:1252+`). `entities=` and `draws=` are
+    # the load-bearing floors — anything below means the cell didn't
+    # populate properly (parse error, BSA miss, scene-build crash).
+    local entities draws
+    entities=$(echo "$bench_line" | grep -oE 'entities=[0-9]+' | head -1 | cut -d= -f2)
+    draws=$(echo "$bench_line" | grep -oE 'draws=[0-9]+' | head -1 | cut -d= -f2)
+    : "${entities:=0}"
+    : "${draws:=0}"
+
+    local hard_fail=0
+    if (( entities < entities_floor )); then
+        echo "smoke[$label]: HARD FAIL — entities=$entities < floor $entities_floor"
+        hard_fail=1
+    else
+        echo "smoke[$label]: PASS — entities=$entities >= $entities_floor"
+    fi
+    if (( draws < draws_floor )); then
+        echo "smoke[$label]: HARD FAIL — draws=$draws < floor $draws_floor"
+        hard_fail=1
+    else
+        echo "smoke[$label]: PASS — draws=$draws >= $draws_floor"
+    fi
+
+    # ── SOFT assertions on the byro-dbg session ───────────────────
+    # `entities <Component>` output ends with `(N entities)` per
+    # `display.rs:21`. `tex.missing` is a JSON-pretty-printed string
+    # whose first line carries `N unique missing textures:`.
+    # Soft because environment-dependent — mod load order or DLC
+    # archive coverage shifts the counts without indicating a bug.
+    local inv_count slots_count tex_miss
+    inv_count=$(awk '/^\(.*entities\)/ { gsub(/[()]/,""); print $1; exit }' \
+        <(grep -A 99999 "byro> Error: no entity named" "$dbg_log" 2>/dev/null \
+          || head -200 "$dbg_log") || true)
+    # Simpler + more robust: count the `(N entities)` summary lines
+    # by their position in the dbg log. There are 2 `entities <X>`
+    # invocations (Inventory, EquipmentSlots), each ending with one
+    # summary. tex.missing has its own JSON-string format.
+    inv_count=$(grep -oE '^\([0-9]+ entities\)' "$dbg_log" | sed -n '1p' | grep -oE '[0-9]+' || echo 0)
+    slots_count=$(grep -oE '^\([0-9]+ entities\)' "$dbg_log" | sed -n '2p' | grep -oE '[0-9]+' || echo 0)
+    : "${inv_count:=0}"
+    : "${slots_count:=0}"
+
+    tex_miss=$(grep -oE '[0-9]+ unique missing textures' "$dbg_log" | grep -oE '^[0-9]+' || echo 0)
+    : "${tex_miss:=0}"
+
+    echo "smoke[$label]: Inventory=$inv_count entities, EquipmentSlots=$slots_count entities, tex.missing=$tex_miss unique"
+    if (( inv_count == 0 )); then
+        echo "smoke[$label]: WARN — zero entities have Inventory (NPCs not spawning, or component not registered)"
+    fi
+    if (( slots_count == 0 )); then
+        echo "smoke[$label]: WARN — zero entities have EquipmentSlots (LVLI dispatch may be silently empty)"
+    fi
+    if (( tex_miss > tex_miss_ceiling )); then
+        echo "smoke[$label]: WARN — tex.missing=$tex_miss > soft ceiling $tex_miss_ceiling (archive coverage gap?)"
+    fi
+
     eval "$kill_engine"
+    return $hard_fail
     return 0
 }
 
@@ -142,7 +211,14 @@ skyrim_run () {
     # Pre-fix the smoke script passed only Textures0-3 and the
     # tex.missing report exposed missing setdressing textures
     # whose canonical home is Textures4-7.
-    run_cell skyrim \
+    # Thresholds: ROADMAP recorded 1932 entities at WhiterunBanneredMare
+    # (M32.5 close); floor 1200 absorbs entity-count drift without
+    # masking a parse-or-spawn collapse. Draws floor at 700 (similar
+    # margin vs the ~700-1000 range observed).
+    # Soft tex.missing ceiling at 30 — Whiterun ships textures across
+    # Textures0-7.bsa and the script now passes all of them, so any
+    # remaining miss after the archive expansion is environment drift.
+    run_cell skyrim 1200 700 30 \
         --esm "$SKYRIM_DATA/Skyrim.esm" \
         --cell WhiterunBanneredMare \
         --bsa "$SKYRIM_DATA/Skyrim - Meshes0.bsa" \
@@ -177,7 +253,17 @@ fo4_run () {
     # + 46× metallocker01.bgsm in tex.missing. The .bgsm misses came
     # from the missing Materials.ba2; the texture misses came from the
     # archive coverage gap.
-    run_cell fo4 \
+    # Thresholds: 2026-05-08 smoke run observed 10809 entities / 8162
+    # draws on MedTekResearch01. Floor at 5000/4000 absorbs ~half the
+    # observed volume — anything below that is a regression on the
+    # cell-load critical path (parse error, BSA miss, or M40 streaming
+    # state corruption). Soft tex.missing ceiling at 20 — with the full
+    # Textures1-9 + TexturesPatch + Materials archive set passed below,
+    # any remaining miss after vanilla expansion is environment drift.
+    # Pre-archive-expansion the same cell reported 47 unique misses
+    # (213× officeboxpapers01_d.dds dominating); post-expansion should
+    # drop into the single digits.
+    run_cell fo4 5000 4000 20 \
         --esm "$FO4_DATA/Fallout4.esm" \
         --cell MedTekResearch01 \
         --bsa "$FO4_DATA/Fallout4 - Meshes.ba2" \
@@ -195,11 +281,23 @@ fo4_run () {
         --materials-ba2 "$FO4_DATA/Fallout4 - Materials.ba2"
 }
 
+# Both cells run even on hard failure so a regression on one game
+# doesn't mask drift on the other. Accumulate exit codes; final
+# script exit reflects the OR. `|| rc=$?` opts out of `set -e` for
+# the per-cell call.
+total_rc=0
 case "$GAME" in
-    skyrim) skyrim_run ;;
-    fo4)    fo4_run ;;
-    all)    skyrim_run; fo4_run ;;
+    skyrim) skyrim_run || total_rc=$? ;;
+    fo4)    fo4_run    || total_rc=$? ;;
+    all)
+        skyrim_run || total_rc=$?
+        fo4_run    || total_rc=$(( total_rc | $? ))
+        ;;
     *)      echo "Usage: $0 [skyrim|fo4|all]"; exit 2 ;;
 esac
 
-echo "smoke: done."
+if (( total_rc != 0 )); then
+    echo "smoke: FAIL — at least one cell hit a HARD assertion (rc=$total_rc)"
+    exit "$total_rc"
+fi
+echo "smoke: PASS — all hard assertions met."
