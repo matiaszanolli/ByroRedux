@@ -2,6 +2,7 @@
 
 use super::acceleration::AccelerationManager;
 use super::allocator::{self, SharedAllocator};
+use super::bloom::BloomPipeline;
 use super::caustic::CausticPipeline;
 use super::composite::{CompositePipeline, HDR_FORMAT};
 use super::compute::ClusterCullPipeline;
@@ -21,6 +22,7 @@ use super::swapchain::{self, SwapchainState};
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
 use super::taa::TaaPipeline;
 use super::texture::Texture;
+use super::volumetrics::VolumetricsPipeline;
 use crate::mesh::MeshRegistry;
 use crate::texture_registry::TextureRegistry;
 use anyhow::{Context, Result};
@@ -760,6 +762,21 @@ pub struct VulkanContext {
     /// sampled views. Non-optional: the R32_UINT atomic storage image the
     /// pass needs is universally supported on desktop GPUs.
     pub caustic: Option<CausticPipeline>,
+    /// Volumetric lighting pipeline (M55, Tier 8). Phase 1 ships a
+    /// no-op clear of the per-frame froxel volume — the plumbing is
+    /// in place; visual output lands in subsequent phases (density+
+    /// lighting injection, ray-march integration, composite sampling).
+    /// `None` when 3D-image allocation or pipeline creation fails on
+    /// initial setup; the dispatch site is gated on `Some` so a
+    /// failure simply skips the pass for the rest of the session.
+    pub volumetrics: Option<VolumetricsPipeline>,
+    /// Bloom pyramid pipeline (M58, Tier 8). Reads the scene HDR
+    /// after TAA, produces a multi-scale blurred bright-content
+    /// texture that composite adds back to `combined` before the
+    /// ACES tone-map. `None` when the down/up image-pyramid
+    /// allocation fails; composite's bloom binding falls back to a
+    /// black dummy so the additive contribution becomes a no-op.
+    pub bloom: Option<BloomPipeline>,
     /// Permanent-failure latch for the TAA compute pass. Set on the
     /// first `taa.dispatch` error in a session. When set: the TAA
     /// dispatch is skipped on every subsequent frame and composite's
@@ -1188,6 +1205,29 @@ impl VulkanContext {
             }
         };
 
+        // 14a-bis. Volumetrics pipeline (M55 Phase 1 — no-op clear).
+        // Allocates the per-frame-in-flight 3D froxel volumes
+        // (160×90×128 RGBA16F, ~14 MiB / slot) and the compute
+        // pipeline that clears them. Subsequent phases will replace
+        // the clear with real density + lighting injection and
+        // ray-march integration. Skipped silently on failure — the
+        // dispatch site is gated on `Some` so the rest of the
+        // pipeline stays unaffected.
+        let volumetrics = match VolumetricsPipeline::new(&device, &gpu_allocator, pipeline_cache) {
+            Ok(v) => {
+                if let Err(e) =
+                    unsafe { v.initialize_layouts(&device, &graphics_queue, transfer_pool) }
+                {
+                    log::warn!("Volumetrics froxel layout init failed: {e}");
+                }
+                Some(v)
+            }
+            Err(e) => {
+                log::warn!("Volumetrics pipeline creation failed: {e} — no volumetric lighting");
+                None
+            }
+        };
+
         // 14. Mesh registry (empty — meshes uploaded by the application)
         let mesh_registry = MeshRegistry::new();
 
@@ -1329,6 +1369,63 @@ impl VulkanContext {
         // 14c. Composite pipeline: owns HDR intermediates + tone-map pass.
         // Its descriptor sets sample HDR (owned by composite), indirect
         // (from SVGF or raw G-buffer), and albedo (G-buffer).
+        // Volumetric views (M55 Phase 3) — composite samples the
+        // pre-integrated `(∫inscatter, T_cum)` volume per fragment
+        // with one sampler3D tap. Hard requirement: composite's
+        // binding 6 is `sampler3D`, so a None volumetrics pipeline
+        // can't be papered over with a 2D fallback view. If pipeline
+        // creation failed earlier, refuse to build composite. The
+        // 14 MiB × 2 / slot 3D-image allocation is universally
+        // supported on RT-class GPUs, so this only fires under exotic
+        // hardware / driver pathologies.
+        let volumetric_views: Vec<vk::ImageView> = match volumetrics.as_ref() {
+            Some(v) => v.integrated_views(),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Volumetric pipeline failed to initialize — composite \
+                     requires the integrated 3D froxel volume for binding 6 \
+                     (M55 Phase 3). Check earlier 'volumetrics' WARN logs."
+                ));
+            }
+        };
+
+        // 14b-bis. Bloom pipeline (M58 Phase 1). Allocates the down/up
+        // mip pyramids — does NOT need any input views at this stage
+        // because the scene HDR view is rebound per-frame in
+        // `dispatch()`. Constructed before composite so we can pass
+        // its output views into composite's binding 7. Soft-fail
+        // skipped: composite needs SOME view for binding 7, and the
+        // smaller image-view allocations are universally supported,
+        // so if this fails we fall through hard like volumetrics.
+        let bloom = match BloomPipeline::new(
+            &device,
+            &gpu_allocator,
+            pipeline_cache,
+            swapchain_state.extent,
+        ) {
+            Ok(b) => {
+                if let Err(e) =
+                    unsafe { b.initialize_layouts(&device, &graphics_queue, transfer_pool) }
+                {
+                    log::warn!("Bloom pyramid layout init failed: {e}");
+                }
+                Some(b)
+            }
+            Err(e) => {
+                log::warn!("Bloom pipeline creation failed: {e} — no bloom this session");
+                None
+            }
+        };
+        let bloom_views: Vec<vk::ImageView> = match bloom.as_ref() {
+            Some(b) => b.output_views(),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Bloom pipeline failed to initialize — composite \
+                     requires the bloom output view for binding 7 (M58). \
+                     Check earlier 'bloom' WARN logs."
+                ));
+            }
+        };
         let mut composite = match CompositePipeline::new(
             &device,
             &gpu_allocator,
@@ -1340,6 +1437,8 @@ impl VulkanContext {
             &albedo_views,
             depth_image_view,
             &caustic_views,
+            &volumetric_views,
+            &bloom_views,
             texture_registry.descriptor_set_layout,
             swapchain_state.extent.width,
             swapchain_state.extent.height,
@@ -1475,6 +1574,8 @@ impl VulkanContext {
             svgf,
             taa,
             caustic,
+            volumetrics,
+            bloom,
             taa_failed: false,
             svgf_failed: false,
             svgf_recovery_frames: 0,
@@ -1774,6 +1875,12 @@ impl Drop for VulkanContext {
                 }
                 if let Some(ref mut caustic) = self.caustic {
                     caustic.destroy(&self.device, alloc);
+                }
+                if let Some(ref mut vol) = self.volumetrics {
+                    vol.destroy(&self.device, alloc);
+                }
+                if let Some(ref mut b) = self.bloom {
+                    b.destroy(&self.device, alloc);
                 }
                 if let Some(ref mut svgf) = self.svgf {
                     svgf.destroy(&self.device, alloc);

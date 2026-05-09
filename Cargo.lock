@@ -386,6 +386,7 @@ dependencies = [
  "byroredux-scripting",
  "byroredux-ui",
  "env_logger",
+ "image 0.24.9",
  "log",
  "rayon",
  "tracing",

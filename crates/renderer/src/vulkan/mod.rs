@@ -1,5 +1,6 @@
 pub mod acceleration;
 pub mod allocator;
+pub mod bloom;
 pub mod buffer;
 pub mod caustic;
 pub mod composite;
@@ -23,3 +24,4 @@ pub mod swapchain;
 pub mod sync;
 pub mod taa;
 pub mod texture;
+pub mod volumetrics;

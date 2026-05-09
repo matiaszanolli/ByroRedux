@@ -1,0 +1,62 @@
+// M58 — Bloom upsample pass.
+//
+// Doubles resolution with a 4-tap bilinear box upsample of the
+// smaller mip, then ADDS the same-resolution downsample mip from
+// the down-pyramid. Output is one level of the up-pyramid.
+//
+// Cumulative effect across the chain: each up-step contributes a
+// progressively finer-grained Gaussian-like spread of bright
+// content. The lowest mip (smallest, blurriest) dominates the wide
+// glow; each higher mip restores fidelity around bright edges.
+// Final mip 0 is what composite samples.
+//
+// Same caveat as the downsample shader: this is a plain box filter,
+// not Jimenez's 9-tap tent filter. Upgrade target tracked in
+// ROADMAP.md M58 row.
+//
+// Reference: Bjørge, "Bandwidth-Efficient Rendering," SIGGRAPH 2015.
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Smaller mip (level i+1 of the upsample chain), bilinearly upsampled
+// to the destination resolution.
+layout(set = 0, binding = 0) uniform sampler2D src_smaller;
+// Same-resolution downsample mip (level i of the downsample chain),
+// summed into the output.
+layout(set = 0, binding = 1) uniform sampler2D src_same;
+// Output: level i of the upsample chain.
+layout(set = 0, binding = 2, r11f_g11f_b10f) uniform writeonly image2D dst;
+
+layout(set = 0, binding = 3) uniform Params {
+    // xy = 1 / smaller resolution
+    // zw = 1 / destination resolution
+    vec4 inv_resolutions;
+} params;
+
+void main() {
+    ivec2 dst_coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dst_size = imageSize(dst);
+    if (any(greaterThanEqual(dst_coord, dst_size))) {
+        return;
+    }
+
+    vec2 smaller_pixel = params.inv_resolutions.xy;
+    vec2 dst_pixel = params.inv_resolutions.zw;
+    vec2 uv = (vec2(dst_coord) + 0.5) * dst_pixel;
+
+    // 4-tap bilinear upsample of the smaller mip.
+    vec3 upsampled = vec3(0.0);
+    upsampled += texture(src_smaller, uv + vec2(-0.5, -0.5) * smaller_pixel).rgb;
+    upsampled += texture(src_smaller, uv + vec2( 0.5, -0.5) * smaller_pixel).rgb;
+    upsampled += texture(src_smaller, uv + vec2(-0.5,  0.5) * smaller_pixel).rgb;
+    upsampled += texture(src_smaller, uv + vec2( 0.5,  0.5) * smaller_pixel).rgb;
+    upsampled *= 0.25;
+
+    // Add the same-resolution down-pyramid mip (single bilinear tap
+    // at the destination texel center; same resolution means no
+    // interpolation actually happens, just a 1:1 sample).
+    vec3 same = texture(src_same, uv).rgb;
+
+    imageStore(dst, dst_coord, vec4(upsampled + same, 1.0));
+}

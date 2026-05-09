@@ -292,6 +292,87 @@ active for incremental wins; don't let them block Tier 1–4.
 | **R4**  | SWF/GFx strategic decision   | M20 works for static SWF menus. M48 needs Scaleform GFx extensions (`_global.gfx`, text replacement, Papyrus callbacks, fonts, 34 menus). Ruffle has no GFx extension support and isn't pinned — it drags wgpu into an otherwise ash-only tree. Honest exits: (a) in-house AS2+GFx-subset interpreter (Papyrus-parser-adjacent patience), or (b) rebuild menus in egui/iced, treat Scaleform compat as out of scope. **Why now (decision, not implementation):** don't sleepwalk into a 3–6 month rabbit hole in Tier 7. Pick a direction so M48 has a plan, then defer until Tier 4 ships. | M20                                             |
 | M48     | UI integration               | Papyrus ↔ UI bridge, input routing, menu callbacks. Shape determined by R4 decision.                                                                                                                                                                                                                                                                                                                                                                                                                  | R4, M20, M47.2                                  |
 
+### Tier 8 — Visual fidelity stretch (post-Tier-4 horizon)
+
+Take the existing rendered content (Prospector Saloon, MedTek
+Research, Whiterun's Bannered Mare, FO3 Megaton) and make it *as
+good as it can possibly look*. Beauty axis only — pure-performance
+work moves to Tier 11. Each entry leverages the existing RT
+investment rather than bolting on a parallel pipeline: volumetric
+shadows are RT, hair shadows are RT, SSS is optionally RT-traced,
+decals participate in GI. ByroRedux's "RT-first" posture means the
+visual ceiling here is genuinely above what any 2008–2015 Bethesda
+forward renderer can reach. Goal: a screenshot of any vanilla
+Bethesda interior that holds up against modern offline-rendered
+output. **No active work** — Tier 1–4 ships first.
+
+Sequencing within the tier is impact-first. M55 (volumetrics) and
+M59 (decals + material layering) are the highest "wow factor per
+dollar" — they transform the look of every existing cell with no
+M41 dependency. M56 / M57 (SSS / hair) are gated on M41 producing
+visible NPCs to render onto. M51 (PT reference) and M-LIGHT crown
+the pipeline; M54 unlocks once the scene-data volume justifies a
+trained model.
+
+| #        | Milestone                          | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Depends on              |
+|----------|------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------|
+| M55      | Volumetric lighting                | God rays / light shafts via single-scattering volumetric integration in a frustum-aligned 3D froxel texture, RT-shadowed (no shadow-map cascade hack — we already have RT visibility). Exponential height fog with per-cell density driven by REGN region records and weather state. The cinematic moment Bethesda interiors most lack — sunlight through Megaton's church windows, dust motes in Doc Mitchell's hallway, fog rolling off WastelandNV grass at dusk. Reference: Hillaire (Frostbite, SIGGRAPH 2015) Frostbite volumetrics. | M34, M44 (REGN parsing) |
+| M59      | Material & decal layering          | Decal projection (blood splatters, bullet holes, footprints in dust, water puddles, scorch marks), micro-detail normal maps (concrete, fabric, metal grain, leather pores), anisotropic specular (brushed metal, hair, satin, vinyl), parallax occlusion improvements for masonry / stones. RT decals participate in GI — Bethesda decals never have. Material slot extensions to `GpuMaterial` only; the R1 promise holds (no DrawCommand or shader-lockstep growth).                                          | R1                      |
+| M58      | Reference-quality post-process     | Kawase-blur bloom (5-pass dual filter, ~2 ms total), scatter-as-gather DOF for cinematic mode, per-object motion blur reusing existing motion vectors, color grading via 3D LUT (per-cell-type mood — interior warm, exterior cool, irradiated green), AgX or Tony McMapface tone mapping selectable alongside ACES, optional vignette / film grain. Single compute dispatch chain layered onto the existing composite pass; no extra render-pass churn.                                                       | —                       |
+| M56      | Subsurface scattering              | Burley normalized SSS (preferred) or screen-space SSS for skin / wax / fruit / soft organic materials. M41's NPCs become visibly human only once skin gets SSS — flat Lambert reads as plastic. Eyes get cornea refraction + caustic (existing M22 caustic compute path is reused, not duplicated). Optional RT-traced SSS variant for closeup actors in cinematic mode.                                                                                                                                       | M41, R1                 |
+| M57      | Hair / fur shading                 | Marschner three-lobe BRDF (R / TT / TRT) for hair; Disney's hair shading model as the simpler default. RT hair shadows with stochastic transparency. Bethesda-vintage hair plate meshes look like clay under standard PBR; correct hair shading is the difference between "T-pose mannequin" and "T-pose person." Pairs naturally with M56 — face closeups need both.                                                                                                                                          | M41                     |
+| M-LIGHT  | Reference-quality lighting         | Soft shadow penumbras filtered in screen space using RT visibility samples (no PCF, no cascade tricks), contact shadows on dielectrics (close-range RT for groundedness), IBL from per-cell HDR sky probe captured once at cell load, multi-bounce GI (≥ 2 bounces in PT mode, currently 1 in raster mode). Closes the gap between "lit correctly" (today) and "lit as well as the data allows."                                                                                                              | M51                     |
+| M51      | Path tracing reference mode        | Full PT (no rasterized fallback), ReSTIR-PT spatiotemporal reservoirs, SHARC radiance cache for diffuse, optional NRC neural radiance cache. Reference mode for screenshots / cinematics; demonstrates "RT-first" wasn't a positioning claim. References: Bitterli et al. (ReSTIR PT, 2022), Pharr et al. (SHARC, 2024). Reuses existing reservoir + denoiser plumbing from M31.5 / M37.                                                                                                                       | M37, M37.3              |
+| M54      | Neural denoiser                    | Small NN (~1–2 MB weights) replaces SVGF spatial filter for indirect lighting once enough scene data exists to train. Targets visual parity + 30% runtime. References: NRD-NN, Intel Open Image Denoise GPU. Implementable as a Vulkan compute pass; no proprietary SDK dependency. At PT scales (M51) it stops being a perf optimisation and becomes a quality multiplier.                                                                                                                                  | M37, M51                |
+
+### Tier 9 — Better-than-Bethesda capability stretch (post-Tier-4 horizon)
+
+Plays to the ECS-native architecture and clean-room rebuild. Each
+entry is something Bethesda demonstrably cannot ship on top of the
+Papyrus stack-VM + non-deterministic save system. **No active work**
+until M40 (streaming) and M45 (save/load) prove the underlying
+state model holds up.
+
+| #     | Milestone                     | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Depends on                              |
+|-------|-------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------|
+| M50   | In-engine world editor        | ECS-native Creation Kit replacement: edit cells, place REFRs, paint terrain, edit lighting, with hot-reload to a running engine via the `byro-dbg` protocol. Linux-native, no Wine; undo/redo is free off the ECS snapshot machinery; saves diff against the parsed ESM into a content-addressed plugin. The largest single user-visible win the project can ship — and the existing debug-protocol crate already does ~60% of the wire shape this needs.        | M45, debug protocol expansion           |
+| M60   | P2P co-op (≤ 4 players)       | Deterministic ECS state replication, host authority with host migration. Was always a community-mod hack on every Bethesda title — practical here because we don't have Papyrus stack-VM semantics fighting determinism. Engine ships P2P only; **no central server, no matchmaking, no telemetry.** R5's quest prototype must include a determinism analysis before this can ship.                                                                              | M45, R5                                 |
+| M62   | LLM dialogue plugin (opt-in)  | Optional plugin wiring DIAL / INFO + custom Papyrus events to a local LLM (Llama 3.x via candle / mistral.rs). Off by default, opt-in per quest or per NPC; lives entirely in plugin space. Demonstrates what "ECS event hooks" enables that stack-VM Papyrus cannot. No network calls; LLM weights ship with the mod.                                                                                                                                            | M47.0, M43                              |
+| M63   | OpenXR / VR                   | Full VR via openxrs. RT-first renderer is genuinely useful here — VR is the genre most starved of well-running RT content, and our forward-pass cost is already low. Stereo rendering through the existing pipeline; controller input through the existing input layer; M50 expanded for VR-aware authoring.                                                                                                                                                     | M27, M50                                |
+| M64   | Procedural exterior cells     | Generate exterior cells from heightmap + biome rules + noise. Effectively unlimited worldspace; complements rather than replaces vanilla Bethesda exteriors. Starfield's procedural-planet model is the obvious comparison; ours can do better because cells are first-class ECS state, not save-file blobs.                                                                                                                                                       | M40, M50                                |
+
+### Tier 10 — Ecosystem unlock (post-Tier-4 horizon)
+
+Realizes the architectural promise of content-addressed Form IDs and
+clean-room data-only legacy compat. **No active work** until the
+engine ships something playable for the existing community to mod.
+
+| #     | Milestone                     | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Depends on              |
+|-------|-------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------|
+| M70   | Cross-platform builds         | Windows native (vanilla Vulkan, no portability layer) and macOS via MoltenVK. The project is Linux-first by primary maintainer setup, **not Linux-only by design.** CI matrix expands to all three platforms; Steam Deck falls out of the Linux build for free.                                                                                                                                                                                                   | —                       |
+| M72   | Decentralized mod hosting     | IPFS-style content-addressed mod distribution: mod-id = content hash, dependency graph auto-resolves through the existing `plugin/resolver.rs` DAG. Realizes the full payoff of "no LOOT, no slot limits" — mods are addressable globally, no central marketplace, no Bethesda.net-style platform tax.                                                                                                                                                            | M46, M50                |
+| M80   | glTF / USD export             | Round-trip Bethesda assets to industry-standard formats. Open NIF / NifSkope replacement: load any vanilla mesh, export to glTF + materials, edit in Blender / Houdini, re-import as a content-addressed plugin. Massive creative-pipeline unlock for modders who don't want to fight 3ds Max 2010 and a 15-year-old NIF plugin.                                                                                                                                  | NIF parser stable       |
+| M81   | Visual scripting (BT-style)   | Behavior-tree node graph layered on M47.0 event hooks, for modders who don't write code. Same surface as Papyrus would expose, but with no language to learn. Complements rather than replaces M47.0 / M47.2.                                                                                                                                                                                                                                                       | M47.0, M50              |
+| M82   | Asset preprocessing pipeline  | One-shot bake: BSA / BA2 → ByroRedux native asset format with optimal layouts (texture-streaming-aware mip ordering, cluster-aware mesh layout for M53). Ships once at install / mod-publish; runtime loads are 10× faster. Replaces the current "open the BSA, decode on demand" hot path with a memory-mappable bundle.                                                                                                                                          | M39, M53                |
+
+### Tier 11 — Performance ceiling (post-Tier-4 horizon)
+
+Pure-performance entries that don't add visual capability or new
+gameplay surface — they raise the per-frame ceiling once a
+real-content benchmark identifies one of them as the bottleneck.
+**No active work** until that benchmark exists. Today's bench is
+GPU-bound on RT cost (`fence=4.34 ms / 75% wall` on Prospector at
+HEAD `6a6950a`); CPU-side draw submission is not the constraint at
+current entity counts. Listed for direction, not on the active
+path. Split out from Tier 8 (2026-05-08) once Tier 8 was reframed
+around visual fidelity — these are honest ceiling raisers, not
+beauty work, and conflating the two muddied both.
+
+| #     | Milestone                          | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                              | Depends on |
+|-------|------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------|
+| M52   | GPU-driven rendering               | Mesh shaders + task shaders, GPU frustum + cluster cone culling, indirect-from-GPU draw command generation. Eliminates CPU draw-submission overhead at 7 000+ entities (FO4 MedTek bench's actual ceiling). Falls back to current path on hardware without `VK_EXT_mesh_shader`. Closes the loop on R7 / M27: parallel ECS dispatch on the CPU side + GPU-driven submission on the GPU side.                                                       | M27        |
+| M53   | Virtual geometry (Nanite-class LOD) | Cluster mesh format with deterministic simplification chain, GPU cluster selection per pixel. Makes M35 (.btr terrain LOD) obsolete in the good direction: load full-resolution geometry, GPU picks the right level. Same data structure works for static and skinned meshes (with care around bone-influenced clusters).                                                                                                                       | M52        |
+
 ### Parking lot (nice-to-have, no active work)
 
 | #       | Notes                                                                                                                                                                            |
@@ -319,8 +400,13 @@ silently growing the cone:
   ship a sorter.
 - **Console releases / non-Linux primary support.** Linux-first.
   Windows + macOS are downstream if they happen.
-- **Online services.** No telemetry, no updater, no crash reporter
-  posting upstream, no skin / monetization surface.
+- **Hosted online services.** No telemetry, no updater, no crash
+  reporter posting upstream, no central server, no skin /
+  monetization surface, no Bethesda.net-style mod marketplace.
+  P2P co-op (M60, Tier 9) is **in scope** — engine ships the
+  replication layer, never a server. Decentralized mod hosting
+  (M72, Tier 10) is in scope — content-addressed, no central
+  registry.
 - **Cloning Papyrus VM semantics.** R5 may make us run "Papyrus
   bytecode as an ECS system" if the pure transpiler bet fails — but
   even then we are not implementing OpcodeFetch / OpcodeDispatch /

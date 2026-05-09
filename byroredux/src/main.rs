@@ -1184,7 +1184,21 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
-        let dt = now.duration_since(self.last_frame).as_secs_f32();
+        // `BYROREDUX_FIXED_DT=<seconds>` overrides the wall-clock dt
+        // with a fixed value so simulation state at frame N is
+        // reproducible across runs. Used by the golden-frame
+        // regression tests in `tests/golden_frames.rs` — set to `0`
+        // to freeze animation entirely (camera, spin, TAA jitter
+        // still advance per-frame because they're frame-counter
+        // driven, not dt-driven), or `0.01666` to step at 60 Hz
+        // for deterministic time-based sims. Has no effect when
+        // unset; `last_frame` is still tracked for any consumer
+        // that reads wall-clock elapsed elsewhere.
+        let wall_dt = now.duration_since(self.last_frame).as_secs_f32();
+        let dt = std::env::var("BYROREDUX_FIXED_DT")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(wall_dt);
         self.last_frame = now;
 
         // Update time resources.

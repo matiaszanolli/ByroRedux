@@ -1672,6 +1672,71 @@ impl VulkanContext {
                 }
             }
 
+            // Volumetric lighting (M55 Phase 2c — sun-only injection
+            // with HG phase + RT shadow visibility). Runs before TAA /
+            // SSAO / composite so the fragment shader can sample the
+            // integrated volume.
+            //
+            // Gated on TLAS being available, mirroring caustic
+            // (caustic.rs:627 / draw.rs:1648). When no TLAS exists
+            // (RT unsupported, scene not yet built, accel_manager
+            // absent) we skip BOTH the descriptor write and the
+            // dispatch — composite reads the prior frame's integrated
+            // volume, which retains its last valid contents (or the
+            // post-`initialize_layouts` zero-init on the very first
+            // frame). One frame of slight ghosting on cell load is
+            // preferable to running an injection that ray-queries an
+            // unwritten TLAS.
+            //
+            // Sun direction is hardcoded to scene.rs's default
+            // procedural-fallback value for now; Phase 2b will plumb
+            // the dynamic `SkyParamsRes.sun_direction` through.
+            if let Some(ref mut vol) = self.volumetrics {
+                let vol_tlas = self
+                    .accel_manager
+                    .as_ref()
+                    .and_then(|accel| accel.tlas_handle(frame));
+                if let Some(tlas) = vol_tlas {
+                    vol.write_tlas(&self.device, frame, tlas);
+                    let sun_dir_xyz = [-0.4_f32, 0.8, -0.45];
+                    let sun_len = (sun_dir_xyz[0] * sun_dir_xyz[0]
+                        + sun_dir_xyz[1] * sun_dir_xyz[1]
+                        + sun_dir_xyz[2] * sun_dir_xyz[2])
+                        .sqrt()
+                        .max(1e-6);
+                    let sun_dir_norm = [
+                        sun_dir_xyz[0] / sun_len,
+                        sun_dir_xyz[1] / sun_len,
+                        sun_dir_xyz[2] / sun_len,
+                    ];
+                    let vol_params = super::super::volumetrics::VolumetricsParams {
+                        inv_view_proj: inv_vp_arr,
+                        camera_pos: [
+                            camera_pos[0],
+                            camera_pos[1],
+                            camera_pos[2],
+                            super::super::volumetrics::DEFAULT_SCATTERING_COEF,
+                        ],
+                        sun_dir: [
+                            sun_dir_norm[0],
+                            sun_dir_norm[1],
+                            sun_dir_norm[2],
+                            super::super::volumetrics::DEFAULT_PHASE_G,
+                        ],
+                        sun_color: [1.0, 0.95, 0.85, 1.0],
+                        volume_extent: [
+                            super::super::volumetrics::DEFAULT_VOLUME_FAR,
+                            0.0,
+                            0.0,
+                            0.0,
+                        ],
+                    };
+                    if let Err(e) = vol.dispatch(&self.device, cmd, frame, &vol_params) {
+                        log::warn!("Volumetrics dispatch failed: {e}");
+                    }
+                }
+            }
+
             // TAA resolve: reprojects previous frame's history via motion
             // vectors, neighborhood-clamps in YCoCg, and writes the anti-
             // aliased HDR result for composite to sample. Runs after SVGF
@@ -1711,6 +1776,24 @@ impl VulkanContext {
                     ssao.dispatch(&self.device, cmd, frame, &vp_arr, &inv_vp_arr, camera_pos)
                 {
                     log::warn!("SSAO dispatch failed: {e}");
+                }
+            }
+
+            // Bloom pyramid (M58). Reads the un-TAA'd scene HDR
+            // (composite.hdr_image_views[frame]) and writes a
+            // multi-scale blurred bright-content texture. Composite
+            // adds bloom to `combined` before the ACES tone-map.
+            // The render pass's final_layout already moved HDR to
+            // SHADER_READ_ONLY_OPTIMAL, so the input is sample-ready.
+            // Bloom uses TAA-jittered input but the blur pyramid
+            // suppresses sub-pixel jitter — visually equivalent to
+            // bloom on TAA output but with simpler wiring.
+            if let Some(ref mut bloom) = self.bloom {
+                if let Some(ref composite) = self.composite {
+                    let hdr_view = composite.hdr_image_views[frame];
+                    if let Err(e) = bloom.dispatch(&self.device, cmd, frame, hdr_view) {
+                        log::warn!("Bloom dispatch failed: {e}");
+                    }
                 }
             }
 

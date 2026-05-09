@@ -167,6 +167,8 @@ impl CompositePipeline {
         albedo_views: &[vk::ImageView],
         depth_view: vk::ImageView,
         caustic_views: &[vk::ImageView],
+        volumetric_views: &[vk::ImageView],
+        bloom_views: &[vk::ImageView],
         bindless_layout: vk::DescriptorSetLayout,
         width: u32,
         height: u32,
@@ -182,6 +184,8 @@ impl CompositePipeline {
             albedo_views,
             depth_view,
             caustic_views,
+            volumetric_views,
+            bloom_views,
             bindless_layout,
             width,
             height,
@@ -204,6 +208,8 @@ impl CompositePipeline {
         albedo_views: &[vk::ImageView],
         depth_view: vk::ImageView,
         caustic_views: &[vk::ImageView],
+        volumetric_views: &[vk::ImageView],
+        bloom_views: &[vk::ImageView],
         bindless_layout: vk::DescriptorSetLayout,
         width: u32,
         height: u32,
@@ -211,6 +217,8 @@ impl CompositePipeline {
         debug_assert_eq!(indirect_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(albedo_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(caustic_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(volumetric_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(bloom_views.len(), MAX_FRAMES_IN_FLIGHT);
         // Build a partially-valid Self so we can use destroy() for cleanup
         // on any error. Fields that haven't been created yet use null
         // handles — destroy() calls vkDestroy* on null (always a no-op).
@@ -451,7 +459,8 @@ impl CompositePipeline {
         }
 
         // ── 6. Descriptor set layout + pipeline layout ───────────────
-        // 6 bindings — HDR, indirect, albedo, params UBO, depth, caustic.
+        // 7 bindings — HDR, indirect, albedo, params UBO, depth,
+        // caustic, volumetric (M55 Phase 4).
         let ds_bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -481,6 +490,23 @@ impl CompositePipeline {
             // 5: caustic accumulator as usampler2D — R32_UINT sampled view.
             vk::DescriptorSetLayoutBinding::default()
                 .binding(5)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // 6: volumetric froxel volume as sampler3D (M55 Phase 4).
+            // Shader ray-marches this volume per fragment to add
+            // inscattered light + extinction modulation.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(6)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // 7: bloom output mip 0 (M58). HDR-linear, half-screen
+            // resolution; sampled with bilinear filter to upscale to
+            // full screen. Shader does `combined += bloom * intensity`
+            // before tone-map.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(7)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -529,7 +555,9 @@ impl CompositePipeline {
         let pool_sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 5) as u32,
+                // 7 sampler bindings per set: HDR, indirect, albedo,
+                // depth, caustic, volumetric, bloom.
+                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 7) as u32,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
@@ -594,6 +622,14 @@ impl CompositePipeline {
                 .sampler(partial.caustic_sampler)
                 .image_view(caustic_views[i])
                 .image_layout(vk::ImageLayout::GENERAL)];
+            let volumetric_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.hdr_sampler)
+                .image_view(volumetric_views[i])
+                .image_layout(vk::ImageLayout::GENERAL)];
+            let bloom_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.hdr_sampler)
+                .image_view(bloom_views[i])
+                .image_layout(vk::ImageLayout::GENERAL)];
             let writes = [
                 vk::WriteDescriptorSet::default()
                     .dst_set(partial.descriptor_sets[i])
@@ -625,6 +661,16 @@ impl CompositePipeline {
                     .dst_binding(5)
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&caustic_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(partial.descriptor_sets[i])
+                    .dst_binding(6)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&volumetric_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(partial.descriptor_sets[i])
+                    .dst_binding(7)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(&bloom_info),
             ];
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }

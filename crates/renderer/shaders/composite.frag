@@ -38,6 +38,16 @@ layout(set = 0, binding = 3) uniform CompositeParams {
 } params;
 layout(set = 0, binding = 4) uniform sampler2D depthTex;     // depth buffer
 layout(set = 0, binding = 5) uniform usampler2D causticTex;  // R32_UINT caustic accumulator (#321)
+// M55 Phase 4: volumetric froxel volume (RGBA16F).
+//   rgb = inscatter radiance (HDR linear, pre-tone-map)
+//   a   = extinction coefficient (1 / m)
+// Sampled per-fragment with a 32-step ray-march for the in-scatter +
+// transmittance modulation applied to `combined` before ACES.
+layout(set = 0, binding = 6) uniform sampler3D volumetricFroxel;
+// M58: bloom output mip 0 (B10G11R11_UFLOAT, half-screen). Sampled
+// at full screen resolution with bilinear hardware filtering;
+// added to `combined` before ACES per Frostbite §8.
+layout(set = 0, binding = 7) uniform sampler2D bloomTex;
 
 // Set 1: bindless texture array from TextureRegistry — shared with the
 // main geometry pipeline. Used here to sample WTHR cloud textures by index.
@@ -54,6 +64,27 @@ layout(set = 1, binding = 0) uniform sampler2D textures[];
 // — bumping the Rust const fails the test until this literal is
 // updated. See #667 / SH-12.
 const float CAUSTIC_FIXED_SCALE = 65536.0;
+
+// M55 — volumetric far plane. Must match `volumetrics::DEFAULT_VOLUME_FAR`
+// (Rust side) and the `params.volume_extent.x` value passed to the
+// injection compute pass; otherwise the slice→view-distance mapping
+// disagrees and fog appears compressed or stretched. With Phase 3
+// pre-integration the per-fragment cost is now ONE sampler3D tap, so
+// no step-count dial is needed here — quality scales with the froxel
+// resolution and dt set on the host.
+const float VOLUME_FAR = 200.0;
+
+// M58 — bloom contribution coefficient. 0.20 (5× the Frostbite
+// SIGGRAPH 2015 default of 0.04) compensates for Bethesda content
+// being LDR-authored: emissive surfaces sit in the 0–1 monitor-
+// space range rather than HDR cd/m², so a Frostbite-default
+// intensity reads as essentially-invisible. 0.20 was hand-tuned on
+// Prospector saloon (lanterns, sun-lit windows, neon pipes) to
+// give visible glow without flooding dim surfaces. Pinned in
+// lockstep with `bloom::DEFAULT_BLOOM_INTENSITY` (Rust side);
+// update both at once. See feedback memo "Color Space — Not sRGB"
+// for why we don't HDR-boost emissives globally instead.
+const float BLOOM_INTENSITY = 0.20;
 
 layout(location = 0) in vec2 fragUV;
 layout(location = 0) out vec4 outColor;
@@ -281,6 +312,65 @@ void main() {
 
         vec3 combined = direct + indirect * albedo + caustic;
 
+        // M55 Phase 3 — volumetric modulation via single sampler3D tap.
+        // The volumetric pipeline pre-integrates `(∫inscatter, T_cum)`
+        // along the view ray per froxel column in a compute pass; here
+        // we just look up the value at the fragment's depth slice and
+        // modulate `combined`. Done in HDR-linear (pre-ACES) per
+        // Frostbite §5.3 so the tone-mapper sees the inscattered
+        // radiance and the scene together.
+        //
+        // The volumetric volume is screen-space in xy and depth-slice
+        // in z under linear distribution, so the sample coordinate is
+        // (fragUV, worldDist / VOLUME_FAR). No NDC projection needed,
+        // no per-step loop.
+        if (depth < 0.9999) {
+            vec2 ndc_xy = fragUV * 2.0 - 1.0;
+            vec4 clip = vec4(ndc_xy, depth, 1.0);
+            vec4 world = params.inv_view_proj * clip;
+            vec3 worldPos = world.xyz / world.w;
+            float worldDist = length(worldPos - params.camera_pos.xyz);
+            // clamp(0, 1 - eps): max-slice texel still samples within
+            // the volume rather than the CLAMP_TO_EDGE neighbour, which
+            // would over-extrapolate transmittance for fragments past
+            // the volume far plane.
+            float slice = clamp(worldDist / VOLUME_FAR, 0.0, 0.9999);
+            vec4 vol = texture(volumetricFroxel, vec3(fragUV, slice));
+            // vol.rgb = ∫inscatter accumulated 0..slice (HDR-linear)
+            // vol.a   = cumulative transmittance through 0..slice
+            // M55 Phase 2c volumetric contribution gated OFF on
+            // 2026-05-09. Diagnostic confirmed the per-froxel single-
+            // shadow-ray approach produces ~8-pixel-wide vertical
+            // bands on bright surfaces (1-bit visibility per froxel
+            // column → bilinear sampling can't recover sub-froxel
+            // detail). Stripes were clearly visible on lantern
+            // bodies in Prospector; disabling the read restored
+            // smooth shading. Volumetric injection + integration
+            // continue to dispatch (validates the pipeline path,
+            // small GPU cost), but composite no longer modulates
+            // `combined` with `vol`. Re-enable when M-LIGHT
+            // (multi-tap shadow rays + temporal stability) lands —
+            // see Tier 8 row in ROADMAP.md.
+            //
+            // The `vol.rgb * 0.0` keeps the texture sample alive so
+            // SPIR-V reflection (validate_set_layout) still sees
+            // binding 6 referenced from this shader; removing the
+            // sample entirely would require also dropping the host-
+            // side binding declaration and is more churn than the
+            // gate is worth.
+            combined += vol.rgb * 0.0;
+        }
+
+        // M58 — bloom add. Sampled with bilinear from mip 0 of the
+        // bloom up-pyramid (half-screen resolution; hardware filter
+        // upscales to full screen for free). Added in HDR-linear
+        // (pre-ACES) so the tone-mapper compresses scene + bloom
+        // together — bright surfaces' glow doesn't clip independently
+        // of the surface. `fragUV` in [0,1]² works directly against
+        // the half-res bloom view.
+        vec3 bloom = texture(bloomTex, fragUV).rgb;
+        combined += bloom * BLOOM_INTENSITY;
+
         float exposure = params.depth_params.y;  // host-set; default 0.85 (DEN-10)
 
         // Tone-map the unfogged combined HDR to display space FIRST,
@@ -299,52 +389,19 @@ void main() {
         // on the post-tone-map side.
         vec3 tonemapped = aces(combined * exposure);
 
-        // Distance fog — applied here rather than in the geometry pass
-        // so SVGF history carries un-fogged indirect. Pre-#428 fog was
-        // baked into both direct and indirect attachments in
-        // triangle.frag, which meant the SVGF history retained the
-        // previous frame's fog values after transitions (cell load,
-        // weather change) and produced multi-frame ghosting until the
-        // α=0.2 accumulation washed it out.
-        //
-        // Reconstruct world-space fragment position from depth +
-        // inv_view_proj, then fog-blend the tone-mapped result by
-        // the camera-to-fragment distance.
-        //
-        // Skip fog on empty/far-plane pixels (depth >= 0.9999). Pre-fix
-        // those pixels had no world position and the reconstructed
-        // `worldDist` was effectively infinite, saturating the smoothstep
-        // to 1.0 and flooding every gap in interior geometry with
-        // fog_color — visible as a bright blue-tinted "doorway" through
-        // any wall seam on interior cells. The sky branch above
-        // already handles exterior depth-far pixels; interior empty
-        // pixels just pass through the clear color untouched.
-        if (depth < 0.9999
-            && params.fog_color.w > 0.5
-            && params.fog_params.y > params.fog_params.x)
-        {
-            vec2 ndc_xy = fragUV * 2.0 - 1.0;
-            vec4 clip = vec4(ndc_xy, depth, 1.0);
-            vec4 world = params.inv_view_proj * clip;
-            vec3 worldPos = world.xyz / world.w;
-            float worldDist = length(worldPos - params.camera_pos.xyz);
-
-            // Cap at 70% opacity — same rationale as the pre-#428
-            // triangle.frag code: D3D9 rendered fog in sRGB where the
-            // blend appeared softer; the cap keeps distant geometry
-            // readable. With the post-#784 display-space mix the
-            // perceptual stronger-than-D3D9 issue is resolved (mixing
-            // in display space matches what the authored fog values
-            // were authored against), but the 0.7 cap stays as a
-            // value-preserving knob for "distant surface still
-            // identifiable" content rules.
-            float fogFactor = smoothstep(params.fog_params.x, params.fog_params.y, worldDist) * 0.7;
-            // Tone-map the fog target separately so the mix happens
-            // entirely in display space. Both arguments to mix() are
-            // post-ACES values in [0, 1].
-            vec3 tonemappedFog = aces(params.fog_color.xyz * exposure);
-            tonemapped = mix(tonemapped, tonemappedFog, fogFactor);
-        }
+        // Legacy display-space fog mix removed (M55 Phase 3, 2026-05-09).
+        // The volumetric pipeline now computes pre-integrated
+        // `(∫inscatter, T_cum)` per froxel, modulated into `combined`
+        // above (HDR-linear, pre-ACES) — that's the single source of
+        // distance haze going forward. Stacking the legacy
+        // `mix(tonemapped, tonemappedFog, smoothstep(near, far, …))`
+        // on top double-tinted distant surfaces (visible on the
+        // 2026-05-09 Prospector screenshot under heavy interior fog
+        // params) and was always going to interfere with proper
+        // physical inscatter accumulation. CompositeParams.fog_color /
+        // fog_params remain in the UBO — the volumetric density
+        // shader will read them in Phase 6 (REGN-driven density)
+        // for region-keyed atmospheric tinting.
 
         outColor = vec4(tonemapped, direct4.a);
     }

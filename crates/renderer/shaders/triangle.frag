@@ -2185,12 +2185,21 @@ void main() {
                 rayDir = normalize(jitteredTarget - rayOrigin);
                 rayDist = length(jitteredTarget - rayOrigin) - 0.1;
             } else {
-                // Directional: small angular cone for penumbra.
-                // Real sun subtends ~0.0047 rad (~0.27°) from Earth. The
-                // previous 0.05 rad (~2.9°) was ~10× too soft, washing out
-                // sharp shadow detail. Keep slight inflation vs physical
-                // value to give visible penumbra at interior scale.
-                const float sunAngularRadius = 0.0047;
+                // Directional: angular cone for stochastic penumbra.
+                // TAA averages the per-frame jittered visibility into
+                // a soft shadow edge. Physical sun is ~0.0047 rad
+                // (~0.27°) from Earth — that gives ~2.4 cm penumbra
+                // at 5m blocker distance, invisible at interior scale.
+                // 0.020 rad (~1.15°) gives ~10 cm penumbra at 5m,
+                // visible without flooding sharp edges. The previous
+                // 0.0047 was tuned for outdoor cell-scale shots
+                // (50-100m blockers) where the smaller cone matters;
+                // 0.020 widens it for interior content where most
+                // shadow casters are 2-15m away. M-LIGHT v1 — see
+                // ROADMAP.md Tier 8. Future work: depth-adaptive
+                // radius (PCSS-lite), eventually multi-tap blocker
+                // search.
+                const float sunAngularRadius = 0.020;
                 vec3 jitteredDir = L + (T * diskSample.x + B * diskSample.y) * sunAngularRadius;
                 rayDir = normalize(jitteredDir);
                 // 100 000 units covers the diagonal of a 7×7 exterior

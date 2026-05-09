@@ -38,3 +38,10 @@ tracing-subscriber = { workspace = true }
 tracing-tracy = { workspace = true, optional = true }
 anyhow = { workspace = true }
 winit = { workspace = true }
+
+[dev-dependencies]
+# Used by the golden-frame regression tests in `tests/golden_frames.rs`
+# to decode + per-pixel-compare PNG screenshots captured via the engine's
+# `--screenshot` CLI flag. See README in `tests/golden/` for the
+# regenerate-baseline workflow.
+image = { workspace = true }

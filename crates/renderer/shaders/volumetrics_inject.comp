@@ -1,0 +1,155 @@
+// M55 Phase 2 — Volumetric lighting injection (Phase 2c: + RT shadows).
+//
+// For each froxel (uvw in volume space) compute the in-scattered
+// radiance from a single directional sun, modulated by the
+// Henyey-Greenstein phase function and gated on a ray-query
+// visibility check against the scene TLAS — so cathedral light
+// shafts through windows respect occluders. Output is RGBA16F:
+//   rgb = inscattered radiance (HDR linear, pre-tone-map)
+//   a   = extinction coefficient (1 / m)
+//
+// Phase 2 simplifications (will fall out in subsequent phases):
+//   - One light only (sun). Phase 2b reads `GpuLight` SSBO and loops.
+//   - Constant participating-medium density. Phase 6 reads REGN
+//     records for per-region density.
+//   - Linear slice→view-distance distribution. Phase 5 will swap to
+//     the standard exponential distribution (denser slices near the
+//     camera) once temporal reprojection lands.
+//
+// Reference: Hillaire, "Physically based and unified volumetric
+// rendering in Frostbite," SIGGRAPH 2015. The injection step is
+// §5.2; phase function from §5.1 (Henyey-Greenstein, single-lobe);
+// shadow visibility is the standard "trace toward light, miss = lit"
+// test used by every modern RT volumetric path.
+#version 460
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image3D froxel;
+
+layout(set = 0, binding = 1) uniform VolumetricsParams {
+    mat4 inv_view_proj;
+    // xyz = camera world position, w = scattering coefficient (1 / m)
+    vec4 camera_pos;
+    // xyz = sun direction (world space, points FROM the sun toward the
+    // ground — same convention as the scene's directional light), w =
+    // HG phase function asymmetry parameter g in (-1, 1).
+    vec4 sun_dir;
+    // rgb = sun radiance (already multiplied by intensity), a = unused
+    vec4 sun_color;
+    // x = volume far plane (m), y/z/w = unused. Defines the maximum
+    // along-ray distance covered by the volume's depth slices.
+    vec4 volume_extent;
+} params;
+
+// Phase 2c — scene TLAS. Updated each frame from the host side via
+// `VolumetricsPipeline::write_tlas` before dispatch. Used solely for
+// shadow visibility from sample → sun; no closest-hit shading is
+// needed because sun radiance is constant.
+layout(set = 0, binding = 2) uniform accelerationStructureEXT topLevelAS;
+
+const float PI = 3.14159265358979323846;
+
+// Henyey-Greenstein single-lobe phase function. cos_theta is the
+// cosine of the angle between the light incoming direction and the
+// view direction (toward the camera). g controls anisotropy:
+//   g = 0  : isotropic (1/4π)
+//   g > 0  : forward scattering (haze, atmosphere — typical 0.3–0.8)
+//   g < 0  : backward scattering (rare in natural media)
+float henyey_greenstein(float cos_theta, float g) {
+    float g2 = g * g;
+    float denom = 1.0 + g2 - 2.0 * g * cos_theta;
+    return (1.0 - g2) / (4.0 * PI * pow(max(denom, 1e-4), 1.5));
+}
+
+// Reconstruct world position at froxel center.
+// uv ∈ [0,1] is screen space; t is along-ray distance from camera.
+vec3 froxel_to_world(vec2 uv, float t) {
+    // Get the world-space ray through this froxel column by inverting
+    // the projection at the far plane (Vulkan default NDC z = 1 = far).
+    vec4 ndc_far = vec4(uv * 2.0 - 1.0, 1.0, 1.0);
+    vec4 world_far = params.inv_view_proj * ndc_far;
+    world_far.xyz /= world_far.w;
+    vec3 ray_dir = normalize(world_far.xyz - params.camera_pos.xyz);
+    return params.camera_pos.xyz + ray_dir * t;
+}
+
+void main() {
+    ivec3 coord = ivec3(gl_GlobalInvocationID.xyz);
+    ivec3 size = imageSize(froxel);
+    if (any(greaterThanEqual(coord, size))) {
+        return;
+    }
+
+    // Froxel center in normalized volume space.
+    vec3 uvw = (vec3(coord) + 0.5) / vec3(size);
+
+    // Slice → along-ray distance (linear for Phase 2; exponential
+    // distribution lands with Phase 5 temporal reprojection).
+    float t = uvw.z * params.volume_extent.x;
+
+    vec3 world_pos = froxel_to_world(uvw.xy, t);
+
+    // View direction points FROM the sample point TOWARD the camera.
+    vec3 view_dir = normalize(params.camera_pos.xyz - world_pos);
+
+    // params.sun_dir.xyz points from sun → ground; the light incoming
+    // direction at the sample is -sun_dir.
+    vec3 light_in = -normalize(params.sun_dir.xyz);
+
+    // HG phase: angle between light arrival direction and view direction.
+    float cos_theta = dot(light_in, view_dir);
+    float phase = henyey_greenstein(cos_theta, params.sun_dir.w);
+
+    // Constant medium parameters (Phase 2 simplification).
+    float scattering_coef = params.camera_pos.w;
+    // Single-scattering albedo of 1 (pure scattering, no absorption)
+    // is a defensible default for clear haze. Smoke / dust / fog
+    // with non-trivial absorption follows from a separate
+    // absorption-coef param later.
+    float extinction_coef = scattering_coef;
+
+    // Phase 2c — visibility ray from sample point toward the sun.
+    // Sun is directional (effectively at infinity), so:
+    //   - origin = world_pos. No surface-normal bias needed; the
+    //     sample is in volume space (potentially inside or outside
+    //     geometry, but never lying on a surface), so a small tMin
+    //     handles self-intersection trivially.
+    //   - direction = -sun_dir.xyz (points from sample toward sun).
+    //   - tMax = effectively the sun's "distance" — huge.
+    //   - flags = OPAQUE | TERMINATE_ON_FIRST_HIT — we only care
+    //     whether any geometry blocks the path; closest-hit walk
+    //     would cost ~10× this.
+    // If the ray hits anything, the sample is shadowed: zero sun
+    // contribution. Otherwise the sun lights this voxel through the
+    // medium, modulated by the phase function. This is what produces
+    // god rays — voxels in a window's beam are lit, voxels behind a
+    // wall are not, and the integration pass propagates the
+    // boundary as crisp light shafts.
+    vec3 ray_origin = world_pos;
+    vec3 ray_dir = light_in;
+    float visibility;
+    {
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(
+            rq,
+            topLevelAS,
+            gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+            0xFFu,
+            ray_origin,
+            0.05,
+            ray_dir,
+            10000.0
+        );
+        rayQueryProceedEXT(rq);
+        visibility = (rayQueryGetIntersectionTypeEXT(rq, true)
+                      == gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
+    }
+
+    // In-scattered radiance from the sun at this voxel, gated on
+    // shadow visibility. HG normalisation already includes 1/4π.
+    vec3 inscatter = scattering_coef * phase * params.sun_color.rgb * visibility;
+
+    imageStore(froxel, coord, vec4(inscatter, extinction_coef));
+}

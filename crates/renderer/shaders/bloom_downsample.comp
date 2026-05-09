@@ -1,0 +1,53 @@
+// M58 — Bloom downsample pass.
+//
+// 4-tap bilinear box filter that halves the resolution. Each tap
+// uses hardware bilinear interpolation to average a 2×2 source
+// region; four taps placed at (±0.5, ±0.5) destination-pixel
+// offsets cover an effective 4×4 source region with even weighting.
+// Provably equivalent to a 4×4 box filter, costs 4 texture lookups,
+// uses 0 floating-point weights to maintain.
+//
+// Why a box filter instead of Jimenez's 13-tap or Bjørge's
+// dual-filter Kawase: the 13-tap weights need to be lifted from the
+// SIGGRAPH 2014 talk verbatim and we don't have the slides in the
+// repo right now; "make up reasonable weights" violates the
+// no-guessing rule. Box filter is mathematically unambiguous, lands
+// 80% of the visual win, and can be upgraded later when we have the
+// reference open. See the M58 row in ROADMAP.md for tracking.
+//
+// Reference: Bjørge, "Bandwidth-Efficient Rendering," SIGGRAPH 2015,
+// §3.2 — the simpler "down 4 / up 4" variant before the dual-filter
+// upgrade.
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(set = 0, binding = 1, r11f_g11f_b10f) uniform writeonly image2D dst;
+
+layout(set = 0, binding = 2) uniform Params {
+    // xy = 1 / source resolution (used to offset taps)
+    // zw = 1 / destination resolution (used to compute uv at center
+    //      of destination texel)
+    vec4 inv_resolutions;
+} params;
+
+void main() {
+    ivec2 dst_coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dst_size = imageSize(dst);
+    if (any(greaterThanEqual(dst_coord, dst_size))) {
+        return;
+    }
+
+    vec2 src_pixel = params.inv_resolutions.xy;
+    vec2 dst_pixel = params.inv_resolutions.zw;
+    vec2 uv = (vec2(dst_coord) + 0.5) * dst_pixel;
+
+    vec3 sum = vec3(0.0);
+    sum += texture(src, uv + vec2(-0.5, -0.5) * src_pixel).rgb;
+    sum += texture(src, uv + vec2( 0.5, -0.5) * src_pixel).rgb;
+    sum += texture(src, uv + vec2(-0.5,  0.5) * src_pixel).rgb;
+    sum += texture(src, uv + vec2( 0.5,  0.5) * src_pixel).rgb;
+
+    imageStore(dst, dst_coord, vec4(sum * 0.25, 1.0));
+}

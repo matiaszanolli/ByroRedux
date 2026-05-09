@@ -1,0 +1,69 @@
+// M55 Phase 3 — Volumetric ray-march integration.
+//
+// One thread per froxel (x, y) column. The thread walks slices
+// 0 → FROXEL_DEPTH-1 sequentially, accumulating the standard
+// volumetric integration recurrence (Hillaire, "Physically Based
+// and Unified Volumetric Rendering in Frostbite," SIGGRAPH 2015,
+// §5.3 — Light Scattering Integration):
+//
+//   per slab i (thickness dt):
+//     integrated_inscatter += inscatter[i] * T_cum * dt
+//     T_cum *= exp(-extinction[i] * dt)
+//     write (integrated_inscatter, T_cum) at slice i
+//
+// dt is constant (linear slice→view-distance distribution); Phase 5
+// will swap in the exponential distribution and a per-slice dt.
+//
+// The output volume stores per-slice cumulative state, so composite
+// reads a single sampler3D tap at `slice = worldDist / VOLUME_FAR`
+// and gets the integrated radiance + transmittance for that pixel —
+// no per-fragment ray-march, no double-fog stacking, O(screen) cost
+// instead of O(screen × steps).
+//
+// This is the math identity transposition of the per-fragment march
+// that shipped in Phase 4 — same recurrence, hoisted to a compute
+// pass so we run it 14 400 times per frame (one per froxel column)
+// instead of 2 073 600 times (one per 1080p pixel).
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// Read: per-froxel inscatter + extinction written by the injection pass.
+layout(set = 0, binding = 0, rgba16f) uniform readonly image3D injection;
+// Write: per-slice cumulative (integrated_inscatter, total_transmittance).
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image3D integrated;
+
+layout(set = 0, binding = 2) uniform IntegrationParams {
+    // x = slab thickness dt in metres (VOLUME_FAR / FROXEL_DEPTH at
+    // the host side; uniform across slices in Phase 3 — Phase 5
+    // will switch to a per-slice dt[] array under exponential
+    // distribution). y/z/w = unused.
+    vec4 step;
+} params;
+
+void main() {
+    ivec3 size = imageSize(injection);
+    ivec2 col = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(col, size.xy))) {
+        return;
+    }
+
+    float dt = params.step.x;
+    vec3 inscatter_total = vec3(0.0);
+    float trans_cumulative = 1.0;
+
+    for (int slice = 0; slice < size.z; ++slice) {
+        vec4 inj = imageLoad(injection, ivec3(col, slice));
+        vec3 inscatter = inj.rgb;
+        float extinction = inj.a;
+
+        inscatter_total += inscatter * trans_cumulative * dt;
+        trans_cumulative *= exp(-extinction * dt);
+
+        imageStore(
+            integrated,
+            ivec3(col, slice),
+            vec4(inscatter_total, trans_cumulative)
+        );
+    }
+}
