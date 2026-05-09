@@ -74,16 +74,12 @@ run_cell () {
         > "$engine_log.stdout" 2> "$engine_log.stderr" &
     local engine_pid=$!
 
-    # Cleanup hook for this run.
-    local cleanup_done=0
-    cleanup () {
-        if [[ $cleanup_done -eq 0 ]]; then
-            cleanup_done=1
-            kill -TERM "$engine_pid" 2>/dev/null || true
-            wait "$engine_pid" 2>/dev/null || true
-        fi
-    }
-    trap cleanup RETURN
+    # Inline kill+wait at every exit point. A `trap … RETURN` hook is
+    # appealing but bash tears local variables down before the trap
+    # fires, so any reference to a `local` flag inside the trap body
+    # explodes under `set -u`. Explicit cleanup at the four call sites
+    # is shorter and visibly correct.
+    local kill_engine='kill -TERM "$engine_pid" 2>/dev/null || true; wait "$engine_pid" 2>/dev/null || true'
 
     # Wait up to 180s for `bench-hold:` to appear in stderr (cold cargo
     # build + cell load can be slow).
@@ -92,12 +88,12 @@ run_cell () {
     while ! grep -q "^bench-hold:" "$engine_log.stderr" 2>/dev/null; do
         if [[ $(date +%s) -gt $deadline ]]; then
             echo "smoke[$label]: TIMEOUT waiting for bench-hold (engine logs in $engine_log.stderr)"
-            cleanup
+            eval "$kill_engine"
             return 1
         fi
         if ! kill -0 "$engine_pid" 2>/dev/null; then
             echo "smoke[$label]: engine exited before bench-hold (logs in $engine_log.stderr)"
-            cat "$engine_log.stderr" | tail -20
+            tail -20 "$engine_log.stderr"
             return 1
         fi
         sleep 0.5
@@ -106,19 +102,23 @@ run_cell () {
     echo "smoke[$label]: engine ready, attaching byro-dbg on port $PORT"
 
     # One-shot byro-dbg command sequence. EOF closes the REPL.
+    # `entities <Component>` filters the entity list by the named
+    # component (per `parse_shorthand` in tools/byro-dbg/src/main.rs).
+    # `find …` does NOT exist as a byro-dbg command — pre-fix this
+    # script used `find` and got `Error: no entity named 'find'`.
     BYRO_DEBUG_PORT="$PORT" cargo run --release --quiet -p byro-dbg <<EOF > "$dbg_log" 2>&1 || true
-entities
-find Inventory
-find EquipmentSlots
+entities Inventory
+entities EquipmentSlots
 tex.missing
 quit
 EOF
 
     echo "smoke[$label]: byro-dbg session complete, captured to $dbg_log"
 
-    # Extract assertions. The actual count parsing is loose — byro-dbg
-    # output format isn't strictly machine-readable, so we look for
-    # entity-count and find-results presence as a smoke signal.
+    # Capture-and-display only — `byro-dbg` output isn't strictly
+    # machine-readable today, so the smoke is "eyeball the counts."
+    # Hard pass/fail thresholds (entity floor, tex.missing ceiling)
+    # are a follow-up once the format stabilises.
     echo
     echo "── byro-dbg session log [$label] ───────────────────────────────"
     cat "$dbg_log"
@@ -126,7 +126,7 @@ EOF
     grep "^bench:" "$engine_log.stdout" || echo "  (no bench: line found)"
     echo
 
-    cleanup
+    eval "$kill_engine"
     return 0
 }
 
@@ -135,6 +135,13 @@ skyrim_run () {
         echo "smoke[skyrim]: SKIP — Skyrim.esm not at $SKYRIM_DATA"
         return 0
     fi
+    # Skyrim ships textures across Textures0-7.bsa; the
+    # `open_with_numeric_siblings` auto-load rule only kicks in for
+    # archives WITHOUT a digit before `.bsa`, and `Textures0.bsa`
+    # already has one — so every archive must be passed explicitly.
+    # Pre-fix the smoke script passed only Textures0-3 and the
+    # tex.missing report exposed missing setdressing textures
+    # whose canonical home is Textures4-7.
     run_cell skyrim \
         --esm "$SKYRIM_DATA/Skyrim.esm" \
         --cell WhiterunBanneredMare \
@@ -143,7 +150,11 @@ skyrim_run () {
         --textures-bsa "$SKYRIM_DATA/Skyrim - Textures0.bsa" \
         --textures-bsa "$SKYRIM_DATA/Skyrim - Textures1.bsa" \
         --textures-bsa "$SKYRIM_DATA/Skyrim - Textures2.bsa" \
-        --textures-bsa "$SKYRIM_DATA/Skyrim - Textures3.bsa"
+        --textures-bsa "$SKYRIM_DATA/Skyrim - Textures3.bsa" \
+        --textures-bsa "$SKYRIM_DATA/Skyrim - Textures4.bsa" \
+        --textures-bsa "$SKYRIM_DATA/Skyrim - Textures5.bsa" \
+        --textures-bsa "$SKYRIM_DATA/Skyrim - Textures6.bsa" \
+        --textures-bsa "$SKYRIM_DATA/Skyrim - Textures7.bsa"
 }
 
 fo4_run () {
@@ -151,12 +162,37 @@ fo4_run () {
         echo "smoke[fo4]: SKIP — Fallout4.esm not at $FO4_DATA"
         return 0
     fi
+    # FO4 archive layout (vanilla install):
+    #   Meshes.ba2 + MeshesExtra.ba2  — precombined / setdressing
+    #                                    meshes need both
+    #   Textures1-9.ba2 + TexturesPatch.ba2 — same sibling-auto-load
+    #                                    gap as Skyrim (Textures1.ba2
+    #                                    has a digit, rule doesn't fire)
+    #   Materials.ba2                  — BGSM material chain; resolves
+    #                                    via --materials-ba2 (separate
+    #                                    flag; --textures-bsa won't
+    #                                    surface BGSM lookups)
+    # Pre-fix the smoke script passed only Textures1-2 and no Materials,
+    # surfacing 213× officeboxpapers01_d.dds + 133× hightechdecaldebris01
+    # + 46× metallocker01.bgsm in tex.missing. The .bgsm misses came
+    # from the missing Materials.ba2; the texture misses came from the
+    # archive coverage gap.
     run_cell fo4 \
         --esm "$FO4_DATA/Fallout4.esm" \
         --cell MedTekResearch01 \
         --bsa "$FO4_DATA/Fallout4 - Meshes.ba2" \
+        --bsa "$FO4_DATA/Fallout4 - MeshesExtra.ba2" \
         --textures-bsa "$FO4_DATA/Fallout4 - Textures1.ba2" \
-        --textures-bsa "$FO4_DATA/Fallout4 - Textures2.ba2"
+        --textures-bsa "$FO4_DATA/Fallout4 - Textures2.ba2" \
+        --textures-bsa "$FO4_DATA/Fallout4 - Textures3.ba2" \
+        --textures-bsa "$FO4_DATA/Fallout4 - Textures4.ba2" \
+        --textures-bsa "$FO4_DATA/Fallout4 - Textures5.ba2" \
+        --textures-bsa "$FO4_DATA/Fallout4 - Textures6.ba2" \
+        --textures-bsa "$FO4_DATA/Fallout4 - Textures7.ba2" \
+        --textures-bsa "$FO4_DATA/Fallout4 - Textures8.ba2" \
+        --textures-bsa "$FO4_DATA/Fallout4 - Textures9.ba2" \
+        --textures-bsa "$FO4_DATA/Fallout4 - TexturesPatch.ba2" \
+        --materials-ba2 "$FO4_DATA/Fallout4 - Materials.ba2"
 }
 
 case "$GAME" in
