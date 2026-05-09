@@ -109,6 +109,17 @@ fn main() -> Result<()> {
     // rendering diagnostics / visual regression baselines.
     let screenshot_path = parse_string_arg(&args, "--screenshot");
 
+    // --bench-hold: after `--bench-frames N` emits its summary, keep
+    // the engine running (rendering, debug server reachable) instead
+    // of exiting. The bench summary still prints exactly once, at the
+    // target frame. Used by audit / triage workflows that need
+    // `byro-dbg` to connect post-bench and run console commands like
+    // `tex.missing` / `tex.loaded` against the loaded scene — pre-flag
+    // the binary exited too quickly for a TCP client to attach. No-op
+    // without `--bench-frames`. See FNV-D5 audit (`docs/audits/
+    // AUDIT_FNV_2026-05-08.md` § Coverage gaps).
+    let bench_hold = args.iter().any(|a| a == "--bench-hold");
+
     // --camera-pos x,y,z + --camera-forward x,y,z — override the
     // auto-computed initial camera pose. Useful for capturing specific
     // framing in bench mode without needing interactive WASD input.
@@ -168,6 +179,7 @@ fn main() -> Result<()> {
 
     let mut app = App::new(debug_mode, &args);
     app.bench_frames_target = bench_frames;
+    app.bench_hold = bench_hold;
     app.screenshot_path = screenshot_path;
     app.camera_pos_override = camera_pos;
     app.camera_forward_override = camera_forward;
@@ -239,6 +251,19 @@ struct App {
     /// When `Some(N)`, run exactly N frames then print a `bench:` line
     /// to stdout and exit. See `--bench-frames` in main() and #366.
     bench_frames_target: Option<u32>,
+    /// When `true` and `bench_frames_target` is set, the engine keeps
+    /// running after the bench summary lands instead of exiting —
+    /// gives `byro-dbg` a window to attach and drive console commands
+    /// against the loaded scene. Set via `--bench-hold`. Surfaced by
+    /// the FNV-D5 audit's coverage gap (`docs/audits/
+    /// AUDIT_FNV_2026-05-08.md`).
+    bench_hold: bool,
+    /// Set once the bench summary has been printed so the per-tick
+    /// re-entry into the bench-exit branch under `--bench-hold` skips
+    /// the print + screenshot path on every subsequent tick. Without
+    /// this guard `--bench-hold` would dump the summary line on every
+    /// `about_to_wait` and the screenshot path would re-fire forever.
+    bench_summary_printed: bool,
     /// Frames rendered since startup. Paired with `bench_frames_target`
     /// to drive the automated benchmark exit.
     bench_frames_count: u32,
@@ -467,6 +492,8 @@ impl App {
             palette_scratch: Vec::new(),
             material_table: byroredux_renderer::MaterialTable::new(),
             bench_frames_target: None,
+            bench_hold: false,
+            bench_summary_printed: false,
             bench_frames_count: 0,
             bench_start: None,
             bench_systems_ns: 0,
@@ -1223,7 +1250,12 @@ impl ApplicationHandler for App {
         // creation fails, etc.) does nothing here.
         if let Some(target) = self.bench_frames_target {
             if self.renderer.is_some() {
-                if self.bench_frames_count >= target {
+                // Guard: under `--bench-hold` we re-enter this branch on
+                // every `about_to_wait` tick once the bench window has
+                // closed; without the `bench_summary_printed` flag the
+                // summary would dump per-tick and the screenshot path
+                // would re-fire forever.
+                if self.bench_frames_count >= target && !self.bench_summary_printed {
                     let stats = self.world.resource::<DebugStats>();
                     let elapsed_secs = self
                         .bench_start
@@ -1319,7 +1351,26 @@ impl ApplicationHandler for App {
                         }
                     }
 
-                    event_loop.exit();
+                    // Latch the summary-once invariant for `--bench-hold`
+                    // and only exit when the caller hasn't asked to hold
+                    // the engine open. Under hold, the next about_to_wait
+                    // ticks render normal frames + service the debug
+                    // server (port 9876 by default) so `byro-dbg` can
+                    // attach and run console commands against the loaded
+                    // scene. See `--bench-hold` in main() and the FNV-D5
+                    // audit's coverage gap.
+                    self.bench_summary_printed = true;
+                    if !self.bench_hold {
+                        event_loop.exit();
+                    } else {
+                        eprintln!(
+                            "bench-hold: engine held open — \
+                             attach via `cargo run -p byro-dbg` \
+                             (port {}). Ctrl+C / window close to exit.",
+                            std::env::var("BYRO_DEBUG_PORT")
+                                .unwrap_or_else(|_| "9876".to_string()),
+                        );
+                    }
                 }
             }
         }

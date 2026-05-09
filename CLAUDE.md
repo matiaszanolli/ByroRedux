@@ -216,6 +216,7 @@ Usage:
   `cargo run -- --esm Fallout3.esm --cell Megaton01 --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa"` — FO3 interior cell (Megaton, 929 REFRs)
   `cargo run -- --esm FalloutNV.esm --grid 0,0 --radius 3 --bsa …` — exterior grid (radius 1..=7, default 3)
   `cargo run -- --master Skyrim.esm --esm Dawnguard.esm --cell ForebearsHoldoutInt01 --bsa …` — DLC interior (M46.0 / #561, repeatable `--master`)
+  `cargo run --release -- … --bench-frames 300 --bench-hold` — run 300-frame bench, print summary, **keep the engine open** so `byro-dbg` can attach (port 9876) and drive console commands against the loaded scene. Without `--bench-hold` the bench exits immediately and the debug server isn't reachable for `tex.missing` / `tex.loaded` / etc.
 Done: N23.1–N23.10 all complete. 186 type names (156 parsed + 30 Havok skip).
 Key: ~48 particle types, bhkCompressedMeshShape (Skyrim collision), FO4 half-float + shader
 wetness, all 6 skinning blocks, full NiSkinPartition, NiPixelData, NiMorphData legacy keys.
