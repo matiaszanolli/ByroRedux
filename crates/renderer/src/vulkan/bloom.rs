@@ -76,17 +76,19 @@ const BLOOM_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
 const WORKGROUP_X: u32 = 8;
 const WORKGROUP_Y: u32 = 8;
 
-/// Default bloom intensity coefficient. 0.20 — 5× the Frostbite
-/// SIGGRAPH 2015 default of 0.04. The 5× compensates for Bethesda
+/// Default bloom intensity coefficient. 0.15 — ≈4× the Frostbite
+/// SIGGRAPH 2015 default of 0.04. The 4× compensates for Bethesda
 /// content being LDR-authored (emissive surfaces in 0–1 monitor
 /// space rather than HDR cd/m²); at the Frostbite default bloom
-/// reads as essentially-invisible on real cells. 0.20 was hand-
-/// tuned on Prospector to give visible glow without flooding dim
-/// surfaces. Pinned in lockstep with `composite.frag`'s
-/// `BLOOM_INTENSITY` constant; update both at once. The proper fix
-/// (HDR-boost emissives globally) is tracked separately — see the
-/// "Color Space — Not sRGB" feedback memo.
-pub const DEFAULT_BLOOM_INTENSITY: f32 = 0.20;
+/// reads as essentially-invisible on real cells. Hand-tuned down
+/// from 0.20 on Prospector saloon (sun-lit windows + chandelier
+/// globes had halos bleeding too far across walls); 0.15 keeps
+/// emissives obviously bloomed without flooding dim surfaces.
+/// Pinned in lockstep with `composite.frag`'s `BLOOM_INTENSITY`
+/// constant; update both at once. The proper fix (HDR-boost
+/// emissives globally) is tracked separately — see the "Color
+/// Space — Not sRGB" feedback memo.
+pub const DEFAULT_BLOOM_INTENSITY: f32 = 0.15;
 
 #[repr(C)]
 #[derive(Clone, Copy)]

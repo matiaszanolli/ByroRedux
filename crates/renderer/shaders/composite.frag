@@ -74,17 +74,18 @@ const float CAUSTIC_FIXED_SCALE = 65536.0;
 // resolution and dt set on the host.
 const float VOLUME_FAR = 200.0;
 
-// M58 — bloom contribution coefficient. 0.20 (5× the Frostbite
+// M58 — bloom contribution coefficient. 0.15 (≈4× the Frostbite
 // SIGGRAPH 2015 default of 0.04) compensates for Bethesda content
 // being LDR-authored: emissive surfaces sit in the 0–1 monitor-
 // space range rather than HDR cd/m², so a Frostbite-default
-// intensity reads as essentially-invisible. 0.20 was hand-tuned on
-// Prospector saloon (lanterns, sun-lit windows, neon pipes) to
-// give visible glow without flooding dim surfaces. Pinned in
-// lockstep with `bloom::DEFAULT_BLOOM_INTENSITY` (Rust side);
-// update both at once. See feedback memo "Color Space — Not sRGB"
-// for why we don't HDR-boost emissives globally instead.
-const float BLOOM_INTENSITY = 0.20;
+// intensity reads as essentially-invisible. Hand-tuned downward
+// from 0.20 on Prospector saloon (sun-lit windows + chandelier
+// globes were producing halos that bled too far across walls);
+// 0.15 keeps emissives obviously bloomed without flooding dim
+// surfaces. Pinned in lockstep with `bloom::DEFAULT_BLOOM_INTENSITY`
+// (Rust side); update both at once. See feedback memo "Color Space
+// — Not sRGB" for why we don't HDR-boost emissives globally instead.
+const float BLOOM_INTENSITY = 0.15;
 
 layout(location = 0) in vec2 fragUV;
 layout(location = 0) out vec4 outColor;

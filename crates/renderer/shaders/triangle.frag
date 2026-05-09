@@ -2390,6 +2390,37 @@ void main() {
         finalAlpha = mix(texColor.a, 1.0, glassFresnel * 0.7);
         // Glass tint adds to the direct-light output.
         directLight = directLight + albedo * 0.15;
+
+        // ── Stylized Fresnel rim (Tier 8 visual fidelity) ──────────
+        //
+        // Even with the alpha lift above and the 3× specStrength on
+        // glass, surfaces in ambient-only lighting (no direct hit at
+        // the right angle) read as flat tinted plastic — the cup-in-
+        // a-dim-interior failure mode visible on Prospector. The
+        // bright grazing-angle edge is the perceptual cue your eye
+        // reads as "this is glass."
+        //
+        // Physically motivated: ambient light transmits through the
+        // glass edge (where the path length through the medium is
+        // greatest), refracts at the rim, and reaches the eye —
+        // brighter rim than center. Real rendering of this requires
+        // proper backlight transmission shading; this stylization
+        // approximates it cheaply by adding ambient-scaled fresnel
+        // brightness to direct light.
+        //
+        // Tuning (hand-picked on Prospector cups; no published
+        // reference, so the values are knobs not derivations):
+        //   exp = 3.0      — rim width. Narrower (5+) gives a
+        //                    pencil-line edge; wider (1.5) bleeds
+        //                    halfway across the surface.
+        //   intensity 0.5  — overall brightness. 0 disables, 1.0+
+        //                    starts looking neon.
+        //   ambient floor  — small +0.05 so pitch-dark rooms still
+        //                    show some rim cue.
+        float oneMinusCos = 1.0 - max(dot(N, V), 0.0);
+        float rimFactor = oneMinusCos * oneMinusCos * oneMinusCos;
+        vec3 rimAmbient = (sceneFlags.yzw + vec3(0.05)) * 1.2;
+        directLight += rimAmbient * rimFactor * 0.5;
     }
 
     // Additive emissive on the direct path (Gamebryo FFP model). Composite

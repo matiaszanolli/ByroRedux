@@ -711,6 +711,35 @@ pub(crate) fn build_render_data(
                     base_material_kind
                 };
 
+                // Glass single-sided override — Bethesda authors many
+                // glass meshes (drinking glasses, pitchers, bottles)
+                // with `TRIANGLE_FACING_CULL_DISABLE` so both inside
+                // and outside walls render. With alpha blending and
+                // no intra-mesh per-triangle depth sort, the back
+                // walls composite over the front walls in arbitrary
+                // mesh-vertex order, producing the visible "wireframe
+                // through the glass" artifact on Prospector cups.
+                //
+                // The inter-mesh depth sort in `draw_sort_key` only
+                // orders ENTIRE meshes back-to-front; per-triangle
+                // ordering within one mesh would need OIT or per-
+                // triangle CPU sort (impractical real-time). Effect-
+                // shader (material_kind ≥ 100) and other two-sided
+                // alpha — fire planes, foliage, banner cloth — keep
+                // their authored two-sided behavior because they
+                // typically aren't volumetric closed meshes.
+                //
+                // Trade-off: glass cups no longer render their
+                // interior walls. For Bethesda content this is
+                // fine — the alpha-blended exterior plus the IOR
+                // refraction path in triangle.frag's glassIOR
+                // branch already shows the scene through the cup.
+                let two_sided = if material_kind == byroredux_renderer::MATERIAL_KIND_GLASS {
+                    false
+                } else {
+                    two_sided
+                };
+
                 // #562 / #619 — Skyrim+ BSLightingShaderProperty variant
                 // payload. Each field group is gated on the matching
                 // `material_kind` so the pack runs only for materials
