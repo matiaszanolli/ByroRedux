@@ -183,6 +183,109 @@ pub fn resolve_armor_mesh<'a>(
     None
 }
 
+/// Maximum LVLI recursion depth before [`expand_leveled_form_id`] gives
+/// up. Vanilla outfit nesting tops out around 3-4 levels (a master list
+/// of regional sub-lists, each of which references variant lists);
+/// 8 leaves comfortable headroom and stops circular references from
+/// spinning the parser. Hit-the-cap is logged once per fired site and
+/// returns whatever was collected up to that point.
+pub const LVLI_MAX_DEPTH: u32 = 8;
+
+/// Expand a single form ID — which may be either a base item (ARMO /
+/// WEAP / MISC) or a leveled-list reference (LVLI) — into a flat list
+/// of base form IDs gated on `actor_level`. Pushes results onto `out`
+/// in-place so the caller can build a mixed flat list across multiple
+/// initial seeds without intermediate allocations.
+///
+/// **Determinism.** This picks the *highest-level entry whose level ≤
+/// actor_level* (the LVLI flag-bit-0-unset Bethesda default for
+/// "single-entry pick"). Vanilla outfits rarely set LVLI flag bit 0;
+/// when they do, the deterministic pick still produces stable output
+/// per-actor without needing a seeded RNG. The "calculate for each
+/// item" flag (bit 1) is also unimplemented today — multi-pick LVLIs
+/// land all eligible entries, which over-equips slightly compared to
+/// Bethesda's runtime but is the safer-than-skipping default for a
+/// rendering audit. Both gaps are signalled in the docstring rather
+/// than producing a runtime warn — the audit-test workflow is the one
+/// that benefits from the ceiling.
+///
+/// **`chance_none`.** Treated as 0 (always produce a result) for the
+/// same render-audit reason. A future RNG-driven dispatch can opt in
+/// per-actor; for now stable visible gear is the higher priority.
+///
+/// Recursion is capped at [`LVLI_MAX_DEPTH`]; over-cap LVLIs return
+/// without expanding further and emit a one-shot debug log.
+pub fn expand_leveled_form_id(
+    form_id: u32,
+    actor_level: i16,
+    index: &EsmIndex,
+    out: &mut Vec<u32>,
+) {
+    expand_leveled_inner(form_id, actor_level, index, out, 0);
+}
+
+fn expand_leveled_inner(
+    form_id: u32,
+    actor_level: i16,
+    index: &EsmIndex,
+    out: &mut Vec<u32>,
+    depth: u32,
+) {
+    if depth >= LVLI_MAX_DEPTH {
+        log::debug!(
+            "expand_leveled_form_id: LVLI recursion cap ({}) hit at form_id {:08X} \
+             — leaving subtree unexpanded",
+            LVLI_MAX_DEPTH,
+            form_id,
+        );
+        return;
+    }
+    // Direct base record — push and stop. Most outfit entries land
+    // here on the first call.
+    if index.items.get(&form_id).is_some() {
+        out.push(form_id);
+        return;
+    }
+    // Leveled list — recurse on the eligible entry / entries.
+    let Some(lvli) = index.leveled_items.get(&form_id) else {
+        // Unknown form ID — neither a base item nor a leveled list.
+        // Could be a WEAP / KEYM / NOTE the dispatch hasn't categorised
+        // yet, or a load-order conflict. Skip silently; the caller's
+        // log already names the originating outfit / NPC.
+        return;
+    };
+
+    // Filter entries by `level <= actor_level`. Pick the highest-level
+    // eligible entry (the Bethesda default). Bethesda LVLI flag bit 1
+    // ("calculate for each item") would multi-pick; we land all
+    // eligible entries instead — over-equips slightly vs the runtime
+    // but safer than skipping for the render-audit use case the
+    // resolver targets today.
+    let eligible: Vec<&_> = lvli
+        .entries
+        .iter()
+        .filter(|e| e.level as i32 <= actor_level as i32)
+        .collect();
+    if eligible.is_empty() {
+        return;
+    }
+
+    let multi_pick = lvli.flags & 0x02 != 0;
+    if multi_pick {
+        for entry in &eligible {
+            expand_leveled_inner(entry.form_id, actor_level, index, out, depth + 1);
+        }
+    } else {
+        // Single-pick: highest-level eligible entry. Stable across
+        // reloads — no RNG.
+        let pick = eligible
+            .iter()
+            .max_by_key(|e| e.level)
+            .expect("eligible non-empty per check above");
+        expand_leveled_inner(pick.form_id, actor_level, index, out, depth + 1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +524,154 @@ mod tests {
             "ARMA refs that don't resolve in the index must be skipped \
              rather than panic"
         );
+    }
+
+    // ── expand_leveled_form_id (M41 Phase 2 LVLI dispatch) ──────────
+
+    use crate::esm::records::container::{LeveledEntry, LeveledList};
+
+    fn add_armo(idx: &mut EsmIndex, fid: u32) {
+        idx.items.insert(fid, skyrim_armor(vec![]));
+    }
+
+    fn add_lvli(idx: &mut EsmIndex, fid: u32, flags: u8, entries: Vec<(u16, u32, u16)>) {
+        idx.leveled_items.insert(
+            fid,
+            LeveledList {
+                form_id: fid,
+                editor_id: String::new(),
+                chance_none: 0,
+                flags,
+                entries: entries
+                    .into_iter()
+                    .map(|(level, form_id, count)| LeveledEntry {
+                        level,
+                        form_id,
+                        count,
+                    })
+                    .collect(),
+            },
+        );
+    }
+
+    /// Direct ARMO ref passes through: the resolver pushes the form ID
+    /// verbatim and recursion never happens.
+    #[test]
+    fn expand_leveled_direct_armo_passthrough() {
+        let mut idx = empty_index();
+        add_armo(&mut idx, 0x0011_1111);
+        let mut out = Vec::new();
+        expand_leveled_form_id(0x0011_1111, 10, &idx, &mut out);
+        assert_eq!(out, vec![0x0011_1111]);
+    }
+
+    /// Single-level LVLI with one ARMO entry: resolver picks the
+    /// only eligible entry and returns the ARMO form ID.
+    #[test]
+    fn expand_leveled_single_entry_lvli() {
+        let mut idx = empty_index();
+        add_armo(&mut idx, 0x0022_2222);
+        add_lvli(&mut idx, 0x0033_3333, 0, vec![(1, 0x0022_2222, 1)]);
+        let mut out = Vec::new();
+        expand_leveled_form_id(0x0033_3333, 10, &idx, &mut out);
+        assert_eq!(out, vec![0x0022_2222]);
+    }
+
+    /// Level-gated pick: actor_level=5 sees only the level≤5 entries;
+    /// the highest-eligible (level=5) wins over level=1.
+    #[test]
+    fn expand_leveled_picks_highest_eligible() {
+        let mut idx = empty_index();
+        add_armo(&mut idx, 0x0044_4444); // level 1
+        add_armo(&mut idx, 0x0055_5555); // level 5
+        add_armo(&mut idx, 0x0066_6666); // level 20 (gated out)
+        add_lvli(
+            &mut idx,
+            0x0077_7777,
+            0,
+            vec![(1, 0x0044_4444, 1), (5, 0x0055_5555, 1), (20, 0x0066_6666, 1)],
+        );
+        let mut out = Vec::new();
+        expand_leveled_form_id(0x0077_7777, 5, &idx, &mut out);
+        assert_eq!(out, vec![0x0055_5555], "highest eligible (level=5) wins");
+    }
+
+    /// Below-floor actor: no entry has `level ≤ actor_level` → empty result.
+    #[test]
+    fn expand_leveled_actor_below_floor_returns_empty() {
+        let mut idx = empty_index();
+        add_armo(&mut idx, 0x0088_8888);
+        add_lvli(&mut idx, 0x0099_9999, 0, vec![(10, 0x0088_8888, 1)]);
+        let mut out = Vec::new();
+        expand_leveled_form_id(0x0099_9999, 5, &idx, &mut out);
+        assert!(
+            out.is_empty(),
+            "actor_level=5 with floor=10 must produce no equip"
+        );
+    }
+
+    /// Multi-pick LVLI (flag bit 1 set) lands every eligible entry,
+    /// not just one. Used by NPC outfit lists that bundle a torso +
+    /// hands + boots LVLI under a single OTFT ref.
+    #[test]
+    fn expand_leveled_multi_pick_lands_all_eligible() {
+        let mut idx = empty_index();
+        add_armo(&mut idx, 0x00AA_AAAA);
+        add_armo(&mut idx, 0x00BB_BBBB);
+        add_lvli(
+            &mut idx,
+            0x00CC_CCCC,
+            0x02, // flag bit 1 = "calculate for each item"
+            vec![(1, 0x00AA_AAAA, 1), (1, 0x00BB_BBBB, 1)],
+        );
+        let mut out = Vec::new();
+        expand_leveled_form_id(0x00CC_CCCC, 10, &idx, &mut out);
+        // Order is iteration-order over `entries`; both must land.
+        assert_eq!(out.len(), 2);
+        assert!(out.contains(&0x00AA_AAAA));
+        assert!(out.contains(&0x00BB_BBBB));
+    }
+
+    /// Nested LVLI: an outer list whose pick is itself a leveled list
+    /// recurses correctly to the inner ARMO.
+    #[test]
+    fn expand_leveled_nested_lvli_recurses() {
+        let mut idx = empty_index();
+        add_armo(&mut idx, 0x00DD_DDDD);
+        add_lvli(&mut idx, 0x00EE_EEEE, 0, vec![(1, 0x00DD_DDDD, 1)]);
+        // Outer LVLI: single entry pointing at the inner LVLI.
+        add_lvli(&mut idx, 0x00FF_FFFF, 0, vec![(1, 0x00EE_EEEE, 1)]);
+        let mut out = Vec::new();
+        expand_leveled_form_id(0x00FF_FFFF, 10, &idx, &mut out);
+        assert_eq!(
+            out,
+            vec![0x00DD_DDDD],
+            "nested LVLI must resolve to the innermost ARMO"
+        );
+    }
+
+    /// Recursion cap at LVLI_MAX_DEPTH: a circular self-reference
+    /// returns without panic instead of stack-overflowing.
+    #[test]
+    fn expand_leveled_circular_reference_caps_at_max_depth() {
+        let mut idx = empty_index();
+        // Self-referencing LVLI — entry points back at itself.
+        add_lvli(&mut idx, 0x0123_4567, 0, vec![(1, 0x0123_4567, 1)]);
+        let mut out = Vec::new();
+        // No panic, no infinite recursion. Output is empty (the cap
+        // hits before any base ARMO is reached).
+        expand_leveled_form_id(0x0123_4567, 10, &idx, &mut out);
+        assert!(out.is_empty());
+    }
+
+    /// Unknown form IDs (neither ARMO nor LVLI in the index) are
+    /// silently skipped — handles WEAP / KEYM / NOTE references that
+    /// the dispatch hasn't categorised yet, plus load-order conflicts.
+    #[test]
+    fn expand_leveled_unknown_form_id_silently_skipped() {
+        let idx = empty_index();
+        let mut out = Vec::new();
+        expand_leveled_form_id(0x0DEA_DEAD, 10, &idx, &mut out);
+        assert!(out.is_empty());
     }
 }

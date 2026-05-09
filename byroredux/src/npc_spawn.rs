@@ -679,6 +679,8 @@ pub fn spawn_npc_entity(
     let mut npc_inventory = Inventory::new();
     let mut equipment_slots = EquipmentSlots::new();
     let mut equipped_armor_count = 0u32;
+    let actor_level = npc.level;
+    let mut resolved_buf: Vec<u32> = Vec::new();
     for entry in npc.inventory.iter() {
         // Negative parsed counts are remove-from-inventory deltas, not
         // live state — clamp at runtime per `ItemStack::count` docs.
@@ -686,83 +688,114 @@ pub fn spawn_npc_entity(
         if runtime_count == 0 {
             continue;
         }
+        // Push the authored entry verbatim into the runtime inventory.
+        // Preserves the LVLI / ARMO ref shape for the eventual save
+        // round-trip (M45) — the visible-mesh dispatch below expands
+        // for rendering only, without modifying what's stored.
         let stack = ItemStack::new(entry.item_form_id, runtime_count);
         let inv_idx = npc_inventory.push(stack);
 
-        // Resolve the base record. Non-armor inventory entries (food,
-        // ammo, weapons, MISC) still get an `Inventory` row but no
-        // visible mesh dispatch — ARMO is the only kind that spawns
-        // skinned geometry in Phase A.1. WEAP visibility is a separate
-        // follow-up (one-handed pose offset, equipped vs holstered).
-        let Some(item) = index.items.get(&entry.item_form_id) else {
-            continue;
-        };
-        let ItemKind::Armor {
-            biped_flags,
-            slot_mask,
-            ..
-        } = item.kind
-        else {
-            continue;
-        };
-
-        // Mark the slot mask occupied. `equip()` returns displaced
-        // indices for "armor-replacing-armor" cases; an NPC at spawn
-        // time normally lays out one armor per slot, so displacement
-        // is rare. Logged-only at debug level to flag suspicious
-        // load-order conflicts (two armors in inventory both claiming
-        // UpperBody — happens with mod overrides).
-        let displaced = equipment_slots.equip(biped_flags, inv_idx);
-        if !displaced.is_empty() {
-            log::debug!(
-                "NPC {:08X} ({}): armor {:08X} displaced inventory slots {:?} \
-                 on biped mask {:#010x}",
-                npc.form_id,
-                npc.editor_id,
-                entry.item_form_id,
-                displaced,
+        // Expand for visible-mesh dispatch — LVLI references resolve
+        // to their level-gated ARMO base record; direct ARMO refs
+        // pass through unchanged. Pre-fix the loop did
+        // `index.items.get(&entry.item_form_id)` which silently
+        // skipped LVLI entries; FO3 / FNV NPCs that reference
+        // leveled lists in CNTO (rarer than the Skyrim+ outfit case
+        // but it does happen with mod-added gear) silently spawned
+        // unequipped. See M41 Phase 2 close-out / #896.
+        resolved_buf.clear();
+        byroredux_plugin::equip::expand_leveled_form_id(
+            entry.item_form_id,
+            actor_level,
+            index,
+            &mut resolved_buf,
+        );
+        for &resolved_fid in &resolved_buf {
+            // Resolve the base record. Non-armor inventory entries
+            // (food, ammo, weapons, MISC) still get an `Inventory`
+            // row but no visible mesh dispatch — ARMO is the only
+            // kind that spawns skinned geometry today. WEAP
+            // visibility is a separate follow-up (one-handed pose
+            // offset, equipped vs holstered).
+            let Some(item) = index.items.get(&resolved_fid) else {
+                continue;
+            };
+            let ItemKind::Armor {
                 biped_flags,
-            );
-        }
-        let _ = slot_mask;
+                slot_mask,
+                ..
+            } = item.kind
+            else {
+                continue;
+            };
 
-        // Per-game ARMO → worn-mesh dispatch lives in
-        // `byroredux_plugin::equip::resolve_armor_mesh` (Phase B.1).
-        // On FNV/FO3/Oblivion the resolver returns
-        // `armor.common.model_path`; on Skyrim+/FO4 it walks the
-        // ARMA list and picks the race-matched gender-appropriate
-        // biped mesh. Either way the spawn site stays uniform.
-        let Some(model_path) =
-            byroredux_plugin::equip::resolve_armor_mesh(item, gender, npc.race_form_id, index, game)
-        else {
-            continue;
-        };
-        match tex_provider.extract_mesh(model_path) {
-            Some(armor_data) => {
-                let (_count, armor_root, _map) = load_nif_bytes_with_skeleton(
-                    world,
-                    ctx,
-                    &armor_data,
-                    model_path,
-                    tex_provider,
-                    mat_provider.as_deref_mut(),
-                    Some(&skel_map),
-                    None,
-                );
-                if let Some(ar) = armor_root {
-                    world.insert(ar, Parent(placement_root));
-                    add_child(world, placement_root, ar);
-                    equipped_armor_count += 1;
-                }
-            }
-            None => {
+            // Mark the slot mask occupied. `equip()` returns
+            // displaced indices for "armor-replacing-armor" cases;
+            // an NPC at spawn time normally lays out one armor per
+            // slot, so displacement is rare. Logged-only at debug
+            // level to flag suspicious load-order conflicts (two
+            // armors in inventory both claiming UpperBody — happens
+            // with mod overrides; also happens with multi-pick LVLIs
+            // resolving to overlapping biped slots).
+            let displaced = equipment_slots.equip(biped_flags, inv_idx);
+            if !displaced.is_empty() {
                 log::debug!(
-                    "NPC {:08X} ({}): armor {:08X} model '{}' not in archives",
+                    "NPC {:08X} ({}): armor {:08X} (from CNTO {:08X}) \
+                     displaced inventory slots {:?} on biped mask {:#010x}",
                     npc.form_id,
                     npc.editor_id,
+                    resolved_fid,
                     entry.item_form_id,
-                    model_path,
+                    displaced,
+                    biped_flags,
                 );
+            }
+            let _ = slot_mask;
+
+            // Per-game ARMO → worn-mesh dispatch lives in
+            // `byroredux_plugin::equip::resolve_armor_mesh` (Phase B.1).
+            // On FNV/FO3/Oblivion the resolver returns
+            // `armor.common.model_path`; on Skyrim+/FO4 it walks the
+            // ARMA list and picks the race-matched gender-appropriate
+            // biped mesh. Either way the spawn site stays uniform.
+            let Some(model_path) = byroredux_plugin::equip::resolve_armor_mesh(
+                item,
+                gender,
+                npc.race_form_id,
+                index,
+                game,
+            ) else {
+                continue;
+            };
+            match tex_provider.extract_mesh(model_path) {
+                Some(armor_data) => {
+                    let (_count, armor_root, _map) = load_nif_bytes_with_skeleton(
+                        world,
+                        ctx,
+                        &armor_data,
+                        model_path,
+                        tex_provider,
+                        mat_provider.as_deref_mut(),
+                        Some(&skel_map),
+                        None,
+                    );
+                    if let Some(ar) = armor_root {
+                        world.insert(ar, Parent(placement_root));
+                        add_child(world, placement_root, ar);
+                        equipped_armor_count += 1;
+                    }
+                }
+                None => {
+                    log::debug!(
+                        "NPC {:08X} ({}): armor {:08X} (from CNTO {:08X}) \
+                         model '{}' not in archives",
+                        npc.form_id,
+                        npc.editor_id,
+                        resolved_fid,
+                        entry.item_form_id,
+                        model_path,
+                    );
+                }
             }
         }
     }
@@ -971,17 +1004,29 @@ pub fn spawn_prebaked_npc_entity(
     // compromise Phase A.1 made before A.2 added the kf-era body-skip.
     // SSE armor-clipping refinement is a separate follow-up.
     //
-    // **LVLI entries skipped.** Outfit `INAM` arrays can reference
-    // either ARMO (direct) or LVLI (leveled item — random roll vs
-    // actor level). Phase B.2 only spawns ARMO matches; LVLI
-    // dispatch (random pick + level gating) is its own slice.
+    // **LVLI dispatch.** Outfit `INAM` arrays + NPC inventory CNTO
+    // entries can reference either ARMO (direct) or LVLI (leveled
+    // item — level-gated pick). Both are flattened through
+    // `byroredux_plugin::equip::expand_leveled_form_id` so the spawn
+    // walk sees ARMO base records uniformly. Without this, vanilla
+    // Skyrim+ NPCs (whose default outfits typically reference leveled
+    // lists for armor variety) silently spawn with no gear. See M41
+    // Phase 2 close-out / #896.
     let mut npc_inventory = Inventory::new();
     let mut equipment_slots = EquipmentSlots::new();
     let mut equipped_armor_count = 0u32;
     let mut equip_form_ids: Vec<u32> = Vec::new();
+    let actor_level = npc.level;
     if let Some(otft_fid) = npc.default_outfit {
         if let Some(otft) = index.outfits.get(&otft_fid) {
-            equip_form_ids.extend(otft.items.iter().copied());
+            for &fid in &otft.items {
+                byroredux_plugin::equip::expand_leveled_form_id(
+                    fid,
+                    actor_level,
+                    index,
+                    &mut equip_form_ids,
+                );
+            }
         } else {
             log::debug!(
                 "NPC {:08X} ({}): DOFT {:08X} unresolved — \
@@ -995,7 +1040,12 @@ pub fn spawn_prebaked_npc_entity(
     for entry in npc.inventory.iter() {
         let runtime_count = entry.count.max(0) as u32;
         if runtime_count > 0 {
-            equip_form_ids.push(entry.item_form_id);
+            byroredux_plugin::equip::expand_leveled_form_id(
+                entry.item_form_id,
+                actor_level,
+                index,
+                &mut equip_form_ids,
+            );
         }
     }
     for form_id in equip_form_ids {
