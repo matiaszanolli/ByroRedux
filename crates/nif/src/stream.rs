@@ -279,7 +279,7 @@ impl<'a> NifStream<'a> {
     /// no padding bytes / no validity invariants beyond "any bit pattern
     /// is sound" (true for `u16`, `u32`, `f32`, `[f32; N]`, and
     /// `#[repr(C)]` 3-or-4-float structs). LE host required.
-    fn read_pod_vec<T: Copy + Default>(&mut self, count: usize) -> io::Result<Vec<T>> {
+    pub(crate) fn read_pod_vec<T: Copy + Default>(&mut self, count: usize) -> io::Result<Vec<T>> {
         let byte_count = count
             .checked_mul(std::mem::size_of::<T>())
             .ok_or_else(|| {
@@ -340,6 +340,16 @@ impl<'a> NifStream<'a> {
     /// Read `count` u16 values in one bulk read.
     pub fn read_u16_array(&mut self, count: usize) -> io::Result<Vec<u16>> {
         self.read_pod_vec::<u16>(count)
+    }
+
+    /// Read `count` RGBA colour values (4 × u8 each) in one bulk read.
+    /// `[u8; 4]` is POD with alignment 1 ≥ 1 and any-bit-pattern
+    /// soundness, so it slots into `read_pod_vec` the same way the
+    /// `[u16; 3]` / `[f32; 2]` / `[f32; 4]` cases do. Replaces the
+    /// `read_u8` × 4 push-loop pattern in BSGeometry color decode
+    /// (#873).
+    pub fn read_u8_quad_array(&mut self, count: usize) -> io::Result<Vec<[u8; 4]>> {
+        self.read_pod_vec::<[u8; 4]>(count)
     }
 
     /// Read `count` triangles (3×u16 each) in one bulk read.

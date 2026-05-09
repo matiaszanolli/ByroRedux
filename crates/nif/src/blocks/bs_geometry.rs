@@ -292,14 +292,25 @@ pub struct BSGeometryMeshData {
 
 /// One bone-weight entry. `bone_index` is the slot in the parent
 /// skin-instance bones array; `weight` is u16 NORM (`/ 65535.0`).
-#[derive(Debug, Clone, Copy)]
+///
+/// `#[repr(C)]` + `Default` so the parser can bulk-read the flat
+/// per-vertex weight array via `read_pod_vec::<BoneWeight>(n)` —
+/// 4 bytes per entry (2× u16, no padding), matches the on-disk
+/// little-endian layout. See #873.
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
 pub struct BoneWeight {
     pub bone_index: u16,
     pub weight: u16,
 }
 
 /// Meshlet entry — DirectX 12 cluster-culling layout.
-#[derive(Debug, Clone, Copy)]
+///
+/// `#[repr(C)]` + `Default` so `read_pod_vec::<Meshlet>(n)` lands
+/// the bulk read in one `read_exact`. 16 bytes per entry (4× u32,
+/// no padding). See #873.
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
 pub struct Meshlet {
     pub vert_count: u32,
     pub vert_offset: u32,
@@ -309,7 +320,12 @@ pub struct Meshlet {
 
 /// Per-meshlet bounding cull data — `center` + `expand` (axis-aligned
 /// half-extents).
-#[derive(Debug, Clone, Copy)]
+///
+/// `#[repr(C)]` + `Default` so `read_pod_vec::<CullData>(n)` lands
+/// the bulk read in one `read_exact`. 24 bytes per entry (6× f32 as
+/// two `[f32; 3]` arrays, no padding). See #873.
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
 pub struct CullData {
     pub center: [f32; 3],
     pub expand: [f32; 3],
@@ -415,27 +431,19 @@ impl BSGeometryMeshData {
             uvs1.push([u, v]);
         }
 
+        // Bulk reads — `[u8; 4]` and `u32` are POD; one `read_exact`
+        // each replaces the per-element push loops. The `allocate_vec`
+        // calls would have done their own check_alloc anyway; the bulk
+        // readers do the equivalent check inside `read_pod_vec`. See
+        // #873 (NIF-PERF-09).
         let n_colors = stream.read_u32_le()?;
-        let mut colors = stream.allocate_vec::<[u8; 4]>(n_colors)?;
-        for _ in 0..n_colors {
-            let r = stream.read_u8()?;
-            let g = stream.read_u8()?;
-            let b = stream.read_u8()?;
-            let a = stream.read_u8()?;
-            colors.push([r, g, b, a]);
-        }
+        let colors = stream.read_u8_quad_array(n_colors as usize)?;
 
         let n_normals = stream.read_u32_le()?;
-        let mut normals_raw = stream.allocate_vec::<u32>(n_normals)?;
-        for _ in 0..n_normals {
-            normals_raw.push(stream.read_u32_le()?);
-        }
+        let normals_raw = stream.read_u32_array(n_normals as usize)?;
 
         let n_tangents = stream.read_u32_le()?;
-        let mut tangents_raw = stream.allocate_vec::<u32>(n_tangents)?;
-        for _ in 0..n_tangents {
-            tangents_raw.push(stream.read_u32_le()?);
-        }
+        let tangents_raw = stream.read_u32_array(n_tangents as usize)?;
 
         let n_total_weights = stream.read_u32_le()?;
         // Per nifly: weight count is interpreted as a *flat* count of
@@ -471,44 +479,22 @@ impl BSGeometryMeshData {
         let mut lods = stream.allocate_vec::<Vec<[u16; 3]>>(n_lods)?;
         for _ in 0..n_lods {
             let n_lod_tri_indices = stream.read_u32_le()?;
-            let lod_tri_count = n_lod_tri_indices / 3;
-            // Counts go through allocate_vec so a corrupt 0xFFFFFFFF can't
-            // OOM before the inner u16 reads fail. See #764.
-            let mut tris = stream.allocate_vec::<[u16; 3]>(lod_tri_count)?;
-            for _ in 0..lod_tri_count {
-                let a = stream.read_u16_le()?;
-                let b = stream.read_u16_le()?;
-                let c = stream.read_u16_le()?;
-                tris.push([a, b, c]);
-            }
+            let lod_tri_count = n_lod_tri_indices as usize / 3;
+            // Bulk read 3-u16 triangles — `read_u16_triple_array` does
+            // its own check_alloc against the byte budget. See #874 +
+            // #873.
+            let tris = stream.read_u16_triple_array(lod_tri_count)?;
             lods.push(tris);
         }
 
+        // Bulk struct reads — `Meshlet` (4 × u32 = 16 B) and `CullData`
+        // (6 × f32 = 24 B) are `#[repr(C)] + Default + Copy` and decode
+        // in one `read_pod_vec` per array. See #873.
         let n_meshlets = stream.read_u32_le()?;
-        let mut meshlets = stream.allocate_vec::<Meshlet>(n_meshlets)?;
-        for _ in 0..n_meshlets {
-            meshlets.push(Meshlet {
-                vert_count: stream.read_u32_le()?,
-                vert_offset: stream.read_u32_le()?,
-                prim_count: stream.read_u32_le()?,
-                prim_offset: stream.read_u32_le()?,
-            });
-        }
+        let meshlets = stream.read_pod_vec::<Meshlet>(n_meshlets as usize)?;
 
         let n_cull_data = stream.read_u32_le()?;
-        let mut cull_data = stream.allocate_vec::<CullData>(n_cull_data)?;
-        for _ in 0..n_cull_data {
-            let cx = stream.read_f32_le()?;
-            let cy = stream.read_f32_le()?;
-            let cz = stream.read_f32_le()?;
-            let ex = stream.read_f32_le()?;
-            let ey = stream.read_f32_le()?;
-            let ez = stream.read_f32_le()?;
-            cull_data.push(CullData {
-                center: [cx, cy, cz],
-                expand: [ex, ey, ez],
-            });
-        }
+        let cull_data = stream.read_pod_vec::<CullData>(n_cull_data as usize)?;
 
         Ok(Self {
             version,
