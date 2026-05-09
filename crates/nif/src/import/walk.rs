@@ -1231,6 +1231,71 @@ mod affected_nodes_tests {
         assert_eq!(names.len(), 1);
         assert_eq!(&*names[0], "OnlyValid");
     }
+
+    /// Regression for #872 / NIF-PERF-08. Both resolvers must take the
+    /// `name_arc()` fast path (`Arc::clone` ⇒ refcount bump) instead of
+    /// `Arc::from(&str)` (fresh heap alloc + byte copy). On cell-load
+    /// critical paths — many lights' affected_nodes, every BSTreeNode's
+    /// trunk + branch bone lists — that's the difference between
+    /// `O(refs)` allocations and zero. We pin the contract via
+    /// `Arc::ptr_eq`: the returned Arc must alias the source Arc on
+    /// the underlying NiObjectNET, not a freshly minted copy.
+    #[test]
+    fn resolvers_refcount_bump_instead_of_realloc() {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(node_with_name("TrunkBone")));
+        scene.blocks.push(Box::new(node_with_name("BranchBoneA")));
+
+        let original_trunk_arc = scene
+            .get(0)
+            .and_then(|b| b.as_object_net())
+            .and_then(|n| n.name_arc())
+            .expect("seed Arc must exist on the NiObjectNET")
+            .clone();
+        let original_branch_arc = scene
+            .get(1)
+            .and_then(|b| b.as_object_net())
+            .and_then(|n| n.name_arc())
+            .expect("seed Arc must exist")
+            .clone();
+
+        // Path 1: BSTreeNode bone-list resolution (the SpeedTree case
+        // called out in #872). BlockRef-typed.
+        let bone_refs = [BlockRef(0), BlockRef(1)];
+        let bone_names = resolve_block_ref_names(&scene, &bone_refs);
+        assert_eq!(bone_names.len(), 2);
+        assert!(
+            std::sync::Arc::ptr_eq(&bone_names[0], &original_trunk_arc),
+            "BSTreeNode bone-list resolver must Arc::clone, not Arc::from(&str)"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&bone_names[1], &original_branch_arc),
+            "all entries take the refcount-bump fast path"
+        );
+
+        // Path 2: NiDynamicEffect.affected_nodes resolution (the lights
+        // case bundled in the same fix). Ptr-typed (u32).
+        let affected = [0u32, 1u32];
+        let lit_names = resolve_affected_node_names(&scene, &affected);
+        assert_eq!(lit_names.len(), 2);
+        assert!(
+            std::sync::Arc::ptr_eq(&lit_names[0], &original_trunk_arc),
+            "affected_nodes resolver shares the same fast path"
+        );
+        assert!(std::sync::Arc::ptr_eq(&lit_names[1], &original_branch_arc));
+
+        // Strong-count sanity: the seed clone above + 2 entries each
+        // from the two resolvers ⇒ ≥ 4 references to the trunk Arc.
+        // Pre-fix the resolvers minted fresh allocations, leaving
+        // strong_count == 2 (block storage + our seed clone) and the
+        // returned Arcs would each be strong_count == 1.
+        assert!(
+            std::sync::Arc::strong_count(&original_trunk_arc) >= 4,
+            "post-fix every resolved entry shares the seed Arc — \
+             strong_count must reflect the refcount bump (was {})",
+            std::sync::Arc::strong_count(&original_trunk_arc)
+        );
+    }
 }
 
 #[cfg(test)]

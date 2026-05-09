@@ -966,6 +966,95 @@ mod tests {
         }
     }
 
+    /// End-to-end regression for #611 / SK-D5-02. The recogniser test
+    /// above pins the predicate; this one pins the actual root-pick
+    /// against a synthesised NIF that mirrors vanilla Skyrim tree LODs:
+    /// `BSTreeNode` at block 0 followed by a plain `NiNode` at block 1.
+    /// Pre-fix the predicate matched only the literal `"NiNode"` and
+    /// returned `Some(1)`, causing the importer to descend from a leaf
+    /// bone container and import 0 of N geometry shapes.
+    #[test]
+    fn root_pick_prefers_bstreenode_root_over_plain_ninode_child() {
+        // NiNode body — same wire layout used by `build_test_nif_with_node`.
+        let mut ninode_body = Vec::new();
+        ninode_body.extend_from_slice(&(-1i32).to_le_bytes()); // name index — none
+        ninode_body.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
+        ninode_body.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        ninode_body.extend_from_slice(&0u32.to_le_bytes()); // flags (u32 @ v20.2.0.7)
+        ninode_body.extend_from_slice(&0.0f32.to_le_bytes()); // tx
+        ninode_body.extend_from_slice(&0.0f32.to_le_bytes()); // ty
+        ninode_body.extend_from_slice(&0.0f32.to_le_bytes()); // tz
+        for r in &[1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+            ninode_body.extend_from_slice(&r.to_le_bytes());
+        }
+        ninode_body.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+        ninode_body.extend_from_slice(&0u32.to_le_bytes()); // properties count
+        ninode_body.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
+        ninode_body.extend_from_slice(&0u32.to_le_bytes()); // children count
+        ninode_body.extend_from_slice(&0u32.to_le_bytes()); // effects count
+
+        // BSTreeNode = NiNode body + two empty bone-ref lists.
+        let mut bstreenode_body = ninode_body.clone();
+        bstreenode_body.extend_from_slice(&0u32.to_le_bytes()); // num_bones_1
+        bstreenode_body.extend_from_slice(&0u32.to_le_bytes()); // num_bones_2
+
+        let mut buf = Vec::new();
+        // Header — FNV-style configuration (user_version_2 = bsver = 34).
+        // The #611 root-pick bug is bsver-agnostic, but matching FNV keeps
+        // the wire layout aligned with `build_test_nif_with_node` (the
+        // properties list at bsver<=34 is part of NiAVObject body).
+        buf.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
+        buf.extend_from_slice(&0x14020007u32.to_le_bytes());
+        buf.push(1); // little-endian
+        buf.extend_from_slice(&11u32.to_le_bytes()); // user_version (FNV)
+        buf.extend_from_slice(&2u32.to_le_bytes()); // num_blocks = 2
+        buf.extend_from_slice(&34u32.to_le_bytes()); // user_version_2 (FNV)
+
+        // Three short strings (author / process / export, empty)
+        for _ in 0..3 {
+            buf.push(1);
+            buf.push(0);
+        }
+
+        // Block types: 2 — "BSTreeNode" (idx 0), "NiNode" (idx 1)
+        buf.extend_from_slice(&2u16.to_le_bytes());
+        buf.extend_from_slice(&10u32.to_le_bytes());
+        buf.extend_from_slice(b"BSTreeNode");
+        buf.extend_from_slice(&6u32.to_le_bytes());
+        buf.extend_from_slice(b"NiNode");
+
+        // Block type indices: block 0 → type 0 (BSTreeNode), block 1 → type 1 (NiNode)
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+
+        // Block sizes
+        buf.extend_from_slice(&(bstreenode_body.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(ninode_body.len() as u32).to_le_bytes());
+
+        // String table — empty
+        buf.extend_from_slice(&0u32.to_le_bytes()); // num_strings
+        buf.extend_from_slice(&0u32.to_le_bytes()); // max_string_length
+        buf.extend_from_slice(&0u32.to_le_bytes()); // num_groups
+
+        // Block data
+        buf.extend_from_slice(&bstreenode_body);
+        buf.extend_from_slice(&ninode_body);
+
+        let scene = parse_nif(&buf).expect("two-block scene must parse cleanly");
+        assert_eq!(scene.len(), 2, "both blocks landed in the scene");
+        assert_eq!(
+            scene.root_index,
+            Some(0),
+            "root must be the BSTreeNode at block 0, not the plain NiNode at block 1"
+        );
+        let root = scene.root().expect("root must resolve");
+        assert_eq!(
+            root.block_type_name(),
+            "BSTreeNode",
+            "root_index points at a NiNode subclass, not the trailing plain NiNode"
+        );
+    }
+
     #[test]
     fn parse_nif_minimal_node() {
         let data = build_test_nif_with_node();

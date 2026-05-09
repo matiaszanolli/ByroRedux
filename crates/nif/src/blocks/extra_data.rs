@@ -1783,6 +1783,53 @@ mod tests {
         assert!(extra.floats_array.is_none());
     }
 
+    /// Regression for #615 / SK-D5-04. NiStringsExtraData on Skyrim+
+    /// (v20.1.0.1+) hits the same string-table dispatch as `NiObjectNET.name`
+    /// — but the strings *array body* per nif.xml is always inline
+    /// `SizedString`, not a list of string-table indices. Pre-#615 the
+    /// loop used `read_string()`, so on Skyrim it consumed a 4-byte
+    /// table index per "string" and silently dropped the array contents.
+    /// Block-size recovery hid the drift behind a clean parse rate.
+    /// This test pins the post-fix `read_sized_string()` path.
+    #[test]
+    fn ni_strings_extra_data_skyrim_round_trips_inline_strings() {
+        let header = skyrim_header();
+        let mut data = Vec::new();
+        // Name: string-table index = -1 (no name).
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // Count = 3 — covers SpeedTree LOD bone names + an empty entry
+        // (vanilla content sometimes ships placeholder slots).
+        data.extend_from_slice(&3u32.to_le_bytes());
+        for s in ["TrunkBone01", "", "BranchRoot_Lod1"] {
+            data.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            data.extend_from_slice(s.as_bytes());
+        }
+
+        let mut stream = NifStream::new(&data, &header);
+        let extra = NiExtraData::parse(&mut stream, "NiStringsExtraData")
+            .expect("NiStringsExtraData must parse cleanly on Skyrim+");
+        assert_eq!(
+            stream.position() as usize,
+            data.len(),
+            "consumed bytes must match payload exactly — no string-table\
+             drift, no missed inline body"
+        );
+        assert_eq!(extra.type_name, "NiStringsExtraData");
+        let arr = extra
+            .strings_array
+            .expect("strings_array populates from #615 fix");
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0].as_deref(), Some("TrunkBone01"));
+        assert!(
+            arr[1].is_none(),
+            "empty inline string yields None, not a zero-length Arc"
+        );
+        assert_eq!(arr[2].as_deref(), Some("BranchRoot_Lod1"));
+        // Sibling-field guard.
+        assert!(extra.string_value.is_none());
+        assert!(extra.integer_value.is_none());
+    }
+
     /// Regression for #553 — `NiFloatsExtraData` (the array variant)
     /// must consume the u32 count + N f32 payloads. Bundled with the
     /// Float case because authoring tools emit both variants in the
