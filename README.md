@@ -66,11 +66,12 @@ Saloon @ 172.6 FPS), Skyrim SE (Whiterun Bannered Mare, 1932 entities @
 253.3 FPS), FO4 (MedTekResearch01, 7434 entities @ 92.5 FPS). Full RT
 pipeline + sky/atmosphere + exterior sun operational. Skinning chain
 verified end-to-end (M29 closed); GPU palette dispatch deferred to
-M29.5 until M41 produces measurable load. World streaming Phase 1
-shipped (single-cell async pre-parse); multi-cell grid pending. NPC
-spawning (M41) gates the visible-actor work — every NPC today is in
-bind pose because no actors are spawned yet. Oblivion exterior gated
-on TES4 worldspace + LAND wiring. See **[ROADMAP.md](ROADMAP.md)**
+M29.5. World streaming Phase 1 shipped (single-cell async pre-parse);
+multi-cell grid pending. NPC spawning (M41) shipped Phase 1 (T-pose
+humanoid + skeleton + body + hands + head + FaceGen morphs) and
+Phase 2 close-out (`Inventory` / `EquipmentSlots` ECS + ARMO/ARMA/LVLI
+dispatch + worn-mesh resolver). Oblivion exterior gated on TES4
+worldspace + LAND wiring. See **[ROADMAP.md](ROADMAP.md)**
 for the authoritative capability matrix, active milestones, and
 architecture decisions. Session narratives live in
 **[HISTORY.md](HISTORY.md)**.
