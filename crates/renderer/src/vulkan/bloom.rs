@@ -535,35 +535,29 @@ impl BloomPipeline {
         };
 
         // ── Downsample chain ─────────────────────────────────────
+        //
+        // Barrier accounting (#931): only emit the *post*-barrier
+        // on the mip just written. Pre-barriers on each iteration's
+        // destination would be redundant — each `BloomFrame` slot
+        // owns its own mip allocations (no cross-frame WAR hazard
+        // beyond the per-frame fence, which sequences submissions),
+        // and within this command buffer no in-frame access has
+        // touched `mip[i]` before iteration i writes it. The prior
+        // iteration's post-barrier (srcStage=COMPUTE →
+        // dstStage=COMPUTE) acts as an execution barrier for the
+        // next dispatch on its way to writing a *different* mip —
+        // no memory dependency to publish since we're overwriting.
+        //
+        // Result: 19 → 10 barriers/frame. Audit's "~3 barriers"
+        // target requires single-pass FidelityFX SPD (workgroup
+        // atomic counters + LDS, several-hundred-LOC shader
+        // rewrite), not a barrier coalesce.
         device.cmd_bind_pipeline(
             cmd,
             vk::PipelineBindPoint::COMPUTE,
             self.downsample_pipeline,
         );
         for i in 0..BLOOM_MIP_COUNT {
-            // Sequence: previous mip's WRITE (or external scene
-            // HDR's external read state) → this iteration's READ +
-            // WRITE on its own mip.
-            // Pre-write barrier on this mip — sequence last frame's
-            // SHADER_READ from composite (or this frame's earlier
-            // READ in the up chain) against the WRITE here.
-            let pre = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_READ)
-                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .image(f.down_mips[i].image)
-                .subresource_range(subresource);
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[pre],
-            );
-
             device.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::COMPUTE,
@@ -599,28 +593,15 @@ impl BloomPipeline {
         }
 
         // ── Upsample chain ───────────────────────────────────────
+        // Same barrier accounting as the down chain — see the
+        // comment above. Per-frame `up_mips[i]` is exclusive to
+        // this frame slot, so the only in-frame producer of its
+        // contents is *this* iteration; no pre-barrier needed.
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.upsample_pipeline);
         // Iterate from N-2 down to 0 — each level reads the
         // previously-produced level (up_mips[i+1] or down_mips[N-1]
         // for the seed) and the same-resolution down_mip.
         for i in (0..(BLOOM_MIP_COUNT - 1)).rev() {
-            let pre = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_READ)
-                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .image(f.up_mips[i].image)
-                .subresource_range(subresource);
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[pre],
-            );
-
             device.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::COMPUTE,
