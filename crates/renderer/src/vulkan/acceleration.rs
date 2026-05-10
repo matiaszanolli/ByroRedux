@@ -160,8 +160,19 @@ pub struct AccelerationManager {
     tlas_addresses_scratch: Vec<u64>,
     /// Monotonic frame counter for BLAS LRU tracking.
     frame_counter: u64,
-    /// Total BLAS memory currently allocated (sum of all BlasEntry.size_bytes).
+    /// Total BLAS memory currently allocated (static + skinned), reported
+    /// by `total_blas_bytes()` for telemetry / `tex.stats` console output.
     total_blas_bytes: vk::DeviceSize,
+    /// Subset of `total_blas_bytes` that lives in `blas_entries` (static,
+    /// mesh-keyed BLAS). Skinned per-entity BLAS in `skinned_blas` are NOT
+    /// counted here. Only this counter is compared against
+    /// `blas_budget_bytes` for eviction decisions because only static BLAS
+    /// are eviction candidates — skinned BLAS lifecycle is tied to entity
+    /// visibility and managed via `drop_skinned_blas`. Without this split,
+    /// post-M41 NPC-heavy scenes (50+ skinned actors) could push
+    /// `total_blas_bytes` permanently over budget and LRU-thrash static
+    /// BLAS every frame. See #920 / REN-D12-NEW-03.
+    static_blas_bytes: vk::DeviceSize,
     /// Maximum BLAS memory budget in bytes. Eviction triggers when exceeded.
     /// Derived at construction time from DEVICE_LOCAL heap size (VRAM / 3)
     /// with a 256 MB floor. On a 12 GB GPU this yields 4 GB (eviction
@@ -447,6 +458,7 @@ impl AccelerationManager {
             tlas_addresses_scratch: Vec::new(),
             frame_counter: 0,
             total_blas_bytes: 0,
+            static_blas_bytes: 0,
             blas_budget_bytes,
             pending_destroy_blas: DeferredDestroyQueue::new(),
             blas_map_generation: 0,
@@ -492,6 +504,7 @@ impl AccelerationManager {
             return;
         };
         self.total_blas_bytes = self.total_blas_bytes.saturating_sub(entry.size_bytes);
+        self.static_blas_bytes = self.static_blas_bytes.saturating_sub(entry.size_bytes);
         self.pending_destroy_blas.push(entry, DEFAULT_COUNTDOWN);
         // BLAS map mutated — bump generation so the next build_tlas
         // can short-circuit the per-instance zip-compare. #300.
@@ -773,6 +786,7 @@ impl AccelerationManager {
             self.blas_entries.push(None);
         }
         self.total_blas_bytes += blas_size;
+        self.static_blas_bytes += blas_size;
         self.blas_entries[handle] = Some(BlasEntry {
             accel,
             buffer: result_buffer,
@@ -970,6 +984,9 @@ impl AccelerationManager {
         };
 
         let blas_size = result_buffer.size;
+        // Skinned BLAS are NOT eviction candidates (lifecycle is tied to
+        // entity visibility — see `drop_skinned_blas`), so do NOT update
+        // `static_blas_bytes`. See #920 for the LRU thrash this prevents.
         self.total_blas_bytes += blas_size;
         self.skinned_blas.insert(
             entity_id,
@@ -1179,6 +1196,9 @@ impl AccelerationManager {
     /// both drain the queue.
     pub fn drop_skinned_blas(&mut self, entity_id: EntityId) {
         if let Some(entry) = self.skinned_blas.remove(&entity_id) {
+            // Skinned BLAS aren't tracked in `static_blas_bytes` (see
+            // counterpart in `build_skinned_blas`), so only the total
+            // counter decrements here.
             self.total_blas_bytes = self.total_blas_bytes.saturating_sub(entry.size_bytes);
             self.pending_destroy_blas
                 .push(entry, MAX_FRAMES_IN_FLIGHT as u32);
@@ -1304,9 +1324,14 @@ impl AccelerationManager {
         }
 
         // Running sum of `acceleration_structure_size` across the Phase 1
-        // buffers we've created for *this batch*. Combined with
-        // `self.total_blas_bytes` it gives the projected footprint the
-        // mid-batch eviction predicate tests. See [`should_evict_mid_batch`].
+        // buffers we've created for *this batch* (all static BLAS — this
+        // codepath is the static / mesh-keyed builder). Combined with
+        // `self.static_blas_bytes` it gives the projected static footprint
+        // the mid-batch eviction predicate tests. See
+        // [`should_evict_mid_batch`]. The compare uses
+        // `static_blas_bytes` not `total_blas_bytes` so skinned-BLAS
+        // residency on NPC-heavy scenes can't trigger eviction of static
+        // BLAS that the budget can't actually free (#920).
         let mut pending_bytes: vk::DeviceSize = 0;
         // Now build geometries referencing the stored triangles data.
         for (idx, &(mesh_handle, _mesh, _vertex_count, index_count)) in meshes.iter().enumerate() {
@@ -1315,7 +1340,7 @@ impl AccelerationManager {
             // arithmetic. #510.
             if idx > 0 && idx % BATCH_EVICTION_CHECK_INTERVAL == 0 {
                 if should_evict_mid_batch(
-                    self.total_blas_bytes,
+                    self.static_blas_bytes,
                     pending_bytes,
                     self.blas_budget_bytes,
                 ) {
@@ -1714,6 +1739,7 @@ impl AccelerationManager {
                 self.blas_entries.push(None);
             }
             self.total_blas_bytes += blas_size;
+            self.static_blas_bytes += blas_size;
             self.blas_entries[handle] = Some(BlasEntry {
                 accel,
                 buffer,
@@ -2327,14 +2353,18 @@ impl AccelerationManager {
         self.tlas[frame_index].as_ref().map(|t| t.accel)
     }
 
-    /// Evict unused BLAS entries when total BLAS memory exceeds the budget.
+    /// Evict unused BLAS entries when static BLAS memory exceeds the budget.
     ///
     /// Entries unused for more than `min_idle_frames` frames are candidates.
     /// Eviction is LRU — the least recently used entries are destroyed first.
     /// Only entries unused for >= MAX_FRAMES_IN_FLIGHT frames are safe to
     /// evict (guarantees no in-flight TLAS references them).
+    ///
+    /// The budget compare uses `static_blas_bytes`, NOT `total_blas_bytes`,
+    /// because skinned per-entity BLAS aren't eviction candidates (see
+    /// `static_blas_bytes` doc on the struct field for details / #920).
     pub unsafe fn evict_unused_blas(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        if self.total_blas_bytes <= self.blas_budget_bytes {
+        if self.static_blas_bytes <= self.blas_budget_bytes {
             return;
         }
 
@@ -2364,7 +2394,7 @@ impl AccelerationManager {
         let mut evicted = 0usize;
         let mut freed = 0u64;
         for (idx, _, _size) in candidates {
-            if self.total_blas_bytes <= self.blas_budget_bytes {
+            if self.static_blas_bytes <= self.blas_budget_bytes {
                 break;
             }
             if let Some(mut entry) = self.blas_entries[idx].take() {
@@ -2372,6 +2402,7 @@ impl AccelerationManager {
                     .destroy_acceleration_structure(entry.accel, None);
                 entry.buffer.destroy(device, allocator);
                 self.total_blas_bytes = self.total_blas_bytes.saturating_sub(entry.size_bytes);
+                self.static_blas_bytes = self.static_blas_bytes.saturating_sub(entry.size_bytes);
                 freed += entry.size_bytes;
                 evicted += 1;
             }
@@ -2379,11 +2410,12 @@ impl AccelerationManager {
 
         if evicted > 0 {
             log::info!(
-                "BLAS eviction: freed {} entries ({:.1} MB), budget: {:.1}/{:.1} MB",
+                "BLAS eviction: freed {} entries ({:.1} MB), static budget: {:.1}/{:.1} MB (total {:.1} MB)",
                 evicted,
                 freed as f64 / (1024.0 * 1024.0),
-                self.total_blas_bytes as f64 / (1024.0 * 1024.0),
+                self.static_blas_bytes as f64 / (1024.0 * 1024.0),
                 self.blas_budget_bytes as f64 / (1024.0 * 1024.0),
+                self.total_blas_bytes as f64 / (1024.0 * 1024.0),
             );
             // BLAS map mutated — see #300.
             self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
@@ -2691,9 +2723,20 @@ impl AccelerationManager {
             .unwrap_or(0)
     }
 
-    /// Current total BLAS memory in bytes.
+    /// Current total BLAS memory in bytes (static + skinned). Use for
+    /// telemetry / `tex.stats` console output. Use `static_blas_bytes()`
+    /// for residency-budget decisions — see #920.
     pub fn total_blas_bytes(&self) -> vk::DeviceSize {
         self.total_blas_bytes
+    }
+
+    /// Current static (mesh-keyed) BLAS memory in bytes — the subset of
+    /// `total_blas_bytes` that lives in `blas_entries` and is eligible
+    /// for LRU eviction. Skinned per-entity BLAS (in `skinned_blas`) are
+    /// not counted here and are not eviction candidates; their lifecycle
+    /// is tied to entity visibility via `drop_skinned_blas`. See #920.
+    pub fn static_blas_bytes(&self) -> vk::DeviceSize {
+        self.static_blas_bytes
     }
 
     /// Current TLAS instance-buffer capacity for a frame slot, in
@@ -2966,6 +3009,46 @@ mod tests {
         // not panic or treat zero budget as "under").
         assert!(should_evict_mid_batch(1, 0, 0));
         assert!(should_evict_mid_batch(0, 0, 0));
+    }
+
+    /// Regression for #920 (REN-D12-NEW-03). The mid-batch + LRU
+    /// eviction predicates must compare *static* BLAS bytes against the
+    /// budget, not *total* BLAS bytes. Without the split, an NPC-heavy
+    /// scene whose skinned BLAS push `total_blas_bytes` over budget
+    /// would LRU-thrash static BLAS every frame even though no static
+    /// eviction actually frees the over-budget skinned residency.
+    ///
+    /// This pins the predicate's input contract: the same static
+    /// footprint must be reported as "under budget" when that's the
+    /// truth, regardless of whatever skinned-BLAS-driven `total_bytes`
+    /// happens to be — because skinned bytes can't be freed via
+    /// eviction.
+    #[test]
+    fn evict_predicate_uses_static_bytes_not_total_post_920() {
+        let budget: vk::DeviceSize = 1_000_000_000; // 1 GB
+        // Realistic post-M41 NPC-heavy scene:
+        // - Static interior-cell BLAS resident: 700 MB (under 90%).
+        // - 50 skinned NPCs at ~10 MB each: 500 MB skinned residency.
+        // - Total: 1200 MB (over budget!).
+        let static_bytes: vk::DeviceSize = 700_000_000;
+        let pending_static_bytes: vk::DeviceSize = 0;
+        // Pre-#920 the caller passed (static + skinned). Verify that
+        // the FIXED inputs do NOT trip the predicate — even though the
+        // total residency *would* exceed 90% of budget.
+        assert!(
+            !should_evict_mid_batch(static_bytes, pending_static_bytes, budget),
+            "static @ 70% must not trigger eviction even with skinned residency \
+             pushing total over 90% — eviction can only free static BLAS",
+        );
+
+        // Cross-check: if static itself climbs past 90%, the predicate
+        // *should* still fire — the fix preserves the threshold for
+        // legitimate static pressure.
+        let static_at_threshold: vk::DeviceSize = 900_000_000;
+        assert!(
+            should_evict_mid_batch(static_at_threshold, 0, budget),
+            "static @ 90% must trigger eviction (threshold preserved)",
+        );
     }
 
     /// Regression: #300 — when `needs_full_rebuild` is set, the
