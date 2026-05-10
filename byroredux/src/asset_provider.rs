@@ -97,6 +97,58 @@ impl MeshResolver for TextureProvider {
     }
 }
 
+/// Strip the Bethesda build-server prefix from an asset path.
+///
+/// Some shipping Bethesda content — most notably the Skyrim Anniversary
+/// Edition's "Skyrim HD" trees, plants, and landscape clutter — embeds
+/// texture and model paths with the full pipeline-internal prefix
+/// `skyrimhd\build\pc\data\textures\…`. The real Bethesda engine
+/// resolves these against a `Data\` root by stripping everything up to
+/// and including the last `\data\` (or `/data/`) segment in the path.
+/// Without that step the BSA lookup misses every affected asset and
+/// the renderer falls back to the magenta-checker placeholder — the
+/// symptom that prompted this fix on a Markarth grid (juniper, reach
+/// branches, driftwood, plus a long tail of landscape clutter).
+///
+/// Returns `Cow::Borrowed` on the common case (no embedded `\data\`).
+/// Case-insensitive on the `data` token; matches `\` or `/` separators
+/// on either side (mod-authoring tools sometimes export forward
+/// slashes).
+pub(crate) fn strip_build_prefix(path: &str) -> std::borrow::Cow<'_, str> {
+    let bytes = path.as_bytes();
+    // We need at least `\data\X` (7 bytes) to even have a useful strip,
+    // and that the strip leaves a non-empty trailer.
+    if bytes.len() < 7 {
+        return std::borrow::Cow::Borrowed(path);
+    }
+    // Scan left-to-right for the LAST `\data\` boundary so we tolerate
+    // future build-server prefixes that nest a `data\` directory
+    // elsewhere in the path. Pre-#945 fix used a hardcoded
+    // `skyrimhd\build\pc\data\` strip but that's brittle: AE post-launch
+    // patches and Creation Club mods author new prefixes
+    // (`fishingrod\data\`, `survivalmode\data\`, etc.) and the engine
+    // strips all of them.
+    let mut last: Option<usize> = None;
+    let mut i = 0;
+    while i + 6 <= bytes.len() {
+        let l = bytes[i];
+        let r = bytes[i + 5];
+        if (l == b'\\' || l == b'/')
+            && (r == b'\\' || r == b'/')
+            && bytes[i + 1..i + 5].eq_ignore_ascii_case(b"data")
+        {
+            last = Some(i + 6);
+        }
+        i += 1;
+    }
+    match last {
+        Some(start) if start < bytes.len() => {
+            std::borrow::Cow::Owned(path[start..].to_string())
+        }
+        _ => std::borrow::Cow::Borrowed(path),
+    }
+}
+
 /// Prepend `textures\` to a texture path if the path doesn't already
 /// begin with that segment (case-insensitive). Returns `Cow::Borrowed`
 /// when the input is already fully qualified so we don't allocate on
@@ -340,6 +392,14 @@ pub(crate) fn resolve_texture_with_clamp(
     let Some(tex_path) = tex_path else {
         return ctx.texture_registry.fallback();
     };
+    // Strip Bethesda build-server prefixes (e.g. `skyrimhd\build\pc\data\`)
+    // so cache + BSA lookups both use the canonical `textures\…` path.
+    // Without this step Skyrim AE's HD-bundle juniper / reach branches /
+    // driftwood / mountain clutter all render as magenta placeholders.
+    // Applied BEFORE the cache so two NIFs that reference the same
+    // physical texture via different prefix-paths share a single
+    // bindless entry. See `strip_build_prefix` doc for details.
+    let tex_path: &str = &strip_build_prefix(tex_path);
     // `acquire_by_path` (not `get_by_path`) — bumps the refcount on a
     // cache hit so each resolve pairs with one drop_texture on cell
     // unload. `load_dds` on the miss path bumps from 0→1 on fresh
@@ -707,6 +767,76 @@ pub(crate) fn merge_bgsm_into_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_build_prefix_handles_skyrim_hd_prefix() {
+        // The headline case from the Markarth render: Skyrim AE bundles
+        // the HD juniper / reach branches / driftwood with the full
+        // pipeline-internal prefix.
+        let out = strip_build_prefix(
+            "skyrimhd\\build\\pc\\data\\textures\\plants\\florajuniper.dds",
+        );
+        assert_eq!(out.as_ref(), "textures\\plants\\florajuniper.dds");
+    }
+
+    #[test]
+    fn strip_build_prefix_passes_canonical_paths_through_borrowed() {
+        let input = "textures\\landscape\\trees\\reachtreebranch01.dds";
+        let out = strip_build_prefix(input);
+        assert_eq!(out.as_ref(), input);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn strip_build_prefix_is_case_insensitive_on_data_token() {
+        // Anniversary Edition's HD bundle uses lowercase `data`, but
+        // we shouldn't be fragile if a future CC pack uses `Data`.
+        let out = strip_build_prefix(
+            "skyrimhd\\build\\pc\\Data\\textures\\plants\\foo.dds",
+        );
+        assert_eq!(out.as_ref(), "textures\\plants\\foo.dds");
+    }
+
+    #[test]
+    fn strip_build_prefix_accepts_forward_slashes() {
+        // Mod-authoring tools occasionally export forward slashes.
+        let out = strip_build_prefix(
+            "skyrimhd/build/pc/data/textures/plants/foo.dds",
+        );
+        assert_eq!(out.as_ref(), "textures/plants/foo.dds");
+    }
+
+    #[test]
+    fn strip_build_prefix_uses_last_data_boundary() {
+        // Pathological case: an asset that genuinely lives under a
+        // nested `data\` directory should strip up to the LAST
+        // boundary so the longest known-prefix wins.
+        let out = strip_build_prefix(
+            "vendor\\data\\skyrimhd\\build\\pc\\data\\textures\\foo.dds",
+        );
+        assert_eq!(out.as_ref(), "textures\\foo.dds");
+    }
+
+    #[test]
+    fn strip_build_prefix_preserves_path_with_no_data_segment() {
+        let input = "meshes\\architecture\\foo.nif";
+        let out = strip_build_prefix(input);
+        assert_eq!(out.as_ref(), input);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn strip_build_prefix_preserves_trailing_data_directory() {
+        // A path that ends with `\data\` exactly would strip to empty;
+        // the helper must guard that and pass the path through
+        // untouched so callers can fall through to "not found" rather
+        // than hitting an empty BSA lookup that might silently succeed
+        // on the first-entry of the archive.
+        let input = "scratch\\data\\";
+        let out = strip_build_prefix(input);
+        assert_eq!(out.as_ref(), input);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
 
     #[test]
     fn normalize_adds_prefix_when_missing() {
