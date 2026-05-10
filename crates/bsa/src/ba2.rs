@@ -25,6 +25,25 @@
 //! | 7            | FO4 Next Gen textures              | 24-byte header, zlib only                           |
 //! | 8            | FO4 Next Gen meshes                | 24-byte header, zlib only                           |
 //!
+//! # Compression model
+//!
+//! Compression is two-axis (#596 / FO4-DIM2-06):
+//!
+//! 1. **Archive-wide codec** — fixed for the whole archive at header parse
+//!    time. v1/v2/v7/v8 always use zlib; v3 carries an explicit
+//!    `compression_method` field (`0 = zlib`, `3 = LZ4 block`). Stored on
+//!    [`Ba2Archive::compression`] and consulted once per extracted chunk.
+//! 2. **Per-chunk on-off** — a `packed_size == 0` marker on a GNRL file
+//!    record or a DX10 chunk record means the payload is stored RAW
+//!    (no decode). Independent of the codec choice above. Both
+//!    [`Ba2Archive::extract_general`] and [`Ba2Archive::extract_dx10`]
+//!    branch on this per chunk before invoking the codec.
+//!
+//! Treating compression as "the archive is zlib" or "the archive is LZ4"
+//! loses the per-chunk axis — vanilla FO4 archives ship a non-trivial
+//! fraction of pre-compressed-too-small or stored-raw chunks, and Starfield
+//! v3 DX10 mips mix raw and LZ4-compressed within one texture.
+//!
 //! # Usage
 //!
 //! ```ignore
