@@ -389,19 +389,19 @@ impl BhkRigidBody {
 /// `bhkSphereRepShape` / `bhkConvexShape`.
 ///
 /// Per nif.xml lines 2293-2299, the `HavokMaterial` struct has an
-/// `Unknown Int` (uint) prefix gated `until="10.0.1.2"` (exclusive)
-/// followed by the material `Material` u32. Pre-10.0.1.2 NIFs (no
-/// Bethesda title ships in that band — vanilla Oblivion is 20.0.0.5,
-/// FO3+ is later still) carry the extra 4-byte prefix; modern NIFs
-/// drop it. Pre-fix every `bhk*Shape::parse` site read just the
-/// final u32 unconditionally, so a pre-10.0.1.2 NIF would attribute
-/// the legacy padding bytes to `material` and then misalign every
-/// subsequent field by 4 bytes. See #723 / NIF-D1-03.
+/// `Unknown Int` (uint) prefix gated `until="10.0.1.2"` followed by the
+/// material `Material` u32. Pre-Bethesda NIFs (no Bethesda title ships
+/// in that band — vanilla Oblivion is 20.0.0.5, FO3+ is later still)
+/// carry the extra 4-byte prefix; modern NIFs drop it. Pre-fix every
+/// `bhk*Shape::parse` site read just the final u32 unconditionally,
+/// so a pre-Bethesda NIF would attribute the legacy padding bytes to
+/// `material` and then misalign every subsequent field by 4 bytes.
+/// See #723 / NIF-D1-03.
 ///
-/// The `until=` boundary is exclusive per the #765 sweep — at
-/// v10.0.1.2 exactly the legacy field is absent.
+/// The `until=` boundary is inclusive per the version.rs doctrine —
+/// at v <= 10.0.1.2 the legacy prefix is read.
 fn read_havok_material(stream: &mut NifStream) -> io::Result<u32> {
-    if stream.version() < NifVersion(0x0A000102) {
+    if stream.version() <= NifVersion(0x0A000102) {
         let _unknown_int = stream.read_u32_le()?;
     }
     stream.read_u32_le()

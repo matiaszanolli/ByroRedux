@@ -37,8 +37,8 @@ impl NiMaterialProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
         // NiMaterialProperty flags: since 3.0, until 10.0.1.2 (NOT present in Oblivion+).
-        // `until=` is exclusive — field absent at v10.0.1.2 exactly. See #769 sweep.
-        if stream.version() < NifVersion(0x0A000102) {
+        // `until=` is inclusive per the version.rs doctrine — field present at v10.0.1.2.
+        if stream.version() <= NifVersion(0x0A000102) {
             let _flags = stream.read_u16_le()?;
         }
 
@@ -221,9 +221,9 @@ impl NiTexturingProperty {
         let net = NiObjectNETData::parse(stream)?;
 
         // Flags: ushort until 10.0.1.2, TexturingFlags since 20.1.0.2.
-        // Gap: versions 10.0.1.2 through 20.1.0.1 have NO flags field.
-        // `until=` is exclusive — field absent at v10.0.1.2 exactly. See #769 sweep.
-        let flags = if stream.version() < NifVersion(0x0A000102)
+        // Gap: versions in (10.0.1.2, 20.1.0.2) have NO flags field.
+        // `until=` is inclusive per the version.rs doctrine — present at v10.0.1.2.
+        let flags = if stream.version() <= NifVersion(0x0A000102)
             || stream.version() >= NifVersion(0x14010002)
         {
             stream.read_u16_le()?
@@ -232,8 +232,8 @@ impl NiTexturingProperty {
         };
 
         // Apply Mode: since 3.3.0.13, until 20.1.0.1.
-        // `until=` is exclusive — field absent at v20.1.0.1 exactly. See #769.
-        if stream.version() < NifVersion(0x14010001) {
+        // `until=` is inclusive per the version.rs doctrine — present at v20.1.0.1.
+        if stream.version() <= NifVersion(0x14010001) {
             let _apply_mode = stream.read_u32_le()?;
         }
 
@@ -448,8 +448,9 @@ impl NiTexturingProperty {
             let filter_mode = stream.read_u32_le()?;
             let uv_set = stream.read_u32_le()?;
 
-            // TexDesc PS2 L/K: nif.xml `until="10.4.0.1"` exclusive. See #765 sweep.
-            if stream.version() < crate::version::NifVersion(0x0A040001) {
+            // TexDesc PS2 L/K: nif.xml `until="10.4.0.1"` inclusive per the
+            // version.rs doctrine — present at v <= 10.4.0.1.
+            if stream.version() <= crate::version::NifVersion(0x0A040001) {
                 let _ps2_l = stream.read_u16_le()?;
                 let _ps2_k = stream.read_u16_le()?;
             }
@@ -778,14 +779,13 @@ mod tests {
         );
     }
 
-    /// Boundary regression for #769. nif.xml gates `Apply Mode` with
-    /// `until="20.1.0.1"`, which is exclusive — the field is absent
-    /// at v20.1.0.1 exactly. Pre-fix the parser used `<=`, so at
-    /// v20.1.0.1 it read 4 stray bytes that should have been
-    /// `texture_count`, then mis-consumed the rest of the block and
-    /// failed with EOF on the trailing shader-map count.
+    /// Boundary regression for #935 (post-#769 doctrine flip). nif.xml
+    /// gates `Apply Mode` with `until="20.1.0.1"` which is **inclusive**
+    /// per niftools/nifly (see version.rs doctrine). The field IS
+    /// present at v20.1.0.1 exactly. The first version that drops the
+    /// field is v20.1.0.2.
     #[test]
-    fn parse_ni_texturing_property_no_apply_mode_at_v20_1_0_1_exactly() {
+    fn parse_ni_texturing_property_apply_mode_at_v20_1_0_1_exactly() {
         let header = NifHeader {
             version: NifVersion(0x14010001), // v20.1.0.1 — the until= boundary
             little_endian: true,
@@ -804,26 +804,62 @@ mod tests {
         data.extend_from_slice(&(-1i32).to_le_bytes());
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&(-1i32).to_le_bytes());
-        // v20.1.0.1 is in the gap (not <= 10.0.1.2 and not >= 20.1.0.2)
-        // → no flags u16. Apply Mode is absent at this version exactly.
+        // v20.1.0.1 is still inside `until="20.1.0.1"` (inclusive) so
+        // Apply Mode IS read here. Flags is absent (gap version).
+        data.extend_from_slice(&1u32.to_le_bytes()); // apply_mode = 1
         data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
         data.push(0); // base_texture has = 0 → None
-                      // num_decals = 0.saturating_sub(6) = 0 → no decal loop body.
         data.extend_from_slice(&0u32.to_le_bytes()); // shader_textures count = 0
 
         let expected_len = data.len();
         let mut stream = NifStream::new(&data, &header);
         let prop = NiTexturingProperty::parse(&mut stream)
-            .expect("v20.1.0.1 NiTexturingProperty must parse without Apply Mode");
+            .expect("v20.1.0.1 NiTexturingProperty must consume Apply Mode under inclusive doctrine");
         assert_eq!(stream.position() as usize, expected_len);
         assert_eq!(prop.texture_count, 0);
         assert!(prop.base_texture.is_none());
         assert_eq!(prop.decal_textures.len(), 0);
     }
 
-    /// Companion to #769: at v20.1.0.0 (one version below the
-    /// boundary) the `Apply Mode` field IS still present and must
-    /// be consumed.
+    /// Boundary above the inclusive `until="20.1.0.1"` — at v20.1.0.2
+    /// the Apply Mode field is finally absent and the new TexturingFlags
+    /// path is active (`since="20.1.0.2"`).
+    #[test]
+    fn parse_ni_texturing_property_no_apply_mode_at_v20_1_0_2() {
+        let header = NifHeader {
+            version: NifVersion(0x14010002),
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+        // NiObjectNETData: name = -1 (None), extras count = 0, controller = -1.
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        // v20.1.0.2: Flags u16 IS read (since=20.1.0.2 path), Apply Mode absent.
+        data.extend_from_slice(&0u16.to_le_bytes()); // flags = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
+        data.push(0); // base_texture has = 0 → None
+        data.extend_from_slice(&0u32.to_le_bytes()); // shader_textures count = 0
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let prop = NiTexturingProperty::parse(&mut stream)
+            .expect("v20.1.0.2 NiTexturingProperty must skip Apply Mode under inclusive doctrine");
+        assert_eq!(stream.position() as usize, expected_len);
+        assert_eq!(prop.texture_count, 0);
+    }
+
+    /// Pre-boundary spot check: at v20.1.0.0 the `Apply Mode` field is
+    /// present (as it is throughout `[3.3.0.13, 20.1.0.1]` inclusive).
     #[test]
     fn parse_ni_texturing_property_with_apply_mode_below_v20_1_0_1() {
         let header = NifHeader {
@@ -1303,8 +1339,8 @@ impl NiFogProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
         // NiProperty.Flags: since 3.0, until 10.0.1.2 — not present in FO3+.
-        // `until=` is exclusive — field absent at v10.0.1.2 exactly. See #769 sweep.
-        if stream.version() < NifVersion(0x0A000102) {
+        // `until=` is inclusive per the version.rs doctrine — present at v10.0.1.2.
+        if stream.version() <= NifVersion(0x0A000102) {
             let _prop_flags = stream.read_u16_le()?;
         }
         let flags = stream.read_u16_le()?;
@@ -1508,17 +1544,16 @@ impl NiStencilProperty {
         if stream.version() <= NifVersion::V20_0_0_5 {
             // Oblivion format: expanded fields.
             //
-            // #723 / NIF-D2-05 — pre-10.0.1.3 (Morrowind / pre-Gamebryo
-            // NetImmerse) NIFs prefix the expanded fields with a u16
-            // `flags` carried over from the NiProperty base
-            // (`Flags: ushort, until=10.0.1.2` per nif.xml line 5149,
-            // exclusive boundary per the #765 sweep — field absent at
-            // v10.0.1.3 exactly). Pre-fix the Oblivion-format branch
-            // claimed v < 10.0.1.3 too, attributing the legacy u16
-            // flags to `stencil_enabled`'s first byte and drifting the
-            // rest of the record by 2 bytes. No Bethesda title ships
-            // in this band; this guards pre-Gamebryo compat.
-            let flags = if stream.version() < NifVersion(0x0A000103) {
+            // #723 / NIF-D2-05 — pre-Gamebryo NetImmerse NIFs prefix the
+            // expanded fields with a u16 `flags` carried over from the
+            // NiProperty base (`Flags: ushort, until=10.0.1.2` per nif.xml
+            // line 5149, inclusive per the version.rs doctrine — present
+            // at v <= 10.0.1.2). Pre-fix the Oblivion-format branch
+            // claimed the legacy u16 flags belonged to `stencil_enabled`'s
+            // first byte and drifted the rest of the record by 2 bytes.
+            // No Bethesda title ships in this band; this guards pre-
+            // Gamebryo compat.
+            let flags = if stream.version() <= NifVersion(0x0A000102) {
                 stream.read_u16_le()?
             } else {
                 0

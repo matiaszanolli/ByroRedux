@@ -71,11 +71,10 @@ impl NiExtraData {
         //  - v >= 10.0.1.0: inherits NiObjectNET's Name field
         //    (string-table at 20.1.0.1+, inline length-prefixed earlier).
         // `Next Extra Data` and `Num Bytes` are gated `until="4.2.2.0"`
-        // (exclusive — see #765 sweep). At v4.2.2.0 exactly, both fall
-        // away and the gap path applies. Pre-fix the legacy branch
-        // claimed v4.2.2.0 and consumed phantom 4-byte ref + 4-byte
-        // Num Bytes that the file does not contain.
-        if stream.version() < NifVersion(0x04020200) {
+        // (inclusive per the version.rs doctrine — present at v4.2.2.0).
+        // The legacy path therefore claims v <= 4.2.2.0; the gap path
+        // covers v in (4.2.2.0, 10.0.1.0).
+        if stream.version() <= NifVersion(0x04020200) {
             return Self::parse_legacy(stream, type_name);
         }
         if stream.version() < NifVersion(0x0A000100) {

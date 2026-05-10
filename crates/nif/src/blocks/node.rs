@@ -501,9 +501,9 @@ impl NiSortAdjustNode {
         let base = NiNode::parse(stream)?;
         let sorting_mode = stream.read_u32_le()?;
         // Legacy accumulator ref (until 20.0.0.3) — Oblivion and later
-        // don't serialize it. `until=` is exclusive — field absent at
-        // v20.0.0.3 exactly. See #769 sweep.
-        if stream.version() < crate::version::NifVersion(0x14000003) {
+        // don't serialize it. `until=` is inclusive per the version.rs
+        // doctrine — field present at v <= 20.0.0.3.
+        if stream.version() <= crate::version::NifVersion(0x14000003) {
             let _accumulator = stream.read_block_ref()?;
         }
         Ok(Self { base, sorting_mode })

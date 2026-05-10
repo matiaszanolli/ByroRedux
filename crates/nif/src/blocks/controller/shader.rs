@@ -70,9 +70,15 @@ impl NiLightColorController {
             BlockRef::NULL
         };
         // NiPoint3InterpController contributes no fields; NiLightColorController
-        // adds `Target Color: LightColor` (u16, since 10.1.0.0). FO3+ all
-        // satisfy the version gate.
-        let target_color = stream.read_u16_le()?;
+        // adds `Target Color: LightColor` (u16, `since="10.1.0.0"` inclusive
+        // per the version.rs doctrine). FO3+ all satisfy the gate; pre-Gamebryo
+        // NetImmerse content (v < 10.1.0.0) uses the `flags` bits on the
+        // NiTimeController base for slot selection instead.
+        let target_color = if stream.version() >= NifVersion(0x0A010000) {
+            stream.read_u16_le()?
+        } else {
+            0
+        };
         Ok(Self {
             base,
             interpolator_ref,
@@ -195,8 +201,14 @@ impl NiMaterialColorController {
         } else {
             BlockRef::NULL
         };
-        // MaterialColor enum (ushort since 10.1.0.0)
-        let target_color = stream.read_u16_le()?;
+        // MaterialColor enum (ushort `since="10.1.0.0"` inclusive per the
+        // version.rs doctrine). Pre-Gamebryo NetImmerse uses the
+        // NiTimeController base `flags` bits for slot selection.
+        let target_color = if stream.version() >= NifVersion(0x0A010000) {
+            stream.read_u16_le()?
+        } else {
+            0
+        };
         Ok(Self {
             base,
             interpolator_ref,

@@ -51,11 +51,11 @@ impl NiSourceTexture {
         // 1 byte and any following blocks drifted (block_size recovery
         // masked the symptom). See NIF-D1-02 / nif.xml lines 5117/5121.
         // NiSourceTexture Use Internal: nif.xml `until="10.0.1.3"`
-        // exclusive — see #765 sweep. Field absent at v10.0.1.3 exactly;
-        // post-Oblivion content with embedded textures relies on the
-        // `Use External == 0` cond alone.
+        // inclusive per the version.rs doctrine — present at v <=
+        // 10.0.1.3. Post-10.0.1.3 content with embedded textures relies
+        // on the `Use External == 0` cond alone.
         let use_internal = if !use_external
-            && stream.version() < crate::version::NifVersion(0x0A000103)
+            && stream.version() <= crate::version::NifVersion(0x0A000103)
         {
             stream.read_u8()? != 0
         } else {
@@ -399,8 +399,8 @@ mod tests {
         data
     }
 
-    /// #715 / NIF-D1-02 — pre-Oblivion (v < 10.0.1.3 per nif.xml
-    /// `until="10.0.1.3"` exclusive — see #765 sweep) embedded path
+    /// #715 / NIF-D1-02 — pre-Oblivion embedded path (`until="10.0.1.3"`
+    /// inclusive per the version.rs doctrine — present at v <= 10.0.1.3)
     /// must consume the `Use Internal` byte after `Use External == 0`
     /// and then read the Pixel Data ref when `Use Internal == 1`.
     /// Pre-fix the byte was unread, so every block on this path
@@ -437,8 +437,8 @@ mod tests {
     /// phantom 4-byte ref in this case.
     #[test]
     fn pre_oblivion_embedded_path_skips_pixel_ref_when_use_internal_is_zero() {
-        // v10.0.1.2: just below the v10.0.1.3 `until=` boundary so the
-        // `Use Internal` byte is still serialized (#765 sweep).
+        // v10.0.1.2: inside the v10.0.1.3 `until=` boundary (inclusive)
+        // so the `Use Internal` byte IS serialized.
         let header = make_pre_oblivion_header(NifVersion(0x0A000102));
         let data = build_legacy_embedded_source_texture(/* use_internal = */ false, false);
         let mut stream = NifStream::new(&data, &header);
@@ -453,10 +453,38 @@ mod tests {
         assert_eq!(stream.position() as usize, data.len());
     }
 
+    /// Boundary regression for #935 (post-#765/#769 doctrine flip).
+    /// nif.xml gates `Use Internal` with `until="10.0.1.3"` which is
+    /// **inclusive** per niftools/nifly (see version.rs doctrine).
+    /// The byte IS read at v10.0.1.3 exactly. Pre-#935 the parser
+    /// used `<` and skipped the byte at this version, drifting every
+    /// subsequent field by 1 byte on legacy embedded textures.
+    #[test]
+    fn pre_oblivion_embedded_path_consumes_use_internal_at_v10_0_1_3_exactly() {
+        let header = make_pre_oblivion_header(NifVersion(0x0A000103));
+        let data = build_legacy_embedded_source_texture(/* use_internal = */ true, true);
+        let mut stream = NifStream::new(&data, &header);
+        let tex = NiSourceTexture::parse(&mut stream).unwrap();
+
+        assert!(!tex.use_external, "embedded path");
+        assert!(tex.filename.is_none(), "no filename on legacy embedded path");
+        assert_eq!(
+            tex.pixel_data_ref.index(),
+            Some(7),
+            "pixel-data ref must read after the use_internal byte at v10.0.1.3 (until= is inclusive)"
+        );
+        assert_eq!(tex.pixel_layout, 1);
+        assert_eq!(
+            stream.position() as usize,
+            data.len(),
+            "parser must consume the block exactly — boundary must include v10.0.1.3"
+        );
+    }
+
     /// Modern path (v >= 10.0.1.4) — the legacy `Use Internal` byte is
     /// absent. Sanity-check that bumping the version one notch above
-    /// the gate triggers the modern flow (no `use_internal` consumed,
-    /// pixel ref read unconditionally on the embedded branch).
+    /// the inclusive gate triggers the modern flow (no `use_internal`
+    /// consumed, pixel ref read unconditionally on the embedded branch).
     #[test]
     fn post_10_0_1_4_embedded_path_skips_use_internal_byte() {
         let header = make_pre_oblivion_header(NifVersion(0x0A000104));
@@ -673,10 +701,10 @@ impl NiTextureEffect {
         let pc = stream.read_f32_le()?;
         let plane = [pn.x, pn.y, pn.z, pc];
 
-        // NiTextureEffect PS2 L/K: nif.xml `until="10.2.0.0"` exclusive
-        // — see #765 sweep. Fields absent at v10.2.0.0 exactly. Oblivion
-        // (v20.0.0.5) sits well past the boundary.
-        let (ps2_l, ps2_k) = if stream.version() < NifVersion(0x0A020000) {
+        // NiTextureEffect PS2 L/K: nif.xml `until="10.2.0.0"` inclusive
+        // per the version.rs doctrine — present at v <= 10.2.0.0.
+        // Oblivion (v20.0.0.5) sits well past the boundary.
+        let (ps2_l, ps2_k) = if stream.version() <= NifVersion(0x0A020000) {
             // No i16 reader in NifStream; sign-reinterpret the u16.
             let l = stream.read_u16_le()? as i16;
             let k = stream.read_u16_le()? as i16;
@@ -686,11 +714,11 @@ impl NiTextureEffect {
         };
 
         // #723 / NIF-D2-04 — pre-4.1 `Unknown Short` field. nif.xml
-        // line 5201 gates this on `until="4.1.0.12"` (exclusive per
-        // the #765 sweep — field absent at v4.1.0.12 exactly). No
-        // Bethesda title ships in this band; this guards pre-Gamebryo
-        // NetImmerse demo / Civ IV / Dark Age of Camelot compat.
-        if stream.version() < NifVersion(0x0401000C) {
+        // line 5201 gates this on `until="4.1.0.12"` (inclusive per the
+        // version.rs doctrine — present at v <= 4.1.0.12). No Bethesda
+        // title ships in this band; guards pre-Gamebryo NetImmerse demo
+        // / Civ IV / Dark Age of Camelot compat.
+        if stream.version() <= NifVersion(0x0401000C) {
             let _unknown_short = stream.read_u16_le()?;
         }
 

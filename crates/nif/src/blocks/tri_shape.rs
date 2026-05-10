@@ -125,12 +125,12 @@ impl NiTriShape {
                 alpha_property_ref = stream.read_block_ref()?;
             }
         } else if stream.version() >= NifVersion(0x0A000100)
-            && stream.version() < NifVersion(0x14010003)
+            && stream.version() <= NifVersion(0x14010003)
         {
             // MaterialData Has Shader + Shader Name + Shader Extra Data
-            // (since 10.0.1.0, until 20.1.0.3 — `until=` exclusive per
-            // nif.xml. See #765 sweep). Present in Oblivion v20.0.0.4/5;
-            // absent at the v20.1.0.3 boundary itself.
+            // (since 10.0.1.0, until 20.1.0.3 — both boundaries inclusive
+            // per the version.rs doctrine). Present in Oblivion v20.0.0.4/5
+            // through v20.1.0.3.
             let has_shader = stream.read_bool()?;
             if has_shader {
                 let _shader_name = stream.read_sized_string()?;
@@ -1463,12 +1463,12 @@ fn parse_geometry_data_base_inner(
     };
 
     // nif.xml: `<field name="Has UV" type="bool" until="4.0.0.2">` — the
-    // explicit bool is only serialized PRE-4.0.0.2 (`until=` is exclusive
-    // per #765 sweep). At v4.0.0.2 exactly (Morrowind canonical) and
-    // beyond, UV presence is derived from `num_uv_sets`: in the
-    // pre-Gamebryo branch this came from the inline u16 at line
-    // 701-702, otherwise from `data_flags & 0x3F`. See #325.
-    let has_uv = if stream.version() < NifVersion(0x04000002) {
+    // explicit bool is serialized at v <= 4.0.0.2 (`until=` is inclusive
+    // per the version.rs doctrine). At v4.0.0.2 (Morrowind canonical) the
+    // bool IS still read; from v4.0.0.3 onward UV presence is derived from
+    // `num_uv_sets`: in the pre-Gamebryo branch this came from the inline
+    // u16 at line 701-702, otherwise from `data_flags & 0x3F`. See #325.
+    let has_uv = if stream.version() <= NifVersion(0x04000002) {
         stream.read_byte_bool()?
     } else {
         num_uv_sets > 0

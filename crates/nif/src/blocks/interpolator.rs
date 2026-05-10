@@ -290,9 +290,10 @@ impl NiTransformData {
 
             if rt == KeyType::XyzRotation {
                 // nif.xml: `Order` float present between RotationType and XYZ KeyGroups on
-                // pre-10.1.0.0 NIFs (field cond="Rotation Type == 4" until="10.1.0.0").
-                // `until=` is exclusive — field absent at v10.1.0.0 exactly. See #769.
-                if stream.version() < crate::version::NifVersion::V10_1_0_0 {
+                // pre-Gamebryo NIFs (field cond="Rotation Type == 4" until="10.1.0.0").
+                // `until=` is inclusive per the version.rs doctrine — present at
+                // v <= 10.1.0.0.
+                if stream.version() <= crate::version::NifVersion::V10_1_0_0 {
                     let _order = stream.read_f32_le()?;
                 }
                 // XYZ rotation: no quaternion keys, three float key groups instead
@@ -718,13 +719,13 @@ impl NiObject for NiTextKeyExtraData {
 
 impl NiTextKeyExtraData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // #723 / NIF-D1-05 — pre-Gamebryo (v < 4.2.2.0) NiExtraData
+        // #723 / NIF-D1-05 — pre-Gamebryo (v <= 4.2.2.0) NiExtraData
         // base format: `Next Extra Data: Ref` (linked-list head) +
-        // `Num Bytes: uint` (since 4.0.0.0, until 4.2.2.0). Both gates
-        // are exclusive per nif.xml + the #765 sweep — at v4.2.2.0
-        // exactly both fall away. The gap window (4.2.2.0 ≤ v <
-        // 10.0.1.0) carries neither prefix nor a Name field; v ≥
-        // 10.0.1.0 inherits NiObjectNET's Name.
+        // `Num Bytes: uint` (since 4.0.0.0, until 4.2.2.0). Both `until=`
+        // gates are inclusive per the version.rs doctrine — present at
+        // v <= 4.2.2.0. The gap window (4.2.2.0 < v < 10.0.1.0) carries
+        // neither prefix nor a Name field; v >= 10.0.1.0 inherits
+        // NiObjectNET's Name.
         //
         // Pre-fix `read_string()` on a pre-Gamebryo NIF consumed the
         // `Next Extra Data` ref bytes as if they were a length-
@@ -734,7 +735,7 @@ impl NiTextKeyExtraData {
         // content (none in the pre-Gamebryo band); guards
         // pre-Gamebryo NetImmerse / Morrowind-era kf compat.
         let v = stream.version();
-        if v < crate::version::NifVersion(0x04020200) {
+        if v <= crate::version::NifVersion(0x04020200) {
             let _next_extra_data_ref = stream.read_block_ref()?;
             if v >= crate::version::NifVersion(0x04000000) {
                 let _num_bytes = stream.read_u32_le()?;
@@ -1472,13 +1473,13 @@ mod tests {
         assert_eq!(interp.data_ref.index(), Some(99));
     }
 
-    /// Boundary regression for #769. nif.xml gates `Order` with
-    /// `until="10.1.0.0"`, which is exclusive — the field is absent
-    /// at v10.1.0.0 exactly. Pre-fix the parser used `<=`, so at
-    /// v10.1.0.0 it consumed 4 stray bytes that should have been
-    /// the X-axis KeyGroup's `num_keys`, then ran past EOF.
+    /// Boundary regression for #935 (post-#769 doctrine flip). nif.xml
+    /// gates `Order` with `until="10.1.0.0"` which is **inclusive** per
+    /// niftools/nifly (see version.rs doctrine). The field IS present
+    /// at v10.1.0.0 exactly; the first version that drops it is
+    /// v10.1.0.1.
     #[test]
-    fn parse_transform_data_xyz_no_order_at_v10_1_0_0_exactly() {
+    fn parse_transform_data_xyz_order_at_v10_1_0_0_exactly() {
         let header = NifHeader {
             version: NifVersion::V10_1_0_0,
             little_endian: true,
@@ -1495,7 +1496,7 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&1u32.to_le_bytes()); // num_rotation_keys = 1
         data.extend_from_slice(&4u32.to_le_bytes()); // KeyType::XyzRotation
-                                                     // NO Order field at v10.1.0.0 (until= is exclusive)
+        data.extend_from_slice(&0u32.to_le_bytes()); // Order = 0 (XYZ) — IS read at v10.1.0.0 (inclusive)
         data.extend_from_slice(&0u32.to_le_bytes()); // X KeyGroup num_keys = 0
         data.extend_from_slice(&0u32.to_le_bytes()); // Y KeyGroup num_keys = 0
         data.extend_from_slice(&0u32.to_le_bytes()); // Z KeyGroup num_keys = 0
@@ -1505,13 +1506,49 @@ mod tests {
         let expected_len = data.len();
         let mut stream = NifStream::new(&data, &header);
         let td = NiTransformData::parse(&mut stream)
-            .expect("v10.1.0.0 NiTransformData with XYZ rotation must parse without Order");
+            .expect("v10.1.0.0 NiTransformData must consume Order under inclusive doctrine");
         assert_eq!(stream.position() as usize, expected_len);
         assert_eq!(td.rotation_type, Some(KeyType::XyzRotation));
         assert!(td.xyz_rotations.is_some());
     }
 
-    /// Companion to #769: at v10.0.1.0 (below the boundary) the
+    /// Boundary above the inclusive `until="10.1.0.0"` — at v10.1.0.1
+    /// the Order field is finally absent.
+    #[test]
+    fn parse_transform_data_xyz_no_order_at_v10_1_0_1() {
+        let header = NifHeader {
+            version: NifVersion(0x0A010001),
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_le_bytes()); // num_rotation_keys = 1
+        data.extend_from_slice(&4u32.to_le_bytes()); // KeyType::XyzRotation
+        // NO Order at v10.1.0.1 (just above the inclusive until= boundary)
+        data.extend_from_slice(&0u32.to_le_bytes()); // X KeyGroup num_keys = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // Y KeyGroup num_keys = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // Z KeyGroup num_keys = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // translations num_keys = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // scales num_keys = 0
+
+        let expected_len = data.len();
+        let mut stream = NifStream::new(&data, &header);
+        let td = NiTransformData::parse(&mut stream)
+            .expect("v10.1.0.1 NiTransformData must skip Order under inclusive doctrine");
+        assert_eq!(stream.position() as usize, expected_len);
+        assert_eq!(td.rotation_type, Some(KeyType::XyzRotation));
+        assert!(td.xyz_rotations.is_some());
+    }
+
+    /// Pre-boundary spot check: at v10.0.1.0 (below the boundary) the
     /// `Order` field IS still present and must be consumed.
     #[test]
     fn parse_transform_data_xyz_with_order_below_v10_1_0_0() {

@@ -3,6 +3,30 @@
 //! Gamebryo encodes the version as a packed u32: major.minor.patch.build
 //! where each component gets 8 bits (except major which is sometimes larger).
 //! The actual encoding is: (major << 24) | (minor << 16) | (patch << 8) | build.
+//!
+//! ## `since=` / `until=` semantic doctrine (#935)
+//!
+//! nif.xml's `<add since="A" until="B">` attribute pair is **inclusive**
+//! on both ends: the field is present at every version `v` such that
+//! `A <= v <= B`. niftools' own `verexpr` token table backs this up —
+//! `#NI_BS_LTE_FO3#` is documented as "All NI + BS *until* Fallout 3"
+//! and uses the operator `<=`. nifly mirrors the same convention with
+//! `<=`-comparisons against `V10_0_1_X` enum values.
+//!
+//! Translate to Rust comparisons:
+//!
+//! - `since="X"`  →  `stream.version() >= NifVersion(X)`
+//! - `until="X"`  →  `stream.version() <= NifVersion(X)`
+//!
+//! The pre-#935 codebase carried an exclusive interpretation
+//! (`stream.version() < NifVersion(X)` for `until="X"`) introduced
+//! by the #765 / #769 sweep. That was wrong — every gate would
+//! mis-skip its field at the boundary version exactly. Bethesda
+//! content is unaffected because every shipping `until=` gate sits
+//! at a version older than 20.0.0.5 (Oblivion baseline), so the
+//! predicate collapsed to `false` either way. The bug bit on
+//! pre-Bethesda Gamebryo / NetImmerse content (Civ4 Colonial Fleet,
+//! IndustryGiant 2, Morrowind-era mods).
 
 use std::fmt;
 
