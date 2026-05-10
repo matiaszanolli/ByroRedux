@@ -43,10 +43,7 @@
 use std::sync::Arc;
 
 use byroredux_core::string::{FixedString, StringPool};
-use byroredux_nif::import::{
-    BsValueNodeData, BsOrderedNodeData, ImportedMesh, ImportedNode, ImportedScene,
-    ShaderTypeFields, TreeBones,
-};
+use byroredux_nif::import::{ImportedMesh, ImportedNode, ImportedScene, ShaderTypeFields};
 
 use crate::scene::SptScene;
 
@@ -418,10 +415,6 @@ mod tests {
     /// accidentally start populating them on the SpeedTree path.
     #[test]
     fn placeholder_clears_nif_specific_node_metadata() {
-        let _ = BsValueNodeData { value: 0, flags: 0 }; // type-existence guard
-        let _ = BsOrderedNodeData { alpha_sort_bound: [0.0; 4], is_static_bound: false };
-        let _ = TreeBones::default();
-
         let mut pool = StringPool::new();
         let imported = import_spt_scene(&empty_scene(), &SptImportParams::default(), &mut pool);
         let n = &imported.nodes[0];

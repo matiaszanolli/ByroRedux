@@ -20,6 +20,7 @@ byroredux-renderer = { workspace = true }
 byroredux-platform = { workspace = true }
 byroredux-scripting = { workspace = true }
 byroredux-nif = { workspace = true }
+byroredux-spt = { workspace = true }
 byroredux-bsa = { workspace = true }
 byroredux-bgsm = { workspace = true }
 byroredux-facegen = { workspace = true }

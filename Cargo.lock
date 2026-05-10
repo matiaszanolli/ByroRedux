@@ -384,6 +384,7 @@ dependencies = [
  "byroredux-plugin",
  "byroredux-renderer",
  "byroredux-scripting",
+ "byroredux-spt",
  "byroredux-ui",
  "env_logger",
  "image 0.24.9",
@@ -569,6 +570,8 @@ name = "byroredux-spt"
 version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
+ "byroredux-core",
+ "byroredux-nif",
  "env_logger",
  "log",
  "thiserror 2.0.18",

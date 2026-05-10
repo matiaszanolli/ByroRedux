@@ -1254,20 +1254,50 @@ fn load_references(
                         // on `NifImportRegistry` was released at the
                         // close of the `reg_entry` scope above, so the
                         // two locks never overlap. See #609.
+                        //
+                        // SpeedTree extension switch (Phase 1.5).
+                        // Pre-Skyrim TREE records point MODL at a
+                        // `.spt` SpeedTree binary instead of a NIF —
+                        // dispatch to the SPT crate's parser/importer
+                        // when we see that extension. The TREE record
+                        // (carrying ICON / OBND / etc.) is looked up
+                        // from `record_index.trees` keyed by the same
+                        // form id the cell loader resolved against
+                        // `index.statics`. See SpeedTree plan 1.5.
+                        let is_spt = model_path
+                            .as_str()
+                            .rsplit('.')
+                            .next()
+                            .map(|ext| ext.eq_ignore_ascii_case("spt"))
+                            .unwrap_or(false);
                         let parsed = match tex_provider.extract_mesh(&model_path) {
                             Some(d) => {
                                 let mut pool =
                                     world.resource_mut::<byroredux_core::string::StringPool>();
-                                parse_and_import_nif(
-                                    &d,
-                                    &model_path,
-                                    mat_provider.as_deref_mut(),
-                                    &mut pool,
-                                    Some(tex_provider),
-                                )
+                                if is_spt {
+                                    let tree_record = record_index.trees.get(&child_form_id);
+                                    parse_and_import_spt(
+                                        &d,
+                                        &model_path,
+                                        tree_record,
+                                        &mut pool,
+                                    )
+                                } else {
+                                    parse_and_import_nif(
+                                        &d,
+                                        &model_path,
+                                        mat_provider.as_deref_mut(),
+                                        &mut pool,
+                                        Some(tex_provider),
+                                    )
+                                }
                             }
                             None => {
-                                log::debug!("NIF not found in BSA: '{}'", model_path);
+                                log::debug!(
+                                    "{} not found in BSA: '{}'",
+                                    if is_spt { "SPT" } else { "NIF" },
+                                    model_path,
+                                );
                                 None
                             }
                         };
@@ -1645,6 +1675,97 @@ fn parse_and_import_nif(
         lights,
         particle_emitters,
         embedded_clip,
+    }))
+}
+
+/// Parse a SpeedTree `.spt` byte slice and convert it to the same
+/// [`CachedNifImport`] shape every other model goes through. Lets the
+/// cache + spawn paths consume `.spt` REFRs without a parallel
+/// dispatch tree.
+///
+/// Today (Phase 1.4 + 1.5) the SPT importer ships the **placeholder
+/// fallback** — a single yaw-billboard quad textured with the leaf
+/// icon resolved from the matching `TreeRecord` (TREE.ICON wins,
+/// `.spt` tag 4003 falls back). When the geometry-tail decoder lands
+/// later, `byroredux_spt::import_spt_scene` will start producing
+/// real branch / frond meshes + per-leaf billboards without any
+/// signature change here.
+///
+/// Returns `None` on parse failure or when the importer produces no
+/// usable geometry (e.g. `.spt` magic missing) so subsequent REFRs
+/// of the same model don't re-attempt the doomed parse.
+fn parse_and_import_spt(
+    spt_data: &[u8],
+    label: &str,
+    tree_record: Option<&byroredux_plugin::esm::records::TreeRecord>,
+    pool: &mut byroredux_core::string::StringPool,
+) -> Option<Arc<CachedNifImport>> {
+    let scene = match byroredux_spt::parse_spt(spt_data) {
+        Ok(s) => {
+            log::debug!(
+                "Parsed SPT '{}': {} entries, tail at offset {}",
+                label,
+                s.entries.len(),
+                s.tail_offset,
+            );
+            if !s.unknown_tags.is_empty() {
+                log::debug!(
+                    "  SPT '{}' bailed at unknown tag {} (offset {}) — \
+                     parameter section partial; placeholder still renders",
+                    label,
+                    s.unknown_tags[0].0,
+                    s.unknown_tags[0].1,
+                );
+            }
+            s
+        }
+        Err(e) => {
+            log::warn!("Failed to parse SPT '{}': {}", label, e);
+            return None;
+        }
+    };
+
+    // Build SptImportParams from the matching TREE record. Every
+    // field defaults gracefully when the record is absent — a `.spt`
+    // referenced from a stub TREE (or from non-TREE content) still
+    // gets a generic-sized placeholder.
+    let leaf_texture_override = tree_record
+        .map(|t| t.leaf_texture.as_str())
+        .filter(|s| !s.is_empty());
+
+    let bounds = tree_record.and_then(|t| t.bounds).map(|b| {
+        let min = [b.min[0] as f32, b.min[1] as f32, b.min[2] as f32];
+        let max = [b.max[0] as f32, b.max[1] as f32, b.max[2] as f32];
+        (min, max)
+    });
+
+    // Wind sensitivity / strength would come from CNAM, not BNAM
+    // (BNAM is billboard-card width/height per UESP). CNAM semantics
+    // aren't pinned down yet — Phase 2 wires it. Leave None so the
+    // placeholder doesn't pretend to know the wind response.
+    let wind = None;
+
+    let form_id = tree_record.map(|t| t.form_id);
+
+    let params = byroredux_spt::SptImportParams {
+        leaf_texture_override,
+        bounds,
+        wind,
+        form_id,
+    };
+
+    let imported = byroredux_spt::import_spt_scene(&scene, &params, pool);
+
+    Some(Arc::new(CachedNifImport {
+        meshes: imported.meshes,
+        // No collisions / lights / particles / animation clips on
+        // the placeholder. Real branch geometry might emit a sphere
+        // collision (tree-trunk collider) once the geometry tail is
+        // decoded — follow-up sub-phase.
+        collisions: Vec::new(),
+        lights: Vec::new(),
+        particle_emitters: Vec::new(),
+        embedded_clip: None,
     }))
 }
 
