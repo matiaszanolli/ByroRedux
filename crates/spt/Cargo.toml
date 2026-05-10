@@ -17,6 +17,13 @@ edition.workspace = true
 [dependencies]
 log = { workspace = true }
 thiserror = { workspace = true }
+# Imported* scene types live in the NIF crate (engine-wide
+# "renderable scene" shape). Pulling them in keeps the SpeedTree
+# importer's output drop-in compatible with `byroredux/src/scene.rs`'s
+# existing scene-spawn path — same convention as how the cell loader
+# routes any model_path through one canonical importer.
+byroredux-nif = { workspace = true }
+byroredux-core = { workspace = true }
 
 [dev-dependencies]
 byroredux-bsa = { workspace = true }

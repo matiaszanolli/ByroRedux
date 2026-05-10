@@ -40,6 +40,7 @@
 //! compatibility plan ships the placeholder fallback (a yaw-billboard
 //! quad keyed on the TREE record's ICON) instead.
 
+pub mod import;
 pub mod parser;
 pub mod scene;
 pub mod stream;
@@ -49,6 +50,7 @@ pub mod version;
 #[cfg(feature = "recon")]
 pub mod recon;
 
+pub use import::{import_spt_scene, SptImportParams};
 pub use parser::{parse_spt, TAG_MAX, TAG_MIN};
 pub use scene::{SptScene, SptValue, TagEntry};
 pub use stream::SptStream;
