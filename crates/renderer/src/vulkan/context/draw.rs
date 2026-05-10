@@ -6,7 +6,7 @@ use super::super::scene_buffer::{
     self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
     INSTANCE_FLAG_NON_UNIFORM_SCALE, INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_RENDER_LAYER_MASK,
     INSTANCE_RENDER_LAYER_SHIFT, INSTANCE_TERRAIN_TILE_MASK,
-    INSTANCE_TERRAIN_TILE_SHIFT,
+    INSTANCE_TERRAIN_TILE_SHIFT, MATERIAL_KIND_GLASS,
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
@@ -26,6 +26,37 @@ fn halton(mut index: u32, base: u32) -> f32 {
         f /= base as f32;
     }
     result
+}
+
+/// Return `true` when `cmd` represents a real refractive surface that the
+/// caustic compute pass (`caustic_splat.comp`) should splat from. The CPU
+/// gate produces `INSTANCE_FLAG_CAUSTIC_SOURCE` on the `GpuInstance.flags`
+/// word; the compute pass burns `max_lights` TLAS ray queries per flagged
+/// pixel, so the gate has to stay tight.
+///
+/// Accepted refractive signals:
+///   * `material_kind == MATERIAL_KIND_GLASS` — engine-classified glass
+///     from `render::build_render_data` (alpha-blend + low metal + low
+///     roughness + not a decal). See #515 / #706.
+///   * Skyrim+ `MultiLayerParallax` (kind 11) with a non-zero inner-layer
+///     refraction scale — real two-layer refractive surface.
+///
+/// Rejected (pre-#922 false positives the old `alpha_blend &&
+/// metalness < 0.3` gate caught): hair (HairTint, kind 6), foliage (kind 0
+/// alpha-test cutouts), particle billboards (kind 0, emissive), decals
+/// (`is_decal` excluded by the glass classifier), `BSEffectShaderProperty`
+/// FX cards (kind 101 — MATERIAL_KIND_EFFECT_SHADER).
+fn is_caustic_source(cmd: &DrawCommand) -> bool {
+    if cmd.material_kind == MATERIAL_KIND_GLASS {
+        return true;
+    }
+    const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11;
+    if cmd.material_kind == MATERIAL_KIND_MULTI_LAYER_PARALLAX
+        && cmd.multi_layer_refraction_scale > 0.0
+    {
+        return true;
+    }
+    false
 }
 
 /// A batch of instances sharing the same mesh + pipeline state.
@@ -904,7 +935,21 @@ impl VulkanContext {
             // with the fragment shader's `flags & N` checks.
             //   bit 0 = non-uniform scale
             //   bit 1 = NiAlphaProperty blend bit
-            //   bit 2 = caustic source (alpha-blend + metalness < 0.3). See #321.
+            //   bit 2 = caustic source — real refractive surface
+            //           (#922 / REN-D13-NEW-01). Pre-fix this fired for
+            //           every alpha-blend + low-metalness draw, which
+            //           over-included hair, foliage, particle quads,
+            //           decals and FX cards — none refractive. The
+            //           caustic compute (`caustic_splat.comp`) burns
+            //           `max_lights` TLAS ray queries per flagged pixel,
+            //           so a foliage-heavy exterior wasted significant
+            //           ray budget. Gate now matches the upstream glass
+            //           classification in `render::build_render_data`
+            //           (#515 / #706): engine-classified
+            //           `MATERIAL_KIND_GLASS` (alpha-blend + low metal +
+            //           low roughness + not a decal) OR Skyrim+
+            //           `MultiLayerParallax` (kind 11) with a non-zero
+            //           inner-layer refraction scale.
             //   bit 3 = terrain splat (set in cell_loader for LAND entities, #470).
             let mut flags = if has_non_uniform_scale {
                 INSTANCE_FLAG_NON_UNIFORM_SCALE
@@ -913,9 +958,9 @@ impl VulkanContext {
             };
             if draw_cmd.alpha_blend {
                 flags |= INSTANCE_FLAG_ALPHA_BLEND;
-                if draw_cmd.metalness < 0.3 {
-                    flags |= INSTANCE_FLAG_CAUSTIC_SOURCE;
-                }
+            }
+            if is_caustic_source(draw_cmd) {
+                flags |= INSTANCE_FLAG_CAUSTIC_SOURCE;
             }
             if let Some(tile_idx) = draw_cmd.terrain_tile_index {
                 flags |= INSTANCE_FLAG_TERRAIN_SPLAT;
@@ -2075,5 +2120,130 @@ impl VulkanContext {
         }
 
         Ok(suboptimal || present_suboptimal)
+    }
+}
+
+#[cfg(test)]
+mod is_caustic_source_tests {
+    use super::*;
+
+    /// Minimal `DrawCommand` builder for the caustic-gate unit tests.
+    /// Fields irrelevant to `is_caustic_source` get zero/default values
+    /// — the gate only consults `material_kind` and
+    /// `multi_layer_refraction_scale`.
+    fn cmd(material_kind: u32, multi_layer_refraction_scale: f32) -> DrawCommand {
+        DrawCommand {
+            mesh_handle: 0,
+            texture_handle: 0,
+            model_matrix: [0.0; 16],
+            alpha_blend: true,
+            src_blend: 6,
+            dst_blend: 7,
+            two_sided: false,
+            is_decal: false,
+            render_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
+            bone_offset: 0,
+            normal_map_index: 0,
+            dark_map_index: 0,
+            glow_map_index: 0,
+            detail_map_index: 0,
+            gloss_map_index: 0,
+            parallax_map_index: 0,
+            parallax_height_scale: 0.0,
+            parallax_max_passes: 0.0,
+            env_map_index: 0,
+            env_mask_index: 0,
+            alpha_threshold: 0.0,
+            alpha_test_func: 0,
+            roughness: 0.5,
+            metalness: 0.0,
+            emissive_mult: 0.0,
+            emissive_color: [0.0; 3],
+            specular_strength: 0.0,
+            specular_color: [0.0; 3],
+            diffuse_color: [1.0; 3],
+            ambient_color: [1.0; 3],
+            vertex_offset: 0,
+            index_offset: 0,
+            vertex_count: 0,
+            sort_depth: 0,
+            in_tlas: true,
+            in_raster: true,
+            avg_albedo: [0.0; 3],
+            material_kind,
+            z_test: true,
+            z_write: true,
+            z_function: 3,
+            terrain_tile_index: None,
+            entity_id: 0,
+            uv_offset: [0.0; 2],
+            uv_scale: [1.0; 2],
+            material_alpha: 1.0,
+            skin_tint_rgba: [0.0; 4],
+            hair_tint_rgb: [0.0; 3],
+            multi_layer_envmap_strength: 0.0,
+            eye_left_center: [0.0; 3],
+            eye_cubemap_scale: 0.0,
+            eye_right_center: [0.0; 3],
+            multi_layer_inner_thickness: 0.0,
+            multi_layer_refraction_scale,
+            multi_layer_inner_scale: [0.0; 2],
+            sparkle_rgba: [0.0; 4],
+            effect_falloff: [0.0; 5],
+            material_id: 0,
+            vertex_color_emissive: false,
+        }
+    }
+
+    #[test]
+    fn glass_material_is_caustic_source() {
+        // MATERIAL_KIND_GLASS = 100: engine-classified refractive surface.
+        assert!(is_caustic_source(&cmd(MATERIAL_KIND_GLASS, 0.0)));
+    }
+
+    #[test]
+    fn multi_layer_parallax_with_refraction_is_caustic_source() {
+        // Skyrim+ BSLightingShaderProperty MultiLayerParallax variant
+        // with non-zero refraction scale — real two-layer refraction.
+        assert!(is_caustic_source(&cmd(11, 0.3)));
+    }
+
+    #[test]
+    fn multi_layer_parallax_without_refraction_is_not_caustic() {
+        // Kind 11 with zero refraction scale = parallax but no refraction.
+        assert!(!is_caustic_source(&cmd(11, 0.0)));
+    }
+
+    #[test]
+    fn default_lit_alpha_blend_is_not_caustic_source() {
+        // material_kind=0 covers foliage alpha-test cutouts and particle
+        // billboards. Pre-#922 the old `alpha_blend && metalness < 0.3`
+        // gate fired here and burned `max_lights` TLAS ray queries per
+        // foliage pixel on exterior cells.
+        assert!(!is_caustic_source(&cmd(0, 0.0)));
+    }
+
+    #[test]
+    fn hair_tint_is_not_caustic_source() {
+        // material_kind=6 = HairTint (Skyrim+). Pre-#922 false positive.
+        assert!(!is_caustic_source(&cmd(6, 0.0)));
+    }
+
+    #[test]
+    fn effect_shader_is_not_caustic_source() {
+        // MATERIAL_KIND_EFFECT_SHADER (101): BSEffectShaderProperty FX
+        // cards — fire planes, magic auras, decals. Emissive add, no
+        // refraction. Pre-#922 false positive on every alpha-blend FX.
+        assert!(!is_caustic_source(&cmd(
+            scene_buffer::MATERIAL_KIND_EFFECT_SHADER,
+            0.0
+        )));
+    }
+
+    #[test]
+    fn skin_tint_is_not_caustic_source() {
+        // material_kind=5 = SkinTint. Bethesda character skin meshes.
+        // Pre-#922 false positive on the alpha-blend body slot.
+        assert!(!is_caustic_source(&cmd(5, 0.0)));
     }
 }

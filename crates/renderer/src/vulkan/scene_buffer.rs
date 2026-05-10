@@ -205,9 +205,14 @@ pub struct GpuInstance {
     ///   bit 0 — has non-uniform scale (needs inverse-transpose normal transform). See #273.
     ///   bit 1 — `alpha_blend` enabled (NiAlphaProperty blend bit). Used by the
     ///           fragment shader for its `isGlass`/`isWindow` classification.
-    ///   bit 2 — caustic source: mesh is a plausible refractive surface
-    ///           (alpha-blend, non-metal). The caustic compute pass scatters
-    ///           caustic splats from every pixel whose instance has this bit. #321.
+    ///   bit 2 — caustic source: real refractive surface. The caustic compute
+    ///           pass scatters caustic splats from every pixel whose instance
+    ///           has this bit. Set by the CPU gate `draw::is_caustic_source`,
+    ///           which requires `MATERIAL_KIND_GLASS` (engine-classified glass)
+    ///           or Skyrim+ `MultiLayerParallax` (kind 11) with a non-zero
+    ///           refraction scale. Pre-#922 fired for every alpha-blend +
+    ///           low-metal draw, which over-included hair, foliage, particles,
+    ///           decals and FX cards. See #321 (original) / #922 (gate tighten).
     ///   bits 3 — terrain-splat enable.
     ///   bits 16..32 — terrain tile slot (when bit 3 is set). See #470.
     pub flags: u32, // 4 B, offset 84

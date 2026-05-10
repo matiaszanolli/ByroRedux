@@ -5,8 +5,9 @@
 // Caustic scatter pass (#321 Option A).
 //
 // One compute invocation per screen pixel. Only pixels whose instance has
-// bit 2 of `flags` (the caustic-source bit, set CPU-side by the refractive-
-// material heuristic in draw.rs) do work. For each such pixel, we:
+// bit 2 of `flags` (the caustic-source bit, set CPU-side by
+// `draw::is_caustic_source` — MATERIAL_KIND_GLASS or MultiLayerParallax
+// with non-zero refraction scale, see #922) do work. For each such pixel, we:
 //   1. Reconstruct the refractive surface's world pos + normal from the
 //      G-buffer (depth + octahedral normal).
 //   2. For each of the first N lights, refract the light's incidence
@@ -112,10 +113,11 @@ void main() {
     // Reject background (meshId = 0 means "empty").
     // Mask off the ALPHA_BLEND_NO_HISTORY flag (bit 15) that
     // triangle.frag sets on transparent fragments — caustic sources
-    // are by definition alpha-blend (the flag 4u check below filters
-    // to metal<0.3 blend surfaces), so every caustic-splat pixel
-    // carries this bit. Without the mask the derived instIdx would
-    // overflow the instance SSBO.
+    // are always alpha-blend (the post-#922 CPU gate restricts the
+    // bit to MATERIAL_KIND_GLASS and MultiLayerParallax refraction,
+    // both of which require alpha-blend upstream), so every
+    // caustic-splat pixel carries this bit. Without the mask the
+    // derived instIdx would overflow the instance SSBO.
     uint meshIdRaw = texelFetch(meshIdTex, pixel, 0).r;
     uint meshId = meshIdRaw & 0x7FFFu;
     if (meshId == 0u) return;
