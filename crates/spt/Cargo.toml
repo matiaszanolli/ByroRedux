@@ -1,0 +1,36 @@
+[package]
+name = "byroredux-spt"
+version.workspace = true
+edition.workspace = true
+
+# SpeedTree `.spt` parser — Oblivion / Fallout 3 / Fallout New Vegas.
+# Skyrim onward dropped `.spt` and bakes tree geometry into NIFs rooted
+# at `BSTreeNode`, so this crate only targets the pre-Skyrim era.
+#
+# IMPORTANT — clean-room policy. We never link the IDV SpeedTree SDK,
+# never copy SDK headers, never paraphrase SDK documentation verbatim.
+# Format notes in `docs/format-notes.md` are observation-only, derived
+# from corpus statistics + cross-references against TREE record
+# subrecords (ICON / SNAM / CNAM / BNAM). The plan also forbids
+# redistributing SpeedTree binaries — we are a reader, never a writer.
+
+[dependencies]
+log = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+byroredux-bsa = { workspace = true }
+env_logger = { workspace = true }
+
+[features]
+# Reverse-engineering harness: corpus stat sweep + per-file dumps.
+# Gated so the default build doesn't pull in the BSA reader (which
+# is also dev-dep above). Enable via `--features recon` when running
+# the recon example or the future format-discovery integration tests.
+default = []
+recon = []
+
+[[example]]
+name = "spt_recon"
+path = "examples/spt_recon.rs"
+required-features = ["recon"]

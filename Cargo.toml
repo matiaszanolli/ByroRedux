@@ -2,6 +2,7 @@
 members = [
     "crates/core",
     "crates/nif",
+    "crates/spt",
     "crates/plugin",
     "crates/physics",
     "crates/renderer",
@@ -34,6 +35,7 @@ byroredux-platform = { path = "crates/platform" }
 byroredux-plugin = { path = "crates/plugin" }
 byroredux-scripting = { path = "crates/scripting" }
 byroredux-nif = { path = "crates/nif" }
+byroredux-spt = { path = "crates/spt" }
 byroredux-bsa = { path = "crates/bsa" }
 byroredux-bgsm = { path = "crates/bgsm" }
 byroredux-physics = { path = "crates/physics" }
