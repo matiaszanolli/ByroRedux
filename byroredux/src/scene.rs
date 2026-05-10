@@ -1156,6 +1156,10 @@ pub(crate) fn setup_scene(
 ///   `cargo run -- path/to/file.nif` — loose NIF file
 ///   `cargo run -- --bsa meshes.bsa --mesh meshes\foo.nif` — extract from BSA
 ///   `cargo run -- --bsa meshes.bsa --mesh meshes\foo.nif --textures-bsa textures.bsa`
+///   `cargo run -- --bsa meshes.bsa --tree trees\joshua01.spt` — direct
+///       SpeedTree visualiser (Phase 1.6). Renders the placeholder billboard
+///       per the SpeedTree compatibility plan; useful for one-tree
+///       reverse-engineering iteration without spinning up a whole cell.
 fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Option<EntityId>) {
     let args: Vec<String> = std::env::args().collect();
 
@@ -1164,7 +1168,7 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Opt
     let mut mat_provider = build_material_provider(&args);
 
     if let Some(bsa_idx) = args.iter().position(|a| a == "--bsa") {
-        // BSA mode: --bsa <archive> --mesh <path_in_archive>
+        // BSA mode: --bsa <archive> {--mesh|--tree} <path_in_archive>.
         let bsa_path = match args.get(bsa_idx + 1) {
             Some(p) => p,
             None => {
@@ -1172,14 +1176,20 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Opt
                 return (0, None);
             }
         };
-        let mesh_path = match args
+        // `--tree` is shorthand for `--mesh` that documents the
+        // user's intent to visualise a SpeedTree binary. The
+        // routing inside `parse_import_and_merge` branches on the
+        // path's `.spt` extension regardless of which flag was
+        // used, so `--mesh foo.spt` works equivalently — `--tree`
+        // exists for discoverability via `--help` / docs.
+        let asset_path = match args
             .iter()
-            .position(|a| a == "--mesh")
+            .position(|a| a == "--mesh" || a == "--tree")
             .and_then(|i| args.get(i + 1))
         {
             Some(p) => p,
             None => {
-                log::error!("--bsa requires --mesh <path>");
+                log::error!("--bsa requires --mesh <path> (or --tree <path> for `.spt`)");
                 return (0, None);
             }
         };
@@ -1191,19 +1201,19 @@ fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Opt
                 return (0, None);
             }
         };
-        let data = match archive.extract(mesh_path) {
+        let data = match archive.extract(asset_path) {
             Ok(d) => d,
             Err(e) => {
-                log::error!("Failed to extract '{}': {}", mesh_path, e);
+                log::error!("Failed to extract '{}': {}", asset_path, e);
                 return (0, None);
             }
         };
-        log::info!("Extracted {} bytes from BSA '{}'", data.len(), mesh_path);
+        log::info!("Extracted {} bytes from BSA '{}'", data.len(), asset_path);
         load_nif_bytes(
             world,
             ctx,
             &data,
-            mesh_path,
+            asset_path,
             &tex_provider,
             Some(&mut mat_provider),
         )
@@ -1262,6 +1272,13 @@ pub(crate) fn load_nif_bytes(
 /// hook-bypass path (where the per-NPC `pre_spawn_hook` then mutates
 /// the result before spawn). Returns `None` on parse failure so the
 /// caller can record a negative cache entry. See #880 / CELL-PERF-02.
+///
+/// Branches on `label`'s extension to route SpeedTree `.spt` bytes
+/// through `byroredux_spt::parse_spt + import_spt_scene` instead of
+/// the NIF parser. This is the loose-file / `--tree` direct-visualiser
+/// path; cell loader REFRs go through `cell_loader::parse_and_import_spt`
+/// which can also pull TREE record metadata for sizing + texture
+/// override.
 fn parse_import_and_merge(
     world: &mut World,
     data: &[u8],
@@ -1269,6 +1286,36 @@ fn parse_import_and_merge(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
 ) -> Option<byroredux_nif::import::ImportedScene> {
+    let is_spt = label
+        .rsplit('.')
+        .next()
+        .map(|ext| ext.eq_ignore_ascii_case("spt"))
+        .unwrap_or(false);
+    if is_spt {
+        let scene = match byroredux_spt::parse_spt(data) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("Failed to parse SPT '{}': {}", label, e);
+                return None;
+            }
+        };
+        let mut pool = world.resource_mut::<StringPool>();
+        // Direct-visualiser path has no TREE record context — the
+        // importer's default params produce a 256×512 placeholder
+        // textured with whatever leaf path the `.spt` itself
+        // authored (tag 4003). Cell-loader REFRs hit the parallel
+        // `cell_loader::parse_and_import_spt` path which threads
+        // the TREE record's ICON / OBND through.
+        let imported = byroredux_spt::import_spt_scene(
+            &scene,
+            &byroredux_spt::SptImportParams::default(),
+            &mut pool,
+        );
+        // BGSM merge doesn't apply — `.spt` doesn't carry BGSM/BGEM
+        // material refs. Drop the mat_provider unused for this path.
+        let _ = mat_provider;
+        return Some(imported);
+    }
     let scene = match byroredux_nif::parse_nif(data) {
         Ok(s) => s,
         Err(e) => {

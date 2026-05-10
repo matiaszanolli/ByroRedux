@@ -220,6 +220,7 @@ Usage:
   `cargo run -- mesh.nif --kf anim.kf` — play animation on a mesh
   `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render
   `cargo run -- --bsa meshes.bsa --mesh meshes\\foo.nif --textures-bsa textures.bsa` — with textures
+  `cargo run -- --bsa "Fallout - Meshes.bsa" --tree trees\\joshua01.spt --textures-bsa "Fallout - Textures.bsa"` — direct SpeedTree visualiser (FNV/FO3/Oblivion `.spt`); renders a placeholder billboard per SpeedTree Phase 1.6
   `cargo run -- --esm FalloutNV.esm --cell CellID --bsa Meshes.bsa --textures-bsa Textures.bsa` — cell
   `cargo run -- --esm Fallout3.esm --cell Megaton01 --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa"` — FO3 interior cell (Megaton, 929 REFRs)
   `cargo run -- --esm FalloutNV.esm --grid 0,0 --radius 3 --bsa …` — exterior grid (radius 1..=7, default 3)
