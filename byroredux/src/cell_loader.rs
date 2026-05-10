@@ -33,6 +33,44 @@ mod nif_import_registry;
 // Re-exports keep the existing `super::*` test imports working and let
 // the rest of `cell_loader` reach these items unqualified.
 pub(crate) use nif_import_registry::{CachedNifImport, NifImportRegistry};
+
+/// Pack `BSEffectShaderProperty` flag booleans (captured in Stage 1 by
+/// `BsEffectShaderData::effect_{soft,palette_color,palette_alpha,lit}`)
+/// into a `GpuMaterial::material_flags`-format u32 so the renderer can
+/// OR the word straight into per-frame material entries without per-bit
+/// re-encoding at the import→render boundary.
+///
+/// `None` (mesh has no `BSEffectShaderProperty`) yields `0`; the
+/// FO3/FNV `BSShaderNoLightingProperty` path also flows through this
+/// helper at `scene.rs` / `cell_loader.rs` with a `None` arg because
+/// that block lacks the SLSF1/SLSF2 vocabulary entirely.
+///
+/// Bit layout is pinned by `byroredux_renderer::vulkan::material::material_flag::EFFECT_*`
+/// — see #890 Stage 2.
+pub(crate) fn pack_effect_shader_flags(
+    eff: Option<&byroredux_nif::import::BsEffectShaderData>,
+) -> u32 {
+    use byroredux_renderer::vulkan::material::material_flag::{
+        EFFECT_LIT, EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR, EFFECT_SOFT,
+    };
+    let Some(es) = eff else {
+        return 0;
+    };
+    let mut flags = 0u32;
+    if es.effect_soft {
+        flags |= EFFECT_SOFT;
+    }
+    if es.effect_palette_color {
+        flags |= EFFECT_PALETTE_COLOR;
+    }
+    if es.effect_palette_alpha {
+        flags |= EFFECT_PALETTE_ALPHA;
+    }
+    if es.effect_lit {
+        flags |= EFFECT_LIT;
+    }
+    flags
+}
 pub(crate) use refr::{
     build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements, RefrTextureOverlay,
 };
@@ -2564,6 +2602,15 @@ fn spawn_placed_instances(
                             }
                         })
                     }),
+                // #890 Stage 2 — pack the four BSEffect flag bits into
+                // a GpuMaterial-format u32 so the renderer can OR them
+                // straight into `GpuMaterial.material_flags` without
+                // per-bit re-encoding. Zero on the FO3/FNV
+                // `BSShaderNoLightingProperty` path (which shares the
+                // `effect_falloff` slot but has no SLSF1/SLSF2 bits).
+                effect_shader_flags: pack_effect_shader_flags(
+                    mesh.effect_shader.as_ref(),
+                ),
             },
         );
         // Load and attach normal map if the material specifies one.

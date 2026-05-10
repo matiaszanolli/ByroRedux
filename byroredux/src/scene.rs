@@ -1913,6 +1913,11 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                             }
                         })
                     }),
+                // #890 Stage 2 — see cell_loader.rs for the
+                // identical packing site / explanation.
+                effect_shader_flags: crate::cell_loader::pack_effect_shader_flags(
+                    mesh.effect_shader.as_ref(),
+                ),
             },
         );
 

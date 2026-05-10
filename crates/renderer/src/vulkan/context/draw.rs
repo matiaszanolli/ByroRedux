@@ -2192,6 +2192,7 @@ mod is_caustic_source_tests {
             effect_falloff: [0.0; 5],
             material_id: 0,
             vertex_color_emissive: false,
+            effect_shader_flags: 0,
         }
     }
 

@@ -1072,10 +1072,55 @@ void main() {
     // already written above and stay valid — TAA + motion-vector
     // reprojection on flame planes still works correctly across frames.
     const uint MATERIAL_KIND_EFFECT_SHADER = 101u;
+    // #890 Stage 2 — `BSEffectShaderProperty` flag bits packed into
+    // `mat.materialFlags`. The four constants below mirror
+    // `byroredux_renderer::vulkan::material::material_flag::EFFECT_*`
+    // — bit layout is the contract; the CPU side packs at the importer
+    // boundary in `byroredux::cell_loader::pack_effect_shader_flags`.
+    // `EFFECT_SOFT` / `EFFECT_PALETTE_COLOR` / `EFFECT_PALETTE_ALPHA`
+    // travel end-to-end but await Stage 2b/2c shader consumers
+    // (depth-attachment-as-shader-resource + bindless greyscale LUT
+    // slot, respectively). Only `EFFECT_LIT` is acted on today.
+    const uint MAT_FLAG_EFFECT_SOFT          = 0x2u; // bit 1
+    const uint MAT_FLAG_EFFECT_PALETTE_COLOR = 0x4u; // bit 2
+    const uint MAT_FLAG_EFFECT_PALETTE_ALPHA = 0x8u; // bit 3
+    const uint MAT_FLAG_EFFECT_LIT           = 0x10u; // bit 4
     if (mat.materialKind == MATERIAL_KIND_EFFECT_SHADER) {
         vec3 emit = texColor.rgb
                   * vec3(mat.emissiveR, mat.emissiveG, mat.emissiveB)
                   * mat.emissiveMult;
+        // #890 Stage 2 — `SLSF2::Effect_Lighting`. The vanilla engine
+        // renders these `BSEffectShaderProperty` surfaces with scene
+        // lighting on top of the additive emit (Skyrim spell FX,
+        // FO4 magic / power-armor ambient effects). Pre-fix the
+        // effect branch ignored every directional/point light and
+        // the cell ambient term, producing purely-additive flat
+        // glow that washed identically in interior moods and at
+        // night. With the bit set we add the cell ambient × surface
+        // diffuse PLUS the first directional sun's N·L contribution
+        // — a lightweight one-light shading pass that captures the
+        // dominant mood without paying the full N-light loop the
+        // rest of the shader uses (effect surfaces don't typically
+        // care about point-light contributions; the additive emit
+        // already saturates near torches / lanterns).
+        if ((mat.materialFlags & MAT_FLAG_EFFECT_LIT) != 0u) {
+            vec3 surf = texColor.rgb;
+            // Cell ambient — same payload the main lit path reads.
+            vec3 lit = sceneFlags.yzw * surf;
+            // First directional light only — `color_type.w == 2.0`
+            // is the type tag. Bounded scan so the loop has a small
+            // upper bound on every divergence.
+            uint scanCount = min(lightCount, 32u);
+            for (uint li = 0u; li < scanCount; ++li) {
+                if (uint(lights[li].color_type.w) == 2u) {
+                    vec3 Ldir = normalize(lights[li].direction_angle.xyz);
+                    float NdotL = max(dot(N, -Ldir), 0.0);
+                    lit += lights[li].color_type.rgb * NdotL * surf;
+                    break;
+                }
+            }
+            emit += lit;
+        }
         // ── #620 / SK-D4-01: view-angle falloff cone ────────────────
         //
         // BSEffectShaderProperty (Skyrim+) and BSShaderNoLightingProperty
@@ -1820,6 +1865,35 @@ void main() {
             return;
         }
         N = normalize(fragNormal);
+
+        // Diffuse mip-bias for fresnel-fallback glass — erase the
+        // fine cross-hatch detail authored into Bethesda drinking-
+        // glass / pitcher diffuse textures (drinkingglass01.dds and
+        // friends ship with a wire-mesh micro-pattern that reads
+        // as "wire weave" through the alpha-blended surface).
+        // Mirrors the IOR path's mip-6 sample at line 1756 — same
+        // reason, same trade-off.
+        //
+        // Diagnostic established 2026-05-09: BYROREDUX_RENDER_DEBUG
+        // = 0x10 (bypass normal map) does NOT remove the cross-
+        // hatch — meaning the pattern is in the diffuse texture
+        // itself, not in the normal-map perturbation. The previous
+        // line (`N = normalize(fragNormal)`) already suppresses
+        // normal-map effects on glass.
+        //
+        // Trade-off: glass surfaces lose all fine diffuse detail
+        // (etched patterns, manufacturer marks). For Bethesda
+        // glass content this is acceptable — the cross-hatch
+        // detail wasn't meaningful representation, just texture
+        // noise that happened to be visible because of the alpha-
+        // blend boost. The overall glass tint is preserved at the
+        // mip-6 averaged colour.
+        vec3 glassDiffuse = textureLod(
+            textures[nonuniformEXT(fragTexIndex)],
+            sampleUV,
+            6.0
+        ).rgb;
+        albedo = glassDiffuse;
     }
 
     // Ambient base from cell lighting — LIGHTING ONLY, no local albedo.

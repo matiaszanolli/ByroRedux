@@ -955,6 +955,12 @@ pub(crate) fn build_render_data(
                     // when the property explicitly disables vertex
                     // colors (`Ignore`).
                     vertex_color_emissive: mat.is_some_and(|m| m.vertex_color_mode == 1),
+                    // #890 Stage 2 — packed BSEffect flag bits captured
+                    // at importer ingestion (see
+                    // `cell_loader::pack_effect_shader_flags`). Layout
+                    // matches `GpuMaterial::material_flags` so
+                    // `to_gpu_material` ORs the word straight in.
+                    effect_shader_flags: mat.map(|m| m.effect_shader_flags).unwrap_or(0),
                 };
                 // #781 / PERF-N4 — `intern_by_hash` skips the
                 // `to_gpu_material()` 260-byte construction on the
@@ -1114,6 +1120,9 @@ pub(crate) fn build_render_data(
                         // `emissive_color` / `emissive_mult` already; no
                         // per-vertex emissive payload (#695).
                         vertex_color_emissive: false,
+                        // #890 Stage 2 — particles never carry
+                        // BSEffectShaderProperty flag bits.
+                        effect_shader_flags: 0,
                     };
                     // #781 / PERF-N4 — see SIBLING note above.
                     cmd.material_id = material_table
@@ -1424,6 +1433,7 @@ mod draw_sort_key_tests {
             effect_falloff: [1.0, 1.0, 1.0, 1.0, 0.0],
             material_id: 0,
             vertex_color_emissive: false,
+            effect_shader_flags: 0,
         }
     }
 

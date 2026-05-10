@@ -143,6 +143,17 @@ pub struct Material {
     /// MATERIAL_KIND_EFFECT_SHADER` (101) branch consumes these via
     /// `GpuInstance.{falloff_*, soft_falloff_depth}`. See #620 / #451.
     pub effect_falloff: Option<EffectFalloff>,
+    /// Packed `BSEffectShaderProperty` flag bits captured from
+    /// `BsEffectShaderData.effect_{soft,palette_color,palette_alpha,lit}`
+    /// at importer ingestion. Bit layout matches
+    /// `byroredux_renderer::vulkan::material::material_flag::EFFECT_*`
+    /// so the renderer OR's this word straight into
+    /// `GpuMaterial.material_flags` without per-bit re-encoding.
+    /// `0` on every non-BSEffect mesh + on the FO3/FNV
+    /// `BSShaderNoLightingProperty` path (which uses the same
+    /// `effect_falloff` slot but has no SLSF1/SLSF2 vocabulary).
+    /// See #890 / SK-D4-NEW-04.
+    pub effect_shader_flags: u32,
 }
 
 /// View-angle + soft-depth falloff cone captured from
@@ -223,6 +234,7 @@ impl Default for Material {
             z_function: 3, // LESSEQUAL — Gamebryo default
             shader_type_fields: None,
             effect_falloff: None,
+            effect_shader_flags: 0,
         }
     }
 }

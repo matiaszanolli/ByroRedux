@@ -247,6 +247,14 @@ pub struct DrawCommand {
     /// [`material_flag::VERTEX_COLOR_EMISSIVE`](super::material::material_flag::VERTEX_COLOR_EMISSIVE)
     /// bit by `to_gpu_material`.
     pub vertex_color_emissive: bool,
+    /// `BSEffectShaderProperty` flag bits packed into a
+    /// `GpuMaterial::material_flags`-format u32 — populated by the
+    /// importer via `pack_effect_shader_flags` in
+    /// `byroredux::cell_loader`. OR'd directly into
+    /// `GpuMaterial.material_flags` by [`to_gpu_material`] without
+    /// per-bit re-encoding. `0` on every non-BSEffect mesh.
+    /// See #890 Stage 2 / SK-D4-NEW-04.
+    pub effect_shader_flags: u32,
 }
 
 impl DrawCommand {
@@ -328,10 +336,17 @@ impl DrawCommand {
             falloff_start_opacity: self.effect_falloff[2],
             falloff_stop_opacity: self.effect_falloff[3],
             soft_falloff_depth: self.effect_falloff[4],
-            material_flags: if self.vertex_color_emissive {
-                super::material::material_flag::VERTEX_COLOR_EMISSIVE
-            } else {
-                0
+            material_flags: {
+                // VERTEX_COLOR_EMISSIVE bit OR'd against the BSEffect
+                // bits packed at the importer boundary (#890 Stage 2 —
+                // `pack_effect_shader_flags`). Both contributors use
+                // the same `material_flag::*` bit layout so no shift
+                // / mask gymnastics are needed.
+                let mut flags = self.effect_shader_flags;
+                if self.vertex_color_emissive {
+                    flags |= super::material::material_flag::VERTEX_COLOR_EMISSIVE;
+                }
+                flags
             },
             _pad_falloff: 0.0,
         }
@@ -361,10 +376,14 @@ impl DrawCommand {
         h.write_u32(self.roughness.to_bits());
         h.write_u32(self.metalness.to_bits());
         h.write_u32(self.emissive_mult.to_bits());
-        let material_flags = if self.vertex_color_emissive {
-            super::material::material_flag::VERTEX_COLOR_EMISSIVE
-        } else {
-            0
+        // Must mirror the same OR composition as `to_gpu_material` so
+        // the byte-level material hash stays in lockstep (#781 contract).
+        let material_flags = {
+            let mut flags = self.effect_shader_flags;
+            if self.vertex_color_emissive {
+                flags |= super::material::material_flag::VERTEX_COLOR_EMISSIVE;
+            }
+            flags
         };
         h.write_u32(material_flags);
         // Emissive RGB + specular_strength
@@ -2072,6 +2091,13 @@ mod draw_command_tests {
             effect_falloff: [0.10, 0.20, 0.30, 0.40, 0.50],
             material_id: 0,
             vertex_color_emissive: true,
+            // Fully-populated scaffold — set every bit so any future
+            // `material_hash` walk that forgets one fails the lockstep
+            // contract test (`material_hash_matches_gpu_material_field_hash`).
+            effect_shader_flags: crate::vulkan::material::material_flag::EFFECT_SOFT
+                | crate::vulkan::material::material_flag::EFFECT_PALETTE_COLOR
+                | crate::vulkan::material::material_flag::EFFECT_PALETTE_ALPHA
+                | crate::vulkan::material::material_flag::EFFECT_LIT,
         }
     }
 

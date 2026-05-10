@@ -275,6 +275,43 @@ pub mod material_flag {
     /// and the matching shader branch in
     /// `crates/renderer/shaders/triangle.frag`.
     pub const VERTEX_COLOR_EMISSIVE: u32 = 1 << 0;
+
+    // ── `BSEffectShaderProperty` flag bits (#890 Stage 2) ────────────
+    //
+    // Captured CPU-side by the four `is_*_from_modern_shader_flags`
+    // helpers in `crates/nif/src/import/material/mod.rs` (which check
+    // both the typed flag word AND the FO76/Starfield CRC32 list union).
+    // Packed into `Material.effect_shader_flags` at the importer boundary
+    // and OR'd into `GpuMaterial.material_flags` by
+    // [`DrawCommand::to_gpu_material`] so the fragment shader's
+    // `MATERIAL_KIND_EFFECT_SHADER` branch can branch on them.
+    //
+    // Bit positions must stay in lockstep with `triangle.frag` —
+    // the GLSL refers to the same `0x...u` literals.
+
+    /// `SLSF1::Soft_Effect` (nif.xml bit 30) — near-camera depth
+    /// feathering for soft particles (smoke, dust, force-field haze).
+    /// Stage 2a only plumbs the bit; the shader-side soft-depth fade
+    /// awaits the depth-attachment-as-shader-resource wiring (#890
+    /// Stage 2b — RenderDoc-required render-pass restructure).
+    pub const EFFECT_SOFT: u32 = 1 << 1;
+    /// `SLSF1::Greyscale_To_PaletteColor` (nif.xml bit 4) — sample the
+    /// `greyscale_texture` as a colour palette LUT indexed by the
+    /// source-texture luminance. Stage 2a plumbs the bit; the shader
+    /// consumer awaits the bindless `greyscale_lut_index` slot on
+    /// `GpuMaterial` (#890 Stage 2c — needs a new texture-index slot
+    /// and `_pad_falloff` repack).
+    pub const EFFECT_PALETTE_COLOR: u32 = 1 << 2;
+    /// `SLSF1::Greyscale_To_PaletteAlpha` (nif.xml bit 5) — same
+    /// `greyscale_texture` indexed for the alpha channel. Stage 2a
+    /// plumbing; Stage 2c shader consumer.
+    pub const EFFECT_PALETTE_ALPHA: u32 = 1 << 3;
+    /// `SLSF2::Effect_Lighting` (nif.xml bit 30) — scene-lit
+    /// `BSEffectShaderProperty` surface. The fragment shader's
+    /// effect-shader branch modulates the pure-additive emit term by
+    /// the cell ambient + directional sun, parallel to the lit-mesh
+    /// path. Live in Stage 2a.
+    pub const EFFECT_LIT: u32 = 1 << 4;
 }
 
 impl GpuMaterial {
