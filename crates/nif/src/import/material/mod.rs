@@ -170,6 +170,115 @@ pub(super) fn is_two_sided_from_modern_shader_flags(
     contains_any(sf1_crcs, &[TWO_SIDED]) || contains_any(sf2_crcs, &[TWO_SIDED])
 }
 
+/// Test a Skyrim+ / FO4 `BSEffectShaderProperty` flag bit against
+/// both the typed-flag word and the FO76 / Starfield CRC32 list union
+/// (#890 / SK-D4-NEW-04). Sites that need to capture one of the four
+/// `BSEffect`-relevant bits route through this — the per-bit wrappers
+/// [`is_soft_effect_from_modern_shader_flags`] /
+/// [`is_palette_color_from_modern_shader_flags`] /
+/// [`is_palette_alpha_from_modern_shader_flags`] /
+/// [`is_effect_lit_from_modern_shader_flags`] keep call sites
+/// self-documenting without paying a runtime cost.
+///
+/// `flags_word` is whichever of `shader_flags_1` / `shader_flags_2`
+/// carries the typed bit position (`mask` chooses which) — the caller
+/// passes the relevant word per the SLSF1/SLSF2 split. `sf1_crcs` and
+/// `sf2_crcs` are the FO76+ CRC32 arrays; the typed-flag word is zero
+/// on BSVER >= 132 so the CRC layer is the only signal there.
+#[inline]
+pub(super) fn modern_effect_shader_bit(
+    flags_word: u32,
+    mask: u32,
+    sf1_crcs: &[u32],
+    sf2_crcs: &[u32],
+    crc: u32,
+) -> bool {
+    use crate::shader_flags::bs_shader_crc32::contains_any;
+    if flags_word & mask != 0 {
+        return true;
+    }
+    contains_any(sf1_crcs, &[crc]) || contains_any(sf2_crcs, &[crc])
+}
+
+/// `SLSF1::Soft_Effect` capture for `BSEffectShaderProperty` — bit 30
+/// of `shader_flags_1` OR `BSShaderCRC32::SOFT_EFFECT` on the SF1/SF2
+/// arrays. See #890.
+#[inline]
+pub(super) fn is_soft_effect_from_modern_shader_flags(
+    flags1: u32,
+    sf1_crcs: &[u32],
+    sf2_crcs: &[u32],
+) -> bool {
+    use crate::shader_flags::bs_shader_crc32::SOFT_EFFECT;
+    use crate::shader_flags::skyrim_slsf1;
+    modern_effect_shader_bit(
+        flags1,
+        skyrim_slsf1::SOFT_EFFECT,
+        sf1_crcs,
+        sf2_crcs,
+        SOFT_EFFECT,
+    )
+}
+
+/// `SLSF1::Greyscale_To_PaletteColor` capture — bit 4 of `shader_flags_1`
+/// OR `BSShaderCRC32::GRAYSCALE_TO_PALETTE_COLOR`. nif.xml uses the
+/// American spelling on the CRC32 enum and the British spelling on the
+/// typed flag; we honor both at the constant import sites. See #890.
+#[inline]
+pub(super) fn is_palette_color_from_modern_shader_flags(
+    flags1: u32,
+    sf1_crcs: &[u32],
+    sf2_crcs: &[u32],
+) -> bool {
+    use crate::shader_flags::bs_shader_crc32::GRAYSCALE_TO_PALETTE_COLOR;
+    use crate::shader_flags::skyrim_slsf1;
+    modern_effect_shader_bit(
+        flags1,
+        skyrim_slsf1::GREYSCALE_TO_PALETTE_COLOR,
+        sf1_crcs,
+        sf2_crcs,
+        GRAYSCALE_TO_PALETTE_COLOR,
+    )
+}
+
+/// `SLSF1::Greyscale_To_PaletteAlpha` capture — bit 5 of `shader_flags_1`
+/// OR `BSShaderCRC32::GRAYSCALE_TO_PALETTE_ALPHA`. See #890.
+#[inline]
+pub(super) fn is_palette_alpha_from_modern_shader_flags(
+    flags1: u32,
+    sf1_crcs: &[u32],
+    sf2_crcs: &[u32],
+) -> bool {
+    use crate::shader_flags::bs_shader_crc32::GRAYSCALE_TO_PALETTE_ALPHA;
+    use crate::shader_flags::skyrim_slsf1;
+    modern_effect_shader_bit(
+        flags1,
+        skyrim_slsf1::GREYSCALE_TO_PALETTE_ALPHA,
+        sf1_crcs,
+        sf2_crcs,
+        GRAYSCALE_TO_PALETTE_ALPHA,
+    )
+}
+
+/// `SLSF2::Effect_Lighting` capture — bit 30 of `shader_flags_2` OR
+/// `BSShaderCRC32::EFFECT_LIGHTING`. See #890.
+#[inline]
+pub(super) fn is_effect_lit_from_modern_shader_flags(
+    flags2: u32,
+    sf1_crcs: &[u32],
+    sf2_crcs: &[u32],
+) -> bool {
+    use crate::shader_flags::bs_shader_crc32::EFFECT_LIGHTING;
+    use crate::shader_flags::skyrim_slsf2;
+    modern_effect_shader_bit(
+        flags2,
+        skyrim_slsf2::EFFECT_LIGHTING,
+        sf1_crcs,
+        sf2_crcs,
+        EFFECT_LIGHTING,
+    )
+}
+
 // NOTE: there is no `SF_DOUBLE_SIDED` on the FO3/FNV
 // `BSShaderPPLightingProperty` / `BSShaderNoLightingProperty` flag
 // pair. Pre-#441 we tested `flags_1 & 0x1000` on both blocks as if
@@ -634,6 +743,33 @@ pub struct BsEffectShaderData {
     /// `2=Wrap_S_Clamp_T`, `3=Wrap_S_Wrap_T` (the Skyrim default).
     /// Raw u8 — renderer maps to `vk::SamplerAddressMode` per axis.
     pub texture_clamp_mode: u8,
+    /// `SLSF1::Soft_Effect` (bit 30) — near-camera depth feathering for
+    /// soft particles (smoke, dust, force-field haze, Dwemer steam).
+    /// Captured via the modern-shader flag + CRC32 fallback path so
+    /// FO76 / Starfield content surfaces it through `sf1_crcs` / `sf2_crcs`.
+    /// Stage 2 (separate issue) wires this into the fragment shader's
+    /// `MATERIAL_KIND_EFFECT_SHADER` branch as a depth-attachment read
+    /// + alpha fade. See #890 / SK-D4-NEW-04.
+    pub effect_soft: bool,
+    /// `SLSF1::Greyscale_To_PaletteColor` (bit 4) — sample
+    /// [`greyscale_texture`] as a colour palette LUT indexed by the
+    /// source-texture luminance instead of using the luminance directly.
+    /// Fire / electricity / magic gradients drive this on Skyrim+ /
+    /// FO4 spell FX. Stage 2 plumbs the palette sample into the
+    /// effect-shader branch. See #890.
+    pub effect_palette_color: bool,
+    /// `SLSF1::Greyscale_To_PaletteAlpha` (bit 5) — same as
+    /// [`effect_palette_color`] but for the alpha channel: the
+    /// [`greyscale_texture`] alpha LUT modulates the surface alpha.
+    /// See #890.
+    pub effect_palette_alpha: bool,
+    /// `SLSF2::Effect_Lighting` (bit 30) — scene-lit `BSEffectShaderProperty`
+    /// surface. Pre-fix the renderer treats every effect shader as
+    /// purely additive; with this bit set the surface should receive
+    /// the cell's directional + ambient light modulated against
+    /// `base_color × base_color_scale`. Stage 2 wires the lit shading.
+    /// See #890.
+    pub effect_lit: bool,
 }
 
 impl Default for MaterialInfo {

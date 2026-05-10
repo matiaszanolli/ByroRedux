@@ -35,6 +35,30 @@ pub(crate) fn capture_effect_shader_data(shader: &BSEffectShaderProperty) -> BsE
         lighting_influence: shader.lighting_influence,
         env_map_min_lod: shader.env_map_min_lod,
         texture_clamp_mode: shader.texture_clamp_mode,
+        // #890 — capture the four BSEffect-relevant flag bits via the
+        // typed-word + CRC32-list union helpers so FO76 / Starfield
+        // content (which writes the typed words as zero and rides
+        // exclusively on the CRC arrays) surfaces them as well.
+        effect_soft: is_soft_effect_from_modern_shader_flags(
+            shader.shader_flags_1,
+            &shader.sf1_crcs,
+            &shader.sf2_crcs,
+        ),
+        effect_palette_color: is_palette_color_from_modern_shader_flags(
+            shader.shader_flags_1,
+            &shader.sf1_crcs,
+            &shader.sf2_crcs,
+        ),
+        effect_palette_alpha: is_palette_alpha_from_modern_shader_flags(
+            shader.shader_flags_1,
+            &shader.sf1_crcs,
+            &shader.sf2_crcs,
+        ),
+        effect_lit: is_effect_lit_from_modern_shader_flags(
+            shader.shader_flags_2,
+            &shader.sf1_crcs,
+            &shader.sf2_crcs,
+        ),
     }
 }
 

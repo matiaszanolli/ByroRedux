@@ -51,10 +51,22 @@ pub mod fo3nv_f2 {
 /// Skyrim `SkyrimShaderPropertyFlags1` — first flag word of
 /// `BSLightingShaderProperty` / `BSEffectShaderProperty`.
 pub mod skyrim_slsf1 {
+    /// Bit 4 — `Greyscale_To_PaletteColor`. Sample the
+    /// `BSEffectShaderProperty.greyscale_texture` as a colour palette LUT
+    /// indexed by the source-texture luminance. nif.xml: "in
+    /// EffectShaderProperty". See #890 / SK-D4-NEW-04.
+    pub const GREYSCALE_TO_PALETTE_COLOR: u32 = 0x0000_0010;
+    /// Bit 5 — `Greyscale_To_PaletteAlpha`. Sample the
+    /// `BSEffectShaderProperty.greyscale_texture` as an alpha palette LUT.
+    /// See #890.
+    pub const GREYSCALE_TO_PALETTE_ALPHA: u32 = 0x0000_0020;
     /// Bit 26 — `Decal`. Same bit + semantic as FO3/FNV F1.
     pub const DECAL: u32 = 0x0400_0000;
     /// Bit 27 — `Dynamic_Decal`. Same bit + semantic as FO3/FNV F1.
     pub const DYNAMIC_DECAL: u32 = 0x0800_0000;
+    /// Bit 30 — `Soft_Effect`. Near-camera depth feathering for soft
+    /// particles (smoke, dust, force-field haze). See #890.
+    pub const SOFT_EFFECT: u32 = 0x4000_0000;
     /// Bit 31 — `ZBuffer_Test`.
     pub const ZBUFFER_TEST: u32 = 0x8000_0000;
 }
@@ -75,6 +87,10 @@ pub mod skyrim_slsf2 {
     /// Bit 21 — `Cloud_LOD` on Skyrim (NOT `Alpha_Decal` — that
     /// is FO3/FNV-only).
     pub const CLOUD_LOD: u32 = 0x0020_0000;
+    /// Bit 30 — `Effect_Lighting`. Scene-lit `BSEffectShaderProperty`
+    /// surface — receives directional light instead of rendering
+    /// purely additive. See #890 / SK-D4-NEW-04.
+    pub const EFFECT_LIGHTING: u32 = 0x4000_0000;
 }
 
 /// FO4+ `Fallout4ShaderPropertyFlags1` — first flag word of
@@ -336,6 +352,26 @@ mod tests {
     #[test]
     fn fo4_shares_double_sided_bit_with_skyrim() {
         assert_eq!(fo4_slsf2::DOUBLE_SIDED, skyrim_slsf2::DOUBLE_SIDED);
+    }
+
+    /// #890 — the four `BSEffectShaderProperty`-relevant flag bits share
+    /// the same numeric positions between Skyrim SLSF1/2 and FO4 F4SF1/2
+    /// per nif.xml. Pin the agreement so the `BsEffectShaderData` import
+    /// capture and the future shader-side consumer can rely on a single
+    /// `skyrim_slsf1::*` / `skyrim_slsf2::*` constant set across both
+    /// game eras. The CRC32 layer covers the FO76 / Starfield cases.
+    #[test]
+    fn fo4_shares_effect_shader_bits_with_skyrim() {
+        assert_eq!(
+            fo4_slsf1::GREYSCALE_TO_PALETTE_COLOR,
+            skyrim_slsf1::GREYSCALE_TO_PALETTE_COLOR
+        );
+        assert_eq!(
+            fo4_slsf1::GREYSCALE_TO_PALETTE_ALPHA,
+            skyrim_slsf1::GREYSCALE_TO_PALETTE_ALPHA
+        );
+        assert_eq!(fo4_slsf1::SOFT_EFFECT, skyrim_slsf1::SOFT_EFFECT);
+        assert_eq!(fo4_slsf2::EFFECT_LIGHTING, skyrim_slsf2::EFFECT_LIGHTING);
     }
 
     /// #712 — pin the `BSShaderCRC32` constants against the literal
