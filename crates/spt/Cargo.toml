@@ -49,3 +49,8 @@ required-features = ["recon"]
 name = "spt_transitions"
 path = "examples/spt_transitions.rs"
 required-features = ["recon"]
+
+[[example]]
+name = "spt_walk"
+path = "examples/spt_walk.rs"
+required-features = ["recon"]

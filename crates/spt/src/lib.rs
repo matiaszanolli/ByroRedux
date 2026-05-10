@@ -40,9 +40,17 @@
 //! compatibility plan ships the placeholder fallback (a yaw-billboard
 //! quad keyed on the TREE record's ICON) instead.
 
+pub mod parser;
+pub mod scene;
+pub mod stream;
+pub mod tag;
 pub mod version;
 
 #[cfg(feature = "recon")]
 pub mod recon;
 
+pub use parser::{parse_spt, TAG_MAX, TAG_MIN};
+pub use scene::{SptScene, SptValue, TagEntry};
+pub use stream::SptStream;
+pub use tag::{dispatch_tag, SptTagKind};
 pub use version::{detect_variant, SpeedTreeVariant};

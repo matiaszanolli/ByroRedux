@@ -460,6 +460,91 @@ back to `Unknown` for anything outside the table.
 
 ---
 
+## 2026-05-09 (later still still) — Phase 1.3 parser landed
+
+The TLV walker is live in `crates/spt/src/{tag.rs, stream.rs, scene.rs,
+parser.rs}`. Public entry point: `pub fn parse_spt(bytes: &[u8]) ->
+io::Result<SptScene>`. Run it as:
+
+```rust
+use byroredux_spt::parse_spt;
+let scene = parse_spt(&bytes)?;
+println!("{} entries", scene.entries.len());
+println!("bark: {:?}", scene.bark_textures());
+println!("leaf: {:?}", scene.leaf_textures());
+println!("curves: {} blobs", scene.curves().len());
+```
+
+### Acceptance gate hit on first ship
+
+The plan's gate was ≥ 95 % FNV coverage. Observed in the
+`parse_real_spt::*` integration tests (env-var gated, `#[ignore]`):
+
+| Game | Files | Coverage |
+|---|---:|---:|
+| FNV | 10 | **100 %** |
+| FO3 | 10 | **100 %** |
+| Oblivion | 113 | **96.46 %** |
+
+The 4 Oblivion outliers (e.g. `trees\shrubms14boxwood.spt`) parse
+cleanly all the way to the last known tag (`13005`) and bail on
+the next u32 — value `104`, in `[TAG_MIN, TAG_MAX]` but unknown.
+Inspection via `spt_walk` confirms `104` is the **length prefix of
+a trailing curve text blob** in those files: tag `13005` ends one
+section, and the next section in those files appears to be a list
+of curve strings without their own tag headers (or with a tag that
+the analyser miscategorised as a string-length confounder). The
+walker's behaviour is correct in the sense that the parameter
+section walked is intact; the 4-file gap is a follow-up dictionary
+refinement, not a parser bug.
+
+### Dictionary corrections from the first parse pass
+
+* **Tag `4000`** — initially missed. Has a 1-byte (`u8`) payload at
+  modal=1B / 100 % confidence. Every vanilla `.spt` carries it at
+  ~offset 4500-5800; the walker bailed on it before this fix.
+* **Tag `10002`** — analyser histogram was bimodal (`4 / 68 / 100 /
+  132 / 164 / 196 B`). Re-classified as `ArrayBytes { stride: 1 }`
+  — a `u32 count + count bytes` blob. Same shape as a String but
+  binary, so the existing `read_string_lp`-style reader works
+  modulo the value-type distinction.
+* **Tag `10003`** — bimodal (`4 / 36 B`). `4 + 4×8 = 36` ⇒
+  `ArrayBytes { stride: 8 }`. Removed from the U32 dispatch arm
+  because the 4-byte case is just `count = 0` and the analyser's
+  71 % U32-confidence was masking the array shape.
+
+### New `SptTagKind::ArrayBytes { stride }` variant
+
+Variable-payload tags ship as `u32 count + count × stride bytes`.
+The parser stores them on the scene as
+`SptValue::ArrayBytes { stride, count, bytes }` with the raw bytes
+preserved for downstream typed decoding. Two confirmed cases today
+(stride 1 and stride 8); future dictionary additions plug in here
+when their histograms reveal an array-shaped pattern.
+
+### Unit + integration test coverage
+
+* 24 unit tests in `crates/spt/src/{tag,stream,scene,parser,version}.rs`
+  — every dispatch arm + every reader primitive + a synthetic
+  round-trip exercising every payload kind.
+* 3 ignored integration tests in `crates/spt/tests/parse_real_spt.rs`
+  asserting the ≥ 95 % coverage gate per game. Env-var gated
+  (`BYROREDUX_FNV_DATA` / `_FO3_DATA` / `_OBL_DATA`) so CI doesn't
+  require user-provided BSAs.
+
+### Next sub-phase
+
+* Refine the dictionary to absorb the 4 Oblivion outliers (likely a
+  new tag in the 13005-13010 range with a complex payload).
+* Decode the geometry tail past `tail_offset` — vertex / leaf-card
+  binary blobs.
+* Plug the parser into the importer (`crates/spt/src/import/`) so
+  `byroredux/src/cell_loader.rs` can route `.spt` REFRs through
+  the SpeedTree path.
+* Curve-text decoder (`parse_bezier_spline_text`).
+
+---
+
 ## Recon harness — how to reproduce
 
 ```bash
