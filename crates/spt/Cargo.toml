@@ -39,3 +39,13 @@ required-features = ["recon"]
 name = "spt_dissect"
 path = "examples/spt_dissect.rs"
 required-features = ["recon"]
+
+[[example]]
+name = "spt_tagmap"
+path = "examples/spt_tagmap.rs"
+required-features = ["recon"]
+
+[[example]]
+name = "spt_transitions"
+path = "examples/spt_transitions.rs"
+required-features = ["recon"]

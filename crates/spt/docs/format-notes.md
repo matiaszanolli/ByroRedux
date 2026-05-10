@@ -322,6 +322,144 @@ the TLV walker without falling into the unknown-tag bail-out.
 
 ---
 
+## 2026-05-09 (later still) — Phase 1.3 analyzer pass: tag dictionary
+
+`spt_dissect` scales to one file at a time. Two new corpus-wide
+analyzers fold its findings into a dictionary:
+
+- **`spt_tagmap`** — walks the file as a TLV stream and records
+  per-tag (string vs bare-marker vs inline) classification. Handles
+  the three classification kinds explicitly. Bails when the next
+  4-byte tag falls outside `[100, 13 999]`.
+- **`spt_transitions`** — scans every aligned position for tag-shaped
+  values and records `(tag, byte_distance_to_next_tag, next_tag)`.
+  The modal byte distance per tag is the empirically observed
+  payload size, recovered without committing to any one
+  classification heuristic up front. This is what cracked the
+  variable-payload-size cases (tag 2002 has a 1-byte payload, not
+  4 — explains the original walker's bail-out at offset ~93).
+
+### Recovered tag → payload-size table
+
+Run command (as of 2026-05-09):
+```
+cargo run -p byroredux-spt --features recon --example spt_transitions -- \
+    "Fallout New Vegas/Data/Fallout - Meshes.bsa" \
+    "Fallout 3 goty/Data/Fallout - Meshes.bsa" \
+    "Oblivion/Data/Oblivion - Meshes.bsa" \
+    > /tmp/spt_transitions.md
+```
+
+Aggregated across 133 files. Confidence ≥ 99 % unless noted.
+
+#### Bare markers (0-byte payload)
+
+These tags consume only their own 4 bytes and the next thing in the
+stream is another tag. They serve as section / structure markers.
+
+`1001`, `1002`, `1003`, `1004`, `1005`, `1007`, `1008`, `1009`, `1010`, `1011`, `1012`, `1015`, `1016`, `1017`, `5644`, `8000`, `8001`, `9000`, `9001`, `9005`, `9006`, `10000`, `10001`, `11000`, `11001`, `12000`, `12001`, `13000`, `13005`
+
+#### 4-byte payload (u32 / f32, type per tag)
+
+`1006`, `1014`, `2001`, `2003`, `2005`, `2006`, `2007`, `3000`, `3001`,
+`3002`, `3004`, `3005`, `3007`, `3008`, `3010`, `4002`, `4007`, `5005`,
+`6008-6014`, `8002`, `8004`, `8006`, `8007`, `8008`, `9002-9004`,
+`9007-9014`, `10003`, `10004`, `11002`, `13002`, `13003`, `13004`,
+`13006`, `13009-13012`
+
+Sample values (confirmed via `spt_dissect`):
+- `2001` — f32 1100.0 (consistent across all 133 files)
+- `2003` — f32 100.0
+- `2005` — f32 0.0 (or close)
+
+#### 1-byte payload (u8 / bool)
+
+`2002`, `3003`, `3006`, `3009`, `5006`, `6015`, `6016`, `13007`
+
+These were the "stuck" cases for the pre-transition walker — the
+1-byte payload doesn't fit u32 alignment, and reading the next
+4 bytes produces nonsense.
+
+#### 12-byte payload (vec3 / 3 × f32 — color or coord triple)
+
+`4001`, `4004`, `4005`, `4006`, `5000-5004`
+
+Likely: leaf-card colour tints + tree-frame vec3 parameters.
+
+#### Variable / string-prefix payload
+
+`2000` — u32 length + raw ASCII (texture path; observed lengths 26-89 B)
+`4003` — u32 length + raw ASCII (texture path; 21-84 B)
+`6000-6007`, `6017` — u32 length + raw ASCII text blobs. **These
+  are the BezierSpline curve definitions** — each is a 90-200 B
+  text-encoded curve. ~85% of curve tags carry strings; the 0-B
+  cases in the histogram are confounders from the analyser misreading
+  a string-length value as a tag (numeric coincidence — see
+  "false-tag confounders" below).
+
+`13001` — string payload, observed lengths 62-525 B. Modal length
+  75 B (~41 % of cases). Probably a name / metadata string.
+
+#### 52-byte fixed payload
+
+`8003`, `8005`, `8009` — fixed 52-byte payloads, 100 % confidence.
+Layout unknown (52 bytes = 13 × f32 = matrix-ish? or 12 floats + 4
+bytes flags?). Likely leaf billboard descriptors.
+
+#### Other notable tags
+
+- `6017`, `10002` — string-prefix tags with wide length distributions.
+- `13008` — modal 11-byte payload; probably small fixed struct.
+- `13013` — modal 7-byte payload (unusual width — 4-byte u32 + u16 + u8?).
+
+### False-tag confounders
+
+The analyser sometimes reports tags in unusual ranges that aren't
+real tags but coincidentally fall in `[100, 13 999]`:
+
+- **String length values** — every BezierSpline string body has a
+  u32 length prefix. Curve text blobs are typically 90-200 bytes,
+  so the length values land in `[100, 200]` and look like tags.
+  Confirms our `100-212` "tags" all → successors `{6001-6008, 1017}`,
+  i.e. they're really string lengths and the next real tag is the
+  one after the curve body.
+- **Hex-aligned multiples** — `4096` (0x1000), `4608` (0x1200),
+  `5376` (0x1500), `5888-7680` (0x1700-0x1E00), `11776` (0x2E00),
+  `13568` (0x3500). All have successor uniformly `13001`. These
+  are likely length values of preceding `13001` payloads, or some
+  other fixed-section-length field. Either way, not standalone tags.
+
+Both confounder classes are easy to filter at parse time: a real
+TLV walker advances the stream by `tag_width + payload_width` and
+never reads inside a string body.
+
+### Updated Phase 1.3 parser plan
+
+1. **Walker module `crates/spt/src/tlv.rs`.** Defines
+   `SptTagKind { Bare, U8, U32, F32, Vec3, FixedBytes(u32), String,
+   Unknown }` and a `dispatch_tag(tag: u32) -> SptTagKind` lookup
+   driven by the dictionary above.
+2. **Reader module.** `read_u32_le`, `read_string_lp`, etc., wrapped
+   in a `SptStream` shaped like `NifStream`.
+3. **TLV walker** consumes (tag, payload) pairs until tag is outside
+   `[TAG_MIN, TAG_MAX]` — that's the binary geometry tail, deferred.
+4. **Test corpus.** Run the walker through every `.spt` in the
+   FNV/FO3/OB BSAs; assert ≥ 95 % FNV files reach the geometry tail
+   with zero unknown-tag bail-outs in between.
+5. **Synthetic fixtures.** Build a tiny known-tags `.spt` byte
+   sequence for unit tests — round-trips parse_spt, no game-data
+   dependency in CI.
+6. **Curve text parser** (`parse_bezier_spline(s: &str)`) — pure
+   whitespace-and-newline split, populates a typed
+   `Vec<BezierKey { t, value, tan_in, tan_out, weight }>`.
+
+The dictionary above stays an observation log — it gets re-derived
+every time `spt_transitions` runs. The parser code embeds a smaller,
+opinionated subset (the modal payload size for each tag) and falls
+back to `Unknown` for anything outside the table.
+
+---
+
 ## Recon harness — how to reproduce
 
 ```bash
