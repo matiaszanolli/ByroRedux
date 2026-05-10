@@ -344,6 +344,11 @@ impl App {
         // hook) decodes a BSA-archived sound and stores it here.
         // Defaults are safe: `None` makes `footstep_system` no-op.
         world.insert_resource(FootstepConfig::default());
+        // M44 Phase 3.5 / #932 — `footstep_system` reuses this Vec<Vec3>
+        // scratch across frames instead of allocating a fresh one each
+        // tick. Preallocated to capacity 32 to cover typical 5-10 NPC
+        // walking case without re-growing.
+        world.insert_resource(crate::components::FootstepScratch::default());
         // M44 Phase 3.5 — opportunistic footstep BSA load. When the
         // user passed `--sounds-bsa <path>`, decode the canonical
         // dirt-walk WAV and stash the `Arc<StaticSoundData>` in

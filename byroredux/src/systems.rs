@@ -854,7 +854,7 @@ pub(crate) fn reverb_zone_system(world: &World, _dt: f32) {
 /// Spawn a `FootstepEmitter` on the player entity to opt in. The
 /// fly-camera attach is wired in `main.rs::App::new`.
 pub(crate) fn footstep_system(world: &World, _dt: f32) {
-    use crate::components::{FootstepConfig, FootstepEmitter};
+    use crate::components::{FootstepConfig, FootstepEmitter, FootstepScratch};
 
     let Some(config) = world.try_resource::<FootstepConfig>() else {
         return;
@@ -871,7 +871,17 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
     // fine (separate storages), but we want to release both locks
     // before touching `AudioWorld` in Phase 2 — minimises contention
     // with `audio_system` running in the same stage.
-    let mut triggers: Vec<Vec3> = Vec::new();
+    //
+    // The triggers buffer is held in `FootstepScratch` (a Resource)
+    // and `clear()`-reused across frames — pre-#932 a fresh
+    // `Vec<Vec3>` was allocated every frame even when no NPCs were
+    // walking. The buffer is sized 32 in `FootstepScratch::default`
+    // to cover the typical 5–10 / peak ~50 walking-NPC range
+    // without re-growing.
+    let Some(mut scratch) = world.try_resource_mut::<FootstepScratch>() else {
+        return;
+    };
+    scratch.triggers.clear();
     {
         let Some(gt_q) = world.query::<GlobalTransform>() else {
             return;
@@ -897,22 +907,36 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
             fs.last_position = pos;
             if fs.accumulated_stride >= fs.stride_threshold {
                 fs.accumulated_stride = 0.0;
-                triggers.push(pos);
+                scratch.triggers.push(pos);
             }
         }
     }
 
     // Phase 2: dispatch one-shots for every triggered stride.
-    if triggers.is_empty() {
+    if scratch.triggers.is_empty() {
         return;
     }
+    // Drop the scratch lock BEFORE acquiring AudioWorld — both are
+    // resource-mut locks, holding both at once would force a strict
+    // TypeId-sorted acquisition contract. Drain the scratch into a
+    // local before releasing it (cheap — Vec move, no allocation).
+    let triggers = std::mem::take(&mut scratch.triggers);
+    drop(scratch);
+
     let Some(mut audio_world) = world.try_resource_mut::<byroredux_audio::AudioWorld>() else {
+        // Audio gone — restore the scratch buffer for next frame
+        // (preserves the heap allocation) and bail. Re-acquiring the
+        // scratch lock here costs one resource_mut hop, but loses the
+        // capacity otherwise.
+        if let Some(mut scratch) = world.try_resource_mut::<FootstepScratch>() {
+            scratch.triggers = triggers;
+        }
         return;
     };
-    for pos in triggers {
+    for pos in &triggers {
         audio_world.play_oneshot(
             std::sync::Arc::clone(&sound),
-            pos,
+            *pos,
             byroredux_audio::Attenuation {
                 // Tighter attenuation than the default — footsteps
                 // drop off fast in real environments. 0.5m → full
@@ -922,6 +946,13 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
             },
             volume,
         );
+    }
+    drop(audio_world);
+
+    // Restore the scratch buffer (with its persisted capacity) so
+    // next frame's `clear()` doesn't strand the allocation.
+    if let Some(mut scratch) = world.try_resource_mut::<FootstepScratch>() {
+        scratch.triggers = triggers;
     }
 }
 
@@ -3271,7 +3302,7 @@ mod animation_system_e2e_tests {
 #[cfg(test)]
 mod footstep_system_tests {
     use super::*;
-    use crate::components::{FootstepConfig, FootstepEmitter};
+    use crate::components::{FootstepConfig, FootstepEmitter, FootstepScratch};
     use byroredux_audio::{Frame, Sound, SoundSettings};
     use byroredux_core::ecs::World;
     use std::sync::Arc;
@@ -3297,6 +3328,7 @@ mod footstep_system_tests {
         // (drain only fires inside `audio_system`, which we don't
         // call from the footstep tests).
         world.insert_resource(byroredux_audio::AudioWorld::default());
+        world.insert_resource(FootstepScratch::default());
         (world, sound)
     }
 

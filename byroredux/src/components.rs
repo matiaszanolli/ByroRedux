@@ -698,3 +698,27 @@ impl Default for FootstepConfig {
     }
 }
 
+/// Per-frame scratch buffer for `footstep_system`'s two-phase pattern
+/// (collect trigger positions while walking emitters, then drain to
+/// `AudioWorld::play_oneshot`). Pre-#932 the system allocated a fresh
+/// `Vec<Vec3>` every frame; with this resource the same backing buffer
+/// is `clear()`-ed and refilled, so capacity persists across frames.
+///
+/// Sized at 32 — typical loaded cell has 5–10 walking NPCs, peak
+/// burst ~50 in dense exteriors. 32 covers the common case without
+/// re-growing; the Vec doubles past that anyway if a giant crowd ever
+/// triggers all at once.
+pub(crate) struct FootstepScratch {
+    pub(crate) triggers: Vec<Vec3>,
+}
+
+impl Resource for FootstepScratch {}
+
+impl Default for FootstepScratch {
+    fn default() -> Self {
+        Self {
+            triggers: Vec::with_capacity(32),
+        }
+    }
+}
+
