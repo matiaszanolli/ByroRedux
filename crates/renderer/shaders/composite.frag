@@ -346,12 +346,18 @@ void main() {
             // column → bilinear sampling can't recover sub-froxel
             // detail). Stripes were clearly visible on lantern
             // bodies in Prospector; disabling the read restored
-            // smooth shading. Volumetric injection + integration
-            // continue to dispatch (validates the pipeline path,
-            // small GPU cost), but composite no longer modulates
-            // `combined` with `vol`. Re-enable when M-LIGHT
-            // (multi-tap shadow rays + temporal stability) lands —
-            // see Tier 8 row in ROADMAP.md.
+            // smooth shading. Re-enable when M-LIGHT (multi-tap
+            // shadow rays + temporal stability) lands — see Tier 8
+            // row in ROADMAP.md.
+            //
+            // ── Lockstep host-side gate (#928) ──────────────────
+            // The Rust-side `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED`
+            // const gates `vol.dispatch()` in `draw.rs::draw_frame`.
+            // While both this `* 0.0` and that const are paired,
+            // the volumetric pipeline does NO GPU work per frame —
+            // recovers ~10–20 ms/frame estimated. When M-LIGHT v2
+            // ships, flip BOTH together: remove the `* 0.0` here and
+            // set `VOLUMETRIC_OUTPUT_CONSUMED = true`.
             //
             // The `vol.rgb * 0.0` keeps the texture sample alive so
             // SPIR-V reflection (validate_set_layout) still sees

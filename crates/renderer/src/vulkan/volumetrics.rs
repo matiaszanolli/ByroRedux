@@ -95,6 +95,25 @@ pub const DEFAULT_PHASE_G: f32 = 0.4;
 /// distribution (Phase 5) to keep near-camera detail.
 pub const DEFAULT_VOLUME_FAR: f32 = 200.0;
 
+/// Single source of truth for whether the composite shader actually
+/// consumes the integrated volumetric output. Pinned in lockstep with
+/// `composite.frag`'s `combined += vol.rgb * 0.0` keep-alive at line
+/// 362 — when M-LIGHT v2 lands and the per-froxel banding is fixed,
+/// flip this `true` AND remove the `* 0.0` in the shader together.
+///
+/// While `false`, callers MUST gate `vol.dispatch()` behind this const.
+/// The diagnostic that produced this gate (per-froxel single-shadow
+/// ray banding on Prospector cup-and-lantern interior content) is
+/// documented in commits `f62d4bd` and `33f48b5`.
+///
+/// **Why this is here, not in draw.rs**: keeping the flag adjacent to
+/// the pipeline implementation it controls means a future contributor
+/// editing `volumetrics.rs` for M-LIGHT v2 can't miss it. The
+/// `composite.frag` shader can't `#include` Rust, so the lockstep is
+/// documented via cross-comments rather than enforced by the compiler.
+/// See #928.
+pub const VOLUMETRIC_OUTPUT_CONSUMED: bool = false;
+
 /// Integration shader uniform — slab thickness `dt` shared across all
 /// slices under linear distribution. Phase 5 will replace this with
 /// an exponential per-slice `dt[]` array. std140 alignment: vec4 only.
