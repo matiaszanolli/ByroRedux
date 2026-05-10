@@ -331,7 +331,17 @@ pub(crate) fn build_render_data(
             // resolved to identity post-propagation. These slots cause
             // the ribbon-vertex artifact described on
             // SKIN_DROPOUT_DUMPED.
-            if frame_count >= 60 {
+            //
+            // Gated on `debug_assertions` (#929 / PERF-CPU-01): the
+            // outer `SKIN_DROPOUT_DUMPED.call_once` short-circuits the
+            // log after the first hit, but the Vec allocation + per-
+            // bone identity check still ran every frame for every
+            // skinned mesh in release. The compiler folds
+            // `cfg!(debug_assertions)` to a const and DCEs the entire
+            // branch in release, restoring zero-cost. Debug builds
+            // (developer + CI test profile) keep the diagnostic for
+            // any future regression investigation.
+            if cfg!(debug_assertions) && frame_count >= 60 {
                 let mut dropout_slots: Vec<(usize, bool)> = Vec::new();
                 for (i, ((bone_e, _bind), pal)) in skin
                     .bones
