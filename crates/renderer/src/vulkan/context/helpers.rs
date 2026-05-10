@@ -446,14 +446,11 @@ pub(super) unsafe fn destroy_depth_resources(
 pub(super) unsafe fn destroy_render_pass_pipelines(
     device: &ash::Device,
     pipeline: &mut vk::Pipeline,
-    pipeline_two_sided: &mut vk::Pipeline,
-    blend_pipeline_cache: &mut std::collections::HashMap<(u8, u8, bool), vk::Pipeline>,
+    blend_pipeline_cache: &mut std::collections::HashMap<(u8, u8), vk::Pipeline>,
     pipeline_ui: &mut vk::Pipeline,
 ) {
     device.destroy_pipeline(*pipeline, None);
     *pipeline = vk::Pipeline::null();
-    device.destroy_pipeline(*pipeline_two_sided, None);
-    *pipeline_two_sided = vk::Pipeline::null();
     for (_, pipe) in blend_pipeline_cache.drain() {
         device.destroy_pipeline(pipe, None);
     }

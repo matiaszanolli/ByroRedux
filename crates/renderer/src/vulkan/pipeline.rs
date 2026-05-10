@@ -37,20 +37,29 @@ pub fn load_shader_module(device: &ash::Device, spv: &[u8]) -> Result<vk::Shader
 
 /// Pipeline selection key for a single draw.
 ///
-/// The renderer keeps two pipelines that always exist (`Opaque` and
-/// `Opaque { two_sided: true }`, depth-write on, no blend) plus a
-/// lazily-populated cache of blended pipelines keyed by the exact
+/// The renderer keeps a single opaque pipeline (depth-write on, no blend)
+/// plus a lazily-populated cache of blended pipelines keyed by the exact
 /// Gamebryo (src, dst) factor pair. This key is what batching logic
-/// in `draw.rs` groups by. See #392.
+/// in `draw.rs` groups by. See #392 / #930.
+///
+/// **Two-sided is NOT in the cache key.** All pipelines declare CULL_MODE
+/// as dynamic state (`vk::DynamicState::CULL_MODE`); per Vulkan spec, when
+/// CULL_MODE is dynamic, the static value baked at pipeline-create is
+/// ignored at draw time. `draw.rs` issues `cmd_set_cull_mode(NONE/BACK)`
+/// based on the per-draw `two_sided` flag without needing distinct
+/// pipelines. Pre-#930 the cache had separate entries per `(two_sided)`
+/// value, doubling the blend-pipeline cache size and forcing a redundant
+/// `cmd_bind_pipeline` on every Opaque{false}↔Opaque{true} flip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PipelineKey {
-    /// Opaque: depth write on, no blend. Optionally two-sided (no
-    /// backface culling for foliage / glass panes / cloth).
-    Opaque { two_sided: bool },
+    /// Opaque: depth write on, no blend. Two-sided behavior comes from
+    /// dynamic `cmd_set_cull_mode`, not a separate pipeline.
+    Opaque,
     /// Blended: depth write off, blend on. `src`/`dst` are raw
     /// Gamebryo `AlphaFunction` enum values (0=ONE ... 10=SRC_ALPHA_SATURATE);
-    /// see [`gamebryo_to_vk_blend_factor`].
-    Blended { src: u8, dst: u8, two_sided: bool },
+    /// see [`gamebryo_to_vk_blend_factor`]. Two-sided behavior comes from
+    /// dynamic `cmd_set_cull_mode`, not a separate pipeline.
+    Blended { src: u8, dst: u8 },
 }
 
 /// Convert a Gamebryo `TestFunction` enum value (from
@@ -108,13 +117,13 @@ pub fn gamebryo_to_vk_blend_factor(v: u8) -> vk::BlendFactor {
     }
 }
 
-/// Pipeline set: the two pipelines that always exist (opaque + opaque
-/// two-sided) plus the shared layout. All blended variants are created
-/// lazily via [`create_blend_pipeline`] and cached on the VulkanContext
-/// by (src, dst, two_sided).
+/// Pipeline set: the single opaque pipeline plus the shared layout.
+/// All blended variants are created lazily via [`create_blend_pipeline`]
+/// and cached on the VulkanContext by (src, dst). Two-sided rendering
+/// uses dynamic `cmd_set_cull_mode` rather than a distinct pipeline —
+/// see [`PipelineKey`] for the rationale (#930).
 pub struct PipelineSet {
     pub opaque: vk::Pipeline,
-    pub opaque_two_sided: vk::Pipeline,
     pub layout: vk::PipelineLayout,
 }
 
@@ -217,22 +226,17 @@ fn triangle_pipeline_inner(
     // the device to expose `features.fillModeNonSolid`. Oblivion vanilla
     // ships zero wireframe meshes, so this gap is invisible to the
     // gameplay-content render today.
+    // CULL_MODE is dynamic state (see `dynamic_states` below) so the
+    // baked value here is ignored at draw time — it just needs to be
+    // valid. The pre-#930 design built two pipelines (BACK + NONE) but
+    // they compiled to identical machine code on every desktop driver
+    // because of the dynamic-state override. Single rasterizer suffices.
     let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
         .rasterizer_discard_enable(false)
         .polygon_mode(vk::PolygonMode::FILL)
         .line_width(1.0)
         .cull_mode(vk::CullModeFlags::BACK)
-        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-        .depth_bias_enable(true);
-
-    // Two-sided rasterizer for meshes flagged as double-sided (foliage, glass, etc.).
-    let rasterizer_no_cull = vk::PipelineRasterizationStateCreateInfo::default()
-        .depth_clamp_enable(false)
-        .rasterizer_discard_enable(false)
-        .polygon_mode(vk::PolygonMode::FILL)
-        .line_width(1.0)
-        .cull_mode(vk::CullModeFlags::NONE)
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .depth_bias_enable(true);
 
@@ -307,28 +311,15 @@ fn triangle_pipeline_inner(
         .stencil_test_enable(false);
 
     let pipeline_infos = [
-        // [0] Opaque pipeline — depth write on, no blend.
+        // Opaque pipeline — depth write on, no blend. Two-sided
+        // behavior comes from dynamic `cmd_set_cull_mode` per draw,
+        // not a separate pipeline (#930).
         vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
             .vertex_input_state(&vertex_input)
             .input_assembly_state(&input_assembly)
             .viewport_state(&viewport_state)
             .rasterization_state(&rasterizer)
-            .multisample_state(&multisampling)
-            .depth_stencil_state(&depth_stencil_opaque)
-            .color_blend_state(&color_blending)
-            .dynamic_state(&dynamic_state)
-            .layout(pipeline_layout)
-            .render_pass(render_pass)
-            .subpass(0),
-        // [1] Opaque two-sided — same as [0] but no backface culling
-        //     (foliage, glass panes with no real back-face geometry, cloth).
-        vk::GraphicsPipelineCreateInfo::default()
-            .stages(&shader_stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterizer_no_cull)
             .multisample_state(&multisampling)
             .depth_stencil_state(&depth_stencil_opaque)
             .color_blend_state(&color_blending)
@@ -345,7 +336,7 @@ fn triangle_pipeline_inner(
             .context("Failed to create graphics pipelines")?
     };
 
-    log::info!("Graphics pipelines created (opaque + opaque two-sided; blend variants lazy-cached by NiAlphaProperty (src, dst))");
+    log::info!("Graphics pipeline created (single opaque; blend variants lazy-cached by NiAlphaProperty (src, dst); two-sided via dynamic cull state)");
 
     // SAFETY: Shader modules are compiled into the pipeline objects during
     // create_graphics_pipelines and are no longer needed. Destroy them
@@ -358,7 +349,6 @@ fn triangle_pipeline_inner(
 
     Ok(PipelineSet {
         opaque: pipelines[0],
-        opaque_two_sided: pipelines[1],
         layout: pipeline_layout,
     })
 }
@@ -382,7 +372,6 @@ pub fn create_blend_pipeline(
     pipeline_layout: vk::PipelineLayout,
     src: u8,
     dst: u8,
-    two_sided: bool,
 ) -> Result<vk::Pipeline> {
     let vert_module = load_shader_module(device, TRIANGLE_VERT_SPV)?;
     let frag_module = load_shader_module(device, TRIANGLE_FRAG_SPV)?;
@@ -416,18 +405,18 @@ pub fn create_blend_pipeline(
         .scissor_count(1);
     let _ = extent;
 
-    let cull_mode = if two_sided {
-        vk::CullModeFlags::NONE
-    } else {
-        vk::CullModeFlags::BACK
-    };
-    // Hard-coded `polygon_mode(FILL)`; wireframe routing deferred per #869.
+    // CULL_MODE is dynamic state (see `dynamic_states` below); the
+    // baked value is ignored at draw time. Two-sided alpha-blend
+    // ordering split (FRONT-cull pass for back faces + BACK-cull
+    // pass for front faces) is implemented via per-draw
+    // `cmd_set_cull_mode`, not separate pipelines (#930). Hard-coded
+    // `polygon_mode(FILL)`; wireframe routing deferred per #869.
     let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
         .rasterizer_discard_enable(false)
         .polygon_mode(vk::PolygonMode::FILL)
         .line_width(1.0)
-        .cull_mode(cull_mode)
+        .cull_mode(vk::CullModeFlags::BACK)
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .depth_bias_enable(true);
 
@@ -523,7 +512,7 @@ pub fn create_blend_pipeline(
     }
 
     log::debug!(
-        "Blend pipeline created: src={src} ({src_factor:?}), dst={dst} ({dst_factor:?}), two_sided={two_sided}"
+        "Blend pipeline created: src={src} ({src_factor:?}), dst={dst} ({dst_factor:?})"
     );
 
     Ok(pipelines[0])
@@ -739,29 +728,19 @@ mod tests {
     /// `(4, 0)` (DEST_COLOR/ONE — Oblivion glass modulation) and
     /// `(0, 0)` (ONE/ONE — premultiplied additive) are the two it
     /// silently aliased to the wrong bucket.
+    ///
+    /// Post-#930: `two_sided` is no longer a key axis (collapsed into
+    /// dynamic CULL_MODE state). The test no longer asserts that
+    /// `Blended { src, dst, two_sided=true }` is distinct from
+    /// `Blended { src, dst, two_sided=false }` because both go through
+    /// the same pipeline now.
     #[test]
     fn pipeline_key_distinguishes_combos_old_code_collapsed() {
-        let alpha = PipelineKey::Blended {
-            src: 6,
-            dst: 7,
-            two_sided: false,
-        };
-        let additive = PipelineKey::Blended {
-            src: 6,
-            dst: 0,
-            two_sided: false,
-        };
-        let glass_modulate = PipelineKey::Blended {
-            src: 4,
-            dst: 0,
-            two_sided: false,
-        };
-        let premul_additive = PipelineKey::Blended {
-            src: 0,
-            dst: 0,
-            two_sided: false,
-        };
-        let opaque = PipelineKey::Opaque { two_sided: false };
+        let alpha = PipelineKey::Blended { src: 6, dst: 7 };
+        let additive = PipelineKey::Blended { src: 6, dst: 0 };
+        let glass_modulate = PipelineKey::Blended { src: 4, dst: 0 };
+        let premul_additive = PipelineKey::Blended { src: 0, dst: 0 };
+        let opaque = PipelineKey::Opaque;
 
         let all = [alpha, additive, glass_modulate, premul_additive, opaque];
         for (i, a) in all.iter().enumerate() {
@@ -773,13 +752,6 @@ mod tests {
                 }
             }
         }
-
-        let alpha_2s = PipelineKey::Blended {
-            src: 6,
-            dst: 7,
-            two_sided: true,
-        };
-        assert_ne!(alpha, alpha_2s);
     }
 
     /// Regression: #398 (OBL-D4-H1) — every Gamebryo `TestFunction`

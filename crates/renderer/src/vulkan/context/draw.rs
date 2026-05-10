@@ -36,10 +36,15 @@ fn halton(mut index: u32, base: u32) -> f32 {
 /// across frames. See issue #243.
 pub(super) struct DrawBatch {
     pub mesh_handle: u32,
-    /// Pipeline selector. `Opaque` uses one of two prebuilt pipelines;
-    /// `Blended { src, dst, two_sided }` resolves through the lazy
-    /// blend pipeline cache on `VulkanContext`. See #392.
+    /// Pipeline selector. `Opaque` uses the single prebuilt opaque
+    /// pipeline; `Blended { src, dst }` resolves through the lazy
+    /// blend pipeline cache on `VulkanContext`. See #392 / #930.
     pub pipeline_key: PipelineKey,
+    /// Two-sided / cull-disabled rendering. Drives per-batch
+    /// `cmd_set_cull_mode(NONE)` (was a separate pipeline pre-#930).
+    /// MUST be part of the merge key so adjacent draws with different
+    /// cull state don't fold into one batch.
+    pub two_sided: bool,
     /// Content-class layer driving the depth-bias ladder
     /// (Architecture / Clutter / Actor / Decal). Replaces the previous
     /// `is_decal` + per-frame `needs_depth_bias` derivation from
@@ -940,16 +945,17 @@ impl VulkanContext {
                 continue;
             }
 
+            // Two-sided is NOT a key axis (#930) — both opaque and
+            // blended pipelines declare CULL_MODE as dynamic state, so
+            // two-sided rendering uses per-draw `cmd_set_cull_mode`
+            // not a separate pipeline.
             let pipeline_key = if draw_cmd.alpha_blend {
                 PipelineKey::Blended {
                     src: draw_cmd.src_blend,
                     dst: draw_cmd.dst_blend,
-                    two_sided: draw_cmd.two_sided,
                 }
             } else {
-                PipelineKey::Opaque {
-                    two_sided: draw_cmd.two_sided,
-                }
+                PipelineKey::Opaque
             };
 
             // Extend the current batch if this draw shares the same
@@ -971,6 +977,7 @@ impl VulkanContext {
             if let Some(batch) = batches.last_mut() {
                 if batch.mesh_handle == draw_cmd.mesh_handle
                     && batch.pipeline_key == pipeline_key
+                    && batch.two_sided == draw_cmd.two_sided
                     && batch.render_layer == render_layer
                     && batch.z_test == draw_cmd.z_test
                     && batch.z_write == draw_cmd.z_write
@@ -986,6 +993,7 @@ impl VulkanContext {
             batches.push(DrawBatch {
                 mesh_handle: draw_cmd.mesh_handle,
                 pipeline_key,
+                two_sided: draw_cmd.two_sided,
                 render_layer,
                 first_instance: instance_idx,
                 instance_count: 1,
@@ -1104,26 +1112,18 @@ impl VulkanContext {
         }
         t.ssbo_build_ns = ssbo_t0.elapsed().as_nanos() as u64;
 
-        // Pre-populate the blend pipeline cache for any new (src, dst,
-        // two_sided) combos this frame. Resolved up-front because the
-        // hot draw loop only takes `&self.device` for `cmd_bind_pipeline`
-        // and can't reborrow `&mut self` to lazy-create. After this loop
+        // Pre-populate the blend pipeline cache for any new (src, dst)
+        // combos this frame. Resolved up-front because the hot draw
+        // loop only takes `&self.device` for `cmd_bind_pipeline` and
+        // can't reborrow `&mut self` to lazy-create. After this loop
         // every `PipelineKey::Blended` has a corresponding cache entry.
-        // See #392.
+        // See #392 / #930 (two-sided dropped from key).
         for batch in &batches {
-            if let PipelineKey::Blended {
-                src,
-                dst,
-                two_sided,
-            } = batch.pipeline_key
-            {
-                if !self
-                    .blend_pipeline_cache
-                    .contains_key(&(src, dst, two_sided))
-                {
-                    if let Err(e) = self.get_or_create_blend_pipeline(src, dst, two_sided) {
+            if let PipelineKey::Blended { src, dst } = batch.pipeline_key {
+                if !self.blend_pipeline_cache.contains_key(&(src, dst)) {
+                    if let Err(e) = self.get_or_create_blend_pipeline(src, dst) {
                         log::error!(
-                            "Failed to create blend pipeline (src={src}, dst={dst}, two_sided={two_sided}): {e}; \
+                            "Failed to create blend pipeline (src={src}, dst={dst}): {e}; \
                              draws using this combo will fall back to opaque pipeline"
                         );
                     }
@@ -1241,7 +1241,6 @@ impl VulkanContext {
             let mut last_pipeline_key = PipelineKey::Blended {
                 src: u8::MAX,
                 dst: u8::MAX,
-                two_sided: false,
             };
             // `Option` so the first batch always emits an explicit
             // `cmd_set_depth_bias` rather than relying on the
@@ -1320,15 +1319,13 @@ impl VulkanContext {
                 let batch = &batches[i];
 
                 // Switch pipeline when rendering mode changes.
+                // Two-sided rendering uses dynamic `cmd_set_cull_mode`
+                // (issued elsewhere in the draw loop based on
+                // `draw_cmd.two_sided`), not a separate pipeline (#930).
                 if batch.pipeline_key != last_pipeline_key {
                     let pipe = match batch.pipeline_key {
-                        PipelineKey::Opaque { two_sided: false } => self.pipeline,
-                        PipelineKey::Opaque { two_sided: true } => self.pipeline_two_sided,
-                        PipelineKey::Blended {
-                            src,
-                            dst,
-                            two_sided,
-                        } => {
+                        PipelineKey::Opaque => self.pipeline,
+                        PipelineKey::Blended { src, dst } => {
                             // Always present after the pre-population
                             // pass above. If creation failed earlier we
                             // fall back to the opaque pipeline rather
@@ -1337,12 +1334,8 @@ impl VulkanContext {
                             // one. See #392.
                             *self
                                 .blend_pipeline_cache
-                                .get(&(src, dst, two_sided))
-                                .unwrap_or(if two_sided {
-                                    &self.pipeline_two_sided
-                                } else {
-                                    &self.pipeline
-                                })
+                                .get(&(src, dst))
+                                .unwrap_or(&self.pipeline)
                         }
                     };
                     self.device
@@ -1408,10 +1401,8 @@ impl VulkanContext {
                 // flips the depth winner per frame, producing
                 // cross-hatch moiré on glass. See Phase 1 of Tier C
                 // glass plan + `docs/issues/glass-investigation/`.
-                let (is_blend, two_sided) = match batch.pipeline_key {
-                    PipelineKey::Blended { two_sided, .. } => (true, two_sided),
-                    PipelineKey::Opaque { two_sided } => (false, two_sided),
-                };
+                let is_blend = matches!(batch.pipeline_key, PipelineKey::Blended { .. });
+                let two_sided = batch.two_sided;
                 let needs_split = is_blend && two_sided;
                 // Opaque & single-sided-blend cull target — used by
                 // every branch below except the split two-sided blend.
@@ -1502,13 +1493,8 @@ impl VulkanContext {
                     let mut end = i + 1;
                     while end < batches.len()
                         && batch_state(&batches[end]) == key
-                        && !matches!(
-                            batches[end].pipeline_key,
-                            PipelineKey::Blended {
-                                two_sided: true,
-                                ..
-                            }
-                        )
+                        && !(matches!(batches[end].pipeline_key, PipelineKey::Blended { .. })
+                            && batches[end].two_sided)
                     {
                         end += 1;
                     }

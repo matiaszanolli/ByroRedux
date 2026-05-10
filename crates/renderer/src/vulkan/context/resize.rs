@@ -115,7 +115,6 @@ impl VulkanContext {
                 destroy_render_pass_pipelines(
                     &self.device,
                     &mut self.pipeline,
-                    &mut self.pipeline_two_sided,
                     &mut self.blend_pipeline_cache,
                     &mut self.pipeline_ui,
                 );
@@ -190,7 +189,6 @@ impl VulkanContext {
                 self.pipeline_layout,
             )?;
             self.pipeline = pipelines.opaque;
-            self.pipeline_two_sided = pipelines.opaque_two_sided;
 
             self.pipeline_ui = pipeline::create_ui_pipeline(
                 &self.device,

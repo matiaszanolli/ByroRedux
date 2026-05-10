@@ -808,20 +808,26 @@ pub struct VulkanContext {
     /// See #479 SIBLING.
     pub caustic_failed: bool,
     pipeline_cache: vk::PipelineCache,
-    /// Opaque pipeline (depth write on, no blend, BACK culling).
+    /// Opaque pipeline (depth write on, no blend). Two-sided rendering
+    /// uses dynamic `cmd_set_cull_mode` per draw, not a separate
+    /// pipeline (#930) — pre-#930 there were two pipelines whose only
+    /// difference was static cull state, but with `vk::DynamicState::
+    /// CULL_MODE` the static value is ignored, so they compiled to
+    /// identical machine code.
     pipeline: vk::Pipeline,
-    /// Opaque two-sided pipeline (depth write on, no blend, no culling).
-    pipeline_two_sided: vk::Pipeline,
-    /// Lazy cache of blended pipelines, keyed by `(src, dst, two_sided)`
-    /// from `NiAlphaProperty.flags` (Gamebryo `AlphaFunction` enum). Each
+    /// Lazy cache of blended pipelines, keyed by `(src, dst)` from
+    /// `NiAlphaProperty.flags` (Gamebryo `AlphaFunction` enum). Each
     /// entry has depth-write disabled, blend on with the exact factor
     /// pair the source NIF authored. See #392 for why this replaced the
     /// earlier 6-pipeline `(opaque|alpha|additive) × (one|two)-sided`
     /// scheme: collapsing 11×11 = 121 possible Gamebryo factor pairs
     /// down to two `Alpha`/`Additive` buckets dropped half the
     /// pipeline-state information for content that depends on it (glass
-    /// modulation, premultiplied alpha, etc.).
-    blend_pipeline_cache: HashMap<(u8, u8, bool), vk::Pipeline>,
+    /// modulation, premultiplied alpha, etc.). Post-#930: `two_sided`
+    /// dropped from the key (same dynamic-CULL_MODE rationale as the
+    /// opaque pipeline) — halves the cache size and removes a redundant
+    /// `cmd_bind_pipeline` per `two_sided` flip in the alpha-blend pass.
+    blend_pipeline_cache: HashMap<(u8, u8), vk::Pipeline>,
     pipeline_ui: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     /// Mesh handle for the fullscreen quad used by UI overlay.
@@ -1547,7 +1553,6 @@ impl VulkanContext {
             render_pass,
             pipeline_cache,
             pipeline: pipelines.opaque,
-            pipeline_two_sided: pipelines.opaque_two_sided,
             blend_pipeline_cache: HashMap::new(),
             pipeline_ui,
             pipeline_layout: pipelines.layout,
@@ -1668,10 +1673,11 @@ impl VulkanContext {
     }
 
     /// Look up the cached blended pipeline for a given Gamebryo
-    /// `(src, dst)` factor pair (with two-sided rasterizer flag), or
-    /// create + cache it on first use. The cache is keyed by the raw
-    /// `NiAlphaProperty.flags` nibbles, so identical factor pairs across
-    /// different materials share one pipeline.
+    /// `(src, dst)` factor pair, or create + cache it on first use.
+    /// The cache is keyed by the raw `NiAlphaProperty.flags` nibbles,
+    /// so identical factor pairs across different materials share one
+    /// pipeline. Two-sided rendering uses dynamic `cmd_set_cull_mode`
+    /// per draw — see [`crate::vulkan::pipeline::PipelineKey`] (#930).
     ///
     /// Returns the cached pipeline on cache hit (no allocation, no
     /// device call). On cache miss, creates a pipeline through
@@ -1684,9 +1690,8 @@ impl VulkanContext {
         &mut self,
         src: u8,
         dst: u8,
-        two_sided: bool,
     ) -> Result<vk::Pipeline> {
-        let key = (src, dst, two_sided);
+        let key = (src, dst);
         if let Some(&pipe) = self.blend_pipeline_cache.get(&key) {
             return Ok(pipe);
         }
@@ -1698,7 +1703,6 @@ impl VulkanContext {
             self.pipeline_layout,
             src,
             dst,
-            two_sided,
         )?;
         self.blend_pipeline_cache.insert(key, pipe);
         Ok(pipe)
@@ -1911,7 +1915,6 @@ impl Drop for VulkanContext {
             destroy_render_pass_pipelines(
                 &self.device,
                 &mut self.pipeline,
-                &mut self.pipeline_two_sided,
                 &mut self.blend_pipeline_cache,
                 &mut self.pipeline_ui,
             );
