@@ -192,6 +192,136 @@ today's silent drop.
 
 ---
 
+## 2026-05-09 (later) — Phase 1.3 prep, single-file dissection
+
+`spt_dissect` (companion to `spt_recon`) drills into one
+representative `.spt` and dumps post-magic hex + every printable
+ASCII run + length-prefix string candidates. First target was
+`trees\euonymusbush01.spt` (FNV, 6 757 B, magic OK). Findings.
+
+### Body is a TLV stream of (u32 tag, payload) pairs
+
+After the 20-byte magic, the file is a sequence of records keyed on a
+4-byte little-endian tag. The payload type depends on the tag:
+
+```
+20: ea 03 00 00 d0 07 00 00 31 00 00 00 43 3a 5c 48
+36: 6f 70 65 5c 46 61 6c 6c 6f 75 74 33 5c 42 75 73
+52: 68 65 73 5c 5c 57 61 73 74 65 6c 61 6e 64 53 68
+68: 72 75 62 30 31 42 61 72 6b 2e 74 67 61 d1 07 00
+84: 00 00 80 89 44 d2 07 00 00 00 d3 07 00 00 00 00
+100: c8 42 d5 07 00 00 61 99 04 00 d6 07 00 00 00 00
+```
+
+Decoded:
+
+| Offset | u32 LE | Decoded |
+|---:|---:|---|
+| 20 | 1002 | tag (`0x3EA`, leading parameter, payload type unknown) |
+| 24 | 2000 | tag (`0x7D0` — bark texture string follows) |
+| 28 | 49 | u32 length of next inline string |
+| 32 | — | 49 ASCII bytes: `C:\Hope\Fallout3\Bushes\\WastelandShrub01Bark.tga` |
+| 81 | 2001 | tag (`0x7D1`) |
+| 85 | f32 1100.0 | f32 payload |
+| 89 | 2002 | tag (`0x7D2`) |
+| 93 | f32 0.0 | f32 payload |
+| 97 | 2003 | tag (`0x7D3`) |
+| 101 | f32 100.0 | f32 payload |
+| 105 | 2005 | tag (`0x7D5`) |
+| 109 | (inline data) | (next field per tag's dispatch) |
+
+So the runtime parser shape is:
+
+```
+loop {
+    let tag = read_u32_le()?;
+    match tag {
+        2000 | 2010 | … => read_length_prefixed_string()?,  // texture / curve
+        2001..=2007 | … => read_f32_le()?,                  // numeric params
+        1016 | …        => begin_subsection(),              // nested
+        _               => bail / log / skip,
+    }
+}
+```
+
+The full tag dictionary is what Phase 1.3 still has to enumerate by
+walking the dissector across more `.spt` corpora and building the
+observed-tag → payload-type map.
+
+### Strings are u32-length + raw ASCII (no NUL terminator)
+
+Confirmed via the length-prefix candidate scan — every string in the
+file (texture path, exporter scribble, **and the BezierSpline curve
+blobs**) has the same shape: `u32 LE length | length raw ASCII bytes`.
+No NUL terminator. No alignment padding.
+
+The `__IdvSpt_02_` magic itself is one of these length-prefixed
+strings (offset 4: `len=12`, payload starts at offset 8).
+
+### `BezierSpline` curves are length-prefixed *text* blobs
+
+The Family-B `BezierSpline` runs identified in the corpus sweep are
+not separate fields — they're each a single length-prefixed string
+holding the entire curve as text. Sample (FNV bush, offset 142):
+
+```
+len=92, payload:
+"BezierSpline 0\t1\t0\n{\n\n\t2\n\t0 0 0.707107 0.707107 0.079604\n\t1 1 0.707107 0.707107 0.107006\n\n}\n"
+```
+
+Curve format (eyeball-derived; not verified beyond pattern match):
+
+```
+BezierSpline <a>\t<b>\t<c>\n
+{\n\n
+    \t<num_control_points>\n
+    \t<t> <v> <tan_x> <tan_y> <weight>\n
+    \t<t> <v> <tan_x> <tan_y> <weight>\n
+    …
+    \n
+}\n
+```
+
+The text-blob serialisation is unusual but consistent. It means
+curve values can be parsed with `str::split_whitespace` /
+`f32::parse` rather than IEEE 754 reads — handy for testing, and
+rules out per-platform endian / NaN-handling drift.
+
+### Geometry is in the binary tail
+
+Past offset ~5060 the printable-run scan starts producing junk
+characters (`?333?`, `?ff&?`, `L=.#`) — that's the binary geometry
++ leaf-billboard payload past the last text curve. File tail:
+
+```
+6693: 00 00 00 25 4e 00 00 00 00 80 3f 00 00 80 3f 00
+6709: 00 00 00 00 00 80 3f 00 00 00 00 00 00 00 00 00
+6725: 00 80 3f 00 00 00 00 21 4e 00 00 08 52 00 00 00
+6741: 00 80 3e 09 52 00 00 cd cc cc 3e f0 55 00 00 00
+```
+
+The repeated `00 00 80 3f` = f32 `1.0` blocks suggest float-vector
+data (positions / UVs / normals). Tag `0x4E25` (= 19 989) and
+`0x4E21` (= 19 985) at offsets 6 696 / 6 732 fit the TLV pattern at
+much higher tag values than the parameter section's `~2000` band —
+likely the geometry subsection IDs.
+
+### Updated parser plan for Phase 1.3
+
+1. Validate the 20-byte magic (`MAGIC_HEAD` already pinned).
+2. Implement a TLV-stream reader: read u32 tag, dispatch on tag.
+3. Build the tag → payload-type table iteratively from corpus
+   dissections (`spt_dissect` runs across additional files).
+4. Curves: length-prefix string → `parse_bezier_spline_text(s: &str)`
+   — pure text parser, fully unit-testable.
+5. Geometry tail: deferred to a follow-up sub-phase once the TLV
+   walker reaches the high-tag (19 985+) region cleanly.
+
+Acceptance gate stays: ≥ 95 % of FNV's `.spt` corpus parses through
+the TLV walker without falling into the unknown-tag bail-out.
+
+---
+
 ## Recon harness — how to reproduce
 
 ```bash

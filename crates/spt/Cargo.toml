@@ -34,3 +34,8 @@ recon = []
 name = "spt_recon"
 path = "examples/spt_recon.rs"
 required-features = ["recon"]
+
+[[example]]
+name = "spt_dissect"
+path = "examples/spt_dissect.rs"
+required-features = ["recon"]
