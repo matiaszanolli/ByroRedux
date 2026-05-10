@@ -1452,26 +1452,50 @@ void main() {
 
     // RT glass Phase 3: IOR refraction + reflection for tier-0 fragments
     // (rtLOD < RT_LOD_IOR = 1.0, i.e. arm's-reach glass objects).
-    // Gated by the per-frame ray budget counter — atomicAdd claims 2 units
-    // (reflection + refraction) and falls back to the Fresnel-highlight path
-    // when the budget is exhausted (glassFresnel + specStrength still active).
-    // Window surfaces (isWindow) are excluded here — actual wall portals
-    // returned via the sky-transmission branch above. Surfaces classified
-    // as windows by α alone but whose portal-escape ray hit interior
-    // geometry have already been demoted to `isWindow = false` above.
+    // Gated by the per-frame ray budget counter — atomicAdd claims the
+    // WORST-CASE ray cost upfront and falls back to the Fresnel-highlight
+    // path when the budget is exhausted (glassFresnel + specStrength still
+    // active). Window surfaces (isWindow) are excluded here — actual wall
+    // portals returned via the sky-transmission branch above. Surfaces
+    // classified as windows by α alone but whose portal-escape ray hit
+    // interior geometry have already been demoted to `isWindow = false`
+    // above.
+    //
+    // Worst-case ray cost per IOR fragment (#916 / REN-D9-NEW-03):
+    //   * 1 reflection ray (`traceReflection`, fired unconditionally
+    //     inside this block).
+    //   * Up to 3 refraction rays — the `REFRACT_PASSTHRU_BUDGET = 2`
+    //     glass-passthru loop below iterates `passthru = 0..=2`, so the
+    //     extreme of stacked self-textured glass shells (per #789) emits
+    //     three `rayQueryProceedEXT` calls before the terminus iteration
+    //     commits whatever it hits.
+    // Pre-#916 the gate claimed 2 units (matching the no-passthru common
+    // case). Stacked glass-on-glass scenes therefore reported half the
+    // real ray cost — bounded in hardware impact (atomic still
+    // terminates the per-frame ray flood) but wrong for any future RT
+    // budget telemetry / tuning overlay. We now claim 4 units upfront so
+    // the bookkeeping matches the worst case. The visible IOR band
+    // tightens from ~10% to ~5% of glass fragments under the documented
+    // load model — accepted trade for honest accounting.
     //
     // Budget sized for a typical interior cell with ~15-20 small glass
     // props (chem tables, drinking glass clusters, vial racks). At 1080p
-    // that's roughly 80k visible glass fragments; 8192 ray pairs cover
-    // the first ~10% of them on the IOR path before degrading to Fresnel
-    // — a stable cliff over time as TAA accumulates. Pre-fix value was
-    // 512 (256 pairs), exhausted in ~16×16 px and visibly producing
+    // that's roughly 80k visible glass fragments; 8192 ray slots cover
+    // ~2000 IOR fragments at the worst-case 4-units-per-fragment claim
+    // before degrading to Fresnel — a stable cliff over time as TAA
+    // accumulates. Pre-fix value was 512 (128 fragments at the post-#916
+    // claim rate), exhausted in ~16×16 px and visibly producing
     // flat-translucent beakers across the frame.
     const uint GLASS_RAY_BUDGET = 8192u;
+    // Worst-case ray cost: 1 reflection + REFRACT_PASSTHRU_BUDGET+1
+    // refraction iterations. REFRACT_PASSTHRU_BUDGET is declared inside
+    // the IOR block below as a non-extern constant; keep this expression
+    // in lockstep with that definition.
+    const uint GLASS_RAY_COST = 4u;
     bool glassIORAllowed = isGlass && rtEnabled && !isWindow && rtLOD < RT_LOD_IOR;
     if (glassIORAllowed) {
-        uint old = atomicAdd(rayBudget.rayBudgetCount, 2u);
-        glassIORAllowed = (old + 2u <= GLASS_RAY_BUDGET);
+        uint old = atomicAdd(rayBudget.rayBudgetCount, GLASS_RAY_COST);
+        glassIORAllowed = (old + GLASS_RAY_COST <= GLASS_RAY_BUDGET);
     }
     if (glassIORAllowed) {
         // ── RT glass (Phase 3) ────────────────────────────────────────
