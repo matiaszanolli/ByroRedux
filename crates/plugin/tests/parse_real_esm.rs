@@ -91,7 +91,7 @@ fn parse_rate_fnv_esm() {
          spells={} magic_effects={} activators={} terminals={} form_lists={} \
          projectiles={} effect_shaders={} item_mods={} armor_addons={} body_parts={} \
          reputations={} explosions={} combat_styles={} idle_animations={} \
-         impacts={} impact_data_sets={} recipes={}",
+         impacts={} impact_data_sets={} recipes={} trees={}",
         index.total(),
         index.items.len(),
         index.containers.len(),
@@ -125,6 +125,7 @@ fn parse_rate_fnv_esm() {
         index.impacts.len(),
         index.impact_data_sets.len(),
         index.recipes.len(),
+        index.trees.len(),
     );
 
     // Primary M24 baseline assertion — the "13,684 structured records"
@@ -220,6 +221,33 @@ fn parse_rate_fnv_esm() {
         index.form_lists.len() >= 250,
         "FLST={} (expected >= 250; vanilla ships ~340)",
         index.form_lists.len(),
+    );
+
+    // SpeedTree Phase 1.1 / TREE record dispatch. Pre-fix TREE collapsed
+    // into the generic MODL-only path, dropping ICON / SNAM / CNAM /
+    // BNAM / PFIG silently. Vanilla FNV ships 3 TREE bases (Joshua tree,
+    // creosote, dead tree); the floor at >= 1 absorbs DLC-only TREE
+    // additions without masking a dispatch regression. Each must have a
+    // non-empty model_path that ends in `.spt` — that's the SpeedTree
+    // route the cell loader will eventually branch on.
+    assert!(
+        !index.trees.is_empty(),
+        "TREE={} — every FNV exterior tree REFR points at a TREE base; \
+         the dispatch must produce at least one entry",
+        index.trees.len(),
+    );
+    let spt_trees = index
+        .trees
+        .values()
+        .filter(|t| t.has_speedtree_binary())
+        .count();
+    assert_eq!(
+        spt_trees,
+        index.trees.len(),
+        "every vanilla FNV TREE points at a `.spt` — found {}/{} routed \
+         through the SpeedTree path",
+        spt_trees,
+        index.trees.len(),
     );
     let flst_with_entries = index
         .form_lists
@@ -564,7 +592,7 @@ fn parse_rate_fo3_esm() {
     eprintln!(
         "[FO3] total={} | items={} containers={} LVLI={} LVLN={} LVLC={} \
          NPCs={} creatures={} factions={} globals={} game_settings={} \
-         scripts={}",
+         scripts={} trees={}",
         index.total(),
         index.items.len(),
         index.containers.len(),
@@ -577,6 +605,7 @@ fn parse_rate_fo3_esm() {
         index.globals.len(),
         index.game_settings.len(),
         index.scripts.len(),
+        index.trees.len(),
     );
 
     // Primary baseline from AUDIT_FO3_2026-04-19.md — 18,007 records
@@ -673,6 +702,28 @@ fn parse_rate_fo3_esm() {
         with_nondefault_fog,
         index.weathers.len(),
     );
+
+    // SpeedTree Phase 1.1 / TREE record dispatch — same shape as the
+    // FNV assertion. Vanilla FO3 ships 9 TREE bases (DC swamp foliage
+    // + a handful of dead trees). Every one points at a `.spt`.
+    assert!(
+        !index.trees.is_empty(),
+        "FO3 TREE={} — DC swamp / wasteland trees must dispatch",
+        index.trees.len(),
+    );
+    let spt_trees = index
+        .trees
+        .values()
+        .filter(|t| t.has_speedtree_binary())
+        .count();
+    assert_eq!(
+        spt_trees,
+        index.trees.len(),
+        "every vanilla FO3 TREE points at a `.spt` — found {}/{} routed \
+         through the SpeedTree path",
+        spt_trees,
+        index.trees.len(),
+    );
 }
 
 /// Oblivion: the 160-byte NAM0 stride target of #533. Minimal parse
@@ -694,10 +745,11 @@ fn parse_rate_oblivion_esm() {
     let index = parse_esm(&bytes).expect("parse Oblivion.esm");
 
     eprintln!(
-        "[OBL] total={} | weathers={} climates={}",
+        "[OBL] total={} | weathers={} climates={} trees={}",
         index.total(),
         index.weathers.len(),
         index.climates.len(),
+        index.trees.len(),
     );
 
     // #533 / audit M33-01: Oblivion NAM0 is 160 B. Same gate failure as
@@ -799,6 +851,44 @@ fn parse_rate_oblivion_esm() {
             edid, w.classification, *expected,
         );
     }
+
+    // SpeedTree Phase 1.1 / TREE record dispatch — Oblivion is the
+    // densest forest content in the lineage (vanilla Cyrodiil ships
+    // 142 TREE bases for the various oak / pine / birch / etc.
+    // species). The floor at >= 100 absorbs DLC trims without
+    // masking a regression. Every one points at a `.spt`.
+    assert!(
+        index.trees.len() >= 100,
+        "OBL TREE={} (expected >= 100; vanilla ships 142) — Cyrodiil \
+         forests rely entirely on the TREE dispatch",
+        index.trees.len(),
+    );
+    let spt_trees = index
+        .trees
+        .values()
+        .filter(|t| t.has_speedtree_binary())
+        .count();
+    assert_eq!(
+        spt_trees,
+        index.trees.len(),
+        "every vanilla Oblivion TREE points at a `.spt` — found {}/{} \
+         routed through the SpeedTree path",
+        spt_trees,
+        index.trees.len(),
+    );
+    // Sanity: at least one TREE carries CNAM (canopy params). Pre-fix
+    // CNAM was silently dropped alongside ICON/SNAM/BNAM/PFIG.
+    let with_cnam = index
+        .trees
+        .values()
+        .filter(|t| !t.canopy_params.is_empty())
+        .count();
+    assert!(
+        with_cnam >= 100,
+        "OBL TREE with CNAM = {}/{} — pre-#TREE every CNAM dropped silently",
+        with_cnam,
+        index.trees.len(),
+    );
 }
 
 /// FO4: vanilla `Fallout4.esm` parse-rate harness. Mirrors the FNV /
@@ -838,7 +928,7 @@ fn parse_rate_fo4_esm() {
          (placements={}) packins={} movables={} material_swaps={} \
          texture_sets={} items={} containers={} LVLI={} LVLN={} NPCs={} \
          races={} classes={} factions={} globals={} game_settings={} \
-         weathers={} climates={}",
+         weathers={} climates={} trees={}",
         index.total(),
         index.game,
         index.cells.cells.len(),
@@ -861,6 +951,7 @@ fn parse_rate_fo4_esm() {
         index.game_settings.len(),
         index.weathers.len(),
         index.climates.len(),
+        index.trees.len(),
     );
 
     // HEDR → GameKind dispatch. Pre-#439 the FO4 master would

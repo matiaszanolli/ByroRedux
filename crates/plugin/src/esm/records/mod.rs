@@ -26,6 +26,7 @@ pub mod outfit;
 pub mod pkin;
 pub mod scol;
 pub mod script;
+pub mod tree;
 pub mod weather;
 
 pub use list_record::{parse_flst, FlstRecord};
@@ -61,6 +62,7 @@ pub use misc::{
     TermRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
+pub use tree::{parse_tree, ObjectBounds as TreeObjectBounds, TreeRecord};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
 
 use super::cell::support::{
@@ -236,6 +238,14 @@ pub struct EsmIndex {
     /// `BPTD` body-part-data records — per-NPC dismemberment
     /// routing (head, torso, limbs) + biped slot count.
     pub body_parts: HashMap<u32, BptdRecord>,
+    /// `TREE` tree base records — Oblivion / FO3 / FNV reference an
+    /// external SpeedTree binary (`.spt`) here; Skyrim+ points at a
+    /// regular NIF rooted at `BSTreeNode`. Pre-fix this group fell
+    /// through the generic MODL-only path alongside STAT / FLOR / etc.,
+    /// dropping ICON / SNAM / CNAM / BNAM / PFIG silently. The
+    /// SpeedTree compatibility plan's Phase 1 consumes this map for
+    /// leaf-texture / wind-parameter / canopy-param routing.
+    pub trees: HashMap<u32, TreeRecord>,
     // ── #809 / FNV-D2-NEW-02 — supporting record stubs ──────────────
     //
     // Seven records that gate FNV NPC AI / crafting / impact-effect
@@ -560,6 +570,7 @@ impl EsmIndex {
         self.activators.extend(other.activators);
         self.terminals.extend(other.terminals);
         self.form_lists.extend(other.form_lists);
+        self.trees.extend(other.trees);
     }
 }
 
@@ -688,12 +699,27 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"MSWP" => parse_mswp_group(&mut reader, end, &mut material_swaps)?,
             // MODL-only labels — populate `cells.statics` for visual
             // placement, no typed map. STAT / MSTT / FURN / DOOR /
-            // LIGH / FLOR / TREE / IDLM / BNDS / ADDN / TACT all carry
-            // a MODL but no record-side parser yet.
-            b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"LIGH" | b"FLOR" | b"TREE" | b"IDLM"
-            | b"BNDS" | b"ADDN" | b"TACT" => {
+            // LIGH / FLOR / IDLM / BNDS / ADDN / TACT all carry a MODL
+            // but no record-side parser yet. TREE was here too pre-#TREE
+            // (SpeedTree Phase 1.1) but split out below so ICON / SNAM /
+            // CNAM / BNAM / PFIG don't silently fall on the floor.
+            b"STAT" | b"MSTT" | b"FURN" | b"DOOR" | b"LIGH" | b"FLOR" | b"IDLM" | b"BNDS"
+            | b"ADDN" | b"TACT" => {
                 parse_modl_group(&mut reader, end, &mut statics)?;
             }
+            // TREE — dual-target: typed `EsmIndex.trees` entry AND
+            // `cells.statics` for the existing REFR placement path.
+            // Same fused-walk pattern as WEAP / ARMO etc. so we don't
+            // pay for the sub-record decode twice.
+            b"TREE" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"TREE",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.trees.insert(fid, parse_tree(fid, subs));
+                },
+            )?,
             // ── Dual-target labels — typed record + cells.statics in one walk. ──
             //
             // Every label below ships BOTH a typed `EsmIndex.<map>`
