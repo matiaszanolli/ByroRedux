@@ -1044,6 +1044,11 @@ impl VulkanContext {
             &gpu_allocator,
             device_caps.ray_query_supported,
         )?;
+        // #921 — seed slot-0 identity in the DEVICE bone palette so the
+        // first frame's binding-12 read (which targets the OTHER frame
+        // slot, never written yet) doesn't surface uninitialized memory
+        // through the vertex shader's bone fetch.
+        scene_buffers.seed_identity_bones(&device, &graphics_queue, transfer_pool)?;
 
         // 12b. Acceleration manager (RT only) — build empty TLAS so descriptors are valid
         let mut scene_buffers = scene_buffers;

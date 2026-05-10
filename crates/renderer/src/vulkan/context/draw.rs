@@ -394,6 +394,14 @@ impl VulkanContext {
                 .upload_bones(&self.device, frame, bone_palette)
                 .unwrap_or_else(|e| log::warn!("Failed to upload bone palette: {e}"));
         }
+        // #921 / REN-D12-NEW-04 — schedule the staging→device copy +
+        // visibility barrier on the main command buffer BEFORE any
+        // shader stage reads the device-side bone palette (the M29 skin
+        // compute steady-state dispatch below, and binding 3 / 12 reads
+        // in the raster vertex stage). Idempotent w.r.t. the per-prime
+        // copies recorded inside the first-sight loop further down.
+        self.scene_buffers
+            .record_bone_copy(&self.device, cmd, frame);
 
         // ── M29 Phase 2: GPU pre-skin + per-skinned-entity BLAS refit ─
         //
@@ -542,18 +550,31 @@ impl VulkanContext {
                                 &self.graphics_queue,
                                 self.transfer_pool,
                                 &self.transfer_fence,
-                                |prime_cmd| unsafe {
-                                    skin_pipeline.dispatch(
+                                |prime_cmd| {
+                                    // #921 — populate the DEVICE bone palette
+                                    // from staging on this one-time command buffer
+                                    // before the prime compute dispatch reads it.
+                                    // The main cmd buffer's `record_bone_copy` runs
+                                    // later in a separate submission, so we cannot
+                                    // rely on it for the prime read.
+                                    self.scene_buffers.record_bone_copy(
                                         &self.device,
                                         prime_cmd,
-                                        slot,
                                         frame,
-                                        input_buffer,
-                                        input_size,
-                                        bone_buf,
-                                        bone_buffer_size,
-                                        push,
                                     );
+                                    unsafe {
+                                        skin_pipeline.dispatch(
+                                            &self.device,
+                                            prime_cmd,
+                                            slot,
+                                            frame,
+                                            input_buffer,
+                                            input_size,
+                                            bone_buf,
+                                            bone_buffer_size,
+                                            push,
+                                        );
+                                    }
                                     Ok(())
                                 },
                             );
