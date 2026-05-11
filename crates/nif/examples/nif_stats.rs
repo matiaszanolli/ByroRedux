@@ -67,6 +67,26 @@ fn min_success_rate() -> f64 {
         .unwrap_or(DEFAULT_MIN_SUCCESS_RATE)
 }
 
+/// #839 / SK-D5-NEW-05 — per-block stream-drift budget. The legacy
+/// gate inspected `clean == total` at the **NIF** level, leaving
+/// per-block realignments invisible — e.g. Skyrim Meshes0 reporting
+/// `100.00% clean / recovered: 0` despite 67+ `consumed != block_size`
+/// events fired in the parse log.
+///
+/// The drift histogram populated on `NifScene.drift_histogram` (#939)
+/// now feeds an opt-in cap: when the env var is set, the walk-level
+/// aggregate must stay at-or-below the value or the binary exits
+/// non-zero. Default is `u64::MAX` (no gating) so existing scripts
+/// keep working; CI / regression runs set it to `0` for strict
+/// vanilla-content checks. Setting `1` etc. lets known-noisy paths
+/// pass while still catching net-new drift.
+fn max_drift_events() -> u64 {
+    std::env::var("NIF_STATS_MAX_DRIFT_EVENTS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(u64::MAX)
+}
+
 /// Per-block-type counts. `parsed` is dispatch-table success; `unknown`
 /// is the count of blocks that landed on the `NiUnknown` recovery path
 /// while still advertising this type in the header.
@@ -207,6 +227,19 @@ impl Stats {
     /// clean/truncated/failed counters above.
     fn total_unknown_blocks(&self) -> usize {
         self.block_histogram.values().map(|c| c.unknown).sum()
+    }
+
+    /// Sum of every drift event across every type — the per-block
+    /// surface that the legacy `clean == total` gate cannot see (#839).
+    /// One drift event = one block parser returned `Ok` but consumed
+    /// a number of bytes that disagreed with the header's `block_size`,
+    /// requiring stream realignment. See #939 for the underlying
+    /// `NifScene.drift_histogram` data source.
+    fn total_drift_events(&self) -> u64 {
+        self.drift_histogram
+            .values()
+            .flat_map(|inner| inner.values())
+            .sum()
     }
 
     /// Number of types where dispatch succeeded for some instances but
@@ -659,6 +692,21 @@ fn main() {
             "\nparse success rate {:.2}% is below the {:.2}% threshold",
             stats.success_rate() * 100.0,
             threshold * 100.0
+        );
+        std::process::exit(1);
+    }
+
+    // #839 / SK-D5-NEW-05 — per-block drift budget. Opt-in via env
+    // var; default `u64::MAX` skips the check entirely so existing
+    // scripts are unaffected. CI / regression runs that want strict
+    // vanilla-content gating set `NIF_STATS_MAX_DRIFT_EVENTS=0`.
+    let drift_budget = max_drift_events();
+    let drift_total = stats.total_drift_events();
+    if stats.total > 0 && drift_total > drift_budget {
+        eprintln!(
+            "\nper-block stream-drift events ({}) exceed budget ({}) — \
+             see `--drift-histogram` for the per-type breakdown",
+            drift_total, drift_budget,
         );
         std::process::exit(1);
     }
