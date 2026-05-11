@@ -39,7 +39,7 @@ the same pass: Skyrim Whiterun 253.3 FPS @ 1932 entities, FO4 MedTek
 **Rendering, today.** Interior cells load and render end-to-end from
 unmodified Bethesda game data (Oblivion Anvil Heinrich Oaken Halls,
 FNV Prospector Saloon, FO3 Megaton at 929 REFRs). Exterior renders
-3×3 grids from FNV WastelandNV with landscape terrain (LAND
+7×7 (radius 3, default) grids from FNV WastelandNV with landscape terrain (LAND
 heightmap + LTEX/TXST splat). Skyrim SE loads individual meshes with
 BSTriShape geometry. Single-mesh sweetroll ~3000-5000 FPS
 (2026-04-22, RTX 4070 Ti @ 1280×720).
@@ -143,7 +143,7 @@ parse-rate work for the games where clean < 100%.
 |-------------------|---------------|----------------------------------------------|----------------------------------------------------------|
 | Oblivion          | BSA v103      | **96.24%** (7 730 / 8 032) · recover 99.99%  | Interior (Anvil Heinrich Oaken Halls). Exterior blocked on TES4 worldspace + LAND wiring (same shape as FO3 was). `#687` closed via two perpetrator-parser fixes (NiGeomMorpherController trailing bsver-gated u32 + NiControllerSequence Phase field for v=10.2.0.0); 83 truncations recovered. `#688` / `#698` track the remaining clean-rate gap. |
 | Fallout 3         | BSA v104      | 100% (10 989)                                | Interior (Megaton, 929 REFRs). Exterior wired; fresh GPU bench pending (R6a). |
-| Fallout New Vegas | BSA v104      | 100% (14 881)                                | Interior (Prospector 1200 entities @ 172.6 FPS / 5.79 ms on RTX 4070 Ti, bench 6a6950a). Exterior 3×3. |
+| Fallout New Vegas | BSA v104      | 100% (14 881)                                | Interior (Prospector 1200 entities @ 172.6 FPS / 5.79 ms on RTX 4070 Ti, bench 6a6950a). Exterior 7×7 (radius 3). |
 | Skyrim SE         | BSA v105 LZ4  | 100% (18 862)                                | Interior (WhiterunBanneredMare 1932 entities @ 253.3 FPS / 3.95 ms, bench 6a6950a; entity count up from 1258 since M32.5 close — more REFRs land now). |
 | Fallout 4         | BA2 v1/v7/v8  | **96.46%** (33 757 / 34 995) · recover 100%  | Interior (MedTekResearch01 7434 entities @ 92.5 FPS / 10.82 ms, bench 6a6950a). FaceGen NIFs dominate the truncation tail (1 235 of 1 238 truncated files). |
 | Fallout 76        | BA2 v1        | **97.34%** (56 915 / 58 469) · recover 100%  | —                                                        |

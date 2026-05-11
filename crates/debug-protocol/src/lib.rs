@@ -76,8 +76,19 @@ pub enum DebugResponse {
         avg_fps: f32,
         frame_time_ms: f32,
         entity_count: u32,
+        /// Registry-wide MeshRegistry size (never drops on cell unload).
+        /// See #637 / FNV-D5-02.
         mesh_count: u32,
+        /// Registry-wide TextureRegistry size. See #637 / FNV-D5-02.
         texture_count: u32,
+        /// Distinct non-zero `MeshHandle` values held by live ECS
+        /// entities. Scene-scoped — pairs with [`mesh_count`] to spot
+        /// retain-past-unload regressions. See #637 / FNV-D5-02.
+        meshes_in_use: u32,
+        /// Distinct non-zero `TextureHandle` values held by live ECS
+        /// entities. Scene-scoped — pairs with [`texture_count`].
+        /// See #637 / FNV-D5-02.
+        textures_in_use: u32,
         draw_call_count: u32,
     },
     /// Screenshot captured — PNG bytes (base64-encoded for JSON transport).

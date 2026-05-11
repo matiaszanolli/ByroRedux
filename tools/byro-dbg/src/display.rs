@@ -38,11 +38,26 @@ pub fn print_response(response: &DebugResponse) {
             entity_count,
             mesh_count,
             texture_count,
+            meshes_in_use,
+            textures_in_use,
             draw_call_count,
         } => {
+            // #637 / FNV-D5-02 — show registry-wide AND scene-scoped
+            // counts for meshes / textures so a leak that holds the
+            // last reference past cell unload is visible as
+            // `<registry>` larger than `<in_use>`.
             println!(
-                "FPS: {:.1} (avg {:.1}) | Frame: {:.2}ms | Entities: {} | Meshes: {} | Textures: {} | Draws: {}",
-                fps, avg_fps, frame_time_ms, entity_count, mesh_count, texture_count, draw_call_count
+                "FPS: {:.1} (avg {:.1}) | Frame: {:.2}ms | Entities: {} | \
+                 Meshes: {}/{} | Textures: {}/{} | Draws: {} (registry/in-use)",
+                fps,
+                avg_fps,
+                frame_time_ms,
+                entity_count,
+                mesh_count,
+                meshes_in_use,
+                texture_count,
+                textures_in_use,
+                draw_call_count
             );
         }
         DebugResponse::Screenshot {

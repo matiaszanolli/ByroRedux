@@ -259,6 +259,9 @@ fn eval_stats(world: &World) -> DebugResponse {
             entity_count: stats.entity_count,
             mesh_count: stats.mesh_count,
             texture_count: stats.texture_count,
+            // #637 / FNV-D5-02 — scene-scoped counterparts.
+            meshes_in_use: stats.meshes_in_use,
+            textures_in_use: stats.textures_in_use,
             draw_call_count: stats.draw_call_count,
         },
         None => DebugResponse::error("DebugStats resource not available"),

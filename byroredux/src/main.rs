@@ -157,6 +157,38 @@ fn main() -> Result<()> {
 
     // Headless --cmd mode: execute command and exit without creating a window.
     if let Some(cmd_idx) = args.iter().position(|a| a == "--cmd") {
+        // #637 / FNV-D5-03 — the headless path builds an empty World
+        // with only `DebugStats::default()` and the command registry, so
+        // every cell-aware command (`stats`, `entities`, `tex.missing`,
+        // `light.dump`, etc.) returns zeros regardless of which
+        // `--esm` / `--bsa` flags were also passed. Reject the
+        // combination with a clear error rather than silently producing
+        // misleading output that a CI baseline check would otherwise
+        // accept as valid.
+        //
+        // Audit Option (b) — wiring the cell loader into this path so
+        // cell-aware stats work without a window — is the long-term
+        // unblock for CI regression checks, but is substantially more
+        // scope than this LOW-severity bundle covers. Filed as a
+        // follow-up if/when CI starts asserting on baselines.
+        let conflicting: Vec<&str> = ["--esm", "--bsa", "--textures-bsa", "--master", "--grid",
+            "--cell", "--wrld", "--radius", "--mesh", "--tree", "--kf"]
+            .iter()
+            .copied()
+            .filter(|flag| args.iter().any(|a| a == flag))
+            .collect();
+        if !conflicting.is_empty() {
+            eprintln!(
+                "error: --cmd is headless and cannot resolve a cell-aware scene. \
+                 Conflicting flag(s) passed: {}\n\
+                 Use a live engine session (omit --cmd, then attach with byro-dbg) \
+                 for cell-aware queries. See #637 / FNV-D5-03.",
+                conflicting.join(", "),
+            );
+            return Err(anyhow::anyhow!(
+                "--cmd cannot coexist with cell/asset-loading flags"
+            ));
+        }
         let input = args.get(cmd_idx + 1).map(|s| s.as_str()).unwrap_or("help");
         let mut world = World::new();
         world.insert_resource(DebugStats::default());
@@ -1211,10 +1243,42 @@ impl ApplicationHandler for App {
         world_resource_set::<TotalTime>(&self.world, |r| r.0 += dt);
 
         // Update debug stats.
+        //
+        // #637 / FNV-D5-02 — `mesh_count` / `texture_count` are
+        // registry-wide and don't drop on cell unload. The new
+        // `meshes_in_use` / `textures_in_use` counts walk the ECS
+        // `MeshHandle` / `TextureHandle` queries and dedupe non-zero
+        // handles, so a regression that retains a registry entry past
+        // the last live consumer shows up as `registry > in_use`. Done
+        // in two scopes because the queries need an immutable world
+        // borrow that can't coexist with `resource_mut::<DebugStats>`.
+        let (meshes_in_use, textures_in_use) = {
+            let mut mesh_set: std::collections::HashSet<u32> =
+                std::collections::HashSet::new();
+            if let Some(q) = self.world.query::<byroredux_core::ecs::MeshHandle>() {
+                for (_, h) in q.iter() {
+                    if h.0 != 0 {
+                        mesh_set.insert(h.0);
+                    }
+                }
+            }
+            let mut tex_set: std::collections::HashSet<u32> =
+                std::collections::HashSet::new();
+            if let Some(q) = self.world.query::<byroredux_core::ecs::TextureHandle>() {
+                for (_, h) in q.iter() {
+                    if h.0 != 0 {
+                        tex_set.insert(h.0);
+                    }
+                }
+            }
+            (mesh_set.len() as u32, tex_set.len() as u32)
+        };
         {
             let mut stats = self.world.resource_mut::<DebugStats>();
             stats.push_frame_time(dt);
             stats.entity_count = self.world.next_entity_id();
+            stats.meshes_in_use = meshes_in_use;
+            stats.textures_in_use = textures_in_use;
             if let Some(ref ctx) = self.renderer {
                 stats.mesh_count = ctx.mesh_registry.len() as u32;
                 stats.texture_count = ctx.texture_registry.len() as u32;

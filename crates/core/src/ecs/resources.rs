@@ -82,10 +82,28 @@ pub struct DebugStats {
     frame_count: usize,
     /// Total entities in the world.
     pub entity_count: u32,
-    /// GPU meshes in the MeshRegistry.
+    /// GPU meshes in the MeshRegistry. **Registry-wide** — never
+    /// drops on cell unload, so a leak that holds the last reference
+    /// to a mesh keeps this counter inflated. Pair with
+    /// [`Self::meshes_in_use`] to spot the leak: `mesh_count >
+    /// meshes_in_use` is the count of meshes the registry is retaining
+    /// for no active consumer.
     pub mesh_count: u32,
-    /// GPU textures in the TextureRegistry.
+    /// GPU textures in the TextureRegistry. **Registry-wide** — same
+    /// caveats as [`Self::mesh_count`]. Pair with
+    /// [`Self::textures_in_use`]. See #637 / FNV-D5-02.
     pub texture_count: u32,
+    /// Distinct non-zero `MeshHandle` values reachable from live ECS
+    /// entities at the last `stats_system` tick. Scene-scoped: drops
+    /// the moment a cell unload removes the last entity holding the
+    /// handle, so a regression that keeps a mesh in the registry
+    /// after unload shows up as `mesh_count > meshes_in_use`. See
+    /// #637 / FNV-D5-02.
+    pub meshes_in_use: u32,
+    /// Distinct non-zero `TextureHandle` values reachable from live
+    /// ECS entities at the last `stats_system` tick. Same scene-scoped
+    /// semantics as [`Self::meshes_in_use`]. See #637 / FNV-D5-02.
+    pub textures_in_use: u32,
     /// Draw calls last frame.
     pub draw_call_count: u32,
 }
@@ -103,6 +121,8 @@ impl Default for DebugStats {
             entity_count: 0,
             mesh_count: 0,
             texture_count: 0,
+            meshes_in_use: 0,
+            textures_in_use: 0,
             draw_call_count: 0,
         }
     }

@@ -49,8 +49,20 @@ impl ConsoleCommand for StatsCommand {
                 max_dt * 1000.0
             ),
             format!("Entities:  {}", stats.entity_count),
-            format!("Meshes:    {}", stats.mesh_count),
-            format!("Textures:  {}", stats.texture_count),
+            // #637 / FNV-D5-02 — show registry-wide AND scene-scoped
+            // counts so a leak that holds the last reference past cell
+            // unload is visible as `<registry>` larger than `<in_use>`.
+            // For single-cell sessions the two numbers usually match;
+            // when M40 world streaming is active they should still
+            // bounce in lockstep, so a steady-state gap = leak.
+            format!(
+                "Meshes:    {} registry / {} in use",
+                stats.mesh_count, stats.meshes_in_use
+            ),
+            format!(
+                "Textures:  {} registry / {} in use",
+                stats.texture_count, stats.textures_in_use
+            ),
             format!("Draws:     {}", stats.draw_call_count),
         ])
     }

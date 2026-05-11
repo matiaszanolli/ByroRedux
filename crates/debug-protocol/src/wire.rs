@@ -76,6 +76,8 @@ mod tests {
             entity_count: 100,
             mesh_count: 50,
             texture_count: 30,
+            meshes_in_use: 42,
+            textures_in_use: 27,
             draw_call_count: 200,
         };
         let encoded = encode(&resp).unwrap();
