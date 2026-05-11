@@ -510,6 +510,71 @@ mod tests {
         assert_eq!(stream.position() as usize, data.len());
     }
 
+    /// #944 / NIF-D3-NEW-04 — the `Use Internal` byte is gated on
+    /// `Use External == 0` per nif.xml line 5117. Pre-existing tests
+    /// pin the `Use External == 0` (embedded) path; this one pins
+    /// the `Use External == 1` (external file) path at the same
+    /// legacy version, so a future refactor that flips the boolean
+    /// or reorders the gate (a common mistake) gets caught immediately
+    /// instead of silently drifting by 1 byte on every external
+    /// texture — which is most of them.
+    #[test]
+    fn pre_oblivion_external_path_does_not_consume_use_internal_byte() {
+        // v10.0.1.2 sits inside the `until="10.0.1.3"` window. The
+        // legacy embedded path WOULD read `use_internal` here, so a
+        // misgated parser that read it regardless of `use_external`
+        // would drift exactly 1 byte on this fixture.
+        let header = make_pre_oblivion_header(NifVersion(0x0A000102));
+        let mut data = Vec::new();
+        // NiObjectNET: empty name + empty extra_data + null controller.
+        data.extend_from_slice(&0u32.to_le_bytes()); // name length = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        // use_external = 1 → external file path. The `use_internal`
+        // byte MUST NOT be read here even though the version satisfies
+        // the `until` gate; nif.xml's gate is the AND of both.
+        data.push(1u8);
+        // Filename: pre-string-table layout (v < 20.2.0.7) reads a
+        // sized string (u32 length + bytes).
+        let filename = b"foo.dds";
+        data.extend_from_slice(&(filename.len() as u32).to_le_bytes());
+        data.extend_from_slice(filename);
+        // _unknown_ref read at v >= 10.1.0.0 — v10.0.1.2 < that, so
+        // no extra ref. (Sibling guard: this branch differs between
+        // pre/post-10.1; if the parser ever read the ref at v10.0.1.2
+        // it would also drift, so the consumed-bytes check covers it.)
+        // Format prefs + is_static.
+        data.extend_from_slice(&1u32.to_le_bytes()); // pixel_layout
+        data.extend_from_slice(&0u32.to_le_bytes()); // use_mipmaps
+        data.extend_from_slice(&0u32.to_le_bytes()); // alpha_format
+        data.push(1u8); // is_static
+
+        let mut stream = NifStream::new(&data, &header);
+        let tex = NiSourceTexture::parse(&mut stream).unwrap();
+        assert!(tex.use_external, "external path");
+        assert_eq!(
+            tex.filename.as_deref(),
+            Some("foo.dds"),
+            "filename must read immediately after `use_external == 1`; \
+             a flipped Use Internal gate would have eaten the first \
+             byte of the sized-string length here"
+        );
+        assert_eq!(
+            tex.pixel_data_ref,
+            BlockRef::NULL,
+            "external path stores no pixel data ref"
+        );
+        assert_eq!(
+            tex.pixel_layout, 1,
+            "format prefs must follow the filename — a misgated parser would shift this"
+        );
+        assert_eq!(
+            stream.position() as usize,
+            data.len(),
+            "parser must consume the external block exactly — no drift from a phantom use_internal byte"
+        );
+    }
+
     #[test]
     fn parse_ni_pixel_data_oblivion() {
         let header = make_oblivion_header();
