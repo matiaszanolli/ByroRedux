@@ -256,6 +256,120 @@ pub fn humanoid_default_idle_kf_path(game: GameKind, _gender: Gender) -> Option<
     }
 }
 
+/// One armor piece resolved against the ESM index, queued for mesh
+/// dispatch. The borrow into `EsmIndex` keeps this lifetime-tied to
+/// the spawn-function scope.
+struct ResolvedArmor<'a> {
+    form_id: u32,
+    model_path: &'a str,
+}
+
+/// Equip pipeline state built purely from `&NpcRecord` + `&EsmIndex`
+/// — no World, no VulkanContext, no archive I/O. Both spawn paths
+/// insert `inventory` + `equipment_slots` on the placement root
+/// **before** skeleton / FaceGen load so the equip data lands even
+/// when the spawn function early-returns on a missing archive. The
+/// `armor_to_spawn` list is consumed after the skeleton resolves;
+/// when the skeleton load early-returns, the meshes simply don't
+/// spawn but the components are already in place for inspection +
+/// the eventual save round-trip (M45).
+struct NpcEquipState<'a> {
+    inventory: Inventory,
+    equipment_slots: EquipmentSlots,
+    armor_to_spawn: Vec<ResolvedArmor<'a>>,
+}
+
+/// Walk the NPC's default outfit + inventory, expand LVLI refs to
+/// base ARMO records, populate `Inventory` + `EquipmentSlots`, and
+/// collect the armor mesh paths the spawn-side mesh loader will
+/// dispatch. Independent of World / VulkanContext so the caller can
+/// insert the components ahead of any archive I/O — that way a
+/// missing skeleton.nif (e.g. FO4's vanilla data lacks
+/// `character assets\skeleton.nif`; only `_1stperson` + `.hkx`
+/// ship) still leaves the equip data inspectable on the placement
+/// root.
+fn build_npc_equip_state<'a>(
+    npc: &NpcRecord,
+    index: &'a EsmIndex,
+    game: GameKind,
+    gender: Gender,
+) -> NpcEquipState<'a> {
+    let mut inventory = Inventory::new();
+    let mut equipment_slots = EquipmentSlots::new();
+    let mut armor_to_spawn: Vec<ResolvedArmor<'a>> = Vec::new();
+    let actor_level = npc.level;
+    let mut expanded: Vec<u32> = Vec::new();
+
+    // Default outfit (OTFT.items) → expand each entry through the
+    // LVLI dispatcher. Skyrim+ NPCs typically reference leveled
+    // lists for outfit variety; the pre-fix loop skipped LVLI refs
+    // silently. See M41 Phase 2 close-out / #896.
+    if let Some(otft_fid) = npc.default_outfit {
+        if let Some(otft) = index.outfits.get(&otft_fid) {
+            for &fid in &otft.items {
+                byroredux_plugin::equip::expand_leveled_form_id(
+                    fid,
+                    actor_level,
+                    index,
+                    &mut expanded,
+                );
+            }
+        }
+    }
+
+    // Direct CNTO inventory entries (kf-era's primary path; Skyrim+
+    // uses these less often but the loop runs uniformly). Negative
+    // counts are remove-from-inventory deltas; clamp at runtime.
+    for entry in npc.inventory.iter() {
+        if entry.count.max(0) > 0 {
+            byroredux_plugin::equip::expand_leveled_form_id(
+                entry.item_form_id,
+                actor_level,
+                index,
+                &mut expanded,
+            );
+        }
+    }
+
+    for form_id in expanded {
+        let stack = ItemStack::new(form_id, 1);
+        let inv_idx = inventory.push(stack);
+
+        let Some(item) = index.items.get(&form_id) else {
+            // LVLI dispatcher already flattened to base records;
+            // anything still unresolved here is a master / DLC
+            // master-list miss. Silent — the inventory row stays.
+            continue;
+        };
+        let ItemKind::Armor { biped_flags, .. } = item.kind else {
+            // Non-armor inventory (food, ammo, weapons, MISC) keep
+            // their inventory row but don't equip / spawn mesh.
+            continue;
+        };
+
+        let _ = equipment_slots.equip(biped_flags, inv_idx);
+
+        if let Some(model_path) = byroredux_plugin::equip::resolve_armor_mesh(
+            item,
+            gender,
+            npc.race_form_id,
+            index,
+            game,
+        ) {
+            armor_to_spawn.push(ResolvedArmor {
+                form_id,
+                model_path,
+            });
+        }
+    }
+
+    NpcEquipState {
+        inventory,
+        equipment_slots,
+        armor_to_spawn,
+    }
+}
+
 /// Spawn an NPC actor entity for the kf-era path (Oblivion / FO3 /
 /// FNV) — M41.0 Phase 1b. Returns the placement-root `EntityId` for
 /// the assembled actor (skeleton + body, parented under the root and
@@ -903,7 +1017,27 @@ pub fn spawn_prebaked_npc_entity(
         world.insert(placement_root, Name(sym));
     }
 
-    // 2. Skeleton — same shared file as the kf-era path uses
+    // 2. Equip state — built from the NPC record + ESM index alone
+    //    so it lands on the placement root **before** any archive
+    //    I/O. FO4 vanilla data ships only `_1stperson\skeleton.nif`
+    //    plus `.hkx` for the 3rd-person humanoid skeleton; the SSE-
+    //    shaped `character assets\skeleton.nif` our resolver looks
+    //    for is absent (verified by BA2 scan against Meshes /
+    //    MeshesExtra / Animations / Misc / Startup). With the equip
+    //    insert deferred to after skeleton load, every FO4 NPC
+    //    silently short-circuited at line `return Some(placement_root)`
+    //    and the M41 Phase 2 smoke reported 0 Inventory components.
+    //    Hoisting the build here keeps the equip data observable for
+    //    diagnostics + the future save round-trip (M45) even when
+    //    the mesh load fails. The armor-mesh dispatch loop further
+    //    down still gates on a resolved `skel_map` — meshes don't
+    //    materialise without bones, but the components do.
+    let equip_state = build_npc_equip_state(npc, index, game, gender);
+    let armor_to_spawn = equip_state.armor_to_spawn;
+    world.insert(placement_root, equip_state.inventory);
+    world.insert(placement_root, equip_state.equipment_slots);
+
+    // 3. Skeleton — same shared file as the kf-era path uses
     //    (Skyrim+ ships `meshes\actors\character\character assets\
     //    skeleton.nif`). The pre-baked head NIF carries its own
     //    `BSTriShape`-skinned mesh that resolves bones against
@@ -913,7 +1047,7 @@ pub fn spawn_prebaked_npc_entity(
         Some(d) => d,
         None => {
             log::warn!(
-                "NPC {:08X} ({}): skeleton '{}' not in archives — skipping spawn",
+                "NPC {:08X} ({}): skeleton '{}' not in archives — skipping mesh spawn (equip state retained)",
                 npc.form_id,
                 npc.editor_id,
                 skel_path,
@@ -936,7 +1070,7 @@ pub fn spawn_prebaked_npc_entity(
         add_child(world, placement_root, sr);
     }
 
-    // 3. Pre-baked FaceGen NIF (per-NPC head+body in one mesh).
+    // 4. Pre-baked FaceGen NIF (per-NPC head+body in one mesh).
     let Some(facegen_path) = prebaked_facegen_nif_path(plugin_name, npc.form_id) else {
         log::debug!(
             "NPC {:08X}: empty plugin name in load order; skipping pre-baked FaceGen",
@@ -972,108 +1106,29 @@ pub fn spawn_prebaked_npc_entity(
         add_child(world, placement_root, fr);
     }
 
-    // 4. Equipment (M41 Phase 2 / #896 Phase B.2 — Skyrim+/FO4 path).
+    // 5. Armor mesh dispatch — `Inventory` + `EquipmentSlots` are
+    //    already inserted above (step 2). Loop the pre-built
+    //    `armor_to_spawn` list and load each piece's worn mesh via
+    //    `byroredux_plugin::equip::resolve_armor_mesh` — which
+    //    dispatches per-game: Skyrim+ walks the ARMA list, race-
+    //    matches, and picks the gender-appropriate biped path.
     //
-    // Walks the actor's default outfit (`DOFT` → `OTFT` → ARMO list)
-    // and any directly-equipped inventory armor, populates ECS
-    // `Inventory` / `EquipmentSlots` on the placement root, and loads
-    // each piece's worn mesh via `byroredux_plugin::equip::resolve_armor_mesh`
-    // — which dispatches per-game: Skyrim+ walks the ARMA list,
-    // race-matches, and picks the gender-appropriate biped path.
-    //
-    // **Body suppression NOT applied here.** The pre-baked FaceGen
-    // NIF is one combined head+body skinned mesh; selectively hiding
-    // body sub-shapes requires per-shape `BSDismemberSkinInstance`
-    // partition inspection. Phase B.2 renders armor on top of the
-    // FaceGen body and accepts whatever clipping happens — same
-    // compromise Phase A.1 made before A.2 added the kf-era body-skip.
-    // SSE armor-clipping refinement is a separate follow-up.
-    //
-    // **LVLI dispatch.** Outfit `INAM` arrays + NPC inventory CNTO
-    // entries can reference either ARMO (direct) or LVLI (leveled
-    // item — level-gated pick). Both are flattened through
-    // `byroredux_plugin::equip::expand_leveled_form_id` so the spawn
-    // walk sees ARMO base records uniformly. Without this, vanilla
-    // Skyrim+ NPCs (whose default outfits typically reference leveled
-    // lists for armor variety) silently spawn with no gear. See M41
-    // Phase 2 close-out / #896.
-    let mut npc_inventory = Inventory::new();
-    let mut equipment_slots = EquipmentSlots::new();
+    //    **Body suppression NOT applied here.** The pre-baked FaceGen
+    //    NIF is one combined head+body skinned mesh; selectively
+    //    hiding body sub-shapes requires per-shape
+    //    `BSDismemberSkinInstance` partition inspection. Phase B.2
+    //    renders armor on top of the FaceGen body and accepts
+    //    whatever clipping happens — same compromise Phase A.1 made
+    //    before A.2 added the kf-era body-skip.
     let mut equipped_armor_count = 0u32;
-    let mut equip_form_ids: Vec<u32> = Vec::new();
-    let actor_level = npc.level;
-    if let Some(otft_fid) = npc.default_outfit {
-        if let Some(otft) = index.outfits.get(&otft_fid) {
-            for &fid in &otft.items {
-                byroredux_plugin::equip::expand_leveled_form_id(
-                    fid,
-                    actor_level,
-                    index,
-                    &mut equip_form_ids,
-                );
-            }
-        } else {
-            log::debug!(
-                "NPC {:08X} ({}): DOFT {:08X} unresolved — \
-                 outfit not in EsmIndex",
-                npc.form_id,
-                npc.editor_id,
-                otft_fid,
-            );
-        }
-    }
-    for entry in npc.inventory.iter() {
-        let runtime_count = entry.count.max(0) as u32;
-        if runtime_count > 0 {
-            byroredux_plugin::equip::expand_leveled_form_id(
-                entry.item_form_id,
-                actor_level,
-                index,
-                &mut equip_form_ids,
-            );
-        }
-    }
-    for form_id in equip_form_ids {
-        let stack = ItemStack::new(form_id, 1);
-        let inv_idx = npc_inventory.push(stack);
-
-        let Some(item) = index.items.get(&form_id) else {
-            // LVLI entries land here too — they're indexed in
-            // `leveled_items`, not `items`. Silent skip is correct
-            // until LVLI dispatch lands.
-            continue;
-        };
-        let ItemKind::Armor { biped_flags, .. } = item.kind else {
-            continue;
-        };
-
-        let displaced = equipment_slots.equip(biped_flags, inv_idx);
-        if !displaced.is_empty() {
-            log::debug!(
-                "NPC {:08X} ({}): armor {:08X} displaced inventory slots {:?}",
-                npc.form_id,
-                npc.editor_id,
-                form_id,
-                displaced,
-            );
-        }
-
-        let Some(model_path) = byroredux_plugin::equip::resolve_armor_mesh(
-            item,
-            gender,
-            npc.race_form_id,
-            index,
-            game,
-        ) else {
-            continue;
-        };
-        match tex_provider.extract_mesh(model_path) {
+    for armor in &armor_to_spawn {
+        match tex_provider.extract_mesh(armor.model_path) {
             Some(armor_data) => {
                 let (_count, armor_root, _map) = load_nif_bytes_with_skeleton(
                     world,
                     ctx,
                     &armor_data,
-                    model_path,
+                    armor.model_path,
                     tex_provider,
                     mat_provider.as_deref_mut(),
                     Some(&skel_map),
@@ -1090,8 +1145,8 @@ pub fn spawn_prebaked_npc_entity(
                     "NPC {:08X} ({}): armor {:08X} model '{}' not in archives",
                     npc.form_id,
                     npc.editor_id,
-                    form_id,
-                    model_path,
+                    armor.form_id,
+                    armor.model_path,
                 );
             }
         }
@@ -1099,15 +1154,13 @@ pub fn spawn_prebaked_npc_entity(
     if equipped_armor_count > 0 {
         log::info!(
             "NPC {:08X} ({}): equipped {} armor mesh(es) on pre-baked path \
-             ({} inventory entries)",
+             ({} armor candidates queued)",
             npc.form_id,
             npc.editor_id,
             equipped_armor_count,
-            npc_inventory.len(),
+            armor_to_spawn.len(),
         );
     }
-    world.insert(placement_root, npc_inventory);
-    world.insert(placement_root, equipment_slots);
 
     // Face-tint texture override (Phase 4.x): the per-NPC face-tint
     // DDS at `textures\actors\character\facegendata\facetint\
