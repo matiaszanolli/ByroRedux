@@ -118,6 +118,17 @@ impl NifVariant {
         }
         // V20.0.0.4 and V20.0.0.5 are exclusively Oblivion — no other game uses these.
         // Check before the uv/uv2 match to avoid misidentifying as FO3/FNV.
+        //
+        // #943 / NIF-D2-NEW-03 considered routing `V20_0_0_4 user=11`
+        // to `Fallout3` because nif.xml's `#FO3#` verset (line 44)
+        // includes `V20_0_0_4__11`. nif.xml line 196 itself lists the
+        // version as "Oblivion, Fallout 3" — genuinely ambiguous.
+        // Sample data would be needed to settle which side wins; the
+        // existing test `detect_oblivion_edge_cases` (line ~446) pins
+        // the prior decision that `(V20_0_0_4, 11, _)` is Oblivion,
+        // and no retail FO3 NIF ships at v20.0.0.4 so the impact is
+        // confined to pre-release / mod content. Leave as Oblivion
+        // until sample data justifies the flip.
         if version == NifVersion::V20_0_0_4 || version == NifVersion::V20_0_0_5 {
             return Self::Oblivion;
         }
