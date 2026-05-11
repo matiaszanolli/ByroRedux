@@ -524,6 +524,50 @@ impl VulkanContext {
                     // buffer is preserved (compute keeps streaming
                     // poses through it), so only the BLAS object
                     // itself is replaced.
+                    //
+                    // #911 / REN-D5-NEW-02 — KNOWN HITCH SOURCE.
+                    // This loop pays 2 fence-waits per first-sight
+                    // entity (one-time submit for prime, one-time
+                    // submit for BLAS BUILD). A multi-NPC spawn
+                    // frame therefore stalls `draw_frame` by 2 × N
+                    // queue waits, surfacing as user-visible hitching
+                    // on actors walking into view.
+                    //
+                    // Audit-recommended fix: move both compute prime
+                    // and BLAS BUILD into the per-frame `cmd` buffer
+                    // between `record_bone_copy` and the TLAS build
+                    // (which already lives on `cmd`). Implementation
+                    // requires either:
+                    //   (a) two-pass scratch sizing — walk first-sight
+                    //       entities, query each `build_scratch_size`,
+                    //       take max, resize `blas_scratch_buffer`
+                    //       ONCE upfront, then record all builds
+                    //       against the now-stable scratch_address,
+                    //       OR
+                    //   (b) per-build scratch buffers with
+                    //       deferred-destroy — each first-sight build
+                    //       allocates its own scratch (no sharing),
+                    //       freed via a deferred-destroy queue after
+                    //       MAX_FRAMES_IN_FLIGHT countdown.
+                    //
+                    // The naive "just submit to per-frame cmd" path
+                    // is UNSAFE because the current
+                    // `acceleration::build_skinned_blas` resizes
+                    // `blas_scratch_buffer` inline — multiple
+                    // back-to-back recorded builds with shared scratch
+                    // would each destroy + recreate the buffer, and
+                    // the earlier-recorded `cmd_build_acceleration_structures`
+                    // call's captured scratch_address points at freed
+                    // memory at submit time. Safe paths above avoid
+                    // this by either staging the resize upfront (a)
+                    // or removing scratch sharing entirely (b).
+                    //
+                    // Deferred from #911 due to invisible-to-cargo-test
+                    // failure modes (use-after-free of destroyed
+                    // scratch, missing memory barriers, TLAS reading
+                    // not-yet-built BLAS). Next attempt needs a
+                    // RenderDoc validation pass on a 10-NPC-spawn
+                    // repro under MAILBOX present mode.
                     for &(entity_id, push, idx_buffer, idx_count, vertex_count) in &dispatches {
                         let needs_slot = !self.skin_slots.contains_key(&entity_id);
                         if accel.should_rebuild_skinned_blas(entity_id) {
