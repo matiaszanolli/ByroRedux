@@ -760,6 +760,7 @@ pub fn build_exterior_world_context(
     skip_all,
     fields(gx = gx, gy = gy),
 )]
+#[allow(clippy::too_many_arguments)]
 pub fn load_one_exterior_cell(
     wctx: &ExteriorWorldContext,
     gx: i32,
@@ -889,6 +890,7 @@ struct RefLoadResult {
     skip_all,
     fields(ref_count = refs.len(), npc_count = npcs.len(), race_count = races.len(), game = ?game, label = label),
 )]
+#[allow(clippy::too_many_arguments)]
 fn load_references(
     refs: &[esm::cell::PlacedRef],
     index: &esm::cell::EsmCellIndex,
@@ -2008,6 +2010,7 @@ fn light_radius_or_default(radius: f32) -> f32 {
     skip_all,
     fields(ref_scale = ref_scale, mesh_count = cached.meshes.len()),
 )]
+#[allow(clippy::too_many_arguments)]
 fn spawn_placed_instances(
     world: &mut World,
     ctx: &mut VulkanContext,

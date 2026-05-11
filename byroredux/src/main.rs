@@ -1003,17 +1003,16 @@ impl ApplicationHandler for App {
                     let is_benching = self.bench_frames_target.is_some();
 
                     let brd_t0 = Instant::now();
-                    let (view_proj, camera_pos, ambient, fog_color, fog_near, fog_far, sky_params) =
-                        build_render_data(
-                            &self.world,
-                            &mut self.draw_commands,
-                            &mut self.gpu_lights,
-                            &mut self.bone_palette,
-                            &mut self.skin_offsets,
-                            &mut self.palette_scratch,
-                            &mut self.material_table,
-                            ctx.particle_quad_handle,
-                        );
+                    let frame = build_render_data(
+                        &self.world,
+                        &mut self.draw_commands,
+                        &mut self.gpu_lights,
+                        &mut self.bone_palette,
+                        &mut self.skin_offsets,
+                        &mut self.palette_scratch,
+                        &mut self.material_table,
+                        ctx.particle_quad_handle,
+                    );
                     if is_benching {
                         self.bench_build_render_ns += brd_t0.elapsed().as_nanos() as u64;
                     }
@@ -1111,18 +1110,18 @@ impl ApplicationHandler for App {
                     };
                     match ctx.draw_frame(
                         clear_color,
-                        &view_proj,
+                        &frame.view_proj,
                         &self.draw_commands,
                         &self.gpu_lights,
                         &self.bone_palette,
                         self.material_table.materials(),
-                        camera_pos,
-                        ambient,
-                        fog_color,
-                        fog_near,
-                        fog_far,
+                        frame.camera_pos,
+                        frame.ambient,
+                        frame.fog_color,
+                        frame.fog_near,
+                        frame.fog_far,
                         ui_tex,
-                        &sky_params,
+                        &frame.sky,
                         frame_timings.as_mut(),
                     ) {
                         Ok(needs_recreate) => {

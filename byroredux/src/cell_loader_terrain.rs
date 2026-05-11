@@ -44,6 +44,11 @@ pub(super) struct CellSplatLayer {
     pub per_quadrant_alpha: [Option<Vec<f32>>; 4],
 }
 
+/// Per-quadrant alpha grids for one LTEX. `[SW, SE, NW, NE]` matches
+/// `CellSplatLayer::per_quadrant_alpha`; `None` means that quadrant
+/// didn't paint this LTEX.
+type PerQuadrantAlpha = [Option<Vec<f32>>; 4];
+
 /// Collect cell-global splat layers from the 4 quadrants. Dedup by
 /// `ltex_form_id`; take the minimum `layer` field as the sort key so seam
 /// vertices across quadrants resolve to the same cell-global layer. Caps
@@ -56,7 +61,7 @@ pub(super) fn build_cell_splat_layers(
 ) -> CellSplatLayers {
     use std::collections::hash_map::Entry;
 
-    let mut by_ltex: HashMap<u32, (u16, [Option<Vec<f32>>; 4])> = HashMap::new();
+    let mut by_ltex: HashMap<u32, (u16, PerQuadrantAlpha)> = HashMap::new();
     for (q_idx, q) in land.quadrants.iter().enumerate() {
         for l in &q.layers {
             let Some(ref alpha) = l.alpha else {
@@ -95,7 +100,7 @@ pub(super) fn build_cell_splat_layers(
     }
 
     // Sort by (layer_sort_key, ltex_form_id) for deterministic order.
-    let mut sorted: Vec<(u32, u16, [Option<Vec<f32>>; 4])> = by_ltex
+    let mut sorted: Vec<(u32, u16, PerQuadrantAlpha)> = by_ltex
         .into_iter()
         .map(|(ltex, (layer, slots))| (ltex, layer, slots))
         .collect();
@@ -189,6 +194,7 @@ pub(super) fn splat_weight_for_vertex(layer: &CellSplatLayer, row: usize, col: u
 /// entity. The mesh participates in the global geometry SSBO so RT
 /// reflection / GI rays sample the right vertex data — using
 /// `upload_scene_mesh` (not plain `upload`) is mandatory; see #371.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_terrain_mesh(
     world: &mut World,
     ctx: &mut VulkanContext,

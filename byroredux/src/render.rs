@@ -244,6 +244,21 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u3
     }
 }
 
+/// Per-frame view + lighting + sky payload returned by
+/// [`build_render_data`]. The draw command list / GPU light list /
+/// bone palette / skin offsets / material table are written into the
+/// scratch buffers passed by the caller; everything that's a fresh
+/// per-frame value lives here.
+pub(crate) struct RenderFrameView {
+    pub view_proj: [f32; 16],
+    pub camera_pos: [f32; 3],
+    pub ambient: [f32; 3],
+    pub fog_color: [f32; 3],
+    pub fog_near: f32,
+    pub fog_far: f32,
+    pub sky: SkyParams,
+}
+
 /// Build the view-projection matrix and draw command list from ECS queries.
 ///
 /// All scratch buffers — `draw_commands`, `gpu_lights`, `bone_palette`,
@@ -251,6 +266,7 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u3
 /// cleared on entry so their heap allocations persist across frames.
 /// See #253 (`skin_offsets`), #243 (`draw_commands` / `gpu_lights` /
 /// `bone_palette` scratch pattern), #509 (`palette_scratch`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_render_data(
     world: &World,
     draw_commands: &mut Vec<DrawCommand>,
@@ -260,7 +276,7 @@ pub(crate) fn build_render_data(
     palette_scratch: &mut Vec<Mat4>,
     material_table: &mut MaterialTable,
     particle_quad_handle: Option<u32>,
-) -> ([f32; 16], [f32; 3], [f32; 3], [f32; 3], f32, f32, SkyParams) {
+) -> RenderFrameView {
     let frame_count = FRAME_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     draw_commands.clear();
@@ -1304,9 +1320,15 @@ pub(crate) fn build_render_data(
         SkyParams::default()
     };
 
-    (
-        view_proj, camera_pos, ambient, fog_color, fog_near, fog_far, sky,
-    )
+    RenderFrameView {
+        view_proj,
+        camera_pos,
+        ambient,
+        fog_color,
+        fog_near,
+        fog_far,
+        sky,
+    }
 }
 
 #[cfg(test)]

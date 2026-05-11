@@ -362,9 +362,9 @@ fn apply_worldspace_weather(
         }
         // Full NAM0 color table for per-frame TOD interpolation.
         let mut sky_colors = [[[0.0f32; 3]; 6]; 10];
-        for g in 0..SKY_COLOR_GROUPS {
-            for s in 0..SKY_TIME_SLOTS {
-                sky_colors[g][s] = wthr.sky_colors[g][s].to_rgb_f32();
+        for (dst_group, src_group) in sky_colors.iter_mut().zip(wthr.sky_colors.iter()) {
+            for (dst, src) in dst_group.iter_mut().zip(src_group.iter()) {
+                *dst = src.to_rgb_f32();
             }
         }
         // #463 — per-climate sunrise/sunset breakpoints.
@@ -505,9 +505,7 @@ fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [f32; 3]) {
         (wthr::SKY_HORIZON, HORIZON),
     ];
     for (group, color) in synthetic {
-        for slot in 0..wthr::SKY_TIME_SLOTS {
-            sky_colors[group][slot] = color;
-        }
+        sky_colors[group].fill(color);
     }
     world.insert_resource(WeatherDataRes {
         sky_colors,
@@ -1366,6 +1364,7 @@ fn parse_import_and_merge(
 /// Returns the local `node_by_name` map alongside the count and root
 /// so the caller can chain it forward into the next NIF's external
 /// skeleton parameter.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_nif_bytes_with_skeleton(
     world: &mut World,
     ctx: &mut VulkanContext,

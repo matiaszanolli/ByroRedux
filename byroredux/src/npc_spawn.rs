@@ -278,6 +278,7 @@ pub fn humanoid_default_idle_kf_path(game: GameKind, _gender: Gender) -> Option<
 /// (after) and inserts `CellRoot` on every fresh entity. So
 /// `spawn_npc_entity` doesn't need to thread the cell-root id —
 /// every entity it creates lands inside that range.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_npc_entity(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -869,6 +870,7 @@ pub fn prebaked_facegen_tint_path(plugin_name: &str, form_id: u32) -> Option<Str
 /// **Animation deferred**: Skyrim+ vanilla ships zero `.kf` files
 /// (Havok `.hkx` only). Pre-baked-track NPCs spawn in bind pose
 /// today; M41.x lands a Havok stub for idle.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_prebaked_npc_entity(
     world: &mut World,
     ctx: &mut VulkanContext,
