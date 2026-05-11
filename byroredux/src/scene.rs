@@ -122,6 +122,15 @@ fn resolve_cloud_layer(
     let Some(path) = path else {
         return (0, 0.0);
     };
+    // Peek the DDS to derive cloud_tile_scale from the authored width
+    // (#529). The handle itself is resolved through `resolve_texture`
+    // below — sharing the same `strip_build_prefix` + `acquire_by_path`
+    // canonicalization every other texture consumer uses (#528 /
+    // FNV-CELL-2). Pre-fix the cloud path called `texture_registry.load_dds`
+    // directly with the raw archive path, so a future TOD-crossfade
+    // system resolving the same cloud sprite through `resolve_texture`
+    // would key on the stripped path and miss the cache — re-uploading
+    // every cloud layer on the crossfade tick.
     let Some(dds_bytes) = tex_provider.extract(path) else {
         log::debug!(
             "Cloud layer {} texture '{}' not in archives",
@@ -132,36 +141,31 @@ fn resolve_cloud_layer(
     };
     let scale = cloud_tile_scale_for_dds(&dds_bytes, baseline_scale);
     let diag = cloud_dds_diag(&dds_bytes);
-    let alloc = ctx.allocator.as_ref().unwrap();
-    match ctx.texture_registry.load_dds(
-        &ctx.device,
-        alloc,
-        &ctx.graphics_queue,
-        ctx.transfer_pool,
-        path,
-        &dds_bytes,
-    ) {
-        Ok(h) => {
-            log::info!(
-                "Cloud layer {} '{}' → handle {} (tile_scale {:.3}, {})",
-                layer_label,
-                path,
-                h,
-                scale,
-                diag,
-            );
-            (h, scale)
-        }
-        Err(e) => {
-            log::warn!(
-                "Cloud layer {} DDS load failed '{}': {} — disabling layer",
-                layer_label,
-                path,
-                e,
-            );
-            (0, 0.0)
-        }
+    // Drop the peeked bytes — `resolve_texture` will re-extract on the
+    // cache-miss path (cloud loads run once per cell transition, so the
+    // duplicate extract is irrelevant). On the cache-hit path (e.g. a
+    // future TOD crossfade re-entering the same WTHR) the registry
+    // bumps the existing slot's refcount via `acquire_by_path` without
+    // re-extracting.
+    drop(dds_bytes);
+    let h = crate::asset_provider::resolve_texture(ctx, tex_provider, Some(path));
+    if h == ctx.texture_registry.fallback() {
+        log::warn!(
+            "Cloud layer {} '{}' resolved to fallback — disabling layer",
+            layer_label,
+            path,
+        );
+        return (0, 0.0);
     }
+    log::info!(
+        "Cloud layer {} '{}' → handle {} (tile_scale {:.3}, {})",
+        layer_label,
+        path,
+        h,
+        scale,
+        diag,
+    );
+    (h, scale)
 }
 
 /// Per-climate sunrise/sunset breakpoints in hours. CLMT TNAM bytes
