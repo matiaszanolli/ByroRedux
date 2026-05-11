@@ -133,23 +133,45 @@ pub fn create_sync_objects(
 
 impl FrameSync {
     /// Resize the per-image fence-aliasing tracker for a new swapchain
-    /// image count. Must be called after `device_wait_idle` so no
-    /// previous image-fence reference is in use.
+    /// image count AND recreate `in_flight` fences as SIGNALED. Must
+    /// be called after `device_wait_idle` so no previous image-fence
+    /// reference is in use.
     ///
     /// Post-#906 `render_finished` is per frame-in-flight (constant
-    /// size), so this is just a `images_in_flight` resize — the
-    /// pre-fix per-image-semaphore destroy/recreate dance was the
-    /// MAILBOX bug surface and is no longer needed.
+    /// size), so the per-image-semaphore destroy/recreate dance is
+    /// gone. What stays is the `in_flight` fence recreation, added in
+    /// #908 / REN-D1-NEW-01: `draw_frame` calls `reset_fences` at
+    /// `context/draw.rs:191` *before* `queue_submit`. Any `?`-
+    /// propagated error between those two points leaves the fence
+    /// UNSIGNALED with no submit queued to ever signal it. The
+    /// preceding `device_wait_idle` doesn't transition UNSIGNALED
+    /// fences back to SIGNALED, so the next `wait_for_fences`
+    /// (`draw.rs:147` — the both-slots wait at the top of each frame)
+    /// would deadlock at `u64::MAX` timeout. Destroying + recreating
+    /// the fences with `SIGNALED` here is safe because
+    /// `device_wait_idle` guarantees no command buffer is referencing
+    /// them, and it sidesteps the missing `vkSignalFence` API. Cost
+    /// is two `vkDestroyFence` + two `vkCreateFence` per resize —
+    /// negligible.
     pub unsafe fn recreate_for_swapchain(
         &mut self,
-        _device: &ash::Device,
+        device: &ash::Device,
         swapchain_image_count: usize,
     ) -> Result<()> {
         self.images_in_flight = vec![vk::Fence::null(); swapchain_image_count];
 
+        let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+        for fence in &mut self.in_flight {
+            device.destroy_fence(*fence, None);
+            *fence = device
+                .create_fence(&fence_info, None)
+                .context("Failed to recreate in_flight fence after resize")?;
+        }
+
         log::info!(
-            "Sync objects recreated for {} swapchain images (images_in_flight only)",
+            "Sync objects recreated for {} swapchain images ({} in_flight fences re-signaled)",
             swapchain_image_count,
+            self.in_flight.len(),
         );
         Ok(())
     }
