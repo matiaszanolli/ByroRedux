@@ -45,13 +45,10 @@ impl NiMaterialProperty {
         // nif.xml line 4366-4367:
         //   <field name="Ambient Color" vercond="#BSVER# #LT# 26">
         //   <field name="Diffuse Color" vercond="#BSVER# #LT# 26">
-        // The gate is a raw header-BSVER comparison, not a variant check.
-        // `variant().compact_material()` included Fallout3 (bsver=21), which
-        // is wrong: 21 < 26, so FO3 files *do* carry ambient/diffuse. Some
-        // FNV archives also ship FO3-era content with in-file BSVER 21-25
-        // that would be misclassified as Fallout3 and hardcoded to 21 — but
-        // either way, using stream.bsver() reflects the file's real layout.
-        // See #323.
+        // Use the file's in-header BSVER directly so files whose
+        // `NifVariant` classification puts them in a different
+        // boundary bucket than their actual `user_version_2` still
+        // parse correctly. See #323 / #938.
         let bethesda_compact = stream.bsver() >= 26;
 
         let ambient = if bethesda_compact {

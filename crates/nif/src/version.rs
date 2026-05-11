@@ -191,73 +191,18 @@ impl NifVariant {
     // ── Feature flags ──────────────────────────────────────────────
     // Each method documents which games have the feature and why.
     // Parsers call these instead of raw `user_version_2 >= N` checks.
-
-    /// Bethesda compact material: ambient/diffuse omitted from NiMaterialProperty.
-    /// nif.xml line 4366-4367: `#BSVER# #LT# 26`. `Fallout3` is excluded
-    /// here because its in-file bsver fans out across the [14, 33] range
-    /// and the typical pre-retail dev BSVER (21) puts files BELOW the
-    /// `>= 26` compact gate — keeping the ambient/diffuse Color3 fields.
-    /// Retail FO3 (bsver=34) detects as `FalloutNV` so its compact-mode
-    /// inclusion goes through that variant. See #323 / #937.
-    ///
-    /// Callers should generally prefer `stream.bsver() >= 26` directly so
-    /// in-file BSVER is honored even when the detected variant carries a
-    /// hardcoded value.
-    pub fn compact_material(self) -> bool {
-        matches!(
-            self,
-            Self::FalloutNV
-                | Self::SkyrimLE
-                | Self::SkyrimSE
-                | Self::Fallout4
-                | Self::Fallout76
-                | Self::Starfield
-        )
-    }
-
-    /// NiMaterialProperty has an emissive multiplier float after alpha.
-    /// nif.xml line 4372: `#BSVER# #GT# 21` (strict greater-than).
-    /// `Fallout3` is excluded because its in-file bsver typically sits
-    /// at or below the gate (the canonical dev BSVER 21 fails `> 21`);
-    /// retail FO3 (bsver=34) detects as `FalloutNV` and is included.
-    /// See #323 / #937.
-    ///
-    /// Callers should generally prefer `stream.bsver() > 21` directly so
-    /// in-file BSVER is honored even when the detected variant carries a
-    /// hardcoded value.
-    pub fn has_emissive_mult(self) -> bool {
-        matches!(
-            self,
-            Self::FalloutNV
-                | Self::SkyrimLE
-                | Self::SkyrimSE
-                | Self::Fallout4
-                | Self::Fallout76
-                | Self::Starfield
-        )
-    }
-
-    /// BSShaderPPLightingProperty has emissive color (4×f32) after texture set ref.
-    ///
-    /// nif.xml gates the field on `vercond="#BS_GT_FO3#"` (bsver > 34),
-    /// which is the AUTHORITATIVE check applied at parse time against
-    /// the file's actual user_version_2. This predicate is a coarse
-    /// pre-screen of game variants whose canonical bsver could exceed
-    /// 34; `Fallout3` is excluded because the variant covers pre-retail
-    /// dev/mod files whose in-file bsver sits in [14, 33] — all of
-    /// which fail the `> 34` gate. Retail FO3 (bsver=34) detects as
-    /// `FalloutNV`, which is also excluded since 34 fails `> 34`.
-    /// See #770 / #937.
-    ///
-    /// FO76/Starfield are intentionally excluded: those games emit
-    /// BSLightingShaderProperty, not BSShaderPPLightingProperty, so this
-    /// predicate is never queried for them.
-    pub fn has_shader_emissive_color(self) -> bool {
-        matches!(
-            self,
-            Self::FalloutNV | Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4
-        )
-    }
+    //
+    // #938 / NIF-D2-NEW-04 — three predicates (compact_material,
+    // has_emissive_mult, has_shader_emissive_color) were deleted here.
+    // They had zero production call sites — every parser queried
+    // `stream.bsver()` directly — and their own doc comments told
+    // callers to prefer that path. Keeping them around as "approved
+    // helpers" alongside the ones that ARE called (`has_properties_list`,
+    // `has_material_crc`, etc.) was an architectural foot-gun: no way
+    // for a future contributor to know which family is blessed without
+    // grepping. The Fallout3 vs FalloutNV boundary made the deleted
+    // predicates disagree with the parse path by one bsver step at
+    // the v20.2.0.7 boundary, compounding the foot-gun.
 
     /// NiTriShape has dedicated shader_property_ref and alpha_property_ref fields.
     /// Present in FO4+ (user_version_2 >= 130). FO76/Starfield use BSTriShape
@@ -594,28 +539,11 @@ mod tests {
         assert!(!NifVariant::Fallout4.has_effects_list());
     }
 
-    #[test]
-    fn feature_compact_material() {
-        assert!(!NifVariant::Oblivion.compact_material());
-        // FO3 at BSVER=21 is NOT compact (21 < 26). nif.xml line 4366-4367.
-        assert!(!NifVariant::Fallout3.compact_material());
-        assert!(NifVariant::FalloutNV.compact_material());
-        assert!(NifVariant::SkyrimSE.compact_material());
-        assert!(NifVariant::Fallout4.compact_material());
-        assert!(NifVariant::Fallout76.compact_material());
-        assert!(NifVariant::Starfield.compact_material());
-    }
-
-    #[test]
-    fn feature_has_emissive_mult() {
-        assert!(!NifVariant::Oblivion.has_emissive_mult());
-        // FO3 at BSVER=21 is NOT included (nif.xml strict >, not >=).
-        assert!(!NifVariant::Fallout3.has_emissive_mult());
-        assert!(NifVariant::FalloutNV.has_emissive_mult());
-        assert!(NifVariant::Fallout4.has_emissive_mult());
-        assert!(NifVariant::Fallout76.has_emissive_mult());
-        assert!(NifVariant::Starfield.has_emissive_mult());
-    }
+    // #938 — `feature_compact_material` / `feature_has_emissive_mult`
+    // were deleted alongside the predicates they exercised. No
+    // production code queried either; the in-file `stream.bsver()`
+    // path was the authority. See the comment block on the
+    // `Feature flags` section in the impl.
 
     #[test]
     fn feature_dedicated_shader_refs() {
