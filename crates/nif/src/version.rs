@@ -87,7 +87,12 @@ pub enum NifVariant {
     Morrowind,
     /// Oblivion (NIF 20.0.0.5, user_version < 11)
     Oblivion,
-    /// Fallout 3 (NIF 20.2.0.7, uv=11, uv2<34 — typically BSVER 21)
+    /// Fallout 3 dev/mod NIFs (NIF 20.2.0.7, uv=11, uv2 < 34 — fans out
+    /// across bsver 14, 16, 21, 24-33 in pre-retail authoring tools).
+    /// Retail FO3 ships at bsver=34 and detects as `FalloutNV` instead
+    /// (the two are binary-identical at that BSVER per nif.xml line 208:
+    /// `<version id="V20_2_0_7_FO3" num="20.2.0.7" user="11" bsver="34"
+    /// ext="rdt">Fallout 3, Fallout NV</version>`).
     Fallout3,
     /// Fallout New Vegas (NIF 20.2.0.7, uv=11, uv2=34)
     FalloutNV,
@@ -141,13 +146,28 @@ impl NifVariant {
         }
     }
 
-    /// BSVER value for nif.xml compatibility.
-    /// This is the user_version_2 that nif.xml uses for version conditionals.
+    /// BSVER value for nif.xml compatibility — the canonical retail
+    /// `user_version_2` for each game. Hard-pin per AUDIT_NIF Dim 2:
+    /// `FO3=34, FNV=34, SK=83, SK_SE=100, FO4=130, FO76=155, SF=172`.
+    ///
+    /// `Fallout3` returns 34 to match the retail value even though the
+    /// variant itself matches dev/mod pre-retail builds (in-file bsver
+    /// < 34). The variant exists for parser routing — the retail bsver
+    /// is the right answer to "what BSVER does FO3 canonically ship at?"
+    /// for any caller hard-coding a value. Parser callers that need to
+    /// honour the in-file bsver (e.g. nif.xml's per-field `#BSVER#`
+    /// conditionals) should use `stream.bsver()` instead of querying
+    /// this method — `stream.bsver()` returns the file's actual
+    /// `user_version_2`, which is what nif.xml gates against.
+    ///
+    /// See #937 / NIF-D2-NEW-01 for the audit history; pre-fix
+    /// `Fallout3.bsver()` returned 21 (one of many dev-tool BSVERs in
+    /// the [0, 33] fan-out) which contradicted the hard-pin.
     pub fn bsver(self) -> u32 {
         match self {
             Self::Morrowind | Self::Oblivion => 0,
-            Self::Fallout3 => 21,
-            Self::FalloutNV => 34,
+            // Retail FO3 ships at bsver=34, identical to FNV. See #937.
+            Self::Fallout3 | Self::FalloutNV => 34,
             Self::SkyrimLE => 83,
             Self::SkyrimSE => 100,
             Self::Fallout4 => 130,
@@ -162,8 +182,12 @@ impl NifVariant {
     // Parsers call these instead of raw `user_version_2 >= N` checks.
 
     /// Bethesda compact material: ambient/diffuse omitted from NiMaterialProperty.
-    /// nif.xml line 4366-4367: `#BSVER# #LT# 26`. FO3 at BSVER=21 is NOT
-    /// compact — the ambient/diffuse Color3 fields are present. See #323.
+    /// nif.xml line 4366-4367: `#BSVER# #LT# 26`. `Fallout3` is excluded
+    /// here because its in-file bsver fans out across the [14, 33] range
+    /// and the typical pre-retail dev BSVER (21) puts files BELOW the
+    /// `>= 26` compact gate — keeping the ambient/diffuse Color3 fields.
+    /// Retail FO3 (bsver=34) detects as `FalloutNV` so its compact-mode
+    /// inclusion goes through that variant. See #323 / #937.
     ///
     /// Callers should generally prefer `stream.bsver() >= 26` directly so
     /// in-file BSVER is honored even when the detected variant carries a
@@ -181,8 +205,11 @@ impl NifVariant {
     }
 
     /// NiMaterialProperty has an emissive multiplier float after alpha.
-    /// nif.xml line 4372: `#BSVER# #GT# 21` (strict greater-than). FO3 at
-    /// BSVER=21 is excluded. See #323.
+    /// nif.xml line 4372: `#BSVER# #GT# 21` (strict greater-than).
+    /// `Fallout3` is excluded because its in-file bsver typically sits
+    /// at or below the gate (the canonical dev BSVER 21 fails `> 21`);
+    /// retail FO3 (bsver=34) detects as `FalloutNV` and is included.
+    /// See #323 / #937.
     ///
     /// Callers should generally prefer `stream.bsver() > 21` directly so
     /// in-file BSVER is honored even when the detected variant carries a
@@ -205,8 +232,11 @@ impl NifVariant {
     /// which is the AUTHORITATIVE check applied at parse time against
     /// the file's actual user_version_2. This predicate is a coarse
     /// pre-screen of game variants whose canonical bsver could exceed
-    /// 34; FO3 (canonical bsver = 21) is excluded because no FO3 file
-    /// can satisfy the in-file gate. See #770.
+    /// 34; `Fallout3` is excluded because the variant covers pre-retail
+    /// dev/mod files whose in-file bsver sits in [14, 33] — all of
+    /// which fail the `> 34` gate. Retail FO3 (bsver=34) detects as
+    /// `FalloutNV`, which is also excluded since 34 fails `> 34`.
+    /// See #770 / #937.
     ///
     /// FO76/Starfield are intentionally excluded: those games emit
     /// BSLightingShaderProperty, not BSShaderPPLightingProperty, so this
@@ -501,14 +531,27 @@ mod tests {
         );
     }
 
+    /// AUDIT_NIF Dim 2 hard-pin: `bsver()` must return the canonical
+    /// retail BSVER per nif.xml — `FO3=34, FNV=34, SK=83, SK_SE=100,
+    /// FO4=130, FO76=155, SF=172`. `Fallout3` returns 34 even though
+    /// the variant matches pre-retail dev/mod files; retail FO3 ships
+    /// at bsver=34 and detects as `FalloutNV` (same wire BSVER), so 34
+    /// is the right "what does this game canonically ship at?" value.
+    /// Pre-#937 the FO3 arm returned 21 (one of many dev-tool BSVERs)
+    /// which contradicted the hard-pin. NIF-D2-NEW-02 adds explicit
+    /// Starfield + Unknown asserts so the full enum surface is pinned.
     #[test]
     fn bsver_values() {
-        assert_eq!(NifVariant::Fallout3.bsver(), 21);
+        assert_eq!(NifVariant::Morrowind.bsver(), 0);
+        assert_eq!(NifVariant::Oblivion.bsver(), 0);
+        assert_eq!(NifVariant::Fallout3.bsver(), 34);
         assert_eq!(NifVariant::FalloutNV.bsver(), 34);
         assert_eq!(NifVariant::SkyrimLE.bsver(), 83);
         assert_eq!(NifVariant::SkyrimSE.bsver(), 100);
         assert_eq!(NifVariant::Fallout4.bsver(), 130);
         assert_eq!(NifVariant::Fallout76.bsver(), 155);
+        assert_eq!(NifVariant::Starfield.bsver(), 172);
+        assert_eq!(NifVariant::Unknown.bsver(), 0);
     }
 
     #[test]
