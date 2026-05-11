@@ -958,8 +958,7 @@ mod caustic_fixed_scale_sync_tests {
     //! literal lines up.
     use super::*;
 
-    const COMPOSITE_FRAG_SRC: &str =
-        include_str!("../../shaders/composite.frag");
+    const COMPOSITE_FRAG_SRC: &str = include_str!("../../shaders/composite.frag");
 
     #[test]
     fn composite_frag_caustic_fixed_scale_matches_rust_const() {

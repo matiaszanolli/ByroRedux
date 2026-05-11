@@ -44,9 +44,15 @@ fn empty_loaded_set_loads_full_radius() {
 fn fully_loaded_set_no_work() {
     // Player at (0,0), 3×3 grid loaded → no deltas.
     let loaded = loaded_set(&[
-        (-1, -1), (-1, 0), (-1, 1),
-        (0, -1),  (0, 0),  (0, 1),
-        (1, -1),  (1, 0),  (1, 1),
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 0),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
     ]);
     let deltas = compute_streaming_deltas(&loaded, (0, 0), 1, 2);
     assert_eq!(deltas, StreamingDeltas::default());
@@ -60,9 +66,15 @@ fn moving_one_cell_loads_three_unloads_zero() {
     // (the now-far -x edge is still within Chebyshev 2 of the new
     // player pos).
     let loaded = loaded_set(&[
-        (-1, -1), (-1, 0), (-1, 1),
-        (0, -1),  (0, 0),  (0, 1),
-        (1, -1),  (1, 0),  (1, 1),
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 0),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
     ]);
     let deltas = compute_streaming_deltas(&loaded, (1, 0), 1, 2);
     // New cells along the +x edge — all Chebyshev distance 1 from
@@ -85,9 +97,15 @@ fn moving_two_cells_loads_and_unloads() {
     //   gx=2 first (distance 1): gy = -1, 0, 1
     //   gx=3 next (distance 2):  gy = -1, 0, 1
     let loaded = loaded_set(&[
-        (-1, -1), (-1, 0), (-1, 1),
-        (0, -1),  (0, 0),  (0, 1),
-        (1, -1),  (1, 0),  (1, 1),
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 0),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
     ]);
     let deltas = compute_streaming_deltas(&loaded, (2, 0), 1, 2);
     // (2,0) is the player's own cell (Chebyshev 0) → sorts first.
@@ -110,9 +128,15 @@ fn hysteresis_prevents_boundary_thrash() {
     // unload (-1,0) the moment it left the load radius and reload it
     // the next step back, thrashing every frame at the boundary.
     let loaded = loaded_set(&[
-        (-1, -1), (-1, 0), (-1, 1),
-        (0, -1),  (0, 0),  (0, 1),
-        (1, -1),  (1, 0),  (1, 1),
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 0),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
     ]);
     let deltas = compute_streaming_deltas(&loaded, (1, 0), 1, 2);
     assert!(

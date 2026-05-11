@@ -1046,18 +1046,18 @@ fn constant_transform_channel(t: &crate::types::NiQuatTransform) -> TransformCha
     // emit an empty key list so the bone keeps its bind-pose value
     // for that axis. See FLT_MAX_SENTINEL above.
     let pose_t = [t.translation.x, t.translation.y, t.translation.z];
-    let translation_keys = if is_flt_max(pose_t[0]) || is_flt_max(pose_t[1]) || is_flt_max(pose_t[2])
-    {
-        Vec::new()
-    } else {
-        vec![TranslationKey {
-            time: 0.0,
-            value: zup_to_yup_pos(pose_t),
-            forward: [0.0; 3],
-            backward: [0.0; 3],
-            tbc: None,
-        }]
-    };
+    let translation_keys =
+        if is_flt_max(pose_t[0]) || is_flt_max(pose_t[1]) || is_flt_max(pose_t[2]) {
+            Vec::new()
+        } else {
+            vec![TranslationKey {
+                time: 0.0,
+                value: zup_to_yup_pos(pose_t),
+                forward: [0.0; 3],
+                backward: [0.0; 3],
+                tbc: None,
+            }]
+        };
     let rotation_keys = if is_flt_max(t.rotation[0])
         || is_flt_max(t.rotation[1])
         || is_flt_max(t.rotation[2])
@@ -1308,9 +1308,10 @@ fn extract_float_channel_bspline(
         })
     };
 
-    let (Some(basis_idx), Some(data_idx)) =
-        (interp.basis_data_ref.index(), interp.spline_data_ref.index())
-    else {
+    let (Some(basis_idx), Some(data_idx)) = (
+        interp.basis_data_ref.index(),
+        interp.spline_data_ref.index(),
+    ) else {
         return static_fallback();
     };
     let (Some(basis), Some(data)) = (
@@ -1549,29 +1550,29 @@ fn static_transform_channel(interp: &NiBSplineCompTransformInterpolator) -> Tran
         interp.transform.translation.y,
         interp.transform.translation.z,
     ];
-    let translation_keys = if is_flt_max(pose_t[0]) || is_flt_max(pose_t[1]) || is_flt_max(pose_t[2])
-    {
-        Vec::new()
-    } else {
-        vec![TranslationKey {
-            time: interp.start_time,
-            value: zup_to_yup_pos(pose_t),
-            forward: [0.0, 0.0, 0.0],
-            backward: [0.0, 0.0, 0.0],
-            tbc: None,
-        }]
-    };
+    let translation_keys =
+        if is_flt_max(pose_t[0]) || is_flt_max(pose_t[1]) || is_flt_max(pose_t[2]) {
+            Vec::new()
+        } else {
+            vec![TranslationKey {
+                time: interp.start_time,
+                value: zup_to_yup_pos(pose_t),
+                forward: [0.0, 0.0, 0.0],
+                backward: [0.0, 0.0, 0.0],
+                tbc: None,
+            }]
+        };
     let q = interp.transform.rotation;
-    let rotation_keys = if is_flt_max(q[0]) || is_flt_max(q[1]) || is_flt_max(q[2]) || is_flt_max(q[3])
-    {
-        Vec::new()
-    } else {
-        vec![RotationKey {
-            time: interp.start_time,
-            value: zup_to_yup_quat(q),
-            tbc: None,
-        }]
-    };
+    let rotation_keys =
+        if is_flt_max(q[0]) || is_flt_max(q[1]) || is_flt_max(q[2]) || is_flt_max(q[3]) {
+            Vec::new()
+        } else {
+            vec![RotationKey {
+                time: interp.start_time,
+                value: zup_to_yup_quat(q),
+                tbc: None,
+            }]
+        };
     let scale_keys = if is_flt_max(interp.transform.scale) {
         Vec::new()
     } else {
@@ -1832,9 +1833,10 @@ fn sample_color_keys_bspline_point3(
         }]
     };
 
-    let (Some(basis_idx), Some(data_idx)) =
-        (interp.basis_data_ref.index(), interp.spline_data_ref.index())
-    else {
+    let (Some(basis_idx), Some(data_idx)) = (
+        interp.basis_data_ref.index(),
+        interp.spline_data_ref.index(),
+    ) else {
         return static_fallback();
     };
     let (Some(basis), Some(data)) = (

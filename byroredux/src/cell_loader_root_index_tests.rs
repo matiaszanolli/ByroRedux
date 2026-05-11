@@ -49,7 +49,10 @@ fn stamp_cell_root_populates_cell_root_index_per_cell() {
             got.sort();
             let mut want_sorted = want.clone();
             want_sorted.sort();
-            assert_eq!(got, want_sorted, "cell_root={cell_root}: index entry mismatch");
+            assert_eq!(
+                got, want_sorted,
+                "cell_root={cell_root}: index entry mismatch"
+            );
         }
     }
 
@@ -68,7 +71,11 @@ fn stamp_cell_root_populates_cell_root_index_per_cell() {
 
     // The other four cells' entries must be unchanged.
     let idx = world.resource::<CellRootIndex>();
-    assert_eq!(idx.map.len(), 4, "draining one cell removes exactly one entry");
+    assert_eq!(
+        idx.map.len(),
+        4,
+        "draining one cell removes exactly one entry"
+    );
     for (cell_root, want) in &cells {
         if *cell_root == target {
             continue;
@@ -77,7 +84,10 @@ fn stamp_cell_root_populates_cell_root_index_per_cell() {
         got.sort();
         let mut want_sorted = want.clone();
         want_sorted.sort();
-        assert_eq!(got, want_sorted, "cell_root={cell_root}: post-drain entry shifted");
+        assert_eq!(
+            got, want_sorted,
+            "cell_root={cell_root}: post-drain entry shifted"
+        );
     }
 }
 
@@ -124,6 +134,9 @@ fn empty_cell_still_creates_index_entry_for_cell_root() {
     stamp_cell_root(&mut world, cell_root, first, last);
 
     let idx = world.resource::<CellRootIndex>();
-    let entry = idx.map.get(&cell_root).expect("empty cell still gets an entry");
+    let entry = idx
+        .map
+        .get(&cell_root)
+        .expect("empty cell still gets an entry");
     assert_eq!(entry, &vec![cell_root], "only the cell_root itself");
 }

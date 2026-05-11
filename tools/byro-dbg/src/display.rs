@@ -83,9 +83,7 @@ pub fn print_response(response: &DebugResponse) {
                 if n.has_mesh_handle {
                     flags.push('M');
                 }
-                let parent = n
-                    .parent
-                    .map_or("·".to_string(), |p| p.to_string());
+                let parent = n.parent.map_or("·".to_string(), |p| p.to_string());
                 let indent = "  ".repeat(n.depth as usize);
                 let name = n.name.as_deref().unwrap_or("");
                 println!(
@@ -160,8 +158,11 @@ pub fn print_response(response: &DebugResponse) {
                 );
             }
             if dropouts > 0 {
-                println!("({} of {} palette slots are IDENTITY — likely #841 dropout)",
-                    dropouts, bones.len());
+                println!(
+                    "({} of {} palette slots are IDENTITY — likely #841 dropout)",
+                    dropouts,
+                    bones.len()
+                );
             }
         }
         DebugResponse::Error { message } => {

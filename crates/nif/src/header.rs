@@ -335,17 +335,15 @@ fn read_pod_vec_from_cursor<T: Copy + Default>(
     cursor: &mut Cursor<&[u8]>,
     count: usize,
 ) -> io::Result<Vec<T>> {
-    let byte_count = count
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "read_pod_vec_from_cursor: byte count overflow ({count} × {} bytes)",
-                    std::mem::size_of::<T>(),
-                ),
-            )
-        })?;
+    let byte_count = count.checked_mul(std::mem::size_of::<T>()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "read_pod_vec_from_cursor: byte count overflow ({count} × {} bytes)",
+                std::mem::size_of::<T>(),
+            ),
+        )
+    })?;
     let mut out: Vec<T> = vec![T::default(); count];
     // SAFETY: same invariants as `NifStream::read_pod_vec` —
     // `out.as_mut_ptr()` is non-null, the region is exactly

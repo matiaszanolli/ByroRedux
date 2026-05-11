@@ -38,8 +38,17 @@ fn main() {
             byroredux_spt::SptValue::Vec3(v) => format!("Vec3({:?})", v),
             byroredux_spt::SptValue::Fixed(b) => format!("Fixed({} bytes)", b.len()),
             byroredux_spt::SptValue::String(s) => format!("String(len={}, {:?})", s.len(), s),
-            byroredux_spt::SptValue::ArrayBytes { stride, count, bytes } => {
-                format!("ArrayBytes(stride={}, count={}, total={} bytes)", stride, count, bytes.len())
+            byroredux_spt::SptValue::ArrayBytes {
+                stride,
+                count,
+                bytes,
+            } => {
+                format!(
+                    "ArrayBytes(stride={}, count={}, total={} bytes)",
+                    stride,
+                    count,
+                    bytes.len()
+                )
             }
         };
         println!("  off {:6}  tag {:5}  {}", entry.offset, entry.tag, v);

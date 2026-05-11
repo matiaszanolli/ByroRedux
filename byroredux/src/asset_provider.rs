@@ -142,9 +142,7 @@ pub(crate) fn strip_build_prefix(path: &str) -> std::borrow::Cow<'_, str> {
         i += 1;
     }
     match last {
-        Some(start) if start < bytes.len() => {
-            std::borrow::Cow::Owned(path[start..].to_string())
-        }
+        Some(start) if start < bytes.len() => std::borrow::Cow::Owned(path[start..].to_string()),
         _ => std::borrow::Cow::Borrowed(path),
     }
 }
@@ -258,10 +256,7 @@ fn open_with_numeric_siblings(path: &str, kind: &str, archives: &mut Vec<Archive
 ///   - The decode fails through `byroredux_audio::load_sound_from_bytes`.
 ///
 /// Each failure logs at WARN; engine boot continues regardless.
-pub(crate) fn try_load_default_footstep(
-    world: &mut byroredux_core::ecs::World,
-    args: &[String],
-) {
+pub(crate) fn try_load_default_footstep(world: &mut byroredux_core::ecs::World, args: &[String]) {
     let mut path: Option<&str> = None;
     let mut i = 0;
     while i < args.len() {
@@ -287,9 +282,7 @@ pub(crate) fn try_load_default_footstep(
     let bytes = match archive.extract(CANONICAL) {
         Ok(b) => b,
         Err(e) => {
-            log::warn!(
-                "M44 Phase 3.5: '{path}' missing canonical footstep '{CANONICAL}': {e}"
-            );
+            log::warn!("M44 Phase 3.5: '{path}' missing canonical footstep '{CANONICAL}': {e}");
             return;
         }
     };
@@ -421,10 +414,12 @@ pub(crate) fn resolve_texture_with_clamp(
         // (`load_references`). Pre-fix every fresh DDS paid its own
         // `with_one_time_commands` (submit + fence-wait) — ~50 ms
         // per ~100-DDS edge crossing.
-        match ctx
-            .texture_registry
-            .enqueue_dds_with_clamp(&ctx.device, tex_path, dds_bytes, clamp_mode)
-        {
+        match ctx.texture_registry.enqueue_dds_with_clamp(
+            &ctx.device,
+            tex_path,
+            dds_bytes,
+            clamp_mode,
+        ) {
             Ok(h) => {
                 log::debug!(
                     "Queued DDS texture: '{}' (clamp_mode {}, handle {h})",
@@ -648,12 +643,27 @@ pub(crate) fn merge_bgsm_into_mesh(
         };
         for step in resolved.walk() {
             let bgsm = &step.file;
-            fill(&mut mesh.texture_path, &bgsm.diffuse_texture, &mut touched, pool);
-            fill(&mut mesh.normal_map, &bgsm.normal_texture, &mut touched, pool);
+            fill(
+                &mut mesh.texture_path,
+                &bgsm.diffuse_texture,
+                &mut touched,
+                pool,
+            );
+            fill(
+                &mut mesh.normal_map,
+                &bgsm.normal_texture,
+                &mut touched,
+                pool,
+            );
             fill(&mut mesh.glow_map, &bgsm.glow_texture, &mut touched, pool);
             // Smoothness/spec mask — .r encodes per-texel specular
             // strength in the engine's existing gloss_map slot. #453.
-            fill(&mut mesh.gloss_map, &bgsm.smooth_spec_texture, &mut touched, pool);
+            fill(
+                &mut mesh.gloss_map,
+                &bgsm.smooth_spec_texture,
+                &mut touched,
+                pool,
+            );
             // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
             fill(&mut mesh.env_map, &bgsm.envmap_texture, &mut touched, pool);
             fill(
@@ -715,11 +725,26 @@ pub(crate) fn merge_bgsm_into_mesh(
         let Some(bgem) = provider.resolve_bgem(&path) else {
             return false;
         };
-        fill(&mut mesh.texture_path, &bgem.base_texture, &mut touched, pool);
-        fill(&mut mesh.normal_map, &bgem.normal_texture, &mut touched, pool);
+        fill(
+            &mut mesh.texture_path,
+            &bgem.base_texture,
+            &mut touched,
+            pool,
+        );
+        fill(
+            &mut mesh.normal_map,
+            &bgem.normal_texture,
+            &mut touched,
+            pool,
+        );
         fill(&mut mesh.glow_map, &bgem.glow_texture, &mut touched, pool);
         fill(&mut mesh.env_map, &bgem.envmap_texture, &mut touched, pool);
-        fill(&mut mesh.env_mask, &bgem.envmap_mask_texture, &mut touched, pool);
+        fill(
+            &mut mesh.env_mask,
+            &bgem.envmap_mask_texture,
+            &mut touched,
+            pool,
+        );
 
         // BGEM has no inheritance so there's no child-first chain —
         // we just forward whatever the single file authored. The
@@ -773,9 +798,8 @@ mod tests {
         // The headline case from the Markarth render: Skyrim AE bundles
         // the HD juniper / reach branches / driftwood with the full
         // pipeline-internal prefix.
-        let out = strip_build_prefix(
-            "skyrimhd\\build\\pc\\data\\textures\\plants\\florajuniper.dds",
-        );
+        let out =
+            strip_build_prefix("skyrimhd\\build\\pc\\data\\textures\\plants\\florajuniper.dds");
         assert_eq!(out.as_ref(), "textures\\plants\\florajuniper.dds");
     }
 
@@ -791,18 +815,14 @@ mod tests {
     fn strip_build_prefix_is_case_insensitive_on_data_token() {
         // Anniversary Edition's HD bundle uses lowercase `data`, but
         // we shouldn't be fragile if a future CC pack uses `Data`.
-        let out = strip_build_prefix(
-            "skyrimhd\\build\\pc\\Data\\textures\\plants\\foo.dds",
-        );
+        let out = strip_build_prefix("skyrimhd\\build\\pc\\Data\\textures\\plants\\foo.dds");
         assert_eq!(out.as_ref(), "textures\\plants\\foo.dds");
     }
 
     #[test]
     fn strip_build_prefix_accepts_forward_slashes() {
         // Mod-authoring tools occasionally export forward slashes.
-        let out = strip_build_prefix(
-            "skyrimhd/build/pc/data/textures/plants/foo.dds",
-        );
+        let out = strip_build_prefix("skyrimhd/build/pc/data/textures/plants/foo.dds");
         assert_eq!(out.as_ref(), "textures/plants/foo.dds");
     }
 
@@ -811,9 +831,7 @@ mod tests {
         // Pathological case: an asset that genuinely lives under a
         // nested `data\` directory should strip up to the LAST
         // boundary so the longest known-prefix wins.
-        let out = strip_build_prefix(
-            "vendor\\data\\skyrimhd\\build\\pc\\data\\textures\\foo.dds",
-        );
+        let out = strip_build_prefix("vendor\\data\\skyrimhd\\build\\pc\\data\\textures\\foo.dds");
         assert_eq!(out.as_ref(), "textures\\foo.dds");
     }
 

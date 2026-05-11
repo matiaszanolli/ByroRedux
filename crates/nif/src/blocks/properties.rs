@@ -813,8 +813,9 @@ mod tests {
 
         let expected_len = data.len();
         let mut stream = NifStream::new(&data, &header);
-        let prop = NiTexturingProperty::parse(&mut stream)
-            .expect("v20.1.0.1 NiTexturingProperty must consume Apply Mode under inclusive doctrine");
+        let prop = NiTexturingProperty::parse(&mut stream).expect(
+            "v20.1.0.1 NiTexturingProperty must consume Apply Mode under inclusive doctrine",
+        );
         assert_eq!(stream.position() as usize, expected_len);
         assert_eq!(prop.texture_count, 0);
         assert!(prop.base_texture.is_none());
@@ -878,13 +879,13 @@ mod tests {
         let mut data = Vec::new();
         // v20.1.0.0 is BELOW the v20.1.0.1 string-table boundary, so
         // `read_string` uses the length-prefixed inline path: u32 len + bytes.
-        data.extend_from_slice(&0u32.to_le_bytes());    // name: empty inline (len = 0)
-        data.extend_from_slice(&0u32.to_le_bytes());    // extras count = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline (len = 0)
+        data.extend_from_slice(&0u32.to_le_bytes()); // extras count = 0
         data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = -1
-        data.extend_from_slice(&1u32.to_le_bytes());    // apply_mode = 1 (present pre-20.1.0.1)
-        data.extend_from_slice(&0u32.to_le_bytes());    // texture_count = 0
-        data.push(0);                                    // base_texture has = 0
-        data.extend_from_slice(&0u32.to_le_bytes());    // shader_textures count = 0
+        data.extend_from_slice(&1u32.to_le_bytes()); // apply_mode = 1 (present pre-20.1.0.1)
+        data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
+        data.push(0); // base_texture has = 0
+        data.extend_from_slice(&0u32.to_le_bytes()); // shader_textures count = 0
 
         let expected_len = data.len();
         let mut stream = NifStream::new(&data, &header);

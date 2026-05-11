@@ -8,8 +8,8 @@ use super::super::ssao::SsaoPipeline;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::{pipeline, swapchain};
 use super::helpers::{
-    create_depth_resources, create_main_framebuffers, create_render_pass,
-    destroy_depth_resources, destroy_main_framebuffers, destroy_render_pass_pipelines,
+    create_depth_resources, create_main_framebuffers, create_render_pass, destroy_depth_resources,
+    destroy_main_framebuffers, destroy_render_pass_pipelines,
 };
 use super::VulkanContext;
 use anyhow::{Context, Result};

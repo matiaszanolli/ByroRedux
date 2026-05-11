@@ -378,11 +378,7 @@ fn parse_rate_fnv_esm() {
 
     // At least one EXPL must have parsed damage > 0 — proves the DATA
     // sub-record decode fires.
-    let expls_with_damage = index
-        .explosions
-        .values()
-        .filter(|e| e.damage > 0.0)
-        .count();
+    let expls_with_damage = index.explosions.values().filter(|e| e.damage > 0.0).count();
     assert!(
         expls_with_damage >= 100,
         "EXPL with damage > 0 = {}/{}, expected >= 100 (DATA decode \
@@ -1060,11 +1056,7 @@ fn parse_rate_fo4_esm() {
     );
     assert!(index.npcs.len() >= 2800, "NPCs={}", index.npcs.len());
     assert!(index.races.len() >= 40, "races={}", index.races.len());
-    assert!(
-        index.classes.len() >= 25,
-        "classes={}",
-        index.classes.len(),
-    );
+    assert!(index.classes.len() >= 25, "classes={}", index.classes.len(),);
     assert!(
         index.factions.len() >= 660,
         "factions={}",

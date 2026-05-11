@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use crate::blocks::bs_geometry::unpack_udec3_xyzw;
+use crate::blocks::bs_geometry::BSGeometry;
 use crate::blocks::node::NiNode;
 use crate::blocks::shader::is_material_reference;
 use crate::blocks::skin::{
@@ -10,8 +12,6 @@ use crate::blocks::skin::{
 };
 #[cfg(test)]
 use crate::blocks::tri_shape::BsTriShapeKind;
-use crate::blocks::bs_geometry::BSGeometry;
-use crate::blocks::bs_geometry::unpack_udec3_xyzw;
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape, NiTriShapeData, NiTriStripsData};
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
@@ -331,8 +331,7 @@ fn synthesize_tangents(
 
                 normalize_inplace(&mut t_yup);
                 // T = T - N * dot(N, T)
-                let dot_nt =
-                    n_yup[0] * t_yup[0] + n_yup[1] * t_yup[1] + n_yup[2] * t_yup[2];
+                let dot_nt = n_yup[0] * t_yup[0] + n_yup[1] * t_yup[1] + n_yup[2] * t_yup[2];
                 t_yup = [
                     t_yup[0] - n_yup[0] * dot_nt,
                     t_yup[1] - n_yup[1] * dot_nt,
@@ -342,16 +341,14 @@ fn synthesize_tangents(
 
                 normalize_inplace(&mut b_yup);
                 // B = B - N * dot(N, B)
-                let dot_nb =
-                    n_yup[0] * b_yup[0] + n_yup[1] * b_yup[1] + n_yup[2] * b_yup[2];
+                let dot_nb = n_yup[0] * b_yup[0] + n_yup[1] * b_yup[1] + n_yup[2] * b_yup[2];
                 b_yup = [
                     b_yup[0] - n_yup[0] * dot_nb,
                     b_yup[1] - n_yup[1] * dot_nb,
                     b_yup[2] - n_yup[2] * dot_nb,
                 ];
                 // B = B - T * dot(T, B)
-                let dot_tb =
-                    t_yup[0] * b_yup[0] + t_yup[1] * b_yup[1] + t_yup[2] * b_yup[2];
+                let dot_tb = t_yup[0] * b_yup[0] + t_yup[1] * b_yup[1] + t_yup[2] * b_yup[2];
                 b_yup = [
                     b_yup[0] - t_yup[0] * dot_tb,
                     b_yup[1] - t_yup[1] * dot_tb,
@@ -386,9 +383,7 @@ fn synthesize_tangents(
 /// `(x, y, z) → (x, z, -y)` convention applied to positions / normals
 /// throughout import. See #795 / SK-D1-03 + #796 / SK-D1-04.
 fn bs_tangents_zup_to_yup(zup: &[[f32; 4]]) -> Vec<[f32; 4]> {
-    zup.iter()
-        .map(|t| [t[0], t[2], -t[1], t[3]])
-        .collect()
+    zup.iter().map(|t| [t[0], t[2], -t[1], t[3]]).collect()
 }
 
 #[inline]
@@ -838,9 +833,7 @@ pub(super) fn extract_bs_tri_shape(
             indices
                 .chunks_exact(3)
                 .filter_map(|c| {
-                    if c[0] <= u16::MAX as u32
-                        && c[1] <= u16::MAX as u32
-                        && c[2] <= u16::MAX as u32
+                    if c[0] <= u16::MAX as u32 && c[1] <= u16::MAX as u32 && c[2] <= u16::MAX as u32
                     {
                         Some([c[0] as u16, c[1] as u16, c[2] as u16])
                     } else {
@@ -1069,7 +1062,15 @@ pub(super) fn extract_bs_geometry(
         if r > 0.0 {
             ([cx, cy, cz], r)
         } else {
-            extract_local_bound(NiPoint3 { x: 0.0, y: 0.0, z: 0.0 }, 0.0, &positions)
+            extract_local_bound(
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                0.0,
+                &positions,
+            )
         }
     };
 
@@ -1500,9 +1501,13 @@ fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPacke
         // axis swap as the inline parser's importer-side helper. Sign
         // is rotation-invariant so the swap doesn't flip it. See
         // #796 / SK-D1-04.
-        if let (Some(bx), Some(by), Some(bz), Some(t_xyz), Some(n)) =
-            (bitangent_x, bitangent_y, bitangent_z, tangent_xyz, normal_zup)
-        {
+        if let (Some(bx), Some(by), Some(bz), Some(t_xyz), Some(n)) = (
+            bitangent_x,
+            bitangent_y,
+            bitangent_z,
+            tangent_xyz,
+            normal_zup,
+        ) {
             let cnx = n[1] * t_xyz[2] - n[2] * t_xyz[1];
             let cny = n[2] * t_xyz[0] - n[0] * t_xyz[2];
             let cnz = n[0] * t_xyz[1] - n[1] * t_xyz[0];

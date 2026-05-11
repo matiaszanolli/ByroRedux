@@ -66,8 +66,8 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 #[derive(Clone, Copy)]
 pub struct GpuMaterial {
     // ── PBR scalars (vec4 #1) ───────────────────────────────────────
-    pub roughness: f32,    // offset 0
-    pub metalness: f32,    // offset 4
+    pub roughness: f32,     // offset 0
+    pub metalness: f32,     // offset 4
     pub emissive_mult: f32, // offset 8
     /// Bitfield of material-level flags consumed by the fragment
     /// shader. Bit 0 (`MAT_FLAG_VERTEX_COLOR_EMISSIVE`): per-vertex

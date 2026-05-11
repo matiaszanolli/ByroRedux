@@ -395,38 +395,46 @@ mod tests {
     fn bs_shader_crc32_matches_nif_xml_literals() {
         use bs_shader_crc32::*;
         let cases: &[(&str, u32, u32)] = &[
-            ("CAST_SHADOWS",             1563274220, CAST_SHADOWS),
-            ("ZBUFFER_TEST",             1740048692, ZBUFFER_TEST),
-            ("ZBUFFER_WRITE",            3166356979, ZBUFFER_WRITE),
-            ("TWO_SIDED",                 759557230, TWO_SIDED),
-            ("VERTEX_COLORS",             348504749, VERTEX_COLORS),
-            ("PBR",                        731263983, PBR),
-            ("SKINNED",                  3744563888, SKINNED),
-            ("ENVMAP",                   2893749418, ENVMAP),
-            ("VERTEX_ALPHA",             2333069810, VERTEX_ALPHA),
-            ("FACE",                       314919375, FACE),
-            ("GRAYSCALE_TO_PALETTE_COLOR",  442246519, GRAYSCALE_TO_PALETTE_COLOR),
-            ("DECAL",                    3849131744, DECAL),
-            ("DYNAMIC_DECAL",            1576614759, DYNAMIC_DECAL),
-            ("HAIRTINT",                 1264105798, HAIRTINT),
-            ("SKIN_TINT",                1483897208, SKIN_TINT),
-            ("EMIT_ENABLED",             2262553490, EMIT_ENABLED),
-            ("GLOWMAP",                  2399422528, GLOWMAP),
-            ("REFRACTION",               1957349758, REFRACTION),
-            ("REFRACTION_FALLOFF",        902349195, REFRACTION_FALLOFF),
-            ("NOFADE",                   2994043788, NOFADE),
-            ("INVERTED_FADE_PATTERN",    3030867718, INVERTED_FADE_PATTERN),
-            ("RGB_FALLOFF",              3448946507, RGB_FALLOFF),
-            ("EXTERNAL_EMITTANCE",       2150459555, EXTERNAL_EMITTANCE),
-            ("MODELSPACENORMALS",        2548465567, MODELSPACENORMALS),
-            ("TRANSFORM_CHANGED",        3196772338, TRANSFORM_CHANGED),
-            ("EFFECT_LIGHTING",          3473438218, EFFECT_LIGHTING),
-            ("FALLOFF",                  3980660124, FALLOFF),
-            ("SOFT_EFFECT",              3503164976, SOFT_EFFECT),
-            ("GRAYSCALE_TO_PALETTE_ALPHA", 2901038324, GRAYSCALE_TO_PALETTE_ALPHA),
-            ("WEAPON_BLOOD",             2078326675, WEAPON_BLOOD),
-            ("LOD_OBJECTS",              2896726515, LOD_OBJECTS),
-            ("NO_EXPOSURE",              3707406987, NO_EXPOSURE),
+            ("CAST_SHADOWS", 1563274220, CAST_SHADOWS),
+            ("ZBUFFER_TEST", 1740048692, ZBUFFER_TEST),
+            ("ZBUFFER_WRITE", 3166356979, ZBUFFER_WRITE),
+            ("TWO_SIDED", 759557230, TWO_SIDED),
+            ("VERTEX_COLORS", 348504749, VERTEX_COLORS),
+            ("PBR", 731263983, PBR),
+            ("SKINNED", 3744563888, SKINNED),
+            ("ENVMAP", 2893749418, ENVMAP),
+            ("VERTEX_ALPHA", 2333069810, VERTEX_ALPHA),
+            ("FACE", 314919375, FACE),
+            (
+                "GRAYSCALE_TO_PALETTE_COLOR",
+                442246519,
+                GRAYSCALE_TO_PALETTE_COLOR,
+            ),
+            ("DECAL", 3849131744, DECAL),
+            ("DYNAMIC_DECAL", 1576614759, DYNAMIC_DECAL),
+            ("HAIRTINT", 1264105798, HAIRTINT),
+            ("SKIN_TINT", 1483897208, SKIN_TINT),
+            ("EMIT_ENABLED", 2262553490, EMIT_ENABLED),
+            ("GLOWMAP", 2399422528, GLOWMAP),
+            ("REFRACTION", 1957349758, REFRACTION),
+            ("REFRACTION_FALLOFF", 902349195, REFRACTION_FALLOFF),
+            ("NOFADE", 2994043788, NOFADE),
+            ("INVERTED_FADE_PATTERN", 3030867718, INVERTED_FADE_PATTERN),
+            ("RGB_FALLOFF", 3448946507, RGB_FALLOFF),
+            ("EXTERNAL_EMITTANCE", 2150459555, EXTERNAL_EMITTANCE),
+            ("MODELSPACENORMALS", 2548465567, MODELSPACENORMALS),
+            ("TRANSFORM_CHANGED", 3196772338, TRANSFORM_CHANGED),
+            ("EFFECT_LIGHTING", 3473438218, EFFECT_LIGHTING),
+            ("FALLOFF", 3980660124, FALLOFF),
+            ("SOFT_EFFECT", 3503164976, SOFT_EFFECT),
+            (
+                "GRAYSCALE_TO_PALETTE_ALPHA",
+                2901038324,
+                GRAYSCALE_TO_PALETTE_ALPHA,
+            ),
+            ("WEAPON_BLOOD", 2078326675, WEAPON_BLOOD),
+            ("LOD_OBJECTS", 2896726515, LOD_OBJECTS),
+            ("NO_EXPOSURE", 3707406987, NO_EXPOSURE),
         ];
         for &(name, expected, actual) in cases {
             assert_eq!(
@@ -455,6 +463,9 @@ mod tests {
             &crcs,
             &[bs_shader_crc32::TWO_SIDED]
         ));
-        assert!(!bs_shader_crc32::contains_any(&[], &[bs_shader_crc32::DECAL]));
+        assert!(!bs_shader_crc32::contains_any(
+            &[],
+            &[bs_shader_crc32::DECAL]
+        ));
     }
 }

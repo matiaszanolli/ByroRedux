@@ -634,21 +634,21 @@ mod tests {
     #[test]
     fn weights_per_vert_hostile_returns_err_not_panic() {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&2u32.to_le_bytes());          // version (≤ 2 → keep parsing)
-        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_tri_indices
-        bytes.extend_from_slice(&1.0f32.to_le_bytes());        // scale (positive)
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // version (≤ 2 → keep parsing)
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_tri_indices
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // scale (positive)
         bytes.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // weights_per_vert HOSTILE
-        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_vertices
-        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_uv1
-        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_uv2
-        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_colors
-        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_normals
-        bytes.extend_from_slice(&0u32.to_le_bytes());          // n_tangents
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_vertices
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_uv1
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_uv2
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_colors
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_normals
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_tangents
         bytes.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // n_total_weights HOSTILE
-                                                                // (outer_len = 0xFFFFFFFF / 0xFFFFFFFF = 1)
-        bytes.push(0x00);                                       // 1 byte padding so outer
-                                                                // allocate_vec(1) passes its
-                                                                // remaining ≥ count check.
+                                                               // (outer_len = 0xFFFFFFFF / 0xFFFFFFFF = 1)
+        bytes.push(0x00); // 1 byte padding so outer
+                          // allocate_vec(1) passes its
+                          // remaining ≥ count check.
 
         let result = BSGeometryMeshData::parse_from_bytes(&bytes);
         assert!(

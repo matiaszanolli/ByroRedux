@@ -170,8 +170,7 @@ pub(super) fn create_render_pass(
         // but pair it with an empty `dst_access_mask`, which the spec
         // permits — so they're left alone.
         .dst_stage_mask(
-            vk::PipelineStageFlags::FRAGMENT_SHADER
-                | vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
         )
         .dst_access_mask(vk::AccessFlags::SHADER_READ);
 
@@ -701,7 +700,11 @@ pub(super) fn save_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache
     if let Err(e) = std::fs::write(&path, &data) {
         log::error!("Failed to save pipeline cache to {}: {}", path.display(), e);
     } else {
-        log::info!("Pipeline cache saved to {} ({} bytes)", path.display(), data.len());
+        log::info!(
+            "Pipeline cache saved to {} ({} bytes)",
+            path.display(),
+            data.len()
+        );
     }
 }
 
@@ -742,14 +745,17 @@ mod pipeline_cache_header_tests {
         let uuid = [0x42u8; 16];
         let mut data = make_header(32, 1, 0x1002, 0x73BF, uuid);
         data.resize(1024, 0); // body bytes — must be ignored
-        assert!(validate_pipeline_cache_header(
-            &data, 0x1002, 0x73BF, &uuid
-        ));
+        assert!(validate_pipeline_cache_header(&data, 0x1002, 0x73BF, &uuid));
     }
 
     #[test]
     fn empty_data_returns_false() {
-        assert!(!validate_pipeline_cache_header(&[], 0x1002, 0x73BF, &[0u8; 16]));
+        assert!(!validate_pipeline_cache_header(
+            &[],
+            0x1002,
+            0x73BF,
+            &[0u8; 16]
+        ));
     }
 
     #[test]
@@ -814,7 +820,10 @@ mod pipeline_cache_header_tests {
         let cache_uuid = [0x99u8; 16]; // different driver build
         let data = make_header(32, 1, 0x1002, 0x73BF, cache_uuid);
         assert!(!validate_pipeline_cache_header(
-            &data, 0x1002, 0x73BF, &device_uuid
+            &data,
+            0x1002,
+            0x73BF,
+            &device_uuid
         ));
     }
 
@@ -840,8 +849,6 @@ mod pipeline_cache_header_tests {
         // 32 bytes of forward-compat extension prefix the validator
         // ignores (driver consumes them; we don't).
         data.resize(64, 0);
-        assert!(validate_pipeline_cache_header(
-            &data, 0x1002, 0x73BF, &uuid
-        ));
+        assert!(validate_pipeline_cache_header(&data, 0x1002, 0x73BF, &uuid));
     }
 }

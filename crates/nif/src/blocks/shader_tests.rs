@@ -1087,7 +1087,7 @@ fn build_bs_sky_shader_property(source_texture: &str, sky_object_type: u32) -> V
     // Skyrim shader flags: u32 pair on BSVER < 132.
     data.extend_from_slice(&0x80000000u32.to_le_bytes()); // SF1 default
     data.extend_from_slice(&0x00000021u32.to_le_bytes()); // SF2 default
-                                                            // UV Offset (2x f32) + UV Scale (2x f32).
+                                                          // UV Offset (2x f32) + UV Scale (2x f32).
     data.extend_from_slice(&0.0f32.to_le_bytes());
     data.extend_from_slice(&0.0f32.to_le_bytes());
     data.extend_from_slice(&1.0f32.to_le_bytes());
@@ -1190,7 +1190,7 @@ fn bs_sky_shader_property_fo76_reads_crc_arrays_not_legacy_flags() {
     data.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes()); // SF1[0]
     data.extend_from_slice(&0x1234_5678u32.to_le_bytes()); // SF1[1]
     data.extend_from_slice(&0xCAFE_BABEu32.to_le_bytes()); // SF2[0]
-                                                            // UV Offset + UV Scale.
+                                                           // UV Offset + UV Scale.
     data.extend_from_slice(&0.0f32.to_le_bytes());
     data.extend_from_slice(&0.0f32.to_le_bytes());
     data.extend_from_slice(&1.0f32.to_le_bytes());
@@ -1225,8 +1225,9 @@ fn dispatch_routes_bs_sky_and_water_to_dedicated_parsers() {
     {
         let data = build_bs_sky_shader_property("textures\\sky\\moon.dds", 7);
         let mut stream = NifStream::new(&data, &header);
-        let block = crate::blocks::parse_block("BSSkyShaderProperty", &mut stream, Some(data.len() as u32))
-            .expect("BSSkyShaderProperty must dispatch");
+        let block =
+            crate::blocks::parse_block("BSSkyShaderProperty", &mut stream, Some(data.len() as u32))
+                .expect("BSSkyShaderProperty must dispatch");
         let sky = block
             .as_any()
             .downcast_ref::<BSSkyShaderProperty>()
@@ -1246,8 +1247,12 @@ fn dispatch_routes_bs_sky_and_water_to_dedicated_parsers() {
     {
         let data = build_bs_water_shader_property(0xC4);
         let mut stream = NifStream::new(&data, &header);
-        let block = crate::blocks::parse_block("BSWaterShaderProperty", &mut stream, Some(data.len() as u32))
-            .expect("BSWaterShaderProperty must dispatch");
+        let block = crate::blocks::parse_block(
+            "BSWaterShaderProperty",
+            &mut stream,
+            Some(data.len() as u32),
+        )
+        .expect("BSWaterShaderProperty must dispatch");
         let water = block
             .as_any()
             .downcast_ref::<BSWaterShaderProperty>()
@@ -1303,10 +1308,7 @@ fn parse_bs_lighting_starfield_minimal_picks_up_fo76_tail() {
 
     let prop = BSLightingShaderProperty::parse(&mut stream)
         .expect("Starfield BLSP body must parse via the FO76+ tail");
-    let w = prop
-        .wetness
-        .as_ref()
-        .expect("wetness present on Starfield");
+    let w = prop.wetness.as_ref().expect("wetness present on Starfield");
     // The pre-#746 regression dropped exactly this byte.
     assert!(
         (w.unknown_2 - 0.77).abs() < 1e-6,
@@ -1466,14 +1468,14 @@ fn parse_bs_effect_shader_fo76_editor_label_does_not_short_circuit() {
     data.extend_from_slice(&0i32.to_le_bytes()); // name → string-table index 0
     data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count = 0
     data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = -1
-    // BSVER 155 effect shader trailing body. Mirror the layout used
-    // by the parser: shader_flags_1/2 absent (bsver > 130), CRC arrays
-    // empty, then UV + texture + scalar fields. We only need enough
-    // bytes for the parse to succeed without underrunning the
-    // stream — `block_size` recovery would otherwise mask a regression.
+                                                    // BSVER 155 effect shader trailing body. Mirror the layout used
+                                                    // by the parser: shader_flags_1/2 absent (bsver > 130), CRC arrays
+                                                    // empty, then UV + texture + scalar fields. We only need enough
+                                                    // bytes for the parse to succeed without underrunning the
+                                                    // stream — `block_size` recovery would otherwise mask a regression.
     data.extend_from_slice(&0u32.to_le_bytes()); // num SF1 = 0
     data.extend_from_slice(&0u32.to_le_bytes()); // num SF2 = 0
-    // uv_offset, uv_scale
+                                                 // uv_offset, uv_scale
     for v in [0.0f32, 0.0, 1.0, 1.0] {
         data.extend_from_slice(&v.to_le_bytes());
     }
@@ -1483,10 +1485,10 @@ fn parse_bs_effect_shader_fo76_editor_label_does_not_short_circuit() {
     data.extend_from_slice(&3u32.to_le_bytes());
     data.push(0u8); // lighting_influence
     data.push(0u8); // env_map_min_lod
-    // padding fields up to falloff and beyond can vary across BSVER —
-    // this test asserts only that the stopcond did NOT fire; the
-    // detailed FO76 effect-shader body shape is covered by other
-    // tests. Use block_size recovery to consume any remainder.
+                    // padding fields up to falloff and beyond can vary across BSVER —
+                    // this test asserts only that the stopcond did NOT fire; the
+                    // detailed FO76 effect-shader body shape is covered by other
+                    // tests. Use block_size recovery to consume any remainder.
     let mut stream = NifStream::new(&data, &header);
     // Best-effort parse: if the body shape differs from this fixture,
     // an Err is fine — what matters is that on a successful parse the
@@ -1522,22 +1524,10 @@ fn bsshader_pplighting_skyrim_era_reads_emissive_color() {
         expected_len,
         "emissive Color4 (16 bytes) must be consumed on bsver > 34"
     );
-    assert!(
-        (prop.emissive_color[0] - 0.8).abs() < 1e-6,
-        "emissive R"
-    );
-    assert!(
-        (prop.emissive_color[1] - 0.2).abs() < 1e-6,
-        "emissive G"
-    );
-    assert!(
-        (prop.emissive_color[2] - 0.0).abs() < 1e-6,
-        "emissive B"
-    );
-    assert!(
-        (prop.emissive_color[3] - 1.0).abs() < 1e-6,
-        "emissive A"
-    );
+    assert!((prop.emissive_color[0] - 0.8).abs() < 1e-6, "emissive R");
+    assert!((prop.emissive_color[1] - 0.2).abs() < 1e-6, "emissive G");
+    assert!((prop.emissive_color[2] - 0.0).abs() < 1e-6, "emissive B");
+    assert!((prop.emissive_color[3] - 1.0).abs() < 1e-6, "emissive A");
 }
 
 /// FO3/FNV (bsver=34) must NOT read the emissive color field — it is absent

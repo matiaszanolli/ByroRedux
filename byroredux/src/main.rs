@@ -7,8 +7,8 @@ mod commands;
 mod components;
 mod helpers;
 mod npc_spawn;
-mod render;
 mod parsed_nif_cache;
+mod render;
 mod scene;
 mod scene_import_cache;
 mod streaming;
@@ -79,8 +79,10 @@ fn init_tracing() {
         use tracing_subscriber::util::SubscriberInitExt;
 
         let registry = tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")))
+            .with(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
             .with(tracing_tracy::TracyLayer::default());
         registry.init();
         log::info!(
@@ -694,7 +696,6 @@ impl App {
             }
         }
     }
-
 }
 
 /// Apply a single worker-pre-parsed [`streaming::LoadCellPayload`]:
@@ -761,9 +762,8 @@ fn consume_streaming_payload(
                 // cache inserts can still trigger eviction of older
                 // entries when `BYRO_NIF_CACHE_MAX > 0`.
                 if !freed.is_empty() {
-                    let mut clip_reg = world
-                        .resource_mut::<byroredux_core::animation::AnimationClipRegistry>(
-                        );
+                    let mut clip_reg =
+                        world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
                     for h in freed {
                         clip_reg.release(h);
                     }
@@ -1388,8 +1388,7 @@ impl ApplicationHandler for App {
                             "bench-hold: engine held open — \
                              attach via `cargo run -p byro-dbg` \
                              (port {}). Ctrl+C / window close to exit.",
-                            std::env::var("BYRO_DEBUG_PORT")
-                                .unwrap_or_else(|_| "9876".to_string()),
+                            std::env::var("BYRO_DEBUG_PORT").unwrap_or_else(|_| "9876".to_string()),
                         );
                     }
                 }

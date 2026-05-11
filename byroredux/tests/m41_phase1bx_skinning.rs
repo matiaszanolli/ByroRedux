@@ -72,7 +72,11 @@ fn imported_node_local(node: &ImportedNode) -> Mat4 {
         node.rotation[2],
         node.rotation[3],
     );
-    let t = Vec3::new(node.translation[0], node.translation[1], node.translation[2]);
+    let t = Vec3::new(
+        node.translation[0],
+        node.translation[1],
+        node.translation[2],
+    );
     Mat4::from_scale_rotation_translation(Vec3::splat(node.scale), q, t)
 }
 
@@ -153,9 +157,7 @@ fn open_fnv_meshes() -> Option<BsaArchive> {
 #[ignore]
 fn skeleton_and_body_agree_on_bone_bind_pose() {
     let Some(bsa) = open_fnv_meshes() else { return };
-    let skel_bytes = bsa
-        .extract(FNV_SKELETON_NIF)
-        .expect("skeleton.nif extract");
+    let skel_bytes = bsa.extract(FNV_SKELETON_NIF).expect("skeleton.nif extract");
     let body_bytes = bsa
         .extract(FNV_UPPERBODY_NIF)
         .expect("upperbody.nif extract");

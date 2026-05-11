@@ -125,16 +125,18 @@ use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
 use kira::sound::{FromFileError, PlaybackState};
 use kira::track::{SendTrackBuilder, SendTrackHandle, SpatialTrackBuilder, SpatialTrackHandle};
 use kira::{AudioManager, AudioManagerSettings, Capacities, DefaultBackend, Mix, Tween};
-use std::time::Duration;
 use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;
 use std::sync::Arc;
+use std::time::Duration;
 
 // Re-export the kira types downstream crates need so they can hold
 // `Arc<StaticSoundData>` (in `Resource`s, components, etc.) without
 // pulling kira as a direct dependency. The audio crate is the canon
 // owner of the audio-engine surface.
-pub use kira::sound::static_sound::{StaticSoundData as Sound, StaticSoundSettings as SoundSettings};
+pub use kira::sound::static_sound::{
+    StaticSoundData as Sound, StaticSoundSettings as SoundSettings,
+};
 pub use kira::Frame;
 
 // Headroom over kira's defaults. Each active spatial sound (entity-
@@ -759,20 +761,17 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
         // f32 is treated as raw dB, so f32::NEG_INFINITY is a clean
         // "no reverb" sentinel.
         if let Some(reverb) = audio_world.reverb_send.as_ref() {
-            if audio_world.reverb_send_db.is_finite()
-                && audio_world.reverb_send_db > -60.0
-            {
+            if audio_world.reverb_send_db.is_finite() && audio_world.reverb_send_db > -60.0 {
                 track_builder = track_builder.with_send(reverb.id(), audio_world.reverb_send_db);
             }
         }
-        let mut track =
-            match mgr.add_spatial_sub_track(listener_id, p.position, track_builder) {
-                Ok(t) => t,
-                Err(e) => {
-                    log::warn!("M44 Phase 3.5: add_spatial_sub_track failed: {e}");
-                    continue;
-                }
-            };
+        let mut track = match mgr.add_spatial_sub_track(listener_id, p.position, track_builder) {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("M44 Phase 3.5: add_spatial_sub_track failed: {e}");
+                continue;
+            }
+        };
         let db = if p.volume > 0.0001 {
             20.0 * p.volume.log10()
         } else {
@@ -879,9 +878,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
         // f32 is treated as raw dB, so f32::NEG_INFINITY is a clean
         // "no reverb" sentinel.
         if let Some(reverb) = audio_world.reverb_send.as_ref() {
-            if audio_world.reverb_send_db.is_finite()
-                && audio_world.reverb_send_db > -60.0
-            {
+            if audio_world.reverb_send_db.is_finite() && audio_world.reverb_send_db > -60.0 {
                 track_builder = track_builder.with_send(reverb.id(), audio_world.reverb_send_db);
             }
         }
@@ -1405,7 +1402,16 @@ mod tests {
         // Synthesise + insert.
         let sound = StaticSoundData {
             sample_rate: 22_050,
-            frames: Arc::from(vec![kira::Frame { left: 0.0, right: 0.0 }; 100].into_boxed_slice()),
+            frames: Arc::from(
+                vec![
+                    kira::Frame {
+                        left: 0.0,
+                        right: 0.0
+                    };
+                    100
+                ]
+                .into_boxed_slice(),
+            ),
             settings: StaticSoundSettings::default(),
             slice: None,
         };
@@ -1414,7 +1420,9 @@ mod tests {
 
         // Different casing → same slot.
         let hit_lower = cache.get(r"sound\fx\foo.wav").expect("cache hit");
-        let hit_upper = cache.get(r"SOUND\FX\FOO.WAV").expect("case-insensitive hit");
+        let hit_upper = cache
+            .get(r"SOUND\FX\FOO.WAV")
+            .expect("case-insensitive hit");
         assert!(Arc::ptr_eq(&inserted, &hit_lower));
         assert!(Arc::ptr_eq(&inserted, &hit_upper));
     }
@@ -1445,7 +1453,16 @@ mod tests {
         use kira::sound::static_sound::StaticSoundSettings;
         let sound = StaticSoundData {
             sample_rate: 22_050,
-            frames: Arc::from(vec![kira::Frame { left: 0.0, right: 0.0 }; 50].into_boxed_slice()),
+            frames: Arc::from(
+                vec![
+                    kira::Frame {
+                        left: 0.0,
+                        right: 0.0
+                    };
+                    50
+                ]
+                .into_boxed_slice(),
+            ),
             settings: StaticSoundSettings::default(),
             slice: None,
         };
@@ -1456,7 +1473,11 @@ mod tests {
             unreachable!("loader must not fire on cache hit");
         });
         assert!(hit.is_some());
-        assert_eq!(calls.get(), 1, "loader call count unchanged after cache hit");
+        assert_eq!(
+            calls.get(),
+            1,
+            "loader call count unchanged after cache hit"
+        );
     }
 
     /// **Phase 3**: `spawn_oneshot_at` lays down the canonical
@@ -1472,7 +1493,14 @@ mod tests {
         let sound = Arc::new(StaticSoundData {
             sample_rate: 22_050,
             frames: Arc::from(
-                vec![kira::Frame { left: 0.0, right: 0.0 }; 50].into_boxed_slice(),
+                vec![
+                    kira::Frame {
+                        left: 0.0,
+                        right: 0.0
+                    };
+                    50
+                ]
+                .into_boxed_slice(),
             ),
             settings: StaticSoundSettings::default(),
             slice: None,
@@ -1527,7 +1555,14 @@ mod tests {
         let sound = Arc::new(StaticSoundData {
             sample_rate: 22_050,
             frames: Arc::from(
-                vec![kira::Frame { left: 0.0, right: 0.0 }; 50].into_boxed_slice(),
+                vec![
+                    kira::Frame {
+                        left: 0.0,
+                        right: 0.0
+                    };
+                    50
+                ]
+                .into_boxed_slice(),
             ),
             settings: StaticSoundSettings::default(),
             slice: None,
@@ -1625,8 +1660,7 @@ mod tests {
         use std::path::PathBuf;
         use std::time::{Duration, Instant};
 
-        const FNV_DEFAULT: &str =
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+        const FNV_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
         let dir = std::env::var("BYROREDUX_FNV_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(FNV_DEFAULT));
@@ -1687,8 +1721,7 @@ mod tests {
         use std::path::PathBuf;
         use std::time::{Duration, Instant};
 
-        const FNV_DEFAULT: &str =
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+        const FNV_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
         let dir = std::env::var("BYROREDUX_FNV_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(FNV_DEFAULT));
@@ -1700,9 +1733,7 @@ mod tests {
             Err(_) => return,
         };
         let bytes = bsa
-            .extract(
-                r"sound\fx\npc\robotsecuritron\armswing\npc_securitron_armswing_02.wav",
-            )
+            .extract(r"sound\fx\npc\robotsecuritron\armswing\npc_securitron_armswing_02.wav")
             .expect("vanilla securitron arm-swing");
         let sound = Arc::new(load_sound_from_bytes(bytes).expect("decode WAV"));
 
@@ -1801,7 +1832,14 @@ mod tests {
         let sound = Arc::new(StaticSoundData {
             sample_rate: 22_050,
             frames: Arc::from(
-                vec![kira::Frame { left: 0.0, right: 0.0 }; 50].into_boxed_slice(),
+                vec![
+                    kira::Frame {
+                        left: 0.0,
+                        right: 0.0
+                    };
+                    50
+                ]
+                .into_boxed_slice(),
             ),
             settings: StaticSoundSettings::default(),
             slice: None,
@@ -1838,8 +1876,7 @@ mod tests {
         use std::path::PathBuf;
         use std::time::Instant;
 
-        const FNV_DEFAULT: &str =
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+        const FNV_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
         let dir = std::env::var("BYROREDUX_FNV_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(FNV_DEFAULT));
@@ -1855,9 +1892,7 @@ mod tests {
             }
         };
         let bytes = bsa
-            .extract(
-                r"sound\fx\npc\robotsecuritron\armswing\npc_securitron_armswing_02.wav",
-            )
+            .extract(r"sound\fx\npc\robotsecuritron\armswing\npc_securitron_armswing_02.wav")
             .expect("vanilla FNV Sound.bsa must contain securitron arm-swing");
         let sound = Arc::new(load_sound_from_bytes(bytes).expect("decode WAV"));
 
@@ -1937,8 +1972,7 @@ mod tests {
         use std::path::PathBuf;
         use std::time::Instant;
 
-        const FNV_DEFAULT: &str =
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+        const FNV_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
         let dir = std::env::var("BYROREDUX_FNV_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(FNV_DEFAULT));
@@ -1954,9 +1988,7 @@ mod tests {
             }
         };
         let bytes = bsa
-            .extract(
-                r"sound\fx\npc\robotsecuritron\armswing\npc_securitron_armswing_02.wav",
-            )
+            .extract(r"sound\fx\npc\robotsecuritron\armswing\npc_securitron_armswing_02.wav")
             .expect("vanilla FNV Sound.bsa must contain securitron arm-swing");
         let sound = Arc::new(load_sound_from_bytes(bytes).expect("decode real WAV"));
 
@@ -2047,8 +2079,7 @@ mod tests {
         use byroredux_bsa::BsaArchive;
         use std::path::PathBuf;
 
-        const FNV_DEFAULT: &str =
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+        const FNV_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
         let dir = std::env::var("BYROREDUX_FNV_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(FNV_DEFAULT));

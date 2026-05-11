@@ -186,8 +186,7 @@ pub(crate) fn extract_material_info_from_refs(
                             // the `envmap_strength` scalar from
                             // `ShaderTypeData::MultiLayerParallax`.
                             if info.env_map.is_none() {
-                                if let Some(env) =
-                                    tex_set.textures.get(4).filter(|s| !s.is_empty())
+                                if let Some(env) = tex_set.textures.get(4).filter(|s| !s.is_empty())
                                 {
                                     info.env_map = intern_texture_path(pool, env);
                                 }
@@ -219,8 +218,7 @@ pub(crate) fn extract_material_info_from_refs(
                             // slots entirely — the empty-filter
                             // skips them silently.
                             if info.env_map.is_none() {
-                                if let Some(env) =
-                                    tex_set.textures.get(4).filter(|s| !s.is_empty())
+                                if let Some(env) = tex_set.textures.get(4).filter(|s| !s.is_empty())
                                 {
                                     info.env_map = intern_texture_path(pool, env);
                                 }
@@ -486,12 +484,10 @@ pub(crate) fn extract_material_info_from_refs(
             // this branch is specifically for pre-Skyrim static meshes.
             // See issue #131.
             if info.normal_map.is_none() {
-                info.normal_map = tex_desc_source_path(
-                    scene,
-                    tex_prop.normal_texture.as_ref(),
-                    pool,
-                )
-                .or_else(|| tex_desc_source_path(scene, tex_prop.bump_texture.as_ref(), pool));
+                info.normal_map =
+                    tex_desc_source_path(scene, tex_prop.normal_texture.as_ref(), pool).or_else(
+                        || tex_desc_source_path(scene, tex_prop.bump_texture.as_ref(), pool),
+                    );
             }
             // Secondary texture slots (#214). NiTexturingProperty has
             // up to 8 slots — base and normal/bump are consumed above,
@@ -503,22 +499,19 @@ pub(crate) fn extract_material_info_from_refs(
             // We only overwrite if a Skyrim+ BSShader path hasn't
             // already set them, matching the base/normal policy.
             if info.glow_map.is_none() {
-                info.glow_map =
-                    tex_desc_source_path(scene, tex_prop.glow_texture.as_ref(), pool);
+                info.glow_map = tex_desc_source_path(scene, tex_prop.glow_texture.as_ref(), pool);
             }
             if info.detail_map.is_none() {
                 info.detail_map =
                     tex_desc_source_path(scene, tex_prop.detail_texture.as_ref(), pool);
             }
             if info.gloss_map.is_none() {
-                info.gloss_map =
-                    tex_desc_source_path(scene, tex_prop.gloss_texture.as_ref(), pool);
+                info.gloss_map = tex_desc_source_path(scene, tex_prop.gloss_texture.as_ref(), pool);
             }
             // Dark / multiplicative lightmap (slot 1). Baked shadow data
             // on Oblivion interior architecture — `albedo *= dark`. #264.
             if info.dark_map.is_none() {
-                info.dark_map =
-                    tex_desc_source_path(scene, tex_prop.dark_texture.as_ref(), pool);
+                info.dark_map = tex_desc_source_path(scene, tex_prop.dark_texture.as_ref(), pool);
             }
             // Parallax height-map (slot 7, v20.2.0.5+). Pre-#450 the
             // parser consumed + dropped this slot so FO3 meshes that

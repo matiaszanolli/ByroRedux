@@ -56,8 +56,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 
-const BLOOM_DOWNSAMPLE_COMP_SPV: &[u8] =
-    include_bytes!("../../shaders/bloom_downsample.comp.spv");
+const BLOOM_DOWNSAMPLE_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_downsample.comp.spv");
 const BLOOM_UPSAMPLE_COMP_SPV: &[u8] = include_bytes!("../../shaders/bloom_upsample.comp.spv");
 
 /// Number of mip levels in the down-pyramid. The up-pyramid has
@@ -120,7 +119,7 @@ struct BloomFrame {
     /// (the scene HDR view) is owned externally and not stable
     /// across pipeline construction.
     down_descriptor_sets: Vec<vk::DescriptorSet>, // BLOOM_MIP_COUNT
-    up_descriptor_sets: Vec<vk::DescriptorSet>,   // BLOOM_MIP_COUNT - 1
+    up_descriptor_sets: Vec<vk::DescriptorSet>, // BLOOM_MIP_COUNT - 1
 
     down_param_buffers: Vec<GpuBuffer>, // BLOOM_MIP_COUNT
     up_param_buffers: Vec<GpuBuffer>,   // BLOOM_MIP_COUNT - 1
@@ -239,9 +238,7 @@ impl BloomPipeline {
             "bloom_downsample",
             &[],
         )
-        .expect(
-            "bloom downsample layout drifted against bloom_downsample.comp (see #427)",
-        );
+        .expect("bloom downsample layout drifted against bloom_downsample.comp (see #427)");
         partial.downsample_dsl = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(

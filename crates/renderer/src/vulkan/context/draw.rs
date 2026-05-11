@@ -5,8 +5,8 @@ use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
 use super::super::scene_buffer::{
     self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
     INSTANCE_FLAG_NON_UNIFORM_SCALE, INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_RENDER_LAYER_MASK,
-    INSTANCE_RENDER_LAYER_SHIFT, INSTANCE_TERRAIN_TILE_MASK,
-    INSTANCE_TERRAIN_TILE_SHIFT, MATERIAL_KIND_GLASS,
+    INSTANCE_RENDER_LAYER_SHIFT, INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT,
+    MATERIAL_KIND_GLASS,
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
@@ -2110,11 +2110,7 @@ impl VulkanContext {
                     // slot lets the scratch shrink hit its
                     // "tlas[slot] is None → drop scratch entirely"
                     // arm in one tick.
-                    accel.shrink_tlas_scratch_to_fit(
-                        slot_to_shrink,
-                        &self.device,
-                        allocator,
-                    );
+                    accel.shrink_tlas_scratch_to_fit(slot_to_shrink, &self.device, allocator);
                 }
             }
         }

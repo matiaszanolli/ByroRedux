@@ -797,10 +797,7 @@ impl GpuBuffer {
                     allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
                 })
                 .context("Failed to allocate staging memory")?;
-            debug_assert_cpu_to_gpu_mapped(
-                &alloc,
-                "create_device_local_with_data buffer_staging",
-            );
+            debug_assert_cpu_to_gpu_mapped(&alloc, "create_device_local_with_data buffer_staging");
 
             unsafe {
                 device

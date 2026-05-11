@@ -207,20 +207,14 @@ fn mtidle_kf_produces_visible_rotation_variation() {
         let n = channel.rotation_keys.len();
         eprintln!(
             "  channel '{}': {} rot keys, t0..t-1 = [{:.3}..{:.3}]",
-            name, n, channel.rotation_keys[0].time, channel.rotation_keys[n - 1].time,
+            name,
+            n,
+            channel.rotation_keys[0].time,
+            channel.rotation_keys[n - 1].time,
         );
-        eprintln!(
-            "    rot[0]   = {:?}",
-            channel.rotation_keys[0].value
-        );
-        eprintln!(
-            "    rot[n/2] = {:?}",
-            channel.rotation_keys[n / 2].value
-        );
-        eprintln!(
-            "    rot[n-1] = {:?}",
-            channel.rotation_keys[n - 1].value
-        );
+        eprintln!("    rot[0]   = {:?}", channel.rotation_keys[0].value);
+        eprintln!("    rot[n/2] = {:?}", channel.rotation_keys[n / 2].value);
+        eprintln!("    rot[n-1] = {:?}", channel.rotation_keys[n - 1].value);
         shown += 1;
     }
 

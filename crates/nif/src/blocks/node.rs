@@ -807,7 +807,7 @@ impl BsWeakReferenceNode {
             let num_materials = stream.read_u32_le()?;
             for _ in 0..num_materials {
                 stream.skip(12)?; // 3 × u32
-                // null-terminated string — read until '\0'
+                                  // null-terminated string — read until '\0'
                 read_past_cstring(stream)?;
             }
         }

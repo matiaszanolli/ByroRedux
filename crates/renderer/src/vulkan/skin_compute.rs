@@ -539,8 +539,12 @@ mod tests {
     /// last_used wraps to a huge unsigned value via subtraction.
     #[test]
     fn should_evict_keeps_active_slot() {
-        assert!(!should_evict_skin_slot(/*last=*/ 100, /*now=*/ 100, /*min=*/ 3));
-        assert!(!should_evict_skin_slot(/*last=*/ 100, /*now=*/ 101, /*min=*/ 3));
+        assert!(!should_evict_skin_slot(
+            /*last=*/ 100, /*now=*/ 100, /*min=*/ 3
+        ));
+        assert!(!should_evict_skin_slot(
+            /*last=*/ 100, /*now=*/ 101, /*min=*/ 3
+        ));
     }
 
     /// Idle below threshold: keep. Idle at threshold: evict.
@@ -549,11 +553,17 @@ mod tests {
     #[test]
     fn should_evict_at_or_above_threshold() {
         // idle = 2 (frames 100..103 - 2 = 101) → keep.
-        assert!(!should_evict_skin_slot(/*last=*/ 100, /*now=*/ 102, /*min=*/ 3));
+        assert!(!should_evict_skin_slot(
+            /*last=*/ 100, /*now=*/ 102, /*min=*/ 3
+        ));
         // idle = 3 → evict.
-        assert!(should_evict_skin_slot(/*last=*/ 100, /*now=*/ 103, /*min=*/ 3));
+        assert!(should_evict_skin_slot(
+            /*last=*/ 100, /*now=*/ 103, /*min=*/ 3
+        ));
         // idle = 4 → also evict.
-        assert!(should_evict_skin_slot(/*last=*/ 100, /*now=*/ 104, /*min=*/ 3));
+        assert!(should_evict_skin_slot(
+            /*last=*/ 100, /*now=*/ 104, /*min=*/ 3
+        ));
     }
 
     /// `last_used_frame == 0` is the "never dispatched" sentinel. A
@@ -563,7 +573,9 @@ mod tests {
     #[test]
     fn should_evict_skips_never_dispatched_sentinel() {
         // Even at frame 1_000_000, a sentinel-zero slot survives.
-        assert!(!should_evict_skin_slot(/*last=*/ 0, /*now=*/ 1_000_000, /*min=*/ 3));
+        assert!(!should_evict_skin_slot(
+            /*last=*/ 0, /*now=*/ 1_000_000, /*min=*/ 3
+        ));
     }
 
     /// Underflow guard: a future-dated `last_used_frame` (would happen
@@ -572,6 +584,8 @@ mod tests {
     /// makes idle = 0 → keep.
     #[test]
     fn should_evict_does_not_wrap_on_future_last_used() {
-        assert!(!should_evict_skin_slot(/*last=*/ 105, /*now=*/ 100, /*min=*/ 3));
+        assert!(!should_evict_skin_slot(
+            /*last=*/ 105, /*now=*/ 100, /*min=*/ 3
+        ));
     }
 }

@@ -131,8 +131,13 @@ fn empty_inline_bs_tri_shape_with_populated_skin_partition_reconstructs() {
     let shape_ref = scene
         .get_as::<BsTriShape>(0)
         .expect("block 0 round-trips as BsTriShape");
-    let mesh = extract_bs_tri_shape(&scene, shape_ref, &crate::types::NiTransform::default(), &mut byroredux_core::string::StringPool::new())
-        .expect("SSE skin partition reconstruction must produce a mesh (#559)");
+    let mesh = extract_bs_tri_shape(
+        &scene,
+        shape_ref,
+        &crate::types::NiTransform::default(),
+        &mut byroredux_core::string::StringPool::new(),
+    )
+    .expect("SSE skin partition reconstruction must produce a mesh (#559)");
 
     assert_eq!(mesh.positions.len(), 3, "all 3 vertices reconstructed");
     // Z-up (1,2,3) → Y-up (1, 3, -2).
@@ -217,8 +222,13 @@ fn partition_vertex_map_remaps_local_indices_to_global() {
     scene.blocks.push(Box::new(skin_partition));
 
     let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
-    let mesh = extract_bs_tri_shape(&scene, shape_ref, &crate::types::NiTransform::default(), &mut byroredux_core::string::StringPool::new())
-        .expect("reconstruction with non-identity vertex_map must succeed");
+    let mesh = extract_bs_tri_shape(
+        &scene,
+        shape_ref,
+        &crate::types::NiTransform::default(),
+        &mut byroredux_core::string::StringPool::new(),
+    )
+    .expect("reconstruction with non-identity vertex_map must succeed");
 
     // partition triangle [0, 1, 2] remapped via [2, 0, 1] → [2, 0, 1].
     assert_eq!(mesh.indices, vec![2, 0, 1]);
@@ -279,7 +289,13 @@ fn empty_inline_with_no_global_buffer_returns_none() {
 
     let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
     assert!(
-        extract_bs_tri_shape(&scene, shape_ref, &crate::types::NiTransform::default(), &mut byroredux_core::string::StringPool::new()).is_none(),
+        extract_bs_tri_shape(
+            &scene,
+            shape_ref,
+            &crate::types::NiTransform::default(),
+            &mut byroredux_core::string::StringPool::new()
+        )
+        .is_none(),
         "empty inline + no global buffer must remain a no-op (early return)"
     );
 }

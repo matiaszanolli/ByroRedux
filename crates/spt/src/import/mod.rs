@@ -183,10 +183,10 @@ fn placeholder_billboard_mesh(
 ) -> ImportedMesh {
     let half_w = width * 0.5;
     let positions = vec![
-        [-half_w, 0.0, 0.0],     // bottom-left
-        [half_w, 0.0, 0.0],      // bottom-right
-        [half_w, height, 0.0],   // top-right
-        [-half_w, height, 0.0],  // top-left
+        [-half_w, 0.0, 0.0],    // bottom-left
+        [half_w, 0.0, 0.0],     // bottom-right
+        [half_w, height, 0.0],  // top-right
+        [-half_w, height, 0.0], // top-left
     ];
     let normals = vec![[0.0, 0.0, 1.0]; 4];
     let uvs = vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
@@ -210,11 +210,11 @@ fn placeholder_billboard_mesh(
         // vanilla TREE ICON textures encode the leaf silhouette in
         // the alpha channel.
         has_alpha: false,
-        src_blend_mode: 6,    // SRC_ALPHA — unused under alpha-test
-        dst_blend_mode: 7,    // INV_SRC_ALPHA — unused under alpha-test
+        src_blend_mode: 6, // SRC_ALPHA — unused under alpha-test
+        dst_blend_mode: 7, // INV_SRC_ALPHA — unused under alpha-test
         alpha_test: true,
         alpha_threshold: 0.5,
-        alpha_test_func: 6,   // GREATEREQUAL
+        alpha_test_func: 6, // GREATEREQUAL
         // Tree billboard rotates with the camera, so both faces will
         // be visible during the rotation interpolation. Two-sided
         // matches vanilla SpeedTree leaf-card behaviour.
@@ -230,7 +230,7 @@ fn placeholder_billboard_mesh(
         env_mask: None,
         parallax_max_passes: None,
         parallax_height_scale: None,
-        vertex_color_mode: 2, // AmbientDiffuse
+        vertex_color_mode: 2,  // AmbientDiffuse
         texture_clamp_mode: 0, // WRAP_S_WRAP_T
         emissive_color: [0.0; 3],
         emissive_mult: 0.0,
@@ -271,7 +271,11 @@ mod tests {
 
     fn scene_with_tag(tag: u32, value: SptValue) -> SptScene {
         SptScene {
-            entries: vec![TagEntry { tag, value, offset: 0 }],
+            entries: vec![TagEntry {
+                tag,
+                value,
+                offset: 0,
+            }],
             ..Default::default()
         }
     }
@@ -327,10 +331,7 @@ mod tests {
     #[test]
     fn leaf_texture_override_wins_over_spt_tag() {
         let mut pool = StringPool::new();
-        let scene = scene_with_tag(
-            4003,
-            SptValue::String("trees\\insidespt.dds".to_string()),
-        );
+        let scene = scene_with_tag(4003, SptValue::String("trees\\insidespt.dds".to_string()));
         let params = SptImportParams {
             leaf_texture_override: Some("textures/treeicon.dds"),
             ..Default::default()
@@ -349,10 +350,7 @@ mod tests {
     #[test]
     fn falls_back_to_spt_leaf_tag_when_no_override() {
         let mut pool = StringPool::new();
-        let scene = scene_with_tag(
-            4003,
-            SptValue::String("trees\\bushleaf.dds".to_string()),
-        );
+        let scene = scene_with_tag(4003, SptValue::String("trees\\bushleaf.dds".to_string()));
         let params = SptImportParams::default();
         let imported = import_spt_scene(&scene, &params, &mut pool);
         let texture = imported.meshes[0]

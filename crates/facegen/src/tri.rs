@@ -118,7 +118,7 @@ mod tests {
         out.extend_from_slice(&1u32.to_le_bytes()); // num_modifiers
         out.extend_from_slice(&38u32.to_le_bytes()); // num_uv_coords
         out.extend_from_slice(&8u32.to_le_bytes()); // num_quads
-        // Pad trailing 5 × u32 unknowns to 64 bytes.
+                                                    // Pad trailing 5 × u32 unknowns to 64 bytes.
         out.extend_from_slice(&238u32.to_le_bytes());
         out.extend_from_slice(&[0u8; 16]);
         debug_assert_eq!(out.len(), HEADER_BYTES);

@@ -57,13 +57,8 @@ fn extension_of(path: &str) -> String {
 }
 
 fn scan_archive(summary: &mut Summary, archive_path: &Path, tsv: bool) -> Result<(), String> {
-    let archive = Ba2Archive::open(archive_path).map_err(|e| {
-        format!(
-            "open BA2 {}: {}",
-            archive_path.display(),
-            e
-        )
-    })?;
+    let archive = Ba2Archive::open(archive_path)
+        .map_err(|e| format!("open BA2 {}: {}", archive_path.display(), e))?;
     let archive_label = archive_path
         .file_name()
         .and_then(|s| s.to_str())
@@ -125,10 +120,7 @@ fn print_summary(summary: &Summary) {
 
     println!();
     println!("─── Per-archive ──────────────────────────────────────────────");
-    println!(
-        "  {:>6} {:>10}  {}",
-        "anomal", "scanned", "archive"
-    );
+    println!("  {:>6} {:>10}  {}", "anomal", "scanned", "archive");
     for (archive, (total, anomalies)) in &summary.per_archive {
         println!("  {:>6} {:>10}  {}", anomalies, total, archive);
     }
@@ -137,8 +129,7 @@ fn print_summary(summary: &Summary) {
     println!("─── Per-extension ────────────────────────────────────────────");
     println!(
         "  {:>6} {:>10} {:>10} {:>8}  {}",
-        "count", "Σpacked", "Σunpkd", "max %",
-        "ext"
+        "count", "Σpacked", "Σunpkd", "max %", "ext"
     );
     let mut by_ext: Vec<(&String, &ExtensionStats)> = summary.per_extension.iter().collect();
     by_ext.sort_by(|a, b| b.1.count.cmp(&a.1.count));

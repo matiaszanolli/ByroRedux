@@ -138,11 +138,7 @@ impl MeshRegistry {
     /// path where no future frames will tick the countdown. Caller must
     /// have already called `device_wait_idle` so the queued buffers
     /// can't be in-flight. See #732 / LIFE-H2.
-    pub fn drain_deferred_destroy(
-        &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-    ) {
+    pub fn drain_deferred_destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         self.deferred_destroy.drain(|(vb, ib)| {
             if let Some(mut b) = vb {
                 b.destroy(device, allocator);
@@ -535,7 +531,8 @@ impl MeshRegistry {
         let old_vb = self.global_vertex_buffer.take();
         let old_ib = self.global_index_buffer.take();
         if old_vb.is_some() || old_ib.is_some() {
-            self.deferred_destroy.push((old_vb, old_ib), DEFAULT_COUNTDOWN);
+            self.deferred_destroy
+                .push((old_vb, old_ib), DEFAULT_COUNTDOWN);
         }
 
         log::info!(
@@ -1030,8 +1027,7 @@ mod refcount_tests {
         // Re-insert a stale cache entry (simulating a hypothetical
         // race where the cache map outlived the purge). The 0-rc
         // gate must reject it.
-        reg.mesh_cache
-            .insert(("stale.nif".to_string(), 0), handle);
+        reg.mesh_cache.insert(("stale.nif".to_string(), 0), handle);
         assert_eq!(reg.acquire_cached("stale.nif", 0), None);
         assert_eq!(reg.refcount(handle), None);
     }

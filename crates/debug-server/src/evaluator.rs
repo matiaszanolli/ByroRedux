@@ -69,9 +69,7 @@ pub fn evaluate(
             eval_walk_entity(world, *entity, *max_depth)
         }
 
-        DebugRequest::InspectSkinnedMesh { entity } => {
-            eval_inspect_skinned_mesh(world, *entity)
-        }
+        DebugRequest::InspectSkinnedMesh { entity } => eval_inspect_skinned_mesh(world, *entity),
 
         DebugRequest::Eval { expr } => eval_request(world, registry, expr),
     }
@@ -95,7 +93,10 @@ fn eval_inspect_skinned_mesh(world: &World, entity: u32) -> DebugResponse {
         .iter()
         .map(|b| {
             b.and_then(|e| name_q.as_ref().and_then(|q| q.get(e)).map(|n| n.0))
-                .and_then(|sym| pool.as_ref().and_then(|p| p.resolve(sym).map(|s| s.to_string())))
+                .and_then(|sym| {
+                    pool.as_ref()
+                        .and_then(|p| p.resolve(sym).map(|s| s.to_string()))
+                })
         })
         .collect();
 
@@ -182,16 +183,18 @@ fn eval_walk_entity(world: &World, root: u32, max_depth: u32) -> DebugResponse {
             .as_ref()
             .and_then(|q| q.get(entity))
             .map(|gt| [gt.translation.x, gt.translation.y, gt.translation.z]);
-        let gt_r = gt_q.as_ref().and_then(|q| q.get(entity)).map(|gt| {
-            [gt.rotation.x, gt.rotation.y, gt.rotation.z, gt.rotation.w]
-        });
+        let gt_r = gt_q
+            .as_ref()
+            .and_then(|q| q.get(entity))
+            .map(|gt| [gt.rotation.x, gt.rotation.y, gt.rotation.z, gt.rotation.w]);
         let local_t = t_q
             .as_ref()
             .and_then(|q| q.get(entity))
             .map(|t| [t.translation.x, t.translation.y, t.translation.z]);
-        let local_r = t_q.as_ref().and_then(|q| q.get(entity)).map(|t| {
-            [t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w]
-        });
+        let local_r = t_q
+            .as_ref()
+            .and_then(|q| q.get(entity))
+            .map(|t| [t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w]);
         let name = name_q.as_ref().and_then(|q| q.get(entity)).and_then(|n| {
             pool.as_ref()
                 .and_then(|p| p.resolve(n.0).map(|s| s.to_string()))

@@ -56,7 +56,10 @@ struct TagTransitions {
 impl TagTransitions {
     fn record_transition(&mut self, payload_bytes: u32, next_tag: u32) {
         self.total += 1;
-        *self.payload_size_histogram.entry(payload_bytes).or_insert(0) += 1;
+        *self
+            .payload_size_histogram
+            .entry(payload_bytes)
+            .or_insert(0) += 1;
         if self.successors.len() < 8 && !self.successors.contains(&next_tag) {
             self.successors.push(next_tag);
         }

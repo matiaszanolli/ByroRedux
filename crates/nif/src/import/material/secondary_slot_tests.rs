@@ -213,8 +213,7 @@ fn empty_vertex_colors_always_falls_back_regardless_of_mode() {
         VertexColorMode::AmbientDiffuse,
     ] {
         assert!(!surfaces_authored_vertex_colors(
-            mode,
-            /* has_authored_colors */ false
+            mode, /* has_authored_colors */ false
         ));
     }
 }

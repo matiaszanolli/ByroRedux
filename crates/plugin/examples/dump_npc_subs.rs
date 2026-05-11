@@ -39,7 +39,11 @@ fn main() -> anyhow::Result<()> {
     };
 
     let bytes = std::fs::read(&path)?;
-    println!("Parsing {} ({:.1} MB)…", path, bytes.len() as f64 / 1_048_576.0);
+    println!(
+        "Parsing {} ({:.1} MB)…",
+        path,
+        bytes.len() as f64 / 1_048_576.0
+    );
 
     let mut reader = EsmReader::new(&bytes);
     let _hdr = reader.read_file_header()?;
@@ -66,11 +70,7 @@ fn walk_groups(reader: &mut EsmReader, end: usize, filters: &[String]) -> anyhow
     Ok(())
 }
 
-fn walk_npc_group(
-    reader: &mut EsmReader,
-    end: usize,
-    filters: &[String],
-) -> anyhow::Result<()> {
+fn walk_npc_group(reader: &mut EsmReader, end: usize, filters: &[String]) -> anyhow::Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let g = reader.read_group_header()?;
@@ -110,22 +110,14 @@ fn print_npc(h: &RecordHeader, edid: &str, subs: &[SubRecord]) {
     for k in &keys {
         let (n, total_bytes) = counts[k];
         let kind = std::str::from_utf8(k).unwrap_or("????");
-        println!(
-            "  {} ×{}  {} bytes total",
-            kind, n, total_bytes
-        );
+        println!("  {} ×{}  {} bytes total", kind, n, total_bytes);
     }
     println!("  ---");
     for s in subs {
         if FACE_SUBS.iter().any(|t| t == &&s.sub_type) {
             let kind = std::str::from_utf8(&s.sub_type).unwrap_or("????");
             let preview = &s.data[..s.data.len().min(32)];
-            println!(
-                "  {}  len={:>5}  hex={:02x?}",
-                kind,
-                s.data.len(),
-                preview,
-            );
+            println!("  {}  len={:>5}  hex={:02x?}", kind, s.data.len(), preview,);
         }
     }
 }

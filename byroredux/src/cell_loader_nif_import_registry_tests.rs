@@ -138,11 +138,18 @@ fn lru_cap_evicts_least_recently_inserted_entry() {
     let _ = reg.insert("d.nif".into(), Some(dummy_cached()));
     assert_eq!(reg.len(), 3);
     assert_eq!(reg.evictions, 1);
-    assert!(!reg.core.cache.contains_key("a.nif"), "a.nif must have been evicted");
+    assert!(
+        !reg.core.cache.contains_key("a.nif"),
+        "a.nif must have been evicted"
+    );
     assert!(reg.core.cache.contains_key("b.nif"));
     assert!(reg.core.cache.contains_key("c.nif"));
     assert!(reg.core.cache.contains_key("d.nif"));
-    assert_eq!(reg.core.parsed_count(), 3, "evicted slot drops parsed_count");
+    assert_eq!(
+        reg.core.parsed_count(),
+        3,
+        "evicted slot drops parsed_count"
+    );
 }
 
 /// #635 / FNV-D3-05 — `touch_keys` bumps the access tick of hit keys
@@ -156,7 +163,7 @@ fn touch_keys_protects_recently_hit_entries_from_lru() {
     let mut reg = registry_with_cap(3);
     let _ = reg.insert("door.nif".into(), Some(dummy_cached())); // tick 0
     let _ = reg.insert("wall.nif".into(), Some(dummy_cached())); // tick 1
-    let _ = reg.insert("sky.nif".into(), Some(dummy_cached()));  // tick 2
+    let _ = reg.insert("sky.nif".into(), Some(dummy_cached())); // tick 2
 
     // Simulate a cell load that hits door.nif again — it must rise
     // above wall.nif and sky.nif in LRU order.
@@ -165,8 +172,14 @@ fn touch_keys_protects_recently_hit_entries_from_lru() {
     // Adding a fresh entry now evicts wall.nif (now the oldest tick).
     let _ = reg.insert("table.nif".into(), Some(dummy_cached()));
     assert_eq!(reg.evictions, 1);
-    assert!(reg.core.cache.contains_key("door.nif"), "touched key must survive");
-    assert!(!reg.core.cache.contains_key("wall.nif"), "untouched-and-oldest is the victim");
+    assert!(
+        reg.core.cache.contains_key("door.nif"),
+        "touched key must survive"
+    );
+    assert!(
+        !reg.core.cache.contains_key("wall.nif"),
+        "untouched-and-oldest is the victim"
+    );
     assert!(reg.core.cache.contains_key("sky.nif"));
     assert!(reg.core.cache.contains_key("table.nif"));
 }
@@ -237,7 +250,11 @@ fn batched_commit_matches_per_iteration_semantics() {
         let _ = reg.insert(k, v);
     }
 
-    assert_eq!(reg.core.hits(), 3, "3 subsequent encounters (2 chairs + 1 lamp)");
+    assert_eq!(
+        reg.core.hits(),
+        3,
+        "3 subsequent encounters (2 chairs + 1 lamp)"
+    );
     assert_eq!(reg.core.misses(), 2, "2 unique parses");
     assert_eq!(reg.core.parsed_count(), 2);
     assert_eq!(reg.len(), 2);
@@ -387,7 +404,10 @@ fn insert_only_returns_freed_handles_for_evicted_entries_with_clips() {
     // freed Vec is empty (the cache entry still gets evicted; just
     // nothing to release into AnimationClipRegistry).
     let freed_b = reg.insert("d.nif".into(), Some(dummy_cached()));
-    assert!(freed_b.is_empty(), "no clip handle on b.nif → empty freed Vec");
+    assert!(
+        freed_b.is_empty(),
+        "no clip handle on b.nif → empty freed Vec"
+    );
     assert_eq!(reg.evictions, 2);
 }
 

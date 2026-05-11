@@ -110,7 +110,9 @@ fn missing_xcll_with_lgtm_template_synthesizes_cell_lighting() {
     let template = template_with_amber_ambient(0x0020_0001);
 
     let mut index = empty_index();
-    index.lighting_templates.insert(0x0020_0001, template.clone());
+    index
+        .lighting_templates
+        .insert(0x0020_0001, template.clone());
 
     let resolved = resolve_cell_lighting(&cell, &index)
         .expect("LTMP must produce a synthesized CellLighting when XCLL is absent");

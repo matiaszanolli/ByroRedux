@@ -1310,17 +1310,17 @@ mod tests {
         data.extend_from_slice(&1u32.to_le_bytes()); // Linear
         data.extend_from_slice(&0.0f32.to_le_bytes()); // time
         data.extend_from_slice(&0.5f32.to_le_bytes()); // value=0.5 (X)
-        // KeyGroup Y: 1 Linear key
+                                                       // KeyGroup Y: 1 Linear key
         data.extend_from_slice(&1u32.to_le_bytes());
         data.extend_from_slice(&1u32.to_le_bytes());
         data.extend_from_slice(&0.0f32.to_le_bytes());
         data.extend_from_slice(&1.0f32.to_le_bytes()); // value=1.0 (Y)
-        // KeyGroup Z: 1 Linear key
+                                                       // KeyGroup Z: 1 Linear key
         data.extend_from_slice(&1u32.to_le_bytes());
         data.extend_from_slice(&1u32.to_le_bytes());
         data.extend_from_slice(&0.0f32.to_le_bytes());
         data.extend_from_slice(&2.0f32.to_le_bytes()); // value=2.0 (Z)
-        // Translations: 0 keys
+                                                       // Translations: 0 keys
         data.extend_from_slice(&0u32.to_le_bytes());
         // Scales: 0 keys
         data.extend_from_slice(&0u32.to_le_bytes());
@@ -1532,7 +1532,7 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&1u32.to_le_bytes()); // num_rotation_keys = 1
         data.extend_from_slice(&4u32.to_le_bytes()); // KeyType::XyzRotation
-        // NO Order at v10.1.0.1 (just above the inclusive until= boundary)
+                                                     // NO Order at v10.1.0.1 (just above the inclusive until= boundary)
         data.extend_from_slice(&0u32.to_le_bytes()); // X KeyGroup num_keys = 0
         data.extend_from_slice(&0u32.to_le_bytes()); // Y KeyGroup num_keys = 0
         data.extend_from_slice(&0u32.to_le_bytes()); // Z KeyGroup num_keys = 0

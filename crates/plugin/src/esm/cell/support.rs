@@ -41,22 +41,13 @@ pub(crate) fn build_static_object_from_subs(
             b"MODL" => model_path = read_zstring(&sub.data),
             b"VMAD" => has_script = true,
             b"DATA" if is_ligh && sub.data.len() >= 12 => {
-                let radius = u32::from_le_bytes([
-                    sub.data[4],
-                    sub.data[5],
-                    sub.data[6],
-                    sub.data[7],
-                ]) as f32;
+                let radius =
+                    u32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]) as f32;
                 let r = sub.data[8] as f32 / 255.0;
                 let g = sub.data[9] as f32 / 255.0;
                 let b = sub.data[10] as f32 / 255.0;
                 let flags = if sub.data.len() >= 16 {
-                    u32::from_le_bytes([
-                        sub.data[12],
-                        sub.data[13],
-                        sub.data[14],
-                        sub.data[15],
-                    ])
+                    u32::from_le_bytes([sub.data[12], sub.data[13], sub.data[14], sub.data[15]])
                 } else {
                     0
                 };

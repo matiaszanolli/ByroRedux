@@ -288,7 +288,9 @@ impl ItemInstancePool {
             // entries, far above any realistic save's instance count.
             assert!(slot <= u32::MAX as usize, "ItemInstancePool overflow");
             self.instances.push(Some(inst));
-            ItemInstanceId(NonZeroU32::new(slot as u32).expect("slot >= 1 since slot 0 is reserved"))
+            ItemInstanceId(
+                NonZeroU32::new(slot as u32).expect("slot >= 1 since slot 0 is reserved"),
+            )
         }
     }
 

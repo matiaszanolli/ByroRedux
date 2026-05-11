@@ -123,7 +123,13 @@ fn hex_dump_with_ascii(bytes: &[u8], base_offset: usize) {
             .collect::<String>();
         let ascii: String = chunk
             .iter()
-            .map(|&b| if (32..=126).contains(&b) { b as char } else { '.' })
+            .map(|&b| {
+                if (32..=126).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         println!("{:6}: {:<48}  {}", off, hex, ascii);
     }
@@ -163,12 +169,7 @@ fn length_prefixed_string_candidates(bytes: &[u8]) -> Vec<(usize, usize, String)
     }
     let mut i = 0;
     while i + 4 <= bytes.len() {
-        let len_u32 = u32::from_le_bytes([
-            bytes[i],
-            bytes[i + 1],
-            bytes[i + 2],
-            bytes[i + 3],
-        ]);
+        let len_u32 = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
         if (1..=256).contains(&len_u32) {
             let len = len_u32 as usize;
             if i + 4 + len <= bytes.len() {

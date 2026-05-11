@@ -247,11 +247,7 @@ impl NifImportRegistry {
     /// no-eviction path (the default `BYRO_NIF_CACHE_MAX=0` mode); no
     /// allocation cost there.
     #[must_use = "evicted clip handles must be released into AnimationClipRegistry to free their keyframe arrays — see #863"]
-    pub(crate) fn insert(
-        &mut self,
-        key: String,
-        value: Option<Arc<CachedNifImport>>,
-    ) -> Vec<u32> {
+    pub(crate) fn insert(&mut self, key: String, value: Option<Arc<CachedNifImport>>) -> Vec<u32> {
         // Core handles parsed/failed counter adjustment + map insertion.
         self.core.insert(key.clone(), value);
         let t = self.next_tick;

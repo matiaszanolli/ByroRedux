@@ -85,7 +85,7 @@ fn uncompressed_gnrl_packed_size_zero_round_trips() {
     buf.extend_from_slice(&1u32.to_le_bytes()); // version 1 (FO4 baseline)
     buf.extend_from_slice(b"GNRL"); // type tag
     buf.extend_from_slice(&1u32.to_le_bytes()); // file count = 1
-    // name_table_offset placeholder — patched after we know the layout.
+                                                // name_table_offset placeholder — patched after we know the layout.
     let name_table_offset_pos = buf.len();
     buf.extend_from_slice(&0u64.to_le_bytes());
 
@@ -118,8 +118,7 @@ fn uncompressed_gnrl_packed_size_zero_round_trips() {
     buf.extend_from_slice(path_in_archive.as_bytes());
 
     // Patch the placeholders.
-    buf[offset_field_pos..offset_field_pos + 8]
-        .copy_from_slice(&payload_offset.to_le_bytes());
+    buf[offset_field_pos..offset_field_pos + 8].copy_from_slice(&payload_offset.to_le_bytes());
     buf[name_table_offset_pos..name_table_offset_pos + 8]
         .copy_from_slice(&name_table_offset.to_le_bytes());
 
@@ -417,7 +416,8 @@ fn starfield_textures01_ba2_v3_dx10_extracts_lz4_block_dds() {
     assert_eq!(archive.version(), 3, "Starfield Textures01.ba2 must be v3");
     assert_eq!(archive.variant(), Ba2Variant::Dx10);
 
-    let entry = pick_entry(&archive, ".dds").expect("at least one .dds in Starfield Textures01.ba2");
+    let entry =
+        pick_entry(&archive, ".dds").expect("at least one .dds in Starfield Textures01.ba2");
     let dds = archive
         .extract(&entry)
         .unwrap_or_else(|e| panic!("extract '{entry}' failed: {e}"));
@@ -457,11 +457,15 @@ fn starfield_constellation_textures_ba2_v2_dx10_extracts_zlib_dds() {
     }
 
     let archive = Ba2Archive::open(&archive_path).expect("open Constellation Textures.ba2");
-    assert_eq!(archive.version(), 2, "Constellation Textures.ba2 must be v2");
+    assert_eq!(
+        archive.version(),
+        2,
+        "Constellation Textures.ba2 must be v2"
+    );
     assert_eq!(archive.variant(), Ba2Variant::Dx10);
 
-    let entry = pick_entry(&archive, ".dds")
-        .expect("at least one .dds in Constellation Textures.ba2");
+    let entry =
+        pick_entry(&archive, ".dds").expect("at least one .dds in Constellation Textures.ba2");
     let dds = archive
         .extract(&entry)
         .unwrap_or_else(|e| panic!("extract '{entry}' failed: {e}"));

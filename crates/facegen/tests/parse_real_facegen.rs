@@ -72,15 +72,12 @@ fn parse_vanilla_headhuman_egm() {
         .fggs_morphs
         .iter()
         .chain(egm.fgga_morphs.iter())
-        .map(|m| {
-            m.deltas
-                .iter()
-                .flatten()
-                .filter(|c| !c.is_finite())
-                .count()
-        })
+        .map(|m| m.deltas.iter().flatten().filter(|c| !c.is_finite()).count())
         .sum();
-    eprintln!("vanilla headhuman.egm: {} non-finite delta components", nan_count);
+    eprintln!(
+        "vanilla headhuman.egm: {} non-finite delta components",
+        nan_count
+    );
 }
 
 #[test]

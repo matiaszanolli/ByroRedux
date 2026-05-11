@@ -1,12 +1,12 @@
 //! Scene graph walking — hierarchical and flat traversal.
 
+use crate::blocks::bs_geometry::BSGeometry;
 use crate::blocks::light::{NiAmbientLight, NiDirectionalLight, NiPointLight, NiSpotLight};
 use crate::blocks::node::{
     BsDistantObjectInstancedNode, BsMultiBoundNode, BsOrderedNode, BsRangeNode, BsTreeNode,
     BsValueNode, BsWeakReferenceNode, NiBillboardNode, NiLODNode, NiNode, NiSortAdjustNode,
     NiSwitchNode,
 };
-use crate::blocks::bs_geometry::BSGeometry;
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
 use crate::blocks::NiObject;
 use crate::scene::NifScene;
@@ -206,7 +206,15 @@ pub(super) fn walk_node_hierarchical(
         let prev_len = inherited_props.len();
         inherited_props.extend_from_slice(&node.av.properties);
         for idx in active_children {
-            walk_node_hierarchical(scene, idx, Some(this_node_idx), inherited_props, out, pool, resolver);
+            walk_node_hierarchical(
+                scene,
+                idx,
+                Some(this_node_idx),
+                inherited_props,
+                out,
+                pool,
+                resolver,
+            );
         }
         inherited_props.truncate(prev_len);
         return;
@@ -302,7 +310,15 @@ pub(super) fn walk_node_hierarchical(
         inherited_props.extend_from_slice(&node.av.properties);
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node_hierarchical(scene, idx, Some(this_node_idx), inherited_props, out, pool, resolver);
+                walk_node_hierarchical(
+                    scene,
+                    idx,
+                    Some(this_node_idx),
+                    inherited_props,
+                    out,
+                    pool,
+                    resolver,
+                );
             }
         }
         inherited_props.truncate(prev_len);
@@ -428,9 +444,10 @@ pub(super) fn extract_first_color_curve(
     use crate::blocks::interpolator::NiColorData;
     use crate::blocks::particle::NiPSysColorModifier;
 
-    let modifier = scene.blocks.iter().find_map(|b| {
-        b.as_any().downcast_ref::<NiPSysColorModifier>()
-    })?;
+    let modifier = scene
+        .blocks
+        .iter()
+        .find_map(|b| b.as_any().downcast_ref::<NiPSysColorModifier>())?;
     let data_idx = modifier.color_data_ref.index()?;
     let data = scene.get_as::<NiColorData>(data_idx)?;
     let keys = &data.keys.keys;
@@ -1410,21 +1427,33 @@ mod texture_effect_import_tests {
         //   3 = NiNode "SunDiscBone"
         //   4 = NiNode "CloudsBone"
         let mut scene = NifScene::default();
-        scene.blocks.push(Box::new(node_named("Scene Root", vec![BlockRef(1)])));
+        scene
+            .blocks
+            .push(Box::new(node_named("Scene Root", vec![BlockRef(1)])));
         scene.blocks.push(Box::new(make_texture_effect(
             vec![3, 4],
             BlockRef(2),
             0, // ProjectedLight
             1, // WorldPerspective
         )));
-        scene.blocks.push(Box::new(make_source_texture("textures\\sun_gobo.dds")));
-        scene.blocks.push(Box::new(node_named("SunDiscBone", Vec::new())));
-        scene.blocks.push(Box::new(node_named("CloudsBone", Vec::new())));
+        scene
+            .blocks
+            .push(Box::new(make_source_texture("textures\\sun_gobo.dds")));
+        scene
+            .blocks
+            .push(Box::new(node_named("SunDiscBone", Vec::new())));
+        scene
+            .blocks
+            .push(Box::new(node_named("CloudsBone", Vec::new())));
         scene.root_index = Some(0);
 
         let mut pool = StringPool::new();
         let effects = crate::import::import_nif_texture_effects(&scene, &mut pool);
-        assert_eq!(effects.len(), 1, "one NiTextureEffect → one ImportedTextureEffect");
+        assert_eq!(
+            effects.len(),
+            1,
+            "one NiTextureEffect → one ImportedTextureEffect"
+        );
         let eff = &effects[0];
 
         // Texture path interned through the pool — resolve back for
@@ -1435,7 +1464,10 @@ mod texture_effect_import_tests {
         assert_eq!(path.as_deref(), Some("textures\\sun_gobo.dds"));
 
         assert_eq!(eff.texture_type, 0, "ProjectedLight roundtrip");
-        assert_eq!(eff.coordinate_generation_type, 1, "WorldPerspective roundtrip");
+        assert_eq!(
+            eff.coordinate_generation_type, 1,
+            "WorldPerspective roundtrip"
+        );
 
         assert_eq!(eff.affected_node_names.len(), 2);
         assert_eq!(&*eff.affected_node_names[0], "SunDiscBone");
@@ -1449,7 +1481,9 @@ mod texture_effect_import_tests {
     #[test]
     fn texture_effect_with_null_source_ref_leaves_path_none() {
         let mut scene = NifScene::default();
-        scene.blocks.push(Box::new(node_named("Scene Root", vec![BlockRef(1)])));
+        scene
+            .blocks
+            .push(Box::new(node_named("Scene Root", vec![BlockRef(1)])));
         scene.blocks.push(Box::new(make_texture_effect(
             Vec::new(),
             BlockRef::NULL,
@@ -1477,7 +1511,9 @@ mod texture_effect_import_tests {
     #[test]
     fn scene_without_texture_effects_returns_empty() {
         let mut scene = NifScene::default();
-        scene.blocks.push(Box::new(node_named("Scene Root", Vec::new())));
+        scene
+            .blocks
+            .push(Box::new(node_named("Scene Root", Vec::new())));
         scene.root_index = Some(0);
 
         let mut pool = StringPool::new();
@@ -1576,9 +1612,21 @@ mod switch_node_walker_tests {
                 switch_state: true,
                 affected_nodes: Vec::new(),
                 dimmer: 1.0,
-                ambient_color: NiColor { r: 0.0, g: 0.0, b: 0.0 },
-                diffuse_color: NiColor { r: 1.0, g: 0.0, b: 0.0 },
-                specular_color: NiColor { r: 0.0, g: 0.0, b: 0.0 },
+                ambient_color: NiColor {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
+                diffuse_color: NiColor {
+                    r: 1.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
+                specular_color: NiColor {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
             },
             constant_attenuation: 0.0,
             linear_attenuation: 0.0,

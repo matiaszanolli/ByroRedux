@@ -104,7 +104,9 @@ impl World {
         });
         // Record the type name so type-erased panic paths can surface
         // it (#466). Idempotent: re-registration leaves the entry alone.
-        self.type_names.entry(type_id).or_insert_with(std::any::type_name::<T>);
+        self.type_names
+            .entry(type_id)
+            .or_insert_with(std::any::type_name::<T>);
     }
 
     /// Despawn an entity, removing all of its components from every
@@ -126,11 +128,7 @@ impl World {
             // is unreachable in practice — every storage in `self.storages`
             // arrives via `register` or `storage_write`, both of which
             // also populate `type_names` — but kept for defense.
-            let type_name = self
-                .type_names
-                .get(type_id)
-                .copied()
-                .unwrap_or("<unknown>");
+            let type_name = self.type_names.get(type_id).copied().unwrap_or("<unknown>");
             lock.get_mut()
                 .unwrap_or_else(|_| storage_lock_poisoned_erased(type_name))
                 .remove_entity_erased(entity);
@@ -730,7 +728,9 @@ impl World {
         // Record the type name on first lazy creation so type-erased
         // panic paths can surface it (#466). Done outside the entry
         // closure so the borrow on `self.storages` doesn't conflict.
-        self.type_names.entry(type_id).or_insert_with(std::any::type_name::<T>);
+        self.type_names
+            .entry(type_id)
+            .or_insert_with(std::any::type_name::<T>);
         self.storages
             .entry(type_id)
             .or_insert_with(|| {

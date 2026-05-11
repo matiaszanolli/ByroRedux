@@ -17,11 +17,7 @@ use byroredux_core::string::StringPool;
 /// Tests in this file only assert on flag fields, never on path
 /// strings, so the pool's lifetime can stay scoped to one assertion.
 /// See #609 / D6-NEW-01 for the FixedString plumbing motivation.
-fn extract_with_pool(
-    scene: &NifScene,
-    shape: &NiTriShape,
-    inherited: &[BlockRef],
-) -> MaterialInfo {
+fn extract_with_pool(scene: &NifScene, shape: &NiTriShape, inherited: &[BlockRef]) -> MaterialInfo {
     let mut pool = StringPool::new();
     extract_material_info(scene, shape, inherited, &mut pool)
 }
@@ -427,7 +423,10 @@ fn starfield_unrelated_crcs_do_not_trigger_decal_or_two_sided() {
     shape.av.properties.clear();
     shape.shader_property_ref = BlockRef(0);
     let info = extract_with_pool(&scene, &shape, &[]);
-    assert!(!info.is_decal, "Skinned/CastShadows/ZBuffer CRCs are not decal");
+    assert!(
+        !info.is_decal,
+        "Skinned/CastShadows/ZBuffer CRCs are not decal"
+    );
     assert!(!info.two_sided);
 }
 
@@ -451,5 +450,10 @@ fn modern_helpers_still_honour_legacy_bits_when_crcs_empty() {
     // SLSF1 / F4SF1 bit 26 == Decal — same numeric value across games.
     assert!(is_decal_from_modern_shader_flags(0x0400_0000, 0, &[], &[]));
     // SLSF2 / F4SF2 bit 4 == Double_Sided.
-    assert!(is_two_sided_from_modern_shader_flags(0, 0x0000_0010, &[], &[]));
+    assert!(is_two_sided_from_modern_shader_flags(
+        0,
+        0x0000_0010,
+        &[],
+        &[]
+    ));
 }

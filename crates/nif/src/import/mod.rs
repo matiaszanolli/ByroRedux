@@ -812,7 +812,15 @@ fn import_nif_scene_impl(
     };
 
     let mut props_stack: Vec<crate::types::BlockRef> = Vec::new();
-    walk::walk_node_hierarchical(scene, root_idx, None, &mut props_stack, &mut imported, pool, resolver);
+    walk::walk_node_hierarchical(
+        scene,
+        root_idx,
+        None,
+        &mut props_stack,
+        &mut imported,
+        pool,
+        resolver,
+    );
 
     // Resolve extra data from the root node (BSXFlags, BSBound).
     if let Some(root_block) = scene.blocks.get(root_idx) {
@@ -962,13 +970,7 @@ pub fn import_nif_texture_effects(
     let Some(root_idx) = scene.root_index else {
         return effects;
     };
-    walk::walk_node_texture_effects(
-        scene,
-        root_idx,
-        &NiTransform::default(),
-        pool,
-        &mut effects,
-    );
+    walk::walk_node_texture_effects(scene, root_idx, &NiTransform::default(), pool, &mut effects);
     effects
 }
 
@@ -1151,7 +1153,8 @@ mod tests {
     #[test]
     fn import_empty_scene() {
         let scene = NifScene::default();
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
         assert!(meshes.is_empty());
     }
 
@@ -1168,7 +1171,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 1);
         let m = &meshes[0];
@@ -1193,7 +1197,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 1);
         let m = &meshes[0];
@@ -1216,7 +1221,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 1);
         let m = &meshes[0];
@@ -1246,7 +1252,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 1);
         let m = &meshes[0];
@@ -1277,7 +1284,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 2);
         assert_eq!(meshes[0].name, Some(Arc::from("A")));
@@ -1304,7 +1312,8 @@ mod tests {
             Box::new(data),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes[0].colors[0], [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(meshes[0].colors[1], [0.0, 1.0, 0.0, 1.0]);
@@ -1337,7 +1346,8 @@ mod tests {
             Box::new(data),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 1, "expected exactly one mesh");
         let alphas: Vec<f32> = meshes[0].colors.iter().map(|c| c[3]).collect();
@@ -1437,7 +1447,8 @@ mod tests {
             Box::new(base_src),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes.len(), 1);
         let m = &meshes[0];
@@ -1520,7 +1531,8 @@ mod tests {
             Box::new(make_src("modern_normal.dds")),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(
             test_support::resolve_path(&pool, meshes[0].normal_map),
@@ -1572,7 +1584,8 @@ mod tests {
             Box::new(mat),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         for color in &meshes[0].colors {
             assert!((color[0] - 0.8).abs() < 1e-6);
@@ -1594,7 +1607,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         for color in &meshes[0].colors {
             assert_eq!(*color, [1.0, 1.0, 1.0, 1.0]);
@@ -1611,7 +1625,8 @@ mod tests {
             Box::new(shape),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
         assert!(meshes.is_empty());
     }
 
@@ -1647,7 +1662,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
         let m = &meshes[0];
 
         assert_eq!(m.positions[0], [0.0, 0.0, 0.0]);
@@ -1668,7 +1684,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         for n in &meshes[0].normals {
             assert_eq!(*n, [0.0, 1.0, 0.0]);
@@ -1683,7 +1700,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         assert!((meshes[0].translation[0]).abs() < 1e-6);
         assert!((meshes[0].translation[1] - 5.0).abs() < 1e-6);
@@ -1703,7 +1721,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         assert!((meshes[0].translation[0]).abs() < 1e-6);
         assert!((meshes[0].translation[1]).abs() < 1e-6);
@@ -1718,7 +1737,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         let q = &meshes[0].rotation;
         assert!(q[0].abs() < 1e-4, "qx={}", q[0]);
@@ -1740,7 +1760,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
 
         assert_eq!(meshes[0].indices, vec![0, 1, 2]);
     }
@@ -1907,7 +1928,8 @@ mod tests {
         let scene = scene_from_blocks(blocks);
 
         // Flat path — would return zero meshes before the fix.
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
         assert_eq!(
             meshes.len(),
             1,
@@ -1916,7 +1938,8 @@ mod tests {
         assert_eq!(meshes[0].name, Some(Arc::from("OrderedChild")));
 
         // Hierarchical path — must register the parent node AND the mesh.
-        let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let imported = import_nif_scene(&scene, &mut pool);
         assert_eq!(imported.nodes.len(), 1);
         assert_eq!(imported.meshes.len(), 1);
         assert_eq!(imported.meshes[0].parent_node, Some(0));
@@ -1946,7 +1969,8 @@ mod tests {
             Box::new(make_tri_shape_data()),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let meshes = import_nif(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let meshes = import_nif(&scene, &mut pool);
         assert_eq!(meshes.len(), 1);
         assert_eq!(meshes[0].name, Some(Arc::from("ValueChild")));
     }
@@ -2044,7 +2068,8 @@ mod tests {
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
             vec![Box::new(root), Box::new(ni_psys_block("NiParticleSystem"))];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let imported = import_nif_scene(&scene, &mut pool);
         assert_eq!(imported.particle_emitters.len(), 1);
         let em = &imported.particle_emitters[0];
         assert_eq!(em.original_type, "NiParticleSystem");
@@ -2143,8 +2168,8 @@ mod tests {
                     Color4Key {
                         time: 0.5,
                         value: [0.85, 0.20, 0.05, 0.7], // mid (intentionally distinct
-                                                        // from start/end so an
-                                                        // off-by-one would surface)
+                        // from start/end so an
+                        // off-by-one would surface)
                         tangent_forward: [0.0; 4],
                         tangent_backward: [0.0; 4],
                         tbc: None,
@@ -2280,7 +2305,8 @@ mod tests {
             let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
                 vec![Box::new(ni_range_node(kind, 0, 5, 2))];
             let scene = scene_from_blocks(blocks);
-            let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
+            let mut pool = StringPool::new();
+            let imported = import_nif_scene(&scene, &mut pool);
             assert_eq!(imported.nodes.len(), 1, "{:?}", kind);
             assert_eq!(
                 imported.nodes[0].range_kind,
@@ -2299,7 +2325,8 @@ mod tests {
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
             vec![Box::new(make_ni_node(identity_transform(), Vec::new()))];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let imported = import_nif_scene(&scene, &mut pool);
         assert_eq!(imported.nodes.len(), 1);
         assert!(imported.nodes[0].range_kind.is_none());
     }
@@ -2361,7 +2388,8 @@ mod tests {
             bone("Branch_B"),
         ];
         let scene = scene_from_blocks(blocks);
-        let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let imported = import_nif_scene(&scene, &mut pool);
         let host_node = &imported.nodes[0];
         let bones = host_node
             .tree_bones
@@ -2401,7 +2429,8 @@ mod tests {
             bones_2: Vec::new(),
         };
         let scene = scene_from_blocks(vec![Box::new(tree)]);
-        let mut pool = StringPool::new(); let imported = import_nif_scene(&scene, &mut pool);
+        let mut pool = StringPool::new();
+        let imported = import_nif_scene(&scene, &mut pool);
         assert!(imported.nodes[0].tree_bones.is_none());
     }
 
@@ -2414,9 +2443,7 @@ mod tests {
     #[test]
     fn bs_multi_bound_node_with_packed_geom_extra_subtree_is_skipped() {
         use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
-        use crate::blocks::extra_data::{
-            BsPackedCombinedGeomDataExtra, BsPackedCombinedPayload,
-        };
+        use crate::blocks::extra_data::{BsPackedCombinedGeomDataExtra, BsPackedCombinedPayload};
         use crate::blocks::node::BsMultiBoundNode;
 
         // [0] BSMultiBoundNode root with extra_data → block 1.

@@ -123,7 +123,11 @@ fn resolve_cloud_layer(
         return (0, 0.0);
     };
     let Some(dds_bytes) = tex_provider.extract(path) else {
-        log::debug!("Cloud layer {} texture '{}' not in archives", layer_label, path);
+        log::debug!(
+            "Cloud layer {} texture '{}' not in archives",
+            layer_label,
+            path
+        );
         return (0, 0.0);
     };
     let scale = cloud_tile_scale_for_dds(&dds_bytes, baseline_scale);
@@ -179,7 +183,11 @@ pub(crate) fn climate_tod_hours(
         return FALLBACK;
     };
     let valid = |b: u8| (1..=144).contains(&b);
-    if valid(c.sunrise_begin) && valid(c.sunrise_end) && valid(c.sunset_begin) && valid(c.sunset_end) {
+    if valid(c.sunrise_begin)
+        && valid(c.sunrise_end)
+        && valid(c.sunset_begin)
+        && valid(c.sunset_end)
+    {
         [
             c.sunrise_begin as f32 / 6.0,
             c.sunrise_end as f32 / 6.0,
@@ -615,15 +623,13 @@ fn stream_initial_radius(
                 None => {
                     let cache_key = model_path.to_ascii_lowercase();
                     let freed = {
-                        let mut reg =
-                            world.resource_mut::<cell_loader::NifImportRegistry>();
+                        let mut reg = world.resource_mut::<cell_loader::NifImportRegistry>();
                         reg.insert(cache_key, None)
                     };
                     // #863 — release LRU-evicted clip handles.
                     if !freed.is_empty() {
-                        let mut clip_reg = world.resource_mut::<
-                            byroredux_core::animation::AnimationClipRegistry,
-                        >();
+                        let mut clip_reg = world
+                            .resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
                         for h in freed {
                             clip_reg.release(h);
                         }
@@ -656,7 +662,12 @@ fn stream_initial_radius(
                 // Worldspace hole — common at edges.
             }
             Err(e) => {
-                log::warn!("Initial cell ({},{}) spawn failed: {:#}", coord.0, coord.1, e);
+                log::warn!(
+                    "Initial cell ({},{}) spawn failed: {:#}",
+                    coord.0,
+                    coord.1,
+                    e
+                );
             }
         }
     }
@@ -785,9 +796,7 @@ pub(crate) fn setup_scene(
                         // establishes the data plumbing; #865 + a
                         // future Skyrim ambient-cube uniform are the
                         // shader-side follow-ups.
-                        world.insert_resource(CellLightingRes::from_cell_lighting(
-                            lit, dir, true,
-                        ));
+                        world.insert_resource(CellLightingRes::from_cell_lighting(lit, dir, true));
                         log::info!(
                             "Cell lighting: ambient={:?} directional={:?} dir={:?} fog={:?} near={:.0} far={:.0}",
                             lit.ambient,
@@ -827,12 +836,8 @@ pub(crate) fn setup_scene(
                 Ok(wctx) => {
                     has_nif_content = true;
                     apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
-                    let mut state = WorldStreamingState::new(
-                        wctx,
-                        tex_provider,
-                        mat_provider,
-                        radius,
-                    );
+                    let mut state =
+                        WorldStreamingState::new(wctx, tex_provider, mat_provider, radius);
                     state.last_player_grid = Some((cx, cy));
                     cam_center = stream_initial_radius(world, ctx, &mut state, cx, cy);
                     log::info!(
@@ -1432,8 +1437,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 let imported_opt =
                     parse_import_and_merge(world, data, label, tex_provider, mat_provider);
                 let arc_opt = imported_opt.map(std::sync::Arc::new);
-                let mut cache =
-                    world.resource_mut::<crate::scene_import_cache::SceneImportCache>();
+                let mut cache = world.resource_mut::<crate::scene_import_cache::SceneImportCache>();
                 let stored = cache.insert(cache_key, arc_opt);
                 match stored {
                     Some(arc) => Some(arc),
@@ -1757,7 +1761,8 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             let pool_read = world.resource::<StringPool>();
             let resolve_owned =
                 |sym: Option<byroredux_core::string::FixedString>| -> Option<String> {
-                    sym.and_then(|s| pool_read.resolve(s)).map(|s| s.to_string())
+                    sym.and_then(|s| pool_read.resolve(s))
+                        .map(|s| s.to_string())
                 };
             (
                 resolve_owned(mesh.texture_path),
@@ -1839,10 +1844,11 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             // STAT → Clutter rule as cell_loader so loose-loaded
             // desk papers don't z-fight against the desk loaded
             // alongside them.
-            let layer =
-                escalate_small_static_to_clutter(RenderLayer::Architecture, mesh.local_bound_radius);
-            let layer =
-                render_layer_with_decal_escalation(layer, mesh.is_decal, mesh.alpha_test);
+            let layer = escalate_small_static_to_clutter(
+                RenderLayer::Architecture,
+                mesh.local_bound_radius,
+            );
+            let layer = render_layer_with_decal_escalation(layer, mesh.is_decal, mesh.alpha_test);
             world.insert(entity, layer);
         }
         // Carry `NiAVObject.flags` across — gameplay systems branch on
@@ -1895,13 +1901,15 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 effect_falloff: mesh
                     .effect_shader
                     .as_ref()
-                    .map(|es| byroredux_core::ecs::components::material::EffectFalloff {
-                        start_angle: es.falloff_start_angle,
-                        stop_angle: es.falloff_stop_angle,
-                        start_opacity: es.falloff_start_opacity,
-                        stop_opacity: es.falloff_stop_opacity,
-                        soft_falloff_depth: es.soft_falloff_depth,
-                    })
+                    .map(
+                        |es| byroredux_core::ecs::components::material::EffectFalloff {
+                            start_angle: es.falloff_start_angle,
+                            stop_angle: es.falloff_stop_angle,
+                            start_opacity: es.falloff_start_opacity,
+                            stop_opacity: es.falloff_stop_opacity,
+                            soft_falloff_depth: es.soft_falloff_depth,
+                        },
+                    )
                     .or_else(|| {
                         mesh.no_lighting_falloff.as_ref().map(|nl| {
                             byroredux_core::ecs::components::material::EffectFalloff {
@@ -2207,9 +2215,7 @@ mod cloud_tile_scale_tests {
     //! Pre-#529 the per-layer baseline was inlined as `0.15` / `0.20`
     //! / `0.25` / `0.30` and identical for every WTHR regardless of
     //! the sprite the artist authored.
-    use super::{
-        cloud_tile_scale_for_dds, CLOUD_TILE_SCALE_LAYER_0, CLOUD_TILE_SCALE_LAYER_1,
-    };
+    use super::{cloud_tile_scale_for_dds, CLOUD_TILE_SCALE_LAYER_0, CLOUD_TILE_SCALE_LAYER_1};
 
     /// Build a minimal DDS file with just enough of a header for
     /// `parse_dds` to read width / height / a recognised pixel format.
@@ -2251,7 +2257,11 @@ mod cloud_tile_scale_tests {
         // squashing every blob to 256 px on screen.
         let dds = make_dds_header(1024, 1024);
         let s = cloud_tile_scale_for_dds(&dds, CLOUD_TILE_SCALE_LAYER_0);
-        assert!((s - CLOUD_TILE_SCALE_LAYER_0 * 0.5).abs() < 1e-6, "got {}", s);
+        assert!(
+            (s - CLOUD_TILE_SCALE_LAYER_0 * 0.5).abs() < 1e-6,
+            "got {}",
+            s
+        );
     }
 
     #[test]
@@ -2261,7 +2271,11 @@ mod cloud_tile_scale_tests {
         // a coarser sprite (some Oblivion DLC clouds ship at 256²).
         let dds = make_dds_header(256, 256);
         let s = cloud_tile_scale_for_dds(&dds, CLOUD_TILE_SCALE_LAYER_1);
-        assert!((s - CLOUD_TILE_SCALE_LAYER_1 * 2.0).abs() < 1e-6, "got {}", s);
+        assert!(
+            (s - CLOUD_TILE_SCALE_LAYER_1 * 2.0).abs() < 1e-6,
+            "got {}",
+            s
+        );
     }
 
     #[test]

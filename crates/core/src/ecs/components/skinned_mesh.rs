@@ -342,12 +342,7 @@ mod tests {
         // For bind_world = I, that's inv(global_skin) = rotz(-90°).
         let bind_inv = Mat4::from_quat(Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2));
 
-        let sm = SkinnedMesh::new_with_global(
-            None,
-            vec![Some(1)],
-            vec![bind_inv],
-            global_skin,
-        );
+        let sm = SkinnedMesh::new_with_global(None, vec![Some(1)], vec![bind_inv], global_skin);
 
         // Bone moves +5 in y at runtime.
         let bone_world = Mat4::from_translation(Vec3::new(0.0, 5.0, 0.0));

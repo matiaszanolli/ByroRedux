@@ -116,8 +116,13 @@ fn bs_tri_shape_captures_skin_tint_color() {
         },
     )));
     let shape = renderable_shape(0);
-    let imported = extract_bs_tri_shape(&scene, &shape, &NiTransform::default(), &mut byroredux_core::string::StringPool::new())
-        .expect("synthetic shape should import");
+    let imported = extract_bs_tri_shape(
+        &scene,
+        &shape,
+        &NiTransform::default(),
+        &mut byroredux_core::string::StringPool::new(),
+    )
+    .expect("synthetic shape should import");
     assert_eq!(imported.material_kind, 5);
     assert_eq!(
         imported.shader_type_fields.skin_tint_color,
@@ -136,7 +141,13 @@ fn bs_tri_shape_captures_hair_tint_color() {
         },
     )));
     let shape = renderable_shape(0);
-    let imported = extract_bs_tri_shape(&scene, &shape, &NiTransform::default(), &mut byroredux_core::string::StringPool::new()).unwrap();
+    let imported = extract_bs_tri_shape(
+        &scene,
+        &shape,
+        &NiTransform::default(),
+        &mut byroredux_core::string::StringPool::new(),
+    )
+    .unwrap();
     assert_eq!(imported.material_kind, 6);
     assert_eq!(
         imported.shader_type_fields.hair_tint_color,
@@ -156,7 +167,13 @@ fn bs_tri_shape_captures_eye_envmap_centers() {
         },
     )));
     let shape = renderable_shape(0);
-    let imported = extract_bs_tri_shape(&scene, &shape, &NiTransform::default(), &mut byroredux_core::string::StringPool::new()).unwrap();
+    let imported = extract_bs_tri_shape(
+        &scene,
+        &shape,
+        &NiTransform::default(),
+        &mut byroredux_core::string::StringPool::new(),
+    )
+    .unwrap();
     assert_eq!(imported.shader_type_fields.eye_cubemap_scale, Some(1.5));
     assert_eq!(
         imported.shader_type_fields.eye_left_reflection_center,
@@ -180,7 +197,13 @@ fn bs_tri_shape_fo76_skin_tint_splits_rgba() {
         },
     )));
     let shape = renderable_shape(0);
-    let imported = extract_bs_tri_shape(&scene, &shape, &NiTransform::default(), &mut byroredux_core::string::StringPool::new()).unwrap();
+    let imported = extract_bs_tri_shape(
+        &scene,
+        &shape,
+        &NiTransform::default(),
+        &mut byroredux_core::string::StringPool::new(),
+    )
+    .unwrap();
     assert_eq!(
         imported.shader_type_fields.skin_tint_color,
         Some([0.9, 0.7, 0.55])
@@ -198,7 +221,13 @@ fn bs_tri_shape_environment_map_routes_scale_not_fields() {
         ShaderTypeData::EnvironmentMap { env_map_scale: 2.5 },
     )));
     let shape = renderable_shape(0);
-    let imported = extract_bs_tri_shape(&scene, &shape, &NiTransform::default(), &mut byroredux_core::string::StringPool::new()).unwrap();
+    let imported = extract_bs_tri_shape(
+        &scene,
+        &shape,
+        &NiTransform::default(),
+        &mut byroredux_core::string::StringPool::new(),
+    )
+    .unwrap();
     assert_eq!(imported.env_map_scale, 2.5);
     assert_eq!(
         imported.shader_type_fields,
@@ -211,7 +240,13 @@ fn bs_tri_shape_without_shader_has_default_fields() {
     let scene = NifScene::default();
     let mut shape = renderable_shape(0);
     shape.shader_property_ref = BlockRef::NULL;
-    let imported = extract_bs_tri_shape(&scene, &shape, &NiTransform::default(), &mut byroredux_core::string::StringPool::new()).unwrap();
+    let imported = extract_bs_tri_shape(
+        &scene,
+        &shape,
+        &NiTransform::default(),
+        &mut byroredux_core::string::StringPool::new(),
+    )
+    .unwrap();
     assert_eq!(imported.material_kind, 0);
     assert_eq!(
         imported.shader_type_fields,

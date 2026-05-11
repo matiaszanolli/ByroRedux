@@ -227,7 +227,9 @@ impl Stats {
         println!();
         if self.drift_histogram.is_empty() {
             println!("─── Drift histogram ──────────────────────────────────────────");
-            println!("  No drift detected (every block parser consumed exactly its declared block_size)");
+            println!(
+                "  No drift detected (every block parser consumed exactly its declared block_size)"
+            );
             return;
         }
 
@@ -252,8 +254,7 @@ impl Stats {
         for (name, total, per_type) in by_total.iter().take(limit) {
             // Show drifts ordered by |drift| (worst first) so a +20
             // outlier appears ahead of the common +1 / -1 noise.
-            let mut entries: Vec<(i64, u64)> =
-                per_type.iter().map(|(&d, &c)| (d, c)).collect();
+            let mut entries: Vec<(i64, u64)> = per_type.iter().map(|(&d, &c)| (d, c)).collect();
             entries.sort_by(|a, b| b.0.abs().cmp(&a.0.abs()).then_with(|| a.0.cmp(&b.0)));
             let dist = entries
                 .iter()
@@ -349,8 +350,10 @@ impl Stats {
             }
 
             if !unknown_only {
-                let filtered: Vec<&(&String, &BlockCounts)> =
-                    sorted.iter().filter(|(_, c)| c.total() >= min_count).collect();
+                let filtered: Vec<&(&String, &BlockCounts)> = sorted
+                    .iter()
+                    .filter(|(_, c)| c.total() >= min_count)
+                    .collect();
                 let header = if show_all {
                     "─── Block type histogram (full) ────────────────────────────────"
                 } else {
@@ -584,7 +587,9 @@ fn main() {
                 eprintln!("  --tsv              emit machine-readable per-type histogram");
                 eprintln!("  --unknown-only     human summary: skip fully-parsed types");
                 eprintln!("  --all              uncap top-20 unparsed/histogram tables (#601)");
-                eprintln!("  --drift-histogram  emit only per-block-type stream-drift table (#939)");
+                eprintln!(
+                    "  --drift-histogram  emit only per-block-type stream-drift table (#939)"
+                );
                 eprintln!("  --min-count N      trim entries with total < N");
                 std::process::exit(0);
             }
@@ -602,9 +607,7 @@ fn main() {
         }
     }
     let Some(path_arg) = path_arg else {
-        eprintln!(
-            "usage: nif_stats <path> [--tsv] [--unknown-only] [--all] [--min-count N]"
-        );
+        eprintln!("usage: nif_stats <path> [--tsv] [--unknown-only] [--all] [--min-count N]");
         eprintln!("  <path> may be a .nif file, a directory, a .bsa, or a .ba2 archive");
         std::process::exit(2);
     };

@@ -453,7 +453,13 @@ impl SvgfPipeline {
         });
 
         // ── 7. Write descriptor sets ──────────────────────────────────
-        partial.write_descriptor_sets(device, raw_indirect_views, motion_views, mesh_id_views, normal_views);
+        partial.write_descriptor_sets(
+            device,
+            raw_indirect_views,
+            motion_views,
+            mesh_id_views,
+            normal_views,
+        );
 
         log::info!("SVGF pipeline created: {}x{}", width, height);
         Ok(partial)
@@ -933,7 +939,13 @@ impl SvgfPipeline {
             return result;
         }
 
-        self.write_descriptor_sets(device, raw_indirect_views, motion_views, mesh_id_views, normal_views);
+        self.write_descriptor_sets(
+            device,
+            raw_indirect_views,
+            motion_views,
+            mesh_id_views,
+            normal_views,
+        );
         Ok(())
     }
 
@@ -1077,7 +1089,11 @@ mod tests {
                 "frame {frame} of {N}-frame recovery: expected α={SVGF_ALPHA_RECOVERY}, got {a_color}",
             );
             assert!((a_moments - SVGF_ALPHA_RECOVERY).abs() < 1e-6);
-            assert_eq!(next, N - 1 - frame, "counter must decrement by 1 per dispatch");
+            assert_eq!(
+                next,
+                N - 1 - frame,
+                "counter must decrement by 1 per dispatch"
+            );
             counter = next;
         }
         // Frame N+1 — recovery exhausted, back to steady-state.

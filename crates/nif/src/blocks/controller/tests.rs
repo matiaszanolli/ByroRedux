@@ -602,12 +602,9 @@ fn bs_lag_bone_controller_dispatches_via_parse_block() {
     data.extend_from_slice(&400.0f32.to_le_bytes());
 
     let mut stream = NifStream::new(&data, &header);
-    let block = crate::blocks::parse_block(
-        "BSLagBoneController",
-        &mut stream,
-        Some(data.len() as u32),
-    )
-    .unwrap();
+    let block =
+        crate::blocks::parse_block("BSLagBoneController", &mut stream, Some(data.len() as u32))
+            .unwrap();
     assert_eq!(block.block_type_name(), "BSLagBoneController");
     let blbc = block
         .as_any()

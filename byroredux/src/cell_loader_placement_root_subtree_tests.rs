@@ -38,11 +38,7 @@ fn subtree_walker_finds_named_meshes_under_placement_root() {
     let placement_root = world.spawn();
     world.insert(
         placement_root,
-        Transform::new(
-            Vec3::new(100.0, 50.0, -25.0),
-            Quat::IDENTITY,
-            1.5,
-        ),
+        Transform::new(Vec3::new(100.0, 50.0, -25.0), Quat::IDENTITY, 1.5),
     );
 
     // Three mesh children with distinct names — represents a NIF

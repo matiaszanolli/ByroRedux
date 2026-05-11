@@ -297,9 +297,7 @@ impl VolumetricsPipeline {
             "volumetrics",
             &[],
         )
-        .expect(
-            "volumetrics descriptor layout drifted against volumetrics_inject.comp (see #427)",
-        );
+        .expect("volumetrics descriptor layout drifted against volumetrics_inject.comp (see #427)");
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(

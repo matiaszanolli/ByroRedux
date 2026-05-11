@@ -149,7 +149,10 @@ fn light_radius_or_default_handles_nan() {
 
 #[test]
 fn plugin_basename_lc_strips_path_and_lowercases() {
-    assert_eq!(super::load_order::plugin_basename_lc("Skyrim.esm"), "skyrim.esm");
+    assert_eq!(
+        super::load_order::plugin_basename_lc("Skyrim.esm"),
+        "skyrim.esm"
+    );
     assert_eq!(
         super::load_order::plugin_basename_lc("/some/abs/Path/Dawnguard.esm"),
         "dawnguard.esm"

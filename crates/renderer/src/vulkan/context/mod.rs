@@ -433,7 +433,7 @@ impl DrawCommand {
         h.write_u32(self.skin_tint_rgba[0].to_bits()); // R
         h.write_u32(self.skin_tint_rgba[1].to_bits()); // G
         h.write_u32(self.skin_tint_rgba[2].to_bits()); // B
-        // hair tint RGB + multi_layer_envmap_strength
+                                                       // hair tint RGB + multi_layer_envmap_strength
         h.write_u32(self.hair_tint_rgb[0].to_bits());
         h.write_u32(self.hair_tint_rgb[1].to_bits());
         h.write_u32(self.hair_tint_rgb[2].to_bits());
@@ -453,12 +453,12 @@ impl DrawCommand {
         h.write_u32(self.multi_layer_inner_scale[0].to_bits());
         h.write_u32(self.multi_layer_inner_scale[1].to_bits());
         h.write_u32(self.sparkle_rgba[0].to_bits()); // sparkle_r
-        // sparkle GB + sparkle_intensity + falloff_start_angle
+                                                     // sparkle GB + sparkle_intensity + falloff_start_angle
         h.write_u32(self.sparkle_rgba[1].to_bits()); // sparkle_g
         h.write_u32(self.sparkle_rgba[2].to_bits()); // sparkle_b
         h.write_u32(self.sparkle_rgba[3].to_bits()); // intensity
         h.write_u32(self.effect_falloff[0].to_bits()); // falloff_start_angle
-        // falloff_stop + opacities + soft_falloff_depth
+                                                       // falloff_stop + opacities + soft_falloff_depth
         h.write_u32(self.effect_falloff[1].to_bits()); // falloff_stop_angle
         h.write_u32(self.effect_falloff[2].to_bits()); // start_opacity
         h.write_u32(self.effect_falloff[3].to_bits()); // stop_opacity
@@ -629,7 +629,10 @@ fn parse_render_debug_flags_env() -> u32 {
             v
         }
         None => {
-            log::warn!("BYROREDUX_RENDER_DEBUG = {:?} could not be parsed as u32; ignoring", s);
+            log::warn!(
+                "BYROREDUX_RENDER_DEBUG = {:?} could not be parsed as u32; ignoring",
+                s
+            );
             0
         }
     }
@@ -1113,8 +1116,7 @@ impl VulkanContext {
         // vendorID / deviceID / pipelineCacheUUID before the bytes
         // reach the driver — defense in depth against tampered or
         // post-upgrade-stale files (SAFE-11 / #91).
-        let pipeline_cache =
-            load_or_create_pipeline_cache(&vk_instance, physical_device, &device)?;
+        let pipeline_cache = load_or_create_pipeline_cache(&vk_instance, physical_device, &device)?;
 
         // 12c. Cluster cull compute pipeline (light culling)
         let cluster_cull = match ClusterCullPipeline::new(
@@ -1710,11 +1712,7 @@ impl VulkanContext {
     /// Pipelines created here are tied to the current render pass and
     /// must be destroyed and re-created on swapchain recreate
     /// ([`recreate_swapchain`](Self::recreate_swapchain)).
-    pub fn get_or_create_blend_pipeline(
-        &mut self,
-        src: u8,
-        dst: u8,
-    ) -> Result<vk::Pipeline> {
+    pub fn get_or_create_blend_pipeline(&mut self, src: u8, dst: u8) -> Result<vk::Pipeline> {
         let key = (src, dst);
         if let Some(&pipe) = self.blend_pipeline_cache.get(&key) {
             return Ok(pipe);
@@ -2020,8 +2018,8 @@ use helpers::{
 
 #[cfg(test)]
 mod draw_command_tests {
-    use super::*;
     use super::super::material::{hash_gpu_material_fields, MaterialTable};
+    use super::*;
 
     /// Build a fully-populated `DrawCommand` with distinct, non-default
     /// values for every material-relevant field. Used by the lockstep

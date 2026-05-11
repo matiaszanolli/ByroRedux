@@ -301,12 +301,29 @@ fn pre_parse_cell(
     cached_keys: &HashSet<String>,
 ) -> LoadCellPayload {
     let mut parsed: HashMap<String, Option<PartialNifImport>> = HashMap::new();
-    let cells_map = match wctx.record_index.cells.exterior_cells.get(&wctx.worldspace_key) {
+    let cells_map = match wctx
+        .record_index
+        .cells
+        .exterior_cells
+        .get(&wctx.worldspace_key)
+    {
         Some(m) => m,
-        None => return LoadCellPayload { gx, gy, generation, parsed },
+        None => {
+            return LoadCellPayload {
+                gx,
+                gy,
+                generation,
+                parsed,
+            }
+        }
     };
     let Some(cell) = cells_map.get(&(gx, gy)) else {
-        return LoadCellPayload { gx, gy, generation, parsed };
+        return LoadCellPayload {
+            gx,
+            gy,
+            generation,
+            parsed,
+        };
     };
 
     // Unique lowercased model paths in this cell. Reuse across
@@ -380,8 +397,7 @@ fn pre_parse_cell(
                 };
                 let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
                 let lights = byroredux_nif::import::import_nif_lights(&scene);
-                let particle_emitters =
-                    byroredux_nif::import::import_nif_particle_emitters(&scene);
+                let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
                 let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
                 Some(PartialNifImport {
                     scene,

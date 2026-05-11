@@ -1623,10 +1623,7 @@ mod tests {
         // extends to 152 — the stub captures whatever DNAM length
         // the file ships with.
         let dnam: Vec<u8> = (0u8..56).collect();
-        let subs = vec![
-            sub(b"EDID", b"InteriorWarmDim\0"),
-            sub(b"DNAM", &dnam),
-        ];
+        let subs = vec![sub(b"EDID", b"InteriorWarmDim\0"), sub(b"DNAM", &dnam)];
         let imgs = parse_imgs(0x000A_1234, &subs);
         assert_eq!(imgs.form_id, 0x000A_1234);
         assert_eq!(imgs.editor_id, "InteriorWarmDim");
@@ -1830,10 +1827,7 @@ mod tests {
         // Author-malformed ENIT (< 16 bytes) must not panic and must
         // leave scalars at their defaults so the surrounding records
         // still load.
-        let subs = vec![
-            sub(b"EDID", b"BrokenEnchant\0"),
-            sub(b"ENIT", &[0u8; 8]),
-        ];
+        let subs = vec![sub(b"EDID", b"BrokenEnchant\0"), sub(b"ENIT", &[0u8; 8])];
         let e = parse_ench(0xDEAD_BEEF, &subs);
         assert_eq!(e.editor_id, "BrokenEnchant");
         assert_eq!(e.enchantment_type, 0);
@@ -2012,7 +2006,10 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"Mod5mmRoundHollowPoint\0"),
             sub(b"FULL", b"Hollow Point\0"),
-            sub(b"DESC", b"Increased damage at the cost of reduced DT effectiveness.\0"),
+            sub(
+                b"DESC",
+                b"Increased damage at the cost of reduced DT effectiveness.\0",
+            ),
             sub(b"DATA", &data),
         ];
         let m = parse_imod(0x0014_5824, &subs);

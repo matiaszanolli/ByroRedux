@@ -85,11 +85,7 @@ fn oblivion_meshes_bsa_v103_extracts_nif_with_gamebryo_magic() {
     }
 
     let archive = BsaArchive::open(&archive_path).expect("open Oblivion - Meshes.bsa");
-    assert_eq!(
-        archive.version(),
-        103,
-        "Oblivion - Meshes.bsa must be v103"
-    );
+    assert_eq!(archive.version(), 103, "Oblivion - Meshes.bsa must be v103");
     assert!(
         archive.file_count() > 1000,
         "Oblivion meshes BSA ships ~20k entries; got {}",

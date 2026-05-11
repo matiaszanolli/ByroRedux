@@ -56,9 +56,7 @@ use interpolator::{
     NiTransformData, NiTransformInterpolator, NiUVData,
 };
 use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB, BsMultiBoundSphere};
-use node::{
-    BsDistantObjectInstancedNode, BsOrderedNode, BsValueNode, BsWeakReferenceNode, NiNode,
-};
+use node::{BsDistantObjectInstancedNode, BsOrderedNode, BsValueNode, BsWeakReferenceNode, NiNode};
 use properties::{
     NiAlphaProperty, NiFlagProperty, NiFogProperty, NiMaterialProperty, NiStencilProperty,
     NiStringPalette, NiTexturingProperty, NiVertexColorProperty, NiZBufferProperty,

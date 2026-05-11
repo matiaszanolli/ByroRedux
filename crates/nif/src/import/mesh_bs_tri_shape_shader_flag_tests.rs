@@ -125,8 +125,13 @@ fn import_with_pool(
     shape: &BsTriShape,
 ) -> (ImportedMesh, byroredux_core::string::StringPool) {
     let mut pool = byroredux_core::string::StringPool::new();
-    let mesh = extract_bs_tri_shape(scene, shape, &crate::types::NiTransform::default(), &mut pool)
-        .expect("renderable shape must produce ImportedMesh");
+    let mesh = extract_bs_tri_shape(
+        scene,
+        shape,
+        &crate::types::NiTransform::default(),
+        &mut pool,
+    )
+    .expect("renderable shape must produce ImportedMesh");
     (mesh, pool)
 }
 
@@ -356,9 +361,21 @@ fn empty_inline_tangents_falls_back_to_synthesize() {
     // matches the triangle in the XY plane (vertex layout from
     // `renderable_shape`: (0,0,0), (1,0,0), (0,1,0)).
     shape.normals = vec![
-        NiPoint3 { x: 0.0, y: 0.0, z: 1.0 },
-        NiPoint3 { x: 0.0, y: 0.0, z: 1.0 },
-        NiPoint3 { x: 0.0, y: 0.0, z: 1.0 },
+        NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        },
+        NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        },
+        NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        },
     ];
 
     let mesh = import(&scene, &shape);

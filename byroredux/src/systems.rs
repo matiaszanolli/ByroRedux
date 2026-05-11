@@ -15,9 +15,9 @@ use byroredux_core::ecs::{
     World, WorldBound,
 };
 use byroredux_core::math::{Quat, Vec3};
+use byroredux_core::string::FixedString;
 #[cfg(test)]
 use byroredux_core::string::StringPool;
-use byroredux_core::string::FixedString;
 
 use crate::anim_convert::build_subtree_name_map;
 use crate::components::{
@@ -1771,8 +1771,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // Wrap scroll at 1.0 so it never grows unboundedly; sampler
     // REPEAT makes the wrap invisible.
     if let Some(mut clouds) = world.try_resource_mut::<CloudSimState>() {
-        clouds.cloud_scroll[0] =
-            (clouds.cloud_scroll[0] + cloud_scroll_rate * dt).rem_euclid(1.0);
+        clouds.cloud_scroll[0] = (clouds.cloud_scroll[0] + cloud_scroll_rate * dt).rem_euclid(1.0);
         clouds.cloud_scroll[1] =
             (clouds.cloud_scroll[1] + cloud_scroll_rate * 0.3 * dt).rem_euclid(1.0);
         // Layer 1 drifts in the opposite U direction at 1.35× speed.
@@ -1990,8 +1989,7 @@ mod bound_propagation_tests {
         world.insert(parent, GlobalTransform::IDENTITY);
         world.insert(parent, WorldBound::ZERO);
 
-        let leaf =
-            spawn_leaf(&mut world, Vec3::new(-10.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
+        let leaf = spawn_leaf(&mut world, Vec3::new(-10.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
         world.insert(leaf, Parent(parent));
         world.insert(parent, Children(vec![leaf]));
 
@@ -2003,8 +2001,7 @@ mod bound_propagation_tests {
         // 1) Spawn a NEW top-level root (unrelated). Cache key
         //    (GlobalTransform::len) bumps; rescan must include it
         //    even though `parent` already had an entry.
-        let new_root =
-            spawn_leaf(&mut world, Vec3::new(50.0, 0.0, 0.0), 1.0, Vec3::ZERO, 2.0);
+        let new_root = spawn_leaf(&mut world, Vec3::new(50.0, 0.0, 0.0), 1.0, Vec3::ZERO, 2.0);
         sys(&world, 0.016);
         let new_root_wb = *world.query::<WorldBound>().unwrap().get(new_root).unwrap();
         assert!(
@@ -2015,8 +2012,7 @@ mod bound_propagation_tests {
 
         // 2) Add a SECOND child to `parent` — Parent::len bumps. The
         //    parent's WorldBound must re-fold to enclose both leaves.
-        let leaf2 =
-            spawn_leaf(&mut world, Vec3::new(10.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
+        let leaf2 = spawn_leaf(&mut world, Vec3::new(10.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
         world.insert(leaf2, Parent(parent));
         world.insert(parent, Children(vec![leaf, leaf2]));
         sys(&world, 0.016);
@@ -2058,8 +2054,7 @@ mod bound_propagation_tests {
         world.insert(parent, GlobalTransform::IDENTITY);
         world.insert(parent, WorldBound::ZERO);
 
-        let leaf =
-            spawn_leaf(&mut world, Vec3::new(-10.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
+        let leaf = spawn_leaf(&mut world, Vec3::new(-10.0, 0.0, 0.0), 1.0, Vec3::ZERO, 1.0);
         world.insert(leaf, Parent(parent));
         world.insert(parent, Children(vec![leaf]));
 
@@ -2246,7 +2241,10 @@ mod weather_tod_keys_tests {
                 break;
             }
         }
-        assert_eq!(slot_a, TOD_SUNRISE, "slot_a at FO3 hour 5.7 must be SUNRISE");
+        assert_eq!(
+            slot_a, TOD_SUNRISE,
+            "slot_a at FO3 hour 5.7 must be SUNRISE"
+        );
         assert_eq!(slot_b, TOD_DAY, "slot_b at FO3 hour 5.7 must be DAY");
         let na = tod_slot_night_factor(slot_a);
         let nb = tod_slot_night_factor(slot_b);
@@ -2575,7 +2573,7 @@ mod weather_interior_gate_tests {
         });
 
         world.insert_resource(GameTimeRes {
-            hour: 12.0, // mid-day so the TOD slot is unambiguous
+            hour: 12.0,      // mid-day so the TOD slot is unambiguous
             time_scale: 0.0, // freeze the clock so dt advances are no-ops
         });
 
@@ -3066,9 +3064,7 @@ mod animation_system_e2e_tests {
         let data_dir = std::env::var("BYROREDUX_FNV_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
-                PathBuf::from(
-                    "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
-                )
+                PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data")
             });
         if !data_dir.is_dir() {
             eprintln!("skipping: FNV data dir not found at {:?}", data_dir);
@@ -3089,8 +3085,7 @@ mod animation_system_e2e_tests {
         let mut nif_clips = byroredux_nif::anim::import_kf(&nif_scene);
         assert!(!nif_clips.is_empty(), "import_kf yields a clip");
         let nif_clip = nif_clips.remove(0);
-        let channel_names: Vec<std::sync::Arc<str>> =
-            nif_clip.channels.keys().cloned().collect();
+        let channel_names: Vec<std::sync::Arc<str>> = nif_clip.channels.keys().cloned().collect();
         eprintln!(
             "real mtidle: '{}' duration={:.2}s freq={} channels={}",
             nif_clip.name,
@@ -3254,10 +3249,7 @@ mod animation_system_e2e_tests {
         world.insert(body_clone, Transform::IDENTITY);
         world.insert(body_clone, Name(bone_sym));
         world.insert(body_clone, Parent(placement_root));
-        world.insert(
-            placement_root,
-            Children(vec![skel_root, body_clone]),
-        );
+        world.insert(placement_root, Children(vec![skel_root, body_clone]));
 
         let handle = {
             let clip = {
@@ -3283,8 +3275,7 @@ mod animation_system_e2e_tests {
             skel_xf.rotation
         );
         assert!(
-            (body_xf.rotation.y).abs() < 1e-6
-                && (body_xf.rotation.w - 1.0).abs() < 1e-6,
+            (body_xf.rotation.y).abs() < 1e-6 && (body_xf.rotation.w - 1.0).abs() < 1e-6,
             "body clone (outside skel_root subtree) must stay at identity \
              — got {:?}; subtree scoping is broken",
             body_xf.rotation
@@ -3312,7 +3303,14 @@ mod footstep_system_tests {
         let sound = Arc::new(Sound {
             sample_rate: 22_050,
             frames: Arc::from(
-                vec![Frame { left: 0.0, right: 0.0 }; 50].into_boxed_slice(),
+                vec![
+                    Frame {
+                        left: 0.0,
+                        right: 0.0
+                    };
+                    50
+                ]
+                .into_boxed_slice(),
             ),
             settings: SoundSettings::default(),
             slice: None,

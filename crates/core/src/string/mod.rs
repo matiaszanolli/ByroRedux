@@ -196,7 +196,10 @@ mod tests {
             pool.resolve(sym_boundary).map(|s| s.len()),
             Some(LOWERCASE_STACK_BUF)
         );
-        assert_eq!(pool.resolve(sym_boundary).unwrap().chars().next(), Some('a'));
+        assert_eq!(
+            pool.resolve(sym_boundary).unwrap().chars().next(),
+            Some('a')
+        );
 
         // One byte over — fallback path.
         let over_boundary: String = "B".repeat(LOWERCASE_STACK_BUF + 1);

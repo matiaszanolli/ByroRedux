@@ -797,7 +797,10 @@ fn bs_lighting_shader_property_keeps_low_range_material_kind() {
 // positively misbinding FaceTint detail textures as cubemaps and
 // silently dropping slot 7 across the board.
 
-fn lighting_shader_with_type_and_texset(shader_type: u32, tex_set_idx: u32) -> BSLightingShaderProperty {
+fn lighting_shader_with_type_and_texset(
+    shader_type: u32,
+    tex_set_idx: u32,
+) -> BSLightingShaderProperty {
     BSLightingShaderProperty {
         shader_type,
         net: empty_net(),

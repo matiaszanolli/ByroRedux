@@ -137,11 +137,26 @@ fn parse_rate_starfield_all_meshes() {
         min_clean: f64,
     }
     let archives: &[ArchiveSpec] = &[
-        ArchiveSpec { name: "Starfield - Meshes01.ba2",    min_clean: 0.970 },
-        ArchiveSpec { name: "Starfield - Meshes02.ba2",    min_clean: 0.990 },
-        ArchiveSpec { name: "Starfield - MeshesPatch.ba2", min_clean: 0.970 },
-        ArchiveSpec { name: "Starfield - LODMeshes.ba2",   min_clean: 0.995 },
-        ArchiveSpec { name: "Starfield - FaceMeshes.ba2",  min_clean: 0.995 },
+        ArchiveSpec {
+            name: "Starfield - Meshes01.ba2",
+            min_clean: 0.970,
+        },
+        ArchiveSpec {
+            name: "Starfield - Meshes02.ba2",
+            min_clean: 0.990,
+        },
+        ArchiveSpec {
+            name: "Starfield - MeshesPatch.ba2",
+            min_clean: 0.970,
+        },
+        ArchiveSpec {
+            name: "Starfield - LODMeshes.ba2",
+            min_clean: 0.995,
+        },
+        ArchiveSpec {
+            name: "Starfield - FaceMeshes.ba2",
+            min_clean: 0.995,
+        },
     ];
 
     let Some(_data_dir) = common::game_data_dir(Game::Starfield) else {

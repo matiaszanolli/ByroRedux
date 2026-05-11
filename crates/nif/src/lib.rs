@@ -219,8 +219,10 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
     // that's consistently 1 byte short on every instance of a given
     // type, and only the magnitude (not the count) surfaces the
     // pattern. See #939.
-    let mut drift_histogram: std::collections::HashMap<String, std::collections::HashMap<i64, u32>> =
-        std::collections::HashMap::new();
+    let mut drift_histogram: std::collections::HashMap<
+        String,
+        std::collections::HashMap<i64, u32>,
+    > = std::collections::HashMap::new();
 
     // For Oblivion-era NIFs (no block_sizes table), track the consumed
     // byte count for each successfully parsed block type. When a block
@@ -644,11 +646,13 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
     // hot-path-friendly shape inside the loop; the BTreeMap gives
     // diff-friendly iteration order to downstream consumers
     // (`nif_stats --drift-histogram`, baseline regression tests). See #939.
-    let scene_drift_histogram: std::collections::BTreeMap<String, std::collections::BTreeMap<i64, u32>> =
-        drift_histogram
-            .into_iter()
-            .map(|(type_name, inner)| (type_name, inner.into_iter().collect()))
-            .collect();
+    let scene_drift_histogram: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<i64, u32>,
+    > = drift_histogram
+        .into_iter()
+        .map(|(type_name, inner)| (type_name, inner.into_iter().collect()))
+        .collect();
 
     let mut scene = NifScene {
         blocks,

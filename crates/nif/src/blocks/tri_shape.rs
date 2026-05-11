@@ -552,8 +552,7 @@ impl BsTriShape {
                 (vertex_size_bytes * num_vertices as usize) + (num_triangles as usize * 6);
             if (data_size as usize) != expected_data_size {
                 let derived_stride = if num_vertices > 0 {
-                    let payload = (data_size as usize)
-                        .saturating_sub(num_triangles as usize * 6);
+                    let payload = (data_size as usize).saturating_sub(num_triangles as usize * 6);
                     if payload % num_vertices as usize == 0 {
                         Some(payload / num_vertices as usize)
                     } else {
@@ -724,9 +723,13 @@ impl BsTriShape {
                 // bitangent triplet → our tangent slot, sign derived
                 // from on-disk tangent). All in raw Z-up; importer
                 // converts xyz → Y-up. Sign is rotation-invariant.
-                if let (Some(bx), Some(by), Some(bz), Some(t_xyz), Some(n)) =
-                    (bitangent_x, bitangent_y, bitangent_z, tangent_xyz, normal_xyz)
-                {
+                if let (Some(bx), Some(by), Some(bz), Some(t_xyz), Some(n)) = (
+                    bitangent_x,
+                    bitangent_y,
+                    bitangent_z,
+                    tangent_xyz,
+                    normal_xyz,
+                ) {
                     // sign(dot(B, cross(N, T))) — disambiguates left/
                     // right-handed TBN. Operates on raw Z-up values;
                     // determinant is preserved across the proper

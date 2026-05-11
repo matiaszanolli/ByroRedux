@@ -152,9 +152,9 @@ mod tests {
     fn parse_flst_truncated_lnam_drops_silently() {
         let subs = vec![
             edid("Truncated"),
-            lnam(0x0001_2345), // valid
+            lnam(0x0001_2345),             // valid
             mk_sub(b"LNAM", vec![0u8; 2]), // truncated → dropped
-            lnam(0x0001_2347), // valid
+            lnam(0x0001_2347),             // valid
         ];
         let rec = parse_flst(0x0001_2400, &subs);
         assert_eq!(rec.entries, vec![0x0001_2345, 0x0001_2347]);

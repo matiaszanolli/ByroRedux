@@ -55,13 +55,10 @@ pub use byroredux_plugin::equip::Gender;
 /// FNV first); the path is the same as FNV's by convention.
 pub fn humanoid_skeleton_path(game: GameKind, _gender: Gender) -> Option<&'static str> {
     match game {
-        GameKind::Oblivion | GameKind::Fallout3NV => {
-            Some(r"meshes\characters\_male\skeleton.nif")
+        GameKind::Oblivion | GameKind::Fallout3NV => Some(r"meshes\characters\_male\skeleton.nif"),
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => {
+            Some(r"meshes\actors\character\character assets\skeleton.nif")
         }
-        GameKind::Skyrim
-        | GameKind::Fallout4
-        | GameKind::Fallout76
-        | GameKind::Starfield => Some(r"meshes\actors\character\character assets\skeleton.nif"),
     }
 }
 
@@ -95,10 +92,7 @@ pub fn humanoid_body_paths(game: GameKind, _gender: Gender) -> &'static [&'stati
             r"meshes\characters\_male\lefthand.nif",
             r"meshes\characters\_male\righthand.nif",
         ],
-        GameKind::Skyrim
-        | GameKind::Fallout4
-        | GameKind::Fallout76
-        | GameKind::Starfield => &[],
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => &[],
     }
 }
 
@@ -223,8 +217,8 @@ pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
     let bytes = path.as_bytes();
     if bytes.len() >= 7 {
         let head = &bytes[..7];
-        let already = head.eq_ignore_ascii_case(b"meshes\\")
-            || head.eq_ignore_ascii_case(b"meshes/");
+        let already =
+            head.eq_ignore_ascii_case(b"meshes\\") || head.eq_ignore_ascii_case(b"meshes/");
         if already {
             return std::borrow::Cow::Borrowed(path);
         }
@@ -253,18 +247,12 @@ pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
 /// `chair_*`, `dlcanch*`, but no plain `idle.kf` base). Per-NPC
 /// overrides from IDLE form records and AI packages slot in on top
 /// once M42 / M47 land.
-pub fn humanoid_default_idle_kf_path(
-    game: GameKind,
-    _gender: Gender,
-) -> Option<&'static str> {
+pub fn humanoid_default_idle_kf_path(game: GameKind, _gender: Gender) -> Option<&'static str> {
     match game {
         GameKind::Oblivion | GameKind::Fallout3NV => {
             Some(r"meshes\characters\_male\locomotion\mtidle.kf")
         }
-        GameKind::Skyrim
-        | GameKind::Fallout4
-        | GameKind::Fallout76
-        | GameKind::Starfield => None,
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => None,
     }
 }
 
@@ -413,7 +401,9 @@ pub fn spawn_npc_entity(
         if body_covered && body_path.ends_with("upperbody.nif") {
             log::info!(
                 "NPC {:08X} ({}): equipped armor covers torso — skipping {}",
-                npc.form_id, npc.editor_id, body_path,
+                npc.form_id,
+                npc.editor_id,
+                body_path,
             );
             continue;
         }
@@ -515,29 +505,26 @@ pub fn spawn_npc_entity(
                 let egm_bytes = recipe
                     .and_then(|_| facegen_sidecar_path(head_path.as_ref(), "egm"))
                     .and_then(|p| tex_provider.extract_mesh(&p));
-                let egm_file = egm_bytes
-                    .as_ref()
-                    .and_then(|b| match byroredux_facegen::EgmFile::parse(b) {
-                        Ok(e) => Some(e),
-                        Err(err) => {
-                            log::debug!(
-                                "NPC {:08X}: EGM parse failed for head '{}': {}",
-                                npc.form_id,
-                                head_path,
-                                err,
-                            );
-                            None
-                        }
-                    });
-                let hook_state: Option<(
-                    &byroredux_facegen::EgmFile,
-                    [f32; 50],
-                    [f32; 30],
-                    u32,
-                )> = match (recipe, egm_file.as_ref()) {
-                    (Some(r), Some(egm)) => Some((egm, r.fggs, r.fgga, npc.form_id)),
-                    _ => None,
-                };
+                let egm_file =
+                    egm_bytes
+                        .as_ref()
+                        .and_then(|b| match byroredux_facegen::EgmFile::parse(b) {
+                            Ok(e) => Some(e),
+                            Err(err) => {
+                                log::debug!(
+                                    "NPC {:08X}: EGM parse failed for head '{}': {}",
+                                    npc.form_id,
+                                    head_path,
+                                    err,
+                                );
+                                None
+                            }
+                        });
+                let hook_state: Option<(&byroredux_facegen::EgmFile, [f32; 50], [f32; 30], u32)> =
+                    match (recipe, egm_file.as_ref()) {
+                        (Some(r), Some(egm)) => Some((egm, r.fggs, r.fgga, npc.form_id)),
+                        _ => None,
+                    };
                 let has_hook = hook_state.is_some();
                 let mut hook_state = hook_state;
                 let mut hook = |scene: &mut byroredux_nif::import::ImportedScene| {
@@ -581,11 +568,8 @@ pub fn spawn_npc_entity(
                             &egm.fggs_morphs,
                             &fggs,
                         );
-                        let after_asym = byroredux_facegen::apply_morphs(
-                            &after_sym,
-                            &egm.fgga_morphs,
-                            &fgga,
-                        );
+                        let after_asym =
+                            byroredux_facegen::apply_morphs(&after_sym, &egm.fgga_morphs, &fgga);
                         mesh.positions = after_asym;
                         deformed_meshes += 1;
                     }
@@ -600,9 +584,8 @@ pub fn spawn_npc_entity(
                         egm.fgga_morphs.len(),
                     );
                 };
-                let pre_spawn: Option<
-                    &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
-                > = if has_hook { Some(&mut hook) } else { None };
+                let pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)> =
+                    if has_hook { Some(&mut hook) } else { None };
                 // Same Phase 1b.x note as the body load — head
                 // skinning happens to render reasonably because the
                 // head only has 5 bones in a short chain, so whatever
@@ -1058,11 +1041,7 @@ pub fn spawn_prebaked_npc_entity(
             // until LVLI dispatch lands.
             continue;
         };
-        let ItemKind::Armor {
-            biped_flags,
-            ..
-        } = item.kind
-        else {
+        let ItemKind::Armor { biped_flags, .. } = item.kind else {
             continue;
         };
 
@@ -1195,8 +1174,7 @@ mod tests {
         assert_eq!(
             prebaked_facegen_nif_path("Skyrim.esm", 0x00013BBE),
             Some(
-                r"meshes\actors\character\facegendata\facegeom\skyrim.esm\00013bbe.nif"
-                    .to_string(),
+                r"meshes\actors\character\facegendata\facegeom\skyrim.esm\00013bbe.nif".to_string(),
             ),
         );
         // Plugin name is lower-cased; FormID rendered as 8 lowercase hex.

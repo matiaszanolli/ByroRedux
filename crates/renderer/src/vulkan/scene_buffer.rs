@@ -221,7 +221,7 @@ pub struct GpuInstance {
     /// Phase 6 dropped the redundant per-instance copies that used to
     /// inflate this struct from 112 B (now) to 400 B.
     pub material_id: u32, // 4 B, offset 88
-    pub _pad_id0: f32,    // 4 B, offset 92
+    pub _pad_id0: f32,        // 4 B, offset 92
     /// Pre-computed average albedo for GI bounce approximation.
     /// Avoids 11 divergent memory ops per GI ray hit by replacing
     /// full UV lookup + texture sample with a single SSBO read.
@@ -231,10 +231,10 @@ pub struct GpuInstance {
     /// a separate `MaterialBuffer` binding to the caustic compute
     /// pipeline — deferred to a follow-up R1 cleanup.
     pub avg_albedo_r: f32, // 4 B, offset 96
-    pub avg_albedo_g: f32, // 4 B, offset 100
-    pub avg_albedo_b: f32, // 4 B, offset 104
-    pub _pad_albedo: f32,  // 4 B, offset 108 → total 112
-                           // Struct is 112 bytes (7×16), 16-byte aligned for std430.
+    pub avg_albedo_g: f32,    // 4 B, offset 100
+    pub avg_albedo_b: f32,    // 4 B, offset 104
+    pub _pad_albedo: f32,     // 4 B, offset 108 → total 112
+                              // Struct is 112 bytes (7×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -467,8 +467,8 @@ impl SceneBuffers {
         let instance_buf_size =
             (std::mem::size_of::<GpuInstance>() * MAX_INSTANCES) as vk::DeviceSize;
         // Material SSBO: deduplicated `GpuMaterial` table (R1 Phase 4).
-        let material_buf_size = (std::mem::size_of::<super::material::GpuMaterial>()
-            * MAX_MATERIALS) as vk::DeviceSize;
+        let material_buf_size =
+            (std::mem::size_of::<super::material::GpuMaterial>() * MAX_MATERIALS) as vk::DeviceSize;
         // Indirect buffer: one VkDrawIndexedIndirectCommand (20 B) per batch. #309.
         let indirect_buf_size = (std::mem::size_of::<vk::DrawIndexedIndirectCommand>()
             * MAX_INDIRECT_DRAWS) as vk::DeviceSize;
@@ -1007,8 +1007,7 @@ impl SceneBuffers {
             return Ok(());
         }
 
-        let byte_size =
-            (std::mem::size_of::<[[f32; 4]; 4]>() * count) as vk::DeviceSize;
+        let byte_size = (std::mem::size_of::<[[f32; 4]; 4]>() * count) as vk::DeviceSize;
         let buf = &mut self.bone_staging_buffers[frame_index];
         let mapped = buf.mapped_slice_mut()?;
         // SAFETY: [[f32; 4]; 4] is #[repr(C)]-compatible with std430 mat4.
@@ -1046,7 +1045,12 @@ impl SceneBuffers {
     /// buffers used for first-sight skinned BLAS builds. The copy is
     /// idempotent: a redundant call on the main cmd buffer after the prime
     /// finished copies the same bytes again, which is harmless.
-    pub fn record_bone_copy(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame_index: usize) {
+    pub fn record_bone_copy(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame_index: usize,
+    ) {
         let byte_size = self.bone_upload_bytes[frame_index];
         if byte_size == 0 {
             return;
@@ -1099,8 +1103,7 @@ impl SceneBuffers {
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
     ) -> Result<()> {
-        let identity_bytes =
-            std::mem::size_of::<[[f32; 4]; 4]>() as vk::DeviceSize;
+        let identity_bytes = std::mem::size_of::<[[f32; 4]; 4]>() as vk::DeviceSize;
         super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
             for i in 0..MAX_FRAMES_IN_FLIGHT {
                 let copy = vk::BufferCopy {
@@ -1323,10 +1326,7 @@ impl SceneBuffers {
                 allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
             })
             .context("Failed to allocate terrain tile staging memory")?;
-        super::buffer::debug_assert_cpu_to_gpu_mapped(
-            &staging_alloc,
-            "terrain_tile_staging",
-        );
+        super::buffer::debug_assert_cpu_to_gpu_mapped(&staging_alloc, "terrain_tile_staging");
         unsafe {
             device
                 .bind_buffer_memory(
@@ -1646,9 +1646,8 @@ pub(super) fn hash_material_slice(materials: &[super::material::GpuMaterial]) ->
     // `GpuMaterial::as_bytes` doc at vulkan/material.rs:281-294).
     // The slice view is contiguous because `[T]` storage is too;
     // `byte_size` matches the slice's footprint exactly.
-    let bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(materials.as_ptr() as *const u8, byte_size)
-    };
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(materials.as_ptr() as *const u8, byte_size) };
     hasher.write(bytes);
     hasher.finish()
 }
@@ -1840,8 +1839,7 @@ mod gpu_instance_layout_tests {
                 // declarations — what's forbidden is reappearance on
                 // `struct GpuInstance` after Phase 6 dropped them.
                 let gi_start = src.find("struct GpuInstance");
-                let gi_end = gi_start
-                    .and_then(|s| src[s..].find('}').map(|e| s + e));
+                let gi_end = gi_start.and_then(|s| src[s..].find('}').map(|e| s + e));
                 if let (Some(s), Some(e)) = (gi_start, gi_end) {
                     let gi_block = &src[s..e];
                     assert!(
@@ -2045,8 +2043,8 @@ mod material_hash_tests {
     //!   3. Empty slice has its own deterministic hash (the `count
     //!      == 0` early-out returns before reaching the hash, but
     //!      the hash itself is still well-defined).
-    use super::hash_material_slice;
     use super::super::material::GpuMaterial;
+    use super::hash_material_slice;
 
     fn sample_material(seed: u32) -> GpuMaterial {
         let mut m = GpuMaterial::default();
@@ -2061,8 +2059,7 @@ mod material_hash_tests {
     /// state case the dirty-gate is designed to detect.
     #[test]
     fn identical_slices_hash_to_same_value() {
-        let mats: Vec<GpuMaterial> =
-            (0..16).map(sample_material).collect();
+        let mats: Vec<GpuMaterial> = (0..16).map(sample_material).collect();
         let h1 = hash_material_slice(&mats);
         let h2 = hash_material_slice(&mats);
         assert_eq!(
@@ -2077,8 +2074,7 @@ mod material_hash_tests {
     /// skip the upload and the GPU would render with stale data.
     #[test]
     fn single_field_change_changes_hash() {
-        let mut mats: Vec<GpuMaterial> =
-            (0..16).map(sample_material).collect();
+        let mut mats: Vec<GpuMaterial> = (0..16).map(sample_material).collect();
         let h_before = hash_material_slice(&mats);
         mats[7].material_flags ^= 1;
         let h_after = hash_material_slice(&mats);
@@ -2096,8 +2092,7 @@ mod material_hash_tests {
     /// upload.
     #[test]
     fn length_change_changes_hash() {
-        let mats: Vec<GpuMaterial> =
-            (0..16).map(sample_material).collect();
+        let mats: Vec<GpuMaterial> = (0..16).map(sample_material).collect();
         let mut grown = mats.clone();
         grown.push(GpuMaterial::default());
         assert_ne!(

@@ -60,13 +60,13 @@ fn stencil_active_property_round_trips_all_fields() {
         net: empty_net(),
         flags: 0,
         stencil_enabled: true,
-        stencil_function: 2,  // EQUAL
+        stencil_function: 2, // EQUAL
         stencil_ref: 0x42,
         stencil_mask: 0xFF,
-        fail_action: 0,    // KEEP
-        z_fail_action: 0,  // KEEP
-        pass_action: 2,    // REPLACE
-        draw_mode: 1,      // CCW (not two-sided)
+        fail_action: 0,   // KEEP
+        z_fail_action: 0, // KEEP
+        pass_action: 2,   // REPLACE
+        draw_mode: 1,     // CCW (not two-sided)
     };
     let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(stencil)];
     let scene = NifScene {

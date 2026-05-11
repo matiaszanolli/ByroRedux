@@ -548,10 +548,7 @@ impl ConsoleCommand for SkinDumpCommand {
             Err(_) => return CommandOutput::line("Usage: skin.dump <entity_id>"),
         };
         let Some(skin) = world.get::<SkinnedMesh>(entity) else {
-            return CommandOutput::line(format!(
-                "Entity {} has no SkinnedMesh component",
-                entity
-            ));
+            return CommandOutput::line(format!("Entity {} has no SkinnedMesh component", entity));
         };
         let lines = format_skin_dump(world, entity, &skin);
         CommandOutput::lines(lines)
@@ -576,7 +573,10 @@ fn format_skin_dump(world: &World, entity: u32, skin: &SkinnedMesh) -> Vec<Strin
         lines.push(format!(
             "  global_skin_transform: NON-IDENTITY (informational; not multiplied at runtime)"
         ));
-        lines.push(format!("    {}", format_mat4_row(&skin.global_skin_transform)));
+        lines.push(format!(
+            "    {}",
+            format_mat4_row(&skin.global_skin_transform)
+        ));
     } else {
         lines.push("  global_skin_transform: identity".to_string());
     }
@@ -585,11 +585,7 @@ fn format_skin_dump(world: &World, entity: u32, skin: &SkinnedMesh) -> Vec<Strin
         "  {:>4} {:>10} {:<24} {:<11} {:<11} {:<11}",
         "slot", "entity", "name", "world(T)", "bind_inv(T)", "palette(T)"
     ));
-    for (i, (maybe_bone, bind_inv)) in skin
-        .bones
-        .iter()
-        .zip(skin.bind_inverses.iter())
-        .enumerate()
+    for (i, (maybe_bone, bind_inv)) in skin.bones.iter().zip(skin.bind_inverses.iter()).enumerate()
     {
         let (entity_str, name_str, world_mat) = match maybe_bone {
             Some(bone_e) => {
@@ -609,13 +605,16 @@ fn format_skin_dump(world: &World, entity: u32, skin: &SkinnedMesh) -> Vec<Strin
             .map(|m| format_translation(&m))
             .unwrap_or_else(|| "(no GT)".to_string());
         let bind_t = format_translation(bind_inv);
-        let palette = world_mat
-            .map(|w| w * *bind_inv)
-            .unwrap_or(Mat4::IDENTITY);
+        let palette = world_mat.map(|w| w * *bind_inv).unwrap_or(Mat4::IDENTITY);
         let pal_t = format_translation(&palette);
         lines.push(format!(
             "  {:>4} {:>10} {:<24} {:<11} {:<11} {:<11}",
-            i, entity_str, truncate(&name_str, 24), world_t, bind_t, pal_t
+            i,
+            entity_str,
+            truncate(&name_str, 24),
+            world_t,
+            bind_t,
+            pal_t
         ));
         // Continuation lines: full matrices (one row of `world`,
         // `bind_inverse`, `palette`). Operators copy these into a
@@ -724,24 +723,16 @@ impl ConsoleCommand for LightDumpCommand {
                 ));
                 lines.push(format!(
                     "  directional_color  = [{:.3}, {:.3}, {:.3}]",
-                    lit.directional_color[0],
-                    lit.directional_color[1],
-                    lit.directional_color[2]
+                    lit.directional_color[0], lit.directional_color[1], lit.directional_color[2]
                 ));
                 lines.push(format!(
                     "  directional_dir    = [{:.3}, {:.3}, {:.3}]",
-                    lit.directional_dir[0],
-                    lit.directional_dir[1],
-                    lit.directional_dir[2]
+                    lit.directional_dir[0], lit.directional_dir[1], lit.directional_dir[2]
                 ));
                 lines.push(format!("  is_interior        = {}", lit.is_interior));
                 lines.push(format!(
                     "  fog                = color=[{:.2}, {:.2}, {:.2}] near={:.1} far={:.1}",
-                    lit.fog_color[0],
-                    lit.fog_color[1],
-                    lit.fog_color[2],
-                    lit.fog_near,
-                    lit.fog_far
+                    lit.fog_color[0], lit.fog_color[1], lit.fog_color[2], lit.fog_near, lit.fog_far
                 ));
                 // Extended XCLL — surface presence so the user can tell
                 // apart "engine fallback" / "LGTM template" / "explicit XCLL".
@@ -987,8 +978,16 @@ mod tests {
         let skin = SkinnedMesh::new(None, vec![None], vec![Mat4::IDENTITY]);
         let lines = format_skin_dump(&world, skin_entity, &skin);
         let dump = lines.join("\n");
-        assert!(dump.contains("(None)"), "unresolved entity missing: {}", dump);
-        assert!(dump.contains("(unresolved)"), "unresolved name missing: {}", dump);
+        assert!(
+            dump.contains("(None)"),
+            "unresolved entity missing: {}",
+            dump
+        );
+        assert!(
+            dump.contains("(unresolved)"),
+            "unresolved name missing: {}",
+            dump
+        );
     }
 
     #[test]

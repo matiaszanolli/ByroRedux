@@ -158,10 +158,7 @@ pub const SMALL_STATIC_RADIUS_UNITS: f32 = 50.0;
 /// `mesh.local_bound_radius * ref_scale` is the contract.
 ///
 /// [`RecordType`]: crate::ecs::components::RenderLayer
-pub fn escalate_small_static_to_clutter(
-    base: RenderLayer,
-    world_bound_radius: f32,
-) -> RenderLayer {
+pub fn escalate_small_static_to_clutter(base: RenderLayer, world_bound_radius: f32) -> RenderLayer {
     if matches!(base, RenderLayer::Architecture)
         && world_bound_radius > 0.0
         && world_bound_radius < SMALL_STATIC_RADIUS_UNITS
@@ -328,10 +325,8 @@ mod tests {
         // Exactly at the threshold must NOT escalate (strictly less).
         // Pinning the comparator so a future `>=` slip doesn't let
         // borderline architecture leak into Clutter.
-        let r = escalate_small_static_to_clutter(
-            RenderLayer::Architecture,
-            SMALL_STATIC_RADIUS_UNITS,
-        );
+        let r =
+            escalate_small_static_to_clutter(RenderLayer::Architecture, SMALL_STATIC_RADIUS_UNITS);
         assert_eq!(r, RenderLayer::Architecture);
     }
 

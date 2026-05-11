@@ -364,8 +364,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
                 // here, so any value outside 0..=127 lost its high byte
                 // (and signed values past -128 had the sign chopped).
                 if sub.data.len() >= 22 {
-                    record.disposition_base =
-                        i16::from_le_bytes([sub.data[20], sub.data[21]]);
+                    record.disposition_base = i16::from_le_bytes([sub.data[20], sub.data[21]]);
                 }
             }
             // VMAD presence-only flag — see `has_script` field doc.
@@ -474,8 +473,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             // `captures_runtime_facegen`, both keyed off `GameKind`
             // semantic predicates.
             b"PNAM" if captures_fo4_face && sub.data.len() >= 4 => {
-                face.head_parts
-                    .push(read_u32_at(&sub.data, 0).unwrap_or(0));
+                face.head_parts.push(read_u32_at(&sub.data, 0).unwrap_or(0));
             }
             _ => {}
         }
@@ -743,17 +741,29 @@ mod tests {
 
         let neg = parse_npc(
             0x700,
-            &[sub(b"EDID", b"Raider\0"), sub(b"ACBS", &acbs_with_disposition(-40))],
+            &[
+                sub(b"EDID", b"Raider\0"),
+                sub(b"ACBS", &acbs_with_disposition(-40)),
+            ],
             GameKind::Fallout3NV,
         );
-        assert_eq!(neg.disposition_base, -40, "negative disposition must keep its sign");
+        assert_eq!(
+            neg.disposition_base, -40,
+            "negative disposition must keep its sign"
+        );
 
         let high = parse_npc(
             0x701,
-            &[sub(b"EDID", b"Friendly\0"), sub(b"ACBS", &acbs_with_disposition(200))],
+            &[
+                sub(b"EDID", b"Friendly\0"),
+                sub(b"ACBS", &acbs_with_disposition(200)),
+            ],
             GameKind::Fallout3NV,
         );
-        assert_eq!(high.disposition_base, 200, "values > 127 must not lose the high byte");
+        assert_eq!(
+            high.disposition_base, 200,
+            "values > 127 must not lose the high byte"
+        );
     }
 
     #[test]

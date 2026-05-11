@@ -3044,10 +3044,10 @@ mod tests {
     #[test]
     fn evict_predicate_uses_static_bytes_not_total_post_920() {
         let budget: vk::DeviceSize = 1_000_000_000; // 1 GB
-        // Realistic post-M41 NPC-heavy scene:
-        // - Static interior-cell BLAS resident: 700 MB (under 90%).
-        // - 50 skinned NPCs at ~10 MB each: 500 MB skinned residency.
-        // - Total: 1200 MB (over budget!).
+                                                    // Realistic post-M41 NPC-heavy scene:
+                                                    // - Static interior-cell BLAS resident: 700 MB (under 90%).
+                                                    // - 50 skinned NPCs at ~10 MB each: 500 MB skinned residency.
+                                                    // - Total: 1200 MB (over budget!).
         let static_bytes: vk::DeviceSize = 700_000_000;
         let pending_static_bytes: vk::DeviceSize = 0;
         // Pre-#920 the caller passed (static + skinned). Verify that

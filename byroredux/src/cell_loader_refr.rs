@@ -156,9 +156,17 @@ impl RefrTextureOverlay {
                 Self::fill(&mut self.diffuse, Some(f.diffuse_texture.as_str()), pool);
                 Self::fill(&mut self.normal, Some(f.normal_texture.as_str()), pool);
                 Self::fill(&mut self.glow, Some(f.glow_texture.as_str()), pool);
-                Self::fill(&mut self.specular, Some(f.smooth_spec_texture.as_str()), pool);
+                Self::fill(
+                    &mut self.specular,
+                    Some(f.smooth_spec_texture.as_str()),
+                    pool,
+                );
                 Self::fill(&mut self.env, Some(f.envmap_texture.as_str()), pool);
-                Self::fill(&mut self.height, Some(f.displacement_texture.as_str()), pool);
+                Self::fill(
+                    &mut self.height,
+                    Some(f.displacement_texture.as_str()),
+                    pool,
+                );
             }
         } else if path.ends_with(".bgem") {
             let Some(bgem) = provider.resolve_bgem(&path) else {

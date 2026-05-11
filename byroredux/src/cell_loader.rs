@@ -24,12 +24,12 @@ use crate::components::{
     SkyParamsRes, TerrainTileSlot, TwoSided, WeatherDataRes, WeatherTransitionRes,
 };
 
-#[path = "cell_loader_refr.rs"]
-mod refr;
 #[path = "cell_loader_load_order.rs"]
 mod load_order;
 #[path = "cell_loader_nif_import_registry.rs"]
 mod nif_import_registry;
+#[path = "cell_loader_refr.rs"]
+mod refr;
 // Re-exports keep the existing `super::*` test imports working and let
 // the rest of `cell_loader` reach these items unqualified.
 pub(crate) use nif_import_registry::{CachedNifImport, NifImportRegistry};
@@ -71,10 +71,10 @@ pub(crate) fn pack_effect_shader_flags(
     }
     flags
 }
+use load_order::{parse_record_indexes_in_load_order, plugin_for_form_id};
 pub(crate) use refr::{
     build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements, RefrTextureOverlay,
 };
-use load_order::{parse_record_indexes_in_load_order, plugin_for_form_id};
 
 /// Result of loading a cell.
 #[allow(dead_code)]
@@ -970,12 +970,7 @@ fn load_references(
     // 2.x can add a per-gender cache if a future game variant ships
     // separate clips.
     let idle_clip_handle = if game.has_kf_animations() {
-        crate::npc_spawn::load_idle_clip(
-            world,
-            tex_provider,
-            game,
-            crate::npc_spawn::Gender::Male,
-        )
+        crate::npc_spawn::load_idle_clip(world, tex_provider, game, crate::npc_spawn::Gender::Male)
     } else {
         None
     };
@@ -1129,8 +1124,7 @@ fn load_references(
                     // mesh — same observable outcome as a missing
                     // FaceGen NIF, just diagnosable from the log.
                     let plugin =
-                        load_order::plugin_for_form_id(child_form_id, load_order)
-                            .unwrap_or("");
+                        load_order::plugin_for_form_id(child_form_id, load_order).unwrap_or("");
                     let spawned = crate::npc_spawn::spawn_prebaked_npc_entity(
                         world,
                         ctx,
@@ -1314,12 +1308,7 @@ fn load_references(
                                     world.resource_mut::<byroredux_core::string::StringPool>();
                                 if is_spt {
                                     let tree_record = record_index.trees.get(&child_form_id);
-                                    parse_and_import_spt(
-                                        &d,
-                                        &model_path,
-                                        tree_record,
-                                        &mut pool,
-                                    )
+                                    parse_and_import_spt(&d, &model_path, tree_record, &mut pool)
                                 } else {
                                     parse_and_import_nif(
                                         &d,
@@ -1354,12 +1343,10 @@ fn load_references(
                         if let Some(ref cached) = parsed {
                             if let Some(nif_clip) = cached.embedded_clip.as_ref() {
                                 let handle = {
-                                    let mut pool = world.resource_mut::<
-                                        byroredux_core::string::StringPool,
-                                    >();
-                                    let clip = crate::anim_convert::convert_nif_clip(
-                                        nif_clip, &mut pool,
-                                    );
+                                    let mut pool =
+                                        world.resource_mut::<byroredux_core::string::StringPool>();
+                                    let clip =
+                                        crate::anim_convert::convert_nif_clip(nif_clip, &mut pool);
                                     drop(pool);
                                     let mut clip_reg = world.resource_mut::<
                                         byroredux_core::animation::AnimationClipRegistry,
@@ -1385,14 +1372,11 @@ fn load_references(
             //   3. `None` — the cached NIF authored no controllers.
             // Subsequent REFRs of the same model in this same load
             // hit case (1) and never touch the registry write path.
-            let clip_handle = pending_clip_handles
-                .get(&cache_key)
-                .copied()
-                .or_else(|| {
-                    world
-                        .resource::<NifImportRegistry>()
-                        .clip_handle_for(&cache_key)
-                });
+            let clip_handle = pending_clip_handles.get(&cache_key).copied().or_else(|| {
+                world
+                    .resource::<NifImportRegistry>()
+                    .clip_handle_for(&cache_key)
+            });
 
             let count = spawn_placed_instances(
                 world,
@@ -1453,8 +1437,7 @@ fn load_references(
     // surfaced an evicted clip handle (#863). Drains the keyframe
     // arrays without invalidating live `clip_handle: u32` consumers.
     if !freed_clip_handles.is_empty() {
-        let mut clip_reg =
-            world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
+        let mut clip_reg = world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
         for h in freed_clip_handles {
             clip_reg.release(h);
         }
@@ -1491,7 +1474,10 @@ fn load_references(
             .collect::<Vec<_>>()
             .join(", ");
         let trunc = if (npc_spawned_sample.len() as u32) < npc_spawned {
-            format!(", … +{} more", npc_spawned - npc_spawned_sample.len() as u32)
+            format!(
+                ", … +{} more",
+                npc_spawned - npc_spawned_sample.len() as u32
+            )
         } else {
             String::new()
         };
@@ -1518,7 +1504,10 @@ fn load_references(
             .collect::<Vec<_>>()
             .join(", ");
         let trunc = if (npc_pending_sample.len() as u32) < npc_pending {
-            format!(", … +{} more", npc_pending - npc_pending_sample.len() as u32)
+            format!(
+                ", … +{} more",
+                npc_pending - npc_pending_sample.len() as u32
+            )
         } else {
             String::new()
         };
@@ -1611,9 +1600,9 @@ fn load_references(
             Ok(n) => log::info!(
                 "  Cell texture upload batch: {n}/{pending_uploads} DDS textures uploaded",
             ),
-            Err(e) => log::warn!(
-                "Cell texture upload batch failed ({pending_uploads} pending): {e}",
-            ),
+            Err(e) => {
+                log::warn!("Cell texture upload batch failed ({pending_uploads} pending): {e}",)
+            }
         }
     }
 
@@ -1671,11 +1660,8 @@ fn parse_and_import_nif(
         return None;
     }
 
-    let (mut meshes, collisions) = byroredux_nif::import::import_nif_with_collision_and_resolver(
-        &scene,
-        pool,
-        mesh_resolver,
-    );
+    let (mut meshes, collisions) =
+        byroredux_nif::import::import_nif_with_collision_and_resolver(&scene, pool, mesh_resolver);
     // FO4+ external material resolution (#493). Walk once at cache-fill
     // time so every REFR sharing this NIF sees the merged texture paths.
     // NIF fields take precedence; only empty slots are filled from the
@@ -1865,17 +1851,18 @@ pub(crate) fn finish_partial_import(
     // cache hits short-circuit — re-attempting a previously-failed
     // parse is also wasted, and the worker already filters those
     // out at request time.
-    if world.resource::<NifImportRegistry>().get(&cache_key).is_some() {
+    if world
+        .resource::<NifImportRegistry>()
+        .get(&cache_key)
+        .is_some()
+    {
         return;
     }
     // Editor markers — pre-warmed scene gets cached as `None` so future
     // placements skip silently. Matches the `parse_and_import_nif` skip
     // semantics.
     if partial.bsx & 0x20 != 0 {
-        log::debug!(
-            "[stream-drain] Skipping editor marker NIF '{}'",
-            model_path
-        );
+        log::debug!("[stream-drain] Skipping editor marker NIF '{}'", model_path);
         let freed = {
             let mut reg = world.resource_mut::<NifImportRegistry>();
             reg.insert(cache_key, None)
@@ -1903,7 +1890,11 @@ pub(crate) fn finish_partial_import(
 
     let (mut meshes, collisions) = {
         let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
-        byroredux_nif::import::import_nif_with_collision_and_resolver(&scene, &mut pool, mesh_resolver)
+        byroredux_nif::import::import_nif_with_collision_and_resolver(
+            &scene,
+            &mut pool,
+            mesh_resolver,
+        )
     };
     if let Some(provider) = mat_provider {
         let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
@@ -1918,8 +1909,7 @@ pub(crate) fn finish_partial_import(
             let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
             crate::anim_convert::convert_nif_clip(nif_clip, &mut pool)
         };
-        let mut clip_reg = world
-            .resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
+        let mut clip_reg = world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
         clip_reg.add(clip)
     });
 
@@ -1943,8 +1933,7 @@ pub(crate) fn finish_partial_import(
     // entries were just LRU-evicted (#863). No-op when
     // `BYRO_NIF_CACHE_MAX=0` (default unlimited mode).
     if !freed_clip_handles.is_empty() {
-        let mut clip_reg =
-            world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
+        let mut clip_reg = world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
         for h in freed_clip_handles {
             clip_reg.release(h);
         }
@@ -1994,7 +1983,11 @@ fn count_spawnable_nif_lights(nif_lights: &[byroredux_nif::import::ImportedLight
 /// `radius=0` becomes visible rather than silently invisible.
 #[inline]
 fn light_radius_or_default(radius: f32) -> f32 {
-    if radius > 0.0 { radius } else { 4096.0 }
+    if radius > 0.0 {
+        radius
+    } else {
+        4096.0
+    }
 }
 
 /// Spawn entities for every mesh / light / collision in a pre-parsed NIF
@@ -2056,10 +2049,7 @@ fn spawn_placed_instances(
     // propagation tick still sees the right placement (e.g. BLAS
     // build during `build_blas_batched` later in the function).
     let placement_root = world.spawn();
-    world.insert(
-        placement_root,
-        Transform::new(ref_pos, ref_rot, ref_scale),
-    );
+    world.insert(placement_root, Transform::new(ref_pos, ref_rot, ref_scale));
     world.insert(
         placement_root,
         GlobalTransform::new(ref_pos, ref_rot, ref_scale),
@@ -2151,27 +2141,27 @@ fn spawn_placed_instances(
         );
         let world_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
         let host = em.host_name.as_deref().unwrap_or("").to_ascii_lowercase();
-        let mut preset = if host.contains("spark") || host.contains("ember") || host.contains("cinder")
-        {
-            ParticleEmitter::embers()
-        } else if host.contains("torch")
-            || host.contains("fire")
-            || host.contains("flame")
-            || host.contains("brazier")
-            || host.contains("candle")
-        {
-            ParticleEmitter::torch_flame()
-        } else if host.contains("smoke") || host.contains("steam") || host.contains("ash") {
-            ParticleEmitter::smoke()
-        } else if host.contains("magic")
-            || host.contains("enchant")
-            || host.contains("sparkle")
-            || host.contains("glow")
-        {
-            ParticleEmitter::magic_sparkles()
-        } else {
-            ParticleEmitter::torch_flame()
-        };
+        let mut preset =
+            if host.contains("spark") || host.contains("ember") || host.contains("cinder") {
+                ParticleEmitter::embers()
+            } else if host.contains("torch")
+                || host.contains("fire")
+                || host.contains("flame")
+                || host.contains("brazier")
+                || host.contains("candle")
+            {
+                ParticleEmitter::torch_flame()
+            } else if host.contains("smoke") || host.contains("steam") || host.contains("ash") {
+                ParticleEmitter::smoke()
+            } else if host.contains("magic")
+                || host.contains("enchant")
+                || host.contains("sparkle")
+                || host.contains("glow")
+            {
+                ParticleEmitter::magic_sparkles()
+            } else {
+                ParticleEmitter::torch_flame()
+            };
         // #707 / FX-2 — override preset start/end colour from the
         // authored `NiPSysColorModifier -> NiColorData` keyframe stream
         // when the NIF carries one. See the parallel block in scene.rs
@@ -2283,8 +2273,7 @@ fn spawn_placed_instances(
                     resolve_to_owned(&pool, ov.and_then(|o| o.diffuse).or(mesh.texture_path));
                 let normal_map =
                     resolve_to_owned(&pool, ov.and_then(|o| o.normal).or(mesh.normal_map));
-                let glow_map =
-                    resolve_to_owned(&pool, ov.and_then(|o| o.glow).or(mesh.glow_map));
+                let glow_map = resolve_to_owned(&pool, ov.and_then(|o| o.glow).or(mesh.glow_map));
                 let gloss_map =
                     resolve_to_owned(&pool, ov.and_then(|o| o.specular).or(mesh.gloss_map));
                 let parallax_map =
@@ -2339,9 +2328,8 @@ fn spawn_placed_instances(
         // `mesh_cache_key` (terrain / single-NIF CLI view) the cache
         // is bypassed and we keep the legacy fresh-upload-per-call
         // shape.
-        let cache_hit_handle = mesh_cache_key.and_then(|key| {
-            ctx.mesh_registry.acquire_cached(key, sub_mesh_index_u32)
-        });
+        let cache_hit_handle = mesh_cache_key
+            .and_then(|key| ctx.mesh_registry.acquire_cached(key, sub_mesh_index_u32));
 
         let mesh_handle = if let Some(handle) = cache_hit_handle {
             // Cached: skip the CPU vertex-build, the GPU upload, AND
@@ -2584,13 +2572,15 @@ fn spawn_placed_instances(
                 effect_falloff: mesh
                     .effect_shader
                     .as_ref()
-                    .map(|es| byroredux_core::ecs::components::material::EffectFalloff {
-                        start_angle: es.falloff_start_angle,
-                        stop_angle: es.falloff_stop_angle,
-                        start_opacity: es.falloff_start_opacity,
-                        stop_opacity: es.falloff_stop_opacity,
-                        soft_falloff_depth: es.soft_falloff_depth,
-                    })
+                    .map(
+                        |es| byroredux_core::ecs::components::material::EffectFalloff {
+                            start_angle: es.falloff_start_angle,
+                            stop_angle: es.falloff_stop_angle,
+                            start_opacity: es.falloff_start_opacity,
+                            stop_opacity: es.falloff_stop_opacity,
+                            soft_falloff_depth: es.soft_falloff_depth,
+                        },
+                    )
                     .or_else(|| {
                         mesh.no_lighting_falloff.as_ref().map(|nl| {
                             byroredux_core::ecs::components::material::EffectFalloff {
@@ -2608,9 +2598,7 @@ fn spawn_placed_instances(
                 // per-bit re-encoding. Zero on the FO3/FNV
                 // `BSShaderNoLightingProperty` path (which shares the
                 // `effect_falloff` slot but has no SLSF1/SLSF2 bits).
-                effect_shader_flags: pack_effect_shader_flags(
-                    mesh.effect_shader.as_ref(),
-                ),
+                effect_shader_flags: pack_effect_shader_flags(mesh.effect_shader.as_ref()),
             },
         );
         // Load and attach normal map if the material specifies one.
@@ -2702,10 +2690,8 @@ fn spawn_placed_instances(
             // gets the Clutter bias before the decal gate sees it.
             // Decal escalation still wins for alpha-tested overlays
             // and NIF-flagged decals regardless of size.
-            let layer = escalate_small_static_to_clutter(
-                base_layer,
-                mesh.local_bound_radius * ref_scale,
-            );
+            let layer =
+                escalate_small_static_to_clutter(base_layer, mesh.local_bound_radius * ref_scale);
             let layer = render_layer_with_decal_escalation(layer, mesh.is_decal, mesh.alpha_test);
             world.insert(entity, layer);
         }
@@ -2752,8 +2738,7 @@ fn spawn_placed_instances(
     // imports of the same models animate correctly.
     if let Some(handle) = clip_handle {
         let player_entity = world.spawn();
-        let mut player =
-            byroredux_core::animation::AnimationPlayer::new(handle);
+        let mut player = byroredux_core::animation::AnimationPlayer::new(handle);
         player.root_entity = Some(placement_root);
         world.insert(player_entity, player);
     }

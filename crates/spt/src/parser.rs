@@ -100,7 +100,11 @@ pub fn parse_spt(bytes: &[u8]) -> io::Result<SptScene> {
 }
 
 /// Read the payload for a tag of a known [`SptTagKind`].
-fn read_payload(stream: &mut SptStream, kind: SptTagKind, tag_offset: usize) -> io::Result<SptValue> {
+fn read_payload(
+    stream: &mut SptStream,
+    kind: SptTagKind,
+    tag_offset: usize,
+) -> io::Result<SptValue> {
     Ok(match kind {
         SptTagKind::Bare => SptValue::Bare,
         SptTagKind::U8 => SptValue::U8(stream.read_u8()?),
@@ -126,7 +130,11 @@ fn read_payload(stream: &mut SptStream, kind: SptTagKind, tag_offset: usize) -> 
                 ));
             }
             let bytes = stream.read_bytes(total_bytes as usize)?.to_vec();
-            SptValue::ArrayBytes { stride, count, bytes }
+            SptValue::ArrayBytes {
+                stride,
+                count,
+                bytes,
+            }
         }
         SptTagKind::Unknown => {
             // The walker dispatches on `Unknown` before reaching
@@ -135,7 +143,10 @@ fn read_payload(stream: &mut SptStream, kind: SptTagKind, tag_offset: usize) -> 
             // a way that violates the precondition.
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("unknown tag at offset {} — should have bailed in walker", tag_offset),
+                format!(
+                    "unknown tag at offset {} — should have bailed in walker",
+                    tag_offset
+                ),
             ));
         }
     })

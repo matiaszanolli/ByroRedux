@@ -19,7 +19,9 @@ use std::sync::Arc;
 // gate. The per-element `from_le_bytes` paths elsewhere in this
 // file are host-agnostic and unaffected. See #833.
 #[cfg(target_endian = "big")]
-compile_error!("NIF parser requires a little-endian host (bulk-array readers cast Vec<T> to &mut [u8])");
+compile_error!(
+    "NIF parser requires a little-endian host (bulk-array readers cast Vec<T> to &mut [u8])"
+);
 
 /// Binary reader with NIF header context for version-aware parsing.
 pub struct NifStream<'a> {
@@ -280,17 +282,15 @@ impl<'a> NifStream<'a> {
     /// is sound" (true for `u16`, `u32`, `f32`, `[f32; N]`, and
     /// `#[repr(C)]` 3-or-4-float structs). LE host required.
     pub(crate) fn read_pod_vec<T: Copy + Default>(&mut self, count: usize) -> io::Result<Vec<T>> {
-        let byte_count = count
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "read_pod_vec: byte count overflow ({count} × {} bytes)",
-                        std::mem::size_of::<T>(),
-                    ),
-                )
-            })?;
+        let byte_count = count.checked_mul(std::mem::size_of::<T>()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "read_pod_vec: byte count overflow ({count} × {} bytes)",
+                    std::mem::size_of::<T>(),
+                ),
+            )
+        })?;
         self.check_alloc(byte_count)?;
         let mut out: Vec<T> = vec![T::default(); count];
         // SAFETY:
@@ -309,9 +309,8 @@ impl<'a> NifStream<'a> {
         // - The `target_endian = "big"` compile-error gate at the top of
         //   the module ensures the on-disk LE bytes match the host's
         //   in-memory layout.
-        let byte_slice: &mut [u8] = unsafe {
-            std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_count)
-        };
+        let byte_slice: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_count) };
         self.cursor.read_exact(byte_slice)?;
         Ok(out)
     }

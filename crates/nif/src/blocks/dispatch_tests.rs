@@ -76,10 +76,7 @@ fn oblivion_shader_variants_route_to_bsshader_pp_lighting() {
     // `DistantLODShaderProperty`, `BSDistantTreeShaderProperty` moved to
     // `BSShaderPropertyBaseOnly` (they inherit `BSShaderProperty` directly,
     // no Lighting fields). Covered by `zero_field_shader_variants_route_to_base_only`.
-    let variants = [
-        "BSShaderPPLightingProperty",
-        "Lighting30ShaderProperty",
-    ];
+    let variants = ["BSShaderPPLightingProperty", "Lighting30ShaderProperty"];
     let header = oblivion_header();
     let bytes = oblivion_bsshader_bytes();
 
@@ -1820,7 +1817,7 @@ fn fo4_niavobject_bytes() -> Vec<u8> {
         }
     }
     d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
-    // No properties list (bsver=130 > 34, dropped per nif.xml).
+                                                // No properties list (bsver=130 > 34, dropped per nif.xml).
     d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
     d
 }
@@ -2424,7 +2421,7 @@ fn starfield_av_prefix(flags: u32) -> Vec<u8> {
     d.extend_from_slice(&0i32.to_le_bytes()); // name = strings[0]
     d.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
     d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
-                                                  // NiAVObject (parse_no_properties): flags(u32) + transform + collision_ref
+                                                 // NiAVObject (parse_no_properties): flags(u32) + transform + collision_ref
     d.extend_from_slice(&flags.to_le_bytes());
     // NiTransform: rotation 3×3 matrix (9×f32) + translation (3×f32) + scale (f32)
     for v in [
@@ -2464,7 +2461,7 @@ fn starfield_external_geometry_bytes(flags: u32, mesh_names: &[&str]) -> Vec<u8>
             d.extend_from_slice(&123u32.to_le_bytes()); // tri_size
             d.extend_from_slice(&456u32.to_le_bytes()); // num_verts
             d.extend_from_slice(&64u32.to_le_bytes()); // flags (nifly: "often 64")
-                                                        // sized string: u32 length + bytes
+                                                       // sized string: u32 length + bytes
             let name = mesh_names[i].as_bytes();
             d.extend_from_slice(&(name.len() as u32).to_le_bytes());
             d.extend_from_slice(name);
@@ -2483,7 +2480,10 @@ fn starfield_bs_geometry_external_mesh_dispatches() {
     let header = starfield_header();
     let bytes = starfield_external_geometry_bytes(
         0, // no internal-geom flag → external-mesh branch
-        &["abcdef0123456789abcdef0123456789abcdef012", "secondary.mesh"],
+        &[
+            "abcdef0123456789abcdef0123456789abcdef012",
+            "secondary.mesh",
+        ],
     );
     let mut stream = NifStream::new(&bytes, &header);
     let block = parse_block("BSGeometry", &mut stream, Some(bytes.len() as u32))
@@ -2535,7 +2535,7 @@ fn starfield_bs_geometry_internal_geom_data_branch_dispatches() {
     d.extend_from_slice(&0u32.to_le_bytes()); // tri_size
     d.extend_from_slice(&0u32.to_le_bytes()); // num_verts
     d.extend_from_slice(&64u32.to_le_bytes()); // flags
-                                                // BSGeometryMeshData: version=99 (>2 → early-out, no body follows).
+                                               // BSGeometryMeshData: version=99 (>2 → early-out, no body follows).
     d.extend_from_slice(&99u32.to_le_bytes());
     d.push(0u8);
     d.push(0u8);
@@ -2587,7 +2587,10 @@ fn starfield_skin_attach_dispatches() {
         .skin_attach_bones
         .as_ref()
         .expect("skin_attach_bones populated");
-    assert_eq!(bones, &vec!["Spine".to_string(), "Head".into(), "L_Hand".into()]);
+    assert_eq!(
+        bones,
+        &vec!["Spine".to_string(), "Head".into(), "L_Hand".into()]
+    );
     assert_eq!(stream.position() as usize, bytes.len());
 }
 
@@ -2599,10 +2602,7 @@ fn starfield_bone_translations_dispatches() {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&0i32.to_le_bytes()); // name index
     bytes.extend_from_slice(&2u32.to_le_bytes()); // numTranslations
-    for (name, trans) in [
-        ("Spine", [0.1f32, 0.2, 0.3]),
-        ("Head", [-0.4, 0.5, -0.6]),
-    ] {
+    for (name, trans) in [("Spine", [0.1f32, 0.2, 0.3]), ("Head", [-0.4, 0.5, -0.6])] {
         bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
         bytes.extend_from_slice(name.as_bytes());
         for v in trans {
@@ -2672,7 +2672,7 @@ fn ni_node_v10_0_1_0_consumes_groupid_prefix_and_full_payload() {
     // NiObjectNET.NumExtraDataList + Extra Data List.
     bytes.extend_from_slice(&1u32.to_le_bytes()); // count
     bytes.extend_from_slice(&1i32.to_le_bytes()); // ref[0]
-    // NiObjectNET.Controller — NULL.
+                                                  // NiObjectNET.Controller — NULL.
     bytes.extend_from_slice(&(-1i32).to_le_bytes());
     // NiAVObject.Flags (u16, BSVER == 0 ≤ 26).
     bytes.extend_from_slice(&0x0010u16.to_le_bytes());
@@ -2684,7 +2684,7 @@ fn ni_node_v10_0_1_0_consumes_groupid_prefix_and_full_payload() {
         bytes.extend_from_slice(&v.to_le_bytes());
     }
     bytes.extend_from_slice(&1.0f32.to_le_bytes()); // scale
-    // NiAVObject.NumProperties + Properties (count=0 → empty).
+                                                    // NiAVObject.NumProperties + Properties (count=0 → empty).
     bytes.extend_from_slice(&0u32.to_le_bytes());
     // NiAVObject.CollisionObject (since 10.0.1.0).
     bytes.extend_from_slice(&(-1i32).to_le_bytes());
@@ -2758,8 +2758,8 @@ fn ni_node_v20_0_0_5_does_not_consume_groupid_prefix() {
     bytes.extend_from_slice(&(-1i32).to_le_bytes()); // collision
     bytes.extend_from_slice(&0u32.to_le_bytes()); // children
     bytes.extend_from_slice(&0u32.to_le_bytes()); // effects
-    // The oblivion_header has bsver=0, so flags is u16 not u32 — fix:
-    // re-build with u16 flags.
+                                                  // The oblivion_header has bsver=0, so flags is u16 not u32 — fix:
+                                                  // re-build with u16 flags.
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&0i32.to_le_bytes()); // name index = 0
     bytes.extend_from_slice(&0u32.to_le_bytes()); // num extra data
@@ -2807,7 +2807,7 @@ fn zero_field_shader_variants_route_to_base_only() {
     bytes.extend_from_slice(&0i32.to_le_bytes()); // name string index
     bytes.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
     bytes.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
-    // BSShaderPropertyData (parse_base)
+                                                     // BSShaderPropertyData (parse_base)
     bytes.extend_from_slice(&0u16.to_le_bytes()); // shade_flags
     bytes.extend_from_slice(&3u32.to_le_bytes()); // shader_type (Tall_Grass=3 for visibility)
     bytes.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_1
@@ -3168,15 +3168,15 @@ fn build_bs_multi_bound_node_body() -> Vec<u8> {
         b.extend_from_slice(&r.to_le_bytes());
     }
     b.extend_from_slice(&1.0f32.to_le_bytes()); // scale
-    // Properties list is gated `bsver <= 34` (FO3/FNV/Oblivion); FO76
-    // bsver=155 skips it entirely — emitting a `0u32` here would shift
-    // every downstream field forward 4 bytes and the multi_bound_ref
-    // (-1) would be misread as a children count of 0xFFFFFFFF.
+                                                // Properties list is gated `bsver <= 34` (FO3/FNV/Oblivion); FO76
+                                                // bsver=155 skips it entirely — emitting a `0u32` here would shift
+                                                // every downstream field forward 4 bytes and the multi_bound_ref
+                                                // (-1) would be misread as a children count of 0xFFFFFFFF.
     b.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
-    // NiNode: 0 children. The `effects` array is gated on bsver — FO4+
-    // (bsver=130) drops it. FO76 (bsver=155) drops it too.
+                                                 // NiNode: 0 children. The `effects` array is gated on bsver — FO4+
+                                                 // (bsver=130) drops it. FO76 (bsver=155) drops it too.
     b.extend_from_slice(&0u32.to_le_bytes()); // children count
-    // BSMultiBoundNode: multi_bound_ref (-1) + culling_mode (Skyrim+).
+                                              // BSMultiBoundNode: multi_bound_ref (-1) + culling_mode (Skyrim+).
     b.extend_from_slice(&(-1i32).to_le_bytes());
     b.extend_from_slice(&0u32.to_le_bytes()); // culling_mode
     b
@@ -3201,8 +3201,8 @@ fn fo76_bs_distant_object_instanced_node_round_trips_two_instances() {
     data.extend_from_slice(&0x0102030405060708u64.to_le_bytes()); // unknown 1
     data.extend_from_slice(&0x11223344u32.to_le_bytes()); // unknown 2
     data.extend_from_slice(&2u32.to_le_bytes()); // num_transforms
-    // Two diagnostic matrices (16 f32 each) — first element differs so
-    // round-trip checks can distinguish them.
+                                                 // Two diagnostic matrices (16 f32 each) — first element differs so
+                                                 // round-trip checks can distinguish them.
     for tag in [10.0f32, 20.0] {
         for j in 0..16 {
             data.extend_from_slice(&(tag + j as f32).to_le_bytes());
@@ -3319,10 +3319,10 @@ fn ni_bspline_comp_float_interpolator_round_trip() {
     data.extend_from_slice(&1.5f32.to_le_bytes()); // stop_time
     data.extend_from_slice(&7i32.to_le_bytes()); // spline_data_ref
     data.extend_from_slice(&8i32.to_le_bytes()); // basis_data_ref
-    // NiBSplineFloatInterpolator: value, handle.
+                                                 // NiBSplineFloatInterpolator: value, handle.
     data.extend_from_slice(&0.25f32.to_le_bytes()); // fallback value
     data.extend_from_slice(&0u32.to_le_bytes()); // handle
-    // NiBSplineCompFloatInterpolator: float_offset, float_half_range.
+                                                 // NiBSplineCompFloatInterpolator: float_offset, float_half_range.
     data.extend_from_slice(&0.5f32.to_le_bytes()); // offset
     data.extend_from_slice(&0.5f32.to_le_bytes()); // half_range
 
@@ -3363,12 +3363,12 @@ fn ni_bspline_comp_point3_interpolator_round_trip() {
     data.extend_from_slice(&2.5f32.to_le_bytes()); // stop_time
     data.extend_from_slice(&3i32.to_le_bytes()); // spline_data_ref
     data.extend_from_slice(&4i32.to_le_bytes()); // basis_data_ref
-    // NiBSplinePoint3Interpolator: Vector3 value + handle.
+                                                 // NiBSplinePoint3Interpolator: Vector3 value + handle.
     data.extend_from_slice(&0.1f32.to_le_bytes());
     data.extend_from_slice(&0.2f32.to_le_bytes());
     data.extend_from_slice(&0.3f32.to_le_bytes());
     data.extend_from_slice(&12u32.to_le_bytes()); // handle (non-invalid)
-    // NiBSplineCompPoint3Interpolator: position_offset, position_half_range.
+                                                  // NiBSplineCompPoint3Interpolator: position_offset, position_half_range.
     data.extend_from_slice(&1.0f32.to_le_bytes()); // offset
     data.extend_from_slice(&2.0f32.to_le_bytes()); // half_range
 

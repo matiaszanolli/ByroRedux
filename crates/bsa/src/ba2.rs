@@ -1147,12 +1147,12 @@ mod tests {
         // name_table_offset points just past those 36 bytes so the seek
         // would succeed even if we got that far (we don't).
         let mut hdr = Vec::with_capacity(36);
-        hdr.extend_from_slice(b"BTDX");        // magic
+        hdr.extend_from_slice(b"BTDX"); // magic
         hdr.extend_from_slice(&3u32.to_le_bytes()); // version = 3 (Starfield DX10)
-        hdr.extend_from_slice(b"GNRL");        // type_tag
+        hdr.extend_from_slice(b"GNRL"); // type_tag
         hdr.extend_from_slice(&0u32.to_le_bytes()); // file_count = 0
         hdr.extend_from_slice(&36u64.to_le_bytes()); // name_table_offset = 36
-        hdr.extend_from_slice(&[0u8; 8]);      // 2×u32 unknown (v2/v3 extra)
+        hdr.extend_from_slice(&[0u8; 8]); // 2×u32 unknown (v2/v3 extra)
         hdr.extend_from_slice(&2u32.to_le_bytes()); // compression_method = 2 (unknown)
         assert_eq!(hdr.len(), 36);
 

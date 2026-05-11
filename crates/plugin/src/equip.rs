@@ -158,8 +158,8 @@ pub fn resolve_armor_mesh<'a>(
         let Some(arma) = index.armor_addons.get(&arma_fid) else {
             continue;
         };
-        let race_match = arma.race_form_id == race_form_id
-            || arma.additional_races.contains(&race_form_id);
+        let race_match =
+            arma.race_form_id == race_form_id || arma.additional_races.contains(&race_form_id);
         if race_match {
             if let Some(path) = pick_path(arma) {
                 return Some(path);
@@ -443,7 +443,13 @@ mod tests {
         // Beast-race ARMA — wrong race, should be skipped.
         idx.armor_addons.insert(
             0xAA,
-            arma_for_race(0xAA, 0x0001_3744 /* Khajiit */, vec![], "beast_m.nif", "beast_f.nif"),
+            arma_for_race(
+                0xAA,
+                0x0001_3744, /* Khajiit */
+                vec![],
+                "beast_m.nif",
+                "beast_f.nif",
+            ),
         );
         // Human ARMA — matches via primary RNAM.
         idx.armor_addons.insert(
@@ -463,7 +469,13 @@ mod tests {
         // Primary RNAM is Nord, but Imperial is in additional_races.
         idx.armor_addons.insert(
             0xCC,
-            arma_for_race(0xCC, nord_race, vec![imperial_race], "shared_m.nif", "shared_f.nif"),
+            arma_for_race(
+                0xCC,
+                nord_race,
+                vec![imperial_race],
+                "shared_m.nif",
+                "shared_f.nif",
+            ),
         );
         let path = resolve_armor_mesh(
             &armor,
@@ -494,13 +506,7 @@ mod tests {
             arma_for_race(0xEE, nord_race, vec![], "second_m.nif", "second_f.nif"),
         );
         // Actor race doesn't match either ARMA — fallback to first.
-        let path = resolve_armor_mesh(
-            &armor,
-            Gender::Male,
-            unknown_race,
-            &idx,
-            GameKind::Skyrim,
-        );
+        let path = resolve_armor_mesh(&armor, Gender::Male, unknown_race, &idx, GameKind::Skyrim);
         assert_eq!(path, Some("first_m.nif"));
     }
 
@@ -589,7 +595,11 @@ mod tests {
             &mut idx,
             0x0077_7777,
             0,
-            vec![(1, 0x0044_4444, 1), (5, 0x0055_5555, 1), (20, 0x0066_6666, 1)],
+            vec![
+                (1, 0x0044_4444, 1),
+                (5, 0x0055_5555, 1),
+                (20, 0x0066_6666, 1),
+            ],
         );
         let mut out = Vec::new();
         expand_leveled_form_id(0x0077_7777, 5, &idx, &mut out);

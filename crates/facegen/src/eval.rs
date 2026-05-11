@@ -151,10 +151,7 @@ mod tests {
     #[test]
     fn nan_delta_skipped() {
         let base = vec![[5.0, 5.0, 5.0]];
-        let morphs = vec![morph(
-            1.0,
-            vec![[f32::NAN, f32::NAN, f32::NAN]],
-        )];
+        let morphs = vec![morph(1.0, vec![[f32::NAN, f32::NAN, f32::NAN]])];
         let out = apply_morphs(&base, &morphs, &[1.0]);
         // NaN delta means "no displacement"; vertex stays at base.
         assert_eq!(out, base);

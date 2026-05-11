@@ -38,7 +38,9 @@ impl Stats {
         if self.total_files == 0 {
             return 0.0;
         }
-        let clean_files = self.total_files.saturating_sub(self.files_with_unknown_tags);
+        let clean_files = self
+            .total_files
+            .saturating_sub(self.files_with_unknown_tags);
         clean_files as f32 / self.total_files as f32
     }
 }
@@ -153,7 +155,10 @@ fn parse_rate_fo3_spt() {
     };
     let bsa = data.join("Fallout - Meshes.bsa");
     let stats = sweep_archive(&bsa, "FO3");
-    assert!(stats.total_files > 0, "FO3 corpus must contain at least one `.spt`");
+    assert!(
+        stats.total_files > 0,
+        "FO3 corpus must contain at least one `.spt`"
+    );
     assert!(
         stats.coverage_rate() >= 0.95,
         "FO3 `.spt` parser coverage = {:.1}% (expected ≥ 95 %)",

@@ -24,7 +24,11 @@ fn main() -> anyhow::Result<()> {
         .nth(1)
         .ok_or_else(|| anyhow::anyhow!("usage: <ESM>"))?;
     let bytes = std::fs::read(&path)?;
-    println!("Parsing {} ({:.1} MB)…", path, bytes.len() as f64 / 1_048_576.0);
+    println!(
+        "Parsing {} ({:.1} MB)…",
+        path,
+        bytes.len() as f64 / 1_048_576.0
+    );
 
     let idx = parse_esm(&bytes)?;
 

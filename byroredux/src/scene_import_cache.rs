@@ -191,7 +191,11 @@ mod tests {
 
         let entry = cache.get("broken.nif").expect("present key");
         assert!(entry.is_none(), "negative entry signals known-failed parse");
-        assert_eq!(cache.parses(), 1, "warm hit must not re-parse a failed entry");
+        assert_eq!(
+            cache.parses(),
+            1,
+            "warm hit must not re-parse a failed entry"
+        );
     }
 
     /// `record_bypass_parse` bumps the bypass counter AND the core
@@ -207,7 +211,11 @@ mod tests {
         cache.record_bypass_parse();
         assert_eq!(cache.parses(), 2);
         assert_eq!(cache.misses(), 2, "bypass parses are misses too");
-        assert_eq!(cache.len(), pre_len, "bypass parses do not populate the cache");
+        assert_eq!(
+            cache.len(),
+            pre_len,
+            "bypass parses do not populate the cache"
+        );
     }
 
     /// Miss-then-insert flow: an unprimed `get` returns `None` and

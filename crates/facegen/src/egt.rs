@@ -170,7 +170,7 @@ mod tests {
         out.extend_from_slice(&num_morphs.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes()); // unknown_a
         out.extend_from_slice(&0x51u32.to_le_bytes()); // unknown_b (matches vanilla)
-        // 28..64 = 36 bytes of padding (header total = 64).
+                                                       // 28..64 = 36 bytes of padding (header total = 64).
         out.extend_from_slice(&[0u8; 36]);
         debug_assert_eq!(out.len(), 64);
         for m in 0..num_morphs {

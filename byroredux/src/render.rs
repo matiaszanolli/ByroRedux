@@ -834,23 +834,22 @@ pub(crate) fn build_render_data(
                 // so non-effect materials emit the identity-pass-through
                 // tuple `[1.0, 1.0, 1.0, 1.0, 0.0]` (no view-angle fade,
                 // no soft-depth fade).
-                let effect_falloff = if material_kind
-                    == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
-                {
-                    mat.and_then(|m| m.effect_falloff)
-                        .map(|f| {
-                            [
-                                f.start_angle,
-                                f.stop_angle,
-                                f.start_opacity,
-                                f.stop_opacity,
-                                f.soft_falloff_depth,
-                            ]
-                        })
-                        .unwrap_or([1.0, 1.0, 1.0, 1.0, 0.0])
-                } else {
-                    [1.0, 1.0, 1.0, 1.0, 0.0]
-                };
+                let effect_falloff =
+                    if material_kind == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER {
+                        mat.and_then(|m| m.effect_falloff)
+                            .map(|f| {
+                                [
+                                    f.start_angle,
+                                    f.stop_angle,
+                                    f.start_opacity,
+                                    f.stop_opacity,
+                                    f.soft_falloff_depth,
+                                ]
+                            })
+                            .unwrap_or([1.0, 1.0, 1.0, 1.0, 0.0])
+                    } else {
+                        [1.0, 1.0, 1.0, 1.0, 0.0]
+                    };
 
                 let mut cmd = DrawCommand {
                     mesh_handle: mesh.0,
@@ -1158,8 +1157,11 @@ pub(crate) fn build_render_data(
             .try_resource::<SkyParamsRes>()
             .map(|sky| sky.sun_intensity)
             .unwrap_or(SUN_INTENSITY_PEAK);
-        let (dir_color, dir_radius) =
-            compute_directional_upload(&cell_lit.directional_color, cell_lit.is_interior, sun_intensity);
+        let (dir_color, dir_radius) = compute_directional_upload(
+            &cell_lit.directional_color,
+            cell_lit.is_interior,
+            sun_intensity,
+        );
         gpu_lights.push(byroredux_renderer::GpuLight {
             position_radius: [0.0, 0.0, 0.0, dir_radius],
             color_type: [dir_color[0], dir_color[1], dir_color[2], 2.0],
@@ -1266,7 +1268,14 @@ pub(crate) fn build_render_data(
         let clouds = world.try_resource::<CloudSimState>();
         let scroll = clouds
             .as_ref()
-            .map(|c| (c.cloud_scroll, c.cloud_scroll_1, c.cloud_scroll_2, c.cloud_scroll_3))
+            .map(|c| {
+                (
+                    c.cloud_scroll,
+                    c.cloud_scroll_1,
+                    c.cloud_scroll_2,
+                    c.cloud_scroll_3,
+                )
+            })
             .unwrap_or_default();
         SkyParams {
             zenith_color: sky_res.zenith_color,
@@ -2114,11 +2123,8 @@ mod directional_upload_tests {
     /// regress daytime surface lighting brightness.
     #[test]
     fn exterior_noon_preserves_pre_fix_brightness() {
-        let (color, radius) = compute_directional_upload(
-            &[0.7, 0.65, 0.55],
-            false,
-            SUN_INTENSITY_PEAK,
-        );
+        let (color, radius) =
+            compute_directional_upload(&[0.7, 0.65, 0.55], false, SUN_INTENSITY_PEAK);
         assert_eq!(radius, 0.0, "exterior radius must be 0 (shadowed)");
         assert!((color[0] - 0.7).abs() < 1e-6);
         assert!((color[1] - 0.65).abs() < 1e-6);
@@ -2152,11 +2158,8 @@ mod directional_upload_tests {
     /// quadratic would regress the smooth dawn/dusk fade.
     #[test]
     fn exterior_sunrise_half_intensity_half_contribution() {
-        let (color, _) = compute_directional_upload(
-            &[0.6, 0.55, 0.40],
-            false,
-            SUN_INTENSITY_PEAK / 2.0,
-        );
+        let (color, _) =
+            compute_directional_upload(&[0.6, 0.55, 0.40], false, SUN_INTENSITY_PEAK / 2.0);
         assert!((color[0] - 0.30).abs() < 1e-6);
         assert!((color[1] - 0.275).abs() < 1e-6);
         assert!((color[2] - 0.20).abs() < 1e-6);
@@ -2174,8 +2177,7 @@ mod directional_upload_tests {
         assert_eq!(negative, [0.0; 3], "negative intensity must clamp to zero");
         let (over_cap, _) = compute_directional_upload(&[1.0; 3], false, 100.0);
         assert_eq!(
-            over_cap,
-            [1.0; 3],
+            over_cap, [1.0; 3],
             "over-cap intensity must clamp to peak (1.0× ramp)"
         );
     }
@@ -2188,18 +2190,18 @@ mod directional_upload_tests {
     /// with the wall-clock hour.
     #[test]
     fn interior_uses_fixed_fill_independent_of_sun_intensity() {
-        let (noon_color, noon_radius) = compute_directional_upload(
-            &[0.5, 0.5, 0.5],
-            true,
-            SUN_INTENSITY_PEAK,
+        let (noon_color, noon_radius) =
+            compute_directional_upload(&[0.5, 0.5, 0.5], true, SUN_INTENSITY_PEAK);
+        let (midnight_color, midnight_radius) =
+            compute_directional_upload(&[0.5, 0.5, 0.5], true, 0.0);
+        assert_eq!(
+            noon_color, midnight_color,
+            "interior fill must NOT vary with sun_intensity"
         );
-        let (midnight_color, midnight_radius) = compute_directional_upload(
-            &[0.5, 0.5, 0.5],
-            true,
-            0.0,
+        assert_eq!(
+            noon_radius, -1.0,
+            "interior radius must be -1 (unshadowed fill)"
         );
-        assert_eq!(noon_color, midnight_color, "interior fill must NOT vary with sun_intensity");
-        assert_eq!(noon_radius, -1.0, "interior radius must be -1 (unshadowed fill)");
         assert_eq!(midnight_radius, -1.0);
         // 0.6× scale per the established convention.
         assert!((noon_color[0] - 0.30).abs() < 1e-6);

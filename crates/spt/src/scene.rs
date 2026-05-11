@@ -146,8 +146,16 @@ impl SptScene {
     /// Helper: count entries by [`SptTagKind`] for diagnostics.
     pub fn count_by_kind(&self) -> [(SptTagKind, usize); 7] {
         use SptTagKind::*;
-        let mut counts = [Bare, U8, U32, Vec3, FixedBytes(0), String, ArrayBytes { stride: 0 }]
-            .map(|k| (k, 0usize));
+        let mut counts = [
+            Bare,
+            U8,
+            U32,
+            Vec3,
+            FixedBytes(0),
+            String,
+            ArrayBytes { stride: 0 },
+        ]
+        .map(|k| (k, 0usize));
         for entry in &self.entries {
             let k = match &entry.value {
                 SptValue::Bare => Bare,
@@ -191,11 +199,31 @@ mod tests {
     fn typed_accessors_filter_by_tag() {
         let scene = SptScene {
             entries: vec![
-                TagEntry { tag: 2000, value: SptValue::String("bark.dds".into()), offset: 0 },
-                TagEntry { tag: 4003, value: SptValue::String("leaf.dds".into()), offset: 0 },
-                TagEntry { tag: 6000, value: SptValue::String("BezierSpline 0".into()), offset: 0 },
-                TagEntry { tag: 6001, value: SptValue::String("BezierSpline 1".into()), offset: 0 },
-                TagEntry { tag: 2001, value: SptValue::U32(0x44898000), offset: 0 },
+                TagEntry {
+                    tag: 2000,
+                    value: SptValue::String("bark.dds".into()),
+                    offset: 0,
+                },
+                TagEntry {
+                    tag: 4003,
+                    value: SptValue::String("leaf.dds".into()),
+                    offset: 0,
+                },
+                TagEntry {
+                    tag: 6000,
+                    value: SptValue::String("BezierSpline 0".into()),
+                    offset: 0,
+                },
+                TagEntry {
+                    tag: 6001,
+                    value: SptValue::String("BezierSpline 1".into()),
+                    offset: 0,
+                },
+                TagEntry {
+                    tag: 2001,
+                    value: SptValue::U32(0x44898000),
+                    offset: 0,
+                },
             ],
             tail_offset: 100,
             reached_eof: false,
@@ -211,9 +239,21 @@ mod tests {
     fn entries_with_tag_handles_repeats() {
         let scene = SptScene {
             entries: vec![
-                TagEntry { tag: 6000, value: SptValue::String("a".into()), offset: 0 },
-                TagEntry { tag: 6000, value: SptValue::String("b".into()), offset: 0 },
-                TagEntry { tag: 6001, value: SptValue::String("c".into()), offset: 0 },
+                TagEntry {
+                    tag: 6000,
+                    value: SptValue::String("a".into()),
+                    offset: 0,
+                },
+                TagEntry {
+                    tag: 6000,
+                    value: SptValue::String("b".into()),
+                    offset: 0,
+                },
+                TagEntry {
+                    tag: 6001,
+                    value: SptValue::String("c".into()),
+                    offset: 0,
+                },
             ],
             ..Default::default()
         };

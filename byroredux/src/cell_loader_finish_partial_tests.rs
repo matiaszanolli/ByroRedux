@@ -123,6 +123,10 @@ fn finish_partial_import_early_outs_with_mixed_case_model_path() {
         dummy_partial(),
     );
     let reg = world.resource::<NifImportRegistry>();
-    assert_eq!(reg.len(), 1, "early-out must not append a duplicate-case entry");
+    assert_eq!(
+        reg.len(),
+        1,
+        "early-out must not append a duplicate-case entry"
+    );
     assert!(reg.get("rock_cliff.nif").is_some());
 }

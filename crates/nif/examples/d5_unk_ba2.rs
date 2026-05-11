@@ -34,16 +34,27 @@ fn main() {
         Arc::Ba2(Ba2Archive::open(&path).expect("open BA2"))
     };
     let files = arc.list();
-    let nifs: Vec<&String> = files.iter().filter(|p| p.to_ascii_lowercase().ends_with(".nif")).collect();
+    let nifs: Vec<&String> = files
+        .iter()
+        .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
+        .collect();
     eprintln!("scanning {} nifs from {:?}", nifs.len(), path);
     let mut unk: BTreeMap<String, usize> = BTreeMap::new();
     let mut total_blocks: usize = 0;
     let mut parsed_files: usize = 0;
     let mut failed_files: usize = 0;
     for (i, nif) in nifs.iter().enumerate() {
-        if i > 0 && i % 2000 == 0 { eprintln!("  {}/{}", i, nifs.len()); }
-        let Ok(bytes) = arc.extract(nif) else { failed_files += 1; continue; };
-        let Ok(scene) = parse_nif(&bytes) else { failed_files += 1; continue; };
+        if i > 0 && i % 2000 == 0 {
+            eprintln!("  {}/{}", i, nifs.len());
+        }
+        let Ok(bytes) = arc.extract(nif) else {
+            failed_files += 1;
+            continue;
+        };
+        let Ok(scene) = parse_nif(&bytes) else {
+            failed_files += 1;
+            continue;
+        };
         parsed_files += 1;
         for b in &scene.blocks {
             total_blocks += 1;
@@ -54,10 +65,20 @@ fn main() {
     }
     let mut v: Vec<_> = unk.into_iter().collect();
     v.sort_by(|a, b| b.1.cmp(&a.1));
-    println!("─── NiUnknown type_name histogram ({}) ───", path.file_name().unwrap().to_string_lossy());
-    println!("  parsed_files={} failed_files={} total_blocks={}", parsed_files, failed_files, total_blocks);
+    println!(
+        "─── NiUnknown type_name histogram ({}) ───",
+        path.file_name().unwrap().to_string_lossy()
+    );
+    println!(
+        "  parsed_files={} failed_files={} total_blocks={}",
+        parsed_files, failed_files, total_blocks
+    );
     let unk_total: usize = v.iter().map(|x| x.1).sum();
-    println!("  unknown_block_total={} ({} distinct types)", unk_total, v.len());
+    println!(
+        "  unknown_block_total={} ({} distinct types)",
+        unk_total,
+        v.len()
+    );
     for (name, cnt) in v.iter().take(60) {
         println!("  {:>7}  {}", cnt, name);
     }

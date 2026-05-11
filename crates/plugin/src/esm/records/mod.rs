@@ -456,7 +456,9 @@ impl EsmIndex {
             ("dehydration_stages", |s| s.dehydration_stages.len()),
             ("hunger_stages", |s| s.hunger_stages.len()),
             ("radiation_stages", |s| s.radiation_stages.len()),
-            ("sleep_deprivation_stages", |s| s.sleep_deprivation_stages.len()),
+            ("sleep_deprivation_stages", |s| {
+                s.sleep_deprivation_stages.len()
+            }),
             ("caravan_cards", |s| s.caravan_cards.len()),
             ("caravan_decks", |s| s.caravan_decks.len()),
             ("challenges", |s| s.challenges.len()),
@@ -686,12 +688,9 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 &mut exterior_cells,
                 &mut worldspace_climates,
             )?,
-            b"LTEX" => parse_ltex_group(
-                &mut reader,
-                end,
-                &mut ltex_to_txst,
-                &mut landscape_textures,
-            )?,
+            b"LTEX" => {
+                parse_ltex_group(&mut reader, end, &mut ltex_to_txst, &mut landscape_textures)?
+            }
             b"TXST" => parse_txst_group(&mut reader, end, &mut txst_textures, &mut texture_sets)?,
             b"SCOL" => parse_scol_group(&mut reader, end, &mut statics, &mut scols)?,
             b"PKIN" => parse_pkin_group(&mut reader, end, &mut statics, &mut packins)?,
@@ -1144,7 +1143,9 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                     .insert(fid, parse_minimal_esm_record(fid, subs));
             })?,
             b"SOUN" => extract_records(&mut reader, end, b"SOUN", &mut |fid, subs| {
-                index.sounds.insert(fid, parse_minimal_esm_record(fid, subs));
+                index
+                    .sounds
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
             })?,
             b"VTYP" => extract_records(&mut reader, end, b"VTYP", &mut |fid, subs| {
                 index
@@ -1158,7 +1159,9 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                     .insert(fid, parse_minimal_esm_record(fid, subs));
             })?,
             b"DEBR" => extract_records(&mut reader, end, b"DEBR", &mut |fid, subs| {
-                index.debris.insert(fid, parse_minimal_esm_record(fid, subs));
+                index
+                    .debris
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
             })?,
             b"GRAS" => extract_records(&mut reader, end, b"GRAS", &mut |fid, subs| {
                 index

@@ -54,13 +54,12 @@ impl NiSourceTexture {
         // inclusive per the version.rs doctrine — present at v <=
         // 10.0.1.3. Post-10.0.1.3 content with embedded textures relies
         // on the `Use External == 0` cond alone.
-        let use_internal = if !use_external
-            && stream.version() <= crate::version::NifVersion(0x0A000103)
-        {
-            stream.read_u8()? != 0
-        } else {
-            true
-        };
+        let use_internal =
+            if !use_external && stream.version() <= crate::version::NifVersion(0x0A000103) {
+                stream.read_u8()? != 0
+            } else {
+                true
+            };
 
         let (filename, pixel_data_ref) = if use_external {
             let fname: Option<Arc<str>> = if use_string_table {
@@ -367,10 +366,7 @@ mod tests {
     /// `version <= 10.0.1.3 && !use_external` per nif.xml line 5117).
     /// Returns the assembled byte vec the parser is expected to consume
     /// in its entirety.
-    fn build_legacy_embedded_source_texture(
-        use_internal: bool,
-        with_pixel_ref: bool,
-    ) -> Vec<u8> {
+    fn build_legacy_embedded_source_texture(use_internal: bool, with_pixel_ref: bool) -> Vec<u8> {
         let mut data = Vec::new();
         // NiObjectNET (pre-10.0.1.0): no name string at all on the
         // ancient layout, but our parser reads NiObjectNETData::parse
@@ -378,11 +374,11 @@ mod tests {
         // is read inline as a sized string — author an empty string
         // (u32 length=0).
         data.extend_from_slice(&0u32.to_le_bytes()); // name length = 0
-                                                      // extra_data_refs and controller_ref are read for v >= 10.0.1.0
-                                                      // — author empty list + null ref.
+                                                     // extra_data_refs and controller_ref are read for v >= 10.0.1.0
+                                                     // — author empty list + null ref.
         data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count = 0
         data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
-                                                         // use_external = 0 → embedded path.
+                                                        // use_external = 0 → embedded path.
         data.push(0u8);
         // use_internal byte (legacy gate).
         data.push(if use_internal { 1u8 } else { 0u8 });
@@ -394,7 +390,7 @@ mod tests {
         data.extend_from_slice(&1u32.to_le_bytes()); // pixel_layout
         data.extend_from_slice(&0u32.to_le_bytes()); // use_mipmaps
         data.extend_from_slice(&0u32.to_le_bytes()); // alpha_format
-                                                      // is_static — present when v >= 5.0.0.1; 10.0.1.0 satisfies.
+                                                     // is_static — present when v >= 5.0.0.1; 10.0.1.0 satisfies.
         data.push(1u8);
         data
     }
@@ -416,7 +412,10 @@ mod tests {
         let tex = NiSourceTexture::parse(&mut stream).unwrap();
 
         assert!(!tex.use_external, "embedded path");
-        assert!(tex.filename.is_none(), "no filename on legacy embedded path");
+        assert!(
+            tex.filename.is_none(),
+            "no filename on legacy embedded path"
+        );
         assert_eq!(
             tex.pixel_data_ref.index(),
             Some(7),
@@ -467,7 +466,10 @@ mod tests {
         let tex = NiSourceTexture::parse(&mut stream).unwrap();
 
         assert!(!tex.use_external, "embedded path");
-        assert!(tex.filename.is_none(), "no filename on legacy embedded path");
+        assert!(
+            tex.filename.is_none(),
+            "no filename on legacy embedded path"
+        );
         assert_eq!(
             tex.pixel_data_ref.index(),
             Some(7),
@@ -494,7 +496,7 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&(-1i32).to_le_bytes());
         data.push(0u8); // use_external = 0
-                         // No use_internal byte at this version.
+                        // No use_internal byte at this version.
         data.extend_from_slice(&5i32.to_le_bytes()); // pixel ref
         data.extend_from_slice(&1u32.to_le_bytes()); // pixel_layout
         data.extend_from_slice(&0u32.to_le_bytes()); // use_mipmaps

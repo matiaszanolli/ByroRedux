@@ -372,12 +372,7 @@ mod tests {
         let skel_root = spawn_with_transform(&mut world, Vec3::ZERO, Quat::IDENTITY, 1.0);
         let bones: Vec<EntityId> = (0..30)
             .map(|_| {
-                spawn_with_transform(
-                    &mut world,
-                    Vec3::new(0.0, 1.0, 0.0),
-                    Quat::IDENTITY,
-                    1.0,
-                )
+                spawn_with_transform(&mut world, Vec3::new(0.0, 1.0, 0.0), Quat::IDENTITY, 1.0)
             })
             .collect();
         // Build the bone chain: bones[0] under skel_root, bones[i] under
@@ -464,7 +459,16 @@ mod tests {
 
         let mut sys = make_transform_propagation_system();
         sys(&world, 0.016);
-        assert_eq!(world.query::<GlobalTransform>().unwrap().get(r1).unwrap().translation.x, 10.0);
+        assert_eq!(
+            world
+                .query::<GlobalTransform>()
+                .unwrap()
+                .get(r1)
+                .unwrap()
+                .translation
+                .x,
+            10.0
+        );
 
         // 1) New root appears — cache must rescan and produce its GT.
         let r2 = spawn_with_transform(&mut world, Vec3::new(20.0, 0.0, 0.0), Quat::IDENTITY, 1.0);

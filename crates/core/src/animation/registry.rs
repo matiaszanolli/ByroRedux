@@ -293,8 +293,7 @@ mod tests {
     #[test]
     fn get_or_insert_by_path_is_case_insensitive() {
         let mut reg = AnimationClipRegistry::new();
-        let h_lower =
-            reg.get_or_insert_by_path("meshes\\idle.kf".to_string(), empty_clip);
+        let h_lower = reg.get_or_insert_by_path("meshes\\idle.kf".to_string(), empty_clip);
         let h_upper = reg.get_or_insert_by_path("MESHES\\IDLE.KF".to_string(), || {
             panic!("build_clip must not be called — case variant should hit the memo")
         });
@@ -323,11 +322,12 @@ mod tests {
     }
 
     fn populated_clip() -> AnimationClip {
-        use crate::animation::types::{TransformChannel, KeyType};
+        use crate::animation::types::{KeyType, TransformChannel};
         let mut clip = empty_clip();
         clip.name = "evicted_clip".to_string();
         clip.duration = 1.5;
-        clip.text_keys.push((0.5, crate::string::StringPool::new().intern("evt")));
+        clip.text_keys
+            .push((0.5, crate::string::StringPool::new().intern("evt")));
         clip.channels.insert(
             crate::string::StringPool::new().intern("Bip01 Pelvis"),
             TransformChannel {
@@ -364,7 +364,9 @@ mod tests {
         assert!(cleared, "release must return true for a populated slot");
 
         // Slot still addressable — live handles still resolve.
-        let post = reg.get(h).expect("slot must remain addressable after release");
+        let post = reg
+            .get(h)
+            .expect("slot must remain addressable after release");
         assert_eq!(post.duration, 0.0);
         assert!(post.channels.is_empty());
         assert!(post.text_keys.is_empty());

@@ -511,9 +511,7 @@ pub fn create_blend_pipeline(
         device.destroy_shader_module(frag_module, None);
     }
 
-    log::debug!(
-        "Blend pipeline created: src={src} ({src_factor:?}), dst={dst} ({dst_factor:?})"
-    );
+    log::debug!("Blend pipeline created: src={src} ({src_factor:?}), dst={dst} ({dst_factor:?})");
 
     Ok(pipelines[0])
 }

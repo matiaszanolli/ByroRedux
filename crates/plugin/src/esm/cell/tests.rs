@@ -1328,7 +1328,9 @@ fn parse_cell_full_lstring_index_renders_as_placeholder() {
     let mut cells = HashMap::new();
     parse_cell_group(&mut reader, end, &mut cells).unwrap();
 
-    let cell = cells.get("dragonsreachjarl").expect("interior CELL present");
+    let cell = cells
+        .get("dragonsreachjarl")
+        .expect("interior CELL present");
     assert_eq!(
         cell.display_name.as_deref(),
         Some("<lstring 0x00012345>"),
@@ -2471,23 +2473,20 @@ fn dodt_payload(
 #[test]
 fn parse_txst_extracts_dodt_decal_data() {
     let dodt = dodt_payload(
-        10.0,           // min_width
-        50.0,           // max_width
-        20.0,           // min_height
-        80.0,           // max_height
-        0.5,            // depth
-        16.0,           // shininess
-        0.04,           // parallax_scale
-        4,              // parallax_passes
-        0b0000_0011,    // flags: Parallax + Alpha-Blending
+        10.0,              // min_width
+        50.0,              // max_width
+        20.0,              // min_height
+        80.0,              // max_height
+        0.5,               // depth
+        16.0,              // shininess
+        0.04,              // parallax_scale
+        4,                 // parallax_passes
+        0b0000_0011,       // flags: Parallax + Alpha-Blending
         [255, 64, 0, 200], // color RGBA
     );
     let txst = build_txst_record_raw(
         0xD0D7,
-        &[
-            (b"TX00", b"textures/decal_diffuse.dds\0"),
-            (b"DODT", &dodt),
-        ],
+        &[(b"TX00", b"textures/decal_diffuse.dds\0"), (b"DODT", &dodt)],
     );
     let group = wrap_in_txst_group(&[txst]);
 
@@ -2521,10 +2520,7 @@ fn parse_txst_extracts_dnam_flags_fo4() {
     let dnam = (0x05u16).to_le_bytes();
     let txst = build_txst_record_raw(
         0xDDA4,
-        &[
-            (b"TX00", b"textures/face.dds\0"),
-            (b"DNAM", &dnam),
-        ],
+        &[(b"TX00", b"textures/face.dds\0"), (b"DNAM", &dnam)],
     );
     let group = wrap_in_txst_group(&[txst]);
 
@@ -2546,7 +2542,10 @@ fn parse_txst_extracts_dnam_flags_fo4() {
 #[test]
 fn parse_txst_extracts_dnam_flags_skyrim_single_byte() {
     let dnam: [u8; 1] = [0x02]; // FaceGenTinting only
-    let txst = build_txst_record_raw(0x5DA4, &[(b"TX00", b"textures/skin.dds\0"), (b"DNAM", &dnam)]);
+    let txst = build_txst_record_raw(
+        0x5DA4,
+        &[(b"TX00", b"textures/skin.dds\0"), (b"DNAM", &dnam)],
+    );
     let group = wrap_in_txst_group(&[txst]);
 
     let mut reader = EsmReader::new(&group);
@@ -2564,7 +2563,18 @@ fn parse_txst_extracts_dnam_flags_skyrim_single_byte() {
 /// must populate every field on `TextureSet` without losing any.
 #[test]
 fn parse_txst_extracts_all_fields_together() {
-    let dodt = dodt_payload(1.0, 2.0, 3.0, 4.0, 0.1, 8.0, 0.02, 2, 0x01, [128, 128, 128, 255]);
+    let dodt = dodt_payload(
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        0.1,
+        8.0,
+        0.02,
+        2,
+        0x01,
+        [128, 128, 128, 255],
+    );
     let dnam = (0x07u16).to_le_bytes();
     let txst = build_txst_record_raw(
         0xFA110,
@@ -2602,7 +2612,18 @@ fn parse_txst_extracts_all_fields_together() {
 /// DODT-only TXSTs hit the gate and were dropped from `texture_sets`.
 #[test]
 fn parse_txst_dodt_only_record_is_preserved() {
-    let dodt = dodt_payload(1.0, 2.0, 3.0, 4.0, 0.5, 16.0, 0.04, 4, 0x01, [255, 0, 0, 255]);
+    let dodt = dodt_payload(
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        0.5,
+        16.0,
+        0.04,
+        4,
+        0x01,
+        [255, 0, 0, 255],
+    );
     let txst = build_txst_record_raw(0xD0D7_0017, &[(b"DODT", &dodt)]);
     let group = wrap_in_txst_group(&[txst]);
 
@@ -2617,8 +2638,10 @@ fn parse_txst_dodt_only_record_is_preserved() {
         sets.get(&0xD0D7_0017).is_some(),
         "DODT-only TXST must survive the default-set rejection gate"
     );
-    assert!(diffuse_only.get(&0xD0D7_0017).is_none(),
-        "DODT-only TXST must not enter the diffuse-only legacy map");
+    assert!(
+        diffuse_only.get(&0xD0D7_0017).is_none(),
+        "DODT-only TXST must not enter the diffuse-only legacy map"
+    );
 }
 
 // ── #692 / O3-N-04 regression guards ──────────────────────────────

@@ -2,7 +2,9 @@
 use byroredux_bsa::Ba2Archive;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: <archive> [pattern] [limit]");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: <archive> [pattern] [limit]");
     let pat = std::env::args().nth(2).unwrap_or_default().to_lowercase();
     let limit: usize = std::env::args()
         .nth(3)

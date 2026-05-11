@@ -336,7 +336,10 @@ impl TextureRegistry {
                 vk::SamplerAddressMode::CLAMP_TO_EDGE,
             )?,
             // 3 = WRAP_S_WRAP_T — pre-#610 default for everything.
-            make_sampler(vk::SamplerAddressMode::REPEAT, vk::SamplerAddressMode::REPEAT)?,
+            make_sampler(
+                vk::SamplerAddressMode::REPEAT,
+                vk::SamplerAddressMode::REPEAT,
+            )?,
         ];
         // Legacy public field — kept as an alias on `samplers[3]` (the
         // REPEAT/REPEAT entry) so any non-bindless caller that reads
@@ -764,7 +767,9 @@ impl TextureRegistry {
     /// REPEAT) preserve the legacy single-key shape.
     pub fn get_by_path_with_clamp(&self, path: &str, clamp_mode: u8) -> Option<TextureHandle> {
         let clamp_mode = clamp_mode.min(3);
-        self.path_map.get(&clamp_keyed_path(path, clamp_mode)).copied()
+        self.path_map
+            .get(&clamp_keyed_path(path, clamp_mode))
+            .copied()
     }
 
     /// Acquire a texture handle by path, bumping the refcount on hit.
@@ -957,10 +962,7 @@ impl TextureRegistry {
     /// [`drain_pending_destroys`] regression test and shutdown
     /// telemetry. See #732.
     pub fn pending_destroy_count(&self) -> usize {
-        self.textures
-            .iter()
-            .map(|e| e.pending_destroy.len())
-            .sum()
+        self.textures.iter().map(|e| e.pending_destroy.len()).sum()
     }
 
     /// Advance the frame counter for deferred-destroy aging (issue #134).
@@ -1833,6 +1835,10 @@ mod tests {
             msg.contains("TextureRegistry is full"),
             "unexpected error: {msg}",
         );
-        assert_eq!(reg.pending_dds_upload_count(), 0, "queue must stay empty on rejection");
+        assert_eq!(
+            reg.pending_dds_upload_count(),
+            0,
+            "queue must stay empty on rejection"
+        );
     }
 }

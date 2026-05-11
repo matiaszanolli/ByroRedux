@@ -224,10 +224,7 @@ mod tests {
         data.extend_from_slice(&12.5f32.to_le_bytes());
         data.push(CONT_FLAG_RESPAWNS); // 0x01 — respawns on cell reset
 
-        let subs = vec![
-            sub(b"EDID", b"GenericTrashbag01\0"),
-            sub(b"DATA", &data),
-        ];
+        let subs = vec![sub(b"EDID", b"GenericTrashbag01\0"), sub(b"DATA", &data)];
         let r = parse_cont(0xCAFE, &subs);
         assert!((r.weight - 12.5).abs() < 1e-6);
         assert_eq!(

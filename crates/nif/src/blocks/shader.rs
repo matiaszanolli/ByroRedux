@@ -362,7 +362,11 @@ impl BSShaderPropertyBaseOnly {
     pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
         let shader = BSShaderPropertyData::parse_base(stream)?;
-        Ok(Self { net, shader, type_name })
+        Ok(Self {
+            net,
+            shader,
+            type_name,
+        })
     }
 }
 

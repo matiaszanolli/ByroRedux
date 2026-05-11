@@ -163,10 +163,7 @@ fn build_overlay_xtxr_later_swap_wins_for_same_slot() {
     let ov = build_refr_texture_overlay(&placed, &index, None, &mut pool)
         .expect("XTXR swaps must produce an overlay");
     // Authoring-order: later XTXR wins.
-    assert_eq!(
-        resolved(&pool, ov.normal),
-        Some(r"textures\second\nrm.dds")
-    );
+    assert_eq!(resolved(&pool, ov.normal), Some(r"textures\second\nrm.dds"));
 }
 
 #[test]

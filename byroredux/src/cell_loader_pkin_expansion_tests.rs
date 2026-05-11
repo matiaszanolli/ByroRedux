@@ -143,9 +143,8 @@ fn expand_pkin_recurses_into_nested_pkin() {
     let outer_pos = Vec3::new(7.0, 8.0, 9.0);
     let outer_rot = Quat::from_rotation_z(0.25);
     let outer_scale = 1.25;
-    let synths =
-        expand_pkin_placements(outer_pkin_id, outer_pos, outer_rot, outer_scale, &index)
-            .expect("PKIN-of-PKIN must still fan out");
+    let synths = expand_pkin_placements(outer_pkin_id, outer_pos, outer_rot, outer_scale, &index)
+        .expect("PKIN-of-PKIN must still fan out");
     assert_eq!(synths.len(), 3, "leaf_a + (leaf_b + leaf_c) flattened");
     let leaf_ids: Vec<u32> = synths.iter().map(|s| s.0).collect();
     assert_eq!(leaf_ids, vec![leaf_a, leaf_b, leaf_c]);

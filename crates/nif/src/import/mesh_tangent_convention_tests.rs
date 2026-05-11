@@ -29,11 +29,30 @@ use crate::types::NiPoint3;
 #[test]
 fn synthesize_tangents_stores_dpdu_not_dpdv() {
     let vertices = vec![
-        NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
-        NiPoint3 { x: 1.0, y: 0.0, z: 0.0 },
-        NiPoint3 { x: 0.0, y: 1.0, z: 0.0 },
+        NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        NiPoint3 {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        NiPoint3 {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        },
     ];
-    let normals = vec![NiPoint3 { x: 0.0, y: 0.0, z: 1.0 }; 3];
+    let normals = vec![
+        NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0
+        };
+        3
+    ];
     let uvs = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
     let triangles = vec![[0u16, 1u16, 2u16]];
 
@@ -82,11 +101,30 @@ fn synthesize_tangents_stores_dpdu_not_dpdv() {
 #[test]
 fn synthesize_tangents_flips_bitangent_sign_on_mirrored_uvs() {
     let vertices = vec![
-        NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
-        NiPoint3 { x: 1.0, y: 0.0, z: 0.0 },
-        NiPoint3 { x: 0.0, y: 1.0, z: 0.0 },
+        NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        NiPoint3 {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        NiPoint3 {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        },
     ];
-    let normals = vec![NiPoint3 { x: 0.0, y: 0.0, z: 1.0 }; 3];
+    let normals = vec![
+        NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 1.0
+        };
+        3
+    ];
     // V axis flipped: vertex (0,1,0) gets v = -1 instead of +1.
     let uvs = vec![[0.0, 0.0], [1.0, 0.0], [0.0, -1.0]];
     let triangles = vec![[0u16, 1u16, 2u16]];

@@ -115,6 +115,10 @@ mod tests {
             inam(0x0001_0000),
         ];
         let r = parse_otft(0x0001_0000, &subs);
-        assert_eq!(r.items, vec![0x0001_0000], "short INAM must not panic or pollute the list");
+        assert_eq!(
+            r.items,
+            vec![0x0001_0000],
+            "short INAM must not panic or pollute the list"
+        );
     }
 }
