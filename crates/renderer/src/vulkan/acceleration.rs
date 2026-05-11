@@ -649,6 +649,21 @@ impl AccelerationManager {
         vertex_count: u32,
         index_count: u32,
     ) -> Result<()> {
+        // #915 / REN-D8-NEW-05 — sibling of the `build_blas_batched`
+        // pre-batch eviction at line ~1354. The batched path is the
+        // M40 cell-loader hot path, so eviction lives there; the
+        // single-shot path here is hit by ad-hoc / UI-quad / lazy-
+        // upload registrations and was missing the guard. A future
+        // streaming refactor that promoted single-shot to the hot
+        // path (or a 6 GB-budget GPU running near the cap) would
+        // silently bypass `blas_budget_bytes` here and let the
+        // static BLAS pool grow past the budget. Mirror the
+        // batched-path call so eviction fires uniformly across the
+        // two BLAS-creating entry points.
+        unsafe {
+            self.evict_unused_blas(device, allocator);
+        }
+
         let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
 
         // SAFETY: get_buffer_device_address requires the buffer was created with
