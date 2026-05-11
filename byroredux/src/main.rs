@@ -346,6 +346,14 @@ struct App {
     /// and synchronously loads / unloads the deltas via the per-cell
     /// loader.
     streaming: Option<streaming::WorldStreamingState>,
+    /// Debug server lifecycle owner (#855 / C6-NEW-02). Holding the
+    /// handle keeps the TCP listener thread alive; the natural App::Drop
+    /// fires the handle's Drop, which sets the shutdown flag and joins
+    /// the listener cleanly instead of detaching it. Read-side never
+    /// touches it — the field exists purely for its Drop side-effect.
+    #[cfg(feature = "debug-server")]
+    #[allow(dead_code)]
+    debug_server: Option<byroredux_debug_server::DebugServerHandle>,
 }
 
 impl App {
@@ -509,14 +517,21 @@ impl App {
         world.insert_resource(build_command_registry());
 
         // Start debug server (feature-gated, zero cost when disabled).
+        // The returned handle's Drop signals shutdown + joins the
+        // listener thread; stash it on App so natural teardown is tidy
+        // (#855 / C6-NEW-02).
         #[cfg(feature = "debug-server")]
-        {
+        let debug_server = {
             let debug_port: u16 = std::env::var("BYRO_DEBUG_PORT")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(9876);
-            byroredux_debug_server::start(&mut world, &mut scheduler, debug_port);
-        }
+            Some(byroredux_debug_server::start(
+                &mut world,
+                &mut scheduler,
+                debug_port,
+            ))
+        };
 
         Self {
             window: None,
@@ -549,6 +564,8 @@ impl App {
             screenshot_requested: false,
             screenshot_deadline_frames: 0,
             streaming: None,
+            #[cfg(feature = "debug-server")]
+            debug_server,
         }
     }
 
