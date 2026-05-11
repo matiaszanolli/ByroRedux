@@ -695,6 +695,42 @@ impl BsClothExtraData {
     }
 }
 
+// ── BSCollisionQueryProxyExtraData ─────────────────────────────────
+
+/// FO76 collision-query-proxy metadata (nif.xml line 8498). Inherits
+/// `BSExtraData` (no `Name` field per the `excludeT` gate, same as
+/// `BSClothExtraData`) and adds a single `ByteArray` payload. The
+/// binary blob is opaque to us today; capturing it correctly prevents
+/// the previous `NiUnknown` silent drop on the 2 occurrences observed
+/// in `SeventySix - Meshes.ba2`. See #728 / NIF-D5-10.
+#[derive(Debug)]
+pub struct BsCollisionQueryProxyExtraData {
+    pub data: Vec<u8>,
+}
+
+impl NiObject for BsCollisionQueryProxyExtraData {
+    fn block_type_name(&self) -> &'static str {
+        "BSCollisionQueryProxyExtraData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsCollisionQueryProxyExtraData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // Same wire layout as `BsClothExtraData` — both inherit
+        // `BSExtraData` (no Name) and carry a single ByteArray
+        // (length-prefixed). Pre-#728 these blocks landed on the
+        // NiUnknown recovery path. Block-size recovery hid the drop;
+        // the per-block telemetry surface added in #939 will catch a
+        // future regression here.
+        let length = stream.read_u32_le()? as usize;
+        let data = stream.read_bytes(length)?;
+        Ok(Self { data })
+    }
+}
+
 // ── BSDistantObjectLargeRefExtraData ────────────────────────────────
 
 /// Skyrim SE "is this a large reference?" flag, attached to worldspace

@@ -43,9 +43,9 @@ use controller::{
 };
 use extra_data::{
     BsAnimNote, BsAnimNotes, BsBehaviorGraphExtraData, BsBound, BsClothExtraData,
-    BsConnectPointChildren, BsConnectPointParents, BsDecalPlacementVectorExtraData,
-    BsDistantObjectLargeRefExtraData, BsEyeCenterExtraData, BsFurnitureMarker, BsInvMarker,
-    BsPositionData, BsWArray, NiExtraData,
+    BsCollisionQueryProxyExtraData, BsConnectPointChildren, BsConnectPointParents,
+    BsDecalPlacementVectorExtraData, BsDistantObjectLargeRefExtraData, BsEyeCenterExtraData,
+    BsFurnitureMarker, BsInvMarker, BsPositionData, BsWArray, NiExtraData,
 };
 use interpolator::{
     BsTreadTransfInterpolator, NiBSplineBasisData, NiBSplineCompFloatInterpolator,
@@ -515,6 +515,11 @@ pub fn parse_block(
             "BSFurnitureMarkerNode",
         )?)),
         "BSClothExtraData" => Ok(Box::new(BsClothExtraData::parse(stream)?)),
+        // #728 / NIF-D5-10 — FO76 collision-query-proxy metadata.
+        // Same wire shape as BSClothExtraData (BSExtraData + ByteArray).
+        "BSCollisionQueryProxyExtraData" => {
+            Ok(Box::new(BsCollisionQueryProxyExtraData::parse(stream)?))
+        }
         // #942 / NIF-D5-NEW-03 — SSE-only `Large Ref` flag attached to
         // worldspace objects scheduled through the precombined-LOD pool.
         // Pre-fix the block fell into NiUnknown and the flag was lost,
@@ -894,7 +899,17 @@ pub fn parse_block(
         | "NiPSysFieldMaxDistanceCtlr"
         | "NiPSysAirFieldAirFrictionCtlr"
         | "NiPSysAirFieldInheritVelocityCtlr"
-        | "NiPSysAirFieldSpreadCtlr" => {
+        | "NiPSysAirFieldSpreadCtlr"
+        // #728 / NIF-D5-10 — `NiPSysRotDampeningCtlr` is another
+        // `NiPSysModifierFloatCtlr` subclass (per the family naming
+        // convention — damps particle rotation, sibling to
+        // GravityStrength / AirFriction etc.). FO76 emits 5
+        // occurrences in `SeventySix - Meshes.ba2`. Same wire shape
+        // as the other modifier ctlrs above; the trailing
+        // `Data: Ref<NiFloatData>` is gated `until="10.1.0.103"` so
+        // FO76 (v20.2.0.7) skips it via the same NiTimeController
+        // base.
+        | "NiPSysRotDampeningCtlr" => {
             Ok(Box::new(particle::parse_modifier_ctlr(stream, type_name)?))
         }
         // ── Havok collision blocks (fully parsed) ────────────────────

@@ -3516,3 +3516,29 @@ fn fnv_bs_tread_transf_interpolator_empty_array() {
     assert!(interp.data_ref.is_null());
     assert_eq!(stream.position() as usize, data.len());
 }
+
+// ── #728 / NIF-D5-10 — BSCollisionQueryProxyExtraData (FO76) ─────
+
+#[test]
+fn fo76_bs_collision_query_proxy_extra_data_round_trips_byte_array() {
+    let header = fnv_header_bspline(); // wire layout doesn't depend on bsver — ByteArray only
+    let payload: &[u8] = b"\xDE\xAD\xBE\xEF\xCA\xFE";
+    let mut data = Vec::new();
+    data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    data.extend_from_slice(payload);
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "BSCollisionQueryProxyExtraData",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("BSCollisionQueryProxyExtraData must dispatch");
+    assert_eq!(block.block_type_name(), "BSCollisionQueryProxyExtraData");
+    let proxy = block
+        .as_any()
+        .downcast_ref::<extra_data::BsCollisionQueryProxyExtraData>()
+        .expect("dispatch must produce BsCollisionQueryProxyExtraData");
+    assert_eq!(proxy.data.as_slice(), payload);
+    assert_eq!(stream.position() as usize, data.len());
+}
