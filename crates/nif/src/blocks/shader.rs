@@ -1085,7 +1085,11 @@ impl BSLightingShaderProperty {
                 });
             }
 
-            let has_texture_arrays = stream.read_u8()? != 0;
+            // #724 / NIF-D1-06 — sibling read_byte_bool on this same
+            // function (thick_object, mix_albedo above) for consistency.
+            // Same single-byte read, just less repetition at the `!= 0`
+            // call site.
+            let has_texture_arrays = stream.read_byte_bool()?;
             if has_texture_arrays {
                 // #408 — preferred allocate_vec for both the outer
                 // count and per-array width; both are file-driven u32s.

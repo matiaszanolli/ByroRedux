@@ -68,8 +68,13 @@ impl NifHeader {
         // Phase 2: Binary header fields
         let version = NifVersion(read_u32_le(&mut cursor)?);
 
-        // Endianness byte (present in version >= 20.0.0.4)
-        let little_endian = if version >= NifVersion(0x14000004) {
+        // Endianness byte: nif.xml line 1968 gates it on
+        // `since="20.0.0.3"`. #724 / NIF-D2-01 — pre-fix this used
+        // `>= 20.0.0.4`. No retail Bethesda title ships at exactly
+        // v20.0.0.3 (it sits in the Civ IV / Florensia non-Bethesda
+        // 20.0.0.x gap window) so the in-the-wild impact is zero,
+        // but the gate should still match nif.xml.
+        let little_endian = if version >= NifVersion(0x14000003) {
             let e = read_u8(&mut cursor)?;
             e != 0
         } else {
