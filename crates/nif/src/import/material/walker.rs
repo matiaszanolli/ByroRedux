@@ -728,6 +728,41 @@ pub(crate) fn extract_material_info_from_refs(
             info.env_map_scale = shader.shader.env_map_scale;
         }
 
+        // #940 / NIF-D4-NEW-01 — `TileShaderProperty` /
+        // `SkyShaderProperty` / `TallGrassShaderProperty` each carry a
+        // `file_name: String` populated by their dedicated parsers
+        // (#455 / #550 / #474) — the import walker was never updated
+        // to consume them, so FO3/FNV HUD tiles, sky domes, and tall
+        // grass imported with `texture_path = None` and the renderer
+        // fell back to the magenta placeholder. WaterShaderProperty
+        // has no file_name (the water texture lives elsewhere) so
+        // there's nothing to capture for that variant — its env-map
+        // scale would flow through the base shader path, but our
+        // BSShaderProperty base data isn't yet plumbed into
+        // MaterialInfo here. Last-writer-wins matches the existing
+        // `texture_path.is_none()` policy on the PP / NoLighting
+        // branches.
+        if let Some(shader) = scene.get_as::<TileShaderProperty>(idx) {
+            if info.texture_path.is_none() {
+                info.texture_path = intern_texture_path(pool, &shader.file_name);
+            }
+            info.texture_clamp_mode = shader.texture_clamp_mode as u8;
+            info.env_map_scale = shader.shader.env_map_scale;
+        }
+        if let Some(shader) = scene.get_as::<SkyShaderProperty>(idx) {
+            if info.texture_path.is_none() {
+                info.texture_path = intern_texture_path(pool, &shader.file_name);
+            }
+            info.texture_clamp_mode = shader.texture_clamp_mode as u8;
+            info.env_map_scale = shader.shader.env_map_scale;
+        }
+        if let Some(shader) = scene.get_as::<TallGrassShaderProperty>(idx) {
+            if info.texture_path.is_none() {
+                info.texture_path = intern_texture_path(pool, &shader.file_name);
+            }
+            info.env_map_scale = shader.shader.env_map_scale;
+        }
+
         // NiStencilProperty — proper parser replaces NiUnknown heuristic.
         // Two-sided promotion is the 95% case (`draw_mode` 0 / 3); the
         // remaining stencil test/write fields ride on

@@ -6,7 +6,8 @@ use crate::blocks::properties::{
 };
 use crate::blocks::shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
-    BSShaderPPLightingProperty, BSShaderTextureSet, ShaderTypeData,
+    BSShaderPPLightingProperty, BSShaderTextureSet, ShaderTypeData, SkyShaderProperty,
+    TallGrassShaderProperty, TileShaderProperty,
 };
 use crate::blocks::texture::NiSourceTexture;
 use crate::blocks::tri_shape::NiTriShape;
