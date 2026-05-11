@@ -1708,11 +1708,18 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         // Solar angle: 0 at sunrise (6h), π at sunset (18h).
         let solar_hour = (hour - 6.0).clamp(0.0, 12.0);
         let angle = solar_hour / 12.0 * std::f32::consts::PI;
-        // Sun arcs from east (+X) through up (+Y) to west (-X).
-        // Add a slight south tilt (negative Z in Y-up).
+        // Sun arcs from east (+X) through up (+Y) to west (-X) with a
+        // slight south tilt — #802 / SUN-N2. Per the Z-up → Y-up swap
+        // in `crates/nif/src/import/coord.rs:18` (`(x, y, z) → (x, z, -y)`),
+        // Bethesda's authored +Y (north) maps to engine -Z, so SOUTH is
+        // engine +Z. All four Bethesda settings (Mojave, Capital
+        // Wasteland, Tamriel, Commonwealth) sit at NH latitudes where
+        // the real sun arcs through the southern sky; pre-#802 this
+        // constant was -0.15 (a NORTH tilt) despite the comment
+        // claiming south.
         let x = angle.cos();
         let y = angle.sin();
-        let z = -0.15_f32; // slight south tilt
+        let z = 0.15_f32; // slight south tilt (engine +Z = Bethesda -Y = south)
         let len = (x * x + y * y + z * z).sqrt();
         if (6.0..=18.0).contains(&hour) {
             [x / len, y / len, z / len]
