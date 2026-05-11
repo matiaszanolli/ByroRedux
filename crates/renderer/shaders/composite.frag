@@ -22,7 +22,11 @@ layout(set = 0, binding = 1) uniform sampler2D indirectTex;  // demodulated indi
 layout(set = 0, binding = 2) uniform sampler2D albedoTex;    // surface albedo (multiplies demodulated indirect)
 layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 fog_color;      // xyz = RGB, w = enabled (1.0 = yes)
-    vec4 fog_params;     // x = near, y = far, z/w = unused
+    // x = near, y = far, z = XCLL cubic-fog clip distance (0 = no
+    // curve), w = XCLL cubic-fog falloff exponent (0 = no curve).
+    // When z > 0 && w > 0, use pow(dist / z, w) instead of the linear
+    // (dist - near) / (far - near) blend. See #865 / FNV-D3-NEW-06.
+    vec4 fog_params;
     vec4 depth_params;   // x = is_exterior (1.0 = sky enabled), y = exposure, z/w = unused
     vec4 sky_zenith;     // xyz = zenith color (linear RGB), w = sun_size (cos threshold)
     vec4 sky_horizon;    // xyz = horizon color (linear RGB), w = unused
@@ -437,6 +441,8 @@ void main() {
         if (params.depth_params.x > 0.5 && depth < 0.9999) {
             float fog_near = params.fog_params.x;
             float fog_far  = params.fog_params.y;
+            float fog_clip  = params.fog_params.z;
+            float fog_power = params.fog_params.w;
             if (fog_far > fog_near) {
                 // worldDist was computed above in the volumetric
                 // branch but only inside that `if (depth < 0.9999)`
@@ -447,10 +453,22 @@ void main() {
                 vec4 world_fog = params.inv_view_proj * clip_fog;
                 vec3 worldPos_fog = world_fog.xyz / world_fog.w;
                 float worldDist = length(worldPos_fog - params.camera_pos.xyz);
-                float fog_t = clamp(
-                    (worldDist - fog_near) / (fog_far - fog_near),
-                    0.0, 1.0
-                );
+                // #865 / FNV-D3-NEW-06 — when XCLL authors a cubic-fog
+                // curve (FNV+ 40-byte tail), use `pow(dist / clip, power)`
+                // instead of the linear ramp. Vanilla FNV interiors
+                // (Doc Mitchell's House, Goodsprings Source Pump)
+                // author both fields to shape close-camera fog more
+                // gently than the linear blend allows. Falls through
+                // to the linear ramp when either field is 0 (un-authored).
+                float fog_t;
+                if (fog_clip > 0.0 && fog_power > 0.0) {
+                    fog_t = clamp(pow(worldDist / fog_clip, fog_power), 0.0, 1.0);
+                } else {
+                    fog_t = clamp(
+                        (worldDist - fog_near) / (fog_far - fog_near),
+                        0.0, 1.0
+                    );
+                }
                 // Sky colour along the view direction — same shader
                 // function the sky branch uses, so the haze matches
                 // what the geometry occludes.

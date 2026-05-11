@@ -46,7 +46,11 @@ const COMPOSITE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/composite.frag.s
 pub struct CompositeParams {
     /// xyz = RGB, w = fog enabled (1.0 = yes, 0.0 = no).
     pub fog_color: [f32; 4],
-    /// x = fog near, y = fog far, z/w = unused.
+    /// x = fog near, y = fog far, z = XCLL cubic-fog clip distance
+    /// (0 = no curve), w = XCLL cubic-fog falloff exponent (0 = no
+    /// curve). When `z > 0 && w > 0`, composite uses
+    /// `pow(dist / z, w)` instead of the linear `near..far` ramp.
+    /// See #865 / FNV-D3-NEW-06.
     pub fog_params: [f32; 4],
     /// x = is_exterior (1.0 = sky enabled), y = exposure (default 0.85), z/w = reserved.
     pub depth_params: [f32; 4],

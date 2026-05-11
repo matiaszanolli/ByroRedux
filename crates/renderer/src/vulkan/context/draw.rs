@@ -124,6 +124,12 @@ impl VulkanContext {
         fog_color: [f32; 3],
         fog_near: f32,
         fog_far: f32,
+        // `fog_clip`/`fog_power` carry the XCLL FNV+ cubic-fog curve
+        // through to `CompositeParams.fog_params.z/w`. `0.0` on either
+        // = no curve; composite falls back to the linear
+        // `fog_near..fog_far` ramp. See #865 / FNV-D3-NEW-06.
+        fog_clip: f32,
+        fog_power: f32,
         ui_texture_handle: Option<u32>,
         sky_params: &SkyParams,
         timings: Option<&mut FrameTimings>,
@@ -1256,7 +1262,12 @@ impl VulkanContext {
                     fog_color[2],
                     if fog_far > fog_near { 1.0 } else { 0.0 },
                 ],
-                fog_params: [fog_near, fog_far, 0.0, 0.0],
+                // #865 / FNV-D3-NEW-06 — pack XCLL cubic-fog curve
+                // into z/w. Composite uses the curve formula
+                // `pow(dist / fog_clip, fog_power)` when both are
+                // > 0; else falls through to the linear
+                // `fog_near..fog_far` ramp.
+                fog_params: [fog_near, fog_far, fog_clip, fog_power],
                 depth_params: [
                     if sky_params.is_exterior { 1.0 } else { 0.0 },
                     0.85, // exposure — default Bethesda-era HDR target; promote to WTHR field (#743)

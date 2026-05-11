@@ -1137,6 +1137,8 @@ impl ApplicationHandler for App {
                         frame.fog_color,
                         frame.fog_near,
                         frame.fog_far,
+                        frame.fog_clip,
+                        frame.fog_power,
                         ui_tex,
                         &frame.sky,
                         frame_timings.as_mut(),
