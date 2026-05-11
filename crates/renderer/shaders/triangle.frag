@@ -1682,13 +1682,29 @@ void main() {
                 float hDist = rayQueryGetIntersectionTEXT(refrRQ, true);
                 GpuInstance hInst = instances[hIdx];
                 bool sameTexture = (hInst.textureIndex == selfTexture);
+                // Fallback-texture detection — bindless slot 0 is the
+                // unresolved-texture placeholder (`TextureRegistry::fallback`).
+                // Markarth probe 2026-05-10: when the lantern flame
+                // texture failed to resolve, the IOR refraction loop
+                // sampled the magenta-checker placeholder THROUGH the
+                // alpha-blend lantern glass. With `ALPHA_BLEND_NO_HISTORY`
+                // disabling TAA and IGN-seeded roughness spread jittering
+                // `refractDir` per-frame per-pixel, the magenta-checker
+                // shimmered violently with every camera move. Skip the
+                // hit like same-texture self/sibling hits so the ray
+                // continues past unresolved content; the terminator
+                // re-tests below.
+                bool fallbackTexture = (hInst.textureIndex == 0u);
 
-                // Same-texture passthru — only continue if we still
-                // have budget for another trace AND this isn't the
-                // last allowed iteration. The terminating iteration
-                // (passthru == BUDGET) commits whatever it hits as
-                // the sample target so the loop always converges.
-                if (sameTexture && passthru < REFRACT_PASSTHRU_BUDGET) {
+                // Same-texture-or-fallback passthru — only continue if
+                // we still have budget for another trace AND this isn't
+                // the last allowed iteration. The terminating iteration
+                // (passthru == BUDGET) commits whatever it hits as the
+                // sample target so the loop always converges; the
+                // post-loop branch below maps a fallback-texture
+                // terminus to the !hit escape path so the magenta
+                // texture is never SAMPLED.
+                if ((sameTexture || fallbackTexture) && passthru < REFRACT_PASSTHRU_BUDGET) {
                     rayOrigin = rayOrigin + refractDir * (hDist + 0.05);
                     rayTMin = 0.0;
                     accumulatedDist += hDist;
@@ -1728,7 +1744,16 @@ void main() {
                 return;
             }
 
-            if (!hit) {
+            // Map fallback-texture terminus to the escape branch —
+            // the terminating iteration of the passthru loop is allowed
+            // to commit any hit (including bindless 0), but actually
+            // SAMPLING the magenta-checker placeholder produces the
+            // shimmer the loop's per-frame IGN jitter was designed to
+            // hide on real textures. Treat such a commit as if the
+            // ray escaped: cell ambient + fog, identical to the !hit
+            // path. Markarth lantern probe 2026-05-10.
+            bool terminusOnFallback = hit && (instances[tIdx].textureIndex == 0u);
+            if (!hit || terminusOnFallback) {
                 // Escaped scene — fall back to cell ambient. The
                 // diagnostic capture from #789-followup showed this
                 // branch is the *dominant* path for upright glass
