@@ -48,7 +48,8 @@ use extra_data::{
     BsPositionData, BsWArray, NiExtraData,
 };
 use interpolator::{
-    NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
+    NiBSplineBasisData, NiBSplineCompFloatInterpolator, NiBSplineCompPoint3Interpolator,
+    NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
     NiBlendFloatInterpolator, NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolData,
     NiBoolInterpolator, NiColorData, NiColorInterpolator, NiFloatData, NiFloatInterpolator,
     NiLookAtInterpolator, NiPathInterpolator, NiPoint3Interpolator, NiPosData, NiTextKeyExtraData,
@@ -701,6 +702,18 @@ pub fn parse_block(
         // subclasses. anim.rs evaluates the spline at 30 Hz into TQS keys.
         "NiBSplineCompTransformInterpolator" => {
             Ok(Box::new(NiBSplineCompTransformInterpolator::parse(stream)?))
+        }
+        // #936 / NIF-D5-NEW-01 — paired float / Point3 compact-spline
+        // interpolators. Wherever a transform B-spline ships on a
+        // NiControllerSequence (Skyrim+ KFs, FO3/FNV idle animations),
+        // alpha / scale floats and color / translation Vec3s usually ride
+        // alongside. Pre-fix both fell into NiUnknown and the channels
+        // collapsed to constant or rest pose.
+        "NiBSplineCompFloatInterpolator" => {
+            Ok(Box::new(NiBSplineCompFloatInterpolator::parse(stream)?))
+        }
+        "NiBSplineCompPoint3Interpolator" => {
+            Ok(Box::new(NiBSplineCompPoint3Interpolator::parse(stream)?))
         }
         "NiBSplineData" => Ok(Box::new(NiBSplineData::parse(stream)?)),
         "NiBSplineBasisData" => Ok(Box::new(NiBSplineBasisData::parse(stream)?)),

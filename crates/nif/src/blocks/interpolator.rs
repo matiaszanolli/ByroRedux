@@ -1951,3 +1951,137 @@ impl NiBSplineCompTransformInterpolator {
         })
     }
 }
+
+/// `NiBSplineCompFloatInterpolator` — B-spline driven scalar (float)
+/// channel using compact (quantized) control points. Inherits
+/// `NiBSplineFloatInterpolator` → `NiBSplineInterpolator`.
+///
+/// nif.xml wire layout (flat, in inheritance order):
+/// - NiBSplineInterpolator: `start_time` (f32), `stop_time` (f32),
+///   `spline_data_ref` (Ref → NiBSplineData), `basis_data_ref`
+///   (Ref → NiBSplineBasisData)
+/// - NiBSplineFloatInterpolator: `value` (f32 fallback), `handle` (u32,
+///   `0xFFFFFFFF` ≡ static)
+/// - NiBSplineCompFloatInterpolator: `float_offset` (f32),
+///   `float_half_range` (f32) — quantization params
+///
+/// Used by FNV/FO3/Skyrim/FO4 KFs to drive alpha or scale curves on a
+/// `NiControllerSequence`. Pre-#936 the block had no dispatch arm; the
+/// outer parse loop discarded it via the block_size fallback, so paired
+/// float channels alongside `NiBSplineCompTransformInterpolator`
+/// silently collapsed to constant or rest values.
+#[derive(Debug)]
+pub struct NiBSplineCompFloatInterpolator {
+    pub start_time: f32,
+    pub stop_time: f32,
+    pub spline_data_ref: BlockRef,
+    pub basis_data_ref: BlockRef,
+    /// Static fallback value used when `handle == u32::MAX`.
+    pub value: f32,
+    pub handle: u32,
+    pub float_offset: f32,
+    pub float_half_range: f32,
+}
+
+impl NiObject for NiBSplineCompFloatInterpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiBSplineCompFloatInterpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBSplineCompFloatInterpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // NiBSplineInterpolator base.
+        let start_time = stream.read_f32_le()?;
+        let stop_time = stream.read_f32_le()?;
+        let spline_data_ref = stream.read_block_ref()?;
+        let basis_data_ref = stream.read_block_ref()?;
+        // NiBSplineFloatInterpolator.
+        let value = stream.read_f32_le()?;
+        let handle = stream.read_u32_le()?;
+        // NiBSplineCompFloatInterpolator.
+        let float_offset = stream.read_f32_le()?;
+        let float_half_range = stream.read_f32_le()?;
+        Ok(Self {
+            start_time,
+            stop_time,
+            spline_data_ref,
+            basis_data_ref,
+            value,
+            handle,
+            float_offset,
+            float_half_range,
+        })
+    }
+}
+
+/// `NiBSplineCompPoint3Interpolator` — B-spline driven Vec3 channel
+/// using compact (quantized) control points. Inherits
+/// `NiBSplinePoint3Interpolator` → `NiBSplineInterpolator`.
+///
+/// nif.xml wire layout (flat, in inheritance order):
+/// - NiBSplineInterpolator: `start_time` (f32), `stop_time` (f32),
+///   `spline_data_ref` (Ref → NiBSplineData), `basis_data_ref`
+///   (Ref → NiBSplineBasisData)
+/// - NiBSplinePoint3Interpolator: `value` (Vector3 fallback), `handle` (u32,
+///   `0xFFFFFFFF` ≡ static)
+/// - NiBSplineCompPoint3Interpolator: `position_offset` (f32),
+///   `position_half_range` (f32) — quantization params
+///
+/// Channel stride for the compact data slice is 3 (x, y, z). Used by
+/// FNV/FO3/Skyrim/FO4 KFs for color / translation curves that ride
+/// alongside `NiBSplineCompTransformInterpolator`. Pre-#936 the block
+/// landed on the NiUnknown recovery path and the channel was silently
+/// dropped.
+#[derive(Debug)]
+pub struct NiBSplineCompPoint3Interpolator {
+    pub start_time: f32,
+    pub stop_time: f32,
+    pub spline_data_ref: BlockRef,
+    pub basis_data_ref: BlockRef,
+    /// Static fallback Vec3 used when `handle == u32::MAX`.
+    pub value: [f32; 3],
+    pub handle: u32,
+    pub position_offset: f32,
+    pub position_half_range: f32,
+}
+
+impl NiObject for NiBSplineCompPoint3Interpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiBSplineCompPoint3Interpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBSplineCompPoint3Interpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // NiBSplineInterpolator base.
+        let start_time = stream.read_f32_le()?;
+        let stop_time = stream.read_f32_le()?;
+        let spline_data_ref = stream.read_block_ref()?;
+        let basis_data_ref = stream.read_block_ref()?;
+        // NiBSplinePoint3Interpolator.
+        let vx = stream.read_f32_le()?;
+        let vy = stream.read_f32_le()?;
+        let vz = stream.read_f32_le()?;
+        let handle = stream.read_u32_le()?;
+        // NiBSplineCompPoint3Interpolator.
+        let position_offset = stream.read_f32_le()?;
+        let position_half_range = stream.read_f32_le()?;
+        Ok(Self {
+            start_time,
+            stop_time,
+            spline_data_ref,
+            basis_data_ref,
+            value: [vx, vy, vz],
+            handle,
+            position_offset,
+            position_half_range,
+        })
+    }
+}

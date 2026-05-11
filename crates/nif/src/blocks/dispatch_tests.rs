@@ -3286,3 +3286,147 @@ fn fo76_bs_distant_object_instanced_node_root_recognised_by_is_ni_node_subclass(
     // child.
     assert!(crate::is_ni_node_subclass("BSDistantObjectInstancedNode"));
 }
+
+// ── #936 / NIF-D5-NEW-01 — NiBSplineComp{Float,Point3}Interpolator ──
+
+/// FNV header (bsver=34, v20.2.0.7) used by the B-spline dispatch
+/// tests. Compact B-spline interpolators are reachable on FO3/FNV per
+/// the "B-splines aren't Skyrim+ only" feedback memory, so the float +
+/// point3 fixtures use the FNV-style header.
+fn fnv_header_bspline() -> NifHeader {
+    NifHeader {
+        version: NifVersion(0x14020007),
+        little_endian: true,
+        user_version: 11,
+        user_version_2: 34,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    }
+}
+
+#[test]
+fn ni_bspline_comp_float_interpolator_round_trip() {
+    let header = fnv_header_bspline();
+    let mut data = Vec::new();
+    // NiBSplineInterpolator: start_time, stop_time, spline_data_ref,
+    // basis_data_ref.
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // start_time
+    data.extend_from_slice(&1.5f32.to_le_bytes()); // stop_time
+    data.extend_from_slice(&7i32.to_le_bytes()); // spline_data_ref
+    data.extend_from_slice(&8i32.to_le_bytes()); // basis_data_ref
+    // NiBSplineFloatInterpolator: value, handle.
+    data.extend_from_slice(&0.25f32.to_le_bytes()); // fallback value
+    data.extend_from_slice(&0u32.to_le_bytes()); // handle
+    // NiBSplineCompFloatInterpolator: float_offset, float_half_range.
+    data.extend_from_slice(&0.5f32.to_le_bytes()); // offset
+    data.extend_from_slice(&0.5f32.to_le_bytes()); // half_range
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "NiBSplineCompFloatInterpolator",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("NiBSplineCompFloatInterpolator must dispatch");
+    assert_eq!(block.block_type_name(), "NiBSplineCompFloatInterpolator");
+    let interp = block
+        .as_any()
+        .downcast_ref::<interpolator::NiBSplineCompFloatInterpolator>()
+        .expect("dispatch must produce NiBSplineCompFloatInterpolator");
+
+    assert_eq!(interp.start_time, 0.0);
+    assert_eq!(interp.stop_time, 1.5);
+    assert_eq!(interp.spline_data_ref.index(), Some(7));
+    assert_eq!(interp.basis_data_ref.index(), Some(8));
+    assert_eq!(interp.value, 0.25);
+    assert_eq!(interp.handle, 0);
+    assert_eq!(interp.float_offset, 0.5);
+    assert_eq!(interp.float_half_range, 0.5);
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "32-byte body must be consumed exactly"
+    );
+}
+
+#[test]
+fn ni_bspline_comp_point3_interpolator_round_trip() {
+    let header = fnv_header_bspline();
+    let mut data = Vec::new();
+    // NiBSplineInterpolator base.
+    data.extend_from_slice(&0.5f32.to_le_bytes()); // start_time
+    data.extend_from_slice(&2.5f32.to_le_bytes()); // stop_time
+    data.extend_from_slice(&3i32.to_le_bytes()); // spline_data_ref
+    data.extend_from_slice(&4i32.to_le_bytes()); // basis_data_ref
+    // NiBSplinePoint3Interpolator: Vector3 value + handle.
+    data.extend_from_slice(&0.1f32.to_le_bytes());
+    data.extend_from_slice(&0.2f32.to_le_bytes());
+    data.extend_from_slice(&0.3f32.to_le_bytes());
+    data.extend_from_slice(&12u32.to_le_bytes()); // handle (non-invalid)
+    // NiBSplineCompPoint3Interpolator: position_offset, position_half_range.
+    data.extend_from_slice(&1.0f32.to_le_bytes()); // offset
+    data.extend_from_slice(&2.0f32.to_le_bytes()); // half_range
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "NiBSplineCompPoint3Interpolator",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("NiBSplineCompPoint3Interpolator must dispatch");
+    assert_eq!(block.block_type_name(), "NiBSplineCompPoint3Interpolator");
+    let interp = block
+        .as_any()
+        .downcast_ref::<interpolator::NiBSplineCompPoint3Interpolator>()
+        .expect("dispatch must produce NiBSplineCompPoint3Interpolator");
+
+    assert_eq!(interp.start_time, 0.5);
+    assert_eq!(interp.stop_time, 2.5);
+    assert_eq!(interp.spline_data_ref.index(), Some(3));
+    assert_eq!(interp.basis_data_ref.index(), Some(4));
+    assert_eq!(interp.value, [0.1, 0.2, 0.3]);
+    assert_eq!(interp.handle, 12);
+    assert_eq!(interp.position_offset, 1.0);
+    assert_eq!(interp.position_half_range, 2.0);
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "36-byte body must be consumed exactly"
+    );
+}
+
+#[test]
+fn ni_bspline_comp_float_interpolator_invalid_handle_static_fallback() {
+    // handle = 0xFFFFFFFF + a non-FLT_MAX `value` means the channel is
+    // static — pin that the body still parses cleanly so the anim
+    // emitter's static-key path has data to read.
+    let header = fnv_header_bspline();
+    let mut data = Vec::new();
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // null spline_data_ref
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // null basis_data_ref
+    data.extend_from_slice(&0.75f32.to_le_bytes()); // value
+    data.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // INVALID handle
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // float_offset
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // float_half_range
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "NiBSplineCompFloatInterpolator",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("static-handle NiBSplineCompFloatInterpolator must dispatch");
+    let interp = block
+        .as_any()
+        .downcast_ref::<interpolator::NiBSplineCompFloatInterpolator>()
+        .unwrap();
+    assert_eq!(interp.handle, u32::MAX);
+    assert_eq!(interp.value, 0.75);
+}

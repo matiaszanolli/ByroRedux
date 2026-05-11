@@ -1213,3 +1213,156 @@ fn import_embedded_animations_returns_none_when_no_controllers() {
         "no-controller scene must yield no clip"
     );
 }
+
+// ── #936 / NIF-D5-NEW-01 — compact-spline float / Point3 emitters ──
+
+/// `extract_float_channel_at` must fall back to the
+/// NiBSplineCompFloatInterpolator path when the interp at `interp_idx`
+/// isn't an `NiFloatInterpolator`. Builds a 4-CP scalar spline
+/// (clamped open-uniform) and pins the endpoint values from the
+/// generated keys. Pre-#936 the channel was dropped at dispatch time;
+/// the new fallback samples it at BSPLINE_SAMPLE_HZ.
+#[test]
+fn extract_float_channel_at_samples_bspline_comp_float() {
+    use crate::blocks::interpolator::{
+        NiBSplineBasisData, NiBSplineCompFloatInterpolator, NiBSplineData,
+    };
+    use crate::types::BlockRef;
+
+    // 4 CPs encoded with offset=0, half_range=10 so the quantization
+    // maps raw [0, 32767, -32767, 0] → [0, 10, -10, 0]. With degree 3
+    // and a 4-CP basis the curve is clamped at the endpoints: u=0
+    // evaluates to CP[0] (0.0) and u=1 (= n - degree) to CP[3] (0.0).
+    let data = NiBSplineData {
+        float_control_points: Vec::new(),
+        compact_control_points: vec![0, 32767, -32767, 0],
+    };
+    let basis = NiBSplineBasisData {
+        num_control_points: 4,
+    };
+    let interp = NiBSplineCompFloatInterpolator {
+        start_time: 0.0,
+        stop_time: 1.0,
+        spline_data_ref: BlockRef(0),
+        basis_data_ref: BlockRef(1),
+        value: 0.0,
+        handle: 0,
+        float_offset: 0.0,
+        float_half_range: 10.0,
+    };
+    let scene = NifScene {
+        blocks: vec![Box::new(data), Box::new(basis), Box::new(interp)],
+        ..NifScene::default()
+    };
+
+    let ch = extract_float_channel_at(&scene, 2, FloatTarget::Alpha)
+        .expect("BSpline-comp float channel must surface keys");
+    assert!(
+        ch.keys.len() >= 2,
+        "must emit at least start + end keys, got {}",
+        ch.keys.len()
+    );
+    let first = ch.keys.first().unwrap();
+    let last = ch.keys.last().unwrap();
+    assert!(
+        (first.value - 0.0).abs() < 1e-3,
+        "u=0 evaluates to CP[0] = 0.0, got {}",
+        first.value
+    );
+    assert!(
+        (last.value - 0.0).abs() < 1e-3,
+        "u=1 evaluates to CP[3] = 0.0, got {}",
+        last.value
+    );
+    assert!(matches!(ch.target, FloatTarget::Alpha));
+}
+
+/// Static-handle case: when the interpolator's `handle == u32::MAX`
+/// the emitter falls back to a single-key channel at `start_time`
+/// carrying the static `value`. Pre-#936 the channel was dropped
+/// entirely.
+#[test]
+fn extract_float_channel_at_emits_static_key_for_invalid_handle() {
+    use crate::blocks::interpolator::NiBSplineCompFloatInterpolator;
+    use crate::types::BlockRef;
+
+    let interp = NiBSplineCompFloatInterpolator {
+        start_time: 0.5,
+        stop_time: 1.0,
+        spline_data_ref: BlockRef::NULL,
+        basis_data_ref: BlockRef::NULL,
+        value: 0.42,
+        handle: u32::MAX,
+        float_offset: 0.0,
+        float_half_range: 0.0,
+    };
+    let scene = NifScene {
+        blocks: vec![Box::new(interp)],
+        ..NifScene::default()
+    };
+
+    let ch = extract_float_channel_at(&scene, 0, FloatTarget::Alpha)
+        .expect("static-handle BSpline-comp float must surface a single-key channel");
+    assert_eq!(ch.keys.len(), 1, "exactly one static key");
+    assert_eq!(ch.keys[0].time, 0.5);
+    assert!((ch.keys[0].value - 0.42).abs() < 1e-6);
+}
+
+/// `resolve_color_keys_at` must fall back to the
+/// NiBSplineCompPoint3Interpolator path. Same recipe as the float
+/// test, but with stride 3 and a populated Vec3 spline payload.
+#[test]
+fn resolve_color_keys_at_samples_bspline_comp_point3() {
+    use crate::blocks::interpolator::{
+        NiBSplineBasisData, NiBSplineCompPoint3Interpolator, NiBSplineData,
+    };
+    use crate::types::BlockRef;
+
+    // 4 CPs × stride 3 = 12 i16 slots. Pack [r,g,b] tuples
+    // [(0,0,0), (32767,32767,32767), (-32767,-32767,-32767), (0,0,0)]
+    // with offset=0.5, half_range=0.5 → [0.5; 3], [1; 3], [0; 3], [0.5; 3].
+    let mut cps: Vec<i16> = Vec::with_capacity(12);
+    cps.extend([0, 0, 0]);
+    cps.extend([32767, 32767, 32767]);
+    cps.extend([-32767, -32767, -32767]);
+    cps.extend([0, 0, 0]);
+
+    let data = NiBSplineData {
+        float_control_points: Vec::new(),
+        compact_control_points: cps,
+    };
+    let basis = NiBSplineBasisData {
+        num_control_points: 4,
+    };
+    let interp = NiBSplineCompPoint3Interpolator {
+        start_time: 0.0,
+        stop_time: 1.0,
+        spline_data_ref: BlockRef(0),
+        basis_data_ref: BlockRef(1),
+        value: [0.0, 0.0, 0.0],
+        handle: 0,
+        position_offset: 0.5,
+        position_half_range: 0.5,
+    };
+    let scene = NifScene {
+        blocks: vec![Box::new(data), Box::new(basis), Box::new(interp)],
+        ..NifScene::default()
+    };
+
+    let keys = resolve_color_keys_at(&scene, 2);
+    assert!(
+        keys.len() >= 2,
+        "BSpline-comp Point3 must surface sampled color keys, got {}",
+        keys.len()
+    );
+    let first = keys.first().unwrap();
+    let last = keys.last().unwrap();
+    // u=0 → CP[0] = [0.5; 3]; u=1 → CP[3] = [0.5; 3] (open-uniform
+    // clamps at both endpoints).
+    for &c in &first.value {
+        assert!((c - 0.5).abs() < 1e-3, "first key channel = 0.5, got {c}");
+    }
+    for &c in &last.value {
+        assert!((c - 0.5).abs() < 1e-3, "last key channel = 0.5, got {c}");
+    }
+}

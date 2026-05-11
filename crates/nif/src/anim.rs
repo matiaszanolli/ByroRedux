@@ -11,8 +11,9 @@ use crate::blocks::controller::{
 use crate::blocks::extra_data::{AnimNoteType, BsAnimNote, BsAnimNotes};
 use crate::blocks::interpolator::NiTextKeyExtraData;
 use crate::blocks::interpolator::{
-    FloatKey, KeyGroup, KeyType, NiBSplineBasisData, NiBSplineCompTransformInterpolator,
-    NiBSplineData, NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendInterpolator,
+    FloatKey, KeyGroup, KeyType, NiBSplineBasisData, NiBSplineCompFloatInterpolator,
+    NiBSplineCompPoint3Interpolator, NiBSplineCompTransformInterpolator, NiBSplineData,
+    NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendInterpolator,
     NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolInterpolator, NiColorData,
     NiColorInterpolator, NiFloatData, NiFloatInterpolator, NiLookAtInterpolator,
     NiPathInterpolator, NiPoint3Interpolator, NiPosData, NiTransformData, NiTransformInterpolator,
@@ -1277,6 +1278,96 @@ fn dequantize_channel(
     out
 }
 
+/// Extract a `FloatChannel` by sampling a
+/// `NiBSplineCompFloatInterpolator`. Same de Boor + `BSPLINE_SAMPLE_HZ`
+/// recipe as `extract_transform_channel_bspline` — restricted to a
+/// stride-1 scalar channel. Returns `None` when the spline data is
+/// missing or under-defined (fewer than `degree + 1` control points,
+/// invalid handle, off-end slice) and the caller's downstream behaviour
+/// is to leave the channel at its bind value. See #936.
+fn extract_float_channel_bspline(
+    scene: &NifScene,
+    interp: &NiBSplineCompFloatInterpolator,
+    target: FloatTarget,
+) -> Option<FloatChannel> {
+    // Single-key static fallback used by every "no usable spline data"
+    // branch below (null refs, missing data blocks, under-defined basis,
+    // invalid handle). Returns None when the fallback `value` is also
+    // FLT_MAX-sentinel, in which case the caller treats it as "no
+    // animation" and the channel stays at its bind value.
+    let static_fallback = || -> Option<FloatChannel> {
+        if is_flt_max(interp.value) {
+            return None;
+        }
+        Some(FloatChannel {
+            target,
+            keys: vec![AnimFloatKey {
+                time: interp.start_time,
+                value: interp.value,
+            }],
+        })
+    };
+
+    let (Some(basis_idx), Some(data_idx)) =
+        (interp.basis_data_ref.index(), interp.spline_data_ref.index())
+    else {
+        return static_fallback();
+    };
+    let (Some(basis), Some(data)) = (
+        scene.get_as::<NiBSplineBasisData>(basis_idx),
+        scene.get_as::<NiBSplineData>(data_idx),
+    ) else {
+        return static_fallback();
+    };
+
+    let n_cp = basis.num_control_points as usize;
+    if n_cp < BSPLINE_DEGREE + 1 {
+        return static_fallback();
+    }
+
+    let channel = channel_slice(
+        interp.handle,
+        &data.compact_control_points,
+        n_cp,
+        1, // scalar — stride 1
+        interp.float_offset,
+        interp.float_half_range,
+    );
+
+    let Some(cps) = channel else {
+        return static_fallback();
+    };
+
+    let duration = (interp.stop_time - interp.start_time).max(0.0);
+    let n_samples_f = (duration * BSPLINE_SAMPLE_HZ).ceil();
+    let n_samples = (n_samples_f as usize).max(2).min(1_000_000);
+    let u_max = (n_cp - BSPLINE_DEGREE) as f32;
+
+    let mut keys = Vec::with_capacity(n_samples);
+    for i in 0..n_samples {
+        let t = if n_samples > 1 {
+            interp.start_time + duration * (i as f32 / (n_samples - 1) as f32)
+        } else {
+            interp.start_time
+        };
+        let u = if duration > f32::EPSILON {
+            ((t - interp.start_time) / duration) * u_max
+        } else {
+            0.0
+        };
+        let p = deboor_cubic(&cps, n_cp, 1, u);
+        keys.push(AnimFloatKey {
+            time: t,
+            value: p[0],
+        });
+    }
+
+    if keys.is_empty() {
+        return None;
+    }
+    Some(FloatChannel { target, keys })
+}
+
 /// Extract a TransformChannel by sampling a NiBSplineCompTransformInterpolator.
 fn extract_transform_channel_bspline(
     scene: &NifScene,
@@ -1581,24 +1672,36 @@ fn extract_float_channel_at(
     if let Some(resolved) = resolve_blend_interpolator_target(scene, interp_idx) {
         interp_idx = resolved;
     }
-    let interp = scene.get_as::<NiFloatInterpolator>(interp_idx)?;
-    let data_idx = interp.data_ref.index()?;
-    let data = scene.get_as::<NiFloatData>(data_idx)?;
+    if let Some(interp) = scene.get_as::<NiFloatInterpolator>(interp_idx) {
+        let data_idx = interp.data_ref.index()?;
+        let data = scene.get_as::<NiFloatData>(data_idx)?;
 
-    let keys: Vec<AnimFloatKey> = data
-        .keys
-        .keys
-        .iter()
-        .map(|k| AnimFloatKey {
-            time: k.time,
-            value: k.value,
-        })
-        .collect();
+        let keys: Vec<AnimFloatKey> = data
+            .keys
+            .keys
+            .iter()
+            .map(|k| AnimFloatKey {
+                time: k.time,
+                value: k.value,
+            })
+            .collect();
 
-    if keys.is_empty() {
-        return None;
+        if keys.is_empty() {
+            return None;
+        }
+        return Some(FloatChannel { target, keys });
     }
-    Some(FloatChannel { target, keys })
+
+    // #936 — compact B-spline scalar channel. Used by Skyrim+ / FO4 KFs
+    // for alpha or scale curves paired with NiBSplineCompTransformInterpolator
+    // on the same NiControllerSequence. Sample at BSPLINE_SAMPLE_HZ and
+    // emit linearly-interpolated keys — same pattern as the transform
+    // path in `extract_transform_channel_bspline`.
+    if let Some(interp) = scene.get_as::<NiBSplineCompFloatInterpolator>(interp_idx) {
+        return extract_float_channel_bspline(scene, interp, target);
+    }
+
+    None
 }
 
 /// Resolve a `NiFlipController.sources` BlockRef list into source
@@ -1692,7 +1795,95 @@ fn resolve_color_keys_at(scene: &NifScene, mut interp_idx: usize) -> Vec<AnimCol
             }
         }
     }
+
+    // Path 3 — #936 / NIF-D5-NEW-01. NiBSplineCompPoint3Interpolator
+    // surfaces a Vec3-stride compact spline channel that vanilla KFs
+    // pair with NiBSplineCompTransformInterpolator for color or
+    // translation curves. The channel emitter samples at
+    // BSPLINE_SAMPLE_HZ — same recipe as the transform path. Pre-fix
+    // these were stripped at dispatch time, so any KF whose color
+    // controller landed on the compact-Point3 variant silently dropped
+    // its keys.
+    if let Some(interp) = scene.get_as::<NiBSplineCompPoint3Interpolator>(interp_idx) {
+        return sample_color_keys_bspline_point3(scene, interp);
+    }
+
     Vec::new()
+}
+
+/// Sample a `NiBSplineCompPoint3Interpolator` into a flat
+/// `Vec<AnimColorKey>` at `BSPLINE_SAMPLE_HZ`. Returns an empty Vec when
+/// the spline data is missing or under-defined; the caller treats that
+/// as "no animation" and leaves the channel at its static value. See #936.
+fn sample_color_keys_bspline_point3(
+    scene: &NifScene,
+    interp: &NiBSplineCompPoint3Interpolator,
+) -> Vec<AnimColorKey> {
+    // Single-key static fallback. FLT_MAX-encoded axes mean "no static
+    // pose for this axis" — emit nothing if any axis is sentinel-valued.
+    let static_fallback = || -> Vec<AnimColorKey> {
+        if is_flt_max(interp.value[0]) || is_flt_max(interp.value[1]) || is_flt_max(interp.value[2])
+        {
+            return Vec::new();
+        }
+        vec![AnimColorKey {
+            time: interp.start_time,
+            value: interp.value,
+        }]
+    };
+
+    let (Some(basis_idx), Some(data_idx)) =
+        (interp.basis_data_ref.index(), interp.spline_data_ref.index())
+    else {
+        return static_fallback();
+    };
+    let (Some(basis), Some(data)) = (
+        scene.get_as::<NiBSplineBasisData>(basis_idx),
+        scene.get_as::<NiBSplineData>(data_idx),
+    ) else {
+        return static_fallback();
+    };
+
+    let n_cp = basis.num_control_points as usize;
+    if n_cp < BSPLINE_DEGREE + 1 {
+        return static_fallback();
+    }
+
+    let Some(cps) = channel_slice(
+        interp.handle,
+        &data.compact_control_points,
+        n_cp,
+        3, // Vec3 — stride 3
+        interp.position_offset,
+        interp.position_half_range,
+    ) else {
+        return static_fallback();
+    };
+
+    let duration = (interp.stop_time - interp.start_time).max(0.0);
+    let n_samples_f = (duration * BSPLINE_SAMPLE_HZ).ceil();
+    let n_samples = (n_samples_f as usize).max(2).min(1_000_000);
+    let u_max = (n_cp - BSPLINE_DEGREE) as f32;
+
+    let mut keys = Vec::with_capacity(n_samples);
+    for i in 0..n_samples {
+        let t = if n_samples > 1 {
+            interp.start_time + duration * (i as f32 / (n_samples - 1) as f32)
+        } else {
+            interp.start_time
+        };
+        let u = if duration > f32::EPSILON {
+            ((t - interp.start_time) / duration) * u_max
+        } else {
+            0.0
+        };
+        let p = deboor_cubic(&cps, n_cp, 3, u);
+        keys.push(AnimColorKey {
+            time: t,
+            value: [p[0], p[1], p[2]],
+        });
+    }
+    keys
 }
 
 /// Extract a color channel from a material-color controller interpolator
