@@ -398,7 +398,16 @@ pub struct GpuBuffer {
     /// `Arc<Mutex<…>>`, so cloning is cheap. Sibling fix to
     /// `Texture` (#656) — same release-build leak otherwise.
     device: ash::Device,
-    allocator: SharedAllocator,
+    /// `Option` so `destroy()` can release the Arc clone immediately
+    /// after freeing the underlying allocation. Pre-#927 this was a
+    /// bare `SharedAllocator`; the Arc stayed alive until the
+    /// GpuBuffer struct itself naturally dropped, which on
+    /// `VulkanContext::Drop` happens *after* `Arc::try_unwrap` has
+    /// already given up — driving the "GPU allocator has N
+    /// outstanding references" leak path. Once `allocation` is `None`
+    /// the allocator is no longer needed (`Drop` short-circuits the
+    /// self-clean), so dropping the Arc here is safe.
+    allocator: Option<SharedAllocator>,
 }
 
 impl GpuBuffer {
@@ -529,7 +538,7 @@ impl GpuBuffer {
             allocation: Some(allocation),
             is_coherent,
             device: device.clone(),
-            allocator: allocator.clone(),
+            allocator: Some(allocator.clone()),
         })
     }
 
@@ -583,7 +592,7 @@ impl GpuBuffer {
             // don't run on it. Value is inert.
             is_coherent: false,
             device: device.clone(),
-            allocator: allocator.clone(),
+            allocator: Some(allocator.clone()),
         })
     }
 
@@ -737,6 +746,14 @@ impl GpuBuffer {
                 .free(allocation)
                 .expect("Failed to free GPU allocation");
         }
+        // #927 — release the stored allocator Arc clone now that the
+        // GPU side is freed. Without this, the struct's Arc clone
+        // outlives `destroy()` and only releases on natural Drop of
+        // the owning container — which on shutdown happens *after*
+        // `VulkanContext::Drop`'s `Arc::try_unwrap`, triggering the
+        // outstanding-refs leak path. Drop's safety-net branch
+        // (only hit when destroy() was skipped) handles the None case.
+        self.allocator = None;
     }
 
     // ── Internal ────────────────────────────────────────────────────────
@@ -882,7 +899,7 @@ impl GpuBuffer {
             // DEVICE_LOCAL staging target — never mapped by the owner.
             is_coherent: false,
             device: device.clone(),
-            allocator: allocator.clone(),
+            allocator: Some(allocator.clone()),
         })
     }
 }
@@ -907,7 +924,19 @@ impl Drop for GpuBuffer {
             self.device.destroy_buffer(self.buffer, None);
         }
         if let Some(alloc) = self.allocation.take() {
-            match self.allocator.lock() {
+            // Invariant: if `allocation` was `Some`, `allocator` is
+            // also `Some` — `destroy()` clears them together. Hitting
+            // None here would mean the buffer escaped destroy() AND
+            // had its allocator cleared independently, which is not
+            // a path the rest of the code takes.
+            let Some(allocator) = self.allocator.as_ref() else {
+                log::error!(
+                    "GpuBuffer::Drop has live allocation but no allocator — \
+                     slab leaks (was destroy() partially invoked?)",
+                );
+                return;
+            };
+            match allocator.lock() {
                 Ok(mut a) => {
                     if let Err(e) = a.free(alloc) {
                         log::error!("GpuBuffer::Drop failed to free allocation: {e}");
@@ -926,6 +955,39 @@ impl Drop for GpuBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// #927 — pins the `Option<SharedAllocator>` mechanism that
+    /// `GpuBuffer::destroy()` and `Texture::destroy()` rely on. When
+    /// `destroy()` sets the Option to `None`, the wrapped `Arc` must
+    /// drop immediately, releasing the strong-count slot. Pre-fix the
+    /// field was a bare `SharedAllocator`, so the Arc stayed alive
+    /// until the GpuBuffer struct itself naturally dropped — which on
+    /// shutdown happens *after* `VulkanContext::Drop`'s
+    /// `Arc::try_unwrap`, contributing to the "GPU allocator has N
+    /// outstanding references" leak path. This test pins the language
+    /// semantics; the real regression check is the absence of the
+    /// "outstanding references" error log on engine shutdown.
+    #[test]
+    fn option_arc_dropped_when_set_to_none() {
+        let shared: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+        let mut held: Option<Arc<Mutex<()>>> = Some(Arc::clone(&shared));
+        assert_eq!(
+            Arc::strong_count(&shared),
+            2,
+            "test fixture: original + Option's clone"
+        );
+        held = None;
+        assert_eq!(
+            Arc::strong_count(&shared),
+            1,
+            "setting Option<Arc<_>> to None must drop the wrapped Arc immediately — \
+             the contract `GpuBuffer::destroy()` and `Texture::destroy()` rely on"
+        );
+        // `held` is consumed by the next line; silence the unused
+        // binding lint without changing the assertion above.
+        drop(held);
+    }
 
     #[test]
     fn aligned_flush_range_already_aligned() {

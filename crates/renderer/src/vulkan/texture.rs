@@ -25,7 +25,12 @@ pub struct Texture {
     /// `Arc<Mutex<…>>`. Sampler is shared and owned elsewhere
     /// (`TextureRegistry`) so neither path touches it. #656.
     device: ash::Device,
-    allocator: SharedAllocator,
+    /// `Option` so `destroy()` can release the Arc clone immediately
+    /// after freeing the underlying allocation. Same shutdown-leak
+    /// fix as `GpuBuffer` (#927). Once `allocation` is `None`, the
+    /// allocator is no longer needed (`Drop` short-circuits the
+    /// self-clean), so dropping the Arc here is safe.
+    allocator: Option<SharedAllocator>,
 }
 
 impl Texture {
@@ -283,7 +288,7 @@ impl Texture {
             sampler,
             allocation: Some(image_alloc),
             device: device.clone(),
-            allocator: allocator.clone(),
+            allocator: Some(allocator.clone()),
         })
     }
 
@@ -632,7 +637,7 @@ impl Texture {
                 sampler,
                 allocation: Some(image_alloc),
                 device: device.clone(),
-                allocator: allocator.clone(),
+                allocator: Some(allocator.clone()),
             },
             staging,
             image_size,
@@ -694,6 +699,13 @@ impl Texture {
                 .free(alloc)
                 .expect("Failed to free texture allocation");
         }
+        // #927 — release the stored allocator Arc clone now that the
+        // GPU side is freed. Without this, every Texture struct kept
+        // a live Arc until naturally dropped (post-`VulkanContext::Drop`),
+        // contributing to the outstanding-refs leak path. Drop's
+        // safety-net branch (only hit when destroy() was skipped)
+        // handles the None case.
+        self.allocator = None;
     }
 }
 
@@ -726,11 +738,23 @@ impl Drop for Texture {
             self.device.destroy_image(self.image, None);
         }
         if let Some(alloc) = self.allocation.take() {
+            // Invariant: if `allocation` was `Some`, `allocator` is
+            // also `Some` — `destroy()` clears them together (#927).
+            // Hitting None here would mean the texture escaped
+            // destroy() AND had its allocator cleared independently,
+            // which is not a path the rest of the code takes.
+            let Some(allocator) = self.allocator.as_ref() else {
+                log::error!(
+                    "Texture::Drop has live allocation but no allocator — \
+                     slab leaks (was destroy() partially invoked?)",
+                );
+                return;
+            };
             // Drop must not panic. Surface allocator failures as
             // log::error! and leak quietly rather than blowing up the
             // process from a destructor (e.g. on a poisoned mutex
             // during a panic unwind).
-            match self.allocator.lock() {
+            match allocator.lock() {
                 Ok(mut a) => {
                     if let Err(e) = a.free(alloc) {
                         log::error!("Texture::Drop failed to free allocation: {e}");

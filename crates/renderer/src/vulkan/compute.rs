@@ -351,9 +351,21 @@ impl ClusterCullPipeline {
         for buf in &mut self.cluster_grid_buffers {
             buf.destroy(device, allocator);
         }
+        // #927 — drop the GpuBuffer structs after `destroy()` has
+        // freed their GPU allocations + released their per-buffer
+        // allocator Arc clones. Matches the `param_buffers.clear()`
+        // pattern used by every other compute / graphics pipeline
+        // (Bloom, SSAO, Volumetrics, TAA, Caustic, SVGF, Composite).
+        // Without this the GpuBuffer structs lingered in the Vec
+        // until ClusterCullPipeline naturally dropped, which on
+        // shutdown happens after `VulkanContext::Drop` — the same
+        // class of late-Drop bug fixed at the per-buffer level on
+        // the Option<SharedAllocator> field.
+        self.cluster_grid_buffers.clear();
         for buf in &mut self.light_index_buffers {
             buf.destroy(device, allocator);
         }
+        self.light_index_buffers.clear();
         device.destroy_pipeline(self.pipeline, None);
         device.destroy_pipeline_layout(self.pipeline_layout, None);
         device.destroy_descriptor_pool(self.descriptor_pool, None);
