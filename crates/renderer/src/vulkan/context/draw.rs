@@ -1324,12 +1324,22 @@ impl VulkanContext {
             let mut last_z_test = true;
             let mut last_z_write = true;
             let mut last_z_function: u8 = u8::MAX;
-            // Dynamic cull mode only affects blend pipelines (they declare
-            // VK_DYNAMIC_STATE_CULL_MODE in pipeline.rs). Opaque pipelines
-            // bake a static BACK / NONE cull; emitting cmd_set_cull_mode
-            // on them is harmless host-side state the static pipeline
-            // ignores. Track the last value to elide redundant commands.
-            let mut last_cull_mode = vk::CullModeFlags::BACK;
+            // CULL_MODE is declared dynamic on EVERY draw-loop pipeline
+            // (see `pipeline.rs::dynamic_states` for both the opaque and
+            // blend variants — the "must be dynamic on every pipeline"
+            // invariant lives there with full justification). The
+            // helper below fires `cmd_set_cull_mode` only when the
+            // tracked last value disagrees with the desired one.
+            //
+            // `Option<…>` with `None` sentinel (#912 / REN-D5-NEW-03):
+            // the first batch's `set_cull` fires unconditionally
+            // (None != Some(any)), so the pre-#912 unconditional
+            // `cmd_set_cull_mode(BACK)` before the draw loop is no
+            // longer needed. That pre-emit was wasted whenever the
+            // first batch wanted NONE (two-sided vegetation/foliage
+            // on exterior cells) — it issued BACK and then the
+            // per-batch helper immediately overrode it with NONE.
+            let mut last_cull_mode: Option<vk::CullModeFlags> = None;
             // #664 — per-mesh-fallback VB/IB bind cache. Only consulted
             // on the `global_bound == false` path (early-startup or any
             // future failure mode). The two-sided alpha-blend split at
@@ -1349,7 +1359,15 @@ impl VulkanContext {
             self.device.cmd_set_depth_write_enable(cmd, true);
             self.device
                 .cmd_set_depth_compare_op(cmd, vk::CompareOp::LESS_OR_EQUAL);
-            self.device.cmd_set_cull_mode(cmd, last_cull_mode);
+            // #912 / REN-D5-NEW-03 — pre-#912 this issued
+            // `cmd_set_cull_mode(BACK)` unconditionally. The per-batch
+            // `set_cull` helper now covers the "must be set before
+            // first draw" Vulkan requirement: the first batch's call
+            // fires (`last_cull_mode == None`) and the helper updates
+            // the tracking. Removing the unconditional set saves one
+            // wasted state change per frame whenever the first batch
+            // wants NONE (exterior cells often start with two-sided
+            // vegetation / foliage).
 
             // Bind the global geometry buffer once for all scene draws.
             // Each batch uses global_index_offset / global_vertex_offset
@@ -1478,10 +1496,10 @@ impl VulkanContext {
                     vk::CullModeFlags::BACK
                 };
 
-                let set_cull = |target: vk::CullModeFlags, last: &mut vk::CullModeFlags| {
-                    if *last != target {
+                let set_cull = |target: vk::CullModeFlags, last: &mut Option<vk::CullModeFlags>| {
+                    if *last != Some(target) {
                         self.device.cmd_set_cull_mode(cmd, target);
-                        *last = target;
+                        *last = Some(target);
                     }
                 };
 
