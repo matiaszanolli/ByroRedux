@@ -59,6 +59,19 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 
+// #918 / REN-D10-NEW-04 — SVGF's read-previous / write-current
+// ping-pong (`prev = (f + 1) % MAX_FRAMES_IN_FLIGHT`) silently aliases
+// to the same slot if the constant is ever lowered to 1
+// (single-frame-in-flight CPU-bound mode). Compile-time gate so a
+// future sync-tier change that touches the constant fails the build
+// here rather than producing a degenerate history-recovery boundary
+// at runtime.
+const _: () = assert!(
+    MAX_FRAMES_IN_FLIGHT >= 2,
+    "SVGF ping-pong arithmetic requires MAX_FRAMES_IN_FLIGHT >= 2 — \
+     lowering it aliases the read-previous and write-current slots to the same index"
+);
+
 const SVGF_TEMPORAL_COMP_SPV: &[u8] = include_bytes!("../../shaders/svgf_temporal.comp.spv");
 
 /// Accumulated indirect light format. R11G11B10F saves 50% vs RGBA16F

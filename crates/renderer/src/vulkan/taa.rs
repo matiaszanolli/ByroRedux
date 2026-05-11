@@ -37,6 +37,18 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 
+// #918 / REN-D10-NEW-04 — TAA's read-previous / write-current
+// ping-pong (`prev = (f + 1) % MAX_FRAMES_IN_FLIGHT` at line ~441,
+// history-slot indexing throughout) requires at least 2 slots.
+// Compile-time gate so a future sync-tier change that touches the
+// constant fails the build here rather than producing a degenerate
+// history-recovery boundary at runtime.
+const _: () = assert!(
+    MAX_FRAMES_IN_FLIGHT >= 2,
+    "TAA ping-pong arithmetic requires MAX_FRAMES_IN_FLIGHT >= 2 — \
+     lowering it aliases the read-previous and write-current slots to the same index"
+);
+
 const TAA_COMP_SPV: &[u8] = include_bytes!("../../shaders/taa.comp.spv");
 
 /// History format. RGBA16F matches the HDR render target so no precision
