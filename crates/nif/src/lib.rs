@@ -702,6 +702,9 @@ fn is_ni_node_subclass(block_type_name: &str) -> bool {
             | "BSOrderedNode"
             | "BSValueNode"
             | "BSMultiBoundNode"
+            // #942 — BSDistantObjectInstancedNode (FO76) extends
+            // BSMultiBoundNode and is a valid root for distant-LOD NIFs.
+            | "BSDistantObjectInstancedNode"
             | "BSTreeNode"
             | "NiBillboardNode"
             | "NiSwitchNode"
@@ -982,6 +985,7 @@ mod tests {
             "BSOrderedNode",
             "BSValueNode",
             "BSMultiBoundNode",
+            "BSDistantObjectInstancedNode",
             "BSTreeNode",
             "NiBillboardNode",
             "NiSwitchNode",

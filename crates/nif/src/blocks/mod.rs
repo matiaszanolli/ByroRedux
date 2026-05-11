@@ -44,7 +44,8 @@ use controller::{
 use extra_data::{
     BsAnimNote, BsAnimNotes, BsBehaviorGraphExtraData, BsBound, BsClothExtraData,
     BsConnectPointChildren, BsConnectPointParents, BsDecalPlacementVectorExtraData,
-    BsEyeCenterExtraData, BsFurnitureMarker, BsInvMarker, BsPositionData, BsWArray, NiExtraData,
+    BsDistantObjectLargeRefExtraData, BsEyeCenterExtraData, BsFurnitureMarker, BsInvMarker,
+    BsPositionData, BsWArray, NiExtraData,
 };
 use interpolator::{
     NiBSplineBasisData, NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
@@ -54,7 +55,9 @@ use interpolator::{
     NiTransformData, NiTransformInterpolator, NiUVData,
 };
 use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB, BsMultiBoundSphere};
-use node::{BsOrderedNode, BsValueNode, BsWeakReferenceNode, NiNode};
+use node::{
+    BsDistantObjectInstancedNode, BsOrderedNode, BsValueNode, BsWeakReferenceNode, NiNode,
+};
 use properties::{
     NiAlphaProperty, NiFlagProperty, NiFogProperty, NiMaterialProperty, NiStencilProperty,
     NiStringPalette, NiTexturingProperty, NiVertexColorProperty, NiZBufferProperty,
@@ -174,6 +177,13 @@ pub fn parse_block(
         // See issue #148. Previously aliased to plain NiNode, dropping the
         // multi_bound linkage to BSMultiBoundAABB volumes.
         "BSMultiBoundNode" => Ok(Box::new(node::BsMultiBoundNode::parse(stream)?)),
+        // #942 / NIF-D5-NEW-03 — FO76 distant-LOD instancing container.
+        // Extends BSMultiBoundNode with per-instance transforms; pre-fix
+        // the block fell into NiUnknown and FO76 distant foliage / rock
+        // clusters rendered only the multi-bound shell ("ghost foliage").
+        "BSDistantObjectInstancedNode" => {
+            Ok(Box::new(BsDistantObjectInstancedNode::parse(stream)?))
+        }
         // BSTreeNode: Skyrim SpeedTree root with two trailing NiNode ref lists
         // (branch roots + trunk bones) for wind simulation. Previously aliased
         // to plain NiNode, silently dropping both ref lists. See #159.
@@ -505,6 +515,15 @@ pub fn parse_block(
             "BSFurnitureMarkerNode",
         )?)),
         "BSClothExtraData" => Ok(Box::new(BsClothExtraData::parse(stream)?)),
+        // #942 / NIF-D5-NEW-03 — SSE-only `Large Ref` flag attached to
+        // worldspace objects scheduled through the precombined-LOD pool.
+        // Pre-fix the block fell into NiUnknown and the flag was lost,
+        // so the renderer treated large refs as plain refs and
+        // re-uploaded their geometry per-cell instead of binding the
+        // pre-merged batch.
+        "BSDistantObjectLargeRefExtraData" => {
+            Ok(Box::new(BsDistantObjectLargeRefExtraData::parse(stream)?))
+        }
         "BSConnectPoint::Parents" => Ok(Box::new(BsConnectPointParents::parse(stream)?)),
         "BSConnectPoint::Children" => Ok(Box::new(BsConnectPointChildren::parse(stream)?)),
         // BSPackedCombined[Shared]GeomDataExtra — FO4+ distant-LOD

@@ -3050,3 +3050,239 @@ fn bs_eye_center_extra_data_hostile_num_floats_returns_err_not_panic() {
         "expected `allocate_vec` budget rejection, got: {msg}"
     );
 }
+
+// ── #942 / NIF-D5-NEW-03 — BSDistantObjectLargeRefExtraData (SSE) ──
+
+/// SSE header with the `BSExtraData.name` slot populated for the
+/// `read_extra_data_name` lookup. SSE bsver=100, version=20.2.0.7.
+fn sse_header_with_name(name: &str) -> NifHeader {
+    NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: 100,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: vec![Arc::from(name)],
+        max_string_length: name.len() as u32,
+        num_groups: 0,
+    }
+}
+
+#[test]
+fn sse_bs_distant_object_large_ref_extra_data_round_trips_true() {
+    let header = sse_header_with_name("LargeRefMarker");
+    let mut data = Vec::new();
+    // NiExtraData.name: string-table index 0 → "LargeRefMarker".
+    data.extend_from_slice(&0i32.to_le_bytes());
+    // Large Ref bool — single byte at v20.2.0.7.
+    data.push(1);
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "BSDistantObjectLargeRefExtraData",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("BSDistantObjectLargeRefExtraData must dispatch");
+    assert_eq!(block.block_type_name(), "BSDistantObjectLargeRefExtraData");
+    let large = block
+        .as_any()
+        .downcast_ref::<extra_data::BsDistantObjectLargeRefExtraData>()
+        .expect("dispatch must produce BsDistantObjectLargeRefExtraData");
+    assert!(large.large_ref);
+    assert_eq!(large.name.as_deref(), Some("LargeRefMarker"));
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "must consume the 5-byte body exactly"
+    );
+}
+
+#[test]
+fn sse_bs_distant_object_large_ref_extra_data_round_trips_false() {
+    let header = sse_header_with_name("");
+    let mut data = Vec::new();
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // name index = -1 (None)
+    data.push(0); // large_ref = false
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "BSDistantObjectLargeRefExtraData",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("BSDistantObjectLargeRefExtraData with false flag must dispatch");
+    let large = block
+        .as_any()
+        .downcast_ref::<extra_data::BsDistantObjectLargeRefExtraData>()
+        .unwrap();
+    assert!(!large.large_ref);
+    assert!(large.name.is_none());
+}
+
+// ── #942 / NIF-D5-NEW-03 — BSDistantObjectInstancedNode (FO76) ──────
+
+/// FO76 header — bsver=155, version=20.2.0.7, with named string slots
+/// for the NiObjectNET / texture-array `SizedString` paths used by the
+/// BSMultiBoundNode base and BSDistantObjectInstancedNode trailing
+/// texture arrays. Strings inside texture arrays are inline
+/// `SizedString` (length-prefixed bytes) — they don't look up against
+/// the string table, so an empty `strings` field is fine for them.
+fn fo76_header_with_name(name: &str) -> NifHeader {
+    NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: 155,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: vec![Arc::from(name)],
+        max_string_length: name.len() as u32,
+        num_groups: 0,
+    }
+}
+
+/// Build the BSMultiBoundNode wire body (NiNode body + multi_bound_ref
+/// + culling_mode for bsver >= 83). Returns the byte vector ready to
+/// concatenate inside a BSDistantObjectInstancedNode payload.
+fn build_bs_multi_bound_node_body() -> Vec<u8> {
+    let mut b = Vec::new();
+    // NiObjectNET: name (string-table index 0 → name string), 0 extra
+    // data refs, controller_ref = -1.
+    b.extend_from_slice(&0i32.to_le_bytes());
+    b.extend_from_slice(&0u32.to_le_bytes());
+    b.extend_from_slice(&(-1i32).to_le_bytes());
+    // NiAVObject (FO76/v20.2.0.7 + bsver>=83 layout): u32 flags +
+    // transform (3 floats translation + 9 floats rotation + 1 scale) +
+    // 0 properties + collision_ref = -1.
+    b.extend_from_slice(&0u32.to_le_bytes()); // flags
+    for _ in 0..3 {
+        b.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    for r in &[1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+        b.extend_from_slice(&r.to_le_bytes());
+    }
+    b.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+    // Properties list is gated `bsver <= 34` (FO3/FNV/Oblivion); FO76
+    // bsver=155 skips it entirely — emitting a `0u32` here would shift
+    // every downstream field forward 4 bytes and the multi_bound_ref
+    // (-1) would be misread as a children count of 0xFFFFFFFF.
+    b.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
+    // NiNode: 0 children. The `effects` array is gated on bsver — FO4+
+    // (bsver=130) drops it. FO76 (bsver=155) drops it too.
+    b.extend_from_slice(&0u32.to_le_bytes()); // children count
+    // BSMultiBoundNode: multi_bound_ref (-1) + culling_mode (Skyrim+).
+    b.extend_from_slice(&(-1i32).to_le_bytes());
+    b.extend_from_slice(&0u32.to_le_bytes()); // culling_mode
+    b
+}
+
+#[test]
+fn fo76_bs_distant_object_instanced_node_round_trips_two_instances() {
+    let header = fo76_header_with_name("DistantRoot");
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&build_bs_multi_bound_node_body());
+
+    // num_instances = 2.
+    data.extend_from_slice(&2u32.to_le_bytes());
+
+    // Instance 0: resource_id (file_hash=0xCAFEBABE, ext="nif\0",
+    // dir_hash=0xDEADBEEF), 1 unknown_data entry, 2 transforms.
+    data.extend_from_slice(&0xCAFEBABEu32.to_le_bytes()); // file_hash
+    data.extend_from_slice(b"nif\0"); // extension
+    data.extend_from_slice(&0xDEADBEEFu32.to_le_bytes()); // dir_hash
+    data.extend_from_slice(&1u32.to_le_bytes()); // num_unknown_data
+    data.extend_from_slice(&0x0102030405060708u64.to_le_bytes()); // unknown 1
+    data.extend_from_slice(&0x11223344u32.to_le_bytes()); // unknown 2
+    data.extend_from_slice(&2u32.to_le_bytes()); // num_transforms
+    // Two diagnostic matrices (16 f32 each) — first element differs so
+    // round-trip checks can distinguish them.
+    for tag in [10.0f32, 20.0] {
+        for j in 0..16 {
+            data.extend_from_slice(&(tag + j as f32).to_le_bytes());
+        }
+    }
+
+    // Instance 1: empty unknown_data, single transform.
+    data.extend_from_slice(&0x00000001u32.to_le_bytes()); // file_hash
+    data.extend_from_slice(b"bgs\0"); // extension
+    data.extend_from_slice(&0x00000002u32.to_le_bytes()); // dir_hash
+    data.extend_from_slice(&0u32.to_le_bytes()); // num_unknown_data
+    data.extend_from_slice(&1u32.to_le_bytes()); // num_transforms
+    for j in 0..16 {
+        data.extend_from_slice(&(100.0f32 + j as f32).to_le_bytes());
+    }
+
+    // 3 BSShaderTextureArray slots — each is unknown_byte + count.
+    // Slot 0: 1 BSTextureArray with width=2 ("foo", "bar").
+    data.push(1u8); // unknown_byte
+    data.extend_from_slice(&1u32.to_le_bytes()); // num_texture_arrays
+    data.extend_from_slice(&2u32.to_le_bytes()); // width
+    data.extend_from_slice(&3u32.to_le_bytes()); // SizedString length
+    data.extend_from_slice(b"foo");
+    data.extend_from_slice(&3u32.to_le_bytes());
+    data.extend_from_slice(b"bar");
+    // Slots 1 + 2: empty (count=0).
+    for _ in 0..2 {
+        data.push(1u8);
+        data.extend_from_slice(&0u32.to_le_bytes());
+    }
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "BSDistantObjectInstancedNode",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("BSDistantObjectInstancedNode must dispatch");
+    assert_eq!(block.block_type_name(), "BSDistantObjectInstancedNode");
+    let inst = block
+        .as_any()
+        .downcast_ref::<node::BsDistantObjectInstancedNode>()
+        .expect("dispatch must produce BsDistantObjectInstancedNode");
+
+    // Multi-bound base intact.
+    assert_eq!(inst.base.culling_mode, 0);
+    assert!(inst.base.multi_bound_ref.is_null());
+    assert_eq!(inst.base.base.av.net.name.as_deref(), Some("DistantRoot"));
+
+    // Per-instance payload intact.
+    assert_eq!(inst.instances.len(), 2);
+    let a = &inst.instances[0];
+    assert_eq!(a.resource_file_hash, 0xCAFEBABE);
+    assert_eq!(a.resource_extension, *b"nif\0");
+    assert_eq!(a.resource_dir_hash, 0xDEADBEEF);
+    assert_eq!(a.unknown_data, vec![(0x0102030405060708, 0x11223344)]);
+    assert_eq!(a.transforms.len(), 2);
+    assert_eq!(a.transforms[0][0], 10.0);
+    assert_eq!(a.transforms[1][0], 20.0);
+
+    let b = &inst.instances[1];
+    assert_eq!(b.resource_file_hash, 1);
+    assert_eq!(b.unknown_data.len(), 0);
+    assert_eq!(b.transforms.len(), 1);
+    assert_eq!(b.transforms[0][0], 100.0);
+
+    // Whole payload consumed — texture arrays are parsed-and-consumed,
+    // so the drift detector stays silent on this fixture.
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "BSDistantObjectInstancedNode must consume the entire payload"
+    );
+}
+
+#[test]
+fn fo76_bs_distant_object_instanced_node_root_recognised_by_is_ni_node_subclass() {
+    // SK-D5-02 / #611 — the root-selection helper must include the new
+    // subclass so a NIF rooted at BSDistantObjectInstancedNode picks
+    // block 0 instead of skipping past it to the first plain NiNode
+    // child.
+    assert!(crate::is_ni_node_subclass("BSDistantObjectInstancedNode"));
+}

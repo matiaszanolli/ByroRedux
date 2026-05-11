@@ -695,6 +695,48 @@ impl BsClothExtraData {
     }
 }
 
+// ── BSDistantObjectLargeRefExtraData ────────────────────────────────
+
+/// Skyrim SE "is this a large reference?" flag, attached to worldspace
+/// objects that participate in precombined-LOD scheduling. Inherits
+/// `NiExtraData`; nif.xml: single `bool Large Ref` field.
+///
+/// Pre-#942 the block landed on the `NiUnknown` recovery path, so the
+/// flag was lost and every large-ref worldspace object missed the
+/// precombined-LOD pool — the renderer re-uploaded the geometry per cell
+/// instead of binding the pre-merged batch. See issue #942 / NIF-D5-NEW-03.
+#[derive(Debug)]
+pub struct BsDistantObjectLargeRefExtraData {
+    pub name: Option<Arc<str>>,
+    /// `true` when the host object should be scheduled through the
+    /// precombined-LOD pool; renderer / cell loader consumers gate on
+    /// this. Vanilla SSE flips it for ~every large static (rocks,
+    /// towers, large trees) in exterior cells.
+    pub large_ref: bool,
+}
+
+impl NiObject for BsDistantObjectLargeRefExtraData {
+    fn block_type_name(&self) -> &'static str {
+        "BSDistantObjectLargeRefExtraData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsDistantObjectLargeRefExtraData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // NiExtraData base: name — gated since 10.0.1.0 per nif.xml.
+        // SSE is well past that gate, so the name field is always present.
+        let name = stream.read_extra_data_name()?;
+        // SSE bsver >= 83, so version >= 20.2.0.7 — `read_bool` reads a
+        // single byte. Kept on the version-aware path for symmetry with
+        // other NiExtraData subclasses.
+        let large_ref = stream.read_bool()?;
+        Ok(Self { name, large_ref })
+    }
+}
+
 // ── BSConnectPoint::Parents ────────────────────────────────────────
 
 /// Workshop connection point definition. FO4+.

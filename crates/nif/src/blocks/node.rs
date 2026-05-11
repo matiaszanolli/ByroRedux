@@ -842,3 +842,148 @@ fn read_past_cstring(stream: &mut NifStream) -> io::Result<()> {
         }
     }
 }
+
+// ── BSDistantObjectInstancedNode (FO76) ──────────────────────────────
+
+/// One per-instance entry inside a `BsDistantObjectInstancedNode`.
+/// nif.xml `BSDistantObjectInstance` compound (`module="BSMain"
+/// versions="#F76#"`):
+///
+/// ```text
+/// BSResourceID resource_id            ; fileHash(u32) + extension([u8;4]) + dirHash(u32) — 12 B
+/// uint num_unknown_data
+/// BSDistantObjectUnknown[num_unknown_data] unknown_data  ; u64 + u32 — 12 B each
+/// uint num_transforms
+/// Matrix44[num_transforms] transforms ; 16 × f32 — 64 B each
+/// ```
+///
+/// Each instance contributes one or more world-space placements of the
+/// host LOD mesh — that's the "foliage cluster" the renderer sees in
+/// FO76 distant terrain.
+#[derive(Debug, Clone)]
+pub struct BsDistantObjectInstance {
+    /// `BSResourceID.fileHash` — first u32 of the 12-byte resource ID.
+    pub resource_file_hash: u32,
+    /// `BSResourceID.extension` — 4-byte ASCII tag (e.g. b"nif\0").
+    pub resource_extension: [u8; 4],
+    /// `BSResourceID.dirHash` — second u32 of the 12-byte resource ID.
+    pub resource_dir_hash: u32,
+    /// `BSDistantObjectUnknown` array. Each entry is `(u64, u32)`; the
+    /// semantics are not documented in nif.xml so we surface the raw
+    /// bytes for future consumers without interpreting them.
+    pub unknown_data: Vec<(u64, u32)>,
+    /// Per-instance Matrix44 transforms (16 × f32, row-major as written
+    /// on the wire). The importer translates these into ECS Transform
+    /// components when the FO76 LOD streaming milestone consumes the
+    /// block.
+    pub transforms: Vec<[f32; 16]>,
+}
+
+/// FO76 distant-LOD instancing container. Inherits `BSMultiBoundNode`
+/// (NiNode + multi_bound_ref + Skyrim+ culling_mode), then adds:
+///
+/// ```text
+/// uint num_instances
+/// BSDistantObjectInstance[num_instances] instances
+/// BSShaderTextureArray[3] texture_arrays         ; fixed-length 3
+/// ```
+///
+/// where each `BSShaderTextureArray` is `byte unknown + uint count +
+/// BSTextureArray[count]` and each `BSTextureArray` is `uint width +
+/// SizedString[width]`.
+///
+/// Pre-#942 the block fell into the `NiUnknown` recovery path. Block
+/// size let the file parse, but every per-instance transform was lost
+/// — distant foliage and rock clusters rendered only the multi-bound
+/// shell ("ghost foliage" in FO76 worldspace LOD). The texture array
+/// metadata is parsed-then-consumed (bytes accounted for, contents not
+/// yet surfaced) because the M35 terrain-streaming milestone owns the
+/// downstream binding work; preserving the per-instance transform
+/// array is the load-bearing fix.
+#[derive(Debug)]
+pub struct BsDistantObjectInstancedNode {
+    pub base: BsMultiBoundNode,
+    pub instances: Vec<BsDistantObjectInstance>,
+}
+
+impl NiObject for BsDistantObjectInstancedNode {
+    fn block_type_name(&self) -> &'static str {
+        "BSDistantObjectInstancedNode"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_object_net(&self) -> Option<&dyn HasObjectNET> {
+        Some(&self.base.base)
+    }
+    fn as_av_object(&self) -> Option<&dyn HasAVObject> {
+        Some(&self.base.base)
+    }
+}
+
+impl BsDistantObjectInstancedNode {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = BsMultiBoundNode::parse(stream)?;
+
+        let num_instances = stream.read_u32_le()?;
+        let mut instances: Vec<BsDistantObjectInstance> = stream.allocate_vec(num_instances)?;
+        for _ in 0..num_instances {
+            // BSResourceID — 12 B fixed (uint + 4-byte tag + uint).
+            let resource_file_hash = stream.read_u32_le()?;
+            let resource_extension = [
+                stream.read_u8()?,
+                stream.read_u8()?,
+                stream.read_u8()?,
+                stream.read_u8()?,
+            ];
+            let resource_dir_hash = stream.read_u32_le()?;
+
+            // BSDistantObjectUnknown[] — each entry is u64 + u32.
+            let num_unknown = stream.read_u32_le()?;
+            let mut unknown_data: Vec<(u64, u32)> = stream.allocate_vec(num_unknown)?;
+            for _ in 0..num_unknown {
+                let u1 = stream.read_u64_le()?;
+                let u2 = stream.read_u32_le()?;
+                unknown_data.push((u1, u2));
+            }
+
+            // Matrix44[] — 16 f32 per transform.
+            let num_transforms = stream.read_u32_le()?;
+            let mut transforms: Vec<[f32; 16]> = stream.allocate_vec(num_transforms)?;
+            for _ in 0..num_transforms {
+                let mut m = [0.0f32; 16];
+                for cell in &mut m {
+                    *cell = stream.read_f32_le()?;
+                }
+                transforms.push(m);
+            }
+
+            instances.push(BsDistantObjectInstance {
+                resource_file_hash,
+                resource_extension,
+                resource_dir_hash,
+                unknown_data,
+                transforms,
+            });
+        }
+
+        // BSShaderTextureArray[3] — fixed-length 3 per nif.xml. The
+        // texture array metadata isn't surfaced yet (the M35
+        // terrain-streaming milestone owns the binding work); consume
+        // the bytes correctly so the drift detector stays quiet.
+        for _ in 0..3 {
+            // `Unknown Byte` (default 1 in vanilla content).
+            let _unknown_byte = stream.read_u8()?;
+            let num_texture_arrays = stream.read_u32_le()?;
+            for _ in 0..num_texture_arrays {
+                // BSTextureArray: uint width + SizedString[width].
+                let width = stream.read_u32_le()?;
+                for _ in 0..width {
+                    let _ = stream.read_sized_string()?;
+                }
+            }
+        }
+
+        Ok(Self { base, instances })
+    }
+}

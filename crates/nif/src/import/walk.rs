@@ -2,8 +2,9 @@
 
 use crate::blocks::light::{NiAmbientLight, NiDirectionalLight, NiPointLight, NiSpotLight};
 use crate::blocks::node::{
-    BsMultiBoundNode, BsOrderedNode, BsRangeNode, BsTreeNode, BsValueNode, BsWeakReferenceNode,
-    NiBillboardNode, NiLODNode, NiNode, NiSortAdjustNode, NiSwitchNode,
+    BsDistantObjectInstancedNode, BsMultiBoundNode, BsOrderedNode, BsRangeNode, BsTreeNode,
+    BsValueNode, BsWeakReferenceNode, NiBillboardNode, NiLODNode, NiNode, NiSortAdjustNode,
+    NiSwitchNode,
 };
 use crate::blocks::bs_geometry::BSGeometry;
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
@@ -73,6 +74,13 @@ pub(super) fn as_ni_node(block: &dyn NiObject) -> Option<&NiNode> {
     }
     if let Some(n) = any.downcast_ref::<BsMultiBoundNode>() {
         return Some(&n.base);
+    }
+    // #942 — FO76 BSDistantObjectInstancedNode wraps BsMultiBoundNode
+    // which wraps NiNode. Without this arm the walker would never descend
+    // through it and the host LOD subtree would import as an empty
+    // ImportedNode (no children, no meshes).
+    if let Some(n) = any.downcast_ref::<BsDistantObjectInstancedNode>() {
+        return Some(&n.base.base);
     }
     if let Some(n) = any.downcast_ref::<BsTreeNode>() {
         return Some(&n.base);
