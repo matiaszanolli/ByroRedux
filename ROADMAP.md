@@ -22,15 +22,26 @@ debug-server registration; standing-queue closures — #337
 `NiStencilProperty` capture, #720 `BSEyeCenterExtraData` dispatch, #873
 BSGeometry bulk reads, #848 `footstep_system` Stage::PostUpdate, #891
 `NiTextureEffect` Phase 1 import — see [HISTORY.md](HISTORY.md)).
-**Bench-of-record**: Prospector Saloon 172.6 FPS / 5.79 ms — commit
-`6a6950a`, wall-clock bench. Scene is glass-heavy (bottles, pitcher,
-marquee sign); RT refraction/reflection cost is representative of a
-tough FNV interior. Frame is GPU-bound (fence=4.34 ms, 75% of wall).
-Slight regression from `e6e8091` (192.8 FPS / 5.19 ms) — within
-compositor-jitter range over 42 intervening commits; brd_ms unchanged
-at 0.86, fence_ms unchanged at 4.34. Companion benches refreshed in
-the same pass: Skyrim Whiterun 253.3 FPS @ 1932 entities, FO4 MedTek
-92.5 FPS @ 7434 entities. See Repro commands.
+**Bench-of-record**: Prospector Saloon 133.5 FPS / 7.49 ms @ 2562
+entities — commit `220e8e1`, 2026-05-11, wall-clock bench, 300
+frames, RTX 4070 Ti @ 1280×720. Scene is glass-heavy (bottles,
+pitcher, marquee sign); RT refraction/reflection cost is
+representative of a tough FNV interior. Frame is GPU-bound
+(fence=5.81 ms, 78% of wall; brd=0.97 ms; draw=6.21 ms with
+tlas=0.19 / ssbo=0.03 / cmd=0.04 / submit=0.09). Refresh from
+`6a6950a` (172.6 FPS / 5.79 ms @ 1200 entities, 2026-04-24):
+**entity count more than doubled (+114%) while wall_ms grew +29%**
+— sub-linear scaling, consistent with RT cost amortising across
+the BLAS hierarchy as more REFRs land in the cell. Two M41-EQUIP
+re-attributions help close the gap: the Phase 2 scaffold (`#896`
+A.0 → B.2) drove most of the entity inflation by spawning NPC
+inventory roots; the REFR Euler→Y-up composition fix landed every
+REFR through a corrected `Rx · Ry · Rz` order (was `Rz · Ry · Rx`).
+Companion benches refreshed in the same pass: Skyrim Whiterun
+217.3 FPS / 4.60 ms @ 3209 entities (was 253.3 @ 1932 entities —
++66% entities, -14% FPS, sub-linear), FO4 MedTek 68.5 FPS / 14.61
+ms @ 10 809 entities (was 92.5 @ 7434 — +45% entities, -26% FPS).
+See Repro commands.
 
 ---
 
@@ -143,9 +154,9 @@ parse-rate work for the games where clean < 100%.
 |-------------------|---------------|----------------------------------------------|----------------------------------------------------------|
 | Oblivion          | BSA v103      | **96.24%** (7 730 / 8 032) · recover 99.99%  | Interior (Anvil Heinrich Oaken Halls). Exterior blocked on TES4 worldspace + LAND wiring (same shape as FO3 was). `#687` closed via two perpetrator-parser fixes (NiGeomMorpherController trailing bsver-gated u32 + NiControllerSequence Phase field for v=10.2.0.0); 83 truncations recovered. `#688` / `#698` track the remaining clean-rate gap. |
 | Fallout 3         | BSA v104      | 100% (10 989)                                | Interior (Megaton, 929 REFRs). Exterior wired; fresh GPU bench pending (R6a). |
-| Fallout New Vegas | BSA v104      | 100% (14 881)                                | Interior (Prospector 1200 entities @ 172.6 FPS / 5.79 ms on RTX 4070 Ti, bench 6a6950a). Exterior 7×7 (radius 3). |
-| Skyrim SE         | BSA v105 LZ4  | 100% (18 862)                                | Interior (WhiterunBanneredMare 1932 entities @ 253.3 FPS / 3.95 ms, bench 6a6950a; entity count up from 1258 since M32.5 close — more REFRs land now). |
-| Fallout 4         | BA2 v1/v7/v8  | **96.46%** (33 757 / 34 995) · recover 100%  | Interior (MedTekResearch01 7434 entities @ 92.5 FPS / 10.82 ms, bench 6a6950a). FaceGen NIFs dominate the truncation tail (1 235 of 1 238 truncated files). |
+| Fallout New Vegas | BSA v104      | 100% (14 881)                                | Interior (Prospector 2562 entities @ 133.5 FPS / 7.49 ms on RTX 4070 Ti, bench `220e8e1` 2026-05-11). Exterior 7×7 (radius 3). |
+| Skyrim SE         | BSA v105 LZ4  | 100% (18 862)                                | Interior (WhiterunBanneredMare 3209 entities @ 217.3 FPS / 4.60 ms, bench `220e8e1` 2026-05-11; entity count up from 1258 since M32.5 close — M41 NPC scaffold + every REFR through the corrected Euler→Y-up composition land more refs now). |
+| Fallout 4         | BA2 v1/v7/v8  | **96.46%** (33 757 / 34 995) · recover 100%  | Interior (MedTekResearch01 10 809 entities @ 68.5 FPS / 14.61 ms, bench `220e8e1` 2026-05-11). FaceGen NIFs dominate the truncation tail (1 235 of 1 238 truncated files). |
 | Fallout 76        | BA2 v1        | **97.34%** (56 915 / 58 469) · recover 100%  | —                                                        |
 | Starfield         | BA2 v2/v3 LZ4 | **98.6%** aggregate · recover 100% (all 5 archives, 2026-04-27 post-#754) | Per-archive: Meshes01 97.21% (31 058 NIFs), Meshes02 **100%** (7 552; was 0% pre-#754 BSWeakReferenceNode), MeshesPatch 98.11% (29 849; was 74% pre-#754), LODMeshes 99.92% (19 535), FaceMeshes **100%** (1 282). Truncation tail in Meshes01/MeshesPatch is residual drift (#746/#747). |
 
@@ -361,8 +372,8 @@ Pure-performance entries that don't add visual capability or new
 gameplay surface — they raise the per-frame ceiling once a
 real-content benchmark identifies one of them as the bottleneck.
 **No active work** until that benchmark exists. Today's bench is
-GPU-bound on RT cost (`fence=4.34 ms / 75% wall` on Prospector at
-HEAD `6a6950a`); CPU-side draw submission is not the constraint at
+GPU-bound on RT cost (`fence=5.81 ms / 78% wall` on Prospector at
+HEAD `220e8e1`, 2026-05-11); CPU-side draw submission is not the constraint at
 current entity counts. Listed for direction, not on the active
 path. Split out from Tier 8 (2026-05-08) once Tier 8 was reframed
 around visual fidelity — these are honest ceiling raisers, not
@@ -596,7 +607,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6** `VulkanContext` scratch buffers have no capacity telemetry — **closed**. `ctx.scratch` console command + `ScratchTelemetry` resource cover all 5 persistent scratches; per-frame refresh via `VulkanContext::fill_scratch_telemetry`. Prospector baseline: 337 KB total, 320 B wasted.
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
-- [ ] **R6a-stale-7** Bench-of-record `6a6950a` is now 455 commits stale **and the M41-EQUIP-gated deferral is falsified — refresh is overdue, not deferred (#902).** Captured at HEAD `318fcaf` (post-Session 31 audit, 2026-05-08): Prospector `entities=2562` vs the recorded `1200` (+114%), `wall_fps=143.7 / wall_ms=6.96` vs `172.6 / 5.79` (-17% FPS, but on 2.1× the entities — `fence_ms=5.11` scaled +18%, sub-linear and consistent with RT cost amortising across the BLAS hierarchy). Session 32 added the `--bench-hold` CLI flag (73adffb) so a refreshed bench is now scriptable end-to-end via `docs/smoke-tests/m41-equip.sh` — refresh remains the next concrete step. Session 33 diagnostic measurement (not bench-of-record): Markarth grid (0,0) radius 2 at HEAD `e2409c0` — 12 725 entities / 6 833 draws / 45.6 wall_fps / 21.91 ms / 14.76 ms unaccounted GPU-side (TLAS + SVGF + TAA + volumetrics + bloom + composite). This isn't a regression — it's a new workload class (Tier 8 indirect lighting + 1500+ mesh exterior grid). The Prospector path also needs re-running before the Tier 8 ship can be ratified. Session contributions to the gap: Sessions 24-25 stacked M41.0 Phases 0–4 + R1 MaterialTable refactor; Session 28 added the RenderLayer depth-bias ladder + Frostbite light falloff curve + `env_map_scale` ≠ metalness fix; Session 29 was bug-bash + parser fixes (no rendering hot-path changes, but the rayon parallel parse `#830` may shorten cell-stream latency on radius-3 grids — companion telemetry work needed before that's measurable). Session 30 shipped M44 audio (no rendering-path impact) + cell-streaming hardening + concurrency audit closeouts. Session 31 shipped the cell-load perf bundle (#878–#883, #886) — improvements land on the streaming-in critical path, not the steady-state per-frame path the bench measures; the M41-EQUIP scaffold (#896 Phases A.0 → B.2) which lit up the visible-actor mix; REN-D15 fixes (cloud scroll, fog night_factor, interior-fill ambient docstring); and the REFR Euler→Y-up composition fix (`Rx · Ry · Rz`, was `Rz · Ry · Rx`) — the rotation fix touches every REFR placement, but Prospector is interior-only and uses authored placements that fall in the trivial Euler subspace where the order doesn't matter empirically. The "deferred until M41 lands" gating clause was the rationale for sitting on the bench refresh; M41-EQUIP B.2 has now landed and the FNV-D5 audit surfaced #900 (skin_compute descriptor pool exhausts at 32 slots under the new entity volume) — exactly the regression a fresh bench would have caught earlier. Not blocking, but no longer load-bearing as a deferral.
+- [x] **R6a-stale-7** Bench-of-record refresh — **closed 2026-05-11 at HEAD `220e8e1`** (post M41 Phase 2 close-out). Prospector 133.5 FPS / 7.49 ms @ 2562 entities (was 172.6 / 5.79 @ 1200 entities at `6a6950a` — +114% entities, +29% wall_ms; sub-linear scaling consistent with RT cost amortising across the BLAS hierarchy). Skyrim Whiterun 217.3 FPS / 4.60 ms @ 3209 entities (was 253.3 @ 1932 — +66% entities, -14% FPS, sub-linear). FO4 MedTek 68.5 FPS / 14.61 ms @ 10 809 entities (was 92.5 @ 7434 — +45% entities, -26% FPS). Frame still GPU-bound on Prospector (fence=5.81 ms / 78% wall). Two M41-EQUIP changes drove most of the entity inflation: the Phase 2 scaffold spawning NPC inventory roots (`#896` A.0 → B.2) and the REFR Euler→Y-up composition fix (`Rx · Ry · Rz`, was `Rz · Ry · Rx`) which now lands every REFR through the corrected order. **Session 33 Markarth grid diagnostic stays as a separate snapshot, not a bench-of-record candidate** — it's a new workload class (Tier 8 indirect lighting + 1500+ mesh exterior grid) which the three steady-state interior benches don't measure.
 - [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
 
 ### Closed — Renderer regressions (2026-05-01 / 02 live debug arc)
@@ -639,9 +650,9 @@ Ground-truth as of 2026-05-10, verified by `/session-close`.
 
 | Claim                                                                     | Command                                                                                                                                                                                        |
 |---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Prospector Saloon 172.6 FPS / 5.79 ms (commit `6a6950a`, 2026-04-24, wall-clock bench) | `cargo run --release -- --esm "Fallout New Vegas/Data/FalloutNV.esm" --cell GSProspectorSaloonInterior --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --textures-bsa "Fallout - Textures2.bsa" --bench-frames 300` |
-| Skyrim SE WhiterunBanneredMare 1932 entities @ 253.3 FPS / 3.95 ms (commit `6a6950a`, 2026-04-24) | `cargo run --release -- --esm "Skyrim Special Edition/Data/Skyrim.esm" --cell WhiterunBanneredMare --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" --textures-bsa "Skyrim - Textures0.bsa" --textures-bsa "Skyrim - Textures1.bsa" --textures-bsa "Skyrim - Textures2.bsa" --bench-frames 300` |
-| FO4 MedTekResearch01 7434 entities @ 92.5 FPS / 10.82 ms (commit `6a6950a`, 2026-04-24) | `cargo run --release -- --esm "Fallout 4/Data/Fallout4.esm" --cell MedTekResearch01 --bsa "Fallout4 - Meshes.ba2" --textures-bsa "Fallout4 - Textures1.ba2" --textures-bsa "Fallout4 - Textures2.ba2" --bench-frames 300` |
+| Prospector Saloon 2562 entities @ 133.5 FPS / 7.49 ms (commit `220e8e1`, 2026-05-11, wall-clock bench) | `cargo run --release -- --esm "Fallout New Vegas/Data/FalloutNV.esm" --cell GSProspectorSaloonInterior --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --textures-bsa "Fallout - Textures2.bsa" --bench-frames 300` |
+| Skyrim SE WhiterunBanneredMare 3209 entities @ 217.3 FPS / 4.60 ms (commit `220e8e1`, 2026-05-11) | `cargo run --release -- --esm "Skyrim Special Edition/Data/Skyrim.esm" --cell WhiterunBanneredMare --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" --textures-bsa "Skyrim - Textures0.bsa" --textures-bsa "Skyrim - Textures1.bsa" --textures-bsa "Skyrim - Textures2.bsa" --bench-frames 300` |
+| FO4 MedTekResearch01 10 809 entities @ 68.5 FPS / 14.61 ms (commit `220e8e1`, 2026-05-11) | `cargo run --release -- --esm "Fallout 4/Data/Fallout4.esm" --cell MedTekResearch01 --bsa "Fallout4 - Meshes.ba2" --bsa "Fallout4 - MeshesExtra.ba2" --textures-bsa "Fallout4 - Textures1.ba2" --textures-bsa "Fallout4 - Textures2.ba2" --textures-bsa "Fallout4 - Textures3.ba2" --textures-bsa "Fallout4 - Textures4.ba2" --textures-bsa "Fallout4 - Textures5.ba2" --textures-bsa "Fallout4 - Textures6.ba2" --textures-bsa "Fallout4 - Textures7.ba2" --textures-bsa "Fallout4 - Textures8.ba2" --textures-bsa "Fallout4 - Textures9.ba2" --textures-bsa "Fallout4 - TexturesPatch.ba2" --materials-ba2 "Fallout4 - Materials.ba2" --bench-frames 300` |
 | Skyrim sweetroll single-mesh ~3000-5000 FPS (2026-04-22, RTX 4070 Ti @ 1280×720)        | `cargo run --release -- --bsa "Skyrim Special Edition/Data/Skyrim - Meshes0.bsa" --mesh meshes\\clutter\\ingredients\\sweetroll01.nif --textures-bsa "Skyrim Special Edition/Data/Skyrim - Textures3.bsa"` |
 | Megaton interior parse-side 929 REFRs (2026-04-19)                        | `cargo test -p byroredux-plugin --release --test parse_real_esm parse_real_fo3_megaton_cell_baseline -- --ignored`                                                                             |
 | Per-game full mesh sweep (clean rates above; recoverable 100% gate)       | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`                                                                                                          |
