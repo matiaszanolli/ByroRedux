@@ -179,6 +179,150 @@ pub struct KfmSequenceGroupMember {
 /// `NiKFMTool::SYNC_SEQUENCE_ID_NONE` constant.
 pub const SYNC_SEQUENCE_ID_NONE: u32 = u32::MAX;
 
+/// Lookup-augmented wrapper around a parsed [`KfmFile`] — the bridge
+/// between a per-actor `.kfm` (`character.kfm`, `creature.kfm`,
+/// `talkingactivator.kfm`, …) and the gameplay code that requests
+/// sequences by name (`"1hmidle"`, `"runforward"`, …).
+///
+/// The parser ([`KfmFile`]) leaves the catalog as raw vectors ordered
+/// by file position; resolving a sequence by editor name therefore
+/// requires an O(n) linear scan plus a per-call filename-stem extraction
+/// every time a gameplay event ticks. [`KfmCatalog`] precomputes that
+/// index once at load and keeps the underlying [`KfmFile`] available
+/// for direct access to transitions / sync groups / defaults.
+///
+/// The "name" used by [`find_by_name`](Self::find_by_name) is the
+/// stem of `KfmSequence.filename` lowercased:
+///
+/// ```text
+///   "characters\\_male\\idleanims\\1hmidle.kf"  →  "1hmidle"
+///   "1stperson\\1hmidle.KF"                     →  "1hmidle"
+/// ```
+///
+/// Matches both forward- and back-slash path separators (KFM files
+/// historically ship with Windows-style `\` on Bethesda content but
+/// editor tools occasionally normalise to `/`). Case-insensitive
+/// because Bethesda gameplay scripts request sequences in
+/// inconsistent casing.
+///
+/// Per [#532](https://github.com/matiaszanolli/ByroRedux/issues/532)
+/// (FNV-ANIM-4) this closes the import-side half of the wiring gap;
+/// the actor-controller half (`AnimationController` population +
+/// `.kf` clip loading) is M30 milestone work that builds on this
+/// catalog without touching the parser.
+#[derive(Debug, Clone)]
+pub struct KfmCatalog {
+    /// The underlying parsed KFM document. Held verbatim so callers
+    /// retain access to transitions, sequence groups, default
+    /// transition durations, and the model path / root node.
+    pub file: KfmFile,
+    /// Lowercased filename-stem → index into [`file.sequences`].
+    /// Built once at construction; an O(1) hash lookup per gameplay
+    /// event vs. the parser's O(n) linear scan.
+    name_to_index: std::collections::HashMap<String, usize>,
+    /// `sequence_id` → index into [`file.sequences`]. KFM stores
+    /// sequences in file-position order, NOT id order, so an
+    /// `AnimationController::add_sequence` walk that visits the
+    /// transition table by `dest_sequence_id` would otherwise need
+    /// its own linear scan per transition.
+    id_to_index: std::collections::HashMap<u32, usize>,
+}
+
+impl KfmCatalog {
+    /// Build the catalog from a parsed [`KfmFile`]. Both indexes are
+    /// populated eagerly so subsequent lookups are O(1).
+    ///
+    /// Duplicate `sequence_id` values (pathological KFM authoring; the
+    /// reference NiKFMTool rejects them) keep the FIRST occurrence's
+    /// index — the runtime then surfaces the duplicate as silently
+    /// ignored rather than panicking, matching the parser's
+    /// graceful-degradation contract. Duplicate filename stems are
+    /// handled the same way.
+    pub fn new(file: KfmFile) -> Self {
+        let mut name_to_index = std::collections::HashMap::with_capacity(file.sequences.len());
+        let mut id_to_index = std::collections::HashMap::with_capacity(file.sequences.len());
+        for (idx, seq) in file.sequences.iter().enumerate() {
+            id_to_index.entry(seq.sequence_id).or_insert(idx);
+            let stem = filename_stem_lower(&seq.filename);
+            if !stem.is_empty() {
+                name_to_index.entry(stem).or_insert(idx);
+            }
+        }
+        Self {
+            file,
+            name_to_index,
+            id_to_index,
+        }
+    }
+
+    /// Parse + index in one call. Equivalent to
+    /// `KfmCatalog::new(parse_kfm(bytes)?)` but reads more naturally
+    /// at the BSA-extract → catalog call site.
+    pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        Ok(Self::new(parse_kfm(bytes)?))
+    }
+
+    /// Look up a sequence by its editor-name (the stem of
+    /// `KfmSequence.filename`, case-insensitive). See the type-level
+    /// doc for the stem-extraction rules.
+    ///
+    /// Returns `None` when the name doesn't match any sequence. The
+    /// resolved reference borrows from [`file.sequences`] so callers
+    /// reading `filename` / `transitions` / `anim_index` don't pay a
+    /// clone.
+    pub fn find_by_name(&self, name: &str) -> Option<&KfmSequence> {
+        let key = name.trim().to_ascii_lowercase();
+        let &idx = self.name_to_index.get(&key)?;
+        self.file.sequences.get(idx)
+    }
+
+    /// Look up a sequence by its stable `sequence_id`. Mirror of
+    /// [`find_by_name`](Self::find_by_name) used by transition-table
+    /// resolution where the destination is keyed by id (per
+    /// `KfmTransition::dest_sequence_id`).
+    pub fn find_by_id(&self, sequence_id: u32) -> Option<&KfmSequence> {
+        let &idx = self.id_to_index.get(&sequence_id)?;
+        self.file.sequences.get(idx)
+    }
+
+    /// Iterator over `(name_stem, &KfmSequence)` pairs in
+    /// sequence-id-sorted order. The M30 actor-controller bring-up
+    /// uses this to walk the catalog once and populate
+    /// `AnimationController` + a per-actor name→clip_handle map
+    /// without paying the linear sequence-by-name scan per insert.
+    pub fn iter_named(&self) -> impl Iterator<Item = (&str, &KfmSequence)> {
+        // Pre-sorted by stable sequence_id so consumers get deterministic
+        // iteration regardless of file authoring order.
+        let mut ordered: Vec<(&str, usize)> = self
+            .name_to_index
+            .iter()
+            .map(|(k, &v)| (k.as_str(), v))
+            .collect();
+        ordered.sort_by_key(|(_, idx)| self.file.sequences[*idx].sequence_id);
+        ordered
+            .into_iter()
+            .map(move |(name, idx)| (name, &self.file.sequences[idx]))
+    }
+}
+
+/// Strip the parent path and extension off a `KfmSequence.filename`
+/// and lowercase the remainder. Handles both `\` and `/` separators;
+/// returns an empty string when the input is empty or all-separator.
+fn filename_stem_lower(path: &str) -> String {
+    // Split on the LAST `\` or `/` — whichever comes later.
+    let last_sep = path.rfind(|c| c == '\\' || c == '/');
+    let leaf = match last_sep {
+        Some(i) => &path[i + 1..],
+        None => path,
+    };
+    // Strip the LAST `.` and everything after it (the extension), if any.
+    let stem = match leaf.rfind('.') {
+        Some(i) => &leaf[..i],
+        None => leaf,
+    };
+    stem.to_ascii_lowercase()
+}
+
 /// Minimum KFM version we parse (`NiKFMTool::LoadFile` rejects older
 /// files as "old version ASCII" which this parser deliberately skips).
 const MIN_VERSION: (u8, u8, u8, u8) = (1, 2, 0, 0);
@@ -810,5 +954,165 @@ mod tests {
         assert_eq!(t.duration, 0.0);
         assert!(t.blend_pairs.is_empty());
         assert!(t.chain.is_empty());
+    }
+
+    // ── #532 / FNV-ANIM-4: KfmCatalog name + id lookup ────────────────
+
+    fn build_catalog_two_sequences() -> KfmCatalog {
+        // Reuse the 2.2.0.0 fixture above; it ships two sequences
+        // (`idle.kf` id=0, `walk.kf` id=1) — enough to exercise both
+        // name and id lookups plus the iter_named ordering.
+        let bytes = sample_kfm_2_2_0_0();
+        KfmCatalog::from_bytes(&bytes).expect("fixture parses")
+    }
+
+    #[test]
+    fn catalog_finds_sequence_by_filename_stem() {
+        let cat = build_catalog_two_sequences();
+        let idle = cat.find_by_name("idle").expect("idle.kf stem matches");
+        assert_eq!(idle.sequence_id, 0);
+        assert_eq!(idle.filename, "idle.kf");
+
+        let walk = cat.find_by_name("walk").expect("walk.kf stem matches");
+        assert_eq!(walk.sequence_id, 1);
+    }
+
+    #[test]
+    fn catalog_name_lookup_is_case_insensitive() {
+        let cat = build_catalog_two_sequences();
+        assert!(cat.find_by_name("IDLE").is_some());
+        assert!(cat.find_by_name("Walk").is_some());
+        assert!(cat.find_by_name("  walk  ").is_some()); // trim
+    }
+
+    #[test]
+    fn catalog_strips_path_and_extension_from_filename() {
+        // Construct a sequence with a Bethesda-style nested path so
+        // the stem extraction has to drop both directories and ext.
+        let kfm = KfmFile {
+            version: (2, 2, 0, 0),
+            little_endian: true,
+            model_path: String::new(),
+            model_root: String::new(),
+            default_sync_transition: KfmTransitionDefaults::default(),
+            default_nonsync_transition: KfmTransitionDefaults::default(),
+            sequences: vec![
+                KfmSequence {
+                    sequence_id: 10,
+                    filename: "characters\\_male\\idleanims\\1hmidle.kf".to_string(),
+                    anim_index: -1,
+                    transitions: vec![],
+                },
+                KfmSequence {
+                    sequence_id: 11,
+                    // Forward-slash path AND uppercase extension —
+                    // both go through the same stem rule.
+                    filename: "1stperson/runforward.KF".to_string(),
+                    anim_index: -1,
+                    transitions: vec![],
+                },
+            ],
+            sequence_groups: vec![],
+        };
+        let cat = KfmCatalog::new(kfm);
+        assert_eq!(cat.find_by_name("1hmidle").map(|s| s.sequence_id), Some(10));
+        assert_eq!(
+            cat.find_by_name("runforward").map(|s| s.sequence_id),
+            Some(11)
+        );
+        // Misses must still return None — no fuzzy matching.
+        assert!(cat.find_by_name("hmidle").is_none());
+        assert!(cat.find_by_name("1stperson").is_none());
+    }
+
+    #[test]
+    fn catalog_finds_sequence_by_id() {
+        let cat = build_catalog_two_sequences();
+        assert_eq!(cat.find_by_id(0).map(|s| &*s.filename), Some("idle.kf"));
+        assert_eq!(cat.find_by_id(1).map(|s| &*s.filename), Some("walk.kf"));
+        assert!(cat.find_by_id(99).is_none());
+    }
+
+    #[test]
+    fn catalog_iter_named_yields_id_sorted_pairs() {
+        // Pin the deterministic-iteration contract — `iter_named`
+        // sorts by sequence_id regardless of file authoring order, so
+        // the M30 actor-controller bring-up gets repeatable walks.
+        let kfm = KfmFile {
+            version: (2, 2, 0, 0),
+            little_endian: true,
+            model_path: String::new(),
+            model_root: String::new(),
+            default_sync_transition: KfmTransitionDefaults::default(),
+            default_nonsync_transition: KfmTransitionDefaults::default(),
+            sequences: vec![
+                KfmSequence {
+                    sequence_id: 5,
+                    filename: "zeta.kf".to_string(),
+                    anim_index: -1,
+                    transitions: vec![],
+                },
+                KfmSequence {
+                    sequence_id: 2,
+                    filename: "alpha.kf".to_string(),
+                    anim_index: -1,
+                    transitions: vec![],
+                },
+                KfmSequence {
+                    sequence_id: 8,
+                    filename: "mu.kf".to_string(),
+                    anim_index: -1,
+                    transitions: vec![],
+                },
+            ],
+            sequence_groups: vec![],
+        };
+        let cat = KfmCatalog::new(kfm);
+        let order: Vec<(&str, u32)> = cat
+            .iter_named()
+            .map(|(n, s)| (n, s.sequence_id))
+            .collect();
+        assert_eq!(
+            order,
+            vec![("alpha", 2u32), ("zeta", 5), ("mu", 8)],
+            "iter_named must sort by sequence_id, not file position"
+        );
+    }
+
+    #[test]
+    fn catalog_duplicate_id_keeps_first() {
+        // Pathological KFM authoring — duplicate sequence_id values.
+        // NiKFMTool rejects this; we keep the FIRST occurrence so a
+        // malformed file degrades to "duplicate silently ignored"
+        // rather than panicking on the HashMap insert.
+        let kfm = KfmFile {
+            version: (2, 2, 0, 0),
+            little_endian: true,
+            model_path: String::new(),
+            model_root: String::new(),
+            default_sync_transition: KfmTransitionDefaults::default(),
+            default_nonsync_transition: KfmTransitionDefaults::default(),
+            sequences: vec![
+                KfmSequence {
+                    sequence_id: 7,
+                    filename: "first.kf".to_string(),
+                    anim_index: -1,
+                    transitions: vec![],
+                },
+                KfmSequence {
+                    sequence_id: 7,
+                    filename: "second.kf".to_string(),
+                    anim_index: -1,
+                    transitions: vec![],
+                },
+            ],
+            sequence_groups: vec![],
+        };
+        let cat = KfmCatalog::new(kfm);
+        assert_eq!(
+            cat.find_by_id(7).map(|s| &*s.filename),
+            Some("first.kf"),
+            "duplicate sequence_id must keep the first occurrence"
+        );
     }
 }
