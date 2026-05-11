@@ -359,13 +359,18 @@ impl AudioWorld {
     /// pending entry through a fresh spatial sub-track at the
     /// authored position.
     ///
-    /// No-op when audio is inactive: pending entries still queue up
-    /// (so a future re-init could replay them), but `audio_system`
-    /// short-circuits before drain. To avoid unbounded growth in a
-    /// no-device-forever scenario, the queue is bounded at 256
-    /// entries — overflow drops oldest with a one-shot warn. 256 is
-    /// 8 seconds of footsteps at 32 Hz cadence; real gameplay never
-    /// approaches it.
+    /// **Drops on inactive audio (#853 / C4-NEW-01).** When the
+    /// manager is `None` (headless CI, no device, init failure),
+    /// `audio_system` early-returns before drain. Pre-#853 the
+    /// queue still filled to its 256-entry cap, pinning ~12 KB +
+    /// one `Arc<StaticSoundData>` strong-count per cached sound
+    /// for the lifetime of the engine. Now we drop the call up
+    /// front and the queue stays empty.
+    ///
+    /// When audio IS active and the system is running, the queue
+    /// is bounded at 256 entries via FIFO drop-oldest as a safety
+    /// net against a runaway producer (256 = ~8 s of footsteps
+    /// at 32 Hz; real gameplay never approaches it).
     pub fn play_oneshot(
         &mut self,
         sound: Arc<StaticSoundData>,
@@ -373,6 +378,9 @@ impl AudioWorld {
         attenuation: Attenuation,
         volume: f32,
     ) {
+        if self.manager.is_none() {
+            return;
+        }
         const MAX_PENDING: usize = 256;
         if self.pending_oneshots.len() >= MAX_PENDING {
             log::warn!(
@@ -1810,14 +1818,15 @@ mod tests {
         }
     }
 
-    /// **Phase 3.5**: `play_oneshot` enqueues regardless of audio
-    /// activity (so a future re-init could replay), but the queue
-    /// stays bounded at 256 entries via FIFO drop-oldest. Pinned
-    /// here so a refactor that "simplifies" by removing the cap
-    /// can't quietly let the queue grow without bound on a no-
-    /// device host.
+    /// **#853 / C4-NEW-01**: `play_oneshot` drops on the floor when
+    /// the manager is inactive — the queue never fills on a no-
+    /// device host. Pre-#853 the queue filled to its 256 cap and
+    /// pinned ~12 KB + one `Arc<StaticSoundData>` strong-count per
+    /// cached sound. Pinned here so a refactor that re-enables
+    /// "queue while inactive for future replay" semantics has to
+    /// flip this test deliberately.
     #[test]
-    fn play_oneshot_queue_caps_at_max_pending() {
+    fn play_oneshot_drops_when_manager_inactive() {
         use kira::sound::static_sound::StaticSoundSettings;
         let mut audio_world = AudioWorld {
             active_sounds: Vec::new(),
@@ -1845,7 +1854,7 @@ mod tests {
             slice: None,
         });
 
-        // Push past the 256 cap.
+        // Hammer the API on an inactive world.
         for i in 0..300 {
             audio_world.play_oneshot(
                 Arc::clone(&sound),
@@ -1854,11 +1863,78 @@ mod tests {
                 1.0,
             );
         }
-        // Cap holds — exactly 256 entries remain (oldest 44 dropped).
+        // Queue must stay empty — Arc strong-count drops back to 1
+        // (just our local `sound` binding) so no stale sound data
+        // is pinned across the engine lifetime.
+        assert_eq!(
+            audio_world.pending_oneshot_count(),
+            0,
+            "inactive audio must drop one-shots, not queue them; got {}",
+            audio_world.pending_oneshot_count()
+        );
+        assert_eq!(
+            Arc::strong_count(&sound),
+            1,
+            "dropped one-shots must release their Arc<StaticSoundData> clone",
+        );
+    }
+
+    /// **Phase 3.5 cap pin**: when the manager IS active and the
+    /// drain pump is somehow not running, the queue still caps at
+    /// 256 via FIFO drop-oldest. Pinned so a refactor that removes
+    /// the cap is caught.
+    #[test]
+    fn play_oneshot_queue_caps_at_max_pending_when_active() {
+        use kira::sound::static_sound::StaticSoundSettings;
+        // Acquire a real manager. Skip the test on hosts without a
+        // working audio device — the inactive path is covered by
+        // `play_oneshot_drops_when_manager_inactive` above.
+        let manager =
+            match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("skipping cap-pin test — no audio device: {e}");
+                    return;
+                }
+            };
+        let mut audio_world = AudioWorld {
+            active_sounds: Vec::new(),
+            pending_oneshots: VecDeque::new(),
+            music: None,
+            reverb_send: None,
+            reverb_send_db: f32::NEG_INFINITY,
+            listener: None,
+            manager: Some(manager),
+            multi_listener_warned: false,
+        };
+        let sound = Arc::new(StaticSoundData {
+            sample_rate: 22_050,
+            frames: Arc::from(
+                vec![
+                    kira::Frame {
+                        left: 0.0,
+                        right: 0.0
+                    };
+                    50
+                ]
+                .into_boxed_slice(),
+            ),
+            settings: StaticSoundSettings::default(),
+            slice: None,
+        });
+
+        for i in 0..300 {
+            audio_world.play_oneshot(
+                Arc::clone(&sound),
+                glam::Vec3::new(i as f32, 0.0, 0.0),
+                Attenuation::default(),
+                1.0,
+            );
+        }
         assert_eq!(
             audio_world.pending_oneshot_count(),
             256,
-            "queue must cap at 256; got {}",
+            "active queue must cap at 256; got {}",
             audio_world.pending_oneshot_count()
         );
     }
