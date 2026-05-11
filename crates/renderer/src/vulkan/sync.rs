@@ -66,8 +66,29 @@ pub struct FrameSync {
     pub render_finished: Vec<vk::Semaphore>,
     /// One per frame-in-flight — CPU waits on these to throttle submission.
     pub in_flight: Vec<vk::Fence>,
-    /// Maps swapchain image index → which in_flight fence was last used.
+    /// Maps swapchain image index → which `in_flight` fence was last used.
     /// Prevents submitting work for an image that's still being rendered.
+    ///
+    /// # Invariant (#953 / REN-D1-NEW-05)
+    ///
+    /// Any handle stored here is guaranteed SIGNALED (or `vk::Fence::null()`)
+    /// by the time `draw_frame` next reads it at `context/draw.rs:179-186`.
+    /// This is upheld upstream by the *both-slots* `wait_for_fences` at
+    /// `context/draw.rs:144-156`, which blocks on BOTH frame-in-flight
+    /// fences before any image-fence read — so by the time we reach the
+    /// guard, every fence in this vec is either null (image never used)
+    /// or matches one of the two frame slots we just waited on.
+    ///
+    /// The aliasing guard `image_fence != in_flight[frame]` at draw.rs:180
+    /// then prevents waiting on the just-reset fence belonging to the
+    /// current frame slot. Reusing the slot's own fence would block on
+    /// an UNSIGNALED handle (it's reset at draw.rs:191) and deadlock.
+    ///
+    /// **If `draw_frame` ever drops to a single-slot fence wait** at the
+    /// top of frame (e.g. as a perf optimization), this invariant breaks
+    /// silently: the OTHER slot's fence handle could still be stored
+    /// here from a prior frame in an UNSIGNALED state. Update both call
+    /// sites in lockstep or this vec stops being safe to read.
     pub images_in_flight: Vec<vk::Fence>,
 }
 
