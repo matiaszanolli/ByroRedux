@@ -156,6 +156,9 @@ impl TaaPipeline {
             frames_since_creation: 0,
         };
 
+        // SAFETY (inside macro below): `partial` is local to this fn and
+        // not yet referenced by any command buffer / descriptor set —
+        // cleanup-on-error closes the partial state before returning.
         macro_rules! try_or_cleanup {
             ($expr:expr) => {
                 match $expr {
@@ -179,6 +182,8 @@ impl TaaPipeline {
             partial.history.push(slot);
         }
 
+        // SAFETY: SamplerCreateInfo populated above; handle owned by
+        // `partial.linear_sampler`, freed by destroy().
         partial.linear_sampler = try_or_cleanup!(unsafe {
             device
                 .create_sampler(
@@ -192,6 +197,7 @@ impl TaaPipeline {
                 )
                 .context("TAA linear sampler")
         });
+        // SAFETY: same contract as `linear_sampler` above.
         partial.point_sampler = try_or_cleanup!(unsafe {
             device
                 .create_sampler(
@@ -265,6 +271,8 @@ impl TaaPipeline {
             &[],
         )
         .expect("taa descriptor layout drifted against taa.comp (see #427)");
+        // SAFETY: `bindings` was validated above by `validate_set_layout`
+        // against taa.comp; layout handle owned by `partial`.
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -274,6 +282,8 @@ impl TaaPipeline {
                 .context("TAA descriptor set layout")
         });
 
+        // SAFETY: descriptor_set_layout just created above; slice-from-ref
+        // borrow lives only for this call.
         partial.pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
@@ -290,6 +300,9 @@ impl TaaPipeline {
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(partial.shader_module)
             .name(c"main");
+        // SAFETY: stage references `partial.shader_module` (loaded above)
+        // and `partial.pipeline_layout` (just created above); pipeline
+        // cache is the caller-provided handle (may be null — valid per spec).
         partial.pipeline = match unsafe {
             device
                 .create_compute_pipelines(
@@ -304,6 +317,8 @@ impl TaaPipeline {
         } {
             Ok(p) => p[0],
             Err(e) => {
+                // SAFETY: cleanup-on-error. Note: `shader_module` survives
+                // on `partial.shader_module` and is freed by `destroy`.
                 unsafe { partial.destroy(device, allocator) };
                 return Err(e);
             }
@@ -323,6 +338,8 @@ impl TaaPipeline {
                 descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
             },
         ];
+        // SAFETY: pool_sizes match the bindings declared above; max_sets
+        // is bounded by MAX_FRAMES_IN_FLIGHT.
         partial.descriptor_pool = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_pool(
@@ -335,6 +352,9 @@ impl TaaPipeline {
         });
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        // SAFETY: pool was just sized for MAX_FRAMES_IN_FLIGHT sets;
+        // `set_layouts` is a length-MAX_FRAMES_IN_FLIGHT vec of the same
+        // descriptor_set_layout handle.
         partial.descriptor_sets = try_or_cleanup!(unsafe {
             device
                 .allocate_descriptor_sets(
@@ -373,6 +393,10 @@ impl TaaPipeline {
             .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
+        // SAFETY: `img_info` fully populated above (TYPE_2D, HISTORY_FORMAT,
+        // STORAGE | SAMPLED usage). On Ok, ownership transfers to the
+        // caller's HistorySlot; on Err the `?` bubbles up before any
+        // bind/view runs.
         let image = unsafe {
             device
                 .create_image(&img_info, None)
@@ -384,6 +408,7 @@ impl TaaPipeline {
             .expect("allocator lock")
             .allocate(&vk_alloc::AllocationCreateDesc {
                 name,
+                // SAFETY: `image` just created above; handle is live.
                 requirements: unsafe { device.get_image_memory_requirements(image) },
                 location: gpu_allocator::MemoryLocation::GpuOnly,
                 linear: false,
@@ -393,21 +418,29 @@ impl TaaPipeline {
         {
             Ok(a) => a,
             Err(e) => {
+                // SAFETY: cleanup-on-error — `image` was created above
+                // but never bound; no other reference exists.
                 unsafe { device.destroy_image(image, None) };
                 return Err(e);
             }
         };
 
+        // SAFETY: `image` matches the memory requirements that produced
+        // `alloc`; bound once per image.
         if let Err(e) = unsafe {
             device
                 .bind_image_memory(image, alloc.memory(), alloc.offset())
                 .with_context(|| format!("bind {name}"))
         } {
             allocator.lock().expect("allocator lock").free(alloc).ok();
+            // SAFETY: same as the destroy in the alloc-error arm above —
+            // image is never bound to a live allocation after the free.
             unsafe { device.destroy_image(image, None) };
             return Err(e);
         }
 
+        // SAFETY: `image` is bound (line above). View ownership transfers
+        // to caller's HistorySlot on Ok.
         let view = match unsafe {
             device
                 .create_image_view(
@@ -429,6 +462,8 @@ impl TaaPipeline {
             Ok(v) => v,
             Err(e) => {
                 allocator.lock().expect("allocator lock").free(alloc).ok();
+                // SAFETY: image was bound (above); free the alloc first,
+                // then destroy the image. No view was created on this arm.
                 unsafe { device.destroy_image(image, None) };
                 return Err(e);
             }
@@ -518,6 +553,10 @@ impl TaaPipeline {
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&params),
             ];
+            // SAFETY: descriptor sets owned by `self`; `writes` references
+            // image views / buffer owned by `self` and `hdr_views` /
+            // `motion_views` / `mesh_id_views` slices (caller-borrowed for
+            // the call duration).
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
     }
@@ -576,6 +615,10 @@ impl TaaPipeline {
                         }),
                 );
             }
+            // SAFETY: caller of `initialize_layouts` (unsafe fn) guarantees
+            // device/queue/pool validity; `cmd` is the recording buffer
+            // from `with_one_time_commands`. Each barrier targets a history
+            // image we own.
             unsafe {
                 device.cmd_pipeline_barrier(
                     cmd,
@@ -725,6 +768,10 @@ impl TaaPipeline {
         height: u32,
     ) -> Result<()> {
         for slot in self.history.drain(..) {
+            // SAFETY: `recreate_on_resize` is called from the swapchain-
+            // resize path which fences both frames-in-flight first
+            // (see `VulkanContext::recreate_swapchain`). View / image
+            // handles are not referenced by any in-flight command.
             unsafe {
                 device.destroy_image_view(slot.view, None);
                 device.destroy_image(slot.image, None);
@@ -752,6 +799,8 @@ impl TaaPipeline {
         })();
         if let Err(ref e) = result {
             log::error!("TAA recreate partial failure: {e} — destroying partial state");
+            // SAFETY: same fenced-resize contract as above — partial
+            // state is not referenced by any in-flight command.
             unsafe { self.destroy(device, allocator) };
             return result;
         }
@@ -764,6 +813,11 @@ impl TaaPipeline {
     /// # Safety
     /// device and allocator must be valid; no GPU work may reference these images.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        // SAFETY (whole function): caller of `destroy` (unsafe fn)
+        // guarantees no in-flight command buffer references any object
+        // owned by `self`. The per-handle `if != null()` guards make this
+        // safe to call on partially-initialised state from a `try_or_cleanup`
+        // path. Each per-handle destroy below relies on this contract.
         for buf in &mut self.param_buffers {
             buf.destroy(device, allocator);
         }

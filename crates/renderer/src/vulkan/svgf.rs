@@ -237,6 +237,9 @@ impl SvgfPipeline {
         };
 
         macro_rules! try_or_cleanup {
+            // SAFETY (inside macro): `partial` is local to this fn and
+            // not yet referenced by any command buffer / descriptor set;
+            // cleanup-on-error closes the partial state before returning.
             ($expr:expr) => {
                 match $expr {
                     Ok(v) => v,
@@ -271,6 +274,8 @@ impl SvgfPipeline {
         }
 
         // ── 2. Sampler ────────────────────────────────────────────────
+        // SAFETY: SamplerCreateInfo fully populated above; handle owned
+        // by `partial.point_sampler`, freed by destroy().
         partial.point_sampler = try_or_cleanup!(unsafe {
             device
                 .create_sampler(
@@ -378,6 +383,7 @@ impl SvgfPipeline {
             &[],
         )
         .expect("svgf descriptor layout drifted against svgf_temporal.comp (see #427)");
+        // SAFETY: `bindings` validated against svgf_temporal.comp above.
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -387,6 +393,8 @@ impl SvgfPipeline {
                 .context("SVGF descriptor set layout")
         });
 
+        // SAFETY: descriptor_set_layout just created above; slice-from-ref
+        // borrow lives only for this call.
         partial.pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
@@ -406,6 +414,9 @@ impl SvgfPipeline {
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(partial.shader_module)
             .name(c"main");
+        // SAFETY: `stage` references `partial.shader_module` (loaded above)
+        // and `partial.pipeline_layout` (just created above). pipeline_cache
+        // is caller-provided (may be null per spec).
         partial.pipeline = match unsafe {
             device
                 .create_compute_pipelines(
@@ -420,6 +431,8 @@ impl SvgfPipeline {
         } {
             Ok(p) => p[0],
             Err(e) => {
+                // SAFETY: cleanup-on-error. shader_module survives on
+                // `partial.shader_module` and is freed by destroy.
                 unsafe { partial.destroy(device, allocator) };
                 return Err(e);
             }
@@ -443,6 +456,8 @@ impl SvgfPipeline {
                 descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
             },
         ];
+        // SAFETY: pool_sizes match the bindings declared above; max_sets
+        // bounded by MAX_FRAMES_IN_FLIGHT.
         partial.descriptor_pool = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_pool(
@@ -455,6 +470,8 @@ impl SvgfPipeline {
         });
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        // SAFETY: pool just sized for MAX_FRAMES_IN_FLIGHT sets with the
+        // same descriptor_set_layout.
         partial.descriptor_sets = try_or_cleanup!(unsafe {
             device
                 .allocate_descriptor_sets(
@@ -501,6 +518,9 @@ impl SvgfPipeline {
             .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
+        // SAFETY: `img_info` fully populated above (TYPE_2D, history
+        // format, STORAGE | SAMPLED usage). Bubbling `?` on Err means
+        // no further allocation runs.
         let image = unsafe {
             device
                 .create_image(&img_info, None)
@@ -512,6 +532,7 @@ impl SvgfPipeline {
             .expect("allocator lock")
             .allocate(&vk_alloc::AllocationCreateDesc {
                 name,
+                // SAFETY: `image` just created above.
                 requirements: unsafe { device.get_image_memory_requirements(image) },
                 location: gpu_allocator::MemoryLocation::GpuOnly,
                 linear: false,
@@ -521,21 +542,29 @@ impl SvgfPipeline {
         {
             Ok(a) => a,
             Err(e) => {
+                // SAFETY: cleanup-on-error — `image` was created but
+                // never bound; no other reference exists.
                 unsafe { device.destroy_image(image, None) };
                 return Err(e);
             }
         };
 
+        // SAFETY: `image` matches the memory requirements that produced
+        // `alloc`; bound once per image.
         if let Err(e) = unsafe {
             device
                 .bind_image_memory(image, alloc.memory(), alloc.offset())
                 .with_context(|| format!("bind {name}"))
         } {
             allocator.lock().expect("allocator lock").free(alloc).ok();
+            // SAFETY: bind failed; free the alloc first, then destroy
+            // the unbound image.
             unsafe { device.destroy_image(image, None) };
             return Err(e);
         }
 
+        // SAFETY: `image` is bound (line above); view owned by the
+        // returned HistorySlot on Ok.
         let view = match unsafe {
             device
                 .create_image_view(
@@ -557,6 +586,8 @@ impl SvgfPipeline {
             Ok(v) => v,
             Err(e) => {
                 allocator.lock().expect("allocator lock").free(alloc).ok();
+                // SAFETY: view creation failed; free alloc first then
+                // destroy the bound image.
                 unsafe { device.destroy_image(image, None) };
                 return Err(e);
             }
@@ -684,6 +715,9 @@ impl SvgfPipeline {
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&prev_norm),
             ];
+            // SAFETY: descriptor sets owned by `self`; writes reference
+            // image views and param buffer owned by `self`, and the
+            // caller-borrowed G-buffer views (live for this call's duration).
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
     }
@@ -728,6 +762,10 @@ impl SvgfPipeline {
                         }),
                 );
             }
+            // SAFETY: caller of `initialize_layouts` (unsafe fn)
+            // guarantees device/queue/pool validity; `cmd` is the
+            // recording buffer from `with_one_time_commands`. Each
+            // barrier targets a history image we own.
             unsafe {
                 device.cmd_pipeline_barrier(
                     cmd,
@@ -903,6 +941,10 @@ impl SvgfPipeline {
         height: u32,
     ) -> Result<()> {
         for slot in self.indirect_history.drain(..) {
+            // SAFETY: `recreate_on_resize` runs from the fenced
+            // swapchain-resize path (`VulkanContext::recreate_swapchain`
+            // waits both frames-in-flight first). History image / view
+            // handles are unreferenced by any in-flight command.
             unsafe {
                 device.destroy_image_view(slot.view, None);
                 device.destroy_image(slot.image, None);
@@ -912,6 +954,7 @@ impl SvgfPipeline {
             }
         }
         for slot in self.moments_history.drain(..) {
+            // SAFETY: same fenced-resize contract as the indirect loop above.
             unsafe {
                 device.destroy_image_view(slot.view, None);
                 device.destroy_image(slot.image, None);
@@ -948,6 +991,7 @@ impl SvgfPipeline {
         })();
         if let Err(ref e) = result {
             log::error!("SVGF recreate partial failure: {e} — destroying partial state");
+            // SAFETY: fenced-resize path; partial state is unreferenced.
             unsafe { self.destroy(device, allocator) };
             return result;
         }
@@ -963,6 +1007,12 @@ impl SvgfPipeline {
     }
 
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        // SAFETY (whole function): caller of `destroy` (unsafe fn)
+        // guarantees no in-flight command buffer references any object
+        // owned by `self`. The per-handle `if != null()` guards make this
+        // safe to call on partially-initialised state from the
+        // `try_or_cleanup` path. Each per-handle destroy below shares
+        // this contract.
         for buf in &mut self.param_buffers {
             buf.destroy(device, allocator);
         }
@@ -986,6 +1036,10 @@ impl SvgfPipeline {
             unsafe { device.destroy_sampler(self.point_sampler, None) };
         }
         for slot in self.indirect_history.drain(..) {
+            // SAFETY: `recreate_on_resize` runs from the fenced
+            // swapchain-resize path (`VulkanContext::recreate_swapchain`
+            // waits both frames-in-flight first). History image / view
+            // handles are unreferenced by any in-flight command.
             unsafe {
                 device.destroy_image_view(slot.view, None);
                 device.destroy_image(slot.image, None);
@@ -995,6 +1049,7 @@ impl SvgfPipeline {
             }
         }
         for slot in self.moments_history.drain(..) {
+            // SAFETY: same fenced-resize contract as the indirect loop above.
             unsafe {
                 device.destroy_image_view(slot.view, None);
                 device.destroy_image(slot.image, None);

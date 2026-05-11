@@ -187,6 +187,9 @@ impl CausticPipeline {
             max_lights: 8,
         };
 
+        // SAFETY (inside macro): `partial` is local to this fn and not
+        // yet referenced by any command buffer / descriptor set;
+        // cleanup-on-error closes the partial state before returning.
         macro_rules! try_or_cleanup {
             ($expr:expr) => {
                 match $expr {
@@ -212,6 +215,8 @@ impl CausticPipeline {
         }
 
         // ── 2. Sampler ────────────────────────────────────────────────
+        // SAFETY: SamplerCreateInfo fully populated above; handle owned
+        // by `partial.point_sampler`, freed by destroy().
         partial.point_sampler = try_or_cleanup!(unsafe {
             device
                 .create_sampler(
@@ -306,6 +311,7 @@ impl CausticPipeline {
             &[],
         )
         .expect("caustic descriptor layout drifted against caustic_splat.comp (see #427)");
+        // SAFETY: `bindings` validated against caustic_splat.comp above.
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -315,6 +321,7 @@ impl CausticPipeline {
                 .context("caustic descriptor set layout")
         });
 
+        // SAFETY: descriptor_set_layout just created above.
         partial.pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
@@ -334,6 +341,8 @@ impl CausticPipeline {
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(partial.shader_module)
             .name(c"main");
+        // SAFETY: `stage` references `partial.shader_module` (loaded
+        // above) and `partial.pipeline_layout` (just created above).
         partial.pipeline = match unsafe {
             device
                 .create_compute_pipelines(
@@ -348,6 +357,8 @@ impl CausticPipeline {
         } {
             Ok(p) => p[0],
             Err(e) => {
+                // SAFETY: cleanup-on-error; shader_module on `partial`
+                // is freed by destroy().
                 unsafe { partial.destroy(device, allocator) };
                 return Err(e);
             }
@@ -376,6 +387,8 @@ impl CausticPipeline {
                 descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
             },
         ];
+        // SAFETY: pool_sizes match bindings declared above; max_sets
+        // bounded by MAX_FRAMES_IN_FLIGHT.
         partial.descriptor_pool = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_pool(
@@ -388,6 +401,8 @@ impl CausticPipeline {
         });
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        // SAFETY: pool just sized for MAX_FRAMES_IN_FLIGHT sets with the
+        // same descriptor_set_layout handle.
         partial.descriptor_sets = try_or_cleanup!(unsafe {
             device
                 .allocate_descriptor_sets(
@@ -443,12 +458,16 @@ impl CausticPipeline {
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
 
+        // SAFETY: `info` fully populated above (TYPE_2D, CAUSTIC_FORMAT,
+        // STORAGE | SAMPLED | TRANSFER_DST usage). On Err the `?` bubbles
+        // up before any subsequent allocation.
         let image = unsafe { device.create_image(&info, None).context("caustic image")? };
         let alloc = match allocator
             .lock()
             .expect("allocator lock")
             .allocate(&vk_alloc::AllocationCreateDesc {
                 name,
+                // SAFETY: `image` just created above.
                 requirements: unsafe { device.get_image_memory_requirements(image) },
                 location: gpu_allocator::MemoryLocation::GpuOnly,
                 linear: false,
@@ -458,21 +477,28 @@ impl CausticPipeline {
         {
             Ok(a) => a,
             Err(e) => {
+                // SAFETY: alloc failed; image was created but never bound.
                 unsafe { device.destroy_image(image, None) };
                 return Err(e);
             }
         };
+        // SAFETY: `image` matches the memory requirements that produced
+        // `alloc`; bound once per image.
         if let Err(e) = unsafe {
             device
                 .bind_image_memory(image, alloc.memory(), alloc.offset())
                 .context("caustic bind image memory")
         } {
             allocator.lock().expect("allocator lock").free(alloc).ok();
+            // SAFETY: bind failed; free alloc first, then destroy unbound image.
             unsafe { device.destroy_image(image, None) };
             return Err(e);
         }
 
         let make_view = |img: vk::Image| -> Result<vk::ImageView> {
+            // SAFETY: callers below pass `image` (bound above) twice —
+            // once for storage view, once for sampled view. Both views
+            // are owned by the returned CausticSlot.
             Ok(unsafe {
                 device
                     .create_image_view(
@@ -496,6 +522,8 @@ impl CausticPipeline {
             Ok(v) => v,
             Err(e) => {
                 allocator.lock().expect("allocator lock").free(alloc).ok();
+                // SAFETY: storage view creation failed; free alloc first,
+                // destroy bound image.
                 unsafe { device.destroy_image(image, None) };
                 return Err(e);
             }
@@ -503,6 +531,8 @@ impl CausticPipeline {
         let sampled_view = match make_view(image) {
             Ok(v) => v,
             Err(e) => {
+                // SAFETY: sampled view creation failed; tear down
+                // already-created storage view, free alloc, destroy image.
                 unsafe { device.destroy_image_view(storage_view, None) };
                 allocator.lock().expect("allocator lock").free(alloc).ok();
                 unsafe { device.destroy_image(image, None) };
@@ -612,6 +642,9 @@ impl CausticPipeline {
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&params_info),
             ];
+            // SAFETY: descriptor sets owned by `self`; writes reference
+            // buffers / image views owned by `self` and caller-borrowed
+            // G-buffer / scene resources (live for this call's duration).
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
     }
@@ -639,6 +672,9 @@ impl CausticPipeline {
             .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
             .descriptor_count(1)
             .push_next(&mut accel_write);
+        // SAFETY: `write` references `accel_write` (which carries the
+        // caller-provided `tlas` handle, live for the call duration) and
+        // `self.descriptor_sets[frame]` (live for `self`'s lifetime).
         unsafe { device.update_descriptor_sets(&[write], &[]) };
     }
 
@@ -676,6 +712,10 @@ impl CausticPipeline {
                         }),
                 );
             }
+            // SAFETY: caller of `initialize_layouts` (unsafe fn) guarantees
+            // device/queue/pool validity; `cmd` is the recording buffer
+            // from `with_one_time_commands`. Each barrier targets a slot
+            // image we own.
             unsafe {
                 device.cmd_pipeline_barrier(
                     cmd,
@@ -853,6 +893,10 @@ impl CausticPipeline {
         height: u32,
     ) -> Result<()> {
         for slot in self.slots.drain(..) {
+            // SAFETY: `recreate_on_resize` runs from the fenced
+            // swapchain-resize path (`VulkanContext::recreate_swapchain`
+            // waits both frames-in-flight first). Slot view / image
+            // handles are unreferenced by any in-flight command.
             unsafe {
                 device.destroy_image_view(slot.storage_view, None);
                 device.destroy_image_view(slot.sampled_view, None);
@@ -879,6 +923,8 @@ impl CausticPipeline {
         })();
         if let Err(ref e) = res {
             log::error!("Caustic recreate partial failure: {e}");
+            // SAFETY: fenced-resize path; partial state is unreferenced
+            // by any in-flight command.
             unsafe { self.destroy(device, allocator) };
             return res;
         }
@@ -901,6 +947,11 @@ impl CausticPipeline {
     /// # Safety
     /// Must be called before the device + allocator are dropped.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        // SAFETY (whole function): caller of `destroy` (unsafe fn)
+        // guarantees no in-flight command buffer references any object
+        // owned by `self`. Per-handle `if != null()` guards make this
+        // safe to call on partially-initialised state from
+        // `try_or_cleanup`.
         for buf in &mut self.param_buffers {
             buf.destroy(device, allocator);
         }
@@ -924,6 +975,8 @@ impl CausticPipeline {
             unsafe { device.destroy_sampler(self.point_sampler, None) };
         }
         for slot in self.slots.drain(..) {
+            // SAFETY: caller's unsafe-fn contract — no in-flight cmd
+            // buffer references slot resources.
             unsafe {
                 device.destroy_image_view(slot.storage_view, None);
                 device.destroy_image_view(slot.sampled_view, None);

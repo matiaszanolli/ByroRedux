@@ -243,6 +243,9 @@ impl CompositePipeline {
         };
 
         // Macro to clean up partial state on any fallible call.
+        // SAFETY (inside macro): `partial` is local to this fn and not
+        // yet referenced by any command buffer / descriptor set;
+        // cleanup-on-error closes the partial state before returning.
         macro_rules! try_or_cleanup {
             ($expr:expr) => {
                 match $expr {
@@ -672,6 +675,10 @@ impl CompositePipeline {
                     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                     .image_info(&bloom_info),
             ];
+            // SAFETY: descriptor sets owned by `partial`; writes reference
+            // HDR / depth / indirect / albedo / caustic / volumetric /
+            // bloom image views — all owned by `partial` or caller-borrowed
+            // for the duration of this `new()` call.
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
@@ -759,11 +766,15 @@ impl CompositePipeline {
             .render_pass(partial.composite_render_pass)
             .subpass(0);
 
+        // SAFETY: pipeline_info references partial.{vert_module,
+        // frag_module, pipeline_layout, composite_render_pass} all
+        // created above. pipeline_cache is caller-provided.
         partial.pipeline = match unsafe {
             device.create_graphics_pipelines(pipeline_cache, &[pipeline_info], None)
         } {
             Ok(pipelines) => pipelines[0],
             Err((_, e)) => {
+                // SAFETY: cleanup-on-error.
                 unsafe { partial.destroy(device, allocator) };
                 return Err(anyhow::anyhow!("composite graphics pipeline: {e}"));
             }
@@ -803,6 +814,10 @@ impl CompositePipeline {
                 },
             })
             .clear_values(&clear_values);
+        // SAFETY: caller of `dispatch` (unsafe fn) guarantees `cmd` is a
+        // recording command buffer, `frame < MAX_FRAMES_IN_FLIGHT`, and
+        // `swapchain_image_index` is a valid swapchain index. The render
+        // pass + pipeline + descriptor sets are owned by `self`.
         unsafe {
             device.cmd_begin_render_pass(cmd, &rp_begin, vk::SubpassContents::INLINE);
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -863,6 +878,11 @@ impl CompositePipeline {
         height: u32,
     ) -> Result<()> {
         // Destroy old framebuffers
+        // SAFETY (the three destroy loops below): `recreate_on_resize`
+        // runs from the fenced swapchain-resize path
+        // (`VulkanContext::recreate_swapchain` waits both frames-in-flight
+        // first). Old framebuffer / view / image handles are unreferenced
+        // by any in-flight command.
         for &fb in &self.composite_framebuffers {
             unsafe { device.destroy_framebuffer(fb, None) };
         }
@@ -905,21 +925,29 @@ impl CompositePipeline {
                     .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .initial_layout(vk::ImageLayout::UNDEFINED);
+                // SAFETY: `img_info` fully populated above; image owned
+                // by `self.hdr_images` on Ok. On Err the `?` bubbles up
+                // before any subsequent allocation runs.
                 let img = unsafe { device.create_image(&img_info, None)? };
                 self.hdr_images.push(img);
 
                 let alloc = allocator.lock().expect("allocator lock").allocate(
                     &vk_alloc::AllocationCreateDesc {
                         name: &format!("hdr_color_{}", i),
+                        // SAFETY: `img` just created above.
                         requirements: unsafe { device.get_image_memory_requirements(img) },
                         location: gpu_allocator::MemoryLocation::GpuOnly,
                         linear: false,
                         allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                     },
                 )?;
+                // SAFETY: `img` matches the memory requirements that
+                // produced `alloc`; bound once per image.
                 unsafe { device.bind_image_memory(img, alloc.memory(), alloc.offset())? };
                 self.hdr_allocations.push(Some(alloc));
 
+                // SAFETY: `img` is bound (line above); view owned by
+                // `self.hdr_image_views` on Ok.
                 let view = unsafe {
                     device.create_image_view(
                         &vk::ImageViewCreateInfo::default()
@@ -1026,6 +1054,10 @@ impl CompositePipeline {
                         .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                         .image_info(&bloom_info),
                 ];
+                // SAFETY: descriptor sets owned by `self`; writes
+                // reference freshly-recreated HDR views (owned by `self`)
+                // and caller-borrowed indirect / albedo / depth /
+                // caustic / volumetric / bloom views.
                 unsafe { device.update_descriptor_sets(&writes, &[]) };
             }
 
@@ -1038,6 +1070,9 @@ impl CompositePipeline {
                     .width(width)
                     .height(height)
                     .layers(1);
+                // SAFETY: `fb_info` references `self.composite_render_pass`
+                // (live) and the caller-borrowed swapchain `view` (live
+                // until the next swapchain recreate, which we are inside).
                 let fb = unsafe { device.create_framebuffer(&fb_info, None)? };
                 self.composite_framebuffers.push(fb);
             }
@@ -1048,6 +1083,11 @@ impl CompositePipeline {
             log::error!("Composite recreate partial failure: {e} — cleaning up");
             // Clean up only the recreatable resources (HDR images +
             // framebuffers), NOT the pipeline/render-pass/descriptors.
+            // SAFETY (the four destroy loops below): fenced-resize path —
+            // `VulkanContext::recreate_swapchain` waits both
+            // frames-in-flight before reaching this branch, so no
+            // in-flight command references any of the partially-allocated
+            // recreate state.
             for &fb in &self.composite_framebuffers {
                 unsafe { device.destroy_framebuffer(fb, None) };
             }
@@ -1117,6 +1157,9 @@ impl CompositePipeline {
                 .dst_binding(0)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&info);
+            // SAFETY: descriptor set `i` owned by `self`; `info` references
+            // caller-borrowed `hdr_views[i]` (live for this call) and
+            // `self.hdr_sampler` (live for `self`).
             unsafe { device.update_descriptor_sets(&[write], &[]) };
         }
     }
@@ -1135,6 +1178,11 @@ impl CompositePipeline {
     /// Destroy all Vulkan objects. Must be called before the device/allocator
     /// are dropped. Safe to call on partially-initialized state.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        // SAFETY (whole function): caller of `destroy` (unsafe fn)
+        // guarantees no in-flight command buffer references any object
+        // owned by `self`. Per-handle `if != null()` guards make this
+        // safe to call on partially-initialised state from
+        // `try_or_cleanup`.
         for buf in &mut self.param_buffers {
             buf.destroy(device, allocator);
         }

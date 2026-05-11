@@ -128,9 +128,14 @@ impl SsaoPipeline {
                 .sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .initial_layout(vk::ImageLayout::UNDEFINED);
 
+            // SAFETY: `ao_image_info` is fully populated above with valid
+            // extent / format / usage. Handle is owned by `partial.ao_images`
+            // on Ok, freed by `partial.destroy()` on Err.
             let ao_image = match unsafe { device.create_image(&ao_image_info, None) } {
                 Ok(img) => img,
                 Err(e) => {
+                    // SAFETY: `partial` is local; no GPU work has begun
+                    // referencing any of its handles yet. Cleanup-on-error.
                     unsafe { partial.destroy(device, allocator) };
                     return Err(anyhow::anyhow!("Failed to create AO image {fi}: {e}"));
                 }
@@ -140,6 +145,8 @@ impl SsaoPipeline {
             let ao_allocation = match allocator.lock().expect("allocator lock").allocate(
                 &gpu_allocator::vulkan::AllocationCreateDesc {
                     name: &format!("ssao_output_{fi}"),
+                    // SAFETY: `ao_image` was just created above and pushed
+                    // into `partial.ao_images`; handle is live.
                     requirements: unsafe { device.get_image_memory_requirements(ao_image) },
                     location: gpu_allocator::MemoryLocation::GpuOnly,
                     linear: false,
@@ -148,11 +155,14 @@ impl SsaoPipeline {
             ) {
                 Ok(a) => a,
                 Err(e) => {
+                    // SAFETY: see `partial.destroy` above — cleanup-on-error.
                     unsafe { partial.destroy(device, allocator) };
                     return Err(anyhow::anyhow!("Failed to allocate AO memory {fi}: {e}"));
                 }
             };
 
+            // SAFETY: `ao_image` matches the memory requirements that
+            // produced `ao_allocation`; bound once per image.
             if let Err(e) = unsafe {
                 device.bind_image_memory(ao_image, ao_allocation.memory(), ao_allocation.offset())
             } {
@@ -161,11 +171,15 @@ impl SsaoPipeline {
                     .expect("allocator lock")
                     .free(ao_allocation)
                     .ok();
+                // SAFETY: cleanup-on-error after explicitly freeing the
+                // unboundallocation above.
                 unsafe { partial.destroy(device, allocator) };
                 return Err(anyhow::anyhow!("Failed to bind AO image memory {fi}: {e}"));
             }
             partial.ao_allocations.push(Some(ao_allocation));
 
+            // SAFETY: `ao_image` is bound to backing memory (line above).
+            // View ownership transfers to `partial.ao_image_views` on Ok.
             let view = match unsafe {
                 device.create_image_view(
                     &vk::ImageViewCreateInfo::default()
@@ -184,6 +198,7 @@ impl SsaoPipeline {
             } {
                 Ok(v) => v,
                 Err(e) => {
+                    // SAFETY: cleanup-on-error.
                     unsafe { partial.destroy(device, allocator) };
                     return Err(anyhow::anyhow!("Failed to create AO view {fi}: {e}"));
                 }
@@ -192,6 +207,8 @@ impl SsaoPipeline {
         }
 
         // Macro to clean up partial state on error and return.
+        // SAFETY (inside macro): `partial` is local to the enclosing
+        // function; cleanup-on-error before any GPU work references it.
         macro_rules! try_or_cleanup {
             ($expr:expr) => {
                 match $expr {
@@ -205,6 +222,8 @@ impl SsaoPipeline {
         }
 
         // Samplers.
+        // SAFETY: SamplerCreateInfo is fully populated above; handle
+        // ownership transfers to `partial.depth_sampler`, freed by destroy().
         partial.depth_sampler = try_or_cleanup!(unsafe {
             device
                 .create_sampler(
@@ -218,6 +237,7 @@ impl SsaoPipeline {
                 .context("depth sampler")
         });
 
+        // SAFETY: same contract as `depth_sampler` above.
         partial.ao_sampler = try_or_cleanup!(unsafe {
             device
                 .create_sampler(
@@ -272,6 +292,8 @@ impl SsaoPipeline {
             &[],
         )
         .expect("ssao descriptor layout drifted against ssao.comp (see #427)");
+        // SAFETY: bindings array (above) is validated against ssao.comp
+        // by `validate_set_layout`. Layout handle owned by `partial`.
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -281,6 +303,8 @@ impl SsaoPipeline {
                 .context("SSAO descriptor set layout")
         });
 
+        // SAFETY: `partial.descriptor_set_layout` just created above; the
+        // slice-from-ref borrow lives only for this call.
         partial.pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
@@ -298,6 +322,10 @@ impl SsaoPipeline {
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(shader_module)
             .name(c"main");
+        // SAFETY: `stage` references `shader_module` (just loaded above),
+        // `partial.pipeline_layout` (just created above). Pipeline cache
+        // is `vk::PipelineCache::null()` from VulkanContext on first call
+        // — valid.
         partial.pipeline = match unsafe {
             device
                 .create_compute_pipelines(
@@ -311,10 +339,15 @@ impl SsaoPipeline {
                 .context("SSAO compute pipeline")
         } {
             Ok(pipelines) => {
+                // SAFETY: shader module is no longer needed once the
+                // compute pipeline has been created (Vulkan spec: the
+                // shader is copied into the pipeline at create time).
                 unsafe { device.destroy_shader_module(shader_module, None) };
                 pipelines[0]
             }
             Err(e) => {
+                // SAFETY: same as Ok branch above — shader module no
+                // longer referenced. Then cleanup-on-error for partial.
                 unsafe { device.destroy_shader_module(shader_module, None) };
                 unsafe { partial.destroy(device, allocator) };
                 return Err(e);
@@ -336,6 +369,8 @@ impl SsaoPipeline {
                 descriptor_count: max_frames as u32,
             },
         ];
+        // SAFETY: `pool_sizes` is a stack array bounded by max_frames;
+        // pool owns the live descriptor sets allocated below.
         partial.descriptor_pool = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_pool(
@@ -348,6 +383,9 @@ impl SsaoPipeline {
         });
 
         let layouts = vec![partial.descriptor_set_layout; max_frames];
+        // SAFETY: `partial.descriptor_pool` was just created with enough
+        // capacity for `max_frames` sets; `layouts` is a length-`max_frames`
+        // vec of the same descriptor_set_layout handle.
         partial.descriptor_sets = try_or_cleanup!(unsafe {
             device
                 .allocate_descriptor_sets(
@@ -389,6 +427,10 @@ impl SsaoPipeline {
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(&param_info),
             ];
+            // SAFETY: descriptor sets just allocated above; `writes`
+            // references images/buffers all owned by `partial` (depth view,
+            // ao image view, param buffer) — all live for the duration of
+            // this descriptor set.
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
@@ -424,6 +466,12 @@ impl SsaoPipeline {
                     .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                     .image(img)
                     .subresource_range(range);
+                // SAFETY: caller of `initialize_ao_images` (unsafe fn,
+                // line 404) guarantees device/queue/pool validity. `cmd`
+                // is the recording buffer from `with_one_time_commands`.
+                // The barrier transitions UNDEFINED → TRANSFER_DST_OPTIMAL
+                // and the subsequent calls (cmd_clear_color_image,
+                // post-clear barrier) run in the same recording scope.
                 unsafe {
                     device.cmd_pipeline_barrier(
                         cmd,

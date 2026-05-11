@@ -88,6 +88,10 @@ impl Attachment {
                 .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .initial_layout(vk::ImageLayout::UNDEFINED);
+            // SAFETY: `img_info` is a fully-populated builder with extent /
+            // format / usage set above. `device` is the engine's live ash
+            // device. On Ok, `img` becomes a fresh handle owned by this
+            // attachment vec and freed by `destroy()` below.
             let img = unsafe {
                 device
                     .create_image(&img_info, None)
@@ -100,12 +104,20 @@ impl Attachment {
                 .expect("allocator lock")
                 .allocate(&vk_alloc::AllocationCreateDesc {
                     name: &format!("{name_prefix}_{i}"),
+                    // SAFETY: `img` was just created on the previous line
+                    // and pushed into `self.images`; the handle is live
+                    // until `destroy()` releases it.
                     requirements: unsafe { device.get_image_memory_requirements(img) },
                     location: gpu_allocator::MemoryLocation::GpuOnly,
                     linear: false,
                     allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                 })
                 .with_context(|| format!("Failed to allocate {name_prefix} memory"))?;
+            // SAFETY: `img` is the freshly-created image; `alloc.memory()`
+            // is the matching allocation gpu-allocator returned for `img`'s
+            // memory requirements. Bound once — the `Drop` path on `alloc`
+            // is the only thing that releases the memory, and we own `alloc`
+            // in `self.allocations` until `destroy()` runs.
             unsafe {
                 device
                     .bind_image_memory(img, alloc.memory(), alloc.offset())
@@ -113,6 +125,9 @@ impl Attachment {
             }
             self.allocations.push(Some(alloc));
 
+            // SAFETY: `img` is bound to backing memory (line above) and
+            // the view-create-info references its format / aspect / mips.
+            // The resulting view is owned by `self.views` until `destroy()`.
             let view = unsafe {
                 device
                     .create_image_view(
@@ -138,10 +153,15 @@ impl Attachment {
 
     unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for &view in &self.views {
+            // SAFETY: caller of `destroy` (an `unsafe fn`) guarantees no
+            // in-flight command buffer or descriptor set references `view`.
             unsafe { device.destroy_image_view(view, None) };
         }
         self.views.clear();
         for &img in &self.images {
+            // SAFETY: same caller contract as `destroy_image_view` — the
+            // view-destroy above already broke any descriptor-bound
+            // references, and the caller fences the queue separately.
             unsafe { device.destroy_image(img, None) };
         }
         self.images.clear();
@@ -211,6 +231,10 @@ impl GBuffer {
             .albedo
             .allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo");
         if let Err(e) = r1.and(r2).and(r3).and(r4).and(r5) {
+            // SAFETY: `gb` is local to this function; no command buffer or
+            // descriptor set has had a chance to reference it yet because
+            // we never returned the partial result. Cleanup path on
+            // partial-allocate failure.
             unsafe { gb.destroy(device, allocator) };
             return Err(e);
         }
@@ -312,6 +336,10 @@ impl GBuffer {
         width: u32,
         height: u32,
     ) -> Result<()> {
+        // SAFETY: caller (`recreate_on_resize`) is invoked from the
+        // swapchain-resize path which fences both frames-in-flight first
+        // (see `VulkanContext::recreate_swapchain`). No GPU work is
+        // referencing the old attachments at this point.
         unsafe {
             self.normal.destroy(device, allocator);
             self.motion.destroy(device, allocator);
@@ -354,6 +382,9 @@ impl GBuffer {
             });
         if let Err(ref e) = result {
             log::error!("G-buffer recreate partial failure: {e} — destroying partial state");
+            // SAFETY: same as the destroy at the top of this function —
+            // resize path is fenced; the partially-reallocated state is
+            // not referenced by any in-flight command buffer.
             unsafe { self.destroy(device, allocator) };
         }
         result
@@ -361,6 +392,11 @@ impl GBuffer {
 
     /// Destroy all images, views, and allocations. Safe to call multiple times.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        // SAFETY: forwarding the unsafe-fn contract — the caller of
+        // `GBuffer::destroy` is responsible for ensuring no in-flight
+        // command buffer or descriptor binding references any attachment.
+        // The per-attachment `destroy` calls below carry the same
+        // requirement.
         unsafe {
             self.normal.destroy(device, allocator);
             self.motion.destroy(device, allocator);
