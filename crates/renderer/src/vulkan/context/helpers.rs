@@ -149,8 +149,17 @@ pub(super) fn create_render_pass(
     let dependency_out = vk::SubpassDependency::default()
         .src_subpass(0)
         .dst_subpass(vk::SUBPASS_EXTERNAL)
+        // #947 / REN-D4-NEW-01: include EARLY_FRAGMENT_TESTS in
+        // symmetry with `dependency` above. Depth writes can complete
+        // in either EARLY or LATE depending on whether the fragment
+        // shader hits a `discard` / `gl_FragDepth` branch. LATE alone
+        // is spec-legal (LATE is logically-later so the dep
+        // transitively covers EARLY writes) but Synchronization2
+        // validation treats the missing EARLY as an
+        // under-synchronisation hint.
         .src_stage_mask(
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
                 | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
         )
         .src_access_mask(
