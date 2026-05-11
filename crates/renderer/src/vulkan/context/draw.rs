@@ -1241,18 +1241,118 @@ impl VulkanContext {
             }
         }
 
+        // Upload composite params (fog + sky) up-front so the bulk host
+        // barrier below covers this UBO's HOST_WRITE too (#909 /
+        // REN-D1-NEW-03). All inputs are available from `draw_frame`'s
+        // parameters; the composite pass itself runs much later, after
+        // the render pass + SVGF / TAA / SSAO / Bloom, but the barrier
+        // doesn't care when the consumer runs as long as it's been
+        // emitted before the consumer.
+        if let Some(ref mut composite) = self.composite {
+            let composite_params = super::super::composite::CompositeParams {
+                fog_color: [
+                    fog_color[0],
+                    fog_color[1],
+                    fog_color[2],
+                    if fog_far > fog_near { 1.0 } else { 0.0 },
+                ],
+                fog_params: [fog_near, fog_far, 0.0, 0.0],
+                depth_params: [
+                    if sky_params.is_exterior { 1.0 } else { 0.0 },
+                    0.85, // exposure — default Bethesda-era HDR target; promote to WTHR field (#743)
+                    0.0,
+                    0.0,
+                ],
+                sky_zenith: [
+                    sky_params.zenith_color[0],
+                    sky_params.zenith_color[1],
+                    sky_params.zenith_color[2],
+                    sky_params.sun_size,
+                ],
+                sky_horizon: [
+                    sky_params.horizon_color[0],
+                    sky_params.horizon_color[1],
+                    sky_params.horizon_color[2],
+                    0.0,
+                ],
+                // #541 — WTHR `SKY_LOWER` group. Pre-fix the
+                // shader faked this as `sky_horizon * 0.3`,
+                // dropping the authored colour entirely.
+                sky_lower: [
+                    sky_params.lower_color[0],
+                    sky_params.lower_color[1],
+                    sky_params.lower_color[2],
+                    0.0,
+                ],
+                sun_dir: [
+                    sky_params.sun_direction[0],
+                    sky_params.sun_direction[1],
+                    sky_params.sun_direction[2],
+                    sky_params.sun_intensity,
+                ],
+                sun_color: [
+                    sky_params.sun_color[0],
+                    sky_params.sun_color[1],
+                    sky_params.sun_color[2],
+                    // #478 — pack the CLMT FNAM sun sprite handle
+                    // into the previously-unused w slot via
+                    // `from_bits`. The shader reinterprets with
+                    // `floatBitsToUint`; `0` keeps the procedural
+                    // disc (pre-fix behaviour).
+                    f32::from_bits(sky_params.sun_texture_index),
+                ],
+                cloud_params: [
+                    sky_params.cloud_scroll[0],
+                    sky_params.cloud_scroll[1],
+                    sky_params.cloud_tile_scale,
+                    f32::from_bits(sky_params.cloud_texture_index),
+                ],
+                cloud_params_1: [
+                    sky_params.cloud_scroll_1[0],
+                    sky_params.cloud_scroll_1[1],
+                    sky_params.cloud_tile_scale_1,
+                    f32::from_bits(sky_params.cloud_texture_index_1),
+                ],
+                cloud_params_2: [
+                    sky_params.cloud_scroll_2[0],
+                    sky_params.cloud_scroll_2[1],
+                    sky_params.cloud_tile_scale_2,
+                    f32::from_bits(sky_params.cloud_texture_index_2),
+                ],
+                cloud_params_3: [
+                    sky_params.cloud_scroll_3[0],
+                    sky_params.cloud_scroll_3[1],
+                    sky_params.cloud_tile_scale_3,
+                    f32::from_bits(sky_params.cloud_texture_index_3),
+                ],
+                // #428 — composite-pass fog needs the camera origin to
+                // compute per-pixel world-space distance from a depth
+                // sample. `w` is unused padding.
+                camera_pos: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
+                inv_view_proj: inv_vp_arr,
+            };
+            if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
+                log::warn!("composite upload_params failed: {e}");
+            }
+        }
+
         // Barrier: make the instance SSBO host write (and any remaining
         // light/camera/bone host writes) visible to the vertex + fragment
-        // shaders in the upcoming render pass. Required by Vulkan spec
-        // even for HOST_COHERENT memory.
+        // shaders in the upcoming render pass. Also covers the composite
+        // UBO host write (uploaded just above) — the composite fragment
+        // shader's `UNIFORM_READ` at `FRAGMENT_SHADER` stage is already
+        // in this barrier's destination mask, so the same execution
+        // dependency carries through (#909 / REN-D1-NEW-03 fold). Required
+        // by Vulkan spec even for HOST_COHERENT memory.
         unsafe {
             // Host-to-device visibility barrier. Covers the instance
             // SSBO (read by VS/FS), camera/light/bone buffers (read by
-            // VS/FS), and — when `multiDrawIndirect` is enabled —
-            // the per-frame indirect buffer whose contents
-            // `cmd_draw_indexed_indirect` reads at `DRAW_INDIRECT`
-            // stage. Without the extra stage mask, Vulkan validation
-            // flags the indirect fetch as racing the host write.
+            // VS/FS), composite UBO (read by composite FS), and — when
+            // `multiDrawIndirect` is enabled — the per-frame indirect
+            // buffer whose contents `cmd_draw_indexed_indirect` reads
+            // at `DRAW_INDIRECT` stage. Without the extra stage mask,
+            // Vulkan validation flags the indirect fetch as racing the
+            // host write.
             let instance_barrier = vk::MemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::HOST_WRITE)
                 .dst_access_mask(
@@ -1928,115 +2028,12 @@ impl VulkanContext {
                 }
             }
 
-            // Upload composite params (fog + sky) before the composite pass.
-            if let Some(ref mut composite) = self.composite {
-                let composite_params = super::super::composite::CompositeParams {
-                    fog_color: [
-                        fog_color[0],
-                        fog_color[1],
-                        fog_color[2],
-                        if fog_far > fog_near { 1.0 } else { 0.0 },
-                    ],
-                    fog_params: [fog_near, fog_far, 0.0, 0.0],
-                    depth_params: [
-                        if sky_params.is_exterior { 1.0 } else { 0.0 },
-                        0.85, // exposure — default Bethesda-era HDR target; promote to WTHR field (#743)
-                        0.0,
-                        0.0,
-                    ],
-                    sky_zenith: [
-                        sky_params.zenith_color[0],
-                        sky_params.zenith_color[1],
-                        sky_params.zenith_color[2],
-                        sky_params.sun_size,
-                    ],
-                    sky_horizon: [
-                        sky_params.horizon_color[0],
-                        sky_params.horizon_color[1],
-                        sky_params.horizon_color[2],
-                        0.0,
-                    ],
-                    // #541 — WTHR `SKY_LOWER` group. Pre-fix the
-                    // shader faked this as `sky_horizon * 0.3`,
-                    // dropping the authored colour entirely.
-                    sky_lower: [
-                        sky_params.lower_color[0],
-                        sky_params.lower_color[1],
-                        sky_params.lower_color[2],
-                        0.0,
-                    ],
-                    sun_dir: [
-                        sky_params.sun_direction[0],
-                        sky_params.sun_direction[1],
-                        sky_params.sun_direction[2],
-                        sky_params.sun_intensity,
-                    ],
-                    sun_color: [
-                        sky_params.sun_color[0],
-                        sky_params.sun_color[1],
-                        sky_params.sun_color[2],
-                        // #478 — pack the CLMT FNAM sun sprite handle
-                        // into the previously-unused w slot via
-                        // `from_bits`. The shader reinterprets with
-                        // `floatBitsToUint`; `0` keeps the procedural
-                        // disc (pre-fix behaviour).
-                        f32::from_bits(sky_params.sun_texture_index),
-                    ],
-                    cloud_params: [
-                        sky_params.cloud_scroll[0],
-                        sky_params.cloud_scroll[1],
-                        sky_params.cloud_tile_scale,
-                        f32::from_bits(sky_params.cloud_texture_index),
-                    ],
-                    cloud_params_1: [
-                        sky_params.cloud_scroll_1[0],
-                        sky_params.cloud_scroll_1[1],
-                        sky_params.cloud_tile_scale_1,
-                        f32::from_bits(sky_params.cloud_texture_index_1),
-                    ],
-                    cloud_params_2: [
-                        sky_params.cloud_scroll_2[0],
-                        sky_params.cloud_scroll_2[1],
-                        sky_params.cloud_tile_scale_2,
-                        f32::from_bits(sky_params.cloud_texture_index_2),
-                    ],
-                    cloud_params_3: [
-                        sky_params.cloud_scroll_3[0],
-                        sky_params.cloud_scroll_3[1],
-                        sky_params.cloud_tile_scale_3,
-                        f32::from_bits(sky_params.cloud_texture_index_3),
-                    ],
-                    // #428 — composite-pass fog needs the camera origin to
-                    // compute per-pixel world-space distance from a depth
-                    // sample. `w` is unused padding.
-                    camera_pos: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
-                    inv_view_proj: inv_vp_arr,
-                };
-                if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
-                    log::warn!("composite upload_params failed: {e}");
-                }
-            }
-
-            // HOST→FRAGMENT barrier: the composite UBO was host-written by
-            // upload_params above. Per Vulkan spec, host writes require an
-            // explicit barrier even for HOST_COHERENT memory (the execution
-            // dependency ensures ordering). SVGF and SSAO correctly emit
-            // HOST→COMPUTE barriers for their UBOs; composite was missing
-            // this. See #281.
-            {
-                let barrier = vk::MemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::HOST_WRITE)
-                    .dst_access_mask(vk::AccessFlags::UNIFORM_READ);
-                self.device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::HOST,
-                    vk::PipelineStageFlags::FRAGMENT_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[barrier],
-                    &[],
-                    &[],
-                );
-            }
+            // Composite UBO host-write + barrier moved to the pre-render-
+            // pass bulk barrier site (#909 / REN-D1-NEW-03). The dedicated
+            // late HOST→FRAGMENT barrier was correct but isolated 750
+            // lines from the bulk barrier; folded into it now so all
+            // host writes consumed by the render pass / composite pass
+            // share one execution dependency.
 
             // Composite pass: sample HDR + indirect + albedo, combine, ACES
             // tone map, write to swapchain. Runs in its own render pass.
