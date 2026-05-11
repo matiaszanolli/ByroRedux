@@ -48,12 +48,13 @@ use extra_data::{
     BsPositionData, BsWArray, NiExtraData,
 };
 use interpolator::{
-    NiBSplineBasisData, NiBSplineCompFloatInterpolator, NiBSplineCompPoint3Interpolator,
-    NiBSplineCompTransformInterpolator, NiBSplineData, NiBlendBoolInterpolator,
-    NiBlendFloatInterpolator, NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolData,
-    NiBoolInterpolator, NiColorData, NiColorInterpolator, NiFloatData, NiFloatInterpolator,
-    NiLookAtInterpolator, NiPathInterpolator, NiPoint3Interpolator, NiPosData, NiTextKeyExtraData,
-    NiTransformData, NiTransformInterpolator, NiUVData,
+    BsTreadTransfInterpolator, NiBSplineBasisData, NiBSplineCompFloatInterpolator,
+    NiBSplineCompPoint3Interpolator, NiBSplineCompTransformInterpolator, NiBSplineData,
+    NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendPoint3Interpolator,
+    NiBlendTransformInterpolator, NiBoolData, NiBoolInterpolator, NiColorData, NiColorInterpolator,
+    NiFloatData, NiFloatInterpolator, NiLookAtInterpolator, NiPathInterpolator,
+    NiPoint3Interpolator, NiPosData, NiTextKeyExtraData, NiTransformData, NiTransformInterpolator,
+    NiUVData,
 };
 use multibound::{BsMultiBound, BsMultiBoundAABB, BsMultiBoundOBB, BsMultiBoundSphere};
 use node::{BsDistantObjectInstancedNode, BsOrderedNode, BsValueNode, BsWeakReferenceNode, NiNode};
@@ -715,6 +716,12 @@ pub fn parse_block(
         }
         "NiBSplineData" => Ok(Box::new(NiBSplineData::parse(stream)?)),
         "NiBSplineBasisData" => Ok(Box::new(NiBSplineBasisData::parse(stream)?)),
+        // #941 / NIF-D5-NEW-02 — FO3+ Bethesda tread / wheel rolling
+        // animation interpolator (Liberty Prime, Vertibird treads,
+        // Power Armor wheels, mammoth rolling-stone). Pre-fix
+        // landed on `NiUnknown` via block_size recovery so wheel /
+        // tread animation imported as static.
+        "BSTreadTransfInterpolator" => Ok(Box::new(BsTreadTransfInterpolator::parse(stream)?)),
         "NiFloatInterpolator" => Ok(Box::new(NiFloatInterpolator::parse(stream)?)),
         "NiFloatData" => Ok(Box::new(NiFloatData::parse(stream)?)),
         // NiUVController + NiUVData — scrolling UV animation, deprecated

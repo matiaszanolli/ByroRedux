@@ -3430,3 +3430,89 @@ fn ni_bspline_comp_float_interpolator_invalid_handle_static_fallback() {
     assert_eq!(interp.handle, u32::MAX);
     assert_eq!(interp.value, 0.75);
 }
+
+// ── #941 / NIF-D5-NEW-02 — BSTreadTransfInterpolator (FO3+) ──────
+
+#[test]
+fn fnv_bs_tread_transf_interpolator_round_trip_two_tread_transforms() {
+    let header = fnv_header_bspline();
+    let mut data = Vec::new();
+    // num_tread_transforms = 2
+    data.extend_from_slice(&2u32.to_le_bytes());
+
+    // Tread 0: name string-table index = -1 (None), two NiQuatTransforms.
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // name
+    // T1: translation (1,2,3) + rotation (w=1,x=0,y=0,z=0 identity) + scale=1
+    for v in [1.0f32, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    // T2: translation (4,5,6) + rotation identity + scale=2
+    for v in [4.0f32, 5.0, 6.0, 1.0, 0.0, 0.0, 0.0, 2.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+
+    // Tread 1: same shape, different values.
+    data.extend_from_slice(&(-1i32).to_le_bytes());
+    for v in [10.0f32, 20.0, 30.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in [40.0f32, 50.0, 60.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+
+    // data_ref → block 5
+    data.extend_from_slice(&5i32.to_le_bytes());
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "BSTreadTransfInterpolator",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("BSTreadTransfInterpolator must dispatch");
+    assert_eq!(block.block_type_name(), "BSTreadTransfInterpolator");
+    let interp = block
+        .as_any()
+        .downcast_ref::<interpolator::BsTreadTransfInterpolator>()
+        .expect("dispatch must produce BsTreadTransfInterpolator");
+
+    assert_eq!(interp.tread_transforms.len(), 2);
+    assert_eq!(interp.tread_transforms[0].transform_1.translation.x, 1.0);
+    assert_eq!(interp.tread_transforms[0].transform_2.scale, 2.0);
+    assert_eq!(interp.tread_transforms[1].transform_1.translation.x, 10.0);
+    assert_eq!(interp.tread_transforms[1].transform_2.translation.z, 60.0);
+    assert_eq!(interp.data_ref.index(), Some(5));
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "BSTreadTransfInterpolator must consume the payload exactly — \
+         each tread is 68 bytes (4 + 32 + 32), 2 treads + 4-byte count + \
+         4-byte data ref = 144 bytes"
+    );
+    assert_eq!(data.len(), 4 + 2 * 68 + 4, "fixture size sanity check");
+}
+
+#[test]
+fn fnv_bs_tread_transf_interpolator_empty_array() {
+    // num_tread_transforms = 0 — zero-tread case. Edge case for the
+    // allocate_vec(0) path and the immediately-following data_ref.
+    let header = fnv_header_bspline();
+    let mut data = Vec::new();
+    data.extend_from_slice(&0u32.to_le_bytes()); // count
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // null data_ref
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "BSTreadTransfInterpolator",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("zero-tread BSTreadTransfInterpolator must dispatch");
+    let interp = block
+        .as_any()
+        .downcast_ref::<interpolator::BsTreadTransfInterpolator>()
+        .unwrap();
+    assert!(interp.tread_transforms.is_empty());
+    assert!(interp.data_ref.is_null());
+    assert_eq!(stream.position() as usize, data.len());
+}

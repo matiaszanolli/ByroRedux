@@ -2085,3 +2085,74 @@ impl NiBSplineCompPoint3Interpolator {
         })
     }
 }
+
+/// `BSTreadTransform` (nif.xml line 6857) — one entry in the per-tread
+/// transform array on `BsTreadTransfInterpolator`. Size = 68 bytes
+/// (NiFixedString u32 + 2× NiQuatTransform 32 each).
+#[derive(Debug, Clone)]
+pub struct BsTreadTransform {
+    /// `NiFixedString` — index into the file's string table (u32).
+    /// `None` when index == -1.
+    pub name: Option<Arc<str>>,
+    pub transform_1: NiQuatTransform,
+    pub transform_2: NiQuatTransform,
+}
+
+/// `BSTreadTransfInterpolator` (nif.xml line 6864, `versions=#FO3_AND_LATER#`).
+/// Drives rolling tread / wheel animation on FO3 Liberty Prime, FNV
+/// Ranger Vertibird treads, Skyrim mammoth / horse rolling-stone, and
+/// FO4 Power Armor wheels + Vertibird. Inherits the abstract
+/// `NiInterpolator` (no inherited fields), then adds:
+///
+/// ```text
+/// uint num_tread_transforms
+/// BSTreadTransform[num_tread_transforms] tread_transforms
+/// Ref<NiFloatData> data
+/// ```
+///
+/// Pre-#941 this fell into `NiUnknown` via the `block_size` recovery
+/// path (FO3+ NIFs all carry block_sizes so no drift, but the per-tread
+/// payload was lost — affected wheel / tread animation imported as
+/// static). The parser captures the data; an animation-side consumer
+/// for a "tread-uv" channel is deferred per the issue body.
+#[derive(Debug)]
+pub struct BsTreadTransfInterpolator {
+    pub tread_transforms: Vec<BsTreadTransform>,
+    /// Reference to the `NiFloatData` driving the per-frame tread
+    /// parameter (typically 0..1 around the tread loop).
+    pub data_ref: BlockRef,
+}
+
+impl NiObject for BsTreadTransfInterpolator {
+    fn block_type_name(&self) -> &'static str {
+        "BSTreadTransfInterpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl BsTreadTransfInterpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let num = stream.read_u32_le()?;
+        let mut tread_transforms: Vec<BsTreadTransform> = stream.allocate_vec(num)?;
+        for _ in 0..num {
+            // NiFixedString — string-table index (or inline sized
+            // string on pre-string-table builds). `read_string()`
+            // already handles both via the version gate at #615.
+            let name = stream.read_string()?;
+            let transform_1 = stream.read_ni_quat_transform()?;
+            let transform_2 = stream.read_ni_quat_transform()?;
+            tread_transforms.push(BsTreadTransform {
+                name,
+                transform_1,
+                transform_2,
+            });
+        }
+        let data_ref = stream.read_block_ref()?;
+        Ok(Self {
+            tread_transforms,
+            data_ref,
+        })
+    }
+}
