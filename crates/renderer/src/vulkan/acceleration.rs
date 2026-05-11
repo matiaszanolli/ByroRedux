@@ -63,6 +63,24 @@ pub struct BlasEntry {
     /// [`SKINNED_BLAS_REFIT_THRESHOLD`] each frame and triggers a
     /// drop+rebuild when the threshold is reached. See #679 / AS-8-9.
     pub refit_count: u32,
+    /// Vertex / index counts the original fresh BUILD was sized for.
+    /// `refit_skinned_blas` validates the caller-supplied counts
+    /// against these before issuing `mode = UPDATE` — a mismatch
+    /// would trip
+    /// `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667`
+    /// ("the corresponding `pBuildRangeInfos[i][j].primitiveCount`
+    /// must equal the `primitiveCount` used to build the source
+    /// acceleration structure") and silently corrupt the BVH on
+    /// NVIDIA. Today no in-engine path remaps `entity_id → mesh`
+    /// between frames, but a future mod swap, LOD switch, or mesh
+    /// hot-reload would; pinning the BUILD-time counts here turns
+    /// that future regression into a logged error + safe fresh-BUILD
+    /// fallback instead of silent corruption. Static BLAS use the
+    /// same fields purely for symmetry — they never refit, so the
+    /// stored values are read-only telemetry there. See #907 /
+    /// REN-D12-NEW-01.
+    pub built_vertex_count: u32,
+    pub built_index_count: u32,
 }
 
 /// REFIT-count threshold beyond which a skinned BLAS is dropped and
@@ -79,6 +97,41 @@ pub const SKINNED_BLAS_REFIT_THRESHOLD: u32 = 600;
 #[inline]
 fn should_rebuild_skinned_blas_after(refit_count: u32) -> bool {
     refit_count >= SKINNED_BLAS_REFIT_THRESHOLD
+}
+
+/// #907 — pure check that the caller-supplied vertex / index counts
+/// for `refit_skinned_blas` match the counts the original fresh
+/// BUILD was sized for. Returns `Ok` when they agree and a
+/// human-readable mismatch description otherwise.
+///
+/// Vulkan
+/// `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667` requires
+/// `primitiveCount` (== `index_count / 3` here) at UPDATE-mode
+/// builds to match the source BUILD's value exactly. `vertex_count`
+/// also feeds `max_vertex` on the geometry — changing it shifts the
+/// valid-index range and trips related VUIDs around index bounds.
+/// Both are pinned defensively even though `primitiveCount` is the
+/// only spec-strict one.
+///
+/// Split out so the check is unit-testable without a Vulkan context
+/// (the rest of `refit_skinned_blas` needs an `ash::Device` and a
+/// recording command buffer to exercise).
+#[inline]
+fn validate_refit_counts(
+    built_vertex_count: u32,
+    built_index_count: u32,
+    refit_vertex_count: u32,
+    refit_index_count: u32,
+) -> Result<(), String> {
+    if built_vertex_count != refit_vertex_count || built_index_count != refit_index_count {
+        return Err(format!(
+            "BUILD-time counts (v={built_vertex_count}, i={built_index_count}) \
+             differ from refit-time counts (v={refit_vertex_count}, i={refit_index_count}); \
+             VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667 \
+             requires `primitiveCount` at UPDATE to equal the source BUILD's"
+        ));
+    }
+    Ok(())
 }
 
 /// Top-level acceleration structure state.
@@ -797,6 +850,8 @@ impl AccelerationManager {
             // Static BLAS never refit; the field stays at zero for
             // their entire lifetime. See #679.
             refit_count: 0,
+            built_vertex_count: vertex_count,
+            built_index_count: index_count,
         });
         // BLAS map mutated — see #300.
         self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
@@ -1000,6 +1055,11 @@ impl AccelerationManager {
                 // Fresh BUILD resets the refit chain — the new BVH
                 // bounds tightly fit the current pose. See #679.
                 refit_count: 0,
+                // #907 — pin the counts used at BUILD time so the
+                // next `refit_skinned_blas` can validate that its
+                // caller-supplied counts match (Vulkan VUID 03667).
+                built_vertex_count: vertex_count,
+                built_index_count: index_count,
             },
         );
         self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
@@ -1044,6 +1104,45 @@ impl AccelerationManager {
         // `self.skinned_blas` so the alignment assert further down
         // doesn't try to re-borrow `&self` (#659).
         let scratch_align = self.scratch_align;
+        // #907 — validate that the caller-supplied counts match the
+        // ones the original fresh BUILD was sized for, BEFORE the
+        // mutable borrow on `self.skinned_blas`. A mismatch would
+        // trip
+        // `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667`
+        // and silently corrupt the BVH on NVIDIA (driver behaviour
+        // for that VUID is undefined). Today no in-engine path
+        // remaps `entity_id → mesh` between frames; this defends
+        // against future mod swap / LOD switch / mesh hot-reload.
+        // The validation is split into a pure helper
+        // (`validate_refit_counts`) so it's unit-testable without a
+        // Vulkan context.
+        let built_counts = self
+            .skinned_blas
+            .get(&entity_id)
+            .map(|e| (e.built_vertex_count, e.built_index_count))
+            .with_context(|| format!("no skinned BLAS for entity {entity_id}"))?;
+        if let Err(mismatch) =
+            validate_refit_counts(built_counts.0, built_counts.1, vertex_count, index_count)
+        {
+            debug_assert!(
+                false,
+                "BLAS refit count mismatch for entity {entity_id}: {mismatch}"
+            );
+            log::error!(
+                "BLAS refit count mismatch for entity {entity_id}: {mismatch} — \
+                 dropping stale BLAS so next frame's first-sight path rebuilds. \
+                 Triggered by entity_id → mesh_handle remap (mod swap / LOD switch / \
+                 hot-reload?). See #907 / VUID 03667."
+            );
+            // Drop the entry so the next first-sight loop in `draw.rs`
+            // sees `skinned_blas_entry(entity_id).is_none()` and emits
+            // a fresh BUILD against the current counts. Borrow on
+            // `self.skinned_blas` already released above.
+            self.drop_skinned_blas(entity_id);
+            return Err(anyhow::anyhow!(
+                "refit_skinned_blas: {mismatch} — entry dropped, will rebuild next frame"
+            ));
+        }
         let entry = self
             .skinned_blas
             .get_mut(&entity_id)
@@ -1276,6 +1375,13 @@ impl AccelerationManager {
             /// tracked separately in `max_scratch_size` for the single
             /// shared build scratch allocation.
             build_scratch_size: vk::DeviceSize,
+            /// #907 — counts captured here so the final `BlasEntry`
+            /// can pin them for the refit-counts VUID check. Static
+            /// BLAS never refit so these are read-only telemetry on
+            /// the resulting entry; included for symmetry with the
+            /// skinned path that DOES validate against them.
+            vertex_count: u32,
+            index_count: u32,
         }
 
         let mut prepared: Vec<PreparedBlas> = Vec::with_capacity(meshes.len());
@@ -1334,7 +1440,7 @@ impl AccelerationManager {
         // BLAS that the budget can't actually free (#920).
         let mut pending_bytes: vk::DeviceSize = 0;
         // Now build geometries referencing the stored triangles data.
-        for (idx, &(mesh_handle, _mesh, _vertex_count, index_count)) in meshes.iter().enumerate() {
+        for (idx, &(mesh_handle, _mesh, vertex_count, index_count)) in meshes.iter().enumerate() {
             // Mid-batch eviction check. Trigger only every N iterations
             // so the cost is amortized; the predicate itself is pure
             // arithmetic. #510.
@@ -1440,6 +1546,8 @@ impl AccelerationManager {
                 geometry,
                 primitive_count,
                 build_scratch_size: sizes.build_scratch_size,
+                vertex_count,
+                index_count,
             });
         }
 
@@ -1580,6 +1688,8 @@ impl AccelerationManager {
                 vk::AccelerationStructureKHR,
                 GpuBuffer,
                 vk::DeviceSize,
+                u32,
+                u32,
             )>,
             u64,
             u64,
@@ -1600,14 +1710,19 @@ impl AccelerationManager {
             let total_after: u64 = compacted_sizes.iter().sum();
 
             // Tuple: (mesh_handle, compacted accel, compacted buffer,
-            // build_scratch_size). Scratch size is propagated from
-            // `prepared` so the final `BlasEntry` can remember what
-            // scratch this mesh consumed at build time (#495).
+            // build_scratch_size, vertex_count, index_count). Scratch
+            // size is propagated from `prepared` so the final
+            // `BlasEntry` can remember what scratch this mesh consumed
+            // at build time (#495); vertex/index counts are propagated
+            // for the refit-counts VUID check (#907 — static BLAS
+            // never refit but we pin the counts for symmetry).
             let mut compact_accels: Vec<(
                 u32,
                 vk::AccelerationStructureKHR,
                 GpuBuffer,
                 vk::DeviceSize,
+                u32,
+                u32,
             )> = Vec::with_capacity(prepared.len());
 
             for (i, p) in prepared.iter().enumerate() {
@@ -1649,6 +1764,8 @@ impl AccelerationManager {
                     compact_accel,
                     compact_buffer,
                     p.build_scratch_size,
+                    p.vertex_count,
+                    p.index_count,
                 ));
             }
 
@@ -1677,7 +1794,7 @@ impl AccelerationManager {
 
         // Record compaction copies in a second command buffer.
         let copy_result = submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
-            for (i, (_, compact_accel, _, _)) in compact_accels.iter().enumerate() {
+            for (i, (_, compact_accel, _, _, _, _)) in compact_accels.iter().enumerate() {
                 let copy_info = vk::CopyAccelerationStructureInfoKHR::default()
                     .src(prepared[i].accel)
                     .dst(*compact_accel)
@@ -1705,7 +1822,7 @@ impl AccelerationManager {
                 }
                 p.buffer.destroy(device, allocator);
             }
-            for (_, accel, mut buf, _) in compact_accels {
+            for (_, accel, mut buf, _, _, _) in compact_accels {
                 unsafe {
                     self.accel_loader
                         .destroy_acceleration_structure(accel, None);
@@ -1725,7 +1842,9 @@ impl AccelerationManager {
         }
 
         let count = compact_accels.len();
-        for (mesh_handle, accel, buffer, build_scratch_size) in compact_accels {
+        for (mesh_handle, accel, buffer, build_scratch_size, vertex_count, index_count) in
+            compact_accels
+        {
             let device_address = unsafe {
                 self.accel_loader.get_acceleration_structure_device_address(
                     &vk::AccelerationStructureDeviceAddressInfoKHR::default()
@@ -1749,6 +1868,8 @@ impl AccelerationManager {
                 build_scratch_size,
                 // Static (mesh-keyed) BLAS never refit. See #679.
                 refit_count: 0,
+                built_vertex_count: vertex_count,
+                built_index_count: index_count,
             });
         }
         // BLAS map mutated (one bump for the whole batch — generation is
@@ -2869,6 +2990,48 @@ mod tests {
             SKINNED_BLAS_REFIT_THRESHOLD + 1
         ));
         assert!(should_rebuild_skinned_blas_after(u32::MAX));
+    }
+
+    // ── #907 / REN-D12-NEW-01 — refit-counts VUID guard ────────────
+
+    /// Identity case: same counts at BUILD and refit → no error. Pins
+    /// the happy path so a future refactor that breaks the check
+    /// (e.g. inverts the equality test) fails this test immediately
+    /// instead of falling through to a real Vulkan refit.
+    #[test]
+    fn validate_refit_counts_accepts_matching_counts() {
+        assert!(validate_refit_counts(100, 300, 100, 300).is_ok());
+        assert!(validate_refit_counts(0, 0, 0, 0).is_ok());
+        assert!(validate_refit_counts(u32::MAX, u32::MAX, u32::MAX, u32::MAX).is_ok());
+    }
+
+    /// Vertex-count drift only — typical for a LOD-down swap (same
+    /// triangle count but fewer unique verts after merging). Vulkan
+    /// VUID 03667 is strict on `primitiveCount` but we also pin
+    /// vertex_count to catch this earlier than the
+    /// max_vertex-based VUIDs.
+    #[test]
+    fn validate_refit_counts_rejects_vertex_only_drift() {
+        let err = validate_refit_counts(100, 300, 80, 300)
+            .expect_err("vertex-count drift must be rejected");
+        assert!(err.contains("v=100") && err.contains("v=80"));
+        assert!(err.contains("03667"));
+    }
+
+    /// Index-count drift — the spec-strict case. UPDATE-mode at a
+    /// different `primitiveCount` is undefined behaviour on every
+    /// driver; silent BVH corruption on NVIDIA per the issue body.
+    #[test]
+    fn validate_refit_counts_rejects_index_only_drift() {
+        let err = validate_refit_counts(100, 300, 100, 240)
+            .expect_err("index-count drift must be rejected (primitiveCount mismatch)");
+        assert!(err.contains("i=300") && err.contains("i=240"));
+    }
+
+    /// Both axes drift — full mesh swap. Same rejection path.
+    #[test]
+    fn validate_refit_counts_rejects_full_mesh_swap() {
+        assert!(validate_refit_counts(100, 300, 80, 240).is_err());
     }
 
     /// Sibling check: the threshold must be a sane number of frames.
