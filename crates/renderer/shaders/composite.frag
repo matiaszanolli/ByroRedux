@@ -261,9 +261,18 @@ vec3 compute_sky(vec3 dir) {
     // correctly (line 222) but the halo stayed at constant 0.15 *
     // sun_col, so a WTHR with non-zero `SKY_SUN[NIGHT]` (e.g.
     // Skyrim's MoonShadow) painted a faint warm halo at midnight.
+    //
+    // Falloff tightened to `pow(., 8)` × 0.10 (was `pow(., 4)` × 0.15)
+    // on the Markarth 2026-05-10 probe. The wider 4-power halo at
+    // `sun_intensity = 4` was adding +0.28 RGB to the sky ~33° off the
+    // sun direction; ACES tonemap then pushed the entire visible
+    // upper hemisphere to pale-white in any view including the sun's
+    // half of the sky. The `pow(., 8)` curve concentrates the halo
+    // to ~15° around the disc — preserves the bright sun region
+    // without washing the rest of the sky.
     float glow = max(cos_angle, 0.0);
-    glow = pow(glow, 4.0);
-    sky += sun_col * glow * 0.15 * sun_intensity;
+    glow = pow(glow, 8.0);
+    sky += sun_col * glow * 0.10 * sun_intensity;
 
     return sky;
 }
@@ -396,19 +405,61 @@ void main() {
         // on the post-tone-map side.
         vec3 tonemapped = aces(combined * exposure);
 
-        // Legacy display-space fog mix removed (M55 Phase 3, 2026-05-09).
-        // The volumetric pipeline now computes pre-integrated
-        // `(∫inscatter, T_cum)` per froxel, modulated into `combined`
-        // above (HDR-linear, pre-ACES) — that's the single source of
-        // distance haze going forward. Stacking the legacy
-        // `mix(tonemapped, tonemappedFog, smoothstep(near, far, …))`
-        // on top double-tinted distant surfaces (visible on the
-        // 2026-05-09 Prospector screenshot under heavy interior fog
-        // params) and was always going to interfere with proper
-        // physical inscatter accumulation. CompositeParams.fog_color /
-        // fog_params remain in the UBO — the volumetric density
-        // shader will read them in Phase 6 (REGN-driven density)
-        // for region-keyed atmospheric tinting.
+        // Aerial-perspective fog — exterior cells only (Markarth probe
+        // 2026-05-10). Pre-fix the geometry branch shipped with NO
+        // distance fade because M55 Phase 3 (2026-05-09) removed the
+        // legacy display-space fog mix on the assumption that the
+        // volumetric pipeline at line 368 above would take over. That
+        // pipeline's per-froxel single-shadow-ray approach produced
+        // ~8-pixel vertical bands on bright surfaces and was gated
+        // OFF (`vol.rgb * 0.0`) pending M-LIGHT v2. Net effect from
+        // 2026-05-09 to 2026-05-10: no atmospheric perspective on any
+        // exterior — distant cliffs read as harsh black silhouettes
+        // against the bright sky (Markarth screenshot, looking up
+        // between the canyon walls). Restoring the legacy mix here
+        // covers the gap until M-LIGHT v2 lands; when it does, drop
+        // this branch in lockstep with flipping the `* 0.0` on
+        // `vol.rgb` and flipping `VOLUMETRIC_OUTPUT_CONSUMED = true`
+        // in `draw.rs::draw_frame`.
+        //
+        // The mix targets the SKY COLOUR along the view direction (not
+        // the flat `params.fog_color`), so the haze pulls each pixel
+        // toward whatever the sky behind it would have painted — real
+        // aerial perspective. `fog_color` stays in the UBO for the
+        // future REGN-driven volumetric density tint (M55 Phase 6).
+        //
+        // Display-space mix (post-tonemap) per #784: HDR-linear fog
+        // values authored in raw monitor space (`feedback_color_space.md`)
+        // get perceptually amplified through ACES if mixed pre-tonemap,
+        // producing a yellow / sepia distance wash on warm-fog cells.
+        // Display-space mix lands closer to the perceptual intent of
+        // the authored values.
+        if (params.depth_params.x > 0.5 && depth < 0.9999) {
+            float fog_near = params.fog_params.x;
+            float fog_far  = params.fog_params.y;
+            if (fog_far > fog_near) {
+                // worldDist was computed above in the volumetric
+                // branch but only inside that `if (depth < 0.9999)`
+                // scope — recompute here so the geometry path
+                // doesn't depend on volumetric branch ordering.
+                vec2 ndc_xy_fog = fragUV * 2.0 - 1.0;
+                vec4 clip_fog = vec4(ndc_xy_fog, depth, 1.0);
+                vec4 world_fog = params.inv_view_proj * clip_fog;
+                vec3 worldPos_fog = world_fog.xyz / world_fog.w;
+                float worldDist = length(worldPos_fog - params.camera_pos.xyz);
+                float fog_t = clamp(
+                    (worldDist - fog_near) / (fog_far - fog_near),
+                    0.0, 1.0
+                );
+                // Sky colour along the view direction — same shader
+                // function the sky branch uses, so the haze matches
+                // what the geometry occludes.
+                vec3 viewDir = screen_to_world_dir(fragUV);
+                vec3 skyHaze = compute_sky(viewDir);
+                vec3 tonemappedHaze = aces(skyHaze * exposure);
+                tonemapped = mix(tonemapped, tonemappedHaze, fog_t);
+            }
+        }
 
         outColor = vec4(tonemapped, direct4.a);
     }
