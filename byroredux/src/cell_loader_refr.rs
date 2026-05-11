@@ -348,7 +348,7 @@ pub(crate) fn expand_scol_placements(
         && index
             .statics
             .get(&base_form_id)
-            .map_or(true, |s| s.model_path.is_empty());
+            .is_none_or(|s| s.model_path.is_empty());
     if !must_expand {
         return vec![(base_form_id, outer_pos, outer_rot, outer_scale)];
     }

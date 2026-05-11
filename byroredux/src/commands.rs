@@ -582,9 +582,7 @@ fn format_skin_dump(world: &World, entity: u32, skin: &SkinnedMesh) -> Vec<Strin
         lines.push("  skeleton_root: (none)".to_string());
     }
     if skin.global_skin_transform != Mat4::IDENTITY {
-        lines.push(format!(
-            "  global_skin_transform: NON-IDENTITY (informational; not multiplied at runtime)"
-        ));
+        lines.push("  global_skin_transform: NON-IDENTITY (informational; not multiplied at runtime)".to_string());
         lines.push(format!(
             "    {}",
             format_mat4_row(&skin.global_skin_transform)

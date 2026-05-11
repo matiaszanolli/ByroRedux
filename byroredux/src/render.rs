@@ -151,7 +151,7 @@ const SUN_INTENSITY_PEAK: f32 = 4.0;
 /// and ceilings/overhangs received the full TOD-NIGHT `SKY_SUNLIGHT`
 /// colour. The WRS shadow ray subtracts when occluded, but at distances
 /// > 4000 units `shadowFade` decays to zero, leaving the unshadowed
-/// contribution un-cancelled.
+/// > contribution un-cancelled.
 ///
 /// Returns `(color, radius)` where `radius == -1` flags the shader to
 /// skip shadow rays (interior fill) and `radius == 0` is the standard

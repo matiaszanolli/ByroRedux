@@ -701,7 +701,7 @@ pub fn build_exterior_world_context(
         .worldspace_climates
         .get(&worldspace_key)
         .and_then(|fid| record_index.climates.get(fid).cloned())
-        .map(|climate| {
+        .inspect(|climate| {
             log::info!(
                 "Worldspace '{}' climate '{}' ({:08X}): {} weathers, \
                  sunrise {:.2}–{:.2}h, sunset {:.2}–{:.2}h",
@@ -714,7 +714,6 @@ pub fn build_exterior_world_context(
                 climate.sunset_begin as f32 / 6.0,
                 climate.sunset_end as f32 / 6.0,
             );
-            climate
         });
     let default_weather = climate.as_ref().and_then(|climate| {
         let best = climate

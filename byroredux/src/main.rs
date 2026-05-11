@@ -1097,7 +1097,7 @@ impl ApplicationHandler for App {
                     let is_interior = self
                         .world
                         .try_resource::<crate::components::CellLightingRes>()
-                        .map_or(false, |l| l.is_interior);
+                        .is_some_and(|l| l.is_interior);
                     let clear_color = if is_interior {
                         [0.0, 0.0, 0.0, 1.0]
                     } else {

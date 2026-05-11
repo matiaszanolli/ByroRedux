@@ -25,7 +25,7 @@ pub(super) fn plugin_basename_lc(path: &str) -> String {
 /// Used by the loud-fail diagnostic when a REFR's `base_form_id` is
 /// unresolved — the audit's #561 completeness item: "name the missing
 /// master" instead of silently rendering empty.
-pub(super) fn plugin_for_form_id<'a>(form_id: u32, load_order: &'a [String]) -> Option<&'a str> {
+pub(super) fn plugin_for_form_id(form_id: u32, load_order: &[String]) -> Option<&str> {
     let mod_index = (form_id >> 24) as usize;
     load_order.get(mod_index).map(|s| s.as_str())
 }
