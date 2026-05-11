@@ -2173,6 +2173,24 @@ impl AccelerationManager {
             &mut tlas.last_blas_addresses,
             &mut current_addresses_scratch,
         );
+        // #914 / REN-D8-NEW-04 — invariant guard. `last_blas_addresses`
+        // is consumed by next frame's `decide_use_update` zip against
+        // the freshly-rebuilt `current_addresses_scratch`, and by the
+        // build-info `primitive_count` on UPDATE-mode rebuilds. Any
+        // future "skip empty tail instances" / partial-instance
+        // optimisation that desyncs the two would silently produce a
+        // `primitiveCount`-mismatch on next frame's UPDATE call (a
+        // validation-layer error in debug, garbage TLAS contents in
+        // release). The cached addresses were just swapped *out* of
+        // `current_addresses_scratch`, which was filled from
+        // `instances.iter()` in the loop above — so length must equal
+        // `instance_count`. Debug-only: zero release-build cost.
+        debug_assert_eq!(
+            tlas.last_blas_addresses.len(),
+            instance_count as usize,
+            "TLAS instance bookkeeping desync — UPDATE will fail next frame \
+             (last_blas_addresses.len() != instance_count)"
+        );
         self.tlas_addresses_scratch = current_addresses_scratch;
         shrink_scratch_if_oversized(&mut self.tlas_addresses_scratch, instances.len(), 512);
         // After this BUILD/UPDATE completes, the next frame can refit
