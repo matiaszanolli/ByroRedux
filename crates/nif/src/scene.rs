@@ -2,6 +2,7 @@
 
 use crate::blocks::{node::NiNode, NiObject};
 use crate::types::BlockRef;
+use std::collections::BTreeMap;
 
 /// A fully parsed and linked NIF file.
 #[derive(Debug)]
@@ -51,6 +52,31 @@ pub struct NifScene {
     /// itself; before this field landed only debug-build / nif_stats
     /// callers ran the walk explicitly. See #892.
     pub link_errors: usize,
+    /// Per-block-type stream-drift histogram. `drift_histogram[type][n]`
+    /// is the number of times a block parser of that type returned `Ok`
+    /// but consumed a number of bytes that disagreed with the header's
+    /// `block_size` field, where `n = declared - consumed`. Positive
+    /// drift = the parser under-read (stream realigned forward),
+    /// negative drift = the parser over-read (stream realigned backward).
+    ///
+    /// Only populated for NIFs that have a `block_sizes` table (Skyrim
+    /// SE / FO4 / FO76 / Starfield era, v20.2.0.7+). Oblivion-era files
+    /// with no per-block sizes have nothing to reconcile against and
+    /// produce an empty histogram — the runtime-size-cache drift
+    /// detector at `parse_nif` handles them separately (#395).
+    ///
+    /// Havok constraint stub block types (`bhkHingeConstraint` & al, see
+    /// `is_havok_constraint_stub` in `lib.rs`) are intentionally
+    /// excluded — they under-consume by design (#117) and would
+    /// otherwise drown the histogram on every actor spawn.
+    ///
+    /// Drives the `nif_stats --drift-histogram` aggregation across full
+    /// archive walks: a clean parse rate can paper over byte-level
+    /// parser drift, so the histogram surfaces "this block type's
+    /// parser is consistently 1 byte short" patterns that would
+    /// otherwise only show up as a much-later downstream block reading
+    /// garbage. See #939.
+    pub drift_histogram: BTreeMap<String, BTreeMap<i64, u32>>,
 }
 
 impl Default for NifScene {
@@ -62,6 +88,7 @@ impl Default for NifScene {
             dropped_block_count: 0,
             recovered_blocks: 0,
             link_errors: 0,
+            drift_histogram: BTreeMap::new(),
         }
     }
 }
@@ -292,6 +319,7 @@ mod validate_refs_tests {
             dropped_block_count: 0,
             recovered_blocks: 0,
             link_errors: 0,
+            drift_histogram: BTreeMap::new(),
         };
         assert!(scene.validate_refs().is_empty());
     }
@@ -310,6 +338,7 @@ mod validate_refs_tests {
             dropped_block_count: 0,
             recovered_blocks: 0,
             link_errors: 0,
+            drift_histogram: BTreeMap::new(),
         };
         assert!(scene.validate_refs().is_empty());
     }
@@ -325,6 +354,7 @@ mod validate_refs_tests {
             dropped_block_count: 0,
             recovered_blocks: 0,
             link_errors: 0,
+            drift_histogram: BTreeMap::new(),
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
@@ -348,6 +378,7 @@ mod validate_refs_tests {
             dropped_block_count: 0,
             recovered_blocks: 0,
             link_errors: 0,
+            drift_histogram: BTreeMap::new(),
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 2);
@@ -369,6 +400,7 @@ mod validate_refs_tests {
             dropped_block_count: 0,
             recovered_blocks: 0,
             link_errors: 0,
+            drift_histogram: BTreeMap::new(),
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
@@ -386,6 +418,7 @@ mod validate_refs_tests {
             dropped_block_count: 0,
             recovered_blocks: 0,
             link_errors: 0,
+            drift_histogram: BTreeMap::new(),
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);

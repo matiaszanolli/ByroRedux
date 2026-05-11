@@ -210,6 +210,17 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
     // NiUnknown" from "block parsed with stream drift" at a glance.
     let mut drifted_by_type: std::collections::HashMap<String, u32> =
         std::collections::HashMap::new();
+    // Per-block-type drift histogram — keyed by `declared - consumed`.
+    // Populated alongside `drifted_by_type` so the parse-end summary log
+    // stays unchanged while a richer, structured surface is also
+    // available via `NifScene.drift_histogram`. Used by `nif_stats
+    // --drift-histogram` to aggregate byte-level parser drift across
+    // archive walks: a `100 % clean` rate can paper over a parser
+    // that's consistently 1 byte short on every instance of a given
+    // type, and only the magnitude (not the count) surfaces the
+    // pattern. See #939.
+    let mut drift_histogram: std::collections::HashMap<String, std::collections::HashMap<i64, u32>> =
+        std::collections::HashMap::new();
 
     // For Oblivion-era NIFs (no block_sizes table), track the consumed
     // byte count for each successfully parsed block type. When a block
@@ -228,6 +239,23 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
             *c += 1;
         } else {
             map.insert(key.to_string(), 1);
+        }
+    }
+
+    // Record one drift event into the per-type histogram. Uses the same
+    // get/insert split as `bump_counter` to skip `to_string()` on the
+    // common already-seen-this-type path.
+    fn bump_drift(
+        map: &mut std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
+        key: &str,
+        drift: i64,
+    ) {
+        if let Some(inner) = map.get_mut(key) {
+            *inner.entry(drift).or_insert(0) += 1;
+        } else {
+            let mut inner = std::collections::HashMap::new();
+            inner.insert(drift, 1u32);
+            map.insert(key.to_string(), inner);
         }
     }
 
@@ -347,15 +375,22 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                             // function rolls these into a single
                             // `warn!` line. Per-block detail stays
                             // visible at `debug!` for parser-author
-                            // debugging.
+                            // debugging. #939: log the signed drift
+                            // explicitly so per-block grep'ing
+                            // (`drift=+1`) picks out the canonical
+                            // 1-byte-short `NiTexturingProperty`
+                            // pattern without arithmetic.
+                            let drift = size as i64 - consumed as i64;
                             log::debug!(
-                                "Block {} '{}': expected {} bytes, consumed {}. Adjusting position.",
+                                "Block {} '{}': declared={} consumed={} drift={:+} — adjusting position.",
                                 i,
                                 type_name,
                                 size,
                                 consumed,
+                                drift,
                             );
                             bump_counter(&mut drifted_by_type, type_name);
+                            bump_drift(&mut drift_histogram, type_name, drift);
                         }
                         stream.set_position(start_pos + size as u64);
                     }
@@ -603,6 +638,18 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         None
     };
 
+    // Convert the per-parse `HashMap<String, HashMap<i64, u32>>` into the
+    // deterministic `BTreeMap<String, BTreeMap<i64, u32>>` surface
+    // documented on `NifScene.drift_histogram`. The HashMap is the
+    // hot-path-friendly shape inside the loop; the BTreeMap gives
+    // diff-friendly iteration order to downstream consumers
+    // (`nif_stats --drift-histogram`, baseline regression tests). See #939.
+    let scene_drift_histogram: std::collections::BTreeMap<String, std::collections::BTreeMap<i64, u32>> =
+        drift_histogram
+            .into_iter()
+            .map(|(type_name, inner)| (type_name, inner.into_iter().collect()))
+            .collect();
+
     let mut scene = NifScene {
         blocks,
         root_index,
@@ -610,6 +657,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         dropped_block_count,
         recovered_blocks,
         link_errors: 0,
+        drift_histogram: scene_drift_histogram,
     };
     // Opt-in dangling-ref walk (#892). Off by default; debug builds,
     // `nif_stats`, and integration sweeps flip
@@ -831,11 +879,13 @@ mod tests {
             dropped_block_count: 3,
             recovered_blocks: 0,
             link_errors: 0,
+            drift_histogram: std::collections::BTreeMap::new(),
         };
         assert!(scene.truncated);
         assert_eq!(scene.dropped_block_count, 3);
         assert_eq!(scene.recovered_blocks, 0);
         assert_eq!(scene.link_errors, 0);
+        assert!(scene.drift_histogram.is_empty());
         assert!(scene.is_empty());
     }
 
@@ -1444,5 +1494,126 @@ mod tests {
         // the closest sample (48) → fire.
         assert!(super::drift_warning(50, &[46, 47, 48]).is_none());
         assert!(super::drift_warning(60, &[46, 47, 48]).is_some());
+    }
+
+    // ── #939: per-block-type drift histogram ─────────────────────────
+
+    /// A known-good NIF must produce an empty drift histogram —
+    /// `block_size` matches `consumed` for every block, so the
+    /// reconciliation branch never fires.
+    #[test]
+    fn drift_histogram_empty_on_clean_parse() {
+        let data = build_test_nif_with_node();
+        let scene = parse_nif(&data).expect("clean parse");
+        assert!(
+            scene.drift_histogram.is_empty(),
+            "clean parse must produce an empty drift histogram, got: {:?}",
+            scene.drift_histogram
+        );
+    }
+
+    /// Build a Skyrim-SE-style NIF with one NiNode whose header-declared
+    /// `block_size` is intentionally `inflate_by` bytes larger than the
+    /// parser actually consumes. The parser returns `Ok`, the drift
+    /// reconciliation branch fires, and `scene.drift_histogram["NiNode"]`
+    /// ends up with one entry at `drift = +inflate_by`. Used by the
+    /// synthetic-drift regression test below.
+    fn build_drifted_nif(inflate_by: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        // Header — same layout as build_test_nif_with_node.
+        buf.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
+        buf.extend_from_slice(&0x14020007u32.to_le_bytes());
+        buf.push(1); // little-endian
+        buf.extend_from_slice(&11u32.to_le_bytes()); // user_version (FNV-style)
+        buf.extend_from_slice(&1u32.to_le_bytes()); // num_blocks = 1
+        buf.extend_from_slice(&34u32.to_le_bytes()); // user_version_2
+
+        // Short strings.
+        for _ in 0..3 {
+            buf.push(1);
+            buf.push(0);
+        }
+
+        // Block types: 1 type "NiNode".
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&6u32.to_le_bytes());
+        buf.extend_from_slice(b"NiNode");
+
+        // Block type indices: block 0 → type 0.
+        buf.extend_from_slice(&0u16.to_le_bytes());
+
+        // NiNode body (same wire layout as build_test_nif_with_node).
+        let mut block = Vec::new();
+        block.extend_from_slice(&0i32.to_le_bytes()); // name index
+        block.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
+        block.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+        block.extend_from_slice(&14u32.to_le_bytes()); // flags (u32 @ v20.2.0.7)
+        block.extend_from_slice(&1.0f32.to_le_bytes());
+        block.extend_from_slice(&2.0f32.to_le_bytes());
+        block.extend_from_slice(&3.0f32.to_le_bytes());
+        for r in &[1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+            block.extend_from_slice(&r.to_le_bytes());
+        }
+        block.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+        block.extend_from_slice(&0u32.to_le_bytes()); // properties count
+        block.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
+        block.extend_from_slice(&0u32.to_le_bytes()); // children count
+        block.extend_from_slice(&0u32.to_le_bytes()); // effects count
+
+        // Block sizes — declared = actual + inflate_by, so the drift
+        // reconciliation branch fires with drift = +inflate_by.
+        let declared = block.len() as u32 + inflate_by;
+        buf.extend_from_slice(&declared.to_le_bytes());
+
+        // String table: 1 string "SceneRoot".
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&9u32.to_le_bytes());
+        buf.extend_from_slice(&9u32.to_le_bytes());
+        buf.extend_from_slice(b"SceneRoot");
+
+        // num_groups = 0.
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        // Block data + tail padding so `stream.set_position(start_pos +
+        // declared)` lands within the buffer.
+        buf.extend_from_slice(&block);
+        buf.extend(std::iter::repeat(0u8).take(inflate_by as usize));
+
+        buf
+    }
+
+    #[test]
+    fn drift_histogram_records_synthetic_drift() {
+        // 10-byte declared-vs-consumed gap on a single NiNode block.
+        let data = build_drifted_nif(10);
+        let scene = parse_nif(&data).expect("synthetic drift NIF parses");
+        let per_type = scene
+            .drift_histogram
+            .get("NiNode")
+            .expect("NiNode drift bucket must exist");
+        assert_eq!(
+            per_type.get(&10).copied(),
+            Some(1),
+            "synthetic NIF inflated NiNode block_size by 10 — expected one entry at drift=+10, \
+             got histogram: {:?}",
+            scene.drift_histogram
+        );
+        // No other drift entries, single drift event total.
+        let total_events: u32 = scene
+            .drift_histogram
+            .values()
+            .flat_map(|inner| inner.values())
+            .sum();
+        assert_eq!(total_events, 1);
+    }
+
+    /// Drift histogram surface is keyed on the public NifScene field —
+    /// pin its existence + Default-initialisation so a future refactor
+    /// can't silently drop it.
+    #[test]
+    fn nif_scene_default_carries_empty_drift_histogram() {
+        let scene = NifScene::default();
+        assert!(scene.drift_histogram.is_empty());
     }
 }

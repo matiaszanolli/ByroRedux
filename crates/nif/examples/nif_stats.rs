@@ -98,6 +98,11 @@ struct Stats {
     truncated_examples: Vec<(String, usize)>,
     /// Per-header-type histogram with `parsed` vs `unknown` split.
     block_histogram: BTreeMap<String, BlockCounts>,
+    /// Per-block-type stream-drift histogram aggregated across every
+    /// scene in the walk. `drift_histogram[type][n]` is the total count
+    /// of drift events of magnitude `n = declared - consumed` over the
+    /// whole walk. Surfaces via `--drift-histogram`. See #939.
+    drift_histogram: BTreeMap<String, BTreeMap<i64, u64>>,
     /// Grouped by the first line of the error message.
     failure_groups: BTreeMap<String, Vec<String>>,
 }
@@ -111,7 +116,19 @@ impl Stats {
             dropped_blocks: 0,
             truncated_examples: Vec::new(),
             block_histogram: BTreeMap::new(),
+            drift_histogram: BTreeMap::new(),
             failure_groups: BTreeMap::new(),
+        }
+    }
+
+    /// Fold one parse's per-block-type drift histogram into the
+    /// walk-level aggregate. See #939.
+    fn record_drift(&mut self, scene_drift: &BTreeMap<String, BTreeMap<i64, u32>>) {
+        for (type_name, per_type) in scene_drift {
+            let entry = self.drift_histogram.entry(type_name.clone()).or_default();
+            for (&drift, &count) in per_type {
+                *entry.entry(drift).or_insert(0) += count as u64;
+            }
         }
     }
 
@@ -199,6 +216,58 @@ impl Stats {
             .values()
             .filter(|c| c.parsed > 0 && c.unknown > 0)
             .count()
+    }
+
+    /// Print the per-block-type stream-drift histogram aggregated
+    /// across every parsed file. Rows are sorted by total drift-event
+    /// count (descending). For each type, the per-drift-value
+    /// distribution is shown as `drift=+N×count` pairs, sorted by
+    /// `|drift|` then sign. See #939.
+    fn print_drift_histogram(&self, show_all: bool) {
+        println!();
+        if self.drift_histogram.is_empty() {
+            println!("─── Drift histogram ──────────────────────────────────────────");
+            println!("  No drift detected (every block parser consumed exactly its declared block_size)");
+            return;
+        }
+
+        // Per-type totals — drives the row ordering.
+        let mut by_total: Vec<(&String, u64, &BTreeMap<i64, u64>)> = self
+            .drift_histogram
+            .iter()
+            .map(|(name, per_type)| {
+                let total: u64 = per_type.values().sum();
+                (name, total, per_type)
+            })
+            .collect();
+        by_total.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+
+        let total_events: u64 = by_total.iter().map(|(_, t, _)| *t).sum();
+        let total_types = by_total.len();
+        println!(
+            "─── Drift histogram ({} events across {} type(s)) ─────────",
+            total_events, total_types
+        );
+        let limit = if show_all { by_total.len() } else { 20 };
+        for (name, total, per_type) in by_total.iter().take(limit) {
+            // Show drifts ordered by |drift| (worst first) so a +20
+            // outlier appears ahead of the common +1 / -1 noise.
+            let mut entries: Vec<(i64, u64)> =
+                per_type.iter().map(|(&d, &c)| (d, c)).collect();
+            entries.sort_by(|a, b| b.0.abs().cmp(&a.0.abs()).then_with(|| a.0.cmp(&b.0)));
+            let dist = entries
+                .iter()
+                .map(|(d, c)| format!("drift={:+}×{}", d, c))
+                .collect::<Vec<_>>()
+                .join(" ");
+            println!("  {:>8}  {:<40}  {}", total, name, dist);
+        }
+        if by_total.len() > limit {
+            println!(
+                "  ... and {} more type(s) (use --all to show)",
+                by_total.len() - limit
+            );
+        }
     }
 
     fn print(&self, unknown_only: bool, show_all: bool, min_count: usize) {
@@ -364,6 +433,10 @@ impl Stats {
 fn process_bytes(stats: &mut Stats, label: String, bytes: &[u8]) {
     match parse_nif(bytes) {
         Ok(scene) => {
+            // Fold drift independent of clean / truncated routing —
+            // a clean parse can still carry drift entries when a parser
+            // returns Ok with consumed != block_size. See #939.
+            stats.record_drift(&scene.drift_histogram);
             // #568 — a non-zero `recovered_blocks` means at least one
             // block fell into the NiUnknown recovery path (parser
             // misalignment like #546, or an unknown dispatch type).
@@ -481,6 +554,7 @@ fn main() {
     let mut tsv = false;
     let mut unknown_only = false;
     let mut show_all = false;
+    let mut drift_only = false;
     let mut min_count: usize = 0;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -488,6 +562,7 @@ fn main() {
             "--tsv" => tsv = true,
             "--unknown-only" => unknown_only = true,
             "--all" => show_all = true,
+            "--drift-histogram" => drift_only = true,
             "--min-count" => {
                 let Some(val) = args.next() else {
                     eprintln!("--min-count requires a value");
@@ -503,13 +578,14 @@ fn main() {
             }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: nif_stats <path> [--tsv] [--unknown-only] [--all] [--min-count N]"
+                    "usage: nif_stats <path> [--tsv] [--unknown-only] [--all] [--drift-histogram] [--min-count N]"
                 );
-                eprintln!("  <path>          .nif file, directory, .bsa, or .ba2");
-                eprintln!("  --tsv           emit machine-readable per-type histogram");
-                eprintln!("  --unknown-only  human summary: skip fully-parsed types");
-                eprintln!("  --all           uncap top-20 unparsed/histogram tables (#601)");
-                eprintln!("  --min-count N   trim entries with total < N");
+                eprintln!("  <path>             .nif file, directory, .bsa, or .ba2");
+                eprintln!("  --tsv              emit machine-readable per-type histogram");
+                eprintln!("  --unknown-only     human summary: skip fully-parsed types");
+                eprintln!("  --all              uncap top-20 unparsed/histogram tables (#601)");
+                eprintln!("  --drift-histogram  emit only per-block-type stream-drift table (#939)");
+                eprintln!("  --min-count N      trim entries with total < N");
                 std::process::exit(0);
             }
             other if other.starts_with("--") => {
@@ -568,6 +644,8 @@ fn main() {
 
     if tsv {
         stats.print_tsv();
+    } else if drift_only {
+        stats.print_drift_histogram(show_all);
     } else {
         stats.print(unknown_only, show_all, min_count);
     }
