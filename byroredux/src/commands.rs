@@ -695,6 +695,202 @@ impl ConsoleCommand for MemFragCommand {
     }
 }
 
+/// Dump the active scene lighting resources — cell ambient / directional,
+/// sky / sun, current game time. Companion to `tex.missing` for diagnosing
+/// "scene is too dark" symptoms without grepping logs (#890 followup —
+/// see Markarth investigation 2026-05-10). The output flags the
+/// resource-not-present case explicitly so it's obvious whether the
+/// engine is on the procedural fallback, a resolved WTHR / CLMT, or a
+/// per-cell XCLL/LGTM override.
+struct LightDumpCommand;
+impl ConsoleCommand for LightDumpCommand {
+    fn name(&self) -> &str {
+        "light.dump"
+    }
+    fn description(&self) -> &str {
+        "Dump active CellLightingRes + SkyParamsRes + GameTimeRes \
+         (diagnoses 'scene is too dark' — see Markarth probe)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let mut lines = Vec::new();
+
+        // ── CellLightingRes ───────────────────────────────────────────
+        match world.try_resource::<crate::components::CellLightingRes>() {
+            Some(lit) => {
+                lines.push("CellLightingRes:".to_string());
+                lines.push(format!(
+                    "  ambient            = [{:.3}, {:.3}, {:.3}]",
+                    lit.ambient[0], lit.ambient[1], lit.ambient[2]
+                ));
+                lines.push(format!(
+                    "  directional_color  = [{:.3}, {:.3}, {:.3}]",
+                    lit.directional_color[0],
+                    lit.directional_color[1],
+                    lit.directional_color[2]
+                ));
+                lines.push(format!(
+                    "  directional_dir    = [{:.3}, {:.3}, {:.3}]",
+                    lit.directional_dir[0],
+                    lit.directional_dir[1],
+                    lit.directional_dir[2]
+                ));
+                lines.push(format!("  is_interior        = {}", lit.is_interior));
+                lines.push(format!(
+                    "  fog                = color=[{:.2}, {:.2}, {:.2}] near={:.1} far={:.1}",
+                    lit.fog_color[0],
+                    lit.fog_color[1],
+                    lit.fog_color[2],
+                    lit.fog_near,
+                    lit.fog_far
+                ));
+                // Extended XCLL — surface presence so the user can tell
+                // apart "engine fallback" / "LGTM template" / "explicit XCLL".
+                lines.push("  XCLL extended:".to_string());
+                lines.push(format!(
+                    "    directional_fade    = {}",
+                    fmt_opt_f32(lit.directional_fade)
+                ));
+                lines.push(format!(
+                    "    fog_clip / fog_power= {} / {}",
+                    fmt_opt_f32(lit.fog_clip),
+                    fmt_opt_f32(lit.fog_power)
+                ));
+                lines.push(format!(
+                    "    fog_far_color       = {}",
+                    fmt_opt_rgb(lit.fog_far_color)
+                ));
+                lines.push(format!(
+                    "    fog_max             = {}",
+                    fmt_opt_f32(lit.fog_max)
+                ));
+                lines.push(format!(
+                    "    light_fade_begin/end= {} / {}",
+                    fmt_opt_f32(lit.light_fade_begin),
+                    fmt_opt_f32(lit.light_fade_end)
+                ));
+                lines.push(format!(
+                    "    directional_ambient = {}",
+                    if lit.directional_ambient.is_some() {
+                        "present (Skyrim+ 6-axis cube)"
+                    } else {
+                        "None"
+                    }
+                ));
+                lines.push(format!(
+                    "    specular            = color={} alpha={}",
+                    fmt_opt_rgb(lit.specular_color),
+                    fmt_opt_f32(lit.specular_alpha)
+                ));
+                lines.push(format!(
+                    "    fresnel_power       = {}",
+                    fmt_opt_f32(lit.fresnel_power)
+                ));
+            }
+            None => {
+                lines.push("CellLightingRes: <not present — no cell loaded yet>".to_string());
+            }
+        }
+        lines.push(String::new());
+
+        // ── SkyParamsRes ──────────────────────────────────────────────
+        match world.try_resource::<crate::components::SkyParamsRes>() {
+            Some(sky) => {
+                lines.push("SkyParamsRes:".to_string());
+                lines.push(format!(
+                    "  sun_direction      = [{:.3}, {:.3}, {:.3}]",
+                    sky.sun_direction[0], sky.sun_direction[1], sky.sun_direction[2]
+                ));
+                lines.push(format!(
+                    "  sun_color          = [{:.3}, {:.3}, {:.3}]",
+                    sky.sun_color[0], sky.sun_color[1], sky.sun_color[2]
+                ));
+                lines.push(format!("  sun_intensity      = {:.3}", sky.sun_intensity));
+                lines.push(format!("  sun_size           = {:.4}", sky.sun_size));
+                lines.push(format!("  is_exterior        = {}", sky.is_exterior));
+                lines.push(format!(
+                    "  zenith             = [{:.3}, {:.3}, {:.3}]",
+                    sky.zenith_color[0], sky.zenith_color[1], sky.zenith_color[2]
+                ));
+                lines.push(format!(
+                    "  horizon            = [{:.3}, {:.3}, {:.3}]",
+                    sky.horizon_color[0], sky.horizon_color[1], sky.horizon_color[2]
+                ));
+                lines.push(format!(
+                    "  lower              = [{:.3}, {:.3}, {:.3}]",
+                    sky.lower_color[0], sky.lower_color[1], sky.lower_color[2]
+                ));
+                lines.push(format!(
+                    "  clouds (tile/tex)  = [{:.2}/{}] [{:.2}/{}] [{:.2}/{}] [{:.2}/{}]",
+                    sky.cloud_tile_scale,
+                    sky.cloud_texture_index,
+                    sky.cloud_tile_scale_1,
+                    sky.cloud_texture_index_1,
+                    sky.cloud_tile_scale_2,
+                    sky.cloud_texture_index_2,
+                    sky.cloud_tile_scale_3,
+                    sky.cloud_texture_index_3
+                ));
+                lines.push(format!(
+                    "  sun_texture_index  = {} ({})",
+                    sky.sun_texture_index,
+                    if sky.sun_texture_index == 0 {
+                        "procedural disc fallback"
+                    } else {
+                        "CLMT FNAM sprite"
+                    }
+                ));
+            }
+            None => {
+                lines.push("SkyParamsRes: <not present — no exterior cell loaded>".to_string());
+            }
+        }
+        lines.push(String::new());
+
+        // ── GameTimeRes ───────────────────────────────────────────────
+        match world.try_resource::<crate::components::GameTimeRes>() {
+            Some(gt) => {
+                let h = gt.hour.rem_euclid(24.0);
+                let hour_int = h.floor() as u32;
+                let minute_int = ((h - h.floor()) * 60.0).floor() as u32;
+                let suffix = if hour_int < 12 { "AM" } else { "PM" };
+                let display_hour = match hour_int {
+                    0 => 12,
+                    1..=12 => hour_int,
+                    _ => hour_int - 12,
+                };
+                lines.push("GameTimeRes:".to_string());
+                lines.push(format!(
+                    "  hour          = {:.3} ({}:{:02} {})",
+                    gt.hour, display_hour, minute_int, suffix
+                ));
+                lines.push(format!(
+                    "  time_scale    = {:.1}\u{00d7} real-time",
+                    gt.time_scale
+                ));
+            }
+            None => {
+                lines.push("GameTimeRes: <not present>".to_string());
+            }
+        }
+
+        CommandOutput::lines(lines)
+    }
+}
+
+fn fmt_opt_f32(v: Option<f32>) -> String {
+    match v {
+        Some(x) => format!("{:.3}", x),
+        None => "None".to_string(),
+    }
+}
+
+fn fmt_opt_rgb(v: Option<[f32; 3]>) -> String {
+    match v {
+        Some(c) => format!("[{:.3}, {:.3}, {:.3}]", c[0], c[1], c[2]),
+        None => "None".to_string(),
+    }
+}
+
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(HelpCommand);
@@ -710,6 +906,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(SkinListCommand);
     registry.register(SkinDumpCommand);
     registry.register(MemFragCommand);
+    registry.register(LightDumpCommand);
     registry
 }
 
@@ -811,6 +1008,111 @@ mod tests {
             dump.contains("global_skin_transform: NON-IDENTITY"),
             "non-identity global must be flagged: {}",
             dump
+        );
+    }
+
+    /// `light.dump` smoke test — exercises both the "no resource"
+    /// branches (the cold start before any cell is loaded) and the
+    /// populated branches, so the command is callable from `byro-dbg`
+    /// at any point in the engine's lifetime without panicking.
+    #[test]
+    fn light_dump_handles_missing_and_present_resources() {
+        use crate::components::{CellLightingRes, GameTimeRes, SkyParamsRes};
+
+        // Cold start — no resources inserted yet.
+        let mut world = World::new();
+        let cmd = LightDumpCommand;
+        let lines = cmd.execute(&world, "").lines;
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("CellLightingRes: <not present"),
+            "cold start should flag CellLightingRes absence: {}",
+            joined
+        );
+        assert!(
+            joined.contains("SkyParamsRes: <not present"),
+            "cold start should flag SkyParamsRes absence: {}",
+            joined
+        );
+        assert!(
+            joined.contains("GameTimeRes: <not present>"),
+            "cold start should flag GameTimeRes absence: {}",
+            joined
+        );
+
+        // Populated — Markarth-procedural-fallback-shaped values, so
+        // the test pins the format the Markarth investigation actually
+        // reads.
+        world.insert_resource(CellLightingRes {
+            ambient: [0.15, 0.14, 0.12],
+            directional_color: [1.0, 0.95, 0.8],
+            directional_dir: [-0.4, 0.8, -0.45],
+            is_interior: false,
+            fog_color: [0.65, 0.7, 0.8],
+            fog_near: 15000.0,
+            fog_far: 80000.0,
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
+        });
+        world.insert_resource(SkyParamsRes {
+            zenith_color: [0.15, 0.3, 0.65],
+            horizon_color: [0.55, 0.5, 0.42],
+            lower_color: [0.165, 0.15, 0.126],
+            sun_direction: [-0.4, 0.8, -0.45],
+            sun_color: [1.0, 0.95, 0.8],
+            sun_size: 0.9995,
+            sun_intensity: 4.0,
+            is_exterior: true,
+            cloud_tile_scale: 0.0,
+            cloud_texture_index: 0,
+            sun_texture_index: 0,
+            cloud_tile_scale_1: 0.0,
+            cloud_texture_index_1: 0,
+            cloud_tile_scale_2: 0.0,
+            cloud_texture_index_2: 0,
+            cloud_tile_scale_3: 0.0,
+            cloud_texture_index_3: 0,
+        });
+        world.insert_resource(GameTimeRes {
+            hour: 10.5,
+            time_scale: 30.0,
+        });
+
+        let lines = cmd.execute(&world, "").lines;
+        let joined = lines.join("\n");
+        // Ambient + sun_intensity are the two key numbers the Markarth
+        // probe needs to read — pin both so output drift breaks the test.
+        assert!(
+            joined.contains("ambient            = [0.150, 0.140, 0.120]"),
+            "ambient must print 3-decimal float triple: {}",
+            joined
+        );
+        assert!(
+            joined.contains("sun_intensity      = 4.000"),
+            "sun_intensity must print 3-decimal float: {}",
+            joined
+        );
+        // GameTime wall-clock conversion — 10.5 should print "10:30 AM".
+        assert!(
+            joined.contains("10:30 AM"),
+            "GameTimeRes hour=10.5 should print '10:30 AM': {}",
+            joined
+        );
+        // is_exterior true + sun_texture_index 0 should annotate
+        // "procedural disc fallback" so a missing CLMT FNAM is obvious.
+        assert!(
+            joined.contains("procedural disc fallback"),
+            "sun_texture_index=0 must annotate procedural fallback: {}",
+            joined
         );
     }
 }
