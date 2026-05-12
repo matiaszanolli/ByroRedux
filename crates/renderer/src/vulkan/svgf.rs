@@ -893,10 +893,26 @@ impl SvgfPipeline {
     ) -> Result<()> {
         // Barrier: the previous use of this frame's OUT slots (writes in
         // the previous use of this frame-in-flight index, at least two
-        // frames ago) finished long before — the in-flight fence guarantees
-        // it. We still emit an execution dependency on SHADER_WRITE so
+        // frames ago) finished long before — the both-slots
+        // `wait_for_fences` at `draw.rs:170-181` (#282) guarantees the
+        // prior-frame COMPUTE write AND the prior-frame composite
+        // FRAGMENT read of `indirect_view(frame)` have retired. We
+        // still emit an execution dependency on SHADER_WRITE so
         // descriptor sampling of the same slot in the previous frame is
-        // ordered correctly.
+        // ordered correctly under any future relaxation of the fence
+        // wait.
+        //
+        // #962 / REN-D10-NEW-05 — audit flagged the `FRAGMENT_SHADER`
+        // src bit as over-specified: composite's FRAGMENT consumer of
+        // this slot is already serialised by the both-slots fence wait
+        // above, so the bit is redundant under today's pin. The
+        // narrowing is deferred to a RenderDoc-validated session per
+        // the speculative-Vulkan-fix policy — cosmetic over-sync is
+        // strictly safer than a missed access-mask dep that only some
+        // IHV drivers flag. Sibling barriers in `taa.rs:789`,
+        // `caustic.rs:816`, `volumetrics.rs:846` follow the same
+        // defensive pattern and would warrant their own re-audits if
+        // this site is ever narrowed.
         let out_ind_img = self.indirect_history[frame].image;
         let out_mom_img = self.moments_history[frame].image;
         let img_barrier = |img: vk::Image| {
