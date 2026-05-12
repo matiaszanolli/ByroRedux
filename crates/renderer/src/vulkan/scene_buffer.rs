@@ -309,6 +309,15 @@ pub struct GpuCamera {
     /// applied to `gl_Position.xy` AFTER motion-vector clip positions are
     /// captured so reprojection remains jitter-free. zw = reserved.
     pub jitter: [f32; 4],
+    /// xyz = active TOD/weather zenith colour in linear RGB (mirrors
+    /// `CompositeParams.sky_zenith.xyz`); w = reserved. Sourced from
+    /// the same `SkyParams.zenith_color` that drives `compute_sky` so
+    /// the triangle.frag window-portal escape transmits a sky tint
+    /// matching whatever the composite pass paints behind the world.
+    /// Pre-#925 the window-portal site hardcoded `vec3(0.6, 0.75, 1.0)`
+    /// (clear-noon blue), so interior cells with windows looked midday
+    /// regardless of TOD / weather. See audit REN-D15-NEW-03.
+    pub sky_tint: [f32; 4],
 }
 
 impl Default for GpuCamera {
@@ -328,6 +337,10 @@ impl Default for GpuCamera {
             screen: [1280.0, 720.0, 0.0, 0.0],
             fog: [0.0, 0.0, 0.0, 0.0],
             jitter: [0.0, 0.0, 0.0, 0.0],
+            // Default to the pre-#925 hardcoded sky so unbootstrapped
+            // frames (engine just opened, sky_params not yet computed)
+            // render windows the same way they always have.
+            sky_tint: [0.6, 0.75, 1.0, 0.0],
         }
     }
 }

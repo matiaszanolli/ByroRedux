@@ -428,6 +428,18 @@ impl VulkanContext {
             // `triangle.frag`'s `floatBitsToUint(jitter.z)` branches).
             // Zero-bits → free no-op; non-zero → debug paths active.
             jitter: [jx, jy, f32::from_bits(self.render_debug_flags), 0.0],
+            // #925 / REN-D15-NEW-03 — mirror the composite's
+            // `sky_zenith.xyz` here so triangle.frag's window-portal
+            // escape transmits a sky tint matching whatever
+            // `compute_sky` paints behind the world. Same source of
+            // truth → same TOD/weather cross-fade behaviour at no
+            // extra upload cost.
+            sky_tint: [
+                sky_params.zenith_color[0],
+                sky_params.zenith_color[1],
+                sky_params.zenith_color[2],
+                0.0,
+            ],
         };
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)

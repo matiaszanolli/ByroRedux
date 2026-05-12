@@ -155,6 +155,13 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 screen;      // x = width, y = height, z = fog near, w = fog far
     vec4 fog;         // xyz = fog color (RGB), w = fog enabled (1.0)
     vec4 jitter;      // xy = sub-pixel TAA jitter in NDC, zw = reserved
+    // #925 / REN-D15-NEW-03 — mirror of composite's `sky_zenith.xyz`
+    // (linear RGB). Used by the window-portal escape below so
+    // interior windows transmit a sky tint that matches whatever
+    // `compute_sky` paints behind the world (TOD / weather cross-fade
+    // already wired upstream). Pre-fix the portal site hardcoded
+    // `vec3(0.6, 0.75, 1.0)` and every window looked clear-noon.
+    vec4 skyTint;     // xyz = TOD/weather zenith colour, w = reserved
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
@@ -1457,7 +1464,13 @@ void main() {
             // Use the glass texture's alpha to control the blend — clear
             // glass (low alpha) shows mostly sky, tinted glass shows more
             // of the glass color.
-            vec3 skyColor = vec3(0.6, 0.75, 1.0); // clear day sky
+            // #925 / REN-D15-NEW-03 — pull the sky colour from the
+            // active TOD/weather palette (same source as composite's
+            // `compute_sky`) so interior windows cross-fade with night
+            // / dawn / dusk / storm just like the outdoor sky behind
+            // them. Pre-fix this was hardcoded `vec3(0.6, 0.75, 1.0)`
+            // and Megaton / Vault 21 interiors always looked midday.
+            vec3 skyColor = skyTint.rgb;
             // Use the authored glass color directly instead of biasing
             // toward white. Pre-fix this mix started from pure white
             // and leaned heavily that way for low-alpha clear glass
