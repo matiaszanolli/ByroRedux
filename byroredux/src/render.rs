@@ -1866,12 +1866,15 @@ mod bone_palette_overflow_tests {
 
     #[test]
     fn at_capacity_fills_palette_completely() {
-        // 32 meshes × 128 bones + 1 identity slot = 4097 slots, which
-        // overshoots by 1. The guard fires only when adding the NEXT
-        // mesh would overflow; 32 meshes still fit at the boundary
-        // because slot 0 is the rigid-fallback identity. Document the
-        // exact off-by-one.
-        let max_skinned = MAX_TOTAL_BONES / MAX_BONES_PER_MESH; // 32
+        // `MAX_SKINNED = MAX_TOTAL_BONES / MAX_BONES_PER_MESH`. At
+        // post-#900 sizing that's 32768 / 128 = 256 meshes. The
+        // overflow check fires only when adding the NEXT mesh would
+        // exceed `MAX_TOTAL_BONES`; `MAX_SKINNED - 1` meshes plus the
+        // 1 identity slot at index 0 fit exactly at the boundary, so
+        // the palette completes without truncation. Document the
+        // exact off-by-one. (Pre-#900 this comment hardcoded the old
+        // 32-mesh / 4096-bone ceiling — REN-D12-NEW-02.)
+        let max_skinned = MAX_TOTAL_BONES / MAX_BONES_PER_MESH;
         let world = make_skinned_world(max_skinned - 1);
         let (palette, offsets) = run_build(&world);
         assert_eq!(
@@ -1887,12 +1890,15 @@ mod bone_palette_overflow_tests {
 
     #[test]
     fn over_capacity_breaks_loop_and_truncates_offsets() {
-        // 33 meshes × 128 bones = 4224 slots requested; 4096 ceiling.
-        // The guard at the top of the loop trips before mesh 32 (the
-        // one that would push the palette past MAX_TOTAL_BONES) gets
-        // its offset registered. `skin_offsets` should hold strictly
-        // fewer than 33 entries.
-        let max_skinned = MAX_TOTAL_BONES / MAX_BONES_PER_MESH; // 32
+        // `MAX_SKINNED + 1` meshes × `MAX_BONES_PER_MESH` bones
+        // requests one mesh past the bone-palette ceiling. The guard
+        // at the top of the loop trips before the offending mesh
+        // gets its offset registered, so `skin_offsets` holds
+        // strictly fewer entries than were requested and the
+        // palette stays at or below `MAX_TOTAL_BONES`. (Pre-#900
+        // this comment hardcoded the old 32-mesh / 4096-bone
+        // ceiling — REN-D12-NEW-02.)
+        let max_skinned = MAX_TOTAL_BONES / MAX_BONES_PER_MESH;
         let world = make_skinned_world(max_skinned + 1);
         let (palette, offsets) = run_build(&world);
         assert!(

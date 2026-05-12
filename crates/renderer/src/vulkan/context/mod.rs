@@ -706,6 +706,17 @@ pub struct VulkanContext {
     /// Used to compute screen-space motion vectors in the vertex shader.
     /// On the very first frame, equals the current frame's viewProj (no motion).
     pub prev_view_proj: [f32; 16],
+    // ── Per-frame scratch cluster ───────────────────────────────────────
+    // The four `*_scratch` Vecs below (plus `terrain_tile_scratch` further
+    // down in the struct definition) all follow the same amortization
+    // pattern (#243 / #496): cleared + reserved at the top of
+    // `draw_frame` and rebuilt in place from the live scene, so capacity
+    // stays around across frames instead of heap-allocating fresh every
+    // 16 ms. Drop runs once at shutdown — no explicit teardown required;
+    // the Vec destructors release the backing allocations alongside the
+    // rest of the context. Documented as a group per REN-D7-NEW-06 so
+    // adding a new scratch Vec to the cluster is an obvious "matches
+    // pattern" review.
     /// Per-frame scratch buffer for the GPU instance SSBO payload. Held on
     /// the context so that capacity amortizes across frames instead of
     /// heap-allocating fresh each `draw_frame`. Cleared + reserved at the
@@ -780,6 +791,12 @@ pub struct VulkanContext {
     /// slot, since capacity opening up means a previously-failing
     /// entity's next attempt could now succeed. `EntityId` is
     /// generational so an entry can't poison a re-issued id. See #900.
+    ///
+    /// Drop contract (REN-D7-NEW-03): purely host-side state, no
+    /// Vulkan handles or device memory involved — the HashSet
+    /// destructor at context teardown is sufficient, no explicit
+    /// clear required. Adding entries that hold device-side
+    /// resources here would invalidate this contract.
     pub failed_skin_slots: std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
     /// Per-frame counters for the skinned-BLAS coverage path, written
     /// by `draw_frame` and copied into the [`byroredux_core::ecs::

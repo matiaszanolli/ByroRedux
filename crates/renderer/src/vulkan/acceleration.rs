@@ -15,6 +15,28 @@ use anyhow::{Context, Result};
 use ash::vk;
 use byroredux_core::ecs::storage::EntityId;
 
+/// Convert a column-major `[f32; 16]` model matrix (glam / shader
+/// convention) into the row-major 3×4 layout `VkTransformMatrixKHR`
+/// expects. The bottom row of an affine model matrix is always
+/// `(0, 0, 0, 1)` and Vulkan's TLAS instance struct drops it; we
+/// emit only the upper three rows in row-major order.
+///
+/// Pinned by `column_major_to_vk_transform_*` tests so a future
+/// refactor that touches glam's storage convention or accidentally
+/// re-transposes the matrix is caught at build time. Pre-#926 this
+/// conversion was inline-spelt at the TLAS rebuild site, with no
+/// unit test — REN-D8-NEW-11.
+#[inline]
+fn column_major_to_vk_transform(m: &[f32; 16]) -> vk::TransformMatrixKHR {
+    vk::TransformMatrixKHR {
+        matrix: [
+            m[0], m[4], m[8], m[12], // row 0: X axis
+            m[1], m[5], m[9], m[13], // row 1: Y axis
+            m[2], m[6], m[10], m[14], // row 2: Z axis
+        ],
+    }
+}
+
 /// Dispatch helper: reuse the shared transfer fence when available,
 /// otherwise fall back to per-call create/destroy (#302).
 fn submit_one_time<F>(
@@ -1966,6 +1988,15 @@ impl AccelerationManager {
         // particle draws would spam the warning every second
         // suggesting an RT regression that didn't exist.
         let mut missing_blas: usize = 0;
+        // REN-D8-NEW-14 — capture the first few offenders so the
+        // warn-rate-limited log below identifies which meshes /
+        // entities are dropping out of the TLAS instead of just
+        // reporting a count. Pre-#926 the warn fired "N lack BLAS"
+        // with no hint of which N, so chasing an RT regression
+        // required adding ad-hoc logs every time. Bounded sample to
+        // keep the log line readable; the count above stays exact.
+        const MISSING_BLAS_SAMPLE_LIMIT: usize = 5;
+        let mut missing_samples: Vec<String> = Vec::new();
         for (i, draw_cmd) in draw_commands.iter().enumerate() {
             // Skip instances not flagged for TLAS inclusion (particles,
             // UI quad — small / transient / 2D). Frustum-culled geometry
@@ -1990,6 +2021,10 @@ impl AccelerationManager {
                     // frame, but raster's inline-skinning path still
                     // renders it correctly).
                     missing_blas += 1;
+                    if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
+                        missing_samples
+                            .push(format!("skinned entity {:?} (no BLAS)", draw_cmd.entity_id));
+                    }
                     continue;
                 };
                 entry.last_used_frame = self.frame_counter;
@@ -1998,6 +2033,10 @@ impl AccelerationManager {
                 let mesh_handle = draw_cmd.mesh_handle as usize;
                 let Some(Some(blas)) = self.blas_entries.get_mut(mesh_handle) else {
                     missing_blas += 1;
+                    if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
+                        missing_samples
+                            .push(format!("rigid mesh_handle={} (no BLAS)", mesh_handle));
+                    }
                     continue;
                 };
                 blas.last_used_frame = self.frame_counter;
@@ -2009,16 +2048,19 @@ impl AccelerationManager {
             // its source mesh during eviction).
             let Some(ssbo_idx) = instance_map.get(i).copied().flatten() else {
                 missing_blas += 1;
+                if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
+                    missing_samples.push(format!(
+                        "mesh_handle={} (no SSBO instance — evicted?)",
+                        draw_cmd.mesh_handle
+                    ));
+                }
                 continue;
             };
 
-            // Convert column-major model_matrix [f32; 16] to VkTransformMatrixKHR (3x4 row-major).
-            let m = &draw_cmd.model_matrix;
-            let transform = vk::TransformMatrixKHR {
-                matrix: [
-                    m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14],
-                ],
-            };
+            // Convert column-major model_matrix [f32; 16] to
+            // VkTransformMatrixKHR (3x4 row-major). See
+            // `column_major_to_vk_transform` for the layout pin.
+            let transform = column_major_to_vk_transform(&draw_cmd.model_matrix);
 
             // SAFETY: AccelerationStructureReferenceKHR is a union — device_handle field
             // is used because our BLAS is on-device (not host-built). The address was
@@ -2065,9 +2107,24 @@ impl AccelerationManager {
             let prev = LAST_LOG.load(std::sync::atomic::Ordering::Relaxed);
             if now != prev {
                 LAST_LOG.store(now, std::sync::atomic::Ordering::Relaxed);
+                let sample = if missing_samples.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " [first {} offender{}: {}{}]",
+                        missing_samples.len(),
+                        if missing_samples.len() == 1 { "" } else { "s" },
+                        missing_samples.join("; "),
+                        if missing_blas > missing_samples.len() {
+                            "; ..."
+                        } else {
+                            ""
+                        },
+                    )
+                };
                 log::warn!(
-                    "TLAS: {} instances from {} draw commands ({} lack BLAS — no RT shadows for those meshes)",
-                    instance_count, draw_commands.len(), missing_blas
+                    "TLAS: {} instances from {} draw commands ({} lack BLAS — no RT shadows for those meshes){}",
+                    instance_count, draw_commands.len(), missing_blas, sample
                 );
             }
         }
@@ -2355,6 +2412,15 @@ impl AccelerationManager {
         }
 
         // Write instances to host-visible staging buffer.
+        //
+        // REN-D8-NEW-02 — `write_mapped` performs the
+        // `vkFlushMappedMemoryRanges` internally when the allocation
+        // isn't HOST_COHERENT. The host→transfer barrier emitted
+        // below covers the visibility hop from host writes to the
+        // transfer engine; the flush is what makes the writes
+        // visible to the device in the first place. Together those
+        // two operations are sufficient — no additional flush is
+        // needed before the `cmd_copy_buffer` further down.
         tlas.instance_buffer.write_mapped(device, &instances)?;
 
         let copy_size = (instances.len()
@@ -3532,5 +3598,59 @@ mod tests {
         // 1024 — hypothetical mobile GPU with a stricter requirement.
         assert!(is_scratch_aligned(0x0010_0000, 1024));
         assert!(!is_scratch_aligned(0x0010_0001, 1024));
+    }
+
+    /// #926 / REN-D8-NEW-11 — `column_major_to_vk_transform` converts
+    /// glam's column-major `[f32; 16]` storage into the row-major
+    /// 3×4 layout Vulkan expects. Pre-#926 this conversion was
+    /// inline-spelt at the TLAS rebuild site with no unit test —
+    /// any silent re-transpose would corrupt every BLAS instance
+    /// orientation. Pin the layout against a hand-built rotation +
+    /// translation matrix.
+    #[test]
+    fn column_major_to_vk_transform_pins_row_major_3x4_output() {
+        // Affine: 90° rotation about +Y followed by translation (3, 4, 5).
+        // Row-major view:
+        //   [  0  0  1  3 ]
+        //   [  0  1  0  4 ]
+        //   [ -1  0  0  5 ]
+        //   [  0  0  0  1 ]  (dropped — Vulkan TLAS instance struct
+        //                    has no bottom row)
+        // glam stores this column-major as 16 floats in column order.
+        let column_major: [f32; 16] = [
+            0.0, 0.0, -1.0, 0.0, // column 0
+            0.0, 1.0, 0.0, 0.0, // column 1
+            1.0, 0.0, 0.0, 0.0, // column 2
+            3.0, 4.0, 5.0, 1.0, // column 3 (translation)
+        ];
+        let t = column_major_to_vk_transform(&column_major);
+        // Row 0: x-row = (m00, m01, m02, m03).
+        assert_eq!(t.matrix[0..4], [0.0, 0.0, 1.0, 3.0]);
+        // Row 1: y-row = (m10, m11, m12, m13).
+        assert_eq!(t.matrix[4..8], [0.0, 1.0, 0.0, 4.0]);
+        // Row 2: z-row = (m20, m21, m22, m23).
+        assert_eq!(t.matrix[8..12], [-1.0, 0.0, 0.0, 5.0]);
+    }
+
+    /// Identity round-trip: the column-major identity matrix must
+    /// emit the row-major identity 3×4 (with zero translation).
+    /// Catches an accidental sign flip / index swap in the helper.
+    #[test]
+    fn column_major_to_vk_transform_identity_maps_to_3x4_identity() {
+        let identity: [f32; 16] = [
+            1.0, 0.0, 0.0, 0.0, // col 0
+            0.0, 1.0, 0.0, 0.0, // col 1
+            0.0, 0.0, 1.0, 0.0, // col 2
+            0.0, 0.0, 0.0, 1.0, // col 3
+        ];
+        let t = column_major_to_vk_transform(&identity);
+        assert_eq!(
+            t.matrix,
+            [
+                1.0, 0.0, 0.0, 0.0, // row 0
+                0.0, 1.0, 0.0, 0.0, // row 1
+                0.0, 0.0, 1.0, 0.0, // row 2
+            ]
+        );
     }
 }
