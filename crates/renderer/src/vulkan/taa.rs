@@ -710,9 +710,22 @@ impl TaaPipeline {
                 base_array_layer: 0,
                 layer_count: 1,
             });
+        // Pre-barrier: protects this slot's TAA output `out_img`
+        // against write-after-read on the previous reader.
+        //
+        // src_stage_mask = COMPUTE_SHADER only — pre-fix this was
+        // `COMPUTE_SHADER | FRAGMENT_SHADER` to cover both the
+        // previous TAA dispatch (compute reader of `prev_history`)
+        // and the previous composite (fragment reader of this slot
+        // as input texture). The fragment reader is from the
+        // PREVIOUS frame's composite; the per-FIF fence wait at
+        // `draw_frame` entry serialises that fragment work against
+        // anything this frame submits, so `FRAGMENT_SHADER` is
+        // covered structurally and naming it here is over-spec.
+        // See REN-D11-NEW-05 (audit 2026-05-09).
         device.cmd_pipeline_barrier(
             cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::DependencyFlags::empty(),
             &[],

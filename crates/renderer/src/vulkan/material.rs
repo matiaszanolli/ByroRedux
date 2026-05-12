@@ -520,6 +520,18 @@ impl MaterialTable {
         self.index.insert(hash, 0);
     }
 
+    // NOTE on first-frame upload (REN-D14-NEW-04, INFO, audit
+    // 2026-05-09): `new()` calls `seed_neutral_default` immediately;
+    // the first frame after construction then re-runs `clear()` →
+    // `seed_neutral_default` AND uploads the (identical) neutral
+    // entry. That re-upload is one std430-aligned `GpuMaterial`
+    // (260 B) of redundant host→device traffic per first frame
+    // and is not visible in steady-state telemetry. Documented
+    // here rather than skipped because the alternative (suppress
+    // first-frame clear) gates the seed on a `dirty` flag, which
+    // is more state-machine bookkeeping than the one trivial
+    // upload costs.
+
     /// Insert a material (or return the existing id if byte-equal to
     /// one already in the table). Returns the `material_id` the GPU
     /// will use to look it up.
@@ -628,6 +640,23 @@ impl MaterialTable {
     /// Dedup ratio = `len() / interned_count()`. See #780 / PERF-N1.
     pub fn interned_count(&self) -> usize {
         self.interned_count
+    }
+
+    /// Number of user-interned unique materials this frame, excluding
+    /// the seeded neutral default at slot 0. Use this in telemetry
+    /// where "how many distinct materials did this frame's content
+    /// actually need" is the question.
+    ///
+    /// Pre-fix the only available count was `len()`, which read as
+    /// off-by-one on every frame: a single-mesh debug scene with one
+    /// real material shows `len() == 2` (seeded slot 0 + 1 user
+    /// material), making the dedup signal noisier than it should be.
+    /// `len().saturating_sub(1)` is the corrected count; the
+    /// `saturating_sub` defends against the impossible-by-construction
+    /// `len() == 0` case (the seed runs in `new()` + `clear()`).
+    /// See REN-D14-NEW-03 (audit 2026-05-09).
+    pub fn unique_user_count(&self) -> usize {
+        self.materials.len().saturating_sub(1)
     }
 }
 

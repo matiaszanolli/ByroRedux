@@ -528,6 +528,21 @@ pub(crate) struct WeatherTransitionRes {
     pub(crate) target: WeatherDataRes,
     pub(crate) elapsed_secs: f32,
     pub(crate) duration_secs: f32,
+    /// `true` once `weather_system` has promoted `target` into the
+    /// live `WeatherDataRes`. Subsequent frames skip the timer
+    /// advance + blend path, so the resource stays resident as a
+    /// dormant idempotent record of "the last cross-fade landed
+    /// successfully" without further state mutation.
+    ///
+    /// Pre-fix the dormant state was encoded as
+    /// `duration_secs = f32::INFINITY`, which (a) used float
+    /// arithmetic as a state machine — the `elapsed/duration`
+    /// computation produced 0 by chance — and (b) let
+    /// `elapsed_secs += dt` accumulate every frame forever until it
+    /// saturated to INFINITY itself and made the ratio NaN. The
+    /// explicit bool drops both hazards. See REN-D15-NEW-07 (audit
+    /// 2026-05-09).
+    pub(crate) done: bool,
 }
 impl Resource for WeatherTransitionRes {}
 

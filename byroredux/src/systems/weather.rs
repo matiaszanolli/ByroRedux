@@ -188,10 +188,19 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // and drop the transition resource.
     let (transition_t, transition_done) =
         if let Some(mut tr) = world.try_resource_mut::<WeatherTransitionRes>() {
-            tr.elapsed_secs += dt;
-            let dur = tr.duration_secs.max(1e-3);
-            let t = (tr.elapsed_secs / dur).clamp(0.0, 1.0);
-            (t, t >= 1.0)
+            // Once `done` latches, freeze the timer and skip the
+            // blend ratio computation entirely — pre-#REN-D15-NEW-07
+            // the elapsed counter advanced every frame forever and
+            // eventually saturated f32 toward INFINITY. See
+            // `WeatherTransitionRes.done` doc for the full rationale.
+            if tr.done {
+                (0.0, false)
+            } else {
+                tr.elapsed_secs += dt;
+                let dur = tr.duration_secs.max(1e-3);
+                let t = (tr.elapsed_secs / dur).clamp(0.0, 1.0);
+                (t, t >= 1.0)
+            }
         } else {
             (0.0, false)
         };
@@ -424,11 +433,16 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
                 wd.fog = new_fog;
                 wd.tod_hours = new_tod;
             }
-            // Set duration to infinity so t = elapsed/duration = 0.0 from
-            // now on — the transition is permanently dormant without removal.
+            // Latch the transition as done. Pre-fix this set
+            // `duration_secs = f32::INFINITY` and relied on float
+            // arithmetic to keep the blend ratio at 0 — the dormant
+            // state machine then accumulated `elapsed_secs += dt`
+            // every frame forever, eventually saturating to INFINITY
+            // itself and making the ratio NaN. The explicit `done`
+            // bool drops both hazards. See REN-D15-NEW-07 (audit
+            // 2026-05-09).
             if let Some(mut tr) = world.try_resource_mut::<WeatherTransitionRes>() {
-                tr.elapsed_secs = 0.0;
-                tr.duration_secs = f32::INFINITY;
+                tr.done = true;
             }
         }
     }

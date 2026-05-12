@@ -362,6 +362,7 @@ pub(super) fn apply_worldspace_weather(
                 target: new_weather,
                 elapsed_secs: 0.0,
                 duration_secs: 8.0,
+                done: false,
             });
         } else {
             world.insert_resource(new_weather);
