@@ -73,6 +73,13 @@ impl ComponentRegistry {
         self.descriptors.values().map(|d| d.name).collect()
     }
 
+    /// Iterate every registered descriptor in name order. Used by the
+    /// `Inspect` request to dump every component on an entity without
+    /// allocating a Vec of names up front.
+    pub fn iter(&self) -> impl Iterator<Item = &ComponentDescriptor> {
+        self.descriptors.values()
+    }
+
     /// Number of registered components.
     pub fn len(&self) -> usize {
         self.descriptors.len()

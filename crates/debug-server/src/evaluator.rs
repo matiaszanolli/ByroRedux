@@ -71,7 +71,50 @@ pub fn evaluate(
 
         DebugRequest::InspectSkinnedMesh { entity } => eval_inspect_skinned_mesh(world, *entity),
 
+        DebugRequest::Inspect { entity } => eval_inspect(world, registry, *entity),
+
         DebugRequest::Eval { expr } => eval_request(world, registry, expr),
+    }
+}
+
+/// Dump every registered component on an entity. The inspection half
+/// of the Bethesda console's `prid` workflow — `prid <id>` (console
+/// command) sets the world's `SelectedRef`; this handler, called
+/// without an explicit `entity` arg, reads it and dumps the picked
+/// reference.
+fn eval_inspect(
+    world: &World,
+    registry: &ComponentRegistry,
+    entity: Option<u32>,
+) -> DebugResponse {
+    let entity = match entity {
+        Some(e) => e,
+        None => match world.try_resource::<byroredux_core::ecs::SelectedRef>() {
+            Some(sel) => match sel.0 {
+                Some(e) => e,
+                None => {
+                    return DebugResponse::error(
+                        "no entity selected — use `prid <id>` or `inspect <id>`",
+                    );
+                }
+            },
+            None => {
+                return DebugResponse::error("SelectedRef resource not present");
+            }
+        },
+    };
+    let world_any: &dyn std::any::Any = world;
+    let mut components: Vec<(String, serde_json::Value)> = Vec::new();
+    for desc in registry.iter() {
+        if let Some(json) = (desc.get_json)(world_any, entity) {
+            components.push((desc.name.to_string(), json));
+        }
+    }
+    let name = resolve_entity_name(world, entity);
+    DebugResponse::Inspect {
+        entity,
+        name,
+        components,
     }
 }
 
@@ -756,6 +799,97 @@ mod tests {
                 assert_eq!(data.as_str(), Some("header\nargs=42 arg2"));
             }
             other => panic!("expected Value response, got {:?}", other),
+        }
+    }
+
+    /// `DebugRequest::Inspect { entity: Some(id) }` dumps every
+    /// registered component on the entity. Verifies the full pipeline:
+    /// `register_all` populates the registry, `eval_inspect` iterates
+    /// it via `ComponentRegistry::iter`, each descriptor's `get_json`
+    /// returns the component's serde value for an entity that has it.
+    #[test]
+    fn inspect_returns_components_for_existing_entity() {
+        use byroredux_core::ecs::components::{GlobalTransform, Transform};
+        use byroredux_core::math::{Quat, Vec3};
+
+        let mut world = World::new();
+        let target = world.spawn();
+        world.insert(target, Transform::from_translation(Vec3::new(5.0, 6.0, 7.0)));
+        world.insert(
+            target,
+            GlobalTransform::new(Vec3::new(5.0, 6.0, 7.0), Quat::IDENTITY, 1.0),
+        );
+
+        let mut registry = ComponentRegistry::new();
+        crate::registration::register_all(&mut registry);
+
+        let request = DebugRequest::Inspect {
+            entity: Some(target),
+        };
+        let response = evaluate(&world, &registry, &request);
+
+        match response {
+            DebugResponse::Inspect {
+                entity,
+                name: _,
+                components,
+            } => {
+                assert_eq!(entity, target);
+                // Both Transform and GlobalTransform must appear.
+                let names: Vec<&str> = components.iter().map(|(n, _)| n.as_str()).collect();
+                assert!(
+                    names.contains(&"Transform"),
+                    "Transform missing from inspect output: {names:?}"
+                );
+                assert!(
+                    names.contains(&"GlobalTransform"),
+                    "GlobalTransform missing from inspect output: {names:?}"
+                );
+            }
+            other => panic!("expected Inspect response, got {other:?}"),
+        }
+    }
+
+    /// `DebugRequest::Inspect { entity: None }` reads the `SelectedRef`
+    /// world resource — the inspection arm of the `prid` workflow.
+    #[test]
+    fn inspect_falls_back_to_selected_ref_when_no_arg() {
+        use byroredux_core::ecs::components::Transform;
+        use byroredux_core::ecs::SelectedRef;
+        use byroredux_core::math::Vec3;
+
+        let mut world = World::new();
+        let picked = world.spawn();
+        world.insert(picked, Transform::from_translation(Vec3::ZERO));
+        world.insert_resource(SelectedRef(Some(picked)));
+
+        let mut registry = ComponentRegistry::new();
+        crate::registration::register_all(&mut registry);
+
+        let response = evaluate(&world, &registry, &DebugRequest::Inspect { entity: None });
+        match response {
+            DebugResponse::Inspect { entity, .. } => assert_eq!(entity, picked),
+            other => panic!("expected Inspect for SelectedRef, got {other:?}"),
+        }
+    }
+
+    /// No SelectedRef + no arg = a friendly error pointing the user at
+    /// the `prid` workflow.
+    #[test]
+    fn inspect_no_selection_returns_error() {
+        use byroredux_core::ecs::SelectedRef;
+        let mut world = World::new();
+        world.insert_resource(SelectedRef::default());
+        let registry = ComponentRegistry::new();
+        let response = evaluate(&world, &registry, &DebugRequest::Inspect { entity: None });
+        match response {
+            DebugResponse::Error { message } => {
+                assert!(
+                    message.contains("prid"),
+                    "error should mention the prid workflow: {message}"
+                );
+            }
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 

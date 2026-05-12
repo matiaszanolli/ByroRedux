@@ -121,6 +121,23 @@ fn parse_shorthand(input: &str) -> Option<DebugRequest> {
                 arg.parse::<u32>()
                     .ok()
                     .map(|entity| DebugRequest::InspectSkinnedMesh { entity })
+            } else if lower == "inspect" {
+                // Bare `inspect` dumps the currently-picked ref (SelectedRef
+                // resource, set via the `prid <id>` console command).
+                Some(DebugRequest::Inspect { entity: None })
+            } else if lower.starts_with("inspect ") || lower.starts_with("inspect(") {
+                // `inspect <id>` overrides the picked ref for a one-shot dump.
+                let arg = input["inspect".len()..].trim();
+                let arg = arg.trim_start_matches('(').trim_end_matches(')').trim();
+                if arg.is_empty() {
+                    Some(DebugRequest::Inspect { entity: None })
+                } else {
+                    arg.parse::<u32>()
+                        .ok()
+                        .map(|entity| DebugRequest::Inspect {
+                            entity: Some(entity),
+                        })
+                }
             } else {
                 None
             }

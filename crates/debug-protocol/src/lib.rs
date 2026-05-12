@@ -53,6 +53,14 @@ pub enum DebugRequest {
     /// skinning-formula variations against live engine data without
     /// rebuilding the engine.
     InspectSkinnedMesh { entity: u32 },
+    /// Dump every registered component on an entity (the inspection
+    /// half of the Bethesda console's `prid` + per-ref-inspection
+    /// workflow). When `entity` is `None`, the evaluator reads the
+    /// `SelectedRef` world resource and inspects whatever was picked
+    /// with `prid <id>`. Returns the entity's `Name` (resolved through
+    /// `StringPool` when present) plus an ordered list of
+    /// `(component_name, JSON value)` pairs.
+    Inspect { entity: Option<u32> },
     /// Ping / keep-alive.
     Ping,
 }
@@ -131,6 +139,15 @@ pub enum DebugResponse {
         /// external probe diffs this against the M29 standalone path
         /// to localize the spike-artifact divergence (#841).
         palette: Vec<[f32; 16]>,
+    },
+    /// Per-entity component dump produced by [`DebugRequest::Inspect`].
+    /// `components` is the ordered list of `(type_name, JSON value)`
+    /// pairs for every registered component the entity currently
+    /// carries. `name` is the entity's resolved `Name` (or `None`).
+    Inspect {
+        entity: u32,
+        name: Option<String>,
+        components: Vec<(String, serde_json::Value)>,
     },
     /// An error message.
     Error { message: String },

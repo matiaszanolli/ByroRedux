@@ -180,6 +180,39 @@ pub fn print_response(response: &DebugResponse) {
                 );
             }
         }
+        DebugResponse::Inspect {
+            entity,
+            name,
+            components,
+        } => {
+            // Header line: entity id + resolved Name (when present).
+            match name {
+                Some(n) => println!("Entity {} \"{}\":", entity, n),
+                None => println!("Entity {}:", entity),
+            }
+            if components.is_empty() {
+                println!(
+                    "  (no registered components present — entity may not exist, or only \
+                     carries unregistered components)"
+                );
+                return;
+            }
+            for (cname, json) in components {
+                // serde_json::to_string_pretty produces a JSON-RFC-compliant
+                // multi-line form. Re-indent so each component is visually
+                // grouped under the type header.
+                let pretty = serde_json::to_string_pretty(json)
+                    .unwrap_or_else(|_| json.to_string());
+                let indented = pretty
+                    .lines()
+                    .map(|l| format!("    {l}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                println!("  {}:", cname);
+                println!("{}", indented);
+            }
+            println!("({} components)", components.len());
+        }
         DebugResponse::Error { message } => {
             eprintln!("Error: {}", message);
         }
@@ -198,6 +231,7 @@ pub fn print_help() {
     println!("  screenshot          Capture screenshot (auto-named)");
     println!("  screenshot path    Capture screenshot to specific file");
     println!("  skin <id>          Dump SkinnedMesh palette + per-bone world (#841 diag)");
+    println!("  inspect [<id>]     Dump all registered components on <id> or picked ref (prid)");
     println!("  ping               Check connection");
     println!("  .help              This help");
     println!("  .quit              Exit");
