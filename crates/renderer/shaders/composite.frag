@@ -133,7 +133,14 @@ vec3 compute_sky(vec3 dir) {
     vec3 horizon = params.sky_horizon.xyz;
     float sun_size = params.sky_zenith.w;
     float sun_intensity = params.sun_dir.w;
-    vec3 sun_direction = normalize(params.sun_dir.xyz);
+    // Host promises `params.sun_dir.xyz` is already normalised
+    // (per `SkyParams::sun_direction` doc — "normalized, world-space
+    // Y-up"). The pre-fix `normalize(...)` per fragment was wasted
+    // compute on the composite fullscreen draw. See REN-D10-NEW-07
+    // (audit 2026-05-09). If the host contract ever weakens, the
+    // dot-product / sun-disc maths below silently degrade — re-add
+    // the normalize at that point and fix the SkyParams comment.
+    vec3 sun_direction = params.sun_dir.xyz;
     vec3 sun_col = params.sun_color.xyz;
 
     // Elevation: 0 at horizon, 1 at zenith. Clamp negative (below horizon)

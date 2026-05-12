@@ -220,8 +220,26 @@ layout(set = 1, binding = 7) uniform sampler2D aoTexture;
 // statically grep-checks the source so the next forbidden read
 // fails CI immediately.
 layout(std430, set = 1, binding = 8) readonly buffer GlobalVertices {
-    float vertexData[]; // flat array, stride = 25 floats (100 bytes) — #783
+    // flat array, stride = `VERTEX_STRIDE_FLOATS` floats (100 bytes) — #783.
+    // The named const lives below so RT hit-fetch sites have one source of
+    // truth for the vertex layout. See REN-D6-NEW-01 (audit 2026-05-09).
+    float vertexData[];
 };
+
+// ── Vertex layout constants ──────────────────────────────────────────
+//
+// Mirror of the Rust `Vertex` struct's float-indexed layout (see the
+// big comment block above the `GlobalVertices` SSBO). Pulled out to
+// file scope so every RT hit-fetch site — `getHitUV` and any future
+// hit-shader code — reads from the same named source. Pre-fix
+// `getHitUV` carried its own local `const uint STRIDE = 25;` (REN-D6-
+// NEW-01); the inline literal worked but each new hit-fetch site
+// risked re-introducing the magic number. The pin
+// `triangle_frag_no_unsafe_vertex_data_reads` (scene_buffer.rs)
+// grep-checks the source for the forbidden slots — keeping the
+// stride pinned here keeps that check authoritative.
+const uint VERTEX_STRIDE_FLOATS = 25;
+const uint VERTEX_UV_OFFSET_FLOATS = 9;
 layout(std430, set = 1, binding = 9) readonly buffer GlobalIndices {
     uint indexData[];
 };
@@ -353,16 +371,15 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
     uint i1 = indexData[iOff + primitiveIdx * 3 + 1];
     uint i2 = indexData[iOff + primitiveIdx * 3 + 2];
 
-    // Vertex stride: 25 floats (100 bytes) — #783. UV starts at float offset 9 (byte 36).
-    const uint STRIDE = 25;
-    const uint UV_OFFSET = 9;
-
-    vec2 uv0 = vec2(vertexData[(vOff + i0) * STRIDE + UV_OFFSET],
-                     vertexData[(vOff + i0) * STRIDE + UV_OFFSET + 1]);
-    vec2 uv1 = vec2(vertexData[(vOff + i1) * STRIDE + UV_OFFSET],
-                     vertexData[(vOff + i1) * STRIDE + UV_OFFSET + 1]);
-    vec2 uv2 = vec2(vertexData[(vOff + i2) * STRIDE + UV_OFFSET],
-                     vertexData[(vOff + i2) * STRIDE + UV_OFFSET + 1]);
+    // Vertex stride + UV offset come from the file-scope
+    // `VERTEX_STRIDE_FLOATS` / `VERTEX_UV_OFFSET_FLOATS` constants —
+    // one source of truth across every RT hit-fetch site, see REN-D6-NEW-01.
+    vec2 uv0 = vec2(vertexData[(vOff + i0) * VERTEX_STRIDE_FLOATS + VERTEX_UV_OFFSET_FLOATS],
+                     vertexData[(vOff + i0) * VERTEX_STRIDE_FLOATS + VERTEX_UV_OFFSET_FLOATS + 1]);
+    vec2 uv1 = vec2(vertexData[(vOff + i1) * VERTEX_STRIDE_FLOATS + VERTEX_UV_OFFSET_FLOATS],
+                     vertexData[(vOff + i1) * VERTEX_STRIDE_FLOATS + VERTEX_UV_OFFSET_FLOATS + 1]);
+    vec2 uv2 = vec2(vertexData[(vOff + i2) * VERTEX_STRIDE_FLOATS + VERTEX_UV_OFFSET_FLOATS],
+                     vertexData[(vOff + i2) * VERTEX_STRIDE_FLOATS + VERTEX_UV_OFFSET_FLOATS + 1]);
 
     // Barycentric interpolation: bary.x = u (vertex 1), bary.y = v (vertex 2), w = 1-u-v (vertex 0).
     float w = 1.0 - barycentrics.x - barycentrics.y;
@@ -386,8 +403,21 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
     rayQueryProceedEXT(rq);
 
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
-        // Miss — return fog/ambient color.
-        return vec4(fog.xyz * 0.5 + sceneFlags.yzw * 0.5, 0.0);
+        // Miss — return sky tint / ambient mix. Pre-#925 this used
+        // `fog.xyz` directly which was the fog tint colour and gave a
+        // reasonable desaturated fallback. The audited REN-D15-NEW-04
+        // concern (audit 2026-05-09) was that a separate refactor
+        // (#924 / REN-D15-NEW-02) would change `fog.xyz` to mean
+        // "unfogged HDR" and break this fallback as a side effect.
+        // Switching to `skyTint.xyz` (the per-frame zenith from
+        // `compute_sky` — same source mirrored from composite via
+        // #925) sidesteps the dependency: a reflection / refraction
+        // ray that escapes the BVH is escaping into open sky, so the
+        // sky tint is the semantically-correct fallback. The 50/50
+        // ambient blend stays so interior misses (where skyTint reads
+        // as the cell's ceiling colour rather than real sky) still
+        // settle to a room-mood-coherent grey.
+        return vec4(skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5, 0.0);
     }
 
     // Hit — get SSBO instance index via custom index (encodes the draw
@@ -1782,10 +1812,12 @@ void main() {
                 // (`sceneFlags.yzw`) is the per-cell room mood; in
                 // exteriors it's already sky-derived from CLMT/WTHR,
                 // so the change is correct in both cases. Match the
-                // `traceReflection` miss fallback at :382 — half-fog
+                // `traceReflection` miss fallback above — half-sky
                 // half-ambient — so escaped refraction rays read
-                // consistent with escaped reflection rays.
-                refrColor = fog.xyz * 0.5 + sceneFlags.yzw * 0.5;
+                // consistent with escaped reflection rays. The pre-
+                // #925 form mixed `fog.xyz`; switched to `skyTint.xyz`
+                // alongside the reflection miss in REN-D15-NEW-04.
+                refrColor = skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5;
             } else {
                 GpuInstance tInst = instances[tIdx];
                 GpuMaterial tMat = materials[tInst.materialId];
