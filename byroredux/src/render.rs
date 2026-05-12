@@ -1,13 +1,15 @@
 //! Per-frame render data collection from ECS queries.
 
+use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterPlane};
 use byroredux_core::ecs::{
     ActiveCamera, AnimatedUvTransform, AnimatedVisibility, Camera, EntityId, GlobalTransform,
     LightSource, Material, MeshHandle, ParticleEmitter, RenderLayer, SkinnedMesh, TextureHandle,
-    Transform, World, WorldBound, MAX_BONES_PER_MESH,
+    TotalTime, Transform, World, WorldBound, MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES;
+use byroredux_renderer::vulkan::water::{WaterDrawCommand, WaterPush};
 use byroredux_renderer::{MaterialTable, SkyParams};
 use rayon::slice::ParallelSliceMut;
 use std::collections::HashMap;
@@ -279,6 +281,7 @@ pub(crate) struct RenderFrameView {
 pub(crate) fn build_render_data(
     world: &World,
     draw_commands: &mut Vec<DrawCommand>,
+    water_commands: &mut Vec<WaterDrawCommand>,
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
     bone_palette: &mut Vec<[[f32; 4]; 4]>,
     skin_offsets: &mut HashMap<EntityId, u32>,
@@ -289,6 +292,7 @@ pub(crate) fn build_render_data(
     let frame_count = FRAME_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     draw_commands.clear();
+    water_commands.clear();
     gpu_lights.clear();
     bone_palette.clear();
     skin_offsets.clear();
@@ -985,6 +989,7 @@ pub(crate) fn build_render_data(
                     // matches `GpuMaterial::material_flags` so
                     // `to_gpu_material` ORs the word straight in.
                     effect_shader_flags: mat.map(|m| m.effect_shader_flags).unwrap_or(0),
+                    is_water: false,
                 };
                 // #781 / PERF-N4 — `intern_by_hash` skips the
                 // `to_gpu_material()` 260-byte construction on the
@@ -1147,6 +1152,7 @@ pub(crate) fn build_render_data(
                         // #890 Stage 2 — particles never carry
                         // BSEffectShaderProperty flag bits.
                         effect_shader_flags: 0,
+                        is_water: false,
                     };
                     // #781 / PERF-N4 — see SIBLING note above.
                     cmd.material_id = material_table
@@ -1343,6 +1349,105 @@ pub(crate) fn build_render_data(
         SkyParams::default()
     };
 
+    // ── Water-plane re-emit ───────────────────────────────────────
+    //
+    // Walk every `WaterPlane` entity, locate its already-emitted
+    // `DrawCommand` (the main mesh-iteration loop above produced it
+    // because water entities carry `MeshHandle`), flip its
+    // `is_water` flag so the regular triangle path skips it, and
+    // emit a parallel `WaterDrawCommand` whose `instance_index`
+    // matches the SSBO slot the renderer will assign to that draw.
+    //
+    // The slot-index ↔ Vec position map relies on the renderer's
+    // 1:1 contract: `gpu_instances` is populated by iterating
+    // `draw_commands` in order, and frustum-culled draws keep
+    // their SSBO slot per #516. So the index into
+    // `draw_commands` equals `gl_InstanceIndex` after upload.
+    //
+    // Linear scan over `draw_commands` per water entity is O(N×W);
+    // typical N is ~thousands of draws and W is ≤ ~3 water planes
+    // per cell, so this is well under a microsecond. A
+    // `HashMap<EntityId, usize>` would be premature for the
+    // expected scale.
+    let time_secs = world
+        .try_resource::<TotalTime>()
+        .map(|t| t.0)
+        .unwrap_or(0.0);
+    if let Some(wq) = world.query::<WaterPlane>() {
+        let fq = world.query::<WaterFlow>();
+        for (entity, plane) in wq.iter() {
+            let Some(idx) = draw_commands.iter().position(|c| c.entity_id == entity)
+            else {
+                // Entity has WaterPlane but no DrawCommand was emitted —
+                // typically because the cell loader spawned the water
+                // entity but the mesh wasn't yet uploaded, or the
+                // entity is frustum-culled out of the regular emit
+                // path. Skip silently.
+                continue;
+            };
+            draw_commands[idx].is_water = true;
+
+            let flow = fq.as_ref().and_then(|q| q.get(entity).copied());
+            let (flow_dir, flow_speed) = match flow {
+                Some(f) => (f.direction, f.speed),
+                None => ([1.0, 0.0, 0.0], 0.0),
+            };
+
+            // ABI: matches `WaterPush` in `shaders/water.frag`.
+            // Each vec4 maps to one std430-scalar slot — see
+            // `crates/renderer/src/vulkan/water.rs::WaterPush` for
+            // the layout contract.
+            let mat = &plane.material;
+            let push = WaterPush {
+                timing: [
+                    time_secs,
+                    plane.kind as u8 as f32,
+                    mat.foam_strength,
+                    mat.ior,
+                ],
+                flow: [flow_dir[0], flow_dir[1], flow_dir[2], flow_speed],
+                shallow: [
+                    mat.shallow_color[0],
+                    mat.shallow_color[1],
+                    mat.shallow_color[2],
+                    mat.fog_near,
+                ],
+                deep: [
+                    mat.deep_color[0],
+                    mat.deep_color[1],
+                    mat.deep_color[2],
+                    mat.fog_far,
+                ],
+                scroll: [
+                    mat.scroll_a[0],
+                    mat.scroll_a[1],
+                    mat.scroll_b[0],
+                    mat.scroll_b[1],
+                ],
+                tune: [
+                    mat.uv_scale_a,
+                    mat.uv_scale_b,
+                    mat.shoreline_width,
+                    mat.reflectivity,
+                ],
+                misc: [
+                    mat.fresnel_f0,
+                    0.0,
+                    WaterPush::pack_normal_index(mat.normal_map_index),
+                    0.0,
+                ],
+            };
+            water_commands.push(WaterDrawCommand {
+                mesh_handle: draw_commands[idx].mesh_handle,
+                instance_index: idx as u32,
+                push,
+            });
+            // Silence WaterKind-unused warning on builds where the
+            // enum is only consumed by the f32 cast above.
+            let _ = WaterKind::Calm;
+        }
+    }
+
     RenderFrameView {
         view_proj,
         camera_pos,
@@ -1490,6 +1595,7 @@ mod draw_sort_key_tests {
             material_id: 0,
             vertex_color_emissive: false,
             effect_shader_flags: 0,
+            is_water: false,
         }
     }
 
@@ -1851,9 +1957,11 @@ mod bone_palette_overflow_tests {
         let mut skin_offsets = HashMap::new();
         let mut palette_scratch = Vec::new();
         let mut material_table = byroredux_renderer::MaterialTable::new();
+        let mut water_commands = Vec::new();
         let _ = build_render_data(
             world,
             &mut draw_commands,
+            &mut water_commands,
             &mut gpu_lights,
             &mut bone_palette,
             &mut skin_offsets,
@@ -1935,9 +2043,11 @@ mod variant_pack_gating_tests {
         let mut skin_offsets = HashMap::new();
         let mut palette_scratch = Vec::new();
         let mut material_table = byroredux_renderer::MaterialTable::new();
+        let mut water_commands = Vec::new();
         let _ = build_render_data(
             world,
             &mut draw_commands,
+            &mut water_commands,
             &mut gpu_lights,
             &mut bone_palette,
             &mut skin_offsets,
@@ -2305,9 +2415,11 @@ mod fog_curve_propagation_tests {
         let mut skin_offsets = HashMap::new();
         let mut palette_scratch = Vec::new();
         let mut material_table = byroredux_renderer::MaterialTable::new();
+        let mut water_commands = Vec::new();
         build_render_data(
             world,
             &mut draw_commands,
+            &mut water_commands,
             &mut gpu_lights,
             &mut bone_palette,
             &mut skin_offsets,

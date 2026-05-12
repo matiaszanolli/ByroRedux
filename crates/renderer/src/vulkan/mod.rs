@@ -25,3 +25,4 @@ pub mod sync;
 pub mod taa;
 pub mod texture;
 pub mod volumetrics;
+pub mod water;

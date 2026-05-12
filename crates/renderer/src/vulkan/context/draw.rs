@@ -9,6 +9,7 @@ use super::super::scene_buffer::{
     MATERIAL_KIND_GLASS,
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
+use super::super::water::WaterDrawCommand;
 use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use anyhow::{Context, Result};
 use ash::vk;
@@ -133,6 +134,17 @@ impl VulkanContext {
         ui_texture_handle: Option<u32>,
         sky_params: &SkyParams,
         timings: Option<&mut FrameTimings>,
+        // `water_commands`: water-surface draws for this frame. Each
+        // entry must match a `DrawCommand` with `is_water=true` that
+        // supplies the corresponding `GpuInstance` SSBO slot. Built
+        // by the app's per-frame render code from `WaterPlane` ECS
+        // entities. Empty slice = no water rendering this frame.
+        water_commands: &[WaterDrawCommand],
+        // `underwater`: xyz = deep_color tint to blend the scene
+        // toward; w = camera depth below the water surface in world
+        // units. `[0, 0, 0, 0]` disables underwater FX. Computed by
+        // the app from the camera's `SubmersionState` component.
+        underwater: [f32; 4],
     ) -> Result<bool> {
         let frame = self.current_frame;
         // Use a local to avoid borrow complexity; copy out at end.
@@ -1098,7 +1110,14 @@ impl VulkanContext {
             // chain here also avoids accidentally extending a previous
             // batch across a gap in the SSBO layout (`first_instance +
             // instance_count` would point past an off-screen draw).
-            if !draw_cmd.in_raster {
+            //
+            // Water surfaces are also skipped here: their `GpuInstance`
+            // SSBO slot is populated (so the water pipeline's vertex
+            // shader can read the model matrix via `gl_InstanceIndex`),
+            // but they render through the dedicated water pipeline in
+            // a separate pass below — not through the triangle / blend
+            // pipeline batches.
+            if !draw_cmd.in_raster || draw_cmd.is_water {
                 continue;
             }
 
@@ -1382,6 +1401,7 @@ impl VulkanContext {
                 // sample. `w` is unused padding.
                 camera_pos: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
                 inv_view_proj: inv_vp_arr,
+                underwater,
             };
             if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
                 log::warn!("composite upload_params failed: {e}");
@@ -1817,6 +1837,59 @@ impl VulkanContext {
                     set_cull(default_cull, &mut last_cull_mode);
                     dispatch_direct(self, &mut last_bound_mesh_handle);
                     i += 1;
+                }
+            }
+
+            // ── Water surfaces ────────────────────────────────────────
+            //
+            // After all opaque + alpha-blend triangle batches have
+            // submitted but before the UI overlay, render every
+            // `WaterPlane` ECS entity through the dedicated water
+            // pipeline. Each `WaterDrawCommand` carries its own push
+            // constants (material + flow + time); the bound set 0 +
+            // set 1 from the triangle path stay compatible because
+            // the water pipeline layout uses the same set layouts.
+            //
+            // State note: the last opaque/blend pipeline already left
+            // depth-test on and depth-write off (blend pipelines
+            // disable depth-write). We still re-issue the dynamic
+            // state defensively — if a frame somehow has only opaque
+            // geometry preceding the water, depth-write would be ON
+            // and water would corrupt the depth buffer.
+            //
+            // Cull mode: water pipeline declares it STATIC (NONE), so
+            // no `cmd_set_cull_mode` is needed when binding it. The
+            // subsequent UI pipeline also has cull static, so the
+            // mismatch doesn't leak to it.
+            if !water_commands.is_empty() {
+                if let Some(ref water) = self.water {
+                    self.device.cmd_set_depth_test_enable(cmd, true);
+                    self.device.cmd_set_depth_write_enable(cmd, false);
+                    self.device
+                        .cmd_set_depth_compare_op(cmd, vk::CompareOp::LESS_OR_EQUAL);
+                    for wc in water_commands {
+                        if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
+                            self.device.cmd_bind_vertex_buffers(
+                                cmd,
+                                0,
+                                &[mesh.vertex_buffer.buffer],
+                                &[0],
+                            );
+                            self.device.cmd_bind_index_buffer(
+                                cmd,
+                                mesh.index_buffer.buffer,
+                                0,
+                                vk::IndexType::UINT32,
+                            );
+                            water.record_draw(
+                                &self.device,
+                                cmd,
+                                &wc.push,
+                                mesh.index_count,
+                                wc.instance_index,
+                            );
+                        }
+                    }
                 }
             }
 
@@ -2345,6 +2418,7 @@ mod is_caustic_source_tests {
             material_id: 0,
             vertex_color_emissive: false,
             effect_shader_flags: 0,
+            is_water: false,
         }
     }
 

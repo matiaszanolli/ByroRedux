@@ -197,6 +197,27 @@ impl VulkanContext {
                 self.pipeline_layout,
                 self.pipeline_cache,
             )?;
+
+            // Water pipeline depends on the render pass. Destroy +
+            // recreate when the render pass changes; absorb failure
+            // by falling back to no water rendering (same robustness
+            // policy as the initial create site).
+            if let Some(mut old) = self.water.take() {
+                unsafe { old.destroy(&self.device) };
+            }
+            self.water = match super::super::water::WaterPipeline::new(
+                &self.device,
+                self.render_pass,
+                self.pipeline_cache,
+                self.texture_registry.descriptor_set_layout,
+                self.scene_buffers.descriptor_set_layout,
+            ) {
+                Ok(w) => Some(w),
+                Err(e) => {
+                    log::warn!("Water pipeline recreate after resize failed: {e}");
+                    None
+                }
+            };
         }
 
         // Recreate descriptor sets for existing textures (new swapchain image count).

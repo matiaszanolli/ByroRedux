@@ -521,6 +521,33 @@ pub fn load_cell_with_masters(
         &load_order,
     );
 
+    // 3a. Interior water plane from XCLW / XCWT — flooded ruins,
+    // sewers, named indoor pools. The cell parser captured the
+    // height directly; the water material comes from the global
+    // WATR record table.
+    if let Some(water_height) = cell.water_height {
+        let mut _blas_dummy: Vec<(u32, u32, u32)> = Vec::new();
+        let _ = water::spawn_water_plane(
+            world,
+            ctx,
+            tex_provider,
+            &index.waters,
+            water_height,
+            cell.water_type_form,
+            // Interior cells use a local-origin frame; the cell's
+            // reference bounds are not yet aggregated at this site
+            // (the cell loader runs reference loading before bounds
+            // collection lands). For MVP we centre the plane on the
+            // world origin — references in flooded interiors are
+            // typically authored around the origin too. Improving
+            // the centroid is a separate audit-pass once the cell
+            // root's WorldBound aggregation is plumbed through.
+            (0.0, 0.0),
+            water::default_interior_half_extent(),
+            &mut _blas_dummy,
+        );
+    }
+
     // SK-D6-02 / #566 — LGTM lighting-template fallback. Vanilla
     // Skyrim ships interior cells (Solitude inn cluster, Dragonsreach
     // throne room, Markarth cells) that omit XCLL and rely on this
@@ -864,6 +891,26 @@ pub fn load_one_exterior_cell(
         ) {
             terrain_entities += count;
         }
+    }
+    // Water plane from XCLW / XCWT. Exterior cells without explicit
+    // XCLW inherit the worldspace default, which the cell parser has
+    // already collapsed into `cell.water_height` upstream.
+    if let Some(water_height) = cell.water_height {
+        // Exterior cell origin in Y-up world coords (matches the
+        // terrain spawn convention): X = grid_x * 4096, Z = −grid_y * 4096.
+        let origin_x = gx as f32 * 4096.0;
+        let origin_z = -(gy as f32) * 4096.0;
+        let _ = water::spawn_water_plane(
+            world,
+            ctx,
+            tex_provider,
+            &wctx.record_index.waters,
+            water_height,
+            cell.water_type_form,
+            (origin_x + 2048.0, origin_z - 2048.0),
+            water::exterior_half_extent(),
+            blas_sink,
+        );
     }
     // Streaming path: submit our own BLAS build now (one mesh, one submit).
     if !local_blas.is_empty() {
@@ -2888,6 +2935,9 @@ pub(crate) fn euler_zup_to_quat_yup_refr(rx: f32, ry: f32, rz: f32) -> Quat {
 
 #[path = "cell_loader_terrain.rs"]
 mod terrain;
+
+#[path = "cell_loader_water.rs"]
+mod water;
 
 #[cfg(test)]
 #[path = "cell_loader_euler_zup_to_quat_yup_tests.rs"]

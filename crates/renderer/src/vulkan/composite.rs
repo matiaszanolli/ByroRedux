@@ -101,6 +101,17 @@ pub struct CompositeParams {
     /// (and, with `camera_pos`, world-space fragment positions for fog) from
     /// screen UV in the composite shader.
     pub inv_view_proj: [[f32; 4]; 4],
+    /// Underwater tint + depth. `xyz` = the water material's
+    /// `deep_color` (linear RGB) the scene should blend toward when
+    /// the camera is submerged; `w` = camera depth below the water
+    /// surface in world units (>0 = underwater, 0 = above water).
+    ///
+    /// Drives `composite.frag`'s underwater post-FX: at the end of
+    /// the shader, when `underwater.w > 0`, the final colour is
+    /// mixed toward `underwater.xyz` by a depth-extinction factor.
+    /// Above-water frames pass `[0, 0, 0, 0]` so the shader's branch
+    /// stays disabled.
+    pub underwater: [f32; 4],
 }
 
 /// HDR color format. RGBA16F = 8 bytes/pixel, sufficient dynamic range
@@ -1280,10 +1291,17 @@ mod composite_params_layout_tests {
         // reorder from silently corrupting the fog-distance origin.
         assert_eq!(offset_of!(CompositeParams, camera_pos), 192);
         assert_eq!(offset_of!(CompositeParams, inv_view_proj), 208);
+        // Underwater post-FX field — appended after inv_view_proj.
+        // Same lockstep contract as the cloud_params expansion above:
+        // adding a new vec4 here bumps the asserted total by 16 and
+        // adds a matching `vec4 underwater;` declaration in the
+        // `composite.frag` UBO block. See `composite.frag` end-of-
+        // shader underwater branch.
+        assert_eq!(offset_of!(CompositeParams, underwater), 272);
         assert_eq!(
             size_of::<CompositeParams>(),
-            208 + 64,
-            "CompositeParams must be 272 bytes (13 × vec4 + mat4)"
+            272 + 16,
+            "CompositeParams must be 288 bytes (14 × vec4 + mat4)"
         );
     }
 }

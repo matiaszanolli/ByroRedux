@@ -21,6 +21,7 @@ pub mod scene_flags;
 pub mod skinned_mesh;
 pub mod texture;
 pub mod transform;
+pub mod water;
 pub mod world_bound;
 
 pub use animated::{
@@ -53,4 +54,5 @@ pub use scene_flags::SceneFlags;
 pub use skinned_mesh::{SkinnedMesh, MAX_BONES_PER_MESH};
 pub use texture::TextureHandle;
 pub use transform::Transform;
+pub use water::{SubmersionState, WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterVolume};
 pub use world_bound::WorldBound;

@@ -1055,6 +1055,14 @@ pub(crate) fn setup_scene(
     // threshold + per-footstep volume are read from `FootstepConfig`
     // (engine-wide resource set up in `App::new`).
     world.insert(cam, crate::components::FootstepEmitter::new());
+    // Submersion state is recomputed each frame by `submersion_system`
+    // from active `WaterPlane` / `WaterVolume` entities. Pre-inserting
+    // the default keeps the system on the pure-mutation path (no
+    // structural inserts mid-frame).
+    world.insert(
+        cam,
+        byroredux_core::ecs::components::water::SubmersionState::default(),
+    );
     world.insert_resource(ActiveCamera(cam));
 
     // NOTE: M28 Phase 1 attached a `PlayerBody::HUMAN` capsule to the

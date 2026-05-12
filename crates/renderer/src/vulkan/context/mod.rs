@@ -23,6 +23,7 @@ use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
 use super::taa::TaaPipeline;
 use super::texture::Texture;
 use super::volumetrics::VolumetricsPipeline;
+use super::water::WaterPipeline;
 use crate::mesh::MeshRegistry;
 use crate::texture_registry::TextureRegistry;
 use anyhow::{Context, Result};
@@ -266,6 +267,13 @@ pub struct DrawCommand {
     /// per-bit re-encoding. `0` on every non-BSEffect mesh.
     /// See #890 Stage 2 / SK-D4-NEW-04.
     pub effect_shader_flags: u32,
+    /// `true` for water-surface entities — the triangle-pipeline path
+    /// in `draw_frame` skips this command (only its `GpuInstance` SSBO
+    /// slot is populated), and a parallel `WaterDrawCommand` in the
+    /// frame's `water_commands` list re-emits the geometry through
+    /// the water pipeline. Pre-water-plumbing this field is always
+    /// `false`; the regular path handles it unconditionally.
+    pub is_water: bool,
 }
 
 impl DrawCommand {
@@ -832,6 +840,14 @@ pub struct VulkanContext {
     /// allocation fails; composite's bloom binding falls back to a
     /// black dummy so the additive contribution becomes a no-op.
     pub bloom: Option<BloomPipeline>,
+    /// Water surface pipeline — renders `WaterPlane` entities as
+    /// transparent draws inside the main render pass (subpass 0)
+    /// after all opaque + alpha-blend triangles have submitted.
+    /// `None` when pipeline creation fails on initial setup; the
+    /// draw site is gated on `Some` so a failure simply skips water
+    /// rendering for the rest of the session (same robustness policy
+    /// as every other optional pipeline in the renderer).
+    pub water: Option<WaterPipeline>,
     /// Permanent-failure latch for the TAA compute pass. Set on the
     /// first `taa.dispatch` error in a session. When set: the TAA
     /// dispatch is skipped on every subsequent frame and composite's
@@ -1228,6 +1244,27 @@ impl VulkanContext {
             pipelines.layout,
             pipeline_cache,
         )?;
+
+        // 15a. Water pipeline (transparent, RT reflection/refraction,
+        // SRC_ALPHA blend on HDR only — G-buffer attachments masked
+        // off so SVGF / motion-vector reprojection ignore water).
+        // Reuses set 0 + set 1 descriptor layouts for compatibility
+        // with the bound triangle-pipeline descriptor sets at draw
+        // time; the water pipeline layout adds a 112-byte push
+        // constant range for per-plane material params.
+        let water = match WaterPipeline::new(
+            &device,
+            render_pass,
+            pipeline_cache,
+            texture_registry.descriptor_set_layout,
+            scene_buffers.descriptor_set_layout,
+        ) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                log::warn!("Water pipeline creation failed: {e} — water surfaces will not render");
+                None
+            }
+        };
 
         // 14a. SSAO pipeline (reads depth buffer after render pass)
         let ssao = match SsaoPipeline::new(
@@ -1629,6 +1666,7 @@ impl VulkanContext {
             caustic,
             volumetrics,
             bloom,
+            water,
             taa_failed: false,
             svgf_failed: false,
             svgf_recovery_frames: 0,
@@ -1961,6 +1999,9 @@ impl Drop for VulkanContext {
                 if let Some(ref mut b) = self.bloom {
                     b.destroy(&self.device, alloc);
                 }
+                if let Some(ref mut w) = self.water {
+                    w.destroy(&self.device);
+                }
                 if let Some(ref mut svgf) = self.svgf {
                     svgf.destroy(&self.device, alloc);
                 }
@@ -2149,6 +2190,7 @@ mod draw_command_tests {
                 | crate::vulkan::material::material_flag::EFFECT_PALETTE_COLOR
                 | crate::vulkan::material::material_flag::EFFECT_PALETTE_ALPHA
                 | crate::vulkan::material::material_flag::EFFECT_LIT,
+            is_water: false,
         }
     }
 

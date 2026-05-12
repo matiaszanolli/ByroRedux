@@ -39,6 +39,12 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 cloud_params_3; // cloud layer 3 (WTHR BNAM) — same packing (M33.1)
     vec4 camera_pos;     // xyz = world position, w = unused. Fog distance origin (#428).
     mat4 inv_view_proj;  // inverse view-projection for ray reconstruction
+    // Underwater post-FX: xyz = water deep-color tint (linear RGB),
+    // w = camera depth below water surface (world units, >0 = under).
+    // The shader's final branch mixes `combined` toward `underwater.xyz`
+    // by a depth-driven extinction when `underwater.w > 0`. When `w == 0`
+    // the branch is a no-op.
+    vec4 underwater;
 } params;
 layout(set = 0, binding = 4) uniform sampler2D depthTex;     // depth buffer
 layout(set = 0, binding = 5) uniform usampler2D causticTex;  // R32_UINT caustic accumulator (#321)
@@ -314,7 +320,17 @@ void main() {
         // contract that's harder to reason about than the symmetric
         // "alpha is the marker bit, branch on it the same way."
         // DEN-11.
-        outColor = vec4(aces(sky * exposure), direct4.a);
+        vec3 sky_tonemapped = aces(sky * exposure);
+        // Underwater post-FX on the sky branch — the camera looking
+        // up through the water surface should also see the deep tint
+        // when submerged. Same model as the geometry branch (see the
+        // matching block at the end of the geometry path).
+        if (params.underwater.w > 0.0) {
+            float extinction = clamp(1.0 - exp(-params.underwater.w / 120.0), 0.0, 0.85);
+            vec3 underwater_tonemap = aces(params.underwater.xyz * exposure);
+            sky_tonemapped = mix(sky_tonemapped, underwater_tonemap, extinction);
+        }
+        outColor = vec4(sky_tonemapped, direct4.a);
     } else {
         // Geometry pixel: combine direct + (indirect × albedo) and tone map.
         // The shader wrote lighting-only indirect (no local albedo) so
@@ -485,6 +501,33 @@ void main() {
                 vec3 tonemappedHaze = aces(skyHaze * exposure);
                 tonemapped = mix(tonemapped, tonemappedHaze, fog_t);
             }
+        }
+
+        // ── Underwater post-FX ────────────────────────────────────────
+        //
+        // Drives a depth-based tint toward the active water material's
+        // `deep_color` when the camera is submerged. The CPU sets
+        // `params.underwater.xyz` to the deep-color tint and
+        // `params.underwater.w` to the camera's depth below the
+        // surface; `w == 0` keeps the branch a no-op.
+        //
+        // Extinction model: Beer-Lambert with a 1/120-wu falloff,
+        // chosen so a 60-wu submersion (head just under) sits at
+        // ~40% tint and a 240-wu submersion saturates at ~85% tint.
+        // The cap at 0.85 prevents full black when the player dives
+        // arbitrarily deep — the scene stays legible.
+        if (params.underwater.w > 0.0) {
+            float extinction = 1.0 - exp(-params.underwater.w / 120.0);
+            extinction = clamp(extinction, 0.0, 0.85);
+            // Tone-map the underwater colour with the same exposure
+            // so the mix doesn't drag the scene into HDR space where
+            // ACES would re-bend it. The underwater colour is
+            // already authored in display-linear (per the
+            // `feedback_color_space.md` policy on Gamebryo colour
+            // bytes), so an ACES pass on a tone-mapped target is
+            // visually correct here.
+            vec3 underwater_tonemap = aces(params.underwater.xyz * exposure);
+            tonemapped = mix(tonemapped, underwater_tonemap, extinction);
         }
 
         outColor = vec4(tonemapped, direct4.a);

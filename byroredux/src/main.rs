@@ -241,6 +241,38 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Derive `(deep_color.xyz, depth_below_surface)` from the active
+/// camera's [`SubmersionState`]. Returns `[0, 0, 0, 0]` when the
+/// camera is above water or no submersion data is available — the
+/// composite shader treats `w == 0` as "underwater FX disabled".
+fn compute_underwater_params(world: &byroredux_core::ecs::World) -> [f32; 4] {
+    let active = world
+        .try_resource::<byroredux_core::ecs::ActiveCamera>()
+        .map(|a| a.0);
+    let Some(cam_entity) = active else {
+        return [0.0; 4];
+    };
+    let Some(sq) = world.query::<byroredux_core::ecs::components::water::SubmersionState>()
+    else {
+        return [0.0; 4];
+    };
+    let Some(state) = sq.get(cam_entity) else {
+        return [0.0; 4];
+    };
+    if !state.head_submerged || state.depth <= 0.0 {
+        return [0.0; 4];
+    }
+    let Some(mat) = state.material.as_ref() else {
+        return [0.0; 4];
+    };
+    [
+        mat.deep_color[0],
+        mat.deep_color[1],
+        mat.deep_color[2],
+        state.depth,
+    ]
+}
+
 fn parse_string_arg(args: &[String], flag: &str) -> Option<String> {
     args.iter()
         .position(|a| a == flag)
@@ -272,6 +304,10 @@ struct App {
     ui_texture_handle: Option<u32>,
     /// Reusable per-frame draw command buffer (cleared each frame, allocation retained).
     draw_commands: Vec<DrawCommand>,
+    /// Reusable per-frame water draw command buffer. Built alongside
+    /// `draw_commands` from `WaterPlane` ECS entities; routed through
+    /// the renderer's dedicated water pipeline.
+    water_commands: Vec<byroredux_renderer::vulkan::water::WaterDrawCommand>,
     /// Reusable per-frame light buffer (cleared each frame, allocation retained).
     gpu_lights: Vec<byroredux_renderer::GpuLight>,
     /// Reusable per-frame bone palette (column-major mat4 entries; slot 0
@@ -497,6 +533,14 @@ impl App {
         // Bound propagation runs last in PostUpdate so it sees final
         // world transforms (including billboard rotations). See #217.
         scheduler.add_exclusive(Stage::PostUpdate, make_world_bound_propagation_system());
+        // Submersion detection runs in PostUpdate after bound
+        // propagation so the camera's GlobalTransform is already
+        // current for the frame. Reads `WaterPlane`/`WaterVolume` +
+        // `GlobalTransform`, writes `SubmersionState` on the active
+        // camera entity. Downstream consumers (audio low-pass send,
+        // underwater composite tint) read the result later in the
+        // frame.
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::submersion_system);
         scheduler.add_to(Stage::Physics, byroredux_physics::physics_sync_system);
         // M44 Phase 6 — cell-acoustics → reverb send (#846). Runs
         // before `audio_system` so any new spatial track constructed
@@ -563,6 +607,7 @@ impl App {
             ui_manager: None,
             ui_texture_handle: None,
             draw_commands: Vec::new(),
+            water_commands: Vec::new(),
             gpu_lights: Vec::new(),
             bone_palette: Vec::new(),
             skin_offsets: HashMap::new(),
@@ -1044,6 +1089,7 @@ impl ApplicationHandler for App {
                     let frame = build_render_data(
                         &self.world,
                         &mut self.draw_commands,
+                        &mut self.water_commands,
                         &mut self.gpu_lights,
                         &mut self.bone_palette,
                         &mut self.skin_offsets,
@@ -1163,6 +1209,8 @@ impl ApplicationHandler for App {
                         ui_tex,
                         &frame.sky,
                         frame_timings.as_mut(),
+                        &self.water_commands,
+                        compute_underwater_params(&self.world),
                     ) {
                         Ok(needs_recreate) => {
                             if is_benching {
