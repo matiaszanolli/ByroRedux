@@ -33,7 +33,7 @@ pub use query::{ComponentRef, QueryRead, QueryWrite};
 pub use resource::{Resource, ResourceRead, ResourceWrite};
 pub use resources::{
     DebugStats, DeltaTime, EngineConfig, SchedulerAccessReport, ScratchRow, ScratchTelemetry,
-    ScreenshotBridge, SkinCoverageStats, SystemList, TotalTime,
+    ScreenshotBridge, SelectedRef, SkinCoverageStats, SystemList, TotalTime,
 };
 pub use scheduler::{
     AccessReport, Scheduler, Stage, StageConflictRow, StageReport, SystemAccessRow,

@@ -20,7 +20,7 @@ use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::console::CommandRegistry;
 use byroredux_core::ecs::{
     Access, ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler,
-    ScratchTelemetry, SkinCoverageStats, Stage, TotalTime, Transform, World,
+    ScratchTelemetry, SelectedRef, SkinCoverageStats, Stage, TotalTime, Transform, World,
 };
 use byroredux_core::string::StringPool;
 use byroredux_platform::window::{self, WindowConfig};
@@ -389,6 +389,7 @@ impl App {
         world.insert_resource(DebugStats::default());
         world.insert_resource(ScratchTelemetry::default());
         world.insert_resource(SkinCoverageStats::default());
+        world.insert_resource(SelectedRef::default());
         world.insert_resource(InputState::default());
         world.insert_resource(StringPool::new());
         world.insert_resource(AnimationClipRegistry::new());

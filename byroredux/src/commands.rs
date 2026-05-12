@@ -3,8 +3,8 @@
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::{
     AccessConflict, ActiveCamera, Camera, ConflictKind, DebugStats, EntityId, GlobalTransform,
-    Material, MeshHandle, Name, SchedulerAccessReport, ScratchTelemetry, SkinCoverageStats,
-    SkinnedMesh, TextureHandle, Transform, World,
+    Material, MeshHandle, Name, SchedulerAccessReport, ScratchTelemetry, SelectedRef,
+    SkinCoverageStats, SkinnedMesh, TextureHandle, Transform, World,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
@@ -447,6 +447,102 @@ impl ConsoleCommand for SkinCoverageCommand {
     }
 }
 
+/// Resolve an entity's `Name` to a printable String via the
+/// `StringPool` resource. Returns `None` when the entity has no
+/// `Name`, when the pool isn't installed, or when the symbol doesn't
+/// resolve (which would itself be a string-pool integrity bug).
+fn resolve_entity_name(world: &World, entity: EntityId) -> Option<String> {
+    let name_q = world.query::<Name>()?;
+    let name = name_q.get(entity)?;
+    let pool = world.try_resource::<StringPool>()?;
+    pool.resolve(name.0).map(|s| s.to_string())
+}
+
+/// `prid <entity_id>` — pick a reference (Bethesda console heritage).
+///
+/// Sets the world-scoped [`SelectedRef`] to the given entity so that
+/// follow-up commands operate on it by default. Today's consumers:
+/// `inspect` (no args), `cam.tp` (no args). The natural workflow:
+///
+/// ```text
+/// byro> entities Inventory          # list NPCs with equip state
+/// byro> prid 42                     # pick one
+/// byro> cam.tp                      # frame it
+/// byro> inspect                     # dump every component on it
+/// byro> skin.coverage               # read coverage against this view
+/// ```
+///
+/// With no arg, `prid` prints the current selection (`SelectedRef`
+/// resource state). The selection is not implicitly cleared on cell
+/// unload — a re-issued generational `EntityId` could re-bind to a
+/// new entity. This is a known dev-tool sharp edge that matches
+/// Bethesda's own `prid` semantics; M40 cell streaming will need an
+/// explicit clear-on-unload pass later.
+struct PridCommand;
+impl ConsoleCommand for PridCommand {
+    fn name(&self) -> &str {
+        "prid"
+    }
+    fn description(&self) -> &str {
+        "Pick a reference for follow-up commands (usage: prid <entity_id>)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let trimmed = args.trim();
+        if trimmed.is_empty() {
+            let Some(sel) = world.try_resource::<SelectedRef>() else {
+                return CommandOutput::line("SelectedRef resource not present");
+            };
+            return match sel.0 {
+                None => CommandOutput::line("no entity selected (usage: prid <entity_id>)"),
+                Some(entity) => {
+                    let name = resolve_entity_name(world, entity);
+                    drop(sel);
+                    CommandOutput::line(match name {
+                        Some(n) => format!("selected: entity {entity} ({n})"),
+                        None => format!("selected: entity {entity}"),
+                    })
+                }
+            };
+        }
+        let Ok(target) = trimmed.parse::<EntityId>() else {
+            return CommandOutput::line(format!(
+                "prid: failed to parse entity id from `{trimmed}`"
+            ));
+        };
+        // Validate the entity exists. Transform is the closest thing
+        // to "every entity has it" in this ECS — placement roots,
+        // NPCs, bones, cameras all carry one. A bone with only a
+        // hierarchy parent + Name (rare) would fail this check;
+        // that's a deliberately conservative bar to keep `prid` from
+        // accepting typos silently. Falls back to GlobalTransform to
+        // catch the bone case.
+        let has_transform = world
+            .query::<Transform>()
+            .map(|q| q.contains(target))
+            .unwrap_or(false);
+        let has_global = world
+            .query::<GlobalTransform>()
+            .map(|q| q.contains(target))
+            .unwrap_or(false);
+        if !has_transform && !has_global {
+            return CommandOutput::line(format!(
+                "prid: entity {target} has no Transform/GlobalTransform — \
+                 does it exist? (use `entities` to list)"
+            ));
+        }
+        let Some(mut sel) = world.try_resource_mut::<SelectedRef>() else {
+            return CommandOutput::line("SelectedRef resource not present");
+        };
+        sel.0 = Some(target);
+        drop(sel);
+        let name = resolve_entity_name(world, target);
+        CommandOutput::line(match name {
+            Some(n) => format!("selected: entity {target} ({n})"),
+            None => format!("selected: entity {target}"),
+        })
+    }
+}
+
 /// Derive fly-camera `(yaw, pitch)` in radians for a camera at `from`
 /// to look at `to`. Matches `fly_camera_system`'s rotation composition
 /// (`Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch)` with
@@ -591,13 +687,26 @@ impl ConsoleCommand for CamTpCommand {
     }
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         let trimmed = args.trim();
-        if trimmed.is_empty() {
-            return CommandOutput::line("usage: cam.tp <entity_id>");
-        }
-        let Ok(target_id) = trimmed.parse::<EntityId>() else {
-            return CommandOutput::line(format!(
-                "cam.tp: failed to parse entity id from `{trimmed}`"
-            ));
+        let target_id = if trimmed.is_empty() {
+            // Fall back to the picked reference (`prid <id>` workflow).
+            // No selection AND no arg → user error, point them at the
+            // shorter path.
+            let Some(sel) = world.try_resource::<SelectedRef>() else {
+                return CommandOutput::line("SelectedRef resource not present");
+            };
+            let Some(id) = sel.0 else {
+                return CommandOutput::line(
+                    "usage: cam.tp <entity_id>  (or `prid <id>` then `cam.tp`)",
+                );
+            };
+            id
+        } else {
+            let Ok(id) = trimmed.parse::<EntityId>() else {
+                return CommandOutput::line(format!(
+                    "cam.tp: failed to parse entity id from `{trimmed}`"
+                ));
+            };
+            id
         };
         let Some(active) = world.try_resource::<ActiveCamera>() else {
             return CommandOutput::line("ActiveCamera resource not present");
@@ -1212,6 +1321,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MeshCacheCommand);
     registry.register(CtxScratchCommand);
     registry.register(SkinCoverageCommand);
+    registry.register(PridCommand);
     registry.register(CamWhereCommand);
     registry.register(CamPosCommand);
     registry.register(CamTpCommand);
@@ -1486,6 +1596,119 @@ mod tests {
         let target = Vec3::new(100.0, 0.0, 0.0);
         let camera = target + Vec3::new(0.0, 50.0, 200.0);
         assert_forward_matches(camera, target);
+    }
+
+    #[test]
+    fn prid_sets_selected_ref_resource() {
+        // Spawn an entity with Transform, run `prid <id>`, verify the
+        // SelectedRef resource is updated. Output line should name the
+        // entity. No-arg `prid` after the set should report the same.
+        let mut world = World::new();
+        world.insert_resource(SelectedRef::default());
+        world.insert_resource(StringPool::new());
+
+        let target = world.spawn();
+        world.insert(target, Transform::from_translation(Vec3::new(1.0, 2.0, 3.0)));
+
+        let cmd = PridCommand;
+        let out = cmd.execute(&world, &target.to_string()).lines.join("\n");
+        assert!(
+            out.contains(&format!("selected: entity {}", target)),
+            "expected 'selected: entity {target}' in output: {out}"
+        );
+
+        // Resource state should now hold Some(target).
+        let sel = world.resource::<SelectedRef>();
+        assert_eq!(sel.0, Some(target));
+        drop(sel);
+
+        // `prid` with no args prints the current selection.
+        let out2 = cmd.execute(&world, "").lines.join("\n");
+        assert!(
+            out2.contains(&format!("selected: entity {}", target)),
+            "no-arg prid should print current selection: {out2}"
+        );
+    }
+
+    #[test]
+    fn prid_rejects_entity_without_transform_or_global_transform() {
+        // Entities that exist in the slot table but have no Transform
+        // AND no GlobalTransform are conservatively rejected — usually
+        // a sign of a typo or a hierarchy-orphan that wouldn't show
+        // up in `entities`. The error should mention the id.
+        let mut world = World::new();
+        world.insert_resource(SelectedRef::default());
+        world.insert_resource(StringPool::new());
+
+        let orphan = world.spawn();
+        // No Transform / GlobalTransform inserted.
+
+        let cmd = PridCommand;
+        let out = cmd.execute(&world, &orphan.to_string()).lines.join("\n");
+        assert!(
+            out.contains("no Transform/GlobalTransform"),
+            "expected rejection message naming missing components: {out}"
+        );
+
+        // Resource must be untouched.
+        let sel = world.resource::<SelectedRef>();
+        assert!(sel.0.is_none(), "SelectedRef should remain None on rejected prid");
+    }
+
+    #[test]
+    fn cam_tp_no_args_uses_selected_ref() {
+        // Set up: ActiveCamera with a Transform, a target with a
+        // GlobalTransform, SelectedRef pointing at the target. `cam.tp`
+        // with no args should treat the SelectedRef as if it were the
+        // explicit argument and move the camera.
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+
+        let camera = world.spawn();
+        world.insert(camera, Transform::from_translation(Vec3::ZERO));
+        world.insert_resource(byroredux_core::ecs::ActiveCamera(camera));
+
+        let target = world.spawn();
+        let target_pos = Vec3::new(100.0, 0.0, 0.0);
+        world.insert(
+            target,
+            GlobalTransform::new(target_pos, Quat::IDENTITY, 1.0),
+        );
+
+        world.insert_resource(SelectedRef(Some(target)));
+        // InputState must exist because cam.tp tries to update it.
+        world.insert_resource(InputState::default());
+
+        let cmd = CamTpCommand;
+        let out = cmd.execute(&world, "").lines.join("\n");
+        assert!(
+            out.contains(&format!("entity {target}")),
+            "cam.tp w/o args should target SelectedRef ({target}): {out}"
+        );
+
+        // The camera transform should have moved away from origin.
+        let tq = world.query::<Transform>().unwrap();
+        let cam_t = tq.get(camera).unwrap();
+        assert_ne!(cam_t.translation, Vec3::ZERO);
+    }
+
+    #[test]
+    fn cam_tp_no_args_no_selection_reports_usage() {
+        // If SelectedRef is empty AND no arg is given, point the user
+        // at both forms — direct (`cam.tp <id>`) and prid-first.
+        let mut world = World::new();
+        let camera = world.spawn();
+        world.insert(camera, Transform::from_translation(Vec3::ZERO));
+        world.insert_resource(byroredux_core::ecs::ActiveCamera(camera));
+        world.insert_resource(SelectedRef::default());
+        world.insert_resource(InputState::default());
+
+        let cmd = CamTpCommand;
+        let out = cmd.execute(&world, "").lines.join("\n");
+        assert!(
+            out.contains("usage:") && out.contains("prid"),
+            "no-selection / no-arg should hint at prid workflow: {out}"
+        );
     }
 
     #[test]

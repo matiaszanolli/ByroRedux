@@ -303,6 +303,24 @@ impl SkinCoverageStats {
     }
 }
 
+/// The currently-selected entity reference for debugger operations.
+///
+/// Bethesda-console heritage — `prid <FormID>` picks a reference, then
+/// follow-up commands (`getpos`, `inspect`, `cam.tp` w/o args, …)
+/// operate on the picked ref by default. byro-dbg uses `EntityId`
+/// rather than `FormID` because the renderer-side debugger talks
+/// directly to the ECS; an M47-era in-game console would resolve
+/// FormID → EntityId through `byroredux_plugin` and set this same
+/// resource.
+///
+/// World-scoped state (not per-TCP-client). Single-developer-at-a-time
+/// is the dev-tool reality; two clients would fight, but the simpler
+/// state model is worth the tradeoff for now.
+#[derive(Debug, Default)]
+pub struct SelectedRef(pub Option<super::storage::EntityId>);
+
+impl Resource for SelectedRef {}
+
 /// Per-stack divergent state.
 ///
 /// Allocated only when an [`ItemStack`](super::components::ItemStack)
