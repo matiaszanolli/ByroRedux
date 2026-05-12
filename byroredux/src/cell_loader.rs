@@ -26,11 +26,8 @@ use crate::components::{
     SkyParamsRes, TerrainTileSlot, TwoSided, WeatherDataRes, WeatherTransitionRes,
 };
 
-#[path = "cell_loader_load_order.rs"]
 mod load_order;
-#[path = "cell_loader_nif_import_registry.rs"]
 mod nif_import_registry;
-#[path = "cell_loader_refr.rs"]
 mod refr;
 // Re-exports keep the existing `super::*` test imports working and let
 // the rest of `cell_loader` reach these items unqualified.
@@ -2933,60 +2930,32 @@ pub(crate) fn euler_zup_to_quat_yup_refr(rx: f32, ry: f32, rz: f32) -> Quat {
     }
 }
 
-#[path = "cell_loader_terrain.rs"]
 mod terrain;
-
-#[path = "cell_loader_water.rs"]
 mod water;
 
 #[cfg(test)]
-#[path = "cell_loader_euler_zup_to_quat_yup_tests.rs"]
 mod euler_zup_to_quat_yup_tests;
-
 #[cfg(test)]
-#[path = "cell_loader_nif_import_registry_tests.rs"]
 mod nif_import_registry_tests;
-
 #[cfg(test)]
-#[path = "cell_loader_finish_partial_tests.rs"]
 mod finish_partial_tests;
-
 #[cfg(test)]
-#[path = "cell_loader_refr_texture_overlay_tests.rs"]
 mod refr_texture_overlay_tests;
-
 #[cfg(test)]
-#[path = "cell_loader_pkin_expansion_tests.rs"]
 mod pkin_expansion_tests;
-
 #[cfg(test)]
-#[path = "cell_loader_scol_expansion_tests.rs"]
 mod scol_expansion_tests;
-
 #[cfg(test)]
-#[path = "cell_loader_terrain_splat_tests.rs"]
 mod terrain_splat_tests;
-
 #[cfg(test)]
-#[path = "cell_loader_sky_params_cleanup_tests.rs"]
 mod sky_params_cleanup_tests;
-
 #[cfg(test)]
-#[path = "cell_loader_nif_light_spawn_gate_tests.rs"]
 mod nif_light_spawn_gate_tests;
-
 #[cfg(test)]
-#[path = "cell_loader_lgtm_fallback_tests.rs"]
 mod lgtm_fallback_tests;
-
 #[cfg(test)]
-#[path = "cell_loader_placement_root_subtree_tests.rs"]
 mod placement_root_subtree_tests;
-
 #[cfg(test)]
-#[path = "cell_loader_root_index_tests.rs"]
 mod root_index_tests;
-
 #[cfg(test)]
-#[path = "cell_loader_inventory_release_tests.rs"]
 mod inventory_release_tests;
