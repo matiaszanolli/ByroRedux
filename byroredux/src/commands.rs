@@ -3,7 +3,8 @@
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::{
     AccessConflict, Camera, ConflictKind, DebugStats, GlobalTransform, Material, MeshHandle, Name,
-    SchedulerAccessReport, ScratchTelemetry, SkinnedMesh, TextureHandle, Transform, World,
+    SchedulerAccessReport, ScratchTelemetry, SkinCoverageStats, SkinnedMesh, TextureHandle,
+    Transform, World,
 };
 use byroredux_core::math::Mat4;
 use byroredux_core::string::StringPool;
@@ -349,6 +350,96 @@ impl ConsoleCommand for CtxScratchCommand {
             lines.push(format!(
                 "  materials: {} unique / {} interned ({:.1}× dedup)",
                 tlm.materials_unique, tlm.materials_interned, ratio,
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+/// `skin.coverage` — print last frame's skinned-mesh BLAS coverage
+/// snapshot.
+///
+/// Closes the "skinned BLAS coverage" observability gap: until this
+/// command, there was no way to confirm whether *every* visible
+/// skinned entity got a pre-skin + BLAS refit this frame. The
+/// green-bar is `refits_succeeded == dispatches_total && slots_failed
+/// == 0` (printed as `coverage: full` / `coverage: PARTIAL`).
+///
+/// Read after spawning a multi-NPC cell (FNV `GSDocMitchellHouse`,
+/// SSE `WhiterunBanneredMare`, FO4 `MedTekResearch01`) to verify the
+/// equip-pipeline NPCs reach the RT path. A drop in `refits_succeeded`
+/// relative to `dispatches_total` flags a regression somewhere between
+/// the visible-entity stream (`build_render_data`) and the per-frame
+/// refit (`draw_frame`).
+struct SkinCoverageCommand;
+impl ConsoleCommand for SkinCoverageCommand {
+    fn name(&self) -> &str {
+        "skin.coverage"
+    }
+    fn description(&self) -> &str {
+        "Show last-frame skinned BLAS coverage (dispatches / first-sight / refit)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(cov) = world.try_resource::<SkinCoverageStats>() else {
+            return CommandOutput::line("SkinCoverageStats resource not present");
+        };
+        let mut lines = vec!["Skinned BLAS coverage (last frame):".to_string()];
+        lines.push(format!(
+            "  dispatches_total       = {}  (visible skinned entities)",
+            cov.dispatches_total,
+        ));
+        lines.push(format!(
+            "  slots_active           = {} / {}  (pool {:.0}% full)",
+            cov.slots_active,
+            cov.slot_pool_capacity,
+            if cov.slot_pool_capacity == 0 {
+                0.0
+            } else {
+                100.0 * cov.slots_active as f64 / cov.slot_pool_capacity as f64
+            },
+        ));
+        lines.push(format!(
+            "  slots_failed           = {}  (suppressed until LRU eviction)",
+            cov.slots_failed,
+        ));
+        lines.push(format!(
+            "  first_sight_attempted  = {}",
+            cov.first_sight_attempted,
+        ));
+        lines.push(format!(
+            "  first_sight_succeeded  = {}",
+            cov.first_sight_succeeded,
+        ));
+        lines.push(format!(
+            "  refits_attempted       = {}",
+            cov.refits_attempted,
+        ));
+        lines.push(format!(
+            "  refits_succeeded       = {}",
+            cov.refits_succeeded,
+        ));
+        if cov.dispatches_total == 0 {
+            lines.push("  coverage: n/a (no skinned entities this frame)".to_string());
+        } else if cov.fully_covered() {
+            lines.push("  coverage: full".to_string());
+        } else {
+            let missed = cov
+                .dispatches_total
+                .saturating_sub(cov.refits_succeeded);
+            lines.push(format!(
+                "  coverage: PARTIAL — {} of {} visible skinned entities missed this frame",
+                missed, cov.dispatches_total,
+            ));
+        }
+        if !cov.failed_entity_ids.is_empty() {
+            let sample: Vec<String> = cov
+                .failed_entity_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect();
+            lines.push(format!(
+                "  failed_entity_ids (sample): [{}]",
+                sample.join(", "),
             ));
         }
         CommandOutput::lines(lines)
@@ -903,6 +994,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MeshInfoCommand);
     registry.register(MeshCacheCommand);
     registry.register(CtxScratchCommand);
+    registry.register(SkinCoverageCommand);
     registry.register(SysAccessesCommand);
     registry.register(SkinListCommand);
     registry.register(SkinDumpCommand);

@@ -245,6 +245,64 @@ impl ScratchTelemetry {
     }
 }
 
+/// Per-frame skinned-mesh BLAS coverage telemetry.
+///
+/// Refreshed each frame by the engine binary via
+/// `VulkanContext::fill_skin_coverage_stats`, alongside
+/// [`ScratchTelemetry`]. Surfaced by the `skin.coverage` console
+/// command.
+///
+/// Closes the M29.3 / "skinned BLAS coverage" observability gap: the
+/// per-skinned-entity pre-skin + BLAS refit path is wired, but several
+/// silent skips can drop a visible skinned entity from this frame's
+/// refit — slot-pool exhaustion (`failed_skin_slots`), first-sight
+/// prime/BUILD failure, missing `MeshHandle`. This resource is the
+/// falsifiable signal that "every visible skinned entity refit this
+/// frame": `refits_succeeded == dispatches_total` is the green-bar.
+#[derive(Debug, Default)]
+pub struct SkinCoverageStats {
+    /// Unique skinned entities in this frame's draw_commands (those with
+    /// `bone_offset > 0`). Denominator for everything below.
+    pub dispatches_total: u32,
+    /// Entities currently holding a `SkinSlot` (gauge — not per-frame).
+    pub slots_active: u32,
+    /// Slot-pool capacity (`SKIN_MAX_SLOTS`). Constant after init.
+    /// `slots_active` approaching this is the pressure signal.
+    pub slot_pool_capacity: u32,
+    /// Entities whose `create_slot` call returned an error and are
+    /// suppressed until LRU eviction frees a slot. Gauge — cleared on
+    /// any eviction.
+    pub slots_failed: u32,
+    /// First-sight entities entering the sync prime + BUILD path this
+    /// frame (slot newly created OR BLAS missing/rebuild-requested).
+    pub first_sight_attempted: u32,
+    /// First-sight entities for which both prime and BUILD succeeded.
+    pub first_sight_succeeded: u32,
+    /// Per-frame compute dispatch + refit attempts (entities with a
+    /// `SkinSlot` AND with an existing BLAS — i.e. past first-sight).
+    pub refits_attempted: u32,
+    /// Refits that returned `Ok` this frame.
+    pub refits_succeeded: u32,
+    /// Sample of entity IDs currently in `failed_skin_slots`. Bounded
+    /// snapshot (first ~16 entries) so the resource stays cheap to copy
+    /// out of the renderer each frame; the full count is in
+    /// `slots_failed`.
+    pub failed_entity_ids: Vec<super::storage::EntityId>,
+}
+
+impl Resource for SkinCoverageStats {}
+
+impl SkinCoverageStats {
+    /// True when every visible skinned entity got a refit this frame.
+    /// Reads correct only after `fill_skin_coverage_stats` populates
+    /// the snapshot; before that all counters are 0 and this returns
+    /// `true` trivially.
+    pub fn fully_covered(&self) -> bool {
+        self.refits_succeeded == self.dispatches_total
+            && self.slots_failed == 0
+    }
+}
+
 /// Per-stack divergent state.
 ///
 /// Allocated only when an [`ItemStack`](super::components::ItemStack)
@@ -423,6 +481,56 @@ mod tests {
             elem_size_bytes: 8,
         };
         assert_eq!(row.wasted_bytes(), 0);
+    }
+
+    #[test]
+    fn skin_coverage_default_is_trivially_covered() {
+        // Default reports zero dispatches → no work missed; this is
+        // the no-skinned-content-this-frame baseline that `skin.
+        // coverage` should print as "n/a".
+        let cov = SkinCoverageStats::default();
+        assert!(cov.fully_covered());
+        assert_eq!(cov.dispatches_total, 0);
+        assert_eq!(cov.refits_succeeded, 0);
+    }
+
+    #[test]
+    fn skin_coverage_full_when_refits_match_dispatches() {
+        let cov = SkinCoverageStats {
+            dispatches_total: 23,
+            refits_succeeded: 23,
+            ..Default::default()
+        };
+        assert!(cov.fully_covered());
+    }
+
+    #[test]
+    fn skin_coverage_partial_when_refits_lag() {
+        // 23 visible skinned entities but only 22 refit — one was
+        // dropped somewhere between dispatches collection and the refit
+        // loop. This is exactly the regression mode the instrumentation
+        // exists to surface.
+        let cov = SkinCoverageStats {
+            dispatches_total: 23,
+            refits_succeeded: 22,
+            ..Default::default()
+        };
+        assert!(!cov.fully_covered());
+    }
+
+    #[test]
+    fn skin_coverage_partial_when_slots_failed_nonzero() {
+        // Even if refits == dispatches arithmetically, a non-zero
+        // failed-slot count means visible entities were silently
+        // skipped from the dispatches stream (they never reached
+        // first-sight). The green-bar must fail.
+        let cov = SkinCoverageStats {
+            dispatches_total: 10,
+            refits_succeeded: 10,
+            slots_failed: 2,
+            ..Default::default()
+        };
+        assert!(!cov.fully_covered());
     }
 
     #[test]

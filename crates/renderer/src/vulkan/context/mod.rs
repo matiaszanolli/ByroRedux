@@ -33,6 +33,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Maximum number of skinned-mesh `SkinSlot`s the per-skinned-entity
+/// pre-skin + BLAS refit pool can hold simultaneously. Each slot costs
+/// `3 × MAX_FRAMES_IN_FLIGHT = 6` storage-buffer descriptors. Sized to
+/// cover M41-EQUIP Prospector load (~30 skinned entities) with ~2×
+/// headroom; the architectural ceiling is `MAX_TOTAL_BONES /
+/// MAX_BONES_PER_MESH = 256` (the bone-palette SSBO ceiling), so 64
+/// stays well below and remains a pressure signal rather than a no-op.
+/// Pre-#900 this was 32 and Prospector overflowed by 2 entities every
+/// frame. See #900.
+pub const SKIN_MAX_SLOTS: u32 = 64;
+
 /// A single draw command: which mesh to draw, with what texture, and what model matrix.
 pub struct DrawCommand {
     pub mesh_handle: u32,
@@ -770,6 +781,11 @@ pub struct VulkanContext {
     /// entity's next attempt could now succeed. `EntityId` is
     /// generational so an entry can't poison a re-issued id. See #900.
     pub failed_skin_slots: std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
+    /// Per-frame counters for the skinned-BLAS coverage path, written
+    /// by `draw_frame` and copied into the [`byroredux_core::ecs::
+    /// SkinCoverageStats`] resource by [`Self::fill_skin_coverage_stats`].
+    /// Reset at the entry of every skinned section in `draw_frame`.
+    pub last_skin_coverage_frame: super::skin_compute::SkinCoverageFrame,
     pub ssao: Option<SsaoPipeline>,
     pub composite: Option<CompositePipeline>,
     pub gbuffer: Option<GBuffer>,
@@ -1158,19 +1174,7 @@ impl VulkanContext {
         // path enforces in `build_render_data`. Buffer bindings are
         // deferred to per-dispatch (cell-transition robustness).
         let skin_compute = if device_caps.ray_query_supported {
-            // 64 slots covers M41-EQUIP Prospector load (NPC body + per-
-            // slot armor pieces from #896 B.2 land ~30 skinned entities;
-            // ~2× headroom). The bone-palette SSBO is sized for
-            // `MAX_TOTAL_BONES / MAX_BONES_PER_MESH = 256` simultaneous
-            // skinned meshes (`scene_buffer.rs:33` / `skinned_mesh.rs:29`),
-            // so 64 stays well below the architectural ceiling and the
-            // cap remains a pressure signal rather than a no-op. Each
-            // slot costs `3 × MAX_FRAMES_IN_FLIGHT = 6` storage-buffer
-            // descriptors. Pre-#900 this was `32` and Prospector
-            // overflowed by 2 entities every frame, retrying the
-            // failed `create_slot` call (and re-emitting a WARN) on
-            // each frame for the duration of the bench. See #900.
-            const SKIN_MAX_SLOTS: u32 = 64;
+            // See module-level `SKIN_MAX_SLOTS` const for the rationale.
             match super::skin_compute::SkinComputePipeline::new(
                 &device,
                 pipeline_cache,
@@ -1599,6 +1603,7 @@ impl VulkanContext {
             skin_compute,
             skin_slots: std::collections::HashMap::new(),
             failed_skin_slots: std::collections::HashSet::new(),
+            last_skin_coverage_frame: super::skin_compute::SkinCoverageFrame::default(),
             ssao,
             composite,
             gbuffer,
@@ -1818,6 +1823,37 @@ impl VulkanContext {
                 capacity: 0,
                 elem_size_bytes: size_of::<vk::AccelerationStructureInstanceKHR>(),
             });
+        }
+    }
+
+    /// Snapshot the skinned-BLAS coverage counters from the last
+    /// `draw_frame` invocation. Filled into the
+    /// [`byroredux_core::ecs::SkinCoverageStats`] resource each frame by
+    /// the engine binary, alongside `fill_scratch_telemetry`, and
+    /// surfaced by the `skin.coverage` console command.
+    ///
+    /// The `failed_entity_ids` snapshot caps at 16 IDs to keep the
+    /// resource cheap to copy; the full count is in `slots_failed`. IDs
+    /// are sampled in HashSet iteration order (non-deterministic) — fine
+    /// for diagnostic spot-checks via `byro-dbg`, not a stable
+    /// regression key.
+    pub fn fill_skin_coverage_stats(&self, stats: &mut byroredux_core::ecs::SkinCoverageStats) {
+        let f = self.last_skin_coverage_frame;
+        stats.dispatches_total = f.dispatches_total;
+        stats.first_sight_attempted = f.first_sight_attempted;
+        stats.first_sight_succeeded = f.first_sight_succeeded;
+        stats.refits_attempted = f.refits_attempted;
+        stats.refits_succeeded = f.refits_succeeded;
+        stats.slots_active = self.skin_slots.len() as u32;
+        stats.slot_pool_capacity = if self.skin_compute.is_some() {
+            SKIN_MAX_SLOTS
+        } else {
+            0
+        };
+        stats.slots_failed = self.failed_skin_slots.len() as u32;
+        stats.failed_entity_ids.clear();
+        for &eid in self.failed_skin_slots.iter().take(16) {
+            stats.failed_entity_ids.push(eid);
         }
     }
 

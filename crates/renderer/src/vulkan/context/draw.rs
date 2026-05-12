@@ -138,6 +138,14 @@ impl VulkanContext {
         // Use a local to avoid borrow complexity; copy out at end.
         let mut t = FrameTimings::default();
 
+        // Reset skinned-BLAS coverage counters at frame start so a
+        // frame without a skinned section (no RT, no bone buffer)
+        // reads zero instead of holding the previous frame's counts.
+        // Section-local increments below populate it; `fill_skin_
+        // coverage_stats` snapshots it after `Scheduler::run`.
+        self.last_skin_coverage_frame =
+            super::super::skin_compute::SkinCoverageFrame::default();
+
         // Wait for this frame-in-flight slot AND the previous slot to be
         // available. SVGF's temporal pass reads the previous slot's G-buffer
         // images (mesh_id, motion, raw_indirect) — without waiting on the
@@ -516,6 +524,7 @@ impl VulkanContext {
                             mesh.vertex_count,
                         ));
                     }
+                    self.last_skin_coverage_frame.dispatches_total = dispatches.len() as u32;
 
                     // First-sight setup: for each entity that doesn't
                     // yet have a SkinSlot OR a skinned BLAS, perform
@@ -591,18 +600,22 @@ impl VulkanContext {
                         if !needs_slot && !needs_blas {
                             continue;
                         }
-                        // Create slot if missing. Skip retry on entities
-                        // whose previous attempt failed — `failed_skin_slots`
-                        // is cleared on any LRU eviction (capacity opened),
-                        // so a real change in pool occupancy un-suppresses
-                        // the retry naturally. Pre-#900 the failure path
-                        // re-fired `create_slot` every frame and re-logged
-                        // the WARN, observed at 58 WARN / 300 frames on
-                        // post-M41-EQUIP Prospector.
+                        // Skip retry on entities whose previous attempt
+                        // failed — `failed_skin_slots` is cleared on any
+                        // LRU eviction (capacity opened), so a real change
+                        // in pool occupancy un-suppresses the retry
+                        // naturally. Pre-#900 the failure path re-fired
+                        // `create_slot` every frame and re-logged the
+                        // WARN, observed at 58 WARN / 300 frames on
+                        // post-M41-EQUIP Prospector. The suppression
+                        // happens *before* the attempt counter so the
+                        // coverage gauge reports "real attempts made this
+                        // frame" rather than "entities the loop visited."
+                        if needs_slot && self.failed_skin_slots.contains(&entity_id) {
+                            continue;
+                        }
+                        self.last_skin_coverage_frame.first_sight_attempted += 1;
                         if needs_slot {
-                            if self.failed_skin_slots.contains(&entity_id) {
-                                continue;
-                            }
                             match skin_pipeline.create_slot(&self.device, alloc, vertex_count) {
                                 Ok(slot) => {
                                     self.skin_slots.insert(entity_id, slot);
@@ -666,8 +679,10 @@ impl VulkanContext {
                             continue;
                         }
                         // Sync BLAS BUILD against the just-primed
-                        // output buffer.
-                        if let Err(e) = accel.build_skinned_blas(
+                        // output buffer. Success here is the cap on a
+                        // first-sight attempt — `first_sight_succeeded`
+                        // requires both prime + BUILD to land cleanly.
+                        match accel.build_skinned_blas(
                             &self.device,
                             alloc,
                             &self.graphics_queue,
@@ -679,9 +694,14 @@ impl VulkanContext {
                             idx_buffer,
                             idx_count,
                         ) {
-                            log::warn!(
-                                "skin_compute first-sight BLAS build failed for entity {entity_id}: {e}"
-                            );
+                            Ok(()) => {
+                                self.last_skin_coverage_frame.first_sight_succeeded += 1;
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "skin_compute first-sight BLAS build failed for entity {entity_id}: {e}"
+                                );
+                            }
                         }
                     }
 
@@ -755,8 +775,12 @@ impl VulkanContext {
                                 let Some(slot) = self.skin_slots.get(&entity_id) else {
                                     continue;
                                 };
+                                // Past the slot gate → coverage counts a
+                                // real refit attempt. Entities without a
+                                // slot land in `slots_failed` instead.
+                                self.last_skin_coverage_frame.refits_attempted += 1;
                                 accel.record_scratch_serialize_barrier(&self.device, cmd);
-                                if let Err(e) = accel.refit_skinned_blas(
+                                match accel.refit_skinned_blas(
                                     &self.device,
                                     cmd,
                                     entity_id,
@@ -765,10 +789,15 @@ impl VulkanContext {
                                     idx_buffer,
                                     idx_count,
                                 ) {
-                                    log::warn!(
-                                        "skin_compute BLAS refit failed for entity {entity_id}: {e}"
-                                    );
-                                    continue;
+                                    Ok(()) => {
+                                        self.last_skin_coverage_frame.refits_succeeded += 1;
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "skin_compute BLAS refit failed for entity {entity_id}: {e}"
+                                        );
+                                        continue;
+                                    }
                                 }
                             }
                             // BLAS refit writes → TLAS build reads.

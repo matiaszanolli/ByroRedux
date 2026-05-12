@@ -93,6 +93,21 @@ impl SkinSlot {
     }
 }
 
+/// Per-frame counter snapshot for the skinned-BLAS coverage path.
+///
+/// `VulkanContext::draw_frame` increments these as it walks the
+/// dispatches / first-sight / refit loops; `fill_skin_coverage_stats`
+/// then copies them into the `SkinCoverageStats` resource. Reset each
+/// frame at the entry to the skinned section.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SkinCoverageFrame {
+    pub dispatches_total: u32,
+    pub first_sight_attempted: u32,
+    pub first_sight_succeeded: u32,
+    pub refits_attempted: u32,
+    pub refits_succeeded: u32,
+}
+
 /// LRU eviction predicate for [`SkinSlot`] / `skinned_blas` cleanup.
 ///
 /// Returns `true` when a slot whose most-recent dispatch was at

@@ -19,8 +19,8 @@ use anyhow::Result;
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::console::CommandRegistry;
 use byroredux_core::ecs::{
-    Access, ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler, ScratchTelemetry,
-    Stage, TotalTime, Transform, World,
+    Access, ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler,
+    ScratchTelemetry, SkinCoverageStats, Stage, TotalTime, Transform, World,
 };
 use byroredux_core::string::StringPool;
 use byroredux_platform::window::{self, WindowConfig};
@@ -388,6 +388,7 @@ impl App {
         });
         world.insert_resource(DebugStats::default());
         world.insert_resource(ScratchTelemetry::default());
+        world.insert_resource(SkinCoverageStats::default());
         world.insert_resource(InputState::default());
         world.insert_resource(StringPool::new());
         world.insert_resource(AnimationClipRegistry::new());
@@ -1329,6 +1330,16 @@ impl ApplicationHandler for App {
         if let Some(ref ctx) = self.renderer {
             let mut tlm = self.world.resource_mut::<ScratchTelemetry>();
             ctx.fill_scratch_telemetry(&mut tlm.rows);
+        }
+
+        // Refresh skinned-BLAS coverage stats — captures last frame's
+        // dispatches / first-sight / refit counters from the renderer
+        // so `skin.coverage` reflects the just-drawn frame. Mirrors the
+        // scratch-telemetry pattern; the `failed_entity_ids` Vec is
+        // bounded to 16 entries inside `fill_skin_coverage_stats`.
+        if let Some(ref ctx) = self.renderer {
+            let mut cov = self.world.resource_mut::<SkinCoverageStats>();
+            ctx.fill_skin_coverage_stats(&mut cov);
         }
 
         // Run all systems.
