@@ -178,8 +178,11 @@ impl NiMorphData {
         // morph and allocated a ~118 GB vector when a garbage num_keys
         // happened to be a huge number.
         //
-        // Oblivion (v20.0.0.5, BSVER in 0..=11) hits the legacy_weight
-        // window. FNV / FO3 (BSVER 34) and everything later do not.
+        // Oblivion (v20.0.0.5, BSVER < 10 — vanilla bsver=11 is
+        // correctly excluded here) hits the legacy_weight window;
+        // FNV / FO3 (BSVER 34) and everything later do not. Gate
+        // matches nif.xml `vercond="#BSVER# #LT# 10"`. See
+        // NIF-D1-NEW-02 (audit 2026-05-12).
         let version = stream.version();
         let bsver = stream.bsver();
         let has_keys = version <= NifVersion(0x0A010000);

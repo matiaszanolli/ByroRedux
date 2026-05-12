@@ -480,6 +480,17 @@ pub(super) struct MaterialInfo {
     ///   4=GREATER, 5=NOTEQUAL, 6=GREATEREQUAL, 7=NEVER.
     /// Default: 6 (GREATEREQUAL) — keep fragments where alpha >= threshold.
     pub alpha_test_func: u8,
+    /// True once a `NiAlphaProperty` has been consumed via
+    /// [`apply_alpha_flags`] for this mesh — regardless of whether
+    /// it set `alpha_blend` / `alpha_test`. A NiAlphaProperty with
+    /// `flags=0` is structurally "the shape explicitly authored no
+    /// blending and no test"; treating it as "no NiAlphaProperty was
+    /// consumed" let the parent NiNode's NiAlphaProperty silently
+    /// overwrite it on inherited-property walks. The cascade gate
+    /// now reads this flag instead of `!alpha_blend && !alpha_test`
+    /// so a flags=0 shape property correctly closes the gate. See
+    /// NIF-D4-NEW-05 (audit 2026-05-12).
+    pub alpha_property_consumed: bool,
     pub two_sided: bool,
     pub is_decal: bool,
     pub emissive_color: [f32; 3],
@@ -822,6 +833,7 @@ impl Default for MaterialInfo {
             alpha_test: false,
             alpha_threshold: 0.0,
             alpha_test_func: 6, // GREATEREQUAL — Gamebryo default
+            alpha_property_consumed: false,
             two_sided: false,
             is_decal: false,
             emissive_color: [0.0, 0.0, 0.0],
@@ -915,6 +927,13 @@ pub(super) fn apply_alpha_flags(info: &mut MaterialInfo, alpha: &NiAlphaProperty
     } else if blend {
         info.alpha_blend = true;
     }
+    // Mark the property as consumed regardless of whether either bit
+    // fired. A flags=0 NiAlphaProperty is still a valid statement of
+    // intent ("this shape authored no blending"); the cascade gate
+    // checks this flag to avoid letting a parent NiNode's
+    // NiAlphaProperty silently overwrite the shape's choice. See
+    // NIF-D4-NEW-05 (audit 2026-05-12).
+    info.alpha_property_consumed = true;
 }
 
 /// Resolve a `TexDesc` slot on an `NiTexturingProperty` to a texture

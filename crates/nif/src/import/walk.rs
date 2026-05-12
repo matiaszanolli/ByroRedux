@@ -345,6 +345,23 @@ pub(super) fn walk_node_hierarchical(
             return;
         }
 
+        // Surface shape-level collision onto the parent NiNode's
+        // collision slot if the parent didn't already author one. The
+        // hierarchical walker stores collisions on `ImportedNode`
+        // (it has no separate `collisions` out-list like the flat
+        // path), so a shape-bound `bhkCollisionObject` flows into
+        // the same field as a node-bound one. See NIF-D4-NEW-04
+        // (audit 2026-05-12). Oblivion + some FO3 modded content
+        // attaches collision to the shape directly.
+        if let Some(parent_idx) = parent_node_idx {
+            if let Some(parent) = out.nodes.get(parent_idx) {
+                if parent.collision.is_none() {
+                    if let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
+                        out.nodes[parent_idx].collision = Some(collision);
+                    }
+                }
+            }
+        }
         if let Some(mesh) = extract_mesh_local(scene, shape, inherited_props, pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
@@ -372,6 +389,16 @@ pub(super) fn walk_node_hierarchical(
             return;
         }
 
+        // Mirror of the NiTriShape branch above — see NIF-D4-NEW-04.
+        if let Some(parent_idx) = parent_node_idx {
+            if let Some(parent) = out.nodes.get(parent_idx) {
+                if parent.collision.is_none() {
+                    if let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
+                        out.nodes[parent_idx].collision = Some(collision);
+                    }
+                }
+            }
+        }
         if let Some(mesh) = extract_bs_tri_shape_local(scene, shape, pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
@@ -385,6 +412,16 @@ pub(super) fn walk_node_hierarchical(
         }
         if is_editor_marker(shape.av.net.name.as_deref()) {
             return;
+        }
+        // Mirror of the NiTriShape branch above — see NIF-D4-NEW-04.
+        if let Some(parent_idx) = parent_node_idx {
+            if let Some(parent) = out.nodes.get(parent_idx) {
+                if parent.collision.is_none() {
+                    if let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
+                        out.nodes[parent_idx].collision = Some(collision);
+                    }
+                }
+            }
         }
         if let Some(mesh) = extract_bs_geometry_local(scene, shape, pool, resolver) {
             let mut mesh = mesh;
@@ -579,6 +616,36 @@ pub(super) fn walk_node_flat(
         return;
     }
 
+    // Helper: surface shape-level collision into the `collisions`
+    // out-list, mirroring the NiNode pattern at lines 491 / 549.
+    // Most Bethesda content attaches `bhkCollisionObject` to a parent
+    // NiNode, but Oblivion + some FO3 modded content attaches it
+    // directly to the NiTriShape / BsTriShape / BSGeometry. Pre-fix
+    // these shape-level collisions silently disappeared because the
+    // walker only checked nodes. See NIF-D4-NEW-04 (audit 2026-05-12).
+    fn push_shape_collision(
+        scene: &NifScene,
+        collisions: &mut Option<&mut Vec<ImportedCollision>>,
+        collision_ref: BlockRef,
+        world_transform: &NiTransform,
+    ) {
+        let Some(coll_out) = collisions else {
+            return;
+        };
+        let Some((shape, body)) = extract_collision(scene, collision_ref) else {
+            return;
+        };
+        let t = &world_transform.translation;
+        let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
+        coll_out.push(ImportedCollision {
+            translation: zup_point_to_yup(t),
+            rotation: quat,
+            scale: world_transform.scale,
+            shape,
+            body,
+        });
+    }
+
     if let Some(shape) = block.as_any().downcast_ref::<NiTriShape>() {
         // bit 0 = APP_CULLED (hidden). Editor-marker filtering runs
         // as a sibling check below so shape-level editor markers
@@ -599,7 +666,7 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
-
+        push_shape_collision(scene, &mut collisions, shape.av.collision_ref, &world_transform);
         if let Some(mesh) = extract_mesh(scene, shape, &world_transform, inherited_props, pool) {
             out.push(mesh);
         }
@@ -625,7 +692,7 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
-
+        push_shape_collision(scene, &mut collisions, shape.av.collision_ref, &world_transform);
         if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform, pool) {
             out.push(mesh);
         }
@@ -639,6 +706,7 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
+        push_shape_collision(scene, &mut collisions, shape.av.collision_ref, &world_transform);
         if let Some(mesh) = extract_bs_geometry(scene, shape, &world_transform, pool, resolver) {
             out.push(mesh);
         }

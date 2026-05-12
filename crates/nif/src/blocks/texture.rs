@@ -96,12 +96,15 @@ impl NiSourceTexture {
         let pixel_layout = stream.read_u32_le()?;
         let use_mipmaps = stream.read_u32_le()?;
         let alpha_format = stream.read_u32_le()?;
-        // is_static only present in v >= 5.0.0.1 (not in Morrowind-era NIFs).
-        let is_static = if stream.version() >= NifVersion(0x05000001) {
-            stream.read_u8()? != 0
-        } else {
-            true
-        };
+        // `is_static` (Is Static) is read unconditionally — nif.xml has
+        // no `since=` attribute on the field, so the pre-fix
+        // `>= 5.0.0.1` gate was a parser deviation from the schema.
+        // Morrowind V4 NIFs (the only content that could have skipped
+        // the field) are out-of-tier for this engine; the unconditional
+        // read brings the parser back into doctrinal agreement with
+        // nif.xml without changing observable behaviour for shipped
+        // content. See NIF-D2-NEW-06 (audit 2026-05-12).
+        let is_static = stream.read_u8()? != 0;
 
         // nif.xml: Direct Render since 10.1.0.103 (0x0A010067), NOT 10.1.0.6.
         if stream.version() >= crate::version::NifVersion(0x0A010067) {

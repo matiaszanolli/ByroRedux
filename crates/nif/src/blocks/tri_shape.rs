@@ -120,7 +120,14 @@ impl NiTriShape {
                 let _dirty_flag = stream.read_u8()?;
             }
 
-            if stream.variant().has_shader_alpha_refs() {
+            // Query the file's actual bsver rather than the routed
+            // game variant — `variant().has_shader_alpha_refs()` returns
+            // false for BSVER in 35..=82 (the `Unknown` corner) even
+            // though nif.xml's `#BS_GT_FO3#` gate is `BSVER > 34` and
+            // the field IS authored there. Mirrors the
+            // `has_properties_list` site at `base.rs:103`. See
+            // NIF-D2-NEW-07 (audit 2026-05-12).
+            if stream.bsver() > 34 {
                 shader_property_ref = stream.read_block_ref()?;
                 alpha_property_ref = stream.read_block_ref()?;
             }
@@ -1391,7 +1398,11 @@ fn parse_geometry_data_base_inner(
     // as a separate u16 field after normals + bounding sphere.
     let data_flags = if stream.version() >= NifVersion(0x0A000100) {
         let df = stream.read_u16_le()?;
-        if stream.variant().has_material_crc() {
+        // Query the file's bsver directly — `variant().has_material_crc()`
+        // would return false for the BSVER 35..=82 `Unknown` gap. The
+        // material CRC is authored from Skyrim onward per nif.xml's
+        // `BSVER > 34` rule. See NIF-D2-NEW-07 (audit 2026-05-12).
+        if stream.bsver() > 34 {
             let _material_crc = stream.read_u32_le()?;
         }
         df

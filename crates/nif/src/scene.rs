@@ -77,6 +77,24 @@ pub struct NifScene {
     /// otherwise only show up as a much-later downstream block reading
     /// garbage. See #939.
     pub drift_histogram: BTreeMap<String, BTreeMap<i64, u32>>,
+    /// Parallel histogram for blocks intentionally skipped from
+    /// [`Self::drift_histogram`] because their parser is a known
+    /// stub — Havok constraint CInfos (`bhkHingeConstraint`,
+    /// `bhkRagdollConstraint`, et al; see `is_havok_constraint_stub`
+    /// in `lib.rs`).
+    ///
+    /// These under-consume by design (#117) and would otherwise
+    /// flood the real histogram with ~45 systematic drift entries
+    /// per actor spawn, drowning real-parser drift signals. They
+    /// land here instead so audit telemetry (`nif_stats
+    /// --drift-histogram`) can still spot a stub regression
+    /// (constraint type drifts from its expected stub size) without
+    /// the noise polluting the per-parser-correctness signal.
+    ///
+    /// Empty for files that don't touch any Havok constraints (most
+    /// non-actor / non-skeleton meshes). See NIF-D3-NEW-06 (audit
+    /// 2026-05-12).
+    pub stubbed_drift_histogram: BTreeMap<String, BTreeMap<i64, u32>>,
 }
 
 impl Default for NifScene {
@@ -89,6 +107,7 @@ impl Default for NifScene {
             recovered_blocks: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
+            stubbed_drift_histogram: BTreeMap::new(),
         }
     }
 }
@@ -320,6 +339,7 @@ mod validate_refs_tests {
             recovered_blocks: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
+            stubbed_drift_histogram: BTreeMap::new(),
         };
         assert!(scene.validate_refs().is_empty());
     }
@@ -339,6 +359,7 @@ mod validate_refs_tests {
             recovered_blocks: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
+            stubbed_drift_histogram: BTreeMap::new(),
         };
         assert!(scene.validate_refs().is_empty());
     }
@@ -355,6 +376,7 @@ mod validate_refs_tests {
             recovered_blocks: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
+            stubbed_drift_histogram: BTreeMap::new(),
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
@@ -379,6 +401,7 @@ mod validate_refs_tests {
             recovered_blocks: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
+            stubbed_drift_histogram: BTreeMap::new(),
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 2);
@@ -401,6 +424,7 @@ mod validate_refs_tests {
             recovered_blocks: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
+            stubbed_drift_histogram: BTreeMap::new(),
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
@@ -419,6 +443,7 @@ mod validate_refs_tests {
             recovered_blocks: 0,
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
+            stubbed_drift_histogram: BTreeMap::new(),
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);

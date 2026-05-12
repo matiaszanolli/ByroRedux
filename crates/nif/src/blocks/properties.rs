@@ -839,7 +839,16 @@ impl NiZBufferProperty {
         let z_test_enabled = flags & 1 != 0;
         let z_write_enabled = flags & 2 != 0;
 
-        let z_function = if stream.version() <= NifVersion::V20_0_0_5 {
+        let z_function = if stream.version() < NifVersion::V4_1_0_12 {
+            // Pre-4.1.0.12 NIFs predate the `z_function` field
+            // entirely — no Bethesda title ships in this range (all
+            // are v10+), but parsing tools / pre-Morrowind reference
+            // content can land here. Mirror the engine default
+            // (LESS_OR_EQUAL = 3) so consumers don't see garbage
+            // when no field was authored. See NIF-D4-NEW-09 (audit
+            // 2026-05-12).
+            3
+        } else if stream.version() <= NifVersion::V20_0_0_5 {
             // Oblivion: separate field.
             stream.read_u32_le()?
         } else {

@@ -223,6 +223,21 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         String,
         std::collections::HashMap<i64, u32>,
     > = std::collections::HashMap::new();
+    // Parallel histogram for blocks intentionally skipped from
+    // `drift_histogram` because the parser is a known stub (Havok
+    // constraint CInfos — see `is_havok_constraint_stub`). The real
+    // histogram excludes these so a future audit running
+    // `nif_stats --drift-histogram` doesn't see ~45 systematic
+    // under-reads per skeleton load and falsely conclude
+    // constraints parse cleanly. Surfacing them separately means
+    // the same audit can still spot a new stub regression
+    // (constraint type drifts from its expected stub size) without
+    // polluting the real-parser signal. See NIF-D3-NEW-06 (audit
+    // 2026-05-12).
+    let mut stubbed_drift_histogram: std::collections::HashMap<
+        String,
+        std::collections::HashMap<i64, u32>,
+    > = std::collections::HashMap::new();
 
     // For Oblivion-era NIFs (no block_sizes table), track the consumed
     // byte count for each successfully parsed block type. When a block
@@ -371,6 +386,12 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                                 consumed,
                                 size,
                             );
+                            // Record into the parallel `stubbed_drift_
+                            // histogram` so audit telemetry can see the
+                            // stub under-reads without contaminating the
+                            // real drift signal. See NIF-D3-NEW-06.
+                            let drift = size as i64 - consumed as i64;
+                            bump_drift(&mut stubbed_drift_histogram, type_name, drift);
                         } else {
                             // #565: downgraded from `warn!` — the
                             // per-NIF summary at the end of this
@@ -438,8 +459,19 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
                 // NIFs don't count as clean on the parse-rate gate —
                 // same rationale as the three Err-branch recoveries
                 // below. See #568.
+                //
+                // Also bump the per-type rollup so the
+                // `recovered N block(s) via …: {per_type_rollup}`
+                // summary tells operators which unknown types are
+                // flooding (e.g. a newly-shipped Bethesda block
+                // class showing up in a content sweep). Pre-fix the
+                // dispatch path bumped the total but left
+                // `recovered_by_type` empty, so the summary listed
+                // only the err-branch recoveries. See NIF-D3-NEW-05
+                // (audit 2026-05-12).
                 if type_name != "NiUnknown" && block.block_type_name() == "NiUnknown" {
                     recovered_blocks += 1;
+                    bump_counter(&mut recovered_by_type, type_name);
                 }
                 blocks.push(block);
             }
@@ -653,6 +685,16 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         .into_iter()
         .map(|(type_name, inner)| (type_name, inner.into_iter().collect()))
         .collect();
+    // Same hashmap → btreemap conversion for the stubbed signal —
+    // see `scene_drift_histogram` above. Visible alongside the
+    // real histogram so `nif_stats --drift-histogram` can opt in.
+    let scene_stubbed_drift_histogram: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<i64, u32>,
+    > = stubbed_drift_histogram
+        .into_iter()
+        .map(|(type_name, inner)| (type_name, inner.into_iter().collect()))
+        .collect();
 
     let mut scene = NifScene {
         blocks,
@@ -662,6 +704,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         recovered_blocks,
         link_errors: 0,
         drift_histogram: scene_drift_histogram,
+        stubbed_drift_histogram: scene_stubbed_drift_histogram,
     };
     // Opt-in dangling-ref walk (#892). Off by default; debug builds,
     // `nif_stats`, and integration sweeps flip
@@ -887,6 +930,7 @@ mod tests {
             recovered_blocks: 0,
             link_errors: 0,
             drift_histogram: std::collections::BTreeMap::new(),
+            stubbed_drift_histogram: std::collections::BTreeMap::new(),
         };
         assert!(scene.truncated);
         assert_eq!(scene.dropped_block_count, 3);

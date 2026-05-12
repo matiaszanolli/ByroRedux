@@ -38,6 +38,12 @@ impl NifVersion {
     // Well-known versions
     /// Morrowind era
     pub const V4_0_0_2: Self = Self(0x04000002);
+    /// First version that authors `NiZBufferProperty.z_function`
+    /// (pre-4.1.0.12 NIFs predate the field). No Bethesda title ships
+    /// in `< 4.1.0.12` — defensive constant used by the property
+    /// parser's pre-V4 fallback branch. See NIF-D4-NEW-09 (audit
+    /// 2026-05-12).
+    pub const V4_1_0_12: Self = Self(0x0401000C);
     /// Pre-Gamebryo boundary: Order float present in XYZ-rotation blocks at <= this version
     pub const V10_1_0_0: Self = Self(0x0A010000);
     /// Oblivion (v20.0.0.4 — most common Oblivion version)
@@ -157,23 +163,31 @@ impl NifVariant {
         }
     }
 
-    /// BSVER value for nif.xml compatibility — the canonical retail
-    /// `user_version_2` for each game. Hard-pin per AUDIT_NIF Dim 2:
-    /// `FO3=34, FNV=34, SK=83, SK_SE=100, FO4=130, FO76=155, SF=172`.
+    /// Single representative `user_version_2` per game variant.
+    /// Hard-pinned to one value each — `FO3=34, FNV=34, SK=83,
+    /// SK_SE=100, FO4=130, FO76=155, SF=172` — for callers that need
+    /// "the" BSVER associated with a game (e.g. fixture builders,
+    /// telemetry buckets, the version-detection unit tests).
     ///
-    /// `Fallout3` returns 34 to match the retail value even though the
-    /// variant itself matches dev/mod pre-retail builds (in-file bsver
-    /// < 34). The variant exists for parser routing — the retail bsver
-    /// is the right answer to "what BSVER does FO3 canonically ship at?"
-    /// for any caller hard-coding a value. Parser callers that need to
-    /// honour the in-file bsver (e.g. nif.xml's per-field `#BSVER#`
-    /// conditionals) should use `stream.bsver()` instead of querying
-    /// this method — `stream.bsver()` returns the file's actual
-    /// `user_version_2`, which is what nif.xml gates against.
+    /// **This value is one representative, not an exhaustive span.**
+    /// Shipping content covers wider BSVER ranges per game:
+    /// FO4 ships at `{130, 132, 139}`, FO76 spans `152..=167`, and
+    /// Starfield is unbounded `≥168`. Parser callers that need to
+    /// honour the file's actual `user_version_2` (e.g. nif.xml's
+    /// per-field `#BSVER#` conditionals) MUST use `stream.bsver()`,
+    /// not this method.
     ///
-    /// See #937 / NIF-D2-NEW-01 for the audit history; pre-fix
-    /// `Fallout3.bsver()` returned 21 (one of many dev-tool BSVERs in
-    /// the [0, 33] fan-out) which contradicted the hard-pin.
+    /// `Fallout3` returns 34 to match the retail value even though
+    /// the variant itself matches dev/mod pre-retail builds (in-file
+    /// bsver < 34). The variant exists for parser routing — the
+    /// retail bsver is the right answer to "what BSVER does FO3
+    /// canonically ship at?"
+    ///
+    /// See #937 / NIF-D2-NEW-01 for the audit history (pre-fix
+    /// `Fallout3.bsver()` returned 21, one of many dev-tool BSVERs in
+    /// the [0, 33] fan-out, which contradicted the hard-pin) and
+    /// NIF-D2-NEW-09 (audit 2026-05-12) for the FO4/FO76/SF span
+    /// clarification.
     pub fn bsver(self) -> u32 {
         match self {
             Self::Morrowind | Self::Oblivion => 0,

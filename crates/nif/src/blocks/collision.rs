@@ -345,11 +345,16 @@ impl BhkRigidBody {
             constraint_refs.push(stream.read_block_ref()?);
         }
 
-        // Body flags: u32 until Skyrim (BSVER < 83), u16 in Skyrim+ per
-        // nif.xml (#SKY_AND_LATER# gating). See issue #127 — previously
-        // used threshold 76, which is in the BSVER 35-75 gap no shipped
-        // game uses but diverges from the reference schema.
-        let body_flags = if bsver < 83 {
+        // Body flags: u32 in pre-Skyrim, u16 in Skyrim+ per nif.xml
+        // (`#SKY_AND_LATER#` resolves to BSVER >= 76 in the niftools
+        // schema). No Bethesda title ships in the BSVER 76..=82 gap,
+        // so the cutoff is structurally invisible to vanilla content
+        // — but the parser doctrine pins to nif.xml's threshold and
+        // the previous `bsver < 83` value contradicted that without
+        // shipping cause. Boundary tests cover bsver=75 (u32 path)
+        // and bsver=76 (u16 path) at the bottom of this file. See
+        // NIF-D2-NEW-05 (audit 2026-05-12), original landing #127.
+        let body_flags = if bsver < 76 {
             stream.read_u32_le()?
         } else {
             stream.read_u16_le()? as u32

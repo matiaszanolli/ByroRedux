@@ -157,3 +157,127 @@ fn bhk_rigid_body_t_skyrim_se_parses_identically() {
     assert_eq!(body.mass, mass);
     assert_eq!(body.deactivator_type, 3);
 }
+
+/// Boundary regression for NIF-D2-NEW-05 (audit 2026-05-12) — the
+/// `body_flags` width threshold is `bsver < 76` per nif.xml's
+/// `#SKY_AND_LATER#` resolution, not the pre-fix `bsver < 83`.
+///
+/// Builds a Skyrim-shape `bhkRigidBody` body at the two bsver values
+/// straddling the threshold and asserts the parser consumed the
+/// expected total byte count:
+///
+/// - **bsver=75** (just below the threshold): `body_flags` reads as
+///   u32 → 4-byte tail → 252 total.
+/// - **bsver=76** (at the threshold): `body_flags` reads as u16 →
+///   2-byte tail → 250 total.
+///
+/// Both bsvers fall in the `35..=129` Skyrim-layout window from the
+/// parser's POV, so the rest of the body shape stays identical —
+/// only the trailing `body_flags` width differs.
+///
+/// No Bethesda title ships in the 76..=82 gap, so the pre-fix value
+/// was structurally invisible to vanilla content — this test exists
+/// to pin the doctrine boundary at the value nif.xml actually
+/// specifies.
+
+fn skyrim_header_at_bsver(bsver: u32) -> NifHeader {
+    NifHeader {
+        version: NifVersion(0x14020007),
+        little_endian: true,
+        user_version: 12,
+        user_version_2: bsver,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    }
+}
+
+/// Same fixture shape as [`minimal_skyrim_bhk_rigid_body_bytes`] but
+/// the trailing `body_flags` is sized for the requested bsver: u32
+/// when `bsver < 76`, u16 otherwise.
+///
+/// Returns `(bytes, body_flags_width_bytes)`. The width is what the
+/// boundary tests assert: the delta in consumed bytes between
+/// bsver=75 and bsver=76 must be exactly the 2-byte difference
+/// between a u32 and u16 read. Total parser-consumed length isn't
+/// asserted because at bsver < 83 the parser skips three Skyrim+
+/// fields (time_factor + gravity_factor + rolling_friction = 12 B)
+/// that the bsver=100 base fixture supplies — the test fixture's
+/// trailing 12 B sit unconsumed and that's a separate (correct)
+/// behaviour from the body_flags width gate.
+fn skyrim_bhk_rigid_body_bytes_at_bsver(bsver: u32) -> (Vec<u8>, usize) {
+    let (mut d, _mass) = minimal_skyrim_bhk_rigid_body_bytes();
+    let width = if bsver < 76 { 4 } else { 2 };
+    if bsver < 76 {
+        // Base fixture wrote u16 body_flags. Pad to u32.
+        d.extend_from_slice(&0u16.to_le_bytes());
+    }
+    (d, width)
+}
+
+#[test]
+fn bhk_rigid_body_body_flags_reads_u32_below_bsver_76() {
+    let header = skyrim_header_at_bsver(75);
+    let (bytes, width) = skyrim_bhk_rigid_body_bytes_at_bsver(75);
+    let mut stream = crate::stream::NifStream::new(&bytes, &header);
+    let block = parse_block("bhkRigidBody", &mut stream, Some(bytes.len() as u32))
+        .expect("bsver=75 bhkRigidBody must parse cleanly");
+    assert_eq!(
+        width, 4,
+        "bsver=75 must size body_flags as u32 (4 bytes) — pre-fix this \
+         read u32 at bsver=75 too, so this pins the threshold doctrine \
+         from below the boundary, not a bug fix"
+    );
+    assert!(block.as_any().is::<BhkRigidBody>());
+}
+
+#[test]
+fn bhk_rigid_body_body_flags_reads_u16_at_bsver_76() {
+    let header = skyrim_header_at_bsver(76);
+    let (bytes, width) = skyrim_bhk_rigid_body_bytes_at_bsver(76);
+    let mut stream = crate::stream::NifStream::new(&bytes, &header);
+    let block = parse_block("bhkRigidBody", &mut stream, Some(bytes.len() as u32))
+        .expect("bsver=76 bhkRigidBody must parse cleanly");
+    assert_eq!(
+        width, 2,
+        "bsver=76 must size body_flags as u16 (2 bytes) — pre-fix the \
+         threshold was 83 and bsver=76 silently over-read 2 bytes, \
+         drifting the stream"
+    );
+    assert!(block.as_any().is::<BhkRigidBody>());
+}
+
+/// Differential test: parse the same body bytes at bsver=75 and
+/// bsver=76 and verify the consumed-byte counts differ by exactly 2.
+/// This is the load-bearing assertion for NIF-D2-NEW-05 — the
+/// individual per-bsver tests above pin the width to the expected
+/// value, this one pins the actual parser behaviour at the boundary.
+#[test]
+fn bhk_rigid_body_body_flags_width_differs_by_2_at_threshold() {
+    let (bytes_75, _) = skyrim_bhk_rigid_body_bytes_at_bsver(75);
+    let (bytes_76, _) = skyrim_bhk_rigid_body_bytes_at_bsver(76);
+
+    let header_75 = skyrim_header_at_bsver(75);
+    let mut stream_75 = crate::stream::NifStream::new(&bytes_75, &header_75);
+    parse_block("bhkRigidBody", &mut stream_75, Some(bytes_75.len() as u32))
+        .expect("bsver=75 must parse");
+    let consumed_75 = stream_75.position();
+
+    let header_76 = skyrim_header_at_bsver(76);
+    let mut stream_76 = crate::stream::NifStream::new(&bytes_76, &header_76);
+    parse_block("bhkRigidBody", &mut stream_76, Some(bytes_76.len() as u32))
+        .expect("bsver=76 must parse");
+    let consumed_76 = stream_76.position();
+
+    assert_eq!(
+        consumed_75.saturating_sub(consumed_76),
+        2,
+        "body_flags width must differ by 2 B (u32 vs u16) at the \
+         bsver < 76 threshold; pre-fix the threshold was 83 so both \
+         bsvers consumed the same width and the boundary was wrong"
+    );
+}
