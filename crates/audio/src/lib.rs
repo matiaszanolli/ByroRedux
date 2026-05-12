@@ -1127,11 +1127,16 @@ pub fn load_streaming_sound_from_file(
 /// keys means `get` / `insert` callers don't have to re-lowercase
 /// per-call; intern the lowered form once at insert time.
 ///
-/// Eviction strategy: **none today**. The full vanilla SFX set fits
-/// in a few hundred MB of decoded PCM; aggressive eviction would
-/// trade load latency for memory we don't need to save. If a future
-/// scenario surfaces (1000+ unique sounds, or platform memory
-/// pressure), bolt on an LRU here without touching the call sites.
+/// Eviction strategy: **manual, via [`Self::clear`]**. No automatic
+/// LRU today. The full vanilla SFX set fits in a few hundred MB of
+/// decoded PCM; the cell-unload path can call `clear()` when a region
+/// exits scope to bound memory across long sessions with mod-loaded
+/// SFX (Project Nevada / TTW / FCO stacks push past 1 GB without it).
+/// [`Self::bytes_estimate`] surfaces the cache footprint to telemetry
+/// so a future unbounded-growth regression shows up in `stats` output
+/// rather than at OOM. If a real LRU is ever needed (1000+ unique
+/// sounds with frequent rotation), bolt it on without touching the
+/// call sites. See #850 / AUD-D6-NEW-09.
 ///
 /// **Dormant API (#859):** the engine binary currently has zero
 /// call sites for `SoundCache`. The footstep dispatch path at
@@ -1216,6 +1221,34 @@ impl SoundCache {
 
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    /// Drop every cached sound. Existing `StaticSoundHandle`s playing
+    /// the dropped `Arc<StaticSoundData>` keep their own clone alive
+    /// for the lifetime of the handle — kira never reads through the
+    /// cache after the initial play call. Intended for the cell-unload
+    /// path to bound memory across long sessions; vanilla gameplay
+    /// can leave the cache populated process-lifetime. See #850 /
+    /// AUD-D6-NEW-09.
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
+
+    /// Best-effort estimate of cached decoded PCM size (bytes). Sums
+    /// `frames.len() * size_of::<kira::Frame>()` for each entry —
+    /// frame storage is `Arc<[Frame]>` where `Frame = { f32 left, f32
+    /// right }` (8 B/frame for stereo). Does NOT count the
+    /// `Arc<StaticSoundData>` header, `StaticSoundSettings`, or the
+    /// `HashMap` overhead — those are O(entries) and small next to
+    /// the PCM blob. Useful for `stats` console output so a future
+    /// unbounded-growth regression surfaces in telemetry rather than
+    /// at OOM. See #850 / AUD-D6-NEW-09.
+    pub fn bytes_estimate(&self) -> usize {
+        let frame_size = std::mem::size_of::<kira::Frame>();
+        self.map
+            .values()
+            .map(|sound| sound.frames.len() * frame_size)
+            .sum()
     }
 }
 
@@ -1486,6 +1519,65 @@ mod tests {
             1,
             "loader call count unchanged after cache hit"
         );
+    }
+
+    /// **#850 / AUD-D6-NEW-09**: `clear()` drops every cached entry
+    /// and `bytes_estimate()` reflects the live PCM footprint. Pinned
+    /// so a future LRU bolt-on can land without breaking the cell-
+    /// unload contract — the cell-unload path calls `clear()` when a
+    /// region exits scope; telemetry polls `bytes_estimate()` for
+    /// `stats` output. A regression that silently drops `clear()` or
+    /// makes `bytes_estimate()` constant would let mod-heavy
+    /// long-session memory growth slip past audit.
+    #[test]
+    fn sound_cache_clear_drops_entries_and_bytes_estimate_tracks_pcm_size() {
+        use kira::sound::static_sound::StaticSoundSettings;
+        let mut cache = SoundCache::new();
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.bytes_estimate(), 0);
+
+        // Insert two sounds with known frame counts so the byte
+        // estimate is deterministic.
+        let frames_a = 100;
+        let frames_b = 250;
+        let make = |n: usize| StaticSoundData {
+            sample_rate: 22_050,
+            frames: Arc::from(
+                vec![
+                    kira::Frame {
+                        left: 0.0,
+                        right: 0.0
+                    };
+                    n
+                ]
+                .into_boxed_slice(),
+            ),
+            settings: StaticSoundSettings::default(),
+            slice: None,
+        };
+        let arc_a = cache.insert(r"sound\fx\a.wav", make(frames_a));
+        cache.insert(r"sound\fx\b.wav", make(frames_b));
+        assert_eq!(cache.len(), 2);
+
+        let frame_size = std::mem::size_of::<kira::Frame>();
+        let expected = (frames_a + frames_b) * frame_size;
+        assert_eq!(
+            cache.bytes_estimate(),
+            expected,
+            "bytes_estimate must sum frame storage across all entries",
+        );
+
+        // External `Arc` held by `arc_a` — clear() must drop the
+        // cache's clone but the external clone keeps the sound alive.
+        cache.clear();
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.bytes_estimate(), 0);
+        assert!(cache.is_empty());
+        assert!(cache.get(r"sound\fx\a.wav").is_none());
+        // External Arc still valid — clear() only drops the cache's
+        // own clone. Currently-playing kira handles that took their
+        // own Arc clone via play_oneshot survive cell unload.
+        assert_eq!(Arc::strong_count(&arc_a), 1);
     }
 
     /// **Phase 3**: `spawn_oneshot_at` lays down the canonical
