@@ -197,8 +197,30 @@ pub(super) fn spawn_placed_instances(
                 radius,
                 color: light.color,
                 flags: 0,
+                ..Default::default()
             },
         );
+        // #983 — attach the NIF light's own block name so the
+        // animation system can resolve `NiLight*Controller` channels
+        // keyed by this name. Anonymous lights (`name.is_none()`)
+        // can't be animated by anything but transform-derived
+        // ancestor controllers, which fall through this path.
+        //
+        // Inline `world.resource_mut::<StringPool>()` intern site —
+        // lights per cell typically number 1-50 (Skyrim Riften ~25,
+        // FNV Goodsprings ~30), so the short write-lock cost is
+        // bounded. Pre-fix the mesh path pre-interned via a
+        // separate pre-pass (#882); a parallel pre-pass for light
+        // names is a deferred optimisation if a light-heavy cell
+        // surfaces a measurable cost.
+        if let Some(ref nif_name) = light.name {
+            let interned = {
+                let mut pool =
+                    world.resource_mut::<byroredux_core::string::StringPool>();
+                pool.intern(nif_name)
+            };
+            world.insert(entity, Name(interned));
+        }
     }
 
     // Spawn particle emitter entities (#401). One ECS entity per
@@ -799,6 +821,7 @@ pub(super) fn spawn_placed_instances(
                         radius: light_radius_or_default(ld.radius),
                         color: ld.color,
                         flags: ld.flags,
+                        ..Default::default()
                     },
                 );
             }

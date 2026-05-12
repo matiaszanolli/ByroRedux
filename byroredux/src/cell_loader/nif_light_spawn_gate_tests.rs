@@ -24,6 +24,7 @@ fn light_with_color(rgb: [f32; 3]) -> ImportedLight {
         kind: LightKind::Point,
         outer_angle: 0.0,
         affected_node_names: Vec::new(),
+        name: None,
     }
 }
 

@@ -1366,3 +1366,216 @@ fn resolve_color_keys_at_samples_bspline_comp_point3() {
         assert!((c - 0.5).abs() < 1e-3, "last key channel = 0.5, got {c}");
     }
 }
+
+/// Regression: #983. A `NiPointLight` with all four `NiLight*Controller`
+/// types chained off its `controller_ref` must surface as an
+/// `AnimationClip` carrying:
+///   - one `ColorTarget::LightDiffuse` channel (NiLightColorController,
+///     target_color=0)
+///   - one `FloatTarget::LightDimmer` channel (NiLightDimmerController)
+///   - one `FloatTarget::LightIntensity` channel (NiLightIntensityController)
+///   - one `FloatTarget::LightRadius` channel (NiLightRadiusController)
+///
+/// All four channels are keyed by the NiPointLight's NiObjectNET name
+/// (`"Torch01"`) so the runtime animation system writes into the
+/// matching `LightSource` ECS entity. Pre-fix the four controller
+/// dispatch arms were missing entirely and lanterns/campfires/plasma
+/// weapons emitted constant light.
+#[test]
+fn import_embedded_animations_captures_nilight_controllers() {
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::controller::{
+        NiLightColorController, NiLightFloatController, NiSingleInterpController,
+        NiTimeControllerBase,
+    };
+    use crate::blocks::interpolator::{
+        FloatKey, KeyGroup, KeyType, NiPoint3Interpolator, NiPosData, Vec3Key,
+    };
+    use crate::blocks::light::{NiLightBase, NiPointLight};
+    use crate::types::{BlockRef, NiColor, NiTransform};
+    use std::sync::Arc;
+
+    // Block layout:
+    //   [0] NiFloatData (dimmer keys 0→1 over 1s)
+    //   [1] NiFloatInterpolator → [0]
+    //   [2] NiFloatData (intensity keys 0→2)
+    //   [3] NiFloatInterpolator → [2]
+    //   [4] NiFloatData (radius keys 100→200)
+    //   [5] NiFloatInterpolator → [4]
+    //   [6] NiPosData ([1,0,0] → [0,1,0])
+    //   [7] NiPoint3Interpolator → [6]
+    //   [8] NiLightColorController → interp [7] (Diffuse, target_color=0)
+    //   [9] NiLightFloatController("NiLightRadiusController") → interp [5], next=[8]
+    //  [10] NiLightFloatController("NiLightIntensityController") → interp [3], next=[9]
+    //  [11] NiLightFloatController("NiLightDimmerController") → interp [1], next=[10]
+    //  [12] NiPointLight (name="Torch01") with controller_ref=[11]
+    fn float_data(v0: f32, v1: f32) -> NiFloatData {
+        NiFloatData {
+            keys: KeyGroup {
+                key_type: KeyType::Linear,
+                keys: vec![
+                    FloatKey {
+                        time: 0.0,
+                        value: v0,
+                        tangent_forward: 0.0,
+                        tangent_backward: 0.0,
+                        tbc: None,
+                    },
+                    FloatKey {
+                        time: 1.0,
+                        value: v1,
+                        tangent_forward: 0.0,
+                        tangent_backward: 0.0,
+                        tbc: None,
+                    },
+                ],
+            },
+        }
+    }
+    fn float_interp(data_idx: u32) -> NiFloatInterpolator {
+        NiFloatInterpolator {
+            value: 0.0,
+            data_ref: BlockRef(data_idx),
+        }
+    }
+    let tc_base = |next: BlockRef| NiTimeControllerBase {
+        next_controller_ref: next,
+        flags: 0,
+        frequency: 1.0,
+        phase: 0.0,
+        start_time: 0.0,
+        stop_time: 1.0,
+        target_ref: BlockRef::NULL,
+    };
+    let single_interp = |next: BlockRef, interp: u32| NiSingleInterpController {
+        base: tc_base(next),
+        interpolator_ref: BlockRef(interp),
+    };
+
+    let pos_data = NiPosData {
+        keys: KeyGroup {
+            key_type: KeyType::Linear,
+            keys: vec![
+                Vec3Key {
+                    time: 0.0,
+                    value: [1.0, 0.0, 0.0],
+                    tangent_forward: [0.0; 3],
+                    tangent_backward: [0.0; 3],
+                    tbc: None,
+                },
+                Vec3Key {
+                    time: 1.0,
+                    value: [0.0, 1.0, 0.0],
+                    tangent_forward: [0.0; 3],
+                    tangent_backward: [0.0; 3],
+                    tbc: None,
+                },
+            ],
+        },
+    };
+    let p3_interp = NiPoint3Interpolator {
+        value: [0.0; 3],
+        data_ref: BlockRef(6),
+    };
+    let color_ctrl = NiLightColorController {
+        base: tc_base(BlockRef::NULL), // tail of chain
+        interpolator_ref: BlockRef(7),
+        target_color: 0, // Diffuse
+    };
+    let radius_ctrl = NiLightFloatController {
+        type_name: "NiLightRadiusController",
+        base: single_interp(BlockRef(8), 5),
+    };
+    let intensity_ctrl = NiLightFloatController {
+        type_name: "NiLightIntensityController",
+        base: single_interp(BlockRef(9), 3),
+    };
+    let dimmer_ctrl = NiLightFloatController {
+        type_name: "NiLightDimmerController",
+        base: single_interp(BlockRef(10), 1),
+    };
+
+    let light = NiPointLight {
+        base: NiLightBase {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from("Torch01")),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef(11_u32), // head = dimmer_ctrl
+                },
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            switch_state: true,
+            affected_nodes: Vec::new(),
+            dimmer: 1.0,
+            ambient_color: NiColor {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+            },
+            diffuse_color: NiColor {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+            },
+            specular_color: NiColor {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+            },
+        },
+        constant_attenuation: 1.0,
+        linear_attenuation: 0.0,
+        quadratic_attenuation: 0.0,
+    };
+
+    let scene = NifScene {
+        blocks: vec![
+            Box::new(float_data(0.0, 1.0)),  // [0] dimmer data
+            Box::new(float_interp(0)),       // [1] dimmer interp
+            Box::new(float_data(0.0, 2.0)),  // [2] intensity data
+            Box::new(float_interp(2)),       // [3] intensity interp
+            Box::new(float_data(100.0, 200.0)), // [4] radius data
+            Box::new(float_interp(4)),       // [5] radius interp
+            Box::new(pos_data),              // [6] color data
+            Box::new(p3_interp),             // [7] color interp
+            Box::new(color_ctrl),            // [8] color ctrl
+            Box::new(radius_ctrl),           // [9] radius ctrl
+            Box::new(intensity_ctrl),        // [10] intensity ctrl
+            Box::new(dimmer_ctrl),           // [11] dimmer ctrl (chain head)
+            Box::new(light),                 // [12] NiPointLight
+        ],
+        ..NifScene::default()
+    };
+
+    let clip = import_embedded_animations(&scene).expect("expected embedded clip");
+    // Three float channels (Dimmer + Intensity + Radius) + one color
+    // channel (LightDiffuse). Order doesn't matter — we assert by
+    // target and node name.
+    assert_eq!(
+        clip.float_channels.len(),
+        3,
+        "expected 3 NiLightFloatController channels"
+    );
+    assert_eq!(
+        clip.color_channels.len(),
+        1,
+        "expected 1 NiLightColorController channel"
+    );
+    let mut seen_targets = std::collections::HashSet::new();
+    for (name, ch) in &clip.float_channels {
+        assert_eq!(&**name, "Torch01");
+        seen_targets.insert(ch.target);
+    }
+    assert!(seen_targets.contains(&FloatTarget::LightDimmer));
+    assert!(seen_targets.contains(&FloatTarget::LightIntensity));
+    assert!(seen_targets.contains(&FloatTarget::LightRadius));
+
+    let (cname, cch) = &clip.color_channels[0];
+    assert_eq!(&**cname, "Torch01");
+    assert_eq!(cch.target, ColorTarget::LightDiffuse);
+    assert_eq!(cch.keys.len(), 2);
+}

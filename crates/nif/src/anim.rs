@@ -157,9 +157,10 @@ fn clip_has_data(clip: &AnimationClip) -> bool {
 pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
     use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
     use crate::blocks::controller::{
-        BsShaderController, NiFlipController, NiMaterialColorController, NiSingleInterpController,
-        NiTextureTransformController,
+        BsShaderController, NiFlipController, NiLightColorController, NiLightFloatController,
+        NiMaterialColorController, NiSingleInterpController, NiTextureTransformController,
     };
+    use crate::blocks::light::{NiAmbientLight, NiDirectionalLight, NiPointLight, NiSpotLight};
     use crate::blocks::node::{NiCamera, NiNode};
     use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
     use crate::types::BlockRef;
@@ -196,6 +197,24 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
         }
         if let Some(b) = any.downcast_ref::<crate::blocks::shader::BSEffectShaderProperty>() {
             return Some(&b.net);
+        }
+        // #983 — NiLight subtypes carry their controller chain on
+        // the NiObjectNET inside `NiLightBase.av.net`. Walking it
+        // surfaces the four `NiLight*Controller` types into the
+        // embedded clip so torches / lanterns / plasma weapons get
+        // their authored flicker / dim / pulse instead of emitting
+        // constant light.
+        if let Some(l) = any.downcast_ref::<NiPointLight>() {
+            return Some(&l.base.av.net);
+        }
+        if let Some(l) = any.downcast_ref::<NiSpotLight>() {
+            return Some(&l.point.base.av.net);
+        }
+        if let Some(l) = any.downcast_ref::<NiAmbientLight>() {
+            return Some(&l.base.av.net);
+        }
+        if let Some(l) = any.downcast_ref::<NiDirectionalLight>() {
+            return Some(&l.base.av.net);
         }
         let _ = NiAVObjectData::parse; // keep the import path alive for future block types
         None
@@ -238,6 +257,20 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                 c.base.next_controller_ref
             } else if let Some(c) = any.downcast_ref::<NiGeomMorpherController>() {
                 c.base.next_controller_ref
+            } else if let Some(c) = any.downcast_ref::<NiLightColorController>() {
+                // #983 — NiLightColorController inherits
+                // NiPoint3InterpController which is a
+                // NiSingleInterpController pass-through. The
+                // next_controller_ref sits on its
+                // NiTimeControllerBase (one `.base` hop).
+                c.base.next_controller_ref
+            } else if let Some(c) = any.downcast_ref::<NiLightFloatController>() {
+                // #983 — NiLightFloatController is the typed alias
+                // covering Dimmer / Intensity / Radius. It's a
+                // NiSingleInterpController + type_name tag; the
+                // chain advance is two hops (`.base.base`) to
+                // reach NiTimeControllerBase.
+                c.base.base.next_controller_ref
             } else {
                 // Unknown chain node — stop rather than infinite-loop.
                 BlockRef::NULL
@@ -414,6 +447,51 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                                 keys,
                             },
                         ));
+                    }
+                }
+                // #983 — Four NiLight*Controller types animate the
+                // light's color / dimmer / intensity / radius slots.
+                // All four follow the standard
+                // NiSingleInterpController shape (interpolator_ref
+                // → NiFloatInterpolator / NiPoint3Interpolator →
+                // NiFloatData / NiPosData keys), so the extract
+                // helpers used elsewhere in this match work
+                // directly. See the dispatch in `blocks/mod.rs`
+                // and the FloatTarget::Light* / ColorTarget::Light*
+                // sinks in `core/src/animation/types.rs`.
+                "NiLightColorController" => {
+                    if let Some(c) = any.downcast_ref::<NiLightColorController>() {
+                        if let Some(idx) = c.interpolator_ref.index() {
+                            let keys = resolve_color_keys_at(scene, idx);
+                            if !keys.is_empty() {
+                                // target_color: 0 = Diffuse, 1 = Ambient
+                                // (per nif.xml line 1241 LightColor enum).
+                                let target = if c.target_color == 1 {
+                                    ColorTarget::LightAmbient
+                                } else {
+                                    ColorTarget::LightDiffuse
+                                };
+                                clip.color_channels
+                                    .push((Arc::clone(&node_name), ColorChannel { target, keys }));
+                            }
+                        }
+                    }
+                }
+                "NiLightDimmerController"
+                | "NiLightIntensityController"
+                | "NiLightRadiusController" => {
+                    if let Some(c) = any.downcast_ref::<NiLightFloatController>() {
+                        let target = match ctrl_type {
+                            "NiLightDimmerController" => FloatTarget::LightDimmer,
+                            "NiLightIntensityController" => FloatTarget::LightIntensity,
+                            "NiLightRadiusController" => FloatTarget::LightRadius,
+                            _ => unreachable!(),
+                        };
+                        if let Some(idx) = c.base.interpolator_ref.index() {
+                            if let Some(ch) = extract_float_channel_at(scene, idx, target) {
+                                clip.float_channels.push((Arc::clone(&node_name), ch));
+                            }
+                        }
                     }
                 }
                 "NiUVController" => {

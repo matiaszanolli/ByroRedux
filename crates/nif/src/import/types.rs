@@ -44,6 +44,16 @@ pub struct ImportedLight {
     /// light-target filtering wiring is a separate change — pre-#335
     /// the importer dropped the field entirely. See #335.
     pub affected_node_names: Vec<Arc<str>>,
+    /// The light's own NIF block name (from `NiObjectNETData.name`).
+    /// `None` for anonymous lights (rare on shipped content, but
+    /// possible in mods + debug content). The cell loader inserts a
+    /// matching `Name` component on the spawned ECS entity so the
+    /// animation system can resolve channels keyed by this name —
+    /// `NiLightColorController` / `NiLightDimmerController` /
+    /// `NiLightIntensityController` / `NiLightRadiusController` from
+    /// the same NIF write into the light's `LightSource` per-frame.
+    /// See #983.
+    pub name: Option<Arc<str>>,
 }
 
 /// Kind of a parsed NIF light.

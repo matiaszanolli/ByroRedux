@@ -134,6 +134,9 @@ pub(crate) fn convert_nif_clip(
         na::FloatTarget::UvRotation => FloatTarget::UvRotation,
         na::FloatTarget::ShaderFloat => FloatTarget::ShaderFloat,
         na::FloatTarget::MorphWeight(idx) => FloatTarget::MorphWeight(idx),
+        na::FloatTarget::LightDimmer => FloatTarget::LightDimmer,
+        na::FloatTarget::LightIntensity => FloatTarget::LightIntensity,
+        na::FloatTarget::LightRadius => FloatTarget::LightRadius,
     };
 
     let convert_color_target = |t: na::ColorTarget| match t {
@@ -142,6 +145,8 @@ pub(crate) fn convert_nif_clip(
         na::ColorTarget::Specular => ColorTarget::Specular,
         na::ColorTarget::Emissive => ColorTarget::Emissive,
         na::ColorTarget::ShaderColor => ColorTarget::ShaderColor,
+        na::ColorTarget::LightDiffuse => ColorTarget::LightDiffuse,
+        na::ColorTarget::LightAmbient => ColorTarget::LightAmbient,
     };
 
     let float_channels = nif

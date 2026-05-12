@@ -120,6 +120,11 @@ pub(crate) fn apply_color_channels(
     let mut specular_q = None;
     let mut emissive_q = None;
     let mut shader_q = None;
+    // #983 — NiLightColorController sink. The animated colour writes
+    // straight into `LightSource.color`; the renderer's light-buffer
+    // build then multiplies by `dimmer * intensity` to produce the
+    // final per-light radiance.
+    let mut light_q = None;
 
     // Macro collapses the 5 near-identical match arms (lazy-init,
     // get_mut, assign `.0`) into one line per target. `world`,
@@ -165,6 +170,29 @@ pub(crate) fn apply_color_channels(
             ColorTarget::ShaderColor => {
                 write_lazy!(shader_q, AnimatedShaderColor, world, target_entity, value)
             }
+            ColorTarget::LightDiffuse => {
+                let q = light_q.get_or_insert_with(|| {
+                    world.query_mut::<byroredux_core::ecs::LightSource>()
+                });
+                if let Some(q) = q.as_mut() {
+                    if let Some(ls) = q.get_mut(target_entity) {
+                        ls.color = [value.x, value.y, value.z];
+                    }
+                }
+            }
+            ColorTarget::LightAmbient => {
+                // #983 — captured but not consumed by the current
+                // renderer (cell ambient drives the unlit fallback,
+                // no per-light ambient slot in the light buffer).
+                // Drop on the floor with a single trace! so future
+                // light-ambient work finds the channel without code
+                // changes. Same shape as the existing
+                // `ColorTarget::Specular` consumer below in spirit
+                // (the renderer doesn't pick up specular per-light
+                // yet either).
+                let _ = target_entity;
+                let _ = value;
+            }
         }
     }
 }
@@ -196,6 +224,11 @@ pub(crate) fn apply_float_channels(
     let mut uv_q = None;
     let mut shader_q = None;
     let mut morph_q = None;
+    // #983 — NiLight float controllers (Dimmer, Intensity, Radius) all
+    // mutate `LightSource` on the target entity. Lazy-acquired so a
+    // clip with only NiAlphaController doesn't lock LightSource's
+    // sparse storage unnecessarily.
+    let mut light_q = None;
 
     for (channel_name, channel) in float_channels {
         let Some(target_entity) = resolve_entity(channel_name) else {
@@ -243,6 +276,23 @@ pub(crate) fn apply_float_channels(
                 if let Some(q) = q.as_mut() {
                     if let Some(m) = q.get_mut(target_entity) {
                         m.set(idx as usize, value);
+                    }
+                }
+            }
+            FloatTarget::LightDimmer
+            | FloatTarget::LightIntensity
+            | FloatTarget::LightRadius => {
+                let q = light_q.get_or_insert_with(|| {
+                    world.query_mut::<byroredux_core::ecs::LightSource>()
+                });
+                if let Some(q) = q.as_mut() {
+                    if let Some(ls) = q.get_mut(target_entity) {
+                        match channel.target {
+                            FloatTarget::LightDimmer => ls.dimmer = value,
+                            FloatTarget::LightIntensity => ls.intensity = value,
+                            FloatTarget::LightRadius => ls.radius = value,
+                            _ => unreachable!(),
+                        }
                     }
                 }
             }

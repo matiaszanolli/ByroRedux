@@ -1212,6 +1212,16 @@ pub(crate) fn build_render_data(
     if let (Some(tq), Some(lq)) = (light_gt_q, light_q) {
         for (entity, light) in lq.iter() {
             if let Some(t) = tq.get(entity) {
+                // #983 — `dimmer` and `intensity` are mutated by the
+                // animation system when the source NIF carries
+                // `NiLight{Dimmer,Intensity}Controller`. The product
+                // is the per-frame multiplicative scalar on the
+                // diffuse color; the renderer doesn't see the curves
+                // directly, just the resolved factor here.
+                // `radius` is similarly animated by
+                // `NiLightRadiusController` and the value already
+                // sits on `light.radius` from the same code path.
+                let scale = light.dimmer * light.intensity;
                 gpu_lights.push(byroredux_renderer::GpuLight {
                     position_radius: [
                         t.translation.x,
@@ -1219,7 +1229,12 @@ pub(crate) fn build_render_data(
                         t.translation.z,
                         light.radius,
                     ],
-                    color_type: [light.color[0], light.color[1], light.color[2], 0.0], // 0 = point
+                    color_type: [
+                        light.color[0] * scale,
+                        light.color[1] * scale,
+                        light.color[2] * scale,
+                        0.0,
+                    ], // 0 = point
                     direction_angle: [0.0, 0.0, 0.0, 0.0],
                 });
             }

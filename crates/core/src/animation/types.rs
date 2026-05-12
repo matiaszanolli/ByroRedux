@@ -77,6 +77,18 @@ pub enum FloatTarget {
     /// Morph target weight (blend shape). The u32 is the morph index
     /// into the NiGeomMorpherController's target list.
     MorphWeight(u32),
+    /// NiLight `dimmer` slot — multiplicative scalar on the base
+    /// color. Animated by `NiLightDimmerController`. See #983.
+    LightDimmer,
+    /// NiLight intensity multiplier — distinct from `dimmer` (some
+    /// content layers flicker on `intensity` while `dimmer` stays
+    /// at the authored steady value). Animated by
+    /// `NiLightIntensityController`. See #983.
+    LightIntensity,
+    /// NiLight `radius` slot. Animated by `NiLightRadiusController`.
+    /// Drives the renderer's per-light attenuation cutoff in world
+    /// units. See #983.
+    LightRadius,
 }
 
 /// What a color channel targets.
@@ -87,6 +99,17 @@ pub enum ColorTarget {
     Specular,
     Emissive,
     ShaderColor,
+    /// NiLight diffuse color slot — animated by
+    /// `NiLightColorController` with `target_color == 0`. Replaces
+    /// `LightSource.color` for the duration of the clip. See #983.
+    LightDiffuse,
+    /// NiLight ambient color slot — animated by
+    /// `NiLightColorController` with `target_color == 1`. The
+    /// renderer doesn't currently consume the ambient slot per-
+    /// light (cell ambient drives the unlit fallback), but the
+    /// channel is captured so a future ambient-per-light path
+    /// finds the data. See #983.
+    LightAmbient,
 }
 
 /// A float keyframe (alpha, UV params, shader floats).

@@ -938,6 +938,11 @@ fn imported_light_from_base(
         kind,
         outer_angle,
         affected_node_names,
+        // #983 — surface the light's NIF block name so the cell
+        // loader can spawn a matching `Name` component; the
+        // animation system resolves NiLight*Controller channels by
+        // that name. `None` for anonymous lights (rare).
+        name: base.av.net.name.clone(),
     }
 }
 

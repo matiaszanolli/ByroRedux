@@ -94,6 +94,12 @@ pub enum FloatTarget {
     ShaderFloat,
     /// Morph target weight (NiGeomMorpherController blend shape).
     MorphWeight(u32),
+    /// NiLight dimmer slot (NiLightDimmerController). See #983.
+    LightDimmer,
+    /// NiLight intensity multiplier (NiLightIntensityController). See #983.
+    LightIntensity,
+    /// NiLight radius (NiLightRadiusController). See #983.
+    LightRadius,
 }
 
 /// What a color animation channel targets.
@@ -109,6 +115,10 @@ pub enum ColorTarget {
     Emissive,
     /// Shader color property.
     ShaderColor,
+    /// NiLight diffuse slot (NiLightColorController, target_color=0). See #983.
+    LightDiffuse,
+    /// NiLight ambient slot (NiLightColorController, target_color=1). See #983.
+    LightAmbient,
 }
 
 /// A float keyframe for non-transform channels.

@@ -337,6 +337,7 @@ pub(super) fn load_references(
                             radius: light_radius_or_default(ld.radius),
                             color: ld.color,
                             flags: ld.flags,
+                            ..Default::default()
                         },
                     );
                     entity_count += 1;
@@ -383,6 +384,7 @@ pub(super) fn load_references(
                             radius: light_radius_or_default(ld.radius),
                             color: ld.color,
                             flags: ld.flags,
+                            ..Default::default()
                         },
                     );
                     entity_count += 1;
