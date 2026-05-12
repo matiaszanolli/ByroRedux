@@ -50,6 +50,7 @@ use extra_data::{
 use interpolator::{
     BsTreadTransfInterpolator, NiBSplineBasisData, NiBSplineCompFloatInterpolator,
     NiBSplineCompPoint3Interpolator, NiBSplineCompTransformInterpolator, NiBSplineData,
+    NiBSplineFloatInterpolator, NiBSplinePoint3Interpolator, NiBSplineTransformInterpolator,
     NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendPoint3Interpolator,
     NiBlendTransformInterpolator, NiBoolData, NiBoolInterpolator, NiColorData, NiColorInterpolator,
     NiFloatData, NiFloatInterpolator, NiLookAtInterpolator, NiPathInterpolator,
@@ -140,6 +141,16 @@ pub fn parse_block(
     // The field is named `groupID` after nifly's name; vanilla
     // Bethesda content always ships zero. We read it and discard —
     // the value isn't consumed by any downstream parser.
+    //
+    // Defence-in-depth note (NIF-D3-NEW-07, audit 2026-05-12): on a
+    // v10.0.x dispatch-fallback where the block-sizes table is
+    // unavailable, the unconditional consume here could theoretically
+    // over-read by 4 bytes — but `block_sizes` is gated at
+    // `>= 20.2.0.5` everywhere it's consumed, so the combination is
+    // structurally unreachable on shipping content. Moving this
+    // consumption into per-subclass `NiObject`-base parsers would
+    // make it defensible against future format quirks, deferred until
+    // content surfaces.
     let v = stream.version();
     if v >= NifVersion(0x0A000000) && v < NifVersion(0x0A010072) {
         let _group_id = stream.read_u32_le()?;
@@ -718,6 +729,27 @@ pub fn parse_block(
         }
         "NiBSplineCompPoint3Interpolator" => {
             Ok(Box::new(NiBSplineCompPoint3Interpolator::parse(stream)?))
+        }
+        // #978 / NIF-D5-NEW-02 — uncompressed B-spline interpolator
+        // siblings. nif.xml defines six concrete BSpline interpolator
+        // classes (three Comp variants above + three uncompressed
+        // siblings here). The compressed variants extend the
+        // uncompressed layout by 8-24 trailing quantization bytes;
+        // aliasing the uncompressed wire to the compressed parser would
+        // over-read. Uncompressed B-splines appear in older Gamebryo
+        // content (Civ IV, Empire Earth) and some FO3/FNV idle KFs
+        // where the animator chose verbatim control points over
+        // quantization. Pre-fix the parse fell into NiUnknown on FO3+
+        // (channel silently collapsed to rest pose) and cascaded the
+        // file on Oblivion (no block_sizes recovery).
+        "NiBSplineTransformInterpolator" => {
+            Ok(Box::new(NiBSplineTransformInterpolator::parse(stream)?))
+        }
+        "NiBSplineFloatInterpolator" => {
+            Ok(Box::new(NiBSplineFloatInterpolator::parse(stream)?))
+        }
+        "NiBSplinePoint3Interpolator" => {
+            Ok(Box::new(NiBSplinePoint3Interpolator::parse(stream)?))
         }
         "NiBSplineData" => Ok(Box::new(NiBSplineData::parse(stream)?)),
         "NiBSplineBasisData" => Ok(Box::new(NiBSplineBasisData::parse(stream)?)),

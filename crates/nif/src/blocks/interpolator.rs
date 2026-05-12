@@ -1186,6 +1186,176 @@ impl NiBSplineData {
     }
 }
 
+/// `NiBSplineTransformInterpolator` — B-spline driven transform channel
+/// using **uncompressed** (full-precision f32) control points. Concrete
+/// (non-abstract) per nif.xml line 4132. The compressed companion
+/// [`NiBSplineCompTransformInterpolator`] extends this layout with six
+/// trailing quantization scalars; this base variant ends after the
+/// three handles.
+///
+/// Serialized layout (flat, in inheritance order):
+/// - NiBSplineInterpolator: `start_time`, `stop_time`, `spline_data_ref`, `basis_data_ref`
+/// - NiBSplineTransformInterpolator: `NiQuatTransform` + 3 handles (translation / rotation / scale)
+///
+/// Spline control points live in [`NiBSplineData::float_control_points`]
+/// (uncompressed-spline path, vs `compact_control_points` for the
+/// quantized variant). A handle value of `u32::MAX` means the
+/// corresponding channel is static (use the inherited `transform`
+/// field directly).
+///
+/// Pre-#978 the type had no dispatch arm; the outer parse loop dropped
+/// it via the block_size fallback on FO3+ (channel collapsed to rest
+/// pose) and cascaded the parse on Oblivion (no block_sizes table).
+/// See `docs/audits/AUDIT_NIF_2026-05-12.md` § NIF-D5-NEW-02.
+#[derive(Debug)]
+pub struct NiBSplineTransformInterpolator {
+    pub start_time: f32,
+    pub stop_time: f32,
+    pub spline_data_ref: BlockRef,
+    pub basis_data_ref: BlockRef,
+    /// Static fallback transform when the corresponding handle is invalid.
+    pub transform: NiQuatTransform,
+    pub translation_handle: u32,
+    pub rotation_handle: u32,
+    pub scale_handle: u32,
+}
+
+impl NiObject for NiBSplineTransformInterpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiBSplineTransformInterpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBSplineTransformInterpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let start_time = stream.read_f32_le()?;
+        let stop_time = stream.read_f32_le()?;
+        let spline_data_ref = stream.read_block_ref()?;
+        let basis_data_ref = stream.read_block_ref()?;
+        let transform = stream.read_ni_quat_transform()?;
+        let translation_handle = stream.read_u32_le()?;
+        let rotation_handle = stream.read_u32_le()?;
+        let scale_handle = stream.read_u32_le()?;
+        Ok(Self {
+            start_time,
+            stop_time,
+            spline_data_ref,
+            basis_data_ref,
+            transform,
+            translation_handle,
+            rotation_handle,
+            scale_handle,
+        })
+    }
+}
+
+/// `NiBSplineFloatInterpolator` — B-spline driven scalar channel using
+/// **uncompressed** (full-precision f32) control points. nif.xml marks
+/// the class `abstract="true"` (line 4108) but the field set is
+/// concrete and on-disk content does ship it (early Gamebryo titles +
+/// FO3/FNV idle KFs that authored verbatim control points instead of
+/// the quantized [`NiBSplineCompFloatInterpolator`] variant).
+///
+/// Serialized layout (flat, in inheritance order):
+/// - NiBSplineInterpolator: `start_time`, `stop_time`, `spline_data_ref`, `basis_data_ref`
+/// - NiBSplineFloatInterpolator: `value` (f32 fallback), `handle` (u32, `0xFFFFFFFF` ≡ static)
+///
+/// Pre-#978 dropped via block_size fallback (FO3+) or parse cascade
+/// (Oblivion). See `docs/audits/AUDIT_NIF_2026-05-12.md` § NIF-D5-NEW-02.
+#[derive(Debug)]
+pub struct NiBSplineFloatInterpolator {
+    pub start_time: f32,
+    pub stop_time: f32,
+    pub spline_data_ref: BlockRef,
+    pub basis_data_ref: BlockRef,
+    /// Static fallback value used when `handle == u32::MAX`.
+    pub value: f32,
+    pub handle: u32,
+}
+
+impl NiObject for NiBSplineFloatInterpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiBSplineFloatInterpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBSplineFloatInterpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let start_time = stream.read_f32_le()?;
+        let stop_time = stream.read_f32_le()?;
+        let spline_data_ref = stream.read_block_ref()?;
+        let basis_data_ref = stream.read_block_ref()?;
+        let value = stream.read_f32_le()?;
+        let handle = stream.read_u32_le()?;
+        Ok(Self {
+            start_time,
+            stop_time,
+            spline_data_ref,
+            basis_data_ref,
+            value,
+            handle,
+        })
+    }
+}
+
+/// `NiBSplinePoint3Interpolator` — B-spline driven Vec3 channel using
+/// **uncompressed** (full-precision f32) control points. nif.xml marks
+/// the class `abstract="true"` (line 4120) but the field set is
+/// concrete; sibling of [`NiBSplineFloatInterpolator`].
+///
+/// Serialized layout (flat, in inheritance order):
+/// - NiBSplineInterpolator: `start_time`, `stop_time`, `spline_data_ref`, `basis_data_ref`
+/// - NiBSplinePoint3Interpolator: `value` (Vector3 fallback), `handle` (u32, `0xFFFFFFFF` ≡ static)
+///
+/// Pre-#978 dropped via block_size fallback (FO3+) or parse cascade
+/// (Oblivion). See `docs/audits/AUDIT_NIF_2026-05-12.md` § NIF-D5-NEW-02.
+#[derive(Debug)]
+pub struct NiBSplinePoint3Interpolator {
+    pub start_time: f32,
+    pub stop_time: f32,
+    pub spline_data_ref: BlockRef,
+    pub basis_data_ref: BlockRef,
+    /// Static fallback Vec3 used when `handle == u32::MAX`.
+    pub value: [f32; 3],
+    pub handle: u32,
+}
+
+impl NiObject for NiBSplinePoint3Interpolator {
+    fn block_type_name(&self) -> &'static str {
+        "NiBSplinePoint3Interpolator"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiBSplinePoint3Interpolator {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let start_time = stream.read_f32_le()?;
+        let stop_time = stream.read_f32_le()?;
+        let spline_data_ref = stream.read_block_ref()?;
+        let basis_data_ref = stream.read_block_ref()?;
+        let vx = stream.read_f32_le()?;
+        let vy = stream.read_f32_le()?;
+        let vz = stream.read_f32_le()?;
+        let handle = stream.read_u32_le()?;
+        Ok(Self {
+            start_time,
+            stop_time,
+            spline_data_ref,
+            basis_data_ref,
+            value: [vx, vy, vz],
+            handle,
+        })
+    }
+}
+
 /// `NiBSplineCompTransformInterpolator` — B-spline driven transform channel
 /// using compact (quantized) control points. Inherits
 /// `NiBSplineTransformInterpolator` → `NiBSplineInterpolator`.

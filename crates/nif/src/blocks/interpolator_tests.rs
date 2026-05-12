@@ -691,3 +691,172 @@ fn parse_transform_data_xyz_with_order_below_v10_1_0_0() {
     assert_eq!(stream.position() as usize, expected_len);
     assert!(td.xyz_rotations.is_some());
 }
+
+// ── #978 / NIF-D5-NEW-02 — uncompressed B-spline interpolator siblings ──
+//
+// Aliasing the uncompressed wire to the compressed parser would over-read
+// 8-24 trailing quantization bytes; these tests pin (a) the dedicated
+// parsers consume exactly the nif.xml-defined byte count and (b) the
+// fields round-trip correctly. The Comp variants extend each base by the
+// listed trailing scalars — same fixture pattern, just truncated.
+
+#[test]
+fn parse_ni_bspline_transform_interpolator_uncompressed() {
+    let header = make_header_fnv();
+    let mut data = Vec::new();
+    // NiBSplineInterpolator base — start_time, stop_time, spline_data_ref, basis_data_ref.
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&2.0f32.to_le_bytes());
+    data.extend_from_slice(&5i32.to_le_bytes());
+    data.extend_from_slice(&7i32.to_le_bytes());
+    // NiQuatTransform (32 bytes: translation Vec3 + quaternion 4 + scale)
+    data.extend_from_slice(&1.0f32.to_le_bytes()); // tx
+    data.extend_from_slice(&2.0f32.to_le_bytes()); // ty
+    data.extend_from_slice(&3.0f32.to_le_bytes()); // tz
+    data.extend_from_slice(&1.0f32.to_le_bytes()); // qw
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // qx
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // qy
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // qz
+    data.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+    // Three handles.
+    data.extend_from_slice(&10u32.to_le_bytes());
+    data.extend_from_slice(&20u32.to_le_bytes());
+    data.extend_from_slice(&u32::MAX.to_le_bytes()); // scale handle: static
+
+    // Total expected: 4 + 4 + 4 + 4 + 32 + 4 + 4 + 4 = 60 bytes.
+    let expected_len = data.len();
+    let mut stream = NifStream::new(&data, &header);
+    let interp = NiBSplineTransformInterpolator::parse(&mut stream).unwrap();
+    assert_eq!(stream.position() as usize, expected_len);
+    assert_eq!(expected_len, 60);
+    assert_eq!(interp.start_time, 0.0);
+    assert_eq!(interp.stop_time, 2.0);
+    assert_eq!(interp.spline_data_ref.index(), Some(5));
+    assert_eq!(interp.basis_data_ref.index(), Some(7));
+    assert_eq!(interp.transform.translation.x, 1.0);
+    assert_eq!(interp.transform.translation.y, 2.0);
+    assert_eq!(interp.transform.translation.z, 3.0);
+    assert_eq!(interp.transform.rotation, [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(interp.transform.scale, 1.0);
+    assert_eq!(interp.translation_handle, 10);
+    assert_eq!(interp.rotation_handle, 20);
+    assert_eq!(interp.scale_handle, u32::MAX);
+}
+
+#[test]
+fn parse_ni_bspline_transform_interpolator_does_not_consume_comp_trailer() {
+    // Regression: aliasing the uncompressed wire to the Comp parser
+    // would have read 24 trailing bytes (6× f32 quantization scalars)
+    // that aren't present on the wire. Pin the byte count.
+    let header = make_header_fnv();
+    let mut data = Vec::new();
+    // 60-byte base layout.
+    for _ in 0..15 {
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    // Trailing junk that MUST NOT be consumed.
+    for _ in 0..6 {
+        data.extend_from_slice(&999.0f32.to_le_bytes());
+    }
+
+    let mut stream = NifStream::new(&data, &header);
+    let _ = NiBSplineTransformInterpolator::parse(&mut stream).unwrap();
+    assert_eq!(
+        stream.position(),
+        60,
+        "uncompressed parser must stop at 60 bytes; the Comp trailer is \
+         NOT part of this type's wire layout"
+    );
+}
+
+#[test]
+fn parse_ni_bspline_float_interpolator_uncompressed() {
+    let header = make_header_fnv();
+    let mut data = Vec::new();
+    // NiBSplineInterpolator base.
+    data.extend_from_slice(&0.5f32.to_le_bytes()); // start_time
+    data.extend_from_slice(&3.5f32.to_le_bytes()); // stop_time
+    data.extend_from_slice(&11i32.to_le_bytes()); // spline_data_ref
+    data.extend_from_slice(&13i32.to_le_bytes()); // basis_data_ref
+    // NiBSplineFloatInterpolator.
+    data.extend_from_slice(&0.75f32.to_le_bytes()); // value
+    data.extend_from_slice(&42u32.to_le_bytes()); // handle
+
+    // 4 + 4 + 4 + 4 + 4 + 4 = 24 bytes.
+    let expected_len = data.len();
+    let mut stream = NifStream::new(&data, &header);
+    let interp = NiBSplineFloatInterpolator::parse(&mut stream).unwrap();
+    assert_eq!(stream.position() as usize, expected_len);
+    assert_eq!(expected_len, 24);
+    assert_eq!(interp.start_time, 0.5);
+    assert_eq!(interp.stop_time, 3.5);
+    assert_eq!(interp.spline_data_ref.index(), Some(11));
+    assert_eq!(interp.basis_data_ref.index(), Some(13));
+    assert_eq!(interp.value, 0.75);
+    assert_eq!(interp.handle, 42);
+}
+
+#[test]
+fn parse_ni_bspline_float_interpolator_does_not_consume_comp_trailer() {
+    // Regression: Comp variant adds 8 bytes (float_offset, float_half_range).
+    // Uncompressed wire stops at 24 bytes.
+    let header = make_header_fnv();
+    let mut data = Vec::new();
+    for _ in 0..6 {
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    // Junk that MUST NOT be consumed.
+    data.extend_from_slice(&999.0f32.to_le_bytes());
+    data.extend_from_slice(&999.0f32.to_le_bytes());
+
+    let mut stream = NifStream::new(&data, &header);
+    let _ = NiBSplineFloatInterpolator::parse(&mut stream).unwrap();
+    assert_eq!(stream.position(), 24);
+}
+
+#[test]
+fn parse_ni_bspline_point3_interpolator_uncompressed() {
+    let header = make_header_fnv();
+    let mut data = Vec::new();
+    // NiBSplineInterpolator base.
+    data.extend_from_slice(&1.0f32.to_le_bytes()); // start_time
+    data.extend_from_slice(&5.0f32.to_le_bytes()); // stop_time
+    data.extend_from_slice(&21i32.to_le_bytes()); // spline_data_ref
+    data.extend_from_slice(&22i32.to_le_bytes()); // basis_data_ref
+    // NiBSplinePoint3Interpolator.
+    data.extend_from_slice(&0.1f32.to_le_bytes()); // value.x
+    data.extend_from_slice(&0.2f32.to_le_bytes()); // value.y
+    data.extend_from_slice(&0.3f32.to_le_bytes()); // value.z
+    data.extend_from_slice(&u32::MAX.to_le_bytes()); // handle: static
+
+    // 4 + 4 + 4 + 4 + 12 + 4 = 32 bytes.
+    let expected_len = data.len();
+    let mut stream = NifStream::new(&data, &header);
+    let interp = NiBSplinePoint3Interpolator::parse(&mut stream).unwrap();
+    assert_eq!(stream.position() as usize, expected_len);
+    assert_eq!(expected_len, 32);
+    assert_eq!(interp.start_time, 1.0);
+    assert_eq!(interp.stop_time, 5.0);
+    assert_eq!(interp.spline_data_ref.index(), Some(21));
+    assert_eq!(interp.basis_data_ref.index(), Some(22));
+    assert_eq!(interp.value, [0.1, 0.2, 0.3]);
+    assert_eq!(interp.handle, u32::MAX);
+}
+
+#[test]
+fn parse_ni_bspline_point3_interpolator_does_not_consume_comp_trailer() {
+    // Regression: Comp variant adds 8 bytes (position_offset, position_half_range).
+    // Uncompressed wire stops at 32 bytes.
+    let header = make_header_fnv();
+    let mut data = Vec::new();
+    for _ in 0..8 {
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    // Junk.
+    data.extend_from_slice(&999.0f32.to_le_bytes());
+    data.extend_from_slice(&999.0f32.to_le_bytes());
+
+    let mut stream = NifStream::new(&data, &header);
+    let _ = NiBSplinePoint3Interpolator::parse(&mut stream).unwrap();
+    assert_eq!(stream.position(), 32);
+}

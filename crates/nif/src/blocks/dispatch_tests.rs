@@ -3542,3 +3542,118 @@ fn fo76_bs_collision_query_proxy_extra_data_round_trips_byte_array() {
     assert_eq!(proxy.data.as_slice(), payload);
     assert_eq!(stream.position() as usize, data.len());
 }
+
+// ── #978 / NIF-D5-NEW-02 — uncompressed B-spline interpolator dispatch ──
+
+#[test]
+fn ni_bspline_transform_interpolator_uncompressed_round_trip() {
+    let header = fnv_header_bspline();
+    let mut data = Vec::new();
+    // NiBSplineInterpolator base.
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    data.extend_from_slice(&5i32.to_le_bytes());
+    data.extend_from_slice(&6i32.to_le_bytes());
+    // NiQuatTransform (32 bytes).
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // tx
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // ty
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // tz
+    data.extend_from_slice(&1.0f32.to_le_bytes()); // qw (identity)
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // qx
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // qy
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // qz
+    data.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+    // Three handles.
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&1u32.to_le_bytes());
+    data.extend_from_slice(&u32::MAX.to_le_bytes());
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "NiBSplineTransformInterpolator",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("NiBSplineTransformInterpolator must dispatch");
+    assert_eq!(block.block_type_name(), "NiBSplineTransformInterpolator");
+    let interp = block
+        .as_any()
+        .downcast_ref::<interpolator::NiBSplineTransformInterpolator>()
+        .expect("dispatch must produce NiBSplineTransformInterpolator");
+    assert_eq!(interp.spline_data_ref.index(), Some(5));
+    assert_eq!(interp.basis_data_ref.index(), Some(6));
+    assert_eq!(interp.translation_handle, 0);
+    assert_eq!(interp.rotation_handle, 1);
+    assert_eq!(interp.scale_handle, u32::MAX);
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "60-byte uncompressed body must be consumed exactly"
+    );
+}
+
+#[test]
+fn ni_bspline_float_interpolator_uncompressed_round_trip() {
+    let header = fnv_header_bspline();
+    let mut data = Vec::new();
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // start
+    data.extend_from_slice(&1.0f32.to_le_bytes()); // stop
+    data.extend_from_slice(&7i32.to_le_bytes()); // spline_data
+    data.extend_from_slice(&8i32.to_le_bytes()); // basis_data
+    data.extend_from_slice(&0.42f32.to_le_bytes()); // value
+    data.extend_from_slice(&3u32.to_le_bytes()); // handle
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "NiBSplineFloatInterpolator",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("NiBSplineFloatInterpolator must dispatch");
+    assert_eq!(block.block_type_name(), "NiBSplineFloatInterpolator");
+    let interp = block
+        .as_any()
+        .downcast_ref::<interpolator::NiBSplineFloatInterpolator>()
+        .expect("dispatch must produce NiBSplineFloatInterpolator");
+    assert_eq!(interp.value, 0.42);
+    assert_eq!(interp.handle, 3);
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "24-byte uncompressed body must be consumed exactly"
+    );
+}
+
+#[test]
+fn ni_bspline_point3_interpolator_uncompressed_round_trip() {
+    let header = fnv_header_bspline();
+    let mut data = Vec::new();
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    data.extend_from_slice(&9i32.to_le_bytes());
+    data.extend_from_slice(&10i32.to_le_bytes());
+    data.extend_from_slice(&0.5f32.to_le_bytes()); // vx
+    data.extend_from_slice(&0.6f32.to_le_bytes()); // vy
+    data.extend_from_slice(&0.7f32.to_le_bytes()); // vz
+    data.extend_from_slice(&15u32.to_le_bytes()); // handle
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "NiBSplinePoint3Interpolator",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("NiBSplinePoint3Interpolator must dispatch");
+    assert_eq!(block.block_type_name(), "NiBSplinePoint3Interpolator");
+    let interp = block
+        .as_any()
+        .downcast_ref::<interpolator::NiBSplinePoint3Interpolator>()
+        .expect("dispatch must produce NiBSplinePoint3Interpolator");
+    assert_eq!(interp.value, [0.5, 0.6, 0.7]);
+    assert_eq!(interp.handle, 15);
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "32-byte uncompressed body must be consumed exactly"
+    );
+}
