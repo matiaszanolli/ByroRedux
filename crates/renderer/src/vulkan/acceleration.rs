@@ -226,14 +226,42 @@ pub struct AccelerationManager {
     blas_scratch_buffer: Option<GpuBuffer>,
     /// Reusable scratch buffer for TLAS instance data. Amortized across
     /// frames to avoid ~320KB/frame heap allocation for large scenes.
+    ///
+    /// Pulled out / restored via `std::mem::take` at the `build_tlas`
+    /// call site. If a panic interleaves between `take` and the field
+    /// re-assignment, the field reverts to `Vec::new()` — empty capacity,
+    /// same as a fresh start. No deferred-destroy / device-handle drama
+    /// on the host-only scratch type makes this a clean unwind path.
+    /// See REN-D8-NEW-03 (audit 2026-05-09).
+    ///
+    /// One-frame capacity-amortisation lag (REN-D8-NEW-09, audit
+    /// 2026-05-09): when a cell unload drops the working-set size
+    /// dramatically (exterior → small interior), this Vec's capacity
+    /// stays at the high watermark until the next `build_tlas` call
+    /// runs `shrink_scratch_if_oversized`. The post-unload frame
+    /// continues to hold the larger backing buffer until then. ~320 KB
+    /// at the 8 k-instance ceiling — bounded and self-correcting,
+    /// flagged for visibility rather than fixed (a synchronous
+    /// shrink on unload would also free the buffer the next BUILD
+    /// would re-allocate, which is the worse trade-off).
     tlas_instances_scratch: Vec<vk::AccelerationStructureInstanceKHR>,
     /// Reusable scratch for the per-frame BLAS address sequence used by
     /// the BUILD-vs-UPDATE decision (#660). Same amortization story as
     /// `tlas_instances_scratch`: ping-ponged with `tlas[i].last_blas_addresses`
     /// via `std::mem::swap` so neither Vec churns the heap. 8 bytes per
-    /// instance — ~64 KB at the 8k-instance ceiling.
+    /// instance — ~64 KB at the 8k-instance ceiling. Same `mem::take`
+    /// panic-safe restore + capacity-amortisation lag behaviours as
+    /// `tlas_instances_scratch` (REN-D8-NEW-03 / NEW-09).
     tlas_addresses_scratch: Vec<u64>,
-    /// Monotonic frame counter for BLAS LRU tracking.
+    /// Monotonic frame counter for BLAS LRU tracking. **Shared across
+    /// every TLAS slot** — there's no per-slot counter. Each TLAS slot's
+    /// `last_used_frame` field on its `BlasEntry` references stamp this
+    /// counter, so a BLAS used by frame N + 1 (slot 0) keeps a
+    /// strictly-greater stamp than one last used by frame N (slot 1).
+    /// Correct because LRU is a global property; per-slot counters
+    /// would make a BLAS used only in even-slot frames look stale
+    /// from the odd-slot perspective. See REN-D8-NEW-12 (audit
+    /// 2026-05-09) — cosmetic note, no behaviour change implied.
     frame_counter: u64,
     /// Total BLAS memory currently allocated (static + skinned), reported
     /// by `total_blas_bytes()` for telemetry / `tex.stats` console output.
@@ -2217,6 +2245,19 @@ impl AccelerationManager {
             // Pre-size generously to avoid future resizes. 8192 covers
             // interior cells (~200-800) and large exterior cells (~3000-5000).
             // Growth: 2x current requirement, minimum 8192.
+            //
+            // The 2× + 8192-floor strategy intentionally over-allocates
+            // — a 200-instance interior gets 8192-slot backing
+            // (~660 KB BAR), a 3000-instance exterior gets 8192
+            // (still ~660 KB), and only past 4096 does the 2× term
+            // dominate. The trade-off: each TLAS resize destroys
+            // both the staging + device-local instance buffers and
+            // recreates them, including a fresh allocator slot lookup
+            // and host→device staging — collectively ~50 µs per
+            // resize. Over-allocating to amortise resizes away costs
+            // a fixed ~660 KB of BAR per TLAS slot in the typical
+            // case (well under 1 MB total across both FIF slots).
+            // See REN-D8-NEW-10 (audit 2026-05-09).
             let padded_count = ((instance_count as usize) * 2).max(8192);
             let padded_size = (std::mem::size_of::<vk::AccelerationStructureInstanceKHR>()
                 * padded_count) as vk::DeviceSize;
