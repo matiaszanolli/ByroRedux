@@ -534,6 +534,30 @@ impl VulkanContext {
         // starts from slot 0 with a clean fence/semaphore cycle.
         self.current_frame = 0;
 
+        // #913 / REN-D7-NEW-07 — reset the per-frame counter that
+        // feeds the Halton TAA jitter sequence (`draw.rs:334`) and
+        // the camera UBO (`:398`) so the first post-resize frame's
+        // jitter aligns with the freshly-recreated TAA history image
+        // (which TAA's force-history-reset gate below will treat as
+        // pure current pixel). Without this reset the Halton index
+        // continued from wherever it was pre-resize while the history
+        // image was just allocated UNDEFINED — one frame of mis-aligned
+        // reprojection visible as a ghost / smear on the first post-
+        // resize frame.
+        self.frame_counter = 0;
+
+        // Force a few-frame TAA history reset + SVGF α-elevation
+        // window so the first post-resize frames are clean
+        // accumulations rather than reprojections against the
+        // freshly-recreated (effectively undefined) history images.
+        // 8 frames matches the cell-streaming discontinuity budget
+        // (`SVGF_TAA_STREAMING_RECOVERY_FRAMES` at `byroredux/src/
+        // main.rs:56`) — at 60 FPS that's ~130 ms of recovery, in
+        // the same band as TAA's own first-frame reset gate. The
+        // robust half of the #913 fix; option 2 from the audit body.
+        const RESIZE_RECOVERY_FRAMES: u32 = 8;
+        self.signal_temporal_discontinuity(RESIZE_RECOVERY_FRAMES);
+
         log::info!(
             "Swapchain recreated: {}x{}",
             self.swapchain_state.extent.width,
