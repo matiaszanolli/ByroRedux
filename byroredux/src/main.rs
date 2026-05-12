@@ -11,6 +11,7 @@ mod parsed_nif_cache;
 mod render;
 mod scene;
 mod scene_import_cache;
+mod sf_smoke;
 mod streaming;
 mod systems;
 
@@ -154,6 +155,24 @@ fn main() -> Result<()> {
 
     log::info!("ByroRedux starting");
     log::info!("{}", byroredux_cxx_bridge::ffi::native_hello());
+
+    // --sf-smoke <CELL_EDID>: Starfield ESM resolve-rate smoke test.
+    // Headless planning-phase deliverable that walks the ESM under the
+    // current `GameKind` dispatch, picks one named interior cell, and
+    // reports the % of REFRs whose base_form_id resolves to a known
+    // StaticObject. Gate question for ROADMAP Milestone B (Starfield
+    // interior renders). See #763 / SF-D6-04. Requires `--esm <PATH>`.
+    // Logger is the global one initialised at line 152 above; the smoke
+    // is a no-window, no-engine path that prints to stdout and exits.
+    if let Some(idx) = args.iter().position(|a| a == "--sf-smoke") {
+        let cell_edid = args.get(idx + 1).cloned().ok_or_else(|| {
+            anyhow::anyhow!("--sf-smoke requires a cell EDID argument")
+        })?;
+        let esm_path = parse_string_arg(&args, "--esm").ok_or_else(|| {
+            anyhow::anyhow!("--sf-smoke requires --esm <PATH> to specify the ESM")
+        })?;
+        return sf_smoke::run(std::path::Path::new(&esm_path), &cell_edid);
+    }
 
     // Headless --cmd mode: execute command and exit without creating a window.
     if let Some(cmd_idx) = args.iter().position(|a| a == "--cmd") {
