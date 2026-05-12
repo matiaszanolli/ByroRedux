@@ -438,6 +438,13 @@ impl CausticPipeline {
         height: u32,
         name: &str,
     ) -> Result<CausticSlot> {
+        // Single-mip image. The downstream `base_mip_level: 0` /
+        // `level_count: 1` literals (view subresource, clear range,
+        // pre/post barriers — all paired with this image) are pinned
+        // to that 1 here. Going wider (e.g. mipmapped for blur or
+        // half-res accumulation) requires updating every subresource
+        // range alongside the `mip_levels` bump. See REN-D13-NEW-06
+        // (audit 2026-05-09).
         let info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .format(CAUSTIC_FORMAT)
@@ -776,9 +783,20 @@ impl CausticPipeline {
         );
 
         // ── Clear accumulator ─────────────────────────────────────────
-        // Previous use was compute write → read by composite fragment shader
-        // on the SAME frame slot in the previous use of this FIF index.
-        // Transition back to GENERAL + wait for fragment shader.
+        // For steady-state frames the previous use of this FIF slot was
+        // compute-write → fragment-read in composite, so we wait on
+        // `COMPUTE_SHADER | FRAGMENT_SHADER` before re-clearing.
+        //
+        // For the FIRST use of each FIF slot the slot is in GENERAL
+        // layout from `initialize_layouts` (one-shot transfer-pool
+        // submit, fully signalled before any `record_dispatch` runs),
+        // so the listed wait stages are over-specified at frame 0 but
+        // not incorrect — the dependency just collapses to a no-op
+        // when there's nothing in flight on those stages. The
+        // pre-fix docstring claimed "previous use was compute
+        // write" categorically and didn't acknowledge the
+        // first-frame initialized-from-transfer path. See
+        // REN-D13-NEW-03 (audit 2026-05-09).
         let slot_img = self.slots[frame].image;
         let pre_clear_barrier = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)

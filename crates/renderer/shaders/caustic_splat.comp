@@ -119,13 +119,16 @@ void main() {
     // caustic-splat pixel carries this bit. Without the mask the
     // derived instIdx would overflow the instance SSBO.
     uint meshIdRaw = texelFetch(meshIdTex, pixel, 0).r;
+    // R16_UINT bit 15 is the alpha-blend marker; the low 15 bits are
+    // the instance id. The mask below clamps the value to 0..=32767
+    // — the `if (meshId > 32767u) return;` post-mask check that used
+    // to live here was dead code by construction. The 32767-instance
+    // ceiling is the structural limit of this encoding; when M40
+    // streaming loads need more, the encoding (and meshIdTex format)
+    // moves to R32_UINT and this comment block migrates with it.
+    // See REN-D13-NEW-02 (audit 2026-05-09).
     uint meshId = meshIdRaw & 0x7FFFu;
     if (meshId == 0u) return;
-    // R16_UINT bit 15 is the alpha-blend marker; the remaining 15 bits
-    // give an effective ceiling of 32767 instances. Guard against values
-    // above that ceiling (possible when M40 streaming loads large exterior
-    // cells) to avoid indexing into random memory in the instance SSBO.
-    if (meshId > 32767u) return;
 
     // RT-enabled gate (#640). The CPU side mirrors this — the dispatch
     // is skipped when `accel_manager.tlas_handle(frame)` is `None` —
@@ -156,13 +159,45 @@ void main() {
                           instances[instIdx].avgAlbedoG,
                           instances[instIdx].avgAlbedoB);
     float tintLum = dot(avgAlbedo, vec3(0.2126, 0.7152, 0.0722));
-    tintLum = max(tintLum, 0.05); // don't zero out purely black glass
+    // Floor at `TINT_LUM_FLOOR` so glass authored at near-black (smoky
+    // chem glass, soot-tinted bottle glass) still splats *some*
+    // caustic. Pre-fix the magic 0.05 was inline; named here so a
+    // future glass-darkness audit knows the knob exists. The value
+    // is a perceptual judgement call — too high washes coloured
+    // glass caustics flat, too low drops them entirely. 0.05 reads
+    // as "you can tell there's some refractor here" on FNV chem
+    // glass and Skyrim potion bottles without overpowering the
+    // light tint of clear glass. See REN-D13-NEW-05 (audit 2026-05-09).
+    const float TINT_LUM_FLOOR = 0.05;
+    tintLum = max(tintLum, TINT_LUM_FLOOR);
 
     float ior = max(causticTune.y, 1.01);
     uint maxLights = uint(causticTune.z);
     float strength = causticTune.w;
     float scale = causticTune.x;
 
+    // ── Caustic transport model ──────────────────────────────────────
+    //
+    // The splat path below is intentionally minimal:
+    //
+    //   • Single eta — one `refract(L, n, 1/ior)` call per light. No
+    //     wavelength-dependent dispersion (red/green/blue eta split),
+    //     no per-channel splat. Chromatic glass tint is recovered
+    //     instead by modulating the scalar `tintLum` from
+    //     `avgAlbedo` above, which is a perceptually-acceptable
+    //     fake for stained glass / chem glass but breaks for true
+    //     dispersion (crystal prisms).
+    //
+    //   • Single bounce — exactly one refraction event per light, no
+    //     reflection-then-refraction or refraction-then-reflection
+    //     chains. A glass-on-water case (refractor sitting in / above
+    //     water) gets only the first refraction; the water-side
+    //     caustic is the water shader's responsibility (M38).
+    //
+    // Both restrictions are deliberate budget choices, not parser
+    // gaps. Lifting them would require either multi-channel
+    // accumulator (3× R32_UINT or RGBA16F) or a multi-pass dispatch.
+    // See REN-D13-NEW-04 (audit 2026-05-09).
     uint N_LIGHTS = min(lightCount, maxLights);
     for (uint li = 0u; li < N_LIGHTS; ++li) {
         GpuLight L = lights[li];
@@ -171,15 +206,40 @@ void main() {
         float Lrad = max(L.position_radius.w, 0.01);
         uint Ltype = uint(L.color_type.w);
 
-        // Direction of light arrival at G.
+        // Direction of light arrival at G + per-light attenuation
+        // factor `lightReach` ∈ [0, 1] applied multiplicatively to the
+        // caustic contribution below. Pre-fix REN-D13-NEW-07 the
+        // point/spot path used a hard `d2 > Lrad²` cliff that popped
+        // caustics in/out as the refractor moved across the radius
+        // boundary, and the directional path used a flat `lightFall = 1`
+        // with no surface-normal cosine, so a directional sun lit a
+        // refractor that was authored facing away from the sun.
         vec3 LtoG;
+        float lightReach;
         if (Ltype == 2u) {
-            // Directional light: `direction_angle.xyz` is the light direction.
+            // Directional light: `direction_angle.xyz` is the light
+            // direction of travel (i.e. light flows along it). Apply
+            // a Lambert cosine against the surface normal so light
+            // hitting the front face of the refractor splats and
+            // light hitting the back doesn't. The refraction normal
+            // flip below still handles the back-side case, but the
+            // cosine here saves the dispatch when the light can't
+            // physically reach the surface.
             LtoG = normalize(L.direction_angle.xyz);
+            lightReach = clamp(dot(N, -LtoG), 0.0, 1.0);
+            if (lightReach < 0.001) continue;
         } else {
             LtoG = G - Lp;
             float d2 = dot(LtoG, LtoG);
-            if (d2 > Lrad * Lrad) continue; // outside light radius
+            float r2 = Lrad * Lrad;
+            if (d2 > r2) continue; // structurally outside radius
+            // Smooth shoulder over the outer 20 % of the radius so
+            // refractors moving across the boundary fade rather than
+            // pop. `smoothstep(1, 0.8, t)` returns 0 at t=1.0 (at the
+            // radius) and 1 at t≤0.8 (inside the inner 80 %).
+            float t = sqrt(d2) / Lrad;
+            lightReach = smoothstep(1.0, 0.8, t);
+            if (lightReach < 0.001) continue;
             LtoG = LtoG * inversesqrt(d2);
         }
 
@@ -236,7 +296,11 @@ void main() {
         }
         float travelFall = 1.0 / (1.0 + hitT * hitT * 1e-4);
         float lum = dot(Lc, vec3(0.2126, 0.7152, 0.0722));
-        float contrib = lum * lightFall * travelFall * tintLum * strength;
+        // `lightReach` from the direction-derivation block above —
+        // smoothstep shoulder for point/spot + Lambert cosine for
+        // directional. Folds into the existing `lightFall` × `travelFall`
+        // attenuation chain. See REN-D13-NEW-07.
+        float contrib = lum * lightFall * lightReach * travelFall * tintLum * strength;
 
         uint fixed_val = uint(clamp(contrib * scale, 0.0, 4.0e7));
         if (fixed_val == 0u) continue;
