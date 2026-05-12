@@ -598,6 +598,105 @@ pub struct TextureSet {
     pub decal_data: Option<DecalData>,
 }
 
+/// Decoded fields from a WRLD (worldspace) record. Captures the
+/// exterior-render-critical bits that pre-#965 fell on the catch-all
+/// `_ => {}` arm of `parse_wrld_group`: parent worldspace, usable
+/// cell-grid bounds, default water / music / map references, and the
+/// 1-byte flags byte.
+///
+/// Wire layout (cross-game, sub-record dispatch):
+/// - `EDID` — editor ID (zstring, lowercased into the index key)
+/// - `WNAM` — parent worldspace FormID (u32). `None` on root
+///   worldspaces (Tamriel, Wasteland, Tamriel-of-Skyrim) since the
+///   sub-record is omitted entirely; populated on derived
+///   worldspaces (Shivering Isles → Tamriel, Solstheim → Skyrim).
+/// - `PNAM` — parent-use flags (u16). Bit set means the field is
+///   inherited from the parent worldspace: 0x01 Land, 0x02 LOD,
+///   0x04 Map, 0x08 Water, 0x10 Climate, 0x20 Imagespace (pre-TES5),
+///   0x40 SkyCell. Absent on TES4 (Oblivion).
+/// - `NAM0` — object bounds south-west corner (2 × f32 in Bethesda
+///   world units, Z-up). Disk-sampled on `Oblivion.esm` Tamriel:
+///   `-262144.0, -253952.0` ≈ cell `(-64, -62)`. The audit text
+///   originally called these "i32 cell-grid pairs"; the wire form
+///   is float world units per UESP and xEdit. The cell loader can
+///   convert to cell coords via `floor(value / 4096.0)`.
+/// - `NAM9` — object bounds north-east corner (2 × f32, same units).
+/// - `NAM2` — default water FormID (u32, WATR on FO3+/Skyrim,
+///   LTEX/WATR on Oblivion).
+/// - `ICON` — map texture path (zstring), the worldspace pause-menu
+///   map background.
+/// - `DATA` — worldspace flags byte (u8): 0x01 small-world, 0x02
+///   can't fast travel, 0x04 no LOD water, 0x08 no landscape, 0x10
+///   no sky, 0x20 fixed dimensions, 0x40 no grass.
+/// - `ZNAM` — default music FormID (u32, MUSC record).
+///
+/// Sub-records not consumed here (parsed-past by the walker so the
+/// next record still aligns): `WCTR` (TES5 centre cell), `MNAM` (map
+/// camera data), `DNAM` (default land/water height for streaming),
+/// `NAM3/NAM4` (LOD water type/height), `RNAM` (region overrides),
+/// `OFST` (per-cell LAND offset table — perf optimisation for
+/// streaming, can land in a follow-up). See OpenMW reference
+/// `components/esm4/loadwrld.cpp` and audit OBL-D3-NEW-01 / #965.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WorldspaceRecord {
+    /// FormID of the WRLD record itself.
+    pub form_id: u32,
+    /// EDID — preserved verbatim. The index keys by `.to_ascii_lowercase()`.
+    pub editor_id: String,
+    /// Object-bounds SW corner (NAM0) in Bethesda world units (Z-up).
+    /// Defaults to `(0.0, 0.0)` when absent. Combined with
+    /// `usable_max` to bound the exterior iteration radius in the
+    /// cell loader; use `usable_cell_bounds()` to convert to
+    /// inclusive cell-grid coordinates.
+    pub usable_min: (f32, f32),
+    /// Object-bounds NE corner (NAM9) in Bethesda world units. When
+    /// both `usable_min` and `usable_max` are the default `(0.0,
+    /// 0.0)`, the consumer should fall back to the explicit cells
+    /// map rather than iterate an empty rectangle.
+    pub usable_max: (f32, f32),
+    /// Parent worldspace FormID (WNAM). `None` on root worldspaces.
+    pub parent_worldspace: Option<u32>,
+    /// Parent-use flags (PNAM). Bits select which fields inherit
+    /// from the parent worldspace. Zero on TES4 (no PNAM authored).
+    pub parent_flags: u16,
+    /// Default music FormID (ZNAM, MUSC record). `None` when the
+    /// worldspace defers to the DefaultObjectManager music.
+    pub default_music: Option<u32>,
+    /// Default water FormID (NAM2). `None` when the worldspace has
+    /// no authored default water plane.
+    pub water_form: Option<u32>,
+    /// Worldspace map-texture path (ICON). Empty when not authored.
+    pub map_texture: String,
+    /// Worldspace flags byte (DATA). See struct docs for bit layout.
+    pub flags: u8,
+}
+
+impl WorldspaceRecord {
+    /// One Bethesda exterior cell spans 4096 world units on each
+    /// side. The cell loader keys exterior_cells by `(i32, i32)`
+    /// cell-grid coordinates; this helper turns the f32 world-unit
+    /// `usable_min`/`usable_max` into the inclusive grid rectangle
+    /// the loader can iterate. Returns `None` when both corners are
+    /// at the default `(0.0, 0.0)` (no NAM0/NAM9 authored — the
+    /// consumer should fall back to the explicit `exterior_cells`
+    /// keys).
+    pub fn usable_cell_bounds(&self) -> Option<((i32, i32), (i32, i32))> {
+        if self.usable_min == (0.0, 0.0) && self.usable_max == (0.0, 0.0) {
+            return None;
+        }
+        const CELL_SIZE: f32 = 4096.0;
+        let min = (
+            (self.usable_min.0 / CELL_SIZE).floor() as i32,
+            (self.usable_min.1 / CELL_SIZE).floor() as i32,
+        );
+        let max = (
+            (self.usable_max.0 / CELL_SIZE).floor() as i32,
+            (self.usable_max.1 / CELL_SIZE).floor() as i32,
+        );
+        Some((min, max))
+    }
+}
+
 /// Result of parsing an ESM file for cell loading.
 #[derive(Debug, Default)]
 pub struct EsmCellIndex {
@@ -610,6 +709,13 @@ pub struct EsmCellIndex {
     /// Landscape texture definitions: LTEX form ID → diffuse texture path.
     /// Resolved via LTEX.TNAM → TXST.TX00 (FO3+) or LTEX.ICON (Oblivion).
     pub landscape_textures: HashMap<u32, String>,
+    /// Full decoded WRLD records, keyed by lowercased EDID. The
+    /// `worldspace_climates` map below is preserved for back-compat
+    /// with the cell loader's CLMT lookup; `worldspaces` is the
+    /// canonical exterior-render entry point and carries every other
+    /// authored field (parent, bounds, flags, water, music, map). See
+    /// audit OBL-D3-NEW-01 / #965.
+    pub worldspaces: HashMap<String, WorldspaceRecord>,
     /// Worldspace climate form IDs: worldspace_name_lowercase → CLMT form ID.
     /// Extracted from the WRLD record's CNAM sub-record.
     pub worldspace_climates: HashMap<String, u32>,
@@ -704,6 +810,7 @@ impl EsmCellIndex {
 
         self.statics.extend(other.statics);
         self.landscape_textures.extend(other.landscape_textures);
+        self.worldspaces.extend(other.worldspaces);
         self.worldspace_climates.extend(other.worldspace_climates);
         self.texture_sets.extend(other.texture_sets);
         self.scols.extend(other.scols);

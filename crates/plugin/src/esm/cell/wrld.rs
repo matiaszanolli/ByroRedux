@@ -8,10 +8,15 @@ use super::*;
 use crate::esm::records::common::read_lstring_or_zstring;
 
 /// Walk the WRLD group hierarchy to find exterior cells and their placed references.
+///
+/// Populates both `worldspaces` (full WRLD record per #965) and
+/// `worldspace_climates` (CLMT FormID lookup preserved for back-compat
+/// with the cell loader — see byroredux/src/cell_loader.rs:778).
 pub(crate) fn parse_wrld_group(
     reader: &mut EsmReader,
     end: usize,
     all_exterior_cells: &mut HashMap<String, HashMap<(i32, i32), CellData>>,
+    worldspaces: &mut HashMap<String, WorldspaceRecord>,
     worldspace_climates: &mut HashMap<String, u32>,
 ) -> Result<()> {
     let mut current_wrld_name: Option<String> = None;
@@ -38,39 +43,120 @@ pub(crate) fn parse_wrld_group(
                 }
             }
         } else {
-            // WRLD record — extract worldspace name + climate form ID.
+            // WRLD record — extract worldspace name + every authored
+            // exterior-render-critical sub-record (#965).
             let header = reader.read_record_header()?;
             if &header.record_type == b"WRLD" {
                 let subs = reader.read_sub_records(&header)?;
-                let mut name_opt: Option<String> = None;
+                let mut record = WorldspaceRecord {
+                    form_id: header.form_id,
+                    ..WorldspaceRecord::default()
+                };
                 let mut climate_fid: Option<u32> = None;
                 for sub in &subs {
                     match &sub.sub_type {
                         b"EDID" => {
-                            name_opt = Some(read_zstring(&sub.data));
+                            record.editor_id = read_zstring(&sub.data);
                         }
+                        // Climate — kept as a separate scalar so the
+                        // cell loader can resolve CLMT without
+                        // walking the worldspaces map. Same FormID
+                        // also lives on the record for completeness
+                        // via the parent-flag inheritance bit.
                         b"CNAM" if sub.data.len() >= 4 => {
-                            climate_fid = Some(u32::from_le_bytes([
+                            climate_fid = read_form_id(&sub.data);
+                        }
+                        // WNAM — parent worldspace FormID (cross-game).
+                        b"WNAM" if sub.data.len() >= 4 => {
+                            record.parent_worldspace = read_form_id(&sub.data);
+                        }
+                        // PNAM — parent-use flags (FO3+/Skyrim, 1 or
+                        // 2 bytes). Read the available prefix as a
+                        // u16; pre-FO3 omits the sub-record entirely.
+                        b"PNAM" if !sub.data.is_empty() => {
+                            record.parent_flags = if sub.data.len() >= 2 {
+                                u16::from_le_bytes([sub.data[0], sub.data[1]])
+                            } else {
+                                sub.data[0] as u16
+                            };
+                        }
+                        // NAM0 / NAM9 — object-bounds SW / NE
+                        // corners (2 × f32 in Bethesda world units,
+                        // Z-up). xEdit / UESP / disk-sampled
+                        // Oblivion.esm Tamriel all agree on the f32
+                        // wire form; OpenMW reads as i32 but never
+                        // consumes the value so it doesn't notice.
+                        // See WorldspaceRecord::usable_cell_bounds.
+                        b"NAM0" if sub.data.len() >= 8 => {
+                            let x = f32::from_le_bytes([
                                 sub.data[0],
                                 sub.data[1],
                                 sub.data[2],
                                 sub.data[3],
-                            ]));
+                            ]);
+                            let y = f32::from_le_bytes([
+                                sub.data[4],
+                                sub.data[5],
+                                sub.data[6],
+                                sub.data[7],
+                            ]);
+                            record.usable_min = (x, y);
+                        }
+                        b"NAM9" if sub.data.len() >= 8 => {
+                            let x = f32::from_le_bytes([
+                                sub.data[0],
+                                sub.data[1],
+                                sub.data[2],
+                                sub.data[3],
+                            ]);
+                            let y = f32::from_le_bytes([
+                                sub.data[4],
+                                sub.data[5],
+                                sub.data[6],
+                                sub.data[7],
+                            ]);
+                            record.usable_max = (x, y);
+                        }
+                        // NAM2 — default water FormID.
+                        b"NAM2" if sub.data.len() >= 4 => {
+                            record.water_form = read_form_id(&sub.data);
+                        }
+                        // ZNAM — default music FormID (MUSC).
+                        b"ZNAM" if sub.data.len() >= 4 => {
+                            record.default_music = read_form_id(&sub.data);
+                        }
+                        // ICON — pause-menu map texture (zstring).
+                        b"ICON" => {
+                            record.map_texture = read_zstring(&sub.data);
+                        }
+                        // DATA — single-byte worldspace flags.
+                        b"DATA" if !sub.data.is_empty() => {
+                            record.flags = sub.data[0];
                         }
                         _ => {}
                     }
                 }
-                if let Some(ref name) = name_opt {
+                if !record.editor_id.is_empty() {
+                    let key = record.editor_id.to_ascii_lowercase();
+                    let cell_bounds = record.usable_cell_bounds();
                     log::info!(
-                        "Found worldspace: '{}' (form {:08X}, climate: {:08X?})",
-                        name,
+                        "Found worldspace: '{}' (form {:08X}, climate: {:08X?}, \
+                         parent: {:08X?}, world bounds: {:?}..{:?} \
+                         (cells {:?}), flags: 0x{:02X})",
+                        record.editor_id,
                         header.form_id,
                         climate_fid,
+                        record.parent_worldspace,
+                        record.usable_min,
+                        record.usable_max,
+                        cell_bounds,
+                        record.flags,
                     );
                     if let Some(clmt_fid) = climate_fid {
-                        worldspace_climates.insert(name.to_ascii_lowercase(), clmt_fid);
+                        worldspace_climates.insert(key.clone(), clmt_fid);
                     }
-                    current_wrld_name = name_opt;
+                    current_wrld_name = Some(record.editor_id.clone());
+                    worldspaces.insert(key, record);
                 }
             } else {
                 reader.skip_record(&header);

@@ -2916,3 +2916,334 @@ fn merge_from_exterior_cells_merge_per_worldspace() {
     assert!(tam.contains_key(&(1, 0)));
     assert!(master.exterior_cells.contains_key("soulcairn"));
 }
+
+// ── WRLD record decoding (#965 / OBL-D3-NEW-01) ─────────────────────
+
+/// Append one sub-record (4-CC + u16 length + payload) to a buffer.
+fn put_sub(buf: &mut Vec<u8>, ty: &[u8; 4], payload: &[u8]) {
+    buf.extend_from_slice(ty);
+    buf.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+    buf.extend_from_slice(payload);
+}
+
+/// Build a synthetic 24-byte-header WRLD record from a sub-record
+/// list. The record header is a stock FNV/Skyrim layout (no
+/// timestamp / version-control fields populated).
+fn build_wrld_record(form_id: u32, subs: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+    let mut sub_data = Vec::new();
+    for (ty, payload) in subs {
+        put_sub(&mut sub_data, ty, payload);
+    }
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"WRLD");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+    buf.extend_from_slice(&form_id.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]); // timestamp + VC + unknown
+    buf.extend_from_slice(&sub_data);
+    buf
+}
+
+/// Wrap a sequence of WRLD records in a top-level GRUP-WRLD group
+/// header (24-byte). Mirrors the on-disk layout the fused walker
+/// dispatches through.
+fn build_wrld_group(records: &[Vec<u8>]) -> Vec<u8> {
+    let payload_len: usize = records.iter().map(|r| r.len()).sum();
+    let mut group = Vec::new();
+    group.extend_from_slice(b"GRUP");
+    group.extend_from_slice(&((24 + payload_len) as u32).to_le_bytes());
+    group.extend_from_slice(b"WRLD"); // label
+    group.extend_from_slice(&0u32.to_le_bytes()); // group_type = 0 (top-level)
+    group.extend_from_slice(&[0u8; 8]); // timestamp + VC
+    for rec in records {
+        group.extend_from_slice(rec);
+    }
+    group
+}
+
+/// Drive `parse_wrld_group` over a synthetic GRUP-WRLD buffer.
+fn parse_synthetic_wrld(
+    buf: &[u8],
+) -> (
+    HashMap<String, super::WorldspaceRecord>,
+    HashMap<String, u32>,
+    HashMap<String, HashMap<(i32, i32), CellData>>,
+) {
+    let mut reader = EsmReader::new(buf);
+    let gh = reader.read_group_header().expect("WRLD group header");
+    let end = reader.group_content_end(&gh);
+    let mut exterior = HashMap::new();
+    let mut worldspaces = HashMap::new();
+    let mut climates = HashMap::new();
+    super::wrld::parse_wrld_group(
+        &mut reader,
+        end,
+        &mut exterior,
+        &mut worldspaces,
+        &mut climates,
+    )
+    .expect("parse_wrld_group");
+    (worldspaces, climates, exterior)
+}
+
+#[test]
+fn parse_wrld_captures_oblivion_root_worldspace_fields() {
+    // Synthetic Tamriel-shaped WRLD: object bounds (f32 world units),
+    // climate, default water, default music, ICON, DATA flag byte.
+    // No WNAM (root worldspace), no PNAM (TES4 doesn't author it).
+    // World-unit values pin to round cell offsets so the
+    // `usable_cell_bounds()` helper has clean asserts.
+    let nam0 = {
+        let mut v = Vec::with_capacity(8);
+        v.extend_from_slice(&(-122_880.0_f32).to_le_bytes()); // -30 cells
+        v.extend_from_slice(&(-204_800.0_f32).to_le_bytes()); // -50 cells
+        v
+    };
+    let nam9 = {
+        let mut v = Vec::with_capacity(8);
+        v.extend_from_slice(&143_360.0_f32.to_le_bytes()); //  35 cells
+        v.extend_from_slice(&225_280.0_f32.to_le_bytes()); //  55 cells
+        v
+    };
+    let wrld = build_wrld_record(
+        0x0000_003C,
+        &[
+            (b"EDID", b"Tamriel\0".to_vec()),
+            (b"CNAM", 0xDEAD_BEEF_u32.to_le_bytes().to_vec()),
+            (b"NAM2", 0x0000_BABE_u32.to_le_bytes().to_vec()),
+            (b"ICON", b"textures/menus80/tamriel.dds\0".to_vec()),
+            (b"ZNAM", 0x0009_0908_u32.to_le_bytes().to_vec()),
+            (b"NAM0", nam0),
+            (b"NAM9", nam9),
+            (b"DATA", vec![0x40]), // no-grass bit
+        ],
+    );
+    let buf = build_wrld_group(&[wrld]);
+
+    let (worldspaces, climates, _exterior) = parse_synthetic_wrld(&buf);
+    let tam = worldspaces.get("tamriel").expect("tamriel decoded");
+    assert_eq!(tam.form_id, 0x0000_003C);
+    assert_eq!(tam.editor_id, "Tamriel");
+    assert_eq!(tam.usable_min, (-122_880.0, -204_800.0));
+    assert_eq!(tam.usable_max, (143_360.0, 225_280.0));
+    assert_eq!(
+        tam.usable_cell_bounds(),
+        Some(((-30, -50), (35, 55))),
+        "world-unit bounds should snap to cell-grid via /4096"
+    );
+    assert_eq!(tam.parent_worldspace, None, "root worldspace has no WNAM");
+    assert_eq!(tam.parent_flags, 0, "TES4 omits PNAM");
+    assert_eq!(tam.water_form, Some(0x0000_BABE));
+    assert_eq!(tam.default_music, Some(0x0009_0908));
+    assert_eq!(tam.map_texture, "textures/menus80/tamriel.dds");
+    assert_eq!(tam.flags, 0x40);
+    // CNAM still mirrors into the legacy climate lookup the cell
+    // loader reads from.
+    assert_eq!(climates.get("tamriel"), Some(&0xDEAD_BEEF));
+}
+
+#[test]
+fn parse_wrld_captures_derived_worldspace_parent_link() {
+    // Synthetic Shivering Isles → Tamriel. WNAM points at the parent
+    // FormID; PNAM carries the inheritance-flag bitfield (FO3+ only —
+    // included here to exercise the u16 read path).
+    let nam0 = {
+        let mut v = Vec::with_capacity(8);
+        v.extend_from_slice(&(-40_960.0_f32).to_le_bytes()); // -10 cells
+        v.extend_from_slice(&(-40_960.0_f32).to_le_bytes());
+        v
+    };
+    let nam9 = {
+        let mut v = Vec::with_capacity(8);
+        v.extend_from_slice(&40_960.0_f32.to_le_bytes()); //  10 cells
+        v.extend_from_slice(&40_960.0_f32.to_le_bytes());
+        v
+    };
+    let wrld = build_wrld_record(
+        0x0001_55C0,
+        &[
+            (b"EDID", b"SEWorld\0".to_vec()),
+            (b"WNAM", 0x0000_003C_u32.to_le_bytes().to_vec()),
+            (b"PNAM", 0x0011_u16.to_le_bytes().to_vec()), // Land + Climate
+            (b"NAM0", nam0),
+            (b"NAM9", nam9),
+        ],
+    );
+    let buf = build_wrld_group(&[wrld]);
+    let (worldspaces, _climates, _exterior) = parse_synthetic_wrld(&buf);
+    let se = worldspaces
+        .get("seworld")
+        .expect("derived worldspace decoded");
+    assert_eq!(se.parent_worldspace, Some(0x0000_003C));
+    assert_eq!(se.parent_flags, 0x0011);
+    assert_eq!(se.usable_cell_bounds(), Some(((-10, -10), (10, 10))));
+}
+
+#[test]
+fn parse_wrld_truncated_payloads_default_safely() {
+    // Defensive: a 1-byte PNAM (pre-Skyrim variant), an empty DATA,
+    // and a NAM0 short by 1 byte must not panic. The walker should
+    // fold whatever it can read and leave the rest at default.
+    let wrld = build_wrld_record(
+        0x0000_0BAD,
+        &[
+            (b"EDID", b"TruncatedWorld\0".to_vec()),
+            (b"PNAM", vec![0x07]),       // single-byte form
+            (b"NAM0", vec![0u8; 7]),     // too short → ignored
+            (b"NAM9", vec![]),           // empty → ignored
+            (b"DATA", vec![]),           // empty → ignored
+            (b"ICON", vec![]),           // empty zstring
+        ],
+    );
+    let buf = build_wrld_group(&[wrld]);
+    let (worldspaces, _climates, _exterior) = parse_synthetic_wrld(&buf);
+    let w = worldspaces.get("truncatedworld").expect("decoded");
+    assert_eq!(w.parent_flags, 0x07, "1-byte PNAM folds into the low byte");
+    assert_eq!(w.usable_min, (0.0, 0.0), "short NAM0 stays at default");
+    assert_eq!(w.usable_max, (0.0, 0.0), "missing NAM9 stays at default");
+    assert_eq!(
+        w.usable_cell_bounds(),
+        None,
+        "default-zero bounds yield None so the consumer falls back to explicit cells"
+    );
+    assert_eq!(w.flags, 0, "empty DATA stays at default");
+    assert!(w.map_texture.is_empty());
+}
+
+#[test]
+fn merge_from_worldspaces_last_write_wins() {
+    let mut master = EsmCellIndex::default();
+    master.worldspaces.insert(
+        "tamriel".into(),
+        WorldspaceRecord {
+            form_id: 0x0000_003C,
+            editor_id: "Tamriel".into(),
+            usable_min: (-122_880.0, -204_800.0),
+            usable_max: (143_360.0, 225_280.0),
+            ..Default::default()
+        },
+    );
+
+    let mut child = EsmCellIndex::default();
+    child.worldspaces.insert(
+        "tamriel".into(),
+        WorldspaceRecord {
+            form_id: 0x0000_003C,
+            editor_id: "Tamriel".into(),
+            // DLC widens the usable bounds.
+            usable_min: (-163_840.0, -245_760.0),
+            usable_max: (184_320.0, 266_240.0),
+            parent_flags: 0x004C,
+            ..Default::default()
+        },
+    );
+    child.worldspaces.insert(
+        "soulcairn".into(),
+        WorldspaceRecord {
+            form_id: 0x0200_5500,
+            editor_id: "SoulCairn".into(),
+            parent_worldspace: Some(0x0000_003C),
+            ..Default::default()
+        },
+    );
+
+    master.merge_from(child);
+
+    let tam = master.worldspaces.get("tamriel").unwrap();
+    assert_eq!(
+        tam.usable_min,
+        (-163_840.0, -245_760.0),
+        "DLC override must replace master's bounds"
+    );
+    assert_eq!(tam.parent_flags, 0x004C);
+    let sc = master.worldspaces.get("soulcairn").unwrap();
+    assert_eq!(sc.parent_worldspace, Some(0x0000_003C));
+    assert_eq!(master.worldspaces.len(), 2);
+}
+
+/// Real-data smoke: parses `Oblivion.esm` (if present) and asserts
+/// the Tamriel WRLD record now lands in `worldspaces` with sane
+/// usable bounds. Pre-#965 this map didn't exist at all. Ignored by
+/// default — opt in with `cargo test -p byroredux-plugin -- --ignored`.
+#[test]
+#[ignore]
+fn parse_real_oblivion_esm_surfaces_tamriel_worldspace() {
+    let path = "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/Oblivion.esm";
+    if !std::path::Path::new(path).exists() {
+        eprintln!("Skipping: Oblivion.esm not found");
+        return;
+    }
+    let data = std::fs::read(path).unwrap();
+    let idx = parse_esm_cells(&data).expect("Oblivion walker");
+    let tam = idx
+        .worldspaces
+        .get("tamriel")
+        .expect("Tamriel WRLD record must be decoded after #965");
+    eprintln!(
+        "Tamriel WRLD: form {:08X}, world bounds {:?}..{:?} (cells {:?}), \
+         flags 0x{:02X}, map='{}', water={:08X?}, music={:08X?}, parent={:08X?}",
+        tam.form_id,
+        tam.usable_min,
+        tam.usable_max,
+        tam.usable_cell_bounds(),
+        tam.flags,
+        tam.map_texture,
+        tam.water_form,
+        tam.default_music,
+        tam.parent_worldspace,
+    );
+    let cell_bounds = tam
+        .usable_cell_bounds()
+        .expect("Tamriel must author NAM0/NAM9 in world units");
+    let (min_cell, max_cell) = cell_bounds;
+    assert!(
+        min_cell.0 <= max_cell.0 && min_cell.1 <= max_cell.1,
+        "usable_min must be SW of usable_max"
+    );
+    // The Cyrodiil playable region runs roughly cell (-64,-64)..(70,70).
+    // Floor of 1 cell on each side keeps the assertion stable under
+    // future authoring tweaks while still catching a 0-bounds regression.
+    assert!(
+        max_cell.0 - min_cell.0 >= 32 && max_cell.1 - min_cell.1 >= 32,
+        "Tamriel bounds rectangle should span >=32 cells in each axis, got {:?}",
+        cell_bounds,
+    );
+    assert_eq!(
+        tam.parent_worldspace, None,
+        "Tamriel is a root worldspace — must not author WNAM"
+    );
+}
+
+/// Real-data smoke: FO3 `Wasteland` WRLD must author NAM0/NAM9. The
+/// FO3 master ships a single root worldspace; later DLCs add
+/// derived ones (Anchorage, Zeta). Ignored by default.
+#[test]
+#[ignore]
+fn parse_real_fo3_esm_surfaces_wasteland_worldspace() {
+    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/Fallout3.esm";
+    if !std::path::Path::new(path).exists() {
+        eprintln!("Skipping: Fallout3.esm not found");
+        return;
+    }
+    let data = std::fs::read(path).unwrap();
+    let idx = parse_esm_cells(&data).expect("FO3 walker");
+    let waste = idx
+        .worldspaces
+        .get("wasteland")
+        .expect("FO3 'wasteland' WRLD must be decoded after #965");
+    eprintln!(
+        "FO3 Wasteland WRLD: form {:08X}, world bounds {:?}..{:?} \
+         (cells {:?}), flags 0x{:02X}, parent={:08X?}, parent_flags=0x{:04X}",
+        waste.form_id,
+        waste.usable_min,
+        waste.usable_max,
+        waste.usable_cell_bounds(),
+        waste.flags,
+        waste.parent_worldspace,
+        waste.parent_flags,
+    );
+    assert!(
+        waste.usable_cell_bounds().is_some(),
+        "FO3 Wasteland must author NAM0/NAM9"
+    );
+}

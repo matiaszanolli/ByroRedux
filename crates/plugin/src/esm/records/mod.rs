@@ -640,6 +640,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     let mut exterior_cells: HashMap<String, HashMap<(i32, i32), CellData>> = HashMap::new();
     let mut statics: HashMap<u32, StaticObject> = HashMap::new();
     let mut landscape_textures: HashMap<u32, String> = HashMap::new();
+    let mut worldspaces: HashMap<String, super::cell::WorldspaceRecord> = HashMap::new();
     let mut worldspace_climates: HashMap<String, u32> = HashMap::new();
     let mut txst_textures: HashMap<u32, String> = HashMap::new();
     let mut texture_sets: HashMap<u32, TextureSet> = HashMap::new();
@@ -686,6 +687,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 &mut reader,
                 end,
                 &mut exterior_cells,
+                &mut worldspaces,
                 &mut worldspace_climates,
             )?,
             b"LTEX" => {
@@ -1291,6 +1293,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         exterior_cells,
         statics,
         landscape_textures,
+        worldspaces,
         worldspace_climates,
         texture_sets,
         scols,
