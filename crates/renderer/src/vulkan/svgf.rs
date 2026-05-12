@@ -781,15 +781,16 @@ impl SvgfPipeline {
         })
     }
 
-    /// Dispatch the temporal accumulation compute shader.
+    /// Upload the per-frame temporal params UBO (host write only).
     ///
-    /// Must be called AFTER the main render pass ends (raw_indirect, motion,
-    /// mesh_id are in SHADER_READ_ONLY_OPTIMAL via render pass final_layout)
-    /// and BEFORE the composite pass (which samples `indirect_view(frame)`).
-    pub unsafe fn dispatch(
+    /// Must be called BEFORE the pre-render-pass bulk HOST→{VS|FS|COMPUTE}
+    /// barrier in `draw_frame`; that barrier covers the host-write →
+    /// uniform-read execution dependency for this UBO so [`Self::dispatch`]
+    /// no longer needs to emit its own. Mirrors the composite-UBO fold
+    /// landed in #909 / REN-D1-NEW-03. See #961 / REN-D10-NEW-04.
+    pub unsafe fn upload_params(
         &mut self,
         device: &ash::Device,
-        cmd: vk::CommandBuffer,
         frame: usize,
         alpha_color: f32,
         alpha_moments: f32,
@@ -823,23 +824,25 @@ impl SvgfPipeline {
             // weights complement. See #674 / DEN-4.
             params: [alpha_color, alpha_moments, first_frame, 0.0],
         };
-        self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))?;
+        self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))
+    }
 
-        // Barrier: host write of params → compute shader uniform read.
-        // Required even on HOST_COHERENT memory (execution dependency).
-        let ubo_barrier = vk::MemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::HOST_WRITE)
-            .dst_access_mask(vk::AccessFlags::UNIFORM_READ);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::HOST,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[ubo_barrier],
-            &[],
-            &[],
-        );
-
+    /// Dispatch the temporal accumulation compute shader.
+    ///
+    /// Must be called AFTER the main render pass ends (raw_indirect, motion,
+    /// mesh_id are in SHADER_READ_ONLY_OPTIMAL via render pass final_layout)
+    /// and BEFORE the composite pass (which samples `indirect_view(frame)`).
+    /// [`Self::upload_params`] must have been called this frame BEFORE the
+    /// pre-render-pass bulk HOST→{VS|FS|COMPUTE} barrier in `draw_frame`;
+    /// that barrier covers the UBO host-write → uniform-read execution
+    /// dependency so this method no longer emits its own (#961 /
+    /// REN-D10-NEW-04, mirror of #909 / REN-D1-NEW-03).
+    pub unsafe fn dispatch(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) -> Result<()> {
         // Barrier: the previous use of this frame's OUT slots (writes in
         // the previous use of this frame-in-flight index, at least two
         // frames ago) finished long before — the in-flight fence guarantees

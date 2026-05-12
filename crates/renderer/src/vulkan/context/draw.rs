@@ -1347,23 +1347,45 @@ impl VulkanContext {
             }
         }
 
+        // SVGF temporal params UBO — uploaded BEFORE the bulk barrier
+        // below so its HOST_WRITE → UNIFORM_READ at COMPUTE_SHADER fold
+        // into the same execution dependency the bulk barrier already
+        // emits for composite. Mirrors the composite-UBO fold from
+        // #909 / REN-D1-NEW-03. See #961 / REN-D10-NEW-04. The α state
+        // machine is host-side and depends on `svgf_recovery_frames`
+        // (advanced at end-of-tick); it does NOT depend on anything
+        // produced by the render pass below.
+        if !self.svgf_failed {
+            if let Some(ref mut svgf) = self.svgf {
+                let (alpha_color, alpha_moments, next_frames) =
+                    crate::vulkan::svgf::next_svgf_temporal_alpha(self.svgf_recovery_frames);
+                self.svgf_recovery_frames = next_frames;
+                if let Err(e) = unsafe {
+                    svgf.upload_params(&self.device, frame, alpha_color, alpha_moments)
+                } {
+                    log::warn!("svgf upload_params failed: {e}");
+                }
+            }
+        }
+
         // Barrier: make the instance SSBO host write (and any remaining
         // light/camera/bone host writes) visible to the vertex + fragment
         // shaders in the upcoming render pass. Also covers the composite
         // UBO host write (uploaded just above) — the composite fragment
         // shader's `UNIFORM_READ` at `FRAGMENT_SHADER` stage is already
         // in this barrier's destination mask, so the same execution
-        // dependency carries through (#909 / REN-D1-NEW-03 fold). Required
-        // by Vulkan spec even for HOST_COHERENT memory.
+        // dependency carries through (#909 / REN-D1-NEW-03 fold). The
+        // COMPUTE_SHADER stage was added to fold the SVGF UBO host
+        // barrier into this same execution dependency (#961 /
+        // REN-D10-NEW-04); the SVGF dispatch reads `param_buffers[frame]`
+        // at COMPUTE_SHADER stage and the host write above completes
+        // before this barrier so the same fold pattern applies. Other
+        // post-render-pass compute consumers (TAA / caustic / volumetrics
+        // / SSAO / bloom) still emit their own per-dispatch HOST→COMPUTE
+        // barriers — bundling them into this barrier is the same fold
+        // and is tracked as the #961 sibling sweep. Required by Vulkan
+        // spec even for HOST_COHERENT memory.
         unsafe {
-            // Host-to-device visibility barrier. Covers the instance
-            // SSBO (read by VS/FS), camera/light/bone buffers (read by
-            // VS/FS), composite UBO (read by composite FS), and — when
-            // `multiDrawIndirect` is enabled — the per-frame indirect
-            // buffer whose contents `cmd_draw_indexed_indirect` reads
-            // at `DRAW_INDIRECT` stage. Without the extra stage mask,
-            // Vulkan validation flags the indirect fetch as racing the
-            // host write.
             let instance_barrier = vk::MemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::HOST_WRITE)
                 .dst_access_mask(
@@ -1376,6 +1398,7 @@ impl VulkanContext {
                 vk::PipelineStageFlags::HOST,
                 vk::PipelineStageFlags::VERTEX_SHADER
                     | vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::COMPUTE_SHADER
                     | vk::PipelineStageFlags::DRAW_INDIRECT,
                 vk::DependencyFlags::empty(),
                 &[instance_barrier],
@@ -1842,17 +1865,11 @@ impl VulkanContext {
             // until a real lost-device repro. See #479.
             if !self.svgf_failed {
                 if let Some(ref mut svgf) = self.svgf {
-                    // #674 — temporal α state machine. 0.2 steady-state
-                    // (Schied 2017 §4 floor), 0.5 in the recovery
-                    // window after a discontinuity. Bumped via
-                    // `signal_temporal_discontinuity`; consumes one
-                    // frame from the window each draw_frame.
-                    let (alpha_color, alpha_moments, next_frames) =
-                        crate::vulkan::svgf::next_svgf_temporal_alpha(self.svgf_recovery_frames);
-                    self.svgf_recovery_frames = next_frames;
-                    if let Err(e) =
-                        svgf.dispatch(&self.device, cmd, frame, alpha_color, alpha_moments)
-                    {
+                    // #674 temporal α state machine + UBO host write
+                    // both ran BEFORE the bulk pre-render barrier
+                    // above (#961 / REN-D10-NEW-04 fold). This call
+                    // only records the SVGF compute dispatch.
+                    if let Err(e) = svgf.dispatch(&self.device, cmd, frame) {
                         log::error!(
                             "SVGF dispatch failed — pass disabled for the rest of the session: {e}"
                         );
