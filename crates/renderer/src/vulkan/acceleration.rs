@@ -1179,13 +1179,15 @@ impl AccelerationManager {
     /// # Safety
     /// `cmd` must be a recording command buffer; `vertex_buffer` must
     /// already have the COMPUTE_SHADER_WRITE → AS_BUILD_INPUT_READ
-    /// barrier in place. The caller must also emit
-    /// [`Self::record_scratch_serialize_barrier`] into `cmd` BEFORE
-    /// calling this — the shared `blas_scratch_buffer` may have been
-    /// written by a sync `build_skinned_blas` / `build_blas_batched`
-    /// earlier this frame in a different submission, and the host
-    /// fence-wait does NOT establish a device-side memory dependency
-    /// for this submission. See #644 / MEM-2-2.
+    /// barrier in place. The shared `blas_scratch_buffer` serialise
+    /// barrier (`AS_WRITE → AS_WRITE`) is now emitted as the first
+    /// statement of this function — REN-D8-NEW-15 (audit
+    /// 2026-05-11). Pre-fix this was a caller-side precondition
+    /// documented but unenforced; the next refactor adding a 2nd
+    /// refit call site could have silently dropped it. The barrier
+    /// is idempotent (`MEMORY_READ | MEMORY_WRITE → MEMORY_READ |
+    /// MEMORY_WRITE`), so any redundant caller-side emission stays
+    /// harmless. See #644 / MEM-2-2 for the original landing.
     pub unsafe fn refit_skinned_blas(
         &mut self,
         device: &ash::Device,
@@ -1196,6 +1198,18 @@ impl AccelerationManager {
         index_buffer: vk::Buffer,
         index_count: u32,
     ) -> Result<()> {
+        // #983 / REN-D8-NEW-15 — Self-emitted scratch-serialize
+        // barrier. The shared `blas_scratch_buffer` may have been
+        // written by a sync `build_skinned_blas` / `build_blas_batched`
+        // earlier this frame in a different submission, and the host
+        // fence-wait between submissions does NOT establish a
+        // device-side memory dependency for this submission. Moving
+        // the barrier inside the callee makes the precondition
+        // load-bearing in code rather than docstring; the existing
+        // caller-side emission at `context/draw.rs` becomes a
+        // harmless idempotent duplicate. See #644 / MEM-2-2.
+        self.record_scratch_serialize_barrier(device, cmd);
+
         // Capture scratch_align before the mutable borrow on
         // `self.skinned_blas` so the alignment assert further down
         // doesn't try to re-borrow `&self` (#659).
