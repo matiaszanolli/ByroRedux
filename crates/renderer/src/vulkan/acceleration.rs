@@ -2723,12 +2723,43 @@ impl AccelerationManager {
     /// The budget compare uses `static_blas_bytes`, NOT `total_blas_bytes`,
     /// because skinned per-entity BLAS aren't eviction candidates (see
     /// `static_blas_bytes` doc on the struct field for details / #920).
+    ///
+    /// Unlike [`drop_blas`](Self::drop_blas), eviction destroys the
+    /// `VkAccelerationStructureKHR` immediately rather than routing it
+    /// through `pending_destroy_blas`. That is sound because `min_idle`
+    /// (declared inline below) is strictly greater than
+    /// `MAX_FRAMES_IN_FLIGHT`, so any candidate's `last_used_frame`
+    /// predates the oldest in-flight frame's fence — its command buffer
+    /// has retired and the GPU no longer references the AS. The
+    /// `const_assert` inside the function pins that invariant: if
+    /// anyone raises `MAX_FRAMES_IN_FLIGHT` without bumping `min_idle`,
+    /// the workspace fails to compile instead of silently introducing a
+    /// use-after-free window (REN-D8-NEW-16 / #960).
     pub unsafe fn evict_unused_blas(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         if self.static_blas_bytes <= self.blas_budget_bytes {
             return;
         }
 
-        let min_idle = MAX_FRAMES_IN_FLIGHT as u64 + 1;
+        // REN-D8-NEW-16 / #960 — `evict_unused_blas` destroys the
+        // `VkAccelerationStructureKHR` immediately (no
+        // `pending_destroy_blas` round-trip), so the gate constant has
+        // to outrun the deepest in-flight frame slot. Today the gate is
+        // `MAX_FRAMES_IN_FLIGHT + 1 = 3` and `MAX_FRAMES_IN_FLIGHT = 2`
+        // (pinned by `sync.rs:32`), but a future bump to either side
+        // could silently close the safety window — e.g. someone
+        // hardcodes `MIN_IDLE_FRAMES = 3` and a later contributor
+        // raises `MAX_FRAMES_IN_FLIGHT` to 3. The const_assert below
+        // ties the two values together at compile time so that
+        // mismatch fails the workspace build instead of producing a
+        // use-after-free.
+        const MIN_IDLE_FRAMES: u64 = MAX_FRAMES_IN_FLIGHT as u64 + 1;
+        const _: () = assert!(
+            MIN_IDLE_FRAMES > MAX_FRAMES_IN_FLIGHT as u64,
+            "evict_unused_blas immediate-destroy requires \
+             MIN_IDLE_FRAMES > MAX_FRAMES_IN_FLIGHT; either widen the \
+             gate or route eviction through pending_destroy_blas",
+        );
+        let min_idle = MIN_IDLE_FRAMES;
         let current = self.frame_counter;
 
         // Collect eviction candidates: (index, last_used_frame, size).
