@@ -1424,6 +1424,40 @@ pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
     ]
 }
 
+/// Walk a `build_tod_keys` table at `hour` and return the bracketing
+/// `(slot_a, slot_b, t)` tuple for piecewise-linear palette + fog
+/// interpolation. `t` is the fraction along the `[slot_a → slot_b]`
+/// segment; pre/post-key hours land on the wrap segment
+/// `keys[last] → keys[0] + 24`.
+///
+/// Hoisted out of `weather_system` so the current snapshot walk and
+/// the WTHR cross-fade target walk share one implementation —
+/// REN-D15-NEW-05 (audit `2026-05-09`).
+pub(crate) fn pick_tod_pair(keys: &[(f32, usize); 7], hour: f32) -> (usize, usize, f32) {
+    // Wrap pre-midnight hours (e.g. 0.5) into the [1, 25) range so the
+    // last-key → first-key wrap segment is reachable from a single
+    // monotonic compare below.
+    let h = if hour < keys[0].0 { hour + 24.0 } else { hour };
+    let last = keys.len() - 1;
+    let mut found = (keys[last].1, keys[0].1, 0.0f32);
+    for i in 0..last {
+        let (h0, s0) = keys[i];
+        let (h1, s1) = keys[i + 1];
+        if h >= h0 && h < h1 {
+            found = (s0, s1, (h - h0) / (h1 - h0));
+            break;
+        }
+    }
+    // After last key (typically 22h+): interpolate night → midnight.
+    if h >= keys[last].0 {
+        let h0 = keys[last].0;
+        let h1 = keys[0].0 + 24.0;
+        let frac = ((h - h0) / (h1 - h0)).clamp(0.0, 1.0);
+        found = (keys[last].1, keys[0].1, frac);
+    }
+    found
+}
+
 /// Map a TOD slot to its `night_factor` contribution in `[0.0, 1.0]`
 /// (`0.0 = full daytime fog distance, 1.0 = full night fog distance`).
 /// Used by `weather_system` to lerp fog distance through the same TOD
@@ -1521,29 +1555,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     let keys = build_tod_keys(wd.tod_hours);
 
     // Find which two keys we're between and compute blend factor.
-    let (slot_a, slot_b, t) = {
-        // Wrap hour to the key range [1, 25) — midnight at hour 0 maps to 24+1=25.
-        let h = if hour < keys[0].0 { hour + 24.0 } else { hour };
-        let last = keys.len() - 1;
-        let mut found = (keys[last].1, keys[0].1, 0.0f32);
-        for i in 0..last {
-            let (h0, s0) = keys[i];
-            let (h1, s1) = keys[i + 1];
-            if h >= h0 && h < h1 {
-                let frac = (h - h0) / (h1 - h0);
-                found = (s0, s1, frac);
-                break;
-            }
-        }
-        // After last key (22h+): interpolate night → midnight.
-        if h >= keys[last].0 {
-            let h0 = keys[last].0;
-            let h1 = keys[0].0 + 24.0; // midnight = 25
-            let frac = ((h - h0) / (h1 - h0)).clamp(0.0, 1.0);
-            found = (keys[last].1, keys[0].1, frac);
-        }
-        found
-    };
+    let (slot_a, slot_b, t) = pick_tod_pair(&keys, hour);
 
     let lerp3 = |a: [f32; 3], b: [f32; 3], t: f32| -> [f32; 3] {
         [
@@ -1619,30 +1631,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             let target = &tr.target;
 
             let keys_b = build_tod_keys(target.tod_hours);
-            let (b_a, b_b, b_t) = {
-                let h = if hour < keys_b[0].0 {
-                    hour + 24.0
-                } else {
-                    hour
-                };
-                let last = keys_b.len() - 1;
-                let mut found = (keys_b[last].1, keys_b[0].1, 0.0f32);
-                for i in 0..last {
-                    let (h0, s0) = keys_b[i];
-                    let (h1, s1) = keys_b[i + 1];
-                    if h >= h0 && h < h1 {
-                        found = (s0, s1, (h - h0) / (h1 - h0));
-                        break;
-                    }
-                }
-                if h >= keys_b[last].0 {
-                    let h0 = keys_b[last].0;
-                    let h1 = keys_b[0].0 + 24.0;
-                    let frac = ((h - h0) / (h1 - h0)).clamp(0.0, 1.0);
-                    found = (keys_b[last].1, keys_b[0].1, frac);
-                }
-                found
-            };
+            let (b_a, b_b, b_t) = pick_tod_pair(&keys_b, hour);
 
             let target_zenith = lerp3(
                 target.sky_colors[SKY_UPPER][b_a],
@@ -2263,6 +2252,47 @@ mod weather_tod_keys_tests {
              Pre-#897 hardcoded hours produced 0.15 here. \
              Got {night_factor:.3}",
         );
+    }
+
+    /// `pick_tod_pair` mid-segment — hour lands inside a key bracket
+    /// and returns the surrounding slot pair plus the linear fraction.
+    /// This is the common path every gameplay frame walks.
+    #[test]
+    fn pick_tod_pair_mid_segment_lerp() {
+        let keys = build_tod_keys([6.0, 10.0, 18.0, 22.0]);
+        // Hour 7.0 sits between SUNRISE (6.0) and DAY (10.0) → t = 0.25.
+        let (a, b, t) = pick_tod_pair(&keys, 7.0);
+        assert_eq!(a, TOD_SUNRISE);
+        assert_eq!(b, TOD_DAY);
+        assert!((t - 0.25).abs() < 1e-5, "expected t≈0.25, got {t}");
+    }
+
+    /// `pick_tod_pair` wrap branch — pre-midnight hours (< first key)
+    /// must reach into the [last, first+24) wrap segment so the night
+    /// → midnight blend stays smooth across the day boundary.
+    #[test]
+    fn pick_tod_pair_pre_midnight_wraps_into_night_segment() {
+        let keys = build_tod_keys([6.0, 10.0, 18.0, 22.0]);
+        // Hour 0.5 wraps to 24.5; falls inside NIGHT (23) → MIDNIGHT (25).
+        let (a, b, t) = pick_tod_pair(&keys, 0.5);
+        assert_eq!(a, TOD_NIGHT, "pre-midnight hour 0.5 wraps into NIGHT");
+        assert_eq!(b, TOD_MIDNIGHT);
+        // t = (24.5 - 23) / (25 - 23) = 0.75.
+        assert!((t - 0.75).abs() < 1e-5, "expected t≈0.75, got {t}");
+    }
+
+    /// `pick_tod_pair` post-last-key branch — hour after the last
+    /// authored key (typically 22h+) interpolates NIGHT → MIDNIGHT
+    /// through the same wrap segment as the pre-midnight case.
+    #[test]
+    fn pick_tod_pair_post_night_anchor_returns_night_to_midnight() {
+        let keys = build_tod_keys([6.0, 10.0, 18.0, 22.0]);
+        // Hour 24.0 (equivalently 0.0 next day, but the wrap normalizes
+        // pre-keys[0]; this test hits the >= keys[last] branch directly).
+        let (a, b, t) = pick_tod_pair(&keys, 23.5);
+        assert_eq!(a, TOD_NIGHT);
+        assert_eq!(b, TOD_MIDNIGHT);
+        assert!(t > 0.0 && t <= 1.0);
     }
 
     /// Default FNV-style climate at noon must yield zero night_factor

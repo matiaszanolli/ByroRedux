@@ -2321,20 +2321,31 @@ void main() {
                 rayDir = normalize(jitteredTarget - rayOrigin);
                 rayDist = length(jitteredTarget - rayOrigin) - 0.1;
             } else {
-                // Directional: angular cone for stochastic penumbra.
-                // TAA averages the per-frame jittered visibility into
-                // a soft shadow edge. Physical sun is ~0.0047 rad
-                // (~0.27°) from Earth — that gives ~2.4 cm penumbra
-                // at 5m blocker distance, invisible at interior scale.
-                // 0.020 rad (~1.15°) gives ~10 cm penumbra at 5m,
-                // visible without flooding sharp edges. The previous
-                // 0.0047 was tuned for outdoor cell-scale shots
-                // (50-100m blockers) where the smaller cone matters;
-                // 0.020 widens it for interior content where most
-                // shadow casters are 2-15m away. M-LIGHT v1 — see
-                // ROADMAP.md Tier 8. Future work: depth-adaptive
-                // radius (PCSS-lite), eventually multi-tap blocker
-                // search.
+                // Directional: small-angle disk jitter, renormalized.
+                // Strictly speaking this is a 2D disk on the tangent
+                // plane scaled by `sunAngularRadius` and projected back
+                // onto the unit sphere via `normalize` — *not* a uniform
+                // spherical-cap sample (which would draw cos θ uniformly
+                // in [cos α, 1] and use ϕ ∈ [0, 2π)). For α ≲ 0.05 rad
+                // the two are visually indistinguishable (< 1% over-
+                // sampling toward the cone centre); we lean on TAA to
+                // average residual non-uniformity into a soft penumbra,
+                // which it does cheaply. Replace with a proper cone
+                // sampler if α ever grows beyond ~0.1 rad (point-source
+                // visibility from a much closer sun-like emitter).
+                // REN-D9-NEW-04 (audit `2026-05-09`).
+                //
+                // Physical sun is ~0.0047 rad (~0.27°) from Earth —
+                // that gives ~2.4 cm penumbra at 5m blocker distance,
+                // invisible at interior scale. 0.020 rad (~1.15°)
+                // gives ~10 cm penumbra at 5m, visible without
+                // flooding sharp edges. The previous 0.0047 was tuned
+                // for outdoor cell-scale shots (50-100m blockers)
+                // where the smaller cone matters; 0.020 widens it for
+                // interior content where most shadow casters are
+                // 2-15m away. M-LIGHT v1 — see ROADMAP.md Tier 8.
+                // Future work: depth-adaptive radius (PCSS-lite),
+                // eventually multi-tap blocker search.
                 const float sunAngularRadius = 0.020;
                 vec3 jitteredDir = L + (T * diskSample.x + B * diskSample.y) * sunAngularRadius;
                 rayDir = normalize(jitteredDir);

@@ -2184,6 +2184,16 @@ impl AccelerationManager {
             );
 
             // Query TLAS sizes.
+            //
+            // `GeometryFlagsKHR::OPAQUE` on `INSTANCES` is redundant with
+            // the `gl_RayFlagsOpaqueEXT` set at every `rayQueryInitialize`
+            // call site in triangle.frag — the ray-query flag forces
+            // opaque traversal regardless of geometry/instance flags. We
+            // keep the flag set anyway for stylistic parity with the BLAS
+            // build paths (which need it for the any-hit-elision path),
+            // and so a future change that drops `gl_RayFlagsOpaqueEXT`
+            // doesn't silently un-opaque the TLAS. REN-D8-NEW-01
+            // (audit `2026-05-09`).
             let geometry = vk::AccelerationStructureGeometryKHR::default()
                 .geometry_type(vk::GeometryTypeKHR::INSTANCES)
                 .flags(vk::GeometryFlagsKHR::OPAQUE)
@@ -2494,6 +2504,8 @@ impl AccelerationManager {
             &vk::BufferDeviceAddressInfo::default().buffer(tlas.instance_buffer_device.buffer),
         );
 
+        // `GeometryFlagsKHR::OPAQUE` on `INSTANCES` is redundant — see
+        // the matching note at the sizes-query site above. REN-D8-NEW-01.
         let geometry = vk::AccelerationStructureGeometryKHR::default()
             .geometry_type(vk::GeometryTypeKHR::INSTANCES)
             .flags(vk::GeometryFlagsKHR::OPAQUE)
