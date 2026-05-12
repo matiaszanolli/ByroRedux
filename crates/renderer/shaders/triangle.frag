@@ -70,7 +70,7 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 
 // ── R1 Phase 4: deduplicated material table ─────────────────────────
 //
-// Mirrors the Rust `GpuMaterial` (272 B std430, 17 vec4 slots) defined
+// Mirrors the Rust `GpuMaterial` (260 B std430, 16 vec4 + 4 B trailing) defined
 // in `crates/renderer/src/vulkan/material.rs`. Indexed by
 // `GpuInstance.materialId`. Phase 4 migrates one field (`roughness`)
 // off the per-instance copy onto this path; Phases 5–6 do the rest
@@ -78,8 +78,8 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 //
 // **Shader Struct Sync**: any field added here must be added in
 // lockstep to the Rust `GpuMaterial` struct + the matching
-// `intern`/encoding sites; the size of this struct (272 B) is pinned
-// by `gpu_material_size_is_272_bytes` on the Rust side.
+// `intern`/encoding sites; the size of this struct (260 B post-#804)
+// is pinned by `gpu_material_size_is_260_bytes` on the Rust side.
 struct GpuMaterial {
     // PBR scalars (vec4 #1)
     float roughness;

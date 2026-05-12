@@ -110,7 +110,15 @@ vec3 screen_to_world_dir(vec2 uv) {
     vec2 ndc = uv * 2.0 - 1.0;
     vec4 clip = vec4(ndc, 1.0, 1.0);
     vec4 world = params.inv_view_proj * clip;
-    return normalize(world.xyz / world.w);
+    // #926 / REN-D10-NEW-06 — defensive guard against a singular
+    // projection matrix producing `world.w == 0`. Real perspective
+    // cameras keep w strictly positive at the far plane, so the
+    // clamp is a no-op on the hot path; the floor only fires for
+    // degenerate matrices (zero-FOV, behind-camera ray, etc.) and
+    // keeps the result finite instead of producing NaN/inf that
+    // would propagate into the sky / aerial-perspective branches.
+    float w = max(abs(world.w), 1e-6);
+    return normalize(world.xyz / w);
 }
 
 // Compute sky color from view direction.

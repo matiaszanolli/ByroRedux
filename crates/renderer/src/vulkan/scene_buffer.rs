@@ -54,7 +54,7 @@ pub const MAX_INDIRECT_DRAWS: usize = 8192;
 pub const MAX_TERRAIN_TILES: usize = 1024;
 
 /// Maximum number of unique materials per frame in the
-/// [`super::material::MaterialTable`] SSBO. 4096 × 272 B = 1.1 MB
+/// [`super::material::MaterialTable`] SSBO. 4096 × 260 B = 1.04 MB
 /// per frame × 3 frames-in-flight = 3.3 MB total — trivial.
 ///
 /// Real interior cells dedup to 50–200 unique materials; a 3×3
