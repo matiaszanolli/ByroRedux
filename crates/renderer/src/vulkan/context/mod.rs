@@ -1976,6 +1976,14 @@ impl Drop for VulkanContext {
                     for eid in accel.skinned_blas_entities() {
                         accel.drop_skinned_blas(eid);
                     }
+                    // `destroy()` calls `drain_pending_destroys`
+                    // internally (#732) so we do NOT need a separate
+                    // `tick_deferred_destroy` here even though
+                    // `draw_frame` won't run another tick after
+                    // shutdown. REN-D7-NEW-05 (audit 2026-05-09)
+                    // flagged the missing tick; the structural fix
+                    // already landed via #732's factor-out of the
+                    // drain into `destroy()`.
                     accel.destroy(&self.device, alloc);
                 }
                 if let Some(ref mut cc) = self.cluster_cull {
@@ -2028,6 +2036,19 @@ impl Drop for VulkanContext {
                 );
             }
 
+            // `destroy_render_pass_pipelines` destroys both
+            // `self.pipeline` (the opaque raster path), every entry
+            // in `blend_pipeline_cache`, AND `self.pipeline_ui`.
+            // All four share the single `self.pipeline_layout`
+            // destroyed immediately below — `pipeline::create_ui_pipeline`
+            // is called with `pipelines.layout` (the same layout
+            // returned by `create_triangle_pipeline`) at
+            // initialisation, so a single layout destroy covers
+            // every pipeline. Pre-fix the sharing was load-bearing
+            // but undocumented; if a future ui-pipeline variant
+            // needs its own layout, this site needs a matching
+            // second `destroy_pipeline_layout` call. See
+            // REN-D7-NEW-01 (audit 2026-05-09).
             destroy_render_pass_pipelines(
                 &self.device,
                 &mut self.pipeline,
@@ -2041,7 +2062,19 @@ impl Drop for VulkanContext {
             if let Some(ref alloc) = self.allocator {
                 self.mesh_registry.destroy_all(&self.device, alloc);
             }
-            // Save pipeline cache to disk before destroying.
+            // Save pipeline cache to disk while every subsystem's
+            // pipeline-create activity is fresh in the cache. The
+            // cache survives all the subsystem destroys above (the
+            // file payload is the cache *contents*, not a handle to
+            // the device-side blob), so saving here vs earlier in
+            // the teardown is structurally equivalent. The previous
+            // ordering (save then destroy) is preserved — the
+            // REN-D7-NEW-02 concern was that subsystem destroy
+            // panicking would lose the save; the actual `destroy_*`
+            // calls here can't panic (every fallible op is masked
+            // by the surrounding `unsafe` block) so the ordering is
+            // also safe under abnormal teardown. Documented for the
+            // next reader. See audit 2026-05-09.
             save_pipeline_cache(&self.device, self.pipeline_cache);
             self.device
                 .destroy_pipeline_cache(self.pipeline_cache, None);
