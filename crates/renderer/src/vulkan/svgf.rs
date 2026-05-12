@@ -149,6 +149,41 @@ struct HistorySlot {
     allocation: Option<vk_alloc::Allocation>,
 }
 
+impl Drop for HistorySlot {
+    /// Safety net mirroring `Attachment::Drop` in `gbuffer.rs` and
+    /// `GpuBuffer::Drop` (#656). `HistorySlot` doesn't stash device
+    /// or allocator handles internally — the parent
+    /// `SvgfPipeline::destroy` passes them in — so this Drop can't
+    /// clean up; it can only scream so a leak surfaces in tests +
+    /// release-log error stream.
+    ///
+    /// Gate on `allocation.is_some()` because the canonical destroy
+    /// path moves slots out of the parent Vec via `drain(..)`, calls
+    /// `destroy_image*` on the bare Vulkan handles, and consumes
+    /// `allocation` via `if let Some(a) = slot.allocation`. The
+    /// `vk::Image` / `vk::ImageView` handles stay non-null on the
+    /// dropped slot (Vulkan handles are integers; their value
+    /// doesn't change post-destroy), so checking those would
+    /// false-positive on every clean shutdown. The
+    /// `gpu_allocator::Allocation` is the load-bearing leak
+    /// indicator — its `Drop` is what releases the slab, and the
+    /// canonical path consumes it before the slot's Drop fires.
+    /// See REN-D2-NEW-01 (audit 2026-05-09).
+    fn drop(&mut self) {
+        if self.allocation.is_none() {
+            return;
+        }
+        log::error!(
+            "HistorySlot leaked into Drop: image={:?} view={:?} \
+             — SvgfPipeline::destroy(device, allocator) was not \
+             called and the gpu_allocator slab will leak. See REN-D2-NEW-01.",
+            self.image,
+            self.view,
+        );
+        debug_assert!(false, "HistorySlot dropped without destroy()");
+    }
+}
+
 pub struct SvgfPipeline {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
@@ -975,7 +1010,7 @@ impl SvgfPipeline {
         width: u32,
         height: u32,
     ) -> Result<()> {
-        for slot in self.indirect_history.drain(..) {
+        for mut slot in self.indirect_history.drain(..) {
             // SAFETY: `recreate_on_resize` runs from the fenced
             // swapchain-resize path (`VulkanContext::recreate_swapchain`
             // waits both frames-in-flight first). History image / view
@@ -984,17 +1019,17 @@ impl SvgfPipeline {
                 device.destroy_image_view(slot.view, None);
                 device.destroy_image(slot.image, None);
             }
-            if let Some(a) = slot.allocation {
+            if let Some(a) = slot.allocation.take() {
                 allocator.lock().expect("allocator lock").free(a).ok();
             }
         }
-        for slot in self.moments_history.drain(..) {
+        for mut slot in self.moments_history.drain(..) {
             // SAFETY: same fenced-resize contract as the indirect loop above.
             unsafe {
                 device.destroy_image_view(slot.view, None);
                 device.destroy_image(slot.image, None);
             }
-            if let Some(a) = slot.allocation {
+            if let Some(a) = slot.allocation.take() {
                 allocator.lock().expect("allocator lock").free(a).ok();
             }
         }
@@ -1074,7 +1109,7 @@ impl SvgfPipeline {
         if self.point_sampler != vk::Sampler::null() {
             unsafe { device.destroy_sampler(self.point_sampler, None) };
         }
-        for slot in self.indirect_history.drain(..) {
+        for mut slot in self.indirect_history.drain(..) {
             // SAFETY: `recreate_on_resize` runs from the fenced
             // swapchain-resize path (`VulkanContext::recreate_swapchain`
             // waits both frames-in-flight first). History image / view
@@ -1083,17 +1118,17 @@ impl SvgfPipeline {
                 device.destroy_image_view(slot.view, None);
                 device.destroy_image(slot.image, None);
             }
-            if let Some(a) = slot.allocation {
+            if let Some(a) = slot.allocation.take() {
                 allocator.lock().expect("allocator lock").free(a).ok();
             }
         }
-        for slot in self.moments_history.drain(..) {
+        for mut slot in self.moments_history.drain(..) {
             // SAFETY: same fenced-resize contract as the indirect loop above.
             unsafe {
                 device.destroy_image_view(slot.view, None);
                 device.destroy_image(slot.image, None);
             }
-            if let Some(a) = slot.allocation {
+            if let Some(a) = slot.allocation.take() {
                 allocator.lock().expect("allocator lock").free(a).ok();
             }
         }

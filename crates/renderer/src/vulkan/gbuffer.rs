@@ -173,6 +173,36 @@ impl Attachment {
     }
 }
 
+impl Drop for Attachment {
+    /// Safety net for `Attachment`'s manual `destroy(device, allocator)`
+    /// contract. Mirrors the `GpuBuffer::Drop` pattern (#656) without
+    /// the recovery branch — `Attachment` doesn't stash device or
+    /// allocator handles internally (the parent `GBuffer::destroy`
+    /// passes them in), so the safety net can't clean up by itself;
+    /// it can only scream so the leak surfaces in tests and dev logs.
+    ///
+    /// `debug_assert!` fires in tests + dev builds the moment any
+    /// path drops a populated `Attachment` without calling
+    /// `destroy()` first; the `log::error!` carries the same signal
+    /// into release builds. Pre-fix release builds silently leaked
+    /// (5 attachments × 2 FIF slots × image + view + alloc per
+    /// attachment = up to 30 leaked Vulkan handles per `GBuffer`).
+    /// See REN-D2-NEW-01 (audit 2026-05-09).
+    fn drop(&mut self) {
+        if self.images.is_empty() && self.views.is_empty() && self.allocations.is_empty() {
+            return;
+        }
+        log::error!(
+            "Attachment leaked into Drop: {} images, {} views, {} allocations — \
+             destroy(device, allocator) was not called. See REN-D2-NEW-01.",
+            self.images.len(),
+            self.views.len(),
+            self.allocations.len(),
+        );
+        debug_assert!(false, "Attachment dropped without destroy()");
+    }
+}
+
 /// Owns the G-buffer attachment images (normal, motion, mesh_id,
 /// raw_indirect, albedo) + their views and allocations. One image per
 /// frame-in-flight slot for each attachment.

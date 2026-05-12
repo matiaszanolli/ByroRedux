@@ -875,6 +875,19 @@ impl CompositePipeline {
     /// swapchain resize. The HDR images themselves are recreated because
     /// their size matches the swapchain. Caller must also pass the new
     /// indirect + albedo views (SVGF/GBuffer just recreated them).
+    ///
+    /// **Signature parity with [`Self::new`]** (REN-D10-NEW-08, audit
+    /// 2026-05-09): every view list the constructor takes —
+    /// `indirect_views`, `albedo_views`, `caustic_views`,
+    /// `volumetric_views`, `bloom_views` — must also appear here so a
+    /// future descriptor set rewrite covers every binding the
+    /// constructor wires. Pre-fix the audit flagged this as drift
+    /// when the volumetrics + bloom views were missing from the
+    /// recreate path; the parity is restored. The parameters
+    /// [`Self::new`] takes but this method does NOT (pipeline_cache,
+    /// swapchain_format, bindless_layout) are device-owned immutable
+    /// state that survives the swapchain resize, so re-passing them
+    /// would be redundant.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub fn recreate_on_resize(

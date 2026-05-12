@@ -2258,6 +2258,18 @@ impl AccelerationManager {
             // a fixed ~660 KB of BAR per TLAS slot in the typical
             // case (well under 1 MB total across both FIF slots).
             // See REN-D8-NEW-10 (audit 2026-05-09).
+            //
+            // REN-D2-NEW-02 (audit 2026-05-09) flagged the 8192 floor
+            // as wasting ~1 MB BAR on interior cells with < 100
+            // instances. The waste is real (8192 slots × 88 B per
+            // instance × 2 FIF = ~1.4 MB across both slots) but the
+            // floor stays for the cell-streaming case: M40
+            // exterior-tile loads frequently transition through low-
+            // instance frames between high-instance cell pairs, and
+            // a per-cell-tuned floor would resize every transition.
+            // The 8192 floor is the right knob for that pattern; the
+            // 1 MB BAR cost is a fraction of the per-FIF scene
+            // buffer total (~10-20 MB).
             let padded_count = ((instance_count as usize) * 2).max(8192);
             let padded_size = (std::mem::size_of::<vk::AccelerationStructureInstanceKHR>()
                 * padded_count) as vk::DeviceSize;

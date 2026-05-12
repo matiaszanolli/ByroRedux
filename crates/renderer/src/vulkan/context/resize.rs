@@ -236,6 +236,18 @@ impl VulkanContext {
                 .expect("allocator missing during resize");
             unsafe { old_ssao.destroy(&self.device, allocator) };
             self.ssao = None;
+            // Re-use `self.pipeline_cache` for the rebuilt SSAO
+            // pipeline. The cache survives the destroy + recreate
+            // by design — `pipeline_cache` is the engine-wide
+            // VkPipelineCache handle owned by VulkanContext, not
+            // the per-pipeline cache slot — so the rebuilt SSAO
+            // pipeline reads any cached blob the prior session's
+            // pipeline-cache file deposited at startup. Pre-fix
+            // this looked like an opportunity to allocate a fresh
+            // cache on resize (cosmetic finding REN-D7-NEW-08,
+            // audit 2026-05-09); reusing it is the right call —
+            // a fresh cache would warm-cold every resize and
+            // negate the disk-cache savings.
             match SsaoPipeline::new(
                 &self.device,
                 allocator,

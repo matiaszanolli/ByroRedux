@@ -362,8 +362,21 @@ impl Drop for StagingGuard {
 /// Destruction requires the allocator, so call [`destroy`](Self::destroy)
 /// explicitly before dropping. Dropping without destroy will leak.
 /// Conservative upper bound for nonCoherentAtomSize across all GPUs.
-/// Typical: 64 bytes (NVIDIA/AMD), max observed: 256 bytes.
-/// Used to align flush offsets when the exact device value isn't plumbed through.
+/// Typical: 64 bytes (NVIDIA/AMD desktop), max observed: 256 bytes
+/// (Intel iGPU, some older mobile parts). Used to align flush
+/// offsets when the exact device value isn't plumbed through.
+///
+/// Worst-case fallback: REN-D2-NEW-03 (audit 2026-05-09, INFO).
+/// Replacing this with the queried
+/// `VkPhysicalDeviceLimits::nonCoherentAtomSize` would cut every
+/// `aligned_flush_range` call's rounded-up size by 2–4× on the
+/// typical desktop case (64 vs 256 B). Skipped pending the
+/// device-limits-plumbing groundwork (`PhysicalDeviceLimits` isn't
+/// stashed on `VulkanContext` today; adding it touches every flush
+/// site). Visible cost is bounded — each persistent host-visible
+/// mapping (UBOs, instance staging, bone palette staging) sees one
+/// flush per frame at most, so the wasted bytes per frame are
+/// O(num_mapped_buffers × 192) on the worst case ≈ a few KB.
 const NON_COHERENT_ATOM_SIZE: vk::DeviceSize = 256;
 
 /// Compute a `(offset, size)` pair that fully covers `[offset, offset+size)`

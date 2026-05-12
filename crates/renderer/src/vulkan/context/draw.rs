@@ -1932,6 +1932,16 @@ impl VulkanContext {
                     // different extent (e.g. scaled Scaleform overlay on
                     // a non-native resolution) would silently use the
                     // inherited values. Cheap two-command insurance.
+                    //
+                    // REN-D5-NEW-04 (audit 2026-05-09) flagged this as
+                    // "redundant" because the values match the
+                    // inherited ones every frame today. Keeping the
+                    // re-set is intentional — the alternative is to
+                    // gate it on "does this UI variant change extent"
+                    // which moves a one-liner of pre-bind state into
+                    // a per-variant capability check, more code than
+                    // the two `cmd_set_*` calls cost. The audit
+                    // recommendation is acknowledged + declined.
                     let viewports = [vk::Viewport {
                         x: 0.0,
                         y: 0.0,
