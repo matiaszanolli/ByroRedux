@@ -12,16 +12,14 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-05-08 (post-Session 32, FNV-D5 + Renderer-D11
-audit closeouts — `skin_compute` pool 32 → 64 + retry-suppression cache,
-shader-only TAA + SVGF NaN/Inf history guards + 15-bit mesh_id mask;
-M41-EQUIP Phase 2 close-out — LVLI dispatch in NPC outfit + inventory
-walks via `expand_leveled_form_id`, `--bench-hold` CLI flag, smoke-test
-framework with hard / soft assertions, `Inventory` / `EquipmentSlots`
-debug-server registration; standing-queue closures — #337
-`NiStencilProperty` capture, #720 `BSEyeCenterExtraData` dispatch, #873
-BSGeometry bulk reads, #848 `footstep_system` Stage::PostUpdate, #891
-`NiTextureEffect` Phase 1 import — see [HISTORY.md](HISTORY.md)).
+**Last verified**: 2026-05-12 (post-Session 34, audit-bundle closeouts
+across Renderer-D / NIF-D / Audio dimensions — ~45 issues; M38 water
+rendering shipped end-to-end (ECS + WaterPipeline + RT reflection /
+refraction); debug-CLI surface expansion (cam.*, prid, inspect,
+light.dump); 10-commit code-reorganization sweep splitting the
+>2000-line production-code files into focused submodules with the
+systems.rs DRY refactors and test-block extractions — see
+[HISTORY.md](HISTORY.md)).
 **Bench-of-record**: Prospector Saloon 133.5 FPS / 7.49 ms @ 2562
 entities — commit `220e8e1`, 2026-05-11, wall-clock bench, 300
 frames, RTX 4070 Ti @ 1280×720. Scene is glass-heavy (bottles,
@@ -274,7 +272,7 @@ active for incremental wins; don't let them block Tier 1–4.
 | M35     | Terrain LOD            | Parse `.btr` terrain LOD meshes + `.bto` object LOD. Distance-based LOD selection. Gameplay-relevant half is world streaming (M40); pure LOD is quality.                                                                                                                                                                                                                                        | M32        |
 | M37     | SVGF spatial filter    | A-trous wavelet filter using existing moments data. 3 iterations, edge-stopping on normal/depth/variance. 1-SPP → ~8-SPP visual quality on GI.                                                                                                                                                                                                                                                 | —          |
 | M37.3   | ReSTIR-DI              | Full spatiotemporal reservoir reuse. Drops shadow rays to 1/pixel while sampling hundreds of lights. Streaming-RIS already shipped as M31.5.                                                                                                                                                                                                                                                    | M31.5, M37 |
-| M38     | Transparency & water   | OIT or depth-peeled transparency. Water plane mesh with reflection/refraction. NIF alpha sort correctness. **R1 unblocked 2026-05-01** — material-table indirection means new shading variants land in `GpuMaterial` only, not lockstep across `DrawCommand` + `GpuInstance` + 4 shaders.                                                                                                            | ~~R1~~     |
+| ~~M38~~ | ~~Transparency & water~~ | **Water shipped (2026-05-11, `2ee1c68`).** ECS `WaterPlane` / `WaterVolume` / `SubmersionState` components, dedicated `WaterPipeline` (vertex displacement + Fresnel), RT reflection + refraction rays against TLAS, exterior cell loader detects water-plane refs and spawns geometry, camera submersion state writes through `submersion_system`. OIT / depth-peeled transparency for non-water alpha-blend remains future work (filed under M38.2 if/when a real workload demands it). | ~~R1~~     |
 | M39     | Texture streaming      | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction.                                                                                                                                                                                                                                                                              | —          |
 | M29.3   | Pre-skinned raster path | Phase 3 of the GPU pre-skinning arc (`SkinComputePipeline` + per-skinned-entity BLAS refit shipped in `1ae235b`, RT shadows / reflections / GI now see this-frame skinned pose). Migrate `triangle.vert:147-204` to read pre-skinned vertices from the per-skinned-entity `SkinSlot` output buffer rather than doing inline weighted-bone-matrix-sum. The same commit must re-add `VERTEX_BUFFER` to the output buffer's usage mask — dropped in `#681` (`MEM-2-6`) so deferred-Phase-3 doesn't bloat memory-type masks today. Single source of truth, drops ~50 ALU ops per skinned vertex, but adds a critical-path dependency on the compute pass: a failed slot would now break raster too. **Defer-rationale:** the rasterized skinning path is well-understood and tested on real content; the new compute path is not. Ship only after the M41 NPC-spawning rollout proves the compute + BLAS-refit chain stable on visible animated content. | `1ae235b`, M41 stable, `#681` re-add |
 | ~~M-NORMALS~~ | ~~Per-vertex tangents~~ | **Closed (2026-05-02)** — commits 91e9011 (decode `NiBinaryExtraData("Tangent space (binormal & tangent vectors)")` for Skyrim+/FO4) + 82a4563 (`synthesize_tangents` — Rust port of nifly's `CalcTangentSpace` per-triangle accumulator for FO3/FNV/Oblivion content that ships without authored tangents). Vertex stride 84 → 100 B (`tangent: [f32; 4]` at offset 84 / location 8 / RGBA32_SFLOAT); `triangle.vert/frag`, `ui.vert`, `skin_vertices.comp` updated in lockstep. `perturbNormal` re-enabled with `vertexTangent.xyz`-driven Path 1 (TBN from authored / synthesized tangent + `sign × cross(N, T)` bitangent reconstruction) and screen-space-derivative Path 2 fallback for content with neither authored nor synthesizable tangents. See [#783](https://github.com/matiaszanolli/ByroRedux/issues/783). | NIF parser |
@@ -608,6 +606,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
 - [x] **R6a-stale-7** Bench-of-record refresh — **closed 2026-05-11 at HEAD `220e8e1`** (post M41 Phase 2 close-out). Prospector 133.5 FPS / 7.49 ms @ 2562 entities (was 172.6 / 5.79 @ 1200 entities at `6a6950a` — +114% entities, +29% wall_ms; sub-linear scaling consistent with RT cost amortising across the BLAS hierarchy). Skyrim Whiterun 217.3 FPS / 4.60 ms @ 3209 entities (was 253.3 @ 1932 — +66% entities, -14% FPS, sub-linear). FO4 MedTek 68.5 FPS / 14.61 ms @ 10 809 entities (was 92.5 @ 7434 — +45% entities, -26% FPS). Frame still GPU-bound on Prospector (fence=5.81 ms / 78% wall). Two M41-EQUIP changes drove most of the entity inflation: the Phase 2 scaffold spawning NPC inventory roots (`#896` A.0 → B.2) and the REFR Euler→Y-up composition fix (`Rx · Ry · Rz`, was `Rz · Ry · Rx`) which now lands every REFR through the corrected order. **Session 33 Markarth grid diagnostic stays as a separate snapshot, not a bench-of-record candidate** — it's a new workload class (Tier 8 indirect lighting + 1500+ mesh exterior grid) which the three steady-state interior benches don't measure.
+- [ ] **R6a-stale-8** Bench-of-record at `220e8e1` is now 34 commits stale (> 30 threshold) as of Session 34 close (`0d437d6`). Drift is procedural — the 78-commit window since refresh is dominated by audit-bundle fixes (Renderer-D / NIF-D / Audio dims) + a 10-commit pure-code-motion refactor sweep (test extraction + module splits), with no perf-relevant changes. Re-run deferred pending real workload growth or M29.5 / GPU-skinning compute landing.
 - [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
 
 ### Closed — Renderer regressions (2026-05-01 / 02 live debug arc)
@@ -632,16 +631,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-05-10, verified by `/session-close`.
+Ground-truth as of 2026-05-12, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~153 802                     |
-| Rust total lines                        | ~160 086                     |
-| Source files (non-test)                 | 307                          |
+| Rust source lines (non-test)            | ~164 180                     |
+| Rust total lines                        | ~170 688                     |
+| Source files (non-test)                 | 364                          |
 | Workspace members                       | 19                           |
-| Tests (last reported by ROADMAP)        | 1879 (Session 32 1827 + Session 33 +52 across the Tier 8 visual fidelity ship — M55 volumetrics + M58 bloom + M-LIGHT v1 + golden frame harness (33f48b5), SpeedTree Phase 1 unblock (9 commits, dedicated TREE parser + TLV walker + importer placeholder + `--tree` CLI), performance audit-bundle close (5 issues #928–#932), NIF `until=X` doctrine flip (#935, ~14 sites across 11 files), BLAS eviction static/total split (#920), Anniversary Edition build-prefix strip (e2409c0, no issue — live `tex.missing` catch on Markarth). Two audits filed (`AUDIT_PERFORMANCE_2026-05-10.md`, `AUDIT_NIF_2026-05-10.md`); ~8 GitHub issues closed end-to-end + 10 new NIF issues filed via `/audit-publish`.) |
-| Open issue directories                  | 898 (`.claude/issues/`)       |
+| Tests (last reported by ROADMAP)        | 1979 (Session 33 1879 + Session 34 +100 across the audit-bundle closeouts + M38 water ship + 10-commit code-reorganization sweep — Renderer-D / NIF-D / Audio audit work, debug-CLI surface, large-module slim-down). |
+| Open issue directories                  | 928 (`.claude/issues/`)       |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
