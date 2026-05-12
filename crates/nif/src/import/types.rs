@@ -589,6 +589,40 @@ impl Default for ImportedSkin {
     }
 }
 
+/// One named attach point harvested from `BSConnectPoint::Parents`
+/// extra-data on a NIF's root node. FO4+ weapon-mod attachment graph
+/// entry.
+///
+/// The `parent` field is the skeleton bone the attach point hangs off
+/// (empty string for non-skinned anchoring on the host mesh root).
+/// `name` is the `CON_xxx` tag the OMOD record / accessory NIF
+/// references. Rotation / translation / scale form the local
+/// transform relative to the parent bone (or root).
+///
+/// Coord conversion: the NIF wire format is Z-up, but the importer
+/// applies the Z-up → Y-up swap at NIF parse time elsewhere — these
+/// values arrive in the importer's downstream Y-up frame so they can
+/// be copied 1:1 into the `AttachPoint` ECS component. See #985.
+#[derive(Debug, Clone)]
+pub struct ImportedAttachPoint {
+    pub parent: String,
+    pub name: String,
+    pub rotation: [f32; 4],
+    pub translation: [f32; 3],
+    pub scale: f32,
+}
+
+/// Child-side companion to [`ImportedAttachPoint`]: the list of
+/// attach-point names this NIF connects back to on its parent host,
+/// plus the `skinned` flag from `BSConnectPoint::Children`. Maps onto
+/// the engine's `ChildAttachConnections` ECS component at spawn time.
+/// See #985.
+#[derive(Debug, Clone, Default)]
+pub struct ImportedChildAttachConnections {
+    pub point_names: Vec<String>,
+    pub skinned: bool,
+}
+
 /// A fully imported NIF scene with hierarchy preserved.
 #[derive(Debug)]
 pub struct ImportedScene {
@@ -611,6 +645,20 @@ pub struct ImportedScene {
     pub bsx_flags: Option<u32>,
     /// BSBound from the root node's extra data (object-level bounding box).
     pub bs_bound: Option<([f32; 3], [f32; 3])>, // (center, half_extents)
+    /// FO4+ `BSConnectPoint::Parents` extra-data — named attach points
+    /// this NIF *exposes* for modular accessories to connect to (e.g.
+    /// `CON_Magazine`, `CON_Scope` on a 10mm pistol). Maps 1:1 onto the
+    /// engine's `AttachPoints` ECS component at spawn time. `None`
+    /// when the NIF authored no `BSConnectPoint::Parents` block —
+    /// almost everything except modular FO4 weapons / armor.
+    /// See #985 / NIF-D5-ORPHAN-A3.
+    pub attach_points: Option<Vec<ImportedAttachPoint>>,
+    /// FO4+ `BSConnectPoint::Children` extra-data — named attach points
+    /// this NIF *connects back to* on its parent host (e.g. a reflex
+    /// sight referencing `CON_Scope` on the pistol). Maps 1:1 onto the
+    /// engine's `ChildAttachConnections` ECS component at spawn time.
+    /// `None` for non-accessory NIFs.
+    pub child_attach_connections: Option<ImportedChildAttachConnections>,
     /// Ambient animation clip collecting every mesh-embedded controller
     /// (alpha fade, UV scroll, visibility flicker, material color
     /// pulse, shader float/color). Populated by

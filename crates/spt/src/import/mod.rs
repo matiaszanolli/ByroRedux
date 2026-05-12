@@ -135,6 +135,9 @@ pub fn import_spt_scene(
             ];
             (center, half_extents)
         }),
+        // SpeedTree placeholders carry no FO4-weapon-mod attach graph.
+        attach_points: None,
+        child_attach_connections: None,
         embedded_clip: None,
     }
 }

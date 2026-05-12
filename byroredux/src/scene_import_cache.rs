@@ -149,6 +149,8 @@ mod tests {
             particle_emitters: Vec::new(),
             bsx_flags: None,
             bs_bound: None,
+            attach_points: None,
+            child_attach_connections: None,
             embedded_clip: None,
         })
     }

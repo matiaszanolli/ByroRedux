@@ -135,6 +135,8 @@ fn import_nif_scene_impl(
         particle_emitters: Vec::new(),
         bsx_flags: None,
         bs_bound: None,
+        attach_points: None,
+        child_attach_connections: None,
         embedded_clip: crate::anim::import_embedded_animations(scene),
     };
 
@@ -165,7 +167,8 @@ fn import_nif_scene_impl(
         resolver,
     );
 
-    // Resolve extra data from the root node (BSXFlags, BSBound).
+    // Resolve extra data from the root node (BSXFlags, BSBound,
+    // BSConnectPoint::Parents / Children).
     if let Some(root_block) = scene.blocks.get(root_idx) {
         if let Some(node) = root_block
             .as_any()
@@ -191,6 +194,38 @@ fn import_nif_scene_impl(
                         .downcast_ref::<crate::blocks::extra_data::BsBound>()
                     {
                         imported.bs_bound = Some((bb.center, bb.dimensions));
+                    }
+                    // #985 / NIF-D5-ORPHAN-A3 — FO4+ weapon-mod
+                    // attachment graph. Parsers landed pre-#985 but the
+                    // payload was dropped on the floor; the OMOD /
+                    // material-swap subsystem (#973 downstream) can't
+                    // function without these reaching the ECS.
+                    if let Some(parents) = block
+                        .as_any()
+                        .downcast_ref::<crate::blocks::extra_data::BsConnectPointParents>()
+                    {
+                        let points = parents
+                            .connect_points
+                            .iter()
+                            .map(|cp| ImportedAttachPoint {
+                                parent: cp.parent.clone(),
+                                name: cp.name.clone(),
+                                rotation: cp.rotation,
+                                translation: cp.translation,
+                                scale: cp.scale,
+                            })
+                            .collect();
+                        imported.attach_points = Some(points);
+                    }
+                    if let Some(children) = block
+                        .as_any()
+                        .downcast_ref::<crate::blocks::extra_data::BsConnectPointChildren>()
+                    {
+                        imported.child_attach_connections =
+                            Some(ImportedChildAttachConnections {
+                                point_names: children.point_names.clone(),
+                                skinned: children.skinned,
+                            });
                     }
                 }
             }

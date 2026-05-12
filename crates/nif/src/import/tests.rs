@@ -1506,3 +1506,182 @@ fn plain_bs_multi_bound_node_without_packed_geom_extra_still_imports() {
         "Plain BSMultiBoundNode (no packed-extra) must still produce a node"
     );
 }
+
+// ── #985 / NIF-D5-ORPHAN-A3 — FO4 weapon-mod attach graph consumer ──
+
+/// `BSConnectPoint::Parents` extra-data on the root node lifts every
+/// authored attach point into `ImportedScene::attach_points`. Without
+/// this routing, every FO4 modular weapon imports with no discoverable
+/// attach surface — the OMOD / weapon-mod system can't function.
+#[test]
+fn bs_connect_point_parents_lifts_to_imported_scene() {
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::extra_data::{BsConnectPointParents, ConnectPointData};
+
+    // FO4 10mm-pistol-style attach graph: receiver bone exposes
+    // a magazine slot and a scope rail.
+    let parents = BsConnectPointParents {
+        name: None,
+        connect_points: vec![
+            ConnectPointData {
+                parent: "GunBoneReceiver".to_string(),
+                name: "CON_Magazine".to_string(),
+                rotation: [1.0, 0.0, 0.0, 0.0],
+                translation: [0.0, -1.5, 0.0],
+                scale: 1.0,
+            },
+            ConnectPointData {
+                parent: "GunBoneReceiver".to_string(),
+                name: "CON_Scope".to_string(),
+                rotation: [1.0, 0.0, 0.0, 0.0],
+                translation: [0.0, 0.0, 2.0],
+                scale: 1.0,
+            },
+        ],
+    };
+    let root = crate::blocks::node::NiNode {
+        av: NiAVObjectData {
+            net: NiObjectNETData {
+                name: Some(std::sync::Arc::from("10mmPistolRoot")),
+                extra_data_refs: vec![BlockRef(1)],
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        children: Vec::new(),
+        effects: Vec::new(),
+    };
+    let scene = scene_from_blocks(vec![Box::new(root), Box::new(parents)]);
+    let mut pool = StringPool::new();
+    let imported = import_nif_scene(&scene, &mut pool);
+
+    let points = imported
+        .attach_points
+        .as_ref()
+        .expect("BSConnectPoint::Parents must reach ImportedScene.attach_points");
+    assert_eq!(points.len(), 2);
+    assert_eq!(points[0].name, "CON_Magazine");
+    assert_eq!(points[0].parent, "GunBoneReceiver");
+    assert_eq!(points[0].translation, [0.0, -1.5, 0.0]);
+    assert_eq!(points[0].scale, 1.0);
+    assert_eq!(points[1].name, "CON_Scope");
+    assert_eq!(points[1].translation, [0.0, 0.0, 2.0]);
+    // Child connections were not authored on this NIF; field stays None.
+    assert!(imported.child_attach_connections.is_none());
+}
+
+/// `BSConnectPoint::Children` extra-data on the root node lifts the
+/// child-side of the attach graph (the names this accessory connects
+/// back to on its parent host) into
+/// `ImportedScene::child_attach_connections`.
+#[test]
+fn bs_connect_point_children_lifts_to_imported_scene() {
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::extra_data::BsConnectPointChildren;
+
+    // A reflex-sight accessory mesh mounting to a parent's CON_Scope.
+    let children = BsConnectPointChildren {
+        name: None,
+        skinned: false,
+        point_names: vec!["CON_Scope".to_string()],
+    };
+    let root = crate::blocks::node::NiNode {
+        av: NiAVObjectData {
+            net: NiObjectNETData {
+                name: Some(std::sync::Arc::from("ReflexSightRoot")),
+                extra_data_refs: vec![BlockRef(1)],
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        children: Vec::new(),
+        effects: Vec::new(),
+    };
+    let scene = scene_from_blocks(vec![Box::new(root), Box::new(children)]);
+    let mut pool = StringPool::new();
+    let imported = import_nif_scene(&scene, &mut pool);
+
+    let conn = imported
+        .child_attach_connections
+        .as_ref()
+        .expect("BSConnectPoint::Children must reach ImportedScene.child_attach_connections");
+    assert_eq!(conn.point_names, vec!["CON_Scope".to_string()]);
+    assert!(!conn.skinned);
+    // Parents not authored on this accessory; field stays None.
+    assert!(imported.attach_points.is_none());
+}
+
+/// `skinned: true` from `BSConnectPoint::Children` round-trips into
+/// `ImportedChildAttachConnections.skinned` — drives the equip-side
+/// "rigid attach vs bone-weighted attach" decision.
+#[test]
+fn bs_connect_point_children_skinned_flag_round_trips() {
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::extra_data::BsConnectPointChildren;
+
+    let children = BsConnectPointChildren {
+        name: None,
+        skinned: true,
+        point_names: vec!["CON_Cape".to_string()],
+    };
+    let root = crate::blocks::node::NiNode {
+        av: NiAVObjectData {
+            net: NiObjectNETData {
+                name: Some(std::sync::Arc::from("CapeAccessoryRoot")),
+                extra_data_refs: vec![BlockRef(1)],
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        children: Vec::new(),
+        effects: Vec::new(),
+    };
+    let scene = scene_from_blocks(vec![Box::new(root), Box::new(children)]);
+    let mut pool = StringPool::new();
+    let imported = import_nif_scene(&scene, &mut pool);
+
+    let conn = imported.child_attach_connections.as_ref().unwrap();
+    assert!(conn.skinned);
+}
+
+/// Sibling check: a NIF with neither `BSConnectPoint::Parents` nor
+/// `BSConnectPoint::Children` in its root extra-data leaves both
+/// fields at `None`. Defends against an unconditional default
+/// `Some(empty)` initialization that would mislead consumers into
+/// "this entity has an explicitly-empty attach graph" (vs the truth:
+/// "no graph authored").
+#[test]
+fn scene_without_connect_point_extras_leaves_fields_none() {
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+
+    let root = crate::blocks::node::NiNode {
+        av: NiAVObjectData {
+            net: NiObjectNETData {
+                name: Some(std::sync::Arc::from("PlainStatic")),
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        children: Vec::new(),
+        effects: Vec::new(),
+    };
+    let scene = scene_from_blocks(vec![Box::new(root)]);
+    let mut pool = StringPool::new();
+    let imported = import_nif_scene(&scene, &mut pool);
+
+    assert!(imported.attach_points.is_none());
+    assert!(imported.child_attach_connections.is_none());
+}

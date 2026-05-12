@@ -1,6 +1,7 @@
 //! Built-in engine components.
 
 pub mod animated;
+pub mod attach_points;
 pub mod billboard;
 pub mod bsx;
 pub mod camera;
@@ -29,6 +30,7 @@ pub use animated::{
     AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,
     AnimatedUvTransform, AnimatedVisibility,
 };
+pub use attach_points::{AttachPoint, AttachPoints, ChildAttachConnections};
 pub use billboard::{Billboard, BillboardMode};
 pub use bsx::{BSBound, BSXFlags};
 pub use camera::{ActiveCamera, Camera};
