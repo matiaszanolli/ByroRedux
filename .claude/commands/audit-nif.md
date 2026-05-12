@@ -54,7 +54,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 **Output**: `/tmp/audit/nif/dim_3.md`
 
 ### Dimension 4: Import Pipeline Correctness
-**Entry points**: `crates/nif/src/import/mod.rs` (import_nif, import_nif_scene), `crates/nif/src/import/walk.rs` (walk_node_hierarchical, walk_node_flat), `crates/nif/src/import/mesh.rs` (extract_mesh, extract_bs_tri_shape), `crates/nif/src/import/material.rs` (find_texture_path, find_alpha_property, find_two_sided, find_decal), `crates/nif/src/import/transform.rs`, `crates/nif/src/import/coord.rs`
+**Entry points**: `crates/nif/src/import/mod.rs` (thin dispatch — `import_nif`, `import_nif_scene`), `crates/nif/src/import/types.rs` (ImportedNode / ImportedMesh / ImportedScene types, post-Session-34 split), `crates/nif/src/import/tests.rs`, `crates/nif/src/import/walk.rs` (walk_node_hierarchical, walk_node_flat), `crates/nif/src/import/mesh.rs` (extract_mesh, extract_bs_tri_shape; + mesh_*_tests.rs siblings), `crates/nif/src/import/material/` (mod.rs find_texture_path/find_alpha_property/find_two_sided/find_decal, walker.rs, shader_data.rs, *_tests.rs siblings), `crates/nif/src/import/transform.rs`, `crates/nif/src/import/coord.rs`, `crates/nif/src/import/collision.rs`
 **Checklist**: All NiAVObject fields accessed via `.av.*` (no stale field access), shader property lookup covers all shader types for each game variant, texture path resolution works for NiTexturingProperty (Oblivion), BSShaderPPLightingProperty (FO3/FNV), BSLightingShaderProperty (Skyrim), BSEffectShaderProperty (Skyrim+), coordinate conversion (Z-up to Y-up) applied consistently, decal flag detection covers all shader flag bit positions per game.
 **Output**: `/tmp/audit/nif/dim_4.md`
 

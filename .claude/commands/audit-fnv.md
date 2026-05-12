@@ -51,8 +51,8 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 3: Cell Loading End-to-End
 **Subagent**: `general-purpose`
-**Entry points**: `byroredux/src/cell_loader.rs`, `byroredux/src/scene.rs`
-**Checklist**: Interior cell load — Prospector Saloon entity count, XCLL lighting, NiAlphaProperty decal routing. Exterior 7×7 grid load from WastelandNV — LAND terrain mesh, LTEX/TXST splatting, WTHR→CLMT→WTHR resolution chain, M33 cloud texture resolution through `TextureProvider`. Reference count consistency across multiple cell loads. `CachedNifImport` Arc cache prevents duplicate parsing (session 6). `CellLoadResult` exposes WeatherRecord for scene.rs consumption. Watch for memory leaks across cell unload/load cycles (M40 not shipped yet — leaks may not be caught).
+**Entry points**: `byroredux/src/cell_loader/{load,unload,exterior,references,spawn,partial,refr,terrain,water}.rs` (cell_loader.rs is thin re-export), `byroredux/src/scene/{nif_loader,world_setup}.rs` (scene.rs is thin re-export)
+**Checklist**: Interior cell load — Prospector Saloon entity count, XCLL lighting, NiAlphaProperty decal routing. Exterior 7×7 grid load from WastelandNV — LAND terrain mesh, LTEX/TXST splatting, WTHR→CLMT→WTHR resolution chain, M33 cloud texture resolution through `TextureProvider`. Reference count consistency across multiple cell loads. `CachedNifImport` Arc cache prevents duplicate parsing (session 6). `CellLoadResult` exposes WeatherRecord for `scene/world_setup.rs` consumption. Watch for memory leaks across cell unload/load cycles. M38 water-plane spawn from cell water references — verify `cell_loader/water.rs` spawns WaterPlane components and `submersion_system` writes camera state on entry.
 **Output**: `/tmp/audit/fnv/dim_3.md`
 
 ### Dimension 4: RT Lighting Pipeline — FNV Scenes
@@ -69,7 +69,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 6: Animation & Skinning (FNV) + M41 NPC Spawn Long-Tail
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/anim.rs`, `crates/core/src/animation/`, `byroredux/src/anim_convert.rs`, `byroredux/src/npc_spawn.rs`
+**Entry points**: `crates/nif/src/anim.rs` (+ `anim/types.rs`, `anim/tests.rs`), `crates/core/src/animation/`, `byroredux/src/anim_convert.rs`, `byroredux/src/npc_spawn.rs`
 **Checklist**: `.kf` file loading from BSA (`--kf meshes/anim.kf`). AnimationClipRegistry populated correctly. NiTransformInterpolator + NiFloatInterpolator + NiBoolInterpolator channels sample correctly. Text key events collected from NiTextKeyExtraData. Cycle types Clamp / Loop / Reverse all honored. KFM state machine parser. FixedString interning at clip load time (#340) — no per-frame StringPool locks. Skinning data extraction from NiSkinData sparse weights — ready for M29 GPU skinning. #178 SkinnedMesh palette computed correctly.
 **M41.0 long-tail regression guards (Session 29)**:
 - B-spline pose-fallback (#772, 3c32a5e): gated on a `FLT_MAX` sentinel. Without the gate, NPCs vanish under FNV `BSPSysSimpleColorModifier` particle stacks that share keyframe time-zero with the actor's animation player. **Note**: B-splines (`NiBSplineCompTransformInterpolator`) ARE reachable on FNV/FO3 (`feedback_bspline_not_skyrim_only.md`) — do not rule them out by game era.

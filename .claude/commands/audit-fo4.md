@@ -59,7 +59,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 3: FO4 Shader Flags & BGSM Material Reference
 **Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/blocks/properties.rs` (BSLightingShaderProperty), `crates/nif/src/import/material.rs`
+**Entry points**: `crates/nif/src/blocks/properties.rs` (BSLightingShaderProperty), `crates/nif/src/import/material/` (mod, walker, shader_data)
 **Checklist**: Shader flags — u32 pair read correctly (shader_flags_1 + shader_flags_2, two separate fields). Flag bit positions for FO4 differ from Skyrim — verify decal, alpha-test, skinned, glow, window, refraction, parallax, facegen bits are read from the correct mask + bit. BSLightingShaderProperty stopcond on BGSM Name path — when the material is external, parser returns early without reading the Phong trailing fields (those belong in the BGSM). `ImportedMesh.material_path` flows through to `Material.material_path` so diagnostics show BGSM references. `mesh.info <entity_id>` debug command surfaces material_path when texture_path is absent (session 10 behavior). **BSShaderTextureSet slot routing on `BSLightingShaderType`** (#563, d9bc363): SkinTint and HairTint sample from different slots than the default LSP path — verify the per-shader-type slot map is in lockstep with what the fragment shader reads.
 **Output**: `/tmp/audit/fo4/dim_3.md`
 

@@ -59,7 +59,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 3: BGSM Material Reference Flow
 **Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/blocks/properties.rs` (stopcond), `crates/nif/src/import/material.rs`
+**Entry points**: `crates/nif/src/blocks/properties.rs` (stopcond), `crates/nif/src/import/material/` (mod, walker, shader_data)
 **Checklist**: Stopcond check — BSVER ≥ 155 && Name is non-empty BGSM/BGEM path → return material-reference stub + **do NOT read the Phong trailing fields** (they belong in the BGSM). Name path flows through `ImportedMesh.material_path` → `Material.material_path`. Validate on a Starfield mesh that references a BGSM: `mesh.info` debug command shows the material path and `tex.missing` lists it as expected-missing (correct behavior). Check whether the BGEM variant is handled distinctly from BGSM (different texture set conventions). Count unique BGSM / BGEM paths in a Starfield archive — this is the work queue for the eventual BGSM parser.
 **Output**: `/tmp/audit/starfield/dim_3.md`
 

@@ -53,7 +53,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/performance/dim_3.md`
 
 ### Dimension 4: ECS Query Patterns
-**Entry points**: `byroredux/src/systems.rs` (all system functions), `crates/core/src/ecs/world.rs`, `crates/core/src/ecs/query.rs`, `crates/core/src/ecs/lock_tracker.rs`
+**Entry points**: `byroredux/src/systems/{animation, audio, billboard, bounds, camera, debug, particle, water, weather}.rs` (post-Session-34 split; `systems.rs` is a 27-line module index), `crates/core/src/ecs/world.rs`, `crates/core/src/ecs/query.rs`, `crates/core/src/ecs/lock_tracker.rs`
 **Checklist**: Query lock duration (held across I/O or GPU ops?), redundant queries in same system, name index rebuild frequency, animation_system per-frame HashMap builds, transform_propagation_system BFS efficiency.
 **2026-05-04 baseline (must not regress)**:
 - `lock_tracker::held_others` Vec collection is `cfg(debug_assertions)`-gated (#823 ECS-PERF-01) — release builds were paying ~100 small allocs/frame for a no-op. Re-enabling for release is a regression
@@ -74,7 +74,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/performance/dim_5.md`
 
 ### Dimension 6: CPU Allocation Hot Paths
-**Entry points**: `byroredux/src/systems.rs` (animation_system, transform_propagation_system), `byroredux/src/render.rs` (build_render_data)
+**Entry points**: `byroredux/src/systems/animation.rs` (animation_system, transform_propagation_system; post-Session-34 split), `byroredux/src/render.rs` (build_render_data)
 **Checklist**: Per-frame Vec allocations (should use pre-allocated buffers?), String allocations in name lookups (already fixed with FixedString?), HashMap rebuilds, temporary Vec<DrawCommand> growth, scratch reuse vs realloc — diff against `ScratchTelemetry` baseline (337 KB / 320 B wasted on Prospector). Allocation findings should explicitly call out the dhat-infra gap (see Known Infrastructure Gap above) and note whether the proposed fix is testable today.
 **Output**: `/tmp/audit/performance/dim_6.md`
 
@@ -89,7 +89,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/performance/dim_8.md`
 
 ### Dimension 9: World Streaming & Cell Transitions (M40)
-**Entry points**: `byroredux/src/streaming.rs`, `byroredux/src/cell_loader.rs` (and cell_loader_*.rs siblings), `byroredux/src/npc_spawn.rs`
+**Entry points**: `byroredux/src/streaming.rs` (+ `streaming_tests.rs`), `byroredux/src/cell_loader/{load,unload,exterior,references,spawn,partial,refr,terrain,water,nif_import_registry,load_order}.rs` (post-Session-34 split — `cell_loader.rs` is a thin re-export, NOT the impl), `byroredux/src/npc_spawn.rs`
 **Checklist**: Cell-transition stall budget (frame-time spike at boundary crossing). Async pre-parse worker thread doing real work off-main (verify with profiler). NIF import cache hit rate during streaming (cached across cells, not per-cell churn). BLAS LRU eviction at 1 GB budget triggers smoothly during streaming, no thrash. Texture upload budget per frame during streaming — staging buffer reuse, not realloc. Shutdown drain joins worker without leaks. Single-cell-at-a-time today (Phase 1a/1b) — multi-cell exterior grid is M40 follow-up; baseline must not regress.
 **Output**: `/tmp/audit/performance/dim_9.md`
 

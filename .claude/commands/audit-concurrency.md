@@ -30,7 +30,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 ## Phase 2: Launch Dimension Agents
 
 ### Dimension 1: ECS Lock Ordering
-**Entry points**: `crates/core/src/ecs/world.rs`, `crates/core/src/ecs/query.rs`, all system functions in `byroredux/src/systems.rs`
+**Entry points**: `crates/core/src/ecs/world.rs`, `crates/core/src/ecs/query.rs`, all system functions under `byroredux/src/systems/` (post-Session-34: `animation.rs`, `audio.rs`, `billboard.rs`, `bounds.rs`, `camera.rs`, `debug.rs`, `particle.rs`, `water.rs`, `weather.rs` — `systems.rs` itself is now a 27-line module index)
 **Checklist**: TypeId-sorted lock acquisition in multi-component queries, RwLock held across system function calls, query_mut dropping before next query, resource_mut scope, nested query patterns (animation_system queries Player then Transform), World::insert during system execution.
 **Output**: `/tmp/audit/concurrency/dim_1.md`
 

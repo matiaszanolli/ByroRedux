@@ -49,7 +49,7 @@ Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 - TLAS refit: `last_blas_addresses` comparison must handle mesh registry changes (add/remove)
 - M29.5 skin compute: per-skinned-mesh output buffer usage flags include `STORAGE_BUFFER` AND `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR`; M29.3 also re-adds `VERTEX_BUFFER` (#681 / `MEM-2-6` regression note). Wrong usage mask = device lost.
 - Skin BLAS refit: vertex/geometry count must match the original BUILD; bone count change forces full rebuild
-- Bone palette: `MAX_TOTAL_BONES` overflow guard at `render.rs:204` actually fires (silent truncation past cap was the M29 regression)
+- Bone palette: `MAX_TOTAL_BONES` overflow guard in `byroredux/src/render.rs` (was `render.rs:204` pre-Session-34; line may have drifted — search `MAX_TOTAL_BONES` to confirm) actually fires (silent truncation past cap was the M29 regression). Regression-guard tests live at `byroredux/src/render/bone_palette_overflow_tests.rs`
 
 ### 7. New Compute Pipeline Safety (TAA, Caustic, Skin)
 - TAA history images held in `GENERAL` layout (storage write + sampled read coexist); no UNDEFINED transitions per frame

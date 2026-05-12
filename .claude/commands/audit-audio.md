@@ -107,7 +107,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/audio/dim_5.md`
 
 ### Dimension 6: ECS Lifecycle & Cell Streaming (M40 Interaction)
-**Entry points**: `crates/audio/src/lib.rs` — `audio_system`, `prune_stopped_sounds`, `OneShotSound`, `AudioEmitter`; cross-cut: `byroredux/src/streaming.rs` (cell unload), `byroredux/src/cell_loader.rs` (cell load)
+**Entry points**: `crates/audio/src/lib.rs` (+ `crates/audio/src/tests.rs` post-Session-34 split) — `audio_system`, `prune_stopped_sounds`, `OneShotSound`, `AudioEmitter`; cross-cut: `byroredux/src/streaming.rs` (cell unload), `byroredux/src/cell_loader/{load,unload}.rs` (cell load/unload — was monolithic cell_loader.rs pre-Session-34)
 **Checklist**:
 - `audio_system` is documented to run at `Stage::Late` (after transform propagation produces final world poses). Verify the Schedule registration matches; running before transform propagation reads stale `GlobalTransform` for the listener and emitters
 - `OneShotSound` marker lifecycle: removed by `dispatch_new_oneshots` after dispatch (single-frame). Audit any path that retains the marker across frames (would re-trigger the sound every frame)

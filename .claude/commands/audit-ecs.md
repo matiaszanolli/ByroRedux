@@ -56,8 +56,9 @@ Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 ### 8. ECS Hot-Path Performance Invariants (2026-05-04 batch — regression guards)
 - `lock_tracker::held_others` Vec collection is `cfg(debug_assertions)`-gated (#823 ECS-PERF-01). Re-enabling for release rebuilds ~100 small allocs/frame for a no-op
 - `NameIndex.map` is refilled in place via `HashMap::clear` + reinsert (#824 ECS-PERF-02). The `HashMap::new() + std::mem::swap` pattern costs ~3 ms cell-stream-in spike — a regression test should pin the in-place refill
-- `transform_propagation_system` caches the root entity set keyed on `(Transform::len, Parent::len, next_entity_id)` (#825 ECS-PERF-03). Recomputing roots every frame is the ~250 µs/frame regression at Megaton scale
-- `animation_system` hoists `events` / `seen_labels` scratches out of the per-entity loop and uses `clone` (not `mem::take`) so capacity persists (#828 ECS-PERF-06). Per-iteration allocation is the regression pattern
+- `transform_propagation_system` (now in `byroredux/src/systems/animation.rs` post-Session-34 split) caches the root entity set keyed on `(Transform::len, Parent::len, next_entity_id)` (#825 ECS-PERF-03). Recomputing roots every frame is the ~250 µs/frame regression at Megaton scale
+- `animation_system` (now in `byroredux/src/systems/animation.rs`) hoists `events` / `seen_labels` scratches out of the per-entity loop and uses `clone` (not `mem::take`) so capacity persists (#828 ECS-PERF-06). Per-iteration allocation is the regression pattern. Helpers `ensure_subtree_cache`, `write_root_motion`, `apply_bool_channels` factored out by `2bdbc36`; `write_lazy!` macro collapses 5 color-target match arms — drift in any of these helpers risks DRY-undo
+- `footstep_system` (`byroredux/src/systems/animation.rs` or `systems/audio.rs`) writes to the `FootstepScratch: Resource` (#932 PERF-CPU-02) using `mem::take` + restore pattern preserving Vec capacity across frames. Per-frame `Vec::new` is the regression
 - `World::despawn` poisoned-lock panic uses a `type_names` side-table to name the offending component (#466 E-03). Removing the side-table means panic messages lose the type name — bisecting takes 10× longer
 
 ## Process

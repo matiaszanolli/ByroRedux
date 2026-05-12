@@ -27,19 +27,26 @@ If `--since` provided: `git log --since="<date>" --oneline && git diff $(git log
 
 | Domain | File Patterns | Risk |
 |--------|--------------|------|
-| **Vulkan/GPU** | `crates/renderer/src/vulkan/*` | HIGH |
-| **RT / Accel** | `crates/renderer/src/vulkan/acceleration.rs`, `crates/renderer/src/vulkan/svgf.rs`, `crates/renderer/src/vulkan/gbuffer.rs`, `crates/renderer/src/vulkan/composite.rs` | HIGH |
-| **Shaders** | `crates/renderer/shaders/*` | HIGH |
-| **ECS Core** | `crates/core/src/ecs/*` | HIGH |
-| **NIF Parser** | `crates/nif/src/blocks/*`, `crates/nif/src/import/*` | HIGH |
-| **BSA/Archive** | `crates/bsa/src/*` | HIGH |
-| **ESM Parser** | `crates/plugin/src/esm/*` | MEDIUM |
-| **Animation** | `crates/core/src/animation/*`, `crates/nif/src/anim.rs` | MEDIUM |
-| **Cell Loader** | `byroredux/src/cell_loader.rs` | MEDIUM |
-| **Systems** | `byroredux/src/systems.rs`, `byroredux/src/render.rs` | MEDIUM |
-| **Main Loop** | `byroredux/src/main.rs` | MEDIUM |
-| **Tests** | `*/tests/*`, `*#[test]*` | LOW |
-| **Docs** | `*.md`, `docs/*` | LOW |
+| **Vulkan/GPU** | `crates/renderer/src/vulkan/**` | HIGH |
+| **RT / Accel** | `crates/renderer/src/vulkan/acceleration.rs`, `svgf.rs`, `gbuffer.rs`, `composite.rs` | HIGH |
+| **Volumetrics (M55)** | `crates/renderer/src/vulkan/volumetrics.rs`, `crates/renderer/shaders/volumetric_*.comp` | HIGH |
+| **Bloom (M58)** | `crates/renderer/src/vulkan/bloom.rs`, `crates/renderer/shaders/bloom_*.comp` | HIGH |
+| **Water (M38)** | `crates/renderer/src/vulkan/water.rs`, `crates/renderer/shaders/water.{vert,frag}`, `byroredux/src/systems/water.rs`, `byroredux/src/cell_loader/water.rs` | HIGH |
+| **Shaders** | `crates/renderer/shaders/**` | HIGH |
+| **ECS Core** | `crates/core/src/ecs/**` | HIGH |
+| **NIF Parser** | `crates/nif/src/blocks/**`, `crates/nif/src/import/**` | HIGH |
+| **BSA/Archive** | `crates/bsa/src/**` | HIGH |
+| **SpeedTree** | `crates/spt/src/**`, `byroredux/src/cell_loader/refr.rs` (.spt route) | MEDIUM |
+| **ESM Parser** | `crates/plugin/src/esm/**` (incl. `records/misc/**` post-Session-34 split: water/character/world/ai/magic/effects/equipment) | MEDIUM |
+| **Animation** | `crates/core/src/animation/**`, `crates/nif/src/anim.rs` + `anim/{types,tests}.rs` | MEDIUM |
+| **Cell Loader** | `byroredux/src/cell_loader/**` (was monolithic `cell_loader.rs` pre-Session-34) | MEDIUM |
+| **Systems** | `byroredux/src/systems/**` (was monolithic `systems.rs` pre-Session-34) + `byroredux/src/render.rs` + `render/**` | MEDIUM |
+| **Scene Setup** | `byroredux/src/scene/**` (was monolithic `scene.rs` pre-Session-34) | MEDIUM |
+| **Main Loop** | `byroredux/src/main.rs`, `byroredux/src/commands.rs` | MEDIUM |
+| **Asset Provider** | `byroredux/src/asset_provider.rs` (sibling-BSA auto-load, AE pipeline-path strip) | MEDIUM |
+| **Audio** | `crates/audio/src/{lib,tests}.rs` | MEDIUM |
+| **Tests** | `**/tests/**`, `**/*_tests.rs`, `byroredux/tests/golden_frames.rs` | LOW |
+| **Docs** | `*.md`, `docs/**` | LOW |
 
 ## Step 3: Audit Each Changed File
 

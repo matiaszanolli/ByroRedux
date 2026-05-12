@@ -1,7 +1,13 @@
-# OBL-D3-NEW-02: Oblivion-unique base records BSGN/CLOT/APPA/SGST/SLGM silently skipped
-
-**Labels**: bug, medium, legacy-compat
-
+title:	OBL-D3-NEW-02: Oblivion-unique base records BSGN/CLOT/APPA/SGST/SLGM silently skipped
+state:	OPEN
+author:	matiaszanolli (Matias Zanolli)
+labels:	bug, legacy-compat, medium
+comments:	0
+assignees:	
+projects:	
+milestone:	
+number:	966
+--
 **Audit**: `docs/audits/AUDIT_OBLIVION_2026-05-11_DIM3.md`
 **Severity**: MEDIUM
 **Domain**: ESM / TES4 record dispatch

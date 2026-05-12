@@ -26,10 +26,33 @@ After NIF parser changes (N23 work):
 
 ### `--preset renderer-deep`
 After significant renderer changes:
-1. `/audit-renderer`              # all 15 dimensions
+1. `/audit-renderer`              # all 20 dimensions (post-Session-34: dims 17 water, 18 volumetrics, 19 bloom, 20 soft shadows)
 2. `/audit-performance --focus 1,2,3,7,8`
 3. `/audit-concurrency --focus 2,3,5`
 4. `/audit-safety`
+
+### `--preset water-deep`
+After M38 water-rendering changes:
+1. `/audit-renderer --focus 8,9,10,17`     # TLAS + rays + composite + water dim
+2. `/audit-concurrency --focus 2,3`
+3. `/audit-safety`
+
+### `--preset volumetrics-deep`
+After M55 volumetric-lighting changes:
+1. `/audit-renderer --focus 1,2,9,10,18`    # sync + memory + RT + composite + volumetrics dim
+2. `/audit-performance --focus 1,2`
+3. `/audit-safety`
+
+### `--preset bloom-deep`
+After M58 bloom-pyramid changes:
+1. `/audit-renderer --focus 1,10,19`        # sync + composite + bloom dim
+2. `/audit-performance --focus 1,2`
+3. `/audit-safety`
+
+### `--preset speedtree-deep`
+After SpeedTree (.spt) Phase 1+ changes:
+1. `/audit-speedtree`
+2. `/audit-incremental --commits 10`
 
 ### `--preset rt-deep`
 After ray tracing / denoiser / G-buffer changes:
@@ -93,8 +116,9 @@ Full audit coverage (longest — run monthly or before major milestones):
 5. `/audit-performance`
 6. `/audit-concurrency`
 7. `/audit-audio`
-8. `/audit-legacy-compat`
-9. `/audit-regression`
+8. `/audit-speedtree`
+9. `/audit-legacy-compat`
+10. `/audit-regression`
 
 ### `--preset nif-all-games`
 Test NIF parser against all available game data:

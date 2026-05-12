@@ -13,12 +13,12 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,7`). Default: all 16.
+- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,7`). Default: all 20.
 - `--depth shallow|deep`: `shallow` = check patterns only; `deep` = trace data flow and validate invariants. Default: `deep`.
 
 ## Extra Per-Finding Fields
 
-- **Dimension**: Vulkan Sync | GPU Memory | Pipeline State | Render Pass | Command Recording | Shader Correctness | Resource Lifecycle | Acceleration Structures | RT Ray Queries | Denoiser & Composite | TAA | GPU Skinning | Caustics | Material Table (R1) | Sky/Weather/Exterior Lighting | Tangent-Space & Normal Maps (M-NORMALS)
+- **Dimension**: Vulkan Sync | GPU Memory | Pipeline State | Render Pass | Command Recording | Shader Correctness | Resource Lifecycle | Acceleration Structures | RT Ray Queries | Denoiser & Composite | TAA | GPU Skinning | Caustics | Material Table (R1) | Sky/Weather/Exterior Lighting | Tangent-Space & Normal Maps (M-NORMALS) | Water (M38) | Volumetrics (M55) | Bloom (M58) | M-LIGHT v1 Soft Shadows
 
 ## Phase 1: Setup
 
@@ -217,7 +217,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - COMPUTE → AS-BUILD → FRAGMENT barrier chain: skin write → BLAS refit → ray-query read in fragment shader (audit barrier scopes match)
 - BLAS refit (UPDATE mode) called per frame for skinned entities; geometry count + vertex count must match the original BUILD or Vulkan validation faults
 - BLAS refit budget / LRU interaction: skinned BLAS must not be evicted by M36 LRU mid-frame (pin while in flight)
-- `MAX_TOTAL_BONES` overflow guard (`render.rs:204`, `Once`-gated warn) actually fires when the bone-palette buffer is full — silent truncation past the cap was the regression in M29
+- `MAX_TOTAL_BONES` overflow guard (in `byroredux/src/render.rs` — line may have drifted post-Session-34 split; search `MAX_TOTAL_BONES`, `Once`-gated warn) actually fires when the bone-palette buffer is full — silent truncation past the cap was the regression in M29. Pinned by `byroredux/src/render/bone_palette_overflow_tests.rs`
 - Workgroup size 64 matches `local_size_x` in skin_vertices.comp; dispatch uses `(vertex_count + 63) / 64` invocations
 - Phase status: confirm whether raster reads inline-skinning (`triangle.vert:147-204`) or pre-skinned (M29.3) — both are valid but cannot coexist in a single mesh
 **Output**: `/tmp/audit/renderer/dim_12.md`
@@ -255,7 +255,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_14.md`
 
 ### Dimension 15: Sky / Weather / Exterior Lighting (M33 / M33.1 / M34)
-**Entry points**: `byroredux/src/systems.rs` (weather_system), `byroredux/src/render.rs` (sun arc + TOD palette assembly), `crates/plugin/src/esm/records/weather.rs`, `crates/renderer/shaders/triangle.frag` (sky gradient + cloud sample + fog application)
+**Entry points**: `byroredux/src/systems/weather.rs` (weather_system; post-Session-34 split — was in monolithic systems.rs), `byroredux/src/render.rs` (sun arc + TOD palette assembly), `crates/plugin/src/esm/records/weather.rs`, `crates/renderer/shaders/triangle.frag` (sky gradient + cloud sample + fog application)
 **Checklist**:
 - `weather_system` advances game time monotonically; sun arc derived from CLMT TNAM hours, not hardcoded
 - TOD color interpolation between WTHR NAM0 colors uses the right easing (linear vs cosine) — verify against legacy
@@ -282,6 +282,63 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Permanent diagnostic bit catalog (`triangle.frag:628-686`): `DBG_BYPASS_POM = 0x1`, `DBG_BYPASS_DETAIL = 0x2`, `DBG_VIZ_NORMALS = 0x4`, `DBG_VIZ_TANGENT = 0x8`, `DBG_BYPASS_NORMAL_MAP = 0x10`, `DBG_FORCE_NORMAL_MAP = 0x20`, `DBG_VIZ_RENDER_LAYER = 0x40`, `DBG_VIZ_GLASS_PASSTHRU = 0x80`. Audit for drift: any added bit must not collide; any dropped bit must not orphan shader code
 - "Chrome posterized walls" red herring: per `feedback_chrome_means_missing_textures.md`, that artifact is the magenta-checker placeholder × a (correctly loaded) tangent-space normal map. Audit findings claiming a tangent-space bug from chrome fragments alone are stale — the audit MUST run `tex.missing` first before recommending a tangent-space fix
 **Output**: `/tmp/audit/renderer/dim_16.md`
+
+### Dimension 17: Water Rendering (M38)
+**Entry points**: `crates/renderer/src/vulkan/water.rs` (WaterPipeline), `crates/renderer/shaders/water.vert/frag`, `byroredux/src/cell_loader/water.rs` (water-plane spawn from XCWT / cell water refs), `byroredux/src/systems/water.rs` (`submersion_system`), `byroredux/src/components.rs` (WaterPlane, WaterVolume, SubmersionState components)
+**Checklist**:
+- WaterPlane ECS component spawned from interior/exterior cell water records; height + extent match cell record
+- WaterPipeline vertex displacement: amplitude bounded, no NaN at edge tessellation, no Z-fighting with shoreline geometry
+- Fresnel term: schlick approximation against view dir, base reflectance ~0.02 for water (do not reuse glass IOR 1.5)
+- RT reflection ray: TLAS query reflected about water normal; missed rays sample sky (not black, not magenta)
+- RT refraction ray: TLAS query along refracted dir, IOR ~1.33; missed rays sample backdrop with proper fog
+- Camera SubmersionState write: `submersion_system` flips component when camera Y crosses water plane; underwater fog / tint applied via composite (verify no per-frame strobe at the boundary)
+- Cell unload: water entities despawn cleanly; no leaked BLAS entries against post-unload TLAS (`AccelerationManager::evict_unused_blas` covers them)
+- Shadow casting: water surface does NOT contribute to shadow rays for opaque geometry (reflection-only)
+- Two-sided rendering: water disables back-face cull (underwater view from below); confirm via dynamic CULL_MODE not pipeline duplicate
+- Sort key: water plane rendered after opaques, before transparents (or in transparent pass with alpha-blend) — verify against `render::sort_key` ordering
+- Material slot: water uses a distinct GpuMaterial entry (separate from glass) — verify dedup doesn't collapse them
+**Output**: `/tmp/audit/renderer/dim_17.md`
+
+### Dimension 18: Volumetric Lighting (M55)
+**Entry points**: `crates/renderer/src/vulkan/volumetrics.rs` (160×90×128 froxel grid, ~14 MiB / slot), `crates/renderer/shaders/volumetric_inject.comp`, `crates/renderer/shaders/volumetric_integrate.comp`, composite consumption in `crates/renderer/shaders/composite.frag`
+**Checklist**:
+- Froxel dimensions `160 × 90 × 128` match `volumetric_inject.comp` `local_size_x/y/z`; dispatch group count covers exactly the grid (no over-dispatch)
+- Per-frame-in-flight buffer sizing: one ~14 MiB image per frame-in-flight slot, not shared across frames (avoid WAR hazard on integrate read)
+- Inject pass: per-froxel HG phase scattering, single shadow ray vs TLAS per froxel — verify `gl_RayFlagsTerminateOnFirstHitEXT` is set so cost stays bounded
+- Integrate pass: depth-walk integration produces an accumulated luminance + transmittance per froxel; transmittance is multiplied (not added) across the walk
+- HG phase function: anisotropy `g` clamped to (-0.999, 0.999) — `g = ±1` produces division-by-zero
+- Output consumed: composite shader samples the integrated 3D image at fragment depth → world Z mapping; the gate `VOLUMETRIC_OUTPUT_CONSUMED: bool` (#928) must remain in lockstep — if composite path drops the sample, the dispatch must be skipped
+- Disabled path: when volumetrics is off, integrate dispatch is skipped entirely (not dispatched + ignored — was the audit finding from #928)
+- Resize: image-view rebind on composite resize (#905); verify both volumetric and composite descriptor sets get refreshed
+- Sun-arc dependency: scattering color/intensity reads from the TOD palette; interior cells with no exterior sun must still produce neutral non-NaN output
+- Performance: budget allows the inject+integrate pair to complete in <2 ms on RTX 4070 Ti at the documented exterior bench
+**Output**: `/tmp/audit/renderer/dim_18.md`
+
+### Dimension 19: Bloom Pyramid (M58)
+**Entry points**: `crates/renderer/src/vulkan/bloom.rs` (5-mip down + 4-mip up, B10G11R11_UFLOAT), `crates/renderer/shaders/bloom_down.comp`, `crates/renderer/shaders/bloom_up.comp`, composite addition in `crates/renderer/shaders/composite.frag`
+**Checklist**:
+- Pyramid size: 5 down-mips + 4 up-mips; each mip is half the previous in X+Y; format `B10G11R11_UFLOAT` everywhere (no R16G16B16A16 mid-chain)
+- Down-pass: 4-tap bilinear box filter — sample offsets at half-pixel centers, weights sum to 1.0
+- Up-pass: 4-tap bilinear additive blend with previous up-mip; no clamp to [0,1] (HDR additive)
+- Per-frame-in-flight slot owns its own mip chain — cross-frame WAR is gated by the per-frame fence (#931 audit: do NOT reintroduce the 9 redundant pre-barriers that were removed)
+- Barrier count: 10 barriers per dispatch (down to 47% from pre-#931's 19); regression = audit finding even if correctness holds
+- Intensity: composite multiplies bloom by 0.15 (tuned down from 0.20 on Prospector saloon); the constant lives in `composite.frag` — drift here is a visual regression
+- Image-view rebind on composite resize (#905) — verify bloom + composite descriptor sets both refresh
+- Disabled path: when bloom is off, neither down nor up is dispatched; composite must short-circuit the addition
+- Tone-map order: bloom is added BEFORE ACES tone mapping (HDR addition), not after (LDR addition would clip)
+- Source pyramid input: must read the un-tone-mapped HDR (`composite.frag` input), not the TAA output (TAA inputs to bloom is a regression pattern — verify the descriptor binding)
+**Output**: `/tmp/audit/renderer/dim_19.md`
+
+### Dimension 20: M-LIGHT v1 — Stochastic Soft Shadows
+**Entry points**: `crates/renderer/shaders/triangle.frag` (sun shadow ray + cone-sample), `byroredux/src/render.rs` (`sunAngularRadius` UBO field), `crates/renderer/src/vulkan/scene_buffer.rs`
+**Checklist**:
+- `sunAngularRadius` ships in the camera/scene UBO at the documented offset; current shipping value `0.020` (bumped from `0.0047`) — drift here changes shadow softness globally
+- Per-fragment single-tap stochastic cone sample around the sun direction: random offset derived from frame index + pixel coords (deterministic per-pixel-per-frame), not a true RNG that breaks TAA history
+- Shadow ray flags include `gl_RayFlagsTerminateOnFirstHitEXT` (no closest-hit needed; visibility query only)
+- TAA accumulation absorbs the per-frame noise — verify the YCoCg clamp tolerance allows the noise to converge (too-tight clamp = persistent noise; too-loose = over-blur)
+- Interior `radius=-1` gate (`triangle.frag:1321`) still bypasses the cone sample — soft-shadow code must not fire inside interior cells
+- Disocclusion: when TAA mesh-id mismatches discard history, the un-converged single-sample frame is visible — verify the fallback isn't black (a black single-sample frame is the regression pattern)
+**Output**: `/tmp/audit/renderer/dim_20.md`
 
 ## Phase 3: Merge
 

@@ -65,7 +65,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 3: BSLightingShaderProperty Shader Variants
 **Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/blocks/properties.rs` (BSLightingShaderProperty), `crates/nif/src/import/material.rs`, `crates/renderer/shaders/triangle.frag`
+**Entry points**: `crates/nif/src/blocks/properties.rs` (BSLightingShaderProperty), `crates/nif/src/import/material/` (mod, walker, shader_data), `crates/renderer/shaders/triangle.frag`
 **Checklist**: All 8 shader-type enum values dispatch to the correct trailing-field reader (EnvironmentMap adds env strength + env map, HairTint adds hair color, ParallaxOcc adds height map params, MultiLayerParallax adds inner-layer fields, SparkleSnow adds sparkle params, EyeEnvmap adds eye-specific fields). Flag bits 0–31 — which are decal, alpha-test, skinned, etc. in Skyrim (differ from FO4 flag bit positions). SkinTint color for HairTint variant. Environment map slot in BSShaderTextureSet[4]. Alpha mask threshold. Subsurface scattering params parsed but not yet routed to the renderer (noted as M38 wetness/subsurface deferred).
 **Output**: `/tmp/audit/skyrim/dim_3.md`
 

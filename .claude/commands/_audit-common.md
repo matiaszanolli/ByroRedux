@@ -11,9 +11,9 @@ Animation:       crates/core/src/animation/          (types, player, stack, regi
 Resources:       crates/core/src/ecs/resources.rs
 Strings:         crates/core/src/string/
 NIF Parser:      crates/nif/src/
-NIF Blocks:      crates/nif/src/blocks/               (30 modules — see blocks/mod.rs dispatch; controller/, particle/, shader/, tri_shape/, skin/, properties/, light, multibound, palette, legacy_particle, …)
-NIF Import:      crates/nif/src/import/               (walk, mesh, material/, transform, coord, collision)
-NIF Animation:   crates/nif/src/anim.rs
+NIF Blocks:      crates/nif/src/blocks/               (see blocks/mod.rs dispatch; controller/ subdir, particle.rs, shader.rs, tri_shape.rs, skin.rs, properties.rs, interpolator.rs, extra_data.rs, light.rs, multibound.rs, palette.rs, legacy_particle.rs, texture.rs, collision.rs, bs_geometry.rs, node.rs, base.rs, traits.rs; *_tests.rs siblings)
+NIF Import:      crates/nif/src/import/               (mod.rs thin dispatch + types.rs + tests.rs; walk.rs, mesh.rs + mesh_*_tests.rs siblings, material/{mod, walker, shader_data, *_tests}, transform.rs, coord.rs, collision.rs)
+NIF Animation:   crates/nif/src/anim.rs + anim/{types.rs, tests.rs}
 BSA Reader:      crates/bsa/src/archive.rs
 BA2 Reader:      crates/bsa/src/ba2.rs
 BGSM Materials:  crates/bgsm/src/                     (FO4+ external material parser)
@@ -21,7 +21,8 @@ FaceGen (M41):   crates/facegen/src/                  (.tri/.egt morph + texture
 Physics (M28):   crates/physics/src/                  (Rapier3D bridge)
 Papyrus (M30):   crates/papyrus/src/                  (.psc lexer + Pratt parser → AST)
 Scripting (M12): crates/scripting/src/                (ECS-native events, timers, cleanup)
-Audio (M44):     crates/audio/src/lib.rs              (byroredux-audio: kira backend, AudioWorld resource, AudioListener/AudioEmitter/OneShotSound components, audio_system, SoundCache, streaming music, global reverb send)
+Audio (M44):     crates/audio/src/lib.rs + tests.rs   (byroredux-audio: kira backend, AudioWorld resource, AudioListener/AudioEmitter/OneShotSound components, audio_system, SoundCache, streaming music, global reverb send)
+SpeedTree (S1):  crates/spt/src/                      (byroredux-spt: TLV walker for FNV/FO3/Oblivion .spt; placeholder-billboard import fallback)
 Debug Protocol:  crates/debug-protocol/src/           (wire types, component registry)
 Debug Server:    crates/debug-server/src/             (TCP server + DebugDrainSystem)
 Renderer:        crates/renderer/src/vulkan/
@@ -33,6 +34,9 @@ TAA (M37.5):     crates/renderer/src/vulkan/taa.rs
 Composite:       crates/renderer/src/vulkan/composite.rs
 SSAO:            crates/renderer/src/vulkan/ssao.rs
 Caustics (M??):  crates/renderer/src/vulkan/caustic.rs
+Volumetrics(M55):crates/renderer/src/vulkan/volumetrics.rs  (160×90×128 froxel grid, inject + integrate compute, single-ray TLAS shadow, HG phase)
+Bloom (M58):     crates/renderer/src/vulkan/bloom.rs        (5-mip down + 4-mip up pyramid, B10G11R11_UFLOAT, 4-tap bilinear)
+Water (M38):     crates/renderer/src/vulkan/water.rs        (WaterPipeline: vertex displacement + Fresnel, RT reflection/refraction against TLAS)
 GPU Skin (M29):  crates/renderer/src/vulkan/skin_compute.rs
 Material (R1):   crates/renderer/src/vulkan/material.rs   (MaterialBuffer SSBO, GpuMaterial dedup; replaces per-instance fields)
 SPIR-V Reflect:  crates/renderer/src/vulkan/reflect.rs    (descriptor layout reflection from SPIR-V)
@@ -43,19 +47,24 @@ Vk Instance:     crates/renderer/src/vulkan/instance.rs
 Vk Surface:      crates/renderer/src/vulkan/surface.rs
 Mesh:            crates/renderer/src/mesh.rs
 Vertex:          crates/renderer/src/vertex.rs
-Tex Registry:    crates/renderer/src/texture_registry.rs
-Shaders:         crates/renderer/shaders/             (triangle.vert/frag, svgf_temporal.comp, taa.comp, composite.vert/frag, ssao.comp, cluster_cull.comp, skin_vertices.comp, caustic_splat.comp, ui.vert/frag)
-Plugin/ESM:      crates/plugin/src/                   (esm/{mod, reader, sub_reader}, esm/cell/, esm/records/{actor, climate, container, global, items, misc, mswp, pkin, scol, script, weather, …}, record.rs generic dispatch, legacy/ TES3-FO4 stubs)
+Tex Registry:    crates/renderer/src/texture_registry.rs (+ texture_registry_tests.rs)
+Shaders:         crates/renderer/shaders/             (triangle.vert/frag, svgf_temporal.comp, taa.comp, composite.vert/frag, ssao.comp, cluster_cull.comp, skin_vertices.comp, caustic_splat.comp, volumetric_inject.comp, volumetric_integrate.comp, bloom_down.comp, bloom_up.comp, water.vert/frag, effect_lit.frag, ui.vert/frag)
+Plugin/ESM:      crates/plugin/src/                   (esm/{mod, reader, sub_reader}, esm/cell/, esm/records/{actor, climate, container, global, items, misc/{water, character, world, ai, magic, effects, equipment}, mswp, pkin, scol, script, tree, weather, …}, record.rs generic dispatch, legacy/ TES3-FO4 stubs)
 Platform:        crates/platform/src/
 UI (Ruffle):     crates/ui/src/
 CXX Bridge:      crates/cxx-bridge/
 Binary:          byroredux/src/main.rs
-Systems:         byroredux/src/systems.rs
-Scene Setup:     byroredux/src/scene.rs
-Render Data:     byroredux/src/render.rs
-Cell Loader:     byroredux/src/cell_loader.rs + cell_loader_refr.rs + cell_loader_terrain.rs (+ ~10 *_tests.rs siblings)
+Systems:         byroredux/src/systems.rs (27-line module index) → systems/{animation, audio, billboard, bounds, camera, debug, particle, water, weather}.rs
+Scene Setup:     byroredux/src/scene.rs (thin) → scene/{nif_loader, world_setup}.rs (+ *_tests.rs siblings)
+Render Data:     byroredux/src/render.rs (build_render_data, draw enumeration) + render/*_tests.rs siblings
+Cell Loader:     byroredux/src/cell_loader.rs (thin dispatch) → cell_loader/{load, unload, exterior, references, spawn, partial, euler, refr, terrain, water, load_order, nif_import_registry}.rs (+ *_tests.rs siblings)
+Commands:        byroredux/src/commands.rs + commands_tests.rs (console: help, stats, entities, tex.missing, light.dump, cam.where/pos/tp, prid, inspect, …)
+Asset Provider:  byroredux/src/asset_provider.rs (BSA/BA2 texture+mesh extraction, resolve_texture, strip_build_prefix for AE pipeline-path paths)
+Components:      byroredux/src/components.rs (markers + app resources: Spinning, AlphaBlend, TwoSided, Decal, WaterPlane, WaterVolume, SubmersionState, SelectedRef, FootstepScratch, …)
 NPC Spawn:       byroredux/src/npc_spawn.rs           (M41 actor instantiation)
-World Stream:    byroredux/src/streaming.rs           (M40 cell lifecycle)
+World Stream:    byroredux/src/streaming.rs           (M40 cell lifecycle) + streaming_tests.rs
+SF Smoke:        byroredux/src/sf_smoke.rs            (Starfield ESM resolve-rate harness, --sf-smoke CLI)
+Golden Frames:   byroredux/tests/golden_frames.rs     (cube-demo frame-60 regression PNG; opts into --ignored)
 Legacy Ref:      docs/legacy/
 ```
 
