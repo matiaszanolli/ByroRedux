@@ -173,6 +173,18 @@ pub struct SvgfPipeline {
     /// True until the first frame has written both slots — forces the
     /// shader to take the "no history" branch and reset moments.
     frames_since_creation: u32,
+    /// Set to `true` in [`Self::dispatch`] after the compute dispatch
+    /// has been recorded into the per-frame command buffer; consumed +
+    /// cleared by [`Self::mark_frame_completed`] after the host-side
+    /// `queue_submit` returns success. Pre-#917 the
+    /// `frames_since_creation` counter advanced at dispatch-record time,
+    /// meaning a record-time-failure or submit-time-failure path would
+    /// leave the counter advanced without any corresponding GPU-side
+    /// history write — the next frame would then think a valid history
+    /// existed and skip the force-reset gate. The two-step recording-
+    /// then-completion handshake gates the counter advance on submit
+    /// success. See #917 / REN-D10-NEW-03.
+    dispatched_this_frame: bool,
 }
 
 impl SvgfPipeline {
@@ -234,6 +246,7 @@ impl SvgfPipeline {
             width,
             height,
             frames_since_creation: 0,
+            dispatched_this_frame: false,
         };
 
         macro_rules! try_or_cleanup {
@@ -925,8 +938,27 @@ impl SvgfPipeline {
             &out_barriers,
         );
 
-        self.frames_since_creation = self.frames_since_creation.saturating_add(1);
+        // #917 / REN-D10-NEW-03 — dispatch was successfully recorded
+        // into `cmd`. `mark_frame_completed` will bump
+        // `frames_since_creation` after `queue_submit` returns success;
+        // a record-time error before this point leaves the flag false
+        // and the counter doesn't advance.
+        self.dispatched_this_frame = true;
         Ok(())
+    }
+
+    /// Mark the previous frame's dispatch as having reached
+    /// queue-submit-success. Advances `frames_since_creation` iff a
+    /// dispatch was actually recorded this frame (the
+    /// `dispatched_this_frame` flag set by [`Self::dispatch`]). Called
+    /// from `draw_frame` after `queue_submit` returns Ok; the gate
+    /// guarantees no advance on a skipped / failed dispatch. See #917 /
+    /// REN-D10-NEW-03.
+    pub fn mark_frame_completed(&mut self) {
+        if self.dispatched_this_frame {
+            self.frames_since_creation = self.frames_since_creation.saturating_add(1);
+            self.dispatched_this_frame = false;
+        }
     }
 
     /// Recreate history images at a new extent after a swapchain resize.
@@ -970,6 +1002,10 @@ impl SvgfPipeline {
         self.width = width;
         self.height = height;
         self.frames_since_creation = 0; // history is meaningless after resize
+        // Drop any pending mark — pre-resize-recorded dispatch (if any)
+        // never sees `queue_submit` because the resize path waited on
+        // both fences. See #917.
+        self.dispatched_this_frame = false;
 
         let result = (|| -> Result<()> {
             for i in 0..MAX_FRAMES_IN_FLIGHT {

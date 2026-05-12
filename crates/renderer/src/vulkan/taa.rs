@@ -97,6 +97,13 @@ pub struct TaaPipeline {
     pub height: u32,
 
     frames_since_creation: u32,
+    /// Set in [`Self::dispatch`] once the compute dispatch has been
+    /// recorded; consumed + cleared by [`Self::mark_frame_completed`]
+    /// after `queue_submit` returns success. Gates the
+    /// `frames_since_creation` advance on submit success so a record-
+    /// or submit-failure path doesn't mark un-dispatched frames as
+    /// completed. See #917 / REN-D10-NEW-03 (mirror of the SVGF fix).
+    dispatched_this_frame: bool,
 }
 
 impl TaaPipeline {
@@ -154,6 +161,7 @@ impl TaaPipeline {
             width,
             height,
             frames_since_creation: 0,
+            dispatched_this_frame: false,
         };
 
         // SAFETY (inside macro below): `partial` is local to this fn and
@@ -583,6 +591,10 @@ impl TaaPipeline {
     /// while SVGF's elevated-α window already faded. See #801.
     pub fn signal_history_reset(&mut self) {
         self.frames_since_creation = 0;
+        // Drop any pending mark — a future-frame queue_submit success
+        // shouldn't undo this reset by advancing the counter past 0
+        // before the next dispatch records.
+        self.dispatched_this_frame = false;
     }
 
     /// UNDEFINED → GENERAL for every history slot. Call once after `new()`.
@@ -751,8 +763,24 @@ impl TaaPipeline {
             &[post],
         );
 
-        self.frames_since_creation = self.frames_since_creation.saturating_add(1);
+        // #917 / REN-D10-NEW-03 — dispatch was successfully recorded.
+        // `mark_frame_completed` advances `frames_since_creation` after
+        // `queue_submit` returns success; record-time failures before
+        // this point leave the flag false.
+        self.dispatched_this_frame = true;
         Ok(())
+    }
+
+    /// Mark the previous frame's dispatch as having reached
+    /// queue-submit-success. Advances `frames_since_creation` iff a
+    /// dispatch was recorded this frame. Called from `draw_frame` after
+    /// `queue_submit` returns Ok. Mirror of `SvgfPipeline::
+    /// mark_frame_completed`. See #917 / REN-D10-NEW-03.
+    pub fn mark_frame_completed(&mut self) {
+        if self.dispatched_this_frame {
+            self.frames_since_creation = self.frames_since_creation.saturating_add(1);
+            self.dispatched_this_frame = false;
+        }
     }
 
     /// Recreate history images at a new extent after swapchain resize.
@@ -784,6 +812,10 @@ impl TaaPipeline {
         self.width = width;
         self.height = height;
         self.frames_since_creation = 0;
+        // Drop any pending mark — pre-resize-recorded dispatch (if any)
+        // never sees `queue_submit` because the resize path waited on
+        // both fences. See #917 (mirror of SVGF resize path).
+        self.dispatched_this_frame = false;
 
         let result = (|| -> Result<()> {
             for i in 0..MAX_FRAMES_IN_FLIGHT {

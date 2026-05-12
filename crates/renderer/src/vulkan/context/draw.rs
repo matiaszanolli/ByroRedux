@@ -2119,6 +2119,23 @@ impl VulkanContext {
                 .context("queue_submit")?;
         }
 
+        // #917 / REN-D10-NEW-03 — advance SVGF + TAA `frames_since_
+        // creation` counters now that `queue_submit` returned success.
+        // Each pipeline self-gates on its `dispatched_this_frame` flag
+        // set during recording, so a skipped dispatch (svgf_failed
+        // latch, missing pipeline, upload_params failure) is a no-op
+        // here. Pre-fix the counters advanced at record time, meaning a
+        // record-time / submit-time failure between them and submit
+        // success would leave the counter advanced without the
+        // corresponding GPU write — the next frame would assume valid
+        // history that wasn't actually written.
+        if let Some(ref mut svgf) = self.svgf {
+            svgf.mark_frame_completed();
+        }
+        if let Some(ref mut taa) = self.taa {
+            taa.mark_frame_completed();
+        }
+
         // Present.
         let swapchains = [self.swapchain_state.swapchain];
         let image_indices = [image_index];
