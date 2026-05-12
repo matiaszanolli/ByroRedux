@@ -493,6 +493,23 @@ impl TaaPipeline {
     ) {
         let param_size = std::mem::size_of::<TaaParams>() as vk::DeviceSize;
         for f in 0..MAX_FRAMES_IN_FLIGHT {
+            // `prev` selects the OTHER FIF slot — the descriptor for
+            // frame slot `f` reads its previous-frame inputs
+            // (`prev_mid`, `prev_history`) from slot `(f + 1) %
+            // MAX_FRAMES_IN_FLIGHT`. Steady state this is the slot
+            // that just submitted last frame and is now resident in
+            // `SHADER_READ_ONLY_OPTIMAL` / `GENERAL`.
+            //
+            // First-frame note (REN-D11-NEW-04, audit 2026-05-09):
+            // on session frame 0, the OTHER slot's images are in
+            // `UNDEFINED` layout (initialized but never written).
+            // The shader's `params.params.y > 0.5` first-frame guard
+            // (`taa.comp:93`) skips the `prev_mid` / `prev_history`
+            // texelFetch entirely on that frame, so the UNDEFINED
+            // contents never reach a sample site. If the first-frame
+            // guard is ever dropped or moved, this descriptor write
+            // needs to pre-clear the OTHER slot's images to a defined
+            // colour first, or skip the dispatch for frame 0.
             let prev = (f + 1) % MAX_FRAMES_IN_FLIGHT;
 
             let curr_hdr = [vk::DescriptorImageInfo::default()

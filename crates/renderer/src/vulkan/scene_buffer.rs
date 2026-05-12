@@ -95,6 +95,24 @@ pub const INSTANCE_TERRAIN_TILE_MASK: u32 = 0xFFFF;
 pub const INSTANCE_RENDER_LAYER_SHIFT: u32 = 4;
 pub const INSTANCE_RENDER_LAYER_MASK: u32 = 0x3;
 
+/// **Reserved** — bit set by the M29 GPU-skinning compute pass on
+/// instances whose vertex data lives at the pre-skinned offset
+/// (driven by `skin_compute`) instead of the source mesh's authored
+/// position. Phase 2 of skinning (RT side only) reads the per-frame
+/// pre-skinned vertex slice via `bone_offset` indirection on the
+/// hit path; Phase 3 (rasteriser) will gate the vertex-fetch on
+/// this bit so the inline-skinning + compute-pre-skin paths can
+/// coexist on the same mesh without one silently shadowing the
+/// other.
+///
+/// Reserved here rather than at Phase 3 landing so the bit number
+/// is stable across the intervening commits — content authoring
+/// tools / debug overlays that already grew a `flags & 0x40` check
+/// don't end up at a different bit after the reservation lands.
+/// No production reader today; the flag is written as zero on
+/// every draw command. See REN-D12-NEW-05 (audit 2026-05-09).
+pub const INSTANCE_FLAG_PRESKINNED: u32 = 1 << 6;
+
 /// Engine-synthesized material kinds for [`GpuInstance::material_kind`].
 ///
 /// The low range (0..=19) is reserved for Skyrim+

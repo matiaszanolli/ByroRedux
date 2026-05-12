@@ -687,6 +687,60 @@ mod tests {
         assert_eq!(std::mem::align_of::<GpuMaterial>(), 4);
     }
 
+    /// Regression guard for `GpuMaterial` GLSL field names —
+    /// REN-D14-NEW-02 (audit 2026-05-09). The offset pin
+    /// (`gpu_material_field_offsets_match_shader_contract`) and the
+    /// size pin (`gpu_material_size_is_260_bytes`) catch byte-level
+    /// drift, but neither catches a GLSL-side field rename: the
+    /// shader still reads from the same offset, the value still
+    /// arrives in the right register, but the field's MEANING in
+    /// the source no longer matches the Rust struct. A future
+    /// reader chasing a "what does `mat.foo` mean?" question hits a
+    /// dead end.
+    ///
+    /// This test asserts that every documented GLSL field name on
+    /// the shader-side `struct GpuMaterial` declaration at
+    /// `triangle.frag:83-126` is present in the file. Renaming the
+    /// Rust field is fine; renaming the GLSL field fails this test
+    /// and forces an audit of every reader downstream.
+    #[test]
+    fn gpu_material_glsl_field_names_pinned() {
+        let src = include_str!("../../shaders/triangle.frag");
+        // Authoritative list — every named field declared inside
+        // `struct GpuMaterial { ... };` at `triangle.frag:83-126`.
+        // Update both sites together when renaming a field on the
+        // GLSL side; the Rust-side rename + this list keep the
+        // contract bidirectional. The trailing `;` in the needle
+        // disambiguates field declarations from incidental uses of
+        // the same identifier in comments / other structs.
+        for name in &[
+            "roughness;", "metalness;", "emissiveMult;", "materialFlags;",
+            "emissiveR,", "emissiveG,", "emissiveB,", "specularStrength;",
+            "specularR,", "specularG,", "specularB,", "alphaThreshold;",
+            "textureIndex,", "normalMapIndex,", "darkMapIndex,", "glowMapIndex;",
+            "detailMapIndex,", "glossMapIndex,", "parallaxMapIndex,", "envMapIndex;",
+            "envMaskIndex,", "alphaTestFunc,", "materialKind;",
+            "materialAlpha;",
+            "parallaxHeightScale,", "parallaxMaxPasses,", "uvOffsetU,", "uvOffsetV;",
+            "uvScaleU,", "uvScaleV,", "diffuseR,", "diffuseG;",
+            "diffuseB,", "ambientR,", "ambientG,", "ambientB;",
+            "skinTintA,", "skinTintR,", "skinTintG,", "skinTintB;",
+            "hairTintR,", "hairTintG,", "hairTintB,", "multiLayerEnvmapStrength;",
+            "eyeCubemapScale;",
+            "multiLayerInnerThickness;",
+            "multiLayerRefractionScale,",
+            "sparkleIntensity,", "falloffStartAngle;",
+            "falloffStopAngle,", "falloffStartOpacity,", "falloffStopOpacity,", "softFalloffDepth;",
+        ] {
+            assert!(
+                src.contains(name),
+                "triangle.frag: expected GpuMaterial GLSL field needle `{}` not found. \
+                 If you renamed a field, update both the GLSL source and this list.",
+                name
+            );
+        }
+    }
+
     /// Regression guard for the GpuMaterial Shader Struct Sync (#806).
     /// The size pin (`gpu_material_size_is_260_bytes`) catches additions
     /// or removals; this catches reorderings WITHIN the existing 16
