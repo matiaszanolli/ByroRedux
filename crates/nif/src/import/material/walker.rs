@@ -421,6 +421,46 @@ pub(crate) fn extract_material_info_from_refs(
                 // rewrite; defer to the follow-up.
             }
         }
+        // Skyrim+ `BSSkyShaderProperty` consumer (#977) — every
+        // `meshes/sky/*.nif` (clouds, sunglare, moon, stars) binds via
+        // `shader_property_ref` and was previously dropped because the
+        // importer had no `get_as::<BSSkyShaderProperty>` site. The FO3/FNV
+        // counterpart (`SkyShaderProperty`, non-BS variant) was wired by
+        // #940 — this is the missing Skyrim-era sibling.
+        if let Some(shader) = scene.get_as::<BSSkyShaderProperty>(idx) {
+            if info.texture_path.is_none() {
+                info.texture_path = intern_texture_path(pool, &shader.source_texture);
+            }
+            if !info.has_material_data {
+                info.uv_offset = shader.uv_offset;
+                info.uv_scale = shader.uv_scale;
+                info.has_uv_transform = true;
+                info.has_material_data = true;
+            }
+            info.is_sky_object = true;
+            info.sky_object_type = shader.sky_object_type;
+            // Sky surfaces are emissive (unlit) — the renderer-side
+            // dispatch on `is_sky_object` is follow-up work; until then
+            // the flag rides through as a structural marker so callers
+            // can route around scene lighting when the path lands.
+        }
+        // Skyrim+ `BSWaterShaderProperty` consumer (#977). Companion to
+        // the BSSkyShaderProperty branch above. Skyrim-era legacy water
+        // meshes (Oblivion `meshes/water/*.nif`, Skyrim river segments)
+        // bind this; M38's `WaterPipeline` handles cell-driven water
+        // refs separately, but mesh-driven water also needs the UV
+        // transform + flag bits to reach the renderer. No source_texture
+        // or texture_set_ref on this block — water diffuse comes from
+        // the renderer-side pipeline.
+        if let Some(shader) = scene.get_as::<BSWaterShaderProperty>(idx) {
+            if !info.has_material_data {
+                info.uv_offset = shader.uv_offset;
+                info.uv_scale = shader.uv_scale;
+                info.has_uv_transform = true;
+                info.has_material_data = true;
+            }
+            info.water_shader_flags = shader.water_shader_flags;
+        }
     }
 
     // Skyrim+: dedicated alpha_property_ref

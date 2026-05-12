@@ -6,8 +6,8 @@ use crate::blocks::properties::{
 };
 use crate::blocks::shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
-    BSShaderPPLightingProperty, BSShaderTextureSet, ShaderTypeData, SkyShaderProperty,
-    TallGrassShaderProperty, TileShaderProperty,
+    BSShaderPPLightingProperty, BSShaderTextureSet, BSSkyShaderProperty, BSWaterShaderProperty,
+    ShaderTypeData, SkyShaderProperty, TallGrassShaderProperty, TileShaderProperty,
 };
 use crate::blocks::texture::NiSourceTexture;
 use crate::blocks::tri_shape::NiTriShape;
@@ -640,6 +640,33 @@ pub(super) struct MaterialInfo {
     /// `extract_material_info` mirrors the value here so the
     /// importer's per-mesh export needs only one field.
     pub texture_clamp_mode: u8,
+    /// Set when a Skyrim+ `BSSkyShaderProperty` is the authoritative
+    /// shader for this material — sky-dome / sun-glare / moon / star
+    /// meshes from `meshes/sky/*.nif`. Pre-#977 these meshes silently
+    /// imported with `texture_path = None` and rendered as the magenta
+    /// placeholder because the importer had no consumer for the type.
+    /// The renderer-side dispatch is follow-up work (sky materials must
+    /// bypass scene lighting and treat the diffuse sample as emissive);
+    /// until then the flag rides through as a structural marker.
+    pub is_sky_object: bool,
+    /// Per nif.xml `SkyObjectType`: `0=Texture, 1=Sunglare, 2=Sky,
+    /// 3=Clouds, 5=Stars, 7=Moon/Stars_Mask`. Selects which sky function
+    /// this property fulfills at render time. Zero when [`is_sky_object`]
+    /// is false. See `BSSkyShaderProperty.sky_object_type` in
+    /// `crates/nif/src/blocks/shader.rs`.
+    pub sky_object_type: u32,
+    /// Captured from `BSWaterShaderProperty.water_shader_flags` per
+    /// nif.xml `WaterShaderPropertyFlags`. Bit layout: `0=Specular,
+    /// 1=Reflections, 2=Refractions, 3=Vertex_UV, 6=Reflections,
+    /// 7=Refractions, 8=Vertex_UV, 9=Vertex_Alpha_Depth, 10=Procedural,
+    /// 11=Fog, 12=Update_Constants, 13=Cubemap`. Zero when no
+    /// `BSWaterShaderProperty` was bound. Renderer-side dispatch (#977
+    /// follow-up) will let the M38 `WaterPipeline` honor authored
+    /// reflection / refraction / cubemap intent on legacy mesh-driven
+    /// water surfaces (Oblivion `meshes/water/*.nif`, Skyrim river
+    /// segments). See `BSWaterShaderProperty` in
+    /// `crates/nif/src/blocks/shader.rs`.
+    pub water_shader_flags: u32,
 }
 
 /// Stencil-test state captured from `NiStencilProperty`. Mirrors the
@@ -842,6 +869,9 @@ impl Default for MaterialInfo {
             // default. Walker overwrites with the diffuse-slot value
             // when the material's authoring source carries one.
             texture_clamp_mode: 3,
+            is_sky_object: false,
+            sky_object_type: 0,
+            water_shader_flags: 0,
         }
     }
 }
@@ -964,3 +994,12 @@ mod double_sided_tests;
 /// rollout); see `pipeline.rs`'s cross-reference comments.
 #[cfg(test)]
 mod stencil_state_capture_tests;
+
+/// Regression tests for #977 — Skyrim+ `BSSkyShaderProperty` and
+/// `BSWaterShaderProperty` were parsed cleanly but had no
+/// `scene.get_as::<>` consumer in the walker, so every Skyrim sky NIF
+/// imported with `texture_path = None` and rendered as the magenta
+/// placeholder. The FO3/FNV `SkyShaderProperty` counterpart was wired
+/// by #940; this closes the missing Skyrim-era sibling.
+#[cfg(test)]
+mod sky_water_shader_tests;
