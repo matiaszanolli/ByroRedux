@@ -36,22 +36,53 @@ byro> 142.Transform.translation
 byro> tex.missing
 17 unique missing textures: ...
 
-byro> mesh.cache
-NIF import cache:
-  entries:       342 (341 parsed, 1 failed)
-  hit rate:      96.4%
-
 byro> screenshot /tmp/frame.png
 Screenshot saved: /tmp/frame.png
+```
 
-byro> quit
+## Common workflows
+
+### Pick a reference, inspect it, frame it
+
+Bethesda-console-style `prid` + `inspect` + camera teleport. `prid`
+sets a world-scoped `SelectedRef`; follow-up commands fall back to
+it when called with no arg.
+
+```
+byro> entities Inventory      # list NPCs that have an outfit
+byro> prid 12                 # pick one — "selected: entity 12 (saadia)"
+byro> cam.tp                  # over-the-shoulder framing of the picked ref
+byro> inspect                 # dump every registered component on 12
+byro> skin.coverage           # verify RT skinning lands on this viewpoint
+```
+
+### Renderer telemetry at a glance
+
+```
+byro> ctx.scratch             # per-Vec scratch growth (R6 — catches M40 leaks)
+byro> skin.coverage           # green-bar: `coverage: full`
+byro> sys.accesses            # R7 — pre-flight for M27 parallel scheduler
+```
+
+### Diagnose a "chrome posterized" interior
+
+Per the project's `feedback_chrome_means_missing_textures` memory:
+when an interior reads as banded/chrome, run `tex.missing` first —
+usually the magenta-checker placeholder × the (correctly loaded)
+tangent-space normal map, not a lighting bug.
+
+```
+byro> tex.missing             # any missing entries? load the right BSA
+byro> mesh.cache              # hit rate sanity check
 ```
 
 ## Full docs
 
-See [`docs/engine/debug-cli.md`](../../docs/engine/debug-cli.md) for the
-wire protocol, expression language, registered components, screenshot
-pipeline, and feature-gating details.
+See [`docs/engine/debug-cli.md`](../../docs/engine/debug-cli.md) for
+the wire protocol, expression language, registered components +
+commands, picked-ref / `inspect` deep dive, camera control, renderer
+telemetry, canonical workflows, screenshot pipeline, and
+feature-gating details.
 
 ## Client-side commands (no network round-trip)
 

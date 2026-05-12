@@ -72,7 +72,7 @@ Request/response types are defined in `crates/debug-protocol/src/lib.rs`:
 
 | Request | What it does |
 |---------|-------------|
-| `Eval { expr }` | Parse + evaluate a Papyrus expression |
+| `Eval { expr }` | Parse + evaluate a Papyrus expression OR dispatch a dotted `CommandRegistry` command (#518) |
 | `ListEntities { component? }` | List entities (optionally filtered by component) |
 | `GetComponent { entity, component }` | Get full component data as JSON |
 | `SetField { entity, component, path, value }` | Modify a single field |
@@ -81,6 +81,9 @@ Request/response types are defined in `crates/debug-protocol/src/lib.rs`:
 | `Stats` | FPS, frame time, entity/mesh/texture/draw counts |
 | `FindEntity { name }` | Find entity by `Name` component |
 | `Screenshot { path? }` | Capture the composited frame as PNG |
+| `WalkEntity { entity, max_depth }` | Depth-first hierarchy walk — returns each visited node's id, name, parent, children, and world translation. Used to inspect runtime trees (NPC spawn chains) without per-component serde derives. |
+| `InspectSkinnedMesh { entity }` | Dump a `SkinnedMesh`'s skeleton root, per-bone resolved entity + `GlobalTransform`, bind-inverses, and computed palette. Pairs with `WalkEntity` for the M41 Phase 1b.x palette-formula investigation (#841). |
+| `Inspect { entity? }` | Per-entity component dump — every registered component on the entity as `(name, JSON value)`. `entity: None` reads the world's `SelectedRef` (see "Picked-Ref Workflow" below). The inspection half of the Bethesda-console `prid` + introspection pattern. |
 | `Ping` | Keep-alive / connection check |
 
 ## Component Registry
@@ -104,7 +107,7 @@ using the generic `register_component::<T>()` helper. Components must derive
 `Serialize + Deserialize` (gated behind the `inspect` feature on
 `byroredux-core`).
 
-### Currently registered (19 components)
+### Currently registered (24 components)
 
 | Component | Fields |
 |-----------|--------|
@@ -127,11 +130,24 @@ using the generic `register_component::<T>()` helper. Components must derive
 | `AnimatedSpecularColor` | (tuple: Vec3) — `NiMaterialColorController` target 2 |
 | `AnimatedEmissiveColor` | (tuple: Vec3) — `NiMaterialColorController` target 3 (neon signs, plasma glow, muzzle flashes) |
 | `AnimatedShaderColor` | (tuple: Vec3) — `BSEffect/BSLightingShaderPropertyColorController` |
+| `AnimationPlayer` | clip_handle, local_time, playing, speed, reverse_direction, root_entity, prev_time (#486 ping-pong snapshot) |
+| `AnimationStack` | layers, root_entity |
+| `Inventory` | items — M41 Phase 2 equip slice (#896 / be4663b), surfaces NPC outfit contents to byro-dbg |
+| `EquipmentSlots` | occupants — biped-slot bitmask coverage, pairs with `Inventory` for the M41 smoke-test workflow |
 
 Post-#517 the single `AnimatedColor` slot is split into one component
 per target. An entity with both a diffuse and an emissive controller
 now carries both components side-by-side instead of colliding
 last-write-wins on a shared RGB field.
+
+`AnimationPlayer` snapshots include `reverse_direction` and the
+blend-in/out timers (#486) so reloading mid-pingpong restores the
+fold direction instead of stepping backward across the boundary.
+
+The M41 Phase 2 `Inventory` + `EquipmentSlots` registration is
+load-bearing for the `m41-equip.sh` smoke test — `entities Inventory`
+lights up every actor with a populated outfit and `inspect <id>`
+shows the resolved biped slots.
 
 To add a new component: derive `Serialize`/`Deserialize` (behind `#[cfg_attr(feature = "inspect", ...)]`),
 then add a `register_component::<T>()` call in `registration.rs`.
@@ -186,7 +202,29 @@ unreachable from `byro-dbg` because `tex.missing` parsed as
 `Ident("tex") . member("missing")` → `find_by_name("tex")` →
 `no entity named 'tex'`.
 
+Current registered commands (19) grouped by purpose:
+
 ```
+# Engine state
+help                        → list every registered command
+stats                       → FPS / frame time / entity / mesh / texture counts
+entities [<Component>]      → list entities (optionally filtered by component)
+systems                     → registered ECS systems in execution order
+sys.accesses                → declared-access conflict report (R7) — pre-flight
+                             for M27 parallel scheduler
+
+# Picked reference + per-entity inspection
+prid <entity_id>            → pick a reference for follow-up commands
+prid                        → print the currently-picked reference
+
+# Camera control (fly-camera entity, ActiveCamera resource)
+cam.where                   → print active camera position + yaw/pitch
+cam.pos <x> <y> <z>         → teleport camera to absolute world position
+cam.tp <entity_id>          → teleport camera to over-the-shoulder framing of
+                              the entity (200 back + 50 up, look-at).
+                              No-arg form uses the picked ref (prid)
+
+# Asset / texture diagnostics
 tex.missing                 → entities with fallback texture + expected paths
 tex.loaded                  → unique loaded textures + fallback count
 mesh.info <entity_id>       → MeshHandle / TextureHandle / Material paths
@@ -194,15 +232,321 @@ mesh.info <entity_id>       → MeshHandle / TextureHandle / Material paths
                               correct FO4 behaviour since the real material
                               lives in the external BGSM/BGEM file)
 mesh.cache                  → NIF import cache stats (size, hit rate, misses)
-help                        → list every registered command
+
+# Renderer telemetry (R6 / M29.3 / R7 instrumentation)
+ctx.scratch                 → per-Vec capacity/len/heap-bytes for every persistent
+                             CPU-side scratch buffer (R6 — catches unbounded
+                             growth across M40 cell streaming)
+skin.coverage               → last-frame skinned-BLAS coverage — dispatches /
+                             first-sight / refit counters + slot-pool gauges.
+                             Green-bar: `coverage: full` (M29.3 closure)
+mem.frag                    → GPU memory fragmentation report
+
+# Skinning + lighting diagnostics
+skin.list                   → list SkinnedMesh entities + slot status
+skin.dump <entity_id>       → full SkinnedMesh dump — per-bone bind / world /
+                             palette matrices, identity-dropout flagging (#841)
+light.dump                  → list active LightSource entities + radius / color
 ```
+
+The dispatcher (#518) only kicks in for the *first whitespace-delimited
+token* — args after the name pass through to the command's
+`execute(world, args)` so existing `mesh.info 42` / `prid 42` shapes
+work without parser changes. The dotted names are deliberately not
+valid Papyrus identifiers, so they can't collide with member-access
+chains.
 
 `help` also works in-engine through `/cmd help`; the two namespaces
 are the same `CommandRegistry`. New commands added via
 `CommandRegistry::register` on the engine side automatically become
 reachable from `byro-dbg` with no protocol change.
 
-### Mutation
+## Picked-Ref Workflow (`prid` + `inspect`)
+
+Bethesda-console heritage. The original console paradigm is "pick a
+reference, then run commands against the picked ref" — `prid 0001A332`
+selects a target, then `getpos x`, `getav health`, etc. all operate
+on it implicitly. byro-dbg mirrors this with a `SelectedRef` world
+resource so commands across the console and the wire protocol read
+the same selection state.
+
+### `prid` — pick a reference (console command)
+
+```
+byro> prid 42
+selected: entity 42 (DocMitchell)
+byro> prid                    # no arg = print current
+selected: entity 42 (DocMitchell)
+```
+
+Implementation in `byroredux/src/commands.rs` (`PridCommand`):
+
+- Writes the `byroredux_core::ecs::SelectedRef` resource (world-scoped,
+  not per-TCP-client — single-developer-at-a-time is the dev-tool
+  reality).
+- Validates the target has a `Transform` *or* `GlobalTransform` before
+  setting. Bone-only entities with only a hierarchy parent pass the
+  `GlobalTransform` check; orphans without either are rejected with
+  a helpful error.
+- Resolves the entity's `Name` through `StringPool` for the output
+  line — same path as `entities` uses.
+- Not implicitly cleared on cell unload. Bethesda's original `prid`
+  has the same sharp edge; M40 streaming will eventually wire an
+  explicit clear-on-unload pass.
+
+### `inspect [<entity_id>]` — dump every registered component (protocol command)
+
+```
+byro> prid 42
+selected: entity 42 (DocMitchell)
+byro> inspect
+Entity 42 "DocMitchell":
+  Transform:
+    {
+      "translation": [3128.5, -148.0, 280.0],
+      "rotation": [0.0, 0.0, 0.0, 1.0],
+      "scale": 1.0
+    }
+  GlobalTransform:
+    {
+      "translation": [3128.5, -148.0, 280.0],
+      "rotation": [0.0, 0.0, 0.0, 1.0],
+      "scale": 1.0
+    }
+  Inventory:
+    { "items": [...] }
+  EquipmentSlots:
+    { "occupants": [...] }
+  AnimationPlayer:
+    { "clip_handle": ..., "playing": true, ... }
+(5 components)
+```
+
+Implementation in `crates/debug-server/src/evaluator.rs::eval_inspect`:
+
+- Reads either the explicit `entity` arg or the `SelectedRef` resource
+  when the arg is `None`. Empty `SelectedRef` + no arg returns a
+  friendly error pointing at the `prid <id>` workflow.
+- Iterates `ComponentRegistry::iter()` and calls each descriptor's
+  `get_json` closure (the same closure that powers `42.Transform`
+  expression access). Components the entity doesn't carry return
+  `None` and are skipped.
+- Output is registry order (BTreeMap-sorted by name) for stable diffs
+  across sessions.
+
+`inspect` is intentionally a **wire-protocol command**, not a
+`CommandRegistry` console command — the `ComponentRegistry` lives on
+the debug-server side (`DebugDrainSystem.registry`), not in the
+World, and reusing it via a `DebugRequest::Inspect` variant avoids
+moving 24 closures across crate boundaries. The console-side `prid`
+mutates `SelectedRef` (a world resource) so the protocol-side
+`inspect` reads the same picked state.
+
+### Composing with other commands
+
+Commands that previously required an explicit `<entity_id>` argument
+should fall back to `SelectedRef` when called with no arg. Today:
+
+- **`cam.tp`** (no arg) — frames the picked ref. Empty `SelectedRef`
+  + no arg prints a usage hint pointing at the `prid` workflow.
+
+Future Bethesda-console additions (`getpos`, `getav`, `setav`,
+in-game console post-M47.0) layer onto the same `SelectedRef` +
+`ComponentRegistry` foundation — adding them is a matter of writing
+a new `ConsoleCommand` whose `execute` reads `SelectedRef`.
+
+## Camera Control (`cam.*`)
+
+The `cam.*` console commands move the active fly-camera entity from
+byro-dbg. Use them to frame a workload (an NPC, a corner of a cell)
+before reading per-frame telemetry like `skin.coverage` against a
+known viewpoint.
+
+| Command | What it does |
+|---------|-------------|
+| `cam.where` | Print `ActiveCamera` entity ID, world position, yaw/pitch in radians + degrees |
+| `cam.pos <x> <y> <z>` | Teleport to an absolute world position (renderer Y-up). Leaves rotation untouched |
+| `cam.tp <entity_id>` | Teleport over-the-shoulder of an entity (200 units back + 50 up, look-at). No-arg form uses the picked ref (`prid`) |
+
+### Look-at math
+
+`cam.tp` computes a fly-camera-compatible `(yaw, pitch)` pair from
+the camera-to-target direction. The fly camera composes rotation as
+`Q_y(yaw) * Q_x(pitch)` and treats `-Z` as forward; the look-at
+inverse is:
+
+```rust
+let dir = (target - camera).normalize();
+let pitch = dir.y.asin();
+let yaw = (-dir.x).atan2(-dir.z);
+```
+
+Four unit tests in `byroredux/src/commands.rs::tests` verify the
+round-trip on all six cardinal axes through the actual glam quat
+composition — analytic sign-convention errors are caught at compile
+time of the test.
+
+### Survives `fly_camera_system` overwrite
+
+`fly_camera_system` early-returns when `InputState.mouse_captured`
+is false — the default state under `--bench-hold` headless smoke
+runs. So `cam.pos` / `cam.tp` values persist across frames without
+fighting the input loop.
+
+Under active mouse capture (interactive play), the fly camera reads
+yaw/pitch from `InputState` each frame and overwrites the
+`Transform.rotation`. `cam.tp` defensively updates `InputState.yaw`
+and `.pitch` alongside the rotation so the orientation survives the
+next tick — `cam.pos` does not (rotation untouched, so it doesn't
+need to).
+
+## Renderer Telemetry
+
+Three observability resources are refreshed each frame by the engine
+binary after `Scheduler::run` and surfaced via console commands.
+
+### `ctx.scratch` — scratch-buffer growth (R6)
+
+`ScratchTelemetry` snapshots every persistent `Vec` scratch in the
+renderer (gpu_instances, batches, indirect_draws, terrain_tile,
+tlas_instances) plus the R1 / #780 material-table dedup ratio. Read
+to catch unbounded growth across long sessions or M40 cell streaming
+where a `Vec::reserve` driven by an outlier frame would pin capacity
+at the high-water mark indefinitely with zero observability.
+
+```
+byro> ctx.scratch
+VulkanContext scratch buffers (R6):
+  name                           len   capacity   bytes_used       wasted
+  gpu_instances_scratch         2562       3072    344064 B     57344 B
+  batches_scratch                 87         96      4644 B       480 B
+  indirect_draws_scratch        2562       3072     61440 B     12240 B
+  terrain_tile_scratch             0          0         0 B         0 B
+  tlas_instances_scratch        2562       3072    267264 B     44544 B
+  total: 677412 bytes used, 114608 bytes wasted across 5 scratches
+  materials: 142 unique / 2562 interned (18.0× dedup)
+```
+
+### `skin.coverage` — skinned BLAS refit coverage (M29.3 closure)
+
+`SkinCoverageStats` records per-frame dispatches / first-sight /
+refit counters + slot-pool gauges. The green-bar is `coverage:
+full` (`refits_succeeded == dispatches_total && slots_failed == 0`).
+PARTIAL output names the miss count and lists sampled failed entity
+IDs for follow-up `inspect <id>`.
+
+```
+byro> skin.coverage
+Skinned BLAS coverage (last frame):
+  dispatches_total       = 6   (visible skinned entities)
+  slots_active           = 6 / 64  (pool 9% full)
+  slots_failed           = 0   (suppressed until LRU eviction)
+  first_sight_attempted  = 0
+  first_sight_succeeded  = 0
+  refits_attempted       = 6
+  refits_succeeded       = 6
+  coverage: full
+```
+
+A regression — for example, a slot-pool exhaustion that drops two
+NPCs from refit — surfaces as:
+
+```
+  coverage: PARTIAL — 2 of 6 visible skinned entities missed this frame
+  failed_entity_ids (sample): [128, 142]
+```
+
+See `crates/core/src/ecs/resources.rs::SkinCoverageStats` for the
+canonical schema and `crates/renderer/src/vulkan/context/draw.rs`
+for the per-frame increments.
+
+### `sys.accesses` — scheduler access conflicts (R7)
+
+`SchedulerAccessReport` runs once at startup against the registered
+systems and reports declared-access conflicts (Conflict / Unknown).
+Pre-flight for M27 parallel dispatch — flip the
+`parallel-scheduler` feature on only once `Unknown` rows hit zero.
+
+```
+byro> sys.accesses
+Stage Late:
+  fly_camera_system            declared: read InputState, write Transform
+  spin_system                  declared: write Transform
+  Conflict: fly_camera_system ↔ spin_system on Transform (both write)
+  ...
+```
+
+## Canonical Workflows
+
+End-to-end recipes that compose the commands above. Each maps to a
+real engineering bar from the current roadmap.
+
+### "Why isn't NPC X getting RT shadows?" (M41 + M29.3)
+
+```
+byro> entities Inventory                  # list every actor with equip state
+byro> prid 142                            # pick the NPC by id
+byro> inspect                             # confirm Inventory / EquipmentSlots
+byro> cam.tp                              # frame them
+byro> skin.coverage                       # verify dispatches_total includes them
+byro> skin.dump 142                       # if PARTIAL, dump per-bone palette
+```
+
+Closure bar: `coverage: full` AND `inspect` shows `SkinnedMesh`,
+`Inventory`, `EquipmentSlots` on the entity, AND `skin.dump` shows
+zero identity-dropout palette slots.
+
+### "Did a recent commit regress scratch growth across M40 streams?"
+
+```
+byro> ctx.scratch                         # baseline snapshot
+... wait through a cell transition ...
+byro> ctx.scratch                         # compare wasted_bytes
+```
+
+Regression bar: any row's `wasted_bytes` should return to a low
+multiple of `bytes_used` after the high-water settles. Sustained
+multi-MB `wasted` across cell transitions = a `Vec::reserve` that
+pins on an outlier frame.
+
+### "What's the entity I clicked / I'm looking at?"
+
+byro-dbg has no in-engine raycast yet, but the closest substitute
+is `find` + `inspect`:
+
+```
+byro> find("DocMitchell")
+  Entity 42 "DocMitchell"
+byro> inspect 42
+```
+
+A future addition would be a `cam.aim` command that ray-casts from
+the active camera forward and prints the hit entity — natural pair
+for `prid`.
+
+### "M41 Phase 2 smoke test"
+
+See [`docs/smoke-tests/m41-equip.sh`](../smoke-tests/m41-equip.sh)
+for the canonical scripted version. The interactive form:
+
+```
+$ cargo run --release -- --esm Skyrim.esm --cell WhiterunBanneredMare \
+    --bsa Skyrim-Meshes0.bsa --textures-bsa Skyrim-Textures0.bsa \
+    --bench-frames 300 --bench-hold
+
+$ cargo run -p byro-dbg
+byro> entities Inventory
+  Entity 12 "saadia"
+  Entity 19 "brenuin"
+  Entity 23 "mikael"
+  ...
+byro> prid 12
+byro> cam.tp
+byro> inspect
+byro> skin.coverage
+```
+
+## Mutation
 
 Field-level set uses the `SetField` protocol message. The evaluator reads
 the component → serializes to JSON → modifies the field → deserializes back
@@ -431,11 +775,15 @@ byro> components
   AnimatedShaderColor
   AnimatedSpecularColor
   AnimatedVisibility
+  AnimationPlayer
+  AnimationStack
   BSBound
   BSXFlags
   Billboard
   Camera
+  EquipmentSlots
   GlobalTransform
+  Inventory
   LightSource
   LocalBound
   Material
@@ -443,7 +791,47 @@ byro> components
   TextureHandle
   Transform
   WorldBound
-(19 components)
+(24 components)
+
+byro> entities Inventory
+  Entity 12 "saadia"
+  Entity 19 "brenuin"
+  Entity 23 "mikael"
+(3 entities)
+
+byro> prid 12
+selected: entity 12 (saadia)
+
+byro> cam.tp
+Camera teleported to look at entity 12 at (3128.50, -148.00, 280.00)
+  camera now at (3128.50, -98.00, 480.00) yaw 0.0° pitch -14.0°
+
+byro> inspect
+Entity 12 "saadia":
+  Transform:
+    {
+      "translation": [3128.5, -148.0, 280.0],
+      "rotation": [0.0, 0.0, 0.0, 1.0],
+      "scale": 1.0
+    }
+  GlobalTransform:
+    { ... }
+  Inventory:
+    { "items": [...] }
+  EquipmentSlots:
+    { "occupants": [...] }
+(4 components)
+
+byro> skin.coverage
+Skinned BLAS coverage (last frame):
+  dispatches_total       = 6   (visible skinned entities)
+  slots_active           = 6 / 64  (pool 9% full)
+  slots_failed           = 0   (suppressed until LRU eviction)
+  first_sight_attempted  = 0
+  first_sight_succeeded  = 0
+  refits_attempted       = 6
+  refits_succeeded       = 6
+  coverage: full
 
 byro> tex.missing
 17 unique missing textures:
