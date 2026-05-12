@@ -2,15 +2,16 @@
 
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::{
-    AccessConflict, Camera, ConflictKind, DebugStats, GlobalTransform, Material, MeshHandle, Name,
-    SchedulerAccessReport, ScratchTelemetry, SkinCoverageStats, SkinnedMesh, TextureHandle,
-    Transform, World,
+    AccessConflict, ActiveCamera, Camera, ConflictKind, DebugStats, EntityId, GlobalTransform,
+    Material, MeshHandle, Name, SchedulerAccessReport, ScratchTelemetry, SkinCoverageStats,
+    SkinnedMesh, TextureHandle, Transform, World,
 };
-use byroredux_core::math::Mat4;
+use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
 use std::collections::HashMap;
 
 use byroredux_core::ecs::SystemList;
+use crate::components::InputState;
 
 struct HelpCommand;
 impl ConsoleCommand for HelpCommand {
@@ -443,6 +444,222 @@ impl ConsoleCommand for SkinCoverageCommand {
             ));
         }
         CommandOutput::lines(lines)
+    }
+}
+
+/// Derive fly-camera `(yaw, pitch)` in radians for a camera at `from`
+/// to look at `to`. Matches `fly_camera_system`'s rotation composition
+/// (`Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch)` with
+/// `forward = rotation * -Z`), so updating `InputState.{yaw, pitch}`
+/// alongside `Transform.rotation` survives the next fly-camera tick.
+/// Degenerate `to == from` returns `(0, 0)`.
+fn look_at_yaw_pitch(from: Vec3, to: Vec3) -> (f32, f32) {
+    let diff = to - from;
+    let len_sq = diff.length_squared();
+    if len_sq < 1e-6 {
+        return (0.0, 0.0);
+    }
+    let dir = diff / len_sq.sqrt();
+    let pitch = dir.y.clamp(-1.0, 1.0).asin();
+    let yaw = (-dir.x).atan2(-dir.z);
+    (yaw, pitch)
+}
+
+/// `cam.where` — print the active camera's world position + yaw/pitch.
+///
+/// Use to capture the current viewpoint before teleporting elsewhere
+/// so you can return to it (`cam.pos x y z`). Pairs with `skin.
+/// coverage` for documenting which viewpoint produced a given coverage
+/// reading.
+struct CamWhereCommand;
+impl ConsoleCommand for CamWhereCommand {
+    fn name(&self) -> &str {
+        "cam.where"
+    }
+    fn description(&self) -> &str {
+        "Print active camera position + yaw/pitch (radians)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(active) = world.try_resource::<ActiveCamera>() else {
+            return CommandOutput::line("ActiveCamera resource not present");
+        };
+        let cam_entity = active.0;
+        drop(active);
+        let pos = world
+            .query::<Transform>()
+            .and_then(|q| q.get(cam_entity).map(|t| t.translation));
+        let Some(pos) = pos else {
+            return CommandOutput::line(format!(
+                "Camera entity {cam_entity} has no Transform"
+            ));
+        };
+        let (yaw, pitch) = if let Some(input) = world.try_resource::<InputState>() {
+            (input.yaw, input.pitch)
+        } else {
+            (0.0, 0.0)
+        };
+        CommandOutput::lines(vec![
+            format!("Camera entity: {}", cam_entity),
+            format!(
+                "  position: ({:.2}, {:.2}, {:.2})",
+                pos.x, pos.y, pos.z
+            ),
+            format!(
+                "  yaw:      {:.4} rad ({:.1}°)",
+                yaw,
+                yaw.to_degrees()
+            ),
+            format!(
+                "  pitch:    {:.4} rad ({:.1}°)",
+                pitch,
+                pitch.to_degrees()
+            ),
+        ])
+    }
+}
+
+/// `cam.pos x y z` — teleport the active camera to an absolute world
+/// position (renderer Y-up). Leaves rotation untouched.
+///
+/// `fly_camera_system` early-returns when the mouse isn't captured
+/// (the default for `--bench-hold`), so the new position persists
+/// across frames. With mouse capture active the camera still moves
+/// relative to WASD input, so this command sets the *anchor* for that
+/// frame's worth of input rather than locking the camera in place.
+struct CamPosCommand;
+impl ConsoleCommand for CamPosCommand {
+    fn name(&self) -> &str {
+        "cam.pos"
+    }
+    fn description(&self) -> &str {
+        "Teleport camera to absolute world position (usage: cam.pos x y z)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let parts: Vec<&str> = args.split_whitespace().collect();
+        if parts.len() != 3 {
+            return CommandOutput::line(
+                "usage: cam.pos <x> <y> <z>  (renderer Y-up coordinates)",
+            );
+        }
+        let parse = |s: &str| -> Option<f32> { s.parse::<f32>().ok() };
+        let (Some(x), Some(y), Some(z)) =
+            (parse(parts[0]), parse(parts[1]), parse(parts[2]))
+        else {
+            return CommandOutput::line(format!(
+                "cam.pos: failed to parse coordinates from `{args}`"
+            ));
+        };
+        let Some(active) = world.try_resource::<ActiveCamera>() else {
+            return CommandOutput::line("ActiveCamera resource not present");
+        };
+        let cam_entity = active.0;
+        drop(active);
+        let Some(mut tq) = world.query_mut::<Transform>() else {
+            return CommandOutput::line("Transform storage not present");
+        };
+        let Some(transform) = tq.get_mut(cam_entity) else {
+            return CommandOutput::line(format!(
+                "Camera entity {cam_entity} has no Transform"
+            ));
+        };
+        transform.translation = Vec3::new(x, y, z);
+        CommandOutput::line(format!(
+            "Camera teleported to ({x:.2}, {y:.2}, {z:.2})"
+        ))
+    }
+}
+
+/// `cam.tp <entity_id>` — teleport the active camera to look at the
+/// given entity. The camera lands ~200 units back along the target's
+/// -Z axis at +50 Y for a reasonable over-the-shoulder framing on
+/// FNV / Skyrim+ NPCs (~100 unit tall humanoids).
+///
+/// Both `Transform.rotation` and `InputState.{yaw, pitch}` are
+/// updated so the orientation survives the next `fly_camera_system`
+/// tick even when the mouse is captured.
+///
+/// The natural usage with `skin.coverage`: spawn a multi-NPC cell with
+/// `--bench-hold`, `cam.tp <npc_entity_id>` to frame the actor, then
+/// `skin.coverage` reads the new viewpoint's dispatches_total.
+struct CamTpCommand;
+impl ConsoleCommand for CamTpCommand {
+    fn name(&self) -> &str {
+        "cam.tp"
+    }
+    fn description(&self) -> &str {
+        "Teleport camera to look at entity (usage: cam.tp <entity_id>)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let trimmed = args.trim();
+        if trimmed.is_empty() {
+            return CommandOutput::line("usage: cam.tp <entity_id>");
+        }
+        let Ok(target_id) = trimmed.parse::<EntityId>() else {
+            return CommandOutput::line(format!(
+                "cam.tp: failed to parse entity id from `{trimmed}`"
+            ));
+        };
+        let Some(active) = world.try_resource::<ActiveCamera>() else {
+            return CommandOutput::line("ActiveCamera resource not present");
+        };
+        let cam_entity = active.0;
+        drop(active);
+        // Read the target's world position. GlobalTransform is updated
+        // by `transform_propagation_system` each frame — for entities
+        // freshly spawned this frame the value may still be the
+        // identity-default, but for cell-stable entities it's the
+        // resolved position. Read-only — no lock contention with the
+        // mutate below.
+        let target_pos = world
+            .query::<GlobalTransform>()
+            .and_then(|q| q.get(target_id).map(|gt| gt.translation));
+        let Some(target_pos) = target_pos else {
+            return CommandOutput::line(format!(
+                "Entity {target_id} has no GlobalTransform (does it exist? `entities` to list)"
+            ));
+        };
+        // Land ~200 units back + 50 up. World-space offset, not local
+        // — keeps the over-the-shoulder framing predictable regardless
+        // of the target's own orientation.
+        let camera_pos = target_pos + Vec3::new(0.0, 50.0, 200.0);
+        let (yaw, pitch) = look_at_yaw_pitch(camera_pos, target_pos);
+        let rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+        // Apply Transform mutation under its own scope so the input-
+        // state mutation doesn't hold two write guards simultaneously.
+        {
+            let Some(mut tq) = world.query_mut::<Transform>() else {
+                return CommandOutput::line("Transform storage not present");
+            };
+            let Some(transform) = tq.get_mut(cam_entity) else {
+                return CommandOutput::line(format!(
+                    "Camera entity {cam_entity} has no Transform"
+                ));
+            };
+            transform.translation = camera_pos;
+            transform.rotation = rotation;
+        }
+        // Sync InputState so the next fly_camera tick under mouse
+        // capture reads back the same yaw/pitch instead of overwriting
+        // the look direction with stale accumulator values.
+        if let Some(mut input) = world.try_resource_mut::<InputState>() {
+            input.yaw = yaw;
+            input.pitch = pitch;
+        }
+        CommandOutput::lines(vec![
+            format!(
+                "Camera teleported to look at entity {target_id} at \
+                 ({:.2}, {:.2}, {:.2})",
+                target_pos.x, target_pos.y, target_pos.z,
+            ),
+            format!(
+                "  camera now at ({:.2}, {:.2}, {:.2}) yaw {:.1}° pitch {:.1}°",
+                camera_pos.x,
+                camera_pos.y,
+                camera_pos.z,
+                yaw.to_degrees(),
+                pitch.to_degrees(),
+            ),
+        ])
     }
 }
 
@@ -995,6 +1212,9 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MeshCacheCommand);
     registry.register(CtxScratchCommand);
     registry.register(SkinCoverageCommand);
+    registry.register(CamWhereCommand);
+    registry.register(CamPosCommand);
+    registry.register(CamTpCommand);
     registry.register(SysAccessesCommand);
     registry.register(SkinListCommand);
     registry.register(SkinDumpCommand);
@@ -1215,5 +1435,65 @@ mod tests {
             "sun_texture_index=0 must annotate procedural fallback: {}",
             joined
         );
+    }
+
+    /// `look_at_yaw_pitch` must produce a (yaw, pitch) pair such that
+    /// composing the fly-camera quaternion (`Q_y(yaw) * Q_x(pitch)`)
+    /// applied to `-Z` yields the unit direction from `from` to `to`.
+    /// Tests pick directions on the six cardinal axes — full coverage
+    /// of the yaw/pitch sign convention.
+    fn forward_from(yaw: f32, pitch: f32) -> Vec3 {
+        let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+        rot * (-Vec3::Z)
+    }
+
+    fn assert_forward_matches(from: Vec3, to: Vec3) {
+        let (yaw, pitch) = look_at_yaw_pitch(from, to);
+        let want = (to - from).normalize();
+        let got = forward_from(yaw, pitch);
+        assert!(
+            (got - want).length() < 1e-3,
+            "look_at_yaw_pitch({from:?} -> {to:?}) yielded forward {got:?}, want {want:?}",
+        );
+    }
+
+    #[test]
+    fn look_at_minus_z_is_identity_rotation() {
+        // Default fly-camera forward is -Z; looking at -Z from origin
+        // must produce yaw=0, pitch=0.
+        let (yaw, pitch) = look_at_yaw_pitch(Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0));
+        assert!(yaw.abs() < 1e-3, "yaw should be 0, got {yaw}");
+        assert!(pitch.abs() < 1e-3, "pitch should be 0, got {pitch}");
+    }
+
+    #[test]
+    fn look_at_cardinal_axes_round_trip_through_quat() {
+        assert_forward_matches(Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0));
+        assert_forward_matches(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0));
+        assert_forward_matches(Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0));
+        assert_forward_matches(Vec3::ZERO, Vec3::new(-1.0, 0.0, 0.0));
+        assert_forward_matches(Vec3::ZERO, Vec3::new(0.0, 1.0, 0.001));
+        assert_forward_matches(Vec3::ZERO, Vec3::new(0.0, -1.0, 0.001));
+    }
+
+    #[test]
+    fn look_at_offset_origin_round_trips() {
+        // Camera at (10, 5, 200), target at (0, 0, 0): forward should
+        // point toward origin and through-quat must reproduce that
+        // direction.
+        assert_forward_matches(Vec3::new(10.0, 5.0, 200.0), Vec3::ZERO);
+        // The cam.tp default framing: 200 back + 50 up.
+        let target = Vec3::new(100.0, 0.0, 0.0);
+        let camera = target + Vec3::new(0.0, 50.0, 200.0);
+        assert_forward_matches(camera, target);
+    }
+
+    #[test]
+    fn look_at_degenerate_zero_distance_returns_zero() {
+        // Target equals source — no meaningful direction; return zero
+        // instead of producing NaN or an arbitrary unit vector.
+        let (yaw, pitch) = look_at_yaw_pitch(Vec3::new(5.0, 5.0, 5.0), Vec3::new(5.0, 5.0, 5.0));
+        assert_eq!(yaw, 0.0);
+        assert_eq!(pitch, 0.0);
     }
 }
