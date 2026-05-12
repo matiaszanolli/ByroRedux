@@ -65,6 +65,15 @@ pub(crate) struct RefrTextureOverlay {
     pub(crate) inner: Option<FixedString>,
     pub(crate) specular: Option<FixedString>,
     pub(crate) material_path: Option<FixedString>,
+    /// Resolved MSWP entries from the REFR's `XMSP` sub-record (#971).
+    /// Each pair substitutes a BGSM/BGEM material path on the base
+    /// mesh's authored material slots — e.g. Raider armour colour
+    /// variants, station-wagon rust patterns, Vault decay overlays.
+    /// Per-shape application happens at mesh-spawn time (the overlay
+    /// itself only tracks a single `material_path`); this list rides
+    /// through so the spawn path can walk it once it knows the host
+    /// mesh's per-shape material assignments.
+    pub(crate) material_swaps: Vec<esm::records::MaterialSwapEntry>,
 }
 
 impl RefrTextureOverlay {
@@ -192,6 +201,7 @@ pub(crate) fn build_refr_texture_overlay(
     if placed.alt_texture_ref.is_none()
         && placed.land_texture_ref.is_none()
         && placed.texture_slot_swaps.is_empty()
+        && placed.material_swap_ref.is_none()
     {
         return None;
     }
@@ -221,10 +231,51 @@ pub(crate) fn build_refr_texture_overlay(
         }
     }
 
+    // XMSP — MSWP material-swap table (#971 / FO4-D4-NEW-08). Resolved
+    // against `EsmCellIndex.material_swaps`. The table substitutes
+    // BGSM/BGEM source-path → target-path on the base mesh's authored
+    // material slots; entries that fail the FNAM path-prefix filter
+    // against the overlay's `material_path` (when one is already set
+    // by XATO/XTNM MNAM) are dropped here so the spawn path doesn't
+    // have to re-evaluate it per shape. Entries are kept in authoring
+    // order — the spawn path applies them per shape with later-wins
+    // semantics matching the MSWP file format.
+    if let Some(swap_ref) = placed.material_swap_ref {
+        if let Some(table) = index.material_swaps.get(&swap_ref) {
+            // Apply the XATO-set material_path swap eagerly when the
+            // overlay already carries one (XATO MNAM-only TXST path).
+            // Multi-shape per-slot application happens at mesh-spawn
+            // time using `material_swaps` below.
+            if let Some(current_sym) = ov.material_path {
+                if let Some(current) = pool.resolve(current_sym).map(str::to_owned) {
+                    let filter_ok = table.path_filter.as_deref().is_none_or(|f| {
+                        current
+                            .to_ascii_lowercase()
+                            .starts_with(&f.to_ascii_lowercase())
+                    });
+                    if filter_ok {
+                        for entry in &table.swaps {
+                            if entry.source.eq_ignore_ascii_case(&current)
+                                && !entry.target.is_empty()
+                            {
+                                ov.material_path = Some(pool.intern(&entry.target));
+                            }
+                        }
+                    }
+                }
+            }
+            // Always preserve the resolved swap list for the spawn-path
+            // per-shape consumer. Clone is cheap — vanilla MSWPs ship
+            // ~2.18 entries on average.
+            ov.material_swaps = table.swaps.clone();
+        }
+    }
+
     // BGSM chain fill — MNAM-only TXSTs contribute nothing to the 8
     // direct slots, but their `material_path` resolves through the BGSM
     // template chain to real textures. Matches import-time
-    // `merge_bgsm_into_mesh` semantics.
+    // `merge_bgsm_into_mesh` semantics. Runs after the MSWP substitution
+    // above so the chain walks the swapped target BGSM, not the source.
     if ov.material_path.is_some() {
         if let Some(mp) = mat_provider {
             ov.fill_from_bgsm(mp, pool);

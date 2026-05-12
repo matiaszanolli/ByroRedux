@@ -12,6 +12,7 @@
 use super::*;
 use byroredux_core::string::{FixedString, StringPool};
 use byroredux_plugin::esm::cell::{EsmCellIndex, PlacedRef, TextureSet, TextureSlotSwap};
+use byroredux_plugin::esm::records::{MaterialSwapEntry, MaterialSwapRecord};
 
 /// Resolve a path handle through the `StringPool`. The pool lowercases
 /// on intern (Gamebryo `GlobalStringTable` semantic) so test assertions
@@ -37,6 +38,7 @@ fn empty_placed_ref(base_form_id: u32) -> PlacedRef {
         land_texture_ref: None,
         texture_slot_swaps: Vec::new(),
         emissive_light_ref: None,
+        material_swap_ref: None,
         ownership: None,
     }
 }
@@ -164,6 +166,136 @@ fn build_overlay_xtxr_later_swap_wins_for_same_slot() {
         .expect("XTXR swaps must produce an overlay");
     // Authoring-order: later XTXR wins.
     assert_eq!(resolved(&pool, ov.normal), Some(r"textures\second\nrm.dds"));
+}
+
+// --- #971 / FO4-D4-NEW-08 XMSP regression tests ---
+
+fn mswp(swaps: Vec<(&str, &str)>, filter: Option<&str>) -> MaterialSwapRecord {
+    MaterialSwapRecord {
+        form_id: 0x0024_0001,
+        editor_id: "TestSwap".into(),
+        path_filter: filter.map(str::to_string),
+        swaps: swaps
+            .into_iter()
+            .map(|(s, t)| MaterialSwapEntry {
+                source: s.into(),
+                target: t.into(),
+                color_intensity: None,
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn build_overlay_xmsp_only_refr_carries_resolved_swap_list() {
+    let mut index = EsmCellIndex::default();
+    index.material_swaps.insert(
+        0x0024_0001,
+        mswp(
+            vec![(
+                r"vehicles\stationwagon01a_rust.bgsm",
+                r"vehicles\stationwagon01_postwar.bgsm",
+            )],
+            None,
+        ),
+    );
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.material_swap_ref = Some(0x0024_0001);
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, None, &mut pool)
+        .expect("XMSP alone must produce an overlay so the spawn path can apply it");
+    assert_eq!(ov.material_swaps.len(), 1);
+    assert_eq!(
+        ov.material_swaps[0].source,
+        r"vehicles\stationwagon01a_rust.bgsm"
+    );
+    assert_eq!(
+        ov.material_swaps[0].target,
+        r"vehicles\stationwagon01_postwar.bgsm"
+    );
+}
+
+#[test]
+fn build_overlay_xmsp_substitutes_xato_material_path_on_source_match() {
+    let mut index = EsmCellIndex::default();
+    index.texture_sets.insert(
+        0x0020_0001,
+        TextureSet {
+            material_path: Some(r"Vehicles\StationWagon01a_Rust.BGSM".to_string()),
+            ..TextureSet::default()
+        },
+    );
+    index.material_swaps.insert(
+        0x0024_0001,
+        mswp(
+            vec![(
+                r"vehicles\stationwagon01a_rust.bgsm",
+                r"vehicles\stationwagon_postwar_cheap04.bgsm",
+            )],
+            None,
+        ),
+    );
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.alt_texture_ref = Some(0x0020_0001);
+    placed.material_swap_ref = Some(0x0024_0001);
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, None, &mut pool)
+        .expect("XATO + XMSP must produce an overlay");
+    // The XATO MNAM-only TXST seeded material_path; XMSP rewrote it.
+    assert_eq!(
+        resolved(&pool, ov.material_path),
+        Some(r"vehicles\stationwagon_postwar_cheap04.bgsm")
+    );
+}
+
+#[test]
+fn build_overlay_xmsp_fnam_filter_skips_non_matching_paths() {
+    let mut index = EsmCellIndex::default();
+    index.texture_sets.insert(
+        0x0020_0001,
+        TextureSet {
+            // Outside the FNAM "Interiors\Vault" filter.
+            material_path: Some(r"Vehicles\StationWagon01a.BGSM".to_string()),
+            ..TextureSet::default()
+        },
+    );
+    index.material_swaps.insert(
+        0x0024_0001,
+        mswp(
+            vec![(r"vehicles\stationwagon01a.bgsm", r"vehicles\swapped.bgsm")],
+            Some(r"Interiors\Vault"),
+        ),
+    );
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.alt_texture_ref = Some(0x0020_0001);
+    placed.material_swap_ref = Some(0x0024_0001);
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, None, &mut pool)
+        .expect("XATO + XMSP must produce an overlay even when filter drops the swap");
+    // Filter did not match, so material_path stays as the XATO MNAM.
+    assert_eq!(
+        resolved(&pool, ov.material_path),
+        Some(r"vehicles\stationwagon01a.bgsm")
+    );
+    // The swap list still rides through — the spawn path's per-shape
+    // application re-applies the filter against each shape's source.
+    assert_eq!(ov.material_swaps.len(), 1);
+}
+
+#[test]
+fn build_overlay_xmsp_missing_record_is_a_no_op() {
+    let index = EsmCellIndex::default();
+    let mut placed = empty_placed_ref(0x0100_0001);
+    placed.material_swap_ref = Some(0xDEAD_BEEF); // unresolved
+
+    let mut pool = StringPool::new();
+    let ov = build_refr_texture_overlay(&placed, &index, None, &mut pool)
+        .expect("Even an unresolved XMSP must produce an overlay (consumer is downstream)");
+    assert!(ov.material_swaps.is_empty());
+    assert!(ov.material_path.is_none());
 }
 
 #[test]

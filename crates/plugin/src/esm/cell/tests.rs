@@ -874,6 +874,29 @@ fn parse_refr_extracts_xrds_radius_override() {
     assert_eq!(r.radius_override, Some(256.0));
 }
 
+/// Regression for #971 / FO4-D4-NEW-08 — XMSP populates
+/// `material_swap_ref` so the cell loader can resolve the per-REFR
+/// MSWP table at spawn time. Pre-fix the arm was missing and every
+/// vanilla Raider colour variant / station-wagon rust pattern / Vault
+/// decay overlay rendered with the base mesh's textures.
+#[test]
+fn parse_refr_extracts_xmsp_material_swap_ref() {
+    let xmsp = 0x0024_9A4Eu32.to_le_bytes();
+    let record = build_refr_with_subs(0xBEEF, &[(b"XMSP", &xmsp)]);
+    let r = parse_one_refr(&record);
+    assert_eq!(r.material_swap_ref, Some(0x0024_9A4E));
+}
+
+/// REFR with no XMSP must leave `material_swap_ref` as `None` — the
+/// cell loader's overlay builder fast-paths these by skipping the
+/// `material_swaps` lookup entirely.
+#[test]
+fn parse_refr_without_xmsp_has_no_material_swap_ref() {
+    let record = build_refr_with_subs(0xBEEF, &[]);
+    let r = parse_one_refr(&record);
+    assert!(r.material_swap_ref.is_none());
+}
+
 /// Regression for #412 — XRMR room membership count + refs. Pre-fix
 /// FO4 interior cell-subdivided culling had no room assignment to
 /// work from. The helper also asserts the allocation bound: a

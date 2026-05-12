@@ -326,6 +326,7 @@ pub(crate) fn parse_refr_group(
             let mut land_texture_ref: Option<u32> = None;
             let mut texture_slot_swaps: Vec<TextureSlotSwap> = Vec::new();
             let mut emissive_light_ref: Option<u32> = None;
+            let mut material_swap_ref: Option<u32> = None;
             // #692 — per-REFR ownership override. Scopes ownership to a
             // single placed object (chest, bed, locker) when the parent
             // cell is public. Same XOWN / XRNK / XGLB layout as CELL.
@@ -470,6 +471,18 @@ pub(crate) fn parse_refr_group(
                     b"XEMI" => {
                         emissive_light_ref = r.u32().ok();
                     }
+                    // XMSP — per-REFR MSWP (Material Swap) FormID. 4 bytes.
+                    // Resolves against `EsmCellIndex.material_swaps` at
+                    // cell-load to substitute BGSM/BGEM material paths on
+                    // the base mesh. Pre-#971 the ~2,500 vanilla FO4
+                    // MSWP records sat indexed but unused because the
+                    // REFR arm was missing — Raider armour colour
+                    // variants, settlement clutter colours, station-
+                    // wagon rust, and Vault decay overlays all rendered
+                    // with the base mesh's textures. See FO4-D4-NEW-08.
+                    b"XMSP" => {
+                        material_swap_ref = r.u32().ok();
+                    }
                     // #692 — per-REFR ownership override (mirrors the
                     // CELL walker arms). XOWN owner FormID, XRNK
                     // faction-rank gate, XGLB global-var gate. Same
@@ -509,6 +522,7 @@ pub(crate) fn parse_refr_group(
                     land_texture_ref,
                     texture_slot_swaps,
                     emissive_light_ref,
+                    material_swap_ref,
                     ownership,
                 });
             }

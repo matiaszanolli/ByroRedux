@@ -316,6 +316,15 @@ pub struct PlacedRef {
     /// the consumer wiring (per-REFR emissive light spawn) is follow-up
     /// work. See audit FO4-DIM6-02.
     pub emissive_light_ref: Option<u32>,
+    /// MSWP FormID attached via the REFR's `XMSP` sub-record — a
+    /// material-swap table the cell loader resolves against
+    /// `EsmCellIndex.material_swaps` to produce per-REFR BGSM/BGEM
+    /// substitutions on the base mesh's authored material slots.
+    /// Pre-#971 every Raider armour colour-variant, settlement clutter
+    /// variation, station-wagon rust pattern, and Vault decay overlay
+    /// rendered with the base mesh's textures because this field was
+    /// silently dropped at parse time. See audit FO4-D4-NEW-08.
+    pub material_swap_ref: Option<u32>,
     /// Per-REFR ownership override (XOWN / XRNK / XGLB). When `Some`,
     /// the placed object (chest, bed, individual storage) is owned
     /// independently of the parent cell's ownership — stealing the
