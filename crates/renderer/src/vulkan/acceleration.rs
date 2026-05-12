@@ -321,6 +321,15 @@ fn decide_use_update(
     // checking instance_count > 0 would otherwise hit this. Cost:
     // one extra BUILD on transition between empty-scene frames (zero
     // measurable impact since `primitiveCount = 0`).
+    //
+    // The mirror case — empty frame followed by a non-empty frame —
+    // also runs a BUILD on both sides (frame N: empty BUILD because
+    // the helper returned early here; frame N+1: BUILD because the
+    // BLAS-map gen differs from the cached non-empty list). The
+    // empty BUILD costs nothing (`primitiveCount = 0`), the non-empty
+    // BUILD would have happened on first-frame regardless. Verified
+    // correct — no double-work to remove. See REN-D8-NEW-13 (audit
+    // 2026-05-09).
     if current_addresses.is_empty() {
         return (false, false);
     }
@@ -735,6 +744,16 @@ impl AccelerationManager {
         // (e.g. lazy first-sight upload) without the flag would
         // silently consume the BLAS budget twice as fast as a
         // batched-path peer.
+        //
+        // REN-D8-NEW-06 (audit 2026-05-09) flagged the flag as
+        // "wasted" because no caller currently runs the compact
+        // pass. The lockstep with the batched path is the load-
+        // bearing reason for keeping it — drop here without
+        // dropping at the batched build site (line 1534) would
+        // create an asymmetric compaction policy that's harder to
+        // reason about than one flag value across both paths.
+        // When the compact pass lands, it lights up on both paths
+        // simultaneously.
         const STATIC_BLAS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
             vk::BuildAccelerationStructureFlagsKHR::from_raw(
                 vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE.as_raw()
@@ -964,11 +983,23 @@ impl AccelerationManager {
         let primitive_count = index_count / 3;
 
         // Build flags: ALLOW_UPDATE makes `mode = UPDATE` legal each
-        // frame; PREFER_FAST_BUILD trades a small ray-tracing perf hit
-        // for cheaper per-frame refits (skinned BLAS rebuild every
-        // frame, whereas static BLAS builds once and stays).
+        // frame; PREFER_FAST_TRACE optimises the BVH layout for ray
+        // traversal speed.
+        //
+        // Pre-fix this used `PREFER_FAST_BUILD` on the (correct-at-
+        // the-time) reasoning that skinned BLAS rebuilds every frame
+        // — making the build path the cost-dominant operation, so
+        // optimise for build speed. #679 changed the rebuild
+        // cadence: skinned BLAS now refits in-place (UPDATE) for
+        // ~600 frames between full BUILDs. Build cost is paid once
+        // per 600 frames; trace cost is paid every frame for every
+        // shadow / GI / reflection ray hitting the actor — easily
+        // 10⁴+ traversals per BLAS per frame. The math now favours
+        // FAST_TRACE by ~6 orders of magnitude. See REN-D8-NEW-08
+        // (audit 2026-05-09); UPDATE site at line ~1247 carries the
+        // matching flag set for spec consistency.
         let build_flags = vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
-            | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD;
+            | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE;
 
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
@@ -1232,8 +1263,13 @@ impl AccelerationManager {
         // stay identical to the original BUILD's geometry. The
         // ALLOW_UPDATE flag set on initial build is what makes this
         // legal.
+        //
+        // PREFER_FAST_TRACE matches the build-site flag (see
+        // REN-D8-NEW-08 rationale at the matching BUILD site
+        // above) — the BLAS was built optimised for trace speed,
+        // refit operations preserve that optimisation.
         let build_flags = vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
-            | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD;
+            | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE;
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
             .flags(build_flags)
@@ -2086,6 +2122,18 @@ impl AccelerationManager {
                 // the raw enumerate index. The 24-bit field holds the
                 // `instances[ssbo_idx]` position the shader reads via
                 // `rayQueryGetIntersectionInstanceCustomIndexEXT`.
+                //
+                // Mask 0xFF: every instance is hit by every ray. The
+                // 8-bit mask is AND'd against `cullMask` at
+                // `rayQueryInitializeEXT` time, so per-light-type
+                // segregation (e.g. shadow rays skipping transparent
+                // foliage, or directional vs point shadow buckets)
+                // could light up by handing instances bucket-specific
+                // bit masks and the corresponding ray sites narrower
+                // cullMask values. Today every shader passes 0xFF and
+                // the lighting model doesn't need the segregation; the
+                // extension point is the mask byte here. See
+                // REN-D8-NEW-07 (audit 2026-05-09).
                 instance_custom_index_and_mask: vk::Packed24_8::new(ssbo_idx, 0xFF),
                 instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
                     0,
