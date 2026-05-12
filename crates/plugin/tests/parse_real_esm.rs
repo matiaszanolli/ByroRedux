@@ -885,6 +885,69 @@ fn parse_rate_oblivion_esm() {
         with_cnam,
         index.trees.len(),
     );
+
+    // #966 / OBL-D3-NEW-02 — Oblivion-unique base records that fell
+    // through the catch-all skip pre-fix. Floors below vanilla counts
+    // so DLC trims / patches don't fail the test, but high enough to
+    // catch a dispatch-arm regression.
+    eprintln!(
+        "[OBL] birthsigns={} clothing={} apparatuses={} sigil_stones={} soul_gems={}",
+        index.birthsigns.len(),
+        index.clothing.len(),
+        index.apparatuses.len(),
+        index.sigil_stones.len(),
+        index.soul_gems.len(),
+    );
+    assert!(
+        index.birthsigns.len() >= 13,
+        "OBL BSGN = {} (expected >= 13 — vanilla ships exactly 13)",
+        index.birthsigns.len(),
+    );
+    assert!(
+        index.clothing.len() >= 100,
+        "OBL CLOT = {} (expected >= 100 — vanilla ~150)",
+        index.clothing.len(),
+    );
+    assert!(
+        index.apparatuses.len() >= 4,
+        "OBL APPA = {} (expected >= 4 — vanilla ships 4 tools)",
+        index.apparatuses.len(),
+    );
+    assert!(
+        index.sigil_stones.len() >= 10,
+        "OBL SGST = {} (expected >= 10)",
+        index.sigil_stones.len(),
+    );
+    assert!(
+        index.soul_gems.len() >= 10,
+        "OBL SLGM = {} (expected >= 10)",
+        index.soul_gems.len(),
+    );
+    // Every SLGM must surface SLCP soul_capacity > 0 — the audit
+    // originally mis-named the field as "DATA byte 0" but the
+    // authoritative source is the SLCP sub-record. A zero capacity
+    // means the parser silently dropped SLCP again.
+    let with_capacity = index
+        .soul_gems
+        .values()
+        .filter(|s| s.soul_capacity > 0)
+        .count();
+    assert!(
+        with_capacity * 2 >= index.soul_gems.len(),
+        "at least half of OBL SLGMs should carry SLCP, got {}/{}",
+        with_capacity,
+        index.soul_gems.len(),
+    );
+    // Sanity: soul magnitude enums fit in 0..=5.
+    for s in index.soul_gems.values() {
+        assert!(
+            s.soul_capacity <= 5 && s.current_soul <= 5,
+            "SLGM '{}' soul enum out of range: capacity={} current={}",
+            s.editor_id,
+            s.soul_capacity,
+            s.current_soul,
+        );
+    }
 }
 
 /// FO4: vanilla `Fallout4.esm` parse-rate harness. Mirrors the FNV /

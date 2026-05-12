@@ -1792,6 +1792,75 @@ pub fn parse_minimal_esm_record(form_id: u32, subs: &[SubRecord]) -> MinimalEsmR
     out
 }
 
+/// `SLGM` — soul-gem record. Oblivion ships ~15 vanilla SLGMs; FO3
+/// drops the record type (no soul magic in the Wasteland), Skyrim
+/// keeps it. Referenced by `ENCH` for the enchantment charge model
+/// and by quest scripts for the Azura's Star / Soul Trap chain.
+///
+/// Wire layout per UESP / xEdit (Oblivion / Skyrim TES4 schema):
+/// - `EDID` — editor ID
+/// - `FULL` — display name
+/// - `MODL` — model path (dual-target — also lands in `cells.statics`
+///   via [`extract_records_with_modl`] so REFR → SLGM placements
+///   render the right mesh)
+/// - `ICON` — inventory icon path
+/// - `SCRI` — attached script FormID (rare on SLGM)
+/// - `DATA` — value (i32) + weight (f32), 8 bytes
+/// - `SOUL` — single-byte enum: 0 None, 1 Petty, 2 Lesser, 3 Common,
+///   4 Greater, 5 Grand. The soul *currently contained*; pre-loaded
+///   soul gems carry a non-zero value.
+/// - `SLCP` — single-byte enum (same scale as SOUL): the gem's
+///   *capacity*. A Grand Soul Gem can hold a Lesser soul, etc.
+///
+/// The audit text suggested decoding "DATA byte 0 soul capacity" —
+/// that's incorrect (DATA byte 0 is the LSB of `value: i32`). The
+/// authoritative capacity field is `SLCP`. See OBL-D3-NEW-02 / #966.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SlgmRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub full_name: String,
+    /// MODL path — the inventory / world-placement mesh.
+    pub model_path: String,
+    /// Item value in caps / gold.
+    pub value: i32,
+    /// Item weight in encumbrance units.
+    pub weight: f32,
+    /// `SOUL` byte: currently-contained soul magnitude.
+    /// 0 None, 1 Petty, 2 Lesser, 3 Common, 4 Greater, 5 Grand.
+    pub current_soul: u8,
+    /// `SLCP` byte: the gem's capacity (same enum). The audit
+    /// originally called this "DATA byte 0"; that was a misread.
+    pub soul_capacity: u8,
+}
+
+pub fn parse_slgm(form_id: u32, subs: &[SubRecord]) -> SlgmRecord {
+    let mut out = SlgmRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
+            b"MODL" => out.model_path = read_zstring(&sub.data),
+            b"DATA" if sub.data.len() >= 8 => {
+                out.value = i32::from_le_bytes([
+                    sub.data[0],
+                    sub.data[1],
+                    sub.data[2],
+                    sub.data[3],
+                ]);
+                out.weight = read_f32_at(&sub.data, 4).unwrap_or(0.0);
+            }
+            b"SOUL" if !sub.data.is_empty() => out.current_soul = sub.data[0],
+            b"SLCP" if !sub.data.is_empty() => out.soul_capacity = sub.data[0],
+            _ => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2572,5 +2641,74 @@ mod tests {
         let m = parse_minimal_esm_record(0xDEAD_BEEF, &subs);
         assert_eq!(m.editor_id, "DOBJDefaultObject");
         assert!(m.full_name.is_empty());
+    }
+
+    // ── #966 / OBL-D3-NEW-02 — SLGM dedicated decode ────────────────
+
+    #[test]
+    fn parse_slgm_decodes_full_oblivion_layout() {
+        // Synthetic Grand Soul Gem (pre-loaded with a Grand soul) —
+        // exercises every sub-record arm the parser is supposed to
+        // consume. DATA = value (i32) + weight (f32). SOUL = current
+        // soul magnitude (0..=5). SLCP = capacity (0..=5).
+        let mut data = Vec::with_capacity(8);
+        data.extend_from_slice(&750_i32.to_le_bytes());
+        data.extend_from_slice(&1.0_f32.to_le_bytes());
+
+        let subs = vec![
+            sub(b"EDID", b"SoulGemGrandFilled\0"),
+            sub(b"FULL", b"Grand Soul Gem\0"),
+            sub(b"MODL", b"Clutter\\SoulGems\\Grand.NIF\0"),
+            sub(b"ICON", b"Clutter\\SoulGems\\Grand.dds\0"),
+            sub(b"DATA", &data),
+            sub(b"SOUL", &[5]), // current = Grand
+            sub(b"SLCP", &[5]), // capacity = Grand
+        ];
+        let g = parse_slgm(0x0002_3F1B, &subs);
+        assert_eq!(g.form_id, 0x0002_3F1B);
+        assert_eq!(g.editor_id, "SoulGemGrandFilled");
+        assert_eq!(g.full_name, "Grand Soul Gem");
+        assert_eq!(g.model_path, "Clutter\\SoulGems\\Grand.NIF");
+        assert_eq!(g.value, 750);
+        assert!((g.weight - 1.0).abs() < f32::EPSILON);
+        assert_eq!(g.current_soul, 5);
+        assert_eq!(g.soul_capacity, 5);
+    }
+
+    #[test]
+    fn parse_slgm_handles_empty_petty_gem_no_soul() {
+        // Empty petty gem — no SOUL sub-record at all. Capacity comes
+        // from SLCP. Pre-fix the audit text suggested reading capacity
+        // from DATA byte 0; this test pins that the correct field is
+        // SLCP and that absence of SOUL leaves `current_soul` at 0.
+        let mut data = Vec::with_capacity(8);
+        data.extend_from_slice(&25_i32.to_le_bytes());
+        data.extend_from_slice(&0.1_f32.to_le_bytes());
+
+        let subs = vec![
+            sub(b"EDID", b"SoulGemPettyEmpty\0"),
+            sub(b"DATA", &data),
+            sub(b"SLCP", &[1]), // petty capacity, no SOUL = empty gem
+        ];
+        let g = parse_slgm(0x0002_3F00, &subs);
+        assert_eq!(g.value, 25);
+        assert_eq!(g.current_soul, 0, "missing SOUL means an empty gem");
+        assert_eq!(g.soul_capacity, 1);
+    }
+
+    #[test]
+    fn parse_slgm_truncated_data_does_not_panic() {
+        // 5-byte DATA (gated by the `>= 8` arm) → value/weight stay at
+        // default. Empty SOUL / SLCP also tolerated.
+        let subs = vec![
+            sub(b"EDID", b"SoulGemMalformed\0"),
+            sub(b"DATA", &[1u8; 5]),
+            sub(b"SOUL", &[]),
+            sub(b"SLCP", &[3]),
+        ];
+        let g = parse_slgm(0x0002_3F02, &subs);
+        assert_eq!(g.value, 0, "short DATA must not bleed bytes into value");
+        assert_eq!(g.current_soul, 0, "empty SOUL stays at default");
+        assert_eq!(g.soul_capacity, 3);
     }
 }

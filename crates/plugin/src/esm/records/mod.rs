@@ -54,12 +54,12 @@ pub use misc::{
     parse_efsh, parse_ench, parse_expl, parse_eyes, parse_hair, parse_hdpt, parse_idle, parse_imgs,
     parse_imod, parse_info, parse_ipct, parse_ipds, parse_lgtm, parse_mesg, parse_mgef,
     parse_minimal_esm_record, parse_navi, parse_navm, parse_pack, parse_perk, parse_proj,
-    parse_qust, parse_regn, parse_repu, parse_spel, parse_term, parse_watr, ActiRecord, ArmaRecord,
-    AvifRecord, BptdRecord, CobjRecord, CstyRecord, DialRecord, EcznRecord, EfshRecord, EnchRecord,
-    ExplRecord, EyesRecord, HairRecord, HdptRecord, IdleRecord, ImgsRecord, ImodRecord, InfoRecord,
-    IpctRecord, IpdsRecord, LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord, NaviRecord,
-    NavmRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RegnRecord, RepuRecord, SpelRecord,
-    TermRecord, WatrRecord,
+    parse_qust, parse_regn, parse_repu, parse_slgm, parse_spel, parse_term, parse_watr, ActiRecord,
+    ArmaRecord, AvifRecord, BptdRecord, CobjRecord, CstyRecord, DialRecord, EcznRecord, EfshRecord,
+    EnchRecord, ExplRecord, EyesRecord, HairRecord, HdptRecord, IdleRecord, ImgsRecord, ImodRecord,
+    InfoRecord, IpctRecord, IpdsRecord, LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord,
+    NaviRecord, NavmRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RegnRecord, RepuRecord,
+    SlgmRecord, SpelRecord, TermRecord, WatrRecord,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use tree::{parse_tree, ObjectBounds as TreeObjectBounds, TreeRecord};
@@ -350,6 +350,36 @@ pub struct EsmIndex {
     pub recipe_categories: HashMap<u32, MinimalEsmRecord>,
     /// `RCPE` recipe — superseded by COBJ; FNV ships both.
     pub recipe_records: HashMap<u32, MinimalEsmRecord>,
+    // ── #966 / OBL-D3-NEW-02 — Oblivion-unique base records ────────────
+    //
+    // Five record types that Oblivion (TES4) authors as distinct
+    // categories; FO3 onwards folded most into ARMO / MISC / ALCH.
+    // Pre-fix all five fell through the catch-all skip — birthsign
+    // starting bonuses dangled, gear-tier displays for clothing
+    // reported `unknown record`, and ENCH cross-refs to SLGM dangled.
+    /// `BSGN` birthsign — Oblivion class-pick screen. ~13 vanilla
+    /// records. References SPEL list for the auto-applied abilities
+    /// (The Mage → Atronach absorb, The Atronach → Stunted Magicka).
+    pub birthsigns: HashMap<u32, MinimalEsmRecord>,
+    /// `CLOT` clothing — Oblivion-only. Same biped-slot shape as ARMO
+    /// but no armour rating; folded into ARMO from FO3 onward.
+    /// ~150 vanilla records (robes, hoods, shirts, pants, shoes).
+    pub clothing: HashMap<u32, MinimalEsmRecord>,
+    /// `APPA` alchemical apparatus — Oblivion-only. The four crafting
+    /// tools (mortar & pestle, alembic, calcinator, retort) that gate
+    /// alchemy quality. Folded into MISC from FO3 onward.
+    pub apparatuses: HashMap<u32, MinimalEsmRecord>,
+    /// `SGST` sigil stone — Oblivion-only. Daedric-quality enchantment
+    /// sources from Oblivion Gates; carries embedded EFID/EFIT effect
+    /// list. Vanilla Oblivion ships ~30 SGSTs across the quality tiers.
+    pub sigil_stones: HashMap<u32, MinimalEsmRecord>,
+    /// `SLGM` soul gem — Oblivion / Skyrim soul-magic carrier.
+    /// Referenced by `ENCH` for the enchantment charge model.
+    /// `SlgmRecord.soul_capacity` (SLCP byte 0) is the gem's max
+    /// soul magnitude; `current_soul` (SOUL byte 0) is the pre-loaded
+    /// soul. FO3 / FNV drop the record (no soul magic in the
+    /// Wasteland) so the map is empty there. See #966.
+    pub soul_gems: HashMap<u32, SlgmRecord>,
 }
 
 impl EsmIndex {
@@ -467,6 +497,12 @@ impl EsmIndex {
             ("casinos", |s| s.casinos.len()),
             ("recipe_categories", |s| s.recipe_categories.len()),
             ("recipe_records", |s| s.recipe_records.len()),
+            // #966 / OBL-D3-NEW-02 — Oblivion-unique base records.
+            ("birthsigns", |s| s.birthsigns.len()),
+            ("clothing", |s| s.clothing.len()),
+            ("apparatuses", |s| s.apparatuses.len()),
+            ("sigil_stones", |s| s.sigil_stones.len()),
+            ("soul_gems", |s| s.soul_gems.len()),
             // FO4-architecture maps (live on `EsmCellIndex`, not the top
             // level — same pattern as the `cells` and `statics` rows).
             // Without these rows a regression that empties any of the
@@ -573,6 +609,13 @@ impl EsmIndex {
         self.terminals.extend(other.terminals);
         self.form_lists.extend(other.form_lists);
         self.trees.extend(other.trees);
+
+        // #966 / OBL-D3-NEW-02 — Oblivion-unique base records.
+        self.birthsigns.extend(other.birthsigns);
+        self.clothing.extend(other.clothing);
+        self.apparatuses.extend(other.apparatuses);
+        self.sigil_stones.extend(other.sigil_stones);
+        self.soul_gems.extend(other.soul_gems);
     }
 }
 
@@ -1258,6 +1301,59 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                     .recipe_records
                     .insert(fid, parse_minimal_esm_record(fid, subs));
             })?,
+            // #966 / OBL-D3-NEW-02 — Oblivion-unique base records.
+            // BSGN has no MODL (birthsign — UI / starting-bonus only)
+            // so it's a plain minimal dispatch. CLOT / APPA / SGST /
+            // SLGM all carry MODL and need cells.statics for visual
+            // placement when a REFR points at them (e.g. world-placed
+            // sigil stones in Oblivion Gates).
+            b"BSGN" => extract_records(&mut reader, end, b"BSGN", &mut |fid, subs| {
+                index
+                    .birthsigns
+                    .insert(fid, parse_minimal_esm_record(fid, subs));
+            })?,
+            b"CLOT" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"CLOT",
+                &mut statics,
+                &mut |fid, subs| {
+                    index
+                        .clothing
+                        .insert(fid, parse_minimal_esm_record(fid, subs));
+                },
+            )?,
+            b"APPA" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"APPA",
+                &mut statics,
+                &mut |fid, subs| {
+                    index
+                        .apparatuses
+                        .insert(fid, parse_minimal_esm_record(fid, subs));
+                },
+            )?,
+            b"SGST" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"SGST",
+                &mut statics,
+                &mut |fid, subs| {
+                    index
+                        .sigil_stones
+                        .insert(fid, parse_minimal_esm_record(fid, subs));
+                },
+            )?,
+            b"SLGM" => extract_records_with_modl(
+                &mut reader,
+                end,
+                b"SLGM",
+                &mut statics,
+                &mut |fid, subs| {
+                    index.soul_gems.insert(fid, parse_slgm(fid, subs));
+                },
+            )?,
             _ => {
                 reader.skip_group(&group);
             }
@@ -2344,7 +2440,10 @@ mod tests {
         //   would let regressions slip through CI).
         // Bumped 87 → 88 in #896 (Phase B: outfits — Skyrim+ OTFT
         //   record map for the equip pipeline).
+        // Bumped 88 → 93 in #966 (OBL-D3-NEW-02: BSGN, CLOT, APPA,
+        //   SGST, SLGM — Oblivion-unique base records that previously
+        //   fell through the catch-all skip).
         // Bump in lockstep with the struct + `categories()` edits.
-        assert_eq!(EsmIndex::categories().len(), 88);
+        assert_eq!(EsmIndex::categories().len(), 93);
     }
 }
