@@ -461,6 +461,152 @@ pub struct SceneBuffers {
     pub tlas_written: Vec<bool>,
 }
 
+/// Build the scene descriptor-set-layout bindings (set=1) consumed by
+/// the main raster pipeline. Pure data — no Vulkan device required —
+/// so this is the seam that `cargo test` reflection tests can call
+/// against the include_bytes!'d `triangle.vert.spv` / `triangle.frag.spv`
+/// without spinning up a real device. Production `SceneBuffers::new`
+/// routes through the same function so test and runtime can't drift.
+///
+/// `rt_enabled = false` drops binding 2 (TLAS); the shader still
+/// declares it because `rayQuery` calls are guarded by a uniform flag
+/// at runtime, so the validator must list `[2]` in
+/// `optional_shader_bindings` for the no-RT case. See #427 / #950.
+pub(crate) fn build_scene_descriptor_bindings(
+    rt_enabled: bool,
+) -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    let mut bindings = vec![
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        // Camera UBO is read by both vertex (viewProj) and fragment (cameraPos, sceneFlags).
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+    ];
+    if rt_enabled {
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        );
+    }
+    // Binding 3: bone palette SSBO (vertex shader — skinning).
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(3)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX),
+    );
+    // Binding 4: instance data SSBO (vertex + fragment — instanced drawing + PBR materials).
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(4)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+    );
+    // Binding 5: cluster grid SSBO (fragment shader — clustered lighting).
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(5)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
+    // Binding 6: cluster light indices SSBO (fragment shader — clustered lighting).
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(6)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
+    // Binding 7: SSAO texture (fragment shader — ambient occlusion).
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(7)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
+    // Binding 8: global vertex SSBO (fragment shader — RT reflection UV lookup).
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(8)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
+    // Binding 9: global index SSBO (fragment shader — RT reflection UV lookup).
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(9)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
+    // Binding 10: terrain tile SSBO (fragment shader — LAND splat layer
+    // texture indices, one entry per terrain entity). #470.
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(10)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
+    // Binding 11: RT mipmap ray budget counter (fragment shader — u32 atomic).
+    // The CPU zeroes this before each render pass; Phase-3 glass fragments
+    // atomicAdd to claim a budget slot and skip IOR refraction once exhausted.
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(11)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
+    // Binding 12: previous-frame bone palette SSBO (vertex shader —
+    // skinned-vertex motion vectors, SH-3 / #641). Bound to the OTHER
+    // slot in the `bone_buffers` frame-in-flight ring, so reading it
+    // yields the palette uploaded last frame. Pre-#641 the vertex
+    // shader composed `fragPrevClipPos = prevViewProj * worldPos`
+    // using the CURRENT-frame skinned worldPos — every actor pixel
+    // had a motion vector encoding only camera + rigid motion, and
+    // SVGF / TAA reprojected the wrong source pixel on intra-mesh
+    // disocclusions (forearm crossing torso). Same indices/weights as
+    // binding 3, so the per-mesh bone offset stamped on the
+    // `GpuInstance` still resolves correctly as long as the offset
+    // assignment is stable across the two frames.
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(12)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX),
+    );
+    // Binding 13: material table SSBO (fragment — R1 Phase 4).
+    // The fragment stage reads `materials[instance.materialId]`
+    // for migrated per-material fields. Vertex stage isn't a
+    // consumer today; widen the stage mask if a future migration
+    // (e.g. M29.5 GPU skinning) needs material data in the vertex
+    // pipeline.
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(13)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
+    bindings
+}
+
 impl SceneBuffers {
     /// Create scene buffers and descriptor infrastructure.
     pub fn new(
@@ -571,135 +717,7 @@ impl SceneBuffers {
         )?;
 
         // Descriptor set layout: set 1.
-        let mut bindings = vec![
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            // Camera UBO is read by both vertex (viewProj) and fragment (cameraPos, sceneFlags).
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-        ];
-        if rt_enabled {
-            bindings.push(
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(2)
-                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            );
-        }
-        // Binding 3: bone palette SSBO (vertex shader — skinning).
-        bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(3)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::VERTEX),
-        );
-        // Binding 4: instance data SSBO (vertex + fragment — instanced drawing + PBR materials).
-        bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(4)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
-        );
-        // Binding 5: cluster grid SSBO (fragment shader — clustered lighting).
-        bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(5)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        );
-        // Binding 6: cluster light indices SSBO (fragment shader — clustered lighting).
-        bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(6)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        );
-        // Binding 7: SSAO texture (fragment shader — ambient occlusion).
-        bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(7)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        );
-        // Binding 8: global vertex SSBO (fragment shader — RT reflection UV lookup).
-        bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(8)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        );
-        // Binding 9: global index SSBO (fragment shader — RT reflection UV lookup).
-        bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(9)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        );
-        // Binding 10: terrain tile SSBO (fragment shader — LAND splat layer
-        // texture indices, one entry per terrain entity). #470.
-        bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(10)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        );
-        // Binding 11: RT mipmap ray budget counter (fragment shader — u32 atomic).
-        // The CPU zeroes this before each render pass; Phase-3 glass fragments
-        // atomicAdd to claim a budget slot and skip IOR refraction once exhausted.
-        bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(11)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        );
-        // Binding 12: previous-frame bone palette SSBO (vertex shader —
-        // skinned-vertex motion vectors, SH-3 / #641). Bound to the OTHER
-        // slot in the `bone_buffers` frame-in-flight ring, so reading it
-        // yields the palette uploaded last frame. Pre-#641 the vertex
-        // shader composed `fragPrevClipPos = prevViewProj * worldPos`
-        // using the CURRENT-frame skinned worldPos — every actor pixel
-        // had a motion vector encoding only camera + rigid motion, and
-        // SVGF / TAA reprojected the wrong source pixel on intra-mesh
-        // disocclusions (forearm crossing torso). Same indices/weights as
-        // binding 3, so the per-mesh bone offset stamped on the
-        // `GpuInstance` still resolves correctly as long as the offset
-        // assignment is stable across the two frames.
-        bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(12)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::VERTEX),
-        );
-        // Binding 13: material table SSBO (fragment — R1 Phase 4).
-        // The fragment stage reads `materials[instance.materialId]`
-        // for migrated per-material fields. Vertex stage isn't a
-        // consumer today; widen the stage mask if a future migration
-        // (e.g. M29.5 GPU skinning) needs material data in the vertex
-        // pipeline.
-        bindings.push(
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(13)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-        );
+        let bindings = build_scene_descriptor_bindings(rt_enabled);
         // Mark bindings 5+6 (cluster data) as PARTIALLY_BOUND so they are
         // valid even when unwritten (cluster cull pipeline may fail to create).
         // The fragment shader guards access with a lightCount > 0 check.
@@ -2125,5 +2143,109 @@ mod material_hash_tests {
         let h1 = hash_material_slice(&[]);
         let h2 = hash_material_slice(&[]);
         assert_eq!(h1, h2);
+    }
+}
+
+#[cfg(test)]
+mod scene_descriptor_reflection_tests {
+    //! Regression tests for #950 / SAFE-25: the scene descriptor set
+    //! layout (set=1) consumed by the main raster pipeline must agree
+    //! with `triangle.vert.spv` + `triangle.frag.spv`.
+    //!
+    //! Production `SceneBuffers::new` calls `validate_set_layout`
+    //! before `vkCreateDescriptorSetLayout` — but that runtime check
+    //! only fires when a real Vulkan device exists, so CI without GPU
+    //! access can't catch a binding-table drift. These tests pull the
+    //! bindings through the same `build_scene_descriptor_bindings`
+    //! helper production uses and validate against the include_bytes!'d
+    //! SPIR-V at `cargo test` time, so drift trips before the first
+    //! frame ever runs.
+    use super::*;
+
+    fn triangle_shaders() -> [super::super::reflect::ReflectedShader<'static>; 2] {
+        [
+            super::super::reflect::ReflectedShader {
+                name: "triangle.vert",
+                spirv: super::super::pipeline::TRIANGLE_VERT_SPV,
+            },
+            super::super::reflect::ReflectedShader {
+                name: "triangle.frag",
+                spirv: super::super::pipeline::TRIANGLE_FRAG_SPV,
+            },
+        ]
+    }
+
+    /// RT-enabled path: every binding 0..=13 (with TLAS at 2) must be
+    /// declared in `triangle.vert` ∪ `triangle.frag` with the matching
+    /// descriptor type. No `optional_shader_bindings` — every declared
+    /// binding must be consumed by the layout.
+    #[test]
+    fn rt_enabled_layout_matches_triangle_shaders() {
+        let bindings = build_scene_descriptor_bindings(true);
+        super::super::reflect::validate_set_layout(
+            1,
+            &bindings,
+            &triangle_shaders(),
+            "scene (set=1, rt=on)",
+            &[],
+        )
+        .expect("scene descriptor layout (rt=on) must match triangle shaders");
+    }
+
+    /// RT-disabled path: TLAS binding (2) is intentionally absent from
+    /// the layout but still declared in the shader, gated at runtime by
+    /// the per-fragment `rayQuery` uniform flag. The validator must list
+    /// it in `optional_shader_bindings` so the shader-declared-but-
+    /// layout-absent case doesn't fire a false positive.
+    #[test]
+    fn rt_disabled_layout_matches_triangle_shaders_with_optional_tlas() {
+        let bindings = build_scene_descriptor_bindings(false);
+        // TLAS (binding 2) is shader-declared but absent from the
+        // RT-disabled layout — and must not be in the bindings vec.
+        assert!(
+            !bindings.iter().any(|b| b.binding == 2),
+            "rt_enabled=false must omit binding 2 (TLAS)",
+        );
+        super::super::reflect::validate_set_layout(
+            1,
+            &bindings,
+            &triangle_shaders(),
+            "scene (set=1, rt=off)",
+            &[2],
+        )
+        .expect("scene descriptor layout (rt=off) must match triangle shaders");
+    }
+
+    /// Synthetic drift: dropping binding 4 (instance SSBO) from the
+    /// layout must produce a descriptive failure. Pin the rejection
+    /// path so a future shader change that *removes* a binding without
+    /// also removing it from the production helper trips a clear
+    /// error rather than silently passing.
+    #[test]
+    fn dropping_instance_binding_fails_with_diagnostic() {
+        let mut bindings = build_scene_descriptor_bindings(true);
+        let before = bindings.len();
+        bindings.retain(|b| b.binding != 4);
+        assert_eq!(
+            bindings.len(),
+            before - 1,
+            "fixture must actually drop binding 4",
+        );
+        // After removing binding 4 from the Rust side, the shader still
+        // declares it — validate must flag the shader's extra binding
+        // since it is not in `optional_shader_bindings`.
+        let err = super::super::reflect::validate_set_layout(
+            1,
+            &bindings,
+            &triangle_shaders(),
+            "scene (set=1, rt=on, drift)",
+            &[],
+        )
+        .expect_err("dropping binding 4 must trip a layout drift error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("binding=4"),
+            "diagnostic must name the offending binding (4): {msg}",
+        );
     }
 }
