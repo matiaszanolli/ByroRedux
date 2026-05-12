@@ -4,6 +4,8 @@
 //! Resolves placed references (REFR/ACHR) to base objects, loads NIFs,
 //! and spawns ECS entities with correct world-space transforms.
 
+use byroredux_core::ecs::components::{Inventory, ItemInstanceId};
+use byroredux_core::ecs::resources::ItemInstancePool;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
     CellRoot, GlobalTransform, LightSource, Material, MeshHandle, ParticleEmitter, TextureHandle,
@@ -358,6 +360,18 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         ctx.texture_registry.drop_texture(&ctx.device, th);
     }
 
+    // #896 DROP — release per-ItemStack `ItemInstancePool` slots so
+    // they return to the free-list ahead of the entity despawn. The
+    // common stack-only case (`instance: None` — stimpaks, ammo) is a
+    // no-op; only stacks that allocated divergent state (named items,
+    // modded weapons, partial-condition armor) reach the release call.
+    // Skipped silently when the pool resource isn't registered (test
+    // fixtures); production registers it at App init. Without this
+    // wiring the pool's `instances` Vec grows monotonically across
+    // cell crossings, defeating the bounded-arena guarantee that's
+    // the whole point of the M45 save-shape design.
+    release_victim_item_instances(world, &victims);
+
     // Remove every surviving component row for the victim entities.
     let victim_count = victims.len();
     for eid in victims {
@@ -372,6 +386,44 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         texture_drops.len(),
         cell_root,
     );
+}
+
+/// Walk `victims` for [`Inventory`] components and release every
+/// `ItemStack.instance: Some(_)` slot back to the [`ItemInstancePool`]
+/// free-list. Called from [`unload_cell`] before the victim despawn
+/// loop runs (#896 DROP completeness check).
+///
+/// Two-phase to satisfy the lock-order invariant: read the Inventory
+/// SparseSet first (collecting instance IDs into a scratch Vec), drop
+/// the query guard, then take the resource write-lock and release.
+/// Holding both simultaneously would cross-lock a SparseSet read and a
+/// Resource write — not deadlocking per the TypeId-sort rule (different
+/// kinds of storage), but the collect-first pattern is what the rest of
+/// `unload_cell` already uses and keeps the lock-hold window short.
+fn release_victim_item_instances(world: &mut World, victims: &[EntityId]) {
+    let mut to_release: Vec<ItemInstanceId> = Vec::new();
+    {
+        let Some(inv_q) = world.query::<Inventory>() else {
+            return;
+        };
+        for &eid in victims {
+            let Some(inv) = inv_q.get(eid) else { continue };
+            for stack in &inv.items {
+                if let Some(id) = stack.instance {
+                    to_release.push(id);
+                }
+            }
+        }
+    }
+    if to_release.is_empty() {
+        return;
+    }
+    let Some(mut pool) = world.try_resource_mut::<ItemInstancePool>() else {
+        return;
+    };
+    for id in to_release {
+        pool.release(id);
+    }
 }
 
 /// Load an interior cell with explicit master plugins.
@@ -2884,3 +2936,7 @@ mod placement_root_subtree_tests;
 #[cfg(test)]
 #[path = "cell_loader_root_index_tests.rs"]
 mod root_index_tests;
+
+#[cfg(test)]
+#[path = "cell_loader_inventory_release_tests.rs"]
+mod inventory_release_tests;
