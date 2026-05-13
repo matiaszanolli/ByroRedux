@@ -1176,7 +1176,29 @@ pub(crate) fn build_render_data(
     //
     // Alpha-blend: must remain back-to-front (depth-primary) for correct
     // transparency ordering — instancing is irrelevant here.
-    draw_commands.par_sort_unstable_by_key(draw_sort_key);
+    //
+    // #934 / PERF-DC-01 — rayon's fork-join overhead loses to serial
+    // `sort_unstable_by_key` below ~2K elements on the closure-extracted
+    // 9-tuple key. Measured on a 7950X (see
+    // `bench_draw_sort_serial_vs_parallel` in
+    // `byroredux/src/render/draw_sort_key_tests.rs`):
+    //
+    //     N= 400: serial 21µs vs parallel 27µs  (serial 28% faster)
+    //     N= 800: serial 46µs vs parallel 60µs  (serial 31% faster)
+    //     N=1500: serial 97µs vs parallel 131µs (serial 35% faster)
+    //     N=2000: 161µs ≈ 165µs                  (tied)
+    //     N=3000: serial 269µs vs parallel 235µs (parallel 14% faster)
+    //     N=10K : serial 1122µs vs parallel 673µs(parallel 67% faster)
+    //
+    // Typical Bethesda cell counts sit in 400–1500 (Prospector ~811,
+    // GSDocMitchell ~263, exterior radius-3 grid ~1200), so serial is
+    // the default. The fallback to `par_sort_unstable_by_key` at ≥2K
+    // covers exterior radius-5+ grids and Skyrim+ city interiors.
+    if draw_commands.len() >= 2000 {
+        draw_commands.par_sort_unstable_by_key(draw_sort_key);
+    } else {
+        draw_commands.sort_unstable_by_key(draw_sort_key);
+    }
 
     // Collect lights from ECS.
 

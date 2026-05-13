@@ -254,3 +254,67 @@ fn sort_key_is_deterministic_for_full_tuple_ties() {
         "entity_id breaks ties ascending"
     );
 }
+
+/// #934 / PERF-DC-01 — measure serial vs parallel sort cost across
+/// scene-sized N. The audit claims rayon's `par_sort_unstable_by_key`
+/// loses to `sort_unstable_by_key` on the closure-extracted 9-tuple
+/// key at typical Bethesda draw counts (~800–1500), and that the
+/// crossover is in the 2K range.
+///
+/// `#[ignore]` because the timings are environment-dependent — this is
+/// a one-shot measurement gate, not a regression test. Run with
+/// `cargo test -p byroredux --release bench_draw_sort_serial_vs_parallel -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_draw_sort_serial_vs_parallel() {
+    use rayon::prelude::*;
+    use std::time::Instant;
+    fn make_inputs(n: usize) -> Vec<DrawCommand> {
+        let mut v = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut c = cmd((i % 7) == 0, (i % 13) == 0, (i % 5) == 0);
+            // Vary the fields the sort key actually reads so the
+            // comparator does real work rather than constant-folding.
+            c.mesh_handle = (i as u32 * 2654435761) & 0xFFFF;
+            c.entity_id = i as u32;
+            c.sort_depth = (i as u32 * 1664525).wrapping_add(1013904223);
+            c.src_blend = ((i % 4) as u8) + 5;
+            c.dst_blend = ((i % 3) as u8) + 6;
+            c.z_test = (i % 2) == 0;
+            c.z_write = (i % 3) == 0;
+            c.z_function = ((i % 8) as u8) + 1;
+            v.push(c);
+        }
+        v
+    }
+    const ITERS: u32 = 50;
+    for &n in &[400usize, 800, 1500, 2000, 3000, 5000, 10_000] {
+        let mut serial_ns = 0u128;
+        for _ in 0..ITERS {
+            // Rebuild each iteration — DrawCommand isn't Clone, and
+            // sort-in-place would otherwise leave a sorted vector that
+            // skews subsequent iterations toward the best case.
+            let mut v = make_inputs(n);
+            let t0 = Instant::now();
+            v.sort_unstable_by_key(draw_sort_key);
+            serial_ns += t0.elapsed().as_nanos();
+            std::hint::black_box(&v);
+        }
+        let mut par_ns = 0u128;
+        for _ in 0..ITERS {
+            let mut v = make_inputs(n);
+            let t0 = Instant::now();
+            v.par_sort_unstable_by_key(draw_sort_key);
+            par_ns += t0.elapsed().as_nanos();
+            std::hint::black_box(&v);
+        }
+        let serial = serial_ns / ITERS as u128;
+        let par = par_ns / ITERS as u128;
+        let winner = if serial < par { "serial" } else { "parallel" };
+        let ratio = serial as f64 / par as f64;
+        eprintln!(
+            "N={:>6}  serial={:>8} ns  parallel={:>8} ns  ratio(s/p)={:>5.2}  winner={}",
+            n, serial, par, ratio, winner
+        );
+    }
+}
