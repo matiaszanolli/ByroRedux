@@ -197,6 +197,47 @@ impl FrameSync {
         Ok(())
     }
 
+    /// Destroy + recreate the `image_available[frame]` semaphore in
+    /// place. Used by `draw_frame`'s error-recovery path: if any `?`-
+    /// propagated error fires between a successful `acquire_next_image`
+    /// (which signals this semaphore) and `queue_submit`'s
+    /// `wait_semaphores` consumption, the signal stays pending. Per
+    /// VUID-vkAcquireNextImageKHR-semaphore-01779 the next
+    /// `acquire_next_image` on the same slot would then trip the
+    /// validation layer ("semaphore must not be currently signaled or
+    /// in a wait operation"). Sibling to `recreate_for_swapchain`'s
+    /// `in_flight` fence recovery — same shape of leak, same shape of
+    /// fix. #910 / REN-D5-NEW-01.
+    ///
+    /// # Safety
+    ///
+    /// - Caller guarantees no command buffer that waits on this
+    ///   semaphore is currently submitted (i.e. the only ops referring
+    ///   to it are the failed acquire's signal and the failed-or-
+    ///   skipped submit's wait). `draw_frame`'s error sites all fall
+    ///   in that window: between the acquire and the `queue_submit`,
+    ///   no batch has been launched yet.
+    /// - `frame` must be `< MAX_FRAMES_IN_FLIGHT`.
+    /// - `device` must be the same one that allocated the existing
+    ///   semaphore.
+    pub unsafe fn recreate_image_available_for_frame(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+    ) -> Result<()> {
+        let info = vk::SemaphoreCreateInfo::default();
+        let new_sem = device
+            .create_semaphore(&info, None)
+            .context("Failed to recreate image_available semaphore on error path")?;
+        let old = std::mem::replace(&mut self.image_available[frame], new_sem);
+        device.destroy_semaphore(old, None);
+        log::warn!(
+            "draw_frame error-recovery: recreated image_available[{}] to clear leaked acquire signal",
+            frame,
+        );
+        Ok(())
+    }
+
     pub unsafe fn destroy(&self, device: &ash::Device) {
         for &sem in &self.image_available {
             device.destroy_semaphore(sem, None);

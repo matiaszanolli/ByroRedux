@@ -201,21 +201,44 @@ impl VulkanContext {
 
         let img = image_index as usize;
 
+        // From here through `queue_submit` below, `image_available[frame]`
+        // is signal-pending (set by the acquire above) and any `?`-
+        // propagated error would leak the signal into the next acquire,
+        // tripping VUID-vkAcquireNextImageKHR-semaphore-01779. Each
+        // fallible call between this point and the submit recovers via
+        // `recreate_image_available_for_frame` — sibling to the
+        // `in_flight` fence recovery already wired through
+        // `recreate_for_swapchain` (#908). See #910 / REN-D5-NEW-01.
+
         // If this swapchain image is still in use by a different frame, wait.
         let image_fence = self.frame_sync.images_in_flight[img];
         if image_fence != vk::Fence::null() && image_fence != self.frame_sync.in_flight[frame] {
             unsafe {
-                self.device
+                if let Err(e) = self
+                    .device
                     .wait_for_fences(&[image_fence], true, u64::MAX)
-                    .context("wait for image fence")?;
+                    .context("wait for image fence")
+                {
+                    let _ = self
+                        .frame_sync
+                        .recreate_image_available_for_frame(&self.device, frame);
+                    return Err(e);
+                }
             }
         }
         self.frame_sync.images_in_flight[img] = self.frame_sync.in_flight[frame];
 
         unsafe {
-            self.device
+            if let Err(e) = self
+                .device
                 .reset_fences(&[self.frame_sync.in_flight[frame]])
-                .context("reset_fences")?;
+                .context("reset_fences")
+            {
+                let _ = self
+                    .frame_sync
+                    .recreate_image_available_for_frame(&self.device, frame);
+                return Err(e);
+            }
         }
 
         // Deferred-destroy tick. Runs AFTER `wait_for_fences` so every
@@ -252,17 +275,31 @@ impl VulkanContext {
         // the GPU has finished with this cmd buffer's previous recording.
         let cmd = self.command_buffers[frame];
         unsafe {
-            self.device
+            if let Err(e) = self
+                .device
                 .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
-                .context("reset_command_buffer")?;
+                .context("reset_command_buffer")
+            {
+                let _ = self
+                    .frame_sync
+                    .recreate_image_available_for_frame(&self.device, frame);
+                return Err(e);
+            }
         }
 
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         unsafe {
-            self.device
+            if let Err(e) = self
+                .device
                 .begin_command_buffer(cmd, &begin_info)
-                .context("begin_command_buffer")?;
+                .context("begin_command_buffer")
+            {
+                let _ = self
+                    .frame_sync
+                    .recreate_image_available_for_frame(&self.device, frame);
+                return Err(e);
+            }
         }
 
         // 6 color attachments + depth. Order must match the render pass:
@@ -2203,9 +2240,21 @@ impl VulkanContext {
             let swapchain_image = self.swapchain_state.images[img];
             self.screenshot_record_copy(cmd, swapchain_image);
 
-            self.device
+            if let Err(e) = self
+                .device
                 .end_command_buffer(cmd)
-                .context("end_command_buffer")?;
+                .context("end_command_buffer")
+            {
+                // Drop out of the inner `unsafe { ... }` block — we
+                // can't call `&mut self` recovery while a closure-style
+                // recovery is held; do it in the outer scope below.
+                // The `?`-replacement here mirrors the other 5 sites:
+                // see #910 / REN-D5-NEW-01 (acquire-signal leak).
+                let _ = self
+                    .frame_sync
+                    .recreate_image_available_for_frame(&self.device, frame);
+                return Err(e);
+            }
         }
         t.cmd_record_ns = cmd_t0.elapsed().as_nanos() as u64;
 
@@ -2238,9 +2287,22 @@ impl VulkanContext {
                 .graphics_queue
                 .lock()
                 .expect("graphics queue lock poisoned");
-            self.device
+            if let Err(e) = self
+                .device
                 .queue_submit(queue, &[submit_info], self.frame_sync.in_flight[frame])
-                .context("queue_submit")?;
+                .context("queue_submit")
+            {
+                // Submit failed — `image_available[frame]` was never
+                // consumed by the (would-be) wait, so it stays signal-
+                // pending. Recover before propagating so the next
+                // acquire on this slot doesn't trip
+                // VUID-vkAcquireNextImageKHR-semaphore-01779.
+                // #910 / REN-D5-NEW-01.
+                let _ = self
+                    .frame_sync
+                    .recreate_image_available_for_frame(&self.device, frame);
+                return Err(e);
+            }
         }
 
         // #917 / REN-D10-NEW-03 — advance SVGF + TAA `frames_since_
