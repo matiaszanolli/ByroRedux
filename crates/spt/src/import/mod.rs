@@ -80,6 +80,18 @@ pub struct SptImportParams<'a> {
     /// width ≈ R, height ≈ 2R (matches the existing default's 1:2
     /// ratio; verified against the Oblivion MODB range 157–3621).
     pub bound_radius: Option<f32>,
+    /// BNAM billboard width/height (FO3/FNV only). Used as a fallback
+    /// below OBND but above MODB. **Not** preferred over OBND despite
+    /// being authored "for the billboard specifically": corpus check
+    /// on FNV/FO3 (#1002, 2026-05-13) showed BNAM encodes a
+    /// distance-imposter quad size that *clamps* tall trees — e.g.
+    /// `WhiteOak01` OBND `802×1567` vs BNAM `768×768`, `Pine01` OBND
+    /// `766×1277` vs BNAM `768×768`. The placeholder stands in for
+    /// the *whole* tree (not just a distance imposter), so OBND's
+    /// full silhouette is the more visually accurate source. BNAM
+    /// is captured for the rare mod-content case where OBND is
+    /// absent but BNAM is present.
+    pub billboard_size: Option<(f32, f32)>,
 }
 
 /// Default placeholder billboard size in game units (1 unit ≈ 1.4 cm).
@@ -169,13 +181,17 @@ pub fn import_spt_scene(
 /// 1. **OBND** (`params.bounds`) — width is the X extent, height the
 ///    Z extent (Bethesda Z-up). FO3/FNV TREE records ship this on
 ///    100 % of vanilla content.
-/// 2. **MODB** (`params.bound_radius`) — sphere radius converted as
+/// 2. **BNAM** (`params.billboard_size`) — FO3/FNV billboard
+///    width × height pair. Only reached when OBND is absent (#1002,
+///    corpus verification showed BNAM clamps tall trees so OBND
+///    wins for our whole-tree placeholder).
+/// 3. **MODB** (`params.bound_radius`) — sphere radius converted as
 ///    `(width, height) = (R, 2R)`. Oblivion ships MODB on 100 % of
 ///    vanilla TREE records and OBND on none (corpus stats
 ///    2026-05-13), so this is the Oblivion path. Matches the
 ///    existing 256×512 default's 1:2 ratio.
-/// 3. **Default** — 256 × 512. Only reaches mod content with neither
-///    field authored.
+/// 4. **Default** — 256 × 512. Only reaches mod content with no
+///    fields authored.
 ///
 /// All paths clamp to the `[16, 8192]` band so corrupt input can't
 /// produce a 1-pixel mosquito or a floor-to-skybox planet-sized
@@ -184,6 +200,11 @@ fn compute_billboard_size(params: &SptImportParams) -> (f32, f32) {
     if let Some((min, max)) = params.bounds {
         let width = (max[0] - min[0]).abs().clamp(16.0, 8192.0);
         let height = (max[2] - min[2]).abs().clamp(16.0, 8192.0);
+        return (width, height);
+    }
+    if let Some((w, h)) = params.billboard_size {
+        let width = w.abs().clamp(16.0, 8192.0);
+        let height = h.abs().clamp(16.0, 8192.0);
         return (width, height);
     }
     if let Some(r) = params.bound_radius.filter(|r| *r > 0.0) {
@@ -479,6 +500,79 @@ mod tests {
             imported.meshes[0].texture_path.is_none(),
             "no texture → leave path unset, renderer fills the magenta placeholder",
         );
+    }
+
+    /// #1002 — BNAM (FO3/FNV billboard width × height) is consumed
+    /// when OBND is absent but BNAM is present. Mod-content edge case;
+    /// vanilla FO3/FNV ship both fields and OBND wins.
+    #[test]
+    fn bnam_drives_placeholder_size_when_obnd_absent() {
+        let mut pool = StringPool::new();
+        let scene = empty_scene();
+        let params = SptImportParams {
+            billboard_size: Some((300.0, 600.0)),
+            ..Default::default()
+        };
+        let imported = import_spt_scene(&scene, &params, &mut pool);
+        let mesh = &imported.meshes[0];
+        // Width = 300, height = 600 — straight from BNAM.
+        assert_eq!(mesh.positions[0], [-150.0, 0.0, 0.0]);
+        assert_eq!(mesh.positions[2], [150.0, 600.0, 0.0]);
+    }
+
+    /// #1002 — OBND wins over BNAM when both are authored. Verified
+    /// against vanilla `WhiteOak01` (FNV/FO3): OBND `802×1567`, BNAM
+    /// `768×768`. Pre-fix using BNAM would have rendered WhiteOak as
+    /// a 768×768 stump instead of the 1567-tall tree.
+    #[test]
+    fn obnd_precedence_over_bnam() {
+        let mut pool = StringPool::new();
+        let scene = empty_scene();
+        let params = SptImportParams {
+            // Vanilla WhiteOak01 OBND extent (rounded).
+            bounds: Some(([-401.0, -401.0, 0.0], [401.0, 401.0, 1567.0])),
+            // Vanilla WhiteOak01 BNAM.
+            billboard_size: Some((768.0, 768.0)),
+            ..Default::default()
+        };
+        let imported = import_spt_scene(&scene, &params, &mut pool);
+        let mesh = &imported.meshes[0];
+        // Must size by OBND (1567 tall), not BNAM (would clamp to 768).
+        assert_eq!(mesh.positions[2][1], 1567.0);
+    }
+
+    /// #1002 — corrupt BNAM (negative or oversized) clamps to the
+    /// safe [16, 8192] band, mirroring the OBND/MODB clamp.
+    #[test]
+    fn bnam_clamps_to_safe_band() {
+        let mut pool = StringPool::new();
+        let scene = empty_scene();
+        // Negative-w mod content (sign flip).
+        let params = SptImportParams {
+            billboard_size: Some((-500.0, 50_000.0)),
+            ..Default::default()
+        };
+        let imported = import_spt_scene(&scene, &params, &mut pool);
+        let mesh = &imported.meshes[0];
+        // |-500| = 500 stays in band; 50000 clamps to 8192.
+        assert_eq!(mesh.positions[2], [250.0, 8192.0, 0.0]);
+    }
+
+    /// #1002 — precedence chain order: when OBND is absent but both
+    /// BNAM and MODB are authored, BNAM wins.
+    #[test]
+    fn bnam_precedence_over_modb() {
+        let mut pool = StringPool::new();
+        let scene = empty_scene();
+        let params = SptImportParams {
+            billboard_size: Some((400.0, 700.0)),
+            bound_radius: Some(1000.0),
+            ..Default::default()
+        };
+        let imported = import_spt_scene(&scene, &params, &mut pool);
+        let mesh = &imported.meshes[0];
+        // BNAM wins over MODB-derived (1000, 2000).
+        assert_eq!(mesh.positions[2], [200.0, 700.0, 0.0]);
     }
 
     /// #1001 — Oblivion TREE records ship MODB but no OBND. Pre-fix

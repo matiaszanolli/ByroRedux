@@ -938,12 +938,21 @@ fn parse_and_import_spt(
         .map(|t| t.bound_radius)
         .filter(|r| *r > 0.0);
 
+    // #1002 — BNAM (FO3/FNV billboard width × height) as a fallback
+    // BELOW OBND. Corpus inspection (2026-05-13) showed BNAM clamps
+    // tall trees vs their physical OBND extent (e.g. `WhiteOak01`
+    // BNAM 768×768 vs OBND 802×1567), so OBND wins for the
+    // whole-tree placeholder. BNAM only reaches `compute_billboard_size`
+    // when OBND is absent — a rare mod-content case in FO3/FNV.
+    let billboard_size = tree_record.and_then(|t| t.billboard_size);
+
     let params = byroredux_spt::SptImportParams {
         leaf_texture_override,
         bounds,
         wind,
         form_id,
         bound_radius,
+        billboard_size,
     };
 
     let imported = byroredux_spt::import_spt_scene(&scene, &params, pool);
