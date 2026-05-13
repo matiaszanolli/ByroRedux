@@ -21,6 +21,7 @@ fn dummy_cached() -> Arc<CachedNifImport> {
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,
+        placement_root_billboard: None,
     })
 }
 

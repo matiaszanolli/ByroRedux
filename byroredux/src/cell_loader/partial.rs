@@ -109,6 +109,9 @@ pub(crate) fn finish_partial_import(
         lights,
         particle_emitters,
         embedded_clip,
+        // Partial NIFs are decoded from streamed bytes — no SpeedTree
+        // placeholder path runs through here, so no billboard mode.
+        placement_root_billboard: None,
     });
 
     let freed_clip_handles = {

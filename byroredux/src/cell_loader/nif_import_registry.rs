@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use byroredux_core::ecs::Resource;
+use byroredux_core::ecs::{BillboardMode, Resource};
 
 use crate::parsed_nif_cache::ParsedNifCache;
 
@@ -56,6 +56,14 @@ pub(crate) struct CachedNifImport {
     /// have to re-thread the parser.
     #[allow(dead_code)]
     pub(super) embedded_clip: Option<byroredux_nif::anim::AnimationClip>,
+    /// Billboard mode to attach to the spawned placement root entity.
+    /// `None` for ordinary meshes; `Some` for `NiBillboardNode`-rooted
+    /// content and for SpeedTree `.spt` placeholders, which need the
+    /// placement root to yaw-track the camera. Populated by the SPT
+    /// importer from `ImportedNode { billboard_mode }`; the NIF path
+    /// currently leaves this `None` (see #994 — NIF cell-loader has
+    /// the same gap, deferred).
+    pub(super) placement_root_billboard: Option<BillboardMode>,
 }
 
 /// Process-lifetime cache of parsed-and-imported NIF scenes keyed by

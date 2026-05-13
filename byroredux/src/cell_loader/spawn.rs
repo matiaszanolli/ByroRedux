@@ -7,8 +7,8 @@
 //! per placement at cell load time.
 
 use byroredux_core::ecs::{
-    GlobalTransform, LightSource, Material, MeshHandle, ParticleEmitter, TextureHandle, Transform,
-    World,
+    Billboard, GlobalTransform, LightSource, Material, MeshHandle, ParticleEmitter, TextureHandle,
+    Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
@@ -140,6 +140,14 @@ pub(super) fn spawn_placed_instances(
         placement_root,
         GlobalTransform::new(ref_pos, ref_rot, ref_scale),
     );
+    // #994 — SpeedTree placeholders (and any future NiBillboardNode-
+    // rooted scene) flag a billboard mode on the cache entry. Attaching
+    // the `Billboard` component on the placement root makes
+    // `billboard_system` yaw-track the spawned entity each frame.
+    // Without this insertion `.spt` REFRs render as static quads.
+    if let Some(mode) = cached.placement_root_billboard {
+        world.insert(placement_root, Billboard::new(mode));
+    }
     // Pre-compute how many NIF lights will actually spawn. The
     // ESM-fallback gate at the bottom of this function uses this
     // count instead of `nif_lights.is_empty()` so a NIF that

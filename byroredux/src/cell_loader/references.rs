@@ -6,7 +6,7 @@
 //! path), expanding container placements, resolving base records,
 //! and committing the per-cell NifImportRegistry deltas.
 
-use byroredux_core::ecs::{GlobalTransform, LightSource, Transform, World};
+use byroredux_core::ecs::{BillboardMode, GlobalTransform, LightSource, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
@@ -852,6 +852,11 @@ fn parse_and_import_nif(
         lights,
         particle_emitters,
         embedded_clip,
+        // NIF cell-loader path leaves billboard wiring to a follow-up —
+        // imported.nodes here represent the whole scene graph, not the
+        // placement root, so we'd need a "which node corresponds to the
+        // REFR placement" heuristic. Tracked alongside #994.
+        placement_root_billboard: None,
     }))
 }
 
@@ -933,6 +938,18 @@ fn parse_and_import_spt(
 
     let imported = byroredux_spt::import_spt_scene(&scene, &params, pool);
 
+    // #994 — the placeholder root node is authored with
+    // `billboard_mode = Some(BsRotateAboutUp)` so the cell-loader spawn
+    // can attach a `Billboard` ECS component to the placement root.
+    // Pre-#994 this field was dropped because `CachedNifImport` carried
+    // no node metadata; trees rendered as static quads facing whichever
+    // direction the REFR was authored at.
+    let placement_root_billboard = imported
+        .nodes
+        .first()
+        .and_then(|n| n.billboard_mode)
+        .map(BillboardMode::from_nif);
+
     Some(Arc::new(CachedNifImport {
         meshes: imported.meshes,
         // No collisions / lights / particles / animation clips on
@@ -943,5 +960,46 @@ fn parse_and_import_spt(
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,
+        placement_root_billboard,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::string::StringPool;
+
+    /// Minimal vanilla-shaped `.spt` byte stream: 20-byte magic + one
+    /// section marker tag + an out-of-range u32 sentinel so the walker
+    /// stops cleanly at the geometry-tail boundary.
+    fn minimal_spt_bytes() -> Vec<u8> {
+        // Magic header (`E8 03 00 00 0C 00 00 00 __IdvSpt_02_`).
+        let mut bytes = vec![0xE8, 0x03, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00];
+        bytes.extend_from_slice(b"__IdvSpt_02_");
+        // Single bare-marker tag (`1002` is in the bare set).
+        bytes.extend_from_slice(&1002u32.to_le_bytes());
+        // Tail sentinel — out-of-range u32 so the walker stops cleanly.
+        bytes.extend_from_slice(&0x4E25u32.to_le_bytes());
+        bytes
+    }
+
+    /// #994 regression — the SpeedTree importer's placeholder root
+    /// authors `billboard_mode = Some(BsRotateAboutUp)`. The cell-loader
+    /// adapter must surface that as `CachedNifImport::placement_root_billboard`
+    /// so `spawn_placed_instances` can attach a `Billboard` ECS component
+    /// to the placement root. Pre-fix the field was dropped on the
+    /// floor; trees rendered as static quads.
+    #[test]
+    fn parse_and_import_spt_surfaces_billboard_mode_on_cache_entry() {
+        let bytes = minimal_spt_bytes();
+        let mut pool = StringPool::new();
+        let cached = parse_and_import_spt(&bytes, "trees\\test.spt", None, &mut pool)
+            .expect("minimal spt parses through the importer");
+        assert_eq!(
+            cached.placement_root_billboard,
+            Some(BillboardMode::BsRotateAboutUp),
+            "SPT placeholder must flag the placement root as a yaw-billboard",
+        );
+        assert_eq!(cached.meshes.len(), 1, "single placeholder quad");
+    }
 }

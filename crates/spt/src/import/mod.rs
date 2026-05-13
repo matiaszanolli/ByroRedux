@@ -122,18 +122,22 @@ pub fn import_spt_scene(
         // Carry the bounds through so the cell loader can surface a
         // `LocalBound` ECS component on the spawned entity. Frustum
         // culling and tex.missing diagnostics both consume it.
+        //
+        // #995 — TREE.OBND is Bethesda Z-up; the engine expects Y-up.
+        // Apply the same axis swap that the NIF importer applies
+        // (`crates/nif/src/import/mod.rs:208-211`): (x, y, z)_zup →
+        // (x, z, -y)_yup for the center, and the half-extent
+        // magnitudes swap as `(x, z, y)` since they're unsigned.
         bs_bound: params.bounds.map(|(min, max)| {
-            let center = [
-                (min[0] + max[0]) * 0.5,
-                (min[1] + max[1]) * 0.5,
-                (min[2] + max[2]) * 0.5,
-            ];
-            let half_extents = [
-                (max[0] - min[0]) * 0.5,
-                (max[1] - min[1]) * 0.5,
-                (max[2] - min[2]) * 0.5,
-            ];
-            (center, half_extents)
+            let cx = (min[0] + max[0]) * 0.5;
+            let cy = (min[1] + max[1]) * 0.5;
+            let cz = (min[2] + max[2]) * 0.5;
+            let hx = (max[0] - min[0]).abs() * 0.5;
+            let hy = (max[1] - min[1]).abs() * 0.5;
+            let hz = (max[2] - min[2]).abs() * 0.5;
+            let center_yup = [cx, cz, -cy];
+            let half_yup = [hx, hz, hy];
+            (center_yup, half_yup)
         }),
         // SpeedTree placeholders carry no FO4-weapon-mod attach graph.
         attach_points: None,
@@ -327,8 +331,13 @@ mod tests {
         assert_eq!(mesh.positions[2], [50.0, 800.0, 0.0]);
         assert!(imported.bs_bound.is_some());
         let (center, half) = imported.bs_bound.unwrap();
-        assert_eq!(center, [0.0, 0.0, 400.0]);
-        assert_eq!(half, [50.0, 50.0, 400.0]);
+        // #995 — bounds emerge in Y-up: (x, y, z)_zup → (x, z, -y)_yup.
+        // Input Bethesda Z-up center `(0, 0, 400)` → Y-up `(0, 400, 0)`
+        // (tall tree centred on Y-up vertical). Half-extent magnitudes
+        // re-shuffle from `(50, 50, 400)` to `(50, 400, 50)` so the tall
+        // axis lives on Y, matching the placeholder mesh's Y-vertical.
+        assert_eq!(center, [0.0, 400.0, 0.0]);
+        assert_eq!(half, [50.0, 400.0, 50.0]);
     }
 
     #[test]
