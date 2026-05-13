@@ -216,6 +216,17 @@ fn placeholder_root_node(billboard: bool) -> ImportedNode {
 /// game units. Corner ordering is bottom-left → bottom-right →
 /// top-right → top-left, with UVs `(0,1) (1,1) (1,0) (0,0)` so the
 /// texture's top-left maps to the quad's top-left at sample time.
+///
+/// **Normal convention** (#1000): the billboard system rotates the
+/// entity via `Quat::from_rotation_arc(-Z, look_dir)` — i.e. the
+/// object-space `-Z` axis ends up pointing at the camera. The front
+/// face of the placeholder must therefore have its normal along
+/// `-Z` so the textured side renders toward the camera at the
+/// rotation arc's terminal direction. Pre-#1000 the normals
+/// pointed `+Z` and `two_sided: true` masked the inverted convention;
+/// the indexed winding has been flipped to `[0, 3, 2, 2, 1, 0]` to
+/// keep the front face CCW when viewed from -Z (matches the NIF
+/// importer's billboard mesh convention).
 fn placeholder_billboard_mesh(
     width: f32,
     height: f32,
@@ -223,15 +234,20 @@ fn placeholder_billboard_mesh(
 ) -> ImportedMesh {
     let half_w = width * 0.5;
     let positions = vec![
-        [-half_w, 0.0, 0.0],    // bottom-left
-        [half_w, 0.0, 0.0],     // bottom-right
-        [half_w, height, 0.0],  // top-right
-        [-half_w, height, 0.0], // top-left
+        [-half_w, 0.0, 0.0],    // 0: bottom-left
+        [half_w, 0.0, 0.0],     // 1: bottom-right
+        [half_w, height, 0.0],  // 2: top-right
+        [-half_w, height, 0.0], // 3: top-left
     ];
-    let normals = vec![[0.0, 0.0, 1.0]; 4];
+    // Front-face normals point -Z (toward the camera after the
+    // billboard rotation arc). See doc above for the rationale.
+    let normals = vec![[0.0, 0.0, -1.0]; 4];
     let uvs = vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
     let colors = vec![[1.0, 1.0, 1.0, 1.0]; 4];
-    let indices = vec![0, 1, 2, 2, 3, 0];
+    // Winding: (0 → 3 → 2) and (2 → 1 → 0). Traces CCW when viewed
+    // from -Z — i.e., the camera at look-arc termination sees the
+    // textured front face.
+    let indices = vec![0, 3, 2, 2, 1, 0];
 
     ImportedMesh {
         positions,
@@ -341,11 +357,60 @@ mod tests {
         // Default size: 256 wide × 512 tall.
         assert_eq!(mesh.positions[0], [-128.0, 0.0, 0.0]);
         assert_eq!(mesh.positions[2], [128.0, 512.0, 0.0]);
-        assert_eq!(mesh.indices, vec![0, 1, 2, 2, 3, 0]);
+        // #1000 — front-face winding flipped to match the -Z normal
+        // convention. Triangulation diagonal stays BL-TR (same as
+        // pre-fix), but each triangle's vertex order is reversed.
+        assert_eq!(mesh.indices, vec![0, 3, 2, 2, 1, 0]);
         assert!(mesh.alpha_test, "leaf billboards use alpha-test cutout");
         assert!(mesh.two_sided, "billboard rotates, both faces visible");
         assert!(!mesh.has_alpha, "alpha-test and alpha-blend are exclusive");
         assert_eq!(mesh.parent_node, Some(0), "mesh is a child of node 0");
+    }
+
+    /// #1000 — front-face normal must point -Z so the billboard
+    /// rotation arc (`Quat::from_rotation_arc(-Z, look_dir)`) maps
+    /// the textured side to the camera. Pre-fix the normals pointed
+    /// +Z and `two_sided: true` masked the inverted convention.
+    #[test]
+    fn placeholder_normals_point_negative_z_for_billboard_arc() {
+        let mut pool = StringPool::new();
+        let imported = import_spt_scene(&empty_scene(), &SptImportParams::default(), &mut pool);
+        let mesh = &imported.meshes[0];
+        assert_eq!(mesh.normals.len(), 4, "one normal per quad corner");
+        for (i, n) in mesh.normals.iter().enumerate() {
+            assert_eq!(
+                n, &[0.0, 0.0, -1.0],
+                "normal[{i}] must point -Z (engine convention: object -Z faces camera at rotation-arc termination)"
+            );
+        }
+    }
+
+    /// #1000 — index winding must be CCW when viewed from -Z so the
+    /// front face is the visible side after the billboard rotation
+    /// arc. Computes the geometric normal of triangle 0 (vertices 0,
+    /// 3, 2 = BL, TL, TR) via the cross product and asserts the Z
+    /// component is negative (i.e., facing -Z).
+    #[test]
+    fn placeholder_index_winding_produces_negative_z_geometric_normal() {
+        let mut pool = StringPool::new();
+        let imported = import_spt_scene(&empty_scene(), &SptImportParams::default(), &mut pool);
+        let mesh = &imported.meshes[0];
+
+        let i0 = mesh.indices[0] as usize;
+        let i1 = mesh.indices[1] as usize;
+        let i2 = mesh.indices[2] as usize;
+        let p0 = mesh.positions[i0];
+        let p1 = mesh.positions[i1];
+        let p2 = mesh.positions[i2];
+        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        // Cross product (e1 × e2). Front face under CCW winding has
+        // the cross product pointing along the front-face normal.
+        let nz = e1[0] * e2[1] - e1[1] * e2[0];
+        assert!(
+            nz < 0.0,
+            "geometric normal of triangle 0 must have negative Z (winding CCW from -Z); got nz = {nz}"
+        );
     }
 
     #[test]
