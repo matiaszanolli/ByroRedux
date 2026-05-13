@@ -656,6 +656,110 @@ fn looping_emitter_survives_natural_duration_and_stops_on_emitter_remove() {
     }
 }
 
+/// **#858 / SAFE-23**: a non-looping `AudioEmitter` whose source
+/// entity loses its emitter component mid-playback (cell unload,
+/// scripted teardown) must be truncated at the kira layer through
+/// the same fade-out path as a looping despawned emitter. Pre-fix
+/// `prune_stopped_sounds` skipped non-looping sounds entirely and
+/// they kept playing at the stale despawn pose until natural
+/// termination — audible as faint cross-cell SFX bleed on fast
+/// interior↔interior fast-travel.
+///
+/// Companion to `looping_emitter_survives_natural_duration_and_stops_on_emitter_remove`
+/// (Phase 4). Same setup, `looping: false`, racing the remove
+/// against the ~580 ms natural duration of the securitron arm-
+/// swing so the prune-stop is the observable cause of termination.
+///
+/// `#[ignore]` — needs working audio device + vanilla FNV data.
+#[test]
+#[ignore]
+fn non_looping_emitter_stops_on_emitter_remove_regression_858() {
+    use byroredux_bsa::BsaArchive;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    const FNV_DEFAULT: &str = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data";
+    let dir = std::env::var("BYROREDUX_FNV_DATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(FNV_DEFAULT));
+    if !dir.is_dir() {
+        return;
+    }
+    let bsa = match BsaArchive::open(&dir.join("Fallout - Sound.bsa")) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let bytes = bsa
+        .extract(r"sound\fx\npc\robotsecuritron\armswing\npc_securitron_armswing_02.wav")
+        .expect("vanilla securitron arm-swing");
+    let sound = Arc::new(load_sound_from_bytes(bytes).expect("decode WAV"));
+
+    let mut world = byroredux_core::ecs::World::new();
+    let aw = AudioWorld::new();
+    if !aw.is_active() {
+        return;
+    }
+    world.insert_resource(aw);
+
+    let listener = world.spawn();
+    world.insert(listener, Transform::IDENTITY);
+    world.insert(listener, GlobalTransform::IDENTITY);
+    world.insert(listener, AudioListener);
+
+    // Non-looping emitter — runs to natural termination ~580 ms
+    // unless the prune sweep truncates it first.
+    let emitter = world.spawn();
+    let pos = glam::Vec3::new(0.0, 0.0, 5.0);
+    world.insert(emitter, Transform::new(pos, glam::Quat::IDENTITY, 1.0));
+    world.insert(
+        emitter,
+        GlobalTransform::new(pos, glam::Quat::IDENTITY, 1.0),
+    );
+    world.insert(
+        emitter,
+        AudioEmitter {
+            sound: Arc::clone(&sound),
+            attenuation: Attenuation::default(),
+            volume: 0.5,
+            looping: false,
+            unload_fade_ms: DEFAULT_UNLOAD_FADE_MS,
+        },
+    );
+    world.insert(emitter, OneShotSound);
+
+    audio_system(&world, 0.016);
+    assert_eq!(world.resource::<AudioWorld>().active_sound_count(), 1);
+
+    // Remove the AudioEmitter long before the ~580 ms natural
+    // termination so the truncation, not natural end, is what the
+    // prune sweep observes.
+    std::thread::sleep(Duration::from_millis(50));
+    {
+        let mut q = world.query_mut::<AudioEmitter>().unwrap();
+        q.remove(emitter);
+    }
+
+    // Pre-#858 the active count would stay at 1 for the remaining
+    // ~530 ms; post-fix the prune sweep issues `.stop(tween)`
+    // within one tick and the next ticks drop the entry once kira
+    // reports `Stopped`. Generous deadline absorbs the 10 ms
+    // default fade plus kira's async settle.
+    let deadline = Instant::now() + Duration::from_millis(400);
+    loop {
+        audio_system(&world, 0.016);
+        if world.resource::<AudioWorld>().active_sound_count() == 0 {
+            break;
+        }
+        if Instant::now() > deadline {
+            panic!(
+                "non-looping sound was not truncated after AudioEmitter removal — \
+                 prune sweep didn't extend to non-looping despawned emitters (#858)"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// **#853 / C4-NEW-01**: `play_oneshot` drops on the floor when
 /// the manager is inactive — the queue never fills on a no-
 /// device host. Pre-#853 the queue filled to its 256 cap and

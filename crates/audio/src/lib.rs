@@ -161,22 +161,23 @@ pub(crate) const SEND_TRACK_CAPACITY: usize = 32;
 /// system can despawn the entity. Underscore-prefix on `_track`
 /// because we hold it for `Drop` side effect only.
 ///
-/// `looping` (Phase 4): when true, the prune pass treats `Stopped`
-/// as a real "stop me" signal (caller-driven, e.g. cell unload).
-/// When false, `Stopped` is the natural one-shot termination.
+/// Whether the underlying kira sound is looping (set via
+/// `loop_region(..)` at dispatch) is decided at the `Pending` /
+/// `AudioEmitter` layer; `ActiveSound` itself doesn't need to carry
+/// that bit post-#858 since the prune sweep no longer branches on it.
 struct ActiveSound {
     entity: Option<EntityId>,
     handle: StaticSoundHandle,
     _track: SpatialTrackHandle,
-    looping: bool,
     /// Fade-out duration captured from `AudioEmitter.unload_fade_ms` at
     /// dispatch time. Read by `prune_stopped_sounds` when the source
-    /// entity loses its emitter component (cell unload). One-shots
-    /// (`looping=false`) carry the default value but never consult it.
-    /// See #845.
+    /// entity loses its emitter component (cell unload). Applies to
+    /// looping AND non-looping post-#858 / SAFE-23 — one-shots
+    /// usually terminate naturally before the fade is needed, but
+    /// despawn-mid-playback routes through the same tween. See #845.
     unload_fade_ms: f32,
     /// Set to `true` once `prune_stopped_sounds` has issued the
-    /// fade-out `stop` call for this looping emitter. The handle's
+    /// fade-out `stop` call for this active sound. The handle's
     /// `state()` won't report `Stopped` until the fade completes, so
     /// without this flag the prune walk would re-mark the same entry
     /// every tick during the fade window — kira treats repeated
@@ -568,14 +569,18 @@ pub struct AudioEmitter {
     /// torch crackle / distant generator hum / cell ambient is `true`.
     pub looping: bool,
     /// Fade-out duration when this emitter's source entity is despawned
-    /// (cell unload, scripted teardown). Only consulted on `looping`
-    /// sounds — one-shots terminate naturally.
+    /// (cell unload, scripted teardown). Applies to looping AND non-
+    /// looping sounds — pre-#858 only the looping path consulted it,
+    /// leaving non-looping SFX to play out at the stale despawn pose
+    /// until natural termination (50 ms – 3 s typical, audible as
+    /// faint cross-cell bleed on fast interior↔interior travel).
     ///
     /// Default 10 ms matches `kira::Tween::default()` and is inaudible
     /// on short sustained ambients (campfire crackle, generator hum).
     /// Long-tailed ambients (cathedral choir, distant thunder loop)
     /// authoring 200-500 ms here avoids the faint click on cell exit
-    /// the abrupt 10 ms cutoff produces. See #845 / AUD-D4-NEW-04.
+    /// the abrupt 10 ms cutoff produces. See #845 / AUD-D4-NEW-04
+    /// (looping) and #858 / SAFE-23 (non-looping extension).
     ///
     /// Captured into `ActiveSound.unload_fade_ms` at dispatch time
     /// because the `AudioEmitter` component is removed from the entity
@@ -797,12 +802,17 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
             entity: None,
             handle,
             _track: track,
-            looping: false,
-            // Queue-driven path is one-shots only (`looping=false`);
-            // unload_fade_ms is never consulted on this branch.
+            // Queue-driven sounds have `entity == None` — they're
+            // intentionally decoupled from despawn coupling (no
+            // entity, no cell unload to truncate against), so the
+            // prune sweep's emitter-presence check skips them and
+            // they run to natural termination as `play_oneshot`'s
+            // documented contract requires. `unload_fade_ms` is
+            // never consulted on this branch.
             unload_fade_ms: DEFAULT_UNLOAD_FADE_MS,
-            // Queue-driven path is one-shots only — never enters the
-            // looping `prune_stopped_sounds` re-stop branch. See #844.
+            // Queue-driven sounds never re-enter the prune sweep's
+            // stop branch (no entity → no despawn signal), so this
+            // flag stays `false` for life. See #844 / #858.
             stop_issued: false,
         });
     }
@@ -934,7 +944,6 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
             entity: Some(p.entity),
             handle,
             _track: track,
-            looping: p.looping,
             unload_fade_ms: p.unload_fade_ms,
             stop_issued: false,
         });
@@ -958,18 +967,20 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
 /// the source entity so a downstream cleanup system can despawn it
 /// without coupling to audio state.
 fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
-    // Phase 4: looping sounds whose source entity has lost its
-    // `AudioEmitter` component (despawn-by-cell-unload, or explicit
-    // removal) should be stopped at the kira layer too. Snapshot
-    // those entity IDs first, then issue stop calls below — kira's
-    // tweened stop is async, but the next prune tick catches the
-    // resulting `Stopped` state.
+    // Phase 4 / #858 / SAFE-23: any active sound whose source entity
+    // has lost its `AudioEmitter` (despawn-by-cell-unload, explicit
+    // remove) should be stopped at the kira layer. Pre-#858 only
+    // looping sounds were truncated here — non-looping SFX kept
+    // playing past the despawn at the stale entity transform until
+    // natural termination (50 ms – 3 s typical), surfacing as faint
+    // cross-cell SFX bleed on fast interior↔interior fast-travel.
+    // Queue-driven plays (`entity == None`, see `play_oneshot`) are
+    // unaffected — no entity, no despawn coupling, they run to
+    // natural termination as `play_oneshot`'s documented contract
+    // requires.
     let emitter_q = world.query::<AudioEmitter>();
     let mut to_stop_indices: Vec<usize> = Vec::new();
     for (idx, s) in audio_world.active_sounds.iter().enumerate() {
-        if !s.looping {
-            continue;
-        }
         // Don't re-mark entries whose stop has already been issued —
         // the handle is fading out asynchronously and won't report
         // `Stopped` until the tween completes. Pre-fix every prune
@@ -1063,8 +1074,11 @@ pub fn spawn_oneshot_at(
             attenuation,
             volume,
             looping: false,
-            // One-shots terminate naturally; unload_fade_ms is never
-            // consulted on the prune path (gated on `looping`).
+            // One-shots usually terminate naturally before any
+            // `unload_fade_ms` is consulted; the field still applies
+            // if the entity is despawned mid-playback (post-#858 the
+            // prune sweep truncates non-looping despawned emitters
+            // through the same fade-out path as looping ones).
             unload_fade_ms: DEFAULT_UNLOAD_FADE_MS,
         },
     );
