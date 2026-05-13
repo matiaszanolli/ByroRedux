@@ -636,16 +636,12 @@ impl BhkConvexVerticesShape {
         let radius = stream.read_f32_le()?;
         // Two bhkWorldObjCInfoProperty structs (12 bytes each)
         stream.skip(24)?;
-        let num_vertices = stream.read_u32_le()?;
-        let mut vertices = stream.allocate_vec(num_vertices)?;
-        for _ in 0..num_vertices {
-            vertices.push(read_vec4(stream)?);
-        }
-        let num_normals = stream.read_u32_le()?;
-        let mut normals = stream.allocate_vec(num_normals)?;
-        for _ in 0..num_normals {
-            normals.push(read_vec4(stream)?);
-        }
+        // #981 — bulk-read `[f32; 4]` arrays via `read_ni_color4_array`
+        // (POD `[f32; 4]` is the same on-disk layout `read_vec4` used).
+        let num_vertices = stream.read_u32_le()? as usize;
+        let vertices = stream.read_ni_color4_array(num_vertices)?;
+        let num_normals = stream.read_u32_le()? as usize;
+        let normals = stream.read_ni_color4_array(num_normals)?;
         Ok(Self {
             material,
             radius,
@@ -684,11 +680,9 @@ impl BhkListShape {
         let material = read_havok_material(stream)?;
         // Two bhkWorldObjCInfoProperty structs (12 bytes each)
         stream.skip(24)?;
-        let num_filters = stream.read_u32_le()?;
-        let mut filters = stream.allocate_vec(num_filters)?;
-        for _ in 0..num_filters {
-            filters.push(stream.read_u32_le()?);
-        }
+        // #981 — bulk-read filter u32 array.
+        let num_filters = stream.read_u32_le()? as usize;
+        let filters = stream.read_u32_array(num_filters)?;
         Ok(Self {
             sub_shape_refs,
             material,
@@ -811,11 +805,9 @@ impl BhkNiTriStripsShape {
         for _ in 0..num_data {
             data_refs.push(stream.read_block_ref()?);
         }
-        let num_filters = stream.read_u32_le()?;
-        let mut filters = stream.allocate_vec(num_filters)?;
-        for _ in 0..num_filters {
-            filters.push(stream.read_u32_le()?);
-        }
+        // #981 — bulk-read filter u32 array.
+        let num_filters = stream.read_u32_le()? as usize;
+        let filters = stream.read_u32_array(num_filters)?;
         Ok(Self {
             material,
             radius,
@@ -1262,31 +1254,19 @@ impl BhkCompressedMeshShapeData {
             // Vertices: nif.xml Num Vertices is the count of u16 values (not triples).
             // Divide by 3 to get the number of (x, y, z) vertex positions.
             // Confirmed via Havok source: Chunk::m_vertices is hkArray<hkUint16>,
-            // count = actual_vertices * 3.
+            // count = actual_vertices * 3. #981 — bulk reads via
+            // `read_u16_triple_array` / `read_u16_array`.
             let num_vertex_components = stream.read_u32_le()?;
-            let num_vertices = num_vertex_components / 3;
-            let mut vertices: Vec<[u16; 3]> = stream.allocate_vec(num_vertices)?;
-            for _ in 0..num_vertices {
-                vertices.push([
-                    stream.read_u16_le()?,
-                    stream.read_u16_le()?,
-                    stream.read_u16_le()?,
-                ]);
-            }
+            let num_vertices = (num_vertex_components / 3) as usize;
+            let vertices = stream.read_u16_triple_array(num_vertices)?;
 
             // Indices
-            let num_indices = stream.read_u32_le()?;
-            let mut indices: Vec<u16> = stream.allocate_vec(num_indices)?;
-            for _ in 0..num_indices {
-                indices.push(stream.read_u16_le()?);
-            }
+            let num_indices = stream.read_u32_le()? as usize;
+            let indices = stream.read_u16_array(num_indices)?;
 
             // Strips
-            let num_strips = stream.read_u32_le()?;
-            let mut strips: Vec<u16> = stream.allocate_vec(num_strips)?;
-            for _ in 0..num_strips {
-                strips.push(stream.read_u16_le()?);
-            }
+            let num_strips = stream.read_u32_le()? as usize;
+            let strips = stream.read_u16_array(num_strips)?;
 
             // Welding info
             let num_welding = stream.read_u32_le()? as usize;

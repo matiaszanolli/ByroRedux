@@ -145,24 +145,18 @@ impl NiExtraData {
                 strings_array = Some(arr);
             }
             "NiIntegersExtraData" => {
-                let count = stream.read_u32_le()?;
-                let mut arr = stream.allocate_vec(count)?;
-                for _ in 0..count {
-                    arr.push(stream.read_u32_le()?);
-                }
-                integers_array = Some(arr);
+                // #981 — bulk-read via `read_u32_array`.
+                let count = stream.read_u32_le()? as usize;
+                integers_array = Some(stream.read_u32_array(count)?);
             }
             // nif.xml line 4269 — parallel to NiIntegersExtraData but
             // with f32 payload. Bundled with #553 because the authoring
             // tools emit both Float and Floats variants in the same DLC
             // content stream.
             "NiFloatsExtraData" => {
-                let count = stream.read_u32_le()?;
-                let mut arr = stream.allocate_vec(count)?;
-                for _ in 0..count {
-                    arr.push(stream.read_f32_le()?);
-                }
-                floats_array = Some(arr);
+                // #981 — bulk-read via `read_f32_array`.
+                let count = stream.read_u32_le()? as usize;
+                floats_array = Some(stream.read_f32_array(count)?);
             }
             // BSBoneLODExtraData (Skyrim+) — bone-LOD distance thresholds
             // for skeleton mesh swapping. nif.xml lines 8183-8187:
@@ -464,14 +458,11 @@ impl BsEyeCenterExtraData {
         // NiExtraData base: name — gated since 10.0.1.0 per nif.xml.
         // FO4 / FO76 sit at 20.2.0.7, well past the boundary.
         let name = stream.read_extra_data_name()?;
-        // Num Floats: u32 — file-driven count, route through
-        // `allocate_vec` per the #408 sweep so a corrupt 0xFFFFFFFF
-        // can't OOM-allocate before the inner reads fail.
-        let num_floats = stream.read_u32_le()?;
-        let mut floats = stream.allocate_vec::<f32>(num_floats)?;
-        for _ in 0..num_floats {
-            floats.push(stream.read_f32_le()?);
-        }
+        // Num Floats: u32 — bulk-read via `read_f32_array`, which
+        // routes through `read_pod_vec` and keeps the byte-budget
+        // guard the #408 sweep introduced. See #981.
+        let num_floats = stream.read_u32_le()? as usize;
+        let floats = stream.read_f32_array(num_floats)?;
         Ok(Self { name, floats })
     }
 }
@@ -511,27 +502,19 @@ impl BsDecalPlacementVectorExtraData {
         let name = stream.read_extra_data_name()?;
         // NiFloatExtraData: float value
         let float_value = stream.read_f32_le()?;
-        // BSDecalPlacementVectorExtraData: vector blocks
+        // BSDecalPlacementVectorExtraData: vector blocks.
+        // #981 — inner `points` / `normals` arrays are POD `[f32; 3]`
+        // sequences; bulk-read via `read_f32_triple_array` (one
+        // allocation + one read_exact per array instead of one
+        // allocation + N per-component reads). The outer block list
+        // stays on a typed push loop because each iteration parses
+        // a variable-width payload, not a fixed-stride POD record.
         let num_blocks = stream.read_u16_le()? as u32;
         let mut vector_blocks: Vec<DecalVectorBlock> = stream.allocate_vec(num_blocks)?;
         for _ in 0..num_blocks {
-            let num_vectors = stream.read_u16_le()? as u32;
-            let mut points: Vec<[f32; 3]> = stream.allocate_vec(num_vectors)?;
-            for _ in 0..num_vectors {
-                points.push([
-                    stream.read_f32_le()?,
-                    stream.read_f32_le()?,
-                    stream.read_f32_le()?,
-                ]);
-            }
-            let mut normals: Vec<[f32; 3]> = stream.allocate_vec(num_vectors)?;
-            for _ in 0..num_vectors {
-                normals.push([
-                    stream.read_f32_le()?,
-                    stream.read_f32_le()?,
-                    stream.read_f32_le()?,
-                ]);
-            }
+            let num_vectors = stream.read_u16_le()? as usize;
+            let points = stream.read_f32_triple_array(num_vectors)?;
+            let normals = stream.read_f32_triple_array(num_vectors)?;
             vector_blocks.push(DecalVectorBlock { points, normals });
         }
         Ok(Self {
@@ -645,11 +628,9 @@ impl NiObject for BsWArray {
 impl BsWArray {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let name = stream.read_string()?;
-        let count = stream.read_u32_le()?;
-        let mut items = stream.allocate_vec(count)?;
-        for _ in 0..count {
-            items.push(stream.read_i32_le()?);
-        }
+        // #981 — bulk-read i32 array.
+        let count = stream.read_u32_le()? as usize;
+        let items = stream.read_i32_array(count)?;
         Ok(Self { name, items })
     }
 }

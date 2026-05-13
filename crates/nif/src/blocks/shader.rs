@@ -442,20 +442,15 @@ fn parse_skyrim_shader_base(
     // Counts go through allocate_vec so a corrupt 0xFFFFFFFF can't OOM
     // before the inner u32 reads fail. See #764.
     let (sf1_crcs, sf2_crcs) = if bsver >= 132 {
-        let num_sf1 = stream.read_u32_le()?;
+        // #981 — bulk-read CRC arrays via `read_u32_array`.
+        let num_sf1 = stream.read_u32_le()? as usize;
         let num_sf2 = if bsver >= 152 {
-            stream.read_u32_le()?
+            stream.read_u32_le()? as usize
         } else {
             0
         };
-        let mut sf1 = stream.allocate_vec::<u32>(num_sf1)?;
-        for _ in 0..num_sf1 {
-            sf1.push(stream.read_u32_le()?);
-        }
-        let mut sf2 = stream.allocate_vec::<u32>(num_sf2)?;
-        for _ in 0..num_sf2 {
-            sf2.push(stream.read_u32_le()?);
-        }
+        let sf1 = stream.read_u32_array(num_sf1)?;
+        let sf2 = stream.read_u32_array(num_sf2)?;
         (sf1, sf2)
     } else {
         (Vec::new(), Vec::new())
@@ -901,23 +896,18 @@ impl BSLightingShaderProperty {
         };
 
         // Num SF1 / Num SF2 (BSVER >= 132 / 152), then both arrays.
-        // Counts go through allocate_vec so a corrupt 0xFFFFFFFF can't OOM
-        // before the inner u32 reads fail. See #764.
+        // #981 — bulk-read via `read_u32_array`. The byte-budget gate
+        // moves from `allocate_vec` into `read_pod_vec` so the OOM
+        // guard from #764 is preserved.
         let (sf1_crcs, sf2_crcs) = if bsver >= 132 {
-            let num_sf1 = stream.read_u32_le()?;
+            let num_sf1 = stream.read_u32_le()? as usize;
             let num_sf2 = if bsver >= 152 {
-                stream.read_u32_le()?
+                stream.read_u32_le()? as usize
             } else {
                 0
             };
-            let mut sf1 = stream.allocate_vec::<u32>(num_sf1)?;
-            for _ in 0..num_sf1 {
-                sf1.push(stream.read_u32_le()?);
-            }
-            let mut sf2 = stream.allocate_vec::<u32>(num_sf2)?;
-            for _ in 0..num_sf2 {
-                sf2.push(stream.read_u32_le()?);
-            }
+            let sf1 = stream.read_u32_array(num_sf1)?;
+            let sf2 = stream.read_u32_array(num_sf2)?;
             (sf1, sf2)
         } else {
             (Vec::new(), Vec::new())
@@ -1508,23 +1498,17 @@ impl BSEffectShaderProperty {
             (0, 0)
         };
 
-        // Counts go through allocate_vec so a corrupt 0xFFFFFFFF can't OOM
-        // before the inner u32 reads fail. See #764.
+        // #981 — bulk-read CRC arrays via `read_u32_array`; same
+        // byte-budget guarantee as the BSEffectShaderData variant above.
         let (sf1_crcs, sf2_crcs) = if bsver >= 132 {
-            let num_sf1 = stream.read_u32_le()?;
+            let num_sf1 = stream.read_u32_le()? as usize;
             let num_sf2 = if bsver >= 152 {
-                stream.read_u32_le()?
+                stream.read_u32_le()? as usize
             } else {
                 0
             };
-            let mut sf1 = stream.allocate_vec::<u32>(num_sf1)?;
-            for _ in 0..num_sf1 {
-                sf1.push(stream.read_u32_le()?);
-            }
-            let mut sf2 = stream.allocate_vec::<u32>(num_sf2)?;
-            for _ in 0..num_sf2 {
-                sf2.push(stream.read_u32_le()?);
-            }
+            let sf1 = stream.read_u32_array(num_sf1)?;
+            let sf2 = stream.read_u32_array(num_sf2)?;
             (sf1, sf2)
         } else {
             (Vec::new(), Vec::new())

@@ -341,6 +341,16 @@ impl<'a> NifStream<'a> {
         self.read_pod_vec::<u16>(count)
     }
 
+    /// Read `count` i16 values in one bulk read. Mirrors
+    /// [`Self::read_u16_array`] — same byte layout, same POD
+    /// any-bit-pattern soundness, signedness is a Rust-side
+    /// interpretation only. Used by `NiBSplineData`'s compact
+    /// control-points stream where the on-disk u16 is reinterpreted
+    /// as i16 by the consumer. See #981 / NIF-D6-NEW-05.
+    pub fn read_i16_array(&mut self, count: usize) -> io::Result<Vec<i16>> {
+        self.read_pod_vec::<i16>(count)
+    }
+
     /// Read `count` RGBA colour values (4 × u8 each) in one bulk read.
     /// `[u8; 4]` is POD with alignment 1 ≥ 1 and any-bit-pattern
     /// soundness, so it slots into `read_pod_vec` the same way the
@@ -366,9 +376,26 @@ impl<'a> NifStream<'a> {
         self.read_pod_vec::<u32>(count)
     }
 
+    /// Read `count` i32 values in one bulk read. Identical byte layout
+    /// to [`Self::read_u32_array`]; signedness is a Rust-side
+    /// reinterpretation only. See #981 / NIF-D6-NEW-05.
+    pub fn read_i32_array(&mut self, count: usize) -> io::Result<Vec<i32>> {
+        self.read_pod_vec::<i32>(count)
+    }
+
     /// Read `count` f32 values in one bulk read.
     pub fn read_f32_array(&mut self, count: usize) -> io::Result<Vec<f32>> {
         self.read_pod_vec::<f32>(count)
+    }
+
+    /// Read `count` triples of f32 (12 bytes each) in one bulk read.
+    /// `[f32; 3]` is POD with the same `#[repr(C)]` layout as
+    /// [`NiPoint3`] but the raw-array type is what `DecalVectorBlock`
+    /// and other consumers already store — exposing the array
+    /// variant separately avoids a `Vec<NiPoint3>` → `Vec<[f32; 3]>`
+    /// round-trip at the call site. See #981 / NIF-D6-NEW-05.
+    pub fn read_f32_triple_array(&mut self, count: usize) -> io::Result<Vec<[f32; 3]>> {
+        self.read_pod_vec::<[f32; 3]>(count)
     }
 
     // ── NIF-specific reads ─────────────────────────────────────────────

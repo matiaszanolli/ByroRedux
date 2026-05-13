@@ -1167,18 +1167,15 @@ impl NiObject for NiBSplineData {
 
 impl NiBSplineData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // #981 — bulk-read via `read_pod_vec` wrappers. nif.xml types
+        // `compact_control_points` as `short` (signed 16-bit) but the
+        // on-disk byte layout is identical to u16; `read_i16_array`
+        // does the reinterpretation in-place without a per-element
+        // cast loop.
         let num_float = stream.read_u32_le()?;
-        let mut float_control_points: Vec<f32> = stream.allocate_vec(num_float)?;
-        for _ in 0..num_float {
-            float_control_points.push(stream.read_f32_le()?);
-        }
+        let float_control_points = stream.read_f32_array(num_float as usize)?;
         let num_compact = stream.read_u32_le()?;
-        let mut compact_control_points: Vec<i16> = stream.allocate_vec(num_compact)?;
-        for _ in 0..num_compact {
-            // `short` in nif.xml — signed 16-bit.
-            let raw = stream.read_u16_le()?;
-            compact_control_points.push(raw as i16);
-        }
+        let compact_control_points = stream.read_i16_array(num_compact as usize)?;
         Ok(Self {
             float_control_points,
             compact_control_points,

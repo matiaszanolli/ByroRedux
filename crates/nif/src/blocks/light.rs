@@ -77,12 +77,9 @@ impl NiLightBase {
         };
 
         let affected_nodes = if pre_fo4 && stream.version() >= NifVersion(0x0A010000) {
-            let count = stream.read_u32_le()?;
-            let mut nodes = stream.allocate_vec(count)?;
-            for _ in 0..count {
-                nodes.push(stream.read_u32_le()?);
-            }
-            nodes
+            // #981 — bulk-read affected-nodes u32 array.
+            let count = stream.read_u32_le()? as usize;
+            stream.read_u32_array(count)?
         } else {
             Vec::new()
         };

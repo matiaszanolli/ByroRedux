@@ -3045,9 +3045,17 @@ fn bs_eye_center_extra_data_hostile_num_floats_returns_err_not_panic() {
         "hostile num_floats must error gracefully, not panic"
     );
     let msg = result.unwrap_err().to_string();
+    // Post-#981 the parser routes through `read_pod_vec` (which calls
+    // `check_alloc` internally) instead of the previous `allocate_vec`
+    // + per-element loop. Both paths share the same budget gate but
+    // produce slightly different wording: the hard-cap branch reads
+    // "exceeds hard cap" and the EOF branch reads "bytes remain[ing]".
+    // The 0xFFFFFFFF × 4-byte request from this fixture trips the
+    // hard-cap branch on the new path; either rejection is acceptable
+    // — the contract is "clean error, not OOM panic."
     assert!(
-        msg.contains("only") && msg.contains("bytes remain"),
-        "expected `allocate_vec` budget rejection, got: {msg}"
+        msg.contains("bytes remain") || msg.contains("exceeds hard cap"),
+        "expected budget-rejection error, got: {msg}"
     );
 }
 

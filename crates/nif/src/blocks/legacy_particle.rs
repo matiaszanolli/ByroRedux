@@ -469,11 +469,9 @@ impl NiParticleSystemController {
         }
 
         let unknown_ref = stream.read_block_ref()?;
+        // #981 — bulk-read emitter-point index array via `read_u32_array`.
         let num_emitter_points = stream.read_u32_le()?;
-        let mut emitter_points: Vec<u32> = stream.allocate_vec(num_emitter_points)?;
-        for _ in 0..num_emitter_points {
-            emitter_points.push(stream.read_u32_le()?);
-        }
+        let emitter_points = stream.read_u32_array(num_emitter_points as usize)?;
         let trailer_emitter_type = stream.read_u32_le()?;
         let unknown_trailer_float = stream.read_f32_le()?;
         let trailer_emitter_modifier = stream.read_block_ref()?;
@@ -670,13 +668,10 @@ impl NiLegacyParticlesData {
         let num_vertices = vertices.len() as u16;
 
         // has_radii + radii (since 10.1.0.0 — always present for Oblivion).
+        // #981 — bulk-read f32 arrays via `read_f32_array`.
         let has_radii = stream.read_byte_bool()?;
         let radii = if has_radii {
-            let mut v = stream.allocate_vec(num_vertices as u32)?;
-            for _ in 0..num_vertices {
-                v.push(stream.read_f32_le()?);
-            }
-            v
+            stream.read_f32_array(num_vertices as usize)?
         } else {
             Vec::new()
         };
@@ -685,11 +680,7 @@ impl NiLegacyParticlesData {
 
         let has_sizes = stream.read_byte_bool()?;
         let sizes = if has_sizes {
-            let mut v = stream.allocate_vec(num_vertices as u32)?;
-            for _ in 0..num_vertices {
-                v.push(stream.read_f32_le()?);
-            }
-            v
+            stream.read_f32_array(num_vertices as usize)?
         } else {
             Vec::new()
         };
@@ -711,26 +702,20 @@ impl NiLegacyParticlesData {
         };
 
         // has_rotation_angles + has_rotation_axes since 20.0.0.4 — present
-        // in Oblivion v20.0.0.5.
+        // in Oblivion v20.0.0.5. #981 — bulk reads via `read_f32_array` /
+        // `read_f32_triple_array`. NiPoint3 is `#[repr(C)]` with the
+        // same field layout as `[f32; 3]`, so the read-and-unpack
+        // pattern collapses into a direct triple read.
         let has_rotation_angles = stream.read_byte_bool()?;
         let rotation_angles = if has_rotation_angles {
-            let mut v = stream.allocate_vec(num_vertices as u32)?;
-            for _ in 0..num_vertices {
-                v.push(stream.read_f32_le()?);
-            }
-            v
+            stream.read_f32_array(num_vertices as usize)?
         } else {
             Vec::new()
         };
 
         let has_rotation_axes = stream.read_byte_bool()?;
         let rotation_axes = if has_rotation_axes {
-            let mut v = stream.allocate_vec(num_vertices as u32)?;
-            for _ in 0..num_vertices {
-                let p = stream.read_ni_point3()?;
-                v.push([p.x, p.y, p.z]);
-            }
-            v
+            stream.read_f32_triple_array(num_vertices as usize)?
         } else {
             Vec::new()
         };

@@ -1137,27 +1137,23 @@ impl BsSubIndexTriShapeData {
             let shared = if num_segments < total_segments {
                 let s_num_segments = stream.read_u32_le()?;
                 let s_total_segments = stream.read_u32_le()?;
-                let mut segment_starts: Vec<u32> = stream.allocate_vec(s_num_segments)?;
-                for _ in 0..s_num_segments {
-                    segment_starts.push(stream.read_u32_le()?);
-                }
+                // #981 — bulk-read segment offsets via `read_u32_array`.
+                let segment_starts = stream.read_u32_array(s_num_segments as usize)?;
                 let mut per_segment_data: Vec<BsGeometryPerSegmentSharedData> =
                     stream.allocate_vec(s_total_segments)?;
                 for _ in 0..s_total_segments {
                     let user_index = stream.read_u32_le()?;
                     let bone_id = stream.read_u32_le()?;
-                    let num_cut_offsets = stream.read_u32_le()?;
+                    let num_cut_offsets = stream.read_u32_le()? as usize;
                     // nif.xml documents `range="0:8"` on Num Cut Offsets,
                     // but nifly's `Geometry.cpp:1230` doesn't enforce the
                     // cap and shipped FO4 content carries values above 8
                     // (verified empirically against `Fallout4 - Meshes.ba2`
                     // — a strict cap dropped parse rate from 100% to
-                    // 96.46%). Trust `allocate_vec`'s #388 hard cap to
+                    // 96.46%). Trust `read_pod_vec`'s byte-budget gate
+                    // (inherited from `allocate_vec`'s #388 hard cap) to
                     // bound malicious inputs and let real content through.
-                    let mut cut_offsets: Vec<f32> = stream.allocate_vec(num_cut_offsets)?;
-                    for _ in 0..num_cut_offsets {
-                        cut_offsets.push(stream.read_f32_le()?);
-                    }
+                    let cut_offsets = stream.read_f32_array(num_cut_offsets)?;
                     per_segment_data.push(BsGeometryPerSegmentSharedData {
                         user_index,
                         bone_id,
@@ -1737,16 +1733,11 @@ pub struct NiAgdDataBlock {
 impl NiAgdDataBlock {
     fn parse(stream: &mut NifStream, packed: bool) -> io::Result<Self> {
         let block_size = stream.read_u32_le()?;
-        let num_blocks = stream.read_u32_le()?;
-        let mut block_offsets = stream.allocate_vec::<u32>(num_blocks)?;
-        for _ in 0..num_blocks {
-            block_offsets.push(stream.read_u32_le()?);
-        }
-        let num_data = stream.read_u32_le()?;
-        let mut data_sizes = stream.allocate_vec::<u32>(num_data)?;
-        for _ in 0..num_data {
-            data_sizes.push(stream.read_u32_le()?);
-        }
+        // #981 — bulk-read both u32 arrays via `read_u32_array`.
+        let num_blocks = stream.read_u32_le()? as usize;
+        let block_offsets = stream.read_u32_array(num_blocks)?;
+        let num_data = stream.read_u32_le()? as usize;
+        let data_sizes = stream.read_u32_array(num_data)?;
         // Flat data blob: nif.xml `length="Num Data" width="Block Size"` is
         // a row-major 2D array. `read_bytes` already guards against a
         // corrupt multiplier via `check_alloc`.
