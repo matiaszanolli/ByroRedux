@@ -888,18 +888,27 @@ impl VulkanContext {
                     // population caught up.
                     let min_idle = MAX_FRAMES_IN_FLIGHT as u64 + 1;
                     let now = self.frame_counter as u64;
-                    let evictees: Vec<EntityId> = self
-                        .skin_slots
-                        .iter()
-                        .filter_map(|(&eid, slot)| {
+                    // #1003 — drain `pending_skin_unload_victims` populated by
+                    // `cell_loader::unload_cell`. These entities have been
+                    // despawned; their slots and per-skinned BLAS must be
+                    // released NOW (post-fence-wait, so no in-flight
+                    // command buffer still references the output buffer).
+                    let mut evictees: Vec<EntityId> =
+                        std::mem::take(&mut self.pending_skin_unload_victims);
+                    // Continue with the regular eviction filter for entries
+                    // that aged out via the idle policy (the original path
+                    // that protects against entity-still-alive-but-not-
+                    // drawn scenarios — camera moved off-screen, etc.).
+                    evictees.extend(
+                        self.skin_slots.iter().filter_map(|(&eid, slot)| {
                             super::super::skin_compute::should_evict_skin_slot(
                                 slot.last_used_frame,
                                 now,
                                 min_idle,
                             )
                             .then_some(eid)
-                        })
-                        .collect();
+                        }),
+                    );
                     if !evictees.is_empty() {
                         log::debug!(
                             "skin_slots eviction: dropping {} idle SkinSlot(s) and matching skinned BLAS",

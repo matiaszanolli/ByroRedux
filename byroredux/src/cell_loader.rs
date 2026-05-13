@@ -168,6 +168,8 @@ mod nif_light_spawn_gate_tests;
 #[cfg(test)]
 mod lgtm_fallback_tests;
 #[cfg(test)]
+mod unload_skin_cleanup_tests;
+#[cfg(test)]
 mod placement_root_subtree_tests;
 #[cfg(test)]
 mod root_index_tests;

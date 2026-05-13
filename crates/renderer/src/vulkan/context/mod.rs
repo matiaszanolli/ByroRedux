@@ -806,6 +806,31 @@ pub struct VulkanContext {
     /// clear required. Adding entries that hold device-side
     /// resources here would invalidate this contract.
     pub failed_skin_slots: std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
+    /// Cell-unload victims pending skin-slot teardown. Populated by
+    /// `unload_cell`, drained by the per-frame eviction pass at the
+    /// top of `draw_frame` (after the fence wait that retires any
+    /// in-flight command buffer referencing the slot's output buffer).
+    ///
+    /// **Why a queue and not immediate `destroy_slot`** (#1003):
+    /// `skin_pipeline.destroy_slot` is unconditional and synchronous —
+    /// caller must guarantee no in-flight command buffer references
+    /// the slot's output buffer. The eviction pass already runs
+    /// post-fence-wait and is therefore safe. `unload_cell` runs
+    /// outside `draw_frame` and pre-fix relied on the eviction pass
+    /// catching despawned entities within ~3 frames; cell-unload-
+    /// without-render-tick (headless smoke tests, paused world)
+    /// silently retained slots indefinitely. Routing through this
+    /// queue makes the teardown window deterministic.
+    ///
+    /// **Drop contract**: tinier than `skin_slots` because each entry
+    /// is a `u32`-shaped `EntityId`; the actual slot is held in
+    /// `skin_slots` until drain. The eviction pass moves the entry
+    /// out of `skin_slots` and into `destroy_slot` in a single step,
+    /// so any race between `unload_cell` and `Drop` resolves cleanly
+    /// (a victim queued but not drained still has its slot in
+    /// `skin_slots`, which `Drop` tears down via the bulk loop at
+    /// `mod.rs:1965`).
+    pub pending_skin_unload_victims: Vec<byroredux_core::ecs::storage::EntityId>,
     /// Per-frame counters for the skinned-BLAS coverage path, written
     /// by `draw_frame` and copied into the [`byroredux_core::ecs::
     /// SkinCoverageStats`] resource by [`Self::fill_skin_coverage_stats`].
@@ -1657,6 +1682,7 @@ impl VulkanContext {
             skin_compute,
             skin_slots: std::collections::HashMap::new(),
             failed_skin_slots: std::collections::HashSet::new(),
+            pending_skin_unload_victims: Vec::new(),
             last_skin_coverage_frame: super::skin_compute::SkinCoverageFrame::default(),
             ssao,
             composite,

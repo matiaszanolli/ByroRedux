@@ -217,6 +217,23 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     for &mh in &mesh_drops {
         ctx.mesh_registry.drop_mesh(mh);
     }
+
+    // #1003 / #1004 — skin slot + failed-slot cache cleanup on cell
+    // unload. Pre-fix the per-frame eviction pass at the top of
+    // `draw_frame` was the only path that reclaimed SkinSlots (after
+    // ~3 idle frames) and cleared `failed_skin_slots` (only when an
+    // active slot was evicted). Cell unload without a subsequent
+    // render tick — headless smoke tests, paused world, or
+    // `draw_frame` early-return — silently retained both forever.
+    // Queue victims here for the eviction pass to drain post-fence-
+    // wait (deferred because `destroy_slot` is synchronous and cell
+    // unload runs outside the per-frame fence boundary).
+    queue_skin_unload_victims(
+        &victims,
+        |eid| ctx.skin_slots.contains_key(&eid),
+        &mut ctx.pending_skin_unload_victims,
+        &mut ctx.failed_skin_slots,
+    );
     for &th in &texture_drops {
         ctx.texture_registry.drop_texture(&ctx.device, th);
     }
@@ -285,4 +302,38 @@ pub(crate) fn release_victim_item_instances(world: &mut World, victims: &[Entity
     for id in to_release {
         pool.release(id);
     }
+}
+
+/// Queue cell-unload victims for skin-slot teardown and prune the
+/// `failed_skin_slots` host-side cache. Extracted from `unload_cell`
+/// so the host-side state transformation is unit-testable without a
+/// Vulkan device. See #1003 / #1004.
+///
+/// - `victims`: every entity owned by the unloading cell root.
+/// - `slot_present`: predicate over EntityId — `true` when the entity
+///   has a live `SkinSlot` (passed in this shape so tests can fake the
+///   HashMap without depending on `VulkanContext`).
+/// - `pending`: `VulkanContext::pending_skin_unload_victims` queue,
+///   drained by the renderer's eviction pass next frame.
+/// - `failed`: `VulkanContext::failed_skin_slots` set; entries for
+///   victim EntityIds removed in place. Host-side state only — safe
+///   to mutate without GPU sync.
+pub(super) fn queue_skin_unload_victims<F>(
+    victims: &[EntityId],
+    slot_present: F,
+    pending: &mut Vec<EntityId>,
+    failed: &mut std::collections::HashSet<EntityId>,
+) where
+    F: Fn(EntityId) -> bool,
+{
+    for &eid in victims {
+        if slot_present(eid) {
+            pending.push(eid);
+        }
+    }
+    if failed.is_empty() {
+        return;
+    }
+    let victim_set: std::collections::HashSet<EntityId> = victims.iter().copied().collect();
+    failed.retain(|eid| !victim_set.contains(eid));
 }
