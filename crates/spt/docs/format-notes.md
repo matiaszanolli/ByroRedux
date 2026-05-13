@@ -561,3 +561,53 @@ cargo run -p byroredux-spt --features recon --example spt_recon -- \
 Output is plain Markdown (a per-archive table + per-bucket string
 samples) — append it under a dated heading in this file when you run
 a follow-up pass.
+
+---
+
+## 2026-05-13 — Tag 13005 bimodal payload (closeout of #999)
+
+Four Oblivion vanilla `.spt` files emit tag 13005 with an optional
+104-byte BezierSpline curve string instead of bare:
+
+| File | Bail offset (pre-fix) |
+|---|---:|
+| `trees\treems14canvasfreesu.spt` | 6047 |
+| `trees\treecottonwoodsu.spt` | 5477 |
+| `trees\shrubms14boxwood.spt` | 4343 |
+| `trees\treems14willowoakyoungsu.spt` | 5782 |
+
+The other 109 vanilla files emit tag 13005 bare. Modal-classifier in
+`spt_transitions` collapsed both forms to "Bare" because 109/113 ≫ 4/113.
+
+**Resolution**: `SptTagKind::MaybeStringElseBare` (new variant). Walker
+peeks the next u32 after the tag — if it's a known dictionary tag,
+the current entry is `Bare`; otherwise consume `u32` length + raw
+bytes as a `String`. Robust against observed vanilla (the 104-byte
+curve length doesn't coincide with any dictionary tag).
+
+### Open: 14000-band tail tags in the 4 outliers
+
+After the #999 fix, the same 4 files decode 28 more entries each but
+then bail again at value `768` (offsets 4507 / 5641 / 5946 / 6211).
+Byte-level inspection shows these bytes are *not* a 768-tag — they're
+part of a sequence of (tag, u32) pairs in the **14000–14008** range,
+sitting beyond the current `TAG_MAX = 13999`:
+
+```text
+4504: B7 36 00 00 = 14007  (out of TAG_MAX range)
+4508: 03 00 00 00 = 3      (presumed u32 payload)
+4512: B8 36 00 00 = 14008
+4516: 01 00 00 00 = 1      (presumed u32 payload)
+4520: D0 32 00 00 = 13008  (known FixedBytes(11))
+...
+```
+
+Without a `spt_transitions` re-run that extends the tag-range search
+into 14000+, we can't classify these confidently. Follow-up: re-run
+the recon harness with `TAG_MAX = 16000`, observe the modal
+payload-distance for each new tag, extend `dispatch_tag`. Expected
+to push Oblivion clean-rate from 96.46 % to 100 %.
+
+Tracked here rather than as a dedicated issue — the placeholder
+fallback already covers these 4 trees today, and Oblivion is well
+above the 95 % acceptance gate.
