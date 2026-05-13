@@ -31,6 +31,7 @@ fn mk_sky(indices: [u32; 5]) -> SkyParamsRes {
         cloud_texture_index_2: indices[2],
         cloud_tile_scale_3: 1.0,
         cloud_texture_index_3: indices[3],
+        current_dalc_cube: None,
     }
 }
 

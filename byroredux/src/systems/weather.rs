@@ -344,6 +344,31 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
 
     drop(wd);
 
+    // #993 — Skyrim DALC ambient cube interpolation. The DALC array
+    // has 4 TOD slots (sunrise / day / sunset / night) while
+    // `sky_colors` has 6 (4 + high_noon + midnight). Fold high_noon→day
+    // and midnight→night per the WTHR parser's on-disk padding rule
+    // (`crates/plugin/src/esm/records/weather.rs:312-314`) so the same
+    // `(slot_a, slot_b, t)` the colour interpolator picked applies
+    // cleanly. Only computed when the WTHR record carried DALC bytes
+    // — FNV / FO3 / Oblivion stay `None`.
+    let dalc_cube = world
+        .try_resource::<WeatherDataRes>()
+        .and_then(|wd| wd.skyrim_dalc_per_tod)
+        .map(|cubes| {
+            use byroredux_plugin::esm::records::weather::*;
+            let fold = |slot: usize| match slot {
+                TOD_HIGH_NOON => TOD_DAY,
+                TOD_MIDNIGHT => TOD_NIGHT,
+                s => s,
+            };
+            crate::components::DalcCubeYup::lerp(
+                &cubes[fold(slot_a)],
+                &cubes[fold(slot_b)],
+                t,
+            )
+        });
+
     // Update SkyParamsRes.
     if let Some(mut sky) = world.try_resource_mut::<SkyParamsRes>() {
         sky.zenith_color = zenith;
@@ -355,6 +380,10 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         sky.sun_color = sun_col;
         sky.sun_direction = sun_dir;
         sky.sun_intensity = sun_intensity;
+        // #993 — DALC cube write-through. `None` on every non-Skyrim
+        // cell, so the renderer's future consumer can branch on
+        // `current_dalc_cube.is_some()` to gate the 6-axis sample.
+        sky.current_dalc_cube = dalc_cube;
     }
 
     // #803 — cloud scroll lives on `CloudSimState`, which survives
@@ -769,6 +798,7 @@ mod interior_gate_tests {
             sky_colors,
             fog: [100.0, 60000.0, 200.0, 30000.0],
             tod_hours: [6.0, 10.0, 18.0, 22.0],
+            skyrim_dalc_per_tod: None,
         });
 
         world

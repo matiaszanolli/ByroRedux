@@ -179,6 +179,7 @@ fn light_dump_handles_missing_and_present_resources() {
         cloud_texture_index_2: 0,
         cloud_tile_scale_3: 0.0,
         cloud_texture_index_3: 0,
+        current_dalc_cube: None,
     });
     world.insert_resource(GameTimeRes {
         hour: 10.5,

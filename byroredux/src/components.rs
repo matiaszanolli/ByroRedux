@@ -373,6 +373,219 @@ mod cell_lighting_res_tests {
     }
 }
 
+#[cfg(test)]
+mod dalc_cube_tests {
+    //! Regression for #993 — Skyrim DALC 6-axis ambient cube
+    //! conversion and per-component lerp. Pinned distinctive colours
+    //! per axis so a future refactor that swaps two axes can't
+    //! silently land.
+    use super::*;
+    use byroredux_plugin::esm::records::weather::{SkyColor, SkyrimAmbientCube};
+
+    fn rgb(r: u8, g: u8, b: u8) -> SkyColor {
+        SkyColor { r, g, b, a: 0 }
+    }
+
+    fn distinctive_cube() -> SkyrimAmbientCube {
+        // Each axis flagged with a unique R channel so the Z-up→Y-up
+        // remap can't silently scramble axes.
+        SkyrimAmbientCube {
+            pos_x: rgb(0x10, 0, 0), // east
+            neg_x: rgb(0x20, 0, 0), // west
+            pos_y: rgb(0x30, 0, 0), // bethesda north
+            neg_y: rgb(0x40, 0, 0), // bethesda south
+            pos_z: rgb(0x50, 0, 0), // sky (bethesda up)
+            neg_z: rgb(0x60, 0, 0), // ground (bethesda down)
+            specular: rgb(0x70, 0, 0),
+            fresnel_power: 1.0,
+        }
+    }
+
+    #[test]
+    fn from_skyrim_zup_maps_bethesda_up_to_engine_pos_y() {
+        let yup = DalcCubeYup::from_skyrim_zup(&distinctive_cube());
+        // Bethesda +Z (sky-fill) lands on engine +Y.
+        let pos_y_r = (yup.pos_y[0] * 255.0).round() as u8;
+        assert_eq!(pos_y_r, 0x50, "engine +Y must carry bethesda +Z sky-fill");
+        // Bethesda -Z (ground-bounce) lands on engine -Y.
+        let neg_y_r = (yup.neg_y[0] * 255.0).round() as u8;
+        assert_eq!(neg_y_r, 0x60, "engine -Y must carry bethesda -Z ground");
+    }
+
+    #[test]
+    fn from_skyrim_zup_swaps_lateral_north_south_to_engine_z() {
+        let yup = DalcCubeYup::from_skyrim_zup(&distinctive_cube());
+        // Bethesda +Y (north) → engine -Z per the project-wide
+        // `(x, y, z) → (x, z, -y)` swap. Verified against
+        // `crates/nif/src/import/coord.rs:18`.
+        let neg_z_r = (yup.neg_z[0] * 255.0).round() as u8;
+        let pos_z_r = (yup.pos_z[0] * 255.0).round() as u8;
+        assert_eq!(neg_z_r, 0x30, "engine -Z must carry bethesda +Y north");
+        assert_eq!(pos_z_r, 0x40, "engine +Z must carry bethesda -Y south");
+    }
+
+    #[test]
+    fn from_skyrim_zup_preserves_lateral_x() {
+        let yup = DalcCubeYup::from_skyrim_zup(&distinctive_cube());
+        let pos_x_r = (yup.pos_x[0] * 255.0).round() as u8;
+        let neg_x_r = (yup.neg_x[0] * 255.0).round() as u8;
+        assert_eq!(pos_x_r, 0x10, "X axis is identical across the swap");
+        assert_eq!(neg_x_r, 0x20);
+    }
+
+    #[test]
+    fn from_skyrim_zup_carries_specular_and_fresnel() {
+        let yup = DalcCubeYup::from_skyrim_zup(&distinctive_cube());
+        let spec_r = (yup.specular[0] * 255.0).round() as u8;
+        assert_eq!(spec_r, 0x70);
+        assert!((yup.fresnel_power - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lerp_at_half_returns_midpoint_per_axis() {
+        let a = DalcCubeYup {
+            pos_x: [0.0, 0.0, 0.0],
+            neg_x: [1.0, 1.0, 1.0],
+            pos_y: [0.0, 0.5, 1.0],
+            neg_y: [0.0; 3],
+            pos_z: [0.0; 3],
+            neg_z: [0.0; 3],
+            specular: [0.0, 0.0, 0.0],
+            fresnel_power: 1.0,
+        };
+        let b = DalcCubeYup {
+            pos_x: [1.0, 1.0, 1.0],
+            neg_x: [0.0, 0.0, 0.0],
+            pos_y: [1.0, 0.5, 0.0],
+            neg_y: [1.0; 3],
+            pos_z: [1.0; 3],
+            neg_z: [1.0; 3],
+            specular: [1.0, 1.0, 1.0],
+            fresnel_power: 3.0,
+        };
+        let m = DalcCubeYup::lerp(&a, &b, 0.5);
+        assert_eq!(m.pos_x, [0.5; 3]);
+        assert_eq!(m.neg_x, [0.5; 3]);
+        assert_eq!(m.pos_y, [0.5, 0.5, 0.5]);
+        assert_eq!(m.neg_y, [0.5; 3]);
+        assert_eq!(m.specular, [0.5; 3]);
+        assert!((m.fresnel_power - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lerp_endpoints_return_inputs_exactly() {
+        let a = DalcCubeYup {
+            pos_y: [0.1, 0.2, 0.3],
+            fresnel_power: 1.5,
+            ..Default::default()
+        };
+        let b = DalcCubeYup {
+            pos_y: [0.7, 0.8, 0.9],
+            fresnel_power: 2.5,
+            ..Default::default()
+        };
+        let at_zero = DalcCubeYup::lerp(&a, &b, 0.0);
+        assert_eq!(at_zero.pos_y, a.pos_y);
+        assert!((at_zero.fresnel_power - a.fresnel_power).abs() < 1e-6);
+        let at_one = DalcCubeYup::lerp(&a, &b, 1.0);
+        assert_eq!(at_one.pos_y, b.pos_y);
+        assert!((at_one.fresnel_power - b.fresnel_power).abs() < 1e-6);
+    }
+}
+
+/// 6-axis directional ambient cube interpolated for the current TOD,
+/// stored in **engine Y-up** coordinates so the renderer can sample
+/// along a fragment normal without coordinate conversion.
+///
+/// Sourced from Skyrim WTHR `DALC` sub-records (4 entries per record,
+/// one per TOD slot — sunrise / day / sunset / night). The original
+/// authoring is Bethesda Z-up; the converter
+/// [`DalcCubeYup::from_skyrim_zup`] applies the same `(x, y, z) →
+/// (x, z, -y)` axis swap used by every other importer
+/// (`crates/nif/src/import/coord.rs:18`).
+///
+/// Engine sampling semantics:
+/// - `pos_y` = sky-fill (was Bethesda +Z, the "up" axis)
+/// - `neg_y` = ground-bounce / cavity-fill (was Bethesda -Z, "down")
+/// - `pos_x` / `neg_x` = lateral east / west
+/// - `pos_z` / `neg_z` = lateral south / north (Bethesda's ±Y after
+///   the swap collapses to engine ∓Z)
+///
+/// Future GPU consumer pushes this through the per-frame UBO; the
+/// shader samples with weights `max(N, 0)` / `max(-N, 0)`. See #993
+/// for the renderer-side wiring.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct DalcCubeYup {
+    pub(crate) pos_x: [f32; 3],
+    pub(crate) neg_x: [f32; 3],
+    /// Engine +Y (Bethesda +Z) — sky fill.
+    pub(crate) pos_y: [f32; 3],
+    /// Engine -Y (Bethesda -Z) — ground-bounce / cavity fill.
+    pub(crate) neg_y: [f32; 3],
+    pub(crate) pos_z: [f32; 3],
+    pub(crate) neg_z: [f32; 3],
+    /// DALC specular tint (raw monitor-space RGB).
+    pub(crate) specular: [f32; 3],
+    /// DALC fresnel power tail — vanilla Skyrim ships `1.0`.
+    pub(crate) fresnel_power: f32,
+}
+
+impl DalcCubeYup {
+    /// Convert a Bethesda-Z-up `SkyrimAmbientCube` into engine Y-up
+    /// axes. The byte→field mapping in the WTHR parser is literal
+    /// (no axis swap), so we apply the swap here once per TOD slot,
+    /// not per fragment.
+    ///
+    /// Mapping:
+    /// - Bethesda +Z (sky) → engine +Y
+    /// - Bethesda -Z (ground) → engine -Y
+    /// - Bethesda +Y (north) → engine -Z
+    /// - Bethesda -Y (south) → engine +Z
+    /// - Bethesda ±X unchanged
+    pub(crate) fn from_skyrim_zup(
+        cube: &byroredux_plugin::esm::records::weather::SkyrimAmbientCube,
+    ) -> Self {
+        Self {
+            pos_x: cube.pos_x.to_rgb_f32(),
+            neg_x: cube.neg_x.to_rgb_f32(),
+            // Z-up "up" → Y-up "up".
+            pos_y: cube.pos_z.to_rgb_f32(),
+            // Z-up "down" → Y-up "down".
+            neg_y: cube.neg_z.to_rgb_f32(),
+            // Z-up "north" (+Y) → Y-up "south" (-Z), so engine `neg_z`
+            // sees Bethesda's "north" fill.
+            neg_z: cube.pos_y.to_rgb_f32(),
+            // Z-up "south" (-Y) → Y-up "north" (+Z).
+            pos_z: cube.neg_y.to_rgb_f32(),
+            specular: cube.specular.to_rgb_f32(),
+            fresnel_power: cube.fresnel_power,
+        }
+    }
+
+    /// Per-component lerp between two cubes. Used by `weather_system`
+    /// to interpolate between adjacent TOD slot pairs (sunrise→day,
+    /// day→sunset, …).
+    pub(crate) fn lerp(a: &Self, b: &Self, t: f32) -> Self {
+        fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+            [
+                a[0] + (b[0] - a[0]) * t,
+                a[1] + (b[1] - a[1]) * t,
+                a[2] + (b[2] - a[2]) * t,
+            ]
+        }
+        Self {
+            pos_x: lerp3(a.pos_x, b.pos_x, t),
+            neg_x: lerp3(a.neg_x, b.neg_x, t),
+            pos_y: lerp3(a.pos_y, b.pos_y, t),
+            neg_y: lerp3(a.neg_y, b.neg_y, t),
+            pos_z: lerp3(a.pos_z, b.pos_z, t),
+            neg_z: lerp3(a.neg_z, b.neg_z, t),
+            specular: lerp3(a.specular, b.specular, t),
+            fresnel_power: a.fresnel_power + (b.fresnel_power - a.fresnel_power) * t,
+        }
+    }
+}
+
 /// Sky rendering parameters from WTHR records (exterior cells).
 /// Stored as an ECS resource so the render loop can read it per-frame.
 pub(crate) struct SkyParamsRes {
@@ -417,6 +630,13 @@ pub(crate) struct SkyParamsRes {
     pub(crate) cloud_tile_scale_3: f32,
     /// Bindless texture handle for cloud_textures[3] (WTHR BNAM).
     pub(crate) cloud_texture_index_3: u32,
+    /// Current TOD-interpolated Skyrim DALC ambient cube in engine
+    /// Y-up coordinates. `Some` only when a Skyrim WTHR record drove
+    /// the cell load (FNV/FO3/Oblivion stay `None`). The renderer's
+    /// future GPU consumer (#993) uploads this through the per-frame
+    /// UBO and replaces the temporary `AMBIENT_AO_FLOOR` constant in
+    /// `triangle.frag` with a normal-driven cube sample.
+    pub(crate) current_dalc_cube: Option<DalcCubeYup>,
 }
 impl Resource for SkyParamsRes {}
 
@@ -508,6 +728,14 @@ pub(crate) struct WeatherDataRes {
     /// values so synthetic test cells and non-climate content keep
     /// their old behaviour.
     pub(crate) tod_hours: [f32; 4],
+    /// Skyrim DALC 6-axis ambient cube, four entries
+    /// (sunrise / day / sunset / night) already converted to engine
+    /// Y-up. `None` on FNV / FO3 / Oblivion (different ambient model).
+    /// `weather_system` interpolates between the (slot_a, slot_b)
+    /// DALC pair the TOD picker chose for `sky_colors`; TOD slots 4/5
+    /// (high_noon / midnight) fold into day / night per the WTHR
+    /// parser's padding convention. See #993.
+    pub(crate) skyrim_dalc_per_tod: Option<[DalcCubeYup; 4]>,
 }
 impl Resource for WeatherDataRes {}
 

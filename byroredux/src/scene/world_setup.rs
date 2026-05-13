@@ -327,6 +327,10 @@ pub(super) fn apply_worldspace_weather(
             cloud_texture_index_2: cloud_tex_index_2,
             cloud_tile_scale_3,
             cloud_texture_index_3: cloud_tex_index_3,
+            // #993 — populated per-frame by `weather_system` when the
+            // WTHR record carried DALC sub-records. Stays `None` for
+            // FNV/FO3/Oblivion (different ambient model).
+            current_dalc_cube: None,
         });
         // #803 — cloud scroll lives on `CloudSimState`, which survives
         // cell transitions. Insert a default-zero state on first
@@ -344,6 +348,19 @@ pub(super) fn apply_worldspace_weather(
         }
         // #463 — per-climate sunrise/sunset breakpoints.
         let tod_hours = climate_tod_hours(wctx.climate.as_ref());
+        // #993 — Skyrim WTHR ships a 4-entry DALC cube (sunrise / day
+        // / sunset / night). Convert Bethesda Z-up authoring to engine
+        // Y-up once here so `weather_system` can lerp on raw f32s
+        // without per-frame coord swaps. `None` on FNV / FO3 /
+        // Oblivion / FO4+ (different ambient models).
+        let skyrim_dalc_per_tod = wthr.skyrim_ambient_cube.as_ref().map(|cubes| {
+            [
+                crate::components::DalcCubeYup::from_skyrim_zup(&cubes[0]),
+                crate::components::DalcCubeYup::from_skyrim_zup(&cubes[1]),
+                crate::components::DalcCubeYup::from_skyrim_zup(&cubes[2]),
+                crate::components::DalcCubeYup::from_skyrim_zup(&cubes[3]),
+            ]
+        });
         let new_weather = WeatherDataRes {
             sky_colors,
             fog: [
@@ -353,6 +370,7 @@ pub(super) fn apply_worldspace_weather(
                 wthr.fog_night_far,
             ],
             tod_hours,
+            skyrim_dalc_per_tod,
         };
         // First-time bootstrap: insert directly. A subsequent worldspace
         // change (door-walking interior↔exterior, M40 Phase 2) will
@@ -452,6 +470,8 @@ pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [
         cloud_texture_index_2: 0,
         cloud_tile_scale_3: 0.0,
         cloud_texture_index_3: 0,
+        // Procedural fallback path has no WTHR record, hence no DALC.
+        current_dalc_cube: None,
     });
     // #803 — same survives-transitions pattern as the WTHR-driven
     // path: the procedural fallback also seeds CloudSimState only on
@@ -491,6 +511,10 @@ pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [
         // Pre-#463 hardcoded TOD breakpoints — sunrise 6h, day 10h,
         // sunset 18h, night 22h.
         tod_hours: [6.0, 10.0, 18.0, 22.0],
+        // Procedural fallback has no WTHR DALC — Skyrim cube stays
+        // `None`, the renderer falls through to the flat ambient + AO
+        // floor path on every fragment.
+        skyrim_dalc_per_tod: None,
     });
     world.insert_resource(GameTimeRes::default());
 }
