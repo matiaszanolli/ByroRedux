@@ -61,8 +61,12 @@ pub struct SptImportParams<'a> {
     /// `(min, max)` in game units (Y-up). When absent the placeholder
     /// falls back to a 256 × 512 tree silhouette.
     pub bounds: Option<([f32; 3], [f32; 3])>,
-    /// Wind sensitivity / strength from the TREE record's `BNAM`.
-    /// Captured for Phase 2 wind animation; not consumed today.
+    /// Wind sensitivity / strength from the TREE record's `CNAM`
+    /// (Oblivion ships 5 × f32; FO3/FNV ship 8 × f32 — exact field
+    /// semantics not pinned). Captured for Phase 2 wind animation;
+    /// not consumed today. **Not** sourced from `BNAM` — per UESP +
+    /// the TREE parser, BNAM is FO3/FNV billboard width/height, which
+    /// flows into `bounds` instead (see #1002).
     pub wind: Option<(f32, f32)>,
     /// FormID of the source TREE record. Useful when downstream code
     /// wants to seed per-tree variation (sway phase, leaf-tint
@@ -91,6 +95,11 @@ pub fn import_spt_scene(
     pool: &mut StringPool,
 ) -> ImportedScene {
     // Resolve leaf texture: TREE.ICON wins, .spt's tag 4003 next.
+    // "First wins" on duplicate tag-4003 entries: vanilla `.spt` files
+    // emit at most one leaf texture tag, but mod content occasionally
+    // ships several. The first one is the SpeedTree exporter's primary
+    // — later entries (when present) are LOD-tier alternates that the
+    // placeholder doesn't render at distance anyway. See #997.
     let leaf_texture: Option<String> = params
         .leaf_texture_override
         .map(|s| s.to_string())
