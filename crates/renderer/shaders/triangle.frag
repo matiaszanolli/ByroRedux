@@ -2561,7 +2561,32 @@ void main() {
     // (texture crevices), RT AO catches hall-scale occlusion. Take min
     // so whichever sees the occluder wins.
     float combinedAO = min(ao, rtAO);
-    vec3 indirectLight = (ambient + indirect) * combinedAO;
+    // Ambient gets a floor on its AO modulation so deep cavities (e.g.
+    // Markarth's narrow rock canyon, Solitude's overhanging arches,
+    // any close-walled exterior) don't crush every fragment to pitch-
+    // black when both SSAO and RT-AO report heavy occlusion. The
+    // `indirect` term (RT diffuse GI bounce) stays fully AO-modulated
+    // because the ray query already accounts for cavity occlusion at
+    // the hit — re-modulating by SSAO+RT-AO is a re-enforcement of
+    // the same signal, valid for the bounce path. The ambient term
+    // represents authored diffuse irradiance (single-bounce sky-fill
+    // + scatter), and real-world second-bounce light fills cavities;
+    // a 0.3 floor matches the empirical 0.25–0.4 range from ground-
+    // truth AO comparisons in published environment-AO papers, and
+    // matches the behaviour of the prior FNV-only render path before
+    // RT-AO was integrated. Without this floor, the WTHR-authored
+    // ambient (which on Skyrim ships at ~0.8–0.9 for overcast day)
+    // never reaches the fragment because canyon-AO crushes it. See
+    // Markarth probe 2026-05-13.
+    //
+    // A future per-cell weight (interior vs exterior, or the DALC
+    // 6-axis ambient cube the Skyrim WTHR parser now exposes) can
+    // replace this constant with a directional sample of the
+    // up-facing ambient vs the surrounding-walls ambient — that's
+    // the architecturally correct fix and is filed as a follow-up.
+    const float AMBIENT_AO_FLOOR = 0.3;
+    float ambientAO = max(combinedAO, AMBIENT_AO_FLOOR);
+    vec3 indirectLight = ambient * ambientAO + indirect * combinedAO;
 
     // Glass compositing: Fresnel controls the output alpha.
     float finalAlpha = texColor.a;
