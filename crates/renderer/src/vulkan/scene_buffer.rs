@@ -35,23 +35,28 @@ pub const MAX_TOTAL_BONES: usize = 32768;
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
 
-/// Maximum instances per frame — pinned at `0x7FFF` (32767), the
-/// hard ceiling of the current `R16_UINT` mesh_id G-buffer encoding.
+/// Maximum instances per frame — `0x40000` (262144). Sized to
+/// absorb the densest observed Skyrim/FO4 city cells (Solitude,
+/// Whiterun draw distance, Diamond City — ~50K REFRs combined with
+/// landscape + clutter) with ~5× headroom.
 ///
-/// `triangle.frag:980` writes `(instance_index + 1) & 0x7FFFu` into
-/// the low 15 bits of the mesh_id attachment, reserving bit 15
-/// (`0x8000`) for the `ALPHA_BLEND_NO_HISTORY` flag consumed by TAA
-/// and SVGF disocclusion. With 15 bits and meshId=0 reserved for
-/// "sky / no instance", the maximum addressable instance index is
-/// 32766 → meshId 32767. Index 32767 would wrap to meshId 0 and
-/// collide with the sky sentinel — every shadow / reflection /
-/// SVGF disocclusion query would misroute. The
-/// `gpu_instances.len() <= 0x7FFF` debug_assert in
-/// `vulkan::context::draw::draw_frame` enforces this contract.
+/// `triangle.frag:980` writes `(instance_index + 1) & 0x7FFFFFFFu`
+/// into the low 31 bits of the mesh_id attachment, reserving bit
+/// 31 (`0x80000000`) for the `ALPHA_BLEND_NO_HISTORY` flag consumed
+/// by TAA and SVGF disocclusion. The encoding ceiling is therefore
+/// `0x7FFFFFFF` (~2.1G) — `MAX_INSTANCES` is set well below that
+/// to bound the persistent SSBO allocation, not the encoding.
+/// The `gpu_instances.len() <= MAX_INSTANCES` debug_assert in
+/// `vulkan::context::draw::draw_frame` enforces this contract; the
+/// `max_instances_stays_within_mesh_id_encoding_ceiling` test
+/// (`scene_buffer.rs`) pins the encoding ceiling separately so a
+/// future `MAX_INSTANCES` bump past `0x7FFFFFFF` would force a
+/// follow-up format flip just like the pre-#992 `R16_UINT` → `R32_UINT`
+/// step.
 ///
-/// `32767 × sizeof(GpuInstance) = 32767 × 112 B = 3.58 MB / frame
-/// × 2 frames-in-flight = 7.16 MB` total — still trivial on the
-/// 6 GB RT-minimum VRAM budget.
+/// `262144 × sizeof(GpuInstance) = 262144 × 112 B = 29.4 MB / frame
+/// × 2 frames-in-flight = 58.8 MB` total — within the 6 GB RT-minimum
+/// VRAM budget.
 ///
 /// **History**:
 ///  - 8192 (original sizing for pre-M41 cells).
@@ -60,30 +65,27 @@ pub const IDENTITY_BONE_SLOT: u32 = 0;
 ///    billboards popping in/out with the slightest camera move.
 ///    Depth-sorted tail spilled past 8192; sub-pixel camera moves
 ///    shuffled which entries fell off the cliff.
-///  - 32767 (this bump): live Skyrim Markarth render exceeded
-///    16384. 32767 is the maximum the `R16_UINT` mesh_id path can
-///    address without collapsing the wrap-to-zero collision into
-///    the sky sentinel.
-///
-/// **Past-ceiling follow-up**: dense Skyrim/FO4 city cells with
-/// REFR counts approaching ~50K (Solitude, Whiterun draw, Diamond
-/// City) will need `MESH_ID_FORMAT` flipped from `R16_UINT` to
-/// `R32_UINT` (+~16 MB at 1440p) and the mesh_id shader encoding
-/// reworked to use bit 31 for the alpha-blend flag instead of bit
-/// 15. Touches 4 shaders + the GBuffer struct. Filed as a
-/// follow-up issue alongside this bump.
-pub const MAX_INSTANCES: usize = 0x7FFF;
+///  - 32767 / `0x7FFF` (commit `67da5af`): live Skyrim Markarth
+///    render exceeded 16384. 32767 was the maximum the `R16_UINT`
+///    mesh_id path could address without wrap-collapsing to the
+///    sky sentinel.
+///  - 262144 / `0x40000` (#992 / REN-MESH-ID-32): flip
+///    `MESH_ID_FORMAT` to `R32_UINT` + shader-side bit 15 → bit 31
+///    rework. Dense Skyrim/FO4 city cells (Solitude, Whiterun
+///    draw, Diamond City — ~50K REFRs) saturated the R16 ceiling
+///    and silently wrap-collapsed.
+pub const MAX_INSTANCES: usize = 0x40000;
 
 /// Maximum number of `VkDrawIndexedIndirectCommand` entries held in
 /// the per-frame indirect buffer. Each entry is 20 bytes, so
-/// `32767 × 20 B = 640 KB per frame × 2 frames-in-flight = 1.28 MB`
+/// `262144 × 20 B = 5.2 MB per frame × 2 frames-in-flight = 10.5 MB`
 /// total. Sized to match `MAX_INSTANCES` so the worst-case 1:1
 /// mapping (no per-mesh batching folds, every instance is its own
 /// indirect draw) still fits. Real scenes with the instanced
 /// batching from #272 emit a few hundred entries; the cap exists
 /// to bound buffer allocation, not to throttle typical use. See
-/// #309.
-pub const MAX_INDIRECT_DRAWS: usize = 0x7FFF;
+/// #309 / #992.
+pub const MAX_INDIRECT_DRAWS: usize = 0x40000;
 
 /// Maximum number of `GpuTerrainTile` slots held in the per-frame
 /// terrain-tile SSBO. 1024 × 32 B = 32 KB per frame — one slot per
@@ -1818,48 +1820,73 @@ mod gpu_instance_layout_tests {
     /// Regression: #309 — `upload_indirect_draws` clamps at
     /// `MAX_INDIRECT_DRAWS` so a future bug that produces an
     /// unbounded batch list can't overflow the indirect buffer.
-    /// `0x7FFF × 20 B = 640 KB` per frame; the allocation matches.
+    /// `0x40000 × 20 B = 5.2 MB` per frame; the allocation matches.
     ///
-    /// Cap history: 8192 → 16384 → 0x7FFF (32767). The final value
-    /// is pinned at the `R16_UINT` mesh_id ceiling — see the
-    /// `MAX_INSTANCES` doc comment for the full encoding rationale.
-    /// Bumping past 0x7FFF requires `MESH_ID_FORMAT` flipped to
-    /// `R32_UINT` plus shader-side bit-31 alpha-blend encoding.
+    /// Cap history: 8192 → 16384 → 0x7FFF (32767) → 0x40000 (262144,
+    /// post-#992 `R32_UINT` mesh_id). See the `MAX_INSTANCES` doc
+    /// comment for the encoding rationale; the cap remains sized
+    /// to match `MAX_INSTANCES` so the worst-case 1:1 mapping fits.
     #[test]
     fn indirect_buffer_capacity_matches_max_draw_constant() {
         let bytes_per_command = size_of::<vk::DrawIndexedIndirectCommand>();
         assert_eq!(bytes_per_command, 20);
         assert_eq!(
             bytes_per_command * MAX_INDIRECT_DRAWS,
-            20 * 0x7FFF,
+            20 * 0x40000,
             "MAX_INDIRECT_DRAWS × sizeof(VkDrawIndexedIndirectCommand) \
              must match the per-frame indirect buffer allocation"
         );
     }
 
     /// Regression: `MAX_INSTANCES` must stay at or below the
-    /// `R16_UINT` mesh_id ceiling (`0x7FFF` = 32767) until the
-    /// G-buffer format is widened to `R32_UINT`. Past that ceiling
-    /// the `(instance_index + 1) & 0x7FFFu` encoding in
-    /// `triangle.frag:980` wraps index 32767 to meshId 0 (the
-    /// "sky / no instance" sentinel) and shadow / reflection /
+    /// `R32_UINT` mesh_id encoding ceiling (`0x7FFFFFFF`, with bit
+    /// 31 reserved for the `ALPHA_BLEND_NO_HISTORY` flag). Past
+    /// that ceiling the `(instance_index + 1) & 0x7FFFFFFFu`
+    /// encoding in `triangle.frag:980` would wrap to meshId 0
+    /// (the "sky / no instance" sentinel) and shadow / reflection /
     /// SVGF disocclusion queries against that instance silently
     /// route to the wrong target. The `draw.rs` debug_assert
-    /// (`gpu_instances.len() <= 0x7FFF`) catches the same drift
-    /// at runtime in debug builds; this test pins the contract at
-    /// build time so a future bump can't accidentally trip the
-    /// wrap without also touching `MESH_ID_FORMAT`.
+    /// catches the same drift at runtime in debug builds; this
+    /// test pins the contract at build time so a future
+    /// `MAX_INSTANCES` bump past the encoding ceiling can't
+    /// accidentally trip the wrap.
+    ///
+    /// Pre-#992 this test pinned `MAX_INSTANCES <= 0x7FFF` — the
+    /// `R16_UINT` encoding ceiling. Dense Skyrim/FO4 city cells
+    /// (Solitude, Whiterun draw, Diamond City) saturated it, so
+    /// the format flipped to `R32_UINT` and the ceiling moved to
+    /// `0x7FFFFFFF`. `MAX_INSTANCES` itself sits at `0x40000`
+    /// (~262K), with ~5× headroom past the worst observed scene.
     #[test]
-    fn max_instances_stays_within_r16_uint_mesh_id_ceiling() {
+    fn max_instances_stays_within_mesh_id_encoding_ceiling() {
+        const MESH_ID_ENCODING_CEILING: usize = 0x7FFF_FFFF;
         assert!(
-            MAX_INSTANCES <= 0x7FFF,
-            "MAX_INSTANCES ({}) exceeds the R16_UINT mesh_id ceiling \
-             (0x7FFF = 32767). Flip MESH_ID_FORMAT to R32_UINT and \
-             update the bit-15 → bit-31 ALPHA_BLEND_NO_HISTORY \
-             encoding across triangle.frag / taa.comp / \
-             svgf_temporal.comp / caustic_splat.comp before bumping \
-             past this value.",
+            MAX_INSTANCES <= MESH_ID_ENCODING_CEILING,
+            "MAX_INSTANCES ({}) exceeds the R32_UINT mesh_id encoding ceiling \
+             (0x7FFFFFFF, with bit 31 reserved for ALPHA_BLEND_NO_HISTORY). \
+             Widen `MESH_ID_FORMAT` past 32 bits before bumping past this value.",
             MAX_INSTANCES
+        );
+    }
+
+    /// Regression: pin `MESH_ID_FORMAT` at `R32_UINT` so a future
+    /// "save VRAM by going back to R16_UINT" attempt fails loudly
+    /// — pre-#992 that's exactly what the format was, and dense
+    /// Skyrim/FO4 city cells silently wrap-collapsed at 32767
+    /// instances. The +4.15 MB / 1080p / frame cost of `R32_UINT`
+    /// is trivial on the 6 GB RT-minimum target; "savings" here
+    /// would re-introduce the silent ghosting / flicker regression.
+    #[test]
+    fn mesh_id_format_is_r32_uint() {
+        assert_eq!(
+            super::super::gbuffer::MESH_ID_FORMAT,
+            ash::vk::Format::R32_UINT,
+            "MESH_ID_FORMAT must stay R32_UINT — the R16_UINT \
+             predecessor capped at 32767 distinct instances and \
+             dense city cells silently wrap-collapsed to meshId 0 \
+             (the sky sentinel), misrouting every shadow / \
+             reflection / SVGF disocclusion query against the \
+             wrapped instance. See #992 / REN-MESH-ID-32."
         );
     }
 

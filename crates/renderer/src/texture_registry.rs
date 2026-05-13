@@ -188,7 +188,8 @@ impl TextureRegistry {
     /// textures, producing corrupted descriptor state or driver crashes.
     /// Now `max_textures` is driven by the device's
     /// `maxPerStageDescriptorUpdateAfterBindSampledImages` limit (clamped
-    /// at the R16_UINT mesh-id ceiling), and this check returns an error
+    /// at 65535, the historical u16 bindless ceiling), and this check
+    /// returns an error
     /// when the slot count is truly exhausted — the caller
     /// (`asset_provider::resolve_texture`) already falls back to the
     /// checkerboard handle on `Err`, so overflow degrades gracefully.

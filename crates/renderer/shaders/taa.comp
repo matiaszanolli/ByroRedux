@@ -135,21 +135,22 @@ void main() {
     ivec2 prevPix = ivec2(prevUv * params.screen.xy);
     prevPix = clamp(prevPix, ivec2(0), dim - 1);
     uint prevMid = texelFetch(uPrevMeshId, prevPix, 0).r;
-    // #904 — bit 15 is `ALPHA_BLEND_NO_HISTORY` (helpers.rs:54-62), not part
-    // of the instance ID. Mask to bits 0-14 so a same-instance opacity
+    // #904 — bit 31 is `ALPHA_BLEND_NO_HISTORY` (post-#992 R32_UINT
+    // encoding; was bit 15 on the pre-#992 R16_UINT format), not part
+    // of the instance ID. Mask to bits 0-30 so a same-instance opacity
     // transition (alpha-blended ↔ opaque) doesn't force a one-frame
-    // history reset on bit-15 toggle alone. The dedicated `alphaBlend`
+    // history reset on bit-31 toggle alone. The dedicated `alphaBlend`
     // path below covers the actual transparency case.
-    bool disocclusion = ((currMid & 0x7FFFu) != (prevMid & 0x7FFFu));
+    bool disocclusion = ((currMid & 0x7FFFFFFFu) != (prevMid & 0x7FFFFFFFu));
 
-    // Alpha-blend opt-out: bit 15 of the mesh_id is set on transparent
+    // Alpha-blend opt-out: bit 31 of the mesh_id is set on transparent
     // fragments by triangle.frag. History reprojection would sample
     // the wrong source across glass z-fight flips and amplify TAA
     // sub-pixel jitter into cross-hatch moiré. Forcing current-sample
     // pass-through gives up ~1 frame of edge smoothing for transparent
     // surfaces, which is the right tradeoff for their known-unstable
     // depth winner.
-    bool alphaBlend = (currMid & 0x8000u) != 0u;
+    bool alphaBlend = (currMid & 0x80000000u) != 0u;
 
     if (offscreen || disocclusion || alphaBlend) {
         imageStore(uOutput, pix, vec4(currRgb, currA));

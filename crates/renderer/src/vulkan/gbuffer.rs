@@ -8,7 +8,7 @@
 //! |---------------|--------------------|----------------------------------------------|
 //! | normal        | RG16_SNORM         | Octahedral-encoded world-space normal (#275)  |
 //! | motion        | RG16_SFLOAT        | Screen-space motion vector (current→prev)     |
-//! | mesh_id       | R16_UINT           | Per-instance ID (disocclusion detection)      |
+//! | mesh_id       | R32_UINT           | Per-instance ID (disocclusion detection)      |
 //! | raw_indirect  | B10G11R11_UFLOAT   | Pre-denoise indirect light (albedo-demod)     |
 //! | albedo        | B10G11R11_UFLOAT   | Surface color for composite re-multiplication |
 //!
@@ -36,7 +36,18 @@ use gpu_allocator::vulkan as vk_alloc;
 /// octahedral projection; consumers decode with the inverse. See #275.
 pub const NORMAL_FORMAT: vk::Format = vk::Format::R16G16_SNORM;
 pub const MOTION_FORMAT: vk::Format = vk::Format::R16G16_SFLOAT;
-pub const MESH_ID_FORMAT: vk::Format = vk::Format::R16_UINT;
+/// Per-instance ID for SVGF / TAA disocclusion + caustic source
+/// lookups. Pre-#992 this was `R16_UINT` — with bit 15 reserved for
+/// the `ALPHA_BLEND_NO_HISTORY` flag, the encoding capped at 32767
+/// addressable instances (`0x7FFF`). Dense Skyrim/FO4 city cells
+/// (Solitude, Whiterun draw distance, Diamond City) exceed that
+/// ceiling and would silently wrap to meshId 0 (the sky sentinel),
+/// misrouting every shadow / reflection / SVGF query against the
+/// wrapped instance. Now `R32_UINT`: bit 31 carries the alpha-blend
+/// flag, bits 0..30 carry the instance ID + 1, capping the encoding
+/// at `0x7FFFFFFF` (~2.1G — effectively unbounded). VRAM cost is
+/// modest (+4.15 MB at 1080p × 2 frames = +8.3 MB on a 6 GB target).
+pub const MESH_ID_FORMAT: vk::Format = vk::Format::R32_UINT;
 /// Raw (pre-denoise) indirect light, albedo-demodulated. Written by the
 /// main render pass, sampled by SVGF temporal pass (Phase 3+) and the
 /// composite pass. R11G11B10F = 4 bytes/pixel, plenty of precision for

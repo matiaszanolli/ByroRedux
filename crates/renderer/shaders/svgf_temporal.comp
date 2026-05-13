@@ -90,7 +90,7 @@ void main() {
     // taps as having 1 frame of trustworthy history. The no-history
     // fallback at the end of this shader writes `1.0` for the
     // distinct "first frame, will accumulate next frame" case.
-    if (currID == 0u || (currID & 0x8000u) != 0u) {
+    if (currID == 0u || (currID & 0x80000000u) != 0u) {
         imageStore(outIndirect, p, vec4(currInd, 1.0));
         imageStore(outMoments, p, vec4(currLum, currLum2, 0.0, 0.0));
         return;
@@ -133,13 +133,14 @@ void main() {
             ivec2 q = base + offs[i];
             if (q.x < 0 || q.y < 0 || q.x >= int(screen.x) || q.y >= int(screen.y)) continue;
             uint prevID = texelFetch(prevMeshIdTex, q, 0).r;
-            // #904 — bit 15 is `ALPHA_BLEND_NO_HISTORY` (helpers.rs:54-62),
-            // not part of the instance ID. The early-out at line 93 already
-            // skips the case where currID's bit 15 is set, but the
-            // current-opaque / prev-alpha-blended case still reaches here
-            // and would reject the bilinear tap on bit-15 toggle alone
-            // even when the 15-bit instance ID matches. Mask to bits 0-14.
-            if ((prevID & 0x7FFFu) != (currID & 0x7FFFu)) continue;
+            // #904 — bit 31 is `ALPHA_BLEND_NO_HISTORY` (post-#992
+            // R32_UINT encoding), not part of the instance ID. The
+            // early-out at line 93 already skips the case where
+            // currID's bit 31 is set, but the current-opaque /
+            // prev-alpha-blended case still reaches here and would
+            // reject the bilinear tap on bit-31 toggle alone even
+            // when the 31-bit instance ID matches. Mask to bits 0-30.
+            if ((prevID & 0x7FFFFFFFu) != (currID & 0x7FFFFFFFu)) continue;
             // #650 / SH-5 — same-mesh disocclusion rejection. mesh_id
             // alone misses the case where the camera orbit reveals a
             // previously-self-occluded part of a long static wall:

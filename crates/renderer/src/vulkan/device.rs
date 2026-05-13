@@ -212,9 +212,15 @@ fn is_device_suitable(
     unsafe {
         instance.get_physical_device_properties2(device, &mut props2);
     }
-    // 65535 is the hard ceiling imposed by `R16_UINT` mesh_id encoding in the
-    // G-buffer (#275/#318) — no point sizing the bindless array larger than
-    // the maximum instance count can reference.
+    // 65535 is a u16 ceiling — it dates back to the pre-#992 `R16_UINT`
+    // mesh_id encoding where the per-pixel instance index couldn't
+    // address more than this. Post-#992 the mesh_id is `R32_UINT` and
+    // `MAX_INSTANCES = 0x40000`, but the bindless texture array sized
+    // at 65535 still has plenty of headroom for the worst observed
+    // cell's unique-texture count (~10K). Bumping this further pays
+    // descriptor-set rebuild cost without any observable win, so it
+    // stays at the historical value pending a future pass that
+    // actually needs more bindless textures.
     const BINDLESS_CEILING: u32 = 65535;
     let reported_limit =
         if indexing_props.max_per_stage_descriptor_update_after_bind_sampled_images > 0 {

@@ -1224,26 +1224,23 @@ impl VulkanContext {
                 None
             };
 
-        // #647 / RP-1 — guard against `gl_InstanceIndex` overflow into
-        // the R16_UINT mesh_id attachment. `triangle.frag:712` packs
-        // `(instance_index + 1) & 0x7FFF` into the low 15 bits and
-        // reserves bit 15 (0x8000) for the ALPHA_BLEND_NO_HISTORY
-        // flag, so the per-frame ceiling is 32766 distinct instances
-        // (index 0..=32766 → mesh_ids 1..=32767). Past that, two
-        // distinct meshes silently collapse to the same id and SVGF
-        // disocclusion accepts stale samples from the wrong mesh —
-        // visible as cross-instance ghosting on dense city cells.
-        // Skyrim/FO4 city REFR counts (~50K) can plausibly hit this;
-        // the right fix is bumping `MESH_ID_FORMAT` to R32_UINT (+8 MB
-        // at 1080p), but the assert catches the silent failure mode
-        // until that lands. Debug-only — release builds keep the
-        // wrap behaviour rather than panicking on a busy frame.
+        // #647 / RP-1 — guard against `gl_InstanceIndex` outrunning
+        // the `MAX_INSTANCES` SSBO allocation. Post-#992 the mesh_id
+        // G-buffer is `R32_UINT` (bit 31 = ALPHA_BLEND_NO_HISTORY,
+        // bits 0..30 = id + 1, ceiling 0x7FFFFFFF), and `MAX_INSTANCES`
+        // is sized at `0x40000` (262144) to absorb dense Skyrim/FO4
+        // city cells (~50K REFRs) with ~5× headroom. The SSBO is
+        // sized to `MAX_INSTANCES`, so writes past that index would
+        // overrun the GPU-side allocation, not the mesh_id encoding.
+        // Debug-only — release builds keep the clamp behaviour in
+        // `upload_instances` rather than panicking on a busy frame.
         debug_assert!(
-            gpu_instances.len() <= 0x7FFF,
-            "RP-1: visible instance count {} exceeds the R16_UINT mesh_id \
-             ceiling (0x7FFF = 32767 with the alpha-blend bit). \
-             Bump MESH_ID_FORMAT to R32_UINT or partition draws.",
+            gpu_instances.len() <= super::super::scene_buffer::MAX_INSTANCES,
+            "RP-1: visible instance count {} exceeds MAX_INSTANCES ({}). \
+             Bump MAX_INSTANCES or partition draws (the R32_UINT mesh_id \
+             encoding still has headroom up to 0x7FFFFFFF).",
             gpu_instances.len(),
+            super::super::scene_buffer::MAX_INSTANCES,
         );
         // Upload all instance data (scene + UI) to the SSBO in one flush.
         if !gpu_instances.is_empty() {

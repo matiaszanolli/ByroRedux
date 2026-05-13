@@ -27,7 +27,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 // ── G-buffer inputs (previous pass already wrote these) ─────────────
 layout(set = 0, binding = 0) uniform sampler2D depthTex;
 layout(set = 0, binding = 1) uniform sampler2D normalTex;   // RG16_SNORM octahedral
-layout(set = 0, binding = 2) uniform usampler2D meshIdTex;  // R16_UINT, id + 1
+layout(set = 0, binding = 2) uniform usampler2D meshIdTex;  // R32_UINT, id + 1
 
 // ── Scene (copied from triangle.{vert,frag}) ────────────────────────
 struct GpuLight {
@@ -119,15 +119,16 @@ void main() {
     // caustic-splat pixel carries this bit. Without the mask the
     // derived instIdx would overflow the instance SSBO.
     uint meshIdRaw = texelFetch(meshIdTex, pixel, 0).r;
-    // R16_UINT bit 15 is the alpha-blend marker; the low 15 bits are
-    // the instance id. The mask below clamps the value to 0..=32767
-    // — the `if (meshId > 32767u) return;` post-mask check that used
-    // to live here was dead code by construction. The 32767-instance
-    // ceiling is the structural limit of this encoding; when M40
-    // streaming loads need more, the encoding (and meshIdTex format)
-    // moves to R32_UINT and this comment block migrates with it.
-    // See REN-D13-NEW-02 (audit 2026-05-09).
-    uint meshId = meshIdRaw & 0x7FFFu;
+    // R32_UINT bit 31 is the alpha-blend marker (post-#992); the
+    // low 31 bits carry the instance id. The mask below clamps the
+    // value to 0..=0x7FFFFFFF — the structural ceiling of the
+    // encoding. Pre-#992 this was an R16_UINT format with bit 15 as
+    // the alpha-blend marker, capping the instance count at 32767;
+    // dense Skyrim/FO4 city cells (Solitude, Whiterun draw, Diamond
+    // City) saturated that ceiling and silently wrap-collapsed to
+    // meshId 0 (the sky sentinel).
+    // See REN-D13-NEW-02 (audit 2026-05-09) and REN-MESH-ID-32 (#992).
+    uint meshId = meshIdRaw & 0x7FFFFFFFu;
     if (meshId == 0u) return;
 
     // RT-enabled gate (#640). The CPU side mirrors this — the dispatch

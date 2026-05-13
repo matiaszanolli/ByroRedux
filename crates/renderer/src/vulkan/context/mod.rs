@@ -1083,8 +1083,8 @@ impl VulkanContext {
 
         // 11. Texture registry with checkerboard fallback.
         // Bindless array size is driven by the device limit (query in
-        // device.rs, clamped at the R16_UINT mesh_id ceiling) instead of a
-        // hardcoded 1024 that large cells would silently overflow. See #425.
+        // device.rs, clamped at 65535) instead of a hardcoded 1024 that
+        // large cells would silently overflow. See #425.
         let mut texture_registry = TextureRegistry::new(
             &device,
             &gpu_allocator,

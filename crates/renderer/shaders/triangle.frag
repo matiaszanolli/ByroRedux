@@ -971,15 +971,20 @@ void main() {
     outMotion = (currNDC - prevNDC) * 0.5;
 
     // Mesh ID: instance index + 1 so that "0" (clear value for background
-    // pixels) is distinct from "instance 0". Caps at uint15 max — bit 15
-    // (0x8000) is reserved for the ALPHA_BLEND_NO_HISTORY flag that
-    // forces TAA + SVGF to disable temporal reuse on transparent
-    // fragments. Phase 1 of Tier C glass — without this the TAA history
-    // reprojects the wrong source pixel across glass z-fight flips,
-    // amplifying sub-pixel jitter into cross-hatch moiré.
-    uint meshIdBase = (uint(fragInstanceIndex) + 1u) & 0x7FFFu;
+    // pixels) is distinct from "instance 0". G-buffer is `R32_UINT`
+    // post-#992 — bit 31 (`0x80000000`) is the ALPHA_BLEND_NO_HISTORY
+    // flag that forces TAA + SVGF to disable temporal reuse on
+    // transparent fragments (Phase 1 of Tier C glass — without this
+    // the TAA history reprojects the wrong source pixel across glass
+    // z-fight flips, amplifying sub-pixel jitter into cross-hatch
+    // moiré). Bits 0..30 carry the instance ID + 1, capping the
+    // encoding at ~2.1G addressable instances. Pre-#992 the format
+    // was `R16_UINT` (bit 15 = flag, ceiling 32767); dense Skyrim/
+    // FO4 city cells exceeded that ceiling and wrap-collapsed to the
+    // sky sentinel.
+    uint meshIdBase = (uint(fragInstanceIndex) + 1u) & 0x7FFFFFFFu;
     bool alphaBlendFrag = (inst.flags & 2u) != 0u;
-    outMeshID = meshIdBase | (alphaBlendFrag ? 0x8000u : 0u);
+    outMeshID = meshIdBase | (alphaBlendFrag ? 0x80000000u : 0u);
 
     // Debug normal-visualization exit. World-space N is fully resolved
     // here (post normal-map perturb), so this is the right place to

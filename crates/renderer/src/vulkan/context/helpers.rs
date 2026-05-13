@@ -51,16 +51,18 @@ pub(super) fn create_render_pass(
     //   1 — normal       (RG16_SNORM)     — octahedral-encoded world-space
     //                                       normal (#275, 4 B/px vs 8 B/px)
     //   2 — motion       (R16G16_SFLOAT)  — screen-space motion vector
-    //   3 — mesh_id      (R16_UINT)       — per-instance ID + 1.
-    //                                       Lower 15 bits = id + 1, bit 15
-    //                                       (0x8000) is the ALPHA_BLEND_NO_HISTORY
-    //                                       flag (`triangle.frag:712`), so the
-    //                                       hard ceiling is 32767 distinct
-    //                                       instances — guarded by the
-    //                                       `debug_assert!` in
+    //   3 — mesh_id      (R32_UINT)       — per-instance ID + 1.
+    //                                       Lower 31 bits = id + 1, bit 31
+    //                                       (0x80000000) is the ALPHA_BLEND_NO_HISTORY
+    //                                       flag (`triangle.frag:980`), so the
+    //                                       encoding ceiling is 0x7FFFFFFF
+    //                                       distinct instances — `MAX_INSTANCES`
+    //                                       sits well below that to bound the
+    //                                       persistent SSBO allocation, guarded
+    //                                       by the `debug_assert!` in
     //                                       `draw.rs::draw_frame` (#647 / RP-1).
     //                                       background = 0; shader writes id+1.
-    //                                       See #318 / R34-02.
+    //                                       See #318 / R34-02 / #992.
     //   4 — raw_indirect (B10G11R11_UFLOAT) — demodulated indirect light (for SVGF)
     //   5 — albedo       (B10G11R11_UFLOAT) — surface color (re-multiplied at composite)
     //   6 — depth        (D32)
