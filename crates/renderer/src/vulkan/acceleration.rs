@@ -1178,6 +1178,288 @@ impl AccelerationManager {
         Ok(())
     }
 
+    /// Batched first-sight skinned BLAS builds recorded onto a caller-
+    /// supplied command buffer — eliminates the per-NPC host fence
+    /// stall that [`Self::build_skinned_blas`] pays through
+    /// `submit_one_time`. See #911 / REN-D5-NEW-02.
+    ///
+    /// Three phases:
+    ///   1. Per-entity sizing + result-buffer + accel-structure
+    ///      allocation. A per-entity failure (typically OOM) is
+    ///      reported in the result vec for that entity and the batch
+    ///      continues with the remaining entities.
+    ///   2. Resize the shared `blas_scratch_buffer` ONCE to fit the
+    ///      max scratch demand across the batch — this is the key
+    ///      safety property. The naive "record N builds back-to-back
+    ///      on `cmd`, each inline-resizing scratch" path is UB: an
+    ///      earlier `cmd_build_acceleration_structures` call's
+    ///      `scratch_data` device address points at memory the next
+    ///      build's resize then freed. With sizing done upfront the
+    ///      scratch address is stable across all recorded builds.
+    ///   3. Per-entity recording into `cmd`, separated by
+    ///      `record_scratch_serialize_barrier` calls because all
+    ///      builds share scratch (`AS_WRITE → AS_WRITE` at
+    ///      `ACCELERATION_STRUCTURE_BUILD_KHR`).
+    ///
+    /// The caller must have emitted a
+    /// `COMPUTE_SHADER_WRITE → AS_BUILD_INPUT_READ` barrier on the
+    /// vertex buffers before this call, exactly as for
+    /// [`Self::refit_skinned_blas`]. The intended call site (per-
+    /// frame `cmd` in `draw_frame`) gets this via the same compute→AS
+    /// barrier that already precedes the refit loop.
+    ///
+    /// Returns `(entity_id, Result<()>)` pairs in batch order so the
+    /// caller can correlate coverage counters per entity.
+    pub fn build_skinned_blas_batched_on_cmd(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        cmd: vk::CommandBuffer,
+        entities: &[(EntityId, vk::Buffer, u32, vk::Buffer, u32)],
+    ) -> Vec<(EntityId, Result<()>)> {
+        if entities.is_empty() {
+            return Vec::new();
+        }
+
+        struct PreparedSkinned {
+            entity_id: EntityId,
+            accel: vk::AccelerationStructureKHR,
+            buffer: GpuBuffer,
+            geometry: vk::AccelerationStructureGeometryKHR<'static>,
+            primitive_count: u32,
+            build_scratch_size: vk::DeviceSize,
+            vertex_count: u32,
+            index_count: u32,
+        }
+
+        let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
+        // Flags match `build_skinned_blas`: ALLOW_UPDATE lets refit run
+        // every frame; PREFER_FAST_TRACE optimises traversal speed
+        // (BUILD cost is paid once per ~600 frames against trace cost
+        // paid every ray per BLAS per frame — see REN-D8-NEW-08).
+        let build_flags = vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
+            | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE;
+
+        let mut prepared: Vec<PreparedSkinned> = Vec::with_capacity(entities.len());
+        let mut results: Vec<(EntityId, Result<()>)> = Vec::with_capacity(entities.len());
+        let mut max_scratch_size: vk::DeviceSize = 0;
+
+        for &(entity_id, vertex_buffer, vertex_count, index_buffer, index_count) in entities {
+            let vertex_address = unsafe {
+                device.get_buffer_device_address(
+                    &vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer),
+                )
+            };
+            let index_address = unsafe {
+                device.get_buffer_device_address(
+                    &vk::BufferDeviceAddressInfo::default().buffer(index_buffer),
+                )
+            };
+            let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+                .vertex_format(vk::Format::R32G32B32_SFLOAT)
+                .vertex_data(vk::DeviceOrHostAddressConstKHR {
+                    device_address: vertex_address,
+                })
+                .vertex_stride(vertex_stride)
+                .max_vertex(vertex_count.saturating_sub(1))
+                .index_type(vk::IndexType::UINT32)
+                .index_data(vk::DeviceOrHostAddressConstKHR {
+                    device_address: index_address,
+                });
+            // SAFETY: the geometry union holds only value-typed fields
+            // (u64 device addresses, format/index-type enums) — no
+            // host pointers or Rust borrows. The `'static` lifetime
+            // annotation on `PreparedSkinned::geometry` mirrors the
+            // same invariant established in `build_blas_batched`
+            // (SAFE-21).
+            let geometry = vk::AccelerationStructureGeometryKHR::default()
+                .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+                .flags(vk::GeometryFlagsKHR::OPAQUE)
+                .geometry(vk::AccelerationStructureGeometryDataKHR { triangles });
+            let primitive_count = index_count / 3;
+
+            let size_build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+                .flags(build_flags)
+                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+                .geometries(std::slice::from_ref(&geometry));
+
+            let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
+            unsafe {
+                self.accel_loader.get_acceleration_structure_build_sizes(
+                    vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                    &size_build_info,
+                    &[primitive_count],
+                    &mut sizes,
+                );
+            }
+
+            let mut result_buffer = match GpuBuffer::create_device_local_uninit(
+                device,
+                allocator,
+                sizes.acceleration_structure_size,
+                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    results.push((entity_id, Err(e)));
+                    continue;
+                }
+            };
+            let accel_info = vk::AccelerationStructureCreateInfoKHR::default()
+                .buffer(result_buffer.buffer)
+                .size(sizes.acceleration_structure_size)
+                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
+            let accel = match unsafe {
+                self.accel_loader
+                    .create_acceleration_structure(&accel_info, None)
+            } {
+                Ok(a) => a,
+                Err(e) => {
+                    result_buffer.destroy(device, allocator);
+                    results.push((entity_id, Err(anyhow::anyhow!("create skinned BLAS: {e}"))));
+                    continue;
+                }
+            };
+
+            max_scratch_size = max_scratch_size.max(sizes.build_scratch_size);
+            prepared.push(PreparedSkinned {
+                entity_id,
+                accel,
+                buffer: result_buffer,
+                geometry,
+                primitive_count,
+                build_scratch_size: sizes.build_scratch_size,
+                vertex_count,
+                index_count,
+            });
+        }
+
+        if prepared.is_empty() {
+            return results;
+        }
+
+        // Phase 2: ensure shared scratch buffer is sized for the
+        // largest build in the batch. Grow-only via shared helper —
+        // see #60 / #424 SIBLING. Critical: this runs BEFORE any
+        // `cmd_build_acceleration_structures` is recorded so the
+        // `scratch_address` captured below stays valid for every
+        // recorded build at submit time.
+        let need_new_scratch = scratch_needs_growth(
+            self.blas_scratch_buffer.as_ref().map(|b| b.size),
+            max_scratch_size,
+        );
+        if need_new_scratch {
+            if let Some(mut old) = self.blas_scratch_buffer.take() {
+                old.destroy(device, allocator);
+            }
+            match GpuBuffer::create_device_local_uninit(
+                device,
+                allocator,
+                max_scratch_size,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            ) {
+                Ok(b) => {
+                    self.blas_scratch_buffer = Some(b);
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    for mut p in prepared {
+                        unsafe {
+                            self.accel_loader
+                                .destroy_acceleration_structure(p.accel, None);
+                        }
+                        p.buffer.destroy(device, allocator);
+                        results.push((
+                            p.entity_id,
+                            Err(anyhow::anyhow!("scratch grow failed: {err_msg}")),
+                        ));
+                    }
+                    return results;
+                }
+            }
+        }
+        let scratch_address = unsafe {
+            device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default()
+                    .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
+            )
+        };
+        self.debug_assert_scratch_aligned(scratch_address, "build_skinned_blas_batched_on_cmd");
+
+        // Phase 3: record builds with inter-build scratch-serialise
+        // barriers. The caller-supplied COMPUTE→AS_BUILD barrier on
+        // the vertex buffers is a precondition; this method does not
+        // re-emit it. Subsequent refit/TLAS-build call sites either
+        // emit their own scratch-serialise barrier internally
+        // (`refit_skinned_blas`) or read AS data after a downstream
+        // AS_WRITE→AS_READ barrier (`build_tlas`'s consumer).
+        for (i, p) in prepared.iter().enumerate() {
+            if i > 0 {
+                self.record_scratch_serialize_barrier(device, cmd);
+            }
+            let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+                .flags(build_flags)
+                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+                .dst_acceleration_structure(p.accel)
+                .geometries(std::slice::from_ref(&p.geometry))
+                .scratch_data(vk::DeviceOrHostAddressKHR {
+                    device_address: scratch_address,
+                });
+            let range_info = vk::AccelerationStructureBuildRangeInfoKHR::default()
+                .primitive_count(p.primitive_count)
+                .primitive_offset(0)
+                .first_vertex(0);
+            unsafe {
+                self.accel_loader.cmd_build_acceleration_structures(
+                    cmd,
+                    &[build_info],
+                    &[std::slice::from_ref(&range_info)],
+                );
+            }
+        }
+
+        // Phase 4: register prepared entries into `skinned_blas`. The
+        // BLAS is referenced by command-buffer state recorded above,
+        // so it must outlive the submission — which it will, since
+        // we keep ownership in `skinned_blas` until `drop_skinned_blas`
+        // routes it through `pending_destroy_blas` with the
+        // `MAX_FRAMES_IN_FLIGHT` countdown.
+        for p in prepared {
+            let device_address = unsafe {
+                self.accel_loader.get_acceleration_structure_device_address(
+                    &vk::AccelerationStructureDeviceAddressInfoKHR::default()
+                        .acceleration_structure(p.accel),
+                )
+            };
+            let blas_size = p.buffer.size;
+            // Skinned BLAS are NOT eviction candidates — lifecycle is
+            // tied to entity visibility, not the static budget. Total
+            // counter bumps; `static_blas_bytes` stays untouched. See
+            // #920 / counterpart in `build_skinned_blas`.
+            self.total_blas_bytes += blas_size;
+            self.skinned_blas.insert(
+                p.entity_id,
+                BlasEntry {
+                    accel: p.accel,
+                    buffer: p.buffer,
+                    device_address,
+                    last_used_frame: self.frame_counter,
+                    size_bytes: blas_size,
+                    build_scratch_size: p.build_scratch_size,
+                    refit_count: 0,
+                    built_vertex_count: p.vertex_count,
+                    built_index_count: p.index_count,
+                },
+            );
+            results.push((p.entity_id, Ok(())));
+        }
+        self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
+        results
+    }
+
     /// Refit an existing skinned BLAS in-place against an updated
     /// vertex buffer. Topology is unchanged; only the vertex positions
     /// shift. `cmd` must already have a

@@ -592,63 +592,52 @@ impl VulkanContext {
                     self.last_skin_coverage_frame.dispatches_total = dispatches.len() as u32;
 
                     // First-sight setup: for each entity that doesn't
-                    // yet have a SkinSlot OR a skinned BLAS, perform
-                    // sync compute prime + sync BLAS BUILD.
+                    // yet have a SkinSlot OR a skinned BLAS, create
+                    // the slot (CPU-only) and queue the BLAS BUILD
+                    // onto the per-frame `cmd` via the batched on-cmd
+                    // builder below. The steady-state compute dispatch
+                    // (further down) serves as the prime for the
+                    // newly-allocated slot — it writes the current
+                    // pose into the slot's output buffer before the
+                    // COMPUTE→AS_BUILD barrier, so the queued BUILD
+                    // reads valid vertex data.
                     //
                     // #679 / AS-8-9 — also re-enter this path for
                     // entities whose BLAS has refit too many times
                     // and degraded BVH traversal quality. Drop the
-                    // stale BLAS first; the loop below then sees
-                    // `needs_blas = true` and emits a fresh BUILD
-                    // against the current pose. The slot's output
-                    // buffer is preserved (compute keeps streaming
-                    // poses through it), so only the BLAS object
-                    // itself is replaced.
+                    // stale BLAS first; the partition below then
+                    // sees `needs_blas = true` and queues a fresh
+                    // BUILD against the next compute output. The
+                    // slot's output buffer is preserved (compute
+                    // keeps streaming poses through it), so only the
+                    // BLAS object itself is replaced.
                     //
-                    // #911 / REN-D5-NEW-02 — KNOWN HITCH SOURCE.
-                    // This loop pays 2 fence-waits per first-sight
-                    // entity (one-time submit for prime, one-time
-                    // submit for BLAS BUILD). A multi-NPC spawn
-                    // frame therefore stalls `draw_frame` by 2 × N
-                    // queue waits, surfacing as user-visible hitching
-                    // on actors walking into view.
-                    //
-                    // Audit-recommended fix: move both compute prime
-                    // and BLAS BUILD into the per-frame `cmd` buffer
-                    // between `record_bone_copy` and the TLAS build
-                    // (which already lives on `cmd`). Implementation
-                    // requires either:
-                    //   (a) two-pass scratch sizing — walk first-sight
-                    //       entities, query each `build_scratch_size`,
-                    //       take max, resize `blas_scratch_buffer`
-                    //       ONCE upfront, then record all builds
-                    //       against the now-stable scratch_address,
-                    //       OR
-                    //   (b) per-build scratch buffers with
-                    //       deferred-destroy — each first-sight build
-                    //       allocates its own scratch (no sharing),
-                    //       freed via a deferred-destroy queue after
-                    //       MAX_FRAMES_IN_FLIGHT countdown.
-                    //
-                    // The naive "just submit to per-frame cmd" path
-                    // is UNSAFE because the current
-                    // `acceleration::build_skinned_blas` resizes
-                    // `blas_scratch_buffer` inline — multiple
-                    // back-to-back recorded builds with shared scratch
-                    // would each destroy + recreate the buffer, and
-                    // the earlier-recorded `cmd_build_acceleration_structures`
-                    // call's captured scratch_address points at freed
-                    // memory at submit time. Safe paths above avoid
-                    // this by either staging the resize upfront (a)
-                    // or removing scratch sharing entirely (b).
-                    //
-                    // Deferred from #911 due to invisible-to-cargo-test
-                    // failure modes (use-after-free of destroyed
-                    // scratch, missing memory barriers, TLAS reading
-                    // not-yet-built BLAS). Next attempt needs a
-                    // RenderDoc validation pass on a 10-NPC-spawn
-                    // repro under MAILBOX present mode.
-                    for &(entity_id, push, idx_buffer, idx_count, vertex_count) in &dispatches {
+                    // #911 / REN-D5-NEW-02 — Pre-fix this loop paid
+                    // 2 fence-waits per first-sight entity (one-time
+                    // submit for compute prime + one-time submit for
+                    // sync BLAS BUILD), stalling `draw_frame` by
+                    // 2 × N queue waits on multi-NPC spawn frames.
+                    // The on-cmd batched builder eliminates both
+                    // host waits — every first-sight BUILD now
+                    // submits as part of the per-frame command
+                    // buffer that already carries the steady-state
+                    // compute dispatch, scratch-serialise barriers,
+                    // refit loop and TLAS build. Two-pass scratch
+                    // sizing inside
+                    // `build_skinned_blas_batched_on_cmd` keeps the
+                    // shared `blas_scratch_buffer` device address
+                    // stable across every recorded build in the
+                    // batch (the failure mode of the naive
+                    // "record N back-to-back, each inline-resizing
+                    // scratch" path).
+                    let mut first_sight_builds: Vec<(
+                        EntityId,
+                        vk::Buffer, // slot.output_buffer.buffer (BUILD input)
+                        u32,        // vertex_count
+                        vk::Buffer, // idx_buffer
+                        u32,        // idx_count
+                    )> = Vec::new();
+                    for &(entity_id, _push, idx_buffer, idx_count, vertex_count) in &dispatches {
                         let needs_slot = !self.skin_slots.contains_key(&entity_id);
                         if accel.should_rebuild_skinned_blas(entity_id) {
                             log::info!(
@@ -695,78 +684,25 @@ impl VulkanContext {
                                 }
                             }
                         }
-                        let Some(slot) = self.skin_slots.get(&entity_id) else {
-                            continue;
-                        };
-                        // Sync compute prime — write current pose into
-                        // the slot's output buffer via a one-time
-                        // command buffer + fence wait. This is the only
-                        // path before the slot's first BLAS build, so
-                        // BUILD has valid vertex data to read.
-                        let prime_result =
-                            super::super::texture::with_one_time_commands_reuse_fence(
-                                &self.device,
-                                &self.graphics_queue,
-                                self.transfer_pool,
-                                &self.transfer_fence,
-                                |prime_cmd| {
-                                    // #921 — populate the DEVICE bone palette
-                                    // from staging on this one-time command buffer
-                                    // before the prime compute dispatch reads it.
-                                    // The main cmd buffer's `record_bone_copy` runs
-                                    // later in a separate submission, so we cannot
-                                    // rely on it for the prime read.
-                                    self.scene_buffers.record_bone_copy(
-                                        &self.device,
-                                        prime_cmd,
-                                        frame,
-                                    );
-                                    unsafe {
-                                        skin_pipeline.dispatch(
-                                            &self.device,
-                                            prime_cmd,
-                                            slot,
-                                            frame,
-                                            input_buffer,
-                                            input_size,
-                                            bone_buf,
-                                            bone_buffer_size,
-                                            push,
-                                        );
-                                    }
-                                    Ok(())
-                                },
-                            );
-                        if let Err(e) = prime_result {
-                            log::warn!(
-                                "skin_compute first-sight prime failed for entity {entity_id}: {e}"
-                            );
-                            continue;
-                        }
-                        // Sync BLAS BUILD against the just-primed
-                        // output buffer. Success here is the cap on a
-                        // first-sight attempt — `first_sight_succeeded`
-                        // requires both prime + BUILD to land cleanly.
-                        match accel.build_skinned_blas(
-                            &self.device,
-                            alloc,
-                            &self.graphics_queue,
-                            self.transfer_pool,
-                            Some(&self.transfer_fence),
-                            entity_id,
-                            slot.output_buffer.buffer,
-                            vertex_count,
-                            idx_buffer,
-                            idx_count,
-                        ) {
-                            Ok(()) => {
-                                self.last_skin_coverage_frame.first_sight_succeeded += 1;
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "skin_compute first-sight BLAS build failed for entity {entity_id}: {e}"
-                                );
-                            }
+                        if needs_blas {
+                            let Some(slot) = self.skin_slots.get(&entity_id) else {
+                                continue;
+                            };
+                            first_sight_builds.push((
+                                entity_id,
+                                slot.output_buffer.buffer,
+                                vertex_count,
+                                idx_buffer,
+                                idx_count,
+                            ));
+                        } else {
+                            // Slot was missing but BLAS already existed —
+                            // structurally impossible today (slot+BLAS are
+                            // paired on insert and slot eviction also drops
+                            // the BLAS). Counted as a successful first-sight
+                            // pass so the coverage gauge stays sound if a
+                            // future refactor decouples the pair.
+                            self.last_skin_coverage_frame.first_sight_succeeded += 1;
                         }
                     }
 
@@ -800,7 +736,11 @@ impl VulkanContext {
                                 );
                             }
                             // Compute writes (skinned vertex output
-                            // buffers) → AS build input reads.
+                            // buffers) → AS build input reads. Covers
+                            // both the first-sight BUILD batch below
+                            // and the refit loop further down — both
+                            // read the freshly-written output buffers
+                            // as BLAS-build vertex input.
                             let compute_to_blas = vk::MemoryBarrier::default()
                                 .src_access_mask(vk::AccessFlags::SHADER_WRITE)
                                 .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
@@ -813,12 +753,54 @@ impl VulkanContext {
                                 &[],
                                 &[],
                             );
+                            // #911 — first-sight BLAS BUILDs piggyback
+                            // on the per-frame `cmd` rather than each
+                            // paying a host fence-wait. The compute
+                            // dispatch above served as the prime for
+                            // every newly-allocated slot in
+                            // `first_sight_builds`; the
+                            // COMPUTE→AS_BUILD barrier just emitted
+                            // hands those writes to the build inputs.
+                            // The helper queries every entity's
+                            // `build_scratch_size`, grows
+                            // `blas_scratch_buffer` ONCE to the max
+                            // demand of the batch, then records each
+                            // build with an internal scratch-serialise
+                            // barrier (`AS_WRITE→AS_WRITE`) between
+                            // iterations so the shared scratch is
+                            // safely sequenced. The first refit
+                            // iteration below emits its own
+                            // scratch-serialise barrier as well
+                            // (#983 / REN-D8-NEW-15), covering the
+                            // BUILD-batch → first-refit transition.
+                            if !first_sight_builds.is_empty() {
+                                let results = accel.build_skinned_blas_batched_on_cmd(
+                                    &self.device,
+                                    alloc,
+                                    cmd,
+                                    &first_sight_builds,
+                                );
+                                for (entity_id, result) in results {
+                                    match result {
+                                        Ok(()) => {
+                                            self.last_skin_coverage_frame
+                                                .first_sight_succeeded += 1;
+                                        }
+                                        Err(e) => {
+                                            log::warn!(
+                                                "skin_compute first-sight BLAS build failed for entity {entity_id}: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                             // Each `refit_skinned_blas` call shares
                             // `blas_scratch_buffer` with every other
-                            // refit in this loop AND with any sync
-                            // BUILD that ran earlier this frame
-                            // (`build_skinned_blas` first-sight,
-                            // `build_blas_batched` cell-load) — Vulkan
+                            // refit in this loop AND with any BUILD
+                            // that ran earlier this frame — the
+                            // first-sight batch above (same `cmd`,
+                            // post-#911) and any `build_blas_batched`
+                            // cell-load (separate submission). Vulkan
                             // spec on `scratchData` requires an
                             // AS_WRITE → AS_WRITE serialise barrier
                             // between every pair of AS-builds that
@@ -828,13 +810,17 @@ impl VulkanContext {
                             // establish device-side memory ordering
                             // for the next submission). Emitting the
                             // barrier before EVERY iteration covers
-                            // both refit→refit (#642) and the
+                            // both refit→refit (#642), the
                             // cross-submission BUILD→first-refit case
-                            // (#644 / MEM-2-2). The redundant
-                            // first-iteration barrier is essentially
-                            // free when the cmd has no prior AS-build
-                            // — same-stage AS_WRITE↔AS_WRITE on a
-                            // queue with no in-flight build work.
+                            // (#644 / MEM-2-2), and the same-cmd
+                            // BUILD-batch→first-refit case introduced
+                            // by #911 (the batched on-cmd builder
+                            // leaves an AS_WRITE in flight). The
+                            // redundant first-iteration barrier is
+                            // essentially free when the cmd has no
+                            // prior AS-build — same-stage
+                            // AS_WRITE↔AS_WRITE on a queue with no
+                            // in-flight build work.
                             for &(entity_id, _, idx_buffer, idx_count, vertex_count) in &dispatches
                             {
                                 let Some(slot) = self.skin_slots.get(&entity_id) else {
