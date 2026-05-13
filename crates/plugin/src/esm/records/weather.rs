@@ -62,7 +62,7 @@ pub const TOD_HIGH_NOON: usize = 4;
 pub const TOD_MIDNIGHT: usize = 5;
 
 /// RGBA color from NAM0 sub-record (u8 per channel).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkyColor {
     pub r: u8,
     pub g: u8,
@@ -145,6 +145,55 @@ pub struct OblivionHdrLighting {
     pub tree_dimmer: f32,
 }
 
+/// Skyrim+ directional-ambient lighting cube — one 32-byte entry per
+/// TOD slot from the DALC sub-record (4 entries: sunrise / day / sunset
+/// / night). Each entry is a 6-axis ambient probe + a "specular" colour +
+/// a final f32 fresnel-power tail.
+///
+/// Wire layout per UESP / xEdit `DALC` struct:
+/// ```text
+///   bytes  0..4   = +X ambient (R G B 0)   (east / right)
+///   bytes  4..8   = -X ambient (R G B 0)   (west / left)
+///   bytes  8..12  = +Y ambient (R G B 0)   (north / forward)
+///   bytes 12..16  = -Y ambient (R G B 0)   (south / back)
+///   bytes 16..20  = +Z ambient (R G B 0)   (up)
+///   bytes 20..24  = -Z ambient (R G B 0)   (down / ground)
+///   bytes 24..28  = specular colour (R G B 0)
+///   bytes 28..32  = fresnel power (f32) — typically 1.0
+/// ```
+///
+/// Engine consumption: the 6 ambient axes drive a Skyrim-style 6-axis
+/// directional ambient cube (sky / ground / cardinal-direction fill)
+/// for diffuse shading in lieu of the single flat ambient value used
+/// on FNV/FO3. The renderer consumer is follow-up work — this struct
+/// captures the authored bytes so a Skyrim cell render can sample
+/// real per-TOD ambient cubes instead of the procedural single-colour
+/// fallback. See #539 / M33-04..07 follow-up.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SkyrimAmbientCube {
+    /// `+X` ambient (engine east / right).
+    pub pos_x: SkyColor,
+    /// `-X` ambient (engine west / left).
+    pub neg_x: SkyColor,
+    /// `+Y` ambient (engine north / forward — Y-up engine).
+    pub pos_y: SkyColor,
+    /// `-Y` ambient (engine south / back).
+    pub neg_y: SkyColor,
+    /// `+Z` ambient (engine up — sky-fill colour).
+    pub pos_z: SkyColor,
+    /// `-Z` ambient (engine down — ground-fill colour).
+    pub neg_z: SkyColor,
+    /// DALC specular colour — feeds the Skyrim-specific specular tint
+    /// on metallic / wet materials. Renderer consumer is follow-up
+    /// work alongside the 6-axis ambient consumer.
+    pub specular: SkyColor,
+    /// DALC fresnel power tail. Vanilla Skyrim ships `1.0` here;
+    /// captured verbatim so a future renderer-side consumer can
+    /// drive the fresnel exponent from authored data instead of a
+    /// hardcoded constant.
+    pub fresnel_power: f32,
+}
+
 /// Parsed WTHR record.
 #[derive(Debug, Clone)]
 pub struct WeatherRecord {
@@ -178,6 +227,14 @@ pub struct WeatherRecord {
     /// records, and for Oblivion records that ship a malformed HNAM.
     /// See audit M33-05 / #537.
     pub oblivion_hdr: Option<OblivionHdrLighting>,
+    /// Skyrim-only 6-axis directional ambient cubes, one per TOD slot
+    /// (sunrise / day / sunset / night). Populated from the four DALC
+    /// sub-records on Skyrim WTHR records; `None` on FNV / FO3 /
+    /// Oblivion / FO4+ records (different ambient model).
+    /// Renderer consumer is follow-up work — captured here so a Skyrim
+    /// cell render can later drive 6-axis ambient fill instead of the
+    /// procedural single-colour fallback. See #539 / M33-04..07.
+    pub skyrim_ambient_cube: Option<[SkyrimAmbientCube; 4]>,
 }
 
 impl Default for WeatherRecord {
@@ -196,54 +253,32 @@ impl Default for WeatherRecord {
             classification: 0,
             cloud_textures: [None, None, None, None],
             oblivion_hdr: None,
+            skyrim_ambient_cube: None,
         }
     }
 }
 
 /// Parse a WTHR record from its sub-records.
 ///
-/// `game` selects the on-disk schema. Today only the Gamebryo / FO3-era
-/// family (Oblivion, FO3, FNV, FO4, FO76, Starfield) has a known NAM0
-/// layout that's safe to parse here; Skyrim's NAM0 has a different TOD
-/// slot count and sub-record FourCCs (M33-04 / M33-05 will land the
-/// proper Skyrim branch). For now the Skyrim arm logs a one-shot warning
-/// and returns the record with default sky colours rather than reading
-/// the first 240 B as if they were FNV layout — silent garbage was the
-/// failure mode flagged in #539 / M33-07.
+/// Game-specific schema dispatch:
+/// - **Oblivion / FO3 / FNV / FO4 / FO76 / Starfield** — Gamebryo/FO3-
+///   era layout. 10-group × 6-TOD NAM0 (160 or 240 bytes on disk;
+///   synthesise HIGH_NOON / MIDNIGHT when the on-disk record only
+///   ships 4 slots — see #533).
+/// - **Skyrim** — re-routes to [`parse_wthr_skyrim`], which handles
+///   the 17-group × 4-TOD NAM0 (272 B), 8-float FNAM, 19-B DATA, and
+///   4× 32-B DALC ambient cube. See #539 / M33-04..07.
 pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRecord {
+    if matches!(game, GameKind::Skyrim) {
+        return parse_wthr_skyrim(form_id, subs);
+    }
+
     let mut record = WeatherRecord {
         form_id,
         ..WeatherRecord::default()
     };
 
-    // Skyrim NAM0 + WTHR sub-record schema diverges from the FO3-era
-    // family. Until a proper Skyrim parser lands, decline to parse
-    // sky-colour / fog / cloud sub-records here. EDID is still read so
-    // weather records remain identifiable in the index.
-    let parse_fnv_schema = !matches!(game, GameKind::Skyrim);
-    if !parse_fnv_schema {
-        static SKYRIM_WARNED: std::sync::Once = std::sync::Once::new();
-        SKYRIM_WARNED.call_once(|| {
-            log::warn!(
-                "WTHR: Skyrim schema not yet supported (#539 / M33-04..07); \
-                 weather records are indexed but sky / fog / clouds stay at \
-                 defaults. Cell streaming for Skyrim is gated on M32.5 — \
-                 this is a placeholder until the Skyrim WTHR parser lands."
-            );
-        });
-    }
-
     for sub in subs {
-        // #539 / M33-07 — Skyrim WTHR has different NAM0 stride and
-        // different cloud / fog sub-record FourCCs. Skip every non-EDID
-        // sub-record under that game's schema so we don't silently
-        // truncate or mis-cast bytes intended for a different layout.
-        // EDID is universal across all Bethesda games and is the only
-        // field we keep here. See M33-01 / M33-02 / M33-04 / M33-05 for
-        // the per-game schema work this gate is the placeholder for.
-        if !parse_fnv_schema && &sub.sub_type != b"EDID" {
-            continue;
-        }
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
 
@@ -399,6 +434,223 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRe
     }
 
     record
+}
+
+/// Number of NAM0 colour groups on a Skyrim WTHR record's on-disk
+/// layout. Reading more reveals the extras (Sky Glare / Cloud LOD /
+/// Effects Lighting / Moon Glare) that the engine doesn't yet
+/// consume; the first 9 groups align byte-for-byte with the existing
+/// `SKY_UPPER..SKY_HORIZON` constants used by `weather_system` so we
+/// slot them straight into the shared `[10][6]` array.
+const SKYRIM_NAM0_GROUPS: usize = 17;
+
+/// Number of TOD slots Skyrim ships on disk per NAM0 group — sunrise /
+/// day / sunset / night. The engine's existing TOD model carries 6
+/// slots (HIGH_NOON / MIDNIGHT synthesised from DAY / NIGHT — same
+/// pattern Oblivion uses, see #533).
+const SKYRIM_NAM0_TOD_SLOTS: usize = 4;
+
+/// Skyrim WTHR DALC sub-record size (32 bytes). Per UESP: 6 RGB+pad
+/// ambient axes + 1 RGB+pad specular colour + 1 f32 fresnel power.
+const SKYRIM_DALC_SIZE: usize = 32;
+
+/// Skyrim WTHR FNAM sub-record size (32 bytes = 8 × f32). Layout per
+/// UESP / xEdit:
+/// `[day_near, day_far, night_near, night_far, day_power, night_power,
+///   day_max, night_max]`. v1 only consumes the first four
+/// (distances); the power / max fields go to follow-up renderer wiring
+/// once the volumetric fog path can honour them.
+const SKYRIM_FNAM_SIZE: usize = 32;
+
+/// Skyrim WTHR DATA sub-record size (19 bytes). Holds wind speed,
+/// transition timings, sun glare / damage, precipitation / thunder
+/// fade, classification, and lightning colour. v1 extracts wind +
+/// classification; the rest is captured-on-disk-only and waits for
+/// the precipitation / sun-damage gameplay consumer to land.
+const SKYRIM_DATA_SIZE: usize = 19;
+
+/// Parse a Skyrim WTHR record. Called by [`parse_wthr`] when
+/// `game == GameKind::Skyrim`; mirrors the FO3-era branch's shape but
+/// handles the Skyrim-specific NAM0 stride (17 groups × 4 TOD slots
+/// = 272 B), 32-byte FNAM (8 floats), 19-byte DATA, and the 4× DALC
+/// sub-record set that ships the 6-axis directional ambient cube.
+///
+/// **NAM0 mapping**: the first 9 of Skyrim's 17 groups align with the
+/// FO3-era group constants (`SKY_UPPER` .. `SKY_HORIZON`) — sky upper,
+/// fog near, unknown, ambient, sunlight, sun, stars, sky lower,
+/// horizon. Groups 9..17 carry Skyrim-exclusive data (Effects
+/// Lighting, Cloud LOD Diffuse / Ambient, Fog Far, Sky Statics, Water
+/// Multiplier, Sun Glare, Moon Glare) — captured into the 10-group
+/// shared array's slot 9 for "Effects Lighting" but the remaining 7
+/// groups are discarded for v1 because the renderer / weather_system
+/// has no consumer for them yet. Follow-up work covers the Sky Glare
+/// + Cloud LOD wiring when the renderer's M-glare / cloud-cover work
+/// surfaces. See M33-04..07.
+///
+/// **TOD synth**: Skyrim ships 4 TOD slots per group (sunrise / day /
+/// sunset / night); HIGH_NOON and MIDNIGHT are synthesised from DAY
+/// and NIGHT respectively so the shared `[group][6]` table stays
+/// authoritative for `weather_system`. Mirrors the Oblivion / FO3
+/// short-NAM0 fallback in [`parse_wthr`].
+///
+/// **Ambient cube**: the 4× DALC sub-records populate
+/// [`WeatherRecord::skyrim_ambient_cube`] (one entry per TOD slot)
+/// so a future renderer-side 6-axis ambient consumer has authored
+/// per-direction values to drive diffuse shading instead of falling
+/// back to a single procedural ambient. See [`SkyrimAmbientCube`].
+fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
+    let mut record = WeatherRecord {
+        form_id,
+        ..WeatherRecord::default()
+    };
+
+    // DALC entries arrive in TOD order (sunrise, day, sunset, night).
+    // Accumulate into a temporary array so out-of-order or partial
+    // records don't corrupt earlier slots.
+    let mut dalc_buf: [Option<SkyrimAmbientCube>; 4] = [None; 4];
+    let mut dalc_idx: usize = 0;
+
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => record.editor_id = read_zstring(&sub.data),
+
+            // NAM0 — 17 groups × 4 TOD slots × 4 bytes RGBA = 272 B.
+            // First 9 groups align with the FO3-era constants and slot
+            // straight into the shared `[10][6]` array. Groups 9..17
+            // are Skyrim-exclusive (Effects Lighting / Cloud LOD /
+            // Fog Far / Sky Statics / Water Multiplier / Sun Glare /
+            // Moon Glare); slot the 10th group (Effects Lighting) into
+            // `SKY_UNUSED_9` so a future consumer has it without
+            // schema churn, and discard the rest for v1.
+            b"NAM0"
+                if sub.data.len()
+                    >= SKYRIM_NAM0_GROUPS * SKYRIM_NAM0_TOD_SLOTS * 4 =>
+            {
+                let mut offset = 0;
+                for group in 0..SKYRIM_NAM0_GROUPS {
+                    for slot in 0..SKYRIM_NAM0_TOD_SLOTS {
+                        // Skyrim ships sunrise / day / sunset / night
+                        // in the same TOD-index order as the engine's
+                        // `TOD_SUNRISE`..`TOD_NIGHT` constants.
+                        let color = SkyColor {
+                            r: sub.data[offset],
+                            g: sub.data[offset + 1],
+                            b: sub.data[offset + 2],
+                            a: sub.data[offset + 3],
+                        };
+                        if group < SKY_COLOR_GROUPS {
+                            record.sky_colors[group][slot] = color;
+                        }
+                        offset += 4;
+                    }
+                    // Synthesise HIGH_NOON / MIDNIGHT for the first
+                    // 10 groups so the shared `[group][6]` table is
+                    // dense for `weather_system`. Mirrors the Oblivion
+                    // / FO3 short-NAM0 fallback above.
+                    if group < SKY_COLOR_GROUPS {
+                        record.sky_colors[group][TOD_HIGH_NOON] =
+                            record.sky_colors[group][TOD_DAY];
+                        record.sky_colors[group][TOD_MIDNIGHT] =
+                            record.sky_colors[group][TOD_NIGHT];
+                    }
+                }
+            }
+
+            // FNAM — 32 bytes = 8 × f32 on Skyrim. First 4 are fog
+            // distances (compatible with the FO3-era 4-distance
+            // model). Trailing 4 are day/night fog power + max —
+            // captured in a follow-up; v1 discards.
+            b"FNAM" if sub.data.len() >= SKYRIM_FNAM_SIZE => {
+                record.fog_day_near = read_f32_at(&sub.data, 0).unwrap_or(0.0);
+                record.fog_day_far = read_f32_at(&sub.data, 4).unwrap_or(10000.0);
+                record.fog_night_near = read_f32_at(&sub.data, 8).unwrap_or(0.0);
+                record.fog_night_far = read_f32_at(&sub.data, 12).unwrap_or(10000.0);
+            }
+
+            // DATA — 19 bytes. v1 extracts wind speed + classification.
+            // Byte 0 = wind. Byte 14 = classification flag bitmask
+            // (WTHR_PLEASANT | WTHR_CLOUDY | WTHR_RAINY | WTHR_SNOW).
+            // Bytes 1..14 are transition timings + sun glare + sun
+            // damage + precip / thunder fade — captured-on-disk-only
+            // for the gameplay consumer.
+            b"DATA" if sub.data.len() >= SKYRIM_DATA_SIZE => {
+                record.wind_speed = sub.data[0];
+                record.classification = sub.data[14];
+            }
+
+            // DALC — 32 bytes per entry, 4 entries (one per TOD slot).
+            // Captured into `skyrim_ambient_cube`. Out-of-order or
+            // extra entries clamp at 4 — Bethesda content always ships
+            // exactly 4 in sunrise/day/sunset/night order per UESP.
+            b"DALC" if sub.data.len() >= SKYRIM_DALC_SIZE => {
+                if dalc_idx < dalc_buf.len() {
+                    let cube = parse_skyrim_dalc(&sub.data);
+                    dalc_buf[dalc_idx] = Some(cube);
+                    dalc_idx += 1;
+                }
+            }
+
+            // Other sub-records (LNAM, MNAM, NNAM, RNAM, QNAM, PNAM,
+            // JNAM, NAM1, TNAM ×many, IMSP, 00TX..L0TX) carry data
+            // the renderer doesn't yet consume:
+            //   - Cloud-layer enable mask + per-layer colours /
+            //     alphas / speeds — wiring up the 32-layer cloud
+            //     pipeline is a separate effort (vs FNV's 4 layers).
+            //   - Aurora data (NAM1) — Skyrim-exclusive volumetric.
+            //   - ImageSpace references (IMSP) — needs the ImageSpace
+            //     record parser to land first.
+            //   - 00TX..L0TX cloud texture paths — paired with the
+            //     32-layer pipeline above.
+            // Captured-on-disk-only for the moment; the silent skip
+            // here is intentional rather than a regression. Follow-up
+            // tracking issues will surface each sub-record's wiring.
+            _ => {}
+        }
+    }
+
+    // Promote the 4 DALC slots into the WeatherRecord when at least
+    // one was authored. All-None stays as `None` so the consumer can
+    // tell apart "no DALC authored" from "DALC authored with zero
+    // values everywhere" (the latter is valid for some Skyrim
+    // weathers).
+    if dalc_buf.iter().any(|d| d.is_some()) {
+        // Fill missing slots with the most recent one (Bethesda
+        // content always ships all 4, but defensive against truncated
+        // mod records).
+        let mut last = SkyrimAmbientCube::default();
+        let mut filled: [SkyrimAmbientCube; 4] = [SkyrimAmbientCube::default(); 4];
+        for (i, slot) in dalc_buf.iter().enumerate() {
+            if let Some(s) = slot {
+                last = *s;
+            }
+            filled[i] = last;
+        }
+        record.skyrim_ambient_cube = Some(filled);
+    }
+
+    record
+}
+
+/// Parse one 32-byte DALC sub-record body into a [`SkyrimAmbientCube`].
+/// Layout per UESP — 6 RGB+pad axes, 1 RGB+pad specular, 1 f32 fresnel.
+fn parse_skyrim_dalc(data: &[u8]) -> SkyrimAmbientCube {
+    debug_assert!(data.len() >= SKYRIM_DALC_SIZE);
+    let read_color = |off: usize| SkyColor {
+        r: data[off],
+        g: data[off + 1],
+        b: data[off + 2],
+        a: data[off + 3],
+    };
+    SkyrimAmbientCube {
+        pos_x: read_color(0),
+        neg_x: read_color(4),
+        pos_y: read_color(8),
+        neg_y: read_color(12),
+        pos_z: read_color(16),
+        neg_z: read_color(20),
+        specular: read_color(24),
+        fresnel_power: read_f32_at(data, 28).unwrap_or(1.0),
+    }
 }
 
 #[cfg(test)]
@@ -951,5 +1203,262 @@ mod tests {
         assert!((rgb[0] - 1.0).abs() < 0.001);
         assert!(rgb[1].abs() < 0.001);
         assert!((rgb[2] - 128.0 / 255.0).abs() < 0.001);
+    }
+
+    // ── #539 / M33-04..07 — Skyrim WTHR parser ────────────────────────
+    //
+    // Pre-fix Skyrim WTHRs were indexed by FormID but every sky / fog /
+    // cloud sub-record was silently skipped: the runtime warn cited
+    // M32.5 as the gating milestone. Every Skyrim cell fell through to
+    // `insert_procedural_fallback_resources` (Mojave-warm defaults),
+    // producing the wrong sun colour / wrong ambient / wrong horizon
+    // band on every Skyrim render. Markarth was the cell that surfaced
+    // it. These tests pin the parser against the on-disk layout
+    // sampled from `Skyrim.esm` via `dump_wthr_subs`.
+
+    /// Build a 272-byte Skyrim NAM0 body — 17 groups × 4 TOD slots ×
+    /// 4 bytes RGBA. Each group/slot gets a recognisable value so
+    /// per-group / per-slot wiring can be asserted in isolation.
+    fn build_skyrim_nam0(groups: &[[[u8; 4]; 4]; SKYRIM_NAM0_GROUPS]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(SKYRIM_NAM0_GROUPS * SKYRIM_NAM0_TOD_SLOTS * 4);
+        for group in groups {
+            for slot in group {
+                out.extend_from_slice(slot);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn parse_skyrim_routes_through_dedicated_branch() {
+        // The dispatch in `parse_wthr` must re-route Skyrim records to
+        // `parse_wthr_skyrim` — not run them through the FO3-era
+        // branch (which would over-read NAM0 by 32 B and corrupt FNAM).
+        // Sanity check: an empty Skyrim record must produce default
+        // sky_colors but a non-default `editor_id` if EDID is present.
+        let subs = vec![make_sub(b"EDID", b"SkyrimClear\0".to_vec())];
+        let w = parse_wthr(0xDEAD, &subs, GameKind::Skyrim);
+        assert_eq!(w.editor_id, "SkyrimClear");
+        assert!(w.skyrim_ambient_cube.is_none());
+        // Default fog distances ride through.
+        assert_eq!(w.fog_day_far, 10_000.0);
+    }
+
+    #[test]
+    fn parse_skyrim_nam0_lifts_first_nine_groups() {
+        // Stripe each of the 17 groups with a recognisable colour so
+        // we can assert which group landed in which slot of the
+        // shared `[10][6]` table.
+        let mut groups: [[[u8; 4]; 4]; SKYRIM_NAM0_GROUPS] =
+            [[[0u8; 4]; 4]; SKYRIM_NAM0_GROUPS];
+        for (g_idx, group) in groups.iter_mut().enumerate() {
+            for (s_idx, slot) in group.iter_mut().enumerate() {
+                *slot = [g_idx as u8 + 1, s_idx as u8 + 1, 0xAA, 0];
+            }
+        }
+        let nam0 = build_skyrim_nam0(&groups);
+
+        let subs = vec![
+            make_sub(b"EDID", b"SkyrimCloudy\0".to_vec()),
+            make_sub(b"NAM0", nam0),
+        ];
+        let w = parse_wthr(0x1234, &subs, GameKind::Skyrim);
+
+        // Group 0 (SKY_UPPER), all 4 TOD slots.
+        for slot in 0..4 {
+            assert_eq!(w.sky_colors[SKY_UPPER][slot].r, 1);
+            assert_eq!(w.sky_colors[SKY_UPPER][slot].g, slot as u8 + 1);
+        }
+        // Group 5 (SKY_SUN), TOD_SUNRISE.
+        assert_eq!(w.sky_colors[SKY_SUN][TOD_SUNRISE].r, 6);
+        assert_eq!(w.sky_colors[SKY_SUN][TOD_SUNRISE].g, 1);
+        // Group 9 (last that fits in the shared 10-group array — Skyrim
+        // "Effects Lighting" / FO3-era SKY_UNUSED_9).
+        assert_eq!(w.sky_colors[9][TOD_DAY].r, 10);
+        // HIGH_NOON synthesised from DAY (slot 1 colour with `g = 2`).
+        assert_eq!(w.sky_colors[SKY_UPPER][TOD_HIGH_NOON].r, 1);
+        assert_eq!(w.sky_colors[SKY_UPPER][TOD_HIGH_NOON].g, 2);
+        // MIDNIGHT synthesised from NIGHT (slot 3 colour with `g = 4`).
+        assert_eq!(w.sky_colors[SKY_UPPER][TOD_MIDNIGHT].r, 1);
+        assert_eq!(w.sky_colors[SKY_UPPER][TOD_MIDNIGHT].g, 4);
+    }
+
+    #[test]
+    fn parse_skyrim_fnam_lifts_four_fog_distances() {
+        // 8 × f32 = 32 B. First 4 are fog distances; trailing 4
+        // (day_power, night_power, day_max, night_max) are
+        // captured-on-disk-only in v1.
+        let mut fnam = Vec::new();
+        for v in [
+            1_200.0f32, 80_000.0, 1_200.0, 40_000.0, 0.4, 0.4, 0.85, 0.85,
+        ] {
+            fnam.extend_from_slice(&v.to_le_bytes());
+        }
+        let subs = vec![
+            make_sub(b"EDID", b"SkyrimStorm\0".to_vec()),
+            make_sub(b"FNAM", fnam),
+        ];
+        let w = parse_wthr(0xCAFE, &subs, GameKind::Skyrim);
+        assert!((w.fog_day_near - 1_200.0).abs() < 0.001);
+        assert!((w.fog_day_far - 80_000.0).abs() < 0.001);
+        assert!((w.fog_night_near - 1_200.0).abs() < 0.001);
+        assert!((w.fog_night_far - 40_000.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_skyrim_data_lifts_wind_and_classification() {
+        // 19 bytes. Byte 0 = wind. Byte 14 = classification flags.
+        let mut data = vec![0u8; 19];
+        data[0] = 0x19; // wind = 25
+        data[14] = WTHR_CLOUDY; // classification = cloudy
+        let subs = vec![
+            make_sub(b"EDID", b"SkyrimRainy\0".to_vec()),
+            make_sub(b"DATA", data),
+        ];
+        let w = parse_wthr(0xFACE, &subs, GameKind::Skyrim);
+        assert_eq!(w.wind_speed, 25);
+        assert_eq!(w.classification, WTHR_CLOUDY);
+    }
+
+    #[test]
+    fn parse_skyrim_dalc_captures_four_ambient_cubes() {
+        // 4× DALC entries, each 32 B = 6 RGB+pad axes + RGB+pad spec
+        // + f32 fresnel.
+        fn make_dalc(slot_marker: u8) -> Vec<u8> {
+            let mut buf = vec![0u8; 32];
+            // 6 ambient axes — stripe each with slot_marker + axis_id.
+            for axis in 0..6 {
+                let off = axis * 4;
+                buf[off] = slot_marker + axis as u8 * 0x10;
+                buf[off + 1] = 0x80;
+                buf[off + 2] = 0xC0;
+                buf[off + 3] = 0;
+            }
+            // Specular colour at bytes 24..28.
+            buf[24] = 0x88;
+            buf[25] = 0x99;
+            buf[26] = 0xAA;
+            // Fresnel power = 1.0 at bytes 28..32.
+            buf[28..32].copy_from_slice(&1.0f32.to_le_bytes());
+            buf
+        }
+
+        let subs = vec![
+            make_sub(b"EDID", b"SkyrimSnow\0".to_vec()),
+            make_sub(b"DALC", make_dalc(0x10)), // sunrise
+            make_sub(b"DALC", make_dalc(0x20)), // day
+            make_sub(b"DALC", make_dalc(0x30)), // sunset
+            make_sub(b"DALC", make_dalc(0x40)), // night
+        ];
+        let w = parse_wthr(0xBABE, &subs, GameKind::Skyrim);
+        let cubes = w
+            .skyrim_ambient_cube
+            .expect("Skyrim DALC must populate the ambient cube");
+        // Slot 0 (sunrise) +X = 0x10.
+        assert_eq!(cubes[0].pos_x.r, 0x10);
+        // Slot 0 (sunrise) -Z (axis 5) = 0x10 + 0x50 = 0x60.
+        assert_eq!(cubes[0].neg_z.r, 0x60);
+        // Slot 1 (day) +X = 0x20.
+        assert_eq!(cubes[1].pos_x.r, 0x20);
+        // Slot 3 (night) +X = 0x40.
+        assert_eq!(cubes[3].pos_x.r, 0x40);
+        // Specular + fresnel ride through.
+        assert_eq!(cubes[0].specular.r, 0x88);
+        assert!((cubes[0].fresnel_power - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_skyrim_dalc_under_four_pads_with_last_authored() {
+        // Defensive: a truncated mod record might ship only 2 DALC
+        // entries. Missing tail slots get the last authored cube so
+        // downstream consumers don't read default-zero ambient for
+        // sunset / night when the record only authored sunrise / day.
+        fn make_dalc(marker: u8) -> Vec<u8> {
+            let mut buf = vec![0u8; 32];
+            buf[0] = marker;
+            buf[28..32].copy_from_slice(&1.0f32.to_le_bytes());
+            buf
+        }
+        let subs = vec![
+            make_sub(b"EDID", b"TruncatedDalcMod\0".to_vec()),
+            make_sub(b"DALC", make_dalc(0xAA)),
+            make_sub(b"DALC", make_dalc(0xBB)),
+        ];
+        let w = parse_wthr(0x9999, &subs, GameKind::Skyrim);
+        let cubes = w.skyrim_ambient_cube.expect("partial DALC still populates");
+        assert_eq!(cubes[0].pos_x.r, 0xAA);
+        assert_eq!(cubes[1].pos_x.r, 0xBB);
+        // Sunset / night fall back to last authored (day = 0xBB).
+        assert_eq!(cubes[2].pos_x.r, 0xBB);
+        assert_eq!(cubes[3].pos_x.r, 0xBB);
+    }
+
+    #[test]
+    fn parse_skyrim_extra_dalc_clamps_at_four_does_not_overflow() {
+        // 5+ DALC entries (some mods do this) clamp at 4 — never
+        // overflow the fixed-size buffer.
+        fn make_dalc(marker: u8) -> Vec<u8> {
+            let mut buf = vec![0u8; 32];
+            buf[0] = marker;
+            buf[28..32].copy_from_slice(&1.0f32.to_le_bytes());
+            buf
+        }
+        let mut subs = vec![make_sub(b"EDID", b"OverflowDalc\0".to_vec())];
+        for marker in 0..8u8 {
+            subs.push(make_sub(b"DALC", make_dalc(0x10 + marker)));
+        }
+        let w = parse_wthr(0x5555, &subs, GameKind::Skyrim);
+        let cubes = w.skyrim_ambient_cube.expect("DALC must populate");
+        // Only first 4 take.
+        assert_eq!(cubes[0].pos_x.r, 0x10);
+        assert_eq!(cubes[3].pos_x.r, 0x13);
+    }
+
+    #[test]
+    fn parse_skyrim_full_record_round_trip() {
+        // End-to-end: NAM0 + FNAM + DATA + DALC all populate together.
+        let mut groups: [[[u8; 4]; 4]; SKYRIM_NAM0_GROUPS] =
+            [[[0u8; 4]; 4]; SKYRIM_NAM0_GROUPS];
+        // Stripe so we can verify cross-group alignment.
+        groups[SKY_UPPER][TOD_DAY] = [40, 110, 155, 0];
+        groups[SKY_AMBIENT][TOD_DAY] = [160, 180, 195, 0];
+        groups[SKY_SUN][TOD_DAY] = [200, 180, 140, 0];
+
+        let mut fnam = Vec::new();
+        for v in [1200.0f32, 80000.0, 1200.0, 40000.0, 0.4, 0.4, 0.85, 0.85] {
+            fnam.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut data = vec![0u8; 19];
+        data[0] = 0x10;
+        data[14] = WTHR_PLEASANT;
+        let mut dalc = vec![0u8; 32];
+        dalc[16] = 0xC0; // +Z (up) ambient .R = 0xC0
+        dalc[28..32].copy_from_slice(&1.0f32.to_le_bytes());
+
+        let subs = vec![
+            make_sub(b"EDID", b"SkyrimFullRoundTrip\0".to_vec()),
+            make_sub(b"NAM0", build_skyrim_nam0(&groups)),
+            make_sub(b"FNAM", fnam),
+            make_sub(b"DATA", data),
+            make_sub(b"DALC", dalc.clone()),
+            make_sub(b"DALC", dalc.clone()),
+            make_sub(b"DALC", dalc.clone()),
+            make_sub(b"DALC", dalc),
+        ];
+        let w = parse_wthr(0xC0DE, &subs, GameKind::Skyrim);
+        assert_eq!(w.editor_id, "SkyrimFullRoundTrip");
+        assert_eq!(w.sky_colors[SKY_UPPER][TOD_DAY].r, 40);
+        assert_eq!(w.sky_colors[SKY_AMBIENT][TOD_DAY].g, 180);
+        assert_eq!(w.sky_colors[SKY_SUN][TOD_DAY].b, 140);
+        // HIGH_NOON synthesised from DAY round-trips.
+        assert_eq!(
+            w.sky_colors[SKY_SUN][TOD_HIGH_NOON],
+            w.sky_colors[SKY_SUN][TOD_DAY]
+        );
+        assert!((w.fog_day_far - 80_000.0).abs() < 0.001);
+        assert_eq!(w.wind_speed, 0x10);
+        assert_eq!(w.classification, WTHR_PLEASANT);
+        let cubes = w.skyrim_ambient_cube.unwrap();
+        assert_eq!(cubes[0].pos_z.r, 0xC0);
     }
 }
