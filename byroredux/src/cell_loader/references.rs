@@ -929,11 +929,21 @@ fn parse_and_import_spt(
 
     let form_id = tree_record.map(|t| t.form_id);
 
+    // #1001 — Oblivion ships MODB on 100 % of TREE records and OBND
+    // on none, so the placeholder size fallback needs MODB to size
+    // Cyrodiil trees correctly (vanilla MODB range 157–3621 game
+    // units). FO3/FNV are inverse: 100 % OBND, 0 % MODB. Surface both
+    // and let `compute_billboard_size` pick its precedence.
+    let bound_radius = tree_record
+        .map(|t| t.bound_radius)
+        .filter(|r| *r > 0.0);
+
     let params = byroredux_spt::SptImportParams {
         leaf_texture_override,
         bounds,
         wind,
         form_id,
+        bound_radius,
     };
 
     let imported = byroredux_spt::import_spt_scene(&scene, &params, pool);

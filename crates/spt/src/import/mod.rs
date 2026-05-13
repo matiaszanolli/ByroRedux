@@ -72,6 +72,14 @@ pub struct SptImportParams<'a> {
     /// wants to seed per-tree variation (sway phase, leaf-tint
     /// random offset) deterministically.
     pub form_id: Option<u32>,
+    /// MODB bound radius from the TREE record, in game units. Used as
+    /// a per-tree size fallback when `bounds` (OBND) is absent —
+    /// vanilla Oblivion ships MODB on 100 % of TREE records and OBND
+    /// on none, while FO3/FNV ship OBND on 100 % and MODB on none
+    /// (corpus stats 2026-05-13). Resolving to a billboard size:
+    /// width ≈ R, height ≈ 2R (matches the existing default's 1:2
+    /// ratio; verified against the Oblivion MODB range 157–3621).
+    pub bound_radius: Option<f32>,
 }
 
 /// Default placeholder billboard size in game units (1 unit ≈ 1.4 cm).
@@ -157,17 +165,33 @@ pub fn import_spt_scene(
 
 /// Pick a billboard size for the placeholder.
 ///
-/// Returns `(width, height)` in game units — width is the X extent
-/// of OBND, height the Z extent (Bethesda Z-up). Both clamped to
-/// the [16, 8 192] band so a corrupt / mod-broken OBND can't produce
-/// a 1-pixel mosquito or a floor-to-skybox planet-sized billboard.
+/// Returns `(width, height)` in game units. Precedence:
+/// 1. **OBND** (`params.bounds`) — width is the X extent, height the
+///    Z extent (Bethesda Z-up). FO3/FNV TREE records ship this on
+///    100 % of vanilla content.
+/// 2. **MODB** (`params.bound_radius`) — sphere radius converted as
+///    `(width, height) = (R, 2R)`. Oblivion ships MODB on 100 % of
+///    vanilla TREE records and OBND on none (corpus stats
+///    2026-05-13), so this is the Oblivion path. Matches the
+///    existing 256×512 default's 1:2 ratio.
+/// 3. **Default** — 256 × 512. Only reaches mod content with neither
+///    field authored.
+///
+/// All paths clamp to the `[16, 8192]` band so corrupt input can't
+/// produce a 1-pixel mosquito or a floor-to-skybox planet-sized
+/// billboard.
 fn compute_billboard_size(params: &SptImportParams) -> (f32, f32) {
-    let Some((min, max)) = params.bounds else {
-        return (DEFAULT_BILLBOARD_WIDTH, DEFAULT_BILLBOARD_HEIGHT);
-    };
-    let width = (max[0] - min[0]).abs().clamp(16.0, 8192.0);
-    let height = (max[2] - min[2]).abs().clamp(16.0, 8192.0);
-    (width, height)
+    if let Some((min, max)) = params.bounds {
+        let width = (max[0] - min[0]).abs().clamp(16.0, 8192.0);
+        let height = (max[2] - min[2]).abs().clamp(16.0, 8192.0);
+        return (width, height);
+    }
+    if let Some(r) = params.bound_radius.filter(|r| *r > 0.0) {
+        let width = r.clamp(16.0, 8192.0);
+        let height = (2.0 * r).clamp(16.0, 8192.0);
+        return (width, height);
+    }
+    (DEFAULT_BILLBOARD_WIDTH, DEFAULT_BILLBOARD_HEIGHT)
 }
 
 /// Construct a minimal `ImportedNode` for the placeholder root.
@@ -390,6 +414,63 @@ mod tests {
             imported.meshes[0].texture_path.is_none(),
             "no texture → leave path unset, renderer fills the magenta placeholder",
         );
+    }
+
+    /// #1001 — Oblivion TREE records ship MODB but no OBND. Pre-fix
+    /// the placeholder fell back to the 256×512 default, sizing
+    /// Cyrodiil pine trees like Mojave creosote bushes. Post-fix the
+    /// MODB radius drives the size as `(R, 2R)`.
+    #[test]
+    fn modb_drives_placeholder_size_when_obnd_absent() {
+        let mut pool = StringPool::new();
+        let scene = empty_scene();
+        // Vanilla Oblivion `TreeSugarMapleForestFA`: MODB ≈ 1931.
+        let params = SptImportParams {
+            bound_radius: Some(1931.0),
+            ..Default::default()
+        };
+        let imported = import_spt_scene(&scene, &params, &mut pool);
+        let mesh = &imported.meshes[0];
+        // width = R, height = 2R.
+        assert_eq!(mesh.positions[0], [-1931.0 * 0.5, 0.0, 0.0]);
+        assert_eq!(mesh.positions[2], [1931.0 * 0.5, 1931.0 * 2.0, 0.0]);
+    }
+
+    /// MODB outside the safe band must clamp like OBND does. A
+    /// mod-authored MODB of 50 000 would otherwise span the entire
+    /// skybox.
+    #[test]
+    fn modb_clamps_to_safe_band() {
+        let mut pool = StringPool::new();
+        let scene = empty_scene();
+        let params = SptImportParams {
+            bound_radius: Some(50_000.0),
+            ..Default::default()
+        };
+        let imported = import_spt_scene(&scene, &params, &mut pool);
+        let mesh = &imported.meshes[0];
+        // Width clamps at 8192, height also at 8192 (2R = 100 000 → 8192).
+        assert_eq!(mesh.positions[2][0], 8192.0 * 0.5);
+        assert_eq!(mesh.positions[2][1], 8192.0);
+    }
+
+    /// OBND wins over MODB when both are present. FO3/FNV TREE records
+    /// don't ship MODB so this is more of a defensive guarantee for
+    /// mod content / Skyrim+ TREE records that authored both.
+    #[test]
+    fn obnd_precedence_over_modb() {
+        let mut pool = StringPool::new();
+        let scene = empty_scene();
+        let params = SptImportParams {
+            bounds: Some(([-100.0, -100.0, 0.0], [100.0, 100.0, 1000.0])),
+            bound_radius: Some(9999.0),
+            ..Default::default()
+        };
+        let imported = import_spt_scene(&scene, &params, &mut pool);
+        let mesh = &imported.meshes[0];
+        // Width = 200 (OBND X extent), height = 1000 (OBND Z extent).
+        // MODB ignored.
+        assert_eq!(mesh.positions[2], [100.0, 1000.0, 0.0]);
     }
 
     #[test]
