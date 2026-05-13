@@ -136,12 +136,31 @@ fn listener_loop(port: u16, queue: CommandQueue, shutdown: Arc<AtomicBool>) {
 
 fn handle_client(stream: TcpStream, queue: CommandQueue, shutdown: Arc<AtomicBool>) {
     // Set blocking mode for the client stream (reader blocks on decode).
-    stream
-        .set_nonblocking(false)
-        .expect("failed to set client stream blocking");
+    // #1008 — pre-fix this site used `.expect()`, panicking the
+    // per-client thread on FD exhaustion / socket-level kernel errors
+    // without any `log::error!` to surface the cause. Listener kept
+    // running and other clients were unaffected, but the failure mode
+    // was invisible until process exit (default panic hook prints to
+    // stderr). Mirror `cell_pre_parse_worker`'s log+return recovery.
+    if let Err(e) = stream.set_nonblocking(false) {
+        log::warn!(
+            "debug-server: client setup failed (set_nonblocking): {} — closing connection",
+            e
+        );
+        return;
+    }
     stream.set_read_timeout(Some(Duration::from_secs(300))).ok();
 
-    let mut reader = stream.try_clone().expect("failed to clone TCP stream");
+    let mut reader = match stream.try_clone() {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!(
+                "debug-server: client setup failed (try_clone): {} — closing connection",
+                e
+            );
+            return;
+        }
+    };
     let mut writer = BufWriter::new(stream);
 
     loop {
