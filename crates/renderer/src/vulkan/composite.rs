@@ -52,7 +52,11 @@ pub struct CompositeParams {
     /// `pow(dist / z, w)` instead of the linear `near..far` ramp.
     /// See #865 / FNV-D3-NEW-06.
     pub fog_params: [f32; 4],
-    /// x = is_exterior (1.0 = sky enabled), y = exposure (default 0.85), z/w = reserved.
+    /// x = is_exterior (1.0 = sky enabled), y = exposure (default 0.85),
+    /// z = volumetric_consumed flag (1.0 when host
+    /// `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED` is true, else 0.0 — gates
+    /// the composite shader's `combined * vol.a + vol.rgb` consumption,
+    /// see #1013), w = reserved.
     pub depth_params: [f32; 4],
     /// xyz = zenith (top-of-sky) color in linear RGB, w = sun angular size (cos threshold).
     pub sky_zenith: [f32; 4],

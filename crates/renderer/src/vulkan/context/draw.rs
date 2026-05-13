@@ -1364,7 +1364,17 @@ impl VulkanContext {
                 depth_params: [
                     if sky_params.is_exterior { 1.0 } else { 0.0 },
                     0.85, // exposure — default Bethesda-era HDR target; promote to WTHR field (#743)
-                    0.0,
+                    // #1013 — host-side mirror of the volumetric-output
+                    // gate. Composite reads this slot to decide whether
+                    // to consume `vol.a` (transmittance) and `vol.rgb`
+                    // (in-scattering). Pinned to the host const so a
+                    // future flip of `VOLUMETRIC_OUTPUT_CONSUMED` is a
+                    // single-line change.
+                    if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
+                        1.0
+                    } else {
+                        0.0
+                    },
                     0.0,
                 ],
                 sky_zenith: [

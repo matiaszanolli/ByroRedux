@@ -394,22 +394,38 @@ void main() {
             // shadow rays + temporal stability) lands — see Tier 8
             // row in ROADMAP.md.
             //
-            // ── Lockstep host-side gate (#928) ──────────────────
-            // The Rust-side `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED`
-            // const gates `vol.dispatch()` in `draw.rs::draw_frame`.
-            // While both this `* 0.0` and that const are paired,
-            // the volumetric pipeline does NO GPU work per frame —
-            // recovers ~10–20 ms/frame estimated. When M-LIGHT v2
-            // ships, flip BOTH together: remove the `* 0.0` here and
-            // set `VOLUMETRIC_OUTPUT_CONSUMED = true`.
+            // ── Lockstep host-side gate (#928 / #1013) ──────────
+            // `params.depth_params.z` mirrors the host-side
+            // `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED` const. When
+            // it's true (1.0) the volumetric integrate pass has run
+            // and `vol.a` carries cumulative transmittance + `vol.rgb`
+            // carries inscatter; the Frostbite §5.3 standard form is
+            //   `final = scene * vol.a + vol.rgb`
+            // — attenuate FIRST (energy lost to absorption between
+            // camera and fragment), then ADD inscatter (radiance that
+            // arrived from in-scattering, NOT itself attenuated by
+            // `T_cum` because the integrate pass already weighted each
+            // slab's contribution by its own running transmittance).
             //
-            // The `vol.rgb * 0.0` keeps the texture sample alive so
-            // SPIR-V reflection (validate_set_layout) still sees
-            // binding 6 referenced from this shader; removing the
-            // sample entirely would require also dropping the host-
-            // side binding declaration and is more churn than the
-            // gate is worth.
-            combined += vol.rgb * 0.0;
+            // When the gate is false (0.0), `vol.dispatch()` is
+            // skipped in `draw.rs::draw_frame` — the 3D image's `.a`
+            // channel is undefined / zero, so consuming it would
+            // multiply `combined` by 0 and produce a black screen.
+            // The fallback `vol.rgb * 0.0` keeps the texture sample
+            // alive for SPIR-V reflection (`validate_set_layout`
+            // still sees binding 6 referenced).
+            //
+            // Pre-#1013 this branch only had the `* 0.0` keep-alive,
+            // so flipping `VOLUMETRIC_OUTPUT_CONSUMED = true` after
+            // M-LIGHT v2 lands would have shipped a missing-`vol.a`
+            // bug. With the gate plumbed through `depth_params.z`,
+            // the flip is now a single-line const change in
+            // `volumetrics.rs`.
+            if (params.depth_params.z > 0.5) {
+                combined = combined * vol.a + vol.rgb;
+            } else {
+                combined += vol.rgb * 0.0;
+            }
         }
 
         // M58 — bloom add. Sampled with bilinear from mip 0 of the
@@ -469,7 +485,12 @@ void main() {
         // producing a yellow / sepia distance wash on warm-fog cells.
         // Display-space mix lands closer to the perceptual intent of
         // the authored values.
-        if (params.depth_params.x > 0.5 && depth < 0.9999) {
+        // #1013 — skip the aerial-perspective fallback when volumetric
+        // consumption is active, otherwise both fog mechanisms stack and
+        // double-darken distant geometry. The volumetric path attenuates
+        // via `vol.a` above and is the canonical exterior fog source
+        // once `VOLUMETRIC_OUTPUT_CONSUMED = true`.
+        if (params.depth_params.x > 0.5 && depth < 0.9999 && params.depth_params.z < 0.5) {
             float fog_near = params.fog_params.x;
             float fog_far  = params.fog_params.y;
             float fog_clip  = params.fog_params.z;
