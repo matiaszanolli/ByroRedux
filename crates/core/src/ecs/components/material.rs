@@ -257,6 +257,29 @@ pub struct PbrMaterial {
 }
 
 impl Material {
+    /// Explicit "this surface is glass / crystal / ice / gem / window"
+    /// classifier for use by [`crate::ecs::components::Material`]-less
+    /// glass-path gating in the renderer. Required because the
+    /// glossiness-fallback in `classify_pbr` undershoots the 0.4
+    /// roughness gate for Skyrim cloth banners (whose
+    /// `BSLightingShaderProperty.glossiness ≈ 80` lands at
+    /// roughness 0.2 via `1 - 80/100`), producing spurious glass
+    /// classification that routes the cloth through the IOR
+    /// refraction + chromatic-dispersion shader path → rainbow
+    /// banners. This predicate requires an explicit texture-path
+    /// keyword match, not just heuristic roughness, so unauthored /
+    /// generic-path materials never trip the glass path. See
+    /// Markarth probe 2026-05-13.
+    pub fn path_indicates_glass(texture_path: Option<&str>) -> bool {
+        let path = texture_path.unwrap_or("");
+        contains_any_ci(
+            path,
+            &[
+                "glass", "crystal", "ice", "gem", "window", "bottle", "jar", "vial",
+            ],
+        )
+    }
+
     /// Infer PBR properties from legacy material data + texture path.
     ///
     /// The texture path is the primary signal — keywords like "metal",
@@ -474,5 +497,63 @@ mod tests {
         let p = m.classify_pbr(Some("textures/unknown/thing.dds"));
         assert_eq!(p.metalness, 0.0);
         assert!(p.roughness > 0.5);
+    }
+
+    // ── path_indicates_glass — Markarth banner-as-glass false-positive
+    //   fix (#993 follow-up; commit 2026-05-13). Pre-fix the
+    //   MATERIAL_KIND_GLASS heuristic in `render.rs` used only
+    //   alpha_blend + metalness + roughness, so Skyrim banner cloth
+    //   whose glossiness-derived roughness fell below 0.4 trips the
+    //   glass path and rendered with rainbow chromatic dispersion.
+    //   Requiring an explicit texture-path glass-keyword signal
+    //   eliminates the false-positive.
+
+    #[test]
+    fn path_indicates_glass_matches_common_glass_keywords() {
+        for path in [
+            r"Textures\Clutter\Glass\GlassBottle01.dds",
+            "textures/clutter/crystal/crystal01.dds",
+            "TEXTURES/SKY/ICE/SnowIce01.dds",
+            r"textures\clutter\gem\ruby01.dds",
+            "textures/architecture/whiterun/whiterunwindow01.dds",
+            "textures/clutter/jars/winejar01.dds",
+            "TEXTURES/CLUTTER/BOTTLES/wineBottle01.dds",
+            "textures/dungeons/vials/healthvial01.dds",
+        ] {
+            assert!(
+                Material::path_indicates_glass(Some(path)),
+                "expected '{path}' to be classified as glass-bearing",
+            );
+        }
+    }
+
+    #[test]
+    fn path_indicates_glass_rejects_cloth_and_architecture() {
+        // The originating bug: Skyrim banner cloth whose path is
+        // `architecture/markarth/markarthbanner01.dds` was being
+        // misclassified as glass because the heuristic in render.rs
+        // didn't consult the texture path. The new explicit gate must
+        // reject these.
+        for path in [
+            "textures/architecture/markarth/markarthbanner01.dds",
+            "textures/architecture/markarth/markarthtower01.dds",
+            "textures/clutter/banner01.dds",
+            "textures/clutter/tapestry01.dds",
+            r"Textures\Architecture\Markarth\MarkarthWall01.dds",
+            "textures/dungeons/markarthstone01.dds",
+            "textures/clutter/fabric/linen.dds",
+            "textures/dungeons/wood/woodplank01.dds",
+        ] {
+            assert!(
+                !Material::path_indicates_glass(Some(path)),
+                "expected '{path}' to NOT be classified as glass-bearing",
+            );
+        }
+    }
+
+    #[test]
+    fn path_indicates_glass_handles_none_and_empty() {
+        assert!(!Material::path_indicates_glass(None));
+        assert!(!Material::path_indicates_glass(Some("")));
     }
 }

@@ -759,12 +759,40 @@ pub(crate) fn build_render_data(
                 // upstream and must win over the heuristic Glass branch.
                 // Today: BSEffectShaderProperty meshes arrive with
                 // material_kind=101 (MATERIAL_KIND_EFFECT_SHADER) set at
-                // import; the glass heuristic (alpha_blend + low metal +
-                // low roughness) would otherwise misclassify a fire plane
-                // as glass. See #706.
+                // import; the glass heuristic would otherwise misclassify
+                // a fire plane as glass. See #706.
+                //
+                // Heuristic glass classification requires an EXPLICIT
+                // texture-path glass-keyword signal alongside the
+                // alpha/metal/roughness gates. Pre-fix any alpha-blend
+                // material whose glossiness-derived roughness happened
+                // to land below 0.4 was classified as glass — that
+                // included Skyrim cloth banners (Markarth heraldic
+                // hangings have `BSLightingShaderProperty.glossiness ≈ 80`
+                // → roughness 0.2 via `1 - 80/100` — the cloth-keyword
+                // arm of `classify_pbr` didn't fire because the texture
+                // path was `architecture/markarth/markarthbanner01.dds`,
+                // not `cloth/banner01.dds`). The misclassification
+                // routed the cloth through the IOR refraction +
+                // chromatic-dispersion shader path, producing visible
+                // rainbow banners. Requiring the path-keyword signal
+                // (glass / crystal / ice / gem / window / bottle / jar
+                // / vial) is conservative: meshes without one of those
+                // tokens never reach the glass renderer regardless of
+                // their PBR fallback, eliminating the cloth-as-glass
+                // false-positive without losing actual glass cups /
+                // bottles. See Markarth probe 2026-05-13.
+                let path_indicates_glass = mat.and_then(|m| m.texture_path.as_deref())
+                    .map(|p| byroredux_core::ecs::components::Material::path_indicates_glass(Some(p)))
+                    .unwrap_or(false);
                 let material_kind = if base_material_kind >= 100 {
                     base_material_kind
-                } else if alpha_blend && !is_decal && metalness < 0.3 && roughness < 0.4 {
+                } else if alpha_blend
+                    && !is_decal
+                    && metalness < 0.3
+                    && roughness < 0.4
+                    && path_indicates_glass
+                {
                     byroredux_renderer::MATERIAL_KIND_GLASS
                 } else {
                     base_material_kind
