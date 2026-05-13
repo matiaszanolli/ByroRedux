@@ -216,8 +216,9 @@ impl Vertex {
 /// Lightweight UI vertex: position + UV only (20 bytes).
 ///
 /// The UI overlay just needs position (already in NDC) and texture
-/// coordinates. Using this instead of the full 76-byte `Vertex` avoids
-/// feeding unused color/normal/bone attributes through the vertex input.
+/// coordinates. Using this instead of the full 100-byte `Vertex` (post-
+/// M-NORMALS, #783) avoids feeding unused color / normal / bone /
+/// tangent attributes through the vertex input.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UiVertex {

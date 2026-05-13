@@ -558,7 +558,8 @@ pub fn create_ui_pipeline(
     ];
 
     // UI pipeline uses the lightweight UiVertex (position + UV only, 20 bytes)
-    // instead of the full 76-byte Vertex with unused bone/normal/color fields.
+    // instead of the full 100-byte Vertex (post-M-NORMALS, #783) with unused
+    // bone / normal / color / tangent fields.
     let binding_descriptions = [UiVertex::binding_description()];
     let attribute_descriptions = UiVertex::attribute_descriptions();
     let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
