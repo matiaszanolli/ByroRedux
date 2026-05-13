@@ -45,6 +45,22 @@ pub enum SptTagKind {
     /// from `spt_transitions` (string-length values that happened
     /// to fall in the tag range — e.g. `4096`, `5376`).
     Unknown,
+    /// Bimodal: tag carries an optional length-prefixed string
+    /// payload. Some files emit the tag bare (0 payload bytes, next
+    /// thing is another tag); others emit it followed by a `u32`
+    /// length and `length` raw ASCII bytes (a BezierSpline curve
+    /// blob).
+    ///
+    /// Disambiguation: the walker peeks the next `u32`. If that value
+    /// is a known dictionary tag → current entry is `Bare`. Otherwise
+    /// → treat as `String`. This is robust against the observed
+    /// vanilla corpus where the only bimodal tag (`13005`) carries a
+    /// 104-byte curve blob whose length doesn't coincide with any
+    /// dictionary tag value.
+    ///
+    /// Documented at `crates/spt/docs/format-notes.md` under "tag
+    /// 13005 bimodal payload" (added with #999).
+    MaybeStringElseBare,
 }
 
 /// Look up a tag's payload kind in the recovered dictionary.
@@ -65,7 +81,14 @@ pub fn dispatch_tag(tag: u32) -> SptTagKind {
         | 10000 | 10001
         | 11000 | 11001
         | 12000 | 12001
-        | 13000 | 13005 => SptTagKind::Bare,
+        | 13000 => SptTagKind::Bare,
+
+        // #999 — bimodal. 109 vanilla Oblivion files emit 13005 bare;
+        // 4 outliers (treems14canvasfreesu, treecottonwoodsu,
+        // shrubms14boxwood, treems14willowoakyoungsu) emit it with an
+        // optional 104-byte BezierSpline curve payload. The walker
+        // peeks the next u32 and decides per-instance.
+        13005 => SptTagKind::MaybeStringElseBare,
 
         // ── 1-byte payload (u8 / bool) ────────────────────────────
         2002 | 3003 | 3006 | 3009
@@ -135,9 +158,19 @@ mod tests {
 
     #[test]
     fn bare_markers_round_trip() {
-        for tag in [1001, 1002, 1016, 1017, 5644, 8000, 9000, 13000, 13005] {
+        for tag in [1001, 1002, 1016, 1017, 5644, 8000, 9000, 13000] {
             assert_eq!(dispatch_tag(tag), SptTagKind::Bare, "tag {} bare", tag);
         }
+    }
+
+    /// #999 — tag 13005 was previously `Bare`, but the 4 Oblivion
+    /// outliers (`treems14canvasfreesu`, `treecottonwoodsu`,
+    /// `shrubms14boxwood`, `treems14willowoakyoungsu`) emit it with an
+    /// optional 104-byte BezierSpline curve payload. The walker now
+    /// peeks the next u32 to disambiguate.
+    #[test]
+    fn tag_13005_is_maybe_string_else_bare() {
+        assert_eq!(dispatch_tag(13005), SptTagKind::MaybeStringElseBare);
     }
 
     #[test]

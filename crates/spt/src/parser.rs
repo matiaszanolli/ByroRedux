@@ -81,6 +81,43 @@ pub fn parse_spt(bytes: &[u8]) -> io::Result<SptScene> {
                 scene.tail_offset = tag_offset;
                 return Ok(scene);
             }
+            SptTagKind::MaybeStringElseBare => {
+                // #999 — tag 13005 is bimodal across the Oblivion
+                // corpus: 109 vanilla files emit it bare, 4 outliers
+                // emit it with an optional length-prefixed string
+                // (BezierSpline curve text). Peek the next `u32` to
+                // disambiguate: if it's a known dictionary tag, the
+                // current entry has no payload (`Bare`). Otherwise
+                // assume it's a string length and consume length +
+                // bytes.
+                //
+                // Robust against observed vanilla content where the
+                // optional curve is 104 bytes long — `dispatch_tag(104)`
+                // returns `Unknown` so the heuristic correctly routes
+                // to the String branch. A pathological mod file
+                // where the string length happens to coincide with a
+                // dictionary tag value (e.g. length = 1002) would
+                // misparse as Bare; not observed in the 133-file
+                // corpus and not worth more complex lookahead today.
+                let _ = stream.read_u32_le()?;
+                let next_is_known_tag = match stream.peek_u32_le() {
+                    Some(next) => {
+                        (TAG_MIN..=TAG_MAX).contains(&next)
+                            && !matches!(dispatch_tag(next), SptTagKind::Unknown)
+                    }
+                    None => false,
+                };
+                let value = if next_is_known_tag {
+                    SptValue::Bare
+                } else {
+                    SptValue::String(stream.read_string_lp()?)
+                };
+                scene.entries.push(TagEntry {
+                    tag,
+                    value,
+                    offset: tag_offset,
+                });
+            }
             kind => {
                 // Consume the tag, then the kind-specific payload.
                 let _ = stream.read_u32_le()?;
@@ -136,15 +173,17 @@ fn read_payload(
                 bytes,
             }
         }
-        SptTagKind::Unknown => {
-            // The walker dispatches on `Unknown` before reaching
-            // here — this arm is unreachable in normal operation.
-            // Defensive bail just in case the dictionary grows in
-            // a way that violates the precondition.
+        SptTagKind::Unknown | SptTagKind::MaybeStringElseBare => {
+            // Walker dispatches both variants before reaching here —
+            // `Unknown` records the diagnostic and bails;
+            // `MaybeStringElseBare` peeks the next u32 and produces
+            // the payload inline. Defensive bail in case a future
+            // dispatch table grows a new context-sensitive kind that
+            // leaks here without walker handling.
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "unknown tag at offset {} — should have bailed in walker",
+                    "context-sensitive tag kind at offset {} — must be handled in walker",
                     tag_offset
                 ),
             ));
@@ -259,5 +298,83 @@ mod tests {
         assert!(scene.reached_eof);
         assert!(scene.entries.is_empty());
         assert_eq!(scene.tail_offset, MAGIC_HEAD.len());
+    }
+
+    /// #999 — tag 13005 followed by another known tag must resolve as
+    /// `Bare`. Models the 109 vanilla Oblivion files that work today.
+    #[test]
+    fn tag_13005_followed_by_known_tag_resolves_as_bare() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC_HEAD);
+        bytes.extend_from_slice(&13005u32.to_le_bytes());
+        // Next: tag 13006 (U32). Walker peek must classify 13005 as Bare.
+        bytes.extend_from_slice(&13006u32.to_le_bytes());
+        bytes.extend_from_slice(&0x12345678u32.to_le_bytes());
+        // Out-of-range sentinel to stop the walker.
+        bytes.extend_from_slice(&0x4E25u32.to_le_bytes());
+
+        let scene = parse_spt(&bytes).expect("must parse");
+        assert!(scene.unknown_tags.is_empty(), "no unknown tags");
+        assert_eq!(scene.entries.len(), 2);
+        assert_eq!(scene.entries[0].tag, 13005);
+        assert_eq!(scene.entries[0].value, SptValue::Bare);
+        assert_eq!(scene.entries[1].tag, 13006);
+        assert_eq!(scene.entries[1].value, SptValue::U32(0x12345678));
+    }
+
+    /// #999 — tag 13005 followed by `u32` length value (not a tag)
+    /// must resolve as `String`. Models the 4 Oblivion outliers
+    /// (`treems14canvasfreesu`, `treecottonwoodsu`, `shrubms14boxwood`,
+    /// `treems14willowoakyoungsu`). Pre-fix the walker bailed on the
+    /// length value (104) as an unknown tag.
+    #[test]
+    fn tag_13005_followed_by_string_length_resolves_as_string() {
+        // Mirror the exact vanilla-Oblivion-outlier curve string.
+        let curve_body: &[u8] = b"BezierSpline 0\t1\t0\n{\n\n\t2\n\t0 1 0.714831 -0.699297 0.079604\n\t1 0.000782381 0.699609 -0.714526 0.107006\n\n}\n";
+        assert_eq!(curve_body.len(), 104, "fixture mirrors the observed 104-byte curve");
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC_HEAD);
+        bytes.extend_from_slice(&13005u32.to_le_bytes());
+        bytes.extend_from_slice(&(curve_body.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(curve_body);
+        // Resume with tag 13006 to prove the walker re-syncs after the
+        // optional payload.
+        bytes.extend_from_slice(&13006u32.to_le_bytes());
+        bytes.extend_from_slice(&0xCAFEBABEu32.to_le_bytes());
+        bytes.extend_from_slice(&0x4E25u32.to_le_bytes());
+
+        let scene = parse_spt(&bytes).expect("must parse");
+        assert!(scene.unknown_tags.is_empty(), "no bail on tag-104 confounder");
+        assert_eq!(scene.entries.len(), 2);
+        assert_eq!(scene.entries[0].tag, 13005);
+        match &scene.entries[0].value {
+            SptValue::String(s) => assert!(s.starts_with("BezierSpline 0\t1\t0")),
+            other => panic!("expected String, got {other:?}"),
+        }
+        assert_eq!(scene.entries[1].tag, 13006);
+        assert_eq!(scene.entries[1].value, SptValue::U32(0xCAFEBABE));
+    }
+
+    /// EOF immediately after tag 13005 (no peek bytes available) is
+    /// safe — peek returns `None`, walker treats as String, and the
+    /// length-read fails with `UnexpectedEof`. Defensive coverage.
+    #[test]
+    fn tag_13005_at_eof_does_not_panic() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC_HEAD);
+        bytes.extend_from_slice(&13005u32.to_le_bytes());
+        // No payload bytes; peek returns None.
+        let result = parse_spt(&bytes);
+        // Either resolves cleanly (length-read fails) or returns an
+        // io::Error — but must not panic.
+        match result {
+            Ok(scene) => {
+                // If the walker treated 13005 as Bare on a None peek, fine.
+                assert!(scene.entries.iter().all(|e| e.tag != 13005)
+                    || scene.entries.iter().any(|e| matches!(e.value, SptValue::Bare)));
+            }
+            Err(e) => assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof),
+        }
     }
 }
