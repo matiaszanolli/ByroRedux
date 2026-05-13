@@ -82,6 +82,14 @@ impl System for DebugDrainSystem {
                     self.pending_screenshot = None;
                 } else if pending.frames_waited > 10 {
                     // Timeout: renderer didn't produce a screenshot in 10 frames.
+                    // #1011 — cancel the bridge state too. If the renderer
+                    // hasn't yet observed `requested = true` (paused,
+                    // swapchain recreate), a later draw would write a
+                    // straggler result that the next screenshot command
+                    // would mistakenly claim. `cancel()` clears both
+                    // the AtomicBool and any buffered bytes atomically
+                    // from the system's POV.
+                    bridge.cancel();
                     let _ = pending.response_tx.send(DebugResponse::error(
                         "screenshot timed out (renderer did not respond)",
                     ));

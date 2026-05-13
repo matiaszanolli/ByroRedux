@@ -32,6 +32,27 @@ impl ScreenshotBridge {
     pub fn take_result(&self) -> Option<Vec<u8>> {
         self.result.lock().unwrap().take()
     }
+
+    /// Cancel a pending request and discard any straggler result bytes.
+    ///
+    /// Pre-#1011, a `DebugDrainSystem` timeout cleared
+    /// `pending_screenshot = None` but left `requested = true` if the
+    /// renderer hadn't yet observed it (renderer paused, swapchain
+    /// recreate). The renderer would later drain the request and write
+    /// a result that nobody was waiting for — the bytes sat in
+    /// `result.lock()` until the *next* screenshot request claimed
+    /// them, leaking a stale PNG into the wrong response.
+    ///
+    /// Returns `true` when state was actually mutated (request was in
+    /// flight or result was buffered). The boolean is informational —
+    /// callers don't need to branch on it.
+    pub fn cancel(&self) -> bool {
+        let had_request = self
+            .requested
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        let had_result = self.result.lock().unwrap().take().is_some();
+        had_request || had_result
+    }
 }
 
 impl Resource for ScreenshotBridge {}
@@ -612,5 +633,67 @@ mod tests {
         });
         assert_eq!(tlm.total_bytes(), 10 * 4 + 5 * 16);
         assert_eq!(tlm.total_wasted(), (10 - 1) * 4 + 0);
+    }
+
+    /// #1011 — `cancel()` must clear both the AtomicBool `requested`
+    /// flag AND any buffered result bytes. Either alone would leak
+    /// state into the next request.
+    #[test]
+    fn screenshot_bridge_cancel_clears_request_and_result() {
+        use std::sync::atomic::Ordering;
+
+        let bridge = ScreenshotBridge {
+            requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        };
+
+        // Simulate a renderer that has finished a capture (result
+        // present) but a still-pending follow-up request (flag set).
+        bridge.request();
+        *bridge.result.lock().unwrap() = Some(vec![0xDE, 0xAD]);
+
+        assert!(bridge.cancel(), "cancel reports state mutated");
+        assert!(!bridge.requested.load(Ordering::Acquire), "flag cleared");
+        assert!(
+            bridge.result.lock().unwrap().is_none(),
+            "buffered result discarded"
+        );
+    }
+
+    #[test]
+    fn screenshot_bridge_cancel_is_idempotent_on_clean_state() {
+        let bridge = ScreenshotBridge {
+            requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        };
+        assert!(
+            !bridge.cancel(),
+            "cancel on clean state reports no mutation"
+        );
+    }
+
+    #[test]
+    fn screenshot_bridge_cancel_handles_request_only() {
+        let bridge = ScreenshotBridge {
+            requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        };
+        bridge.request();
+        assert!(bridge.cancel());
+        assert!(
+            !bridge
+                .requested
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+    }
+
+    #[test]
+    fn screenshot_bridge_cancel_handles_result_only() {
+        let bridge = ScreenshotBridge {
+            requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            result: std::sync::Arc::new(std::sync::Mutex::new(Some(vec![0xCA, 0xFE]))),
+        };
+        assert!(bridge.cancel());
+        assert!(bridge.result.lock().unwrap().is_none());
     }
 }
