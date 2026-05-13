@@ -25,7 +25,8 @@ pub use components::{
     AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,
     AnimatedUvTransform, AnimatedVisibility, BSBound, BSXFlags, Billboard, BillboardMode, Camera,
     CellRoot, Children, EmitterShape, GlobalTransform, LightSource, LocalBound, Material,
-    MeshHandle, Name, Parent, ParticleEmitter, ParticleSoA, RenderLayer, SceneFlags, SkinnedMesh,
+    MeshHandle, Name, Parent, ParticleEmitter, ParticleForceField, ParticleSoA, RenderLayer,
+    SceneFlags, SkinnedMesh,
     TextureHandle, Transform, WorldBound, MAX_BONES_PER_MESH,
 };
 pub use packed::PackedStorage;

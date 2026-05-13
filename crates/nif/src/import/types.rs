@@ -701,6 +701,50 @@ pub struct ImportedParticleEmitter {
     /// the parser captured the ref but immediately discarded it, so
     /// every emitter rendered with the heuristic preset's colour.
     pub color_curve: Option<ParticleColorCurve>,
+    /// Force fields collected from the source NIF's `modifier_refs`
+    /// list — one `ImportedParticleForceField` per
+    /// `NiPSys{Gravity,Vortex,Drag,Turbulence,Air,Radial}FieldModifier`
+    /// in the chain. Empty when the NIF authored no field modifiers
+    /// (most static-FX emitters like torches and ambient embers).
+    /// See #984 / NIF-D5-ORPHAN-A2.
+    pub force_fields: Vec<ImportedParticleForceField>,
+}
+
+/// One authored force field, mirrored 1:1 from a
+/// `NiPSys{Gravity,Vortex,Drag,Turbulence,Air,Radial}FieldModifier`.
+/// Renderer-facing fields stay in NIF Z-up local space — the scene
+/// builder converts to engine Y-up world space when it spawns the
+/// `ParticleEmitter.force_fields` entries (see byroredux/src/scene.rs).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ImportedParticleForceField {
+    Gravity {
+        direction: [f32; 3],
+        strength: f32,
+        decay: f32,
+    },
+    Vortex {
+        axis: [f32; 3],
+        strength: f32,
+        decay: f32,
+    },
+    Drag {
+        strength: f32,
+        direction: [f32; 3],
+        use_direction: bool,
+    },
+    Turbulence {
+        frequency: f32,
+        scale: f32,
+    },
+    Air {
+        direction: [f32; 3],
+        strength: f32,
+        falloff: f32,
+    },
+    Radial {
+        strength: f32,
+        falloff: f32,
+    },
 }
 
 /// Two-keyframe sample of a `NiColorData` curve, captured at NIF import
@@ -740,4 +784,9 @@ pub struct ImportedParticleEmitterFlat {
     /// preset. See [`ImportedParticleEmitter::color_curve`] for the
     /// rationale; same field, same #707 / FX-2 origin.
     pub color_curve: Option<ParticleColorCurve>,
+    /// Force fields collected from the source NIF's
+    /// `NiPSys{Gravity,Vortex,Drag,Turbulence,Air,Radial}FieldModifier`
+    /// chain — empty for most non-FX emitters. See
+    /// [`ImportedParticleEmitter::force_fields`] / #984.
+    pub force_fields: Vec<ImportedParticleForceField>,
 }

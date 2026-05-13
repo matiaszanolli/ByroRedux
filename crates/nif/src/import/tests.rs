@@ -1030,9 +1030,25 @@ fn plain_ni_node_has_no_bs_subclass_payloads() {
 /// the emitter via `ImportedScene::particle_emitters` and the flat
 /// importer must surface it via `import_nif_particle_emitters`.
 /// Pre-#401 both paths discarded the block silently.
-fn ni_psys_block(type_name: &str) -> crate::blocks::particle::NiPSysBlock {
-    crate::blocks::particle::NiPSysBlock {
-        original_type: type_name.to_string(),
+///
+/// Modern emitter types (`NiParticleSystem` / `NiMeshParticleSystem` /
+/// `NiParticles` / `BSStripParticleSystem`) dispatch to the typed
+/// `NiParticleSystem` struct post-#984 — the synthetic fixture needs
+/// to match. Legacy controller types (`NiParticleSystemController` /
+/// `NiBSPArrayController` / `NiAutoNormalParticles` /
+/// `NiRotatingParticles`) stay on the opaque `NiPSysBlock` fallback.
+fn synthetic_particle_block(type_name: &str) -> Box<dyn crate::blocks::NiObject> {
+    match type_name {
+        "NiParticleSystem"
+        | "NiMeshParticleSystem"
+        | "NiParticles"
+        | "BSStripParticleSystem" => Box::new(crate::blocks::particle::NiParticleSystem {
+            original_type: type_name.to_string(),
+            modifier_refs: Vec::new(),
+        }),
+        _ => Box::new(crate::blocks::particle::NiPSysBlock {
+            original_type: type_name.to_string(),
+        }),
     }
 }
 
@@ -1041,7 +1057,7 @@ fn hierarchical_import_surfaces_particle_emitter_under_named_host() {
     // Root NiNode named "TorchNode" with a NiParticleSystem child at index 1.
     let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
     let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
-        vec![Box::new(root), Box::new(ni_psys_block("NiParticleSystem"))];
+        vec![Box::new(root), synthetic_particle_block("NiParticleSystem")];
     let scene = scene_from_blocks(blocks);
     let mut pool = StringPool::new();
     let imported = import_nif_scene(&scene, &mut pool);
@@ -1057,7 +1073,7 @@ fn flat_import_surfaces_particle_emitter_with_nearest_named_host() {
     // Root NiNode at translation (5, 10, 20), with NiParticleSystem child.
     let root = make_ni_node(translated(5.0, 10.0, 20.0), vec![BlockRef(1)]);
     let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
-        vec![Box::new(root), Box::new(ni_psys_block("NiParticleSystem"))];
+        vec![Box::new(root), synthetic_particle_block("NiParticleSystem")];
     let scene = scene_from_blocks(blocks);
     let emitters = import_nif_particle_emitters(&scene);
     assert_eq!(emitters.len(), 1);
@@ -1085,7 +1101,7 @@ fn flat_import_recognizes_legacy_particle_block_types() {
     ] {
         let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
-            vec![Box::new(root), Box::new(ni_psys_block(variant))];
+            vec![Box::new(root), synthetic_particle_block(variant)];
         let scene = scene_from_blocks(blocks);
         let emitters = import_nif_particle_emitters(&scene);
         assert_eq!(
@@ -1161,7 +1177,7 @@ fn import_captures_color_curve_from_psys_color_modifier_chain() {
     };
     let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
         Box::new(root),
-        Box::new(ni_psys_block("NiParticleSystem")),
+        synthetic_particle_block("NiParticleSystem"),
         Box::new(modifier),
         Box::new(color_data),
     ];
@@ -1194,7 +1210,7 @@ fn import_captures_color_curve_from_psys_color_modifier_chain() {
 fn import_leaves_color_curve_none_when_no_color_modifier() {
     let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
     let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
-        vec![Box::new(root), Box::new(ni_psys_block("NiParticleSystem"))];
+        vec![Box::new(root), synthetic_particle_block("NiParticleSystem")];
     let scene = scene_from_blocks(blocks);
     let mut pool = StringPool::new();
     let imported = import_nif_scene(&scene, &mut pool);
@@ -1216,8 +1232,8 @@ fn flat_import_skips_modifier_only_blocks() {
     let root = make_ni_node(identity_transform(), vec![BlockRef(1), BlockRef(2)]);
     let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
         Box::new(root),
-        Box::new(ni_psys_block("NiPSysGravity")),
-        Box::new(ni_psys_block("NiPSysColorModifier")),
+        synthetic_particle_block("NiPSysGravity"),
+        synthetic_particle_block("NiPSysColorModifier"),
     ];
     let scene = scene_from_blocks(blocks);
     let emitters = import_nif_particle_emitters(&scene);

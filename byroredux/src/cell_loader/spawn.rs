@@ -278,6 +278,16 @@ pub(super) fn spawn_placed_instances(
             preset.start_color = curve.start;
             preset.end_color = curve.end;
         }
+        // #984 / NIF-D5-ORPHAN-A2 — carry authored force-field
+        // modifiers onto the spawned `ParticleEmitter` so the
+        // simulator can integrate gravity / vortex / drag /
+        // turbulence / air / radial alongside the preset's `gravity`
+        // scalar. NIF Z-up axes are converted to engine Y-up via
+        // `convert_force_fields_zup_to_yup`. Empty for emitters whose
+        // source NIF authored no field modifiers — preset behaviour
+        // is unchanged in that case.
+        preset.force_fields =
+            crate::systems::convert_force_fields_zup_to_yup(&em.force_fields);
         let entity = world.spawn();
         world.insert(entity, Transform::from_translation(world_pos));
         world.insert(entity, GlobalTransform::new(world_pos, Quat::IDENTITY, 1.0));

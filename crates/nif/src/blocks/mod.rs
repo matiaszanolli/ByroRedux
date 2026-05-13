@@ -895,16 +895,30 @@ pub fn parse_block(
         // Colliders
         "NiPSysPlanarCollider" => Ok(Box::new(particle::parse_planar_collider(stream)?)),
         "NiPSysSphericalCollider" => Ok(Box::new(particle::parse_spherical_collider(stream)?)),
-        // Field modifiers
-        "NiPSysVortexFieldModifier" | "NiPSysGravityFieldModifier" => Ok(Box::new(
-            particle::parse_field_modifier_vec3(stream, type_name)?,
-        )),
-        "NiPSysDragFieldModifier" => Ok(Box::new(particle::parse_drag_field_modifier(stream)?)),
-        "NiPSysTurbulenceFieldModifier" => {
-            Ok(Box::new(particle::parse_turbulence_field_modifier(stream)?))
+        // Field modifiers — #984 / NIF-D5-ORPHAN-A2: each dispatches
+        // to a dedicated downcastable struct so the importer can fold
+        // the authored gravity / vortex / drag / turbulence / air /
+        // radial force into the ECS `ParticleEmitter.force_fields`
+        // list. Pre-#984 every field modifier collapsed onto the
+        // opaque `NiPSysBlock` and the simulator ignored them all.
+        "NiPSysGravityFieldModifier" => {
+            Ok(Box::new(particle::NiPSysGravityFieldModifier::parse(stream)?))
         }
-        "NiPSysAirFieldModifier" => Ok(Box::new(particle::parse_air_field_modifier(stream)?)),
-        "NiPSysRadialFieldModifier" => Ok(Box::new(particle::parse_radial_field_modifier(stream)?)),
+        "NiPSysVortexFieldModifier" => {
+            Ok(Box::new(particle::NiPSysVortexFieldModifier::parse(stream)?))
+        }
+        "NiPSysDragFieldModifier" => {
+            Ok(Box::new(particle::NiPSysDragFieldModifier::parse(stream)?))
+        }
+        "NiPSysTurbulenceFieldModifier" => Ok(Box::new(
+            particle::NiPSysTurbulenceFieldModifier::parse(stream)?,
+        )),
+        "NiPSysAirFieldModifier" => {
+            Ok(Box::new(particle::NiPSysAirFieldModifier::parse(stream)?))
+        }
+        "NiPSysRadialFieldModifier" => {
+            Ok(Box::new(particle::NiPSysRadialFieldModifier::parse(stream)?))
+        }
         // Controllers
         "NiPSysUpdateCtlr" | "NiPSysResetOnLoopCtlr" => Ok(Box::new(
             particle::parse_time_controller(stream, type_name)?,

@@ -87,19 +87,6 @@ fn skip_collider_base(stream: &mut NifStream) -> io::Result<()> {
     Ok(())
 }
 
-// ── NiPSysFieldModifier base (extends NiPSysModifier) ──────────────
-
-fn skip_field_modifier_base(stream: &mut NifStream) -> io::Result<()> {
-    // field_object_ref(ptr) + magnitude(f32) + attenuation(f32) +
-    // use_max_distance(bool) + max_distance(f32)
-    let _field_object = stream.read_block_ref()?;
-    let _magnitude = stream.read_f32_le()?;
-    let _attenuation = stream.read_f32_le()?;
-    let _use_max_distance = stream.read_byte_bool()?;
-    let _max_distance = stream.read_f32_le()?;
-    Ok(())
-}
-
 // ── Generic particle block (shared struct for all types) ────────────
 
 /// Generic particle system block. All particle types are opaque to the
@@ -507,65 +494,269 @@ pub fn parse_spherical_collider(stream: &mut NifStream) -> io::Result<NiPSysBloc
 }
 
 // ── Field modifier parsers ──────────────────────────────────────────
+//
+// Pre-#984 the field-modifier parsers returned an opaque `NiPSysBlock`
+// with every interesting scalar dropped on the floor. Per the
+// NIF-D5-NEW-01 audit, particle systems carrying authored gravity /
+// vortex / drag / turbulence / air / radial fields therefore rendered
+// at heuristic preset config regardless of what the NIF wanted —
+// dust devils didn't rotate, magic spell trails looked anemic.
+//
+// Each modifier now retains its full data payload as a dedicated
+// downcastable struct. The importer's
+// [`crate::import::walk::collect_force_fields`] walks
+// `NiParticleSystem.modifier_refs` and extracts these into a
+// `Vec<ParticleForceField>` that the ECS simulator integrates per
+// frame. See #984 / NIF-D5-ORPHAN-A2.
 
-/// Parse field modifier with vec3 trailing data (vortex, gravity, radial directions).
-pub fn parse_field_modifier_vec3(
-    stream: &mut NifStream,
-    type_name: &str,
-) -> io::Result<NiPSysBlock> {
-    let _base = NiPSysModifierBase::parse(stream)?;
-    skip_field_modifier_base(stream)?;
-    stream.skip(12)?; // direction vec3
-    Ok(NiPSysBlock {
-        original_type: type_name.to_string(),
-    })
+/// Base fields shared across every `NiPSysFieldModifier` subclass,
+/// captured here so the importer can read magnitude / attenuation /
+/// max-distance gates without re-parsing the on-disk bytes.
+#[derive(Debug, Clone)]
+pub struct NiPSysFieldModifierBase {
+    pub field_object_ref: BlockRef,
+    pub magnitude: f32,
+    pub attenuation: f32,
+    pub use_max_distance: bool,
+    pub max_distance: f32,
 }
 
-/// NiPSysDragFieldModifier: field_base + use_direction(bool) + direction(vec3)
-pub fn parse_drag_field_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
-    let _base = NiPSysModifierBase::parse(stream)?;
-    skip_field_modifier_base(stream)?;
-    let _use_direction = stream.read_byte_bool()?;
-    stream.skip(12)?; // direction vec3
-    Ok(NiPSysBlock {
-        original_type: "NiPSysDragFieldModifier".to_string(),
-    })
+impl NiPSysFieldModifierBase {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let field_object_ref = stream.read_block_ref()?;
+        let magnitude = stream.read_f32_le()?;
+        let attenuation = stream.read_f32_le()?;
+        let use_max_distance = stream.read_byte_bool()?;
+        let max_distance = stream.read_f32_le()?;
+        Ok(Self {
+            field_object_ref,
+            magnitude,
+            attenuation,
+            use_max_distance,
+            max_distance,
+        })
+    }
 }
 
-/// NiPSysTurbulenceFieldModifier: field_base + frequency(f32)
-pub fn parse_turbulence_field_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
-    let _base = NiPSysModifierBase::parse(stream)?;
-    skip_field_modifier_base(stream)?;
-    let _frequency = stream.read_f32_le()?;
-    Ok(NiPSysBlock {
-        original_type: "NiPSysTurbulenceFieldModifier".to_string(),
-    })
+/// `NiPSysGravityFieldModifier` — point-source / directional gravity.
+/// `direction` is the gravity vector (NIF Z-up local space).
+#[derive(Debug)]
+pub struct NiPSysGravityFieldModifier {
+    pub modifier_base: NiPSysModifierBase,
+    pub field_base: NiPSysFieldModifierBase,
+    pub direction: [f32; 3],
 }
 
-/// NiPSysAirFieldModifier: field_base + direction(vec3) + 2 floats + 3 bools + 1 float
-pub fn parse_air_field_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
-    let _base = NiPSysModifierBase::parse(stream)?;
-    skip_field_modifier_base(stream)?;
-    stream.skip(12)?; // direction vec3
-    stream.skip(4 * 2)?; // air friction + inherit velocity
-    let _inherit_rotation = stream.read_byte_bool()?;
-    let _component_only = stream.read_byte_bool()?;
-    let _enable_spread = stream.read_byte_bool()?;
-    let _spread = stream.read_f32_le()?;
-    Ok(NiPSysBlock {
-        original_type: "NiPSysAirFieldModifier".to_string(),
-    })
+impl NiObject for NiPSysGravityFieldModifier {
+    fn block_type_name(&self) -> &'static str {
+        "NiPSysGravityFieldModifier"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
-/// NiPSysRadialFieldModifier: field_base + radial_type(u32)
-pub fn parse_radial_field_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
-    let _base = NiPSysModifierBase::parse(stream)?;
-    skip_field_modifier_base(stream)?;
-    let _radial_type = stream.read_u32_le()?;
-    Ok(NiPSysBlock {
-        original_type: "NiPSysRadialFieldModifier".to_string(),
-    })
+impl NiPSysGravityFieldModifier {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let modifier_base = NiPSysModifierBase::parse(stream)?;
+        let field_base = NiPSysFieldModifierBase::parse(stream)?;
+        let dx = stream.read_f32_le()?;
+        let dy = stream.read_f32_le()?;
+        let dz = stream.read_f32_le()?;
+        Ok(Self {
+            modifier_base,
+            field_base,
+            direction: [dx, dy, dz],
+        })
+    }
 }
+
+/// `NiPSysVortexFieldModifier` — rotational force around an axis.
+/// `direction` is the rotation axis (NIF Z-up local space).
+#[derive(Debug)]
+pub struct NiPSysVortexFieldModifier {
+    pub modifier_base: NiPSysModifierBase,
+    pub field_base: NiPSysFieldModifierBase,
+    pub direction: [f32; 3],
+}
+
+impl NiObject for NiPSysVortexFieldModifier {
+    fn block_type_name(&self) -> &'static str {
+        "NiPSysVortexFieldModifier"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiPSysVortexFieldModifier {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let modifier_base = NiPSysModifierBase::parse(stream)?;
+        let field_base = NiPSysFieldModifierBase::parse(stream)?;
+        let dx = stream.read_f32_le()?;
+        let dy = stream.read_f32_le()?;
+        let dz = stream.read_f32_le()?;
+        Ok(Self {
+            modifier_base,
+            field_base,
+            direction: [dx, dy, dz],
+        })
+    }
+}
+
+/// `NiPSysDragFieldModifier` — velocity-proportional damping. When
+/// `use_direction` is false the drag is isotropic; when true the drag
+/// is applied only along `direction`.
+#[derive(Debug)]
+pub struct NiPSysDragFieldModifier {
+    pub modifier_base: NiPSysModifierBase,
+    pub field_base: NiPSysFieldModifierBase,
+    pub use_direction: bool,
+    pub direction: [f32; 3],
+}
+
+impl NiObject for NiPSysDragFieldModifier {
+    fn block_type_name(&self) -> &'static str {
+        "NiPSysDragFieldModifier"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiPSysDragFieldModifier {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let modifier_base = NiPSysModifierBase::parse(stream)?;
+        let field_base = NiPSysFieldModifierBase::parse(stream)?;
+        let use_direction = stream.read_byte_bool()?;
+        let dx = stream.read_f32_le()?;
+        let dy = stream.read_f32_le()?;
+        let dz = stream.read_f32_le()?;
+        Ok(Self {
+            modifier_base,
+            field_base,
+            use_direction,
+            direction: [dx, dy, dz],
+        })
+    }
+}
+
+/// `NiPSysTurbulenceFieldModifier` — pseudo-random per-particle force.
+/// `frequency` drives the noise sampling rate.
+#[derive(Debug)]
+pub struct NiPSysTurbulenceFieldModifier {
+    pub modifier_base: NiPSysModifierBase,
+    pub field_base: NiPSysFieldModifierBase,
+    pub frequency: f32,
+}
+
+impl NiObject for NiPSysTurbulenceFieldModifier {
+    fn block_type_name(&self) -> &'static str {
+        "NiPSysTurbulenceFieldModifier"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiPSysTurbulenceFieldModifier {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let modifier_base = NiPSysModifierBase::parse(stream)?;
+        let field_base = NiPSysFieldModifierBase::parse(stream)?;
+        let frequency = stream.read_f32_le()?;
+        Ok(Self {
+            modifier_base,
+            field_base,
+            frequency,
+        })
+    }
+}
+
+/// `NiPSysAirFieldModifier` — directional wind with falloff. `direction`
+/// is the wind vector, `air_friction` damps cross-wind motion,
+/// `inherit_velocity` ties particle velocity to wind, and `spread`
+/// authors a cone half-angle when `enable_spread` is set.
+#[derive(Debug)]
+pub struct NiPSysAirFieldModifier {
+    pub modifier_base: NiPSysModifierBase,
+    pub field_base: NiPSysFieldModifierBase,
+    pub direction: [f32; 3],
+    pub air_friction: f32,
+    pub inherit_velocity: f32,
+    pub inherit_rotation: bool,
+    pub component_only: bool,
+    pub enable_spread: bool,
+    pub spread: f32,
+}
+
+impl NiObject for NiPSysAirFieldModifier {
+    fn block_type_name(&self) -> &'static str {
+        "NiPSysAirFieldModifier"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiPSysAirFieldModifier {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let modifier_base = NiPSysModifierBase::parse(stream)?;
+        let field_base = NiPSysFieldModifierBase::parse(stream)?;
+        let dx = stream.read_f32_le()?;
+        let dy = stream.read_f32_le()?;
+        let dz = stream.read_f32_le()?;
+        let air_friction = stream.read_f32_le()?;
+        let inherit_velocity = stream.read_f32_le()?;
+        let inherit_rotation = stream.read_byte_bool()?;
+        let component_only = stream.read_byte_bool()?;
+        let enable_spread = stream.read_byte_bool()?;
+        let spread = stream.read_f32_le()?;
+        Ok(Self {
+            modifier_base,
+            field_base,
+            direction: [dx, dy, dz],
+            air_friction,
+            inherit_velocity,
+            inherit_rotation,
+            component_only,
+            enable_spread,
+            spread,
+        })
+    }
+}
+
+/// `NiPSysRadialFieldModifier` — radial push/pull around the field
+/// origin. `radial_type` is a Gamebryo enum (linear / quadratic /
+/// constant); the simulator collapses it to a falloff exponent.
+#[derive(Debug)]
+pub struct NiPSysRadialFieldModifier {
+    pub modifier_base: NiPSysModifierBase,
+    pub field_base: NiPSysFieldModifierBase,
+    pub radial_type: u32,
+}
+
+impl NiObject for NiPSysRadialFieldModifier {
+    fn block_type_name(&self) -> &'static str {
+        "NiPSysRadialFieldModifier"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiPSysRadialFieldModifier {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let modifier_base = NiPSysModifierBase::parse(stream)?;
+        let field_base = NiPSysFieldModifierBase::parse(stream)?;
+        let radial_type = stream.read_u32_le()?;
+        Ok(Self {
+            modifier_base,
+            field_base,
+            radial_type,
+        })
+    }
+}
+
 
 // ── Controller parsers ──────────────────────────────────────────────
 
@@ -637,7 +828,37 @@ pub fn parse_multi_target_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiP
 /// inside the missing payload. With a junk count of e.g. 3000, the
 /// modifier-ref loop walked ~12 KB into the next block — the 75×
 /// over-read the audit flagged.
-pub fn parse_particle_system(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
+/// Top-level particle-system block — capturing the `modifier_refs`
+/// list so the importer can walk the chain into the
+/// `NiPSysGravityFieldModifier` / `NiPSysVortexFieldModifier` /
+/// `NiPSysDragFieldModifier` / `NiPSysTurbulenceFieldModifier` /
+/// `NiPSysAirFieldModifier` / `NiPSysRadialFieldModifier` blocks and
+/// surface authored force fields to the ECS simulator. See #984.
+///
+/// `original_type` discriminates between the five top-level types
+/// (`NiParticleSystem` / `NiParticles` / `NiMeshParticleSystem` /
+/// `BSStripParticleSystem` / `BSMasterParticleSystem`) so the walker
+/// can preserve the pre-#984 telemetry. `modifier_refs` is empty for
+/// `NiParticles` (the wire format has no modifier list on that path).
+#[derive(Debug)]
+pub struct NiParticleSystem {
+    pub original_type: String,
+    pub modifier_refs: Vec<BlockRef>,
+}
+
+impl NiObject for NiParticleSystem {
+    fn block_type_name(&self) -> &'static str {
+        "NiParticleSystem"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+pub fn parse_particle_system(
+    stream: &mut NifStream,
+    type_name: &str,
+) -> io::Result<NiParticleSystem> {
     use super::base::NiAVObjectData;
     use crate::version::NifVersion;
 
@@ -706,6 +927,7 @@ pub fn parse_particle_system(stream: &mut NifStream, type_name: &str) -> io::Res
     }
 
     // NiParticleSystem-specific fields (NiParticles has none).
+    let mut modifier_refs: Vec<BlockRef> = Vec::new();
     if type_name != "NiParticles" {
         // SSE+ (BSVER >= 100): vertex_desc (u64) + Far/Near Begin/End
         // (4 × u16) + data ref. Skyrim LE (BSVER >= 83) has just the
@@ -731,20 +953,22 @@ pub fn parse_particle_system(stream: &mut NifStream, type_name: &str) -> io::Res
         // 12 KB into the next block. Each ref is 4 bytes on disk.
         // See #388 / #407.
         stream.check_alloc((num_modifiers as usize).saturating_mul(4))?;
+        modifier_refs.reserve_exact(num_modifiers as usize);
         for _ in 0..num_modifiers {
-            let _modifier_ref = stream.read_block_ref()?;
+            modifier_refs.push(stream.read_block_ref()?);
         }
     }
 
-    Ok(NiPSysBlock {
+    Ok(NiParticleSystem {
         original_type: type_name.to_string(),
+        modifier_refs,
     })
 }
 
 // ── BSStripParticleSystem (FO3+): same as NiParticleSystem ──────────
 
 /// BSStripParticleSystem: inherits NiParticleSystem, no own fields.
-pub fn parse_strip_particle_system(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
+pub fn parse_strip_particle_system(stream: &mut NifStream) -> io::Result<NiParticleSystem> {
     parse_particle_system(stream, "BSStripParticleSystem")
 }
 

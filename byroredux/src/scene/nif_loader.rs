@@ -486,6 +486,14 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             preset.start_color = curve.start;
             preset.end_color = curve.end;
         }
+        // #984 / NIF-D5-ORPHAN-A2 — carry authored
+        // `NiPSys{Gravity,Vortex,Drag,Turbulence,Air,Radial}FieldModifier`
+        // entries onto the spawned `ParticleEmitter` so the simulator
+        // integrates them alongside the preset's `gravity` scalar.
+        // Mirrored by the cell-loader spawn path; see
+        // `cell_loader::spawn` for the parallel block.
+        preset.force_fields =
+            crate::systems::convert_force_fields_zup_to_yup(&emitter.force_fields);
         world.insert(host_entity, preset);
     }
 

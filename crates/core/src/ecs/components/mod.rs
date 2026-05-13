@@ -47,7 +47,7 @@ pub use local_bound::LocalBound;
 pub use material::Material;
 pub use mesh::MeshHandle;
 pub use name::Name;
-pub use particle::{EmitterShape, ParticleEmitter, ParticleSoA};
+pub use particle::{EmitterShape, ParticleEmitter, ParticleForceField, ParticleSoA};
 pub use render_layer::{
     escalate_small_static_to_clutter, render_layer_with_decal_escalation, RenderLayer,
     SMALL_STATIC_RADIUS_UNITS,

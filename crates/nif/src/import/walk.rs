@@ -430,22 +430,32 @@ pub(super) fn walk_node_hierarchical(
         }
     }
 
-    // Particle systems — see #401 / `ImportedParticleEmitter`.
-    // The parser keeps every NiPSys* variant opaque (`NiPSysBlock`), so
-    // we identify the renderable subset by the original_type string.
-    // Only the top-level emitter blocks produce an ImportedParticleEmitter;
-    // modifier blocks ride along inside the same scene and are walked but
-    // not surfaced (the heuristic preset on the host node carries the
-    // visual config until the parsers retain real emitter fields).
+    // Particle systems — see #401 / `ImportedParticleEmitter` and
+    // #984 / `ImportedParticleForceField`. Modern emitter blocks
+    // (`NiParticleSystem` / `NiMeshParticleSystem` / `NiParticles` /
+    // `BSStripParticleSystem`) deserialise to a typed
+    // `NiParticleSystem` whose `modifier_refs` we walk into the field-
+    // modifier blocks. Legacy emitter / controller types stay on the
+    // opaque `NiPSysBlock` fallback because they have no modifier list.
+    if let Some(ps) = block
+        .as_any()
+        .downcast_ref::<crate::blocks::particle::NiParticleSystem>()
+    {
+        out.particle_emitters
+            .push(crate::import::ImportedParticleEmitter {
+                parent_node: parent_node_idx,
+                original_type: ps.original_type.clone(),
+                color_curve: extract_first_color_curve(scene),
+                force_fields: collect_force_fields(scene, &ps.modifier_refs),
+            });
+        return;
+    }
     if let Some(ps) = block
         .as_any()
         .downcast_ref::<crate::blocks::particle::NiPSysBlock>()
     {
         match ps.original_type.as_str() {
-            "NiParticleSystem"
-            | "NiMeshParticleSystem"
-            | "NiParticles"
-            | "NiParticleSystemController"
+            "NiParticleSystemController"
             | "NiBSPArrayController"
             | "NiAutoNormalParticles"
             | "NiRotatingParticles" => {
@@ -454,11 +464,93 @@ pub(super) fn walk_node_hierarchical(
                         parent_node: parent_node_idx,
                         original_type: ps.original_type.clone(),
                         color_curve: extract_first_color_curve(scene),
+                        // Legacy controller path — no NiPSysModifier
+                        // chain on the wire, so no authored force fields.
+                        force_fields: Vec::new(),
                     });
             }
             _ => {}
         }
     }
+}
+
+/// Walk a `NiParticleSystem.modifier_refs` chain and collect every
+/// `NiPSys{Gravity,Vortex,Drag,Turbulence,Air,Radial}FieldModifier`
+/// into an `ImportedParticleForceField` list. Inactive modifiers
+/// (per [`NiPSysModifierBase::active`]) and stale refs are skipped.
+/// See #984 / NIF-D5-ORPHAN-A2.
+pub(super) fn collect_force_fields(
+    scene: &NifScene,
+    modifier_refs: &[crate::types::BlockRef],
+) -> Vec<crate::import::ImportedParticleForceField> {
+    use crate::blocks::particle::{
+        NiPSysAirFieldModifier, NiPSysDragFieldModifier, NiPSysGravityFieldModifier,
+        NiPSysRadialFieldModifier, NiPSysTurbulenceFieldModifier, NiPSysVortexFieldModifier,
+    };
+    use crate::import::ImportedParticleForceField as F;
+
+    let mut out = Vec::new();
+    for r in modifier_refs {
+        let Some(idx) = r.index() else { continue };
+        let Some(block) = scene.blocks.get(idx) else {
+            continue;
+        };
+        let any = block.as_any();
+        if let Some(g) = any.downcast_ref::<NiPSysGravityFieldModifier>() {
+            if !g.modifier_base.active {
+                continue;
+            }
+            out.push(F::Gravity {
+                direction: g.direction,
+                strength: g.field_base.magnitude,
+                decay: g.field_base.attenuation,
+            });
+        } else if let Some(v) = any.downcast_ref::<NiPSysVortexFieldModifier>() {
+            if !v.modifier_base.active {
+                continue;
+            }
+            out.push(F::Vortex {
+                axis: v.direction,
+                strength: v.field_base.magnitude,
+                decay: v.field_base.attenuation,
+            });
+        } else if let Some(d) = any.downcast_ref::<NiPSysDragFieldModifier>() {
+            if !d.modifier_base.active {
+                continue;
+            }
+            out.push(F::Drag {
+                strength: d.field_base.magnitude,
+                direction: d.direction,
+                use_direction: d.use_direction,
+            });
+        } else if let Some(t) = any.downcast_ref::<NiPSysTurbulenceFieldModifier>() {
+            if !t.modifier_base.active {
+                continue;
+            }
+            out.push(F::Turbulence {
+                frequency: t.frequency,
+                scale: t.field_base.magnitude,
+            });
+        } else if let Some(a) = any.downcast_ref::<NiPSysAirFieldModifier>() {
+            if !a.modifier_base.active {
+                continue;
+            }
+            out.push(F::Air {
+                direction: a.direction,
+                strength: a.field_base.magnitude,
+                falloff: a.field_base.attenuation,
+            });
+        } else if let Some(rd) = any.downcast_ref::<NiPSysRadialFieldModifier>() {
+            if !rd.modifier_base.active {
+                continue;
+            }
+            out.push(F::Radial {
+                strength: rd.field_base.magnitude,
+                falloff: rd.field_base.attenuation,
+            });
+        }
+    }
+    out
 }
 
 /// Scan the parsed NIF scene for the first `NiPSysColorModifier` and
@@ -877,15 +969,29 @@ pub(super) fn walk_node_particle_emitters_flat(
         return;
     }
 
+    // Mirror the hierarchical-walk dispatch (#984): try typed
+    // `NiParticleSystem` first (carries `modifier_refs`); fall through
+    // to opaque `NiPSysBlock` for legacy controller / particle types.
+    if let Some(ps) = block
+        .as_any()
+        .downcast_ref::<crate::blocks::particle::NiParticleSystem>()
+    {
+        let t = &parent_transform.translation;
+        out.push(crate::import::ImportedParticleEmitterFlat {
+            local_position: zup_point_to_yup(t),
+            host_name: parent_node_name,
+            original_type: ps.original_type.clone(),
+            color_curve: extract_first_color_curve(scene),
+            force_fields: collect_force_fields(scene, &ps.modifier_refs),
+        });
+        return;
+    }
     if let Some(ps) = block
         .as_any()
         .downcast_ref::<crate::blocks::particle::NiPSysBlock>()
     {
         match ps.original_type.as_str() {
-            "NiParticleSystem"
-            | "NiMeshParticleSystem"
-            | "NiParticles"
-            | "NiParticleSystemController"
+            "NiParticleSystemController"
             | "NiBSPArrayController"
             | "NiAutoNormalParticles"
             | "NiRotatingParticles" => {
@@ -895,6 +1001,7 @@ pub(super) fn walk_node_particle_emitters_flat(
                     host_name: parent_node_name,
                     original_type: ps.original_type.clone(),
                     color_curve: extract_first_color_curve(scene),
+                    force_fields: Vec::new(),
                 });
             }
             _ => {}

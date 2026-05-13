@@ -137,6 +137,75 @@ impl ParticleSoA {
     }
 }
 
+/// One authored force field captured from a `NiPSys*FieldModifier` on
+/// the source NIF's modifier chain. The particle simulator folds each
+/// active field into the per-particle velocity step every frame.
+///
+/// All centers / axes are stored in the **emitter's local frame at
+/// spawn time** — the field's `field_object_ref` originally targets a
+/// NiNode whose world position the simulator would re-anchor to. The
+/// importer collapses that to the emitter origin (origin-anchored
+/// fields are by far the dominant authoring pattern in vanilla
+/// Bethesda content); a follow-up may add a `world_anchor: [f32; 3]`
+/// slot if multi-anchor fields surface in the wild.
+///
+/// `decay` / `falloff` first-pass model: distance is divided into the
+/// effective force as `force / (1 + decay * dist^attenuation)` for the
+/// Gravity/Vortex/Radial variants, matching the Gamebryo
+/// `NiPSysFieldModifier.attenuation` semantics qualitatively. These
+/// curves are tuneable approximations rather than exact reproductions
+/// — vanilla NIF reference data may shift the exponents at a future
+/// pass. See #984 / NIF-D5-ORPHAN-A2.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParticleForceField {
+    /// Point-source gravity / directional gravity. `direction` is the
+    /// gravity vector in the emitter's local frame; `strength` scales
+    /// magnitude per unit time. `decay` divides force by
+    /// `(1 + decay * dist)` for point falloff at increasing
+    /// distance from the emitter origin; pass `0.0` for uniform.
+    Gravity {
+        direction: [f32; 3],
+        strength: f32,
+        decay: f32,
+    },
+    /// Rotational force around `axis` (local frame). `strength` is the
+    /// tangential acceleration magnitude at unit distance; `decay`
+    /// is the inverse falloff exponent.
+    Vortex {
+        axis: [f32; 3],
+        strength: f32,
+        decay: f32,
+    },
+    /// Velocity-proportional damping. `strength` is the damping rate
+    /// (`v -= v * strength * dt`). When `direction` is non-zero the
+    /// damping projects velocity onto the direction axis first
+    /// (authored anisotropic drag, rare).
+    Drag {
+        strength: f32,
+        direction: [f32; 3],
+    },
+    /// Pseudo-random per-particle force. `scale` is the per-frame
+    /// acceleration magnitude, `frequency` drives the noise sampling
+    /// rate (jitter cadence). The simulator's first-pass uses a fast
+    /// hash-based noise; a follow-up may swap in curl noise.
+    Turbulence { frequency: f32, scale: f32 },
+    /// Directional wind. `direction` is the wind vector (local frame),
+    /// `strength` scales force magnitude. `falloff` divides by
+    /// `(1 + falloff * dist)` so distant particles feel weaker wind
+    /// (matches `NiPSysFieldModifier.attenuation` semantics).
+    Air {
+        direction: [f32; 3],
+        strength: f32,
+        falloff: f32,
+    },
+    /// Radial push (positive `strength`) or pull (negative). Centered
+    /// at the emitter origin; `falloff` divides by `(1 + falloff *
+    /// dist)`. `NiPSysRadialFieldModifier.radial_type`'s linear /
+    /// quadratic / constant enum collapses into the same falloff
+    /// scalar at import time.
+    Radial { strength: f32, falloff: f32 },
+}
+
 /// CPU-driven particle emitter. Attach to any entity that also has a
 /// [`Transform`](super::Transform) + [`GlobalTransform`](super::GlobalTransform).
 /// The emitter spawns particles in **world space** (transformed at spawn
@@ -194,6 +263,13 @@ pub struct ParticleEmitter {
     /// system each tick: integer-floor goes out as the spawn count, the
     /// fractional remainder rolls forward.
     pub spawn_accumulator: f32,
+    /// Authored force fields from the source NIF's
+    /// `NiPSys*FieldModifier` chain. Empty for emitters spawned via a
+    /// heuristic preset (`torch_flame()`, `smoke()`, etc.) or for NIFs
+    /// that don't author field modifiers — the simulator falls back
+    /// to `gravity` alone in that case. See [`ParticleForceField`]
+    /// and #984 / NIF-D5-ORPHAN-A2.
+    pub force_fields: Vec<ParticleForceField>,
     /// Live particle SoA. The emitter owns the dynamic state inline.
     pub particles: ParticleSoA,
 }
@@ -221,6 +297,7 @@ impl Default for ParticleEmitter {
             src_blend: 6, // SRC_ALPHA
             dst_blend: 1, // ONE
             spawn_accumulator: 0.0,
+            force_fields: Vec::new(),
             particles: ParticleSoA::default(),
         }
     }
@@ -229,9 +306,11 @@ impl Default for ParticleEmitter {
 impl ParticleEmitter {
     /// Heuristic preset for a small flickering torch flame. Used by the
     /// NIF importer when a `NiParticleSystem` is attached to a node
-    /// whose name contains `torch`/`fire`/`flame` and no parsed config
-    /// is available — the parsers currently discard the per-emitter
-    /// fields (`NiPSysBlock` is opaque).
+    /// whose name contains `torch`/`fire`/`flame`. The preset still
+    /// drives shape / rate / colour for emitter blocks whose parsers
+    /// remain opaque (`NiPSysBlock`), but authored force fields are
+    /// now wired through `force_fields` post-#984 / NIF-D5-ORPHAN-A2;
+    /// the simulator integrates `gravity` + `force_fields` together.
     pub fn torch_flame() -> Self {
         Self {
             shape: EmitterShape::Sphere { radius: 1.2 },
@@ -252,6 +331,7 @@ impl ParticleEmitter {
             src_blend: 6,
             dst_blend: 1,
             spawn_accumulator: 0.0,
+            force_fields: Vec::new(),
             particles: ParticleSoA::default(),
         }
     }
@@ -286,6 +366,7 @@ impl ParticleEmitter {
             src_blend: 6, // SRC_ALPHA
             dst_blend: 7, // ONE_MINUS_SRC_ALPHA — non-additive smoke
             spawn_accumulator: 0.0,
+            force_fields: Vec::new(),
             particles: ParticleSoA::default(),
         }
     }
@@ -322,6 +403,7 @@ impl ParticleEmitter {
             src_blend: 6,
             dst_blend: 1, // additive — glints against smoke
             spawn_accumulator: 0.0,
+            force_fields: Vec::new(),
             particles: ParticleSoA::default(),
         }
     }
@@ -348,6 +430,7 @@ impl ParticleEmitter {
             src_blend: 6,
             dst_blend: 1, // additive
             spawn_accumulator: 0.0,
+            force_fields: Vec::new(),
             particles: ParticleSoA::default(),
         }
     }
