@@ -35,16 +35,38 @@ pub const MAX_TOTAL_BONES: usize = 32768;
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
 
-/// Maximum instances per frame. 8192 × 400 B = 3.1 MB/frame — trivial.
-/// Covers large exterior cells with multiple loaded cells (~5000+ references).
-pub const MAX_INSTANCES: usize = 8192;
+/// Maximum instances per frame. `16384 × sizeof(GpuInstance) =
+/// 16384 × 112 B = 1.79 MB / frame × 2 frames-in-flight = 3.58 MB`
+/// total — trivial on the 6 GB RT-minimum VRAM budget.
+///
+/// **History**: bumped from 8192 to 16384 after live FNV cell render
+/// showed transparent-draw flicker — fire / waterfall / particle
+/// billboards popping in/out with the slightest camera move. Root
+/// cause: out-of-frustum entities still ride in the instance SSBO
+/// (RT needs them as occluders / reflectors) and the depth-sorted
+/// transparent-cohort tail spilled past 8192, so every sub-pixel
+/// camera move shuffled which depth-sorted tail entries fell off
+/// the cliff. Bumping the cap to 16384 absorbs heavy interior cells
+/// (Ranger Outpost Mojave at 1.5K REFRs with M41 NPC equip meshes +
+/// M38 water + particle billboards lands around 10–12K instances).
+///
+/// **Long-term follow-up** (issue filed alongside this bump):
+/// out-of-frustum instances should live in a separate RT-only SSBO
+/// so they don't compete with raster instances for cap space. That
+/// cuts the effective working-set on typical interiors by 30–50%
+/// since roughly half the cell is off-camera at any moment. Until
+/// that lands, 16384 is the sized-for-content number.
+pub const MAX_INSTANCES: usize = 16384;
 
 /// Maximum number of `VkDrawIndexedIndirectCommand` entries held in
-/// the per-frame indirect buffer. Each entry is 20 bytes, so 8192
-/// entries × 20 B = 160 KB per frame × 3 frames-in-flight = 480 KB
-/// total. Sized generously — real scenes with instanced batching from
-/// #272 rarely emit more than a few hundred entries. See #309.
-pub const MAX_INDIRECT_DRAWS: usize = 8192;
+/// the per-frame indirect buffer. Each entry is 20 bytes, so 16384
+/// entries × 20 B = 320 KB per frame × 2 frames-in-flight = 640 KB
+/// total. Sized generously — real scenes with instanced batching
+/// from #272 rarely emit more than a few hundred entries, but the
+/// MAX_INSTANCES bump above doubled the headroom needed for the
+/// worst-case 1:1 mapping (every instance draws its own indirect
+/// because no per-mesh batching applies). See #309.
+pub const MAX_INDIRECT_DRAWS: usize = 16384;
 
 /// Maximum number of `GpuTerrainTile` slots held in the per-frame
 /// terrain-tile SSBO. 1024 × 32 B = 32 KB per frame — one slot per
@@ -1779,14 +1801,18 @@ mod gpu_instance_layout_tests {
     /// Regression: #309 — `upload_indirect_draws` clamps at
     /// `MAX_INDIRECT_DRAWS` so a future bug that produces an
     /// unbounded batch list can't overflow the indirect buffer.
-    /// 8192 × 20 B = 160 KB per frame; the allocation matches.
+    /// `16384 × 20 B = 320 KB` per frame; the allocation matches.
+    /// Bumped from 8192 alongside `MAX_INSTANCES` after live FNV cell
+    /// render exceeded the original cap and produced transparent-draw
+    /// flicker (depth-sorted tail spilled past the cap, see the
+    /// `MAX_INSTANCES` doc comment for the full root-cause analysis).
     #[test]
     fn indirect_buffer_capacity_matches_max_draw_constant() {
         let bytes_per_command = size_of::<vk::DrawIndexedIndirectCommand>();
         assert_eq!(bytes_per_command, 20);
         assert_eq!(
             bytes_per_command * MAX_INDIRECT_DRAWS,
-            20 * 8192,
+            20 * 16384,
             "MAX_INDIRECT_DRAWS × sizeof(VkDrawIndexedIndirectCommand) \
              must match the per-frame indirect buffer allocation"
         );
