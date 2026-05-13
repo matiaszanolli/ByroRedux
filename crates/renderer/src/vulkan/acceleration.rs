@@ -386,15 +386,30 @@ fn decide_use_update(
 /// corresponding draw command survives the SSBO filter (typically
 /// `mesh_registry.get(handle).is_some()` in the caller). The returned
 /// map is `Some(compacted_idx)` for every kept command in enumeration
-/// order and `None` for every dropped one. See #419 — this is the
-/// single source of truth the TLAS `instance_custom_index` and the
-/// SSBO position must agree on; before it landed the two filter
-/// predicates were independent and could silently diverge.
-pub fn build_instance_map(len: usize, mut keep: impl FnMut(usize) -> bool) -> Vec<Option<u32>> {
+/// order and `None` for every dropped or capacity-clipped one. See
+/// #419 — this is the single source of truth the TLAS
+/// `instance_custom_index` and the SSBO position must agree on; before
+/// it landed the two filter predicates were independent and could
+/// silently diverge.
+///
+/// `max_kept` enforces the SSBO cap (`scene_buffer::MAX_INSTANCES`).
+/// Beyond it `keep` returns are forced to `None` so the TLAS doesn't
+/// emit instances whose `instance_custom_index` would point past the
+/// SSBO upload — that would produce garbage reads on every shadow /
+/// reflection / GI ray hit against an over-cap instance. Caller is
+/// expected to have sorted the draw list so cap-clipped tail entries
+/// are the lowest-priority ones (RT-only off-frustum occluders per
+/// the `!in_raster` prefix in `byroredux::render::draw_sort_key`),
+/// so the dropped contribution is bounded to off-screen RT bounces.
+pub fn build_instance_map(
+    len: usize,
+    max_kept: usize,
+    mut keep: impl FnMut(usize) -> bool,
+) -> Vec<Option<u32>> {
     let mut out = Vec::with_capacity(len);
     let mut next: u32 = 0;
     for i in 0..len {
-        if keep(i) {
+        if keep(i) && (next as usize) < max_kept {
             out.push(Some(next));
             next += 1;
         } else {
@@ -3594,9 +3609,15 @@ mod tests {
     // TLAS custom indices stayed put, silently corrupting material /
     // transform reads on every RT hit downstream.
 
+    /// Effectively-unbounded cap used by the legacy tests that pre-date
+    /// the `max_kept` parameter. usize::MAX guarantees the cap never
+    /// bites for any realistic input, preserving the pre-Option-B
+    /// semantics under test.
+    const NO_CAP: usize = usize::MAX;
+
     #[test]
     fn instance_map_empty_list_produces_empty_map() {
-        let map = build_instance_map(0, |_| true);
+        let map = build_instance_map(0, NO_CAP, |_| true);
         assert!(map.is_empty());
     }
 
@@ -3605,13 +3626,13 @@ mod tests {
         // Happy path: every draw_cmd survives the filter. compacted
         // index equals the enumerate index, which is exactly the pre-fix
         // behaviour — so the mapping must be a no-op in this case.
-        let map = build_instance_map(4, |_| true);
+        let map = build_instance_map(4, NO_CAP, |_| true);
         assert_eq!(map, vec![Some(0), Some(1), Some(2), Some(3)]);
     }
 
     #[test]
     fn instance_map_all_dropped_produces_all_none() {
-        let map = build_instance_map(3, |_| false);
+        let map = build_instance_map(3, NO_CAP, |_| false);
         assert_eq!(map, vec![None, None, None]);
     }
 
@@ -3623,13 +3644,13 @@ mod tests {
         // [A, C, E] at positions 0, 1, 2 — so the shader's ray hit on
         // C would read gpu_instances[2] = E. After #419 C's
         // custom_index is the compacted 1, which matches gpu_instances[1].
-        let map = build_instance_map(5, |i| i != 1 && i != 3);
+        let map = build_instance_map(5, NO_CAP, |i| i != 1 && i != 3);
         assert_eq!(map, vec![Some(0), None, Some(1), None, Some(2)]);
     }
 
     #[test]
     fn instance_map_only_first_kept() {
-        let map = build_instance_map(4, |i| i == 0);
+        let map = build_instance_map(4, NO_CAP, |i| i == 0);
         assert_eq!(map, vec![Some(0), None, None, None]);
     }
 
@@ -3638,12 +3659,82 @@ mod tests {
         // Every `Some(x)` value must be unique and strictly increasing.
         // A regression that decremented or double-assigned `next` would
         // pass the "count matches" check but break SSBO indexing.
-        let map = build_instance_map(10, |i| i % 2 == 0);
+        let map = build_instance_map(10, NO_CAP, |i| i % 2 == 0);
         let kept: Vec<u32> = map.iter().filter_map(|x| *x).collect();
         assert_eq!(kept, vec![0, 1, 2, 3, 4]);
         assert!(
             kept.windows(2).all(|w| w[0] < w[1]),
             "compacted indices must be strictly increasing"
+        );
+    }
+
+    /// Regression: Option B (`MAX_INSTANCES` cap in lockstep with the
+    /// SSBO upload). When the kept count would exceed `max_kept`, the
+    /// trailing entries flip to `None` so the TLAS doesn't emit
+    /// instances whose `instance_custom_index` would point past the
+    /// uploaded SSBO range — that would produce garbage reads on every
+    /// shadow / reflection / GI ray hit against an over-cap instance.
+    #[test]
+    fn instance_map_caps_at_max_kept() {
+        // 10 draw commands all eligible; cap at 4.
+        let map = build_instance_map(10, 4, |_| true);
+        // First 4 land at compacted positions 0..3; the trailing 6
+        // get None because they would have indices >= 4.
+        assert_eq!(
+            map,
+            vec![
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ]
+        );
+    }
+
+    /// Sibling cap-check: when the filter drops some entries AND the
+    /// cap bites, the cap counts only the kept (compacted) ones. A
+    /// dropped entry doesn't consume a cap slot.
+    #[test]
+    fn instance_map_cap_counts_kept_only_not_filtered() {
+        // 8 draw commands; filter drops every odd index (4 dropped, 4 kept);
+        // cap at 3 → keeps the first 3 of the surviving 4.
+        let map = build_instance_map(8, 3, |i| i % 2 == 0);
+        // Surviving indices in order: 0, 2, 4, 6 → first 3 (0, 2, 4)
+        // get compacted 0, 1, 2; index 6 flips to None because the
+        // cap is full.
+        assert_eq!(
+            map,
+            vec![
+                Some(0),
+                None,
+                Some(1),
+                None,
+                Some(2),
+                None,
+                None,
+                None,
+            ]
+        );
+    }
+
+    /// Cap-equal-to-len edge case: when `max_kept >= len` AND every
+    /// entry is kept, the map is identical to the uncapped iota — the
+    /// cap doesn't introduce any None entries.
+    #[test]
+    fn instance_map_cap_at_or_above_len_is_no_op() {
+        assert_eq!(
+            build_instance_map(3, 3, |_| true),
+            vec![Some(0), Some(1), Some(2)]
+        );
+        assert_eq!(
+            build_instance_map(3, 100, |_| true),
+            vec![Some(0), Some(1), Some(2)]
         );
     }
 

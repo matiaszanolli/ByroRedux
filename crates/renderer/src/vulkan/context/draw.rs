@@ -360,11 +360,15 @@ impl VulkanContext {
         // the SSBO builder below — both must honour this map.
         let tlas_t0 = Instant::now();
         let instance_map: Vec<Option<u32>> =
-            super::super::acceleration::build_instance_map(draw_commands.len(), |i| {
-                self.mesh_registry
-                    .get(draw_commands[i].mesh_handle)
-                    .is_some()
-            });
+            super::super::acceleration::build_instance_map(
+                draw_commands.len(),
+                super::super::scene_buffer::MAX_INSTANCES,
+                |i| {
+                    self.mesh_registry
+                        .get(draw_commands[i].mesh_handle)
+                        .is_some()
+                },
+            );
         // M29 Phase 2: TLAS build moved to AFTER bone upload + skin
         // chain (compute dispatch + BLAS refit) so the TLAS sees this
         // frame's skinned poses with zero lag. instance_map computed

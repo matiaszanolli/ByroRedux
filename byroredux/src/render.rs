@@ -192,35 +192,54 @@ fn compute_directional_upload(
 /// to fold into single instanced draws. Owned here so the field order
 /// can't silently drift from an assert in a downstream crate.
 ///
-/// Both branches return the same 9-tuple shape so the compiler accepts a
-/// single key closure. Per-branch semantics:
-///   Opaque      — slot 3/4 = 0 (blend factors unused); slot 5 = depth_state;
-///                 slot 6 = mesh (cluster key); slot 7 = sort_depth (front-to-back);
-///                 slot 8 = entity_id tiebreaker (#506).
-///   Transparent — slot 3/4 = (src_blend, dst_blend) so additive vs alpha vs
-///                 modulate draws cluster together and don't thrash the
-///                 blend-pipeline cache; slot 5 = !sort_depth (back-to-front
-///                 within a (blend, depth_state) cohort); slot 6 = depth_state;
-///                 slot 7 = mesh; slot 8 = entity_id tiebreaker (#506).
-///                 Correctness: alpha compositing requires back-to-front order
-///                 *within one pipeline state*, not across them. Draws sharing
-///                 (src, dst) still sort back-to-front; different-blend draws
-///                 are already visually separable (#499).
+/// Both branches return the same 10-tuple shape so the compiler accepts
+/// a single key closure. Per-branch semantics:
+///   Slot 0       = `!in_raster` priority bit — `0` for in-frustum
+///                 (rasterized) draws, `1` for off-frustum RT-only
+///                 occluders. Out-of-frustum entities ride in the SSBO
+///                 / TLAS so on-screen fragments' shadow / reflection /
+///                 GI rays can hit them, but they don't render to the
+///                 raster pipeline. Clustering them at the END of the
+///                 sorted array means when `MAX_INSTANCES` cap fires
+///                 it drops RT-only entries first — raster never gets
+///                 dropped, and the dropped RT-only contributions
+///                 degrade gracefully (those entries are off-screen
+///                 by definition, so direct visual impact is bounded
+///                 to shadow / reflection / GI from beyond the
+///                 frustum). See `MAX_INSTANCES` doc + Option B of
+///                 the transparent-draw-flicker root-cause writeup.
+///   Slots 1–9    same as the pre-Option-B key:
+///   Opaque      — slot 4/5 = 0 (blend factors unused); slot 6 = depth_state;
+///                 slot 7 = mesh (cluster key); slot 8 = sort_depth
+///                 (front-to-back); slot 9 = entity_id tiebreaker (#506).
+///   Transparent — slot 4/5 = (src_blend, dst_blend); slot 6 = !sort_depth
+///                 (back-to-front within a (blend, depth_state) cohort);
+///                 slot 7 = depth_state; slot 8 = mesh; slot 9 = entity_id.
+///                 Correctness: alpha compositing requires back-to-front
+///                 order *within one pipeline state*, not across them.
 ///
-/// Slot 1 widened from `is_decal as u8` to `render_layer as u8`
+/// Slot 2 widened from `is_decal as u8` to `render_layer as u8`
 /// (#renderlayer): same shape, but consecutive same-layer draws now
 /// cluster as one of `{0..3}` rather than `{0,1}`, matching the new
 /// per-layer depth-bias state-change boundary in `DrawBatch`.
 ///
 /// The entity_id final slot makes `par_sort_unstable_by_key` behave
 /// deterministically across runs: without it, rayon's work-stealing
-/// could reorder commands whose 8-tuple prefix tied, breaking
+/// could reorder commands whose 9-tuple prefix tied, breaking
 /// capture/replay and screenshot-diff workflows on scenes with many
 /// identical-mesh / identical-depth entries (e.g. exterior rock
 /// fields at a fixed camera distance).
-pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u32, u32, u32) {
+pub(crate) fn draw_sort_key(
+    cmd: &DrawCommand,
+) -> (u8, u8, u8, u8, u32, u32, u32, u32, u32, u32) {
+    // Off-frustum RT-only entries cluster at the END of the sorted
+    // array. Cap-on-overflow at `upload_instances` drops them first,
+    // never raster draws. See the doc comment above + the
+    // `MAX_INSTANCES` writeup in `scene_buffer.rs`.
+    let rt_only = (!cmd.in_raster) as u8;
     if cmd.alpha_blend {
         (
+            rt_only,
             1u8, // after opaque
             cmd.render_layer as u8,
             cmd.two_sided as u8,
@@ -233,6 +252,7 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u32, u32, u32, u3
         )
     } else {
         (
+            rt_only,
             0u8,
             cmd.render_layer as u8,
             cmd.two_sided as u8,

@@ -318,3 +318,115 @@ fn bench_draw_sort_serial_vs_parallel() {
         );
     }
 }
+
+// ── Option B: !in_raster prefix sorts RT-only draws to the end ────
+//
+// When `MAX_INSTANCES` cap fires, the SSBO upload silently drops the
+// trailing entries. The Option B sort-key prefix ensures the dropped
+// entries are guaranteed to be off-frustum RT-only occluders — raster
+// draws cluster at the front and are never affected by the cap.
+
+/// In-frustum (in_raster=true) draws sort STRICTLY before off-frustum
+/// (in_raster=false) draws regardless of every other key field.
+#[test]
+fn in_raster_draws_sort_strictly_before_rt_only() {
+    // Off-frustum opaque with "best" other key fields (low entity id,
+    // low mesh handle, etc.) vs in-frustum transparent with "worst"
+    // other key fields. Despite the alpha_blend prefix that would
+    // normally put transparent AFTER opaque, the in_raster bit
+    // dominates → in_raster draws sort first.
+    let mut rt_only_opaque = cmd(false, false, false);
+    rt_only_opaque.in_raster = false;
+    rt_only_opaque.mesh_handle = 0;
+    rt_only_opaque.entity_id = 0;
+
+    let mut in_raster_transparent = cmd(true, false, false);
+    in_raster_transparent.in_raster = true;
+    in_raster_transparent.mesh_handle = u32::MAX;
+    in_raster_transparent.entity_id = u32::MAX;
+
+    let mut cmds = vec![rt_only_opaque, in_raster_transparent];
+    cmds.sort_by_key(draw_sort_key);
+
+    assert!(
+        cmds[0].in_raster,
+        "in_raster=true must sort first; the cap-on-overflow at \
+         MAX_INSTANCES should drop RT-only draws before any raster \
+         draw — otherwise raster pixels disappear when the cap bites"
+    );
+    assert!(!cmds[1].in_raster);
+}
+
+/// Within the in_raster=true band, the legacy opaque-before-transparent
+/// invariant must still hold (back-to-front blend correctness depends on
+/// it).
+#[test]
+fn opaque_before_transparent_within_in_raster_band() {
+    let mut opaque = cmd(false, false, false);
+    opaque.in_raster = true;
+    let mut transparent = cmd(true, false, false);
+    transparent.in_raster = true;
+
+    let mut cmds = vec![transparent, opaque];
+    cmds.sort_by_key(draw_sort_key);
+    assert!(
+        !cmds[0].alpha_blend,
+        "opaque must sort before transparent within the in_raster band"
+    );
+    assert!(cmds[1].alpha_blend);
+}
+
+/// Within the in_raster=false (RT-only) band, opaque-before-transparent
+/// also holds — the secondary sort key still applies; we just relocated
+/// the whole band to the end of the array. This preserves shader-
+/// pipeline batching potential even on the dropped tail (in case the
+/// cap doesn't bite on a given frame).
+#[test]
+fn opaque_before_transparent_within_rt_only_band() {
+    let mut opaque = cmd(false, false, false);
+    opaque.in_raster = false;
+    let mut transparent = cmd(true, false, false);
+    transparent.in_raster = false;
+
+    let mut cmds = vec![transparent, opaque];
+    cmds.sort_by_key(draw_sort_key);
+    assert!(!cmds[0].alpha_blend);
+    assert!(cmds[1].alpha_blend);
+    // Both still off-frustum.
+    assert!(!cmds[0].in_raster);
+    assert!(!cmds[1].in_raster);
+}
+
+/// Sibling check: the !in_raster prefix is u8 (0 or 1), narrower than
+/// the rest of the key, so promoting it to the front of the tuple
+/// can't widen the comparator beyond what `par_sort_unstable_by_key`
+/// already pays. This is a compile-time + behavioural check that the
+/// sort still terminates with the expected ordering on a moderate
+/// mixed batch.
+#[test]
+fn mixed_in_raster_and_rt_only_partition_is_stable() {
+    let mut a = cmd(false, false, false);
+    a.in_raster = true;
+    a.entity_id = 1;
+    let mut b = cmd(true, false, false);
+    b.in_raster = false;
+    b.entity_id = 2;
+    let mut c = cmd(false, false, false);
+    c.in_raster = false;
+    c.entity_id = 3;
+    let mut d = cmd(true, false, false);
+    d.in_raster = true;
+    d.entity_id = 4;
+
+    // Insertion order intentionally interleaves bands.
+    let mut cmds = vec![a, b, c, d];
+    cmds.sort_by_key(draw_sort_key);
+
+    // Expected order: in_raster=true (a, d), then in_raster=false (c, b).
+    // Within in_raster=true: opaque(a) before transparent(d).
+    // Within in_raster=false: opaque(c) before transparent(b).
+    assert_eq!(
+        cmds.iter().map(|x| x.entity_id).collect::<Vec<_>>(),
+        vec![1, 4, 3, 2]
+    );
+}
