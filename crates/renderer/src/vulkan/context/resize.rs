@@ -22,6 +22,26 @@ impl VulkanContext {
             self.device.device_wait_idle().context("device_wait_idle")?;
         }
 
+        // #1005 — shrink the BLAS build scratch buffer to fit. The
+        // scratch is grow-only across the process lifetime by design
+        // (#495); without this call a session that touched one heavy
+        // mesh (Starfield `Saturn.nif`, FO4 LOD terrain) keeps the
+        // ~80–200 MB scratch resident across every subsequent resize
+        // until a cell unload triggers the shrink. Resize already
+        // paid the `device_wait_idle` cost above, so the BLAS build
+        // command buffer (fenced one-time submit) is guaranteed
+        // complete and the scratch buffer is safe to destroy/realloc.
+        // SAFETY: post-`device_wait_idle` — no in-flight GPU work
+        // references the scratch. Skipped when `accel_manager` or
+        // `allocator` are absent (pre-init / headless paths).
+        if let (Some(accel), Some(allocator)) =
+            (self.accel_manager.as_mut(), self.allocator.as_ref())
+        {
+            unsafe {
+                accel.shrink_blas_scratch_to_fit(&self.device, allocator);
+            }
+        }
+
         // Capture the old swapchain format BEFORE recreation so the
         // post-recreate comparison can decide whether to keep the
         // render pass + rasterization pipelines. They depend on
