@@ -13,7 +13,7 @@
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
-    Billboard, BillboardMode, GlobalTransform, LocalBound,
+    BSBound, BSXFlags, Billboard, BillboardMode, GlobalTransform, LocalBound,
     Material, MeshHandle, Name, Parent, ParticleEmitter, SceneFlags, SkinnedMesh, TextureHandle,
     Transform, World, WorldBound, MAX_BONES_PER_MESH,
 };
@@ -978,6 +978,30 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     }
 
     let root = node_entities.first().copied();
+
+    // #986 / NIF-D5-ORPHAN-B2 — wire root-node extra data onto the
+    // root entity. `BSXFlags` (physics / animation hints) and `BSBound`
+    // (object-level AABB) live on the root NiNode in the NIF; the
+    // importer hoists them into `ImportedScene` but pre-#986 no
+    // consumer surfaced them on the ECS. Attaching here means
+    // frustum-cull and spatial-query systems can read the
+    // mesh-precomputed bound directly instead of recomputing a sphere
+    // from per-leaf `LocalBound`s. Both components are
+    // `SparseSetStorage` so unattached NIFs pay nothing.
+    if let Some(root_entity) = root {
+        if let Some(flags) = imported.bsx_flags {
+            world.insert(root_entity, BSXFlags(flags));
+        }
+        if let Some((center, half_extents)) = imported.bs_bound {
+            world.insert(
+                root_entity,
+                BSBound {
+                    center,
+                    half_extents,
+                },
+            );
+        }
+    }
 
     // #261 — mesh-embedded controller chains (water UV scroll, torch
     // flame visibility, lava emissive pulse). `import_nif_scene`

@@ -1685,3 +1685,52 @@ fn scene_without_connect_point_extras_leaves_fields_none() {
     assert!(imported.attach_points.is_none());
     assert!(imported.child_attach_connections.is_none());
 }
+
+/// #986 / NIF-D5-ORPHAN-B2 — `BSBound` extra-data on the root node lifts
+/// onto `ImportedScene::bs_bound` with the center/dimensions rotated
+/// from NIF Z-up to renderer Y-up so the downstream
+/// `BSBound` ECS component agrees with `Transform` / `GlobalTransform`.
+/// Pre-fix the captured value was raw Z-up, leaving any future culling
+/// or spatial-query consumer 90° out of plane with the scene graph.
+#[test]
+fn bs_bound_lifts_to_imported_scene_in_y_up() {
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::extra_data::BsBound;
+
+    // Asymmetric center + half-extents so the y/z permutation is
+    // observable separately from the y-sign flip.
+    let bound = BsBound {
+        name: None,
+        center: [1.0, 2.0, 3.0],     // Z-up
+        dimensions: [4.0, 5.0, 6.0], // half-extents (Z-up labels)
+    };
+    let root = crate::blocks::node::NiNode {
+        av: NiAVObjectData {
+            net: NiObjectNETData {
+                name: Some(std::sync::Arc::from("BoundedRoot")),
+                extra_data_refs: vec![BlockRef(1)],
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        children: Vec::new(),
+        effects: Vec::new(),
+    };
+    let scene = scene_from_blocks(vec![Box::new(root), Box::new(bound)]);
+    let mut pool = StringPool::new();
+    let imported = import_nif_scene(&scene, &mut pool);
+
+    let (center, half_extents) = imported
+        .bs_bound
+        .expect("BsBound on the root node must reach ImportedScene.bs_bound");
+    // Z-up [1, 2, 3] → Y-up [x, z, -y] = [1, 3, -2]. Same rule as
+    // every other point in the importer (zup_point_to_yup).
+    assert_eq!(center, [1.0, 3.0, -2.0]);
+    // Half-extents are unsigned magnitudes — the Z-up→Y-up rotation
+    // around X is a 90° relabel, so the new-Y half-extent equals the
+    // old Z half-extent and vice versa. No sign flip.
+    assert_eq!(half_extents, [4.0, 6.0, 5.0]);
+}
