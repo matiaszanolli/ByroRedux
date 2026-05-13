@@ -7,8 +7,8 @@
 //! silently miscompute the load / unload set.
 
 use super::{
-    classify_payload, compute_streaming_deltas, pre_parse_cell_panic_safe, world_pos_to_grid,
-    LoadCellPayload, LoadedCell, PayloadDecision, StreamingDeltas,
+    classify_payload, compute_streaming_deltas, join_with_timeout, pre_parse_cell_panic_safe,
+    world_pos_to_grid, JoinTimeout, LoadCellPayload, LoadedCell, PayloadDecision, StreamingDeltas,
 };
 use byroredux_core::ecs::storage::EntityId;
 use std::collections::HashMap;
@@ -297,4 +297,56 @@ fn worker_panic_safe_passes_through_normal_payload() {
     assert_eq!(payload.generation, 5);
     assert_eq!(payload.parsed.len(), 1);
     assert!(payload.parsed.contains_key("test/model.nif"));
+}
+
+// ── #856 / C6-NEW-03 — join_with_timeout regression coverage ─────
+//
+// Pins the watcher-thread pattern used by
+// [`WorldStreamingState::shutdown`]. The streaming worker itself is
+// too heavy to wire into a unit test (needs `ExteriorWorldContext`,
+// providers, an mpsc pipeline), but `join_with_timeout` is the
+// load-bearing piece and is trivially testable against a synthetic
+// thread.
+
+#[test]
+fn join_with_timeout_returns_ok_when_thread_finishes_before_deadline() {
+    let handle = std::thread::Builder::new()
+        .name("byro-test-quick".into())
+        .spawn(|| std::thread::sleep(std::time::Duration::from_millis(10)))
+        .expect("spawn quick test thread");
+    let res = join_with_timeout(handle, std::time::Duration::from_millis(500));
+    assert_eq!(res, Ok(()));
+}
+
+#[test]
+fn join_with_timeout_returns_timeout_when_thread_outlives_deadline() {
+    let handle = std::thread::Builder::new()
+        .name("byro-test-slow".into())
+        .spawn(|| std::thread::sleep(std::time::Duration::from_millis(500)))
+        .expect("spawn slow test thread");
+    let res = join_with_timeout(handle, std::time::Duration::from_millis(50));
+    assert_eq!(res, Err(JoinTimeout));
+    // Don't block test wall-clock waiting for the detached watcher —
+    // the spawned sleep thread will complete on its own. The
+    // detached-watcher behaviour matches the production shutdown
+    // path's fallback when the bound fires.
+}
+
+#[test]
+fn join_with_timeout_passes_through_a_panicking_thread_as_ok() {
+    // The streaming worker installs its own panic guard
+    // (`pre_parse_cell_panic_safe`), so a panic shouldn't reach
+    // `join_with_timeout`. But the helper is a general join utility —
+    // a panic in the joined thread means it's *done*, not hung, so
+    // the contract is "Ok (thread terminated)" rather than propagating
+    // the panic payload to the caller.
+    let handle = std::thread::Builder::new()
+        .name("byro-test-panic".into())
+        .spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            panic!("synthetic panic for join_with_timeout test");
+        })
+        .expect("spawn panicking test thread");
+    let res = join_with_timeout(handle, std::time::Duration::from_millis(500));
+    assert_eq!(res, Ok(()));
 }

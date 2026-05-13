@@ -156,15 +156,12 @@ pub struct WorldStreamingState {
     /// suppress no-op streaming work when the player hasn't crossed a
     /// cell boundary.
     pub last_player_grid: Option<(i32, i32)>,
-    /// Worker thread handle. Held so the thread isn't detached; on
-    /// shutdown the worker observes the `request_tx` drop, exits its
-    /// recv loop, and the `JoinHandle` lets a future graceful-shutdown
-    /// path wait on it. Kept inside `Option` so `WorldStreamingState`
-    /// can be moved out of the App on shutdown without forcing a join.
-    /// `dead_code` allow: nothing currently calls `.take().join()` —
-    /// holding the handle is the point (prevents the OS thread from
-    /// being treated as a detached/leaked allocation).
-    #[allow(dead_code)]
+    /// Worker thread handle. Held so the thread isn't detached. On
+    /// graceful shutdown [`WorldStreamingState::shutdown`] drops
+    /// `request_tx` (so the worker's recv loop exits) and joins this
+    /// handle with a bounded timeout (#856). Kept inside `Option` so
+    /// `shutdown` can move the handle out of `self` by destructure
+    /// without `JoinHandle: Default`.
     pub worker: Option<JoinHandle<()>>,
     /// mpsc channel sending requests to the worker. Dropped on
     /// `WorldStreamingState` Drop so the worker exits cleanly.
@@ -207,6 +204,104 @@ impl WorldStreamingState {
             worker: Some(worker),
             request_tx,
             payload_rx,
+        }
+    }
+
+    /// Graceful shutdown — drop the request channel so the worker's
+    /// recv loop exits, then join the worker with a bounded timeout.
+    /// On timeout the worker is detached (matches the pre-#856
+    /// unconditional-detach behaviour as a fallback). Replaces the
+    /// previous `self.streaming.take()` pattern at the
+    /// `WindowEvent::CloseRequested` handler in `main.rs`.
+    ///
+    /// The bound is necessary because the worker may be mid-
+    /// `BsaArchive::extract()` (~100–300 ms typical, much longer on
+    /// network filesystems or contended spinning disks); a slow
+    /// extract should not block process teardown indefinitely. See
+    /// AUDIT_CONCURRENCY_2026-05-05.md / C6-NEW-03.
+    pub fn shutdown(self, timeout: std::time::Duration) {
+        let Self {
+            worker, request_tx, ..
+        } = self;
+        // Drop the sender *first*. The worker's `request_rx.recv()`
+        // returns Err on its next loop iteration and the thread exits.
+        // The matching `payload_rx` drop happens as part of the
+        // destructure's `..` (Drop runs on the discarded fields),
+        // closing the payload channel from the consumer side — if the
+        // worker is currently inside `payload_tx.send(payload)` it
+        // observes the closed receiver and bails via the existing
+        // post-#854 break path.
+        drop(request_tx);
+        let Some(handle) = worker else {
+            return;
+        };
+        match join_with_timeout(handle, timeout) {
+            Ok(()) => log::info!("cell-stream worker joined cleanly on shutdown"),
+            Err(JoinTimeout) => log::warn!(
+                "cell-stream worker did not exit within {:?} — detaching (#856). \
+                 The worker thread will exit shortly after `request_tx` drop, but the \
+                 process teardown won't block on it.",
+                timeout
+            ),
+        }
+    }
+}
+
+/// Sentinel returned by [`join_with_timeout`] when the joined thread
+/// outlives the timeout. Body is unit since the caller doesn't need
+/// to recover any state from the thread — its purpose is to signal
+/// "detach, log, move on."
+#[derive(Debug, PartialEq, Eq)]
+pub struct JoinTimeout;
+
+/// `JoinHandle::join` with a wall-clock timeout. The watcher-thread
+/// pattern works around the lack of a `join_timeout` API on
+/// `std::thread::JoinHandle`: spawn a one-shot mini-thread that
+/// joins the target handle and signals completion on a oneshot mpsc
+/// channel; main thread waits via `recv_timeout`. On timeout the
+/// watcher (and the thread it's still joining) is detached — they
+/// will exit naturally once the work-thread completes its current
+/// unit. The leaked watcher JoinHandle is bounded: at most one per
+/// `join_with_timeout` call site, and on the shutdown path the
+/// process exits shortly after so there's nothing meaningful to
+/// reclaim.
+///
+/// Unit-testable without a full streaming setup — see the
+/// `join_with_timeout_*` tests below.
+pub fn join_with_timeout(
+    handle: JoinHandle<()>,
+    timeout: std::time::Duration,
+) -> Result<(), JoinTimeout> {
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let watcher = std::thread::Builder::new()
+        .name("byro-join-watcher".into())
+        .spawn(move || {
+            // Swallow a panic in the joined thread — the caller's
+            // contract is "thread is done," not "thread succeeded."
+            // Panics in worker threads are already surfaced by the
+            // worker itself (see `pre_parse_cell_panic_safe`).
+            let _ = handle.join();
+            let _ = done_tx.send(());
+        });
+    match watcher {
+        Ok(_watcher_handle) => match done_rx.recv_timeout(timeout) {
+            Ok(()) => Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(JoinTimeout),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // Watcher panicked before sending — treat as "thread
+                // exited" since the join itself returned.
+                Ok(())
+            }
+        },
+        Err(e) => {
+            log::warn!(
+                "join_with_timeout: failed to spawn watcher thread: {e} — \
+                 caller will detach the joined handle"
+            );
+            // No watcher means we can't observe completion. Report
+            // timeout so the caller logs + moves on — same end state
+            // as if the watcher had been spawned and timed out.
+            Err(JoinTimeout)
         }
     }
 }

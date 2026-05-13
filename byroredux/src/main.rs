@@ -1051,12 +1051,22 @@ impl ApplicationHandler for App {
                     ctx.flush_pending_destroys();
                 }
                 // Drop the streaming state explicitly — joins the
-                // worker thread cleanly via the request_tx Drop chain
-                // before we tear down the GPU. Without this, the
-                // worker could still be holding `Arc<TextureProvider>`
-                // file handles that the allocator's leak path would
-                // observe as outstanding refs.
-                self.streaming.take();
+                // worker thread cleanly before we tear down the GPU.
+                // Without this, the worker could still be holding
+                // `Arc<TextureProvider>` file handles that the
+                // allocator's leak path would observe as outstanding
+                // refs.
+                //
+                // #856 / C6-NEW-03 — pre-fix this was a bare
+                // `self.streaming.take()` which detached the worker
+                // (the `JoinHandle` was dropped on the same line via
+                // `WorldStreamingState` Drop). `shutdown` drops
+                // `request_tx` first, then joins with a 1-second
+                // bound so a slow `BsaArchive::extract()` can't
+                // block process teardown.
+                if let Some(state) = self.streaming.take() {
+                    state.shutdown(std::time::Duration::from_secs(1));
+                }
                 self.renderer.take();
                 self.window.take();
                 event_loop.exit();
