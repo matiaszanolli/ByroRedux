@@ -24,6 +24,37 @@ pub(crate) struct PendingCommand {
 /// Shared command queue between listener threads and the drain system.
 pub(crate) type CommandQueue = Arc<Mutex<Vec<PendingCommand>>>;
 
+/// Maximum number of in-flight commands across all clients before the
+/// per-client `handle_client` thread synchronously rejects new commands
+/// with `DebugResponse::error("server overloaded ...")`. Per-client
+/// backpressure is naturally 1-in-flight (each thread blocks on
+/// `recv_timeout` after pushing), so this only fires under N clients ×
+/// commands-between-drains. Debug server is loopback-only (#857), so
+/// the real attack surface is operator-controlled. Cap exists to bound
+/// memory under a CLI-bug-driven tight-loop flood. See #1010.
+pub(crate) const MAX_QUEUED_COMMANDS: usize = 64;
+
+/// Try to enqueue a debug command into the shared `CommandQueue`,
+/// returning the response receiver on success or `None` when the queue
+/// is at capacity. Lock held only across the check+push pair so
+/// concurrent per-client threads can't both slip past the cap. See
+/// #1010.
+pub(crate) fn try_enqueue_command(
+    queue: &CommandQueue,
+    request: DebugRequest,
+) -> Option<mpsc::Receiver<DebugResponse>> {
+    let (tx, rx) = mpsc::channel();
+    let mut q = queue.lock().unwrap();
+    if q.len() >= MAX_QUEUED_COMMANDS {
+        return None;
+    }
+    q.push(PendingCommand {
+        request,
+        response_tx: tx,
+    });
+    Some(rx)
+}
+
 /// Handle returned by [`spawn`] / [`crate::start`]. Owning the handle keeps
 /// the listener thread alive; dropping it signals shutdown and joins the
 /// listener cleanly. Per-client threads stay detached (they observe the
@@ -188,17 +219,21 @@ fn handle_client(stream: TcpStream, queue: CommandQueue, shutdown: Arc<AtomicBoo
             }
         };
 
-        // Create a one-shot channel for the response.
-        let (tx, rx) = mpsc::channel();
-
-        // Push the command into the queue for the drain system.
-        {
-            let mut q = queue.lock().unwrap();
-            q.push(PendingCommand {
-                request,
-                response_tx: tx,
-            });
-        }
+        // #1010 — atomic check-and-push: if the queue is at capacity,
+        // synchronously reject with an overload error without ever
+        // enqueueing. Lock is held briefly across both ops so two
+        // concurrent clients can't both slip past the cap.
+        let Some(rx) = try_enqueue_command(&queue, request) else {
+            let response = DebugResponse::error(format!(
+                "debug-server overloaded ({} commands in flight) — drop and retry",
+                MAX_QUEUED_COMMANDS
+            ));
+            if let Err(e) = wire::send(&mut writer, &response) {
+                log::warn!("Debug client write error during overload reject: {}", e);
+                return;
+            }
+            continue;
+        };
 
         // Wait for the drain system to process it (next frame).
         match rx.recv_timeout(Duration::from_secs(5)) {
@@ -254,5 +289,58 @@ mod tests {
             "DebugServerHandle Drop took {:?} — listener join did not honour shutdown",
             elapsed,
         );
+    }
+
+    fn empty_queue() -> CommandQueue {
+        Arc::new(Mutex::new(Vec::new()))
+    }
+
+    fn ping_request() -> DebugRequest {
+        DebugRequest::Stats
+    }
+
+    /// #1010 — `try_enqueue_command` admits commands when the queue is
+    /// below `MAX_QUEUED_COMMANDS`.
+    #[test]
+    fn try_enqueue_accepts_when_queue_has_capacity() {
+        let queue = empty_queue();
+        let rx = try_enqueue_command(&queue, ping_request());
+        assert!(rx.is_some(), "enqueue must succeed on empty queue");
+        assert_eq!(queue.lock().unwrap().len(), 1, "command landed");
+    }
+
+    /// #1010 — `try_enqueue_command` rejects when the queue is at
+    /// capacity. Drains the receiver to prove the rejection is
+    /// synchronous (no enqueue happened).
+    #[test]
+    fn try_enqueue_rejects_when_queue_is_full() {
+        let queue = empty_queue();
+        for _ in 0..MAX_QUEUED_COMMANDS {
+            let rx = try_enqueue_command(&queue, ping_request());
+            assert!(rx.is_some());
+        }
+        // Cap reached — next enqueue returns None.
+        let rx = try_enqueue_command(&queue, ping_request());
+        assert!(rx.is_none(), "enqueue at cap must reject");
+        assert_eq!(
+            queue.lock().unwrap().len(),
+            MAX_QUEUED_COMMANDS,
+            "no overflow push slipped through"
+        );
+    }
+
+    /// #1010 — after draining, capacity returns and subsequent enqueues
+    /// succeed.
+    #[test]
+    fn try_enqueue_accepts_again_after_drain() {
+        let queue = empty_queue();
+        for _ in 0..MAX_QUEUED_COMMANDS {
+            try_enqueue_command(&queue, ping_request());
+        }
+        // Drain (simulating DebugDrainSystem).
+        let _ = std::mem::take(&mut *queue.lock().unwrap());
+        // Fresh capacity.
+        let rx = try_enqueue_command(&queue, ping_request());
+        assert!(rx.is_some(), "post-drain enqueue must succeed");
     }
 }
