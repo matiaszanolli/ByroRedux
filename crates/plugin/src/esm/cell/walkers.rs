@@ -81,6 +81,13 @@ pub(crate) fn parse_cell_group(
                 let mut ownership_owner: Option<u32> = None;
                 let mut ownership_rank: Option<i32> = None;
                 let mut ownership_global: Option<u32> = None;
+                // #970 / OBL-D3-NEW-06 — Oblivion-era cell-level RGB
+                // tint override (`RCLR`, 3 bytes). Rare even on
+                // Oblivion (editor-authored), absent on FO3+ vanilla.
+                // Parsed cross-game; the field is harmless when None
+                // and lets modded post-Oblivion cells still surface
+                // the override.
+                let mut regional_color_override: Option<[u8; 3]> = None;
 
                 for sub in &subs {
                     match &sub.sub_type {
@@ -145,6 +152,17 @@ pub(crate) fn parse_cell_group(
                         }
                         b"XGLB" => {
                             ownership_global = read_form_id(&sub.data);
+                        }
+                        // #970 / OBL-D3-NEW-06 — Oblivion CELL regional
+                        // tint. nif.xml-equivalent here is the GECK
+                        // CELL Edit, "Regional Map Color" picker; on
+                        // disk it's `RCLR` with 3 RGB bytes (no alpha).
+                        // Some plugins ship a 4-byte payload with a
+                        // trailing pad — accept >= 3 and read the
+                        // first three bytes only.
+                        b"RCLR" if sub.data.len() >= 3 => {
+                            regional_color_override =
+                                Some([sub.data[0], sub.data[1], sub.data[2]]);
                         }
                         b"XCLL" if sub.data.len() >= 28 => {
                             // XCLL layout (shared 28-byte prefix across all games):
@@ -271,6 +289,7 @@ pub(crate) fn parse_cell_group(
                             regions: regions.clone(),
                             lighting_template_form,
                             ownership,
+                            regional_color_override,
                         },
                     );
                     current_cell = Some((header.form_id, editor_id));

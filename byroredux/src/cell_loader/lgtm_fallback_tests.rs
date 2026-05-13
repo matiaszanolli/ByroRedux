@@ -49,6 +49,7 @@ fn empty_cell(form_id: u32, edid: &str) -> CellData {
         regions: Vec::new(),
         lighting_template_form: None,
         ownership: None,
+        regional_color_override: None,
     }
 }
 

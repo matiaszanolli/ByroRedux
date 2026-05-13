@@ -212,6 +212,15 @@ pub struct CellData {
     /// Parsed for completeness; the gameplay consumer is M47 ECS
     /// runtime work. See #692.
     pub ownership: Option<CellOwnership>,
+    /// Oblivion-era cell-level regional fog/sky colour tint from the
+    /// `RCLR` sub-record (3-byte RGB). FO3+ replaced this concept with
+    /// the LGTM / CLMT chain — vanilla post-Oblivion cells don't ship
+    /// RCLR, but the field is kept cross-game so modded data parses
+    /// cleanly everywhere. `None` for any cell that omits RCLR (the
+    /// dominant case even on Oblivion — RCLR is editor-authored, rare
+    /// in vanilla, occasional in mods). The renderer hasn't wired
+    /// this into the LGTM fallback chain yet; see #970 / OBL-D3-NEW-06.
+    pub regional_color_override: Option<[u8; 3]>,
 }
 
 /// Ownership tuple from `XOWN` / `XRNK` / `XGLB` sub-records. Lives

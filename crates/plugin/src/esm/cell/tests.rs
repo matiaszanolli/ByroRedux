@@ -1192,6 +1192,85 @@ fn parse_cell_xclw_populates_water_height() {
     );
 }
 
+/// Regression: #970 / OBL-D3-NEW-06 — Oblivion CELL RCLR
+/// (3-byte RGB regional tint) was silently dropped by the walker;
+/// editor-authored cell-level colour overrides never surfaced to
+/// the downstream renderer. The audit's typical authoring site is
+/// Oblivion exterior cells but the parse arm is cross-game (rare
+/// in vanilla, modder-portable).
+#[test]
+fn parse_cell_rclr_populates_regional_color_override() {
+    let mut sub_data = Vec::new();
+    let edid = "OblivionFog\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01); // is_interior
+
+    // RCLR = 3 bytes RGB.
+    sub_data.extend_from_slice(b"RCLR");
+    sub_data.extend_from_slice(&3u16.to_le_bytes());
+    sub_data.extend_from_slice(&[0x40, 0x80, 0xC0]); // tint = (64, 128, 192)
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+    buf.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes()); // form_id
+    buf.extend_from_slice(&[0u8; 8]); // padding
+    buf.extend_from_slice(&sub_data);
+
+    let mut reader = super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+
+    let cell = cells.get("oblivionfog").expect("lowercase key");
+    assert_eq!(
+        cell.regional_color_override,
+        Some([0x40, 0x80, 0xC0]),
+        "RCLR must populate regional_color_override on CellData"
+    );
+}
+
+/// Companion: a CELL without RCLR keeps `regional_color_override =
+/// None`. Pins that the parse path doesn't fabricate a default value.
+#[test]
+fn parse_cell_without_rclr_leaves_regional_color_override_none() {
+    let mut sub_data = Vec::new();
+    let edid = "NoRclrCell\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01);
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&0xCAFE_BABEu32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+
+    let mut reader = super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    assert!(cells.get("norclrcell").unwrap().regional_color_override.is_none());
+}
+
 #[test]
 fn parse_cell_skyrim_extended_subrecords() {
     // Regression: #356 — Skyrim CELL extended sub-records were
@@ -2817,6 +2896,7 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
         regions: Vec::new(),
         lighting_template_form: None,
         ownership: None,
+        regional_color_override: None,
     }
 }
 

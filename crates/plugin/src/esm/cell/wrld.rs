@@ -240,6 +240,11 @@ pub(crate) fn parse_wrld_children(
                 let mut ownership_owner: Option<u32> = None;
                 let mut ownership_rank: Option<i32> = None;
                 let mut ownership_global: Option<u32> = None;
+                // #970 / OBL-D3-NEW-06 — exterior CELL RCLR. The audit
+                // observed this on Oblivion only; FO3+ vanilla uses
+                // LGTM/CLMT instead. Parse cross-game so modded
+                // exterior cells in any era still surface the override.
+                let mut regional_color_override: Option<[u8; 3]> = None;
 
                 for sub in &subs {
                     match &sub.sub_type {
@@ -306,6 +311,13 @@ pub(crate) fn parse_wrld_children(
                         b"XGLB" if sub.data.len() >= 4 => {
                             ownership_global = read_form_id(&sub.data);
                         }
+                        // #970 / OBL-D3-NEW-06 — see interior walker
+                        // for semantics. Oblivion exterior cells are
+                        // the dominant authoring site for this tag.
+                        b"RCLR" if sub.data.len() >= 3 => {
+                            regional_color_override =
+                                Some([sub.data[0], sub.data[1], sub.data[2]]);
+                        }
                         _ => {}
                     }
                 }
@@ -338,6 +350,7 @@ pub(crate) fn parse_wrld_children(
                             regions,
                             lighting_template_form,
                             ownership,
+                            regional_color_override,
                         },
                     );
                     current_cell = Some(g);
