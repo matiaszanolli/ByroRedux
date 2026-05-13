@@ -35,38 +35,55 @@ pub const MAX_TOTAL_BONES: usize = 32768;
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
 
-/// Maximum instances per frame. `16384 × sizeof(GpuInstance) =
-/// 16384 × 112 B = 1.79 MB / frame × 2 frames-in-flight = 3.58 MB`
-/// total — trivial on the 6 GB RT-minimum VRAM budget.
+/// Maximum instances per frame — pinned at `0x7FFF` (32767), the
+/// hard ceiling of the current `R16_UINT` mesh_id G-buffer encoding.
 ///
-/// **History**: bumped from 8192 to 16384 after live FNV cell render
-/// showed transparent-draw flicker — fire / waterfall / particle
-/// billboards popping in/out with the slightest camera move. Root
-/// cause: out-of-frustum entities still ride in the instance SSBO
-/// (RT needs them as occluders / reflectors) and the depth-sorted
-/// transparent-cohort tail spilled past 8192, so every sub-pixel
-/// camera move shuffled which depth-sorted tail entries fell off
-/// the cliff. Bumping the cap to 16384 absorbs heavy interior cells
-/// (Ranger Outpost Mojave at 1.5K REFRs with M41 NPC equip meshes +
-/// M38 water + particle billboards lands around 10–12K instances).
+/// `triangle.frag:980` writes `(instance_index + 1) & 0x7FFFu` into
+/// the low 15 bits of the mesh_id attachment, reserving bit 15
+/// (`0x8000`) for the `ALPHA_BLEND_NO_HISTORY` flag consumed by TAA
+/// and SVGF disocclusion. With 15 bits and meshId=0 reserved for
+/// "sky / no instance", the maximum addressable instance index is
+/// 32766 → meshId 32767. Index 32767 would wrap to meshId 0 and
+/// collide with the sky sentinel — every shadow / reflection /
+/// SVGF disocclusion query would misroute. The
+/// `gpu_instances.len() <= 0x7FFF` debug_assert in
+/// `vulkan::context::draw::draw_frame` enforces this contract.
 ///
-/// **Long-term follow-up** (issue filed alongside this bump):
-/// out-of-frustum instances should live in a separate RT-only SSBO
-/// so they don't compete with raster instances for cap space. That
-/// cuts the effective working-set on typical interiors by 30–50%
-/// since roughly half the cell is off-camera at any moment. Until
-/// that lands, 16384 is the sized-for-content number.
-pub const MAX_INSTANCES: usize = 16384;
+/// `32767 × sizeof(GpuInstance) = 32767 × 112 B = 3.58 MB / frame
+/// × 2 frames-in-flight = 7.16 MB` total — still trivial on the
+/// 6 GB RT-minimum VRAM budget.
+///
+/// **History**:
+///  - 8192 (original sizing for pre-M41 cells).
+///  - 16384 (commit `fbba53e`, May 2026): live FNV cell render
+///    showed transparent-draw flicker — fire / waterfall / particle
+///    billboards popping in/out with the slightest camera move.
+///    Depth-sorted tail spilled past 8192; sub-pixel camera moves
+///    shuffled which entries fell off the cliff.
+///  - 32767 (this bump): live Skyrim Markarth render exceeded
+///    16384. 32767 is the maximum the `R16_UINT` mesh_id path can
+///    address without collapsing the wrap-to-zero collision into
+///    the sky sentinel.
+///
+/// **Past-ceiling follow-up**: dense Skyrim/FO4 city cells with
+/// REFR counts approaching ~50K (Solitude, Whiterun draw, Diamond
+/// City) will need `MESH_ID_FORMAT` flipped from `R16_UINT` to
+/// `R32_UINT` (+~16 MB at 1440p) and the mesh_id shader encoding
+/// reworked to use bit 31 for the alpha-blend flag instead of bit
+/// 15. Touches 4 shaders + the GBuffer struct. Filed as a
+/// follow-up issue alongside this bump.
+pub const MAX_INSTANCES: usize = 0x7FFF;
 
 /// Maximum number of `VkDrawIndexedIndirectCommand` entries held in
-/// the per-frame indirect buffer. Each entry is 20 bytes, so 16384
-/// entries × 20 B = 320 KB per frame × 2 frames-in-flight = 640 KB
-/// total. Sized generously — real scenes with instanced batching
-/// from #272 rarely emit more than a few hundred entries, but the
-/// MAX_INSTANCES bump above doubled the headroom needed for the
-/// worst-case 1:1 mapping (every instance draws its own indirect
-/// because no per-mesh batching applies). See #309.
-pub const MAX_INDIRECT_DRAWS: usize = 16384;
+/// the per-frame indirect buffer. Each entry is 20 bytes, so
+/// `32767 × 20 B = 640 KB per frame × 2 frames-in-flight = 1.28 MB`
+/// total. Sized to match `MAX_INSTANCES` so the worst-case 1:1
+/// mapping (no per-mesh batching folds, every instance is its own
+/// indirect draw) still fits. Real scenes with the instanced
+/// batching from #272 emit a few hundred entries; the cap exists
+/// to bound buffer allocation, not to throttle typical use. See
+/// #309.
+pub const MAX_INDIRECT_DRAWS: usize = 0x7FFF;
 
 /// Maximum number of `GpuTerrainTile` slots held in the per-frame
 /// terrain-tile SSBO. 1024 × 32 B = 32 KB per frame — one slot per
@@ -1801,20 +1818,48 @@ mod gpu_instance_layout_tests {
     /// Regression: #309 — `upload_indirect_draws` clamps at
     /// `MAX_INDIRECT_DRAWS` so a future bug that produces an
     /// unbounded batch list can't overflow the indirect buffer.
-    /// `16384 × 20 B = 320 KB` per frame; the allocation matches.
-    /// Bumped from 8192 alongside `MAX_INSTANCES` after live FNV cell
-    /// render exceeded the original cap and produced transparent-draw
-    /// flicker (depth-sorted tail spilled past the cap, see the
-    /// `MAX_INSTANCES` doc comment for the full root-cause analysis).
+    /// `0x7FFF × 20 B = 640 KB` per frame; the allocation matches.
+    ///
+    /// Cap history: 8192 → 16384 → 0x7FFF (32767). The final value
+    /// is pinned at the `R16_UINT` mesh_id ceiling — see the
+    /// `MAX_INSTANCES` doc comment for the full encoding rationale.
+    /// Bumping past 0x7FFF requires `MESH_ID_FORMAT` flipped to
+    /// `R32_UINT` plus shader-side bit-31 alpha-blend encoding.
     #[test]
     fn indirect_buffer_capacity_matches_max_draw_constant() {
         let bytes_per_command = size_of::<vk::DrawIndexedIndirectCommand>();
         assert_eq!(bytes_per_command, 20);
         assert_eq!(
             bytes_per_command * MAX_INDIRECT_DRAWS,
-            20 * 16384,
+            20 * 0x7FFF,
             "MAX_INDIRECT_DRAWS × sizeof(VkDrawIndexedIndirectCommand) \
              must match the per-frame indirect buffer allocation"
+        );
+    }
+
+    /// Regression: `MAX_INSTANCES` must stay at or below the
+    /// `R16_UINT` mesh_id ceiling (`0x7FFF` = 32767) until the
+    /// G-buffer format is widened to `R32_UINT`. Past that ceiling
+    /// the `(instance_index + 1) & 0x7FFFu` encoding in
+    /// `triangle.frag:980` wraps index 32767 to meshId 0 (the
+    /// "sky / no instance" sentinel) and shadow / reflection /
+    /// SVGF disocclusion queries against that instance silently
+    /// route to the wrong target. The `draw.rs` debug_assert
+    /// (`gpu_instances.len() <= 0x7FFF`) catches the same drift
+    /// at runtime in debug builds; this test pins the contract at
+    /// build time so a future bump can't accidentally trip the
+    /// wrap without also touching `MESH_ID_FORMAT`.
+    #[test]
+    fn max_instances_stays_within_r16_uint_mesh_id_ceiling() {
+        assert!(
+            MAX_INSTANCES <= 0x7FFF,
+            "MAX_INSTANCES ({}) exceeds the R16_UINT mesh_id ceiling \
+             (0x7FFF = 32767). Flip MESH_ID_FORMAT to R32_UINT and \
+             update the bit-15 → bit-31 ALPHA_BLEND_NO_HISTORY \
+             encoding across triangle.frag / taa.comp / \
+             svgf_temporal.comp / caustic_splat.comp before bumping \
+             past this value.",
+            MAX_INSTANCES
         );
     }
 
