@@ -16,21 +16,102 @@ pub struct SchedulerAccessReport(pub crate::ecs::scheduler::AccessReport);
 impl Resource for SchedulerAccessReport {}
 
 /// Bridge for requesting screenshots from the renderer.
-/// Set `requested` to true; the renderer will capture the next frame and
-/// place the PNG bytes in `result`.
+/// Atomically claim ownership via [`ScreenshotBridge::try_claim`]; the
+/// renderer captures the next frame and places PNG bytes in `result`.
+/// [`ScreenshotBridge::take_result_for`] consumes the bytes only when
+/// the calling consumer matches the in-flight owner.
+///
+/// Two consumers exist by design: the CLI `--screenshot path.png`
+/// deadline loop and the debug-server `DebugRequest::Screenshot`
+/// handler. Pre-#1006 both could fire concurrently and race on the
+/// single result slot — last drainer won the PNG, the other reported
+/// "timed out" and the user's path argument was silently ignored.
+/// The owner-tagged API rejects the second caller with `false` from
+/// `try_claim`; the rejected consumer surfaces a "screenshot in
+/// progress (claimed by ...)" error to its user.
 pub struct ScreenshotBridge {
     pub requested: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub result: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    /// Atomic owner tag — `SCREENSHOT_OWNER_NONE` / `_CLI` / `_DEBUG_SERVER`.
+    /// CAS'd from NONE → owner by `try_claim`, reset to NONE by
+    /// successful `take_result_for` or by `cancel`.
+    pub owner: std::sync::Arc<std::sync::atomic::AtomicU8>,
 }
 
+/// `ScreenshotBridge` is idle — neither CLI nor debug-server holds it.
+pub const SCREENSHOT_OWNER_NONE: u8 = 0;
+/// CLI `--screenshot` deadline loop owns the in-flight request.
+pub const SCREENSHOT_OWNER_CLI: u8 = 1;
+/// Debug-server `DebugRequest::Screenshot` owns the in-flight request.
+pub const SCREENSHOT_OWNER_DEBUG_SERVER: u8 = 2;
+
 impl ScreenshotBridge {
+    /// Set `requested = true` without owner-gating. Kept for
+    /// renderer-internal use (the staging-copy poll loop on the
+    /// device side which doesn't care about consumer identity).
+    /// **New CLI / debug-server code should use [`try_claim`]
+    /// instead** so the two consumers can't collide. See #1006.
     pub fn request(&self) {
         self.requested
             .store(true, std::sync::atomic::Ordering::Release);
     }
 
+    /// Atomically claim the bridge for `owner` and set `requested = true`.
+    /// Returns `true` on successful claim, `false` when another owner
+    /// (or the same owner re-claiming a still-in-flight request)
+    /// already holds the bridge.
+    ///
+    /// `owner` must be `SCREENSHOT_OWNER_CLI` or
+    /// `SCREENSHOT_OWNER_DEBUG_SERVER` — passing `_NONE` is a logic
+    /// error.
+    pub fn try_claim(&self, owner: u8) -> bool {
+        debug_assert!(
+            owner == SCREENSHOT_OWNER_CLI || owner == SCREENSHOT_OWNER_DEBUG_SERVER,
+            "ScreenshotBridge::try_claim must be called with CLI or DEBUG_SERVER, not NONE"
+        );
+        if self
+            .owner
+            .compare_exchange(
+                SCREENSHOT_OWNER_NONE,
+                owner,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        self.requested
+            .store(true, std::sync::atomic::Ordering::Release);
+        true
+    }
+
+    /// Read the current in-flight owner (CLI / DebugServer / None).
+    /// Useful for surfacing a precise rejection message when
+    /// `try_claim` fails.
+    pub fn current_owner(&self) -> u8 {
+        self.owner.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub fn take_result(&self) -> Option<Vec<u8>> {
         self.result.lock().unwrap().take()
+    }
+
+    /// Owner-gated result drain. Returns `Some(bytes)` only when the
+    /// in-flight owner matches `owner` AND a result is available.
+    /// On a successful take, atomically resets the owner to
+    /// `SCREENSHOT_OWNER_NONE` so the next request can claim a fresh
+    /// bridge. Mismatched owners get `None` even if bytes exist —
+    /// the bytes stay queued for their rightful claimant. See #1006.
+    pub fn take_result_for(&self, owner: u8) -> Option<Vec<u8>> {
+        if self.owner.load(std::sync::atomic::Ordering::Acquire) != owner {
+            return None;
+        }
+        let bytes = self.result.lock().unwrap().take()?;
+        // Release the bridge for the next consumer.
+        self.owner
+            .store(SCREENSHOT_OWNER_NONE, std::sync::atomic::Ordering::Release);
+        Some(bytes)
     }
 
     /// Cancel a pending request and discard any straggler result bytes.
@@ -51,6 +132,9 @@ impl ScreenshotBridge {
             .requested
             .swap(false, std::sync::atomic::Ordering::AcqRel);
         let had_result = self.result.lock().unwrap().take().is_some();
+        // #1006 — release ownership so the next consumer can claim.
+        self.owner
+            .store(SCREENSHOT_OWNER_NONE, std::sync::atomic::Ordering::Release);
         had_request || had_result
     }
 }
@@ -635,6 +719,15 @@ mod tests {
         assert_eq!(tlm.total_wasted(), (10 - 1) * 4 + 0);
     }
 
+    /// Test fixture — fresh idle bridge.
+    fn idle_bridge() -> ScreenshotBridge {
+        ScreenshotBridge {
+            requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            owner: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(SCREENSHOT_OWNER_NONE)),
+        }
+    }
+
     /// #1011 — `cancel()` must clear both the AtomicBool `requested`
     /// flag AND any buffered result bytes. Either alone would leak
     /// state into the next request.
@@ -642,10 +735,7 @@ mod tests {
     fn screenshot_bridge_cancel_clears_request_and_result() {
         use std::sync::atomic::Ordering;
 
-        let bridge = ScreenshotBridge {
-            requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            result: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        };
+        let bridge = idle_bridge();
 
         // Simulate a renderer that has finished a capture (result
         // present) but a still-pending follow-up request (flag set).
@@ -662,10 +752,7 @@ mod tests {
 
     #[test]
     fn screenshot_bridge_cancel_is_idempotent_on_clean_state() {
-        let bridge = ScreenshotBridge {
-            requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            result: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        };
+        let bridge = idle_bridge();
         assert!(
             !bridge.cancel(),
             "cancel on clean state reports no mutation"
@@ -674,10 +761,7 @@ mod tests {
 
     #[test]
     fn screenshot_bridge_cancel_handles_request_only() {
-        let bridge = ScreenshotBridge {
-            requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            result: std::sync::Arc::new(std::sync::Mutex::new(None)),
-        };
+        let bridge = idle_bridge();
         bridge.request();
         assert!(bridge.cancel());
         assert!(
@@ -689,11 +773,87 @@ mod tests {
 
     #[test]
     fn screenshot_bridge_cancel_handles_result_only() {
-        let bridge = ScreenshotBridge {
-            requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            result: std::sync::Arc::new(std::sync::Mutex::new(Some(vec![0xCA, 0xFE]))),
-        };
+        let bridge = idle_bridge();
+        *bridge.result.lock().unwrap() = Some(vec![0xCA, 0xFE]);
         assert!(bridge.cancel());
         assert!(bridge.result.lock().unwrap().is_none());
+    }
+
+    /// #1006 — `try_claim` succeeds on an idle bridge and atomically
+    /// sets both owner + requested.
+    #[test]
+    fn screenshot_bridge_try_claim_succeeds_when_idle() {
+        let bridge = idle_bridge();
+        assert!(bridge.try_claim(SCREENSHOT_OWNER_CLI));
+        assert_eq!(bridge.current_owner(), SCREENSHOT_OWNER_CLI);
+        assert!(bridge
+            .requested
+            .load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    /// #1006 — second `try_claim` rejects when another owner holds
+    /// the bridge; no mutation occurs.
+    #[test]
+    fn screenshot_bridge_try_claim_rejects_when_owned() {
+        let bridge = idle_bridge();
+        assert!(bridge.try_claim(SCREENSHOT_OWNER_CLI));
+        // Different owner — must reject.
+        assert!(!bridge.try_claim(SCREENSHOT_OWNER_DEBUG_SERVER));
+        // Same owner — also rejects (a still-in-flight request must
+        // complete its result drain before re-claiming).
+        assert!(!bridge.try_claim(SCREENSHOT_OWNER_CLI));
+        // Owner unchanged.
+        assert_eq!(bridge.current_owner(), SCREENSHOT_OWNER_CLI);
+    }
+
+    /// #1006 — `take_result_for` only returns bytes when owner matches.
+    /// On a successful take, owner resets to NONE so the next consumer
+    /// can claim.
+    #[test]
+    fn screenshot_bridge_take_result_for_owner_gated() {
+        let bridge = idle_bridge();
+        bridge.try_claim(SCREENSHOT_OWNER_DEBUG_SERVER);
+        *bridge.result.lock().unwrap() = Some(vec![0xBE, 0xEF]);
+
+        // Wrong owner — bytes stay queued.
+        assert!(bridge.take_result_for(SCREENSHOT_OWNER_CLI).is_none());
+        assert!(
+            bridge.result.lock().unwrap().is_some(),
+            "bytes not consumed by wrong owner"
+        );
+        assert_eq!(bridge.current_owner(), SCREENSHOT_OWNER_DEBUG_SERVER);
+
+        // Correct owner — bytes drain AND owner resets.
+        let bytes = bridge.take_result_for(SCREENSHOT_OWNER_DEBUG_SERVER);
+        assert_eq!(bytes, Some(vec![0xBE, 0xEF]));
+        assert_eq!(
+            bridge.current_owner(),
+            SCREENSHOT_OWNER_NONE,
+            "successful take releases ownership"
+        );
+    }
+
+    /// #1006 — after a successful drain, the bridge is idle and the
+    /// other consumer can claim it.
+    #[test]
+    fn screenshot_bridge_handoff_cli_to_debug_server() {
+        let bridge = idle_bridge();
+        bridge.try_claim(SCREENSHOT_OWNER_CLI);
+        *bridge.result.lock().unwrap() = Some(vec![0x01]);
+        assert!(bridge.take_result_for(SCREENSHOT_OWNER_CLI).is_some());
+        // Debug-server can now claim.
+        assert!(bridge.try_claim(SCREENSHOT_OWNER_DEBUG_SERVER));
+    }
+
+    /// #1006 — `cancel()` also resets ownership so the bridge is fully
+    /// reusable after a timeout cleanup.
+    #[test]
+    fn screenshot_bridge_cancel_resets_owner() {
+        let bridge = idle_bridge();
+        bridge.try_claim(SCREENSHOT_OWNER_DEBUG_SERVER);
+        bridge.cancel();
+        assert_eq!(bridge.current_owner(), SCREENSHOT_OWNER_NONE);
+        // Either consumer can claim a fresh bridge.
+        assert!(bridge.try_claim(SCREENSHOT_OWNER_CLI));
     }
 }

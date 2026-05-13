@@ -962,6 +962,16 @@ impl ApplicationHandler for App {
                     .insert_resource(byroredux_core::ecs::ScreenshotBridge {
                         requested: ss_handle.requested,
                         result: ss_handle.result,
+                        // #1006 — owner-tagged claim so the CLI
+                        // `--screenshot` deadline loop and the
+                        // debug-server `DebugRequest::Screenshot`
+                        // can't race on a single result slot.
+                        // Starts idle (SCREENSHOT_OWNER_NONE).
+                        owner: std::sync::Arc::new(
+                            std::sync::atomic::AtomicU8::new(
+                                byroredux_core::ecs::resources::SCREENSHOT_OWNER_NONE,
+                            ),
+                        ),
                     });
 
                 // Expose the GPU allocator to the ECS so the
@@ -1513,21 +1523,41 @@ impl ApplicationHandler for App {
                                 .world
                                 .try_resource::<byroredux_core::ecs::ScreenshotBridge>()
                             {
-                                bridge
-                                    .requested
-                                    .store(true, std::sync::atomic::Ordering::Release);
-                                drop(bridge);
-                                self.screenshot_requested = true;
-                                self.screenshot_deadline_frames = 60;
-                                return; // keep running frames
+                                // #1006 — claim ownership atomically.
+                                // If the debug-server already holds
+                                // the bridge (rare: byro-dbg attached
+                                // before the CLI's first frame issues
+                                // its screenshot command), bail with a
+                                // clear error so the user knows the
+                                // collision happened instead of silently
+                                // racing for the result slot.
+                                if !bridge.try_claim(
+                                    byroredux_core::ecs::resources::SCREENSHOT_OWNER_CLI,
+                                ) {
+                                    eprintln!(
+                                        "screenshot: bridge already claimed (debug-server owns it) — skipping CLI capture"
+                                    );
+                                    self.screenshot_path = None;
+                                } else {
+                                    drop(bridge);
+                                    self.screenshot_requested = true;
+                                    self.screenshot_deadline_frames = 60;
+                                    return; // keep running frames
+                                }
                             }
                         }
 
                         // Poll the result slot until the PNG arrives.
+                        // Owner-gated take so a debug-server screenshot
+                        // racing past the CLI claim can't steal our bytes.
                         let maybe_bytes = self
                             .world
                             .try_resource::<byroredux_core::ecs::ScreenshotBridge>()
-                            .and_then(|b| b.result.lock().unwrap().take());
+                            .and_then(|b| {
+                                b.take_result_for(
+                                    byroredux_core::ecs::resources::SCREENSHOT_OWNER_CLI,
+                                )
+                            });
                         if let Some(bytes) = maybe_bytes {
                             match std::fs::write(&path, &bytes) {
                                 Ok(()) => {
