@@ -30,8 +30,9 @@ use collision::{
     BhkCompressedMeshShape, BhkCompressedMeshShapeData, BhkConstraint, BhkConvexListShape,
     BhkConvexVerticesShape, BhkCylinderShape, BhkLiquidAction, BhkListShape, BhkMoppBvTreeShape,
     BhkMultiSphereShape, BhkNiTriStripsShape, BhkOrientHingedBodyAction, BhkPCollisionObject,
-    BhkPackedNiTriStripsShape, BhkRigidBody, BhkSimpleShapePhantom, BhkSphereShape,
-    BhkTransformShape, HkPackedNiTriStripsData, NiCollisionObjectBase,
+    BhkPackedNiTriStripsShape, BhkPoseArray, BhkRagdollTemplate, BhkRagdollTemplateData,
+    BhkRigidBody, BhkSimpleShapePhantom, BhkSphereShape, BhkTransformShape,
+    HkPackedNiTriStripsData, NiCollisionObjectBase,
 };
 use controller::{
     BhkBlendController, BsNiAlphaPropertyTestRefController, BsRefractionFirePeriodController,
@@ -1043,6 +1044,17 @@ pub fn parse_block(
             stream,
             "bhkRagdollSystem",
         )?)),
+        // FO3+ ragdoll extensions (#980 / NIF-D5-NEW-04). Pre-fix the
+        // three types fell through to NiUnknown and the death-pose /
+        // canned-ragdoll system was silently disabled — every dead
+        // raider / molerat collapsed into the same generic spine-null
+        // pose instead of the authored "shot in the chest" /
+        // "stumble-and-drop" poses authored in `.psa` / `.rdt` files.
+        "bhkPoseArray" => Ok(Box::new(BhkPoseArray::parse(stream)?)),
+        "bhkRagdollTemplate" => Ok(Box::new(BhkRagdollTemplate::parse(stream)?)),
+        "bhkRagdollTemplateData" => {
+            Ok(Box::new(BhkRagdollTemplateData::parse(stream, block_size)?))
+        }
         _ => {
             // Unknown block type — skip it if we know the size
             if let Some(size) = block_size {
