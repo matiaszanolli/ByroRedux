@@ -57,6 +57,59 @@ pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
 /// Hoisted out of `weather_system` so the current snapshot walk and
 /// the WTHR cross-fade target walk share one implementation —
 /// REN-D15-NEW-05 (audit `2026-05-09`).
+/// Derive sun direction + intensity from the climate's `tod_hours`.
+///
+/// `tod_hours = [sunrise_begin, sunrise_end, sunset_begin, sunset_end]`
+/// (same quad `build_tod_keys` consumes). The visible-sun arc spans
+/// `[sunrise_begin, sunset_end]` so the directional light stays in
+/// lockstep with the sky palette across the entire dawn → day → dusk
+/// transition. Outside this window the sun direction is the below-
+/// horizon sentinel `[0, -1, 0]` and intensity is 0.
+///
+/// Intensity envelope:
+///   - ramp 0 → 4.0 across `[sunrise_begin, sunrise_end]`
+///   - full 4.0 across `[sunrise_end, sunset_begin]`
+///   - ramp 4.0 → 0 across `[sunset_begin, sunset_end]`
+///   - 0.0 outside `[sunrise_begin, sunset_end]`
+///
+/// Pre-#1012 the arc was hardcoded `(hour - 6.0) / 12.0 * π` and the
+/// intensity window was `[7, 17]`, which produced a ~40 min "below-
+/// horizon sun under sunrise-tinted sky" window on FO3 Capital
+/// Wasteland (`tod_hours = [5.333, 10.0, 17.0, 22.0]`).
+pub(crate) fn compute_sun_arc(hour: f32, tod_hours: [f32; 4]) -> ([f32; 3], f32) {
+    let [sunrise_begin, sunrise_end, sunset_begin, sunset_end] = tod_hours;
+    let day_span = (sunset_end - sunrise_begin).max(1e-3);
+
+    // Sun direction: semicircular arc east → zenith → west, with a
+    // slight south tilt (engine +Z = Bethesda -Y = south) per #802 /
+    // SUN-N2. Per-worldspace latitude tilt deferred to #1019.
+    let sun_dir = if hour >= sunrise_begin && hour <= sunset_end {
+        let solar_hour = (hour - sunrise_begin).clamp(0.0, day_span);
+        let angle = solar_hour / day_span * std::f32::consts::PI;
+        let x = angle.cos();
+        let y = angle.sin();
+        let z = 0.15_f32;
+        let len = (x * x + y * y + z * z).sqrt();
+        [x / len, y / len, z / len]
+    } else {
+        [0.0, -1.0, 0.0]
+    };
+
+    let sun_intensity = if hour >= sunrise_end && hour <= sunset_begin {
+        4.0
+    } else if hour >= sunrise_begin && hour < sunrise_end {
+        let ramp_span = (sunrise_end - sunrise_begin).max(1e-3);
+        ((hour - sunrise_begin) / ramp_span * 4.0).clamp(0.0, 4.0)
+    } else if hour > sunset_begin && hour <= sunset_end {
+        let ramp_span = (sunset_end - sunset_begin).max(1e-3);
+        ((sunset_end - hour) / ramp_span * 4.0).clamp(0.0, 4.0)
+    } else {
+        0.0
+    };
+
+    (sun_dir, sun_intensity)
+}
+
 pub(crate) fn pick_tod_pair(keys: &[(f32, usize); 7], hour: f32) -> (usize, usize, f32) {
     // Wrap pre-midnight hours (e.g. 0.5) into the [1, 25) range so the
     // last-key → first-key wrap segment is reachable from a single
@@ -291,43 +344,15 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             )
         };
 
-    // Sun direction: semicircular arc from east (6h) through zenith (12h) to west (18h).
-    // Below horizon at night. Y-up coordinate system.
-    let sun_dir = {
-        // Solar angle: 0 at sunrise (6h), π at sunset (18h).
-        let solar_hour = (hour - 6.0).clamp(0.0, 12.0);
-        let angle = solar_hour / 12.0 * std::f32::consts::PI;
-        // Sun arcs from east (+X) through up (+Y) to west (-X) with a
-        // slight south tilt — #802 / SUN-N2. Per the Z-up → Y-up swap
-        // in `crates/nif/src/import/coord.rs:18` (`(x, y, z) → (x, z, -y)`),
-        // Bethesda's authored +Y (north) maps to engine -Z, so SOUTH is
-        // engine +Z. All four Bethesda settings (Mojave, Capital
-        // Wasteland, Tamriel, Commonwealth) sit at NH latitudes where
-        // the real sun arcs through the southern sky; pre-#802 this
-        // constant was -0.15 (a NORTH tilt) despite the comment
-        // claiming south.
-        let x = angle.cos();
-        let y = angle.sin();
-        let z = 0.15_f32; // slight south tilt (engine +Z = Bethesda -Y = south)
-        let len = (x * x + y * y + z * z).sqrt();
-        if (6.0..=18.0).contains(&hour) {
-            [x / len, y / len, z / len]
-        } else {
-            // Night: sun below horizon. Push it down so no sun disc renders.
-            [0.0, -1.0, 0.0]
-        }
-    };
-
-    // Sun intensity: fade in/out at sunrise/sunset.
-    let sun_intensity = if (7.0..=17.0).contains(&hour) {
-        4.0
-    } else if (6.0..7.0).contains(&hour) {
-        (hour - 6.0) * 4.0 // fade in
-    } else if hour > 17.0 && hour <= 18.0 {
-        (18.0 - hour) * 4.0 // fade out
-    } else {
-        0.0 // night
-    };
+    // Sun direction + intensity — derived from this WTHR's
+    // `tod_hours` via `compute_sun_arc`, so the sun stays in lockstep
+    // with the climate-driven palette. Pre-#1012 these were hardcoded
+    // to a 6h/18h arc + 7h/17h intensity window that disagreed with
+    // non-default CLMTs — FO3 Capital Wasteland (sunrise 5.333 h) had
+    // ~40 min where the palette was sunrise-tinted but the sun
+    // direction was the below-horizon sentinel `[0, -1, 0]` (sky
+    // painted dawn while N·L = 0).
+    let (sun_dir, sun_intensity) = compute_sun_arc(hour, wd.tod_hours);
 
     // Cloud layer 0 scroll rate. Pre-#535 the rate was "derived" from
     // `wd.cloud_speeds[0] / 128.0 * 0.02`, but that byte was actually
@@ -693,6 +718,103 @@ mod tod_keys_tests {
         assert_eq!(a, TOD_NIGHT);
         assert_eq!(b, TOD_MIDNIGHT);
         assert!(t > 0.0 && t <= 1.0);
+    }
+
+    /// Regression for #1012 / REN-D15-NEW-08.
+    ///
+    /// Pre-fix: sun direction used a hardcoded `[6h, 18h]` gate. On
+    /// FO3 Capital Wasteland (`tod_hours = [5.333, 10.0, 17.0, 22.0]`)
+    /// the palette interpolator entered the SUNRISE band at hour 5.333
+    /// while the sun direction stayed at the below-horizon sentinel
+    /// `[0, -1, 0]` until hour 6.0 — a ~40 min window where the sky
+    /// painted dawn but `sun_dir.y < 0` killed N·L on every surface.
+    /// Symmetric ~1h dead window at sunset between 17h and 18h.
+    ///
+    /// Post-fix: `compute_sun_arc` derives the visible-sun window from
+    /// `[sunrise_begin, sunset_end]`. At hour 5.5 on FO3 the sun is
+    /// just above horizon (positive y) with low elevation. At hour
+    /// 17.5 (within FO3's sunset band) the sun is still above horizon.
+    #[test]
+    fn fo3_wasteland_sun_above_horizon_during_sunrise_palette_band() {
+        let fo3_tod = [5.333, 10.0, 17.0, 22.0];
+
+        // Hour 5.5: 0.167 h past sunrise_begin, sky is sunrise-tinted.
+        // Pre-fix the sun was at [0, -1, 0] (below horizon). Post-fix
+        // the sun is just above horizon with low positive elevation.
+        let (dir, _) = compute_sun_arc(5.5, fo3_tod);
+        assert!(
+            dir[1] > 0.0,
+            "sun must be above horizon at hour 5.5 on FO3 (sunrise_begin=5.333). \
+             Pre-#1012: dir=[0,-1,0] sentinel; got dir=[{:.3},{:.3},{:.3}]",
+            dir[0], dir[1], dir[2],
+        );
+        assert!(
+            dir[0] > 0.5,
+            "sun should still be in the eastern half (cos(angle) > 0.5) at hour 5.5; \
+             got dir.x={:.3}",
+            dir[0],
+        );
+
+        // Hour 17.5: in FO3's sunset band [17, 22]. Pre-fix the sun
+        // was at [0,-1,0] because hour > 18.0 hardcoded gate. Post-fix
+        // the sun is still above horizon, ramping toward west.
+        let (dir, intensity) = compute_sun_arc(17.5, fo3_tod);
+        assert!(
+            dir[1] > 0.0,
+            "sun must still be above horizon at hour 17.5 on FO3 (sunset_end=22). \
+             Got dir=[{:.3},{:.3},{:.3}]",
+            dir[0], dir[1], dir[2],
+        );
+        assert!(
+            dir[0] < 0.0,
+            "sun should be in the western half at hour 17.5; got dir.x={:.3}",
+            dir[0],
+        );
+        // Hour 17.5 is 0.5h past sunset_begin (17.0) of a 5h sunset
+        // band → intensity ≈ 4.0 * (22.0 - 17.5)/5.0 = 3.6.
+        assert!(
+            (intensity - 3.6).abs() < 0.05,
+            "FO3 sunset_begin=17, sunset_end=22 → intensity at 17.5h ≈ 3.6; got {intensity:.3}",
+        );
+    }
+
+    /// Default FNV-style climate retains a sane sun arc + intensity
+    /// envelope post-#1012. The arc-span widens from the pre-fix
+    /// 12 h hardcoded window to 16 h (`sunset_end - sunrise_begin`),
+    /// which matches the authored TOD bands.
+    #[test]
+    fn fnv_default_sun_arc_matches_tod_bands() {
+        let fnv_tod = [6.0, 10.0, 18.0, 22.0];
+
+        // Pre-sunrise: sentinel below horizon.
+        let (dir, intensity) = compute_sun_arc(5.5, fnv_tod);
+        assert_eq!(dir, [0.0, -1.0, 0.0]);
+        assert_eq!(intensity, 0.0);
+
+        // Sunrise band [6, 10]: ramping intensity. At hour 8 the
+        // ramp is half-way → intensity = 2.0.
+        let (dir, intensity) = compute_sun_arc(8.0, fnv_tod);
+        assert!(
+            dir[1] > 0.0,
+            "sun should be above horizon at hour 8 on FNV; got y={:.3}",
+            dir[1],
+        );
+        assert!(
+            (intensity - 2.0).abs() < 0.05,
+            "FNV sunrise band hour 8 → intensity ≈ 2.0; got {intensity:.3}",
+        );
+
+        // Day band [10, 18]: full intensity.
+        let (_, intensity) = compute_sun_arc(14.0, fnv_tod);
+        assert!(
+            (intensity - 4.0).abs() < 1e-5,
+            "FNV day band → intensity 4.0; got {intensity:.3}",
+        );
+
+        // Post-sunset: sentinel.
+        let (dir, intensity) = compute_sun_arc(22.5, fnv_tod);
+        assert_eq!(dir, [0.0, -1.0, 0.0]);
+        assert_eq!(intensity, 0.0);
     }
 
     /// Default FNV-style climate at noon must yield zero night_factor
