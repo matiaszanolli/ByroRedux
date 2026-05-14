@@ -736,6 +736,15 @@ pub(crate) struct WeatherDataRes {
     /// (high_noon / midnight) fold into day / night per the WTHR
     /// parser's padding convention. See #993.
     pub(crate) skyrim_dalc_per_tod: Option<[DalcCubeYup; 4]>,
+    /// WTHR DATA `wind_speed` byte (#1033 / REN-D15-NEW-12). Drives
+    /// the cloud-layer scroll rate in `weather_system` so calm vs
+    /// storm weather animates at different rates. Pre-#1033 the byte
+    /// was parsed onto `WeatherRecord` but never projected into the
+    /// runtime resource; the cloud animation used a hardcoded
+    /// `0.018 UV/sec` literal regardless of weather. `0` on the
+    /// synthetic-fallback path (no WTHR record loaded) — produces a
+    /// static cloud layer, which is the safe default.
+    pub(crate) wind_speed: u8,
 }
 impl Resource for WeatherDataRes {}
 

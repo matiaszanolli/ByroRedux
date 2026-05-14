@@ -371,6 +371,11 @@ pub(super) fn apply_worldspace_weather(
             ],
             tod_hours,
             skyrim_dalc_per_tod,
+            // #1033 — project the WTHR DATA wind_speed byte onto the
+            // runtime resource so `weather_system::cloud_scroll_rate_from_wind`
+            // can drive per-weather cloud animation. Pre-#1033 this
+            // byte was parsed but dropped at the boundary.
+            wind_speed: wthr.wind_speed,
         };
         // First-time bootstrap: insert directly. A subsequent worldspace
         // change (door-walking interior↔exterior, M40 Phase 2) will
@@ -515,6 +520,9 @@ pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [
         // `None`, the renderer falls through to the flat ambient + AO
         // floor path on every fragment.
         skyrim_dalc_per_tod: None,
+        // No authored WTHR → no wind; the cloud animation stays still
+        // on the synthetic fallback. #1033.
+        wind_speed: 0,
     });
     world.insert_resource(GameTimeRes::default());
 }

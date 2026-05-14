@@ -183,6 +183,28 @@ fn lerp1(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+/// Per-unit `wind_speed` (u8 0..=255) contribution to the cloud-layer 0
+/// scroll rate (UV/sec). Calibrated so `wind_speed = 32` (typical
+/// vanilla mid-range across FNV/FO3/Oblivion/Skyrim WTHR DATA bytes
+/// — fixtures in `crates/plugin/src/esm/records/weather.rs::tests`
+/// ship 16/25/30/50, mean ≈ 30) reproduces the pre-#1033 `0.018`
+/// baseline that `cloud_scroll_rate_from_wind(32)` returns.
+///
+/// `wind_speed = 0` (calm WTHR) zeroes the rate so clouds halt;
+/// `wind_speed = 255` (storm) reaches ≈0.143 UV/sec — visibly
+/// streaking clouds matching the perceptual range of Bethesda's
+/// storm-weather content. Replace with a bench-captured calibration
+/// when one becomes available.
+const WIND_TO_SCROLL_RATE: f32 = 0.018 / 32.0;
+
+/// Pure helper for the cloud-scroll-rate derivation so the unit test
+/// can pin the calm-vs-storm contract without a live `World`. See the
+/// `WIND_TO_SCROLL_RATE` doc for the calibration rationale.
+#[inline]
+pub(crate) fn cloud_scroll_rate_from_wind(wind_speed: u8) -> f32 {
+    wind_speed as f32 * WIND_TO_SCROLL_RATE
+}
+
 /// Sample a `WeatherDataRes`-shaped snapshot at the given `(slot_a, slot_b, t)`
 /// tuple. Returns the seven blended fields the WTHR cross-fade composer
 /// needs: zenith, horizon, lower, sun_col, ambient, sunlight, fog_col.
@@ -368,18 +390,28 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // painted dawn while N·L = 0).
     let (sun_dir, sun_intensity) = compute_sun_arc(hour, wd.tod_hours);
 
-    // Cloud layer 0 scroll rate. Pre-#535 the rate was "derived" from
-    // `wd.cloud_speeds[0] / 128.0 * 0.02`, but that byte was actually
-    // the first character of the DNAM cloud-path zstring (typically
-    // `'s'` = 0x73 = 115 → factor 0.898 → ≈0.018 UV/sec). The visible
-    // result looked fine because the authored constant was close, so
-    // keep it here as a named baseline while the real per-weather
-    // scroll source stays unknown. WTHR has ONAM (4 B, looks f32-ish)
-    // and INAM (304 B, per-image transition data) that plausibly carry
-    // the speed; sourcing that is deferred — cross-cuts #541's
-    // "unused WTHR fields" scope and needs UESP-authoritative byte
-    // sampling before committing to an offset.
-    let cloud_scroll_rate: f32 = 0.018;
+    // Cloud layer 0 base scroll rate, driven by the WTHR DATA
+    // `wind_speed` byte (#1033 / REN-D15-NEW-12).
+    //
+    // Pre-#1033 a hardcoded `0.018 UV/sec` literal sat here. The
+    // record's `wind_speed` byte was parsed (`weather.rs::WeatherRecord`)
+    // but never reached the cloud-scroll path, so calm-WTHR vs
+    // storm-WTHR animated identically. Earlier-fix attempt at #535
+    // sourced from `cloud_speeds[0]`, which was actually the first
+    // byte of a DNAM cloud-path zstring (`'s'` = 0x73 = 115 →
+    // factor 0.898 → ≈0.018 UV/sec) — explains why the previous
+    // visual matched the hardcoded constant.
+    //
+    // The scale is calibrated to reproduce the existing `0.018`
+    // baseline at a typical mid-range vanilla `wind_speed` of 32
+    // (seen across the FNV/FO3/Oblivion/Skyrim WTHR fixtures in
+    // `weather.rs` tests: 16, 25, 30, 50 → mean ≈ 30, median 27.5).
+    // `wind_speed = 0` (calm WTHR) → static clouds; `wind_speed =
+    // 255` (storm) → ≈0.143 UV/sec — ~8× the mid-range, which
+    // matches the Bethesda-content perceptual range of "completely
+    // still" to "visibly streaking storm clouds." Replace with a
+    // bench-captured calibration when one becomes available.
+    let cloud_scroll_rate = cloud_scroll_rate_from_wind(wd.wind_speed);
 
     drop(wd);
 
@@ -519,6 +551,76 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
 /// Regression tests for #463 — climate-driven TOD breakpoints on
 /// `WeatherDataRes.tod_hours` flow through `build_tod_keys` so the
 /// time-of-day interpolator runs on the right schedule per worldspace.
+#[cfg(test)]
+mod cloud_scroll_rate_tests {
+    //! Regression tests for #1033 / REN-D15-NEW-12. Pre-fix the
+    //! cloud-scroll rate was a hardcoded `0.018` literal; the parsed
+    //! WTHR `wind_speed` byte never reached the cloud animation, so
+    //! calm vs storm WTHR records produced identical visual cloud
+    //! motion. These tests pin the new wind-driven derivation against
+    //! its calibration contract.
+    use super::*;
+
+    /// Calibration pin: `wind_speed = 32` reproduces the pre-fix
+    /// hardcoded baseline `0.018 UV/sec`. Any future re-calibration
+    /// of `WIND_TO_SCROLL_RATE` that moves this anchor without an
+    /// intentional decision should trip this assertion.
+    #[test]
+    fn baseline_wind_speed_reproduces_pre_fix_018() {
+        let rate = cloud_scroll_rate_from_wind(32);
+        assert!(
+            (rate - 0.018).abs() < 1e-6,
+            "wind_speed=32 must reproduce the pre-#1033 baseline 0.018 UV/sec; got {rate}"
+        );
+    }
+
+    /// Calm WTHR (`wind_speed = 0`) halts the cloud scroll — visible
+    /// "still air" lookalike. Pre-fix this case still emitted the
+    /// hardcoded 0.018 rate, so static-sky weather still drifted.
+    #[test]
+    fn calm_weather_halts_scroll() {
+        assert_eq!(
+            cloud_scroll_rate_from_wind(0),
+            0.0,
+            "wind_speed=0 (calm WTHR) must produce zero scroll rate"
+        );
+    }
+
+    /// Storm WTHR (`wind_speed = 255`) scrolls visibly faster than
+    /// the mid-range baseline — the core regression the audit caught.
+    /// 255 × (0.018/32) ≈ 0.143 UV/sec, ~8× the baseline.
+    #[test]
+    fn storm_weather_scrolls_faster_than_baseline() {
+        let baseline = cloud_scroll_rate_from_wind(32);
+        let storm = cloud_scroll_rate_from_wind(255);
+        assert!(
+            storm > baseline * 4.0,
+            "storm (wind_speed=255) must scroll noticeably faster than baseline ({baseline} → {storm})"
+        );
+        let expected = 255.0 * WIND_TO_SCROLL_RATE;
+        assert!((storm - expected).abs() < 1e-5);
+    }
+
+    /// Monotonic across the whole byte range — clouds must scroll
+    /// faster as wind_speed increases, full stop. Pins the linearity
+    /// of the derivation against future re-calibrations that might
+    /// introduce a non-monotonic curve (e.g. logarithmic or
+    /// piecewise) without a behavioural test catching the
+    /// regression.
+    #[test]
+    fn rate_is_monotonic_in_wind_speed() {
+        let mut prev = cloud_scroll_rate_from_wind(0);
+        for speed in 1u16..=255 {
+            let current = cloud_scroll_rate_from_wind(speed as u8);
+            assert!(
+                current >= prev,
+                "scroll rate must be non-decreasing in wind_speed; speed={speed} broke monotonicity ({prev} → {current})"
+            );
+            prev = current;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tod_keys_tests {
     use super::*;
@@ -1007,6 +1109,7 @@ mod interior_gate_tests {
             fog: [100.0, 60000.0, 200.0, 30000.0],
             tod_hours: [6.0, 10.0, 18.0, 22.0],
             skyrim_dalc_per_tod: None,
+            wind_speed: 0,
         });
 
         world
