@@ -1085,5 +1085,4 @@ pub fn parse_block(
 }
 
 #[cfg(test)]
-#[path = "dispatch_tests.rs"]
 mod dispatch_tests;
