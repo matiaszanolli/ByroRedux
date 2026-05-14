@@ -993,3 +993,51 @@ impl VolumetricsPipeline {
         }
     }
 }
+
+#[cfg(test)]
+mod workgroup_shader_sync_tests {
+    //! Drift-detection for `WORKGROUP_X` / `WORKGROUP_Y` / `WORKGROUP_Z`
+    //! against the volumetrics compute shaders. `volumetrics_inject` is
+    //! a full 3D dispatch (one thread per froxel); `volumetrics_integrate`
+    //! is 2D (one thread per column, z-marches internally) so its shader
+    //! pins `local_size_z = 1` as an intentional literal — only X/Y are
+    //! checked there. See TD4-020 in
+    //! `docs/audits/AUDIT_TECH_DEBT_2026-05-13.md`.
+    use super::*;
+
+    const INJECT_SRC: &str = include_str!("../../shaders/volumetrics_inject.comp");
+    const INTEGRATE_SRC: &str = include_str!("../../shaders/volumetrics_integrate.comp");
+
+    fn assert_contains(src: &str, expected: &str, shader: &str) {
+        assert!(
+            src.contains(expected),
+            "{shader} must declare `{expected}` — bump the GLSL `layout(local_size_*)` in lockstep with the Rust const, or fold both through a build.rs codegen target (#1038).",
+        );
+    }
+
+    #[test]
+    fn volumetrics_inject_local_size_matches_rust_workgroup() {
+        assert_contains(
+            INJECT_SRC,
+            &format!(
+                "local_size_x = {}, local_size_y = {}, local_size_z = {}",
+                WORKGROUP_X, WORKGROUP_Y, WORKGROUP_Z
+            ),
+            "volumetrics_inject.comp",
+        );
+    }
+
+    #[test]
+    fn volumetrics_integrate_local_size_xy_matches_rust_workgroup() {
+        // `local_size_z = 1` is intentional (2D dispatch with internal
+        // Z-march) — only X/Y are pinned here.
+        assert_contains(
+            INTEGRATE_SRC,
+            &format!(
+                "local_size_x = {}, local_size_y = {}",
+                WORKGROUP_X, WORKGROUP_Y
+            ),
+            "volumetrics_integrate.comp",
+        );
+    }
+}

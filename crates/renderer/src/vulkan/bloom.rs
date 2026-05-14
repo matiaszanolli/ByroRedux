@@ -1031,3 +1031,42 @@ fn create_compute_pipeline(
     };
     Ok(pipeline)
 }
+
+#[cfg(test)]
+mod workgroup_shader_sync_tests {
+    //! Drift-detection for `WORKGROUP_X` / `WORKGROUP_Y` workgroup-size
+    //! constants. The Rust side uses them for dispatch math
+    //! (`(width + 7) / 8`); the shader declares them via `layout(local_size_x = 8)`.
+    //! If they drift, the dispatch is either too few groups (corners
+    //! unwritten) or too many (out-of-bounds writes with no validation
+    //! signal). See TD4-020 in `docs/audits/AUDIT_TECH_DEBT_2026-05-13.md`.
+    use super::*;
+
+    const BLOOM_DOWNSAMPLE_SRC: &str = include_str!("../../shaders/bloom_downsample.comp");
+    const BLOOM_UPSAMPLE_SRC: &str = include_str!("../../shaders/bloom_upsample.comp");
+
+    fn assert_contains(src: &str, expected: &str, shader: &str) {
+        assert!(
+            src.contains(expected),
+            "{shader} must declare `{expected}` — bump the GLSL `layout(local_size_*)` in lockstep with the Rust const, or fold both through a build.rs codegen target (#1038).",
+        );
+    }
+
+    #[test]
+    fn bloom_downsample_local_size_matches_rust_workgroup() {
+        assert_contains(
+            BLOOM_DOWNSAMPLE_SRC,
+            &format!("local_size_x = {}, local_size_y = {}", WORKGROUP_X, WORKGROUP_Y),
+            "bloom_downsample.comp",
+        );
+    }
+
+    #[test]
+    fn bloom_upsample_local_size_matches_rust_workgroup() {
+        assert_contains(
+            BLOOM_UPSAMPLE_SRC,
+            &format!("local_size_x = {}, local_size_y = {}", WORKGROUP_X, WORKGROUP_Y),
+            "bloom_upsample.comp",
+        );
+    }
+}

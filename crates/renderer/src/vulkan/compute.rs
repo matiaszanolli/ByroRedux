@@ -372,3 +372,95 @@ impl ClusterCullPipeline {
         device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
     }
 }
+
+#[cfg(test)]
+mod cluster_constant_sync_tests {
+    //! Drift-detection for cluster-grid constants shared between Rust
+    //! (`compute.rs`), the cluster compute shader, and the cluster
+    //! indexing logic in the fragment shader. Bumping a Rust constant
+    //! without updating both shaders sizes the cluster light-index SSBO
+    //! wrong and silently corrupts per-pixel light lookups — no Vulkan
+    //! validation signal. See TD4-003 / TD4-004 in
+    //! `docs/audits/AUDIT_TECH_DEBT_2026-05-13.md`.
+    //!
+    //! `cluster_cull.comp` uses the bare names (`TILES_X`); the cluster
+    //! lookup in `triangle.frag` uses `CLUSTER_*` prefixed copies. Both
+    //! get pinned here.
+    use super::*;
+
+    const CLUSTER_CULL_SRC: &str = include_str!("../../shaders/cluster_cull.comp");
+    const TRIANGLE_FRAG_SRC: &str = include_str!("../../shaders/triangle.frag");
+
+    fn assert_contains(src: &str, expected: &str, shader: &str) {
+        assert!(
+            src.contains(expected),
+            "{shader} must declare `{expected}` — bump the GLSL literal in lockstep with the Rust const, or fold both through a build.rs codegen target (#1038).",
+        );
+    }
+
+    #[test]
+    fn cluster_cull_comp_tiles_x_matches_rust_const() {
+        assert_contains(
+            CLUSTER_CULL_SRC,
+            &format!("const uint TILES_X = {};", TILES_X),
+            "cluster_cull.comp",
+        );
+    }
+
+    #[test]
+    fn cluster_cull_comp_tiles_y_matches_rust_const() {
+        assert_contains(
+            CLUSTER_CULL_SRC,
+            &format!("const uint TILES_Y = {};", TILES_Y),
+            "cluster_cull.comp",
+        );
+    }
+
+    #[test]
+    fn cluster_cull_comp_slices_z_matches_rust_const() {
+        assert_contains(
+            CLUSTER_CULL_SRC,
+            &format!("const uint SLICES_Z = {};", SLICES_Z),
+            "cluster_cull.comp",
+        );
+    }
+
+    #[test]
+    fn cluster_cull_comp_max_lights_per_cluster_matches_rust_const() {
+        assert_contains(
+            CLUSTER_CULL_SRC,
+            &format!(
+                "const uint MAX_LIGHTS_PER_CLUSTER = {};",
+                MAX_LIGHTS_PER_CLUSTER
+            ),
+            "cluster_cull.comp",
+        );
+    }
+
+    #[test]
+    fn triangle_frag_cluster_tiles_x_matches_rust_const() {
+        assert_contains(
+            TRIANGLE_FRAG_SRC,
+            &format!("const uint CLUSTER_TILES_X = {};", TILES_X),
+            "triangle.frag",
+        );
+    }
+
+    #[test]
+    fn triangle_frag_cluster_tiles_y_matches_rust_const() {
+        assert_contains(
+            TRIANGLE_FRAG_SRC,
+            &format!("const uint CLUSTER_TILES_Y = {};", TILES_Y),
+            "triangle.frag",
+        );
+    }
+
+    #[test]
+    fn triangle_frag_cluster_slices_z_matches_rust_const() {
+        assert_contains(
+            TRIANGLE_FRAG_SRC,
+            &format!("const uint CLUSTER_SLICES_Z = {};", SLICES_Z),
+            "triangle.frag",
+        );
+    }
+}
