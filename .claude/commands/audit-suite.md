@@ -107,6 +107,11 @@ After IOR refraction / glass-passthrough / Frisvad changes (Sessions 27–29):
 1. `/audit-renderer --focus 9,10`
 2. `/audit-safety`
 
+### `--preset tech-debt-deep`
+Surface accumulated debt (run after a milestone closes, before opening the next):
+1. `/audit-tech-debt`
+2. `/audit-incremental --commits 30`
+
 ### `--preset comprehensive`
 Full audit coverage (longest — run monthly or before major milestones):
 1. `/audit-renderer`
@@ -118,7 +123,8 @@ Full audit coverage (longest — run monthly or before major milestones):
 7. `/audit-audio`
 8. `/audit-speedtree`
 9. `/audit-legacy-compat`
-10. `/audit-regression`
+10. `/audit-tech-debt`
+11. `/audit-regression`
 
 ### `--preset nif-all-games`
 Test NIF parser against all available game data:

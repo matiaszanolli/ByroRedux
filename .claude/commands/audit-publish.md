@@ -44,6 +44,8 @@ argument-hint: "<path-to-audit-report>"
      --label "<severity>,<domain>,bug"
    ```
 
+   **Audit-type label override**: when the report path is `AUDIT_TECH_DEBT_*.md`, append the `tech-debt` label and use `maintenance` instead of `bug` as the type label (tech debt isn't a bug). Final label set: `<severity>,<domain>,tech-debt,maintenance`. Same pattern applies to any future audit-type label (e.g., a hypothetical `AUDIT_DOCS_*.md` would get a `docs` label + `documentation` type).
+
 8. **Save to local tracking**:
    ```bash
    mkdir -p .claude/issues/<NUMBER>
