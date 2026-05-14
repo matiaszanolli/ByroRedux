@@ -324,8 +324,22 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
                 target_sunlight,
                 target_fog_col,
             ) = sample_wthr_colors(&target.sky_colors, b_a, b_b, b_t);
-            let target_fog_near = target.fog[0] + (target.fog[2] - target.fog[0]) * night_factor;
-            let target_fog_far = target.fog[1] + (target.fog[3] - target.fog[1]) * night_factor;
+            // #1018 / REN-D15-NEW-09 — `night_factor` above was derived
+            // from the SOURCE weather's `(slot_a, slot_b, t)`. The
+            // target's fog distance must use the target's own TOD
+            // slot pair (already computed for `sample_wthr_colors`)
+            // so colour and distance stay in lockstep when the source
+            // and target ship different CLMTs (rare today: typically
+            // both weathers share a CLMT, which makes the two
+            // night_factors equal; matters as soon as a WTHR cross-
+            // fade spans worldspace boundaries or mod content).
+            let target_night_a = tod_slot_night_factor(b_a);
+            let target_night_b = tod_slot_night_factor(b_b);
+            let target_night_factor = target_night_a + (target_night_b - target_night_a) * b_t;
+            let target_fog_near =
+                target.fog[0] + (target.fog[2] - target.fog[0]) * target_night_factor;
+            let target_fog_far =
+                target.fog[1] + (target.fog[3] - target.fog[1]) * target_night_factor;
 
             (
                 lerp3(zenith, target_zenith, transition_t),
@@ -815,6 +829,78 @@ mod tod_keys_tests {
         let (dir, intensity) = compute_sun_arc(22.5, fnv_tod);
         assert_eq!(dir, [0.0, -1.0, 0.0]);
         assert_eq!(intensity, 0.0);
+    }
+
+    /// Regression for #1018 / REN-D15-NEW-09.
+    ///
+    /// Pre-fix: during a WTHR cross-fade, `target_fog_near/far` were
+    /// computed using the *source* weather's `night_factor` (derived
+    /// from source's `(slot_a, slot_b, t)`). When source and target
+    /// shipped DIFFERENT CLMTs (rare today, but possible across
+    /// worldspace boundaries / mod content), the target's fog
+    /// distance disagreed with its own colour table — visible as
+    /// fog colour shifting at a different rate than fog distance
+    /// during the 8s cross-fade.
+    ///
+    /// Post-fix: the cross-fade path derives `target_night_factor`
+    /// from the target's own `(b_a, b_b, b_t)` so colour and
+    /// distance share the same TOD source.
+    ///
+    /// Two assertions pin the bug:
+    ///
+    /// 1. Even between ship-realistic CLMTs (FNV vs FO3, both shipping
+    ///    sunrise/sunset within ~0.7 hours of each other), the
+    ///    night_factors diverge in some hour windows — proving the
+    ///    target's lookup must be independent.
+    /// 2. With a more compressed-daylight target CLMT (worldspace mod
+    ///    content), the divergence at sunrise hours is dramatic —
+    ///    proving the bug magnitude scales with CLMT difference.
+    #[test]
+    fn cross_fade_uses_per_weather_night_factor() {
+        // Helper: replicate the pure-function path that
+        // `weather_system` walks for both source and target.
+        fn nf(tod_hours: [f32; 4], hour: f32) -> f32 {
+            let keys = build_tod_keys(tod_hours);
+            let (a, b, t) = pick_tod_pair(&keys, hour);
+            let na = tod_slot_night_factor(a);
+            let nb = tod_slot_night_factor(b);
+            na + (nb - na) * t
+        }
+
+        // ── Assertion 1: ship-realistic divergence (FNV vs FO3) ──
+        //
+        // At hour 17.5, FNV (`sunset_begin = 18`) is still in the
+        // (DAY-reanchor → SUNSET) bracket while FO3 (`sunset_begin =
+        // 17`) has already crossed into (SUNSET → NIGHT). The two
+        // night_factors differ by enough that pulling the source's
+        // value into the target's fog-distance lookup would shift
+        // the target's fog distance by ~17% of the day↔night
+        // amplitude — visible during the 8 s cross-fade.
+        let fnv_nf = nf([6.0, 10.0, 18.0, 22.0], 17.5);
+        let fo3_nf = nf([5.333, 10.0, 17.0, 22.0], 17.5);
+        assert!(
+            (fnv_nf - fo3_nf).abs() > 0.1,
+            "Realistic FNV/FO3 cross-fade at hour 17.5 must show some night_factor \
+             divergence to justify per-weather lookup; got FNV={fnv_nf:.3}, \
+             FO3={fo3_nf:.3}, diff={:.3}",
+            (fnv_nf - fo3_nf).abs(),
+        );
+
+        // ── Assertion 2: dramatic divergence (mod / compressed CLMT) ──
+        //
+        // A compressed-daylight CLMT (sunrise 4h, sunset 20h vs
+        // FNV's 6h/22h) crossed at hour 5.5 lands in a different
+        // TOD bracket than FNV. Pre-#1018, the target's fog distance
+        // would be lerp'd at the source's night_factor — a 0.2+ error.
+        let compressed_nf = nf([4.0, 8.0, 16.0, 20.0], 5.5);
+        let fnv_at_55 = nf([6.0, 10.0, 18.0, 22.0], 5.5);
+        let dramatic_div = (compressed_nf - fnv_at_55).abs();
+        assert!(
+            dramatic_div > 0.2,
+            "FNV vs compressed-CLMT cross-fade at hour 5.5 must show >0.2 \
+             night_factor divergence (mod-content scenario); got FNV={fnv_at_55:.3}, \
+             compressed={compressed_nf:.3}, diff={dramatic_div:.3}",
+        );
     }
 
     /// Default FNV-style climate at noon must yield zero night_factor
