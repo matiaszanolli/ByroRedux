@@ -198,9 +198,12 @@ pub struct GpuCamera {
     /// captured so reprojection remains jitter-free. zw = reserved.
     pub jitter: [f32; 4],
     /// xyz = active TOD/weather zenith colour in linear RGB (mirrors
-    /// `CompositeParams.sky_zenith.xyz`); w = reserved. Sourced from
-    /// the same `SkyParams.zenith_color` that drives `compute_sky` so
-    /// the triangle.frag window-portal escape transmits a sky tint
+    /// `CompositeParams.sky_zenith.xyz`); w = sun angular radius (rad,
+    /// half-angle of the directional-light disk used for PCSS-lite
+    /// shadow jitter in `triangle.frag` — see #1023 / REN-D20-NEW-01).
+    /// Sourced from the same `SkyParams.zenith_color` /
+    /// `sun_angular_radius` that drives `compute_sky` so the
+    /// triangle.frag window-portal escape transmits a sky tint
     /// matching whatever the composite pass paints behind the world.
     /// Pre-#925 the window-portal site hardcoded `vec3(0.6, 0.75, 1.0)`
     /// (clear-noon blue), so interior cells with windows looked midday
@@ -228,7 +231,9 @@ impl Default for GpuCamera {
             // Default to the pre-#925 hardcoded sky so unbootstrapped
             // frames (engine just opened, sky_params not yet computed)
             // render windows the same way they always have.
-            sky_tint: [0.6, 0.75, 1.0, 0.0],
+            // w = sun_angular_radius (rad); default matches the
+            // pre-#1023 triangle.frag hardcoded const (0.020 ≈ 1.15°).
+            sky_tint: [0.6, 0.75, 1.0, 0.020],
         }
     }
 }

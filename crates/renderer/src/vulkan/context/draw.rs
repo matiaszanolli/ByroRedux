@@ -487,11 +487,16 @@ impl VulkanContext {
             // `compute_sky` paints behind the world. Same source of
             // truth → same TOD/weather cross-fade behaviour at no
             // extra upload cost.
+            //
+            // w = sun_angular_radius (rad). Plumbed from SkyParams so
+            // PCSS-lite directional-shadow disk jitter in triangle.frag
+            // is tunable per-cell / per-TOD without a shader recompile.
+            // See #1023 / REN-D20-NEW-01.
             sky_tint: [
                 sky_params.zenith_color[0],
                 sky_params.zenith_color[1],
                 sky_params.zenith_color[2],
-                0.0,
+                sky_params.sun_angular_radius,
             ],
         };
         self.scene_buffers

@@ -519,6 +519,16 @@ pub struct SkyParams {
     pub sun_size: f32,
     /// Sun brightness multiplier.
     pub sun_intensity: f32,
+    /// Angular half-radius of the sun as a tangent-plane disk, in
+    /// radians. Drives PCSS-lite directional-shadow disk jitter in
+    /// `triangle.frag`. Default 0.020 (~1.15°) gives ~10 cm penumbra
+    /// at 5 m blocker distance — visible without flooding sharp
+    /// edges; smaller values approach the physical sun (~0.0047 rad)
+    /// at the cost of cell-scale soft shadows. Plumbed via
+    /// `GpuCamera.sky_tint.w` (the previously-reserved slot) so this
+    /// change doesn't touch GpuCamera's 288 B layout. See #1023 /
+    /// REN-D20-NEW-01.
+    pub sun_angular_radius: f32,
     /// Whether sky rendering is enabled (true for exterior cells).
     pub is_exterior: bool,
     /// Cloud layer 0 scroll offset in UV space (accumulated by weather_system).
@@ -571,6 +581,11 @@ impl Default for SkyParams {
             sun_color: [1.0, 0.95, 0.8],
             sun_size: 0.9994, // cos(~2°) — visible disc, larger than real sun
             sun_intensity: 5.0,
+            // Tangent-plane half-radius (rad) for PCSS-lite shadow
+            // disk jitter. Matches the pre-#1023 hardcoded shader
+            // constant so behaviour is unchanged unless a caller
+            // overrides it. See SkyParams::sun_angular_radius doc.
+            sun_angular_radius: 0.020,
             is_exterior: false,
             cloud_scroll: [0.0, 0.0],
             cloud_tile_scale: 0.0, // disabled until WTHR supplies a cloud texture

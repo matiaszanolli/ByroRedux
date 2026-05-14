@@ -21,6 +21,7 @@ fn mk_sky(indices: [u32; 5]) -> SkyParamsRes {
         sun_color: [1.0; 3],
         sun_size: 1.0,
         sun_intensity: 1.0,
+        sun_angular_radius: 0.020,
         is_exterior: true,
         cloud_tile_scale: 1.0,
         cloud_texture_index: indices[0],

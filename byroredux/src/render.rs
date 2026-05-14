@@ -1434,6 +1434,7 @@ pub(crate) fn build_render_data(
             sun_color: sky_res.sun_color,
             sun_size: sky_res.sun_size,
             sun_intensity: sky_res.sun_intensity,
+            sun_angular_radius: sky_res.sun_angular_radius,
             is_exterior: sky_res.is_exterior,
             cloud_scroll: scroll.0,
             cloud_tile_scale: sky_res.cloud_tile_scale,

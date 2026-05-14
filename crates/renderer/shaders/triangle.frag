@@ -2406,16 +2406,21 @@ void main() {
                 //
                 // Physical sun is ~0.0047 rad (~0.27°) from Earth —
                 // that gives ~2.4 cm penumbra at 5m blocker distance,
-                // invisible at interior scale. 0.020 rad (~1.15°)
-                // gives ~10 cm penumbra at 5m, visible without
-                // flooding sharp edges. The previous 0.0047 was tuned
-                // for outdoor cell-scale shots (50-100m blockers)
-                // where the smaller cone matters; 0.020 widens it for
-                // interior content where most shadow casters are
-                // 2-15m away. M-LIGHT v1 — see ROADMAP.md Tier 8.
-                // Future work: depth-adaptive radius (PCSS-lite),
-                // eventually multi-tap blocker search.
-                const float sunAngularRadius = 0.020;
+                // invisible at interior scale. 0.020 rad (~1.15°,
+                // pre-#1023 hardcoded default) gives ~10 cm penumbra
+                // at 5m, visible without flooding sharp edges. The
+                // previous 0.0047 was tuned for outdoor cell-scale
+                // shots (50-100m blockers) where the smaller cone
+                // matters; 0.020 widens it for interior content
+                // where most shadow casters are 2-15m away. M-LIGHT
+                // v1 — see ROADMAP.md Tier 8.
+                //
+                // #1023 / REN-D20-NEW-01: now read from skyTint.w
+                // (SkyParams::sun_angular_radius) so per-cell / per-
+                // TOD tuning is one host-side write, not a shader
+                // recompile. Future work: depth-adaptive radius
+                // (PCSS-lite), eventually multi-tap blocker search.
+                float sunAngularRadius = skyTint.w;
                 vec3 jitteredDir = L + (T * diskSample.x + B * diskSample.y) * sunAngularRadius;
                 rayDir = normalize(jitteredDir);
                 // 100 000 units covers the diagonal of a 7×7 exterior

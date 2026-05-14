@@ -169,6 +169,7 @@ fn light_dump_handles_missing_and_present_resources() {
         sun_color: [1.0, 0.95, 0.8],
         sun_size: 0.9995,
         sun_intensity: 4.0,
+        sun_angular_radius: 0.020,
         is_exterior: true,
         cloud_tile_scale: 0.0,
         cloud_texture_index: 0,
