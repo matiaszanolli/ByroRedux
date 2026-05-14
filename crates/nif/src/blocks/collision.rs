@@ -938,15 +938,35 @@ impl HkPackedNiTriStripsData {
         }
 
         let num_vertices = stream.read_u32_le()?;
-        // FO3+ (since 20.2.0.7): compressed bool + optional half-float vertices
-        if version >= crate::version::NifVersion::V20_2_0_7 {
-            let _compressed = stream.read_byte_bool()?;
-        }
+        // FO3+ (since 20.2.0.7) — nif.xml lines 3962-3967:
+        //   `Compressed: bool` gates the trailing `Vertices` array
+        //   between `Vector3[]` (12 B/vertex, IEEE f32) and
+        //   `HalfVector3[]` (6 B/vertex, IEEE half-float). Vanilla
+        //   Bethesda content ships `Compressed == 0`, but flipping
+        //   the bit is legal — and if we always read f32 the per-
+        //   vertex over-read scrambles the following `Num Sub Shapes`
+        //   u16 and turns every collider vertex into NaN downstream.
+        //   See issue #975 (NIF-D1-NEW-01).
+        let compressed = if version >= crate::version::NifVersion::V20_2_0_7 {
+            stream.read_byte_bool()?
+        } else {
+            false
+        };
         let mut vertices: Vec<[f32; 3]> = stream.allocate_vec(num_vertices)?;
         for _ in 0..num_vertices {
-            let x = stream.read_f32_le()?;
-            let y = stream.read_f32_le()?;
-            let z = stream.read_f32_le()?;
+            let (x, y, z) = if compressed {
+                (
+                    crate::blocks::tri_shape::half_to_f32(stream.read_u16_le()?),
+                    crate::blocks::tri_shape::half_to_f32(stream.read_u16_le()?),
+                    crate::blocks::tri_shape::half_to_f32(stream.read_u16_le()?),
+                )
+            } else {
+                (
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                )
+            };
             vertices.push([x, y, z]);
         }
 
@@ -2160,3 +2180,5 @@ mod bhk_blend_collision_object_tests;
 mod bhk_breakable_constraint_tests;
 #[cfg(test)]
 mod bhk_ragdoll_tests;
+#[cfg(test)]
+mod hk_packed_ni_tri_strips_data_tests;
