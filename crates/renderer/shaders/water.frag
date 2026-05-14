@@ -174,7 +174,14 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 scroll, float 
 // per fragment. See `traceReflection` in triangle.frag for the design
 // rationale.
 
-vec3 traceWaterRay(vec3 origin, vec3 direction, float maxDist, out float hitDist, out bool hit) {
+// `missFallback` is the colour returned on a TLAS miss. Reflection
+// callers want the sky tint (light from above the water surface bounces
+// back toward the camera). Refraction callers want the cell's deep
+// water tint — pre-#1015 a single hardcoded `skyTint` return painted a
+// faint sky cast through `absorbWaterColumn`'s ~14% surface-radiance
+// term on miss (downward refraction rays escaping the BLAS at cliff
+// edges or sparse exterior cells).
+vec3 traceWaterRay(vec3 origin, vec3 direction, float maxDist, vec3 missFallback, out float hitDist, out bool hit) {
     rayQueryEXT rq;
     rayQueryInitializeEXT(
         rq, topLevelAS,
@@ -186,8 +193,7 @@ vec3 traceWaterRay(vec3 origin, vec3 direction, float maxDist, out float hitDist
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
         hit = false;
         hitDist = maxDist;
-        // Miss: distance attenuation against the sky tint.
-        return skyTint.xyz;
+        return missFallback;
     }
 
     hit = true;
@@ -350,7 +356,9 @@ void main() {
     // ── Reflection ray ──
     vec3 R = reflect(-V, Nperturbed);
     float reflDist; bool reflHit;
-    vec3 reflColor = traceWaterRay(vWorldPos, R, REFLECTION_MAX_DIST, reflDist, reflHit);
+    // Reflection-miss: sky tint is the right backdrop (the reflected
+    // ray escaped above the water surface).
+    vec3 reflColor = traceWaterRay(vWorldPos, R, REFLECTION_MAX_DIST, skyTint.xyz, reflDist, reflHit);
     if (reflHit) {
         reflColor *= exp(-reflDist * DIST_FALLOFF);
     }
@@ -367,7 +375,11 @@ void main() {
         // If TIR (total internal reflection) — refract returns zero —
         // skip the ray and use deep colour.
         if (length(Tdir) > 0.001) {
-            vec3 hitColor = traceWaterRay(vWorldPos, Tdir, REFRACTION_MAX_DIST, refrDist, refrHit);
+            // Refraction-miss: deep water tint is the right backdrop
+            // (the downward ray escaped the BLAS — cliff edge / sparse
+            // exterior — but conceptually it should land in the deep
+            // water column, NOT in the sky above). #1015.
+            vec3 hitColor = traceWaterRay(vWorldPos, Tdir, REFRACTION_MAX_DIST, push.deep.rgb, refrDist, refrHit);
             refrColor = absorbWaterColumn(hitColor, refrHit ? refrDist : push.deep.a);
         } else {
             refrColor = push.deep.rgb;
