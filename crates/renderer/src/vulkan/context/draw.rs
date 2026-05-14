@@ -2129,9 +2129,17 @@ impl VulkanContext {
             // post-`initialize_layouts` zero-init on the very first
             // frame).
             //
-            // Sun direction is hardcoded to scene.rs's default
-            // procedural-fallback value for now; Phase 2b will plumb
-            // the dynamic `SkyParamsRes.sun_direction` through.
+            // Sun direction + radiance are plumbed from
+            // `SkyParams::sun_direction` / `sun_color` / `sun_intensity`
+            // (#1022 / REN-D18-008). When the cell isn't exterior (interior
+            // gate `!is_exterior`) or the sun is below the horizon
+            // (`sun_intensity <= 0`), `sun_color` is zeroed so the
+            // volumetric inject path produces no contribution — without
+            // this, interior cells would otherwise inject daylight
+            // god-rays through walls the moment #928 flips
+            // VOLUMETRIC_OUTPUT_CONSUMED on. Direction is still plumbed
+            // (rather than left at a hardcoded default) so the UBO
+            // field is meaningful when a future debug toggle samples it.
             if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
                 if let Some(ref mut vol) = self.volumetrics {
                     let vol_tlas = self
@@ -2140,17 +2148,17 @@ impl VulkanContext {
                         .and_then(|accel| accel.tlas_handle(frame));
                     if let Some(tlas) = vol_tlas {
                         vol.write_tlas(&self.device, frame, tlas);
-                        let sun_dir_xyz = [-0.4_f32, 0.8, -0.45];
-                        let sun_len = (sun_dir_xyz[0] * sun_dir_xyz[0]
-                            + sun_dir_xyz[1] * sun_dir_xyz[1]
-                            + sun_dir_xyz[2] * sun_dir_xyz[2])
-                            .sqrt()
-                            .max(1e-6);
-                        let sun_dir_norm = [
-                            sun_dir_xyz[0] / sun_len,
-                            sun_dir_xyz[1] / sun_len,
-                            sun_dir_xyz[2] / sun_len,
-                        ];
+                        let sun_radiance =
+                            if sky_params.is_exterior && sky_params.sun_intensity > 0.0 {
+                                [
+                                    sky_params.sun_color[0] * sky_params.sun_intensity,
+                                    sky_params.sun_color[1] * sky_params.sun_intensity,
+                                    sky_params.sun_color[2] * sky_params.sun_intensity,
+                                    0.0,
+                                ]
+                            } else {
+                                [0.0, 0.0, 0.0, 0.0]
+                            };
                         let vol_params = super::super::volumetrics::VolumetricsParams {
                             inv_view_proj: inv_vp_arr,
                             camera_pos: [
@@ -2160,12 +2168,12 @@ impl VulkanContext {
                                 super::super::volumetrics::DEFAULT_SCATTERING_COEF,
                             ],
                             sun_dir: [
-                                sun_dir_norm[0],
-                                sun_dir_norm[1],
-                                sun_dir_norm[2],
+                                sky_params.sun_direction[0],
+                                sky_params.sun_direction[1],
+                                sky_params.sun_direction[2],
                                 super::super::volumetrics::DEFAULT_PHASE_G,
                             ],
-                            sun_color: [1.0, 0.95, 0.85, 1.0],
+                            sun_color: sun_radiance,
                             volume_extent: [
                                 super::super::volumetrics::DEFAULT_VOLUME_FAR,
                                 0.0,
