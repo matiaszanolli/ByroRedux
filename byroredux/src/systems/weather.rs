@@ -183,6 +183,46 @@ fn lerp1(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+/// Neutral exterior lighting written into `CellLightingRes` when an
+/// exterior cell loads without a WTHR record (#1034 / REN-D15-NEW-15).
+/// Pre-#1034 the no-WTHR branch in `weather_system` returned without
+/// writing the resource, so the prior cell's stale values leaked
+/// through — if the prior cell was a dark interior, the exterior
+/// rendered pitch-black.
+///
+/// Mid-grey ambient + neutral-white sun + early-sunrise sun
+/// direction (via `compute_sun_arc(6.0, DEFAULT_TOD_HOURS)`) — fully
+/// lit but flavour-less, the safe default the audit checklist
+/// item 10 explicitly demands.
+const NEUTRAL_AMBIENT: [f32; 3] = [0.4, 0.4, 0.4];
+const NEUTRAL_SUNLIGHT: [f32; 3] = [1.0, 1.0, 1.0];
+/// Hazy-daylight fog tint — slightly cool grey so the no-WTHR
+/// fallback reads as "overcast morning" rather than "tinted void".
+const NEUTRAL_FOG_COLOR: [f32; 3] = [0.5, 0.55, 0.6];
+const NEUTRAL_FOG_NEAR: f32 = 1000.0;
+const NEUTRAL_FOG_FAR: f32 = 50000.0;
+/// Sunrise/sunset/etc. breakpoints used when no climate record drives
+/// `WeatherDataRes::tod_hours`. Matches the pre-#463 hardcoded
+/// defaults the synthetic-fallback path in `scene::world_setup` ships.
+const DEFAULT_TOD_HOURS: [f32; 4] = [6.0, 10.0, 18.0, 22.0];
+
+/// Write the neutral exterior fallback into `cell_lit` when no WTHR
+/// record is loaded. Interior cells are skipped so XCLL/LGTM-authored
+/// values survive — mirrors the interior gate in the main update path
+/// (#782).
+fn apply_neutral_exterior_fallback(cell_lit: &mut CellLightingRes) {
+    if cell_lit.is_interior {
+        return;
+    }
+    let (sun_dir, _intensity) = compute_sun_arc(6.0, DEFAULT_TOD_HOURS);
+    cell_lit.ambient = NEUTRAL_AMBIENT;
+    cell_lit.directional_color = NEUTRAL_SUNLIGHT;
+    cell_lit.directional_dir = sun_dir;
+    cell_lit.fog_color = NEUTRAL_FOG_COLOR;
+    cell_lit.fog_near = NEUTRAL_FOG_NEAR;
+    cell_lit.fog_far = NEUTRAL_FOG_FAR;
+}
+
 /// Per-unit `wind_speed` (u8 0..=255) contribution to the cloud-layer 0
 /// scroll rate (UV/sec). Calibrated so `wind_speed = 32` (typical
 /// vanilla mid-range across FNV/FO3/Oblivion/Skyrim WTHR DATA bytes
@@ -281,6 +321,18 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         };
 
     let Some(wd) = world.try_resource::<WeatherDataRes>() else {
+        // #1034 / REN-D15-NEW-15 — no WTHR record loaded for this
+        // exterior cell. Without this branch, `CellLightingRes`
+        // keeps the stale interior values from the prior cell;
+        // if those were neutral / dark, the exterior renders
+        // pitch-black. Write a documented neutral default so the
+        // exterior is at least lit (audit-checklist item 10).
+        // Interior cells are skipped by `apply_neutral_exterior_fallback`'s
+        // internal gate (sibling of the main path's `!is_interior`
+        // check at line ~525).
+        if let Some(mut cell_lit) = world.try_resource_mut::<CellLightingRes>() {
+            apply_neutral_exterior_fallback(&mut cell_lit);
+        }
         return;
     };
 
@@ -1175,5 +1227,106 @@ mod interior_gate_tests {
             "exterior fog_color was not updated by weather_system: {:?}",
             cell_lit.fog_color
         );
+    }
+}
+
+/// Regression tests for #1034 / REN-D15-NEW-15 — the no-WTHR exterior
+/// fallback. Without this branch, an exterior cell load that lands
+/// before `WeatherDataRes` resolves leaks the prior cell's stale
+/// (often dark interior) lighting values into `CellLightingRes`,
+/// producing pitch-black exteriors. The fix writes documented
+/// neutral defaults at the early-return site; these tests pin the
+/// happy path (ambient non-zero, sun lit) AND the interior gate
+/// (interior values preserved even when the system early-returns).
+#[cfg(test)]
+mod no_wthr_fallback_tests {
+    use super::*;
+    use byroredux_core::ecs::World;
+
+    /// Same fixture shape as `interior_gate_tests::build_world` but
+    /// deliberately omits `WeatherDataRes` so `weather_system` takes
+    /// the no-WTHR branch.
+    fn build_world_no_wthr(is_interior: bool) -> World {
+        let mut world = World::new();
+        // Stale interior values — pre-#1034 these would leak unchanged
+        // into the exterior render. Pure black so an assertion on
+        // "ambient != black" reliably catches the bug.
+        world.insert_resource(CellLightingRes {
+            ambient: [0.0, 0.0, 0.0],
+            directional_color: [0.0, 0.0, 0.0],
+            directional_dir: [0.0, 1.0, 0.0],
+            is_interior,
+            fog_color: [0.0, 0.0, 0.0],
+            fog_near: 0.0,
+            fog_far: 0.0,
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
+        });
+        world.insert_resource(GameTimeRes {
+            hour: 12.0,
+            time_scale: 0.0,
+        });
+        // NB: no WeatherDataRes — that's the case under test.
+        world
+    }
+
+    /// Core regression: exterior cell + no WTHR must produce non-zero
+    /// ambient + non-zero directional light + non-zero fog_far. Pre-fix
+    /// every field stayed at zero (pitch-black exterior).
+    #[test]
+    fn no_wthr_exterior_writes_neutral_defaults() {
+        let world = build_world_no_wthr(false);
+        weather_system(&world, 0.016);
+
+        let cell_lit = world.try_resource::<CellLightingRes>().unwrap();
+        assert!(
+            cell_lit.ambient.iter().any(|c| *c > 0.0),
+            "no-WTHR exterior must produce non-zero ambient (#1034); got {:?}",
+            cell_lit.ambient
+        );
+        assert!(
+            cell_lit.directional_color.iter().any(|c| *c > 0.0),
+            "no-WTHR exterior must produce non-zero directional color (#1034); got {:?}",
+            cell_lit.directional_color
+        );
+        assert!(
+            cell_lit.fog_far > 0.0,
+            "no-WTHR exterior must produce non-zero fog_far (#1034); got {}",
+            cell_lit.fog_far
+        );
+        assert_eq!(cell_lit.ambient, NEUTRAL_AMBIENT);
+        assert_eq!(cell_lit.directional_color, NEUTRAL_SUNLIGHT);
+        assert_eq!(cell_lit.fog_color, NEUTRAL_FOG_COLOR);
+    }
+
+    /// Interior gate survives the fallback path — `is_interior=true`
+    /// must NOT be clobbered by the no-WTHR branch, mirroring the
+    /// main-path interior gate (#782).
+    #[test]
+    fn no_wthr_interior_preserves_xcll_values() {
+        let world = build_world_no_wthr(true);
+        weather_system(&world, 0.016);
+
+        let cell_lit = world.try_resource::<CellLightingRes>().unwrap();
+        // Original zero values must survive — interior cells own their
+        // XCLL/LGTM-authored lighting and the weather fallback must not
+        // clobber them.
+        assert_eq!(
+            cell_lit.ambient,
+            [0.0, 0.0, 0.0],
+            "interior ambient was clobbered by the no-WTHR fallback — \
+             same #782-shape regression on the new branch"
+        );
+        assert_eq!(cell_lit.directional_color, [0.0, 0.0, 0.0]);
+        assert_eq!(cell_lit.fog_color, [0.0, 0.0, 0.0]);
     }
 }
