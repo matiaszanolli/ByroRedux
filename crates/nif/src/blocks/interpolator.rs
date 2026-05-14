@@ -89,163 +89,208 @@ pub struct KeyGroup<K> {
     pub keys: Vec<K>,
 }
 
-impl KeyGroup<FloatKey> {
-    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let num_keys = stream.read_u32_le()?;
-        if num_keys == 0 {
-            return Ok(Self {
-                key_type: KeyType::Linear,
-                keys: Vec::new(),
-            });
-        }
-        let key_type = KeyType::from_u32(stream.read_u32_le()?)?;
-        let mut keys: Vec<FloatKey> = stream.allocate_vec(num_keys)?;
-        for _ in 0..num_keys {
-            let time = stream.read_f32_le()?;
-            let value = stream.read_f32_le()?;
-            let mut tangent_forward = 0.0;
-            let mut tangent_backward = 0.0;
-            let mut tbc = None;
-            match key_type {
-                KeyType::Linear | KeyType::Constant => {}
-                KeyType::Quadratic => {
-                    tangent_forward = stream.read_f32_le()?;
-                    tangent_backward = stream.read_f32_le()?;
-                }
-                KeyType::Tbc => {
-                    let t = stream.read_f32_le()?;
-                    let b = stream.read_f32_le()?;
-                    let c = stream.read_f32_le()?;
-                    tbc = Some([t, b, c]);
-                }
-                KeyType::XyzRotation => {
-                    // Not valid for float keys
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "XyzRotation key type in float key group",
-                    ));
-                }
+/// Per-key reader, parameterised by the keyframe-value type.
+///
+/// Lets `KeyGroup<K>::parse` carry the shared scaffold (read `num_keys`
+/// → early-return on zero → read `key_type` → `allocate_vec` → loop)
+/// once, with each value type providing only the inner per-key body.
+/// `QuatKey` implements this for symmetry with the others; the
+/// XyzRotation special case (delegate to three `KeyGroup<FloatKey>`s)
+/// stays in `NiTransformData::parse` where the version-gated `Order`
+/// float lives.
+///
+/// Past divergent-fix history (#230 TBC-on-rotation, #408 allocate_vec
+/// sweep, #8353092 reject-unknown-float-key) had to touch each scaffold
+/// independently — this trait collapses that.
+pub trait KeyParse: Sized {
+    /// Short label used in error messages — "float", "vec3", "color",
+    /// "quaternion".
+    const KIND_LABEL: &'static str;
+
+    /// Read a single key entry from the stream, given the group's
+    /// chosen `key_type`.
+    fn parse_one(stream: &mut NifStream, key_type: KeyType) -> io::Result<Self>;
+}
+
+impl KeyParse for FloatKey {
+    const KIND_LABEL: &'static str = "float";
+
+    fn parse_one(stream: &mut NifStream, key_type: KeyType) -> io::Result<Self> {
+        let time = stream.read_f32_le()?;
+        let value = stream.read_f32_le()?;
+        let mut tangent_forward = 0.0;
+        let mut tangent_backward = 0.0;
+        let mut tbc = None;
+        match key_type {
+            KeyType::Linear | KeyType::Constant => {}
+            KeyType::Quadratic => {
+                tangent_forward = stream.read_f32_le()?;
+                tangent_backward = stream.read_f32_le()?;
             }
-            keys.push(FloatKey {
-                time,
-                value,
-                tangent_forward,
-                tangent_backward,
-                tbc,
-            });
+            KeyType::Tbc => {
+                let t = stream.read_f32_le()?;
+                let b = stream.read_f32_le()?;
+                let c = stream.read_f32_le()?;
+                tbc = Some([t, b, c]);
+            }
+            KeyType::XyzRotation => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("XyzRotation key type in {} key group", Self::KIND_LABEL),
+                ));
+            }
         }
-        Ok(Self { key_type, keys })
+        Ok(FloatKey {
+            time,
+            value,
+            tangent_forward,
+            tangent_backward,
+            tbc,
+        })
     }
 }
 
-impl KeyGroup<Vec3Key> {
-    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let num_keys = stream.read_u32_le()?;
-        if num_keys == 0 {
-            return Ok(Self {
-                key_type: KeyType::Linear,
-                keys: Vec::new(),
-            });
-        }
-        let key_type = KeyType::from_u32(stream.read_u32_le()?)?;
-        let mut keys: Vec<Vec3Key> = stream.allocate_vec(num_keys)?;
-        for _ in 0..num_keys {
-            let time = stream.read_f32_le()?;
-            let x = stream.read_f32_le()?;
-            let y = stream.read_f32_le()?;
-            let z = stream.read_f32_le()?;
-            let mut tangent_forward = [0.0; 3];
-            let mut tangent_backward = [0.0; 3];
-            let mut tbc = None;
-            match key_type {
-                KeyType::Linear | KeyType::Constant => {}
-                KeyType::Quadratic => {
-                    tangent_forward = [
-                        stream.read_f32_le()?,
-                        stream.read_f32_le()?,
-                        stream.read_f32_le()?,
-                    ];
-                    tangent_backward = [
-                        stream.read_f32_le()?,
-                        stream.read_f32_le()?,
-                        stream.read_f32_le()?,
-                    ];
-                }
-                KeyType::Tbc => {
-                    let t = stream.read_f32_le()?;
-                    let b = stream.read_f32_le()?;
-                    let c = stream.read_f32_le()?;
-                    tbc = Some([t, b, c]);
-                }
-                KeyType::XyzRotation => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "XyzRotation key type in vec3 key group",
-                    ));
-                }
+impl KeyParse for Vec3Key {
+    const KIND_LABEL: &'static str = "vec3";
+
+    fn parse_one(stream: &mut NifStream, key_type: KeyType) -> io::Result<Self> {
+        let time = stream.read_f32_le()?;
+        let x = stream.read_f32_le()?;
+        let y = stream.read_f32_le()?;
+        let z = stream.read_f32_le()?;
+        let mut tangent_forward = [0.0; 3];
+        let mut tangent_backward = [0.0; 3];
+        let mut tbc = None;
+        match key_type {
+            KeyType::Linear | KeyType::Constant => {}
+            KeyType::Quadratic => {
+                tangent_forward = [
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                ];
+                tangent_backward = [
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                ];
             }
-            keys.push(Vec3Key {
-                time,
-                value: [x, y, z],
-                tangent_forward,
-                tangent_backward,
-                tbc,
-            });
+            KeyType::Tbc => {
+                let t = stream.read_f32_le()?;
+                let b = stream.read_f32_le()?;
+                let c = stream.read_f32_le()?;
+                tbc = Some([t, b, c]);
+            }
+            KeyType::XyzRotation => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("XyzRotation key type in {} key group", Self::KIND_LABEL),
+                ));
+            }
         }
-        Ok(Self { key_type, keys })
+        Ok(Vec3Key {
+            time,
+            value: [x, y, z],
+            tangent_forward,
+            tangent_backward,
+            tbc,
+        })
     }
 }
 
-impl KeyGroup<Color4Key> {
-    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let num_keys = stream.read_u32_le()?;
-        if num_keys == 0 {
-            return Ok(Self {
-                key_type: KeyType::Linear,
-                keys: Vec::new(),
-            });
+impl KeyParse for Color4Key {
+    const KIND_LABEL: &'static str = "color";
+
+    fn parse_one(stream: &mut NifStream, key_type: KeyType) -> io::Result<Self> {
+        let time = stream.read_f32_le()?;
+        let r = stream.read_f32_le()?;
+        let g = stream.read_f32_le()?;
+        let b = stream.read_f32_le()?;
+        let a = stream.read_f32_le()?;
+        let mut tangent_forward = [0.0; 4];
+        let mut tangent_backward = [0.0; 4];
+        let mut tbc = None;
+        match key_type {
+            KeyType::Linear | KeyType::Constant => {}
+            KeyType::Quadratic => {
+                for slot in tangent_forward.iter_mut() {
+                    *slot = stream.read_f32_le()?;
+                }
+                for slot in tangent_backward.iter_mut() {
+                    *slot = stream.read_f32_le()?;
+                }
+            }
+            KeyType::Tbc => {
+                let t = stream.read_f32_le()?;
+                let b = stream.read_f32_le()?;
+                let c = stream.read_f32_le()?;
+                tbc = Some([t, b, c]);
+            }
+            KeyType::XyzRotation => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("XyzRotation key type in {} key group", Self::KIND_LABEL),
+                ));
+            }
         }
-        let key_type = KeyType::from_u32(stream.read_u32_le()?)?;
-        let mut keys: Vec<Color4Key> = stream.allocate_vec(num_keys)?;
-        for _ in 0..num_keys {
-            let time = stream.read_f32_le()?;
-            let r = stream.read_f32_le()?;
-            let g = stream.read_f32_le()?;
+        Ok(Color4Key {
+            time,
+            value: [r, g, b, a],
+            tangent_forward,
+            tangent_backward,
+            tbc,
+        })
+    }
+}
+
+impl KeyParse for QuatKey {
+    const KIND_LABEL: &'static str = "quaternion";
+
+    /// Per-key body shared with the hand-rolled scaffold in
+    /// `NiTransformData::parse`. The XyzRotation case is the CALLER's
+    /// responsibility (NiTransformData delegates to three
+    /// `KeyGroup<FloatKey>`s + the version-gated `Order` float);
+    /// reaching this function with `key_type == XyzRotation` is a
+    /// parser bug, not a malformed file.
+    fn parse_one(stream: &mut NifStream, key_type: KeyType) -> io::Result<Self> {
+        let time = stream.read_f32_le()?;
+        let w = stream.read_f32_le()?;
+        let x = stream.read_f32_le()?;
+        let y = stream.read_f32_le()?;
+        let z = stream.read_f32_le()?;
+        let tbc = if key_type == KeyType::Tbc {
+            let t = stream.read_f32_le()?;
             let b = stream.read_f32_le()?;
-            let a = stream.read_f32_le()?;
-            let mut tangent_forward = [0.0; 4];
-            let mut tangent_backward = [0.0; 4];
-            let mut tbc = None;
-            match key_type {
-                KeyType::Linear | KeyType::Constant => {}
-                KeyType::Quadratic => {
-                    for slot in tangent_forward.iter_mut() {
-                        *slot = stream.read_f32_le()?;
-                    }
-                    for slot in tangent_backward.iter_mut() {
-                        *slot = stream.read_f32_le()?;
-                    }
-                }
-                KeyType::Tbc => {
-                    let t = stream.read_f32_le()?;
-                    let b = stream.read_f32_le()?;
-                    let c = stream.read_f32_le()?;
-                    tbc = Some([t, b, c]);
-                }
-                KeyType::XyzRotation => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "XyzRotation key type in color key group",
-                    ));
-                }
-            }
-            keys.push(Color4Key {
-                time,
-                value: [r, g, b, a],
-                tangent_forward,
-                tangent_backward,
-                tbc,
+            let c = stream.read_f32_le()?;
+            Some([t, b, c])
+        } else {
+            None
+        };
+        Ok(QuatKey {
+            time,
+            value: [w, x, y, z],
+            tbc,
+        })
+    }
+}
+
+impl<K: KeyParse> KeyGroup<K> {
+    /// Shared scaffold for every keyframe array in the format: read
+    /// `num_keys`, early-return on zero, read `key_type`, allocate the
+    /// backing Vec via `allocate_vec` (the `#[must_use]` budget guard
+    /// from #408 / #831), then delegate per-key reading to `K::parse_one`.
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let num_keys = stream.read_u32_le()?;
+        if num_keys == 0 {
+            return Ok(Self {
+                key_type: KeyType::Linear,
+                keys: Vec::new(),
             });
+        }
+        let key_type = KeyType::from_u32(stream.read_u32_le()?)?;
+        let mut keys: Vec<K> = stream.allocate_vec(num_keys)?;
+        for _ in 0..num_keys {
+            keys.push(K::parse_one(stream, key_type)?);
         }
         Ok(Self { key_type, keys })
     }
@@ -302,29 +347,16 @@ impl NiTransformData {
                 let z_keys = KeyGroup::<FloatKey>::parse(stream)?;
                 xyz_rotations = Some([x_keys, y_keys, z_keys]);
             } else {
-                // Quaternion keys. Counts go through allocate_vec so a
-                // corrupt 0xFFFFFFFF can't OOM before the inner reads fail.
-                // See #764.
+                // Quaternion keys. Per-key body delegates to
+                // `QuatKey::parse_one` (shared with `KeyGroup<QuatKey>`)
+                // so the TBC handling stays in lockstep with the float
+                // / vec3 / color paths — #230 had to fix the TBC
+                // handling here separately pre-trait. Counts go through
+                // `allocate_vec` (#408 / #764) so a corrupt 0xFFFFFFFF
+                // can't OOM before the inner reads fail.
                 rotation_keys = stream.allocate_vec::<QuatKey>(num_rotation_keys)?;
                 for _ in 0..num_rotation_keys {
-                    let time = stream.read_f32_le()?;
-                    let w = stream.read_f32_le()?;
-                    let x = stream.read_f32_le()?;
-                    let y = stream.read_f32_le()?;
-                    let z = stream.read_f32_le()?;
-                    let tbc = if rt == KeyType::Tbc {
-                        let t = stream.read_f32_le()?;
-                        let b = stream.read_f32_le()?;
-                        let c = stream.read_f32_le()?;
-                        Some([t, b, c])
-                    } else {
-                        None
-                    };
-                    rotation_keys.push(QuatKey {
-                        time,
-                        value: [w, x, y, z],
-                        tbc,
-                    });
+                    rotation_keys.push(QuatKey::parse_one(stream, rt)?);
                 }
             }
         }
