@@ -173,6 +173,30 @@ impl AccelerationManager {
             } else {
                 0
             };
+            // #957 / REN-D8-NEW-13 — `instance_custom_index` is a 24-bit
+            // field in the Vulkan AS-instance struct. `Packed24_8::new`
+            // silently truncates anything ≥ 2^24 = 16 777 216, which would
+            // re-route every RT hit's SSBO lookup to the wrong instance and
+            // silently corrupt material / transform reads.
+            //
+            // Unreachable today: `MAX_INSTANCES = 0x40000` (262 144,
+            // `scene_buffer/constants.rs`) is the upstream cap, enforced by
+            // the `RP-1` assert at `context/draw.rs::draw_frame`. That's a
+            // ~64× margin below the 24-bit ceiling. The invariant lives in
+            // a different file from the truncation site though, so a future
+            // `MAX_INSTANCES` bump past 2^24 (large open-world streaming
+            // ambitions, M40 Phase 2+) wouldn't catch this gap. Mirror the
+            // RP-1 assert here so the 24-bit invariant is documented and
+            // enforced at the truncation site itself.
+            debug_assert!(
+                ssbo_idx < (1u32 << 24),
+                "REN-D8-NEW-13: ssbo_idx {ssbo_idx} exceeds 24-bit \
+                 instance_custom_index ceiling (2^24 = 16 777 216). \
+                 Either MAX_INSTANCES was bumped past 2^24 without \
+                 partitioning the TLAS, or the build_instance_map \
+                 upstream cap drifted. See #957.",
+                ssbo_idx = ssbo_idx,
+            );
             instances.push(vk::AccelerationStructureInstanceKHR {
                 transform,
                 // #419 — SSBO-compacted index from the shared map, NOT
