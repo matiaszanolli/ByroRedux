@@ -263,6 +263,39 @@ layout(std430, set = 1, binding = 10) readonly buffer TerrainTileBuffer {
     GpuTerrainTile terrainTiles[];
 };
 
+// 6-axis directional ambient cube (Skyrim WTHR.DALC, per-TOD-lerped on
+// the host). `dalcFlags.x == 1.0` when the cube is authored (Skyrim
+// cells); zero means fall back to the legacy AMBIENT_AO_FLOOR path so
+// FNV / FO3 / Oblivion exteriors render unchanged. Each axis vec4
+// stores RGB in xyz with `.w` reserved for padding. #993 / REN-AMBIENT-DALC.
+layout(set = 1, binding = 14) uniform DalcCubeUBO {
+    vec4 dalcPosX;
+    vec4 dalcNegX;
+    vec4 dalcPosY;     // engine +Y = sky-fill
+    vec4 dalcNegY;     // engine -Y = ground-bounce / cavity-fill
+    vec4 dalcPosZ;
+    vec4 dalcNegZ;
+    vec4 dalcSpecularFresnel; // xyz = specular tint, w = fresnel power
+    vec4 dalcFlags;           // x = enabled (0/1), yzw = reserved
+};
+
+// Sample the 6-axis directional ambient cube along surface normal `N`.
+// Weights are the non-negative components of N on each cardinal axis,
+// so a normal pointing straight up reads `dalcPosY` only (sky-fill);
+// a normal pointing into a wall reads a mix of the lateral axes (cavity
+// fill). Sum of weights = |N.x| + |N.y| + |N.z| ≥ 1 (unit normal),
+// matching the typical 6-axis-cube convention from Halo / Frostbite —
+// the per-axis values are authored knowing this weighting. Replaces the
+// hand-tuned `AMBIENT_AO_FLOOR = 0.3` constant with a directionally-
+// correct sample of the WTHR-authored hemisphere. See #993.
+vec3 sampleDalcCube(vec3 N) {
+    vec3 pw = max(N, vec3(0.0));
+    vec3 nw = max(-N, vec3(0.0));
+    return dalcPosX.xyz * pw.x + dalcNegX.xyz * nw.x
+         + dalcPosY.xyz * pw.y + dalcNegY.xyz * nw.y
+         + dalcPosZ.xyz * pw.z + dalcNegZ.xyz * nw.z;
+}
+
 // Must match cluster_cull.comp constants.
 const uint CLUSTER_TILES_X = 16;
 const uint CLUSTER_TILES_Y = 9;
@@ -2621,14 +2654,34 @@ void main() {
     // never reaches the fragment because canyon-AO crushes it. See
     // Markarth probe 2026-05-13.
     //
-    // A future per-cell weight (interior vs exterior, or the DALC
-    // 6-axis ambient cube the Skyrim WTHR parser now exposes) can
-    // replace this constant with a directional sample of the
-    // up-facing ambient vs the surrounding-walls ambient — that's
-    // the architecturally correct fix and is filed as a follow-up.
+    // #993 / REN-AMBIENT-DALC: when the cell carries an authored Skyrim
+    // `WTHR.DALC` cube (`dalcFlags.x == 1.0`), sample the 6-axis cube
+    // along the surface normal. The per-axis values authored by
+    // Bethesda already encode the cavity-fill directional response,
+    // so AO modulation can apply directly without a uniform floor.
+    // For non-Skyrim cells (`dalcFlags.x == 0.0`) we keep the legacy
+    // single-constant `AMBIENT_AO_FLOOR = 0.3` path so FNV / FO3 /
+    // Oblivion exterior rendering is unchanged.
+    //
+    // The 0.3 floor was empirically tuned on Markarth canyon to keep
+    // wall-on-wall AO from crushing the fragment to black; matches the
+    // 0.25–0.4 range from ground-truth AO papers + the pre-RT-AO FNV
+    // render-path behaviour. See Markarth probe 2026-05-13.
     const float AMBIENT_AO_FLOOR = 0.3;
-    float ambientAO = max(combinedAO, AMBIENT_AO_FLOOR);
-    vec3 indirectLight = ambient * ambientAO + indirect * combinedAO;
+    vec3 indirectLight;
+    if (dalcFlags.x > 0.5) {
+        // Sky-fill / cavity-fill cube. The cube carries the
+        // hemispheric ambient response so we modulate by the
+        // raw combinedAO without a floor — wall surfaces hitting
+        // heavy AO still pick up the bright -Y (ground-bounce) axis
+        // from the cube, which is the directionally-correct
+        // cavity fill.
+        vec3 ambient_dir = sampleDalcCube(N);
+        indirectLight = (ambient_dir + indirect) * combinedAO;
+    } else {
+        float ambientAO = max(combinedAO, AMBIENT_AO_FLOOR);
+        indirectLight = ambient * ambientAO + indirect * combinedAO;
+    }
 
     // Glass compositing: Fresnel controls the output alpha.
     float finalAlpha = texColor.a;

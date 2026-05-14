@@ -497,6 +497,31 @@ impl DrawCommand {
     }
 }
 
+/// 6-axis directional ambient cube on the renderer side. Mirror of
+/// `byroredux::components::DalcCubeYup` — the engine crate owns the
+/// Bethesda-Z-up → engine-Y-up axis swap (in `from_skyrim_zup`) and
+/// per-TOD lerp (in `weather_system`); the renderer just receives
+/// raw RGB per axis + specular tint + fresnel power and packs it into
+/// `GpuDalcCube` at the draw boundary. `None` on every non-Skyrim cell
+/// — the shader's fallback path keeps the legacy `AMBIENT_AO_FLOOR`
+/// behaviour unchanged. See #993 / REN-AMBIENT-DALC.
+#[derive(Debug, Clone, Copy)]
+pub struct SkyDalcCube {
+    /// Engine +X (east) ambient — raw RGB.
+    pub pos_x: [f32; 3],
+    pub neg_x: [f32; 3],
+    /// Engine +Y (sky-fill / up) ambient — raw RGB.
+    pub pos_y: [f32; 3],
+    /// Engine -Y (ground-bounce / down / cavity-fill) ambient — raw RGB.
+    pub neg_y: [f32; 3],
+    pub pos_z: [f32; 3],
+    pub neg_z: [f32; 3],
+    /// DALC specular tint (vanilla Skyrim ships zeros on most weathers).
+    pub specular: [f32; 3],
+    /// DALC fresnel power tail (vanilla Skyrim ships 1.0).
+    pub fresnel_power: f32,
+}
+
 /// Sky rendering parameters passed per-frame to the composite shader.
 /// Populated from WTHR records for exterior cells or a procedural fallback.
 pub struct SkyParams {
@@ -566,6 +591,12 @@ pub struct SkyParams {
     pub cloud_tile_scale_3: f32,
     /// Bindless texture handle for cloud_textures[3] (WTHR BNAM).
     pub cloud_texture_index_3: u32,
+    /// Per-TOD-interpolated 6-axis directional ambient cube from Skyrim
+    /// `WTHR.DALC`. `None` for FNV / FO3 / Oblivion (no DALC subrecord) —
+    /// the GPU consumer sets `GpuDalcCube.flags.x = 0.0` so triangle.frag
+    /// falls back to the legacy `AMBIENT_AO_FLOOR` path on those games.
+    /// See #993 / REN-AMBIENT-DALC.
+    pub dalc_cube: Option<SkyDalcCube>,
 }
 
 impl Default for SkyParams {
@@ -600,6 +631,9 @@ impl Default for SkyParams {
             cloud_scroll_3: [0.0, 0.0],
             cloud_tile_scale_3: 0.0,
             cloud_texture_index_3: 0,
+            // None ⇒ shader fallback to AMBIENT_AO_FLOOR. Skyrim cells
+            // overwrite from per-TOD-lerped WTHR.DALC.
+            dalc_cube: None,
         }
     }
 }

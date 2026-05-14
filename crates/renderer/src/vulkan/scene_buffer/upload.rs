@@ -65,6 +65,21 @@ impl super::buffers::SceneBuffers {
         self.camera_buffers[frame_index].write_mapped(device, std::slice::from_ref(camera))
     }
 
+    /// Upload the 6-axis directional ambient cube for the current
+    /// frame-in-flight. Consumed by `triangle.frag` at descriptor set 1
+    /// binding 14. The cube's `flags.x` field gates the consumer: when
+    /// the host writes a disabled cube (the `GpuDalcCube::default()` —
+    /// all zeros + `flags = 0`), the shader falls back to the legacy
+    /// AMBIENT_AO_FLOOR path. See #993 / REN-AMBIENT-DALC.
+    pub fn upload_dalc(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        dalc: &GpuDalcCube,
+    ) -> Result<()> {
+        self.dalc_buffers[frame_index].write_mapped(device, std::slice::from_ref(dalc))
+    }
+
     /// Upload the bone palette for the current frame-in-flight into the
     /// HOST_VISIBLE staging buffer. The matching DEVICE_LOCAL slot is
     /// populated by [`record_bone_copy`] once a recording command buffer

@@ -1449,6 +1449,21 @@ pub(crate) fn build_render_data(
             cloud_scroll_3: scroll.3,
             cloud_tile_scale_3: sky_res.cloud_tile_scale_3,
             cloud_texture_index_3: sky_res.cloud_texture_index_3,
+            // #993 — pass the per-TOD-lerped 6-axis ambient cube
+            // through to the renderer. Engine-Y-up axes (the
+            // Zup → Yup swap lives in DalcCubeYup::from_skyrim_zup).
+            dalc_cube: sky_res.current_dalc_cube.map(|c| {
+                byroredux_renderer::vulkan::context::SkyDalcCube {
+                    pos_x: c.pos_x,
+                    neg_x: c.neg_x,
+                    pos_y: c.pos_y,
+                    neg_y: c.neg_y,
+                    pos_z: c.pos_z,
+                    neg_z: c.neg_z,
+                    specular: c.specular,
+                    fresnel_power: c.fresnel_power,
+                }
+            }),
         }
     } else {
         SkyParams::default()

@@ -174,6 +174,10 @@ impl super::buffers::SceneBuffers {
             buf.destroy(device, allocator);
         }
         self.material_buffers.clear();
+        for buf in &mut self.dalc_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.dalc_buffers.clear();
         for buf in &mut self.indirect_buffers {
             buf.destroy(device, allocator);
         }

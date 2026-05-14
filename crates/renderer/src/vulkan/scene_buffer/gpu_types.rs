@@ -238,3 +238,60 @@ impl Default for GpuCamera {
     }
 }
 
+/// 6-axis directional ambient cube uploaded to set 1 binding 14 as a
+/// UBO. Sourced from Skyrim `WTHR.DALC` records, axis-swapped to engine
+/// Y-up by `byroredux/src/components.rs::DalcCubeYup::from_skyrim_zup`,
+/// per-TOD lerped by `weather_system`, then assembled in
+/// `context::draw_frame` and consumed by `triangle.frag::sampleDalcCube`.
+/// Replaces the hand-tuned `AMBIENT_AO_FLOOR = 0.3` constant the Skyrim
+/// canyon-dimness incident introduced (commit `bf40401`). See #993.
+///
+/// Each axis vec4 stores RGB in xyz; w is unused padding (std140 vec3
+/// would round up to 16 B anyway, so a vec4 is the same cost and lets
+/// the shader read with a single `.xyz` swizzle).
+/// `flags.x = 1.0` when the DALC cube is authored (Skyrim cells with a
+/// `WTHR.DALC`); `0.0` otherwise — the shader uses this to fall back to
+/// the legacy `ambient * max(combinedAO, AMBIENT_AO_FLOOR)` path so
+/// FNV / FO3 / Oblivion exterior rendering is unchanged.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GpuDalcCube {
+    /// Engine +X (east) ambient — RGB in xyz, w = pad.
+    pub pos_x: [f32; 4],
+    /// Engine -X (west) ambient — RGB in xyz, w = pad.
+    pub neg_x: [f32; 4],
+    /// Engine +Y (sky-fill / up) ambient — RGB in xyz, w = pad.
+    pub pos_y: [f32; 4],
+    /// Engine -Y (ground-bounce / down / cavity-fill) ambient — RGB in xyz, w = pad.
+    pub neg_y: [f32; 4],
+    /// Engine +Z (north after the Zup → Yup axis swap) ambient — RGB in xyz, w = pad.
+    pub pos_z: [f32; 4],
+    /// Engine -Z (south after the Zup → Yup axis swap) ambient — RGB in xyz, w = pad.
+    pub neg_z: [f32; 4],
+    /// xyz = DALC specular tint, w = fresnel_power (vanilla Skyrim ships 1.0).
+    /// Reserved for future per-cell specular tint plumbing — the shader
+    /// reads neither today but the field is laid out so it lands when a
+    /// consumer arrives without a UBO size change.
+    pub specular_fresnel: [f32; 4],
+    /// x = `1.0` when an authored DALC is available (Skyrim cells); `0.0`
+    /// otherwise. yzw = reserved padding to keep the struct 16-byte aligned.
+    pub flags: [f32; 4],
+}
+
+impl Default for GpuDalcCube {
+    fn default() -> Self {
+        // All zeros + flags.x = 0 → shader falls back to the
+        // AMBIENT_AO_FLOOR path. Used on the very first frame and for
+        // every non-Skyrim cell.
+        Self {
+            pos_x: [0.0; 4],
+            neg_x: [0.0; 4],
+            pos_y: [0.0; 4],
+            neg_y: [0.0; 4],
+            pos_z: [0.0; 4],
+            neg_z: [0.0; 4],
+            specular_fresnel: [0.0, 0.0, 0.0, 1.0],
+            flags: [0.0, 0.0, 0.0, 0.0],
+        }
+    }
+}

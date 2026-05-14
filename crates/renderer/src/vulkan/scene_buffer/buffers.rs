@@ -62,6 +62,12 @@ pub struct SceneBuffers {
     /// One SSBO per frame-in-flight (per-instance data for instanced drawing).
     /// Each entry contains model matrix + texture index + bone offset.
     pub(super) instance_buffers: Vec<GpuBuffer>,
+    /// One UBO per frame-in-flight holding the per-TOD-interpolated
+    /// 6-axis directional ambient cube (`GpuDalcCube`). Sourced from
+    /// Skyrim WTHR.DALC; the cube's `flags.x` gates the consumer so
+    /// non-Skyrim cells fall back to the legacy AMBIENT_AO_FLOOR path
+    /// in triangle.frag. See #993 / REN-AMBIENT-DALC.
+    pub(super) dalc_buffers: Vec<GpuBuffer>,
     /// One SSBO per frame-in-flight ([`super::super::material::GpuMaterial`]
     /// table). Indexed by `GpuInstance.materialId`. Phase 4 (R1)
     /// migrates one field (`roughness`) onto this path; Phases 5–6
@@ -271,6 +277,18 @@ pub(crate) fn build_scene_descriptor_bindings(
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT),
     );
+    // Binding 14: DALC ambient cube UBO (fragment — #993 / REN-AMBIENT-DALC).
+    // 6-axis directional ambient sourced from Skyrim WTHR.DALC,
+    // axis-swapped + per-TOD-lerped engine-side. `GpuDalcCube.flags.x`
+    // gates use; when zero, triangle.frag falls back to the legacy
+    // AMBIENT_AO_FLOOR path so non-Skyrim cells render unchanged.
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(14)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
     bindings
 }
 
@@ -286,6 +304,7 @@ impl SceneBuffers {
             + std::mem::size_of::<GpuLight>() * MAX_LIGHTS)
             as vk::DeviceSize;
         let camera_buf_size = std::mem::size_of::<GpuCamera>() as vk::DeviceSize;
+        let dalc_buf_size = std::mem::size_of::<GpuDalcCube>() as vk::DeviceSize;
         // Bone palette: 4 × vec4 (mat4) per slot, std430 layout.
         let bone_buf_size =
             (std::mem::size_of::<[[f32; 4]; 4]>() * MAX_TOTAL_BONES) as vk::DeviceSize;
@@ -324,6 +343,7 @@ impl SceneBuffers {
             vk::BufferUsageFlags::STORAGE_BUFFER,
         )?;
         let mut material_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut dalc_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             light_buffers.push(GpuBuffer::create_host_visible(
                 device,
@@ -366,6 +386,12 @@ impl SceneBuffers {
                 allocator,
                 material_buf_size,
                 vk::BufferUsageFlags::STORAGE_BUFFER,
+            )?);
+            dalc_buffers.push(GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                dalc_buf_size,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
             )?);
             // Ray budget counter is now a SINGLE shared buffer (declared
             // outside this loop) with per-frame slots at
@@ -512,6 +538,11 @@ impl SceneBuffers {
                 offset: 0,
                 range: material_buf_size,
             }];
+            let dalc_buf_info = [vk::DescriptorBufferInfo {
+                buffer: dalc_buffers[i].buffer,
+                offset: 0,
+                range: dalc_buf_size,
+            }];
             let set = descriptor_sets[i];
             let writes = [
                 write_storage_buffer(set, 0, &light_buf_info),
@@ -522,6 +553,7 @@ impl SceneBuffers {
                 write_storage_buffer(set, 11, &ray_budget_buf_info),
                 write_storage_buffer(set, 12, &bone_prev_buf_info),
                 write_storage_buffer(set, 13, &material_buf_info),
+                write_uniform_buffer(set, 14, &dalc_buf_info),
             ];
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);
@@ -543,6 +575,15 @@ impl SceneBuffers {
         for buf in &mut bone_staging_buffers {
             buf.write_mapped(device, std::slice::from_ref(&identity))?;
         }
+        // Seed every per-FIF dalc buffer with the disabled-default cube
+        // so frame 0's fragment read on binding 14 sees a valid
+        // `flags.x = 0` (shader's fallback path). Subsequent frames
+        // overwrite via `upload_dalc` whenever a Skyrim WTHR.DALC is
+        // active. See #993.
+        let default_dalc = GpuDalcCube::default();
+        for buf in &mut dalc_buffers {
+            buf.write_mapped(device, std::slice::from_ref(&default_dalc))?;
+        }
         // Track the seeded identity matrix so `record_bone_copy` on the
         // very first frame still propagates slot 0 to device memory even
         // if no skinned content was uploaded that frame.
@@ -563,6 +604,7 @@ impl SceneBuffers {
             bone_device_buffers,
             bone_upload_bytes,
             instance_buffers,
+            dalc_buffers,
             material_buffers,
             indirect_buffers,
             terrain_tile_buffer,

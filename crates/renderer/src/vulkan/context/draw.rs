@@ -502,6 +502,34 @@ impl VulkanContext {
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)
             .unwrap_or_else(|e| log::warn!("Failed to upload camera: {e}"));
+        // #993 — upload the per-TOD-lerped 6-axis directional ambient
+        // cube (Skyrim WTHR.DALC). When the cell carries no DALC
+        // (FNV / FO3 / Oblivion), `sky_params.dalc_cube` is `None`;
+        // we upload a disabled cube so the fragment shader stays on
+        // its AMBIENT_AO_FLOOR fallback path. The `flags.x` field is
+        // the runtime gate the shader reads.
+        let dalc_gpu = if let Some(cube) = sky_params.dalc_cube {
+            super::super::scene_buffer::GpuDalcCube {
+                pos_x: [cube.pos_x[0], cube.pos_x[1], cube.pos_x[2], 0.0],
+                neg_x: [cube.neg_x[0], cube.neg_x[1], cube.neg_x[2], 0.0],
+                pos_y: [cube.pos_y[0], cube.pos_y[1], cube.pos_y[2], 0.0],
+                neg_y: [cube.neg_y[0], cube.neg_y[1], cube.neg_y[2], 0.0],
+                pos_z: [cube.pos_z[0], cube.pos_z[1], cube.pos_z[2], 0.0],
+                neg_z: [cube.neg_z[0], cube.neg_z[1], cube.neg_z[2], 0.0],
+                specular_fresnel: [
+                    cube.specular[0],
+                    cube.specular[1],
+                    cube.specular[2],
+                    cube.fresnel_power,
+                ],
+                flags: [1.0, 0.0, 0.0, 0.0],
+            }
+        } else {
+            super::super::scene_buffer::GpuDalcCube::default()
+        };
+        self.scene_buffers
+            .upload_dalc(&self.device, frame, &dalc_gpu)
+            .unwrap_or_else(|e| log::warn!("Failed to upload DALC cube: {e}"));
         // Store this frame's viewProj as next frame's "previous" for motion vectors.
         self.prev_view_proj = *vp;
         if !bone_palette.is_empty() {
