@@ -22,12 +22,16 @@
 //! for the `update_rgba` "stack multiple in-flight replacements per
 //! slot" flow.
 
-/// Default countdown value used by every production caller. Matches
-/// the renderer's `MAX_FRAMES_IN_FLIGHT == 2` const-asserted contract
-/// from `vulkan::sync` (#870) — items pushed at frame N are safe to
-/// destroy at frame N+2 because every command buffer that could
-/// reference them has finished by then.
-pub(crate) const DEFAULT_COUNTDOWN: u32 = 2;
+/// Default countdown value used by every production caller. Expressed
+/// directly as `MAX_FRAMES_IN_FLIGHT as u32` so a future bump to
+/// `MAX_FRAMES_IN_FLIGHT` (currently 2 per the `vulkan::sync` #870
+/// const-assert) automatically widens the deferred-destroy window
+/// instead of silently lagging behind. Items pushed at frame N are
+/// safe to destroy at frame N+`DEFAULT_COUNTDOWN` because every
+/// command buffer that could reference them has finished by then.
+/// Mirrors the correct pattern at `draw.rs:889` and
+/// `acceleration.rs::tick_pending_destroy_blas`.
+pub(crate) const DEFAULT_COUNTDOWN: u32 = crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT as u32;
 
 /// Queue of items waiting `countdown` more frames before destruction.
 /// `tick` decrements every entry's countdown each frame, calls the

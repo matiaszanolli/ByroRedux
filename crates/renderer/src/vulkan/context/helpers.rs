@@ -753,9 +753,14 @@ mod pipeline_cache_header_tests {
     /// scope is verified (it must not touch the body).
     #[test]
     fn happy_path_valid_header_returns_true() {
+        // Test-fixture body size — has no relation to `BINDLESS_CEILING`
+        // (`device.rs::BINDLESS_CEILING == 65535`) or any other in-tree
+        // 1024-shaped constant. 1 KiB is just "enough body bytes that
+        // the validator obviously can't be reading them by accident".
+        const TEST_BODY_PAD_BYTES: usize = 1024;
         let uuid = [0x42u8; 16];
         let mut data = make_header(32, 1, 0x1002, 0x73BF, uuid);
-        data.resize(1024, 0); // body bytes — must be ignored
+        data.resize(TEST_BODY_PAD_BYTES, 0); // body bytes — must be ignored
         assert!(validate_pipeline_cache_header(&data, 0x1002, 0x73BF, &uuid));
     }
 

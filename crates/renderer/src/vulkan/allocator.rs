@@ -14,6 +14,28 @@ use std::sync::{Arc, Mutex};
 /// points in the renderer lifecycle.
 pub type SharedAllocator = Arc<Mutex<vulkan::Allocator>>;
 
+/// Device-local block size for the gpu-allocator. The library default
+/// is 256 MB, which over-reserves on 4–8 GB GPUs (a single startup
+/// block consumes 6% of a 4 GB part). 64 MB lets blocks grow on
+/// demand at a 4x finer granularity — typical cell load is ~250 MB
+/// across ~3000 allocations in 4–5 blocks. See `create_allocator`
+/// for the empirical sizing rationale.
+pub const DEVICE_LOCAL_BLOCK_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Host-visible block size for the gpu-allocator. 16 MB pairs with
+/// the 64 MB device-local block at a 4:1 ratio — host-visible memory
+/// is dominated by staging buffers (texture uploads, BLAS scratch)
+/// that turn over rapidly within a frame, so the smaller block
+/// keeps reservations tight.
+pub const HOST_VISIBLE_BLOCK_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Fallback "approaching OOM" warn threshold when no DEVICE_LOCAL
+/// heap is exposed (pure-SoC / Vulkan-on-software-rasterizer). The
+/// hot path scales the warn threshold to 80% of the smallest
+/// DEVICE_LOCAL heap (`warn_threshold_bytes`); this is the literal
+/// the fallback returns when that heap discovery yields zero.
+pub const SMALL_VRAM_THRESHOLD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 /// Resource newtype that lets the ECS expose the renderer's
 /// `SharedAllocator` to systems / console commands. Pre-#503 the
 /// allocator lived on `VulkanContext` only — out of reach of
@@ -192,16 +214,11 @@ pub fn create_allocator(
     physical_device: ash::vk::PhysicalDevice,
     buffer_device_address: bool,
 ) -> Result<SharedAllocator> {
-    // Tuned block sizes for game engine workload. The gpu-allocator
-    // defaults (256 MB device, 64 MB host) over-reserve on GPUs with
-    // 4–8 GB VRAM — a single 256 MB block at startup consumes 6% of a
-    // 4 GB GPU before any content loads. Smaller blocks (64 MB device,
-    // 16 MB host) let the allocator grow on demand with less waste.
-    // Typical cell load: ~250 MB across ~3000 allocations in 4–5 blocks.
-    let allocation_sizes = gpu_allocator::AllocationSizes::new(
-        64 * 1024 * 1024, // 64 MB device-local blocks
-        16 * 1024 * 1024, // 16 MB host-visible blocks
-    );
+    // Tuned block sizes for game engine workload — see
+    // [`DEVICE_LOCAL_BLOCK_BYTES`] / [`HOST_VISIBLE_BLOCK_BYTES`] for
+    // the empirical rationale.
+    let allocation_sizes =
+        gpu_allocator::AllocationSizes::new(DEVICE_LOCAL_BLOCK_BYTES, HOST_VISIBLE_BLOCK_BYTES);
     let allocator = vulkan::Allocator::new(&vulkan::AllocatorCreateDesc {
         instance: instance.clone(),
         device: device.clone(),
@@ -232,7 +249,7 @@ pub fn create_allocator(
 fn warn_threshold_bytes(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> u64 {
     let heap = super::device::smallest_device_local_heap_bytes(instance, physical_device);
     if heap == 0 {
-        2 * 1024 * 1024 * 1024
+        SMALL_VRAM_THRESHOLD_BYTES
     } else {
         (heap / 5) * 4 // 80% without losing precision to floats
     }
@@ -313,12 +330,12 @@ mod tests {
         // we can verify the math: 80% of a known heap size.
         fn threshold_for(heap: u64) -> u64 {
             if heap == 0 {
-                2 * 1024 * 1024 * 1024
+                SMALL_VRAM_THRESHOLD_BYTES
             } else {
                 (heap / 5) * 4
             }
         }
-        assert_eq!(threshold_for(0), 2 * 1024 * 1024 * 1024);
+        assert_eq!(threshold_for(0), SMALL_VRAM_THRESHOLD_BYTES);
         // 6 GB floor → ~4.8 GB threshold (int truncation of /5).
         let six_gb = 6u64 * 1024 * 1024 * 1024;
         assert_eq!(threshold_for(six_gb), (six_gb / 5) * 4);

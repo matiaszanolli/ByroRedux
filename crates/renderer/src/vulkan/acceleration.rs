@@ -15,6 +15,46 @@ use anyhow::{Context, Result};
 use ash::vk;
 use byroredux_core::ecs::storage::EntityId;
 
+/// Slack margin on BLAS-build scratch shrink. The persistent scratch
+/// buffer shrinks only when it's both >2× the new peak AND the
+/// absolute excess exceeds this margin — keeps shrink decisions
+/// stable across adjacent cell loads with similar high-water marks.
+/// 16 MB is the scale BLAS scratch lives at (a single 80–200 MB
+/// build is plausible; the slack is ~10% of that). See `#495` and
+/// `scratch_should_shrink`.
+const BLAS_REBUILD_SLACK_BYTES: vk::DeviceSize = 16 * 1024 * 1024;
+
+/// Slack margin on TLAS instance-buffer shrink (`#645` / MEM-2-3).
+/// TLAS instance buffers are 64 B/entry and live at MB scale, so the
+/// BLAS-scratch 16 MB slack would effectively never trigger — a
+/// 32 K-instance peak buffer is only ~2 MB. 1 MB ≈ 16 K instances:
+/// wide enough to absorb adjacent-cell-load variance, narrow enough
+/// to actually fire when a big exterior peak settles back into a
+/// small interior working set. See `tlas_instance_should_shrink`.
+const TLAS_REBUILD_SLACK_BYTES: vk::DeviceSize = 1024 * 1024;
+
+/// Lower bound on TLAS instance-buffer capacity. The build path
+/// pre-sizes to `max(2 × instance_count, MIN_TLAS_INSTANCE_RESERVE)`
+/// — covers interior cells (~200-800) and exterior cells (~3000-5000)
+/// without resizing on cell-streaming transitions through
+/// low-instance frames. Trades ~1 MB BAR per FIF slot on small cells
+/// for stable build performance. See REN-D8-NEW-10 / REN-D2-NEW-02.
+const MIN_TLAS_INSTANCE_RESERVE: u32 = 8192;
+
+/// Lower bound on the post-shrink TLAS working-set capacity. Matches
+/// the build-path floor `MIN_TLAS_INSTANCE_RESERVE` so a shrink
+/// targeting a tiny working set can't churn below the floor — the
+/// next build would just re-pad back to it and we'd burn a
+/// free+create cycle for no behavioural change.
+const WORKING_SET_FLOOR: u32 = MIN_TLAS_INSTANCE_RESERVE;
+
+/// Minimum BLAS-budget floor. Computed budget is `device_local / 3`
+/// capped no lower than this — keeps the 90% eviction trigger
+/// meaningful even on small-VRAM devices where `total / 3` would be
+/// a small absolute number. 256 MB matches the typical cell BLAS
+/// footprint. See `compute_blas_budget`.
+const MIN_BLAS_BUDGET_BYTES: vk::DeviceSize = 256 * 1024 * 1024;
+
 /// Convert a column-major `[f32; 16]` model matrix (glam / shader
 /// convention) into the row-major 3×4 layout `VkTransformMatrixKHR`
 /// expects. The bottom row of an affine model matrix is always
@@ -450,9 +490,8 @@ fn scratch_needs_growth(
 /// issue #495 for the failure mode — a single 80–200 MB BLAS build
 /// pinning VRAM for the rest of the process lifetime.
 fn scratch_should_shrink(current_capacity: vk::DeviceSize, peak_required: vk::DeviceSize) -> bool {
-    const SLACK: vk::DeviceSize = 16 * 1024 * 1024;
     current_capacity > peak_required.saturating_mul(2)
-        && current_capacity.saturating_sub(peak_required) > SLACK
+        && current_capacity.saturating_sub(peak_required) > BLAS_REBUILD_SLACK_BYTES
 }
 
 /// Hysteresis decision for the TLAS instance buffer pair (`#645` /
@@ -472,9 +511,8 @@ fn tlas_instance_should_shrink(
     current_capacity_bytes: vk::DeviceSize,
     working_set_bytes: vk::DeviceSize,
 ) -> bool {
-    const SLACK: vk::DeviceSize = 1024 * 1024;
     current_capacity_bytes > working_set_bytes.saturating_mul(2)
-        && current_capacity_bytes.saturating_sub(working_set_bytes) > SLACK
+        && current_capacity_bytes.saturating_sub(working_set_bytes) > TLAS_REBUILD_SLACK_BYTES
 }
 
 /// Shrink a per-frame scratch `Vec` back toward its working set when a
@@ -548,9 +586,8 @@ fn compute_blas_budget(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
 ) -> vk::DeviceSize {
-    const MIN_BUDGET: vk::DeviceSize = 256 * 1024 * 1024; // 256 MB floor
     let device_local_bytes = super::device::total_device_local_bytes(instance, physical_device);
-    (device_local_bytes / 3).max(MIN_BUDGET)
+    (device_local_bytes / 3).max(MIN_BLAS_BUDGET_BYTES)
 }
 
 impl AccelerationManager {
@@ -2581,7 +2618,8 @@ impl AccelerationManager {
             // The 8192 floor is the right knob for that pattern; the
             // 1 MB BAR cost is a fraction of the per-FIF scene
             // buffer total (~10-20 MB).
-            let padded_count = ((instance_count as usize) * 2).max(8192);
+            let padded_count =
+                ((instance_count as usize) * 2).max(MIN_TLAS_INSTANCE_RESERVE as usize);
             let padded_size = (std::mem::size_of::<vk::AccelerationStructureInstanceKHR>()
                 * padded_count) as vk::DeviceSize;
 
@@ -3248,13 +3286,11 @@ impl AccelerationManager {
     ) -> bool {
         const INSTANCE_STRIDE: vk::DeviceSize =
             std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as vk::DeviceSize;
-        // Match the floor that `build_tlas` itself imposes on every
-        // resize (line 1827 — `padded_count = max(2 * count, 8192)`).
-        // Treating the working set as `max(working, FLOOR)` means a
+        // [`WORKING_SET_FLOOR`] matches the build-path floor
+        // `MIN_TLAS_INSTANCE_RESERVE` imposes on every resize so a
         // shrink targeting a tiny working set can't churn below the
-        // floor — the very next build would just re-pad back to it
-        // and we'd burn a free+create cycle for no behavioural change.
-        const WORKING_SET_FLOOR: u32 = 8192;
+        // floor — the next build would just re-pad back to it and
+        // we'd burn a free+create cycle for no behavioural change.
 
         let Some(slot) = self.tlas[slot_index].as_ref() else {
             return false;
@@ -3600,18 +3636,23 @@ mod tests {
     /// (the real caller) follows the same math.
     #[test]
     fn shrink_scratch_reclaims_capacity_after_peak() {
+        // Target = 2 × max(working_set, floor) = 2 × max(50, 512) = 1024.
+        // The literal "1024" in the asserts below is this product, not
+        // the `BINDLESS_CEILING = 65535` constant or any other in-tree
+        // 1024-shaped value; bumping the floor will move both.
+        const FLOOR: usize = 512;
+        const TARGET: usize = 2 * FLOOR;
         // 10 000-entry peak, then a tiny steady-state restore.
         let mut v: Vec<u8> = Vec::with_capacity(10_000);
-        shrink_scratch_if_oversized(&mut v, 50, 512);
-        // Target = 2 × max(50, 512) = 1024. Capacity was 10 000 → shrink.
+        shrink_scratch_if_oversized(&mut v, 50, FLOOR);
         assert!(
-            v.capacity() <= 1024,
-            "expected capacity <= 1024, got {}",
+            v.capacity() <= TARGET,
+            "expected capacity <= {TARGET}, got {}",
             v.capacity()
         );
         // Floor honoured — NOT shrunk to `working_set` alone (50).
         assert!(
-            v.capacity() >= 512,
+            v.capacity() >= FLOOR,
             "floor must keep capacity above working-set for small frames"
         );
     }
@@ -3621,25 +3662,29 @@ mod tests {
     /// oscillates around the peak).
     #[test]
     fn shrink_scratch_preserves_hysteresis_band() {
+        // Same target-derivation note as above: TARGET = 2 × FLOOR; not
+        // BINDLESS_CEILING.
+        const FLOOR: usize = 512;
+        const TARGET: usize = 2 * FLOOR;
         // Working set 500, floor 512, target = 2 × max(500, 512) = 1024.
         // Capacity 1500 > target → shrink.
         let mut over: Vec<u8> = Vec::with_capacity(1500);
-        shrink_scratch_if_oversized(&mut over, 500, 512);
-        assert!(over.capacity() <= 1024);
+        shrink_scratch_if_oversized(&mut over, 500, FLOOR);
+        assert!(over.capacity() <= TARGET);
 
-        // Capacity 1024 == target → NO shrink (equality falls into
-        // the "leave alone" branch).
-        let mut at: Vec<u8> = Vec::with_capacity(1024);
-        shrink_scratch_if_oversized(&mut at, 500, 512);
+        // Capacity == target → NO shrink (equality falls into the
+        // "leave alone" branch).
+        let mut at: Vec<u8> = Vec::with_capacity(TARGET);
+        shrink_scratch_if_oversized(&mut at, 500, FLOOR);
         assert_eq!(
             at.capacity(),
-            1024,
+            TARGET,
             "at-target capacity must not be touched"
         );
 
         // Capacity below 2× — leave alone, we're already efficient.
         let mut under: Vec<u8> = Vec::with_capacity(800);
-        shrink_scratch_if_oversized(&mut under, 500, 512);
+        shrink_scratch_if_oversized(&mut under, 500, FLOOR);
         assert_eq!(under.capacity(), 800);
     }
 
@@ -3700,11 +3745,14 @@ mod tests {
     /// to zero just because the current frame emitted no draws.
     #[test]
     fn shrink_scratch_zero_working_set_keeps_floor() {
+        // Same derivation as above tests — TARGET = 2 × FLOOR.
+        const FLOOR: usize = 512;
+        const TARGET: usize = 2 * FLOOR;
         let mut v: Vec<u8> = Vec::with_capacity(5000);
-        shrink_scratch_if_oversized(&mut v, 0, 512);
-        assert!(v.capacity() >= 512, "floor must survive zero working set");
+        shrink_scratch_if_oversized(&mut v, 0, FLOOR);
+        assert!(v.capacity() >= FLOOR, "floor must survive zero working set");
         assert!(
-            v.capacity() <= 1024,
+            v.capacity() <= TARGET,
             "shrink must still fire above 2 × floor"
         );
     }
@@ -3992,16 +4040,7 @@ mod tests {
         // cap is full.
         assert_eq!(
             map,
-            vec![
-                Some(0),
-                None,
-                Some(1),
-                None,
-                Some(2),
-                None,
-                None,
-                None,
-            ]
+            vec![Some(0), None, Some(1), None, Some(2), None, None, None,]
         );
     }
 

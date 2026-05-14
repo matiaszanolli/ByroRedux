@@ -81,14 +81,16 @@ pub const MAX_INSTANCES: usize = 0x40000;
 
 /// Maximum number of `VkDrawIndexedIndirectCommand` entries held in
 /// the per-frame indirect buffer. Each entry is 20 bytes, so
-/// `262144 × 20 B = 5.2 MB per frame × 2 frames-in-flight = 10.5 MB`
-/// total. Sized to match `MAX_INSTANCES` so the worst-case 1:1
-/// mapping (no per-mesh batching folds, every instance is its own
-/// indirect draw) still fits. Real scenes with the instanced
-/// batching from #272 emit a few hundred entries; the cap exists
-/// to bound buffer allocation, not to throttle typical use. See
-/// #309 / #992.
-pub const MAX_INDIRECT_DRAWS: usize = 0x40000;
+/// `MAX_INSTANCES × 20 B ≈ 5.2 MB per frame × 2 frames-in-flight
+/// ≈ 10.5 MB` total. Sized identically to `MAX_INSTANCES` (one
+/// expression, one variable to bump) so the worst-case 1:1 mapping
+/// (no per-mesh batching folds, every instance is its own indirect
+/// draw) still fits — the comment used to say "must agree with
+/// MAX_INSTANCES" but the two were independent literals that could
+/// drift on the next bump. Real scenes with the instanced batching
+/// from #272 emit a few hundred entries; the cap exists to bound
+/// buffer allocation, not to throttle typical use. See #309 / #992.
+pub const MAX_INDIRECT_DRAWS: usize = MAX_INSTANCES;
 
 /// Maximum number of `GpuTerrainTile` slots held in the per-frame
 /// terrain-tile SSBO. 1024 × 32 B = 32 KB per frame — one slot per
