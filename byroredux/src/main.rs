@@ -1126,9 +1126,16 @@ impl ApplicationHandler for App {
                     // surface them. Cheap (two usize writes) and
                     // capturing here means the values reflect the
                     // exact state visible to the SSBO upload below.
+                    //
+                    // #1032 / REN-D14-NEW-01 — `unique_user_count()`
+                    // excludes the seeded neutral slot 0, so the
+                    // `mat.stats` console output reports the actual
+                    // distinct-materials count (Prospector baseline:
+                    // 87 unique, not the 88 the pre-fix `len()`
+                    // emitted).
                     {
                         let mut tlm = self.world.resource_mut::<ScratchTelemetry>();
-                        tlm.materials_unique = self.material_table.len();
+                        tlm.materials_unique = self.material_table.unique_user_count();
                         tlm.materials_interned = self.material_table.interned_count();
                     }
 

@@ -900,6 +900,57 @@ mod tests {
         assert_eq!(table.interned_count(), 0);
     }
 
+    /// #1032 / REN-D14-NEW-01 — `unique_user_count` excludes the
+    /// seeded slot 0 so `mat.stats` reports actual user-distinct
+    /// material counts. Pin the contract on the four shapes that
+    /// matter:
+    ///   * fresh table (no user interns) → 0
+    ///   * one user material → 1 (not 2)
+    ///   * default-only interns (dedup to slot 0) → 0
+    ///   * post-clear → 0
+    #[test]
+    fn unique_user_count_excludes_seeded_slot() {
+        let mut table = MaterialTable::new();
+        assert_eq!(
+            table.unique_user_count(),
+            0,
+            "fresh table has only the seeded neutral; zero user materials"
+        );
+        assert_eq!(
+            table.len(),
+            1,
+            "sanity: len() still counts the seeded slot"
+        );
+
+        let mut user = GpuMaterial::default();
+        user.roughness = 0.7;
+        table.intern(user);
+        assert_eq!(
+            table.unique_user_count(),
+            1,
+            "one user material — pre-fix `mat.stats` reported 2 here"
+        );
+        assert_eq!(table.len(), 2, "sanity: len() = seeded + 1 user");
+
+        // Interning the default GpuMaterial dedups to slot 0 — it
+        // bumps `interned_count` but NOT the user count.
+        let mut bare_default_table = MaterialTable::new();
+        let _ = bare_default_table.intern(GpuMaterial::default());
+        let _ = bare_default_table.intern(GpuMaterial::default());
+        assert_eq!(
+            bare_default_table.unique_user_count(),
+            0,
+            "default-only interns dedup to slot 0 — zero distinct user materials"
+        );
+
+        table.clear();
+        assert_eq!(
+            table.unique_user_count(),
+            0,
+            "clear re-seeds slot 0 only — user count drops to zero"
+        );
+    }
+
     /// #807 — `clear()` re-seeds slot 0 so the per-frame contract
     /// (id 0 == neutral default) holds at frame start, not just at
     /// engine boot.
