@@ -16,6 +16,7 @@
 
 use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::StagingPool;
+use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::vulkan::texture::Texture;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -23,9 +24,6 @@ use std::collections::{HashMap, VecDeque};
 
 /// Handle into the TextureRegistry (index into the bindless array).
 pub type TextureHandle = u32;
-
-/// Maximum frames in flight — textures must survive this many frames after replacement.
-const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 /// One queued `vkUpdateDescriptorSets` payload for a slot whose
 /// descriptor set is not currently being recorded. The write is
