@@ -11,13 +11,17 @@
 //! the parser silently `stream.skip`'d the global buffer and the
 //! importer's early-return guard fired on the empty inline arrays.
 use super::*;
-use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
 use crate::blocks::skin::{
-    NiSkinInstance, NiSkinPartition, SkinPartitionEntry, SseSkinGlobalBuffer,
+    NiSkinData, NiSkinInstance,
+    NiSkinPartition, SseSkinGlobalBuffer,
 };
 use crate::blocks::tri_shape::BsTriShapeKind;
+use crate::blocks::tri_shape::BsTriShape;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3};
+
+use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+use crate::blocks::skin::SkinPartitionEntry;
 
 fn empty_net() -> NiObjectNETData {
     NiObjectNETData {

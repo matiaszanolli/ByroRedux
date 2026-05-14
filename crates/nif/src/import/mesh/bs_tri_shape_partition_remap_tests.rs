@@ -12,12 +12,18 @@
 //! 256+ bone skins) silently alias every vertex past partition 0
 //! to the wrong bones.
 use super::*;
-use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
 use crate::blocks::node::NiNode;
-use crate::blocks::skin::{NiSkinData, NiSkinInstance, NiSkinPartition, SkinPartitionEntry};
+use crate::blocks::skin::{
+    NiSkinData, NiSkinInstance,
+    NiSkinPartition,
+};
 use crate::blocks::tri_shape::BsTriShapeKind;
+use crate::blocks::tri_shape::BsTriShape;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
+
+use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+use crate::blocks::skin::SkinPartitionEntry;
 
 fn empty_net() -> NiObjectNETData {
     NiObjectNETData {

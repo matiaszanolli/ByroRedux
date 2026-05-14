@@ -3,6 +3,9 @@
 //! Same qualified path preserved (`skin_tests::FOO`).
 
 use super::*;
+use crate::blocks::skin::NiSkinData;
+use crate::types::{NiPoint3, NiTransform};
+
 use crate::blocks::skin::{BoneData, BoneVertWeight};
 use crate::types::NiMatrix3;
 

@@ -10,10 +10,15 @@
 //! observable `ImportedMesh` output rather than deleted helper
 //! implementation details.
 use super::*;
-use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
-use crate::blocks::shader::BSEffectShaderProperty;
+use crate::blocks::tri_shape::BsTriShapeKind;
+use crate::blocks::tri_shape::BsTriShape;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3};
+
+use super::super::{ImportedMesh, MeshResolver};
+use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+use crate::blocks::shader::BSEffectShaderProperty;
+// (BlockRef + NiPoint3 already in canonical block above)
 
 fn empty_net() -> NiObjectNETData {
     NiObjectNETData {

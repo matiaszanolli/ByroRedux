@@ -3,11 +3,16 @@
 //! Same qualified path preserved (`material_path_capture_tests::FOO`).
 
 use super::*;
-use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
-use crate::blocks::shader::{BSEffectShaderProperty, BSLightingShaderProperty, ShaderTypeData};
+use crate::blocks::shader::is_material_reference;
+use crate::blocks::tri_shape::BsTriShapeKind;
+use crate::blocks::tri_shape::BsTriShape;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
+
+use super::super::{ImportedMesh, MeshResolver};
 use std::sync::Arc;
+use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+use crate::blocks::shader::{BSEffectShaderProperty, BSLightingShaderProperty, ShaderTypeData};
 
 fn net_with_name(name: &str) -> NiObjectNETData {
     NiObjectNETData {
@@ -257,7 +262,6 @@ fn material_path_from_name_helper_accepts_both_suffixes() {
 
 #[test]
 fn mat_suffix_recognised_case_insensitively() {
-    use crate::blocks::shader::is_material_reference;
     assert!(is_material_reference("materials\\test.mat"));
     assert!(is_material_reference("materials\\test.MAT"));
     assert!(is_material_reference("materials\\test.Mat"));

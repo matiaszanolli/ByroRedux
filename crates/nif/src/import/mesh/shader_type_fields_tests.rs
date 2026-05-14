@@ -3,10 +3,13 @@
 //! Same qualified path preserved (`shader_type_fields_tests::FOO`).
 
 use super::*;
-use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
-use crate::blocks::shader::{BSLightingShaderProperty, ShaderTypeData};
+use crate::blocks::tri_shape::BsTriShapeKind;
+use crate::blocks::tri_shape::BsTriShape;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
+
+use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+use crate::blocks::shader::{BSLightingShaderProperty, ShaderTypeData};
 
 fn empty_net() -> NiObjectNETData {
     NiObjectNETData {
