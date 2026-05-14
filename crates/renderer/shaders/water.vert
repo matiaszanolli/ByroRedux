@@ -73,8 +73,13 @@ layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vWorldNormal;
 layout(location = 2) out vec3 vWorldTangent;
 layout(location = 3) out float vWorldBitangentSign;
-layout(location = 4) out vec2 vUV;
-layout(location = 5) flat out int vInstanceIndex;
+// #1036 / F-WAT-08 — `vUV` (loc 4) and `vInstanceIndex` (loc 5)
+// were declared here but `water.frag` never read them; locations 4
+// and 5 are now free. Water computes its UVs from world XZ (flat
+// planes) or T/B projection (waterfalls) directly in the fragment
+// shader, and the push-constant block carries every per-plane
+// parameter that would otherwise need an instance lookup — there's
+// no per-fragment `gl_InstanceIndex` dependency on this path.
 
 void main() {
     GpuInstance inst = instances[gl_InstanceIndex];
@@ -93,9 +98,6 @@ void main() {
     vWorldNormal       = normalize(modelRot * inNormal);
     vWorldTangent      = normalize(modelRot * inTangent.xyz);
     vWorldBitangentSign = inTangent.w;
-
-    vUV = inUV;
-    vInstanceIndex = gl_InstanceIndex;
 
     // TAA jitter pulled from the camera UBO — keeps water's projected
     // depth coherent with the opaque pass so the shoreline foam ray

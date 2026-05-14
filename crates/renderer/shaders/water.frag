@@ -67,8 +67,13 @@ layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vWorldNormal;
 layout(location = 2) in vec3 vWorldTangent;
 layout(location = 3) in float vWorldBitangentSign;
-layout(location = 4) in vec2 vUV;
-layout(location = 5) flat in int vInstanceIndex;
+// #1036 / F-WAT-08 — `vUV` (loc 4) and `vInstanceIndex` (loc 5)
+// were declared as orphan inputs (vertex shader wrote them, this
+// fragment shader never read them). Both removed in lockstep with
+// `water.vert`. UVs are computed below from world XZ / T-B
+// projection; the push-constant block (`WaterPush`) carries every
+// per-plane parameter the fragment shader needs, so there's no
+// `gl_InstanceIndex`-driven instance lookup on this path.
 
 // Single HDR output — water is a transparent draw, blended onto the
 // opaque pass's main colour attachment via standard SRC_ALPHA /
