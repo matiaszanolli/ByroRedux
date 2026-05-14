@@ -4,9 +4,63 @@ use crate::deferred_destroy::{DeferredDestroyQueue, DEFAULT_COUNTDOWN};
 use crate::vertex::{UiVertex, Vertex};
 use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::{GpuBuffer, StagingPool};
-use anyhow::Result;
+use anyhow::{bail, Result};
 use ash::vk;
 use std::collections::HashMap;
+use std::sync::Once;
+
+/// Defence-in-depth cap on the global vertex pool size. The pool grows
+/// monotonically until `drop_mesh` (refcount → 0) lets `compact_pending_geometry`
+/// rewrite it. A correct streaming session sees `pending_vertices` track the
+/// resident scene's geometry; a broken cell-unload path leaks placements and
+/// grows the pool unbounded.
+///
+/// Soft cap (~400 MB at `Vertex` = 100 B post-M-NORMALS) fires a one-shot
+/// `warn!` so a regression in cell unload becomes visible without crashing
+/// the engine. Hard cap (~1.6 GB) returns `Err` from `upload_scene_mesh` so
+/// the caller can skip the placement and continue, rather than letting the
+/// allocator OOM-panic mid-frame.
+///
+/// See REN-D2-005 / #1016. Mirrors the `MAX_INDIRECT_DRAWS` defence-in-depth
+/// cap at `scene_buffer.rs:1326+` — these are not perf knobs, they are
+/// safety guards against unbounded-growth bugs.
+pub const VERTEX_POOL_SOFT_CAP: usize = 4_000_000;
+pub const VERTEX_POOL_HARD_CAP: usize = 16_000_000;
+/// Index pool caps — typical mesh ratio is ~3 indices per vertex, so the
+/// caps here track the vertex caps proportionally.
+pub const INDEX_POOL_SOFT_CAP: usize = 16_000_000;
+pub const INDEX_POOL_HARD_CAP: usize = 64_000_000;
+
+static VERTEX_POOL_SOFT_WARNED: Once = Once::new();
+static INDEX_POOL_SOFT_WARNED: Once = Once::new();
+
+/// Pure-function check — given the current pool length and the new
+/// length after the proposed `extend_from_slice`, decide whether to
+/// allow the growth (`Ok(soft_warn_needed)`), or reject it (`Err`).
+///
+/// Returns `true` in the `Ok` case when the soft cap was crossed by
+/// this growth (caller should fire a one-shot warn). Returns `Err`
+/// when the hard cap would be exceeded.
+///
+/// Pulled out of `upload_scene_mesh` so it can be unit-tested with
+/// arbitrary cap values without allocating gigabytes of vertex data.
+pub(crate) fn check_pool_growth(
+    current_len: usize,
+    new_len: usize,
+    soft_cap: usize,
+    hard_cap: usize,
+    label: &'static str,
+) -> Result<bool> {
+    if new_len > hard_cap {
+        bail!(
+            "{label} pool hard cap exceeded: would grow from {current_len} to {new_len} \
+             (cap {hard_cap}). Likely a leaked cell unload — placements were uploaded \
+             without a matching `drop_mesh`. See REN-D2-005 / #1016.",
+        );
+    }
+    let crossed_soft = current_len <= soft_cap && new_len > soft_cap;
+    Ok(crossed_soft)
+}
 
 /// Cache key for the refcounted scene-mesh dedup layer (#879). The
 /// `path` is the lowercased model path (matches
@@ -224,6 +278,48 @@ impl MeshRegistry {
         // Record offsets before appending.
         let v_offset = self.pending_vertices.len() as u32;
         let i_offset = self.pending_indices.len() as u32;
+
+        // Defence-in-depth growth caps (#1016 / REN-D2-005). A correct
+        // streaming session keeps `pending_vertices`/`pending_indices`
+        // bounded via the cell-unload `drop_mesh` path; these caps catch
+        // a regression in that path before the allocator OOMs.
+        let new_v_len = self.pending_vertices.len() + vertices.len();
+        let new_i_len = self.pending_indices.len() + indices.len();
+        let v_warn = check_pool_growth(
+            self.pending_vertices.len(),
+            new_v_len,
+            VERTEX_POOL_SOFT_CAP,
+            VERTEX_POOL_HARD_CAP,
+            "vertex",
+        )?;
+        let i_warn = check_pool_growth(
+            self.pending_indices.len(),
+            new_i_len,
+            INDEX_POOL_SOFT_CAP,
+            INDEX_POOL_HARD_CAP,
+            "index",
+        )?;
+        if v_warn {
+            VERTEX_POOL_SOFT_WARNED.call_once(|| {
+                log::warn!(
+                    "Global vertex pool crossed soft cap ({VERTEX_POOL_SOFT_CAP} verts \
+                     ≈ {} MB). A correct cell-unload flow keeps this bounded; this warn \
+                     is a one-shot heads-up that the resident scene grew larger than \
+                     expected. Hard cap {VERTEX_POOL_HARD_CAP} returns Err. \
+                     See REN-D2-005 / #1016.",
+                    VERTEX_POOL_SOFT_CAP * std::mem::size_of::<Vertex>() / 1_000_000,
+                );
+            });
+        }
+        if i_warn {
+            INDEX_POOL_SOFT_WARNED.call_once(|| {
+                log::warn!(
+                    "Global index pool crossed soft cap ({INDEX_POOL_SOFT_CAP} indices \
+                     ≈ {} MB). See REN-D2-005 / #1016.",
+                    INDEX_POOL_SOFT_CAP * 4 / 1_000_000,
+                );
+            });
+        }
 
         // Accumulate for global SSBO.
         self.pending_vertices.extend_from_slice(vertices);
@@ -843,6 +939,84 @@ pub fn fullscreen_quad_ui_vertices() -> (Vec<UiVertex>, Vec<u32>) {
     ];
     let indices = vec![0, 1, 2, 2, 3, 0];
     (vertices, indices)
+}
+
+#[cfg(test)]
+mod pool_growth_cap_tests {
+    //! Regression tests for #1016 / REN-D2-005: defence-in-depth caps
+    //! on `pending_vertices` / `pending_indices` growth. The pure-
+    //! function `check_pool_growth` is exercised here with mock cap
+    //! values so the test doesn't need to allocate gigabytes.
+    use super::*;
+
+    #[test]
+    fn growth_below_soft_cap_is_clean() {
+        let warned = check_pool_growth(0, 100, 1000, 2000, "vertex").unwrap();
+        assert!(!warned, "growth fully under soft cap must not warn");
+    }
+
+    #[test]
+    fn growth_crossing_soft_cap_signals_warn() {
+        // 900 → 1100 crosses soft cap 1000.
+        let warned = check_pool_growth(900, 1100, 1000, 2000, "vertex").unwrap();
+        assert!(warned, "growth that crosses soft cap must signal warn");
+    }
+
+    #[test]
+    fn second_growth_beyond_soft_cap_does_not_re_signal() {
+        // 1500 → 1600 is fully past soft cap 1000; the warn was already
+        // signalled on the crossing growth, this growth should be silent.
+        let warned = check_pool_growth(1500, 1600, 1000, 2000, "vertex").unwrap();
+        assert!(
+            !warned,
+            "growth fully above soft cap (already warned) must NOT re-signal"
+        );
+    }
+
+    #[test]
+    fn growth_exceeding_hard_cap_returns_err() {
+        // 1500 → 2100 exceeds hard cap 2000.
+        let result = check_pool_growth(1500, 2100, 1000, 2000, "vertex");
+        assert!(result.is_err(), "growth past hard cap must return Err");
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("hard cap"),
+            "err message should mention hard cap; got: {err_msg}",
+        );
+        assert!(
+            err_msg.contains("REN-D2-005"),
+            "err message should reference the issue id for grep-ability; got: {err_msg}",
+        );
+    }
+
+    #[test]
+    fn growth_landing_exactly_at_hard_cap_is_allowed() {
+        // 1500 → 2000 is exactly at hard cap — within bounds.
+        let result = check_pool_growth(1500, 2000, 1000, 2000, "vertex");
+        assert!(
+            result.is_ok(),
+            "growth landing exactly at hard cap must be allowed"
+        );
+    }
+
+    #[test]
+    fn shipping_caps_have_sane_relative_sizing() {
+        // The hard caps must be strictly greater than the soft caps,
+        // and both must fit in usize comfortably (defence against a
+        // future edit accidentally setting hard < soft).
+        assert!(VERTEX_POOL_HARD_CAP > VERTEX_POOL_SOFT_CAP);
+        assert!(INDEX_POOL_HARD_CAP > INDEX_POOL_SOFT_CAP);
+        // At Vertex = 100 B, hard cap 16M = 1.6 GB. At u32 indices,
+        // hard cap 64M = 256 MB. Sanity-check: vertex cap is the bigger
+        // memory commitment of the two.
+        let vertex_bytes = VERTEX_POOL_HARD_CAP * std::mem::size_of::<Vertex>();
+        let index_bytes = INDEX_POOL_HARD_CAP * 4;
+        assert!(
+            vertex_bytes > index_bytes,
+            "vertex cap should be larger memory budget than index cap (got {} vs {} bytes)",
+            vertex_bytes, index_bytes,
+        );
+    }
 }
 
 #[cfg(test)]
