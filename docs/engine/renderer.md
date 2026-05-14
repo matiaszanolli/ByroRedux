@@ -113,9 +113,12 @@ crates/renderer/src/vulkan/
 ├── pipeline.rs         Graphics pipeline + pipeline cache persistence
 ├── descriptors.rs      Descriptor set layouts (UBO, SSBO, samplers, AS)
 ├── compute.rs          Compute pipeline utilities (shared by SSAO/SVGF/TAA/cluster_cull)
-├── scene_buffer.rs     SSBO for multi-light data; uploaded per frame
-├── acceleration.rs     BLAS + TLAS construction, per-skinned-entity BLAS
-│                       refit, scratch buffer reuse + serialise barrier,
+├── scene_buffer/       Per-frame scene SSBO/UBO (Session 35 split into:
+│                       constants / gpu_types / buffers / upload / descriptors)
+├── acceleration/       BLAS + TLAS lifecycle (Session 35 split into:
+│                       constants / types / predicates / blas_static /
+│                       blas_skinned / tlas / memory). Per-skinned-entity
+│                       BLAS refit, scratch buffer reuse + serialise barrier,
 │                       LRU eviction, compaction (ALLOW_COMPACTION + query + copy)
 ├── skin_compute.rs     M29 GPU pre-skinning compute pipeline (1 workgroup
 │                       per skinned entity), per-entity SkinSlot output SSBO
@@ -240,7 +243,7 @@ get reset; the next `draw_frame` runs through the standard acquire path.
 
 ## RT acceleration structures
 
-Located in [`vulkan/acceleration.rs`](../../crates/renderer/src/vulkan/acceleration.rs).
+Located in [`vulkan/acceleration/`](../../crates/renderer/src/vulkan/acceleration/). Split across `mod.rs` (struct + lifecycle), `blas_static.rs` (mesh-keyed BLAS builds + eviction), `blas_skinned.rs` (per-entity BLAS refits), `tlas.rs` (TLAS rebuild), `memory.rs` (`shrink_*_to_fit` + telemetry), `predicates.rs` (pure decision fns), `constants.rs` (slack margins + eviction thresholds), and `types.rs` (`BlasEntry`, `TlasState`).
 
 - **BLAS per mesh**: built once when the mesh is uploaded, owned by the
   `AccelerationManager` keyed by `MeshHandle`. Builds use
@@ -350,7 +353,7 @@ the swapchain color attachment (or to the TAA input when TAA is enabled).
 
 ## Multi-light SSBO
 
-Located in [`vulkan/scene_buffer.rs`](../../crates/renderer/src/vulkan/scene_buffer.rs).
+Located in [`vulkan/scene_buffer/`](../../crates/renderer/src/vulkan/scene_buffer/). Split across `mod.rs` (re-exports), `constants.rs` (capacity ceilings + flag bits), `gpu_types.rs` (`#[repr(C)]` shader-contract structs), `buffers.rs` (`SceneBuffers` struct + `new()` + accessors), `upload.rs` (per-SSBO upload-and-flush), and `descriptors.rs` (descriptor-set writes for AO / GBuffer / cluster / TLAS).
 
 The renderer uses an SSBO (not a UBO) so the shader can iterate a variable
 number of lights without recompiling the pipeline. Each light is a 64-byte

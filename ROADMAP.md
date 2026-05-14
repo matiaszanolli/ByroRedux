@@ -103,7 +103,7 @@ commits 91e9011 + 82a4563) parses Bethesda's
 `NiBinaryExtraData("Tangent space (binormal & tangent vectors)")` blob
 when present and falls back to a Rust port of nifly's
 `NiTriShapeData::CalcTangentSpace` per-triangle accumulator
-(`crates/nif/src/import/mesh.rs::synthesize_tangents`) for FO3 / FNV /
+(`crates/nif/src/import/mesh/tangent.rs::synthesize_tangents`) for FO3 / FNV /
 Oblivion content that ships without authored tangents. Vertex stride
 84 → 100 B (`tangent: [f32; 4]` at offset 84, attribute location 8 /
 RGBA32_SFLOAT); `triangle.vert/frag`, `ui.vert`, and
@@ -635,11 +635,11 @@ Ground-truth as of 2026-05-14, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~172 343                     |
-| Rust total lines                        | ~179 073                     |
-| Source files (non-test)                 | 370                          |
+| Rust source lines (non-test)            | ~143 745                     |
+| Rust total lines                        | ~180 039                     |
+| Source files (non-test)                 | 348                          |
 | Workspace members                       | 19                           |
-| Tests (last reported by ROADMAP)        | 2109 (Session 34 1979 + Session 35 +130 across the audit-bundle close-out continuation, SpeedTree Phase 1.5 finishing, Skyrim WTHR ship, MESH_ID_FORMAT flip, and the first /audit-tech-debt pass with its 15 shader-drift-detection tests + KeyParse trait + STRING_TABLE_THRESHOLD migration). |
+| Tests (last reported by ROADMAP)        | 2134 (Session 35 2109 + Session 36 +25 across post-tech-debt audit fixes #1024-#1036, the `KeyParse`/`bsver` finishers, and the 7-file monolith split sweep — see HISTORY Session 36). |
 | Open issue directories                  | 1009 (`.claude/issues/`)      |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27. |

@@ -32,7 +32,9 @@ crates/nif/src/
 ├── stream.rs         NifStream — version-aware binary reader
 ├── types.rs          NiPoint3, NiMatrix3, NiTransform, NiColor, BlockRef
 ├── scene.rs          NifScene container with downcast helpers (get_as<T>)
-├── anim.rs           KF animation file import (ImportedClip, channels)
+├── anim/             KF animation file import (ImportedClip, channels) — Session 35 split
+│                     into per-phase siblings (coord/controlled_block/transform/
+│                     sequence/keys/channel/bspline/entry)
 ├── blocks/           Per-block parsers (one file per category)
 │   ├── mod.rs        parse_block dispatcher (190+ entries) + NiObject trait
 │   ├── traits.rs     HasObjectNET, HasAVObject, HasShaderRefs upcast traits
@@ -60,11 +62,16 @@ crates/nif/src/
 │   │                 NiParticleColorModifier / GrowFade / Rotation / Bomb,
 │   │                 NiGravity, NiPlanarCollider, NiSphericalCollider
 │   ├── skin.rs       NiSkinInstance/Data/Partition, BSSkin, BsDismemberSkinInstance
-│   └── collision.rs  bhk* collision shapes (rigid bodies, MOPP, CompressedMesh)
+│   └── collision/    bhk* collision shapes — Session 35 split into 9 siblings
+│                     (collision_object / rigid_body / ragdoll / shape_primitive /
+│                     shape_compound / shape_mesh / compressed_mesh / constraints /
+│                     phantom_action) with shared low-level readers in mod.rs
 └── import/           NIF→ECS scene import
     ├── mod.rs        ImportedNode/Mesh/Scene types, import_nif()
     ├── walk.rs       Hierarchical + flat scene graph traversal
-    ├── mesh.rs       NiTriShape + BSTriShape geometry extraction
+    ├── mesh/         Session 35 split into 8 production siblings
+    │                 (material_path / decode / ni_tri_shape / bs_tri_shape /
+    │                 bs_geometry / tangent / sse_recon / skin) plus 7 test files
     ├── material.rs   MaterialInfo, texture/alpha/decal property extraction
     ├── transform.rs  Transform composition, degenerate rotation SVD repair
     └── coord.rs      Z-up (Gamebryo) → Y-up (renderer) quaternion conversion
@@ -512,7 +519,7 @@ every known CRITICAL / HIGH audit item. Known follow-ups that
 - ~~Starfield BA2 v3 DX10 textures~~ — resolved in session 7. The issue
   was a missing compression method field in the v3 header + LZ4 block
   compression. See [Archives — Resolved gaps](archives.md#resolved-gaps-session-7).
-- ~~**NiUV animation importer** (#154 follow-up)~~ — closed: `anim.rs`
+- ~~**NiUV animation importer** (#154 follow-up)~~ — closed: `anim/channel.rs`
   emits `FloatTarget::UvOffsetU/V/UvScaleU/V` channels both per-clip
   (KF) and per-NIF-embedded paths.
 - ~~**NiSequenceStreamHelper animation importer** (#144 follow-up)~~ —

@@ -163,14 +163,14 @@ Where each major capability lives, by milestone group:
 | Legacy ESM/ESP/ESL bridge | `plugin` | [crates/plugin/src/legacy/](../../crates/plugin/src/legacy/) |
 | NIF binary parser | `nif` | [crates/nif/src/blocks/](../../crates/nif/src/blocks/) |
 | NIF→ECS scene import | `nif` | [crates/nif/src/import/](../../crates/nif/src/import/) |
-| KF animation import | `nif` | [crates/nif/src/anim.rs](../../crates/nif/src/anim.rs) |
+| KF animation import | `nif` | [crates/nif/src/anim/](../../crates/nif/src/anim/) |
 | BSA reader (v103/104/105) | `bsa` | [crates/bsa/src/archive.rs](../../crates/bsa/src/archive.rs) |
 | BA2 reader (v1/2/3/7/8) | `bsa` | [crates/bsa/src/ba2.rs](../../crates/bsa/src/ba2.rs) |
 | Physics world + sync | `physics` | [crates/physics/src/](../../crates/physics/src/) |
 | Vulkan context (init, draw, resize) | `renderer` | [crates/renderer/src/vulkan/context/](../../crates/renderer/src/vulkan/context/) |
 | Mesh / texture registries | `renderer` | [crates/renderer/src/](../../crates/renderer/src/) |
-| RT acceleration structures | `renderer` | [crates/renderer/src/vulkan/acceleration.rs](../../crates/renderer/src/vulkan/acceleration.rs) |
-| Multi-light SSBO + ray query shadows | `renderer` | [crates/renderer/src/vulkan/scene_buffer.rs](../../crates/renderer/src/vulkan/scene_buffer.rs) |
+| RT acceleration structures | `renderer` | [crates/renderer/src/vulkan/acceleration/](../../crates/renderer/src/vulkan/acceleration/) |
+| Multi-light SSBO + ray query shadows | `renderer` | [crates/renderer/src/vulkan/scene_buffer/](../../crates/renderer/src/vulkan/scene_buffer/) |
 | Ruffle/SWF UI | `ui` | [crates/ui/src/](../../crates/ui/src/) |
 | Game loop and cell loader | `byroredux` | [byroredux/src/](../../byroredux/src/) |
 

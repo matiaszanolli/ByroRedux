@@ -70,16 +70,33 @@ crates/
     src/datastore.rs         DataStore resource, ResolvedRecord, Conflict
     src/resolver.rs          DependencyResolver (DAG), ConflictResolution
     src/legacy/              Legacy ESM/ESP/ESL/ESH bridge (LegacyFormId, LegacyLoadOrder). Per-game parser stubs were removed under #390 — see `crates/plugin/src/esm/` for the live ESM path.
+    src/esm/cell/            CELL walker + per-feature submodules (helpers / support / walkers / wrld)
+      tests/                 CELL parsing regression tests (Session 35 split — 8 per-topic siblings: light, addn_stat, refr, cell, txst, merge, wrld, integration)
   renderer/                  Vulkan graphics (ash, gpu-allocator, image)
     src/vulkan/              pipeline, device, swapchain, sync, allocator, buffer,
-                             scene_buffer (SSBO/UBO), acceleration (BLAS/TLAS)
+                             scene_buffer/ (SSBO/UBO), acceleration/ (BLAS/TLAS)
     src/vulkan/context/      VulkanContext (split into submodules)
       mod.rs                 VulkanContext struct, new(), Drop (reverse-order teardown)
       draw.rs                draw_frame() — per-frame command recording + submission
       resize.rs              recreate_swapchain() — window resize handler
       resources.rs           build_blas_for_mesh, register_ui_quad, swapchain_extent, log_memory_usage
       helpers.rs             find_depth_format, create_render_pass, create_framebuffers, etc.
-    src/vulkan/acceleration.rs  AccelerationManager, BlasEntry, TlasState (BLAS/TLAS lifecycle)
+    src/vulkan/acceleration/ AccelerationManager, BlasEntry, TlasState (Session 35 split)
+      mod.rs                 Struct definition + new()/destroy()/debug_assert_scratch_aligned()
+      constants.rs           BLAS / TLAS slack margins, reserve floors, eviction thresholds
+      types.rs               BlasEntry, TlasState data structs
+      predicates.rs          Pure decision fns (`scratch_should_shrink`, `decide_use_update`, …)
+      blas_static.rs         Static (mesh-keyed) BLAS lifecycle + builds + eviction
+      blas_skinned.rs        Per-entity skinned BLAS lifecycle + refit
+      tlas.rs                TLAS build / refit + `tlas_handle` accessor
+      memory.rs              `shrink_*_to_fit` + telemetry getters
+    src/vulkan/scene_buffer/ Per-frame scene SSBO/UBO (Session 35 split)
+      mod.rs                 Re-exports + module docs
+      constants.rs           MAX_INSTANCES, INSTANCE_FLAG_*, MATERIAL_KIND_* (every tunable)
+      gpu_types.rs           `#[repr(C)]` shader-contract structs (GpuInstance, GpuLight, …)
+      buffers.rs             `SceneBuffers` struct + `new()` + accessors + descriptor builder
+      upload.rs              upload_lights / camera / bones / instances / materials / indirect / terrain
+      descriptors.rs         write_ao_texture / geometry_buffers / cluster_buffers / tlas + destroy
     src/vulkan/gbuffer.rs    GBuffer — normal, motion vector, mesh ID, raw indirect, albedo attachments
     src/vulkan/svgf.rs       SvgfPipeline — temporal accumulation denoiser for indirect lighting
     src/vulkan/composite.rs  CompositePipeline — direct + denoised indirect reassembly, ACES tone mapping
@@ -114,15 +131,45 @@ crates/
     src/version.rs           NifVersion (packed u32), version constants
     src/types.rs             NiPoint3, NiMatrix3, NiTransform, NiColor, BlockRef
     src/stream.rs            NifStream: version-aware binary reader
-    src/blocks/              Block parsers: NiNode, NiTriShape/Strips, NiTriShapeData/StripsData, properties, BSShader, textures
+    src/blocks/              Block parsers: NiNode, NiTriShape/Strips, properties, BSShader, textures, …
+      collision/             bhk* parsers (Session 35 split — 9 siblings)
+        mod.rs               Re-exports + shared low-level readers (`read_havok_material`, `read_vec4`, `read_matrix3`)
+        collision_object.rs  Base + Bhk + BhkNP + BhkP + SystemBinary
+        rigid_body.rs        `BhkRigidBody`
+        ragdoll.rs           bone-pose + ragdoll templates (FO3+)
+        shape_primitive.rs   Sphere / MultiSphere / Box / Capsule / Cylinder
+        shape_compound.rs    Convex / List / Transform / MoppBvTree / ConvexList
+        shape_mesh.rs        NiTriStrips / PackedNiTriStrips + per-strip data
+        compressed_mesh.rs   Skyrim+ `BhkCompressedMeshShape` + data
+        constraints.rs       `BhkConstraint`, `BhkBreakableConstraint`
+        phantom_action.rs    Phantoms + `LiquidAction` + `OrientHingedBodyAction`
+      dispatch_tests/        Block-dispatch regression tests (Session 35 split — 9 per-topic siblings)
     src/import/              NIF-to-ECS import (split into submodules)
       mod.rs                 ImportedNode/Mesh/Scene types, import_nif_scene(), import_nif()
       walk.rs                Hierarchical + flat scene graph traversal
-      mesh.rs                NiTriShape + BsTriShape geometry extraction
+      mesh/                  Geometry extraction (Session 35 split — 8 production + 7 test siblings)
+        mod.rs               Re-exports + module docs
+        material_path.rs     `material_path_from_name` (`.bgsm`/`.bgem` capture)
+        decode.rs            half-float / byte-normal / LE readers
+        ni_tri_shape.rs      Classic `NiTriShape` + `GeomData<'a>`
+        bs_tri_shape.rs      Skyrim SE+ packed-half BSTriShape
+        bs_geometry.rs       Starfield `BSGeometry` extraction
+        tangent.rs           Tangent extraction + Mikkelsen synthesis
+        sse_recon.rs         Skyrim SE skinned-geometry reconstruction (#559)
+        skin.rs              Skinning data extraction + bone-pose flattening
       material.rs            MaterialInfo, texture/alpha/decal property extraction
       transform.rs           Transform composition, degenerate rotation SVD repair
       coord.rs               Z-up (Gamebryo) → Y-up (renderer) quaternion conversion
-    src/anim.rs              KF animation import: clips, channels, coordinate conversion
+    src/anim/                KF animation import (Session 35 split — 8 per-phase siblings)
+      mod.rs                 Re-exports + module docs
+      coord.rs               Zup → Yup helpers
+      controlled_block.rs    `CbString` + string / target resolution
+      transform.rs           TRS channel extraction
+      sequence.rs            Per-`NiControllerSequence` import
+      keys.rs                Key conversion + Euler ↔ quat
+      channel.rs             Float / Color / Bool / texture-transform channels
+      bspline.rs             Compressed B-spline evaluation (#155)
+      entry.rs               `import_kf` + `import_embedded_animations` public entry points
     src/scene.rs             NifScene: parsed block collection with downcasting
   ui/                       Scaleform/SWF UI (Ruffle integration)
     src/lib.rs               UiManager resource, SWF loading

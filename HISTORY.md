@@ -24,6 +24,33 @@ Commits hold that record.
 
 ---
 
+## Session 36 — Monolith-split sweep + post-tech-debt audit finishers  (2026-05-14, 98bbbcd..ca81c19, 35 commits)
+
+Session 35 left the audit-bundle pipeline cleared but the repo still
+carried six production files plus two test files above 2 000 LOC.
+Session 34's split-sweep had only reached the largest pre-existing
+monoliths; the tech-debt audit grew the list back. This session
+finished the remaining tech-debt audit fixes (#1024–#1036) and then
+ran a second monolith split-sweep, knocking every non-context-trio
+file above 2 K LOC down to per-topic sibling files.
+
+- **Tech-debt audit finishers (#1024–#1036, #1046–#1048)** — water-exclusion now load-bearing in TLAS-build path (#1024), water grazing-angle normal clamp (#1025), `WaterDrawCommand.instance_index` assertion (#1026), CameraUBO `skyTint` propagated to 3 lagging shaders (#1028), `traceReflection` return contract unified (#1029), descriptor pool sizes derived from layout bindings (#1030), `initialize_layouts` folded into `recreate_on_resize` (#1031), `mat.stats` filters seeded slot (#1032), WTHR `wind_speed` → cloud scroll rate (#1033), neutral exterior-lighting fallback for missing WTHR (#1034), orphan `DBG_FORCE_NORMAL_MAP` renamed to `DBG_RESERVED_20` (#1035), orphan `vUV`/`vInstanceIndex` dropped from water shaders (#1036), BLAS slack constants named + `MAX_INDIRECT_DRAWS` invariant pinned (#1048), parse-but-don't-consume gating-milestone surfacing (#1047), `descriptors.rs` Vulkan boilerplate helpers fleshed out (#1046). Plus #975 (NIF `Compressed` flag honoured in `hkPackedNiTriStripsData`).
+- **Monolith split sweep — 7 files split, 9 commits.** Each split converted `foo.rs` → `foo/mod.rs` via `git mv`, then chunked the body into per-topic sibling files. Test coverage preserved at parity throughout; zero workspace failures at every commit. Largest sibling reduction was 76–84% LOC per file.
+  - `crates/renderer/src/vulkan/acceleration.rs` (4 383) → 9 siblings (`29e9f45`) — `constants` / `types` / `predicates` / `blas_static` / `blas_skinned` / `tlas` / `memory` / `mod` / `tests`. Largest now 1 055 LOC.
+  - `crates/nif/src/blocks/dispatch_tests.rs` (3 667) → 9 per-topic test siblings (`bd45caa`) — `shader` / `havok` / `interpolators` / `controllers` / `extra_data` / `nodes` / `effects` / `starfield` / `mod`. Followup `51007db` removed 10 orphan helpers captured during test-range extraction.
+  - `crates/plugin/src/esm/cell/tests.rs` (3 329) → 9 per-topic test siblings (`9c1f723`) — `light` / `addn_stat` / `refr` / `cell` / `txst` / `merge` / `wrld` / `integration` / `mod`. Shared `wrld` helpers stay `pub(super)` so `merge.rs` can reuse them.
+  - `crates/nif/src/blocks/collision.rs` (2 184) → 9 production siblings (`1fe5321`) — `collision_object` / `rigid_body` / `ragdoll` / `shape_primitive` / `shape_compound` / `shape_mesh` / `compressed_mesh` / `constraints` / `phantom_action`. Shared low-level readers (`read_havok_material`, `read_vec4`, `read_matrix3`) stay private in `mod.rs` — Rust visibility makes them reachable from every descendant sibling. Pre-existing `bhk_*_tests` files moved into the directory and dropped `#[path]` shims.
+  - `crates/nif/src/anim.rs` (2 101) → 8 per-phase siblings (`fe47706`) — `coord` / `controlled_block` / `transform` / `sequence` / `keys` / `channel` / `bspline` / `entry`. Cross-sibling helpers re-exported via `pub(crate) use sibling::*;` in `mod.rs` so each sibling keeps a `use super::*;` glob.
+  - `crates/nif/src/import/mesh.rs` (2 212) → 8 production siblings (`014adc8`) — `material_path` / `decode` / `bs_geometry` / `bs_tri_shape` / `ni_tri_shape` / `tangent` / `sse_recon` / `skin`. Pre-existing `mesh_*_tests.rs` siblings (seven, attached via `#[path]` shims) moved into the new directory and dropped the `mesh_` prefix.
+  - `crates/renderer/src/vulkan/scene_buffer.rs` (2 334) → 5 production + 3 test siblings (`ca81c19`) — `constants` / `gpu_types` / `buffers` / `upload` / `descriptors` plus the three reflection test files. `LightHeader` / `hash_material_slice` / `build_scene_descriptor_bindings` bumped to `pub(super)` / `pub(crate)` to span the new boundaries.
+- **Minor cleanups** — `d2e13f2` prefixed unused let-bindings in two NIF test files with `_` (cargo fix sweep output). `51007db` followup removed 10 orphan helper duplicates in `dispatch_tests/` that got captured during the test-range extraction.
+
+**Still pre-split (deferred to a future session):** `crates/renderer/src/vulkan/context/draw.rs` (2 571), `crates/renderer/src/vulkan/context/mod.rs` (2 363). Both are higher-risk than the seven landed here — single huge `draw_frame` function, Vulkan-spec invariants tests can't fully catch. Better with a dedicated session and a `cargo run` smoke check between each substantive step.
+
+Net: tests 2 109 → 2 134 (+25 from audit finishers), workspace zero failures throughout, branch +35 commits ahead of origin/main at session close. Every pre-Session-36 `file.rs:N` reference in audit docs or INVESTIGATION.md files now needs translation through the new tree — see the `session35-layout` and `session36-layout`-style memory notes (or just grep the codebase by symbol name).
+
+---
+
 ## Session 35 — Audit-bundle closeout + tech-debt sweep  (2026-05-12 → 2026-05-14, 6622eeb..98bbbcd, 66 commits)
 
 Session 34 left the audit pipeline mid-cycle: a still-open bundle of renderer / safety / NIF / audio findings, the SpeedTree Phase 1 placeholder gaps, and a fresh round of AUDIT_NIF / AUDIT_SAFETY reports waiting on disposition. This session closed ~28 audit issues across the bundle, shipped Skyrim WTHR end-to-end (#539 / M33-04..07), and ran a first-pass `/audit-tech-debt` that surfaced 132 findings and filed them as 17 batched GitHub issues (#1037-#1053). Two of those batches closed in the same session; five more landed partials.

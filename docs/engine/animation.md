@@ -8,7 +8,7 @@ in the binary crate (the per-frame tick that walks ECS players and
 writes target transforms).
 
 Source:
-- Parser / import: [`crates/nif/src/anim.rs`](../../crates/nif/src/anim.rs)
+- Parser / import: [`crates/nif/src/anim/`](../../crates/nif/src/anim/) — Session 35 split into per-phase siblings (`entry`, `sequence`, `controlled_block`, `transform`, `bspline`, `channel`, `keys`, `coord`)
 - Runtime: [`crates/core/src/animation/`](../../crates/core/src/animation/)
 - Conversion glue: [`byroredux/src/anim_convert.rs`](../../byroredux/src/anim_convert.rs)
 - Per-frame system: [`byroredux/src/systems.rs`](../../byroredux/src/systems.rs)
@@ -225,7 +225,7 @@ model and how scripts subscribe to markers without a VM.
 
 Animation channel data is in Gamebryo's Z-up coordinate system, same as
 the NIF mesh data. The conversion to Y-up happens in the keyframe import
-path (`crates/nif/src/anim.rs`) so the runtime always sees Y-up data and
+path (`crates/nif/src/anim/coord.rs`) so the runtime always sees Y-up data and
 doesn't need to rotate per-frame. See [Coordinate System](coordinate-system.md)
 for the rotation convention details and the SVD repair pass.
 
