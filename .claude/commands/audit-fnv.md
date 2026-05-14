@@ -46,7 +46,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 ### Dimension 2: ESM Record Parser — Coverage & Accuracy
 **Subagent**: `general-purpose`
 **Entry points**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell.rs`
-**Checklist**: All 23 record types still parse cleanly. Record counts on FalloutNV.esm match the M24 Phase 1 baseline (items 2643, containers 2478, LVLI 2738, LVLN 365, NPCs 3816, races 22, classes 74, factions 682, globals 218, settings 648). Spot-check specific records: Varmint Rifle stats, NCR faction relations, VATS AVIF entries. CELL XCLL fog_far_color optional field handling. FO4 additions (SCOL/MOVS/PKIN/TXST from session 10) don't inadvertently steal FNV dispatch (the `unreachable_patterns` warning in `cell.rs:211` is a code smell to investigate).
+**Checklist**: All 23 record types still parse cleanly. Record counts on FalloutNV.esm match the M24 Phase 1 baseline (items 2643, containers 2478, LVLI 2738, LVLN 365, NPCs 3816, races 22, classes 74, factions 682, globals 218, settings 648). Spot-check specific records: Varmint Rifle stats, NCR faction relations, VATS AVIF entries. CELL XCLL fog_far_color optional field handling. FO4 additions (SCOL/MOVS/PKIN/TXST from session 10) don't inadvertently steal FNV dispatch (post-Session-34 the TXST/XATO/XTNM/XTXR match arms live in `crates/plugin/src/esm/cell/walkers.rs`; an `unreachable_patterns` warning there is a code smell to investigate).
 **Output**: `/tmp/audit/fnv/dim_2.md`
 
 ### Dimension 3: Cell Loading End-to-End

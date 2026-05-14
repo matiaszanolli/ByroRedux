@@ -65,7 +65,7 @@ Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 - ALL fields scalar f32/u32 — never `[f32; 3]` (std430 vec3 alignment ≠ tightly-packed Rust)
 - Named pad fields explicitly zeroed (no uninit bytes leak into byte-Hash dedup)
 - `material_id` bounds: GpuInstance.material_id used as SSBO index — CPU must guarantee in-range; GPU has no bounds check
-- `MaterialTable::intern` cap (#797 SAFE-22): over `MAX_MATERIALS = 4096` distinct interns return id `0` with one-shot warn — no SSBO over-index, no DEVICE_LOST. Verify the cap fires AND the SSBO upload at `scene_buffer.rs:~975` truncates to `MAX_MATERIALS`. Mismatch between intern cap and upload truncation is the class of bug the cap was added to prevent
+- `MaterialTable::intern` cap (#797 SAFE-22): over `MAX_MATERIALS = 4096` distinct interns return id `0` with one-shot warn — no SSBO over-index, no DEVICE_LOST. Verify the cap fires AND the SSBO upload (`scene_buffer.rs::MaterialBuffer::upload_materials` — `materials.len().min(MAX_MATERIALS)`) truncates to `MAX_MATERIALS`. Mismatch between intern cap and upload truncation is the class of bug the cap was added to prevent
 - `ui.vert` MaterialBuffer read offsets stay in lockstep with `triangle.frag` (#785 R-N1 was a stale-hunk regression of #776 reading wrong bytes — name `ui.vert` explicitly in any R1 audit)
 
 ### 9. RT IOR-Refraction Safety (Sessions 27–29)

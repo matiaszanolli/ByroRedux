@@ -76,7 +76,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Attachment load/store ops (CLEAR + STORE for all G-buffer outputs)
 - Layout transitions (UNDEFINED → COLOR_ATTACHMENT → SHADER_READ for G-buffer targets)
 - Subpass dependencies cover all stage/access masks
-- G-buffer format choices match shader output types (RG16_SNORM octahedral-packed for normals per Schied 2017, R16G16_SFLOAT for motion vectors, **R16_UINT** for mesh ID — 15-bit id + bit 15 = ALPHA_BLEND_NO_HISTORY flag for SVGF disocclusion, hard-cap 32767 instances guarded by `debug_assert!` in `draw.rs`; see `helpers.rs:54-62`)
+- G-buffer format choices match shader output types (RG16_SNORM octahedral-packed for normals per Schied 2017, R16G16_SFLOAT for motion vectors, **R32_UINT** for mesh ID per `gbuffer.rs::MESH_ID_FORMAT` — 31-bit id + bit 31 (0x80000000) = ALPHA_BLEND_NO_HISTORY flag for SVGF disocclusion (`triangle.frag` `computeMeshId`), encoding ceiling `0x7FFFFFFF`, runtime cap `MAX_INSTANCES = 0x40000` per `scene_buffer.rs::MAX_INSTANCES`, guarded by `debug_assert!` in `context/draw.rs`; see `context/helpers.rs` `encode_mesh_id` and #992)
 - Depth attachment format and load/store ops
 - G-buffer images created with SAMPLED usage (needed by SVGF and composite reads)
 **Output**: `/tmp/audit/renderer/dim_4.md`
@@ -274,7 +274,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Entry points**: `crates/nif/src/import/mesh.rs` (extract_tangents_from_extra_data, synthesize_tangents, BSTriShape inline-tangent decode), `crates/nif/src/blocks/tri_shape.rs` (VF_TANGENTS = 0x010, packed-vertex tangent stride), `crates/renderer/shaders/triangle.frag` (perturbNormal, DBG_BYPASS_NORMAL_MAP / DBG_VIZ_NORMALS / DBG_VIZ_TANGENT)
 **Checklist**:
 - Oblivion / FO3 / FNV path: per-vertex tangents pulled from `NiBinaryExtraData` named `"Tangent space (binormal & tangent vectors)"` — Bethesda's blob is `[tangents..., bitangents...]` Z-up, but their "tangent" field is actually `∂P/∂V` and "bitangent" is `∂P/∂U` (`CalcTangentSpace` swap). The decoder MUST read the **bitangent half** (offset `num_verts * 12`) into `Vertex.tangent.xyz` and use the tangent half to derive the bitangent sign — handedness regression here was #786 (fixed 5dde345). Audit for any new path that re-reads the blob without honoring the swap
-- FO4+ BSTriShape inline tangents: when `VF_TANGENTS | VF_NORMALS` are both set on the packed-vertex flag (`tri_shape.rs:695`), tangents ship inline in the packed-vertex blob, NOT in a separate `NiBinaryExtraData`. This is distinct from the Skyrim path; verify the FO4 inline decode (#795 / #796, b63ab0c) still fires and is not gated behind the wrong BSVER
+- FO4+ BSTriShape inline tangents: when `VF_TANGENTS | VF_NORMALS` are both set on the packed-vertex flag (`tri_shape.rs::BSTriShape` packed-vertex loop, ~lines 665-730), tangents ship inline in the packed-vertex blob, NOT in a separate `NiBinaryExtraData`. This is distinct from the Skyrim path; verify the FO4 inline decode (#795 / #796, b63ab0c) still fires and is not gated behind the wrong BSVER
 - Synthesized fallback: when the authored blob is missing or malformed (size mismatch warns, see `mesh.rs:87`), the importer falls through to nifly's `CalcTangentSpace` synthesis (`synthesize_tangents`). Verify the fallback path produces unit-length tangents and consistent bitangent signs
 - Bitangent sign convention: `B = bitangent_sign * cross(N, T)` — the sign is reconstructed shader-side from `Vertex.tangent.w`. Verify the convention is consistent across the three import paths (Bethesda authored, FO4 inline, synthesized)
 - Coordinate conversion: Z-up (Gamebryo) → Y-up (renderer) applied to tangent xyz components in lockstep with normal conversion (no path that converts N but not T, or vice versa)
@@ -300,9 +300,9 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_17.md`
 
 ### Dimension 18: Volumetric Lighting (M55)
-**Entry points**: `crates/renderer/src/vulkan/volumetrics.rs` (160×90×128 froxel grid, ~14 MiB / slot), `crates/renderer/shaders/volumetric_inject.comp`, `crates/renderer/shaders/volumetric_integrate.comp`, composite consumption in `crates/renderer/shaders/composite.frag`
+**Entry points**: `crates/renderer/src/vulkan/volumetrics.rs` (160×90×128 froxel grid, ~14 MiB / slot), `crates/renderer/shaders/volumetrics_inject.comp`, `crates/renderer/shaders/volumetrics_integrate.comp`, composite consumption in `crates/renderer/shaders/composite.frag`
 **Checklist**:
-- Froxel dimensions `160 × 90 × 128` match `volumetric_inject.comp` `local_size_x/y/z`; dispatch group count covers exactly the grid (no over-dispatch)
+- Froxel dimensions `160 × 90 × 128` match `volumetrics_inject.comp` `local_size_x/y/z`; dispatch group count covers exactly the grid (no over-dispatch)
 - Per-frame-in-flight buffer sizing: one ~14 MiB image per frame-in-flight slot, not shared across frames (avoid WAR hazard on integrate read)
 - Inject pass: per-froxel HG phase scattering, single shadow ray vs TLAS per froxel — verify `gl_RayFlagsTerminateOnFirstHitEXT` is set so cost stays bounded
 - Integrate pass: depth-walk integration produces an accumulated luminance + transmittance per froxel; transmittance is multiplied (not added) across the walk
@@ -315,7 +315,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_18.md`
 
 ### Dimension 19: Bloom Pyramid (M58)
-**Entry points**: `crates/renderer/src/vulkan/bloom.rs` (5-mip down + 4-mip up, B10G11R11_UFLOAT), `crates/renderer/shaders/bloom_down.comp`, `crates/renderer/shaders/bloom_up.comp`, composite addition in `crates/renderer/shaders/composite.frag`
+**Entry points**: `crates/renderer/src/vulkan/bloom.rs` (5-mip down + 4-mip up, B10G11R11_UFLOAT), `crates/renderer/shaders/bloom_downsample.comp`, `crates/renderer/shaders/bloom_upsample.comp`, composite addition in `crates/renderer/shaders/composite.frag`
 **Checklist**:
 - Pyramid size: 5 down-mips + 4 up-mips; each mip is half the previous in X+Y; format `B10G11R11_UFLOAT` everywhere (no R16G16B16A16 mid-chain)
 - Down-pass: 4-tap bilinear box filter — sample offsets at half-pixel centers, weights sum to 1.0

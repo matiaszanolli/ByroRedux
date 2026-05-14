@@ -48,7 +48,7 @@ Vk Surface:      crates/renderer/src/vulkan/surface.rs
 Mesh:            crates/renderer/src/mesh.rs
 Vertex:          crates/renderer/src/vertex.rs
 Tex Registry:    crates/renderer/src/texture_registry.rs (+ texture_registry_tests.rs)
-Shaders:         crates/renderer/shaders/             (triangle.vert/frag, svgf_temporal.comp, taa.comp, composite.vert/frag, ssao.comp, cluster_cull.comp, skin_vertices.comp, caustic_splat.comp, volumetric_inject.comp, volumetric_integrate.comp, bloom_down.comp, bloom_up.comp, water.vert/frag, effect_lit.frag, ui.vert/frag)
+Shaders:         crates/renderer/shaders/             (triangle.vert/frag, svgf_temporal.comp, taa.comp, composite.vert/frag, ssao.comp, cluster_cull.comp, skin_vertices.comp, caustic_splat.comp, volumetrics_inject.comp, volumetrics_integrate.comp, bloom_downsample.comp, bloom_upsample.comp, water.vert/frag, ui.vert/frag)
 Plugin/ESM:      crates/plugin/src/                   (esm/{mod, reader, sub_reader}, esm/cell/, esm/records/{actor, climate, container, global, items, misc/{water, character, world, ai, magic, effects, equipment}, mswp, pkin, scol, script, tree, weather, …}, record.rs generic dispatch; legacy/ holds the LegacyFormId/LoadOrder bridge — per-game stubs were removed under #390)
 Platform:        crates/platform/src/
 UI (Ruffle):     crates/ui/src/

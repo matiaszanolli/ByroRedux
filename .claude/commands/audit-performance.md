@@ -58,7 +58,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **2026-05-04 baseline (must not regress)**:
 - `lock_tracker::held_others` Vec collection is `cfg(debug_assertions)`-gated (#823 ECS-PERF-01) — release builds were paying ~100 small allocs/frame for a no-op. Re-enabling for release is a regression
 - `NameIndex.map` is refilled in place (HashMap::clear + insert), NOT replaced via `HashMap::new() + std::mem::swap` (#824 ECS-PERF-02) — the swap path costs ~3 ms cell-stream-in spike
-- `transform_propagation_system` caches the root entity set keyed on `(Transform::len, Parent::len, next_entity_id)` (#825 ECS-PERF-03) — saves ~250 µs/frame at Megaton scale
+- `transform_propagation_system` caches the root entity set keyed on `(Transform::len, Parent storage len OR 0 when Parent absent, world.next_entity_id())` (#825 ECS-PERF-03; see `crates/core/src/ecs/systems.rs` cache state + invalidation logic — third field is an `EntityId` value, not a count, and the Parent-len has `unwrap_or(0)` for scenes with no parent storage) — saves ~250 µs/frame at Megaton scale
 - `animation_system` hoists `events` / `seen_labels` scratches out of the per-entity loop and uses `clone` instead of `mem::take` so capacity persists across iterations (#828 ECS-PERF-06)
 - `World::despawn` poisoned-lock panic uses a `type_names` side-table to name the offending component (#466 E-03) — regression test must continue to pin the panic message format
 **Output**: `/tmp/audit/performance/dim_4.md`
@@ -67,7 +67,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Entry points**: `crates/nif/src/lib.rs` (parse_nif), `crates/nif/src/import/`, `crates/nif/src/blocks/`, `crates/nif/src/stream.rs` (allocate_vec, read_pod_vec), `byroredux/src/streaming.rs` (pre_parse_cell with rayon)
 **Checklist**: Per-block allocation count, string cloning vs borrowing, Vec preallocation, SVD decomposition frequency (nalgebra overhead), block_size skip vs full parse for unused blocks.
 **2026-05-04 baseline (must not regress)**:
-- `pre_parse_cell` parallelises the model loop with rayon's `into_par_iter` (#830 NIF-PERF-06, `streaming.rs:286`) — drops cell-stream latency ~6-7× on FNV/SE exterior grids. Serial fallback is a regression
+- `pre_parse_cell` parallelises the model loop with rayon's `into_par_iter` (#830 NIF-PERF-06, `byroredux/src/streaming.rs::pre_parse_cell`) — drops cell-stream latency ~6-7× on FNV/SE exterior grids. Serial fallback is a regression
 - `stream.allocate_vec::<T>(n)?;` is `#[must_use]` — bound-check-only call sites that discard the empty Vec are a leak/no-op pattern that #831 NIF-PERF-03 fixed at 9 sites; the `must_use` attribute prevents recurrence
 - 6 NIF bulk-array readers go through `read_pod_vec<T>` to collapse double allocation (#833 NIF-PERF-02). Direct allocate-then-loop-and-fill is the regression pattern. The helper has a top-of-module compile-error gate for big-endian hosts; bytemuck path was rejected because bytemuck is NOT a workspace dep despite some audits claiming it
 - Per-block parse-loop counters use `entry().get_mut() / insert` split, NOT `entry().or_insert(name.to_string())` (#832 NIF-PERF-01) — the to_string path leaked ~150 KB/cell of throwaway short-string allocations on Oblivion
@@ -85,7 +85,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 
 ### Dimension 8: Material Table & SSBO Upload (R1)
 **Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer.rs` (MaterialBuffer SSBO), `byroredux/src/render.rs` (material intern call sites)
-**Checklist**: Dedup ratio — N placements of the same material should produce 1 GpuMaterial entry; report dedup hit rate per cell. Per-frame upload size — should be O(unique materials), not O(draws). Hash-table churn — `MaterialTable::intern` should be O(1) amortized per lookup. SSBO resize policy — does the buffer over-allocate and reuse, or realloc-shrink each frame? GpuInstance struct size win — verify the post-R1 size (target ~112 B vs ~400 B legacy) is realized in `gpu_instance_size_*` test. Memory bandwidth — confirm material table upload doesn't replace dedup wins with bandwidth losses on large scenes.
+**Checklist**: Dedup ratio — N placements of the same material should produce 1 GpuMaterial entry; report dedup hit rate per cell. Per-frame upload size — should be O(unique materials), not O(draws). Hash-table churn — `MaterialTable::intern` should be O(1) amortized per lookup. SSBO resize policy — does the buffer over-allocate and reuse, or realloc-shrink each frame? GpuInstance struct size win — verify the post-R1 size (target 112 B vs ~400 B legacy) is realized in the `gpu_instance_is_112_bytes_std430_compatible` + `gpu_instance_field_offsets_match_shader_contract` + `gpu_instance_does_not_re_expand_with_per_material_fields` tests in `scene_buffer.rs`. Memory bandwidth — confirm material table upload doesn't replace dedup wins with bandwidth losses on large scenes.
 **Output**: `/tmp/audit/performance/dim_8.md`
 
 ### Dimension 9: World Streaming & Cell Transitions (M40)
