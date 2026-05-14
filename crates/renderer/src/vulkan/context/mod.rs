@@ -681,9 +681,13 @@ pub struct VulkanContext {
     ///   `0x4` — output world-space normal (gbuffer + outColor) and exit
     ///   `0x8` — visualize per-fragment tangent presence (green/red)
     ///   `0x10` — bypass normal-map perturbation (geometric N only)
-    ///   `0x20` — re-enable normal-map perturbation (DISABLED BY
-    ///            DEFAULT in the 2026-05-03 chrome-regression
-    ///            follow-up — see `triangle.frag::DBG_FORCE_NORMAL_MAP`).
+    ///   `0x20` — reserved no-op (#1035 / R16-01). Pre-#786 this
+    ///            opted IN to normal-map perturbation while it was
+    ///            off by default; since #786 closed the default
+    ///            flipped back to on, so this bit is harmless and
+    ///            kept only so legacy diagnostic scripts that set
+    ///            it don't suddenly start tripping a different
+    ///            behaviour. See `triangle.frag::DBG_RESERVED_20`.
     ///   `0x40` — visualize render-layer classification (#renderlayer):
     ///            Architecture grey, Clutter cyan, Actor magenta,
     ///            Decal yellow. Empirical validation that the

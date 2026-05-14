@@ -736,13 +736,17 @@ const uint DBG_VIZ_TANGENT       = 0x8u;
 // so a future regression can be bisected without rebuilding the
 // shader.
 const uint DBG_BYPASS_NORMAL_MAP = 0x10u;
-// Historical: in the 77aa2de → 5dde345 window this bit was the
-// opt-IN for perturbNormal while the default was off. After #786
-// closed (2026-05-03) the default flipped back to on, making this
-// bit redundant. Preserved in the catalog so existing diagnostic
-// scripts (`BYROREDUX_RENDER_DEBUG=0x20` / `0x24` / `0x28`) keep
-// working as no-ops on top of the default-on path.
-const uint DBG_FORCE_NORMAL_MAP  = 0x20u;
+// Reserved (#1035 / R16-01). In the 77aa2de → 5dde345 window this
+// bit was the opt-IN for perturbNormal while the default was off
+// (it was named `DBG_FORCE_NORMAL_MAP`). After #786 closed
+// (2026-05-03) the default flipped back to on and the bit became
+// a silent no-op — a confusing trap when a bisect script set
+// `BYROREDUX_RENDER_DEBUG=0x20` expecting it to do something.
+// Renamed to `DBG_RESERVED_20` to make the no-op status explicit
+// in the bit catalog. Existing diagnostic scripts using
+// `BYROREDUX_RENDER_DEBUG=0x20` / `0x24` / `0x28` keep working as
+// no-ops — they always did; the rename only clarifies the name.
+const uint DBG_RESERVED_20       = 0x20u;
 // #renderlayer — visualize the per-entity content-class layer driving
 // the depth-bias ladder. Tints fragments by layer:
 //   Architecture (0) → grey
@@ -970,9 +974,10 @@ void main() {
     //
     // `DBG_BYPASS_NORMAL_MAP = 0x10` remains as a runtime opt-out so
     // a future regression can be bisected without rebuilding the
-    // shader. `DBG_FORCE_NORMAL_MAP = 0x20` is preserved in the bit
-    // catalog (now redundant, but harmless) so existing diagnostic
-    // scripts keep working.
+    // shader. The 0x20 bit (#1035) is now `DBG_RESERVED_20` — pre-#786
+    // it was the `DBG_FORCE_NORMAL_MAP` opt-IN when perturbation was
+    // off by default; the rename makes the no-op status explicit
+    // without breaking diagnostic scripts that set the bit by value.
     if (normalMapIdx != 0u
         && (dbgFlags & DBG_BYPASS_NORMAL_MAP) == 0u)
     {
