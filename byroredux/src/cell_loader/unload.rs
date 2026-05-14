@@ -30,7 +30,6 @@ use crate::components::{
 /// remaining holders keep the refcount positive. M40 doorwalking needs
 /// this — without it, cell A's unload would flip cell B's shared
 /// clutter textures to the checkerboard.
-#[allow(dead_code)] // exposed for scripting / doorwalking wiring (M40)
 #[tracing::instrument(name = "unload_cell", skip_all, fields(cell_root = ?cell_root))]
 pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: EntityId) {
     // Drain victims from the `CellRootIndex` inverted map (#791). Pre-#791

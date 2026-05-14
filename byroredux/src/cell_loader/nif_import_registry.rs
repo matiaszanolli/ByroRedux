@@ -52,9 +52,7 @@ pub(crate) struct CachedNifImport {
     ///
     /// Currently write-only on the cell-loader path (the spawn doesn't
     /// yet attach `Name` components or parent meshes under a placement
-    /// root). Field is retained so the follow-up wiring pass doesn't
-    /// have to re-thread the parser.
-    #[allow(dead_code)]
+    /// root).
     pub(super) embedded_clip: Option<byroredux_nif::anim::AnimationClip>,
     /// Billboard mode to attach to the spawned placement root entity.
     /// `None` for ordinary meshes; `Some` for `NiBillboardNode`-rooted
@@ -138,16 +136,6 @@ impl NifImportRegistry {
             evictions: 0,
             clip_handles: HashMap::new(),
         }
-    }
-
-    /// Clear all entries (e.g. before a hard world reset). Lifetime
-    /// counters (hits/misses/evictions) are preserved so the debug
-    /// command can still display historical activity.
-    #[allow(dead_code)]
-    pub(crate) fn clear(&mut self) {
-        self.core.clear_entries();
-        self.access_tick.clear();
-        self.clip_handles.clear();
     }
 
     /// Look up a previously-registered embedded-clip handle for `key`.

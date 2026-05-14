@@ -55,29 +55,6 @@ fn hit_rate_reflects_hit_miss_ratio() {
 }
 
 #[test]
-fn clear_drops_entries_but_preserves_lifetime_counters() {
-    let mut reg = NifImportRegistry::new();
-    let _ = reg.insert("a".into(), Some(dummy_cached()));
-    let _ = reg.insert("b".into(), None);
-    // 5 hits + 2 misses to mimic a busy lifetime ahead of the clear.
-    for _ in 0..5 {
-        reg.core.record_hit();
-    }
-    for _ in 0..2 {
-        reg.core.record_miss();
-    }
-
-    reg.clear();
-    assert_eq!(reg.len(), 0);
-    assert_eq!(reg.core.parsed_count(), 0);
-    assert_eq!(reg.core.failed_count(), 0);
-    // Lifetime counters survive — debug command can still report
-    // historical activity after a forced cache flush.
-    assert_eq!(reg.core.hits(), 5);
-    assert_eq!(reg.core.misses(), 2);
-}
-
-#[test]
 fn failed_parse_entry_is_remembered_and_reused() {
     // The cell loader inserts `None` on parse failure so subsequent
     // placements of the same broken model don't re-attempt the parse.
@@ -307,25 +284,6 @@ fn set_clip_handle_overwrite_replaces_previous_value() {
     reg.set_clip_handle("torch.nif".into(), 1);
     reg.set_clip_handle("torch.nif".into(), 42);
     assert_eq!(reg.clip_handle_for("torch.nif"), Some(42));
-}
-
-/// #544 — `clear()` drops the clip-handle map in lockstep with the
-/// cache so a forced flush can never produce stale handles. The
-/// `mesh.cache` operator command relies on this invariant when
-/// triggering a manual reset.
-#[test]
-fn clear_drops_clip_handles_alongside_cache() {
-    let mut reg = NifImportRegistry::new();
-    let _ = reg.insert("torch.nif".into(), Some(dummy_cached()));
-    reg.set_clip_handle("torch.nif".into(), 12);
-    assert_eq!(reg.clip_handle_for("torch.nif"), Some(12));
-
-    reg.clear();
-    assert_eq!(reg.len(), 0);
-    assert!(
-        reg.clip_handle_for("torch.nif").is_none(),
-        "clear must drop the clip-handle map in lockstep with the cache"
-    );
 }
 
 /// #544 — when the LRU sweep evicts a cache entry, its clip handle

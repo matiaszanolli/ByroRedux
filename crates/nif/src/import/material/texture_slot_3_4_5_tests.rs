@@ -5,7 +5,6 @@
 use super::*;
 use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
 use crate::blocks::node::NiNode;
-use crate::blocks::properties::NiTexturingProperty;
 use crate::blocks::shader::{
     BSLightingShaderProperty, BSShaderPPLightingProperty, BSShaderTextureSet, ShaderTypeData,
 };
@@ -513,13 +512,6 @@ fn bs_lighting_shader_uv_transform_blocks_later_ni_texturing_property() {
     assert_eq!(info.uv_offset, [0.25, 0.75]);
     assert_eq!(info.uv_scale, [4.0, 4.0]);
     assert!(info.has_uv_transform);
-}
-
-// Keep `NiTexturingProperty` imports working — referenced by the
-// outer test module via `use super::*`. Otherwise clippy complains.
-#[allow(dead_code)]
-fn _uses_ni_texturing_property() -> NiTexturingProperty {
-    panic!()
 }
 
 // ── #706 / FX-1 regression guards ──────────────────────────────

@@ -31,16 +31,11 @@ pub struct ExteriorWorldContext {
 /// Per-cell load result emitted by [`load_one_exterior_cell`]. Each
 /// cell gets its own `cell_root` so streaming can unload cells
 /// independently as the player moves.
-#[allow(dead_code)] // `cell_root` consumed by streaming `WorldStreamingState` (M40 Phase 1a)
 pub struct OneCellLoadInfo {
     pub cell_root: EntityId,
-    pub entity_count: usize,
-    pub mesh_count: usize,
     /// Mid-cell terrain ground point in Y-up world space (only used by
     /// the bulk loader to seat the initial camera).
     pub center: Vec3,
-    pub gx: i32,
-    pub gy: i32,
 }
 
 /// Build the once-per-session context for exterior streaming.
@@ -243,14 +238,13 @@ pub fn load_one_exterior_cell(
     // Terrain mesh from LAND heightmap. Either accumulate the BLAS
     // spec for caller's batched build (bulk loader) or build it
     // ourselves (streaming).
-    let mut terrain_entities = 0usize;
     let mut local_blas: Vec<(u32, u32, u32)> = Vec::new();
     let blas_sink: &mut Vec<(u32, u32, u32)> = match terrain_blas_accumulator {
         Some(acc) => acc,
         None => &mut local_blas,
     };
     if let Some(ref land) = cell.landscape {
-        if let Some(count) = terrain::spawn_terrain_mesh(
+        let _ = terrain::spawn_terrain_mesh(
             world,
             ctx,
             tex_provider,
@@ -259,9 +253,7 @@ pub fn load_one_exterior_cell(
             gy,
             land,
             blas_sink,
-        ) {
-            terrain_entities += count;
-        }
+        );
     }
     // Water plane from XCLW / XCWT. Exterior cells without explicit
     // XCLW inherit the worldspace default, which the cell parser has
@@ -330,13 +322,6 @@ pub fn load_one_exterior_cell(
     let cell_root = world.spawn();
     stamp_cell_root(world, cell_root, first_entity, last_entity);
 
-    Ok(Some(OneCellLoadInfo {
-        cell_root,
-        entity_count: result.entity_count + terrain_entities,
-        mesh_count: result.mesh_count + terrain_entities,
-        center,
-        gx,
-        gy,
-    }))
+    Ok(Some(OneCellLoadInfo { cell_root, center }))
 }
 

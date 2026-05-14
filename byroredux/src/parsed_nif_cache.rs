@@ -164,11 +164,6 @@ impl<T> ParsedNifCache<T> {
         self.cache.len()
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.cache.is_empty()
-    }
-
     /// Hit rate as a percentage `[0, 100]`. `0.0` when no lookups
     /// have happened yet (avoid NaN).
     pub(crate) fn hit_rate_pct(&self) -> f64 {
@@ -188,16 +183,6 @@ impl<T> ParsedNifCache<T> {
         self.cache.keys()
     }
 
-    /// Clear all entries and reset live parsed/failed counts.
-    /// Lifetime hit/miss counters are preserved so the debug
-    /// command can still display historical activity. Counterpart
-    /// of `NifImportRegistry::clear` (#544 hard-reset path).
-    #[allow(dead_code)]
-    pub(crate) fn clear_entries(&mut self) {
-        self.cache.clear();
-        self.parsed_count = 0;
-        self.failed_count = 0;
-    }
 }
 
 #[cfg(test)]
@@ -271,24 +256,4 @@ mod tests {
         assert!((cache.hit_rate_pct() - (1000.0 / 13.0)).abs() < 1e-6);
     }
 
-    /// `clear_entries` resets the live parsed/failed counts but
-    /// preserves the lifetime hit/miss totals — telemetry continues
-    /// across a hard reset.
-    #[test]
-    fn clear_entries_preserves_lifetime_totals() {
-        let mut cache: ParsedNifCache<u32> = ParsedNifCache::new();
-        cache.insert("a.nif".into(), Some(Arc::new(1)));
-        cache.insert("b.nif".into(), None);
-        cache.record_hit();
-        cache.record_miss();
-
-        cache.clear_entries();
-
-        assert_eq!(cache.len(), 0);
-        assert_eq!(cache.parsed_count(), 0);
-        assert_eq!(cache.failed_count(), 0);
-        // Lifetime counters survive.
-        assert_eq!(cache.hits(), 1);
-        assert_eq!(cache.misses(), 1);
-    }
 }

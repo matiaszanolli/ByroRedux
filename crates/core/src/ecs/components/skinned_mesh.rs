@@ -68,8 +68,13 @@ pub struct SkinnedMesh {
 }
 
 impl SkinnedMesh {
-    /// Create a new skinned-mesh binding. Panics if `bones.len() != bind_inverses.len()`
+    /// Create a new skinned-mesh binding with an implicit identity
+    /// `global_skin_transform`. Test-only ergonomic shim — the only
+    /// production caller (`scene/nif_loader.rs::extract_skin*`) passes
+    /// the parsed `NiSkinData.skinTransform` directly via
+    /// `new_with_global`. Panics if `bones.len() != bind_inverses.len()`
     /// or if the bone count exceeds `MAX_BONES_PER_MESH`.
+    #[cfg(test)]
     pub fn new(
         skeleton_root: Option<EntityId>,
         bones: Vec<Option<EntityId>>,

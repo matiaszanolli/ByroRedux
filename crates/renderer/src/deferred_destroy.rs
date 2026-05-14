@@ -107,7 +107,7 @@ impl<T> DeferredDestroyQueue<T> {
         self.queue.len()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }

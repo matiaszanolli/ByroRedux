@@ -209,7 +209,6 @@ impl TextureRegistry {
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
-        _swapchain_image_count: u32, // unused with bindless — kept for API compat
         max_textures: u32,
         max_sampler_anisotropy: f32,
     ) -> Result<Self> {

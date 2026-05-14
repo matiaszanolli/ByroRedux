@@ -26,7 +26,7 @@ use std::sync::Mutex;
 ///
 /// See UESP `Oblivion_Mod:BSA_File_Format#Hash_Calculation` and the
 /// BSArch / libbsarch reference implementations. See #361.
-#[allow(dead_code)]
+#[cfg(any(debug_assertions, test))]
 fn genhash_folder(name: &[u8]) -> u64 {
     let len = name.len();
 
@@ -61,7 +61,7 @@ fn genhash_folder(name: &[u8]) -> u64 {
 /// **Caller contract**: `name` must already be ASCII-lowercased — see
 /// `genhash_folder` for rationale. `name` is the filename only — no
 /// directory component.
-#[allow(dead_code)]
+#[cfg(any(debug_assertions, test))]
 fn genhash_file(name: &[u8]) -> u64 {
     let (stem_bytes, ext_bytes) = match name.iter().rposition(|&c| c == b'.') {
         Some(i) => (&name[..i], &name[i..]),

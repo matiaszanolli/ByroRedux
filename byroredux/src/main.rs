@@ -591,11 +591,7 @@ impl App {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(9876);
-            Some(byroredux_debug_server::start(
-                &mut world,
-                &mut scheduler,
-                debug_port,
-            ))
+            Some(byroredux_debug_server::start(&mut scheduler, debug_port))
         };
 
         Self {

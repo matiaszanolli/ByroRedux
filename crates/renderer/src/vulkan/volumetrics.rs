@@ -835,14 +835,6 @@ impl VolumetricsPipeline {
         Ok(())
     }
 
-    /// View for this frame's integration-output volume, used by
-    /// composite to sample the pre-integrated `(∫inscatter, T_cum)`
-    /// per fragment with a single sampler3D tap.
-    #[allow(dead_code)]
-    pub fn integrated_view(&self, frame: usize) -> vk::ImageView {
-        self.integrated_volumes[frame].view
-    }
-
     /// All per-frame-in-flight integration-output views, in slot order.
     /// Composite consumes this at construction time to bind one view
     /// per frame-in-flight descriptor set. This is the volume composite

@@ -21,38 +21,13 @@ use super::references::load_references;
 use super::water;
 
 /// Result of loading a cell.
-#[allow(dead_code)]
 pub struct CellLoadResult {
     pub cell_name: String,
     pub entity_count: usize,
-    /// Number of **mesh-bearing entities** spawned by this cell load —
-    /// i.e. the count of `world.insert(entity, MeshHandle(...))` calls
-    /// in `spawn_placed_instances` for this cell's references. Stable
-    /// across repeat loads of the same cell (unlike the NIF-parse
-    /// cache, which reports 0 on a second load even though the cell
-    /// still spawns all its entities) and matches the per-cell
-    /// draw-count. Useful as a telemetry baseline. See #477
-    /// (FNV-3-L2). Bench-pinned counts for specific cells live in
-    /// `docs/audits/` — don't pin a number here, since dispatch
-    /// generation drift over time will desync it (see #822).
-    pub mesh_count: usize,
     /// Bounding box center of all placed objects (Y-up, for camera positioning).
     pub center: Vec3,
     /// Interior cell lighting (ambient + directional).
     pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
-    /// Owner token for every entity this load produced. Pass to
-    /// [`unload_cell`] to tear the cell down (despawn entities + free
-    /// mesh/BLAS/texture resources). See #372.
-    pub cell_root: EntityId,
-    // Pre-#860 this struct also carried `weather: Option<WeatherRecord>`
-    // and `climate: Option<ClimateRecord>` fields. The producer
-    // (`load_cell_with_masters`) is the interior-only entry point and
-    // unconditionally emitted `None` for both, and no consumer ever
-    // read them — exterior weather flows through
-    // `apply_worldspace_weather()` reading `wctx.default_weather`
-    // directly off the [`ExteriorWorldContext`]. Re-added at the
-    // point a real consumer (e.g. interior scripted-weather override)
-    // appears, with a populated producer to match.
 }
 
 pub(crate) fn stamp_cell_root(
@@ -223,7 +198,11 @@ pub fn load_cell_with_masters(
     // Reserve a dedicated root entity and stamp CellRoot on every
     // entity in [first_entity, last_entity). The stamp is sparse-set
     // backed, so entities that never received any component simply
-    // don't show up in the CellRoot storage — fine.
+    // don't show up in the CellRoot storage — fine. The returned root
+    // entity is only consumed by the interior-unload path; today no
+    // caller exercises it (interior cells loaded at startup live
+    // until process exit) so it's discarded here. Re-add the field
+    // when a real interior-unload consumer materialises.
     let last_entity = world.next_entity_id();
     let cell_root = world.spawn();
     stamp_cell_root(world, cell_root, first_entity, last_entity);
@@ -231,10 +210,8 @@ pub fn load_cell_with_masters(
     Ok(CellLoadResult {
         cell_name: cell.editor_id.clone(),
         entity_count: result.entity_count,
-        mesh_count: result.mesh_count,
         center: result.center,
         lighting: resolved_lighting,
-        cell_root,
     })
 }
 

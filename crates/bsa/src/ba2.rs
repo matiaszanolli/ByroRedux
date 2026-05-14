@@ -125,6 +125,10 @@ struct Dx10Chunk {
     offset: u64,
     packed_size: u32,
     unpacked_size: u32,
+    // MILESTONE: M40 streaming (partial-mip-range texture upload) — see #1049.
+    // Today the BA2 reader extracts full DDS files; once M40 streams mip
+    // ranges, these per-chunk bounds are how the renderer requests the
+    // subset it needs without re-reading the whole texture.
     #[allow(dead_code)]
     start_mip: u16,
     #[allow(dead_code)]

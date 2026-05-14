@@ -282,27 +282,6 @@ impl AccelerationManager {
         }
     }
 
-    /// Current TLAS scratch buffer capacity for a frame slot, in
-    /// bytes. `None` if the slot is empty (post-shrink, pre-first-
-    /// build, or never built). Exposed for
-    /// [`Self::shrink_tlas_scratch_to_fit`]'s regression test and
-    /// shutdown telemetry. See #682 / MEM-2-7.
-    pub fn tlas_scratch_capacity_bytes(&self, slot_index: usize) -> Option<vk::DeviceSize> {
-        self.scratch_buffers
-            .get(slot_index)
-            .and_then(|s| s.as_ref().map(|b| b.size))
-    }
-
-    /// Recorded last-fresh-build peak for a frame slot's TLAS scratch.
-    /// `0` when the slot has never had a fresh build. Exposed for
-    /// [`Self::shrink_tlas_scratch_to_fit`]'s regression test.
-    pub fn tlas_scratch_peak_bytes(&self, slot_index: usize) -> vk::DeviceSize {
-        self.tlas_scratch_peak_bytes
-            .get(slot_index)
-            .copied()
-            .unwrap_or(0)
-    }
-
     /// Current total BLAS memory in bytes (static + skinned). Use for
     /// telemetry / `tex.stats` console output. Use `static_blas_bytes()`
     /// for residency-budget decisions — see #920.
@@ -319,26 +298,6 @@ impl AccelerationManager {
         self.static_blas_bytes
     }
 
-    /// Current TLAS instance-buffer capacity for a frame slot, in
-    /// bytes. `None` if the slot is empty (post-shrink, pre-first-
-    /// build, or never built). Exposed for [`shrink_tlas_to_fit`]'s
-    /// regression test and shutdown telemetry. See #645.
-    pub fn tlas_instance_capacity_bytes(&self, slot_index: usize) -> Option<vk::DeviceSize> {
-        const INSTANCE_STRIDE: vk::DeviceSize =
-            std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as vk::DeviceSize;
-        self.tlas
-            .get(slot_index)?
-            .as_ref()
-            .map(|t| (t.max_instances as vk::DeviceSize) * INSTANCE_STRIDE)
-    }
-
-    /// Current BLAS scratch buffer capacity in bytes. `None` if the
-    /// scratch has never been allocated or was just shrunk to zero.
-    /// Exposed for observability (#495 / PERF-D2-M1).
-    pub fn blas_scratch_bytes(&self) -> Option<vk::DeviceSize> {
-        self.blas_scratch_buffer.as_ref().map(|b| b.size)
-    }
-
     /// CPU-side TLAS instance staging Vec — `(len, capacity)`. Element
     /// size is `size_of::<vk::AccelerationStructureInstanceKHR>()` (64
     /// bytes). Surfaced for the `ctx.scratch` console command (R6).
@@ -349,14 +308,4 @@ impl AccelerationManager {
         )
     }
 
-    /// CPU-side TLAS BLAS-address staging Vec — `(len, capacity)`. 8
-    /// bytes per entry. Used by the BUILD-vs-UPDATE compare; ping-pongs
-    /// with each per-frame TLAS slot's `last_blas_addresses` so capacity
-    /// converges to the working-set size with no per-frame churn (#660).
-    pub fn tlas_addresses_scratch_telemetry(&self) -> (usize, usize) {
-        (
-            self.tlas_addresses_scratch.len(),
-            self.tlas_addresses_scratch.capacity(),
-        )
-    }
 }

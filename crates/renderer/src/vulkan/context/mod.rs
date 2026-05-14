@@ -1128,7 +1128,6 @@ impl VulkanContext {
         let mut texture_registry = TextureRegistry::new(
             &device,
             &gpu_allocator,
-            swapchain_state.images.len() as u32,
             device_caps.max_bindless_sampled_images,
             device_caps.max_sampler_anisotropy,
         )?;

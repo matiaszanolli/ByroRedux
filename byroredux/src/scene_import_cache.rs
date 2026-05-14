@@ -98,7 +98,7 @@ impl SceneImportCache {
     /// `parses()` is the cumulative count that the regression test
     /// pins against ("spawn 10 NPCs sharing one skeleton, count
     /// `parse_nif` calls, assert exactly 1").
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn parses(&self) -> u64 {
         self.core
             .parsed_count()
@@ -106,17 +106,17 @@ impl SceneImportCache {
             .saturating_add(self.bypass_parses)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn hits(&self) -> u64 {
         self.core.hits()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn misses(&self) -> u64 {
         self.core.misses()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.core.len()
     }

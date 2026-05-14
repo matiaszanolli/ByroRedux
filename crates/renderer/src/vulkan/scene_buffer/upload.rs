@@ -242,12 +242,6 @@ impl super::buffers::SceneBuffers {
         buf.flush_if_needed(device)
     }
 
-    /// Get a mutable reference to the mapped instance buffer for direct writes.
-    /// Used by the UI overlay to append a single instance after the bulk upload.
-    pub fn instance_buffer_mapped_mut(&mut self, frame_index: usize) -> Result<&mut [u8]> {
-        self.instance_buffers[frame_index].mapped_slice_mut()
-    }
-
     /// Upload the deduplicated material table for the current
     /// frame-in-flight (R1 Phase 4). Called once per frame after
     /// `build_render_data` has populated the table; the fragment
