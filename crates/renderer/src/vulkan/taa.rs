@@ -757,10 +757,18 @@ impl TaaPipeline {
 
     /// Recreate history images at a new extent after swapchain resize.
     /// Caller must pass the freshly-recreated G-buffer and composite HDR views.
+    ///
+    /// Self-contained per #1031 / REN-D10-NEW-11: fresh history
+    /// images are walked from `UNDEFINED` to `GENERAL` via
+    /// [`Self::initialize_layouts`] internally, so post-resize first
+    /// dispatches see a valid storage layout
+    /// (VUID-vkCmdDispatch-None-04115).
     pub fn recreate_on_resize(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
         hdr_views: &[vk::ImageView],
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
@@ -810,6 +818,14 @@ impl TaaPipeline {
         }
 
         self.write_descriptor_sets(device, hdr_views, motion_views, mesh_id_views);
+
+        // #1031 — walk fresh history images from UNDEFINED to GENERAL.
+        // SAFETY: fenced-resize contract — no concurrent reader on
+        // these images. Warn-log matches the caller's pre-#1031
+        // behaviour.
+        if let Err(e) = unsafe { self.initialize_layouts(device, queue, command_pool) } {
+            log::warn!("TAA layout re-init after resize failed: {e}");
+        }
         Ok(())
     }
 

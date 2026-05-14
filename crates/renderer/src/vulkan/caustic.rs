@@ -823,11 +823,18 @@ impl CausticPipeline {
     }
 
     /// Recreate accumulator images and rewrite descriptor sets on resize.
+    ///
+    /// Self-contained per #1031 / REN-D10-NEW-11: fresh slot images
+    /// are created at `initial_layout: UNDEFINED` and walked to
+    /// GENERAL via [`Self::initialize_layouts`] internally, so
+    /// post-resize first dispatches see a valid storage layout.
     #[allow(clippy::too_many_arguments)]
     pub fn recreate_on_resize(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
         depth_view: vk::ImageView,
         normal_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
@@ -889,6 +896,14 @@ impl CausticPipeline {
             instance_buffers,
             instance_buffer_size,
         );
+
+        // #1031 — walk fresh slot images from UNDEFINED to GENERAL.
+        // SAFETY: fenced-resize contract — no concurrent reader on
+        // these images. Warn-log on failure matches the caller's
+        // pre-#1031 behaviour.
+        if let Err(e) = unsafe { self.initialize_layouts(device, queue, command_pool) } {
+            log::warn!("Caustic layout re-init after resize failed: {e}");
+        }
         Ok(())
     }
 

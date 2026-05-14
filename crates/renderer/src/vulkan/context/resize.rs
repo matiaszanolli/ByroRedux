@@ -345,13 +345,19 @@ impl VulkanContext {
 
         // Recreate SVGF history images + rewrite its descriptor sets
         // against the new G-buffer views. Must happen before composite
-        // (whose descriptor sets reference SVGF's indirect_view).
+        // (whose descriptor sets reference SVGF's indirect_view). The
+        // post-recreate `initialize_layouts` call lives INSIDE
+        // `recreate_on_resize` (#1031) — the function is self-contained
+        // so a new caller can't forget to walk the fresh history
+        // images to GENERAL.
         if let Some(ref mut svgf) = self.svgf {
             svgf.recreate_on_resize(
                 &self.device,
                 self.allocator
                     .as_ref()
                     .expect("allocator missing during resize"),
+                &self.graphics_queue,
+                self.transfer_pool,
                 &raw_indirect_views,
                 &motion_views_in,
                 &mesh_id_views_in,
@@ -359,12 +365,6 @@ impl VulkanContext {
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;
-            // Re-transition the fresh history images to GENERAL.
-            if let Err(e) = unsafe {
-                svgf.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
-            } {
-                log::warn!("SVGF layout re-init after resize failed: {e}");
-            }
         }
 
         // Choose the indirect source for composite: SVGF accumulated (in
@@ -389,11 +389,15 @@ impl VulkanContext {
                 .collect()
         };
         if let Some(ref mut caustic) = self.caustic {
+            // `recreate_on_resize` walks the new slots to GENERAL
+            // internally (#1031).
             caustic.recreate_on_resize(
                 &self.device,
                 self.allocator
                     .as_ref()
                     .expect("allocator missing during resize"),
+                &self.graphics_queue,
+                self.transfer_pool,
                 self.depth_image_view,
                 &normal_views_in,
                 &mesh_id_views_in,
@@ -406,11 +410,6 @@ impl VulkanContext {
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;
-            if let Err(e) = unsafe {
-                caustic.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
-            } {
-                log::warn!("Caustic layout re-init after resize failed: {e}");
-            }
         }
         let caustic_views: Vec<vk::ImageView> = match self.caustic {
             Some(ref c) => (0..MAX_FRAMES_IN_FLIGHT)
@@ -516,24 +515,23 @@ impl VulkanContext {
             .hdr_image_views
             .clone();
 
-        // Recreate TAA history images + descriptor sets.
+        // Recreate TAA history images + descriptor sets. The
+        // post-recreate layout walk to GENERAL lives inside
+        // `recreate_on_resize` (#1031).
         if let Some(ref mut taa) = self.taa {
             taa.recreate_on_resize(
                 &self.device,
                 self.allocator
                     .as_ref()
                     .expect("allocator missing during resize"),
+                &self.graphics_queue,
+                self.transfer_pool,
                 &hdr_views_owned,
                 &motion_views_in,
                 &mesh_id_views_in,
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;
-            if let Err(e) = unsafe {
-                taa.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
-            } {
-                log::warn!("TAA layout re-init after resize failed: {e}");
-            }
         }
         // Rewire composite's HDR binding to TAA output (if TAA is active).
         if let (Some(ref t), Some(ref mut c)) = (&self.taa, &mut self.composite) {

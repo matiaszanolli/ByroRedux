@@ -941,10 +941,21 @@ impl SvgfPipeline {
     /// Recreate history images at a new extent after a swapchain resize.
     /// Caller must supply the G-buffer's new views (which they just
     /// recreated via `GBuffer::recreate_on_resize`).
+    ///
+    /// Self-contained per #1031 / REN-D10-NEW-11: the fresh history
+    /// images are created at `initial_layout: UNDEFINED` and walked
+    /// to GENERAL via [`Self::initialize_layouts`] internally, so a
+    /// post-resize first dispatch sees the storage images in a valid
+    /// layout (VUID-vkCmdDispatch-None-04115). Pre-#1031 the caller
+    /// had to remember to chain `initialize_layouts` after this call;
+    /// any new caller forgetting that step would trip the validation
+    /// error on the first post-resize frame.
     pub fn recreate_on_resize(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
         raw_indirect_views: &[vk::ImageView],
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
@@ -1019,6 +1030,21 @@ impl SvgfPipeline {
             mesh_id_views,
             normal_views,
         );
+
+        // #1031 — walk the fresh history images from UNDEFINED to
+        // GENERAL so the next dispatch sees them in a valid storage
+        // layout. SAFETY: same fenced-resize contract as the destroy
+        // loops above — `recreate_swapchain` waits both
+        // frames-in-flight before reaching this branch, so the
+        // one-time command buffer queued by `initialize_layouts` has
+        // no concurrent reader on these images. Warn-log on failure
+        // matches the caller's pre-#1031 behaviour at
+        // `context::resize::recreate_swapchain`.
+        if let Err(e) =
+            unsafe { self.initialize_layouts(device, queue, command_pool) }
+        {
+            log::warn!("SVGF layout re-init after resize failed: {e}");
+        }
         Ok(())
     }
 
