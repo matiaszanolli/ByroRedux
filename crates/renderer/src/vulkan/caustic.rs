@@ -41,6 +41,10 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::descriptors::{
+    image_barrier_undef_to_general, write_combined_image_sampler, write_storage_buffer,
+    write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
+};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
@@ -365,40 +369,29 @@ impl CausticPipeline {
         };
 
         // ── 6. Descriptor pool + sets ─────────────────────────────────
-        let pool_sizes = [
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 3) as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 2) as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 2) as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-        ];
-        // SAFETY: pool_sizes match bindings declared above; max_sets
-        // bounded by MAX_FRAMES_IN_FLIGHT.
-        partial.descriptor_pool = try_or_cleanup!(unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&pool_sizes)
-                        .max_sets(MAX_FRAMES_IN_FLIGHT as u32),
-                    None,
-                )
-                .context("caustic descriptor pool")
-        });
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
+            .pool(
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                (MAX_FRAMES_IN_FLIGHT * 3) as u32,
+            )
+            .pool(
+                vk::DescriptorType::STORAGE_BUFFER,
+                (MAX_FRAMES_IN_FLIGHT * 2) as u32,
+            )
+            .pool(
+                vk::DescriptorType::UNIFORM_BUFFER,
+                (MAX_FRAMES_IN_FLIGHT * 2) as u32,
+            )
+            .pool(
+                vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .pool(
+                vk::DescriptorType::STORAGE_IMAGE,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+            .build(device, "caustic descriptor pool"));
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: pool just sized for MAX_FRAMES_IN_FLIGHT sets with the
@@ -607,47 +600,16 @@ impl CausticPipeline {
                 range: param_size,
             }];
 
+            let set = self.descriptor_sets[f];
             let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&depth_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&normal_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&mesh_id_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(3)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&light_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(4)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&camera_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(5)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&instance_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(7)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(&caustic_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(8)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&params_info),
+                write_combined_image_sampler(set, 0, &depth_info),
+                write_combined_image_sampler(set, 1, &normal_info),
+                write_combined_image_sampler(set, 2, &mesh_id_info),
+                write_storage_buffer(set, 3, &light_info),
+                write_uniform_buffer(set, 4, &camera_info),
+                write_storage_buffer(set, 5, &instance_info),
+                write_storage_image(set, 7, &caustic_info),
+                write_uniform_buffer(set, 8, &params_info),
             ];
             // SAFETY: descriptor sets owned by `self`; writes reference
             // buffers / image views owned by `self` and caller-borrowed
@@ -701,23 +663,7 @@ impl CausticPipeline {
         super::texture::with_one_time_commands(device, queue, pool, |cmd| {
             let mut barriers = Vec::with_capacity(self.slots.len());
             for slot in &self.slots {
-                barriers.push(
-                    vk::ImageMemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::empty())
-                        .dst_access_mask(
-                            vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
-                        )
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .new_layout(vk::ImageLayout::GENERAL)
-                        .image(slot.image)
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        }),
-                );
+                barriers.push(image_barrier_undef_to_general(slot.image));
             }
             // SAFETY: caller of `initialize_layouts` (unsafe fn) guarantees
             // device/queue/pool validity; `cmd` is the recording buffer

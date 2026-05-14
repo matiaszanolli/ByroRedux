@@ -19,6 +19,7 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::descriptors::{write_storage_buffer, DescriptorPoolBuilder};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
@@ -270,25 +271,14 @@ impl SkinComputePipeline {
         // MAX_BONES_PER_MESH)` — that math was wrong; the ratio is
         // 256, not 32.)
         let pool_total = max_slots * (MAX_FRAMES_IN_FLIGHT as u32);
-        let pool_sizes = [vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::STORAGE_BUFFER,
-            descriptor_count: pool_total * 3,
-        }];
-        let descriptor_pool = unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&pool_sizes)
-                        .max_sets(pool_total)
-                        // Slots are freed on entity destruction (cell
-                        // unload); FREE_DESCRIPTOR_SET allows
-                        // `vkFreeDescriptorSets` rather than only
-                        // `vkResetDescriptorPool`.
-                        .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET),
-                    None,
-                )
-                .context("create skin_compute descriptor pool")?
-        };
+        // Slots are freed on entity destruction (cell unload);
+        // FREE_DESCRIPTOR_SET allows `vkFreeDescriptorSets` rather
+        // than only `vkResetDescriptorPool`.
+        let descriptor_pool = DescriptorPoolBuilder::new()
+            .pool(vk::DescriptorType::STORAGE_BUFFER, pool_total * 3)
+            .max_sets(pool_total)
+            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+            .build(device, "create skin_compute descriptor pool")?;
 
         log::info!(
             "Skin compute pipeline created (max_slots={}, sets={}, push={} B)",
@@ -447,21 +437,9 @@ impl SkinComputePipeline {
         }];
         let descriptor_set = slot.descriptor_sets[frame_index];
         let writes = [
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&input_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&bone_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_set)
-                .dst_binding(2)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&output_info),
+            write_storage_buffer(descriptor_set, 0, &input_info),
+            write_storage_buffer(descriptor_set, 1, &bone_info),
+            write_storage_buffer(descriptor_set, 2, &output_info),
         ];
         device.update_descriptor_sets(&writes, &[]);
 
@@ -636,7 +614,10 @@ mod vertex_layout_shader_sync_tests {
     fn skin_vertices_comp_vertex_stride_floats_matches_rust_const() {
         assert_contains(
             SKIN_VERTICES_COMP_SRC,
-            &format!("const uint VERTEX_STRIDE_FLOATS = {}u;", VERTEX_STRIDE_FLOATS),
+            &format!(
+                "const uint VERTEX_STRIDE_FLOATS = {}u;",
+                VERTEX_STRIDE_FLOATS
+            ),
             "skin_vertices.comp",
         );
     }
@@ -645,7 +626,10 @@ mod vertex_layout_shader_sync_tests {
     fn triangle_frag_vertex_stride_floats_matches_rust_const() {
         assert_contains(
             TRIANGLE_FRAG_SRC,
-            &format!("const uint VERTEX_STRIDE_FLOATS = {};", VERTEX_STRIDE_FLOATS),
+            &format!(
+                "const uint VERTEX_STRIDE_FLOATS = {};",
+                VERTEX_STRIDE_FLOATS
+            ),
             "triangle.frag",
         );
     }

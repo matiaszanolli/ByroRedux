@@ -2,6 +2,9 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::{StagingGuard, StagingPool};
+use super::descriptors::{
+    image_barrier_transfer_dst_to_shader_read, image_barrier_undef_to_transfer_dst,
+};
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -36,14 +39,15 @@ pub struct Texture {
 impl Texture {
     /// Create a texture from raw RGBA pixel data.
     ///
-    /// Full upload pipeline:
-    /// 1. Create staging buffer (CPU-visible), copy pixel data
-    /// 2. Create device-local image (TRANSFER_DST | SAMPLED, R8G8B8A8_SRGB)
-    /// 3. Transition layout: UNDEFINED → TRANSFER_DST_OPTIMAL
-    /// 4. Copy staging buffer → image
-    /// 5. Transition layout: TRANSFER_DST_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
-    /// 6. Destroy staging buffer
-    /// 7. Create image view (sampler provided externally)
+    /// Thin wrapper around [`Self::from_dds_with_mip_chain`]: a 1-mip
+    /// `R8G8B8A8_SRGB` image is just a degenerate DDS upload with
+    /// `compressed=false` and `mip_count=1`. Pre-#1046 this path
+    /// hand-coded its own staging-buffer-create + image-create +
+    /// two-layout-transition-barriers dance — exactly what
+    /// `record_dds_upload` already does. The split was the visible
+    /// driver of #730 (uncompressed cloud sprites losing their
+    /// authored mip chain because `from_rgba` hard-coded `mip_levels(1)`
+    /// where `from_dds_with_mip_chain` would have respected the chain).
     pub fn from_rgba(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -53,243 +57,34 @@ impl Texture {
         height: u32,
         pixels: &[u8],
         sampler: vk::Sampler,
-        mut staging_pool: Option<&mut StagingPool>,
+        staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
         assert_eq!(
             pixels.len(),
             (width * height * 4) as usize,
             "pixel data must be width*height*4 RGBA bytes"
         );
-
-        let image_size = pixels.len() as vk::DeviceSize;
-
-        // 1. Staging buffer — from pool (reuse) or fresh allocate. See
-        //    #239 — pre-fix texture uploads bypassed the pool entirely.
-        let (staging_buffer, mut staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
-            pool.acquire(image_size)?
-        } else {
-            let staging_buffer_info = vk::BufferCreateInfo::default()
-                .size(image_size)
-                .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-            let buf = unsafe {
-                device
-                    .create_buffer(&staging_buffer_info, None)
-                    .context("Failed to create staging buffer")?
-            };
-            let reqs = unsafe { device.get_buffer_memory_requirements(buf) };
-            let alloc = allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .allocate(&vk_alloc::AllocationCreateDesc {
-                    name: "texture_staging",
-                    requirements: reqs,
-                    location: MemoryLocation::CpuToGpu,
-                    linear: true,
-                    allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-                })
-                .context("Failed to allocate staging memory")?;
-            super::buffer::debug_assert_cpu_to_gpu_mapped(&alloc, "texture_staging");
-            unsafe {
-                device
-                    .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
-                    .context("Failed to bind staging buffer")?;
-            }
-            (buf, alloc)
+        let meta = super::dds::DdsMetadata {
+            width,
+            height,
+            mip_count: 1,
+            format: vk::Format::R8G8B8A8_SRGB,
+            block_size: 4, // bytes per pixel — uncompressed RGBA
+            compressed: false,
+            data_offset: 0, // unused: caller passes the pixel slice directly
         };
-
-        // Copy pixels into staging.
-        staging_alloc
-            .mapped_slice_mut()
-            .context("Staging buffer not mapped")?[..pixels.len()]
-            .copy_from_slice(pixels);
-
-        // Wrap staging in RAII guard — ensures cleanup on early return.
-        let staging = StagingGuard::new(
-            staging_buffer,
-            staging_alloc,
-            device.clone(),
-            allocator.clone(),
-        );
-
-        // 2. Device-local image.
-        let image_info = vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_SRGB)
-            .extent(vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-
-        let image = unsafe {
-            device
-                .create_image(&image_info, None)
-                .context("Failed to create texture image")?
-        };
-
-        let image_reqs = unsafe { device.get_image_memory_requirements(image) };
-
-        let image_alloc = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vk_alloc::AllocationCreateDesc {
-                name: "texture_image",
-                requirements: image_reqs,
-                location: MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("Failed to allocate texture image memory")?;
-
-        unsafe {
-            device
-                .bind_image_memory(image, image_alloc.memory(), image_alloc.offset())
-                .context("Failed to bind texture image memory")?;
-        }
-
-        // 3-5. Layout transitions + copy via one-time commands.
-        with_one_time_commands(device, queue, command_pool, |cmd| {
-            // 3. UNDEFINED → TRANSFER_DST_OPTIMAL
-            let barrier_to_dst = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .src_access_mask(vk::AccessFlags::empty())
-                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
-
-            unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[barrier_to_dst],
-                );
-            }
-
-            // 4. Copy buffer → image.
-            let region = vk::BufferImageCopy {
-                buffer_offset: 0,
-                buffer_row_length: 0,
-                buffer_image_height: 0,
-                image_subresource: vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: 0,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-                image_extent: vk::Extent3D {
-                    width,
-                    height,
-                    depth: 1,
-                },
-            };
-
-            unsafe {
-                device.cmd_copy_buffer_to_image(
-                    cmd,
-                    staging.buffer,
-                    image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    &[region],
-                );
-            }
-
-            // 5. TRANSFER_DST_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
-            let barrier_to_read = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ);
-
-            unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::FRAGMENT_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[barrier_to_read],
-                );
-            }
-            Ok(())
-        })?;
-
-        // 6. Release staging buffer. When a pool was provided, hand
-        //    the buffer back for reuse; otherwise destroy outright.
-        //    Guard ensures cleanup on error above regardless.
-        if let Some(pool) = staging_pool {
-            let capacity = staging
-                .allocation
-                .as_ref()
-                .map(|a| a.size())
-                .unwrap_or(image_size);
-            staging.release_to(pool, capacity);
-        } else {
-            staging.destroy();
-        }
-
-        // 7. Image view.
-        let view_info = vk::ImageViewCreateInfo::default()
-            .image(image)
-            .view_type(vk::ImageViewType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_SRGB)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
-
-        let image_view = unsafe {
-            device
-                .create_image_view(&view_info, None)
-                .context("Failed to create texture image view")?
-        };
-
-        log::debug!("Texture uploaded: {}x{} RGBA", width, height);
-
-        Ok(Self {
-            image,
-            image_view,
+        let texture = Self::from_dds_with_mip_chain(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            &meta,
+            pixels,
             sampler,
-            allocation: Some(image_alloc),
-            device: device.clone(),
-            allocator: Some(allocator.clone()),
-        })
+            staging_pool,
+        )?;
+        log::debug!("Texture uploaded: {}x{} RGBA", width, height);
+        Ok(texture)
     }
 
     /// Create a texture from a DDS pixel-data payload with its full
@@ -539,21 +334,7 @@ impl Texture {
         // 3-5. Record layout transitions + copy into the provided cmd.
         // Per-image barriers (not global) so multiple uploads recorded
         // into the same cmd don't serialise on each other unnecessarily.
-        let barrier_to_dst = vk::ImageMemoryBarrier::default()
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: meta.mip_count,
-                base_array_layer: 0,
-                layer_count: 1,
-            })
-            .src_access_mask(vk::AccessFlags::empty())
-            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+        let barrier_to_dst = image_barrier_undef_to_transfer_dst(image, meta.mip_count);
 
         unsafe {
             device.cmd_pipeline_barrier(
@@ -575,21 +356,7 @@ impl Texture {
             );
         }
 
-        let barrier_to_read = vk::ImageMemoryBarrier::default()
-            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: meta.mip_count,
-                base_array_layer: 0,
-                layer_count: 1,
-            })
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ);
+        let barrier_to_read = image_barrier_transfer_dst_to_shader_read(image, meta.mip_count);
 
         unsafe {
             device.cmd_pipeline_barrier(

@@ -28,6 +28,9 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::descriptors::{
+    write_combined_image_sampler, write_uniform_buffer, DescriptorPoolBuilder,
+};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
@@ -574,28 +577,19 @@ impl CompositePipeline {
         });
 
         // ── 7. Descriptor pool + per-frame descriptor sets ───────────
-        let pool_sizes = [
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                // 7 sampler bindings per set: HDR, indirect, albedo,
-                // depth, caustic, volumetric, bloom.
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 7) as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-        ];
-        partial.descriptor_pool = try_or_cleanup!(unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&pool_sizes)
-                        .max_sets(MAX_FRAMES_IN_FLIGHT as u32),
-                    None,
-                )
-                .context("composite descriptor pool")
-        });
+        // 7 sampler bindings per set: HDR, indirect, albedo, depth,
+        // caustic, volumetric, bloom.
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
+            .pool(
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                (MAX_FRAMES_IN_FLIGHT * 7) as u32,
+            )
+            .pool(
+                vk::DescriptorType::UNIFORM_BUFFER,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+            .build(device, "composite descriptor pool"));
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         partial.descriptor_sets = try_or_cleanup!(unsafe {
@@ -652,47 +646,16 @@ impl CompositePipeline {
                 .sampler(partial.hdr_sampler)
                 .image_view(bloom_views[i])
                 .image_layout(vk::ImageLayout::GENERAL)];
+            let set = partial.descriptor_sets[i];
             let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&hdr_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&indirect_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&albedo_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(3)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&params_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(4)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&depth_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(5)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&caustic_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(6)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&volumetric_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(7)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&bloom_info),
+                write_combined_image_sampler(set, 0, &hdr_info),
+                write_combined_image_sampler(set, 1, &indirect_info),
+                write_combined_image_sampler(set, 2, &albedo_info),
+                write_uniform_buffer(set, 3, &params_info),
+                write_combined_image_sampler(set, 4, &depth_info),
+                write_combined_image_sampler(set, 5, &caustic_info),
+                write_combined_image_sampler(set, 6, &volumetric_info),
+                write_combined_image_sampler(set, 7, &bloom_info),
             ];
             // SAFETY: descriptor sets owned by `partial`; writes reference
             // HDR / depth / indirect / albedo / caustic / volumetric /
@@ -1043,48 +1006,17 @@ impl CompositePipeline {
                     .image_layout(vk::ImageLayout::GENERAL)];
                 // Typed [_; 8] array — compile catches divergence from
                 // the 8-binding layout (#905). Init path mirrors this
-                // exact shape at lines 633-674.
+                // exact shape at the post-`new()` writer above.
+                let set = self.descriptor_sets[i];
                 let writes: [vk::WriteDescriptorSet; 8] = [
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(self.descriptor_sets[i])
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(&hdr_info),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(self.descriptor_sets[i])
-                        .dst_binding(1)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(&indirect_info),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(self.descriptor_sets[i])
-                        .dst_binding(2)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(&albedo_info),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(self.descriptor_sets[i])
-                        .dst_binding(3)
-                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                        .buffer_info(&params_info),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(self.descriptor_sets[i])
-                        .dst_binding(4)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(&depth_info),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(self.descriptor_sets[i])
-                        .dst_binding(5)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(&caustic_info),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(self.descriptor_sets[i])
-                        .dst_binding(6)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(&volumetric_info),
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(self.descriptor_sets[i])
-                        .dst_binding(7)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(&bloom_info),
+                    write_combined_image_sampler(set, 0, &hdr_info),
+                    write_combined_image_sampler(set, 1, &indirect_info),
+                    write_combined_image_sampler(set, 2, &albedo_info),
+                    write_uniform_buffer(set, 3, &params_info),
+                    write_combined_image_sampler(set, 4, &depth_info),
+                    write_combined_image_sampler(set, 5, &caustic_info),
+                    write_combined_image_sampler(set, 6, &volumetric_info),
+                    write_combined_image_sampler(set, 7, &bloom_info),
                 ];
                 // SAFETY: descriptor sets owned by `self`; writes
                 // reference freshly-recreated HDR views (owned by `self`)
@@ -1184,11 +1116,7 @@ impl CompositePipeline {
                 .sampler(self.hdr_sampler)
                 .image_view(hdr_views[i])
                 .image_layout(hdr_layout)];
-            let write = vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[i])
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&info);
+            let write = write_combined_image_sampler(self.descriptor_sets[i], 0, &info);
             // SAFETY: descriptor set `i` owned by `self`; `info` references
             // caller-borrowed `hdr_views[i]` (live for this call) and
             // `self.hdr_sampler` (live for `self`).

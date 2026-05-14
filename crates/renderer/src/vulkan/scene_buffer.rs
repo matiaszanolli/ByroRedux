@@ -6,6 +6,9 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::descriptors::{
+    write_combined_image_sampler, write_storage_buffer, write_uniform_buffer, DescriptorPoolBuilder,
+};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -827,40 +830,34 @@ impl SceneBuffers {
         };
 
         // Descriptor pool.
-        // Two STORAGE_BUFFER descriptors per frame (lights + bones).
-        let mut pool_sizes = vec![
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_BUFFER,
-                // 11 SSBOs per frame: lights(0), bones(3), instances(4), cluster
-                // grid(5), light indices(6), vertices(8), indices(9), terrain
-                // tiles(10), ray budget counter(11), bones_prev(12 — SH-3 / #641),
-                // materials(13 — R1 Phase 4).
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 11) as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                // 1 per frame: SSAO texture (binding 7).
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-        ];
-        if rt_enabled {
-            pool_sizes.push(vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            });
-        }
-        let pool_info = vk::DescriptorPoolCreateInfo::default()
-            .pool_sizes(&pool_sizes)
+        // 11 SSBOs per frame: lights(0), bones(3), instances(4), cluster
+        // grid(5), light indices(6), vertices(8), indices(9), terrain
+        // tiles(10), ray budget counter(11), bones_prev(12 — SH-3 / #641),
+        // materials(13 — R1 Phase 4). Plus 1 sampler per frame for SSAO
+        // (binding 7) and 1 UBO per frame. The optional TLAS slot is
+        // appended below when ray tracing is enabled.
+        let mut pool_builder = DescriptorPoolBuilder::new()
+            .pool(
+                vk::DescriptorType::STORAGE_BUFFER,
+                (MAX_FRAMES_IN_FLIGHT * 11) as u32,
+            )
+            .pool(
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .pool(
+                vk::DescriptorType::UNIFORM_BUFFER,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
-        let descriptor_pool = unsafe {
-            device
-                .create_descriptor_pool(&pool_info, None)
-                .context("Failed to create scene descriptor pool")?
-        };
+        if rt_enabled {
+            pool_builder = pool_builder.pool(
+                vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            );
+        }
+        let descriptor_pool =
+            pool_builder.build(device, "Failed to create scene descriptor pool")?;
 
         // Allocate descriptor sets.
         let layouts = vec![descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
@@ -928,47 +925,16 @@ impl SceneBuffers {
                 offset: 0,
                 range: material_buf_size,
             }];
+            let set = descriptor_sets[i];
             let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&light_buf_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&camera_buf_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
-                    .dst_binding(3)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&bone_buf_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
-                    .dst_binding(4)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&instance_buf_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
-                    .dst_binding(10)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&terrain_tile_buf_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
-                    .dst_binding(11)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&ray_budget_buf_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
-                    .dst_binding(12)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&bone_prev_buf_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_sets[i])
-                    .dst_binding(13)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&material_buf_info),
+                write_storage_buffer(set, 0, &light_buf_info),
+                write_uniform_buffer(set, 1, &camera_buf_info),
+                write_storage_buffer(set, 3, &bone_buf_info),
+                write_storage_buffer(set, 4, &instance_buf_info),
+                write_storage_buffer(set, 10, &terrain_tile_buf_info),
+                write_storage_buffer(set, 11, &ray_budget_buf_info),
+                write_storage_buffer(set, 12, &bone_prev_buf_info),
+                write_storage_buffer(set, 13, &material_buf_info),
             ];
             unsafe {
                 device.update_descriptor_sets(&writes, &[]);
@@ -1532,11 +1498,7 @@ impl SceneBuffers {
             .sampler(ao_sampler)
             .image_view(ao_image_view)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-        let write = vk::WriteDescriptorSet::default()
-            .dst_set(self.descriptor_sets[frame_index])
-            .dst_binding(7)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(&image_info);
+        let write = write_combined_image_sampler(self.descriptor_sets[frame_index], 7, &image_info);
         unsafe {
             device.update_descriptor_sets(&[write], &[]);
         }
@@ -1562,17 +1524,10 @@ impl SceneBuffers {
             offset: 0,
             range: index_size,
         }];
+        let set = self.descriptor_sets[frame_index];
         let writes = [
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[frame_index])
-                .dst_binding(8)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&vert_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[frame_index])
-                .dst_binding(9)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&idx_info),
+            write_storage_buffer(set, 8, &vert_info),
+            write_storage_buffer(set, 9, &idx_info),
         ];
         unsafe { device.update_descriptor_sets(&writes, &[]) }
     }
@@ -1598,17 +1553,10 @@ impl SceneBuffers {
             offset: 0,
             range: index_size,
         }];
+        let set = self.descriptor_sets[frame_index];
         let writes = [
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[frame_index])
-                .dst_binding(5)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&grid_info),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.descriptor_sets[frame_index])
-                .dst_binding(6)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&index_info),
+            write_storage_buffer(set, 5, &grid_info),
+            write_storage_buffer(set, 6, &index_info),
         ];
         unsafe {
             device.update_descriptor_sets(&writes, &[]);

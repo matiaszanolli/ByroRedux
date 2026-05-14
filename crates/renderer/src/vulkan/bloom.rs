@@ -50,6 +50,10 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::descriptors::{
+    image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
+    write_uniform_buffer, DescriptorPoolBuilder,
+};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
@@ -336,30 +340,15 @@ impl BloomPipeline {
         let total_samplers = MAX_FRAMES_IN_FLIGHT * (BLOOM_MIP_COUNT + 2 * (BLOOM_MIP_COUNT - 1));
         let total_storage = MAX_FRAMES_IN_FLIGHT * (BLOOM_MIP_COUNT + (BLOOM_MIP_COUNT - 1));
         let total_ubo = total_storage; // one per set
-        let pool_sizes = [
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: total_samplers as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: total_storage as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: total_ubo as u32,
-            },
-        ];
-        partial.descriptor_pool = try_or_cleanup!(unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&pool_sizes)
-                        .max_sets(total_sets as u32),
-                    None,
-                )
-                .context("bloom descriptor pool")
-        });
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
+            .pool(
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                total_samplers as u32,
+            )
+            .pool(vk::DescriptorType::STORAGE_IMAGE, total_storage as u32)
+            .pool(vk::DescriptorType::UNIFORM_BUFFER, total_ubo as u32)
+            .max_sets(total_sets as u32)
+            .build(device, "bloom descriptor pool"));
 
         // ── 6. Per-frame mip pyramids + descriptor sets ───────────────
         for frame_idx in 0..MAX_FRAMES_IN_FLIGHT {
@@ -401,23 +390,7 @@ impl BloomPipeline {
             let mut barriers = Vec::with_capacity(total);
             for frame in &self.frames {
                 for mip in frame.down_mips.iter().chain(frame.up_mips.iter()) {
-                    barriers.push(
-                        vk::ImageMemoryBarrier::default()
-                            .src_access_mask(vk::AccessFlags::empty())
-                            .dst_access_mask(
-                                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
-                            )
-                            .old_layout(vk::ImageLayout::UNDEFINED)
-                            .new_layout(vk::ImageLayout::GENERAL)
-                            .image(mip.image)
-                            .subresource_range(vk::ImageSubresourceRange {
-                                aspect_mask: vk::ImageAspectFlags::COLOR,
-                                base_mip_level: 0,
-                                level_count: 1,
-                                base_array_layer: 0,
-                                layer_count: 1,
-                            }),
-                    );
+                    barriers.push(image_barrier_undef_to_general(mip.image));
                 }
             }
             unsafe {
@@ -460,11 +433,7 @@ impl BloomPipeline {
             .sampler(self.sampler)
             .image_view(input_view)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-        let scene_write = vk::WriteDescriptorSet::default()
-            .dst_set(f.down_descriptor_sets[0])
-            .dst_binding(0)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(&scene_info);
+        let scene_write = write_combined_image_sampler(f.down_descriptor_sets[0], 0, &scene_info);
         device.update_descriptor_sets(&[scene_write], &[]);
 
         // Compute and upload the per-mip params for both chains.
@@ -823,28 +792,14 @@ impl BloomFrame {
                 None
             };
             if let Some(ref src) = src_info {
-                writes.push(
-                    vk::WriteDescriptorSet::default()
-                        .dst_set(down_descriptor_sets[i])
-                        .dst_binding(0)
-                        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(src.as_slice()),
-                );
+                writes.push(write_combined_image_sampler(
+                    down_descriptor_sets[i],
+                    0,
+                    src.as_slice(),
+                ));
             }
-            writes.push(
-                vk::WriteDescriptorSet::default()
-                    .dst_set(down_descriptor_sets[i])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(&dst_info),
-            );
-            writes.push(
-                vk::WriteDescriptorSet::default()
-                    .dst_set(down_descriptor_sets[i])
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&ubo_info),
-            );
+            writes.push(write_storage_image(down_descriptor_sets[i], 1, &dst_info));
+            writes.push(write_uniform_buffer(down_descriptor_sets[i], 2, &ubo_info));
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
@@ -874,26 +829,10 @@ impl BloomFrame {
                 range: up_param_size,
             }];
             let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(up_descriptor_sets[i])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&smaller_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(up_descriptor_sets[i])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&same_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(up_descriptor_sets[i])
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(&dst_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(up_descriptor_sets[i])
-                    .dst_binding(3)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&ubo_info),
+                write_combined_image_sampler(up_descriptor_sets[i], 0, &smaller_info),
+                write_combined_image_sampler(up_descriptor_sets[i], 1, &same_info),
+                write_storage_image(up_descriptor_sets[i], 2, &dst_info),
+                write_uniform_buffer(up_descriptor_sets[i], 3, &ubo_info),
             ];
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
@@ -1056,7 +995,10 @@ mod workgroup_shader_sync_tests {
     fn bloom_downsample_local_size_matches_rust_workgroup() {
         assert_contains(
             BLOOM_DOWNSAMPLE_SRC,
-            &format!("local_size_x = {}, local_size_y = {}", WORKGROUP_X, WORKGROUP_Y),
+            &format!(
+                "local_size_x = {}, local_size_y = {}",
+                WORKGROUP_X, WORKGROUP_Y
+            ),
             "bloom_downsample.comp",
         );
     }
@@ -1065,7 +1007,10 @@ mod workgroup_shader_sync_tests {
     fn bloom_upsample_local_size_matches_rust_workgroup() {
         assert_contains(
             BLOOM_UPSAMPLE_SRC,
-            &format!("local_size_x = {}, local_size_y = {}", WORKGROUP_X, WORKGROUP_Y),
+            &format!(
+                "local_size_x = {}, local_size_y = {}",
+                WORKGROUP_X, WORKGROUP_Y
+            ),
             "bloom_upsample.comp",
         );
     }

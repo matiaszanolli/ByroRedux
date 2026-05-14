@@ -53,6 +53,10 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::descriptors::{
+    image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
+    write_uniform_buffer, DescriptorPoolBuilder,
+};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
@@ -487,35 +491,24 @@ impl SvgfPipeline {
         };
 
         // ── 6. Descriptor pool + sets ─────────────────────────────────
-        let pool_sizes = [
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                // 8 sampler bindings per set after #650: curr indirect,
-                // motion, curr/prev mesh_id, prev indirect/moments
-                // history, curr/prev normal.
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 8) as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 2) as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-        ];
-        // SAFETY: pool_sizes match the bindings declared above; max_sets
-        // bounded by MAX_FRAMES_IN_FLIGHT.
-        partial.descriptor_pool = try_or_cleanup!(unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&pool_sizes)
-                        .max_sets(MAX_FRAMES_IN_FLIGHT as u32),
-                    None,
-                )
-                .context("SVGF descriptor pool")
-        });
+        // 8 sampler bindings per set after #650: curr indirect, motion,
+        // curr/prev mesh_id, prev indirect/moments history, curr/prev
+        // normal.
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
+            .pool(
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                (MAX_FRAMES_IN_FLIGHT * 8) as u32,
+            )
+            .pool(
+                vk::DescriptorType::STORAGE_IMAGE,
+                (MAX_FRAMES_IN_FLIGHT * 2) as u32,
+            )
+            .pool(
+                vk::DescriptorType::UNIFORM_BUFFER,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+            .build(device, "SVGF descriptor pool"));
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: pool just sized for MAX_FRAMES_IN_FLIGHT sets with the
@@ -706,62 +699,19 @@ impl SvgfPipeline {
                 range: param_size,
             }];
 
+            let set = self.descriptor_sets[f];
             let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&curr_indirect),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&motion),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&curr_mid),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(3)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&prev_mid),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(4)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&prev_ind),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(5)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&prev_mom),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(6)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(&out_ind),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(7)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(&out_mom),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(8)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&params),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(9)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&curr_norm),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(10)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&prev_norm),
+                write_combined_image_sampler(set, 0, &curr_indirect),
+                write_combined_image_sampler(set, 1, &motion),
+                write_combined_image_sampler(set, 2, &curr_mid),
+                write_combined_image_sampler(set, 3, &prev_mid),
+                write_combined_image_sampler(set, 4, &prev_ind),
+                write_combined_image_sampler(set, 5, &prev_mom),
+                write_storage_image(set, 6, &out_ind),
+                write_storage_image(set, 7, &out_mom),
+                write_uniform_buffer(set, 8, &params),
+                write_combined_image_sampler(set, 9, &curr_norm),
+                write_combined_image_sampler(set, 10, &prev_norm),
             ];
             // SAFETY: descriptor sets owned by `self`; writes reference
             // image views and param buffer owned by `self`, and the
@@ -792,23 +742,7 @@ impl SvgfPipeline {
                 .iter()
                 .chain(self.moments_history.iter())
             {
-                barriers.push(
-                    vk::ImageMemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::empty())
-                        .dst_access_mask(
-                            vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
-                        )
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .new_layout(vk::ImageLayout::GENERAL)
-                        .image(slot.image)
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        }),
-                );
+                barriers.push(image_barrier_undef_to_general(slot.image));
             }
             // SAFETY: caller of `initialize_layouts` (unsafe fn)
             // guarantees device/queue/pool validity; `cmd` is the
@@ -1053,9 +987,9 @@ impl SvgfPipeline {
         self.width = width;
         self.height = height;
         self.frames_since_creation = 0; // history is meaningless after resize
-        // Drop any pending mark — pre-resize-recorded dispatch (if any)
-        // never sees `queue_submit` because the resize path waited on
-        // both fences. See #917.
+                                        // Drop any pending mark — pre-resize-recorded dispatch (if any)
+                                        // never sees `queue_submit` because the resize path waited on
+                                        // both fences. See #917.
         self.dispatched_this_frame = false;
 
         let result = (|| -> Result<()> {

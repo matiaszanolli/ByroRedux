@@ -30,6 +30,10 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::descriptors::{
+    image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
+    write_uniform_buffer, DescriptorPoolBuilder,
+};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::svgf::should_force_history_reset;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -332,32 +336,21 @@ impl TaaPipeline {
             }
         };
 
-        let pool_sizes = [
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 5) as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-        ];
-        // SAFETY: pool_sizes match the bindings declared above; max_sets
-        // is bounded by MAX_FRAMES_IN_FLIGHT.
-        partial.descriptor_pool = try_or_cleanup!(unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&pool_sizes)
-                        .max_sets(MAX_FRAMES_IN_FLIGHT as u32),
-                    None,
-                )
-                .context("TAA descriptor pool")
-        });
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
+            .pool(
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                (MAX_FRAMES_IN_FLIGHT * 5) as u32,
+            )
+            .pool(
+                vk::DescriptorType::STORAGE_IMAGE,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .pool(
+                vk::DescriptorType::UNIFORM_BUFFER,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+            .build(device, "TAA descriptor pool"));
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: pool was just sized for MAX_FRAMES_IN_FLIGHT sets;
@@ -541,42 +534,15 @@ impl TaaPipeline {
                 range: param_size,
             }];
 
+            let set = self.descriptor_sets[f];
             let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&curr_hdr),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&motion),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&curr_mid),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(3)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&prev_mid),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(4)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&prev_hist),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(5)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(&out_taa),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(self.descriptor_sets[f])
-                    .dst_binding(6)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&params),
+                write_combined_image_sampler(set, 0, &curr_hdr),
+                write_combined_image_sampler(set, 1, &motion),
+                write_combined_image_sampler(set, 2, &curr_mid),
+                write_combined_image_sampler(set, 3, &prev_mid),
+                write_combined_image_sampler(set, 4, &prev_hist),
+                write_storage_image(set, 5, &out_taa),
+                write_uniform_buffer(set, 6, &params),
             ];
             // SAFETY: descriptor sets owned by `self`; `writes` references
             // image views / buffer owned by `self` and `hdr_views` /
@@ -626,23 +592,7 @@ impl TaaPipeline {
         super::texture::with_one_time_commands(device, queue, pool, |cmd| {
             let mut barriers = Vec::with_capacity(self.history.len());
             for slot in &self.history {
-                barriers.push(
-                    vk::ImageMemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::empty())
-                        .dst_access_mask(
-                            vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
-                        )
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .new_layout(vk::ImageLayout::GENERAL)
-                        .image(slot.image)
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        }),
-                );
+                barriers.push(image_barrier_undef_to_general(slot.image));
             }
             // SAFETY: caller of `initialize_layouts` (unsafe fn) guarantees
             // device/queue/pool validity; `cmd` is the recording buffer

@@ -42,6 +42,10 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::descriptors::{
+    image_barrier_undef_to_general, write_storage_image, write_uniform_buffer,
+    DescriptorPoolBuilder,
+};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
@@ -350,30 +354,21 @@ impl VolumetricsPipeline {
         };
 
         // ── 5. Descriptor pool + sets ─────────────────────────────────
-        let pool_sizes = [
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-        ];
-        partial.descriptor_pool = try_or_cleanup!(unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&pool_sizes)
-                        .max_sets(MAX_FRAMES_IN_FLIGHT as u32),
-                    None,
-                )
-                .context("Volumetrics descriptor pool")
-        });
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
+            .pool(
+                vk::DescriptorType::STORAGE_IMAGE,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .pool(
+                vk::DescriptorType::UNIFORM_BUFFER,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .pool(
+                vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+            .build(device, "Volumetrics descriptor pool"));
 
         let layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         partial.descriptor_sets = try_or_cleanup!(unsafe {
@@ -396,17 +391,10 @@ impl VolumetricsPipeline {
                 offset: 0,
                 range: param_size,
             }];
+            let set = partial.descriptor_sets[f];
             let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[f])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(&lighting_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[f])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&params_info),
+                write_storage_image(set, 0, &lighting_info),
+                write_uniform_buffer(set, 1, &params_info),
             ];
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
@@ -515,26 +503,17 @@ impl VolumetricsPipeline {
         };
 
         // ── 10. Integration descriptor pool + sets ────────────────────
-        let int_pool_sizes = [
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 2) as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-        ];
-        partial.integration_descriptor_pool = try_or_cleanup!(unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&int_pool_sizes)
-                        .max_sets(MAX_FRAMES_IN_FLIGHT as u32),
-                    None,
-                )
-                .context("Volumetrics integration descriptor pool")
-        });
+        partial.integration_descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
+            .pool(
+                vk::DescriptorType::STORAGE_IMAGE,
+                (MAX_FRAMES_IN_FLIGHT * 2) as u32,
+            )
+            .pool(
+                vk::DescriptorType::UNIFORM_BUFFER,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+            .build(device, "Volumetrics integration descriptor pool"));
 
         let int_layouts = vec![partial.integration_descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         partial.integration_descriptor_sets = try_or_cleanup!(unsafe {
@@ -565,22 +544,11 @@ impl VolumetricsPipeline {
                 offset: 0,
                 range: int_param_size,
             }];
+            let set = partial.integration_descriptor_sets[f];
             let int_writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.integration_descriptor_sets[f])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(&inj_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.integration_descriptor_sets[f])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(&int_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.integration_descriptor_sets[f])
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&ubo_info),
+                write_storage_image(set, 0, &inj_info),
+                write_storage_image(set, 1, &int_info),
+                write_uniform_buffer(set, 2, &ubo_info),
             ];
             unsafe { device.update_descriptor_sets(&int_writes, &[]) };
         }
@@ -702,23 +670,7 @@ impl VolumetricsPipeline {
                 .iter()
                 .chain(self.integrated_volumes.iter())
             {
-                barriers.push(
-                    vk::ImageMemoryBarrier::default()
-                        .src_access_mask(vk::AccessFlags::empty())
-                        .dst_access_mask(
-                            vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
-                        )
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .new_layout(vk::ImageLayout::GENERAL)
-                        .image(slot.image)
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        }),
-                );
+                barriers.push(image_barrier_undef_to_general(slot.image));
             }
             unsafe {
                 device.cmd_pipeline_barrier(

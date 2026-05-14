@@ -6,6 +6,7 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::descriptors::{write_storage_buffer, write_uniform_buffer, DescriptorPoolBuilder};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
@@ -201,26 +202,17 @@ impl ClusterCullPipeline {
         };
 
         // Descriptor pool + sets.
-        let pool_sizes = [
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: (MAX_FRAMES_IN_FLIGHT * 3) as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-            },
-        ];
-        partial.descriptor_pool = try_or_cleanup!(unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&pool_sizes)
-                        .max_sets(MAX_FRAMES_IN_FLIGHT as u32),
-                    None,
-                )
-                .context("Failed to create cluster cull descriptor pool")
-        });
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
+            .pool(
+                vk::DescriptorType::STORAGE_BUFFER,
+                (MAX_FRAMES_IN_FLIGHT * 3) as u32,
+            )
+            .pool(
+                vk::DescriptorType::UNIFORM_BUFFER,
+                MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+            .build(device, "Failed to create cluster cull descriptor pool"));
 
         let layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         partial.descriptor_sets = try_or_cleanup!(unsafe {
@@ -255,27 +247,12 @@ impl ClusterCullPipeline {
                 offset: 0,
                 range: index_list_size,
             }];
+            let set = partial.descriptor_sets[i];
             let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&light_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&camera_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&grid_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(3)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&index_info),
+                write_storage_buffer(set, 0, &light_info),
+                write_uniform_buffer(set, 1, &camera_info),
+                write_storage_buffer(set, 2, &grid_info),
+                write_storage_buffer(set, 3, &index_info),
             ];
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }

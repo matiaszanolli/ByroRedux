@@ -6,6 +6,9 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::descriptors::{
+    write_combined_image_sampler, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
+};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use anyhow::{Context, Result};
 use ash::vk;
@@ -355,32 +358,15 @@ impl SsaoPipeline {
         };
 
         // Descriptor pool + sets.
-        let pool_sizes = [
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: max_frames as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: max_frames as u32,
-            },
-            vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: max_frames as u32,
-            },
-        ];
-        // SAFETY: `pool_sizes` is a stack array bounded by max_frames;
-        // pool owns the live descriptor sets allocated below.
-        partial.descriptor_pool = try_or_cleanup!(unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .pool_sizes(&pool_sizes)
-                        .max_sets(max_frames as u32),
-                    None,
-                )
-                .context("SSAO descriptor pool")
-        });
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
+            .pool(
+                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                max_frames as u32
+            )
+            .pool(vk::DescriptorType::STORAGE_IMAGE, max_frames as u32)
+            .pool(vk::DescriptorType::UNIFORM_BUFFER, max_frames as u32)
+            .max_sets(max_frames as u32)
+            .build(device, "SSAO descriptor pool"));
 
         let layouts = vec![partial.descriptor_set_layout; max_frames];
         // SAFETY: `partial.descriptor_pool` was just created with enough
@@ -410,22 +396,11 @@ impl SsaoPipeline {
                 offset: 0,
                 range: param_size,
             }];
+            let set = partial.descriptor_sets[i];
             let writes = [
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(0)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(&depth_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(1)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .image_info(&ao_info),
-                vk::WriteDescriptorSet::default()
-                    .dst_set(partial.descriptor_sets[i])
-                    .dst_binding(2)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&param_info),
+                write_combined_image_sampler(set, 0, &depth_info),
+                write_storage_image(set, 1, &ao_info),
+                write_uniform_buffer(set, 2, &param_info),
             ];
             // SAFETY: descriptor sets just allocated above; `writes`
             // references images/buffers all owned by `partial` (depth view,
