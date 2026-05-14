@@ -6,10 +6,7 @@
 
 use super::{fo4_header, oblivion_header};
 use crate::blocks::*;
-use crate::header::NifHeader;
 use crate::stream::NifStream;
-use crate::version::NifVersion;
-use std::sync::Arc;
 
 /// Regression: #474 — `bhkSimpleShapePhantom` carries an 8-byte
 /// `Unused 01` field between the bhkWorldObjectCInfo block and the
@@ -475,81 +472,3 @@ fn fo4_bhk_ragdoll_system_keeps_byte_array_verbatim() {
 
 // ── #708 / NIF-D5-01 + NIF-D5-02 + NIF-D5-08 — Starfield BSGeometry triple ──
 
-/// Starfield header (bsver=172, uv=12). Per
-/// `crates/nif/src/version.rs::NifVariant::detect`. Skyrim+ string-table
-/// shape — `read_string` resolves `0` to `strings[0]`.
-fn starfield_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 172,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: vec![Arc::from("BSGeometry_Test")],
-        max_string_length: 16,
-        num_groups: 0,
-    }
-}
-
-/// Build the NiAVObject (no-properties) prefix every BSGeometry shares.
-/// `flags` lands on the parent NiAVObject; bit 0x200 is the
-/// internal-geom-data gate.
-fn starfield_av_prefix(flags: u32) -> Vec<u8> {
-    let mut d = Vec::new();
-    // NiObjectNET — name index, extra-data ref count, controller ref.
-    d.extend_from_slice(&0i32.to_le_bytes()); // name = strings[0]
-    d.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
-    d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
-                                                 // NiAVObject (parse_no_properties): flags(u32) + transform + collision_ref
-    d.extend_from_slice(&flags.to_le_bytes());
-    // NiTransform: rotation 3×3 matrix (9×f32) + translation (3×f32) + scale (f32)
-    for v in [
-        1.0f32, 0.0, 0.0, // row 0
-        0.0, 1.0, 0.0, // row 1
-        0.0, 0.0, 1.0, // row 2
-        0.0, 0.0, 0.0, // translation
-        1.0, // scale
-    ] {
-        d.extend_from_slice(&v.to_le_bytes());
-    }
-    d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
-    d
-}
-
-/// Append the BSGeometry trailer (bounds + boundMinMax + 3 refs) and
-/// `mesh_count` external-mesh slots (each: 3×u32 + sized-string).
-fn starfield_external_geometry_bytes(flags: u32, mesh_names: &[&str]) -> Vec<u8> {
-    assert!(mesh_names.len() <= 4);
-    let mut d = starfield_av_prefix(flags);
-    // bounds: Vector3 center + f32 radius
-    for v in [0.0f32, 0.0, 0.0, 1.0] {
-        d.extend_from_slice(&v.to_le_bytes());
-    }
-    // boundMinMax: 6 × f32
-    for v in [-1.0f32, -1.0, -1.0, 1.0, 1.0, 1.0] {
-        d.extend_from_slice(&v.to_le_bytes());
-    }
-    // 3 refs: skin / shader / alpha
-    d.extend_from_slice(&(-1i32).to_le_bytes());
-    d.extend_from_slice(&(-1i32).to_le_bytes());
-    d.extend_from_slice(&(-1i32).to_le_bytes());
-    // 4 mesh slots — `mesh_names.len()` populated, rest absent.
-    for i in 0..4 {
-        if i < mesh_names.len() {
-            d.push(1u8); // present
-            d.extend_from_slice(&123u32.to_le_bytes()); // tri_size
-            d.extend_from_slice(&456u32.to_le_bytes()); // num_verts
-            d.extend_from_slice(&64u32.to_le_bytes()); // flags (nifly: "often 64")
-                                                       // sized string: u32 length + bytes
-            let name = mesh_names[i].as_bytes();
-            d.extend_from_slice(&(name.len() as u32).to_le_bytes());
-            d.extend_from_slice(name);
-        } else {
-            d.push(0u8); // absent
-        }
-    }
-    d
-}

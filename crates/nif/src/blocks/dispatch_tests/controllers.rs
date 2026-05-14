@@ -240,14 +240,6 @@ fn oblivion_kf_animation_blocks_route_correctly() {
         .is_some());
 }
 
-/// Helper: encode a pre-20.1 inline length-prefixed string (u32 len + bytes).
-fn inline_string(s: &str) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(&(s.len() as u32).to_le_bytes());
-    out.extend_from_slice(s.as_bytes());
-    out
-}
-
 /// Regression test for issue #154: NiUVController + NiUVData.
 #[test]
 fn oblivion_uv_controller_and_data_roundtrip() {
@@ -400,19 +392,3 @@ fn oblivion_legacy_particle_system_controller_roundtrip() {
 
 // ── #124 / audit NIF-513 — bhkNPCollisionObject family ──────────
 
-/// FO4 header (bsver=130) used by the NP-physics dispatch tests.
-fn fo4_header() -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 130,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}

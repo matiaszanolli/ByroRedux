@@ -247,25 +247,3 @@ fn starfield_bone_translations_dispatches() {
 
 // ── O5-3 / #688 — early-Gamebryo NiObject groupID prefix ─────────
 
-/// Build a header for an early-Gamebryo NIF (file version in the
-/// `[10.0.0.0, 10.1.0.114)` window). Every block in this range is
-/// prefixed with a 4-byte `NiObject.groupID` field per nifly's
-/// `NiObject::Get`. Pre-#688 the byte was misread as the first u32
-/// of the block payload (typically `NiObjectNET.Name`'s SizedString
-/// length), causing 145 / 8032 Oblivion-era files to truncate at
-/// root with "failed to fill whole buffer".
-fn early_gamebryo_header(packed_version: u32) -> NifHeader {
-    NifHeader {
-        version: NifVersion(packed_version),
-        little_endian: true,
-        user_version: 0,
-        user_version_2: 0,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: Vec::new(),
-        max_string_length: 0,
-        num_groups: 0,
-    }
-}

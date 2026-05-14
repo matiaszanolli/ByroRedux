@@ -226,42 +226,6 @@ fn skyrim_bs_bone_lod_extra_data_dispatches_and_parses() {
     assert_eq!(stream.position() as usize, bytes.len());
 }
 
-/// Oblivion-era empty NiNode body (no children, no effects, no
-/// properties, identity transform). Used as the base bytes for
-/// every NiNode subtype test in this module.
-fn oblivion_empty_ninode_bytes() -> Vec<u8> {
-    let mut d = Vec::new();
-    // NiObjectNET: name (empty inline) + empty extra data list + null controller
-    d.extend_from_slice(&0u32.to_le_bytes()); // name len
-    d.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
-    d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
-                                                 // NiAVObject: flags (u16 for bsver<=26), identity transform (13 f32),
-                                                 // empty properties list, null collision ref.
-    d.extend_from_slice(&0u16.to_le_bytes()); // flags
-                                              // transform: translation (3 f32)
-    d.extend_from_slice(&0.0f32.to_le_bytes());
-    d.extend_from_slice(&0.0f32.to_le_bytes());
-    d.extend_from_slice(&0.0f32.to_le_bytes());
-    // transform: rotation 3x3 identity
-    for (i, row) in (0..3).zip([[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]) {
-        let _ = i;
-        for v in row {
-            d.extend_from_slice(&v.to_le_bytes());
-        }
-    }
-    // transform: scale
-    d.extend_from_slice(&1.0f32.to_le_bytes());
-    // properties list: empty
-    d.extend_from_slice(&0u32.to_le_bytes());
-    // collision_ref: null
-    d.extend_from_slice(&(-1i32).to_le_bytes());
-    // NiNode children: empty
-    d.extend_from_slice(&0u32.to_le_bytes());
-    // NiNode effects: empty (Oblivion has_effects_list = true)
-    d.extend_from_slice(&0u32.to_le_bytes());
-    d
-}
-
 /// Regression #158 / #365: BSPackedCombined[Shared]GeomDataExtra
 /// must dispatch to its own parser and fully decode the
 /// variable-size per-object tail (not just skip-via-block_size).
@@ -484,29 +448,6 @@ fn bs_connect_point_children_reads_skinned_as_byte() {
         expected_len,
         "BSConnectPoint::Children over-read the skinned flag"
     );
-}
-
-/// Build an "empty NiAVObject" body sized for Oblivion. Same prefix
-/// as the NiNode helper, minus the NiNode-specific children+effects
-/// trailers. Used for NiLight bodies.
-fn oblivion_niavobject_bytes() -> Vec<u8> {
-    let mut d = Vec::new();
-    d.extend_from_slice(&0u32.to_le_bytes()); // name len (empty inline)
-    d.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
-    d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
-    d.extend_from_slice(&0u16.to_le_bytes()); // flags
-    for _ in 0..3 {
-        d.extend_from_slice(&0.0f32.to_le_bytes()); // translation
-    }
-    for row in [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
-        for v in row {
-            d.extend_from_slice(&v.to_le_bytes());
-        }
-    }
-    d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
-    d.extend_from_slice(&0u32.to_le_bytes()); // empty properties list
-    d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
-    d
 }
 
 /// Regression for #722 (NIF-D5-07): BSClothExtraData inherits
@@ -806,63 +747,6 @@ fn sse_bs_distant_object_large_ref_extra_data_round_trips_false() {
 }
 
 // ── #942 / NIF-D5-NEW-03 — BSDistantObjectInstancedNode (FO76) ──────
-
-/// FO76 header — bsver=155, version=20.2.0.7, with named string slots
-/// for the NiObjectNET / texture-array `SizedString` paths used by the
-/// BSMultiBoundNode base and BSDistantObjectInstancedNode trailing
-/// texture arrays. Strings inside texture arrays are inline
-/// `SizedString` (length-prefixed bytes) — they don't look up against
-/// the string table, so an empty `strings` field is fine for them.
-fn fo76_header_with_name(name: &str) -> NifHeader {
-    NifHeader {
-        version: NifVersion::V20_2_0_7,
-        little_endian: true,
-        user_version: 12,
-        user_version_2: 155,
-        num_blocks: 0,
-        block_types: Vec::new(),
-        block_type_indices: Vec::new(),
-        block_sizes: Vec::new(),
-        strings: vec![Arc::from(name)],
-        max_string_length: name.len() as u32,
-        num_groups: 0,
-    }
-}
-
-/// Build the BSMultiBoundNode wire body (NiNode body + multi_bound_ref
-/// + culling_mode for bsver >= 83). Returns the byte vector ready to
-/// concatenate inside a BSDistantObjectInstancedNode payload.
-fn build_bs_multi_bound_node_body() -> Vec<u8> {
-    let mut b = Vec::new();
-    // NiObjectNET: name (string-table index 0 → name string), 0 extra
-    // data refs, controller_ref = -1.
-    b.extend_from_slice(&0i32.to_le_bytes());
-    b.extend_from_slice(&0u32.to_le_bytes());
-    b.extend_from_slice(&(-1i32).to_le_bytes());
-    // NiAVObject (FO76/v20.2.0.7 + bsver>=83 layout): u32 flags +
-    // transform (3 floats translation + 9 floats rotation + 1 scale) +
-    // 0 properties + collision_ref = -1.
-    b.extend_from_slice(&0u32.to_le_bytes()); // flags
-    for _ in 0..3 {
-        b.extend_from_slice(&0.0f32.to_le_bytes());
-    }
-    for r in &[1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
-        b.extend_from_slice(&r.to_le_bytes());
-    }
-    b.extend_from_slice(&1.0f32.to_le_bytes()); // scale
-                                                // Properties list is gated `bsver <= 34` (FO3/FNV/Oblivion); FO76
-                                                // bsver=155 skips it entirely — emitting a `0u32` here would shift
-                                                // every downstream field forward 4 bytes and the multi_bound_ref
-                                                // (-1) would be misread as a children count of 0xFFFFFFFF.
-    b.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
-                                                 // NiNode: 0 children. The `effects` array is gated on bsver — FO4+
-                                                 // (bsver=130) drops it. FO76 (bsver=155) drops it too.
-    b.extend_from_slice(&0u32.to_le_bytes()); // children count
-                                              // BSMultiBoundNode: multi_bound_ref (-1) + culling_mode (Skyrim+).
-    b.extend_from_slice(&(-1i32).to_le_bytes());
-    b.extend_from_slice(&0u32.to_le_bytes()); // culling_mode
-    b
-}
 
 // ── #728 / NIF-D5-10 — BSCollisionQueryProxyExtraData (FO76) ─────
 
