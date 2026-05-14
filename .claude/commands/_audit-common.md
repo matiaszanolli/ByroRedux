@@ -12,8 +12,8 @@ Resources:       crates/core/src/ecs/resources.rs
 Strings:         crates/core/src/string/
 NIF Parser:      crates/nif/src/
 NIF Blocks:      crates/nif/src/blocks/               (see blocks/mod.rs dispatch; controller/ subdir, particle.rs, shader.rs, tri_shape.rs, skin.rs, properties.rs, interpolator.rs, extra_data.rs, light.rs, multibound.rs, palette.rs, legacy_particle.rs, texture.rs, collision.rs, bs_geometry.rs, node.rs, base.rs, traits.rs; *_tests.rs siblings)
-NIF Import:      crates/nif/src/import/               (mod.rs thin dispatch + types.rs + tests.rs; walk.rs, mesh.rs + mesh_*_tests.rs siblings, material/{mod, walker, shader_data, *_tests}, transform.rs, coord.rs, collision.rs)
-NIF Animation:   crates/nif/src/anim.rs + anim/{types.rs, tests.rs}
+NIF Import:      crates/nif/src/import/               (mod.rs thin dispatch + types.rs + tests.rs; walk.rs, mesh/{mod, material_path, decode, ni_tri_shape, bs_tri_shape, bs_geometry, tangent, sse_recon, skin, *_tests}, material/{mod, walker, shader_data, *_tests}, transform.rs, coord.rs, collision.rs)
+NIF Animation:   crates/nif/src/anim/                 (mod.rs re-exports; coord, controlled_block, transform, sequence, keys, channel, bspline, entry; types.rs + tests.rs)
 BSA Reader:      crates/bsa/src/archive.rs
 BA2 Reader:      crates/bsa/src/ba2.rs
 BGSM Materials:  crates/bgsm/src/                     (FO4+ external material parser)
@@ -27,7 +27,7 @@ Debug Protocol:  crates/debug-protocol/src/           (wire types, component reg
 Debug Server:    crates/debug-server/src/             (TCP server + DebugDrainSystem)
 Renderer:        crates/renderer/src/vulkan/
 VulkanContext:   crates/renderer/src/vulkan/context/  (mod.rs, draw.rs, resize.rs, resources.rs, helpers.rs, screenshot.rs)
-Accel (RT):      crates/renderer/src/vulkan/acceleration.rs
+Accel (RT):      crates/renderer/src/vulkan/acceleration/  (mod.rs struct + new()/destroy(); constants, types, predicates, blas_static, blas_skinned, tlas, memory; tests.rs)
 G-Buffer:        crates/renderer/src/vulkan/gbuffer.rs
 SVGF Denoiser:   crates/renderer/src/vulkan/svgf.rs
 TAA (M37.5):     crates/renderer/src/vulkan/taa.rs
@@ -40,7 +40,7 @@ Water (M38):     crates/renderer/src/vulkan/water.rs        (WaterPipeline: vert
 GPU Skin (M29):  crates/renderer/src/vulkan/skin_compute.rs
 Material (R1):   crates/renderer/src/vulkan/material.rs   (MaterialBuffer SSBO, GpuMaterial dedup; replaces per-instance fields)
 SPIR-V Reflect:  crates/renderer/src/vulkan/reflect.rs    (descriptor layout reflection from SPIR-V)
-Scene Buffers:   crates/renderer/src/vulkan/scene_buffer.rs
+Scene Buffers:   crates/renderer/src/vulkan/scene_buffer/  (mod, constants, gpu_types, buffers, upload, descriptors; gpu_instance_layout_tests + material_hash_tests + scene_descriptor_reflection_tests)
 Descriptors:     crates/renderer/src/vulkan/descriptors.rs
 Vk Debug Util:   crates/renderer/src/vulkan/debug.rs
 Vk Instance:     crates/renderer/src/vulkan/instance.rs

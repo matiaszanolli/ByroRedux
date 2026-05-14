@@ -44,7 +44,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_1.md`
 
 ### Dimension 2: GPU Memory
-**Entry points**: `crates/renderer/src/vulkan/buffer.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/renderer/src/vulkan/scene_buffer.rs`, `crates/renderer/src/vulkan/acceleration.rs`
+**Entry points**: `crates/renderer/src/vulkan/buffer.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/renderer/src/vulkan/scene_buffer/`, `crates/renderer/src/vulkan/acceleration/`
 **Checklist**:
 - gpu-allocator usage: correct memory types (CpuToGpu vs GpuOnly)
 - Buffer/image destruction before allocator drop
@@ -76,7 +76,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Attachment load/store ops (CLEAR + STORE for all G-buffer outputs)
 - Layout transitions (UNDEFINED → COLOR_ATTACHMENT → SHADER_READ for G-buffer targets)
 - Subpass dependencies cover all stage/access masks
-- G-buffer format choices match shader output types (RG16_SNORM octahedral-packed for normals per Schied 2017, R16G16_SFLOAT for motion vectors, **R32_UINT** for mesh ID per `gbuffer.rs::MESH_ID_FORMAT` — 31-bit id + bit 31 (0x80000000) = ALPHA_BLEND_NO_HISTORY flag for SVGF disocclusion (`triangle.frag` `computeMeshId`), encoding ceiling `0x7FFFFFFF`, runtime cap `MAX_INSTANCES = 0x40000` per `scene_buffer.rs::MAX_INSTANCES`, guarded by `debug_assert!` in `context/draw.rs`; see `context/helpers.rs` `encode_mesh_id` and #992)
+- G-buffer format choices match shader output types (RG16_SNORM octahedral-packed for normals per Schied 2017, R16G16_SFLOAT for motion vectors, **R32_UINT** for mesh ID per `gbuffer.rs::MESH_ID_FORMAT` — 31-bit id + bit 31 (0x80000000) = ALPHA_BLEND_NO_HISTORY flag for SVGF disocclusion (`triangle.frag` `computeMeshId`), encoding ceiling `0x7FFFFFFF`, runtime cap `MAX_INSTANCES = 0x40000` per `scene_buffer/constants.rs::MAX_INSTANCES`, guarded by `debug_assert!` in `context/draw.rs`; see `context/helpers.rs` `encode_mesh_id` and #992)
 - Depth attachment format and load/store ops
 - G-buffer images created with SAMPLED usage (needed by SVGF and composite reads)
 **Output**: `/tmp/audit/renderer/dim_4.md`
@@ -129,7 +129,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_7.md`
 
 ### Dimension 8: Acceleration Structures (RT)
-**Entry points**: `crates/renderer/src/vulkan/acceleration.rs`, `crates/renderer/src/vulkan/context/resources.rs` (build_blas_for_mesh)
+**Entry points**: `crates/renderer/src/vulkan/acceleration/`, `crates/renderer/src/vulkan/context/resources.rs` (build_blas_for_mesh)
 **Checklist**:
 - BLAS build: vertex format matches Vertex struct (R32G32B32_SFLOAT at offset 0)
 - BLAS build: index type matches mesh index buffer (UINT32)
@@ -191,7 +191,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_10.md`
 
 ### Dimension 11: TAA — Temporal Antialiasing (M37.5)
-**Entry points**: `crates/renderer/src/vulkan/taa.rs`, `crates/renderer/shaders/taa.comp`, camera-UBO jitter assembly in `byroredux/src/render.rs` and `crates/renderer/src/vulkan/scene_buffer.rs`
+**Entry points**: `crates/renderer/src/vulkan/taa.rs`, `crates/renderer/shaders/taa.comp`, camera-UBO jitter assembly in `byroredux/src/render.rs` and `crates/renderer/src/vulkan/scene_buffer/`
 **Checklist**:
 - Halton (2,3) sequence: index advances per frame, wraps without seam, jitter applied to projection matrix in NDC pixel units (not clip units)
 - Camera UBO carries the un-jittered projection alongside the jittered one (motion-vector reconstruction must use un-jittered)
@@ -208,7 +208,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_11.md`
 
 ### Dimension 12: GPU Skinning Compute + BLAS Refit (M29.5 + M29.3)
-**Entry points**: `crates/renderer/src/vulkan/skin_compute.rs`, `crates/renderer/shaders/skin_vertices.comp`, `crates/renderer/src/vulkan/acceleration.rs` (per-skinned-entity BLAS refit), `byroredux/src/render.rs` (skinned-mesh enumeration)
+**Entry points**: `crates/renderer/src/vulkan/skin_compute.rs`, `crates/renderer/shaders/skin_vertices.comp`, `crates/renderer/src/vulkan/acceleration/` (per-skinned-entity BLAS refit), `byroredux/src/render.rs` (skinned-mesh enumeration)
 **Checklist**:
 - `VERTEX_STRIDE_FLOATS = 25` matches `crates/renderer/src/vertex.rs::Vertex` exactly (100 B / vertex; widened from the pre-M-NORMALS 21 / 84 B per #783 once tangent + bitangent_sign landed). Drift here corrupts every skinned vertex
 - `SkinPushConstants` (vertex_offset, vertex_count, bone_offset) matches the GLSL `PushConstants` struct in skin_vertices.comp; total ≤ 128 B
@@ -238,7 +238,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_13.md`
 
 ### Dimension 14: Material Table (R1 Refactor — closed 2026-05-01, hardened 2026-05-04/05)
-**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer.rs` (GpuInstance, MAX_MATERIALS = 4096), `byroredux/src/render.rs` (build_render_data), all 3 shaders (`triangle.vert/frag`, `ui.vert`)
+**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer/` (GpuInstance, MAX_MATERIALS = 4096), `byroredux/src/render.rs` (build_render_data), all 5 shaders (`triangle.vert/frag`, `ui.vert`, `water.vert/frag`)
 **Checklist**:
 - `GpuMaterial` is exactly **260 bytes** (`gpu_material_size_is_260_bytes` test pins it; was 272 B until #804 / R1-N4 dropped the unread `avg_albedo_r/g/b` field). Any field add/remove must update both Rust + GLSL `struct GpuMaterial` in lockstep
 - Per-field offset pinning (`gpu_material_field_offsets_match_shader_contract`, #806): all 65 named-field offsets across 16 vec4 slots are asserted; size-only pin cannot catch within-vec4 reorders (e.g. swapping `texture_index ↔ normal_map_index`). Any new field must add a matching offset assertion
@@ -271,7 +271,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_15.md`
 
 ### Dimension 16: Tangent-Space & Normal Maps (M-NORMALS, Sessions 26–29)
-**Entry points**: `crates/nif/src/import/mesh.rs` (extract_tangents_from_extra_data, synthesize_tangents, BSTriShape inline-tangent decode), `crates/nif/src/blocks/tri_shape.rs` (VF_TANGENTS = 0x010, packed-vertex tangent stride), `crates/renderer/shaders/triangle.frag` (perturbNormal, DBG_BYPASS_NORMAL_MAP / DBG_VIZ_NORMALS / DBG_VIZ_TANGENT)
+**Entry points**: `crates/nif/src/import/mesh/tangent.rs` (extract_tangents_from_extra_data, synthesize_tangents), `crates/nif/src/import/mesh/bs_tri_shape.rs` (BSTriShape inline-tangent decode), `crates/nif/src/blocks/tri_shape.rs` (VF_TANGENTS = 0x010, packed-vertex tangent stride), `crates/renderer/shaders/triangle.frag` (perturbNormal, DBG_BYPASS_NORMAL_MAP / DBG_VIZ_NORMALS / DBG_VIZ_TANGENT)
 **Checklist**:
 - Oblivion / FO3 / FNV path: per-vertex tangents pulled from `NiBinaryExtraData` named `"Tangent space (binormal & tangent vectors)"` — Bethesda's blob is `[tangents..., bitangents...]` Z-up, but their "tangent" field is actually `∂P/∂V` and "bitangent" is `∂P/∂U` (`CalcTangentSpace` swap). The decoder MUST read the **bitangent half** (offset `num_verts * 12`) into `Vertex.tangent.xyz` and use the tangent half to derive the bitangent sign — handedness regression here was #786 (fixed 5dde345). Audit for any new path that re-reads the blob without honoring the swap
 - FO4+ BSTriShape inline tangents: when `VF_TANGENTS | VF_NORMALS` are both set on the packed-vertex flag (`tri_shape.rs::BSTriShape` packed-vertex loop, ~lines 665-730), tangents ship inline in the packed-vertex blob, NOT in a separate `NiBinaryExtraData`. This is distinct from the Skyrim path; verify the FO4 inline decode (#795 / #796, b63ab0c) still fires and is not gated behind the wrong BSVER
@@ -279,7 +279,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Bitangent sign convention: `B = bitangent_sign * cross(N, T)` — the sign is reconstructed shader-side from `Vertex.tangent.w`. Verify the convention is consistent across the three import paths (Bethesda authored, FO4 inline, synthesized)
 - Coordinate conversion: Z-up (Gamebryo) → Y-up (renderer) applied to tangent xyz components in lockstep with normal conversion (no path that converts N but not T, or vice versa)
 - `perturbNormal` is **default-on** (#787 / #788, b8ab477) with the Path-1 transform fixed; `DBG_BYPASS_NORMAL_MAP = 0x10` is the runtime opt-out for bisecting (`triangle.frag:863`). Verify the bit is still recognized
-- Permanent diagnostic bit catalog (`triangle.frag:628-686`): `DBG_BYPASS_POM = 0x1`, `DBG_BYPASS_DETAIL = 0x2`, `DBG_VIZ_NORMALS = 0x4`, `DBG_VIZ_TANGENT = 0x8`, `DBG_BYPASS_NORMAL_MAP = 0x10`, `DBG_FORCE_NORMAL_MAP = 0x20`, `DBG_VIZ_RENDER_LAYER = 0x40`, `DBG_VIZ_GLASS_PASSTHRU = 0x80`. Audit for drift: any added bit must not collide; any dropped bit must not orphan shader code
+- Permanent diagnostic bit catalog (`triangle.frag:628-686`): `DBG_BYPASS_POM = 0x1`, `DBG_BYPASS_DETAIL = 0x2`, `DBG_VIZ_NORMALS = 0x4`, `DBG_VIZ_TANGENT = 0x8`, `DBG_BYPASS_NORMAL_MAP = 0x10`, `DBG_RESERVED_20 = 0x20` (formerly `DBG_FORCE_NORMAL_MAP`, no-op post-#1035), `DBG_VIZ_RENDER_LAYER = 0x40`, `DBG_VIZ_GLASS_PASSTHRU = 0x80`. Audit for drift: any added bit must not collide; any dropped bit must not orphan shader code
 - "Chrome posterized walls" red herring: per `feedback_chrome_means_missing_textures.md`, that artifact is the magenta-checker placeholder × a (correctly loaded) tangent-space normal map. Audit findings claiming a tangent-space bug from chrome fragments alone are stale — the audit MUST run `tex.missing` first before recommending a tangent-space fix
 **Output**: `/tmp/audit/renderer/dim_16.md`
 
@@ -330,7 +330,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_19.md`
 
 ### Dimension 20: M-LIGHT v1 — Stochastic Soft Shadows
-**Entry points**: `crates/renderer/shaders/triangle.frag` (sun shadow ray + cone-sample), `byroredux/src/render.rs` (`sunAngularRadius` UBO field), `crates/renderer/src/vulkan/scene_buffer.rs`
+**Entry points**: `crates/renderer/shaders/triangle.frag` (sun shadow ray + cone-sample), `byroredux/src/render.rs` (`sunAngularRadius` UBO field), `crates/renderer/src/vulkan/scene_buffer/`
 **Checklist**:
 - `sunAngularRadius` ships in the camera/scene UBO at the documented offset; current shipping value `0.020` (bumped from `0.0047`) — drift here changes shadow softness globally
 - Per-fragment single-tap stochastic cone sample around the sun direction: random offset derived from frame index + pixel coords (deterministic per-pixel-per-frame), not a true RNG that breaks TAA history

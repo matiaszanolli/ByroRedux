@@ -43,7 +43,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/performance/dim_1.md`
 
 ### Dimension 2: GPU Memory & Allocation Patterns
-**Entry points**: `crates/renderer/src/vulkan/buffer.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/renderer/src/vulkan/scene_buffer.rs`, `crates/renderer/src/vulkan/acceleration.rs`
+**Entry points**: `crates/renderer/src/vulkan/buffer.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/renderer/src/vulkan/scene_buffer/`, `crates/renderer/src/vulkan/acceleration/`
 **Checklist**: Host-visible vs device-local usage, staging buffer lifecycle, BLAS scratch buffer reuse (high-water mark — does it grow unbounded?), per-frame SSBO/UBO mapped writes (flush needed?), texture upload staging reuse, gpu-allocator fragmentation, TLAS instance buffer sizing (2x padding policy), G-buffer memory footprint at high resolutions, SVGF history buffer double-allocation cost.
 **Output**: `/tmp/audit/performance/dim_2.md`
 
@@ -79,13 +79,13 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/performance/dim_6.md`
 
 ### Dimension 7: TAA & GPU Skinning Cost (M37.5 + M29.5)
-**Entry points**: `crates/renderer/src/vulkan/taa.rs`, `crates/renderer/src/vulkan/skin_compute.rs`, `crates/renderer/src/vulkan/acceleration.rs` (BLAS refit path), `crates/renderer/shaders/taa.comp`, `crates/renderer/shaders/skin_vertices.comp`
+**Entry points**: `crates/renderer/src/vulkan/taa.rs`, `crates/renderer/src/vulkan/skin_compute.rs`, `crates/renderer/src/vulkan/acceleration/` (BLAS refit path), `crates/renderer/shaders/taa.comp`, `crates/renderer/shaders/skin_vertices.comp`
 **Checklist**: TAA dispatch cost relative to scene cost (compute should be O(pixels) only, not O(pixels × meshes)). History image allocation: 2× RGBA16F at swapchain res — non-trivial at 4K (~64 MB). Skin compute dispatch frequency: per-skinned-mesh per-frame is the design; verify no dispatch for static meshes (pre-skin gating). BLAS refit cost vs full rebuild — refit must dominate; full rebuild only on bone count change. Per-skinned-mesh output buffer: lazily allocated, never re-uploaded with stale data. Bone palette upload: single buffer per frame, sized to MAX_TOTAL_BONES — no per-mesh upload churn. M29.3 raster path (when shipped): vertex shader reads pre-skinned vertex SSBO instead of inline matrix sum (~50 ALU ops saved per vertex).
 **Output**: `/tmp/audit/performance/dim_7.md`
 
 ### Dimension 8: Material Table & SSBO Upload (R1)
-**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer.rs` (MaterialBuffer SSBO), `byroredux/src/render.rs` (material intern call sites)
-**Checklist**: Dedup ratio — N placements of the same material should produce 1 GpuMaterial entry; report dedup hit rate per cell. Per-frame upload size — should be O(unique materials), not O(draws). Hash-table churn — `MaterialTable::intern` should be O(1) amortized per lookup. SSBO resize policy — does the buffer over-allocate and reuse, or realloc-shrink each frame? GpuInstance struct size win — verify the post-R1 size (target 112 B vs ~400 B legacy) is realized in the `gpu_instance_is_112_bytes_std430_compatible` + `gpu_instance_field_offsets_match_shader_contract` + `gpu_instance_does_not_re_expand_with_per_material_fields` tests in `scene_buffer.rs`. Memory bandwidth — confirm material table upload doesn't replace dedup wins with bandwidth losses on large scenes.
+**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer/` (MaterialBuffer SSBO), `byroredux/src/render.rs` (material intern call sites)
+**Checklist**: Dedup ratio — N placements of the same material should produce 1 GpuMaterial entry; report dedup hit rate per cell. Per-frame upload size — should be O(unique materials), not O(draws). Hash-table churn — `MaterialTable::intern` should be O(1) amortized per lookup. SSBO resize policy — does the buffer over-allocate and reuse, or realloc-shrink each frame? GpuInstance struct size win — verify the post-R1 size (target 112 B vs ~400 B legacy) is realized in the `gpu_instance_is_112_bytes_std430_compatible` + `gpu_instance_field_offsets_match_shader_contract` + `gpu_instance_does_not_re_expand_with_per_material_fields` tests in `scene_buffer/gpu_instance_layout_tests.rs`. Memory bandwidth — confirm material table upload doesn't replace dedup wins with bandwidth losses on large scenes.
 **Output**: `/tmp/audit/performance/dim_8.md`
 
 ### Dimension 9: World Streaming & Cell Transitions (M40)

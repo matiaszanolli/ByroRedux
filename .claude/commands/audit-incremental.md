@@ -28,7 +28,7 @@ If `--since` provided: `git log --since="<date>" --oneline && git diff $(git log
 | Domain | File Patterns | Risk |
 |--------|--------------|------|
 | **Vulkan/GPU** | `crates/renderer/src/vulkan/**` | HIGH |
-| **RT / Accel** | `crates/renderer/src/vulkan/acceleration.rs`, `svgf.rs`, `gbuffer.rs`, `composite.rs` | HIGH |
+| **RT / Accel** | `crates/renderer/src/vulkan/acceleration/`, `svgf.rs`, `gbuffer.rs`, `composite.rs` | HIGH |
 | **Volumetrics (M55)** | `crates/renderer/src/vulkan/volumetrics.rs`, `crates/renderer/shaders/volumetric_*.comp` | HIGH |
 | **Bloom (M58)** | `crates/renderer/src/vulkan/bloom.rs`, `crates/renderer/shaders/bloom_*.comp` | HIGH |
 | **Water (M38)** | `crates/renderer/src/vulkan/water.rs`, `crates/renderer/shaders/water.{vert,frag}`, `byroredux/src/systems/water.rs`, `byroredux/src/cell_loader/water.rs` | HIGH |
@@ -38,7 +38,7 @@ If `--since` provided: `git log --since="<date>" --oneline && git diff $(git log
 | **BSA/Archive** | `crates/bsa/src/**` | HIGH |
 | **SpeedTree** | `crates/spt/src/**`, `byroredux/src/cell_loader/refr.rs` (.spt route) | MEDIUM |
 | **ESM Parser** | `crates/plugin/src/esm/**` (incl. `records/misc/**` post-Session-34 split: water/character/world/ai/magic/effects/equipment) | MEDIUM |
-| **Animation** | `crates/core/src/animation/**`, `crates/nif/src/anim.rs` + `anim/{types,tests}.rs` | MEDIUM |
+| **Animation** | `crates/core/src/animation/**`, `crates/nif/src/anim/` (post-Session-35 split: `entry`, `sequence`, `controlled_block`, `transform`, `bspline`, `channel`, `keys`, `coord`, plus `types.rs` and `tests.rs`) | MEDIUM |
 | **Cell Loader** | `byroredux/src/cell_loader/**` (was monolithic `cell_loader.rs` pre-Session-34) | MEDIUM |
 | **Systems** | `byroredux/src/systems/**` (was monolithic `systems.rs` pre-Session-34) + `byroredux/src/render.rs` + `render/**` | MEDIUM |
 | **Scene Setup** | `byroredux/src/scene/**` (was monolithic `scene.rs` pre-Session-34) | MEDIUM |

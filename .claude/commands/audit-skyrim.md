@@ -53,8 +53,8 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 1: BSTriShape Vertex Format
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/bs_tri_shape.rs` (if present, else the BSTriShape parser in `blocks/`), `crates/nif/src/import/mesh.rs`
-**Checklist**: Vertex format flag bits (`VF_*`) mapped correctly — VERTEX, UV, NORMAL, TANGENT, COLOR, SKINNED, FULL_PRECISION, EYE_DATA. Half-precision u16 → f32 conversion numerically correct (IEEE 754 binary16 decode). Packed normals → tangent-space reconstruction. Vertex index stride (u16 vs u32) chosen from the BSVER or packed-vertex flag. `extract_bs_tri_shape` in `import/mesh.rs` handles all flag combinations. Skinned-vertex `bone_indices` / `bone_weights` extraction matches the #178 skinning pipeline.
+**Entry points**: `crates/nif/src/blocks/bs_tri_shape.rs` (if present, else the BSTriShape parser in `blocks/`), `crates/nif/src/import/mesh/bs_tri_shape.rs`
+**Checklist**: Vertex format flag bits (`VF_*`) mapped correctly — VERTEX, UV, NORMAL, TANGENT, COLOR, SKINNED, FULL_PRECISION, EYE_DATA. Half-precision u16 → f32 conversion numerically correct (IEEE 754 binary16 decode). Packed normals → tangent-space reconstruction. Vertex index stride (u16 vs u32) chosen from the BSVER or packed-vertex flag. `extract_bs_tri_shape` in `import/mesh/bs_tri_shape.rs` handles all flag combinations. Skinned-vertex `bone_indices` / `bone_weights` extraction matches the #178 skinning pipeline.
 **Output**: `/tmp/audit/skyrim/dim_1.md`
 
 ### Dimension 2: BSA v105 (LZ4)

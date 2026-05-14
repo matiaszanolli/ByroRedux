@@ -167,7 +167,7 @@ Default tech-debt findings to LOW unless one of the above fires.
   ```bash
   find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1 > 2000 && $2 != "total"' | sort -rn
   ```
-  As of 2026-05-13: `acceleration.rs` 4200, `dispatch_tests.rs` 3667, `cell/tests.rs` 3329, `draw.rs` 2554, `scene_buffer.rs` 2367, `context/mod.rs` 2348, `import/mesh.rs` 2212, `blocks/collision.rs` 2162, `nif/anim.rs` 2101. For each, propose a split axis (by submodule responsibility, not by line count alone).
+  As of 2026-05-13: `acceleration.rs` 4200, `dispatch_tests.rs` 3667, `cell/tests.rs` 3329, `draw.rs` 2554, `scene_buffer.rs` 2367, `context/mod.rs` 2348, `import/mesh.rs` 2212, `blocks/collision.rs` 2162, `nif/anim.rs` 2101. As of 2026-05-14 (post-Session-36 split sweep — #29e9f45/bd45caa/9c1f723/1fe5321/fe47706/014adc8/ca81c19): 7 of 9 closed; remaining are `context/draw.rs` 2571 and `context/mod.rs` 2363 (both Vulkan-recording-adjacent, see `feedback_speculative_vulkan_fixes.md`). For each, propose a split axis (by submodule responsibility, not by line count alone).
 - Functions >200 LOC — propose extraction
 - Match arms >50 cases (these usually want a lookup table)
 - Nesting depth >5 (often a state-machine extraction candidate)
@@ -179,7 +179,7 @@ Default tech-debt findings to LOW unless one of the above fires.
 ### Dimension 10: Audit-Finding Rot
 **Entry points**: `.claude/commands/audit-*.md`, `docs/audits/`, `.claude/issues/`
 **Checklist**:
-- Audit skill "must not regress" baselines (e.g., `audit-performance.md` lines referencing `streaming.rs:286`, `MAX_TOTAL_BONES` location, `scene_buffer.rs:~975`) — verify each line/symbol still exists; if drifted, propose a fix
+- Audit skill "must not regress" baselines (e.g., `audit-performance.md` lines referencing `streaming.rs:286`, `MAX_TOTAL_BONES` location, `scene_buffer/upload.rs::upload_materials`) — verify each line/symbol still exists; if drifted, propose a fix
 - "Existing: #NNN" callouts in skill files where the issue is now CLOSED — should the skill prose reference the closed-state baseline differently?
 - `.claude/issues/<N>/ISSUE.md` entries where the upstream GitHub issue was closed but the local file still says "Status: Open"
 - Audit reports in `docs/audits/` from >90 days ago whose CRITICAL/HIGH findings are not all triaged (open or closed) on GitHub

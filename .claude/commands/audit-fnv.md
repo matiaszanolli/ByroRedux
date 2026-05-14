@@ -57,7 +57,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 4: RT Lighting Pipeline — FNV Scenes
 **Subagent**: `renderer-specialist`
-**Entry points**: `crates/renderer/src/vulkan/acceleration.rs`, `crates/renderer/shaders/triangle.frag`, `crates/renderer/shaders/composite.frag`
+**Entry points**: `crates/renderer/src/vulkan/acceleration/`, `crates/renderer/shaders/triangle.frag`, `crates/renderer/shaders/composite.frag`
 **Checklist**: TLAS frustum culling correctness — no lights dropped for in-view fragments. Streaming RIS (M31.5) — 8 reservoirs/fragment from full cluster, unbiased W estimator, 64× clamp engaged. Shadow ray budget caps. Distance-based shadow / GI ray fallback. BLAS compaction (M36) — occupancy query succeeds, compact copy replaces original. BLAS LRU eviction at the 1 GB budget. SVGF temporal accumulation uses motion vectors + mesh_id disocclusion. TAA Halton jitter + YCoCg variance clamp + luma blend α=0.1. M33 sky gradient + cloud layer blends correctly with tone-mapped geometry.
 **Output**: `/tmp/audit/fnv/dim_4.md`
 
@@ -69,7 +69,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 6: Animation & Skinning (FNV) + M41 NPC Spawn Long-Tail
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/anim.rs` (+ `anim/types.rs`, `anim/tests.rs`), `crates/core/src/animation/`, `byroredux/src/anim_convert.rs`, `byroredux/src/npc_spawn.rs`
+**Entry points**: `crates/nif/src/anim/` (Session 35 split: `entry`, `sequence`, `controlled_block`, `transform`, `bspline`, `channel`, `keys`, `coord`; `types.rs` + `tests.rs`), `crates/core/src/animation/`, `byroredux/src/anim_convert.rs`, `byroredux/src/npc_spawn.rs`
 **Checklist**: `.kf` file loading from BSA (`--kf meshes/anim.kf`). AnimationClipRegistry populated correctly. NiTransformInterpolator + NiFloatInterpolator + NiBoolInterpolator channels sample correctly. Text key events collected from NiTextKeyExtraData. Cycle types Clamp / Loop / Reverse all honored. KFM state machine parser. FixedString interning at clip load time (#340) — no per-frame StringPool locks. Skinning data extraction from NiSkinData sparse weights — ready for M29 GPU skinning. #178 SkinnedMesh palette computed correctly.
 **M41.0 long-tail regression guards (Session 29)**:
 - B-spline pose-fallback (#772, 3c32a5e): gated on a `FLT_MAX` sentinel. Without the gate, NPCs vanish under FNV `BSPSysSimpleColorModifier` particle stacks that share keyframe time-zero with the actor's animation player. **Note**: B-splines (`NiBSplineCompTransformInterpolator`) ARE reachable on FNV/FO3 (`feedback_bspline_not_skyrim_only.md`) — do not rule them out by game era.
