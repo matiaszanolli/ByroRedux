@@ -10,12 +10,12 @@ use super::super::*;
 #[test]
 #[ignore]
 fn parse_real_fnv_esm() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/FalloutNV.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: FalloutNV.esm not found");
+    let path = crate::esm::test_paths::fnv_esm();
+    if !path.exists() {
+        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     let index = parse_esm_cells(&data).unwrap();
 
     eprintln!("Interior cells: {}", index.cells.len());
@@ -82,12 +82,12 @@ fn parse_real_fnv_esm() {
 #[test]
 #[ignore]
 fn oblivion_cells_populate_xcll_lighting() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/Oblivion.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: Oblivion.esm not found");
+    let path = crate::esm::test_paths::oblivion_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Oblivion.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     let idx = parse_esm_cells(&data).expect("Oblivion walker");
 
     let total = idx.cells.len();
@@ -168,12 +168,12 @@ fn oblivion_cells_populate_xcll_lighting() {
 #[test]
 #[ignore]
 fn parse_real_oblivion_esm_walker_survives() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/Oblivion.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: Oblivion.esm not found");
+    let path = crate::esm::test_paths::oblivion_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Oblivion.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
 
     // Sanity-check auto-detection.
     use crate::esm::reader::{EsmReader, EsmVariant};
@@ -223,12 +223,12 @@ fn parse_real_oblivion_esm_walker_survives() {
 #[test]
 #[ignore]
 fn parse_real_fo3_megaton_cell_baseline() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/Fallout3.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: Fallout3.esm not found");
+    let path = crate::esm::test_paths::fo3_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Fallout3.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     let index = parse_esm_cells(&data).expect("parse_esm_cells");
     let megaton = index
         .cells
@@ -252,12 +252,12 @@ fn parse_real_fo3_megaton_cell_baseline() {
 #[test]
 #[ignore]
 fn parse_real_skyrim_esm() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: Skyrim.esm not found");
+    let path = crate::esm::test_paths::skyrim_se_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Skyrim.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     let idx = parse_esm_cells(&data).expect("Skyrim.esm walker");
 
     eprintln!(
@@ -339,12 +339,12 @@ fn read_zstring_handles_null_terminator() {
 #[test]
 #[ignore]
 fn parse_real_fo4_esm_surfaces_scol_placements() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/Fallout4.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: Fallout4.esm not found");
+    let path = crate::esm::test_paths::fo4_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Fallout4.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     let idx = parse_esm_cells(&data).expect("parse_esm_cells");
 
     let total_placements: usize = idx
@@ -390,12 +390,12 @@ fn parse_real_fo4_esm_surfaces_scol_placements() {
 #[test]
 #[ignore]
 fn parse_real_fo4_esm_surfaces_pkin_contents() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/Fallout4.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: Fallout4.esm not found");
+    let path = crate::esm::test_paths::fo4_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Fallout4.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     let idx = parse_esm_cells(&data).expect("parse_esm_cells");
 
     let pkin_count = idx.packins.len();
@@ -432,12 +432,12 @@ fn parse_real_fo4_esm_surfaces_pkin_contents() {
 #[test]
 #[ignore]
 fn parse_real_oblivion_esm_surfaces_tamriel_worldspace() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/Oblivion.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: Oblivion.esm not found");
+    let path = crate::esm::test_paths::oblivion_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Oblivion.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     let idx = parse_esm_cells(&data).expect("Oblivion walker");
     let tam = idx
         .worldspaces
@@ -484,12 +484,12 @@ fn parse_real_oblivion_esm_surfaces_tamriel_worldspace() {
 #[test]
 #[ignore]
 fn parse_real_fo3_esm_surfaces_wasteland_worldspace() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/Fallout3.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: Fallout3.esm not found");
+    let path = crate::esm::test_paths::fo3_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Fallout3.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     let idx = parse_esm_cells(&data).expect("FO3 walker");
     let waste = idx
         .worldspaces

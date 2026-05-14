@@ -657,30 +657,64 @@ fn normalize_path(path: &str) -> String {
 mod tests {
     use super::*;
 
-    const FNV_MESHES_BSA: &str =
-        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/Fallout - Meshes.bsa";
+    /// Real-data path helpers — env-var override falling back to the
+    /// canonical Steam install on the reference dev machine (#1058).
+    /// Each test still guards via `skip_if_*_missing` so absent data
+    /// produces a clean skip rather than a panic.
+    fn fnv_data_dir() -> std::path::PathBuf {
+        std::env::var("BYROREDUX_FNV_DATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(
+                    "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+                )
+            })
+    }
+
+    fn skyrim_se_data_dir() -> std::path::PathBuf {
+        std::env::var("BYROREDUX_SKYRIMSE_DATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(
+                    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+                )
+            })
+    }
+
+    fn fnv_meshes_bsa() -> std::path::PathBuf {
+        fnv_data_dir().join("Fallout - Meshes.bsa")
+    }
+
+    fn fnv_textures_bsa() -> std::path::PathBuf {
+        fnv_data_dir().join("Fallout - Textures.bsa")
+    }
 
     // Skyrim SE BSA v105 (LZ4) — the only Bethesda format that uses the
     // LZ4 frame compression path. Pre-#569 the test surface had no
     // gated regression against real v105 archives; any change to the
     // frame-decoder dispatch, 24-byte folder record sizing, or u64
     // file-record offset read would slip through. See SK-D2-01.
-    const SKYRIM_MESHES0_BSA: &str =
-        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim - Meshes0.bsa";
-    const SKYRIM_MESHES1_BSA: &str =
-        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim - Meshes1.bsa";
-    const SKYRIM_TEXTURES0_BSA: &str =
-        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Skyrim - Textures0.bsa";
+    fn skyrim_meshes0_bsa() -> std::path::PathBuf {
+        skyrim_se_data_dir().join("Skyrim - Meshes0.bsa")
+    }
+
+    fn skyrim_meshes1_bsa() -> std::path::PathBuf {
+        skyrim_se_data_dir().join("Skyrim - Meshes1.bsa")
+    }
+
+    fn skyrim_textures0_bsa() -> std::path::PathBuf {
+        skyrim_se_data_dir().join("Skyrim - Textures0.bsa")
+    }
 
     fn skip_if_missing() -> bool {
-        !Path::new(FNV_MESHES_BSA).exists()
+        !fnv_meshes_bsa().exists()
     }
 
     /// Per-archive availability gate so a test that needs Skyrim data
     /// stays green when only FNV is installed (and vice versa). Mirrors
     /// the FNV `skip_if_missing` pattern.
-    fn skip_if_skyrim_missing(path: &str) -> bool {
-        !Path::new(path).exists()
+    fn skip_if_skyrim_missing(path: &std::path::Path) -> bool {
+        !path.exists()
     }
 
     // ── Hash function unit tests (#361) ────────────────────────────────
@@ -769,7 +803,7 @@ mod tests {
         if skip_if_missing() {
             return;
         }
-        let archive = BsaArchive::open(FNV_MESHES_BSA).unwrap();
+        let archive = BsaArchive::open(fnv_meshes_bsa()).unwrap();
         assert_eq!(archive.file_count(), 19587);
     }
 
@@ -779,7 +813,7 @@ mod tests {
         if skip_if_missing() {
             return;
         }
-        let archive = BsaArchive::open(FNV_MESHES_BSA).unwrap();
+        let archive = BsaArchive::open(fnv_meshes_bsa()).unwrap();
         let files = archive.list_files();
         let nif_count = files.iter().filter(|f| f.ends_with(".nif")).count();
         assert!(
@@ -795,7 +829,7 @@ mod tests {
         if skip_if_missing() {
             return;
         }
-        let archive = BsaArchive::open(FNV_MESHES_BSA).unwrap();
+        let archive = BsaArchive::open(fnv_meshes_bsa()).unwrap();
         assert!(archive.contains("meshes\\clutter\\food\\beerbottle01.nif"));
         // Case insensitive
         assert!(archive.contains("Meshes\\Clutter\\Food\\BeerBottle01.nif"));
@@ -811,7 +845,7 @@ mod tests {
         if skip_if_missing() {
             return;
         }
-        let archive = BsaArchive::open(FNV_MESHES_BSA).unwrap();
+        let archive = BsaArchive::open(fnv_meshes_bsa()).unwrap();
         let data = archive
             .extract("meshes\\clutter\\food\\beerbottle01.nif")
             .unwrap();
@@ -830,7 +864,7 @@ mod tests {
         if skip_if_missing() {
             return;
         }
-        let archive = BsaArchive::open(FNV_MESHES_BSA).unwrap();
+        let archive = BsaArchive::open(fnv_meshes_bsa()).unwrap();
         let data = archive
             .extract("meshes\\clutter\\food\\beerbottle01.nif")
             .unwrap();
@@ -845,7 +879,7 @@ mod tests {
         if skip_if_missing() {
             return;
         }
-        let archive = BsaArchive::open(FNV_MESHES_BSA).unwrap();
+        let archive = BsaArchive::open(fnv_meshes_bsa()).unwrap();
         let result = archive.extract("meshes\\nonexistent.nif");
         assert!(result.is_err());
     }
@@ -853,12 +887,11 @@ mod tests {
     #[test]
     #[ignore]
     fn texture_bsa_extract_dds() {
-        let tex_bsa =
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/Fallout - Textures.bsa";
-        if !Path::new(tex_bsa).exists() {
+        let tex_bsa = fnv_textures_bsa();
+        if !tex_bsa.exists() {
             return;
         }
-        let archive = BsaArchive::open(tex_bsa).unwrap();
+        let archive = BsaArchive::open(&tex_bsa).unwrap();
         eprintln!("Textures BSA: {} files", archive.file_count());
 
         assert!(
@@ -1160,10 +1193,10 @@ mod tests {
     #[test]
     #[ignore]
     fn skyrim_meshes0_opens_and_counts_match_baseline() {
-        if skip_if_skyrim_missing(SKYRIM_MESHES0_BSA) {
+        if skip_if_skyrim_missing(&skyrim_meshes0_bsa()) {
             return;
         }
-        let archive = BsaArchive::open(SKYRIM_MESHES0_BSA).unwrap();
+        let archive = BsaArchive::open(skyrim_meshes0_bsa()).unwrap();
         assert_eq!(
             archive.file_count(),
             19_443,
@@ -1187,10 +1220,10 @@ mod tests {
     #[test]
     #[ignore]
     fn skyrim_meshes0_extracts_sweetroll_with_exact_size() {
-        if skip_if_skyrim_missing(SKYRIM_MESHES0_BSA) {
+        if skip_if_skyrim_missing(&skyrim_meshes0_bsa()) {
             return;
         }
-        let archive = BsaArchive::open(SKYRIM_MESHES0_BSA).unwrap();
+        let archive = BsaArchive::open(skyrim_meshes0_bsa()).unwrap();
         let path = "meshes\\clutter\\ingredients\\sweetroll01.nif";
         assert!(
             archive.contains(path),
@@ -1217,10 +1250,10 @@ mod tests {
     #[test]
     #[ignore]
     fn skyrim_meshes0_path_normalization_matches_sweetroll() {
-        if skip_if_skyrim_missing(SKYRIM_MESHES0_BSA) {
+        if skip_if_skyrim_missing(&skyrim_meshes0_bsa()) {
             return;
         }
-        let archive = BsaArchive::open(SKYRIM_MESHES0_BSA).unwrap();
+        let archive = BsaArchive::open(skyrim_meshes0_bsa()).unwrap();
         let path = "meshes\\clutter\\ingredients\\sweetroll01.nif";
         assert!(archive.contains(path));
         assert!(archive.contains("MESHES\\CLUTTER\\INGREDIENTS\\SWEETROLL01.NIF"));
@@ -1235,10 +1268,10 @@ mod tests {
     #[test]
     #[ignore]
     fn skyrim_meshes1_dlc_overflow_opens_and_counts_match_baseline() {
-        if skip_if_skyrim_missing(SKYRIM_MESHES1_BSA) {
+        if skip_if_skyrim_missing(&skyrim_meshes1_bsa()) {
             return;
         }
-        let archive = BsaArchive::open(SKYRIM_MESHES1_BSA).unwrap();
+        let archive = BsaArchive::open(skyrim_meshes1_bsa()).unwrap();
         assert_eq!(
             archive.file_count(),
             14_242,
@@ -1253,10 +1286,10 @@ mod tests {
     #[test]
     #[ignore]
     fn skyrim_textures0_opens_and_first_dds_decodes() {
-        if skip_if_skyrim_missing(SKYRIM_TEXTURES0_BSA) {
+        if skip_if_skyrim_missing(&skyrim_textures0_bsa()) {
             return;
         }
-        let archive = BsaArchive::open(SKYRIM_TEXTURES0_BSA).unwrap();
+        let archive = BsaArchive::open(skyrim_textures0_bsa()).unwrap();
         assert_eq!(
             archive.file_count(),
             5_891,

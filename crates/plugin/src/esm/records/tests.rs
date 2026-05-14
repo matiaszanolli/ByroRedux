@@ -182,12 +182,12 @@ fn dial_topic_children_walked_into_dialogue_infos() {
 #[test]
 #[ignore]
 fn parse_real_fnv_dial_infos_populated() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/FalloutNV.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: FalloutNV.esm not found");
+    let path = crate::esm::test_paths::fnv_esm();
+    if !path.exists() {
+        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     let index = parse_esm(&data).expect("parse_esm");
 
     let total_infos: usize = index.dialogues.values().map(|d| d.infos.len()).sum();
@@ -224,12 +224,12 @@ fn parse_real_fnv_dial_infos_populated() {
 #[test]
 #[ignore]
 fn parse_real_fnv_esm_record_counts() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data/FalloutNV.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: FalloutNV.esm not found");
+    let path = crate::esm::test_paths::fnv_esm();
+    if !path.exists() {
+        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     let index = parse_esm(&data).expect("parse_esm");
 
     eprintln!(
@@ -643,12 +643,12 @@ fn lvlc_group_dispatches_to_leveled_creatures_map() {
 #[test]
 #[ignore]
 fn parse_real_fo3_esm_scpt_count_and_scri_resolves() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/Fallout3.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: Fallout3.esm not found");
+    let path = crate::esm::test_paths::fo3_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Fallout3.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     let index = parse_esm(&data).expect("parse_esm");
     eprintln!("FO3 SCPT: {} records", index.scripts.len());
     assert!(
@@ -687,12 +687,12 @@ fn parse_real_fo3_esm_scpt_count_and_scri_resolves() {
 #[test]
 #[ignore]
 fn parse_real_fo3_esm_crea_and_lvlc_counts() {
-    let path = "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data/Fallout3.esm";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("Skipping: Fallout3.esm not found");
+    let path = crate::esm::test_paths::fo3_esm();
+    if !path.exists() {
+        eprintln!("Skipping: Fallout3.esm not found at {}", path.display());
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     let index = parse_esm(&data).expect("parse_esm");
     eprintln!(
         "FO3 index: {} NPCs, {} creatures, {} LVLN, {} LVLC",

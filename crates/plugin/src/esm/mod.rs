@@ -9,6 +9,9 @@ pub mod reader;
 pub mod records;
 pub mod sub_reader;
 
+#[cfg(test)]
+pub(crate) mod test_paths;
+
 pub use cell::{CellData, EsmCellIndex, PlacedRef, StaticObject};
 pub use reader::{EsmReader, GroupHeader, RecordHeader, SubRecord};
 pub use records::{
