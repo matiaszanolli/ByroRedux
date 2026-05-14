@@ -117,6 +117,34 @@ pub struct WaterDrawCommand {
     pub push: WaterPush,
 }
 
+/// Contract check (#1026 / F-WAT-05): every entry in `water_commands`
+/// must point at a `DrawCommand` slot whose `is_water` flag is set
+/// and whose `mesh_handle` matches. This pins the no-resort contract
+/// the app's per-frame render code relies on — `WaterDrawCommand`
+/// records `instance_index` as the position in `draw_commands` at
+/// emit time, so any code path that re-sorts `draw_commands` after
+/// the water emit would silently desync the recorded
+/// `instance_index` from the actual SSBO slot the renderer assigns.
+/// (The SSBO is built by iterating `draw_commands` in order with
+/// frustum-culled entries reserving their slot per #516, so the
+/// vec position is the slot.)
+///
+/// Pure function so the regression test can pin the contract
+/// without a live Vulkan device. The hot path calls it inside a
+/// `debug_assert!` in `draw_frame` immediately before the
+/// water-pipeline loop consumes `wc.instance_index`.
+pub fn water_commands_match_draw_slots(
+    water_commands: &[WaterDrawCommand],
+    draw_commands: &[crate::vulkan::context::DrawCommand],
+) -> bool {
+    water_commands
+        .iter()
+        .all(|wc| match draw_commands.get(wc.instance_index as usize) {
+            Some(dc) => dc.is_water && dc.mesh_handle == wc.mesh_handle,
+            None => false,
+        })
+}
+
 /// Owns the water graphics pipeline + its layout.
 pub struct WaterPipeline {
     pub pipeline: vk::Pipeline,
@@ -157,15 +185,14 @@ impl WaterPipeline {
         };
 
         // ── Pipeline ──
-        let pipeline =
-            match build_pipeline(device, render_pass, pipeline_cache, pipeline_layout) {
-                Ok(p) => p,
-                Err(e) => {
-                    // Clean up the layout on failure so we don't leak.
-                    unsafe { device.destroy_pipeline_layout(pipeline_layout, None) };
-                    return Err(e);
-                }
-            };
+        let pipeline = match build_pipeline(device, render_pass, pipeline_cache, pipeline_layout) {
+            Ok(p) => p,
+            Err(e) => {
+                // Clean up the layout on failure so we don't leak.
+                unsafe { device.destroy_pipeline_layout(pipeline_layout, None) };
+                return Err(e);
+            }
+        };
 
         log::info!("Water pipeline created (water.vert + water.frag, SRC_ALPHA blend on HDR, cull NONE, depth-write off, 112B push constants)");
 
@@ -389,6 +416,7 @@ fn build_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vulkan::context::DrawCommand;
 
     #[test]
     fn water_push_layout_is_112_bytes() {
@@ -402,5 +430,182 @@ mod tests {
             let packed = WaterPush::pack_normal_index(v);
             assert_eq!(packed.to_bits(), v);
         }
+    }
+
+    // ── #1026 / F-WAT-05 — water-instance-index contract ──────────
+
+    fn make_draw_command(mesh_handle: u32, is_water: bool) -> DrawCommand {
+        DrawCommand {
+            mesh_handle,
+            texture_handle: 0,
+            model_matrix: [0.0; 16],
+            alpha_blend: false,
+            src_blend: 6,
+            dst_blend: 7,
+            two_sided: false,
+            is_decal: false,
+            render_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
+            bone_offset: 0,
+            normal_map_index: 0,
+            dark_map_index: 0,
+            glow_map_index: 0,
+            detail_map_index: 0,
+            gloss_map_index: 0,
+            parallax_map_index: 0,
+            parallax_height_scale: 0.0,
+            parallax_max_passes: 0.0,
+            env_map_index: 0,
+            env_mask_index: 0,
+            alpha_threshold: 0.0,
+            alpha_test_func: 0,
+            roughness: 0.5,
+            metalness: 0.0,
+            emissive_mult: 0.0,
+            emissive_color: [0.0; 3],
+            specular_strength: 0.0,
+            specular_color: [0.0; 3],
+            diffuse_color: [1.0; 3],
+            ambient_color: [1.0; 3],
+            vertex_offset: 0,
+            index_offset: 0,
+            vertex_count: 0,
+            sort_depth: 0,
+            in_tlas: true,
+            in_raster: true,
+            avg_albedo: [0.0; 3],
+            material_kind: 0,
+            z_test: true,
+            z_write: true,
+            z_function: 3,
+            terrain_tile_index: None,
+            entity_id: 0,
+            uv_offset: [0.0; 2],
+            uv_scale: [1.0; 2],
+            material_alpha: 1.0,
+            skin_tint_rgba: [0.0; 4],
+            hair_tint_rgb: [0.0; 3],
+            multi_layer_envmap_strength: 0.0,
+            eye_left_center: [0.0; 3],
+            eye_cubemap_scale: 0.0,
+            eye_right_center: [0.0; 3],
+            multi_layer_inner_thickness: 0.0,
+            multi_layer_refraction_scale: 0.0,
+            multi_layer_inner_scale: [0.0; 2],
+            sparkle_rgba: [0.0; 4],
+            effect_falloff: [0.0; 5],
+            material_id: 0,
+            vertex_color_emissive: false,
+            effect_shader_flags: 0,
+            is_water,
+        }
+    }
+
+    fn water_cmd(mesh_handle: u32, instance_index: u32) -> WaterDrawCommand {
+        WaterDrawCommand {
+            mesh_handle,
+            instance_index,
+            push: WaterPush {
+                timing: [0.0; 4],
+                flow: [0.0; 4],
+                shallow: [0.0; 4],
+                deep: [0.0; 4],
+                scroll: [0.0; 4],
+                tune: [0.0; 4],
+                misc: [0.0; 4],
+            },
+        }
+    }
+
+    /// Happy path: water command's `instance_index` points at the
+    /// draw whose `mesh_handle` matches and whose `is_water` is set.
+    /// Mirrors the post-emit, pre-upload state when no re-sort has
+    /// run.
+    #[test]
+    fn matching_slot_passes_contract() {
+        let draws = vec![
+            make_draw_command(7, false),  // opaque rock
+            make_draw_command(42, true),  // the water entity at idx 1
+            make_draw_command(99, false), // another opaque draw
+        ];
+        let water = vec![water_cmd(42, 1)];
+        assert!(water_commands_match_draw_slots(&water, &draws));
+    }
+
+    /// The trap: a re-sort moved the water draw to a different slot
+    /// AFTER the WaterDrawCommand was emitted, so the recorded
+    /// `instance_index` now points at an opaque draw with the wrong
+    /// `mesh_handle` AND `is_water=false`. The predicate must reject
+    /// both signals.
+    #[test]
+    fn resort_after_emit_breaks_contract() {
+        // Original layout — water authored at idx 1.
+        let original = vec![
+            make_draw_command(7, false),
+            make_draw_command(42, true),
+            make_draw_command(99, false),
+        ];
+        let water = vec![water_cmd(42, 1)];
+        assert!(
+            water_commands_match_draw_slots(&water, &original),
+            "sanity: pre-resort layout must satisfy the contract"
+        );
+
+        // Synthetic re-sort: rotate so the water draw lands at idx 0
+        // and the opaque entries shift. `DrawCommand` isn't `Clone`
+        // (it owns vk handle fields in production), so we rebuild
+        // the rotated layout from scratch.
+        let resorted = vec![
+            make_draw_command(42, true),  // was at idx 1, now at idx 0
+            make_draw_command(99, false), // was at idx 2, now at idx 1
+            make_draw_command(7, false),  // was at idx 0, now at idx 2
+        ];
+        // Index 1 in `resorted` is now mesh 99, is_water=false — the
+        // predicate catches it on BOTH signals (mesh mismatch AND
+        // is_water=false).
+        assert!(
+            !water_commands_match_draw_slots(&water, &resorted),
+            "predicate must reject the post-resort layout"
+        );
+    }
+
+    /// `is_water == false` on the indexed slot is the strongest
+    /// failure signal — even when the mesh_handle still matches
+    /// (mesh-sharing case), the predicate must reject because
+    /// `WaterDrawCommand` only exists for slots the water-emit
+    /// flipped to `is_water=true`.
+    #[test]
+    fn mesh_match_but_is_water_false_fails_contract() {
+        let draws = vec![
+            make_draw_command(42, false), // same mesh_handle but is_water cleared
+        ];
+        let water = vec![water_cmd(42, 0)];
+        assert!(!water_commands_match_draw_slots(&water, &draws));
+    }
+
+    /// `mesh_handle` mismatch fails even when `is_water=true` —
+    /// covers the case where someone replaces the WaterPlane's
+    /// MeshHandle between emit and upload (re-upload during cell
+    /// transition, hypothetical mod hot-reload).
+    #[test]
+    fn mesh_handle_mismatch_fails_contract() {
+        let draws = vec![make_draw_command(7, true)];
+        let water = vec![water_cmd(42, 0)];
+        assert!(!water_commands_match_draw_slots(&water, &draws));
+    }
+
+    /// Out-of-bounds `instance_index` (the vec was truncated after
+    /// the emit — extreme case) is rejected rather than panicking.
+    #[test]
+    fn out_of_bounds_index_fails_contract() {
+        let draws = vec![make_draw_command(42, true)];
+        let water = vec![water_cmd(42, 5)]; // index past the end
+        assert!(!water_commands_match_draw_slots(&water, &draws));
+    }
+
+    /// Empty water_commands trivially passes — no draws to validate.
+    #[test]
+    fn empty_water_commands_passes() {
+        let draws = vec![make_draw_command(7, false)];
+        assert!(water_commands_match_draw_slots(&[], &draws));
     }
 }

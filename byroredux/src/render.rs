@@ -229,9 +229,7 @@ fn compute_directional_upload(
 /// capture/replay and screenshot-diff workflows on scenes with many
 /// identical-mesh / identical-depth entries (e.g. exterior rock
 /// fields at a fixed camera distance).
-pub(crate) fn draw_sort_key(
-    cmd: &DrawCommand,
-) -> (u8, u8, u8, u8, u32, u32, u32, u32, u32, u32) {
+pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u8, u32, u32, u32, u32, u32, u32) {
     // Off-frustum RT-only entries cluster at the END of the sorted
     // array. Cap-on-overflow at `upload_instances` drops them first,
     // never raster draws. See the doc comment above + the
@@ -782,8 +780,11 @@ pub(crate) fn build_render_data(
                 // their PBR fallback, eliminating the cloth-as-glass
                 // false-positive without losing actual glass cups /
                 // bottles. See Markarth probe 2026-05-13.
-                let path_indicates_glass = mat.and_then(|m| m.texture_path.as_deref())
-                    .map(|p| byroredux_core::ecs::components::Material::path_indicates_glass(Some(p)))
+                let path_indicates_glass = mat
+                    .and_then(|m| m.texture_path.as_deref())
+                    .map(|p| {
+                        byroredux_core::ecs::components::Material::path_indicates_glass(Some(p))
+                    })
                     .unwrap_or(false);
                 let material_kind = if base_material_kind >= 100 {
                     base_material_kind
@@ -1247,6 +1248,24 @@ pub(crate) fn build_render_data(
     } else {
         draw_commands.sort_unstable_by_key(draw_sort_key);
     }
+    // ⚠ No-resort contract (#1026 / F-WAT-05).
+    //
+    // The water-plane re-emit below records each WaterDrawCommand's
+    // `instance_index` as the current position into `draw_commands`.
+    // The renderer relies on that index pointing at the same draw
+    // slot at GPU upload time (the SSBO is built by iterating
+    // `draw_commands` in order — frustum-culled draws keep their
+    // slot per #516, so the vec position is the slot). Any code
+    // path that re-sorts `draw_commands` AFTER the water emit below
+    // breaks this contract silently — the recorded `instance_index`
+    // would now point at a different draw whose model matrix /
+    // material is wrong for the water shader.
+    //
+    // The defensive gate is a `debug_assert!` in
+    // `VulkanContext::draw_frame` (immediately before the
+    // water-pipeline loop) using
+    // `byroredux_renderer::vulkan::water::water_commands_match_draw_slots`
+    // — see the function's doc-comment for the predicate.
 
     // Collect lights from ECS.
 
@@ -1449,6 +1468,13 @@ pub(crate) fn build_render_data(
     // their SSBO slot per #516. So the index into
     // `draw_commands` equals `gl_InstanceIndex` after upload.
     //
+    // ⚠ No-resort contract (#1026 / F-WAT-05) — once the
+    // `instance_index` below is captured, `draw_commands` MUST NOT
+    // be re-ordered before the renderer consumes it. See the sort
+    // site above (line ~1245) for the full contract and the
+    // `debug_assert!` that fires in `draw_frame` if anyone breaks
+    // it.
+    //
     // Linear scan over `draw_commands` per water entity is O(N×W);
     // typical N is ~thousands of draws and W is ≤ ~3 water planes
     // per cell, so this is well under a microsecond. A
@@ -1461,8 +1487,7 @@ pub(crate) fn build_render_data(
     if let Some(wq) = world.query::<WaterPlane>() {
         let fq = world.query::<WaterFlow>();
         for (entity, plane) in wq.iter() {
-            let Some(idx) = draw_commands.iter().position(|c| c.entity_id == entity)
-            else {
+            let Some(idx) = draw_commands.iter().position(|c| c.entity_id == entity) else {
                 // Entity has WaterPlane but no DrawCommand was emitted —
                 // typically because the cell loader spawned the water
                 // entity but the mesh wasn't yet uploaded, or the
@@ -1546,18 +1571,17 @@ pub(crate) fn build_render_data(
     }
 }
 
-
-#[cfg(test)]
-mod frustum_tests;
-#[cfg(test)]
-mod draw_sort_key_tests;
-#[cfg(test)]
-mod sort_key_tests;
 #[cfg(test)]
 mod bone_palette_overflow_tests;
 #[cfg(test)]
-mod variant_pack_gating_tests;
-#[cfg(test)]
 mod directional_upload_tests;
 #[cfg(test)]
+mod draw_sort_key_tests;
+#[cfg(test)]
 mod fog_curve_propagation_tests;
+#[cfg(test)]
+mod frustum_tests;
+#[cfg(test)]
+mod sort_key_tests;
+#[cfg(test)]
+mod variant_pack_gating_tests;

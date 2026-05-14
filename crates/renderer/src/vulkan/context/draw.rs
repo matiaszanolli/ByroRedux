@@ -1905,6 +1905,23 @@ impl VulkanContext {
             // subsequent UI pipeline also has cull static, so the
             // mismatch doesn't leak to it.
             if !water_commands.is_empty() {
+                // #1026 / F-WAT-05 — pin the no-resort contract right
+                // before consuming `wc.instance_index`. The app's
+                // render code records the position into `draw_commands`
+                // at emit time; any future re-sort between that emit
+                // and this consumer would silently desync the recorded
+                // index from the actual SSBO slot. The assertion
+                // compiles out in release builds (the forward-compat
+                // trap is documented next to the sort site in
+                // `byroredux/src/render.rs`).
+                debug_assert!(
+                    super::super::water::water_commands_match_draw_slots(
+                        water_commands,
+                        draw_commands,
+                    ),
+                    "WaterDrawCommand instance_index desynced from draw_commands — \
+                     was draw_commands re-sorted after the water emit? See #1026 / F-WAT-05.",
+                );
                 if let Some(ref water) = self.water {
                     self.device.cmd_set_depth_test_enable(cmd, true);
                     self.device.cmd_set_depth_write_enable(cmd, false);
