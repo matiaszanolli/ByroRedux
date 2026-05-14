@@ -1,8 +1,30 @@
-//! Tests for `tests` extracted from ../anim.rs (refactor stage A).
+//! Tests for the animation-import pipeline.
 //!
-//! Same qualified path preserved (`tests::FOO`).
+//! Each test reaches into the sibling whose function it exercises.
+//! The split (Session 35) put each pipeline phase in its own file;
+//! the explicit glob-imports below mirror what the pre-split monolith
+//! made visible through `use super::*;`.
 
 use super::*;
+
+use crate::blocks::controller::{
+    ControlledBlock, NiControllerManager, NiControllerSequence, NiGeomMorpherController,
+    NiMorphData,
+};
+use crate::blocks::extra_data::{AnimNoteType, BsAnimNote, BsAnimNotes};
+use crate::blocks::interpolator::NiTextKeyExtraData;
+use crate::blocks::interpolator::{
+    FloatKey, KeyGroup, KeyType, NiBSplineBasisData, NiBSplineCompFloatInterpolator,
+    NiBSplineCompPoint3Interpolator, NiBSplineCompTransformInterpolator, NiBSplineData,
+    NiBlendBoolInterpolator, NiBlendFloatInterpolator, NiBlendInterpolator,
+    NiBlendPoint3Interpolator, NiBlendTransformInterpolator, NiBoolInterpolator, NiColorData,
+    NiColorInterpolator, NiFloatData, NiFloatInterpolator, NiLookAtInterpolator,
+    NiPathInterpolator, NiPoint3Interpolator, NiPosData, NiTransformData, NiTransformInterpolator,
+    Vec3Key,
+};
+use crate::blocks::properties::NiStringPalette;
+use crate::scene::NifScene;
+use std::sync::Arc;
 
 #[test]
 fn resolve_morph_target_index_by_name() {
