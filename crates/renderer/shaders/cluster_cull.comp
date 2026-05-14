@@ -55,6 +55,12 @@ layout(std430, set = 0, binding = 0) readonly buffer LightBuffer {
     GpuLight lights[];
 };
 
+// MUST match `GpuCamera` in `scene_buffer.rs` — both field order AND
+// field count. Cluster cull only consumes `viewProj` / `invViewProj`
+// today, so the pre-#1028 missing `skyTint` was benign, but the
+// block declaration size must equal the bound UBO range for the
+// sibling-consumer audit (#1028 / R-D6-01) to hold across all 6
+// shaders that re-declare this struct.
 layout(set = 0, binding = 1) uniform CameraUBO {
     mat4 viewProj;
     mat4 prevViewProj;  // Must match GpuCamera in scene_buffer.rs. See #256.
@@ -64,6 +70,7 @@ layout(set = 0, binding = 1) uniform CameraUBO {
     vec4 screen;        // x = width, y = height, z = fog near, w = fog far
     vec4 fog;           // xyz = fog color, w = fog enabled
     vec4 jitter;        // xy = sub-pixel TAA jitter in NDC, zw = reserved
+    vec4 skyTint;       // xyz = TOD/weather zenith colour, w = reserved. #1028.
 };
 
 struct ClusterEntry {

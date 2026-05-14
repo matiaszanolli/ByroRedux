@@ -345,7 +345,23 @@ pub struct GpuLight {
     pub direction_angle: [f32; 4],
 }
 
-/// GPU-side camera data (256 bytes, std140-compatible).
+/// GPU-side camera data (288 bytes, std140-compatible).
+///
+/// Layout pinned by `gpu_camera_layout_pin` test — three `mat4`
+/// (3×64 = 192 B) + nine `vec4` (9×16 = 144 B, wait — six trailing vec4s
+/// post-#925 / #1028: position, flags, screen, fog, jitter, sky_tint
+/// = 6×16 = 96 B) → 288 B. Every shader that re-declares this struct
+/// MUST keep field order and field count in lockstep:
+///
+/// * `triangle.vert`, `triangle.frag`, `water.vert`, `water.frag`
+///   (set 1, binding 1).
+/// * `cluster_cull.comp` (set 0, binding 1).
+/// * `caustic_splat.comp` (set 0, binding 4).
+///
+/// See [`feedback_shader_struct_sync`] for the broader policy and
+/// #1028 / R-D6-01 for the audit that caught `triangle.vert` /
+/// `cluster_cull.comp` / `caustic_splat.comp` lagging behind the
+/// `sky_tint` addition.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuCamera {
@@ -1719,6 +1735,25 @@ mod gpu_instance_layout_tests {
             size_of::<GpuInstance>(),
             112,
             "GpuInstance must stay 112 B to match std430 shader layout"
+        );
+    }
+
+    /// Regression for #1028 / R-D6-01. `GpuCamera` must stay 288 B
+    /// — three `mat4` (192 B) plus six trailing `vec4` (96 B) for
+    /// `position`, `flags`, `screen`, `fog`, `jitter`, `sky_tint`.
+    /// Every shader that re-declares `CameraUBO` (`triangle.vert`,
+    /// `triangle.frag`, `water.vert`, `water.frag`, `cluster_cull.comp`,
+    /// `caustic_splat.comp`) must match this size — pre-#1028 the
+    /// first and last two were one `vec4` short, which the test would
+    /// not have caught (no Rust-side drift) but the audit did. This
+    /// pin at least catches the Rust-side regression so the doc-
+    /// comment stays honest.
+    #[test]
+    fn gpu_camera_is_288_bytes() {
+        assert_eq!(
+            size_of::<GpuCamera>(),
+            288,
+            "GpuCamera must stay 288 B to match the CameraUBO declaration in every shader that re-declares it — see #1028 / R-D6-01"
         );
     }
 

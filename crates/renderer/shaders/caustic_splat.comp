@@ -42,6 +42,12 @@ layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
     GpuLight lights[];
 };
 
+// MUST match `GpuCamera` in `scene_buffer.rs` — both field order AND
+// field count. Pre-#1028 the trailing `skyTint` was omitted; caustic
+// compute only consumes `viewProj` / `cameraPos` today, so the
+// truncation was benign, but the declaration size must equal the
+// bound UBO range to keep the sibling-consumer audit (R-D6-01) in
+// lockstep across every shader that re-declares this struct.
 layout(set = 0, binding = 4) uniform CameraUBO {
     mat4 viewProj;
     mat4 prevViewProj;
@@ -51,6 +57,7 @@ layout(set = 0, binding = 4) uniform CameraUBO {
     vec4 screen;
     vec4 fog;
     vec4 jitter;
+    vec4 skyTint;       // xyz = TOD/weather zenith colour, w = reserved. #1028.
 };
 
 // R1 Phase 6 — `GpuInstance` collapsed to per-DRAW data only.

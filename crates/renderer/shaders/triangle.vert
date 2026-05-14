@@ -53,6 +53,13 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 };
 
 // Camera UBO (set 1, binding 1) — per-frame, shared across all draws.
+// MUST match `GpuCamera` in `crates/renderer/src/vulkan/scene_buffer.rs`
+// in both field order AND field count. Pre-#1028 (R-D6-01) this block
+// terminated at `jitter`, omitting the trailing `skyTint` field that
+// `GpuCamera` carries. The vertex shader didn't consume `skyTint` so
+// the truncation was benign, but any future vertex-stage effect that
+// reads `skyTint` would silently OOB-read off the end of the bound
+// UBO range — a latent footgun the audit flagged.
 layout(set = 1, binding = 1) uniform CameraUBO {
     mat4 viewProj;
     mat4 prevViewProj;   // Previous frame's view-projection for motion vectors.
@@ -62,6 +69,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 screen;
     vec4 fog;
     vec4 jitter;         // xy = sub-pixel TAA jitter in NDC, zw = reserved.
+    vec4 skyTint;        // xyz = TOD/weather zenith colour, w = reserved. #1028.
 };
 
 // Bone palette SSBO (set 1, binding 3) — skinning matrices for the
