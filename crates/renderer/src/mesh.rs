@@ -155,6 +155,17 @@ pub struct MeshRegistry {
     /// `ash::Device` Arc fields whose validity invariants forbid
     /// zero-initialisation). See #879 / CELL-PERF-01.
     mesh_ref_counts: Vec<u32>,
+    /// Staging pool reused across global-geometry-SSBO builds and
+    /// rebuilds. Lazy-initialised on the first `build_geometry_ssbo`
+    /// call because `MeshRegistry::new()` runs before the device is
+    /// available; once created, the pool's retained capacity is
+    /// recycled per #242's hit-rate target. Pre-#1055 both
+    /// `build_geometry_ssbo` and `rebuild_geometry_ssbo` accepted
+    /// `Option<&mut StagingPool>` and the two consumer sites always
+    /// passed `None`, leaving the whole large-scene rebuild path on
+    /// the per-call create/destroy fallback. Mirrors
+    /// `TextureRegistry::staging_pool`.
+    geometry_staging_pool: Option<StagingPool>,
 }
 
 impl MeshRegistry {
@@ -170,6 +181,7 @@ impl MeshRegistry {
             deferred_destroy: DeferredDestroyQueue::new(),
             mesh_cache: HashMap::new(),
             mesh_ref_counts: Vec::new(),
+            geometry_staging_pool: None,
         }
     }
 
@@ -552,16 +564,18 @@ impl MeshRegistry {
     /// Build the global geometry SSBO from accumulated vertex/index data.
     /// Call once after all scene meshes are loaded.
     ///
-    /// When `staging_pool` is `Some`, the staging buffer is reused from the
-    /// pool instead of allocating a fresh one. This avoids a large
-    /// fire-and-forget staging allocation on cell loads. See #242.
+    /// Staging-buffer reuse lives on `self.geometry_staging_pool` — lazy-
+    /// initialised here on the first call because `MeshRegistry::new()`
+    /// runs before the device handle is available. The retained pool
+    /// avoids a fresh fire-and-forget staging allocation on every cell
+    /// load and frame-loop rebuild. See #242 (StagingPool ship) and
+    /// #1055 (consumer-side wiring).
     pub fn build_geometry_ssbo(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
-        staging_pool: Option<&mut StagingPool>,
     ) -> Result<()> {
         if self.pending_vertices.is_empty() {
             return Ok(());
@@ -572,10 +586,14 @@ impl MeshRegistry {
         let index_size =
             (std::mem::size_of::<u32>() * self.pending_indices.len()) as vk::DeviceSize;
 
+        if self.geometry_staging_pool.is_none() {
+            self.geometry_staging_pool =
+                Some(StagingPool::new(device.clone(), allocator.clone()));
+        }
+
         // Create with STORAGE_BUFFER (RT reflection UV lookups) plus
         // VERTEX_BUFFER / INDEX_BUFFER so the draw loop can bind this
         // single global buffer instead of per-mesh rebinding. See #294.
-        let mut pool = staging_pool;
         self.global_vertex_buffer = Some(GpuBuffer::create_device_local_buffer(
             device,
             allocator,
@@ -584,7 +602,7 @@ impl MeshRegistry {
             vertex_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER,
             &self.pending_vertices,
-            pool.as_deref_mut(),
+            self.geometry_staging_pool.as_mut(),
         )?);
         self.global_index_buffer = Some(GpuBuffer::create_device_local_buffer(
             device,
@@ -594,7 +612,7 @@ impl MeshRegistry {
             index_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER,
             &self.pending_indices,
-            pool.as_deref_mut(),
+            self.geometry_staging_pool.as_mut(),
         )?);
 
         log::info!(
@@ -626,7 +644,6 @@ impl MeshRegistry {
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
-        staging_pool: Option<&mut StagingPool>,
     ) -> Result<()> {
         // If any scene meshes were dropped since the last build, compact
         // the pending buffers and rewrite every live mesh's offsets. Pure
@@ -651,8 +668,10 @@ impl MeshRegistry {
             self.pending_vertices.len(),
         );
 
-        // Rebuild from all accumulated data.
-        self.build_geometry_ssbo(device, allocator, queue, command_pool, staging_pool)
+        // Rebuild from all accumulated data. The internal
+        // `geometry_staging_pool` (lazy-initialised in `build_geometry_ssbo`
+        // on first call, then reused) keeps the staging-buffer churn bounded.
+        self.build_geometry_ssbo(device, allocator, queue, command_pool)
     }
 
     /// Returns true when new meshes have been loaded since the last SSBO
@@ -697,6 +716,15 @@ impl MeshRegistry {
         // `drain_deferred_destroy` so the App-level shutdown sweep can
         // call the same drain explicitly before `Drop`.
         self.drain_deferred_destroy(device, allocator);
+        // #1055 — release the geometry-build StagingPool's retained
+        // buffer + the pool's `Arc<Mutex<Allocator>>` clone. Same
+        // shape as `TextureRegistry::destroy`'s pool teardown — the
+        // `take()` form (not `as_mut()`) drops the clone so
+        // `Arc::try_unwrap` on the parent `VulkanContext::Drop` can
+        // finally release the allocator.
+        if let Some(mut pool) = self.geometry_staging_pool.take() {
+            pool.destroy();
+        }
     }
 }
 

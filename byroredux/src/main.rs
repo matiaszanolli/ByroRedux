@@ -1143,12 +1143,17 @@ impl ApplicationHandler for App {
                     // loaded since the last build (cell transitions, late
                     // streaming). See #258.
                     if ctx.mesh_registry.is_geometry_dirty() {
+                        // StagingPool reuse lives on
+                        // `MeshRegistry.geometry_staging_pool` — lazy-init
+                        // on the first `build_geometry_ssbo` call (during
+                        // scene load), reused on every frame-loop rebuild
+                        // thereafter. Closes the #242 consumer-side TODO
+                        // (#1055).
                         if let Err(e) = ctx.mesh_registry.rebuild_geometry_ssbo(
                             &ctx.device,
                             ctx.allocator.as_ref().unwrap(),
                             &ctx.graphics_queue,
                             ctx.transfer_pool,
-                            None, // TODO: thread StagingPool through frame loop (#242)
                         ) {
                             log::warn!("Failed to rebuild geometry SSBO: {e}");
                         }
