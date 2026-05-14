@@ -395,10 +395,18 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
 // reach. Fix #420.
 vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
     rayQueryEXT rq;
+    // tMin = 0.05 matches the N_bias offset every caller already applies
+    // to `origin` (callers at lines 1633 and 2049 use bias 0.05 and 0.1
+    // respectively) and the convention every other ray-query site in
+    // this shader uses (1486, 1702, 2408, 2484). Pre-#1017 this was 0.01
+    // — five times smaller than the bias — which let perturbed-normal
+    // flips at grazing angles fire the ray back through the surface and
+    // self-hit, producing black speckle on metals. Same fix shape as the
+    // GI-tMin normalisation called out at line 2472.
     rayQueryInitializeEXT(
         rq, topLevelAS,
         gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
-        origin, 0.01, direction, maxDist
+        origin, 0.05, direction, maxDist
     );
     rayQueryProceedEXT(rq);
 
