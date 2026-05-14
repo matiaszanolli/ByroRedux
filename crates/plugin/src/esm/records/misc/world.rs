@@ -262,6 +262,13 @@ pub fn parse_imgs(form_id: u32, subs: &[SubRecord]) -> ImgsRecord {
 /// Full destruction-stage decoding is deferred — the stub captures
 /// identity + model + SCRI cross-ref so dangling references resolve
 /// at lookup time. See #521.
+///
+/// **Runtime consumer gap (M47.0):** the captured `script_form_id` /
+/// `sound_form_id` / `radio_form_id` cross-refs ride through unused
+/// today; the trigger / event-hook runtime planned for M47.0 will
+/// dispatch ActivateEvent to the SCRI-linked script and play the
+/// SNAM/RNAM sound on `OnActivate`. Until then the stub closes the
+/// parser-side silent drop so the M47.0 work has one grep target.
 #[derive(Debug, Clone, Default)]
 pub struct ActiRecord {
     pub form_id: u32,
@@ -307,6 +314,14 @@ pub fn parse_acti(form_id: u32, subs: &[SubRecord]) -> ActiRecord {
 /// the NIF model of the physical terminal. MNAM text is collected
 /// into `menu_items` so a future terminal-interaction system can
 /// walk the options without re-parsing. See #521.
+///
+/// **Runtime consumer gap (M47.0):** the menu tree, password, and
+/// SCRI cross-ref ride through unused — terminal interaction needs
+/// the event-hook runtime planned for M47.0 (NNAM target dispatch +
+/// CTDA option-gate evaluation, plus a UI overlay for the
+/// `body_size`-driven screen). The stub captures the surface so
+/// the M47.0 work has one grep target and the labels don't have to
+/// be re-walked from the ESM.
 #[derive(Debug, Clone, Default)]
 pub struct TermRecord {
     pub form_id: u32,

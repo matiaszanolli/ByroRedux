@@ -28,7 +28,8 @@
 //! - **Two-sided** is on, since the billboard rotates and we want
 //!   both faces visible from any camera angle.
 //!
-//! ## Future sub-phases
+//! ## SpeedTree Phase 2 (planned, no ROADMAP row — gated by
+//! `crates/spt/docs/format-notes.md`'s "Geometry tail" section)
 //!
 //! - Decode the geometry tail past `tail_offset` → real branch /
 //!   frond meshes with the bark texture (`SptScene::bark_textures`).
@@ -36,9 +37,12 @@
 //!   around the canopy (auto-instanced by the renderer's existing
 //!   batching path, #272).
 //! - Decode `BezierSpline` curves into typed wind-response data on
-//!   a per-tree component.
+//!   a per-tree component (consumed by [`SptImportParams::wind`]).
 //!
-//! Each plugs in here without changing the public signature.
+//! Each plugs in here without changing the public signature. Until
+//! Phase 2 lands, the parser-captured `wind` / `bound_radius` /
+//! `billboard_size` fields below ride through onto `SptImportParams`
+//! so the silent-drop is at the consumer, not the parser surface.
 
 use std::sync::Arc;
 
@@ -63,10 +67,10 @@ pub struct SptImportParams<'a> {
     pub bounds: Option<([f32; 3], [f32; 3])>,
     /// Wind sensitivity / strength from the TREE record's `CNAM`
     /// (Oblivion ships 5 × f32; FO3/FNV ship 8 × f32 — exact field
-    /// semantics not pinned). Captured for Phase 2 wind animation;
-    /// not consumed today. **Not** sourced from `BNAM` — per UESP +
-    /// the TREE parser, BNAM is FO3/FNV billboard width/height, which
-    /// flows into `bounds` instead (see #1002).
+    /// semantics not pinned). Captured for SpeedTree Phase 2 wind
+    /// animation; not consumed today. **Not** sourced from `BNAM` —
+    /// per UESP + the TREE parser, BNAM is FO3/FNV billboard
+    /// width/height, which flows into `bounds` instead (see #1002).
     pub wind: Option<(f32, f32)>,
     /// FormID of the source TREE record. Useful when downstream code
     /// wants to seed per-tree variation (sway phase, leaf-tint
