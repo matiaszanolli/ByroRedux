@@ -273,6 +273,17 @@ pub struct DrawCommand {
     /// frame's `water_commands` list re-emits the geometry through
     /// the water pipeline. Pre-water-plumbing this field is always
     /// `false`; the regular path handles it unconditionally.
+    ///
+    /// **TLAS exclusion contract (#1024 / F-WAT-03):** also load-bearing
+    /// on the RT path — `build_tlas` skips any draw with
+    /// `is_water == true` before BLAS lookup, so water never lands as
+    /// a TLAS instance. Sibling to the mesh-side gate at
+    /// `byroredux::cell_loader::water::spawn_water_plane` which uploads
+    /// the water plane with `for_rt = false` (no BLAS slot is allocated).
+    /// Both halves are belt-and-braces: removing either lets a future
+    /// code path silently reintroduce water-ray self-hits (the water
+    /// surface reflecting/refracting against itself instead of opaque
+    /// geometry).
     pub is_water: bool,
 }
 

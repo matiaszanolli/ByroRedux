@@ -563,6 +563,26 @@ fn should_evict_mid_batch(
 /// idle cost is one add + one compare per N iterations.
 const BATCH_EVICTION_CHECK_INTERVAL: usize = 64;
 
+/// Decide whether a `DrawCommand` should emit a TLAS instance.
+///
+/// Two-axis gate (#516 + #1024):
+/// - `in_tlas == false` excludes particles / UI quads / other
+///   draws that are by design rasterized-only.
+/// - `is_water == true` excludes water surfaces unconditionally
+///   (F-WAT-03). Water reflection / refraction rays must hit opaque
+///   geometry under the water, not the water plane itself; even
+///   though the cell loader uploads water meshes with
+///   `for_rt = false` (no BLAS allocated), this predicate keeps the
+///   exclusion explicit on the consumer side so a future BLAS-add
+///   on the same mesh handle can't silently reintroduce self-hits.
+///
+/// Pure function so the unit test can pin the contract without a
+/// live Vulkan device.
+#[inline]
+fn draw_command_eligible_for_tlas(draw_cmd: &DrawCommand) -> bool {
+    draw_cmd.in_tlas && !draw_cmd.is_water
+}
+
 /// Vulkan-spec compliance check for AS-build scratch addresses.
 ///
 /// Every `scratch_data.device_address` passed to
@@ -2410,10 +2430,15 @@ impl AccelerationManager {
         const MISSING_BLAS_SAMPLE_LIMIT: usize = 5;
         let mut missing_samples: Vec<String> = Vec::new();
         for (i, draw_cmd) in draw_commands.iter().enumerate() {
-            // Skip instances not flagged for TLAS inclusion (particles,
-            // UI quad — small / transient / 2D). Frustum-culled geometry
-            // still reaches this loop with `in_tlas = true` post-#516.
-            if !draw_cmd.in_tlas {
+            // Two-axis eligibility (#516 + #1024 / F-WAT-03):
+            //  - `in_tlas == false` skips particles / UI quads / other
+            //    rasterized-only draws.
+            //  - `is_water == true` skips water surfaces so water rays
+            //    don't hit the water plane itself. Sibling contract on
+            //    `DrawCommand::is_water` (see its doc-comment).
+            // See [`draw_command_eligible_for_tlas`] for the pinned
+            // predicate that the unit test pins this contract against.
+            if !draw_command_eligible_for_tlas(draw_cmd) {
                 continue;
             }
             // M29 Phase 2 — skinned draws (`bone_offset != 0`) reference
@@ -2868,8 +2893,11 @@ impl AccelerationManager {
         // Skinned draws ride the per-entity skinned_blas table; rigid
         // draws ride the per-mesh blas_entries table. The override
         // mirror in the build loop above kept the same discriminator.
+        // Filter is `draw_command_eligible_for_tlas` so water surfaces
+        // (#1024) and `!in_tlas` draws stay out of the LRU-bump path
+        // in lockstep with the build loop above.
         for draw_cmd in draw_commands {
-            if !draw_cmd.in_tlas {
+            if !draw_command_eligible_for_tlas(draw_cmd) {
                 continue;
             }
             if draw_cmd.bone_offset != 0 {
@@ -3553,6 +3581,122 @@ impl AccelerationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minimal `DrawCommand` builder for the TLAS-eligibility unit
+    /// tests. Only `in_tlas` and `is_water` are read by
+    /// [`draw_command_eligible_for_tlas`]; every other field gets a
+    /// zero/default value. Same pattern as the `cmd` builder in
+    /// `context::draw::is_caustic_source_tests`.
+    fn make_draw_command(in_tlas: bool, is_water: bool) -> DrawCommand {
+        DrawCommand {
+            mesh_handle: 0,
+            texture_handle: 0,
+            model_matrix: [0.0; 16],
+            alpha_blend: false,
+            src_blend: 6,
+            dst_blend: 7,
+            two_sided: false,
+            is_decal: false,
+            render_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
+            bone_offset: 0,
+            normal_map_index: 0,
+            dark_map_index: 0,
+            glow_map_index: 0,
+            detail_map_index: 0,
+            gloss_map_index: 0,
+            parallax_map_index: 0,
+            parallax_height_scale: 0.0,
+            parallax_max_passes: 0.0,
+            env_map_index: 0,
+            env_mask_index: 0,
+            alpha_threshold: 0.0,
+            alpha_test_func: 0,
+            roughness: 0.5,
+            metalness: 0.0,
+            emissive_mult: 0.0,
+            emissive_color: [0.0; 3],
+            specular_strength: 0.0,
+            specular_color: [0.0; 3],
+            diffuse_color: [1.0; 3],
+            ambient_color: [1.0; 3],
+            vertex_offset: 0,
+            index_offset: 0,
+            vertex_count: 0,
+            sort_depth: 0,
+            in_tlas,
+            in_raster: true,
+            avg_albedo: [0.0; 3],
+            material_kind: 0,
+            z_test: true,
+            z_write: true,
+            z_function: 3,
+            terrain_tile_index: None,
+            entity_id: 0,
+            uv_offset: [0.0; 2],
+            uv_scale: [1.0; 2],
+            material_alpha: 1.0,
+            skin_tint_rgba: [0.0; 4],
+            hair_tint_rgb: [0.0; 3],
+            multi_layer_envmap_strength: 0.0,
+            eye_left_center: [0.0; 3],
+            eye_cubemap_scale: 0.0,
+            eye_right_center: [0.0; 3],
+            multi_layer_inner_thickness: 0.0,
+            multi_layer_refraction_scale: 0.0,
+            multi_layer_inner_scale: [0.0; 2],
+            sparkle_rgba: [0.0; 4],
+            effect_falloff: [0.0; 5],
+            material_id: 0,
+            vertex_color_emissive: false,
+            effect_shader_flags: 0,
+            is_water,
+        }
+    }
+
+    // ── #1024 / F-WAT-03 — water TLAS-exclusion contract ──────────
+
+    /// The hot path: a regular opaque draw with `in_tlas=true` and
+    /// `is_water=false` is eligible for TLAS instancing.
+    #[test]
+    fn regular_opaque_draw_is_tlas_eligible() {
+        let cmd = make_draw_command(true, false);
+        assert!(draw_command_eligible_for_tlas(&cmd));
+    }
+
+    /// Particles / UI quads opt out via `in_tlas=false` — already
+    /// pinned by the SSBO-builder contract (#516) but exercised here
+    /// alongside the new water gate so a future refactor of
+    /// `draw_command_eligible_for_tlas` keeps both axes load-bearing.
+    #[test]
+    fn non_tlas_draw_is_excluded() {
+        let cmd = make_draw_command(false, false);
+        assert!(!draw_command_eligible_for_tlas(&cmd));
+    }
+
+    /// Core regression. Water surfaces must be excluded from the
+    /// TLAS even if `in_tlas=true`. Pre-#1024 this case relied on
+    /// the cell loader's `for_rt=false` mesh upload to keep the
+    /// water mesh out of `blas_entries`; any future code path that
+    /// adds water to the BLAS pool (e.g. caustic-source meshes
+    /// sharing a handle) would silently reintroduce ray self-hits.
+    /// This predicate makes `is_water` the load-bearing gate.
+    #[test]
+    fn water_draw_excluded_even_with_in_tlas_set() {
+        let cmd = make_draw_command(true, true);
+        assert!(
+            !draw_command_eligible_for_tlas(&cmd),
+            "is_water=true must exclude the draw from the TLAS regardless of in_tlas"
+        );
+    }
+
+    /// Both opt-outs at once — degenerate case but pinned so a
+    /// future short-circuit refactor (e.g. early-return on `is_water`)
+    /// doesn't accidentally invert the `in_tlas` branch.
+    #[test]
+    fn water_and_non_tlas_both_excluded() {
+        let cmd = make_draw_command(false, true);
+        assert!(!draw_command_eligible_for_tlas(&cmd));
+    }
 
     /// Regression for #679 / AS-8-9. The skinned-BLAS rebuild
     /// predicate must fire only when the in-place refit chain has

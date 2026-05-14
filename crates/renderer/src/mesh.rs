@@ -215,6 +215,20 @@ impl MeshRegistry {
     /// Uses a staging buffer to place geometry in DEVICE_LOCAL memory.
     /// The vertex type is generic (`Vertex` for scene meshes, `UiVertex`
     /// for UI overlays) — the GPU buffer is format-agnostic.
+    ///
+    /// `rt_enabled = false` skips the
+    /// `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR` usage flag on
+    /// the vertex/index buffers, which prevents the caller from ever
+    /// building a BLAS over this mesh. Water plane meshes are uploaded
+    /// with `rt_enabled = false` (see
+    /// `byroredux::cell_loader::water::spawn_water_plane`) so they
+    /// never enter the BLAS pool — the mesh-side half of the water
+    /// TLAS-exclusion contract documented on
+    /// `crates/renderer/src/vulkan/context/mod.rs::DrawCommand::is_water`
+    /// (#1024 / F-WAT-03). The TLAS-build path enforces the same
+    /// contract from the draw side via the `is_water` flag, so a
+    /// future code path adding water to BLAS can't silently
+    /// reintroduce ray self-hits.
     pub fn upload<V: Copy>(
         &mut self,
         device: &ash::Device,
@@ -1014,7 +1028,8 @@ mod pool_growth_cap_tests {
         assert!(
             vertex_bytes > index_bytes,
             "vertex cap should be larger memory budget than index cap (got {} vs {} bytes)",
-            vertex_bytes, index_bytes,
+            vertex_bytes,
+            index_bytes,
         );
     }
 }
