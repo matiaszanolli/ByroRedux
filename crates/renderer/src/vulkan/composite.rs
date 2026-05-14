@@ -430,7 +430,19 @@ impl CompositePipeline {
                 vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::SHADER_WRITE,
             )
             .dst_stage_mask(vk::PipelineStageFlags::FRAGMENT_SHADER)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ);
+            // #963 / REN-D10-NEW-06 — enumerate UNIFORM_READ alongside
+            // SHADER_READ so the render-pass dep documents (and
+            // independently covers) composite.frag's read of the
+            // params UBO at set 0 binding 3. Today the HOST_WRITE →
+            // UNIFORM_READ chain is fully handled by the bulk
+            // pre-render barrier in `draw.rs::draw_frame` (#909 /
+            // REN-D1-NEW-03); adding UNIFORM_READ here is
+            // defence-in-depth so the dep accurately reflects the
+            // consumer access pattern and a future #909
+            // revert/restructure can't silently strand the
+            // dependency. Purely additive — widens the access mask,
+            // never narrows.
+            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::UNIFORM_READ);
 
         // Outgoing dependency: ensure swapchain write finishes before present.
         let composite_dep_out = vk::SubpassDependency::default()
