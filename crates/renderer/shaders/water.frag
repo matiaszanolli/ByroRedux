@@ -340,12 +340,44 @@ void main() {
     // Tangent → world space.
     vec3 Nperturbed = normalize(TBN * nMix);
 
-    // Stability: as the camera grazes the surface, fresnel goes to 1
-    // and the perturbed normal can drift behind the geometric plane,
-    // producing reflection rays that hit the water mesh itself.
-    // Clamp the perturbed normal not to go below the geometric N.
-    if (dot(Nperturbed, V) < 0.05) {
-        Nperturbed = normalize(mix(Nperturbed, N, 0.6));
+    // Stability clamp — #1025 / F-WAT-04.
+    //
+    // As the camera grazes the surface, the high-frequency normal-map
+    // perturbation can tilt `Nperturbed` past the geometric plane
+    // (`dot(Nperturbed, N) <= 0`), producing reflection / refraction
+    // rays that hit the water mesh itself from underneath. The
+    // pre-#1025 clamp fired only when `dot(Nperturbed, V) < 0.05`
+    // and mixed only 60 % toward `N` — leaving 40 % of a still-
+    // sub-plane normal in the result, so the failure mode persisted
+    // at extreme grazing.
+    //
+    // Two-part fix, both feeding `Nperturbed` consumed by `reflect`
+    // and `refract` below:
+    //
+    //   1. Project `Nperturbed` into the half-space above the
+    //      geometric plane (`dot(Nperturbed, N) >= NORMAL_PLANE_EPS`)
+    //      via a single Gram-Schmidt-style step. Smooth — preserves
+    //      the tangential perturbation, just removes the sub-plane
+    //      component. No visible banding at the threshold.
+    //
+    //   2. Hard fall-back to the geometric `N` when even after step 1
+    //      the perturbed normal points away from the viewer
+    //      (`dot(Nperturbed, V) <= 0`). Fresnel computation needs a
+    //      positive `N·V` for the Schlick term to be meaningful;
+    //      hitting this branch means the view ray and the geometric
+    //      plane are essentially parallel (skybox horizon
+    //      transition), so the safe choice is a perfectly mirror
+    //      surface for that pixel.
+    //
+    // Sibling: refraction uses the same `Nperturbed` (line ~373),
+    // so the clamp covers both `reflect` and `refract` with one pass.
+    const float NORMAL_PLANE_EPS = 0.05;
+    float NperturbedDotN = dot(Nperturbed, N);
+    if (NperturbedDotN < NORMAL_PLANE_EPS) {
+        Nperturbed = normalize(Nperturbed + N * (NORMAL_PLANE_EPS - NperturbedDotN));
+    }
+    if (dot(Nperturbed, V) <= 0.0) {
+        Nperturbed = N;
     }
 
     // ── Fresnel ──
