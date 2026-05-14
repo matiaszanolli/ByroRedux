@@ -493,6 +493,12 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             pair_count,
         );
     }
+    // MILESTONE: M41.0.5 (per-vertex morph runtime) — see #1057.
+    // FMRI + FMRS pairs decoded here populate `face_morphs.morphs`
+    // (typed-morph-target form). `byroredux/src/npc_spawn.rs` ignores
+    // the array today; FaceGen Phase 4 (#794 family) only consumed the
+    // `runtime_facegen` recipe path. Wire when the per-vertex morph
+    // GPU runtime lands.
     for i in 0..pair_count {
         face.morphs.push(NpcFaceMorph {
             form_id: fmri_forms[i],

@@ -147,6 +147,12 @@ pub fn parse_tree(form_id: u32, subs: &[SubRecord]) -> TreeRecord {
         })
     });
 
+    // MILESTONE: SpeedTree Phase 2 (real leaf animation + canopy wind) — see #1057.
+    // SNAM (leaf-index list) + CNAM (canopy/wind params) both decoded
+    // below; `crates/spt/src/import.rs` ignores both and the placeholder
+    // billboard renders as a single static card. Wire them when the
+    // real SpeedTree runtime lands.
+    //
     // SNAM is a packed u32 array. The slice length varies by tree
     // (more leaves → more indices). Read every full u32 we can; ignore
     // any trailing bytes that don't make a complete u32 (defensive

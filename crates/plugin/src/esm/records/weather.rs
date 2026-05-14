@@ -354,6 +354,11 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRe
             // 16-byte HNAM as a fog source keep compiling; real
             // Oblivion masters ship only the 56-byte form.
             b"HNAM" if sub.data.len() == 56 => {
+                // MILESTONE: M-LIGHT v2 (HDR sky / cloud relighting) — see #1057.
+                // Decoded today (all 14 f32 fields populated) but `weather_system`
+                // in `byroredux/src/systems/weather.rs` only reads the SDR
+                // colors. Wire the HDR fields when the renderer side ships
+                // HDR sky/cloud relighting.
                 record.oblivion_hdr = Some(OblivionHdrLighting {
                     eye_adapt_speed: read_f32_at(&sub.data, 0).unwrap_or(0.0),
                     blur_radius: read_f32_at(&sub.data, 4).unwrap_or(0.0),

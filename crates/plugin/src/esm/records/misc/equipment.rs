@@ -139,6 +139,13 @@ pub struct BptdRecord {
     pub first_part_name: String,
 }
 
+// MILESTONE: Tier-7 ragdoll / dismemberment — see #1057.
+// `BptdRecord` (part_count + first_part_name) is extracted today but
+// no consumer touches it. The dismemberment routing + biped-slot
+// catalogue from BPTD never reaches the physics or render layer.
+// When ragdoll lands, swap the count-only stub for a full per-part
+// array (BPTN + BPNN + BPNT + BPND quartets) and wire to the physics
+// crate's actor body builder.
 pub fn parse_bptd(form_id: u32, subs: &[SubRecord]) -> BptdRecord {
     let mut out = BptdRecord {
         form_id,
