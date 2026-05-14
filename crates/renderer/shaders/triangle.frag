@@ -387,7 +387,21 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
 }
 
 // Cast a reflection ray and return the reflected color.
-// Returns (color, hit) where hit is 1.0 if the ray hit geometry, 0.0 if it missed.
+//
+// Return contract (#1029 / REN-D9-NEW-06):
+//   * `.rgb` is ALWAYS the final reflection colour the caller should
+//     use — sky-tinted ambient blend on miss, distance-attenuated
+//     surface texel on hit. Pre-#1029 the two callers (metal + glass)
+//     interpreted this inconsistently: glass read `.rgb` directly,
+//     while metal weighted the mix by `.a` and collapsed to a
+//     separate `ambientFallback` on miss — discarding the
+//     `skyTint*0.5 + sceneFlags.yzw*0.5` blend this function pays
+//     to compute. One function, two semantics, easy to drift.
+//   * `.a` is INFORMATIONAL hit confidence: `1.0 = hit`, `0.0 = miss`.
+//     Available to callers that genuinely want to gate on
+//     "did the ray hit BVH geometry" (e.g. to skip a follow-on cost
+//     that only makes sense on hits). The reflection rgb is already
+//     correct without it.
 //
 // Uses gl_RayFlagsTerminateOnFirstHitEXT — we only need ANY opaque hit
 // (the first one becomes the reflection surface). Without the flag the
@@ -2059,13 +2073,18 @@ void main() {
         // Fresnel-weighted reflection: stronger at grazing angles.
         vec3 F = fresnelSchlick(NdotV, F0);
 
-        // Roughness blurs the reflection: mix toward raw ambient (without
-        // the per-pixel metalness factor that line 495 zeroed) for rough
-        // metals so high-roughness surfaces still see environment color
-        // when the ray miss path returns weak signal.
+        // Roughness blurs the reflection toward raw ambient. Pre-#1029
+        // the mix weight was `reflClarity * reflResult.a`, which
+        // collapsed to pure ambient on a BVH miss — discarding the
+        // sky-tinted blend `traceReflection` returned in `.rgb` on
+        // miss. Under the unified contract (see `traceReflection`
+        // header), `.rgb` is already the right reflection colour
+        // regardless of hit/miss, so the mix weighs only on
+        // roughness here: smooth metals see sky-tint on miss, rough
+        // metals fade to cell ambient as before.
         float reflClarity = 1.0 - roughness;
         vec3 ambientFallback = sceneFlags.yzw;
-        vec3 envColor = mix(ambientFallback, reflResult.rgb, reflClarity * reflResult.a);
+        vec3 envColor = mix(ambientFallback, reflResult.rgb, reflClarity);
 
         Lo += envColor * F * metalness;
     }
