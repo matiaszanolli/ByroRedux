@@ -8,9 +8,10 @@ that understands the legacy architecture and builds modern equivalents.
 *Anvil Heinrich Oaken Halls loaded directly from `Oblivion.esm` + meshes + textures BSAs — RT multi-light with ray-query shadows.*
 
 ![Prospector Saloon (Fallout: New Vegas)](docs/screenshots/prospector-saloon.png)
-*Prospector Saloon (Goodsprings) from `FalloutNV.esm` — 1 200 entities,
-streaming RIS shadows, 172.6 FPS / 5.79 ms on RTX 4070 Ti (commit 6a6950a,
-wall-clock `--bench-frames 300`; see [ROADMAP Project Stats](ROADMAP.md#project-stats)).*
+*Prospector Saloon (Goodsprings) from `FalloutNV.esm` — streaming RIS
+shadows on RTX 4070 Ti. Current entity count + bench numbers in
+[ROADMAP Project Stats](ROADMAP.md#project-stats) (refreshed per
+`/session-close`).*
 
 ## At a glance
 
@@ -19,7 +20,7 @@ wall-clock `--bench-frames 300`; see [ROADMAP Project Stats](ROADMAP.md#project-
 | **Games supported** | 7 — Oblivion · Fallout 3 · Fallout New Vegas · Skyrim SE · Fallout 4 · Fallout 76 · Starfield |
 | **NIF parse rate** | **100% clean** on FO3 / FNV / Skyrim SE; 95–99% clean / 100% recoverable on Oblivion / FO4 / FO76 / Starfield — 184 886 files validated. See [ROADMAP compatibility matrix](ROADMAP.md#compatibility-matrix). |
 | **Archive formats** | BSA v103 / v104 / v105 · BA2 v1 / v2 / v3 / v7 / v8 (GNRL + DX10, zlib + LZ4) |
-| **NIF block types** | 291 dispatch arms (~38 Havok) — see `crates/nif/src/blocks/mod.rs` |
+| **NIF block types** | See `crates/nif/src/blocks/mod.rs` for the canonical dispatch registry (incl. Havok skip-stubs) |
 | **ESM records (FNV)** | 62 219 structured records — items, NPCs, factions, cells, CREA, LVLC, SCPT, PACK, QUST, DIAL, MESG, PERK, SPEL, MGEF, … |
 | **Test count, LOC, file count, workspace size** | See [ROADMAP Project Stats](ROADMAP.md#project-stats) — refreshed per `/session-close` so the README doesn't drift behind. |
 | **Renderer** | Vulkan 1.3 + `VK_KHR_ray_query` — multi-light RT shadows, reflections, 1-bounce GI, SVGF temporal denoiser, TAA, streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction |
@@ -62,19 +63,21 @@ wall-clock `--bench-frames 300`; see [ROADMAP Project Stats](ROADMAP.md#project-
 
 Interior cells load and render end-to-end across five games — Oblivion
 (Anvil Heinrich Oaken Halls), FO3 (Megaton, 929 REFRs), FNV (Prospector
-Saloon @ 172.6 FPS), Skyrim SE (Whiterun Bannered Mare, 1932 entities @
-253.3 FPS), FO4 (MedTekResearch01, 7434 entities @ 92.5 FPS). Full RT
-pipeline + sky/atmosphere + exterior sun operational. Skinning chain
-verified end-to-end (M29 closed); GPU palette dispatch deferred to
-M29.5. World streaming Phase 1 shipped (single-cell async pre-parse);
-multi-cell grid pending. NPC spawning (M41) shipped Phase 1 (T-pose
-humanoid + skeleton + body + hands + head + FaceGen morphs) and
+Saloon), Skyrim SE (Whiterun Bannered Mare), FO4 (MedTekResearch01).
+Per-cell entity counts and bench numbers live in [ROADMAP Project
+Stats](ROADMAP.md#project-stats), refreshed per `/session-close`.
+Full RT pipeline + sky/atmosphere + exterior sun operational. Skinning
+chain verified end-to-end (M29 closed); GPU palette dispatch deferred
+to M29.5. World streaming Phase 1 shipped (single-cell async
+pre-parse); multi-cell grid pending. NPC spawning (M41) shipped Phase 1
+(T-pose humanoid + skeleton + body + hands + head + FaceGen morphs) and
 Phase 2 close-out (`Inventory` / `EquipmentSlots` ECS + ARMO/ARMA/LVLI
-dispatch + worn-mesh resolver). Oblivion exterior gated on TES4
-worldspace + LAND wiring. See **[ROADMAP.md](ROADMAP.md)**
-for the authoritative capability matrix, active milestones, and
-architecture decisions. Session narratives live in
-**[HISTORY.md](HISTORY.md)**.
+dispatch + worn-mesh resolver). FO4 humanoid armor meshes pending a
+Havok `.hkx` skeleton stub (M41.x); the ECS equip state is observable
+today via `inspect <ref>` in `byro-dbg`. Oblivion exterior gated on
+TES4 worldspace + LAND wiring. See **[ROADMAP.md](ROADMAP.md)** for the
+authoritative capability matrix, active milestones, and architecture
+decisions. Session narratives live in **[HISTORY.md](HISTORY.md)**.
 
 ## Run
 
