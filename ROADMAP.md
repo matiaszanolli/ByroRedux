@@ -12,13 +12,13 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-05-12 (post-Session 34, audit-bundle closeouts
-across Renderer-D / NIF-D / Audio dimensions — ~45 issues; M38 water
-rendering shipped end-to-end (ECS + WaterPipeline + RT reflection /
-refraction); debug-CLI surface expansion (cam.*, prid, inspect,
-light.dump); 10-commit code-reorganization sweep splitting the
->2000-line production-code files into focused submodules with the
-systems.rs DRY refactors and test-block extractions — see
+**Last verified**: 2026-05-14 (post-Session 35, audit-bundle close-out
+continuation: closed ~28 of the open Renderer-D / NIF-D / debug-server
+findings, shipped Skyrim WTHR end-to-end (#539 / M33-04..07), and ran
+the first dedicated `/audit-tech-debt` pass — 132 findings filed as 17
+batched issues #1037-#1053. SpeedTree Phase 1.5 placeholder finalised
+(MODB/BNAM sizing, normals + winding, Billboard ref); MESH_ID_FORMAT
+flipped to R32_UINT with MAX_INSTANCES = 0x40000. See
 [HISTORY.md](HISTORY.md)).
 **Bench-of-record**: Prospector Saloon 133.5 FPS / 7.49 ms @ 2562
 entities — commit `220e8e1`, 2026-05-11, wall-clock bench, 300
@@ -606,7 +606,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6a** Prospector re-bench — **closed**. 192.8 FPS / 5.19 ms at `e6e8091`, wall-clock bench.
 - [x] **R6a-stale** Bench-of-record refreshed at `6a6950a` (2026-04-24). Prospector 172.6 FPS / 5.79 ms (was 192.8 / 5.19 — slight regression in compositor-jitter range; fence_ms unchanged at 4.34, GPU still the bottleneck). Skyrim Whiterun 253.3 FPS / 3.95 ms at 1932 entities (was 237 FPS at 1258 entities — entity count up 53% while FPS improved, indicating more REFRs land now without perf cost). FO4 MedTek 92.5 FPS / 10.82 ms (was 90, 7434 entities unchanged).
 - [x] **R6a-stale-7** Bench-of-record refresh — **closed 2026-05-11 at HEAD `220e8e1`** (post M41 Phase 2 close-out). Prospector 133.5 FPS / 7.49 ms @ 2562 entities (was 172.6 / 5.79 @ 1200 entities at `6a6950a` — +114% entities, +29% wall_ms; sub-linear scaling consistent with RT cost amortising across the BLAS hierarchy). Skyrim Whiterun 217.3 FPS / 4.60 ms @ 3209 entities (was 253.3 @ 1932 — +66% entities, -14% FPS, sub-linear). FO4 MedTek 68.5 FPS / 14.61 ms @ 10 809 entities (was 92.5 @ 7434 — +45% entities, -26% FPS). Frame still GPU-bound on Prospector (fence=5.81 ms / 78% wall). Two M41-EQUIP changes drove most of the entity inflation: the Phase 2 scaffold spawning NPC inventory roots (`#896` A.0 → B.2) and the REFR Euler→Y-up composition fix (`Rx · Ry · Rz`, was `Rz · Ry · Rx`) which now lands every REFR through the corrected order. **Session 33 Markarth grid diagnostic stays as a separate snapshot, not a bench-of-record candidate** — it's a new workload class (Tier 8 indirect lighting + 1500+ mesh exterior grid) which the three steady-state interior benches don't measure.
-- [ ] **R6a-stale-8** Bench-of-record at `220e8e1` is now 34 commits stale (> 30 threshold) as of Session 34 close (`0d437d6`). Drift is procedural — the 78-commit window since refresh is dominated by audit-bundle fixes (Renderer-D / NIF-D / Audio dims) + a 10-commit pure-code-motion refactor sweep (test extraction + module splits), with no perf-relevant changes. Re-run deferred pending real workload growth or M29.5 / GPU-skinning compute landing.
+- [ ] **R6a-stale-8** Bench-of-record at `220e8e1` is now **101 commits stale** (> 30 threshold) as of Session 35 close (`98bbbcd`). Drift remains procedural — the 144-commit window since refresh is dominated by audit-bundle fixes (Renderer-D / NIF-D / debug-server / tech-debt), SpeedTree Phase 1.5 placeholder work, Skyrim WTHR landing, and ~30 LOW-severity hygiene closeouts with no perf-relevant changes. Re-run deferred pending real workload growth or M29.5 / GPU-skinning compute landing.
 - [x] **R7** Scheduler access declarations — **closed**. `Access` builder + `System::access()` opt-in + `Scheduler::add_to_with_access` for closures + `sys.accesses` console command surface a per-stage Conflict / Unknown report. 3 of 12 systems declared so far (fly_camera, spin, log_stats); 4 Unknown pairs remaining. M27 flip is diagnosable now; eliminating the Unknown rows is incremental migration work.
 
 ### Closed — Renderer regressions (2026-05-01 / 02 live debug arc)
@@ -631,16 +631,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-05-12, verified by `/session-close`.
+Ground-truth as of 2026-05-14, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~164 180                     |
-| Rust total lines                        | ~170 688                     |
-| Source files (non-test)                 | 364                          |
+| Rust source lines (non-test)            | ~172 343                     |
+| Rust total lines                        | ~179 073                     |
+| Source files (non-test)                 | 370                          |
 | Workspace members                       | 19                           |
-| Tests (last reported by ROADMAP)        | 1979 (Session 33 1879 + Session 34 +100 across the audit-bundle closeouts + M38 water ship + 10-commit code-reorganization sweep — Renderer-D / NIF-D / Audio audit work, debug-CLI surface, large-module slim-down). |
-| Open issue directories                  | 928 (`.claude/issues/`)       |
+| Tests (last reported by ROADMAP)        | 2109 (Session 34 1979 + Session 35 +130 across the audit-bundle close-out continuation, SpeedTree Phase 1.5 finishing, Skyrim WTHR ship, MESH_ID_FORMAT flip, and the first /audit-tech-debt pass with its 15 shader-drift-detection tests + KeyParse trait + STRING_TABLE_THRESHOLD migration). |
+| Open issue directories                  | 1009 (`.claude/issues/`)      |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
