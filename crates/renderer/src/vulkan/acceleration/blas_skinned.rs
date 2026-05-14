@@ -8,6 +8,7 @@
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
+use super::constants::UPDATABLE_AS_FLAGS;
 use super::predicates::{
     is_scratch_aligned, scratch_needs_growth, should_rebuild_skinned_blas_after, submit_one_time,
     validate_refit_counts,
@@ -87,28 +88,16 @@ impl AccelerationManager {
             .geometry(vk::AccelerationStructureGeometryDataKHR { triangles });
         let primitive_count = index_count / 3;
 
-        // Build flags: ALLOW_UPDATE makes `mode = UPDATE` legal each
-        // frame; PREFER_FAST_TRACE optimises the BVH layout for ray
-        // traversal speed.
-        //
-        // Pre-fix this used `PREFER_FAST_BUILD` on the (correct-at-
-        // the-time) reasoning that skinned BLAS rebuilds every frame
-        // — making the build path the cost-dominant operation, so
-        // optimise for build speed. #679 changed the rebuild
-        // cadence: skinned BLAS now refits in-place (UPDATE) for
-        // ~600 frames between full BUILDs. Build cost is paid once
-        // per 600 frames; trace cost is paid every frame for every
-        // shadow / GI / reflection ray hitting the actor — easily
-        // 10⁴+ traversals per BLAS per frame. The math now favours
-        // FAST_TRACE by ~6 orders of magnitude. See REN-D8-NEW-08
-        // (audit 2026-05-09); UPDATE site at line ~1247 carries the
-        // matching flag set for spec consistency.
-        let build_flags = vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
-            | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE;
-
+        // Build flags: see `UPDATABLE_AS_FLAGS` for the shared
+        // PREFER_FAST_TRACE | ALLOW_UPDATE rationale (#679 / REN-D8-NEW-08:
+        // skinned BLAS refits in-place ~600 frames between full builds, so
+        // trace cost dominates by ~6 orders of magnitude). #958 lifted the
+        // four UPDATE-target call sites to the shared constant to enforce
+        // VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667 by
+        // construction.
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-            .flags(build_flags)
+            .flags(UPDATABLE_AS_FLAGS)
             .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
             .geometries(std::slice::from_ref(&geometry));
 
@@ -172,7 +161,7 @@ impl AccelerationManager {
             self.debug_assert_scratch_aligned(scratch_address, "build_skinned_blas");
             let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                .flags(build_flags)
+                .flags(UPDATABLE_AS_FLAGS)
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                 .dst_acceleration_structure(accel)
                 .geometries(std::slice::from_ref(&geometry))
@@ -295,12 +284,7 @@ impl AccelerationManager {
         }
 
         let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
-        // Flags match `build_skinned_blas`: ALLOW_UPDATE lets refit run
-        // every frame; PREFER_FAST_TRACE optimises traversal speed
-        // (BUILD cost is paid once per ~600 frames against trace cost
-        // paid every ray per BLAS per frame — see REN-D8-NEW-08).
-        let build_flags = vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
-            | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE;
+        // Flags: shared `UPDATABLE_AS_FLAGS` — see #958 / REN-D8-NEW-14.
 
         let mut prepared: Vec<PreparedSkinned> = Vec::with_capacity(entities.len());
         let mut results: Vec<(EntityId, Result<()>)> = Vec::with_capacity(entities.len());
@@ -342,7 +326,7 @@ impl AccelerationManager {
 
             let size_build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                .flags(build_flags)
+                .flags(UPDATABLE_AS_FLAGS)
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                 .geometries(std::slice::from_ref(&geometry));
 
@@ -463,7 +447,7 @@ impl AccelerationManager {
             }
             let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                .flags(build_flags)
+                .flags(UPDATABLE_AS_FLAGS)
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                 .dst_acceleration_structure(p.accel)
                 .geometries(std::slice::from_ref(&p.geometry))
@@ -661,19 +645,13 @@ impl AccelerationManager {
 
         // mode = UPDATE: src == dst == this entity's BLAS. Vulkan
         // refits in-place against the new vertex data; topology must
-        // stay identical to the original BUILD's geometry. The
-        // ALLOW_UPDATE flag set on initial build is what makes this
-        // legal.
-        //
-        // PREFER_FAST_TRACE matches the build-site flag (see
-        // REN-D8-NEW-08 rationale at the matching BUILD site
-        // above) — the BLAS was built optimised for trace speed,
-        // refit operations preserve that optimisation.
-        let build_flags = vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE
-            | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE;
+        // stay identical to the original BUILD's geometry. The shared
+        // `UPDATABLE_AS_FLAGS` constant guarantees this UPDATE's flag
+        // set matches the original BUILD (VUID-…-pInfos-03667). See
+        // #958 / REN-D8-NEW-14.
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-            .flags(build_flags)
+            .flags(UPDATABLE_AS_FLAGS)
             .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
             .src_acceleration_structure(entry.accel)
             .dst_acceleration_structure(entry.accel)

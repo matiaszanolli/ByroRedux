@@ -6,7 +6,7 @@
 
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
-use super::constants::MIN_TLAS_INSTANCE_RESERVE;
+use super::constants::{MIN_TLAS_INSTANCE_RESERVE, UPDATABLE_AS_FLAGS};
 use super::predicates::{
     column_major_to_vk_transform, decide_use_update, draw_command_eligible_for_tlas,
     is_scratch_aligned, scratch_needs_growth, shrink_scratch_if_oversized,
@@ -373,18 +373,17 @@ impl AccelerationManager {
                         }),
                 });
 
-            // PREFER_FAST_TRACE + ALLOW_UPDATE: REFIT (#247) handles most
-            // per-frame TLAS changes, so full rebuilds are rare and the
-            // trace-time wins from a higher-quality BVH pay off on every
-            // ray query (shadows, reflections, GI, caustics, window
-            // portal). Matches the BLAS flag choice. See #307 / audit
-            // AUDIT_PERFORMANCE_2026-04-13b P1-09.
+            // Shared `UPDATABLE_AS_FLAGS` (PREFER_FAST_TRACE | ALLOW_UPDATE):
+            // REFIT (#247) handles most per-frame TLAS changes, so full
+            // rebuilds are rare and the trace-time wins from a higher-
+            // quality BVH pay off on every ray query (shadows, reflections,
+            // GI, caustics, window portal). The UPDATE counterpart below
+            // must read the same flag set per VUID-…-pInfos-03667; the
+            // shared constant enforces that. See #307 / #958 /
+            // REN-D8-NEW-14 + AUDIT_PERFORMANCE_2026-04-13b P1-09.
             let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-                .flags(
-                    vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
-                        | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
-                )
+                .flags(UPDATABLE_AS_FLAGS)
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                 .geometries(std::slice::from_ref(&geometry));
 
@@ -699,15 +698,12 @@ impl AccelerationManager {
         );
 
         // Mirror the flags used at creation time so Vulkan's validation
-        // layer matches source and dst flags. ALLOW_UPDATE must be set
-        // on both BUILD and UPDATE submissions. PREFER_FAST_TRACE here
-        // must stay in lockstep with the BUILD path above (#307).
+        // layer matches source and dst flags. The shared
+        // `UPDATABLE_AS_FLAGS` constant keeps this site lockstep with
+        // the fresh-build path above (VUID-…-pInfos-03667 / #307 / #958).
         let mut build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-            .flags(
-                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
-                    | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE,
-            )
+            .flags(UPDATABLE_AS_FLAGS)
             .dst_acceleration_structure(tlas.accel)
             .geometries(std::slice::from_ref(&geometry))
             .scratch_data(vk::DeviceOrHostAddressKHR {

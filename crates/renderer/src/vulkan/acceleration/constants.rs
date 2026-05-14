@@ -58,3 +58,21 @@ pub const SKINNED_BLAS_REFIT_THRESHOLD: u32 = 600;
 /// [`should_evict_mid_batch`]; eviction runs only when needed, so the
 /// idle cost is one add + one compare per N iterations.
 pub(super) const BATCH_EVICTION_CHECK_INTERVAL: usize = 64;
+
+/// Build flags shared by every acceleration structure that's intended
+/// to receive `mode = UPDATE` refit calls (skinned BLAS + TLAS).
+/// Centralised so the BUILD/UPDATE pairs in `blas_skinned.rs`
+/// (`build_skinned_blas`, `build_skinned_blas_batched_on_cmd`,
+/// `refit_skinned_blas`) and `tlas.rs` (fresh `build_tlas` + the TLAS
+/// update path) can't drift apart. Vulkan spec
+/// `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667` requires
+/// the UPDATE flags to match the source BUILD's flags exactly; the
+/// shared constant turns that invariant from "convention" into
+/// "enforced by the compiler". Counterpart of the function-local
+/// `STATIC_BLAS_FLAGS` in `blas_static.rs`. See #958 /
+/// REN-D8-NEW-14.
+pub(super) const UPDATABLE_AS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
+    vk::BuildAccelerationStructureFlagsKHR::from_raw(
+        vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE.as_raw()
+            | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE.as_raw(),
+    );
