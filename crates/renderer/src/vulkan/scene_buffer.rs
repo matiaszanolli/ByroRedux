@@ -847,35 +847,17 @@ impl SceneBuffers {
                 .context("Failed to create scene descriptor set layout")?
         };
 
-        // Descriptor pool.
-        // 11 SSBOs per frame: lights(0), bones(3), instances(4), cluster
-        // grid(5), light indices(6), vertices(8), indices(9), terrain
-        // tiles(10), ray budget counter(11), bones_prev(12 — SH-3 / #641),
-        // materials(13 — R1 Phase 4). Plus 1 sampler per frame for SSAO
-        // (binding 7) and 1 UBO per frame. The optional TLAS slot is
-        // appended below when ray tracing is enabled.
-        let mut pool_builder = DescriptorPoolBuilder::new()
-            .pool(
-                vk::DescriptorType::STORAGE_BUFFER,
-                (MAX_FRAMES_IN_FLIGHT * 11) as u32,
-            )
-            .pool(
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                MAX_FRAMES_IN_FLIGHT as u32,
-            )
-            .pool(
-                vk::DescriptorType::UNIFORM_BUFFER,
-                MAX_FRAMES_IN_FLIGHT as u32,
-            )
-            .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
-        if rt_enabled {
-            pool_builder = pool_builder.pool(
-                vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-                MAX_FRAMES_IN_FLIGHT as u32,
-            );
-        }
+        // Descriptor pool — sizes derived from `bindings` so the
+        // conditional TLAS slot (and any future binding addition)
+        // flows through automatically (#1030 / REN-D10-NEW-09).
+        // `build_scene_descriptor_bindings(rt_enabled)` already
+        // includes / omits the TLAS binding based on the same flag,
+        // so the pool count tracks it without a parallel branch
+        // here.
         let descriptor_pool =
-            pool_builder.build(device, "Failed to create scene descriptor pool")?;
+            DescriptorPoolBuilder::from_layout_bindings(&bindings, MAX_FRAMES_IN_FLIGHT as u32)
+                .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+                .build(device, "Failed to create scene descriptor pool")?;
 
         // Allocate descriptor sets.
         let layouts = vec![descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];

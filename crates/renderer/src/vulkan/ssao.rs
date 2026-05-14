@@ -357,16 +357,14 @@ impl SsaoPipeline {
             }
         };
 
-        // Descriptor pool + sets.
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
-            .pool(
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                max_frames as u32
-            )
-            .pool(vk::DescriptorType::STORAGE_IMAGE, max_frames as u32)
-            .pool(vk::DescriptorType::UNIFORM_BUFFER, max_frames as u32)
-            .max_sets(max_frames as u32)
-            .build(device, "SSAO descriptor pool"));
+        // Descriptor pool + sets — sizes derived from `bindings`
+        // (#1030 / REN-D10-NEW-09).
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
+            &bindings,
+            max_frames as u32,
+        )
+        .max_sets(max_frames as u32)
+        .build(device, "SSAO descriptor pool"));
 
         let layouts = vec![partial.descriptor_set_layout; max_frames];
         // SAFETY: `partial.descriptor_pool` was just created with enough

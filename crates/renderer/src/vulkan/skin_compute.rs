@@ -273,12 +273,14 @@ impl SkinComputePipeline {
         let pool_total = max_slots * (MAX_FRAMES_IN_FLIGHT as u32);
         // Slots are freed on entity destruction (cell unload);
         // FREE_DESCRIPTOR_SET allows `vkFreeDescriptorSets` rather
-        // than only `vkResetDescriptorPool`.
-        let descriptor_pool = DescriptorPoolBuilder::new()
-            .pool(vk::DescriptorType::STORAGE_BUFFER, pool_total * 3)
-            .max_sets(pool_total)
-            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-            .build(device, "create skin_compute descriptor pool")?;
+        // than only `vkResetDescriptorPool`. Pool sizes derived from
+        // `bindings` so any future binding addition flows through to
+        // the pool count automatically (#1030 / REN-D10-NEW-09).
+        let descriptor_pool =
+            DescriptorPoolBuilder::from_layout_bindings(&bindings, pool_total)
+                .max_sets(pool_total)
+                .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+                .build(device, "create skin_compute descriptor pool")?;
 
         log::info!(
             "Skin compute pipeline created (max_slots={}, sets={}, push={} B)",

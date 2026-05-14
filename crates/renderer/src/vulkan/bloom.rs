@@ -333,20 +333,19 @@ impl BloomPipeline {
         ));
 
         // ── 5. Descriptor pool ────────────────────────────────────────
-        // Per frame: BLOOM_MIP_COUNT down sets + (BLOOM_MIP_COUNT-1) up sets.
-        // Down: 1 sampler + 1 storage + 1 UBO each.
-        // Up:   2 samplers + 1 storage + 1 UBO each.
-        let total_sets = MAX_FRAMES_IN_FLIGHT * (BLOOM_MIP_COUNT + (BLOOM_MIP_COUNT - 1));
-        let total_samplers = MAX_FRAMES_IN_FLIGHT * (BLOOM_MIP_COUNT + 2 * (BLOOM_MIP_COUNT - 1));
-        let total_storage = MAX_FRAMES_IN_FLIGHT * (BLOOM_MIP_COUNT + (BLOOM_MIP_COUNT - 1));
-        let total_ubo = total_storage; // one per set
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
-            .pool(
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                total_samplers as u32,
+        // One pool backs BLOOM_MIP_COUNT down-sets (down_bindings
+        // layout) + (BLOOM_MIP_COUNT-1) up-sets (up_bindings layout)
+        // per frame-in-flight. Pool sizes derived from each layout's
+        // bindings via `add_layout_bindings` (#1030 / REN-D10-NEW-09).
+        let down_sets = MAX_FRAMES_IN_FLIGHT * BLOOM_MIP_COUNT;
+        let up_sets = MAX_FRAMES_IN_FLIGHT * (BLOOM_MIP_COUNT - 1);
+        let total_sets = down_sets + up_sets;
+        partial.descriptor_pool =
+            try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
+                &down_bindings,
+                down_sets as u32,
             )
-            .pool(vk::DescriptorType::STORAGE_IMAGE, total_storage as u32)
-            .pool(vk::DescriptorType::UNIFORM_BUFFER, total_ubo as u32)
+            .add_layout_bindings(&up_bindings, up_sets as u32)
             .max_sets(total_sets as u32)
             .build(device, "bloom descriptor pool"));
 

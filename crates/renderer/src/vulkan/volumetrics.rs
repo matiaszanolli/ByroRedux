@@ -354,21 +354,13 @@ impl VolumetricsPipeline {
         };
 
         // ── 5. Descriptor pool + sets ─────────────────────────────────
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
-            .pool(
-                vk::DescriptorType::STORAGE_IMAGE,
-                MAX_FRAMES_IN_FLIGHT as u32,
-            )
-            .pool(
-                vk::DescriptorType::UNIFORM_BUFFER,
-                MAX_FRAMES_IN_FLIGHT as u32,
-            )
-            .pool(
-                vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-                MAX_FRAMES_IN_FLIGHT as u32,
-            )
-            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-            .build(device, "Volumetrics descriptor pool"));
+        // Pool sizes derived from `bindings` (#1030 / REN-D10-NEW-09).
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
+            &bindings,
+            MAX_FRAMES_IN_FLIGHT as u32,
+        )
+        .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+        .build(device, "Volumetrics descriptor pool"));
 
         let layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         partial.descriptor_sets = try_or_cleanup!(unsafe {
@@ -503,13 +495,10 @@ impl VolumetricsPipeline {
         };
 
         // ── 10. Integration descriptor pool + sets ────────────────────
-        partial.integration_descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
-            .pool(
-                vk::DescriptorType::STORAGE_IMAGE,
-                (MAX_FRAMES_IN_FLIGHT * 2) as u32,
-            )
-            .pool(
-                vk::DescriptorType::UNIFORM_BUFFER,
+        // Pool sizes derived from `int_bindings` (#1030 / REN-D10-NEW-09).
+        partial.integration_descriptor_pool =
+            try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
+                &int_bindings,
                 MAX_FRAMES_IN_FLIGHT as u32,
             )
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32)

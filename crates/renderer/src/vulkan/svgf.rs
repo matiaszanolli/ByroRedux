@@ -491,22 +491,14 @@ impl SvgfPipeline {
         };
 
         // ── 6. Descriptor pool + sets ─────────────────────────────────
-        // 8 sampler bindings per set after #650: curr indirect, motion,
-        // curr/prev mesh_id, prev indirect/moments history, curr/prev
-        // normal.
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
-            .pool(
-                vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                (MAX_FRAMES_IN_FLIGHT * 8) as u32,
-            )
-            .pool(
-                vk::DescriptorType::STORAGE_IMAGE,
-                (MAX_FRAMES_IN_FLIGHT * 2) as u32,
-            )
-            .pool(
-                vk::DescriptorType::UNIFORM_BUFFER,
-                MAX_FRAMES_IN_FLIGHT as u32,
-            )
+        // Derived from `bindings` so adding a binding above
+        // automatically lifts the pool size (#1030 / REN-D10-NEW-10).
+        // Today's contents: 8 COMBINED_IMAGE_SAMPLER + 2 STORAGE_IMAGE
+        // + 1 UNIFORM_BUFFER per set, MAX_FRAMES_IN_FLIGHT sets.
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
+            &bindings,
+            MAX_FRAMES_IN_FLIGHT as u32,
+        )
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
             .build(device, "SVGF descriptor pool"));
 

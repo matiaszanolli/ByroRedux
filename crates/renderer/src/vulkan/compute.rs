@@ -201,18 +201,14 @@ impl ClusterCullPipeline {
             }
         };
 
-        // Descriptor pool + sets.
-        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::new()
-            .pool(
-                vk::DescriptorType::STORAGE_BUFFER,
-                (MAX_FRAMES_IN_FLIGHT * 3) as u32,
-            )
-            .pool(
-                vk::DescriptorType::UNIFORM_BUFFER,
-                MAX_FRAMES_IN_FLIGHT as u32,
-            )
-            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-            .build(device, "Failed to create cluster cull descriptor pool"));
+        // Descriptor pool + sets — sizes derived from `bindings`
+        // (#1030 / REN-D10-NEW-09).
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
+            &bindings,
+            MAX_FRAMES_IN_FLIGHT as u32,
+        )
+        .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+        .build(device, "Failed to create cluster cull descriptor pool"));
 
         let layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         partial.descriptor_sets = try_or_cleanup!(unsafe {

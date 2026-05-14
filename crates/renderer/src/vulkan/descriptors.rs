@@ -225,6 +225,68 @@ impl DescriptorPoolBuilder {
         self
     }
 
+    /// Derive pool sizes from a layout's bindings (#1030 /
+    /// REN-D10-NEW-09/10). Sums `descriptor_count` per
+    /// `DescriptorType` across `bindings` then multiplies by
+    /// `set_count` (the number of sets that will be allocated from
+    /// this pool — typically `MAX_FRAMES_IN_FLIGHT`).
+    ///
+    /// Lets the layout-bindings array act as the single source of
+    /// truth for both `vkCreateDescriptorSetLayout` and pool sizing.
+    /// Hand-derived sizes silently lag any binding added to the
+    /// layout — the audit caught composite (7 samplers) and svgf
+    /// (8+2+1) on that drift. Self-derived sizes prevent it.
+    ///
+    /// `max_sets` is NOT set here — the caller chooses it separately
+    /// (often `set_count` itself, but tests + non-FIF pools can
+    /// diverge).
+    ///
+    /// For pools that back multiple layouts (e.g. bloom's down +
+    /// up pyramid layouts share one pool), chain
+    /// [`Self::add_layout_bindings`] for each additional layout.
+    pub fn from_layout_bindings(
+        bindings: &[vk::DescriptorSetLayoutBinding],
+        set_count: u32,
+    ) -> Self {
+        Self::new().add_layout_bindings(bindings, set_count)
+    }
+
+    /// Accumulate another layout's bindings into an existing builder.
+    /// Lets one pool back multiple layouts (bloom's down + up pyramid
+    /// sets, for example) while keeping the "layout is single source
+    /// of truth" property of [`Self::from_layout_bindings`]. Entries
+    /// with the same `DescriptorType` are merged with the existing
+    /// pool sizes (`descriptor_count` summed) rather than emitted as
+    /// duplicates — Vulkan requires each pool-sizes entry's type be
+    /// unique.
+    pub fn add_layout_bindings(
+        mut self,
+        bindings: &[vk::DescriptorSetLayoutBinding],
+        set_count: u32,
+    ) -> Self {
+        use std::collections::BTreeMap;
+        // Per-type totals for this layout. BTreeMap gives a
+        // deterministic emission order so a regression test pinning
+        // the pool-sizes vec layout stays stable across runs.
+        let mut additions: BTreeMap<i32, u32> = BTreeMap::new();
+        for b in bindings {
+            *additions.entry(b.descriptor_type.as_raw()).or_insert(0) +=
+                b.descriptor_count * set_count;
+        }
+        for (raw_ty, count) in additions {
+            let ty = vk::DescriptorType::from_raw(raw_ty);
+            if let Some(existing) = self.sizes.iter_mut().find(|s| s.ty == ty) {
+                existing.descriptor_count += count;
+            } else {
+                self.sizes.push(vk::DescriptorPoolSize {
+                    ty,
+                    descriptor_count: count,
+                });
+            }
+        }
+        self
+    }
+
     pub fn max_sets(mut self, n: u32) -> Self {
         self.max_sets = n;
         self
@@ -250,5 +312,121 @@ impl DescriptorPoolBuilder {
             .pool_sizes(&self.sizes)
             .max_sets(self.max_sets);
         unsafe { device.create_descriptor_pool(&info, None) }.context(label)
+    }
+
+    /// Test-only accessor exposing the accumulated pool sizes so the
+    /// `from_layout_bindings_*` regression tests can pin the
+    /// derivation without `build()`'ing a real Vulkan pool.
+    #[cfg(test)]
+    pub(crate) fn sizes(&self) -> &[vk::DescriptorPoolSize] {
+        &self.sizes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin the helper's per-type aggregation. The composite layout
+    /// post-#1030 has 7 `COMBINED_IMAGE_SAMPLER` + 1 `UNIFORM_BUFFER`
+    /// bindings; deriving from the array must produce exactly those
+    /// two entries with the right per-set count.
+    #[test]
+    fn from_layout_bindings_aggregates_per_type() {
+        let bindings: Vec<vk::DescriptorSetLayoutBinding> = (0..7u32)
+            .map(|b| {
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(b)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            })
+            .chain(std::iter::once(
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(7)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            ))
+            .collect();
+        let builder = DescriptorPoolBuilder::from_layout_bindings(&bindings, 2);
+        let sizes = builder.sizes();
+        assert_eq!(sizes.len(), 2, "two distinct DescriptorTypes");
+        // BTreeMap iteration order is deterministic across runs;
+        // COMBINED_IMAGE_SAMPLER = 1, UNIFORM_BUFFER = 6 — sampler
+        // sorts first.
+        assert_eq!(sizes[0].ty, vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
+        assert_eq!(sizes[0].descriptor_count, 7 * 2);
+        assert_eq!(sizes[1].ty, vk::DescriptorType::UNIFORM_BUFFER);
+        assert_eq!(sizes[1].descriptor_count, 1 * 2);
+    }
+
+    /// Multi-descriptor-count bindings (the bindless case) must scale
+    /// by the binding's own `descriptor_count`, not collapse to 1.
+    #[test]
+    fn from_layout_bindings_respects_per_binding_count() {
+        let bindings = [vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .descriptor_count(1024) // bindless slot count
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        let builder = DescriptorPoolBuilder::from_layout_bindings(&bindings, 1);
+        let sizes = builder.sizes();
+        assert_eq!(sizes.len(), 1);
+        assert_eq!(sizes[0].descriptor_count, 1024);
+    }
+
+    /// Repeated `DescriptorType` across bindings collapses to a
+    /// single pool entry with the summed count — matches Vulkan's
+    /// requirement that each pool-sizes entry's type is unique.
+    #[test]
+    fn from_layout_bindings_dedupes_same_type() {
+        let bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(2)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        ];
+        let builder = DescriptorPoolBuilder::from_layout_bindings(&bindings, 3);
+        let sizes = builder.sizes();
+        assert_eq!(sizes.len(), 1, "STORAGE_BUFFER × 2 bindings collapses");
+        assert_eq!(sizes[0].descriptor_count, (1 + 2) * 3);
+    }
+
+    /// The core #1030 regression: adding a binding to the layout
+    /// silently bumps the derived pool size. Pin this by adding a
+    /// binding and re-deriving — the pre-#1030 hand-derived count
+    /// would have stayed at the old value and tripped a startup
+    /// pool-allocation failure.
+    #[test]
+    fn from_layout_bindings_tracks_new_bindings() {
+        let mut bindings = vec![vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        let before = DescriptorPoolBuilder::from_layout_bindings(&bindings, 2);
+        assert_eq!(before.sizes()[0].descriptor_count, 2);
+        // Simulate a future contributor adding a binding to the
+        // layout without bumping any pool-size hand-count.
+        bindings.push(
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        );
+        let after = DescriptorPoolBuilder::from_layout_bindings(&bindings, 2);
+        assert_eq!(
+            after.sizes()[0].descriptor_count,
+            4,
+            "the new binding must lift the derived pool size automatically"
+        );
     }
 }
