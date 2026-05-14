@@ -69,17 +69,12 @@ crates/
     src/record.rs            Record (component bundles), ErasedComponentData
     src/datastore.rs         DataStore resource, ResolvedRecord, Conflict
     src/resolver.rs          DependencyResolver (DAG), ConflictResolution
-    src/legacy/              Legacy ESM/ESP/ESL/ESH bridge
-      mod.rs                 LegacyFormId, LegacyLoadOrder
-      tes3.rs                Morrowind parser stub
-      tes4.rs                Oblivion parser stub
-      tes5.rs                Skyrim parser stub
-      fo4.rs                 Fallout 4 parser stub
+    src/legacy/              Legacy ESM/ESP/ESL/ESH bridge (LegacyFormId, LegacyLoadOrder). Per-game parser stubs were removed under #390 — see `crates/plugin/src/esm/` for the live ESM path.
   renderer/                  Vulkan graphics (ash, gpu-allocator, image)
     src/vulkan/              pipeline, device, swapchain, sync, allocator, buffer,
                              scene_buffer (SSBO/UBO), acceleration (BLAS/TLAS)
     src/vulkan/context/      VulkanContext (split into submodules)
-      mod.rs                 Struct definition (54 fields), new(), Drop (reverse-order teardown)
+      mod.rs                 VulkanContext struct, new(), Drop (reverse-order teardown)
       draw.rs                draw_frame() — per-frame command recording + submission
       resize.rs              recreate_swapchain() — window resize handler
       resources.rs           build_blas_for_mesh, register_ui_quad, swapchain_extent, log_memory_usage
@@ -95,13 +90,19 @@ crates/
     src/vulkan/dds.rs        DDS header parser (BC1/BC3/BC5, FourCC + DX10 extended, mip sizes)
     src/texture_registry.rs  TextureRegistry (path→handle cache, per-texture descriptor sets)
     src/mesh.rs              MeshRegistry, global vertex/index SSBOs, cube/triangle/quad helpers
-    src/vertex.rs            Vertex (position + color + normal + UV), 4 attribute descriptions
-    shaders/                 GLSL → SPIR-V (pre-compiled, include_bytes!)
+    src/vertex.rs            Vertex (position + color + normal + uv + bone_idx + bone_wt + splat0/1 + tangent), 9 attribute descriptions, 100 B / 25 floats
+    shaders/                 GLSL → SPIR-V (pre-compiled, include_bytes!) — see crates/renderer/shaders/ for the full set; key passes:
       triangle.vert/frag     Main geometry pass — PBR + RT ray queries (shadows, reflections, GI)
       svgf_temporal.comp     SVGF temporal accumulation with motion vector reprojection
+      taa.comp               TAA resolve (Halton jitter + YCoCg variance clamp, M37.5)
       composite.vert/frag    Fullscreen quad — direct + denoised indirect + ACES tone mapping
       ssao.comp              Screen-space ambient occlusion compute
       cluster_cull.comp      Clustered lighting frustum assignment
+      skin_vertices.comp     GPU pre-skinning (M29)
+      water.vert/frag        Water plane — vertex displacement + RT reflection/refraction (M38)
+      caustic_splat.comp     Caustic splat compute (water under-side lighting)
+      volumetrics_inject.comp / _integrate.comp  Volumetric froxel grid (M55)
+      bloom_downsample.comp / _upsample.comp     Bloom pyramid (M58)
       ui.vert/frag           UI overlay (Scaleform/SWF)
   bsa/                       BSA + BA2 archive readers (Bethesda Softworks Archive)
     src/archive.rs           BsaArchive: BSA v103/v104/v105 (Oblivion → Skyrim SE)
@@ -214,7 +215,7 @@ M31.5, M32 Phase 1+2, M34 Phase 1, M36, M37.5) + N23 + N26 closeout + #178 skinn
 RT multi-light with streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction,
 instanced draw batching, landscape terrain with texture splatting, exterior directional sun,
 TAA (Halton jitter + YCoCg variance clamp), Papyrus language parser, FO4 SCOL/MOVS/PKIN/TXST.
-1000+ tests across 14 engine crates (16 workspace members). ~94K lines of Rust, 200 source files. See [ROADMAP.md](ROADMAP.md#project-stats) for ground truth.
+See [ROADMAP.md](ROADMAP.md#project-stats) for ground truth on test/file/LOC/crate counts (refreshed each /session-close).
 Usage:
   `cargo run -- path/to/mesh.nif` — render a loose NIF file
   `cargo run -- mesh.nif --kf anim.kf` — play animation on a mesh
@@ -226,7 +227,7 @@ Usage:
   `cargo run -- --esm FalloutNV.esm --grid 0,0 --radius 3 --bsa …` — exterior grid (radius 1..=7, default 3)
   `cargo run -- --master Skyrim.esm --esm Dawnguard.esm --cell ForebearsHoldoutInt01 --bsa …` — DLC interior (M46.0 / #561, repeatable `--master`)
   `cargo run --release -- … --bench-frames 300 --bench-hold` — run 300-frame bench, print summary, **keep the engine open** so `byro-dbg` can attach (port 9876) and drive console commands against the loaded scene. Without `--bench-hold` the bench exits immediately and the debug server isn't reachable for `tex.missing` / `tex.loaded` / etc.
-Done: N23.1–N23.10 all complete. 186 type names (156 parsed + 30 Havok skip).
+Done: N23.1–N23.10 all complete. NIF block dispatcher in `crates/nif/src/blocks/mod.rs` carries the live arm count — see source.
 Key: ~48 particle types, bhkCompressedMeshShape (Skyrim collision), FO4 half-float + shader
 wetness, all 6 skinning blocks, full NiSkinPartition, NiPixelData, NiMorphData legacy keys.
 Collision import with Havok→engine transform. Normal map from BSShaderPPLighting (FO3/FNV).
@@ -298,8 +299,9 @@ ESM dispatch expansion (10 → 18 record categories):
     ECZN/LGTM/HDPT/EYES/HAIR stubs.
 Renderer plumbing:
   — #452 / #453 BSShaderTextureSet slots 3/4/5 → GpuInstance with POM
-    fragment branch (192-byte struct, Shader Struct Sync lockstep across
-    triangle.vert/frag, ui.vert, caustic_splat.comp);
+    fragment branch (struct size pinned by `gpu_instance_is_112_bytes_std430_compatible`
+    test; Shader Struct Sync lockstep across the shaders that declare
+    `struct GpuInstance` — see `feedback_shader_struct_sync.md`);
   — #421 window portal ray fires along -N with grazing-angle gate;
   — #464 BFS transform propagation via VecDeque.
 Compat correctness:
@@ -313,9 +315,10 @@ Docs hygiene:
   — #456 date-stamped stale FPS claims across ROADMAP + game-compat;
   — #457 FO3 Tier-1 row updated to "Interior ✓ · Exterior wired".
   — Megaton validated parse-side at 929 REFRs (was 1609 post-NIF-expand).
-888 tests passing.
-Next: M33 sky/atmosphere, M35 terrain LOD, M37 SVGF spatial filter,
-M29 GPU skinning, FO3 exterior GPU re-bench (#457).
+See [ROADMAP.md](ROADMAP.md#project-stats) for current test count and per-game compat matrix.
+Next: M29.5 GPU palette dispatch, M35 terrain LOD, M37 SVGF spatial filter,
+M37.3 ReSTIR-DI, FO3 exterior GPU re-bench (#457). M33 (sky/atmosphere) and
+M29 (GPU skinning) closed — confirm via ROADMAP before treating as upcoming.
 Session 27 (2026-05-02): "Chrome posterized walls" red herring nailed
 to the wrong cause across multiple sessions. Auto-loaded
 `<stem>N.bsa` siblings in `byroredux/src/asset_provider.rs` —
