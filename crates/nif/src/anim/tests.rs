@@ -689,8 +689,8 @@ fn euler_to_quat_90_deg_x() {
     use std::f32::consts::FRAC_PI_2;
     // 90° around X: quat = (cos(45°), sin(45°), 0, 0) = (~0.707, ~0.707, 0, 0)
     let [w, x, y, z] = euler_to_quat_wxyz(FRAC_PI_2, 0.0, 0.0);
-    let s = FRAC_PI_2.sin() * 0.5_f32.sqrt(); // sin(45°)
-    let c = FRAC_PI_2.cos() * 0.5_f32.sqrt(); // cos(45°) — but let's just check magnitude
+    let _s = FRAC_PI_2.sin() * 0.5_f32.sqrt(); // sin(45°)
+    let _c = FRAC_PI_2.cos() * 0.5_f32.sqrt(); // cos(45°) — but let's just check magnitude
     assert!(
         (w * w + x * x + y * y + z * z - 1.0).abs() < 1e-5,
         "quaternion should be unit"

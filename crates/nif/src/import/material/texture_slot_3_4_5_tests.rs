@@ -235,7 +235,7 @@ fn pp_lighting_with_only_3_slots_leaves_parallax_and_env_none() {
         ..NifScene::default()
     };
     let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
-    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
     assert!(info.parallax_map.is_none());
     assert!(info.env_map.is_none());
     assert!(info.env_mask.is_none());
@@ -375,7 +375,7 @@ fn ni_texturing_uv_transform_survives_preceding_ni_material_property() {
         ..NifScene::default()
     };
     let shape = make_tri_shape_with_props(vec![BlockRef(0), BlockRef(1)]);
-    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
     assert_eq!(
         info.uv_offset,
         [0.5, 0.0],
@@ -425,7 +425,7 @@ fn ni_material_property_ambient_color_reaches_material_info() {
         ..NifScene::default()
     };
     let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
-    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
     assert!((info.ambient_color[0] - 0.25).abs() < 1e-6);
     assert!((info.ambient_color[1] - 0.5).abs() < 1e-6);
     assert!((info.ambient_color[2] - 0.75).abs() < 1e-6);
@@ -507,7 +507,7 @@ fn bs_lighting_shader_uv_transform_blocks_later_ni_texturing_property() {
     // wiring extract_material_info uses.
     let mut shape = make_tri_shape_with_props(vec![BlockRef(1)]);
     shape.shader_property_ref = BlockRef(0);
-    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
     // Shader transform wins — the later NiTexturingProperty must
     // not stomp it.
     assert_eq!(info.uv_offset, [0.25, 0.75]);
@@ -695,7 +695,7 @@ fn nispecular_disabled_clears_color_for_glass_ior_path() {
         ..NifScene::default()
     };
     let shape = make_tri_shape_with_props(vec![BlockRef(0), BlockRef(1)]);
-    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
 
     assert!(!info.specular_enabled);
     assert_eq!(info.specular_strength, 0.0);
@@ -751,7 +751,7 @@ fn nispecular_enabled_preserves_color() {
         ..NifScene::default()
     };
     let shape = make_tri_shape_with_props(vec![BlockRef(0), BlockRef(1)]);
-    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
 
     assert!(info.specular_enabled);
     assert_eq!(info.specular_color, [0.8, 0.8, 0.8]);
@@ -773,7 +773,7 @@ fn bs_lighting_shader_property_keeps_low_range_material_kind() {
     };
     let mut shape = make_tri_shape_with_props(Vec::new());
     shape.shader_property_ref = BlockRef(0);
-    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
 
     assert_eq!(
         info.material_kind, 5,
