@@ -230,7 +230,7 @@ impl NiTexturingProperty {
 
         // Apply Mode: since 3.3.0.13, until 20.1.0.1.
         // `until=` is inclusive per the version.rs doctrine — present at v20.1.0.1.
-        if stream.version() <= NifVersion(0x14010001) {
+        if stream.version() <= NifVersion::STRING_TABLE_THRESHOLD {
             let _apply_mode = stream.read_u32_le()?;
         }
 
@@ -383,7 +383,7 @@ impl NiTexturingProperty {
                     // nif.xml: `Has Texture Transform` + conditional
                     // 32-byte body are both `since="10.1.0.0"`. Mirrors
                     // the same gate inside `read_tex_desc`.
-                    if stream.version() >= crate::version::NifVersion(0x0A010000) {
+                    if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
                         let has_transform = stream.read_byte_bool()?;
                         if has_transform {
                             let _ = Self::read_tex_transform(stream)?;
@@ -425,7 +425,7 @@ impl NiTexturingProperty {
             // transform body when the bool is set and store it on the
             // returned TexDesc; the old parser skipped it, which caused
             // #219 (per-slot UV transforms lost).
-            let transform = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+            let transform = if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
                 let has_transform = stream.read_byte_bool()?;
                 if has_transform {
                     Some(Self::read_tex_transform(stream)?)
@@ -452,7 +452,7 @@ impl NiTexturingProperty {
                 let _ps2_k = stream.read_u16_le()?;
             }
 
-            let transform = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+            let transform = if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
                 let has_transform = stream.read_byte_bool()?;
                 if has_transform {
                     Some(Self::read_tex_transform(stream)?)

@@ -86,7 +86,7 @@ fn nigeometry_data_at_10_0_1_0_skips_keep_compress_flags() {
 /// appears from 10.1.0.114.
 #[test]
 fn nigeometry_data_at_10_1_0_0_reads_keep_compress_flags() {
-    let header = header_at(NifVersion(0x0A010000)); // 10.1.0.0 — threshold.
+    let header = header_at(NifVersion::V10_1_0_0); // 10.1.0.0 — threshold.
     let bytes = nigeometry_data_bytes(
         /*include_group_id=*/ false, /*include_keep_compress=*/ true,
         /*include_consistency=*/ true,

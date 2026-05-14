@@ -359,7 +359,7 @@ impl NiBillboardNode {
         // Mode field was introduced in 10.1.0.0. Earlier NIFs pack the
         // mode into NiAVObject flags (bits 5-6) and have no trailing
         // field — see nif.xml.
-        let billboard_mode = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+        let billboard_mode = if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
             stream.read_u16_le()?
         } else {
             0
@@ -405,7 +405,7 @@ impl NiObject for NiSwitchNode {
 impl NiSwitchNode {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiNode::parse(stream)?;
-        let switch_flags = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+        let switch_flags = if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
             stream.read_u16_le()?
         } else {
             0
@@ -452,7 +452,7 @@ impl NiObject for NiLODNode {
 impl NiLODNode {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiSwitchNode::parse(stream)?;
-        let lod_level_data = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+        let lod_level_data = if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
             stream.read_block_ref()?
         } else {
             // Legacy path (Vector3 center + num levels + N × LODRange)
@@ -694,7 +694,7 @@ impl NiCamera {
         let av = NiAVObjectData::parse(stream)?;
 
         // camera_flags added at 10.1.0.0. Oblivion (20.0.0.5) has it.
-        let camera_flags = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+        let camera_flags = if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
             stream.read_u16_le()?
         } else {
             0
@@ -710,7 +710,7 @@ impl NiCamera {
         // use_orthographic added at 10.1.0.0. Per nif.xml, `bool` is
         // 8-bit from 4.1.0.1 onward — all games we target (Oblivion+)
         // sit in that window, so read a single byte.
-        let use_orthographic = if stream.version() >= crate::version::NifVersion(0x0A010000) {
+        let use_orthographic = if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
             stream.read_byte_bool()?
         } else {
             false

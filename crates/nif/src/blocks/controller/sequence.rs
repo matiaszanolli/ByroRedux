@@ -179,7 +179,7 @@ impl NiControllerSequence {
         // corrupting the stream for every subsequent block. See #107.
         let bsver = stream.bsver();
         let uses_string_palette =
-            stream.version() >= NifVersion(0x0A020000) && stream.version() < NifVersion(0x14010001);
+            stream.version() >= NifVersion(0x0A020000) && stream.version() < NifVersion::STRING_TABLE_THRESHOLD;
         let mut controlled_blocks = stream.allocate_vec(num_controlled_blocks)?;
         for _ in 0..num_controlled_blocks {
             let interpolator_ref = stream.read_block_ref()?;
@@ -291,7 +291,7 @@ impl NiControllerSequence {
         // with BSVER >= 24) use the modern string-table layout and
         // skip this field. See #402 (audit premise was wrong — Oblivion
         // uses NiControllerSequence, not NiSequenceStreamHelper).
-        if stream.version() >= NifVersion(0x0A010071) && stream.version() < NifVersion(0x14010001) {
+        if stream.version() >= NifVersion(0x0A010071) && stream.version() < NifVersion::STRING_TABLE_THRESHOLD {
             let _deprecated_string_palette_ref = stream.read_block_ref()?;
         }
 

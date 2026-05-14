@@ -67,12 +67,12 @@ impl NiSourceTexture {
             } else {
                 Some(Arc::from(stream.read_sized_string()?))
             };
-            if stream.version() >= crate::version::NifVersion(0x0A010000) {
+            if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
                 let _unknown_ref = stream.read_block_ref()?;
             }
             (fname, BlockRef::NULL)
         } else {
-            if stream.version() >= crate::version::NifVersion(0x0A010000) {
+            if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
                 if use_string_table {
                     let _unknown = stream.read_string()?;
                 } else {
@@ -198,7 +198,7 @@ impl NiPixelData {
             let bits_per_pixel_u32 = stream.read_u32_le()?;
             let _fast_compare = stream.read_bytes(8)?;
 
-            let tiling = if stream.version() >= NifVersion(0x0A010000) {
+            let tiling = if stream.version() >= NifVersion::V10_1_0_0 {
                 stream.read_u32_le()?
             } else {
                 0
@@ -739,7 +739,7 @@ impl NiTextureEffect {
         } else {
             true
         };
-        let affected_nodes = if stream.version() >= NifVersion(0x0A010000) {
+        let affected_nodes = if stream.version() >= NifVersion::V10_1_0_0 {
             // #981 — bulk-read affected-nodes u32 array.
             let count = stream.read_u32_le()? as usize;
             stream.read_u32_array(count)?

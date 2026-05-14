@@ -252,7 +252,7 @@ impl NiSkinPartition {
             }
         }
 
-        let has_conditionals = stream.version() >= crate::version::NifVersion(0x0A010000);
+        let has_conditionals = stream.version() >= crate::version::NifVersion::V10_1_0_0;
 
         let mut partitions = stream.allocate_vec(num_partitions)?;
         for _ in 0..num_partitions {
@@ -758,7 +758,7 @@ mod tests {
     fn ni_skin_instance_skin_partition_absent_pre_10_1_0_101() {
         // Header at v10.1.0.0 — below the since=10.1.0.101 boundary.
         let header = NifHeader {
-            version: NifVersion(0x0A010000),
+            version: NifVersion::V10_1_0_0,
             little_endian: true,
             user_version: 0,
             user_version_2: 0,

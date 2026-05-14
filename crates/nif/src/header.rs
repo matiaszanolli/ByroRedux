@@ -3,7 +3,7 @@
 //! The header contains version info, block type tables, block sizes,
 //! and the string table. Everything needed to navigate the block data.
 
-use crate::version::NifVersion;
+use crate::version::{bsver, NifVersion};
 use std::io::{self, Cursor, Read};
 use std::sync::Arc;
 
@@ -114,7 +114,7 @@ impl NifHeader {
             || (user_version >= 3
                 && (version == NifVersion::V20_2_0_7
                     || version == NifVersion(0x14000005) // 20.0.0.5
-                    || (version >= NifVersion(0x0A010000) // 10.1.0.0
+                    || (version >= NifVersion::V10_1_0_0 // 10.1.0.0
                         && version <= NifVersion(0x14000004) // 20.0.0.4
                         && user_version <= 11)));
         let user_version_2 = if has_bs_stream_header {
@@ -124,10 +124,10 @@ impl NifHeader {
         };
         if has_bs_stream_header {
             let _author = read_short_string(&mut cursor)?;
-            if user_version_2 > 130 {
+            if user_version_2 > bsver::FALLOUT4 {
                 let _unknown_int = read_u32_le(&mut cursor)?;
             }
-            if user_version_2 < 131 {
+            if user_version_2 <= bsver::FALLOUT4 {
                 let _process_script = read_short_string(&mut cursor)?;
             }
             let _export_script = read_short_string(&mut cursor)?;
@@ -221,7 +221,7 @@ impl NifHeader {
         // String table — since 20.1.0.1 per nif.xml. Must stay in sync with
         // the same threshold in NifStream::read_string (stream.rs); a mismatch
         // would corrupt reads on 20.1.0.1/20.1.0.2 files.
-        let (strings, max_string_length) = if version >= NifVersion(0x14010001) {
+        let (strings, max_string_length) = if version >= NifVersion::STRING_TABLE_THRESHOLD {
             let num_strings = read_u32_le(&mut cursor)? as usize;
             let max_len = read_u32_le(&mut cursor)?;
             // #408 — same byte-budget guard as the indices/sizes

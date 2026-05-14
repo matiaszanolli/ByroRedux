@@ -76,7 +76,7 @@ impl NiLightBase {
             true
         };
 
-        let affected_nodes = if pre_fo4 && stream.version() >= NifVersion(0x0A010000) {
+        let affected_nodes = if pre_fo4 && stream.version() >= NifVersion::V10_1_0_0 {
             // #981 — bulk-read affected-nodes u32 array.
             let count = stream.read_u32_le()? as usize;
             stream.read_u32_array(count)?

@@ -1378,7 +1378,7 @@ fn parse_geometry_data_base_inner(
     // not 10.0.1.0. Files in the [10.0.1.0, 10.1.0.0) gap window (non-Bethesda
     // Gamebryo) had 2 phantom bytes consumed before `has_vertices`, corrupting
     // every NiGeometryData downstream. See #327 / audit N1-02.
-    if stream.version() >= NifVersion(0x0A010000) {
+    if stream.version() >= NifVersion::V10_1_0_0 {
         let _keep_flags = stream.read_u8()?;
         let _compress_flags = stream.read_u8()?;
     }

@@ -74,7 +74,7 @@ impl NiLightColorController {
         // per the version.rs doctrine). FO3+ all satisfy the gate; pre-Gamebryo
         // NetImmerse content (v < 10.1.0.0) uses the `flags` bits on the
         // NiTimeController base for slot selection instead.
-        let target_color = if stream.version() >= NifVersion(0x0A010000) {
+        let target_color = if stream.version() >= NifVersion::V10_1_0_0 {
             stream.read_u16_le()?
         } else {
             0
@@ -204,7 +204,7 @@ impl NiMaterialColorController {
         // MaterialColor enum (ushort `since="10.1.0.0"` inclusive per the
         // version.rs doctrine). Pre-Gamebryo NetImmerse uses the
         // NiTimeController base `flags` bits for slot selection.
-        let target_color = if stream.version() >= NifVersion(0x0A010000) {
+        let target_color = if stream.version() >= NifVersion::V10_1_0_0 {
             stream.read_u16_le()?
         } else {
             0

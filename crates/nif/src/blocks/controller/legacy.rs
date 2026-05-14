@@ -88,7 +88,7 @@ impl NiObject for NiLookAtController {
 impl NiLookAtController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
-        let look_at_flags = if stream.version() >= NifVersion(0x0A010000) {
+        let look_at_flags = if stream.version() >= NifVersion::V10_1_0_0 {
             stream.read_u16_le()?
         } else {
             0
@@ -136,7 +136,7 @@ impl NiObject for NiPathController {
 impl NiPathController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
-        let path_flags = if stream.version() >= NifVersion(0x0A010000) {
+        let path_flags = if stream.version() >= NifVersion::V10_1_0_0 {
             stream.read_u16_le()?
         } else {
             0

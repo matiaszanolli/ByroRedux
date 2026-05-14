@@ -1009,7 +1009,7 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
     let count = _verts.len() as u64;
 
     // Has Radii / Radii: since 10.1.0.0, array only on !BS202.
-    if stream.version() >= NifVersion(0x0A010000) {
+    if stream.version() >= NifVersion::V10_1_0_0 {
         let has_radii = stream.read_byte_bool()?;
         if has_radii && !is_bs_202 {
             stream.skip(count * 4)?;
@@ -1453,7 +1453,7 @@ mod tests {
         }
         d.extend_from_slice(&num_vertices.to_le_bytes());
         // keep/compress flags since 10.1.0.0
-        if version >= NifVersion(0x0A010000) {
+        if version >= NifVersion::V10_1_0_0 {
             d.push(0u8);
             d.push(0u8);
         }

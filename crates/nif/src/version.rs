@@ -55,6 +55,17 @@ impl NifVersion {
     /// Skyrim / Fallout 4
     pub const V20_2_0_7_SSE: Self = Self(0x14020007);
 
+    /// v20.1.0.1 — the inclusive boundary at which Gamebryo introduced
+    /// the per-file string table. Headers `>= STRING_TABLE_THRESHOLD`
+    /// carry `(strings, max_string_length)` after the block table;
+    /// stream reads beyond this version follow the indexed-string path,
+    /// older versions inline length-prefixed strings.
+    ///
+    /// MUST be kept in lockstep across `header.rs::NifHeader::parse`
+    /// and `stream.rs::NifStream` — drift here misreads every block's
+    /// name. See `header.rs:~224` and `stream.rs:~411`.
+    pub const STRING_TABLE_THRESHOLD: Self = Self(0x14010001);
+
     pub fn major(self) -> u8 {
         (self.0 >> 24) as u8
     }
@@ -80,6 +91,42 @@ impl fmt::Display for NifVersion {
             self.build()
         )
     }
+}
+
+/// Named `user_version_2` (BSVER) thresholds.
+///
+/// Bethesda's NIFs carry a `user_version_2` byte that disambiguates
+/// the engine variant when the wire-format version alone is not
+/// enough (every Bethesda title since Oblivion ships `V20_2_0_7`).
+/// Block parsers gate field reads on `stream.bsver()` against these
+/// boundaries; the canonical retail values per game are documented
+/// on [`NifVariant::bsver`].
+///
+/// Use these constants in raw `bsver` comparisons instead of bare
+/// decimal literals — the symbols survive cross-file refactors and
+/// document intent at the call site. See [`NifVariant`] for the
+/// feature-flag helpers that wrap most common predicates.
+pub mod bsver {
+    /// Pre-Bethesda authoring tools (Morrowind era, NifSkope older
+    /// builds) — every Bethesda title is `>= FO3_FNV`.
+    pub const PRE_BETHESDA: u32 = 0;
+    /// Fallout 3 retail + Fallout New Vegas (binary-identical at
+    /// BSVER 34 per nif.xml `V20_2_0_7_FO3`).
+    pub const FO3_FNV: u32 = 34;
+    /// Skyrim LE.
+    pub const SKYRIM_LE: u32 = 83;
+    /// Skyrim Special Edition.
+    pub const SKYRIM_SE: u32 = 100;
+    /// Fallout 4 (also covers 132 / 139 patch BSVERs in shipping
+    /// content per the `Fallout4` variant fan-out; this constant is
+    /// the lower bound).
+    pub const FALLOUT4: u32 = 130;
+    /// Fallout 76 (lower bound; FO76 spans 152..=167 in shipping
+    /// content).
+    pub const FO76: u32 = 155;
+    /// Starfield (lower bound — `>=168` in retail; 170 is the
+    /// historical cutoff vs FO76 dev builds).
+    pub const STARFIELD: u32 = 172;
 }
 
 /// Which game generation produced this NIF.

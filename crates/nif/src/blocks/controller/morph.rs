@@ -185,7 +185,7 @@ impl NiMorphData {
         // NIF-D1-NEW-02 (audit 2026-05-12).
         let version = stream.version();
         let bsver = stream.bsver();
-        let has_keys = version <= NifVersion(0x0A010000);
+        let has_keys = version <= NifVersion::V10_1_0_0;
         let has_legacy_weight =
             version >= NifVersion(0x0A010068) && version <= NifVersion(0x14010002) && bsver < 10;
 

@@ -430,7 +430,7 @@ impl<'a> NifStream<'a> {
     }
 
     pub fn read_string(&mut self) -> io::Result<Option<Arc<str>>> {
-        if self.header.version >= NifVersion(0x14010001) {
+        if self.header.version >= NifVersion::STRING_TABLE_THRESHOLD {
             // String table index — Arc::clone is just a refcount bump.
             let idx = self.read_i32_le()?;
             if idx < 0 {
@@ -714,7 +714,7 @@ mod tests {
         // Regression for #172: string-table dispatch must kick in at
         // exactly 20.1.0.1 per nif.xml, not 20.1.0.3 as it used to.
         // At 20.1.0.1 the reader should take the string-table path.
-        let header = test_header(NifVersion(0x14010001));
+        let header = test_header(NifVersion::STRING_TABLE_THRESHOLD);
         let data: Vec<u8> = vec![
             0x00, 0x00, 0x00, 0x00, // string table index 0
         ];

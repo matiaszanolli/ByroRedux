@@ -289,7 +289,7 @@ fn parse_ni_texturing_property_with_zero_shader_maps() {
 #[test]
 fn parse_ni_texturing_property_apply_mode_at_v20_1_0_1_exactly() {
     let header = NifHeader {
-        version: NifVersion(0x14010001), // v20.1.0.1 — the until= boundary
+        version: NifVersion::STRING_TABLE_THRESHOLD, // v20.1.0.1 — the until= boundary
         little_endian: true,
         user_version: 0,
         user_version_2: 0,
