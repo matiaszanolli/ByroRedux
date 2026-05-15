@@ -1554,13 +1554,19 @@ pub(crate) fn build_render_data(
                     mat.uv_scale_a,
                     mat.uv_scale_b,
                     mat.shoreline_width,
-                    mat.reflectivity,
+                    0.0, // reserved (reflectivity moved to tint_reflect.w in #1069)
                 ],
                 misc: [
                     mat.fresnel_f0,
                     0.0,
                     WaterPush::pack_normal_index(mat.normal_map_index),
                     0.0,
+                ],
+                tint_reflect: [
+                    mat.reflection_tint[0],
+                    mat.reflection_tint[1],
+                    mat.reflection_tint[2],
+                    mat.reflectivity,
                 ],
             };
             water_commands.push(WaterDrawCommand {

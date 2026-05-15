@@ -15,7 +15,7 @@
 //! Unique to this pipeline:
 //!
 //! - `water.vert` + `water.frag` shaders;
-//! - a 112-byte push-constant block ([`WaterPush`]) carrying
+//! - a 128-byte push-constant block ([`WaterPush`]) carrying
 //!   time + flow + per-plane material params;
 //! - SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend on HDR attachment 0;
 //!   attachments 1..5 (normal, motion, mesh_id, raw_indirect, albedo)
@@ -49,8 +49,9 @@ const WATER_FRAG_SPV: &[u8] = include_bytes!("../../shaders/water.frag.spv");
 /// `WaterPush` block in `shaders/water.frag` exactly — std430
 /// scalar layout (push constants are always scalar, never std140).
 ///
-/// 112 bytes total (7 × 16) — fits the Vulkan 1.1 spec minimum
-/// `maxPushConstantsSize >= 128`.
+/// 128 bytes total (8 × 16) — exactly the Vulkan 1.1 spec minimum
+/// `maxPushConstantsSize >= 128`. No further growth is possible
+/// without raising a device capability check.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct WaterPush {
@@ -66,11 +67,15 @@ pub struct WaterPush {
     /// xy = scroll_a, zw = scroll_b (wu/s).
     pub scroll: [f32; 4],
     /// x = uv_scale_a, y = uv_scale_b, z = shoreline_width,
-    /// w = reflectivity.
+    /// w = reserved (was reflectivity pre-#1069; moved to `tint_reflect.w`).
     pub tune: [f32; 4],
     /// x = fresnel_f0, y = reserved, z = normal_map_index bit-cast
     /// to f32 (shader does `floatBitsToUint`), w = reserved.
     pub misc: [f32; 4],
+    /// xyz = reflection_tint (WATR `reflection_color`; tints the
+    /// geometry-hit colour in `traceWaterRay`). w = reflectivity
+    /// (0..1 — fresnel multiplier; moved here from `tune.w` in #1069).
+    pub tint_reflect: [f32; 4],
 }
 
 impl WaterPush {
@@ -84,8 +89,9 @@ impl WaterPush {
 }
 
 const _: () = assert!(
-    std::mem::size_of::<WaterPush>() == 112,
-    "WaterPush must stay 112 bytes (fits the Vulkan 1.1 minimum push constant range of 128)"
+    std::mem::size_of::<WaterPush>() == 128,
+    "WaterPush must be exactly 128 bytes (Vulkan 1.1 minimum maxPushConstantsSize; \
+     no headroom remains — adding fields requires a device-capability check)"
 );
 
 /// One water surface to draw in the current frame.
@@ -419,8 +425,8 @@ mod tests {
     use crate::vulkan::context::DrawCommand;
 
     #[test]
-    fn water_push_layout_is_112_bytes() {
-        assert_eq!(std::mem::size_of::<WaterPush>(), 112);
+    fn water_push_layout_is_128_bytes() {
+        assert_eq!(std::mem::size_of::<WaterPush>(), 128);
         assert_eq!(std::mem::align_of::<WaterPush>(), 4);
     }
 
@@ -512,6 +518,7 @@ mod tests {
                 scroll: [0.0; 4],
                 tune: [0.0; 4],
                 misc: [0.0; 4],
+                tint_reflect: [0.0; 4],
             },
         }
     }

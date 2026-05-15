@@ -104,6 +104,13 @@ pub struct WaterMaterial {
     /// (post-fresnel). 1.0 = pure mirror; 0.7 = REDengine-style
     /// "convincing but not chrome".
     pub reflectivity: f32,
+    /// Tint applied to the reflected geometry hit colour in
+    /// `traceWaterRay`. Sourced from `WATR DATA reflection_color`
+    /// (#1069 / F-WAT-09). Allows chemically-tinted, lava, and
+    /// ocean water to show distinct reflected-geometry hues.
+    /// Default `[0.65, 0.70, 0.75]` matches the pre-fix hard-coded
+    /// neutral-grey value in `water.frag`.
+    pub reflection_tint: [f32; 3],
     /// Normal-map index in the bindless texture array. Both wave
     /// layers sample this; the shader applies a different scale +
     /// scroll vector to each. `u32::MAX` = solid-colour water.
@@ -159,6 +166,7 @@ impl Default for WaterMaterial {
             shoreline_width: 32.0,
             ior: 1.33,
             source_form: 0,
+            reflection_tint: [0.65, 0.70, 0.75],
         }
     }
 }

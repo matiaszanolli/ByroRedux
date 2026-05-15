@@ -302,6 +302,7 @@ fn resolve_water_material(
             mat.fog_far = rec.params.fog_far;
             mat.fresnel_f0 = rec.params.fresnel.clamp(0.001, 0.20);
             mat.reflectivity = rec.params.reflectivity;
+            mat.reflection_tint = rec.params.reflection_color;
             mat.source_form = rec.form_id;
 
             // ── WaterKind heuristic from EDID naming convention ──
@@ -386,4 +387,64 @@ pub(super) fn default_interior_half_extent() -> f32 {
 #[inline]
 pub(super) fn exterior_half_extent() -> f32 {
     CELL_SIZE * 0.5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_plugin::esm::records::misc::{WatrRecord, WaterParams};
+
+    /// Regression for #1069 / F-WAT-09 — `reflection_color` parsed from
+    /// WATR DATA must reach `WaterMaterial.reflection_tint` via
+    /// `resolve_water_material`. Pre-fix the field was silently dropped.
+    #[test]
+    fn resolve_water_material_transfers_reflection_color() {
+        let lava_tint = [0.85_f32, 0.30, 0.10]; // orange-red lava pool
+
+        let rec = WatrRecord {
+            form_id: 0x000A_BCDE,
+            editor_id: "LavaPool01".to_string(),
+            full_name: "Lava Pool".to_string(),
+            texture_path: String::new(),
+            noise_textures: [u32::MAX; 3],
+            params: WaterParams {
+                shallow_color: [1.0, 0.4, 0.1],
+                deep_color: [0.6, 0.1, 0.0],
+                reflection_color: lava_tint,
+                fog_near: 20.0,
+                fog_far: 80.0,
+                reflectivity: 0.40,
+                fresnel: 0.04,
+                wind_speed: 0.0,
+                wind_direction: 0.0,
+                wave_amplitude: 0.0,
+                wave_frequency: 0.0,
+            },
+            raw_dnam: Vec::new(),
+            raw_data: Vec::new(),
+        };
+
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+
+        let (mat, _kind, _flow, _normal) =
+            resolve_water_material(&waters, Some(0x000A_BCDE));
+
+        assert_eq!(
+            mat.reflection_tint, lava_tint,
+            "reflection_tint must round-trip from WATR DATA reflection_color"
+        );
+    }
+
+    /// Default WaterMaterial (no XCWT / no WATR record) uses the neutral
+    /// grey that matches the pre-#1069 hard-coded shader value.
+    #[test]
+    fn default_water_material_has_neutral_reflection_tint() {
+        let (mat, _, _, _) = resolve_water_material(&HashMap::new(), None);
+        assert_eq!(
+            mat.reflection_tint,
+            [0.65, 0.70, 0.75],
+            "default reflection_tint must match the pre-fix shader hard-code"
+        );
+    }
 }

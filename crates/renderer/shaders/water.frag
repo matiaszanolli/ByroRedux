@@ -37,8 +37,8 @@
 //   thanks to the perturbed-normal averaging across the surface. The
 //   composite-pass tone-mapper + TAA handles the residual jitter.
 //
-// Push constants (112 bytes, ≤ 128 byte minimum on every Vulkan 1.1
-// device — `maxPushConstantsSize ≥ 128`):
+// Push constants (128 bytes, exactly the Vulkan 1.1 minimum
+// `maxPushConstantsSize ≥ 128` — no headroom remains):
 
 layout(push_constant) uniform WaterPush {
     // x = time (seconds since cell load), y = WaterKind enum cast to
@@ -52,10 +52,14 @@ layout(push_constant) uniform WaterPush {
     vec4 deep;
     // xy = scroll_a (world units/s), zw = scroll_b
     vec4 scroll;
-    // x = uv_scale_a, y = uv_scale_b, z = shoreline_width, w = reflectivity
+    // x = uv_scale_a, y = uv_scale_b, z = shoreline_width, w = reserved
     vec4 tune;
     // x = fresnel_f0, y = (unused/reserved), z = normal_map_index (uintBitsToFloat — sample with floatBitsToUint), w = (reserved)
     vec4 misc;
+    // rgb = reflection_tint (WATR DATA reflection_color — tints geometry-hit
+    // colour in traceWaterRay; #1069 / F-WAT-09). a = reflectivity (0..1,
+    // moved from tune.w).
+    vec4 tint_reflect;
 } push;
 
 const uint WATER_CALM      = 0u;
@@ -213,7 +217,11 @@ vec3 traceWaterRay(vec3 origin, vec3 direction, float maxDist, vec3 missFallback
     // limited to (textures, camera UBO, TLAS, instance buffer) — no
     // material table / vertex SSBO / index SSBO bindings needed,
     // which would otherwise double the descriptor footprint.
-    return mix(skyTint.xyz, vec3(0.65, 0.7, 0.75), 0.4);
+    // Tint the geometry-hit colour with the per-WATR `reflection_color`
+    // authored value (#1069 / F-WAT-09). Pre-fix this was a hard-coded
+    // neutral grey (`vec3(0.65, 0.7, 0.75)`); the default value of
+    // `tint_reflect.rgb` matches that fallback for unspecified records.
+    return mix(skyTint.xyz, push.tint_reflect.rgb, 0.4);
 }
 
 // ── Beer-Lambert through the water column ─────────────────────────────
@@ -450,7 +458,7 @@ void main() {
     foamMask = clamp(foamMask * foamStrength, 0.0, 1.0);
 
     // ── Surface colour ──
-    vec3 surfaceColor = mix(refrColor, reflColor * push.tune.w, fresnel);
+    vec3 surfaceColor = mix(refrColor, reflColor * push.tint_reflect.w, fresnel);
 
     // Foam is bright white-ish with a faint tint from the shallow
     // colour — looks more natural than pure white.
