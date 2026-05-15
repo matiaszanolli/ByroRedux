@@ -64,11 +64,11 @@ no longer lockstep across 4 shaders + DrawCommand + GpuInstance.
 **Parser coverage.** NIF parses across seven games (184 886 files
 on the latest sweep — see compatibility matrix below). FO3 / FNV /
 Skyrim SE land at 100% clean; Oblivion / FO4 / FO76 in the 95–97%
-band (drift-induced truncation per #687 / #688); Starfield at 97.19%
+band (drift-induced truncation; #687/#688 closed). Starfield at 97.19%
 clean (recent BA2 v3 LZ4 chunked content the parser doesn't yet
 fully cover). Recoverable rate is 100% on all seven games except
 Oblivion (99.99%, single hard-fail on a corrupt-by-design debug
-marker — #698). ESM parses structured records across ~25 types on
+marker — #698 closed). ESM parses structured records across ~25 types on
 FNV; 73 054 structured records on the latest sweep, plus a 5 625-
 record long-tail bucket (sounds / idle / grasses / debris). Archive
 readers cover BSA v103/v104/v105 and BA2 v1/v2/v3/v7/v8 (GNRL + DX10
@@ -138,12 +138,13 @@ Parse-rate columns measured 2026-04-26 against vanilla mesh archives
 on commit 0681fc7 (`cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`).
 Clean = no NiUnknown placeholders + no truncation. Recoverable = file
 parses end-to-end (counting NiUnknown / truncation as recoverable).
-The audit-publish run #684–#688 / #697 / #698 tracks the open
-parse-rate work for the games where clean < 100%.
+The audit-publish run #684–#688 / #697 / #698 tracked the parse-rate
+work for the games where clean < 100% (all four now CLOSED; residual
+gaps tracked under git log).
 
 | Game              | Archive       | NIF parse rate (clean / recoverable)         | Cells                                                    |
 |-------------------|---------------|----------------------------------------------|----------------------------------------------------------|
-| Oblivion          | BSA v103      | **96.24%** (7 730 / 8 032) · recover 99.99%  | Interior (Anvil Heinrich Oaken Halls). Exterior blocked on TES4 worldspace + LAND wiring (same shape as FO3 was). `#687` closed via two perpetrator-parser fixes (NiGeomMorpherController trailing bsver-gated u32 + NiControllerSequence Phase field for v=10.2.0.0); 83 truncations recovered. `#688` / `#698` track the remaining clean-rate gap. |
+| Oblivion          | BSA v103      | **96.24%** (7 730 / 8 032) · recover 99.99%  | Interior (Anvil Heinrich Oaken Halls). Exterior blocked on TES4 worldspace + LAND wiring (same shape as FO3 was). `#687` closed (NiGeomMorpherController + NiControllerSequence Phase fixes; 83 truncations recovered). `#688` / `#698` closed; remaining ~149 NetImmerse-era Oblivion files tracked under git log. |
 | Fallout 3         | BSA v104      | 100% (10 989)                                | Interior (Megaton, 929 REFRs). Exterior wired; fresh GPU bench pending (R6a). |
 | Fallout New Vegas | BSA v104      | 100% (14 881)                                | Interior (Prospector 2562 entities @ 133.5 FPS / 7.49 ms on RTX 4070 Ti, bench `220e8e1` 2026-05-11). Exterior 7×7 (radius 3). |
 | Skyrim SE         | BSA v105 LZ4  | 100% (18 862)                                | Interior (WhiterunBanneredMare 3209 entities @ 217.3 FPS / 4.60 ms, bench `220e8e1` 2026-05-11; entity count up from 1258 since M32.5 close — M41 NPC scaffold + every REFR through the corrected Euler→Y-up composition land more refs now). |
@@ -158,8 +159,8 @@ parse-rate work for the games where clean < 100%.
 Priority: **shortest path to a playable cell**, not shortest path to a
 shinier frame. The renderer is mature (RT + RIS + SVGF + TAA + POM)
 and the content pipeline parses recoverably across every target
-(clean rates per the matrix above; tracked under #687 / #688 / #697
-/ #698); next bottlenecks are *consumers* — things that make what we
+(clean rates per the matrix above; #687/#688/#697/#698 closed — see git log);
+next bottlenecks are *consumers* — things that make what we
 parse actually do something on screen or at the speakers.
 
 **Two axes.** Milestones (`M…`) ship user-visible capability.
@@ -282,7 +283,7 @@ active for incremental wins; don't let them block Tier 1–4.
 | M24.2   | ESM Phase 2                         | QUST / DIAL / INFO / PERK / MGEF / SPEL / ENCH / AVIF semantic parsing. Quest stages, dialogue trees, perk entry points, magic effects.                                                                                                                                                                                                                                                                                                                                                                                                                                                | R2             |
 | M30.2   | Papyrus Phase 2–4                   | Statement parser, script declarations, FO4 extensions. Full `.psc` → AST for the entire Skyrim / FO4 corpus.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | M30            |
 | ~~M46.0~~ | ~~Multi-plugin CLI~~              | **Closed** via #561. Repeatable `--master <path>` CLI arg + `load_cell_with_masters` / `load_exterior_cells_with_masters` entry points. Each plugin's TES4 master_files header drives a per-plugin `FormIdRemap` so cross-plugin REFRs land in the merged `EsmIndex` under their global FormIDs. Last-write-wins on key collisions (canonical Bethesda load-order semantics). `EsmIndex::merge_from` + `EsmCellIndex::merge_from` carry the merge across the 30+ record-type maps. The unresolved-REFR diagnostic now names the missing plugin instead of silently rendering empty. Usage: `cargo run -- --master Skyrim.esm --esm Dawnguard.esm --cell ForebearsHoldoutInt01`. | #445 (done)    |
-| ~~R3~~  | ~~NIF per-block-type parse histogram~~ | **Closed.** `nif_stats --tsv` emits a per-header-type `parsed` vs `NiUnknown` histogram; `crates/nif/tests/per_block_baselines.rs` integration test (opt-in via `cargo test -- --ignored`) compares against checked-in TSV baselines for all 7 games and fails on any `unknown` growth or `parsed` shrinkage. `BYROREDUX_REGEN_BASELINES=1` regenerates after intentional changes. Oblivion baseline refreshed 2026-04-26 to track the post-session-18 truncation drift surfaced by the audit (#687/#688/#697); the underlying drift sources stay open as separate issues (R3's job is to surface them, not fix them). Today the gate runs as a manual `cargo test … -- --ignored` invocation — there is no GitHub Actions pipeline yet, so "fail CI on regression" is the test's *contract* rather than an enforced workflow. | —              |
+| ~~R3~~  | ~~NIF per-block-type parse histogram~~ | **Closed.** `nif_stats --tsv` emits a per-header-type `parsed` vs `NiUnknown` histogram; `crates/nif/tests/per_block_baselines.rs` integration test (opt-in via `cargo test -- --ignored`) compares against checked-in TSV baselines for all 7 games and fails on any `unknown` growth or `parsed` shrinkage. `BYROREDUX_REGEN_BASELINES=1` regenerates after intentional changes. Oblivion baseline refreshed 2026-04-26 to track the post-session-18 truncation drift surfaced by the audit (#687/#688/#697, all now CLOSED); R3's job was to surface the drift, not fix it — the underlying issues were separately resolved. Today the gate runs as a manual `cargo test … -- --ignored` invocation — there is no GitHub Actions pipeline yet, so "fail CI on regression" is the test's *contract* rather than an enforced workflow. | —              |
 
 ### Tier 7 — Deep gameplay systems (deferred until Tier 1–4 proves out)
 
@@ -519,7 +520,7 @@ M14 DDS texture loading · M16 ESM parser & cell loading ·
 M18 Skyrim SE NIF · M19 full cell loading · M26 BA2 archive
 support (v1/v2/v3/v7/v8, zlib + LZ4). Per-game clean-parse rates
 in the compat matrix above; recoverable rate at 100% across all
-seven games except Oblivion's single hard-fail (#698).
+seven games except Oblivion's single hard-fail (#698, closed).
 
 **ESM records (M24 Phase 1)**
 Items (WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE), containers,
@@ -592,7 +593,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 - [x] ~~**R1** DrawCommand has ~40 fields + 10 shader-variant payloads — collapse to `material_id` indirection (blocks M38)~~ — **closed 2026-05-01** across 6 phases (`aa48d64`..`22f294a`). `GpuInstance` collapsed 400 → 112 B (72% reduction); per-frame `MaterialBuffer` SSBO with byte-level dedup. M38 unblocked. Two follow-ups: caustic compute set 0 path + `DrawCommand` per-material field cleanup.
 - [ ] **R2** ESM sub-record decoder is ad-hoc across 3 000+-line walkers — typed `read_sub::<T>` API (blocks M24.2)
-- [x] **R3** NIF `NiUnknown` soft-fail masks per-block regressions — **closed**. `nif_stats --tsv` emits per-type `parsed` vs `unknown`; `crates/nif/tests/per_block_baselines.rs` (opt-in) compares against checked-in 7-game baselines and fails on any unknown growth or parsed shrinkage. Oblivion baseline refreshed 2026-04-26 against the audit-flagged truncation drift; `#687`/`#688`/`#697` track the underlying parser drift sources (R3 surfaces them, doesn't fix them).
+- [x] **R3** NIF `NiUnknown` soft-fail masks per-block regressions — **closed**. `nif_stats --tsv` emits per-type `parsed` vs `unknown`; `crates/nif/tests/per_block_baselines.rs` (opt-in) compares against checked-in 7-game baselines and fails on any unknown growth or parsed shrinkage. Oblivion baseline refreshed 2026-04-26 against the audit-flagged truncation drift; `#687`/`#688`/`#697` (all CLOSED) were the underlying parser drift sources — R3 surfaced them, separate fixes resolved them.
 - [ ] **R4** SWF/GFx strategic decision needed before M48 — Ruffle+GFx-stubs vs rewrite menus natively
 - [ ] **R5** Papyrus full-runtime prototype on one real quest before M47.2 scope commitment
 - [x] **R6** `VulkanContext` scratch buffers have no capacity telemetry — **closed**. `ctx.scratch` console command + `ScratchTelemetry` resource cover all 5 persistent scratches; per-frame refresh via `VulkanContext::fill_scratch_telemetry`. Prospector baseline: 337 KB total, 320 B wasted.
@@ -618,7 +619,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [ ] `BSBoneLODExtraData` has no parser — surfaced by R3 baselines: 0/34 on FO4, 0/52 on Skyrim SE, 0/56 on FO76 (no instances on the other four games). Single-fix candidate matching the Session 18 R3-driven pattern.
 - [x] ~~`BSClothExtraData` 0/298 on Starfield~~ — **closed via #722**. Parser was reading the NiExtraData `Name` field that nif.xml line 3222 marks `excludeT="BSExtraData"`; consumed 4 bytes of cloth payload as a string-table index, then read garbage as length and tripped EOF. Fix unblocks 1 523 cloth blocks across FO4 (309) / FO76 (365) / SF Meshes01 (298) + SF FaceMeshes (551). Cloth-simulation animation consumer still future work; parser side now correct. Baseline TSVs need a fresh sweep (`BYROREDUX_REGEN_BASELINES=1`) to lock the per-block delta.
 - [ ] One Starfield NIF (`meshes\marker_radius.nif`) requests a 318 MB single-buffer allocation at parse time, exceeding `byroredux_nif::stream::MAX_SINGLE_ALLOC_BYTES = 256 MB`. Per-allocation cap is a different trade-off from the BA2 chunk cap bumped in Session 18 — bumping this one weakens defence against attacker-controlled `u32` sizes inside individual NIF blocks. Tracked separately; one file out of 320 483 in the Starfield mesh archive.
-- [ ] **`#688`** — 149 Oblivion files truncate at root NiNode "failed to fill whole buffer". Investigation refuted the audit's "v=20.0.0.5 subset" framing (see `.claude/issues/688/INVESTIGATION.md`): all 149 are pre-Gamebryo NetImmerse-vintage content shipped in Oblivion's BSA, dominated by **v=10.1.0.106 / bsver=5 (77 files, 52% of bucket)** plus v=10.0.1.0 (39), v=10.0.1.2 (21), v=10.1.0.101 (8), v=4.0.0.2 (4). Empirical hex dump of `meshes\menus\hud_brackets\a_b_c_d_seq.nif` shows a 4-byte leading zero before the NiObjectNET.name field that neither `nif.xml` nor `nifly` document. Two block-layout hypotheses tested (per-block u32 prefix; one-time block_data_offset shift), both partial — different blocks expect different leading layouts. The audit's recommended `block_size` end-of-block assertion doesn't apply because `block_sizes` is gated `since 20.2.0.5` and these files are < 20.2.0.5. **Deferred** until Gamebryo 2.3 / NetImmerse-era `NiObjectNET::LoadBinary` source is mounted to bisect against. Affected files are non-critical-path (HUD brackets, menu assets, one creature head); interior cells render fine. **Caution for future audit runs**: do NOT re-derive the "v=20.0.0.5 subset" framing — it's been empirically refuted.
+- [x] ~~**`#688`**~~ — **CLOSED.** 149 Oblivion files truncate at root NiNode "failed to fill whole buffer" (pre-Gamebryo NetImmerse-vintage HUD brackets, menu assets, one creature head). Investigation (`.claude/issues/688/INVESTIGATION.md`) refuted the audit's "v=20.0.0.5 subset" framing — all 149 are `v=10.x.x.x / bsver=5` NetImmerse content with an undocumented 4-byte leading zero before `NiObjectNET.name`. Parser-side recovery (block_size gate) already handles them as truncated-not-failed; interior cells render fine. **Caution for future audit runs**: do NOT re-derive the "v=20.0.0.5 subset" framing — it has been empirically refuted.
 
 ---
 

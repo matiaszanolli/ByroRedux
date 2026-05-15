@@ -238,7 +238,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_13.md`
 
 ### Dimension 14: Material Table (R1 Refactor — closed 2026-05-01, hardened 2026-05-04/05)
-**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer/` (GpuInstance, MAX_MATERIALS = 4096), `byroredux/src/render.rs` (build_render_data), all 5 shaders (`triangle.vert/frag`, `ui.vert`, `water.vert/frag`)
+**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer/` (GpuInstance, MAX_MATERIALS = 4096), `byroredux/src/render.rs` (build_render_data), all 5 shaders that declare `struct GpuInstance` (`triangle.vert`, `triangle.frag`, `ui.vert`, `water.vert`, `caustic_splat.comp`) — verify via `grep -l "struct GpuInstance" crates/renderer/shaders/`
 **Checklist**:
 - `GpuMaterial` is exactly **260 bytes** (`gpu_material_size_is_260_bytes` test pins it; was 272 B until #804 / R1-N4 dropped the unread `avg_albedo_r/g/b` field). Any field add/remove must update both Rust + GLSL `struct GpuMaterial` in lockstep
 - Per-field offset pinning (`gpu_material_field_offsets_match_shader_contract`, #806): all 65 named-field offsets across 16 vec4 slots are asserted; size-only pin cannot catch within-vec4 reorders (e.g. swapping `texture_index ↔ normal_map_index`). Any new field must add a matching offset assertion
@@ -249,7 +249,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Dedup-ratio telemetry exposed (#780 PERF-N1): unique material count vs placement count surfaced via console — Prospector baseline 1200 placements → 87 unique (~14× hit rate). Regression = audit finding even if correctness holds
 - `GpuInstance.material_id: u32` ships in the Phase 3+ instance struct; legacy per-instance fields confirmed dropped from Phases 4–6 already-migrated slices
 - Shader-side `materials[instance.material_id].foo` reads use the same offsets as the Rust struct (Phase 4–5 mechanical migration check). The #785 R-N1 regression of `ui.vert` reading the wrong MaterialBuffer offset is a recurring trap — verify `ui.vert` is in lockstep with the offset-pin contract, not just `triangle.frag`
-- All 3 shaders updated in lockstep — `triangle.vert`, `triangle.frag`, `ui.vert` (per `feedback_shader_struct_sync.md`)
+- All 5 shaders updated in lockstep — `triangle.vert`, `triangle.frag`, `ui.vert`, `water.vert`, `caustic_splat.comp` (per `feedback_shader_struct_sync.md`). Use `grep -l "struct GpuInstance" crates/renderer/shaders/` as the canonical drift check
 - Identity invariant: render output for a scene with N copies of the same material must be byte-identical pre/post R1 dedup
 - Phase status check: any per-instance fields that R1 did NOT migrate yet should be flagged (Phase 6 was the closeout — verify nothing remains in DrawCommand/GpuInstance that should now live in GpuMaterial)
 **Output**: `/tmp/audit/renderer/dim_14.md`
@@ -279,7 +279,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Bitangent sign convention: `B = bitangent_sign * cross(N, T)` — the sign is reconstructed shader-side from `Vertex.tangent.w`. Verify the convention is consistent across the three import paths (Bethesda authored, FO4 inline, synthesized)
 - Coordinate conversion: Z-up (Gamebryo) → Y-up (renderer) applied to tangent xyz components in lockstep with normal conversion (no path that converts N but not T, or vice versa)
 - `perturbNormal` is **default-on** (#787 / #788, b8ab477) with the Path-1 transform fixed; `DBG_BYPASS_NORMAL_MAP = 0x10` is the runtime opt-out for bisecting (`triangle.frag:863`). Verify the bit is still recognized
-- Permanent diagnostic bit catalog (`triangle.frag:628-686`): `DBG_BYPASS_POM = 0x1`, `DBG_BYPASS_DETAIL = 0x2`, `DBG_VIZ_NORMALS = 0x4`, `DBG_VIZ_TANGENT = 0x8`, `DBG_BYPASS_NORMAL_MAP = 0x10`, `DBG_RESERVED_20 = 0x20` (formerly `DBG_FORCE_NORMAL_MAP`, no-op post-#1035), `DBG_VIZ_RENDER_LAYER = 0x40`, `DBG_VIZ_GLASS_PASSTHRU = 0x80`. Audit for drift: any added bit must not collide; any dropped bit must not orphan shader code
+- Permanent diagnostic bit catalog (`triangle.frag:739-829`): `DBG_BYPASS_POM = 0x1`, `DBG_BYPASS_DETAIL = 0x2`, `DBG_VIZ_NORMALS = 0x4`, `DBG_VIZ_TANGENT = 0x8`, `DBG_BYPASS_NORMAL_MAP = 0x10`, `DBG_RESERVED_20 = 0x20` (formerly `DBG_FORCE_NORMAL_MAP`, no-op post-#1035), `DBG_VIZ_RENDER_LAYER = 0x40`, `DBG_VIZ_GLASS_PASSTHRU = 0x80`, `DBG_DISABLE_SPECULAR_AA = 0x100`, `DBG_DISABLE_HALF_LAMBERT_FILL = 0x200`. Audit for drift: any added bit must not collide; any dropped bit must not orphan shader code
 - "Chrome posterized walls" red herring: per `feedback_chrome_means_missing_textures.md`, that artifact is the magenta-checker placeholder × a (correctly loaded) tangent-space normal map. Audit findings claiming a tangent-space bug from chrome fragments alone are stale — the audit MUST run `tex.missing` first before recommending a tangent-space fix
 **Output**: `/tmp/audit/renderer/dim_16.md`
 

@@ -156,9 +156,9 @@ pub struct GpuLight {
 /// GPU-side camera data (288 bytes, std140-compatible).
 ///
 /// Layout pinned by `gpu_camera_layout_pin` test — three `mat4`
-/// (3×64 = 192 B) + nine `vec4` (9×16 = 144 B, wait — six trailing vec4s
-/// post-#925 / #1028: position, flags, screen, fog, jitter, sky_tint
-/// = 6×16 = 96 B) → 288 B. Every shader that re-declares this struct
+/// (3×64 = 192 B) + six trailing `vec4` (6×16 = 96 B: position, flags,
+/// screen, fog, jitter, sky_tint — post-#925 / #1028) → 288 B. Every
+/// shader that re-declares this struct
 /// MUST keep field order and field count in lockstep:
 ///
 /// * `triangle.vert`, `triangle.frag`, `water.vert`, `water.frag`

@@ -73,7 +73,7 @@ Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 - Frisvad orthonormal basis (#820 / REN-D9-NEW-01): the `cross(N, world-up)` construction degenerates near vertical surfaces (zero-length basis → NaN ray). Verify Frisvad is the active code path for IOR refraction roughness spread
 - Glass ray budget bounded: `GLASS_RAY_BUDGET = 8192` (raised from 512 in 9a4dc15) — the cap exists to prevent runaway recursion, not as a quality knob. Verify the budget is enforced at every call site
 - IOR miss fallback for interiors uses cell-ambient (bb53fd5), NOT the global sky tint — open-sky leakage into dungeons is a visible regression
-- `DBG_VIZ_GLASS_PASSTHRU = 0x80` debug bit kept as a permanent diagnostic; verify the bit position has not collided with new debug-flag additions (full catalog: `triangle.frag:628-686`)
+- `DBG_VIZ_GLASS_PASSTHRU = 0x80` debug bit kept as a permanent diagnostic; verify the bit position has not collided with new debug-flag additions (full catalog: `triangle.frag:739-829`)
 
 ### 10. NPC / Animation Spawn Safety (M41.0 long-tail)
 - B-spline pose-fallback (#772): NPC vanishing under FNV `BSPSysSimpleColorModifier` particle stacks that share keyframe time-zero with the actor's animation player must be gated on a `FLT_MAX` sentinel. Removing the gate causes whole-NPC disappearance, not just a stuck pose — verify the sentinel is still wired
