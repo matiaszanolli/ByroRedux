@@ -263,10 +263,10 @@ fn sort_key_is_deterministic_for_full_tuple_ties() {
 ///
 /// `#[ignore]` because the timings are environment-dependent — this is
 /// a one-shot measurement gate, not a regression test. Run with
-/// `cargo test -p byroredux --release bench_draw_sort_serial_vs_parallel -- --ignored --nocapture`.
+/// `cargo test -p byroredux --release manual_bench_draw_sort_serial_vs_parallel -- --ignored --nocapture`.
 #[test]
 #[ignore]
-fn bench_draw_sort_serial_vs_parallel() {
+fn manual_bench_draw_sort_serial_vs_parallel() {
     use rayon::prelude::*;
     use std::time::Instant;
     fn make_inputs(n: usize) -> Vec<DrawCommand> {

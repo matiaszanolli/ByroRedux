@@ -38,6 +38,7 @@ Inventory` returned nothing.
 |--------|-----------|----------|
 | [`m41-equip.sh`](m41-equip.sh) | M41 Phase 2 close-out | Skyrim+ / FO4 NPCs spawn with their default outfit (LVLI dispatch via OTFT walks resolves to base ARMO refs; `Inventory` + `EquipmentSlots` are populated; armor meshes load without `tex.missing` overflow). |
 | [`m-trees.sh`](m-trees.sh) | SpeedTree Phase 1.7 close-out | Pre-Skyrim TREE REFRs round-trip through the SpeedTree pipeline: TREE record → `.spt` parser → SPT importer → cell loader extension switch → `Billboard` ECS entity. FNV / FO3 exterior cells must spawn ≥ 1 / ≥ 5 billboard placeholders respectively. |
+| `cargo test -p byroredux --test skinning_e2e -- --ignored` | M29 skinning close-out | FNV `NiSkinInstance` + SSE `BSSkinInstance` full import chain: bones populated, names round-trip `node_by_name`, partition-local → global bone-index remap correct, per-vertex `bone_indices`/`bone_weights` in bounds. Needs `BYROREDUX_FNV_DATA` + `BYROREDUX_SKYRIM_DATA`. |
 
 ### Assertion shape
 

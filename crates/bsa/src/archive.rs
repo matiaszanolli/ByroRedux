@@ -860,21 +860,6 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn extract_and_parse_nif() {
-        if skip_if_missing() {
-            return;
-        }
-        let archive = BsaArchive::open(fnv_meshes_bsa()).unwrap();
-        let data = archive
-            .extract("meshes\\clutter\\food\\beerbottle01.nif")
-            .unwrap();
-        // Write to temp file so NIF parser can read it
-        std::fs::write("/tmp/test_bsa_bottle.nif", &data).unwrap();
-        eprintln!("Extracted {} bytes to /tmp/test_bsa_bottle.nif", data.len());
-    }
-
-    #[test]
-    #[ignore]
     fn extract_nonexistent_fails() {
         if skip_if_missing() {
             return;

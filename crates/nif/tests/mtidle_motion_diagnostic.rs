@@ -1,13 +1,13 @@
-//! Diagnostic test for #794 — does FNV `mtidle.kf` produce visible
-//! rotation variation across time when sampled through the same
-//! import + sample path the runtime uses?
+//! Regression pin for #794 — verifies that FNV `mtidle.kf` produces
+//! visible rotation variation across time when sampled through the
+//! import + sample path the runtime uses.
 //!
-//! Reproduces the third investigation step in #794: load a real
-//! `mtidle.kf` from FNV `Fallout - Meshes.bsa`, extract the
-//! TransformChannel for one of the major bones (`Bip01 Spine`,
-//! `Bip01 Head`, etc.), and assert that sampling the same channel at
-//! several times across the clip duration produces *at least one*
-//! quaternion delta above an epsilon.
+//! Exercises the full clip at `SAMPLE_TIMES`, collects the maximum
+//! quaternion delta across all `TransformChannel`s for major bones
+//! (`Bip01 Spine`, `Bip01 Head`, etc.), and asserts it exceeds
+//! `ROTATION_EPSILON = 1e-3`. A failure signals that the B-spline
+//! rotation decoder is producing constant output (the root cause of
+//! #794 before the fix).
 //!
 //! `#[ignore]` because it needs vanilla FNV game data; run with
 //! `cargo test -p byroredux-nif --test mtidle_motion_diagnostic
