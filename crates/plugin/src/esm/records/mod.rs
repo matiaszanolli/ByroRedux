@@ -61,6 +61,7 @@ pub use misc::{
     NaviRecord, NavmRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RegnRecord, RepuRecord,
     SlgmRecord, SpelRecord, TermRecord, WatrRecord,
 };
+pub use common::StringsTableGuard;
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use tree::{parse_tree, ObjectBounds as TreeObjectBounds, TreeRecord};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};

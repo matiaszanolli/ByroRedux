@@ -1,22 +1,24 @@
-# #989 — SK-D6-NEW-01: No .STRINGS companion-file loader
+# Issue #989: SK-D6-NEW-01: No .STRINGS companion-file loader
 
-**Source**: `docs/audits/AUDIT_SKYRIM_2026-05-12.md` § Dim 6
-**Severity**: LOW (cosmetic — does not block rendering)
-**URL**: https://github.com/matiaszanolli/ByroRedux/issues/989
-
-## Locations
-
-- `crates/plugin/src/esm/records/common.rs:105-114` — placeholder emitter
-- `crates/plugin/src/esm/reader.rs:557` — `FileHeader.localized`
+**State:** OPEN  
+**Labels:** enhancement, low, legacy-compat
 
 ## Summary
 
-`FileHeader.localized` is captured, and every `read_lstring_or_zstring` call site emits a `<lstring 0xNNNNNNNN>` placeholder. The Phase 2 follow-up (loading `Strings/<plugin>_<lang>.{STRINGS,DLSTRINGS,ILSTRINGS}` and resolving the placeholder) has never been implemented; `grep -rn 'STRINGS|stringstable|StringTable|strings_file' crates/plugin/src/esm/` returns zero hits.
+Skyrim localized names render as `<lstring 0xNNNNNNNN>` placeholders because the
+`.STRINGS`/`.DLSTRINGS`/`.ILSTRINGS` companion-file loader (Phase 2) was never
+implemented. Phase 1 (#348, CLOSED) wired the placeholder; this issue implements
+the resolver.
 
-## Fix
+## Location
 
-Land `crates/plugin/src/esm/strings_table.rs` honouring the UESP STRINGS format (8-byte header + count × (id, offset) + string blob). Surface as an optional `&StringTableSet` parameter on `parse_esm_with_load_order`. ~150 LOC + fixtures.
+- `crates/plugin/src/esm/records/common.rs` — `read_lstring_or_zstring`, `LocalizedPluginGuard`
+- To create: `crates/plugin/src/esm/strings_table.rs`
 
-## Related
+## Plan
 
-- #348 (CLOSED) — Phase 1 placeholder
+1. Create `strings_table.rs` with `StringsTable` + `StringTableSet`
+2. Add thread-local `CURRENT_STRINGS_TABLE` + `StringsTableGuard` in `common.rs`
+3. Update `read_lstring_or_zstring` to resolve via thread-local table
+4. Export from `mod.rs`
+5. Add regression test

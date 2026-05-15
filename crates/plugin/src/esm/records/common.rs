@@ -6,7 +6,9 @@
 //! model paths, primitive reads at known offsets.
 
 use crate::esm::reader::SubRecord;
-use std::cell::Cell;
+use crate::esm::strings_table::StringTableSet;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 thread_local! {
     /// Tracks whether the plugin currently being parsed set the
@@ -16,6 +18,15 @@ thread_local! {
     /// [`read_lstring_or_zstring`] when decoding FULL / DESC /
     /// similar lstring-bearing sub-records. See audit S6-03 / #348.
     static CURRENT_PLUGIN_LOCALIZED: Cell<bool> = const { Cell::new(false) };
+
+    /// Active `.STRINGS`/`.DLSTRINGS`/`.ILSTRINGS` companion tables for
+    /// the plugin currently being parsed. `None` means no table was
+    /// provided (or the plugin is not localized). Set/restored by
+    /// [`StringsTableGuard`] — the RAII pattern keeps nested parses
+    /// correctly stacked. Consulted by [`read_lstring_or_zstring`]
+    /// when resolving a 4-byte lstring index. See #989.
+    static CURRENT_STRINGS_TABLE: RefCell<Option<Rc<StringTableSet>>> =
+        RefCell::new(None);
 }
 
 /// Set the thread-local "this plugin uses lstring indirection" flag.
@@ -77,6 +88,53 @@ impl Drop for LocalizedPluginGuard {
     }
 }
 
+/// RAII guard that installs a [`StringTableSet`] into the thread-local for
+/// the duration of a parse scope and restores the previous value on drop.
+///
+/// Mirrors [`LocalizedPluginGuard`] — nested parses correctly stack because
+/// each guard captures and restores the prior value. Panics inside the parse
+/// also restore correctly.
+///
+/// Typical usage:
+/// ```ignore
+/// let tables = StringTableSet::load(plugin_path, "english");
+/// let _strings_guard = StringsTableGuard::new(tables);
+/// let index = parse_esm_with_load_order(bytes, remap)?;
+/// ```
+pub struct StringsTableGuard {
+    prev: Option<Rc<StringTableSet>>,
+}
+
+impl StringsTableGuard {
+    /// Install `table` as the active string tables for this thread.
+    /// The previous value is captured and will be restored on [`Drop`].
+    pub fn new(table: StringTableSet) -> Self {
+        let prev = CURRENT_STRINGS_TABLE.with(|t| t.borrow().clone());
+        CURRENT_STRINGS_TABLE.with(|t| *t.borrow_mut() = Some(Rc::new(table)));
+        Self { prev }
+    }
+}
+
+impl Drop for StringsTableGuard {
+    fn drop(&mut self) {
+        CURRENT_STRINGS_TABLE.with(|t| *t.borrow_mut() = self.prev.take());
+    }
+}
+
+/// Resolve an lstring-table ID against the active thread-local string tables.
+///
+/// Returns `Some(string)` if the active [`StringTableSet`] (if any) contains
+/// the ID, `None` otherwise. Called by [`read_lstring_or_zstring`] after
+/// identifying a 4-byte localized payload.
+pub fn resolve_lstring(id: u32) -> Option<String> {
+    CURRENT_STRINGS_TABLE.with(|t| {
+        t.borrow()
+            .as_ref()
+            .and_then(|set| set.resolve(id))
+            .map(str::to_owned)
+    })
+}
+
 /// Read a null-terminated ASCII string from a sub-record's data buffer.
 /// Trailing bytes after the first NUL are ignored. Returns `String::new()`
 /// for empty buffers.
@@ -108,7 +166,11 @@ pub fn read_zstring(data: &[u8]) -> String {
 pub fn read_lstring_or_zstring(data: &[u8]) -> String {
     if is_localized_plugin() && data.len() == 4 {
         let id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        return format!("<lstring 0x{:08X}>", id);
+        // Resolve against the active StringTableSet first (#989).
+        // Falls back to the placeholder when no table is installed or
+        // the ID is absent from all three companion files.
+        return resolve_lstring(id)
+            .unwrap_or_else(|| format!("<lstring 0x{:08X}>", id));
     }
     read_zstring(data)
 }

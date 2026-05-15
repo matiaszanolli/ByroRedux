@@ -838,3 +838,115 @@ fn categories_table_row_count_pinned() {
     // Bump in lockstep with the struct + `categories()` edits.
     assert_eq!(EsmIndex::categories().len(), 93);
 }
+
+/// Regression test for #989 — `.STRINGS` companion file resolves lstring
+/// placeholders when a [`StringsTableGuard`] is active during `parse_esm`.
+///
+/// Fixture: a localized WEAP record with FULL = 4-byte lstring ID 0x0001.
+/// A synthetic `.STRINGS` table maps 0x0001 → "Iron Sword".
+/// After parsing with the guard active, `item.common.full_name` must be
+/// "Iron Sword" — NOT the `<lstring 0x00000001>` placeholder.
+#[test]
+fn lstring_resolved_via_strings_table_guard() {
+    use crate::esm::strings_table::{StringTableSet, StringsTable};
+
+    // ── Build a synthetic .STRINGS table ─────────────────────────────
+    // Binary layout: [count:u32][data_size:u32][id:u32, offset:u32 × count][blob]
+    let string_data = b"Iron Sword\0";
+    let mut strings_bytes = Vec::new();
+    strings_bytes.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+    strings_bytes.extend_from_slice(&(string_data.len() as u32).to_le_bytes()); // data_size
+    strings_bytes.extend_from_slice(&0x0001u32.to_le_bytes()); // id = 1
+    strings_bytes.extend_from_slice(&0u32.to_le_bytes()); // offset = 0
+    strings_bytes.extend_from_slice(string_data);
+
+    let table = StringsTable::parse(&strings_bytes, false).unwrap();
+    assert_eq!(table.get(0x0001), Some("Iron Sword"), "table round-trip");
+
+    let set = StringTableSet {
+        strings: Some(table),
+        dlstrings: None,
+        ilstrings: None,
+    };
+
+    // ── Build a localized ESM fixture ─────────────────────────────────
+    // TES4 record with flags = 0x80 (Localized bit), then a WEAP GRUP.
+    let lstring_id: u32 = 0x0001;
+
+    // WEAP record: EDID="TestBlade" + FULL=4-byte lstring ID
+    let mut weap_subs = Vec::<(&[u8; 4], Vec<u8>)>::new();
+    weap_subs.push((b"EDID", b"TestBlade\0".to_vec()));
+    weap_subs.push((b"FULL", lstring_id.to_le_bytes().to_vec()));
+    // Minimal DATA sub-record (FNV-style: value + health + weight + damage + clip)
+    weap_subs.push((b"DATA", {
+        let mut d = Vec::new();
+        d.extend_from_slice(&100u32.to_le_bytes()); // value
+        d.extend_from_slice(&0u32.to_le_bytes()); // health
+        d.extend_from_slice(&1.5f32.to_le_bytes()); // weight
+        d.extend_from_slice(&15u16.to_le_bytes()); // damage
+        d.push(0); // clip_size
+        d.push(0);
+        d
+    }));
+    let weap_record = build_record(b"WEAP", 0xBEEF, &weap_subs);
+    let weap_group = wrap_group(b"WEAP", &weap_record);
+
+    // TES4 with Localized flag (bit 0x80)
+    let tes4 = build_localized_tes4();
+
+    let mut esm_bytes = tes4;
+    esm_bytes.extend_from_slice(&weap_group);
+
+    // ── Parse without guard: must get placeholder ─────────────────────
+    {
+        let index = parse_esm(&esm_bytes).unwrap();
+        let item = index.items.get(&0xBEEF).expect("WEAP indexed");
+        assert_eq!(
+            item.common.full_name,
+            "<lstring 0x00000001>",
+            "without StringsTableGuard the placeholder must survive"
+        );
+    }
+
+    // ── Parse with guard: must get the resolved string ─────────────────
+    {
+        let _guard = StringsTableGuard::new(set);
+        let index = parse_esm(&esm_bytes).unwrap();
+        let item = index.items.get(&0xBEEF).expect("WEAP indexed");
+        assert_eq!(
+            item.common.full_name, "Iron Sword",
+            "StringsTableGuard must resolve the lstring placeholder"
+        );
+    }
+
+    // ── After guard drop: back to placeholder ─────────────────────────
+    {
+        let index = parse_esm(&esm_bytes).unwrap();
+        let item = index.items.get(&0xBEEF).expect("WEAP indexed");
+        assert_eq!(
+            item.common.full_name,
+            "<lstring 0x00000001>",
+            "guard drop must restore placeholder behaviour"
+        );
+    }
+}
+
+/// Build a TES4 record with the `Localized` flag set (bit `0x80`).
+fn build_localized_tes4() -> Vec<u8> {
+    // Minimal TES4: HEDR sub-record (12 bytes) only.
+    let mut hedr = Vec::new();
+    hedr.extend_from_slice(b"HEDR");
+    hedr.extend_from_slice(&12u16.to_le_bytes());
+    hedr.extend_from_slice(&1.7f32.to_le_bytes()); // version (Skyrim)
+    hedr.extend_from_slice(&0u32.to_le_bytes()); // record_count
+    hedr.extend_from_slice(&0u32.to_le_bytes()); // next_object_id
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"TES4");
+    buf.extend_from_slice(&(hedr.len() as u32).to_le_bytes()); // data size
+    buf.extend_from_slice(&0x80u32.to_le_bytes()); // flags = 0x80 (Localized)
+    buf.extend_from_slice(&0u32.to_le_bytes()); // form_id
+    buf.extend_from_slice(&[0u8; 8]); // padding
+    buf.extend_from_slice(&hedr);
+    buf
+}
