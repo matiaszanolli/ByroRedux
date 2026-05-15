@@ -1,5 +1,6 @@
 pub(crate) mod deferred_destroy;
 pub mod mesh;
+pub mod shader_constants;
 pub mod texture_registry;
 pub mod vertex;
 pub mod vulkan;

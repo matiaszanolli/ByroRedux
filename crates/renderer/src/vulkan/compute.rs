@@ -11,15 +11,11 @@ use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
 use ash::vk;
+use crate::shader_constants::{
+    CLUSTER_TILES_X, CLUSTER_TILES_Y, CLUSTER_SLICES_Z, TOTAL_CLUSTERS, MAX_LIGHTS_PER_CLUSTER,
+};
 
 const CLUSTER_CULL_COMP_SPV: &[u8] = include_bytes!("../../shaders/cluster_cull.comp.spv");
-
-/// Cluster grid dimensions — must match cluster_cull.comp constants.
-pub const TILES_X: u32 = 16;
-pub const TILES_Y: u32 = 9;
-pub const SLICES_Z: u32 = 24;
-pub const TOTAL_CLUSTERS: u32 = TILES_X * TILES_Y * SLICES_Z; // 3456
-pub const MAX_LIGHTS_PER_CLUSTER: u32 = 32;
 
 /// Per-cluster entry: offset into the flat light index list + count.
 #[repr(C)]
@@ -266,9 +262,9 @@ impl ClusterCullPipeline {
 
         log::info!(
             "Cluster cull pipeline created: {}×{}×{} = {} clusters, {} max lights/cluster",
-            TILES_X,
-            TILES_Y,
-            SLICES_Z,
+            CLUSTER_TILES_X,
+            CLUSTER_TILES_Y,
+            CLUSTER_SLICES_Z,
             TOTAL_CLUSTERS,
             MAX_LIGHTS_PER_CLUSTER,
         );
@@ -283,7 +279,7 @@ impl ClusterCullPipeline {
     ///
     /// One workgroup per cluster — the shader's `local_size_x = 32`
     /// fans the per-cluster light scan out across one warp / wavefront
-    /// (#652). Total threads = `TILES_X × TILES_Y × SLICES_Z × 32 =
+    /// (#652). Total threads = `CLUSTER_TILES_X × CLUSTER_TILES_Y × CLUSTER_SLICES_Z × 32 =
     /// 3456 × 32 = 110_592` per dispatch.
     pub unsafe fn dispatch(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
@@ -296,7 +292,7 @@ impl ClusterCullPipeline {
             &[],
         );
 
-        device.cmd_dispatch(cmd, TILES_X, TILES_Y, SLICES_Z);
+        device.cmd_dispatch(cmd, CLUSTER_TILES_X, CLUSTER_TILES_Y, CLUSTER_SLICES_Z);
     }
 
     /// Get the cluster grid buffer handle for a frame (for scene descriptor set writes).
@@ -346,94 +342,6 @@ impl ClusterCullPipeline {
     }
 }
 
-#[cfg(test)]
-mod cluster_constant_sync_tests {
-    //! Drift-detection for cluster-grid constants shared between Rust
-    //! (`compute.rs`), the cluster compute shader, and the cluster
-    //! indexing logic in the fragment shader. Bumping a Rust constant
-    //! without updating both shaders sizes the cluster light-index SSBO
-    //! wrong and silently corrupts per-pixel light lookups — no Vulkan
-    //! validation signal. See TD4-003 / TD4-004 in
-    //! `docs/audits/AUDIT_TECH_DEBT_2026-05-13.md`.
-    //!
-    //! `cluster_cull.comp` uses the bare names (`TILES_X`); the cluster
-    //! lookup in `triangle.frag` uses `CLUSTER_*` prefixed copies. Both
-    //! get pinned here.
-    use super::*;
-
-    const CLUSTER_CULL_SRC: &str = include_str!("../../shaders/cluster_cull.comp");
-    const TRIANGLE_FRAG_SRC: &str = include_str!("../../shaders/triangle.frag");
-
-    fn assert_contains(src: &str, expected: &str, shader: &str) {
-        assert!(
-            src.contains(expected),
-            "{shader} must declare `{expected}` — bump the GLSL literal in lockstep with the Rust const, or fold both through a build.rs codegen target (#1038).",
-        );
-    }
-
-    #[test]
-    fn cluster_cull_comp_tiles_x_matches_rust_const() {
-        assert_contains(
-            CLUSTER_CULL_SRC,
-            &format!("const uint TILES_X = {};", TILES_X),
-            "cluster_cull.comp",
-        );
-    }
-
-    #[test]
-    fn cluster_cull_comp_tiles_y_matches_rust_const() {
-        assert_contains(
-            CLUSTER_CULL_SRC,
-            &format!("const uint TILES_Y = {};", TILES_Y),
-            "cluster_cull.comp",
-        );
-    }
-
-    #[test]
-    fn cluster_cull_comp_slices_z_matches_rust_const() {
-        assert_contains(
-            CLUSTER_CULL_SRC,
-            &format!("const uint SLICES_Z = {};", SLICES_Z),
-            "cluster_cull.comp",
-        );
-    }
-
-    #[test]
-    fn cluster_cull_comp_max_lights_per_cluster_matches_rust_const() {
-        assert_contains(
-            CLUSTER_CULL_SRC,
-            &format!(
-                "const uint MAX_LIGHTS_PER_CLUSTER = {};",
-                MAX_LIGHTS_PER_CLUSTER
-            ),
-            "cluster_cull.comp",
-        );
-    }
-
-    #[test]
-    fn triangle_frag_cluster_tiles_x_matches_rust_const() {
-        assert_contains(
-            TRIANGLE_FRAG_SRC,
-            &format!("const uint CLUSTER_TILES_X = {};", TILES_X),
-            "triangle.frag",
-        );
-    }
-
-    #[test]
-    fn triangle_frag_cluster_tiles_y_matches_rust_const() {
-        assert_contains(
-            TRIANGLE_FRAG_SRC,
-            &format!("const uint CLUSTER_TILES_Y = {};", TILES_Y),
-            "triangle.frag",
-        );
-    }
-
-    #[test]
-    fn triangle_frag_cluster_slices_z_matches_rust_const() {
-        assert_contains(
-            TRIANGLE_FRAG_SRC,
-            &format!("const uint CLUSTER_SLICES_Z = {};", SLICES_Z),
-            "triangle.frag",
-        );
-    }
-}
+// Drift tests for cluster constants moved to shader_constants::tests
+// (affected_shaders_include_constants_header + generated_header_contains_all_defines)
+// after #1038 folded inline shader consts into the build.rs codegen path.

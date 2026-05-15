@@ -22,17 +22,11 @@ use super::buffer::GpuBuffer;
 use super::descriptors::{write_storage_buffer, DescriptorPoolBuilder};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use crate::shader_constants::{VERTEX_STRIDE_BYTES, VERTEX_STRIDE_FLOATS};
 use anyhow::{Context, Result};
 use ash::vk;
 
 const SKIN_VERTICES_COMP_SPV: &[u8] = include_bytes!("../../shaders/skin_vertices.comp.spv");
-
-/// Per-vertex stride in floats (matches `Vertex` Rust struct: 25 × 4 B
-/// = 100 B post-#783). Cross-checked against the shader's
-/// `VERTEX_STRIDE_FLOATS` constant — drift here means the per-vertex
-/// bone-index unpack would read random bytes.
-pub const VERTEX_STRIDE_FLOATS: u32 = 25;
-pub const VERTEX_STRIDE_BYTES: u64 = (VERTEX_STRIDE_FLOATS as u64) * 4;
 
 /// Compute workgroup size (local_size_x in skin_vertices.comp).
 const WORKGROUP_SIZE: u32 = 64;
@@ -585,72 +579,10 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod vertex_layout_shader_sync_tests {
-    //! Drift-detection for vertex-layout constants shared between Rust
-    //! and the skin compute / fragment shaders. `VERTEX_STRIDE_FLOATS`
-    //! has already drifted once silently (#783: 21 → 25 on tangent
-    //! addition). `MAX_BONES_PER_MESH` is documented as the lockstep
-    //! risk for #29.5 (palette resize).
-    //!
-    //! See TD4-005 / TD4-006 in `docs/audits/AUDIT_TECH_DEBT_2026-05-13.md`.
-    //!
-    //! `skin_vertices.comp` uses the `u` suffix on integer literals
-    //! (`= 25u;`); `triangle.frag` and `triangle.vert` are mixed —
-    //! pin each shader against the spelling it actually uses today.
-    use super::*;
-    use byroredux_core::ecs::components::skinned_mesh::MAX_BONES_PER_MESH;
-
-    const SKIN_VERTICES_COMP_SRC: &str = include_str!("../../shaders/skin_vertices.comp");
-    const TRIANGLE_VERT_SRC: &str = include_str!("../../shaders/triangle.vert");
-    const TRIANGLE_FRAG_SRC: &str = include_str!("../../shaders/triangle.frag");
-
-    fn assert_contains(src: &str, expected: &str, shader: &str) {
-        assert!(
-            src.contains(expected),
-            "{shader} must declare `{expected}` — bump the GLSL literal in lockstep with the Rust const, or fold both through a build.rs codegen target (#1038).",
-        );
-    }
-
-    #[test]
-    fn skin_vertices_comp_vertex_stride_floats_matches_rust_const() {
-        assert_contains(
-            SKIN_VERTICES_COMP_SRC,
-            &format!(
-                "const uint VERTEX_STRIDE_FLOATS = {}u;",
-                VERTEX_STRIDE_FLOATS
-            ),
-            "skin_vertices.comp",
-        );
-    }
-
-    #[test]
-    fn triangle_frag_vertex_stride_floats_matches_rust_const() {
-        assert_contains(
-            TRIANGLE_FRAG_SRC,
-            &format!(
-                "const uint VERTEX_STRIDE_FLOATS = {};",
-                VERTEX_STRIDE_FLOATS
-            ),
-            "triangle.frag",
-        );
-    }
-
-    #[test]
-    fn skin_vertices_comp_max_bones_per_mesh_matches_rust_const() {
-        assert_contains(
-            SKIN_VERTICES_COMP_SRC,
-            &format!("const uint MAX_BONES_PER_MESH = {}u;", MAX_BONES_PER_MESH),
-            "skin_vertices.comp",
-        );
-    }
-
-    #[test]
-    fn triangle_vert_max_bones_per_mesh_matches_rust_const() {
-        assert_contains(
-            TRIANGLE_VERT_SRC,
-            &format!("const uint MAX_BONES_PER_MESH = {}u;", MAX_BONES_PER_MESH),
-            "triangle.vert",
-        );
-    }
-}
+// Shader drift-detection tests moved to shader_constants::tests after #1038
+// folded all shared constants into the build.rs codegen path. The canonical
+// checks are now:
+//   shader_constants::tests::affected_shaders_include_constants_header
+//   shader_constants::tests::generated_header_contains_all_defines
+//   shader_constants::tests::vertex_stride_matches_vertex_struct
+//   shader_constants::tests::max_bones_per_mesh_matches_core

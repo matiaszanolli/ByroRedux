@@ -2,6 +2,7 @@
 name = "byroredux-renderer"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 
 [dependencies]
 byroredux-core = { workspace = true }

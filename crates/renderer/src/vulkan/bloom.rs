@@ -56,6 +56,7 @@ use super::descriptors::{
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -75,9 +76,6 @@ pub const BLOOM_MIP_COUNT: usize = 5;
 /// `svgf.rs`'s `INDIRECT_HIST_FORMAT`) — universally supported as
 /// a storage image format on RT-class GPUs (#275).
 const BLOOM_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
-
-const WORKGROUP_X: u32 = 8;
-const WORKGROUP_Y: u32 = 8;
 
 /// Default bloom intensity coefficient. 0.15 — ≈4× the Frostbite
 /// SIGGRAPH 2015 default of 0.04. The 4× compensates for Bethesda
@@ -970,47 +968,7 @@ fn create_compute_pipeline(
     Ok(pipeline)
 }
 
-#[cfg(test)]
-mod workgroup_shader_sync_tests {
-    //! Drift-detection for `WORKGROUP_X` / `WORKGROUP_Y` workgroup-size
-    //! constants. The Rust side uses them for dispatch math
-    //! (`(width + 7) / 8`); the shader declares them via `layout(local_size_x = 8)`.
-    //! If they drift, the dispatch is either too few groups (corners
-    //! unwritten) or too many (out-of-bounds writes with no validation
-    //! signal). See TD4-020 in `docs/audits/AUDIT_TECH_DEBT_2026-05-13.md`.
-    use super::*;
-
-    const BLOOM_DOWNSAMPLE_SRC: &str = include_str!("../../shaders/bloom_downsample.comp");
-    const BLOOM_UPSAMPLE_SRC: &str = include_str!("../../shaders/bloom_upsample.comp");
-
-    fn assert_contains(src: &str, expected: &str, shader: &str) {
-        assert!(
-            src.contains(expected),
-            "{shader} must declare `{expected}` — bump the GLSL `layout(local_size_*)` in lockstep with the Rust const, or fold both through a build.rs codegen target (#1038).",
-        );
-    }
-
-    #[test]
-    fn bloom_downsample_local_size_matches_rust_workgroup() {
-        assert_contains(
-            BLOOM_DOWNSAMPLE_SRC,
-            &format!(
-                "local_size_x = {}, local_size_y = {}",
-                WORKGROUP_X, WORKGROUP_Y
-            ),
-            "bloom_downsample.comp",
-        );
-    }
-
-    #[test]
-    fn bloom_upsample_local_size_matches_rust_workgroup() {
-        assert_contains(
-            BLOOM_UPSAMPLE_SRC,
-            &format!(
-                "local_size_x = {}, local_size_y = {}",
-                WORKGROUP_X, WORKGROUP_Y
-            ),
-            "bloom_upsample.comp",
-        );
-    }
-}
+// Bloom workgroup drift tests moved to shader_constants::tests after #1038
+// folded all shared constants into the build.rs codegen path. Canonical checks:
+//   shader_constants::tests::affected_shaders_include_constants_header
+//   shader_constants::tests::generated_header_contains_all_defines

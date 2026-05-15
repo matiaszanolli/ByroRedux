@@ -47,6 +47,7 @@ use super::descriptors::{
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use crate::shader_constants::CAUSTIC_FIXED_SCALE;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -59,12 +60,6 @@ const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_spla
 /// to 4 B/pixel; color tinting is encoded by the per-instance `avgAlbedo`
 /// the shader uses to modulate the splatted value.
 pub const CAUSTIC_FORMAT: vk::Format = vk::Format::R32_UINT;
-
-/// Fixed-point scale used by the shader to encode `float contrib` into the
-/// atomic u32 accumulator. 16.16 gives 15 bits of fractional precision and
-/// a 65536× integer headroom before saturation — comfortable for the
-/// luminance values we accumulate.
-pub const CAUSTIC_FIXED_SCALE: f32 = 65536.0;
 
 /// UBO uploaded once per frame. Matches `CausticParams` in
 /// `shaders/caustic_splat.comp` exactly.
@@ -952,48 +947,7 @@ impl CausticPipeline {
     }
 }
 
-#[cfg(test)]
-mod caustic_fixed_scale_sync_tests {
-    //! Regression for #667 / SH-12: the `CAUSTIC_FIXED_SCALE` magic
-    //! number lives in three places:
-    //!
-    //!   * `caustic.rs:63` — Rust `pub const CAUSTIC_FIXED_SCALE`.
-    //!   * `caustic_splat.comp:207` — `scale = causticTune.x`. The
-    //!     compute shader reads it from the per-frame `CausticParams`
-    //!     UBO that `caustic.rs` fills, so this site is auto-synced.
-    //!   * `composite.frag:48` — `const float CAUSTIC_FIXED_SCALE =
-    //!     65536.0;`. The composite shader does NOT route through the
-    //!     UBO (it would need an extra vec4 slot in `CompositeParams`
-    //!     and a write at `draw.rs:1654+`), so the GLSL const is the
-    //!     drift risk the audit flagged.
-    //!
-    //! This test embeds `composite.frag`'s source at build time
-    //! (`include_str!`) and asserts that the `CAUSTIC_FIXED_SCALE`
-    //! literal matches the Rust constant verbatim. Bump the Rust
-    //! const without updating the shader → test fails until the GLSL
-    //! literal lines up.
-    use super::*;
-
-    const COMPOSITE_FRAG_SRC: &str = include_str!("../../shaders/composite.frag");
-
-    #[test]
-    fn composite_frag_caustic_fixed_scale_matches_rust_const() {
-        // Render the Rust constant exactly the way GLSL would print
-        // it — `65536.0` (the Rust `f32` Display has no trailing
-        // ".0" without the formatter, so `{:?}` gives "65536.0" for
-        // the current value but would give "65536.5" if the const
-        // were patched mid-byte). `:?` is sufficient because every
-        // realistic value here is an integer power of two.
-        let expected = format!(
-            "const float CAUSTIC_FIXED_SCALE = {:?};",
-            CAUSTIC_FIXED_SCALE,
-        );
-        assert!(
-            COMPOSITE_FRAG_SRC.contains(&expected),
-            "composite.frag must declare `{}` — bump the GLSL literal \
-             in lockstep with the Rust const, or route the value \
-             through the CompositeParams UBO (#667 / SH-12).",
-            expected,
-        );
-    }
-}
+// CAUSTIC_FIXED_SCALE drift test moved to shader_constants::tests after #1038
+// folded the constant into the build.rs codegen path. Canonical check:
+//   shader_constants::tests::generated_header_contains_all_defines
+//   shader_constants::tests::affected_shaders_include_constants_header

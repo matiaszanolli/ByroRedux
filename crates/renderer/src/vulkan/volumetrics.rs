@@ -48,6 +48,7 @@ use super::descriptors::{
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y, WORKGROUP_Z};
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -148,11 +149,6 @@ pub const FROXEL_DEPTH: u32 = 128;
 /// alpha-equivalent (the implicit 0.0 we'd reconstruct) loses the
 /// transmittance channel entirely.
 const FROXEL_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
-
-/// Compute workgroup size — must match `volumetrics_clear.comp`.
-const WORKGROUP_X: u32 = 8;
-const WORKGROUP_Y: u32 = 8;
-const WORKGROUP_Z: u32 = 8;
 
 struct FroxelSlot {
     image: vk::Image,
@@ -927,50 +923,8 @@ impl VolumetricsPipeline {
     }
 }
 
-#[cfg(test)]
-mod workgroup_shader_sync_tests {
-    //! Drift-detection for `WORKGROUP_X` / `WORKGROUP_Y` / `WORKGROUP_Z`
-    //! against the volumetrics compute shaders. `volumetrics_inject` is
-    //! a full 3D dispatch (one thread per froxel); `volumetrics_integrate`
-    //! is 2D (one thread per column, z-marches internally) so its shader
-    //! pins `local_size_z = 1` as an intentional literal — only X/Y are
-    //! checked there. See TD4-020 in
-    //! `docs/audits/AUDIT_TECH_DEBT_2026-05-13.md`.
-    use super::*;
-
-    const INJECT_SRC: &str = include_str!("../../shaders/volumetrics_inject.comp");
-    const INTEGRATE_SRC: &str = include_str!("../../shaders/volumetrics_integrate.comp");
-
-    fn assert_contains(src: &str, expected: &str, shader: &str) {
-        assert!(
-            src.contains(expected),
-            "{shader} must declare `{expected}` — bump the GLSL `layout(local_size_*)` in lockstep with the Rust const, or fold both through a build.rs codegen target (#1038).",
-        );
-    }
-
-    #[test]
-    fn volumetrics_inject_local_size_matches_rust_workgroup() {
-        assert_contains(
-            INJECT_SRC,
-            &format!(
-                "local_size_x = {}, local_size_y = {}, local_size_z = {}",
-                WORKGROUP_X, WORKGROUP_Y, WORKGROUP_Z
-            ),
-            "volumetrics_inject.comp",
-        );
-    }
-
-    #[test]
-    fn volumetrics_integrate_local_size_xy_matches_rust_workgroup() {
-        // `local_size_z = 1` is intentional (2D dispatch with internal
-        // Z-march) — only X/Y are pinned here.
-        assert_contains(
-            INTEGRATE_SRC,
-            &format!(
-                "local_size_x = {}, local_size_y = {}",
-                WORKGROUP_X, WORKGROUP_Y
-            ),
-            "volumetrics_integrate.comp",
-        );
-    }
-}
+// Shader workgroup drift tests moved to shader_constants::tests after #1038
+// folded all shared constants into the build.rs codegen path. The canonical
+// checks are now:
+//   shader_constants::tests::affected_shaders_include_constants_header
+//   shader_constants::tests::generated_header_contains_all_defines
