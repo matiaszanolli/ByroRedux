@@ -2,6 +2,7 @@
 //!
 //! Lead types: NiGeomMorpherController, MorphWeight, MorphTarget, NiMorphData.
 
+use crate::impl_ni_object;
 use super::*;
 use crate::types::NiPoint3;
 
@@ -23,15 +24,6 @@ pub struct NiGeomMorpherController {
 pub struct MorphWeight {
     pub interpolator_ref: BlockRef,
     pub weight: f32,
-}
-
-impl NiObject for NiGeomMorpherController {
-    fn block_type_name(&self) -> &'static str {
-        "NiGeomMorpherController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiGeomMorpherController {
@@ -127,15 +119,6 @@ pub struct NiMorphData {
     pub num_vertices: u32,
     pub relative_targets: u8,
     pub morphs: Vec<MorphTarget>,
-}
-
-impl NiObject for NiMorphData {
-    fn block_type_name(&self) -> &'static str {
-        "NiMorphData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiMorphData {
@@ -241,3 +224,8 @@ impl NiMorphData {
         })
     }
 }
+
+impl_ni_object!(
+    NiGeomMorpherController,
+    NiMorphData,
+);

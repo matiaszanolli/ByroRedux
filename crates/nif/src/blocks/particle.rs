@@ -6,10 +6,9 @@
 //! have no block_size fallback.
 
 use super::controller::NiTimeControllerBase;
-use super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
-use std::any::Any;
 use std::io;
 use std::sync::Arc;
 
@@ -97,15 +96,6 @@ pub struct NiPSysBlock {
     pub original_type: String,
 }
 
-impl NiObject for NiPSysBlock {
-    fn block_type_name(&self) -> &'static str {
-        "NiPSysBlock"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 // ── Modifier parsers ────────────────────────────────────────────────
 
 /// Parse a modifier with only the base fields (NiPSysPositionModifier, etc.).
@@ -178,15 +168,6 @@ pub fn parse_collider_manager(stream: &mut NifStream) -> io::Result<NiPSysBlock>
 pub struct NiPSysColorModifier {
     pub base: NiPSysModifierBase,
     pub color_data_ref: BlockRef,
-}
-
-impl NiObject for NiPSysColorModifier {
-    fn block_type_name(&self) -> &'static str {
-        "NiPSysColorModifier"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiPSysColorModifier {
@@ -547,15 +528,6 @@ pub struct NiPSysGravityFieldModifier {
     pub direction: [f32; 3],
 }
 
-impl NiObject for NiPSysGravityFieldModifier {
-    fn block_type_name(&self) -> &'static str {
-        "NiPSysGravityFieldModifier"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiPSysGravityFieldModifier {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let modifier_base = NiPSysModifierBase::parse(stream)?;
@@ -578,15 +550,6 @@ pub struct NiPSysVortexFieldModifier {
     pub modifier_base: NiPSysModifierBase,
     pub field_base: NiPSysFieldModifierBase,
     pub direction: [f32; 3],
-}
-
-impl NiObject for NiPSysVortexFieldModifier {
-    fn block_type_name(&self) -> &'static str {
-        "NiPSysVortexFieldModifier"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiPSysVortexFieldModifier {
@@ -615,15 +578,6 @@ pub struct NiPSysDragFieldModifier {
     pub direction: [f32; 3],
 }
 
-impl NiObject for NiPSysDragFieldModifier {
-    fn block_type_name(&self) -> &'static str {
-        "NiPSysDragFieldModifier"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiPSysDragFieldModifier {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let modifier_base = NiPSysModifierBase::parse(stream)?;
@@ -648,15 +602,6 @@ pub struct NiPSysTurbulenceFieldModifier {
     pub modifier_base: NiPSysModifierBase,
     pub field_base: NiPSysFieldModifierBase,
     pub frequency: f32,
-}
-
-impl NiObject for NiPSysTurbulenceFieldModifier {
-    fn block_type_name(&self) -> &'static str {
-        "NiPSysTurbulenceFieldModifier"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiPSysTurbulenceFieldModifier {
@@ -687,15 +632,6 @@ pub struct NiPSysAirFieldModifier {
     pub component_only: bool,
     pub enable_spread: bool,
     pub spread: f32,
-}
-
-impl NiObject for NiPSysAirFieldModifier {
-    fn block_type_name(&self) -> &'static str {
-        "NiPSysAirFieldModifier"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiPSysAirFieldModifier {
@@ -733,15 +669,6 @@ pub struct NiPSysRadialFieldModifier {
     pub modifier_base: NiPSysModifierBase,
     pub field_base: NiPSysFieldModifierBase,
     pub radial_type: u32,
-}
-
-impl NiObject for NiPSysRadialFieldModifier {
-    fn block_type_name(&self) -> &'static str {
-        "NiPSysRadialFieldModifier"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiPSysRadialFieldModifier {
@@ -844,15 +771,6 @@ pub fn parse_multi_target_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiP
 pub struct NiParticleSystem {
     pub original_type: String,
     pub modifier_refs: Vec<BlockRef>,
-}
-
-impl NiObject for NiParticleSystem {
-    fn block_type_name(&self) -> &'static str {
-        "NiParticleSystem"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 pub fn parse_particle_system(
@@ -1193,6 +1111,18 @@ pub fn parse_master_particle_system(stream: &mut NifStream) -> io::Result<NiPSys
         original_type: "BSMasterParticleSystem".to_string(),
     })
 }
+
+impl_ni_object!(
+    NiPSysBlock,
+    NiPSysColorModifier,
+    NiPSysGravityFieldModifier,
+    NiPSysVortexFieldModifier,
+    NiPSysDragFieldModifier,
+    NiPSysTurbulenceFieldModifier,
+    NiPSysAirFieldModifier,
+    NiPSysRadialFieldModifier,
+    NiParticleSystem,
+);
 
 #[cfg(test)]
 mod tests {

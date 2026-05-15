@@ -6,6 +6,7 @@
 
 use super::base::{BSShaderPropertyData, NiObjectNETData};
 use super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
 use std::any::Any;
@@ -66,15 +67,6 @@ impl BSShaderPPLightingProperty {
     }
     pub fn shader_flags_2(&self) -> u32 {
         self.shader.shader_flags_2
-    }
-}
-
-impl NiObject for BSShaderPPLightingProperty {
-    fn block_type_name(&self) -> &'static str {
-        "BSShaderPPLightingProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
@@ -163,15 +155,6 @@ impl BSShaderNoLightingProperty {
     }
 }
 
-impl NiObject for BSShaderNoLightingProperty {
-    fn block_type_name(&self) -> &'static str {
-        "BSShaderNoLightingProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BSShaderNoLightingProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
@@ -226,15 +209,6 @@ pub struct TileShaderProperty {
     pub file_name: String,
 }
 
-impl NiObject for TileShaderProperty {
-    fn block_type_name(&self) -> &'static str {
-        "TileShaderProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl TileShaderProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
@@ -276,15 +250,6 @@ pub struct SkyShaderProperty {
     pub sky_object_type: u32,
 }
 
-impl NiObject for SkyShaderProperty {
-    fn block_type_name(&self) -> &'static str {
-        "SkyShaderProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl SkyShaderProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
@@ -313,15 +278,6 @@ impl SkyShaderProperty {
 pub struct WaterShaderProperty {
     pub net: NiObjectNETData,
     pub shader: BSShaderPropertyData,
-}
-
-impl NiObject for WaterShaderProperty {
-    fn block_type_name(&self) -> &'static str {
-        "WaterShaderProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl WaterShaderProperty {
@@ -383,15 +339,6 @@ pub struct TallGrassShaderProperty {
     pub shader: BSShaderPropertyData,
     /// Grass texture file path (typically `textures\landscape\*.dds`).
     pub file_name: String,
-}
-
-impl NiObject for TallGrassShaderProperty {
-    fn block_type_name(&self) -> &'static str {
-        "TallGrassShaderProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl TallGrassShaderProperty {
@@ -505,15 +452,6 @@ pub struct BSSkyShaderProperty {
     pub sky_object_type: u32,
 }
 
-impl NiObject for BSSkyShaderProperty {
-    fn block_type_name(&self) -> &'static str {
-        "BSSkyShaderProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BSSkyShaderProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
@@ -565,15 +503,6 @@ pub struct BSWaterShaderProperty {
     pub water_shader_flags: u32,
 }
 
-impl NiObject for BSWaterShaderProperty {
-    fn block_type_name(&self) -> &'static str {
-        "BSWaterShaderProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BSWaterShaderProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
@@ -599,16 +528,6 @@ impl BSWaterShaderProperty {
 #[derive(Debug)]
 pub struct BSShaderTextureSet {
     pub textures: Vec<String>,
-}
-
-impl NiObject for BSShaderTextureSet {
-    fn block_type_name(&self) -> &'static str {
-        "BSShaderTextureSet"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BSShaderTextureSet {
@@ -823,16 +742,6 @@ impl BSLightingShaderProperty {
             texture_arrays: Vec::new(),
             shader_type_data: ShaderTypeData::None,
         }
-    }
-}
-
-impl NiObject for BSLightingShaderProperty {
-    fn block_type_name(&self) -> &'static str {
-        "BSLightingShaderProperty"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
@@ -1461,16 +1370,6 @@ impl BSEffectShaderProperty {
     }
 }
 
-impl NiObject for BSEffectShaderProperty {
-    fn block_type_name(&self) -> &'static str {
-        "BSEffectShaderProperty"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BSEffectShaderProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let bsver = stream.bsver();
@@ -1635,6 +1534,20 @@ impl BSEffectShaderProperty {
         })
     }
 }
+
+impl_ni_object!(
+    BSShaderPPLightingProperty,
+    BSShaderNoLightingProperty,
+    TileShaderProperty,
+    SkyShaderProperty,
+    WaterShaderProperty,
+    TallGrassShaderProperty,
+    BSSkyShaderProperty,
+    BSWaterShaderProperty,
+    BSShaderTextureSet,
+    BSLightingShaderProperty,
+    BSEffectShaderProperty,
+);
 
 #[cfg(test)]
 #[path = "shader_tests.rs"]

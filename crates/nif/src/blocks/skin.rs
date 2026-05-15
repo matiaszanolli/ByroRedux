@@ -3,11 +3,10 @@
 //! These blocks define skeletal deformation for character meshes.
 //! NiTriShape.skin_instance_ref → NiSkinInstance → NiSkinData + NiSkinPartition.
 
-use super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiTransform};
 use crate::version::NifVersion;
-use std::any::Any;
 use std::io;
 
 // ── NiSkinInstance ───────────────────────────────────────────────────
@@ -23,15 +22,6 @@ pub struct NiSkinInstance {
     pub skeleton_root_ref: BlockRef,
     /// Bone block references (NiNode pointers).
     pub bone_refs: Vec<BlockRef>,
-}
-
-impl NiObject for NiSkinInstance {
-    fn block_type_name(&self) -> &'static str {
-        "NiSkinInstance"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiSkinInstance {
@@ -92,15 +82,6 @@ pub struct NiSkinData {
     pub skin_transform: NiTransform,
     /// Per-bone data: transform, bounds, weights.
     pub bones: Vec<BoneData>,
-}
-
-impl NiObject for NiSkinData {
-    fn block_type_name(&self) -> &'static str {
-        "NiSkinData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiSkinData {
@@ -211,15 +192,6 @@ pub struct NiSkinPartition {
     /// FNV/FO3/Oblivion partitions where geometry stays inline on the
     /// shape. See [`SseSkinGlobalBuffer`] and #559.
     pub global_vertex_data: Option<SseSkinGlobalBuffer>,
-}
-
-impl NiObject for NiSkinPartition {
-    fn block_type_name(&self) -> &'static str {
-        "NiSkinPartition"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiSkinPartition {
@@ -390,15 +362,6 @@ pub struct BodyPartInfo {
     pub body_part: u16,
 }
 
-impl NiObject for BsDismemberSkinInstance {
-    fn block_type_name(&self) -> &'static str {
-        "BSDismemberSkinInstance"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsDismemberSkinInstance {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiSkinInstance::parse(stream)?;
@@ -428,15 +391,6 @@ pub struct BsSkinInstance {
     pub bone_data_ref: BlockRef,
     pub bone_refs: Vec<BlockRef>,
     pub scales: Vec<[f32; 3]>,
-}
-
-impl NiObject for BsSkinInstance {
-    fn block_type_name(&self) -> &'static str {
-        "BSSkin::Instance"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BsSkinInstance {
@@ -490,15 +444,6 @@ pub struct BsSkinBoneData {
     pub bones: Vec<BsSkinBoneTrans>,
 }
 
-impl NiObject for BsSkinBoneData {
-    fn block_type_name(&self) -> &'static str {
-        "BSSkin::BoneData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsSkinBoneData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let num_bones = stream.read_u32_le()?;
@@ -524,6 +469,15 @@ impl BsSkinBoneData {
         Ok(Self { bones })
     }
 }
+
+impl_ni_object!(
+    NiSkinInstance,
+    NiSkinData,
+    NiSkinPartition,
+    BsDismemberSkinInstance => "BSDismemberSkinInstance",
+    BsSkinInstance => "BSSkin::Instance",
+    BsSkinBoneData => "BSSkin::BoneData",
+);
 
 #[cfg(test)]
 mod tests {

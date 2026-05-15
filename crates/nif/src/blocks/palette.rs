@@ -3,10 +3,9 @@
 //! Used by NiControllerManager to bind animation sequences to scene
 //! graph objects by name.
 
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
-use crate::NiObject;
-use std::any::Any;
 use std::io;
 
 /// An entry in the object palette: name → block reference.
@@ -26,14 +25,7 @@ pub struct NiDefaultAVObjectPalette {
     pub objs: Vec<AVObject>,
 }
 
-impl NiObject for NiDefaultAVObjectPalette {
-    fn block_type_name(&self) -> &'static str {
-        "NiDefaultAVObjectPalette"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
+impl_ni_object!(NiDefaultAVObjectPalette);
 
 impl NiDefaultAVObjectPalette {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {

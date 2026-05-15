@@ -2,10 +2,9 @@
 //!
 //! BhkCompressedMeshShape + Data + chunk / big-tri / transform sub-types.
 
-use super::super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
-use std::any::Any;
 use std::io;
 
 
@@ -19,14 +18,6 @@ pub struct BhkCompressedMeshShape {
     pub data_ref: BlockRef,
 }
 
-impl NiObject for BhkCompressedMeshShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkCompressedMeshShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkCompressedMeshShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -109,14 +100,6 @@ pub struct BhkCompressedMeshShapeData {
     pub chunks: Vec<CmsChunk>,
 }
 
-impl NiObject for BhkCompressedMeshShapeData {
-    fn block_type_name(&self) -> &'static str {
-        "bhkCompressedMeshShapeData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkCompressedMeshShapeData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -275,3 +258,8 @@ impl BhkCompressedMeshShapeData {
         })
     }
 }
+
+impl_ni_object!(
+    BhkCompressedMeshShape => "bhkCompressedMeshShape",
+    BhkCompressedMeshShapeData => "bhkCompressedMeshShapeData",
+);

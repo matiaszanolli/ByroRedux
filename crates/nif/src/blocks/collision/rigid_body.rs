@@ -3,10 +3,9 @@
 //! The most-touched Havok type — holds mass, inertia tensor, velocity, and
 //! the per-shape collision filter. Constraint refs live here too.
 
-use super::super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
-use std::any::Any;
 use std::io;
 
 use super::{read_matrix3, read_vec4};
@@ -41,14 +40,6 @@ pub struct BhkRigidBody {
     pub body_flags: u32,
 }
 
-impl NiObject for BhkRigidBody {
-    fn block_type_name(&self) -> &'static str {
-        "bhkRigidBody"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkRigidBody {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -214,3 +205,5 @@ impl BhkRigidBody {
         })
     }
 }
+
+impl_ni_object!(BhkRigidBody => "bhkRigidBody");

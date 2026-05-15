@@ -3,9 +3,8 @@
 //! Sphere, MultiSphere, Box, Capsule, Cylinder — single-volume shapes with
 //! material + bounding metadata.
 
-use super::super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
-use std::any::Any;
 use std::io;
 
 use super::{read_havok_material, read_vec4};
@@ -15,15 +14,6 @@ use super::{read_havok_material, read_vec4};
 pub struct BhkSphereShape {
     pub material: u32,
     pub radius: f32,
-}
-
-impl NiObject for BhkSphereShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkSphereShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BhkSphereShape {
@@ -55,15 +45,6 @@ pub struct BhkMultiSphereShape {
     /// Up to 8 spheres making up the collision approximation. Each is
     /// (center_x, center_y, center_z, radius).
     pub spheres: Vec<[f32; 4]>,
-}
-
-impl NiObject for BhkMultiSphereShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkMultiSphereShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BhkMultiSphereShape {
@@ -99,15 +80,6 @@ pub struct BhkBoxShape {
     pub dimensions: [f32; 3],
 }
 
-impl NiObject for BhkBoxShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkBoxShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BhkBoxShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let material = read_havok_material(stream)?;
@@ -134,15 +106,6 @@ pub struct BhkCapsuleShape {
     pub radius1: f32,
     pub point2: [f32; 3],
     pub radius2: f32,
-}
-
-impl NiObject for BhkCapsuleShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkCapsuleShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BhkCapsuleShape {
@@ -179,15 +142,6 @@ pub struct BhkCylinderShape {
     pub cylinder_radius: f32,
 }
 
-impl NiObject for BhkCylinderShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkCylinderShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BhkCylinderShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let material = read_havok_material(stream)?;
@@ -206,3 +160,11 @@ impl BhkCylinderShape {
         })
     }
 }
+
+impl_ni_object!(
+    BhkSphereShape => "bhkSphereShape",
+    BhkMultiSphereShape => "bhkMultiSphereShape",
+    BhkBoxShape => "bhkBoxShape",
+    BhkCapsuleShape => "bhkCapsuleShape",
+    BhkCylinderShape => "bhkCylinderShape",
+);

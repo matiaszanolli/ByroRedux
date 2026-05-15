@@ -3,10 +3,9 @@
 //! ConvexVerts, List, Transform, MoppBvTree, ConvexList — shapes that wrap or
 //! aggregate other shapes.
 
-use super::super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
-use std::any::Any;
 use std::io;
 
 use super::{read_havok_material, read_vec4};
@@ -20,14 +19,6 @@ pub struct BhkConvexVerticesShape {
     pub normals: Vec<[f32; 4]>,
 }
 
-impl NiObject for BhkConvexVerticesShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkConvexVerticesShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkConvexVerticesShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -58,14 +49,6 @@ pub struct BhkListShape {
     pub filters: Vec<u32>,
 }
 
-impl NiObject for BhkListShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkListShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkListShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -97,14 +80,6 @@ pub struct BhkTransformShape {
     pub transform: [[f32; 4]; 4],
 }
 
-impl NiObject for BhkTransformShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkTransformShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkTransformShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -137,14 +112,6 @@ pub struct BhkMoppBvTreeShape {
     pub scale: f32,
 }
 
-impl NiObject for BhkMoppBvTreeShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkMoppBvTreeShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkMoppBvTreeShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -190,14 +157,6 @@ pub struct BhkConvexListShape {
     pub closest_point_min_distance: f32,
 }
 
-impl NiObject for BhkConvexListShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkConvexListShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkConvexListShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -222,3 +181,11 @@ impl BhkConvexListShape {
         })
     }
 }
+
+impl_ni_object!(
+    BhkConvexVerticesShape => "bhkConvexVerticesShape",
+    BhkListShape => "bhkListShape",
+    BhkTransformShape => "bhkTransformShape",
+    BhkMoppBvTreeShape => "bhkMoppBvTreeShape",
+    BhkConvexListShape => "bhkConvexListShape",
+);

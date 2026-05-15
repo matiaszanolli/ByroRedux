@@ -2,20 +2,12 @@
 //!
 //! Lead types: NiSequenceStreamHelper, NiUVController, NiLookAtController, NiPathController.
 
+use crate::impl_ni_object;
 use super::*;
 
 #[derive(Debug)]
 pub struct NiSequenceStreamHelper {
     pub net: NiObjectNETData,
-}
-
-impl NiObject for NiSequenceStreamHelper {
-    fn block_type_name(&self) -> &'static str {
-        "NiSequenceStreamHelper"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiSequenceStreamHelper {
@@ -34,15 +26,6 @@ pub struct NiUVController {
     pub target_attribute: u16,
     /// Ref to the NiUVData block with the four KeyGroup channels.
     pub data_ref: BlockRef,
-}
-
-impl NiObject for NiUVController {
-    fn block_type_name(&self) -> &'static str {
-        "NiUVController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiUVController {
@@ -74,15 +57,6 @@ pub struct NiLookAtController {
     pub base: NiTimeControllerBase,
     pub look_at_flags: u16,
     pub look_at_ref: BlockRef,
-}
-
-impl NiObject for NiLookAtController {
-    fn block_type_name(&self) -> &'static str {
-        "NiLookAtController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiLookAtController {
@@ -124,15 +98,6 @@ pub struct NiPathController {
     pub percent_data_ref: BlockRef,
 }
 
-impl NiObject for NiPathController {
-    fn block_type_name(&self) -> &'static str {
-        "NiPathController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiPathController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
@@ -161,3 +126,10 @@ impl NiPathController {
         })
     }
 }
+
+impl_ni_object!(
+    NiSequenceStreamHelper,
+    NiUVController,
+    NiLookAtController,
+    NiPathController,
+);

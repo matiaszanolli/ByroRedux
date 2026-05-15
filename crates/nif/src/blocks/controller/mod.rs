@@ -6,6 +6,7 @@
 
 use super::base::NiObjectNETData;
 use super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
 use crate::version::NifVersion;
@@ -72,15 +73,6 @@ pub struct NiTimeController {
     pub base: NiTimeControllerBase,
 }
 
-impl NiObject for NiTimeController {
-    fn block_type_name(&self) -> &'static str {
-        "NiTimeController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiTimeController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         Ok(Self {
@@ -110,15 +102,6 @@ pub struct BsLagBoneController {
     pub linear_velocity: f32,
     pub linear_rotation: f32,
     pub maximum_distance: f32,
-}
-
-impl NiObject for BsLagBoneController {
-    fn block_type_name(&self) -> &'static str {
-        "BSLagBoneController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BsLagBoneController {
@@ -174,15 +157,6 @@ pub struct BsProceduralLightningController {
     pub fade_child_bolts: bool,
     pub animate_arc_offset: bool,
     pub shader_property: BlockRef,
-}
-
-impl NiObject for BsProceduralLightningController {
-    fn block_type_name(&self) -> &'static str {
-        "BSProceduralLightningController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BsProceduralLightningController {
@@ -250,15 +224,6 @@ pub struct NiSingleInterpController {
     pub interpolator_ref: BlockRef,
 }
 
-impl NiObject for NiSingleInterpController {
-    fn block_type_name(&self) -> &'static str {
-        "NiSingleInterpController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiSingleInterpController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
@@ -305,15 +270,6 @@ pub struct NiFlipController {
     /// References to the source textures to cycle through. Typically
     /// 2–8 frames for water ripples or fire flicker.
     pub sources: Vec<BlockRef>,
-}
-
-impl NiObject for NiFlipController {
-    fn block_type_name(&self) -> &'static str {
-        "NiFlipController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiFlipController {
@@ -415,15 +371,6 @@ pub struct NiBsBoneLodController {
     pub shape_groups_2: Vec<BlockRef>,
 }
 
-impl NiObject for NiBsBoneLodController {
-    fn block_type_name(&self) -> &'static str {
-        "NiBSBoneLODController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiBsBoneLodController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
@@ -507,15 +454,6 @@ pub struct BhkBlendController {
     pub keys: u32,
 }
 
-impl NiObject for BhkBlendController {
-    fn block_type_name(&self) -> &'static str {
-        "bhkBlendController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BhkBlendController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
@@ -541,15 +479,6 @@ impl BhkBlendController {
 #[derive(Debug)]
 pub struct BsNiAlphaPropertyTestRefController {
     pub base: NiSingleInterpController,
-}
-
-impl NiObject for BsNiAlphaPropertyTestRefController {
-    fn block_type_name(&self) -> &'static str {
-        "BSNiAlphaPropertyTestRefController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BsNiAlphaPropertyTestRefController {
@@ -585,15 +514,6 @@ pub struct NiFloatExtraDataController {
     /// Name of the NiFloatExtraData tag this controller animates.
     /// Resolved against the header string table at 20.1+.
     pub extra_data_name: Option<Arc<str>>,
-}
-
-impl NiObject for NiFloatExtraDataController {
-    fn block_type_name(&self) -> &'static str {
-        "NiFloatExtraDataController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiFloatExtraDataController {
@@ -721,6 +641,18 @@ mod tests;
 // Inherits NiTimeController. DEPRECATED (10.2), REMOVED (20.5) — cutscene
 // and environmental animation spline follower. The engine later replaced
 // this with NiPathInterpolator on a plain NiTransformController. See #228.
+
+impl_ni_object!(
+    NiTimeController,
+    BsLagBoneController => "BSLagBoneController",
+    BsProceduralLightningController => "BSProceduralLightningController",
+    NiSingleInterpController,
+    NiFlipController,
+    NiBsBoneLodController => "NiBSBoneLODController",
+    BhkBlendController => "bhkBlendController",
+    BsNiAlphaPropertyTestRefController => "BSNiAlphaPropertyTestRefController",
+    NiFloatExtraDataController,
+);
 
 #[cfg(test)]
 mod path_lookat_tests;

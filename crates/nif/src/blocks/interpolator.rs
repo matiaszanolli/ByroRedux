@@ -5,6 +5,7 @@
 //! NiFloatInterpolator → NiFloatData (single-channel float keys)
 
 use super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiQuatTransform};
 use std::any::Any;
@@ -312,15 +313,6 @@ pub struct NiTransformData {
     pub scales: KeyGroup<FloatKey>,
 }
 
-impl NiObject for NiTransformData {
-    fn block_type_name(&self) -> &'static str {
-        "NiTransformData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiTransformData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // Rotation keys
@@ -384,15 +376,6 @@ impl NiTransformData {
 pub struct NiTransformInterpolator {
     pub transform: NiQuatTransform,
     pub data_ref: BlockRef,
-}
-
-impl NiObject for NiTransformInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiTransformInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiTransformInterpolator {
@@ -459,15 +442,6 @@ pub struct NiLookAtInterpolator {
     pub interp_scale: BlockRef,
 }
 
-impl NiObject for NiLookAtInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiLookAtInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiLookAtInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let flags = stream.read_u16_le()?;
@@ -498,15 +472,6 @@ pub struct NiFloatInterpolator {
     pub data_ref: BlockRef,
 }
 
-impl NiObject for NiFloatInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiFloatInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiFloatInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let value = stream.read_f32_le()?;
@@ -523,15 +488,6 @@ pub struct NiFloatData {
     pub keys: KeyGroup<FloatKey>,
 }
 
-impl NiObject for NiFloatData {
-    fn block_type_name(&self) -> &'static str {
-        "NiFloatData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiFloatData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let keys = KeyGroup::<FloatKey>::parse(stream)?;
@@ -546,15 +502,6 @@ impl NiFloatData {
 pub struct NiPoint3Interpolator {
     pub value: [f32; 3],
     pub data_ref: BlockRef,
-}
-
-impl NiObject for NiPoint3Interpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiPoint3Interpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiPoint3Interpolator {
@@ -576,15 +523,6 @@ impl NiPoint3Interpolator {
 #[derive(Debug)]
 pub struct NiPosData {
     pub keys: KeyGroup<Vec3Key>,
-}
-
-impl NiObject for NiPosData {
-    fn block_type_name(&self) -> &'static str {
-        "NiPosData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiPosData {
@@ -634,15 +572,6 @@ pub struct NiPathInterpolator {
     pub percent_data_ref: BlockRef,
 }
 
-impl NiObject for NiPathInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiPathInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiPathInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let flags = stream.read_u16_le()?;
@@ -683,15 +612,6 @@ pub struct NiColorInterpolator {
     pub data_ref: BlockRef,
 }
 
-impl NiObject for NiColorInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiColorInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiColorInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let r = stream.read_f32_le()?;
@@ -715,15 +635,6 @@ pub struct NiColorData {
     pub keys: KeyGroup<Color4Key>,
 }
 
-impl NiObject for NiColorData {
-    fn block_type_name(&self) -> &'static str {
-        "NiColorData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiColorData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let keys = KeyGroup::<Color4Key>::parse(stream)?;
@@ -738,15 +649,6 @@ impl NiColorData {
 pub struct NiTextKeyExtraData {
     pub name: Option<Arc<str>>,
     pub text_keys: Vec<(f32, String)>,
-}
-
-impl NiObject for NiTextKeyExtraData {
-    fn block_type_name(&self) -> &'static str {
-        "NiTextKeyExtraData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiTextKeyExtraData {
@@ -882,15 +784,6 @@ pub struct NiBoolData {
     pub keys: KeyGroup<FloatKey>,
 }
 
-impl NiObject for NiBoolData {
-    fn block_type_name(&self) -> &'static str {
-        "NiBoolData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiBoolData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // Bool data uses byte keys (KeyType is always 1=Linear for bool).
@@ -1016,15 +909,6 @@ pub struct NiBlendTransformInterpolator {
     pub base: NiBlendInterpolator,
 }
 
-impl NiObject for NiBlendTransformInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiBlendTransformInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiBlendTransformInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         Ok(Self {
@@ -1040,15 +924,6 @@ pub struct NiBlendFloatInterpolator {
     pub value: f32,
 }
 
-impl NiObject for NiBlendFloatInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiBlendFloatInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiBlendFloatInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiBlendInterpolator::parse(stream)?;
@@ -1062,15 +937,6 @@ impl NiBlendFloatInterpolator {
 pub struct NiBlendPoint3Interpolator {
     pub base: NiBlendInterpolator,
     pub value: [f32; 3],
-}
-
-impl NiObject for NiBlendPoint3Interpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiBlendPoint3Interpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiBlendPoint3Interpolator {
@@ -1093,15 +959,6 @@ pub struct NiBlendBoolInterpolator {
     pub value: u8,
 }
 
-impl NiObject for NiBlendBoolInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiBlendBoolInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiBlendBoolInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiBlendInterpolator::parse(stream)?;
@@ -1120,15 +977,6 @@ impl NiBlendBoolInterpolator {
 pub struct NiUVData {
     /// Four animated UV channels: [offset_u, offset_v, tiling_u, tiling_v].
     pub groups: [KeyGroup<FloatKey>; 4],
-}
-
-impl NiObject for NiUVData {
-    fn block_type_name(&self) -> &'static str {
-        "NiUVData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiUVData {
@@ -1162,15 +1010,6 @@ pub struct NiBSplineBasisData {
     pub num_control_points: u32,
 }
 
-impl NiObject for NiBSplineBasisData {
-    fn block_type_name(&self) -> &'static str {
-        "NiBSplineBasisData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiBSplineBasisData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let num_control_points = stream.read_u32_le()?;
@@ -1186,15 +1025,6 @@ impl NiBSplineBasisData {
 pub struct NiBSplineData {
     pub float_control_points: Vec<f32>,
     pub compact_control_points: Vec<i16>,
-}
-
-impl NiObject for NiBSplineData {
-    fn block_type_name(&self) -> &'static str {
-        "NiBSplineData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiBSplineData {
@@ -1249,15 +1079,6 @@ pub struct NiBSplineTransformInterpolator {
     pub scale_handle: u32,
 }
 
-impl NiObject for NiBSplineTransformInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiBSplineTransformInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiBSplineTransformInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let start_time = stream.read_f32_le()?;
@@ -1305,15 +1126,6 @@ pub struct NiBSplineFloatInterpolator {
     pub handle: u32,
 }
 
-impl NiObject for NiBSplineFloatInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiBSplineFloatInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiBSplineFloatInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let start_time = stream.read_f32_le()?;
@@ -1353,15 +1165,6 @@ pub struct NiBSplinePoint3Interpolator {
     /// Static fallback Vec3 used when `handle == u32::MAX`.
     pub value: [f32; 3],
     pub handle: u32,
-}
-
-impl NiObject for NiBSplinePoint3Interpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiBSplinePoint3Interpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiBSplinePoint3Interpolator {
@@ -1413,15 +1216,6 @@ pub struct NiBSplineCompTransformInterpolator {
     pub rotation_half_range: f32,
     pub scale_offset: f32,
     pub scale_half_range: f32,
-}
-
-impl NiObject for NiBSplineCompTransformInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiBSplineCompTransformInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiBSplineCompTransformInterpolator {
@@ -1496,15 +1290,6 @@ pub struct NiBSplineCompFloatInterpolator {
     pub float_half_range: f32,
 }
 
-impl NiObject for NiBSplineCompFloatInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiBSplineCompFloatInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiBSplineCompFloatInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiBSplineInterpolator base.
@@ -1560,15 +1345,6 @@ pub struct NiBSplineCompPoint3Interpolator {
     pub handle: u32,
     pub position_offset: f32,
     pub position_half_range: f32,
-}
-
-impl NiObject for NiBSplineCompPoint3Interpolator {
-    fn block_type_name(&self) -> &'static str {
-        "NiBSplineCompPoint3Interpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiBSplineCompPoint3Interpolator {
@@ -1636,15 +1412,6 @@ pub struct BsTreadTransfInterpolator {
     pub data_ref: BlockRef,
 }
 
-impl NiObject for BsTreadTransfInterpolator {
-    fn block_type_name(&self) -> &'static str {
-        "BSTreadTransfInterpolator"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsTreadTransfInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let num = stream.read_u32_le()?;
@@ -1669,3 +1436,32 @@ impl BsTreadTransfInterpolator {
         })
     }
 }
+
+impl_ni_object!(
+    NiTransformData,
+    NiTransformInterpolator,
+    NiLookAtInterpolator,
+    NiFloatInterpolator,
+    NiFloatData,
+    NiPoint3Interpolator,
+    NiPosData,
+    NiPathInterpolator,
+    NiColorInterpolator,
+    NiColorData,
+    NiTextKeyExtraData,
+    NiBoolData,
+    NiBlendTransformInterpolator,
+    NiBlendFloatInterpolator,
+    NiBlendPoint3Interpolator,
+    NiBlendBoolInterpolator,
+    NiUVData,
+    NiBSplineBasisData,
+    NiBSplineData,
+    NiBSplineTransformInterpolator,
+    NiBSplineFloatInterpolator,
+    NiBSplinePoint3Interpolator,
+    NiBSplineCompTransformInterpolator,
+    NiBSplineCompFloatInterpolator,
+    NiBSplineCompPoint3Interpolator,
+    BsTreadTransfInterpolator => "BSTreadTransfInterpolator",
+);

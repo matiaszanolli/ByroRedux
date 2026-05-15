@@ -5,6 +5,7 @@
 
 use super::base::NiObjectNETData;
 use super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::NiColor;
 use crate::version::NifVersion;
@@ -22,15 +23,6 @@ pub struct NiMaterialProperty {
     pub shininess: f32,
     pub alpha: f32,
     pub emissive_mult: f32,
-}
-
-impl NiObject for NiMaterialProperty {
-    fn block_type_name(&self) -> &'static str {
-        "NiMaterialProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiMaterialProperty {
@@ -103,15 +95,6 @@ pub struct NiAlphaProperty {
     pub net: NiObjectNETData,
     pub flags: u16,
     pub threshold: u8,
-}
-
-impl NiObject for NiAlphaProperty {
-    fn block_type_name(&self) -> &'static str {
-        "NiAlphaProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiAlphaProperty {
@@ -202,15 +185,6 @@ impl TexTransform {
         transform_method: 0,
         center: [0.0, 0.0],
     };
-}
-
-impl NiObject for NiTexturingProperty {
-    fn block_type_name(&self) -> &'static str {
-        "NiTexturingProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiTexturingProperty {
@@ -511,15 +485,6 @@ pub struct NiFogProperty {
     pub fog_color: [f32; 3],
 }
 
-impl NiObject for NiFogProperty {
-    fn block_type_name(&self) -> &'static str {
-        "NiFogProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiFogProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
@@ -613,15 +578,6 @@ pub struct NiStringPalette {
     pub palette: String,
 }
 
-impl NiObject for NiStringPalette {
-    fn block_type_name(&self) -> &'static str {
-        "NiStringPalette"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiStringPalette {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let palette = stream.read_sized_string()?;
@@ -655,15 +611,6 @@ pub struct NiVertexColorProperty {
     pub flags: u16,
     pub vertex_mode: u32,
     pub lighting_mode: u32,
-}
-
-impl NiObject for NiVertexColorProperty {
-    fn block_type_name(&self) -> &'static str {
-        "NiVertexColorProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiVertexColorProperty {
@@ -711,15 +658,6 @@ pub struct NiStencilProperty {
     pub z_fail_action: u32,
     pub pass_action: u32,
     pub draw_mode: u32,
-}
-
-impl NiObject for NiStencilProperty {
-    fn block_type_name(&self) -> &'static str {
-        "NiStencilProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiStencilProperty {
@@ -822,15 +760,6 @@ pub struct NiZBufferProperty {
     pub z_function: u32,
 }
 
-impl NiObject for NiZBufferProperty {
-    fn block_type_name(&self) -> &'static str {
-        "NiZBufferProperty"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiZBufferProperty {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
@@ -866,6 +795,17 @@ impl NiZBufferProperty {
     }
 }
 
+
+impl_ni_object!(
+    NiMaterialProperty,
+    NiAlphaProperty,
+    NiTexturingProperty,
+    NiFogProperty,
+    NiStringPalette,
+    NiVertexColorProperty,
+    NiStencilProperty,
+    NiZBufferProperty,
+);
 
 #[cfg(test)]
 #[path = "properties_tests.rs"]

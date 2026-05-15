@@ -3,7 +3,8 @@
 //! Base + Bhk + BhkN P + BhkP + SystemBinary — wrappers that link a rigid
 //! body / phantom into the scene-graph collision-target field.
 
-use super::super::NiObject;
+use crate::blocks::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
 use std::any::Any;
@@ -25,14 +26,6 @@ pub struct NiCollisionObjectBase {
     pub target_ref: BlockRef,
 }
 
-impl NiObject for NiCollisionObjectBase {
-    fn block_type_name(&self) -> &'static str {
-        "NiCollisionObject"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl NiCollisionObjectBase {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -50,14 +43,6 @@ pub struct BhkCollisionObject {
     pub body_ref: BlockRef,
 }
 
-impl NiObject for BhkCollisionObject {
-    fn block_type_name(&self) -> &'static str {
-        "bhkCollisionObject"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkCollisionObject {
     pub fn parse(stream: &mut NifStream, is_blend: bool) -> io::Result<Self> {
@@ -121,14 +106,6 @@ pub struct BhkNPCollisionObject {
     pub body_id: u32,
 }
 
-impl NiObject for BhkNPCollisionObject {
-    fn block_type_name(&self) -> &'static str {
-        "bhkNPCollisionObject"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkNPCollisionObject {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -195,14 +172,6 @@ pub struct BhkPCollisionObject {
     pub body_ref: BlockRef,
 }
 
-impl NiObject for BhkPCollisionObject {
-    fn block_type_name(&self) -> &'static str {
-        "bhkPCollisionObject"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkPCollisionObject {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -216,3 +185,10 @@ impl BhkPCollisionObject {
         })
     }
 }
+
+impl_ni_object!(
+    NiCollisionObjectBase => "NiCollisionObject",
+    BhkCollisionObject => "bhkCollisionObject",
+    BhkNPCollisionObject => "bhkNPCollisionObject",
+    BhkPCollisionObject => "bhkPCollisionObject",
+);

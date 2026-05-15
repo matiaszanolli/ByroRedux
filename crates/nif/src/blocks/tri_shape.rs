@@ -6,6 +6,7 @@
 
 use super::base::NiAVObjectData;
 use super::{traits, NiObject};
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 use crate::version::NifVersion;
@@ -1306,16 +1307,6 @@ pub struct NiTriShapeData {
     pub triangles: Vec<[u16; 3]>,
 }
 
-impl NiObject for NiTriShapeData {
-    fn block_type_name(&self) -> &'static str {
-        "NiTriShapeData"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 /// Parse the NiGeometryData base class fields shared by NiTriShapeData and NiTriStripsData.
 /// Returns (vertices, data_flags, normals, center, radius, vertex_colors, uv_sets).
 pub(crate) fn parse_geometry_data_base(
@@ -1576,16 +1567,6 @@ pub struct NiTriStripsData {
     pub strips: Vec<Vec<u16>>,
 }
 
-impl NiObject for NiTriStripsData {
-    fn block_type_name(&self) -> &'static str {
-        "NiTriStripsData"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiTriStripsData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let (vertices, _data_flags, normals, center, radius, vertex_colors, uv_sets) =
@@ -1839,6 +1820,11 @@ impl NiAdditionalGeometryData {
         })
     }
 }
+
+impl_ni_object!(
+    NiTriShapeData,
+    NiTriStripsData,
+);
 
 #[cfg(test)]
 #[path = "tri_shape_skin_vertex_tests.rs"]

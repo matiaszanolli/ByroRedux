@@ -3,10 +3,9 @@
 //! BoneTransform, BonePose, BhkPoseArray, BhkRagdollTemplate,
 //! BhkRagdollTemplateData — the persistent ragdoll articulation.
 
-use super::super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
-use std::any::Any;
 use std::io;
 use std::sync::Arc;
 
@@ -80,14 +79,6 @@ pub struct BhkPoseArray {
     pub poses: Vec<BonePose>,
 }
 
-impl NiObject for BhkPoseArray {
-    fn block_type_name(&self) -> &'static str {
-        "bhkPoseArray"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkPoseArray {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -131,14 +122,6 @@ pub struct BhkRagdollTemplate {
     pub bones: Vec<BlockRef>,
 }
 
-impl NiObject for BhkRagdollTemplate {
-    fn block_type_name(&self) -> &'static str {
-        "bhkRagdollTemplate"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkRagdollTemplate {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -185,14 +168,6 @@ pub struct BhkRagdollTemplateData {
     pub num_constraints: u32,
 }
 
-impl NiObject for BhkRagdollTemplateData {
-    fn block_type_name(&self) -> &'static str {
-        "bhkRagdollTemplateData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkRagdollTemplateData {
     pub fn parse(stream: &mut NifStream, block_size: Option<u32>) -> io::Result<Self> {
@@ -229,3 +204,9 @@ impl BhkRagdollTemplateData {
         })
     }
 }
+
+impl_ni_object!(
+    BhkPoseArray => "bhkPoseArray",
+    BhkRagdollTemplate => "bhkRagdollTemplate",
+    BhkRagdollTemplateData => "bhkRagdollTemplateData",
+);

@@ -2,6 +2,7 @@
 //!
 //! Lead types: ShaderControllerKind, NiLightColorController, NiLightFloatController, BsShaderController, NiMaterialColorController, NiTextureTransformController.
 
+use crate::impl_ni_object;
 use super::*;
 
 /// Which shader-property controller kind and its enum payload.
@@ -49,15 +50,6 @@ pub struct NiLightColorController {
     /// 1 = Ambient. Selects which NiLight color slot the controller
     /// drives.
     pub target_color: u16,
-}
-
-impl NiObject for NiLightColorController {
-    fn block_type_name(&self) -> &'static str {
-        "NiLightColorController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiLightColorController {
@@ -184,15 +176,6 @@ pub struct NiMaterialColorController {
     pub target_color: u16,
 }
 
-impl NiObject for NiMaterialColorController {
-    fn block_type_name(&self) -> &'static str {
-        "NiMaterialColorController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiMaterialColorController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
@@ -226,15 +209,6 @@ pub struct NiTextureTransformController {
     pub operation: u32,
 }
 
-impl NiObject for NiTextureTransformController {
-    fn block_type_name(&self) -> &'static str {
-        "NiTextureTransformController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiTextureTransformController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
@@ -255,3 +229,9 @@ impl NiTextureTransformController {
         })
     }
 }
+
+impl_ni_object!(
+    NiLightColorController,
+    NiMaterialColorController,
+    NiTextureTransformController,
+);

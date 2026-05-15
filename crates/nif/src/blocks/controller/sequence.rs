@@ -2,21 +2,13 @@
 //!
 //! Lead types: NiMultiTargetTransformController, NiControllerManager, ControlledBlock, NiControllerSequence, BsRefractionFirePeriodController.
 
+use crate::impl_ni_object;
 use super::*;
 
 #[derive(Debug)]
 pub struct NiMultiTargetTransformController {
     pub base: NiTimeControllerBase,
     pub extra_targets: Vec<BlockRef>,
-}
-
-impl NiObject for NiMultiTargetTransformController {
-    fn block_type_name(&self) -> &'static str {
-        "NiMultiTargetTransformController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiMultiTargetTransformController {
@@ -40,15 +32,6 @@ pub struct NiControllerManager {
     pub cumulative: bool,
     pub sequence_refs: Vec<BlockRef>,
     pub object_palette_ref: BlockRef,
-}
-
-impl NiObject for NiControllerManager {
-    fn block_type_name(&self) -> &'static str {
-        "NiControllerManager"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiControllerManager {
@@ -134,15 +117,6 @@ pub struct NiControllerSequence {
     pub manager_ref: BlockRef,
     pub accum_root_name: Option<Arc<str>>,
     pub anim_note_refs: Vec<BlockRef>,
-}
-
-impl NiObject for NiControllerSequence {
-    fn block_type_name(&self) -> &'static str {
-        "NiControllerSequence"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiControllerSequence {
@@ -338,15 +312,6 @@ pub struct BsRefractionFirePeriodController {
     pub interpolator_ref: BlockRef,
 }
 
-impl NiObject for BsRefractionFirePeriodController {
-    fn block_type_name(&self) -> &'static str {
-        "BSRefractionFirePeriodController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsRefractionFirePeriodController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
@@ -357,3 +322,10 @@ impl BsRefractionFirePeriodController {
         })
     }
 }
+
+impl_ni_object!(
+    NiMultiTargetTransformController,
+    NiControllerManager,
+    NiControllerSequence,
+    BsRefractionFirePeriodController => "BSRefractionFirePeriodController",
+);

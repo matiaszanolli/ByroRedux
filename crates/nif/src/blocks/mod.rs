@@ -100,6 +100,50 @@ pub trait NiObject: Debug + Send + Sync {
     }
 }
 
+/// Implements the trivial 2-method `NiObject` boilerplate for block types
+/// that don't override `as_object_net`, `as_av_object`, or `as_shader_refs`.
+///
+/// Two forms:
+/// - `impl_ni_object!(TypeA, TypeB)` — uses `stringify!(TypeName)` as the block type name.
+/// - `impl_ni_object!(TypeA => "ActualName", TypeB => "Other")` — explicit name string.
+///
+/// Mix forms freely: `impl_ni_object!(Foo, Bar => "bhkBar", Baz);`
+#[macro_export]
+macro_rules! impl_ni_object {
+    // Base case: empty
+    () => {};
+    // Explicit name form: Type => "name", rest...
+    ($t:ident => $name:literal, $($rest:tt)*) => {
+        impl $crate::blocks::NiObject for $t {
+            fn block_type_name(&self) -> &'static str { $name }
+            fn as_any(&self) -> &dyn ::std::any::Any { self }
+        }
+        $crate::impl_ni_object!($($rest)*);
+    };
+    // Explicit name form (trailing, no comma): Type => "name"
+    ($t:ident => $name:literal) => {
+        impl $crate::blocks::NiObject for $t {
+            fn block_type_name(&self) -> &'static str { $name }
+            fn as_any(&self) -> &dyn ::std::any::Any { self }
+        }
+    };
+    // Implicit name form: Type, rest...
+    ($t:ident, $($rest:tt)*) => {
+        impl $crate::blocks::NiObject for $t {
+            fn block_type_name(&self) -> &'static str { stringify!($t) }
+            fn as_any(&self) -> &dyn ::std::any::Any { self }
+        }
+        $crate::impl_ni_object!($($rest)*);
+    };
+    // Implicit name form (trailing, no comma): Type
+    ($t:ident) => {
+        impl $crate::blocks::NiObject for $t {
+            fn block_type_name(&self) -> &'static str { stringify!($t) }
+            fn as_any(&self) -> &dyn ::std::any::Any { self }
+        }
+    };
+}
+
 /// A parsed block that we don't have a specific parser for.
 /// Preserved so block indices remain valid.
 #[derive(Debug)]

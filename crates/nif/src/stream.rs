@@ -222,6 +222,24 @@ impl<'a> NifStream<'a> {
         Ok(Vec::with_capacity(count as usize))
     }
 
+    /// Reads `count` items using `reader`, pre-allocating with the same
+    /// budget guard as `allocate_vec`. Prevents the count-then-allocate
+    /// pattern from being reinvented (see #408 / #764 / #768 allocate_vec sweep).
+    pub fn read_array_of<T, F>(
+        &mut self,
+        count: u32,
+        mut reader: F,
+    ) -> io::Result<Vec<T>>
+    where
+        F: FnMut(&mut Self) -> io::Result<T>,
+    {
+        let mut v = self.allocate_vec::<T>(count)?;
+        for _ in 0..count {
+            v.push(reader(self)?);
+        }
+        Ok(v)
+    }
+
     /// Validate a file-driven allocation request before `vec![0u8; n]`.
     ///
     /// Rejects claims that (a) exceed the remaining bytes in the stream

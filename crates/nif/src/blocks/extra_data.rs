@@ -4,6 +4,7 @@
 //! We parse the most common ones and skip unknown subtypes.
 
 use super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
 use crate::version::NifVersion;
@@ -45,16 +46,6 @@ pub struct NiExtraData {
     /// skeleton at this LOD. Per `nifly::BoneTranslations::Sync`
     /// (ExtraData.cpp:441). See #708.
     pub bone_translations: Option<Vec<(String, [f32; 3])>>,
-}
-
-impl NiObject for NiExtraData {
-    fn block_type_name(&self) -> &'static str {
-        "NiExtraData"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiExtraData {
@@ -326,15 +317,6 @@ pub struct BsBound {
     pub dimensions: [f32; 3],
 }
 
-impl NiObject for BsBound {
-    fn block_type_name(&self) -> &'static str {
-        "BSBound"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsBound {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiExtraData base: name — gated since 10.0.1.0 per nif.xml. See #329.
@@ -378,15 +360,6 @@ pub struct BsPositionData {
     /// Per-vertex blend factor in the range [0, 1] (typical) — driven
     /// by Havok cloth / dismemberment systems on FO4 / FO76.
     pub vertex_data: Vec<f32>,
-}
-
-impl NiObject for BsPositionData {
-    fn block_type_name(&self) -> &'static str {
-        "BSPositionData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BsPositionData {
@@ -444,15 +417,6 @@ pub struct BsEyeCenterExtraData {
     pub floats: Vec<f32>,
 }
 
-impl NiObject for BsEyeCenterExtraData {
-    fn block_type_name(&self) -> &'static str {
-        "BSEyeCenterExtraData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsEyeCenterExtraData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiExtraData base: name — gated since 10.0.1.0 per nif.xml.
@@ -485,15 +449,6 @@ pub struct BsDecalPlacementVectorExtraData {
     pub name: Option<Arc<str>>,
     pub float_value: f32,
     pub vector_blocks: Vec<DecalVectorBlock>,
-}
-
-impl NiObject for BsDecalPlacementVectorExtraData {
-    fn block_type_name(&self) -> &'static str {
-        "BSDecalPlacementVectorExtraData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BsDecalPlacementVectorExtraData {
@@ -536,15 +491,6 @@ pub struct BsBehaviorGraphExtraData {
     pub controls_base_skeleton: bool,
 }
 
-impl NiObject for BsBehaviorGraphExtraData {
-    fn block_type_name(&self) -> &'static str {
-        "BSBehaviorGraphExtraData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsBehaviorGraphExtraData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiExtraData base — gated since 10.0.1.0 per nif.xml. See #329.
@@ -577,15 +523,6 @@ pub struct BsInvMarker {
     pub zoom: f32,
 }
 
-impl NiObject for BsInvMarker {
-    fn block_type_name(&self) -> &'static str {
-        "BSInvMarker"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsInvMarker {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiExtraData base — gated since 10.0.1.0 per nif.xml. See #329.
@@ -616,15 +553,6 @@ pub struct BsWArray {
     pub items: Vec<i32>,
 }
 
-impl NiObject for BsWArray {
-    fn block_type_name(&self) -> &'static str {
-        "BSWArray"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsWArray {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let name = stream.read_string()?;
@@ -649,15 +577,6 @@ impl BsWArray {
 pub struct BsClothExtraData {
     pub name: Option<Arc<str>>,
     pub data: Vec<u8>,
-}
-
-impl NiObject for BsClothExtraData {
-    fn block_type_name(&self) -> &'static str {
-        "BSClothExtraData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BsClothExtraData {
@@ -687,15 +606,6 @@ impl BsClothExtraData {
 #[derive(Debug)]
 pub struct BsCollisionQueryProxyExtraData {
     pub data: Vec<u8>,
-}
-
-impl NiObject for BsCollisionQueryProxyExtraData {
-    fn block_type_name(&self) -> &'static str {
-        "BSCollisionQueryProxyExtraData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BsCollisionQueryProxyExtraData {
@@ -732,15 +642,6 @@ pub struct BsDistantObjectLargeRefExtraData {
     pub large_ref: bool,
 }
 
-impl NiObject for BsDistantObjectLargeRefExtraData {
-    fn block_type_name(&self) -> &'static str {
-        "BSDistantObjectLargeRefExtraData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsDistantObjectLargeRefExtraData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiExtraData base: name — gated since 10.0.1.0 per nif.xml.
@@ -770,15 +671,6 @@ pub struct ConnectPointData {
 pub struct BsConnectPointParents {
     pub name: Option<Arc<str>>,
     pub connect_points: Vec<ConnectPointData>,
-}
-
-impl NiObject for BsConnectPointParents {
-    fn block_type_name(&self) -> &'static str {
-        "BSConnectPoint::Parents"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl BsConnectPointParents {
@@ -1238,15 +1130,6 @@ pub struct BsConnectPointChildren {
     pub point_names: Vec<String>,
 }
 
-impl NiObject for BsConnectPointChildren {
-    fn block_type_name(&self) -> &'static str {
-        "BSConnectPoint::Children"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsConnectPointChildren {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiExtraData base — gated since 10.0.1.0 per nif.xml. See #329.
@@ -1256,10 +1139,7 @@ impl BsConnectPointChildren {
         // Points` count. See issue #108.
         let skinned = stream.read_u8()? != 0;
         let count = stream.read_u32_le()?;
-        let mut point_names = stream.allocate_vec(count)?;
-        for _ in 0..count {
-            point_names.push(stream.read_sized_string()?);
-        }
+        let point_names = stream.read_array_of(count, |s| s.read_sized_string())?;
         Ok(Self {
             name,
             skinned,
@@ -1333,15 +1213,6 @@ pub struct BsAnimNote {
     pub state: Option<u32>,
 }
 
-impl NiObject for BsAnimNote {
-    fn block_type_name(&self) -> &'static str {
-        "BSAnimNote"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsAnimNote {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let raw_type = stream.read_u32_le()?;
@@ -1373,15 +1244,6 @@ pub struct BsAnimNotes {
     pub notes: Vec<BlockRef>,
 }
 
-impl NiObject for BsAnimNotes {
-    fn block_type_name(&self) -> &'static str {
-        "BSAnimNotes"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl BsAnimNotes {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let count = stream.read_u16_le()? as u32;
@@ -1393,6 +1255,24 @@ impl BsAnimNotes {
     }
 }
 
+
+impl_ni_object!(
+    NiExtraData,
+    BsBound => "BSBound",
+    BsPositionData => "BSPositionData",
+    BsEyeCenterExtraData => "BSEyeCenterExtraData",
+    BsDecalPlacementVectorExtraData => "BSDecalPlacementVectorExtraData",
+    BsBehaviorGraphExtraData => "BSBehaviorGraphExtraData",
+    BsInvMarker => "BSInvMarker",
+    BsWArray => "BSWArray",
+    BsClothExtraData => "BSClothExtraData",
+    BsCollisionQueryProxyExtraData => "BSCollisionQueryProxyExtraData",
+    BsDistantObjectLargeRefExtraData => "BSDistantObjectLargeRefExtraData",
+    BsConnectPointParents => "BSConnectPoint::Parents",
+    BsConnectPointChildren => "BSConnectPoint::Children",
+    BsAnimNote => "BSAnimNote",
+    BsAnimNotes => "BSAnimNotes",
+);
 
 #[cfg(test)]
 #[path = "extra_data_tests.rs"]

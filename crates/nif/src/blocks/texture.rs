@@ -5,6 +5,7 @@
 use super::base::{NiAVObjectData, NiObjectNETData};
 use super::traits::{HasAVObject, HasObjectNET};
 use super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiMatrix3, NiTransform};
 use crate::version::NifVersion;
@@ -23,15 +24,6 @@ pub struct NiSourceTexture {
     pub use_mipmaps: u32,
     pub alpha_format: u32,
     pub is_static: bool,
-}
-
-impl NiObject for NiSourceTexture {
-    fn block_type_name(&self) -> &'static str {
-        "NiSourceTexture"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiSourceTexture {
@@ -170,15 +162,6 @@ pub struct NiPixelData {
     pub num_faces: u32,
     /// Raw pixel data (all mipmaps, all faces, contiguous).
     pub pixel_data: Vec<u8>,
-}
-
-impl NiObject for NiPixelData {
-    fn block_type_name(&self) -> &'static str {
-        "NiPixelData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiPixelData {
@@ -323,6 +306,11 @@ impl NiPixelData {
         })
     }
 }
+
+impl_ni_object!(
+    NiSourceTexture,
+    NiPixelData,
+);
 
 #[cfg(test)]
 mod tests {

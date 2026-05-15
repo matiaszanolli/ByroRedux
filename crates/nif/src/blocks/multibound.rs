@@ -3,10 +3,9 @@
 //! BSMultiBoundNode (already parsed as NiNode) references a BSMultiBound,
 //! which in turn references a BSMultiBoundAABB or BSMultiBoundOBB.
 
-use super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
-use std::any::Any;
 use std::io;
 
 /// BSMultiBound — container referencing a BSMultiBoundData subclass.
@@ -15,14 +14,6 @@ pub struct BsMultiBound {
     pub data_ref: BlockRef,
 }
 
-impl NiObject for BsMultiBound {
-    fn block_type_name(&self) -> &'static str {
-        "BSMultiBound"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BsMultiBound {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -38,14 +29,6 @@ pub struct BsMultiBoundAABB {
     pub extent: [f32; 3],
 }
 
-impl NiObject for BsMultiBoundAABB {
-    fn block_type_name(&self) -> &'static str {
-        "BSMultiBoundAABB"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BsMultiBoundAABB {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -71,14 +54,6 @@ pub struct BsMultiBoundOBB {
     pub rotation: [[f32; 3]; 3],
 }
 
-impl NiObject for BsMultiBoundOBB {
-    fn block_type_name(&self) -> &'static str {
-        "BSMultiBoundOBB"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BsMultiBoundOBB {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -113,14 +88,6 @@ pub struct BsMultiBoundSphere {
     pub radius: f32,
 }
 
-impl NiObject for BsMultiBoundSphere {
-    fn block_type_name(&self) -> &'static str {
-        "BSMultiBoundSphere"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BsMultiBoundSphere {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -133,6 +100,13 @@ impl BsMultiBoundSphere {
         Ok(Self { center, radius })
     }
 }
+
+impl_ni_object!(
+    BsMultiBound => "BSMultiBound",
+    BsMultiBoundAABB => "BSMultiBoundAABB",
+    BsMultiBoundOBB => "BSMultiBoundOBB",
+    BsMultiBoundSphere => "BSMultiBoundSphere",
+);
 
 #[cfg(test)]
 mod tests {

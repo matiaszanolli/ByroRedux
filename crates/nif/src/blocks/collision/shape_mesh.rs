@@ -2,10 +2,9 @@
 //!
 //! NiTriStrips, PackedNiTriStrips and their per-strip data types.
 
-use super::super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
-use std::any::Any;
 use std::io;
 
 use super::{read_havok_material, read_vec4};
@@ -19,14 +18,6 @@ pub struct BhkNiTriStripsShape {
     pub filters: Vec<u32>,
 }
 
-impl NiObject for BhkNiTriStripsShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkNiTriStripsShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkNiTriStripsShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -69,14 +60,6 @@ pub struct HkSubPartData {
     pub material: u32,
 }
 
-impl NiObject for BhkPackedNiTriStripsShape {
-    fn block_type_name(&self) -> &'static str {
-        "bhkPackedNiTriStripsShape"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkPackedNiTriStripsShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -135,14 +118,6 @@ pub struct PackedTriangle {
     pub normal: Option<[f32; 3]>,
 }
 
-impl NiObject for HkPackedNiTriStripsData {
-    fn block_type_name(&self) -> &'static str {
-        "hkPackedNiTriStripsData"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl HkPackedNiTriStripsData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -220,3 +195,9 @@ impl HkPackedNiTriStripsData {
         })
     }
 }
+
+impl_ni_object!(
+    BhkNiTriStripsShape => "bhkNiTriStripsShape",
+    BhkPackedNiTriStripsShape => "bhkPackedNiTriStripsShape",
+    HkPackedNiTriStripsData => "hkPackedNiTriStripsData",
+);

@@ -3,10 +3,9 @@
 //! Simple + AABB phantoms, LiquidAction, OrientHingedBodyAction. Tail-type
 //! round-trip parsers per #557 / NIF-12.
 
-use super::super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
-use std::any::Any;
 use std::io;
 
 use super::read_vec4;
@@ -19,14 +18,6 @@ pub struct BhkSimpleShapePhantom {
     pub transform: [[f32; 4]; 4],
 }
 
-impl NiObject for BhkSimpleShapePhantom {
-    fn block_type_name(&self) -> &'static str {
-        "bhkSimpleShapePhantom"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkSimpleShapePhantom {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -79,14 +70,6 @@ pub struct BhkAabbPhantom {
     pub aabb_max: [f32; 4],
 }
 
-impl NiObject for BhkAabbPhantom {
-    fn block_type_name(&self) -> &'static str {
-        "bhkAabbPhantom"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkAabbPhantom {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -128,14 +111,6 @@ pub struct BhkLiquidAction {
     pub neighbor_strength: f32,
 }
 
-impl NiObject for BhkLiquidAction {
-    fn block_type_name(&self) -> &'static str {
-        "bhkLiquidAction"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkLiquidAction {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -182,14 +157,6 @@ pub struct BhkOrientHingedBodyAction {
     pub damping: f32,
 }
 
-impl NiObject for BhkOrientHingedBodyAction {
-    fn block_type_name(&self) -> &'static str {
-        "bhkOrientHingedBodyAction"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkOrientHingedBodyAction {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -210,3 +177,10 @@ impl BhkOrientHingedBodyAction {
         })
     }
 }
+
+impl_ni_object!(
+    BhkSimpleShapePhantom => "bhkSimpleShapePhantom",
+    BhkAabbPhantom => "bhkAabbPhantom",
+    BhkLiquidAction => "bhkLiquidAction",
+    BhkOrientHingedBodyAction => "bhkOrientHingedBodyAction",
+);

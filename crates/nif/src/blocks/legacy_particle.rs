@@ -22,6 +22,7 @@ use super::base::NiAVObjectData;
 use super::traits::{HasAVObject, HasObjectNET};
 use super::tri_shape::parse_geometry_data_base;
 use super::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 use std::any::Any;
@@ -51,15 +52,6 @@ pub struct NiParticleColorModifier {
     pub color_data_ref: BlockRef,
 }
 
-impl NiObject for NiParticleColorModifier {
-    fn block_type_name(&self) -> &'static str {
-        "NiParticleColorModifier"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiParticleColorModifier {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let (next_modifier, controller) = parse_particle_modifier_base(stream)?;
@@ -80,15 +72,6 @@ pub struct NiParticleGrowFade {
     pub controller: BlockRef,
     pub grow: f32,
     pub fade: f32,
-}
-
-impl NiObject for NiParticleGrowFade {
-    fn block_type_name(&self) -> &'static str {
-        "NiParticleGrowFade"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiParticleGrowFade {
@@ -114,15 +97,6 @@ pub struct NiParticleRotation {
     pub random_initial_axis: bool,
     pub initial_axis: [f32; 3],
     pub rotation_speed: f32,
-}
-
-impl NiObject for NiParticleRotation {
-    fn block_type_name(&self) -> &'static str {
-        "NiParticleRotation"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiParticleRotation {
@@ -158,15 +132,6 @@ pub struct NiParticleBomb {
     pub symmetry_type: u32,
     pub position: [f32; 3],
     pub direction: [f32; 3],
-}
-
-impl NiObject for NiParticleBomb {
-    fn block_type_name(&self) -> &'static str {
-        "NiParticleBomb"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiParticleBomb {
@@ -210,15 +175,6 @@ pub struct NiGravity {
     pub field_type: u32,
     pub position: [f32; 3],
     pub direction: [f32; 3],
-}
-
-impl NiObject for NiGravity {
-    fn block_type_name(&self) -> &'static str {
-        "NiGravity"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiGravity {
@@ -282,15 +238,6 @@ pub struct NiPlanarCollider {
     pub plane: [f32; 4],
 }
 
-impl NiObject for NiPlanarCollider {
-    fn block_type_name(&self) -> &'static str {
-        "NiPlanarCollider"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 impl NiPlanarCollider {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let (next_modifier, controller, bounce, spawn_on_collide, die_on_collide) =
@@ -329,15 +276,6 @@ pub struct NiSphericalCollider {
     pub die_on_collide: bool,
     pub radius: f32,
     pub position: [f32; 3],
-}
-
-impl NiObject for NiSphericalCollider {
-    fn block_type_name(&self) -> &'static str {
-        "NiSphericalCollider"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiSphericalCollider {
@@ -409,15 +347,6 @@ pub struct NiParticleSystemController {
     pub trailer_emitter_type: u32,
     pub unknown_trailer_float: f32,
     pub trailer_emitter_modifier: BlockRef,
-}
-
-impl NiObject for NiParticleSystemController {
-    fn block_type_name(&self) -> &'static str {
-        "NiParticleSystemController"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 impl NiParticleSystemController {
@@ -738,3 +667,14 @@ impl NiLegacyParticlesData {
         })
     }
 }
+
+impl_ni_object!(
+    NiParticleColorModifier,
+    NiParticleGrowFade,
+    NiParticleRotation,
+    NiParticleBomb,
+    NiGravity,
+    NiPlanarCollider,
+    NiSphericalCollider,
+    NiParticleSystemController,
+);

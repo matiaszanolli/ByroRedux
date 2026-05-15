@@ -3,7 +3,8 @@
 //! BhkConstraint stubs + BhkBreakableConstraint with its inner-wrapped
 //! constraint payload (#117 / #557).
 
-use super::super::NiObject;
+use crate::blocks::NiObject;
+use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
 use crate::version::NifVersion;
@@ -168,14 +169,6 @@ pub struct BhkBreakableConstraint {
     pub remove_when_broken: bool,
 }
 
-impl NiObject for BhkBreakableConstraint {
-    fn block_type_name(&self) -> &'static str {
-        "bhkBreakableConstraint"
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 impl BhkBreakableConstraint {
     /// Payload size (in bytes, past the 16-byte outer bhkConstraintCInfo
@@ -344,3 +337,5 @@ impl BhkBreakableConstraint {
         })
     }
 }
+
+impl_ni_object!(BhkBreakableConstraint => "bhkBreakableConstraint");
