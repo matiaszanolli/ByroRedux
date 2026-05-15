@@ -292,301 +292,365 @@ pub(crate) fn build_scene_descriptor_bindings(
     bindings
 }
 
+/// All per-frame-in-flight and shared scene render buffers, plus their sizes.
+///
+/// Allocated by [`allocate_scene_render_buffers`]; consumed by
+/// [`SceneBuffers::new`] for descriptor writes and seeding before being
+/// decomposed into the final [`SceneBuffers`] struct fields.
+struct SceneRenderBuffers {
+    light_buffers: Vec<GpuBuffer>,
+    light_buf_size: vk::DeviceSize,
+    camera_buffers: Vec<GpuBuffer>,
+    camera_buf_size: vk::DeviceSize,
+    bone_staging_buffers: Vec<GpuBuffer>,
+    bone_device_buffers: Vec<GpuBuffer>,
+    bone_buf_size: vk::DeviceSize,
+    instance_buffers: Vec<GpuBuffer>,
+    instance_buf_size: vk::DeviceSize,
+    indirect_buffers: Vec<GpuBuffer>,
+    material_buffers: Vec<GpuBuffer>,
+    material_buf_size: vk::DeviceSize,
+    dalc_buffers: Vec<GpuBuffer>,
+    dalc_buf_size: vk::DeviceSize,
+    terrain_tile_buffer: GpuBuffer,
+    terrain_tile_buf_size: vk::DeviceSize,
+    // #683 / MEM-2-8 — single shared buffer with per-frame stride slots.
+    ray_budget_buffer: GpuBuffer,
+}
+
+/// Allocate all Vulkan buffers needed by the scene render pipeline.
+///
+/// Creates per-frame-in-flight SSBO/UBO buffers (lights, camera, bones,
+/// instances, materials, indirect draw, DALC cube) and shared buffers
+/// (terrain tile SSBO, ray-budget counter). Separated from
+/// [`SceneBuffers::new`] so the allocation phase can be read independently
+/// from the descriptor-setup phase. See #1052 / TD9-009.
+fn allocate_scene_render_buffers(
+    device: &ash::Device,
+    allocator: &SharedAllocator,
+) -> Result<SceneRenderBuffers> {
+    // ── Buffer sizes ──────────────────────────────────────────────────────
+    let light_buf_size = (std::mem::size_of::<LightHeader>()
+        + std::mem::size_of::<GpuLight>() * MAX_LIGHTS)
+        as vk::DeviceSize;
+    let camera_buf_size = std::mem::size_of::<GpuCamera>() as vk::DeviceSize;
+    let dalc_buf_size = std::mem::size_of::<GpuDalcCube>() as vk::DeviceSize;
+    // Bone palette: 4 × vec4 (mat4) per slot, std430 layout.
+    let bone_buf_size =
+        (std::mem::size_of::<[[f32; 4]; 4]>() * MAX_TOTAL_BONES) as vk::DeviceSize;
+    // Instance SSBO: per-instance model matrix + texture index + bone offset.
+    let instance_buf_size =
+        (std::mem::size_of::<GpuInstance>() * MAX_INSTANCES) as vk::DeviceSize;
+    // Material SSBO: deduplicated `GpuMaterial` table (R1 Phase 4).
+    let material_buf_size =
+        (std::mem::size_of::<super::super::material::GpuMaterial>() * MAX_MATERIALS)
+            as vk::DeviceSize;
+    // Indirect buffer: one VkDrawIndexedIndirectCommand (20 B) per batch. #309.
+    let indirect_buf_size = (std::mem::size_of::<vk::DrawIndexedIndirectCommand>()
+        * MAX_INDIRECT_DRAWS) as vk::DeviceSize;
+    // Terrain tile SSBO: 32 B per slot × MAX_TERRAIN_TILES. #470.
+    let terrain_tile_buf_size =
+        (std::mem::size_of::<GpuTerrainTile>() * MAX_TERRAIN_TILES) as vk::DeviceSize;
+
+    // ── Per-frame-in-flight buffers ───────────────────────────────────────
+    let mut light_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    let mut camera_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    // #921 / REN-D12-NEW-04 — split bone palette into HOST_VISIBLE staging
+    // + DEVICE_LOCAL storage. Descriptors bind the device buffers; the
+    // staging buffer is written by `upload_bones` and transferred each
+    // frame by `record_bone_copy`.
+    let mut bone_staging_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    let mut bone_device_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    let mut material_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    let mut dalc_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    for _ in 0..MAX_FRAMES_IN_FLIGHT {
+        light_buffers.push(GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            light_buf_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+        )?);
+        camera_buffers.push(GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            camera_buf_size,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+        )?);
+        bone_staging_buffers.push(GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            bone_buf_size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+        )?);
+        bone_device_buffers.push(GpuBuffer::create_device_local_uninit(
+            device,
+            allocator,
+            bone_buf_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        )?);
+        instance_buffers.push(GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            instance_buf_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+        )?);
+        indirect_buffers.push(GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            indirect_buf_size,
+            vk::BufferUsageFlags::INDIRECT_BUFFER,
+        )?);
+        material_buffers.push(GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            material_buf_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+        )?);
+        dalc_buffers.push(GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            dalc_buf_size,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+        )?);
+        // Ray budget counter is a SINGLE shared buffer (created below)
+        // with per-frame slots at `frame * RAY_BUDGET_STRIDE`. #683 / MEM-2-8.
+    }
+
+    // ── Shared (single-allocation) buffers ────────────────────────────────
+    // #683 / MEM-2-8 — single shared buffer covering all frame slots.
+    let ray_budget_buffer = GpuBuffer::create_host_visible(
+        device,
+        allocator,
+        RAY_BUDGET_STRIDE * MAX_FRAMES_IN_FLIGHT as vk::DeviceSize,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+    )?;
+    // Terrain tile SSBO: single DEVICE_LOCAL buffer, uploaded via staging at
+    // cell load. Shared across all FIF descriptor sets since contents are
+    // static until the next cell transition. See #497.
+    let terrain_tile_buffer = GpuBuffer::create_device_local_uninit(
+        device,
+        allocator,
+        terrain_tile_buf_size,
+        vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+    )?;
+
+    Ok(SceneRenderBuffers {
+        light_buffers,
+        light_buf_size,
+        camera_buffers,
+        camera_buf_size,
+        bone_staging_buffers,
+        bone_device_buffers,
+        bone_buf_size,
+        instance_buffers,
+        instance_buf_size,
+        indirect_buffers,
+        material_buffers,
+        material_buf_size,
+        dalc_buffers,
+        dalc_buf_size,
+        terrain_tile_buffer,
+        terrain_tile_buf_size,
+        ray_budget_buffer,
+    })
+}
+
+/// Create scene descriptor set layout, pool, allocate per-FIF sets, and
+/// write the initial buffer-backed descriptors into them.
+///
+/// Returns `(layout, pool, sets)`. Separated from [`SceneBuffers::new`] so
+/// the descriptor-wiring phase can be read independently from the allocation
+/// phase. See #1052 / TD9-009.
+///
+/// # Safety
+/// Calls `vkCreateDescriptorSetLayout`, `vkAllocateDescriptorSets`, and
+/// `vkUpdateDescriptorSets` — all safe as long as `device` is valid and the
+/// buffer handles in `bufs` are live for the duration of the sets' lifetimes.
+/// [`SceneBuffers::destroy`] drops the pool before the layout and before the
+/// device, satisfying the invariant.
+fn create_scene_descriptors(
+    device: &ash::Device,
+    rt_enabled: bool,
+    bufs: &SceneRenderBuffers,
+) -> Result<(vk::DescriptorSetLayout, vk::DescriptorPool, Vec<vk::DescriptorSet>)> {
+    // ── Descriptor set layout ─────────────────────────────────────────────
+    let bindings = build_scene_descriptor_bindings(rt_enabled);
+    // Mark bindings 5+6 (cluster data) as PARTIALLY_BOUND so they are
+    // valid even when unwritten (cluster cull pipeline may fail to create).
+    let binding_flags: Vec<vk::DescriptorBindingFlags> = bindings
+        .iter()
+        .map(|b| {
+            if b.binding >= 5 {
+                vk::DescriptorBindingFlags::PARTIALLY_BOUND
+            } else {
+                vk::DescriptorBindingFlags::empty()
+            }
+        })
+        .collect();
+    let mut binding_flags_info =
+        vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
+    // Validate against triangle.vert/frag SPIR-V before creating the layout (#427).
+    let optional_bindings: &[u32] = if rt_enabled { &[] } else { &[2] };
+    super::super::reflect::validate_set_layout(
+        1,
+        &bindings,
+        &[
+            super::super::reflect::ReflectedShader {
+                name: "triangle.vert",
+                spirv: super::super::pipeline::TRIANGLE_VERT_SPV,
+            },
+            super::super::reflect::ReflectedShader {
+                name: "triangle.frag",
+                spirv: super::super::pipeline::TRIANGLE_FRAG_SPV,
+            },
+        ],
+        "scene (set=1)",
+        optional_bindings,
+    )
+    .expect("scene descriptor layout drifted against triangle.vert/frag (see #427)");
+    let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+        .bindings(&bindings)
+        .push_next(&mut binding_flags_info);
+    let descriptor_set_layout = unsafe {
+        device
+            .create_descriptor_set_layout(&layout_info, None)
+            .context("Failed to create scene descriptor set layout")?
+    };
+
+    // ── Descriptor pool + set allocation ─────────────────────────────────
+    // Pool sizes derived from `bindings` so conditional TLAS slot flows
+    // through automatically (#1030 / REN-D10-NEW-09).
+    let descriptor_pool =
+        DescriptorPoolBuilder::from_layout_bindings(&bindings, MAX_FRAMES_IN_FLIGHT as u32)
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+            .build(device, "Failed to create scene descriptor pool")?;
+
+    let layouts = vec![descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+    let alloc_info = vk::DescriptorSetAllocateInfo::default()
+        .descriptor_pool(descriptor_pool)
+        .set_layouts(&layouts);
+    let descriptor_sets = unsafe {
+        device
+            .allocate_descriptor_sets(&alloc_info)
+            .context("Failed to allocate scene descriptor sets")?
+    };
+
+    // ── Write descriptors ─────────────────────────────────────────────────
+    for i in 0..MAX_FRAMES_IN_FLIGHT {
+        let light_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.light_buffers[i].buffer,
+            offset: 0,
+            range: bufs.light_buf_size,
+        }];
+        let camera_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.camera_buffers[i].buffer,
+            offset: 0,
+            range: bufs.camera_buf_size,
+        }];
+        // #921 — descriptors point at the DEVICE buffers; staging copies
+        // happen on the recording command buffer via `record_bone_copy`.
+        let bone_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.bone_device_buffers[i].buffer,
+            offset: 0,
+            range: bufs.bone_buf_size,
+        }];
+        // Previous-frame bone palette (SH-3 / #641): the OTHER ring slot.
+        let bone_prev_idx = (i + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+        let bone_prev_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.bone_device_buffers[bone_prev_idx].buffer,
+            offset: 0,
+            range: bufs.bone_buf_size,
+        }];
+        let instance_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.instance_buffers[i].buffer,
+            offset: 0,
+            range: bufs.instance_buf_size,
+        }];
+        let terrain_tile_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.terrain_tile_buffer.buffer,
+            offset: 0,
+            range: bufs.terrain_tile_buf_size,
+        }];
+        // #683 / MEM-2-8 — slot into the shared buffer at this frame's stride.
+        let ray_budget_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.ray_budget_buffer.buffer,
+            offset: (i as vk::DeviceSize) * RAY_BUDGET_STRIDE,
+            range: std::mem::size_of::<u32>() as vk::DeviceSize,
+        }];
+        let material_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.material_buffers[i].buffer,
+            offset: 0,
+            range: bufs.material_buf_size,
+        }];
+        let dalc_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.dalc_buffers[i].buffer,
+            offset: 0,
+            range: bufs.dalc_buf_size,
+        }];
+        let set = descriptor_sets[i];
+        let writes = [
+            write_storage_buffer(set, 0, &light_buf_info),
+            write_uniform_buffer(set, 1, &camera_buf_info),
+            write_storage_buffer(set, 3, &bone_buf_info),
+            write_storage_buffer(set, 4, &instance_buf_info),
+            write_storage_buffer(set, 10, &terrain_tile_buf_info),
+            write_storage_buffer(set, 11, &ray_budget_buf_info),
+            write_storage_buffer(set, 12, &bone_prev_buf_info),
+            write_storage_buffer(set, 13, &material_buf_info),
+            write_uniform_buffer(set, 14, &dalc_buf_info),
+        ];
+        unsafe {
+            device.update_descriptor_sets(&writes, &[]);
+        }
+    }
+
+    Ok((descriptor_set_layout, descriptor_pool, descriptor_sets))
+}
+
 impl SceneBuffers {
     /// Create scene buffers and descriptor infrastructure.
+    ///
+    /// Delegates to [`allocate_scene_render_buffers`] (buffer allocation) and
+    /// [`create_scene_descriptors`] (layout + pool + writes), then seeds the
+    /// bone-palette identity slot and the DALC UBO default before returning the
+    /// fully-initialised [`SceneBuffers`]. See #1052 / TD9-009.
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
         rt_enabled: bool,
     ) -> Result<Self> {
-        // Calculate buffer sizes.
-        let light_buf_size = (std::mem::size_of::<LightHeader>()
-            + std::mem::size_of::<GpuLight>() * MAX_LIGHTS)
-            as vk::DeviceSize;
-        let camera_buf_size = std::mem::size_of::<GpuCamera>() as vk::DeviceSize;
-        let dalc_buf_size = std::mem::size_of::<GpuDalcCube>() as vk::DeviceSize;
-        // Bone palette: 4 × vec4 (mat4) per slot, std430 layout.
-        let bone_buf_size =
-            (std::mem::size_of::<[[f32; 4]; 4]>() * MAX_TOTAL_BONES) as vk::DeviceSize;
-        // Instance SSBO: per-instance model matrix + texture index + bone offset.
-        let instance_buf_size =
-            (std::mem::size_of::<GpuInstance>() * MAX_INSTANCES) as vk::DeviceSize;
-        // Material SSBO: deduplicated `GpuMaterial` table (R1 Phase 4).
-        let material_buf_size =
-            (std::mem::size_of::<super::super::material::GpuMaterial>() * MAX_MATERIALS) as vk::DeviceSize;
-        // Indirect buffer: one VkDrawIndexedIndirectCommand (20 B) per batch. #309.
-        let indirect_buf_size = (std::mem::size_of::<vk::DrawIndexedIndirectCommand>()
-            * MAX_INDIRECT_DRAWS) as vk::DeviceSize;
-        // Terrain tile SSBO: 32 B per slot × MAX_TERRAIN_TILES. #470.
-        let terrain_tile_buf_size =
-            (std::mem::size_of::<GpuTerrainTile>() * MAX_TERRAIN_TILES) as vk::DeviceSize;
+        let mut bufs = allocate_scene_render_buffers(device, allocator)?;
+        let (descriptor_set_layout, descriptor_pool, descriptor_sets) =
+            create_scene_descriptors(device, rt_enabled, &bufs)?;
 
-        // Create per-frame buffers.
-        let mut light_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut camera_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        // #921 / REN-D12-NEW-04 — split bone palette into HOST_VISIBLE
-        // staging + DEVICE_LOCAL storage. The descriptor binds the
-        // device buffers; `upload_bones` writes the staging buffer and
-        // `record_bone_copy` schedules the per-frame transfer.
-        let mut bone_staging_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut bone_device_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        // #683 / MEM-2-8 — single shared buffer covering all frame slots
-        // (see `RAY_BUDGET_STRIDE` doc). Created outside the per-frame
-        // loop below; each frame's descriptor write picks its slot via
-        // an offset into this one allocation.
-        let ray_budget_buffer = GpuBuffer::create_host_visible(
-            device,
-            allocator,
-            RAY_BUDGET_STRIDE * MAX_FRAMES_IN_FLIGHT as vk::DeviceSize,
-            vk::BufferUsageFlags::STORAGE_BUFFER,
-        )?;
-        let mut material_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut dalc_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            light_buffers.push(GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                light_buf_size,
-                vk::BufferUsageFlags::STORAGE_BUFFER,
-            )?);
-            camera_buffers.push(GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                camera_buf_size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            )?);
-            bone_staging_buffers.push(GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                bone_buf_size,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-            )?);
-            bone_device_buffers.push(GpuBuffer::create_device_local_uninit(
-                device,
-                allocator,
-                bone_buf_size,
-                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-            )?);
-            instance_buffers.push(GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                instance_buf_size,
-                vk::BufferUsageFlags::STORAGE_BUFFER,
-            )?);
-            indirect_buffers.push(GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                indirect_buf_size,
-                vk::BufferUsageFlags::INDIRECT_BUFFER,
-            )?);
-            material_buffers.push(GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                material_buf_size,
-                vk::BufferUsageFlags::STORAGE_BUFFER,
-            )?);
-            dalc_buffers.push(GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                dalc_buf_size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-            )?);
-            // Ray budget counter is now a SINGLE shared buffer (declared
-            // outside this loop) with per-frame slots at
-            // `frame * RAY_BUDGET_STRIDE`. See #683 / MEM-2-8.
-        }
-        // Terrain tile SSBO: single DEVICE_LOCAL buffer, uploaded via
-        // staging at cell load. TRANSFER_DST needed for the staging
-        // copy. Shared across all frame-in-flight descriptor sets
-        // since the contents are static until the next cell
-        // transition. See #497.
-        let terrain_tile_buffer = GpuBuffer::create_device_local_uninit(
-            device,
-            allocator,
-            terrain_tile_buf_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
-        )?;
-
-        // Descriptor set layout: set 1.
-        let bindings = build_scene_descriptor_bindings(rt_enabled);
-        // Mark bindings 5+6 (cluster data) as PARTIALLY_BOUND so they are
-        // valid even when unwritten (cluster cull pipeline may fail to create).
-        // The fragment shader guards access with a lightCount > 0 check.
-        let binding_flags: Vec<vk::DescriptorBindingFlags> = bindings
-            .iter()
-            .enumerate()
-            .map(|(_, b)| {
-                let binding_idx = b.binding;
-                if binding_idx >= 5 {
-                    vk::DescriptorBindingFlags::PARTIALLY_BOUND
-                } else {
-                    vk::DescriptorBindingFlags::empty()
-                }
-            })
-            .collect();
-        let mut binding_flags_info =
-            vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
-        // Validate against triangle.vert/frag SPIR-V before creating the layout (#427).
-        // When rt_enabled=false the TLAS binding (2) is declared in the shader
-        // but intentionally omitted from the layout — the fragment gates every
-        // rayQuery behind a uniform flag.
-        // Binding 2 (TLAS) is declared in the shader but omitted when rt_enabled=false.
-        let optional_bindings: &[u32] = if rt_enabled { &[] } else { &[2] };
-        super::super::reflect::validate_set_layout(
-            1,
-            &bindings,
-            &[
-                super::super::reflect::ReflectedShader {
-                    name: "triangle.vert",
-                    spirv: super::super::pipeline::TRIANGLE_VERT_SPV,
-                },
-                super::super::reflect::ReflectedShader {
-                    name: "triangle.frag",
-                    spirv: super::super::pipeline::TRIANGLE_FRAG_SPV,
-                },
-            ],
-            "scene (set=1)",
-            optional_bindings,
-        )
-        .expect("scene descriptor layout drifted against triangle.vert/frag (see #427)");
-        let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
-            .bindings(&bindings)
-            .push_next(&mut binding_flags_info);
-        let descriptor_set_layout = unsafe {
-            device
-                .create_descriptor_set_layout(&layout_info, None)
-                .context("Failed to create scene descriptor set layout")?
-        };
-
-        // Descriptor pool — sizes derived from `bindings` so the
-        // conditional TLAS slot (and any future binding addition)
-        // flows through automatically (#1030 / REN-D10-NEW-09).
-        // `build_scene_descriptor_bindings(rt_enabled)` already
-        // includes / omits the TLAS binding based on the same flag,
-        // so the pool count tracks it without a parallel branch
-        // here.
-        let descriptor_pool =
-            DescriptorPoolBuilder::from_layout_bindings(&bindings, MAX_FRAMES_IN_FLIGHT as u32)
-                .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-                .build(device, "Failed to create scene descriptor pool")?;
-
-        // Allocate descriptor sets.
-        let layouts = vec![descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
-        let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
-            .set_layouts(&layouts);
-        let descriptor_sets = unsafe {
-            device
-                .allocate_descriptor_sets(&alloc_info)
-                .context("Failed to allocate scene descriptor sets")?
-        };
-
-        // Write descriptor sets to point at the buffers.
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let light_buf_info = [vk::DescriptorBufferInfo {
-                buffer: light_buffers[i].buffer,
-                offset: 0,
-                range: light_buf_size,
-            }];
-            let camera_buf_info = [vk::DescriptorBufferInfo {
-                buffer: camera_buffers[i].buffer,
-                offset: 0,
-                range: camera_buf_size,
-            }];
-            // #921 — descriptors point at the DEVICE buffers; the
-            // staging copies happen on the recording command buffer via
-            // `record_bone_copy` before the consuming shader stage.
-            let bone_buf_info = [vk::DescriptorBufferInfo {
-                buffer: bone_device_buffers[i].buffer,
-                offset: 0,
-                range: bone_buf_size,
-            }];
-            // Previous-frame bone palette: the OTHER slot in the ring.
-            // Frame N writes its palette into `bone_device_buffers[N % MAX]`
-            // and binding 12 references `bone_device_buffers[(N + MAX - 1) % MAX]`
-            // (last frame's data). SH-3 / #641. With MAX_FRAMES_IN_FLIGHT=2
-            // the prev index is `(i + 1) % 2`. The mapping is static —
-            // written once here.
-            let bone_prev_idx = (i + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
-            let bone_prev_buf_info = [vk::DescriptorBufferInfo {
-                buffer: bone_device_buffers[bone_prev_idx].buffer,
-                offset: 0,
-                range: bone_buf_size,
-            }];
-            let instance_buf_info = [vk::DescriptorBufferInfo {
-                buffer: instance_buffers[i].buffer,
-                offset: 0,
-                range: instance_buf_size,
-            }];
-            let terrain_tile_buf_info = [vk::DescriptorBufferInfo {
-                buffer: terrain_tile_buffer.buffer,
-                offset: 0,
-                range: terrain_tile_buf_size,
-            }];
-            // #683 / MEM-2-8 — slot into the shared buffer at this
-            // frame's stride offset. `range` is the actual u32 payload;
-            // the alignment padding is invisible to the shader.
-            let ray_budget_buf_info = [vk::DescriptorBufferInfo {
-                buffer: ray_budget_buffer.buffer,
-                offset: (i as vk::DeviceSize) * RAY_BUDGET_STRIDE,
-                range: std::mem::size_of::<u32>() as vk::DeviceSize,
-            }];
-            let material_buf_info = [vk::DescriptorBufferInfo {
-                buffer: material_buffers[i].buffer,
-                offset: 0,
-                range: material_buf_size,
-            }];
-            let dalc_buf_info = [vk::DescriptorBufferInfo {
-                buffer: dalc_buffers[i].buffer,
-                offset: 0,
-                range: dalc_buf_size,
-            }];
-            let set = descriptor_sets[i];
-            let writes = [
-                write_storage_buffer(set, 0, &light_buf_info),
-                write_uniform_buffer(set, 1, &camera_buf_info),
-                write_storage_buffer(set, 3, &bone_buf_info),
-                write_storage_buffer(set, 4, &instance_buf_info),
-                write_storage_buffer(set, 10, &terrain_tile_buf_info),
-                write_storage_buffer(set, 11, &ray_budget_buf_info),
-                write_storage_buffer(set, 12, &bone_prev_buf_info),
-                write_storage_buffer(set, 13, &material_buf_info),
-                write_uniform_buffer(set, 14, &dalc_buf_info),
-            ];
-            unsafe {
-                device.update_descriptor_sets(&writes, &[]);
-            }
-        }
-
-        // Seed slot 0 of each STAGING buffer with the identity matrix so
-        // rigid vertices that fall through to the palette (shouldn't
-        // happen, but serves as a defensive fallback) produce correct
-        // positions rather than collapsing to origin. The matching
-        // device buffer is populated by `seed_identity_bones` once the
-        // caller can supply a queue + command pool for the initial copy.
+        // ── Seed initial buffer data ──────────────────────────────────────
+        // Seed slot 0 of each STAGING bone buffer with the identity matrix so
+        // rigid vertices that fall through to the palette produce correct
+        // positions rather than collapsing to origin. The matching device
+        // buffer is populated by `seed_identity_bones` once the caller can
+        // supply a queue + command pool for the initial transfer copy.
         let identity: [[f32; 4]; 4] = [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ];
-        for buf in &mut bone_staging_buffers {
+        for buf in &mut bufs.bone_staging_buffers {
             buf.write_mapped(device, std::slice::from_ref(&identity))?;
         }
-        // Seed every per-FIF dalc buffer with the disabled-default cube
-        // so frame 0's fragment read on binding 14 sees a valid
-        // `flags.x = 0` (shader's fallback path). Subsequent frames
-        // overwrite via `upload_dalc` whenever a Skyrim WTHR.DALC is
-        // active. See #993.
+        // Seed DALC UBOs with the disabled-default cube so frame 0's
+        // fragment read on binding 14 sees a valid `flags.x = 0`
+        // (shader's fallback path). Overwritten via `upload_dalc` when
+        // a Skyrim WTHR.DALC becomes active. See #993.
         let default_dalc = GpuDalcCube::default();
-        for buf in &mut dalc_buffers {
+        for buf in &mut bufs.dalc_buffers {
             buf.write_mapped(device, std::slice::from_ref(&default_dalc))?;
         }
-        // Track the seeded identity matrix so `record_bone_copy` on the
-        // very first frame still propagates slot 0 to device memory even
-        // if no skinned content was uploaded that frame.
+        // Track the seeded identity so `record_bone_copy` on frame 0
+        // still propagates slot 0 to device memory even without skinned
+        // content.
         let identity_bytes = std::mem::size_of::<[[f32; 4]; 4]>() as vk::DeviceSize;
         let bone_upload_bytes = vec![identity_bytes; MAX_FRAMES_IN_FLIGHT];
 
@@ -594,22 +658,22 @@ impl SceneBuffers {
             "Scene buffers created: {} frames, {} max lights ({} bytes/frame)",
             MAX_FRAMES_IN_FLIGHT,
             MAX_LIGHTS,
-            light_buf_size,
+            bufs.light_buf_size,
         );
 
         Ok(Self {
-            light_buffers,
-            camera_buffers,
-            bone_staging_buffers,
-            bone_device_buffers,
+            light_buffers: bufs.light_buffers,
+            camera_buffers: bufs.camera_buffers,
+            bone_staging_buffers: bufs.bone_staging_buffers,
+            bone_device_buffers: bufs.bone_device_buffers,
             bone_upload_bytes,
-            instance_buffers,
-            dalc_buffers,
-            material_buffers,
-            indirect_buffers,
-            terrain_tile_buffer,
-            terrain_tile_buf_size,
-            ray_budget_buffer,
+            instance_buffers: bufs.instance_buffers,
+            dalc_buffers: bufs.dalc_buffers,
+            material_buffers: bufs.material_buffers,
+            indirect_buffers: bufs.indirect_buffers,
+            terrain_tile_buffer: bufs.terrain_tile_buffer,
+            terrain_tile_buf_size: bufs.terrain_tile_buf_size,
+            ray_budget_buffer: bufs.ray_budget_buffer,
             descriptor_pool,
             descriptor_set_layout,
             descriptor_sets,
