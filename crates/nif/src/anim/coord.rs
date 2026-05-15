@@ -1,19 +1,16 @@
-//! Coordinate-space conversion helpers.
+//! Coordinate-space conversion helpers (Zup → Yup) for animation key
+//! import.
 //!
-//! Zup→Yup positions and quaternions for the Gamebryo-to-engine handoff.
+//! Pre-#1044 / TD3-002 this file owned a divergent copy of
+//! `zup_to_yup_pos` + `zup_to_yup_quat` that missed the #333
+//! normalise-after-swizzle fix (Shepperd quaternion extraction can
+//! emit ~3.5%-off-unity outputs on degenerate-determinant inputs;
+//! authored KF rotation keys can ship `±1e-4` off unity from
+//! export-tool drift). The single source of truth now lives in
+//! `byroredux_core::math::coord`; this file re-exports for backwards
+//! compatibility of the `zup_to_yup_pos` / `zup_to_yup_quat` names
+//! and to keep call-site rewrites minimal.
 
-
-pub fn zup_to_yup_pos(v: [f32; 3]) -> [f32; 3] {
-    [v[0], v[2], -v[1]]
-}
-
-/// Convert a quaternion from Gamebryo (w,x,y,z) Z-up to glam (x,y,z,w) Y-up.
-/// The coordinate change quaternion is a 90° rotation around X:
-/// q_conv = (sin(45°), 0, 0, cos(45°)) = (√2/2, 0, 0, √2/2)
-/// q_yup = q_conv * q_zup * q_conv_inv
-/// Simplified: swap y↔z and negate new z for the vector part.
-pub fn zup_to_yup_quat(wxyz: [f32; 4]) -> [f32; 4] {
-    let [w, x, y, z] = wxyz;
-    // Z-up to Y-up: (w, x, y, z) → (w, x, z, -y), then reorder to glam (x, y, z, w)
-    [x, z, -y, w]
-}
+pub use byroredux_core::math::coord::{
+    zup_to_yup_pos, zup_to_yup_quat_wxyz as zup_to_yup_quat,
+};

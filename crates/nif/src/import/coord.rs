@@ -1,22 +1,24 @@
-//! Z-up (Gamebryo) to Y-up (renderer) coordinate conversion.
+//! Z-up (Gamebryo) to Y-up (renderer) coordinate conversion — NIF
+//! flavour. Array-form primitives live in
+//! [`byroredux_core::math::coord`]; this file wraps them with the
+//! NIF-internal types (`NiPoint3` / `NiMatrix3`) the import path
+//! works in. The matrix-path Shepperd + SVD repair stays here because
+//! it depends on NIF types and isn't shared with any other consumer.
+//! See #1044 / TD3-002 for the consolidation.
 
 use crate::types::{NiMatrix3, NiPoint3};
 
-/// Convert a Z-up point / translation to Y-up: `(x, y, z) → (x, z, -y)`.
+/// Convert a Z-up `NiPoint3` to Y-up `[x, y, z]`: `(x, y, z) → (x, z, -y)`.
 ///
-/// This is the fundamental axis-basis change applied at every import
-/// boundary (mesh vertices, mesh normals, node translations, bound
-/// centers, bone translations, light positions, …). Keeping the swap
-/// in one helper prevents copy-paste drift — pre-#232 the same
-/// `[.x, .z, -.y]` literal appeared in ~13 sites across `mesh.rs` and
-/// `walk.rs`; getting any one of them wrong produces silently-
-/// misaligned geometry that's hard to diagnose. Sibling animation
-/// keyframes in `crates/nif/src/anim.rs` use a local `[f32; 3]` form
-/// (`zup_to_yup_pos`) since they've already been extracted from the
-/// stream into plain arrays by the KF reader.
+/// Thin wrapper over [`byroredux_core::math::coord::zup_to_yup_pos`].
+/// Applied at every import boundary (mesh vertices, mesh normals, node
+/// translations, bound centers, bone translations, light positions, …).
+/// Pre-#232 the same `[.x, .z, -.y]` literal appeared in ~13 sites
+/// across `mesh.rs` and `walk.rs`; pre-#1044 the array-form sibling
+/// in `crates/nif/src/anim/coord.rs` was a copy. Both now route here.
 #[inline]
 pub(super) fn zup_point_to_yup(p: &NiPoint3) -> [f32; 3] {
-    [p.x, p.z, -p.y]
+    byroredux_core::math::coord::zup_to_yup_pos([p.x, p.y, p.z])
 }
 
 /// Convert a Z-up NiMatrix3 rotation to a Y-up quaternion [x, y, z, w].
@@ -112,21 +114,7 @@ fn matrix3_to_quat(m: &[[f32; 3]; 3]) -> [f32; 4] {
         [x, y, z, w]
     };
 
-    normalize_quat(q)
-}
-
-/// Normalise a quaternion to unit length. Zero-length input (impossible
-/// from Shepperd on any non-NaN matrix) is returned unchanged to avoid
-/// producing NaN; the SVD repair path never hits that case because
-/// `U * V^T` already has determinant ±1.
-#[inline]
-fn normalize_quat(q: [f32; 4]) -> [f32; 4] {
-    let len_sq = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
-    if len_sq == 0.0 {
-        return q;
-    }
-    let inv = len_sq.sqrt().recip();
-    [q[0] * inv, q[1] * inv, q[2] * inv, q[3] * inv]
+    byroredux_core::math::coord::normalize_quat(q)
 }
 
 /// SVD-repair a degenerate matrix and extract a quaternion.

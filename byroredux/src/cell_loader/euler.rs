@@ -1,41 +1,22 @@
 //! Z-up (Bethesda) → Y-up (engine) Euler-angle → quaternion conversion
 //! helpers used by REFR placement and XCLL directional lighting.
+//!
+//! The shipping default ([`euler_zup_to_quat_yup`]) is a thin re-export
+//! of [`byroredux_core::math::coord::euler_zup_to_quat_yup`] — the
+//! single source of truth post-#1044 / TD3-003 — so non-REFR callers
+//! (XCLL directional in `scene.rs`, #380) route through one canonical
+//! formula. The diagnostic-mode dispatcher stays in this module
+//! because the four-candidate triage is REFR-placement-specific and
+//! the `2026-05-07 GSDocMitchellHouse` sign-off was on a single cell.
 
 use byroredux_core::math::Quat;
 
-/// Convert Euler angles (radians, Z-up Bethesda convention) to a Y-up quaternion.
-///
-/// Bethesda uses Gamebryo's **clockwise-positive** rotation convention:
-///   R_zup = Rx_cw(rx) · Ry_cw(ry) · Rz_cw(rz)
-///
-/// Note the composition order: **Z applied first, X applied last**
-/// (rightmost matrix in the product is applied first to the column
-/// vector). This is the `FromEulerAnglesXYZ` ordering Gamebryo's
-/// `Matrix3.h` exposes, and matches xEdit's `EulerToM33`
-/// (`Core/wbNifMath.pas:387`) decomposition. Pre-2026-05-07 this
-/// helper used the opposite (`Rz · Ry · Rx`) ordering, which produced
-/// correct results for axis-aligned rotations but rotated combined-
-/// Euler REFRs by 90°-quantised orthogonal swaps — the symptom that
-/// surfaced as misplaced large statics. See `196dd67` for the
-/// `--rotation-mode` triage that pinned this.
-///
-/// Since glam uses the standard counter-clockwise convention, each
-/// CW rotation by angle t equals a CCW rotation by -t:
-///   R_zup = Rx_ccw(-rx) · Ry_ccw(-ry) · Rz_ccw(-rz)
-///
-/// Coordinate change C: (x,y,z)_zup → (x,z,-y)_yup conjugates each:
-///   C · Rx(-rx) · C^T = Rx(-rx)     (x → x)
-///   C · Ry(-ry) · C^T = Rz(ry)      (y → -z, double negate)
-///   C · Rz(-rz) · C^T = Ry(-rz)     (z → y)
-///
-/// Result: R_yup = Rx(-rx) · Rz(ry) · Ry(-rz)
-///
-/// `pub(crate)` so non-REFR callers (XCLL directional lighting in
-/// `scene.rs`, #380) can route authored Z-up Euler angles through the
-/// same CW-convention helper instead of reinventing the spherical
-/// math inline and drifting from the authored intent.
+/// Convert Euler angles (radians, Z-up Bethesda convention) to a Y-up
+/// quaternion. See [`byroredux_core::math::coord::euler_zup_to_quat_yup`]
+/// for the full derivation; this is `pub(crate)` so the existing
+/// REFR / XCLL call sites keep their qualified path.
 pub(crate) fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
-    Quat::from_rotation_x(-rx) * Quat::from_rotation_z(ry) * Quat::from_rotation_y(-rz)
+    byroredux_core::math::coord::euler_zup_to_quat_yup(rx, ry, rz)
 }
 
 /// Diagnostic switch for the REFR Euler→Y-up quaternion conversion.

@@ -160,7 +160,11 @@ pub fn import_spt_scene(
         // Apply the same axis swap that the NIF importer applies
         // (`crates/nif/src/import/mod.rs:208-211`): (x, y, z)_zup →
         // (x, z, -y)_yup for the center, and the half-extent
-        // magnitudes swap as `(x, z, y)` since they're unsigned.
+        // magnitudes swap as `(x, z, y)` since they're unsigned. The
+        // center swap routes through the canonical
+        // `byroredux_core::math::coord::zup_to_yup_pos` helper so the
+        // SpeedTree path can't drift from the NIF / REFR import
+        // boundary (post-#1044 / TD3-004 consolidation).
         bs_bound: params.bounds.map(|(min, max)| {
             let cx = (min[0] + max[0]) * 0.5;
             let cy = (min[1] + max[1]) * 0.5;
@@ -168,7 +172,7 @@ pub fn import_spt_scene(
             let hx = (max[0] - min[0]).abs() * 0.5;
             let hy = (max[1] - min[1]).abs() * 0.5;
             let hz = (max[2] - min[2]).abs() * 0.5;
-            let center_yup = [cx, cz, -cy];
+            let center_yup = byroredux_core::math::coord::zup_to_yup_pos([cx, cy, cz]);
             let half_yup = [hx, hz, hy];
             (center_yup, half_yup)
         }),
