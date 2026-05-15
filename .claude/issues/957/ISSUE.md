@@ -46,3 +46,4 @@ Unreachable today — the R16_UINT mesh_id ceiling (Dim 4, `helpers.rs:54-62`) c
 - Adjacent to `#647` / RP-1 (mesh_id R16→R32 upgrade plan) and `#956` (Dim 5 `debug_assert!` in active recording).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+Status: Closed (108450e)

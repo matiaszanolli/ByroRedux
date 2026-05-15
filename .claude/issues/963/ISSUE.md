@@ -53,3 +53,4 @@ Add `vk::AccessFlags::UNIFORM_READ` to `composite_dep_in.dst_access_mask` so the
 - Adjacent to #909 invariant (closed); this finding hardens against a future #909 revert/restructure.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+Status: Closed (3290dca)

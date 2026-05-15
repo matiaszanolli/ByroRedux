@@ -77,3 +77,4 @@ Single PR (or 2-3 small ones) running mechanical deletes + grep verification. `c
 - [ ] `genhash_folder/file` gated by `cfg(any(debug_assertions, test))`, mute removed
 - [ ] `cargo check` and `cargo test` both pass at every step
 
+Status: Partial fix landed (13e41bb)
