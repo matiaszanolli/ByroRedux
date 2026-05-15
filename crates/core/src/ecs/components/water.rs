@@ -187,9 +187,10 @@ impl Component for WaterPlane {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct WaterFlow {
-    /// Unit vector. Z component is non-zero for waterfalls (typically
-    /// `-1` — falls go down in world Z-up before the Y-up swizzle);
-    /// horizontal currents put Z near zero.
+    /// Unit vector in **world Y-up space**. Y component is typically
+    /// `-1.0` for waterfalls (falls are downward in Y-up); horizontal
+    /// currents (rivers) keep Y=0. Set from the WATR `wind_direction`
+    /// angle after the Z→Y swizzle in `cell_loader/water.rs`.
     pub direction: [f32; 3],
     /// World units per second. Typical: 0.5 (calm river) … 8.0
     /// (whitewater rapids) … 25.0 (Tamriel-tall waterfall sheet).
