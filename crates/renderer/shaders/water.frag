@@ -217,10 +217,21 @@ vec3 traceWaterRay(vec3 origin, vec3 direction, float maxDist, vec3 missFallback
     // limited to (textures, camera UBO, TLAS, instance buffer) — no
     // material table / vertex SSBO / index SSBO bindings needed,
     // which would otherwise double the descriptor footprint.
-    // Tint the geometry-hit colour with the per-WATR `reflection_color`
-    // authored value (#1069 / F-WAT-09). Pre-fix this was a hard-coded
-    // neutral grey (`vec3(0.65, 0.7, 0.75)`); the default value of
-    // `tint_reflect.rgb` matches that fallback for unspecified records.
+    //
+    // TODO(M38-Phase2 / #1070): Returns a per-WATR constant — the water
+    // pipeline does not bind MaterialBuffer / GlobalVertexBuffer /
+    // GlobalIndexBuffer. To fetch the real hit albedo, extend
+    // WaterPipeline's descriptor set with those three SSBOs and call
+    // rayQueryGetIntersectionInstanceCustomIndexEXT to index into them.
+    // See also: caustic_splat.comp uses instances[instIdx].avgAlbedoR/G/B
+    // as a per-instance proxy that could approximate this without a full
+    // SSBO plumb.
+    //
+    // The per-WATR `tint_reflect.rgb` (sourced from WATR DATA
+    // reflection_color, #1069 / F-WAT-09) currently provides water-body-
+    // specific tinting. The pre-fix value was a hard-coded neutral grey
+    // (`vec3(0.65, 0.7, 0.75)`); the default of `tint_reflect.rgb`
+    // matches that fallback for unspecified records.
     return mix(skyTint.xyz, push.tint_reflect.rgb, 0.4);
 }
 
