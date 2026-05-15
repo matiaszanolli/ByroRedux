@@ -113,12 +113,13 @@ pub(crate) fn extract_material_info_from_refs(
     // Skyrim+: dedicated shader_property_ref
     if let Some(idx) = shader_property_ref.index() {
         if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
-            if let Some(name) = shader.net.name.as_deref() {
-                let lower = name.to_ascii_lowercase();
-                if lower.ends_with(".bgsm") || lower.ends_with(".bgem") {
-                    info.material_path = intern_texture_path(pool, name);
-                }
-            }
+            // Delegate to the shared helper so `.bgsm`, `.bgem`, and `.mat`
+            // (Starfield JSON materials) are all captured, and trailing
+            // whitespace / null bytes are trimmed. Pre-#976 this used an
+            // inline suffix check that missed `.mat` entirely. Mirrors the
+            // BSEffectShaderProperty branch below. See #749.
+            info.material_path =
+                crate::import::mesh::material_path_from_name(shader.net.name.as_deref(), pool);
             if let Some(ts_idx) = shader.texture_set_ref.index() {
                 if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                     if let Some(path) = tex_set.textures.first() {

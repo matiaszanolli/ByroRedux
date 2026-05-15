@@ -1022,3 +1022,11 @@ mod stencil_state_capture_tests;
 /// by #940; this closes the missing Skyrim-era sibling.
 #[cfg(test)]
 mod sky_water_shader_tests;
+
+/// Regression tests for #976 (NIF-D4-NEW-02) — `BSLightingShaderProperty`
+/// with a `.mat` (Starfield JSON material) or trailing-whitespace name
+/// must populate `material_path` via the shared `material_path_from_name`
+/// helper. Pre-fix the walker used an inline `.bgsm`/`.bgem` suffix check
+/// that dropped all `.mat` references.
+#[cfg(test)]
+mod lighting_shader_mat_tests;
