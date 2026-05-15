@@ -51,8 +51,8 @@ fn build_bsshader_bytes_with_emissive(user_version_2: u32, emissive: Option<[f32
     data.extend_from_slice(&3u32.to_le_bytes());
     // texture_set_ref (i32)
     data.extend_from_slice(&5i32.to_le_bytes());
-    // nif.xml:6245-6248 — refraction fields present for bsver > 14, parallax
-    // for bsver > 24 (strict). FNV: bsver=34, both present. FO3 ships some
+    // nif.xml:6245-6248 — refraction fields present for bsver > crate::version::bsver::FO3_REFRACTION, parallax
+    // for bsver > crate::version::bsver::FO3_PARALLAX (strict). FNV: bsver=34, both present. FO3 ships some
     // content at bsver=24 (parallax absent — boundary case for #774).
     // Oblivion: bsver=0, neither.
     if user_version_2 > 14 {
@@ -63,7 +63,7 @@ fn build_bsshader_bytes_with_emissive(user_version_2: u32, emissive: Option<[f32
         data.extend_from_slice(&4.0f32.to_le_bytes()); // parallax_max_passes
         data.extend_from_slice(&1.5f32.to_le_bytes()); // parallax_scale
     }
-    // nif.xml: Emissive Color (Color4) for bsver > 34.
+    // nif.xml: Emissive Color (Color4) for bsver > crate::version::bsver::FO3_FNV.
     if let Some([r, g, b, a]) = emissive {
         data.extend_from_slice(&r.to_le_bytes());
         data.extend_from_slice(&g.to_le_bytes());
@@ -187,10 +187,10 @@ fn parse_bsshader_fo3_bsver24_skips_parallax() {
 
     let prop = BSShaderPPLightingProperty::parse(&mut stream).unwrap();
     assert_eq!(prop.texture_set_ref.index(), Some(5));
-    // Refraction reads at bsver > 14, so bsver=24 must populate them.
+    // Refraction reads at bsver > crate::version::bsver::FO3_REFRACTION, so bsver=24 must populate them.
     assert!((prop.refraction_strength - 0.5).abs() < 1e-6);
     assert_eq!(prop.refraction_fire_period, 10);
-    // Parallax gate is bsver > 24, so bsver=24 must default.
+    // Parallax gate is bsver > crate::version::bsver::FO3_PARALLAX, so bsver=24 must default.
     assert!((prop.parallax_max_passes - 4.0).abs() < 1e-6);
     assert!((prop.parallax_scale - 1.0).abs() < 1e-6);
     // 38 base + 8 refraction = 46 bytes; no parallax trailer.
@@ -545,15 +545,15 @@ fn make_fo4_header_with_bsver(bsver: u32) -> NifHeader {
 }
 
 /// Regression for #409: at `BSVER == 131` the parser must read
-/// neither the u32 flag pair (gated on `bsver <= 130`) nor the
-/// CRC-array counts (gated on `bsver >= 132`). This is NOT a bug —
+/// neither the u32 flag pair (gated on `bsver <= crate::version::bsver::FALLOUT4`) nor the
+/// CRC-array counts (gated on `bsver >= crate::version::bsver::FO4_CRC_FLAGS`). This is NOT a bug —
 /// nif.xml's `#BS_FO4#` is strict `BSVER == 130` and `#BS_GTE_132#`
 /// starts at 132, leaving 131 as an intentional dev-stream gap
 /// where the flag fields are absent altogether.
 ///
 /// The test constructs a body 8 bytes shorter than BSVER 130 (no
 /// flag pair) and assumes the pre-flag-pair part plus the
-/// post-CRC part line up with `bsver == 131`'s expected layout.
+/// post-CRC part line up with `bsver == crate::version::bsver::FO4_SHADER_GAP`'s expected layout.
 /// Consumes exactly the authored bytes.
 #[test]
 fn bs_lighting_bsver_131_skips_flag_pair_and_crc_counts() {
@@ -569,8 +569,8 @@ fn bs_lighting_bsver_131_skips_flag_pair_and_crc_counts() {
     data.extend_from_slice(&0i32.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&(-1i32).to_le_bytes());
-    // NO flag pair at bsver == 131 (gate is `bsver <= 130`).
-    // NO Num SF1/SF2 at bsver == 131 (gate is `bsver >= 132`).
+    // NO flag pair at bsver == crate::version::bsver::FO4_SHADER_GAP (gate is `bsver <= crate::version::bsver::FALLOUT4`).
+    // NO Num SF1/SF2 at bsver == crate::version::bsver::FO4_SHADER_GAP (gate is `bsver >= crate::version::bsver::FO4_CRC_FLAGS`).
     // Next field: uv_offset + uv_scale.
     for v in [0.0f32, 0.0, 1.0, 1.0] {
         data.extend_from_slice(&v.to_le_bytes());
@@ -602,7 +602,7 @@ fn bs_lighting_bsver_131_skips_flag_pair_and_crc_counts() {
     // Wetness (7 floats — same as BSVER 130; the wetness gate is
     // `>= 130` not per-BSVER-specific). `env_map_scale` slot
     // (offset 4 within the wetness block) only present at
-    // `bsver == 130` strictly — at 131 the parser reads 6 floats.
+    // `bsver == crate::version::bsver::FALLOUT4` strictly — at 131 the parser reads 6 floats.
     for v in [0.1f32, 0.2, 0.3, 0.5, 0.6, 0.95] {
         data.extend_from_slice(&v.to_le_bytes());
     }
@@ -644,8 +644,8 @@ fn bs_lighting_bsver_132_reads_crc_counts_but_not_flag_pair() {
     data.extend_from_slice(&0i32.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&(-1i32).to_le_bytes());
-    // NO flag pair at bsver == 132 (gate is `bsver <= 130`).
-    // Num SF1 = 2, Num SF2 NOT read (gated on `bsver >= 152`).
+    // NO flag pair at bsver == crate::version::bsver::FO4_CRC_FLAGS (gate is `bsver <= crate::version::bsver::FALLOUT4`).
+    // Num SF1 = 2, Num SF2 NOT read (gated on `bsver >= crate::version::bsver::FO76_SF2_CRCS`).
     data.extend_from_slice(&2u32.to_le_bytes());
     // Two SF1 CRC32 entries.
     data.extend_from_slice(&0xDEADBEEFu32.to_le_bytes());
@@ -672,7 +672,7 @@ fn bs_lighting_bsver_132_reads_crc_counts_but_not_flag_pair() {
     data.extend_from_slice(&0.7f32.to_le_bytes());
     data.extend_from_slice(&5.0f32.to_le_bytes());
     // Wetness: same 6 floats as bsver 131 (no env_map_scale slot
-    // since that's strict `bsver == 130`).
+    // since that's strict `bsver == crate::version::bsver::FALLOUT4`).
     for v in [0.1f32, 0.2, 0.3, 0.5, 0.6, 0.95] {
         data.extend_from_slice(&v.to_le_bytes());
     }
@@ -687,7 +687,7 @@ fn bs_lighting_bsver_132_reads_crc_counts_but_not_flag_pair() {
     assert_eq!(prop.shader_flags_1, 0);
     assert_eq!(prop.shader_flags_2, 0);
     assert_eq!(prop.sf1_crcs, vec![0xDEADBEEF, 0xCAFEBABE]);
-    assert!(prop.sf2_crcs.is_empty(), "Num SF2 requires bsver >= 152");
+    assert!(prop.sf2_crcs.is_empty(), "Num SF2 requires bsver >= crate::version::bsver::FO76_SF2_CRCS");
     assert_eq!(
         stream.position() as usize,
         expected_len,
@@ -1291,14 +1291,14 @@ fn make_starfield_header(name: &str) -> NifHeader {
 
 /// Regression for #746 / SF-D1: every BSVER-`>= 155`-gated tail
 /// field on `BSLightingShaderProperty` must populate at Starfield
-/// BSVER (172) too. Pre-fix the gates were `bsver == 155`, so
+/// BSVER (172) too. Pre-fix the gates were `bsver == crate::version::bsver::FO76`, so
 /// Starfield blocks under-read the WetnessParams `unknown_2` (4 B),
 /// the LuminanceParams + TranslucencyParams + texture_arrays
 /// (~24 + 22 + variable B), and silently dropped every authored
 /// PBR scalar. The test reuses the exact byte body that the FO76
 /// regression test (`parse_bs_lighting_fo76_minimal`) walks — the
 /// only difference is the header's `user_version_2`. If the
-/// `bsver == 155` gate ever returns, every assertion past
+/// `bsver == crate::version::bsver::FO76` gate ever returns, every assertion past
 /// `wetness.unknown_2` flips to its default and the test fails.
 #[test]
 fn parse_bs_lighting_starfield_minimal_picks_up_fo76_tail() {
@@ -1343,7 +1343,7 @@ fn parse_bs_lighting_starfield_minimal_picks_up_fo76_tail() {
 /// Regression for #747 / SF-D1-DISPATCH: Starfield uses the same
 /// `BSShaderType155` numeric mapping as FO76 (type 4 = skin tint
 /// Color4, type 5 = hair tint Color3 per nif.xml). Pre-fix the
-/// dispatch gate was `bsver == 155`, so Starfield routed through
+/// dispatch gate was `bsver == crate::version::bsver::FO76`, so Starfield routed through
 /// `parse_shader_type_data_fo4` which mis-interprets the type-4
 /// payload — character / face / hair meshes lost 12 B of tint data.
 #[test]
@@ -1368,7 +1368,7 @@ fn parse_bs_lighting_starfield_skin_tint_routes_via_fo76_dispatch() {
         }
         other => panic!(
             "expected Fo76SkinTint on Starfield (BSVER 172), got {other:?} \
-             — `bsver == 155` dispatch gate has regressed",
+             — `bsver == crate::version::bsver::FO76` dispatch gate has regressed",
         ),
     }
     assert_eq!(stream.position(), data.len() as u64);
@@ -1469,7 +1469,7 @@ fn parse_bs_effect_shader_fo76_editor_label_does_not_short_circuit() {
     data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count = 0
     data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = -1
                                                     // BSVER 155 effect shader trailing body. Mirror the layout used
-                                                    // by the parser: shader_flags_1/2 absent (bsver > 130), CRC arrays
+                                                    // by the parser: shader_flags_1/2 absent (bsver > crate::version::bsver::FALLOUT4), CRC arrays
                                                     // empty, then UV + texture + scalar fields. We only need enough
                                                     // bytes for the parse to succeed without underrunning the
                                                     // stream — `block_size` recovery would otherwise mask a regression.
@@ -1504,7 +1504,7 @@ fn parse_bs_effect_shader_fo76_editor_label_does_not_short_circuit() {
 }
 
 /// Regression for #716 — BSShaderPPLightingProperty.Emissive Color (Color4)
-/// is gated by `#BS_GT_FO3#` (bsver > 34).  Pre-fix the field was never read,
+/// is gated by `#BS_GT_FO3#` (bsver > crate::version::bsver::FO3_FNV).  Pre-fix the field was never read,
 /// leaving 16 bytes in the stream; block_size recovery silently masked this on
 /// Skyrim-era PPLighting content.
 #[test]
@@ -1522,7 +1522,7 @@ fn bsshader_pplighting_skyrim_era_reads_emissive_color() {
     assert_eq!(
         stream.position() as usize,
         expected_len,
-        "emissive Color4 (16 bytes) must be consumed on bsver > 34"
+        "emissive Color4 (16 bytes) must be consumed on bsver > crate::version::bsver::FO3_FNV"
     );
     assert!((prop.emissive_color[0] - 0.8).abs() < 1e-6, "emissive R");
     assert!((prop.emissive_color[1] - 0.2).abs() < 1e-6, "emissive G");
@@ -1531,7 +1531,7 @@ fn bsshader_pplighting_skyrim_era_reads_emissive_color() {
 }
 
 /// FO3/FNV (bsver=34) must NOT read the emissive color field — it is absent
-/// on pre-Skyrim PPLighting blocks.  Verifies the bsver > 34 gate is strict.
+/// on pre-Skyrim PPLighting blocks.  Verifies the bsver > crate::version::bsver::FO3_FNV gate is strict.
 #[test]
 fn bsshader_pplighting_fnv_has_no_emissive_color() {
     let header = make_header(11, 34); // FNV

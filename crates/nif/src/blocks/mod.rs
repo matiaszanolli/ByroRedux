@@ -197,7 +197,7 @@ pub fn parse_block(
     // make it defensible against future format quirks, deferred until
     // content surfaces.
     let v = stream.version();
-    if v >= NifVersion(0x0A000000) && v < NifVersion(0x0A010072) {
+    if v >= NifVersion::V10_0_0_0 && v < NifVersion::V10_1_0_114 {
         let _group_id = stream.read_u32_le()?;
     }
 
@@ -358,8 +358,8 @@ pub fn parse_block(
         // — the per-segment bone-slot flags + SSF filename + cut offsets
         // are now recovered into `BsTriShapeKind::SubIndex(_)` so the
         // M-series combat / locational-damage roadmap has the data it
-        // needs. The full layout differs between SSE (`bsver == 100`,
-        // pre-FO4 single-byte flags) and FO4+/FO76 (`bsver >= 130`,
+        // needs. The full layout differs between SSE (`bsver == crate::version::bsver::SKYRIM_SE`,
+        // pre-FO4 single-byte flags) and FO4+/FO76 (`bsver >= crate::version::bsver::FALLOUT4`,
         // sub-segment lists + optional shared-data trailer with .ssf
         // filename). See `BsTriShape::parse_sub_index` doc-comment.
         "BSSubIndexTriShape" => {

@@ -35,25 +35,101 @@ use std::fmt;
 pub struct NifVersion(pub u32);
 
 impl NifVersion {
-    // Well-known versions
+    // ── NetImmerse / early Gamebryo (4.x – 5.x) ──────────────────────
+    /// Earliest NetImmerse version seen in the wild (Civ4-era content).
+    pub const V4_0_0_0: Self = Self(0x04000000);
     /// Morrowind era
     pub const V4_0_0_2: Self = Self(0x04000002);
+    /// v4.1.0.1 — endianness flag introduced.
+    pub const V4_1_0_1: Self = Self(0x04010001);
     /// First version that authors `NiZBufferProperty.z_function`
     /// (pre-4.1.0.12 NIFs predate the field). No Bethesda title ships
     /// in `< 4.1.0.12` — defensive constant used by the property
     /// parser's pre-V4 fallback branch. See NIF-D4-NEW-09 (audit
     /// 2026-05-12).
     pub const V4_1_0_12: Self = Self(0x0401000C);
+    /// v4.2.1.0 — NiNode screen-texture count field introduced.
+    pub const V4_2_1_0: Self = Self(0x04020100);
+    /// v4.2.2.0 — NiAVObject collision-ref path changes.
+    pub const V4_2_2_0: Self = Self(0x04020200);
+    /// v5.0.0.1 — block-type table introduced in header.
+    pub const V5_0_0_1: Self = Self(0x05000001);
+    /// v5.0.0.6 — group table introduced in header.
+    pub const V5_0_0_6: Self = Self(0x05000006);
+
+    // ── Gamebryo 10.x ─────────────────────────────────────────────────
+    /// v10.0.0.0 — transition from NetImmerse 5.x naming.
+    pub const V10_0_0_0: Self = Self(0x0A000000);
+    /// v10.0.0.6 — seen in early Gamebryo test/debug content.
+    pub const V10_0_0_6: Self = Self(0x0A000006);
+    /// v10.0.1.0 — extra-data list, NiAVObject collision-ref, and
+    /// NiGeometryData flags appear at `>= V10_0_1_0`. High-frequency
+    /// boundary (~20 call sites across block parsers).
+    pub const V10_0_1_0: Self = Self(0x0A000100);
+    /// v10.0.1.2 — BSStreamHeader appears at this version (Oblivion
+    /// tools export); also the string-name field on NiAVObject.
+    pub const V10_0_1_2: Self = Self(0x0A000102);
+    /// v10.0.1.3 — minor variant of the 10.0.1.x family.
+    pub const V10_0_1_3: Self = Self(0x0A000103);
+    /// v10.0.1.4 — rare; seen in some Oblivion-era mod content.
+    pub const V10_0_1_4: Self = Self(0x0A000104);
+    /// v10.0.1.8 — `user_version` field appears in NIF header.
+    pub const V10_0_1_8: Self = Self(0x0A000108);
     /// Pre-Gamebryo boundary: Order float present in XYZ-rotation blocks at <= this version
     pub const V10_1_0_0: Self = Self(0x0A010000);
+    /// v10.1.0.1 — minor transition version.
+    pub const V10_1_0_1: Self = Self(0x0A010001);
+    /// v10.1.0.101 — NiSkinInstance `skin_partition_ref` field added.
+    pub const V10_1_0_101: Self = Self(0x0A010065);
+    /// v10.1.0.103 — NiGeomMorpherController interpolator path.
+    pub const V10_1_0_103: Self = Self(0x0A010067);
+    /// v10.1.0.104 — NiTimeController `interpolator_ref` field added.
+    /// High-frequency boundary (~6 call sites).
+    pub const V10_1_0_104: Self = Self(0x0A010068);
+    /// v10.1.0.106 — NiLight `switch_state` field added.
+    /// High-frequency boundary (~6 call sites).
+    pub const V10_1_0_106: Self = Self(0x0A01006A);
+    /// v10.1.0.113 — one below the NiGeometryData bsver gate.
+    pub const V10_1_0_113: Self = Self(0x0A010071);
+    /// v10.1.0.114 — NiGeometryData data-flags layout changes.
+    pub const V10_1_0_114: Self = Self(0x0A010072);
+    /// v10.2.0.0 — NiTimeController extra-data name field added.
+    /// High-frequency boundary (~8 call sites).
+    pub const V10_2_0_0: Self = Self(0x0A020000);
+    /// v10.4.0.0 — rare pre-Bethesda 10.4.x family.
+    pub const V10_4_0_0: Self = Self(0x0A040000);
+    /// v10.4.0.1 — NiSwitchNode / particle fields.
+    pub const V10_4_0_1: Self = Self(0x0A040001);
+    /// v10.4.0.2 — rare; seen in some Gamebryo SDK samples.
+    pub const V10_4_0_2: Self = Self(0x0A040002);
+
+    // ── Bethesda 20.x ─────────────────────────────────────────────────
+    /// v20.0.0.2 — early Oblivion pre-release content.
+    pub const V20_0_0_2: Self = Self(0x14000002);
+    /// v20.0.0.3 — Oblivion little-endian flag boundary.
+    pub const V20_0_0_3: Self = Self(0x14000003);
     /// Oblivion (v20.0.0.4 — most common Oblivion version)
     pub const V20_0_0_4: Self = Self(0x14000004);
     /// Oblivion (v20.0.0.5 — some Oblivion NIFs)
     pub const V20_0_0_5: Self = Self(0x14000005);
+    /// v20.1.0.0 — just below the string-table threshold.
+    pub const V20_1_0_0: Self = Self(0x14010000);
+    /// v20.1.0.2 — rare; used in some Oblivion-era NifSkope exports.
+    pub const V20_1_0_2: Self = Self(0x14010002);
+    /// v20.1.0.3 — NiGeometryData vertex-count / UV layout changes.
+    /// High-frequency boundary (~5 call sites).
+    pub const V20_1_0_3: Self = Self(0x14010003);
+    /// v20.2.0.5 — block sizes appear in header; NiSpotLight inner
+    /// angle field added. High-frequency boundary (~6 call sites).
+    pub const V20_2_0_5: Self = Self(0x14020005);
     /// Fallout 3+ (v20.2.0.7)
     pub const V20_2_0_7: Self = Self(0x14020007);
-    /// Skyrim / Fallout 4
+    /// Skyrim / Fallout 4 (alias for V20_2_0_7)
     pub const V20_2_0_7_SSE: Self = Self(0x14020007);
+    /// v20.3.0.4 — rare; seen in some Gamebryo 2.6 SDK content.
+    pub const V20_3_0_4: Self = Self(0x14030004);
+    /// v20.5.0.4 — rare; seen in some Gamebryo 3.x SDK content.
+    pub const V20_5_0_4: Self = Self(0x14050004);
 
     /// v20.1.0.1 — the inclusive boundary at which Gamebryo introduced
     /// the per-file string table. Headers `>= STRING_TABLE_THRESHOLD`
@@ -110,9 +186,34 @@ pub mod bsver {
     /// Pre-Bethesda authoring tools (Morrowind era, NifSkope older
     /// builds) — every Bethesda title is `>= FO3_FNV`.
     pub const PRE_BETHESDA: u32 = 0;
+    /// Oblivion BSVER (v20.0.0.4 / v20.0.0.5 or v20.2.0.7 with uv=11).
+    /// Pre-collision v2 content ships `bsver < 9`; standard Oblivion
+    /// content ships at exactly 11.
+    pub const OBLIVION: u32 = 11;
+    /// Pre-retail FO3 dev builds that first added refraction fields
+    /// (`refraction_strength`, `refraction_fire_period`) to
+    /// BSShaderPPLightingProperty. Content with `bsver > FO3_REFRACTION`
+    /// carries these fields.
+    pub const FO3_REFRACTION: u32 = 14;
+    /// Pre-retail FO3 dev builds that added parallax fields
+    /// (`parallax_max_passes`, `parallax_scale`). Content with
+    /// `bsver > FO3_PARALLAX` carries these fields.
+    pub const FO3_PARALLAX: u32 = 24;
+    /// BSVER threshold at which NiAVObject `flags` widens from u16 to
+    /// u32 (`bsver > FLAGS_U32_THRESHOLD`). Corresponds to nif.xml's
+    /// `#BS_GTE_26#` predicate.
+    pub const FLAGS_U32_THRESHOLD: u32 = 26;
+    /// BSVER threshold at which NiControllerSequence gains an animation-
+    /// notes list (`bsver > ANIM_NOTES_THRESHOLD`). Content with
+    /// `bsver <= 28` (Oblivion and early FO3 dev) omits the list.
+    pub const ANIM_NOTES_THRESHOLD: u32 = 28;
     /// Fallout 3 retail + Fallout New Vegas (binary-identical at
     /// BSVER 34 per nif.xml `V20_2_0_7_FO3`).
     pub const FO3_FNV: u32 = 34;
+    /// bhkRigidBody `body_flags` switches from u32 (`bsver < 76`) to
+    /// u16 (`bsver >= 76`). Sits between FO3_FNV and SKYRIM_LE in the
+    /// dev-build BSVER timeline.
+    pub const RIGID_BODY_FLAGS16: u32 = 76;
     /// Skyrim LE.
     pub const SKYRIM_LE: u32 = 83;
     /// Skyrim Special Edition.
@@ -121,12 +222,33 @@ pub mod bsver {
     /// content per the `Fallout4` variant fan-out; this constant is
     /// the lower bound).
     pub const FALLOUT4: u32 = 130;
+    /// Intentional gap: no retail game shipped at BSVER 131.
+    /// BSLightingShaderProperty / BSEffectShaderProperty flag arrays
+    /// and CRC fields are BOTH absent at this value — parsers must
+    /// handle it as a no-op for both branches.
+    pub const FO4_SHADER_GAP: u32 = 131;
+    /// FO4 patch — shader flags switch to CRC hash arrays
+    /// (`bsver >= FO4_CRC_FLAGS`). Corresponds to nif.xml's
+    /// `#BS_GTE_132#` predicate.
+    pub const FO4_CRC_FLAGS: u32 = 132;
+    /// FO4 patch — `env_map_scale` moves inside an extended wetness
+    /// block. Content with `bsver >= FO4_ENV_SCALE` uses the new
+    /// layout; `bsver < FO4_ENV_SCALE` keeps the old position.
+    pub const FO4_ENV_SCALE: u32 = 140;
+    /// Lower bound for FO76 SF2 CRC arrays (`bsver >= FO76_SF2_CRCS`).
+    /// The `num_sf2` count field is only present at this BSVER and
+    /// above; below it the SF2 array is always empty.
+    pub const FO76_SF2_CRCS: u32 = 152;
     /// Fallout 76 (lower bound; FO76 spans 152..=167 in shipping
     /// content).
     pub const FO76: u32 = 155;
     /// Starfield (lower bound — `>=168` in retail; 170 is the
     /// historical cutoff vs FO76 dev builds).
     pub const STARFIELD: u32 = 172;
+    /// Starfield dev+ builds that carry a `form_id` field in some
+    /// blocks (e.g. NiNode). Content with `bsver >= SF_FORM_ID` has
+    /// this field; retail Starfield at 172 does not.
+    pub const SF_FORM_ID: u32 = 173;
 }
 
 /// Which game generation produced this NIF.
@@ -382,7 +504,7 @@ mod tests {
 
     #[test]
     fn version_components() {
-        let v = NifVersion(0x14020007);
+        let v = NifVersion::V20_2_0_7;
         assert_eq!(v.major(), 0x14); // 20
         assert_eq!(v.minor(), 0x02);
         assert_eq!(v.patch(), 0x00);
@@ -391,9 +513,9 @@ mod tests {
 
     #[test]
     fn version_display() {
-        assert_eq!(NifVersion(0x14020007).to_string(), "20.2.0.7");
-        assert_eq!(NifVersion(0x04000002).to_string(), "4.0.0.2");
-        assert_eq!(NifVersion(0x14000005).to_string(), "20.0.0.5");
+        assert_eq!(NifVersion::V20_2_0_7.to_string(), "20.2.0.7");
+        assert_eq!(NifVersion::V4_0_0_2.to_string(), "4.0.0.2");
+        assert_eq!(NifVersion::V20_0_0_5.to_string(), "20.0.0.5");
     }
 
     #[test]

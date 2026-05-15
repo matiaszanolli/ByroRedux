@@ -1,5 +1,12 @@
 //! BSA archive reading and file extraction.
 
+/// BSA format version number for Oblivion.
+const BSA_V_OBLIVION: u32 = 103;
+/// BSA format version number for Fallout 3, Fallout New Vegas, and Skyrim LE.
+const BSA_V_FO3_SKYRIM: u32 = 104;
+/// BSA format version number for Skyrim Special Edition.
+const BSA_V_SKYRIM_SE: u32 = 105;
+
 use crate::safety::{checked_chunk_size, checked_chunk_size_usize, checked_entry_count};
 use flate2::read::ZlibDecoder;
 use std::collections::HashMap;
@@ -162,7 +169,7 @@ impl BsaArchive {
         }
 
         let version = u32::from_le_bytes(header[4..8].try_into().unwrap());
-        if version != 103 && version != 104 && version != 105 {
+        if version != BSA_V_OBLIVION && version != BSA_V_FO3_SKYRIM && version != BSA_V_SKYRIM_SE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -197,7 +204,7 @@ impl BsaArchive {
         //     bstring prefix in each file body.
         // Source: UESP `Oblivion_Mod:BSA_File_Format#Archive_Flags`,
         // libbsarch `bsa_open.cpp` flag table.
-        let embed_file_names = version >= 104 && archive_flags & 0x100 != 0;
+        let embed_file_names = version >= BSA_V_FO3_SKYRIM && archive_flags & 0x100 != 0;
 
         if !include_dir_names || !include_file_names {
             return Err(io::Error::new(
@@ -222,7 +229,7 @@ impl BsaArchive {
         // name + file records start, **with the `_total_file_name_length`
         // header quantity added to it** on disk — subtract that at
         // validation time. See `expected_offset` below. (#362)
-        let folder_record_size: usize = if version == 105 { 24 } else { 16 };
+        let folder_record_size: usize = if version == BSA_V_SKYRIM_SE { 24 } else { 16 };
         struct FolderRecord {
             /// Stored folder-name hash. Only retained in debug builds
             /// for the per-folder hash validation in the name-pass
@@ -253,7 +260,7 @@ impl BsaArchive {
             let count_raw = u32::from_le_bytes(rec[8..12].try_into().unwrap());
             let count = checked_entry_count(count_raw, "BSA folder.count")?;
             #[cfg(debug_assertions)]
-            let offset = if version == 105 {
+            let offset = if version == BSA_V_SKYRIM_SE {
                 u64::from_le_bytes(rec[16..24].try_into().unwrap())
             } else {
                 // v103/v104 offset is u32 at [12..16].
@@ -600,7 +607,7 @@ impl BsaArchive {
             drop(file);
 
             // v104 uses zlib, v105 uses LZ4 frame format.
-            let (decompressed, codec) = if self.version >= 105 {
+            let (decompressed, codec) = if self.version >= BSA_V_SKYRIM_SE {
                 let mut decoder = lz4_flex::frame::FrameDecoder::new(&compressed[..]);
                 let mut buf = Vec::with_capacity(original_size);
                 decoder.read_to_end(&mut buf)?;

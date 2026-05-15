@@ -54,7 +54,7 @@ fn ni_path_interpolator_consumes_full_24_bytes() {
 #[test]
 fn ni_look_at_interpolator_consumes_full_54_bytes() {
     let header = NifHeader {
-        version: NifVersion(0x14020007),
+        version: NifVersion::V20_2_0_7,
         little_endian: true,
         user_version: 11,
         user_version_2: 34,

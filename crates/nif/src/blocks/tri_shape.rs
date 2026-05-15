@@ -109,7 +109,7 @@ impl NiTriShape {
         let mut num_materials = 0u32;
         let mut active_material_index = 0u32;
 
-        if stream.version() >= NifVersion(0x14020005) {
+        if stream.version() >= NifVersion::V20_2_0_5 {
             num_materials = stream.read_u32_le()?;
             for _ in 0..num_materials {
                 let _mat_name_idx = stream.read_u32_le()?;
@@ -132,8 +132,8 @@ impl NiTriShape {
                 shader_property_ref = stream.read_block_ref()?;
                 alpha_property_ref = stream.read_block_ref()?;
             }
-        } else if stream.version() >= NifVersion(0x0A000100)
-            && stream.version() <= NifVersion(0x14010003)
+        } else if stream.version() >= NifVersion::V10_0_1_0
+            && stream.version() <= NifVersion::V20_1_0_3
         {
             // MaterialData Has Shader + Shader Name + Shader Extra Data
             // (since 10.0.1.0, until 20.1.0.3 — both boundaries inclusive
@@ -506,7 +506,7 @@ impl BsTriShape {
         let vertex_size_quads = (vertex_desc & 0xF) as usize; // size in units of 4 bytes
 
         // Triangle and vertex counts
-        let num_triangles = if stream.bsver() >= 130 {
+        let num_triangles = if stream.bsver() >= crate::version::bsver::FALLOUT4 {
             stream.read_u32_le()?
         } else {
             stream.read_u16_le()? as u32
@@ -662,7 +662,7 @@ impl BsTriShape {
                 // FO4+ (BSVER >= 130): bit VF_FULL_PRECISION selects precision.
                 if vertex_attrs & VF_VERTEX != 0 {
                     let full_precision =
-                        stream.bsver() < 130 || vertex_attrs & VF_FULL_PRECISION != 0;
+                        stream.bsver() < crate::version::bsver::FALLOUT4 || vertex_attrs & VF_FULL_PRECISION != 0;
                     let has_tangents = vertex_attrs & VF_TANGENTS != 0;
                     if full_precision {
                         let pos = stream.read_ni_point3()?;
@@ -808,7 +808,7 @@ impl BsTriShape {
         // every BSDynamicTriShape (data_size==0, real vertex data lives in the
         // trailing dynamic Vector4 array) the 4-byte size was never consumed,
         // misaligning `parse_dynamic` and dropping every Skyrim NPC face mesh.
-        if stream.bsver() < 130 {
+        if stream.bsver() < crate::version::bsver::FALLOUT4 {
             let particle_data_size = stream.read_u32_le()?;
             if particle_data_size > 0 {
                 // particle vertices (num_vertices × 6 bytes) + particle normals + particle triangles
@@ -958,11 +958,11 @@ impl BsTriShape {
     /// path per nif.xml `<niobject name="BSSubIndexTriShape">`.
     ///
     /// Wire layout differs by stream variant:
-    /// - **SSE (`bsver < 130`)** — always present (no `data_size > 0` gate):
+    /// - **SSE (`bsver < crate::version::bsver::FALLOUT4`)** — always present (no `data_size > 0` gate):
     ///   `uint num_segments` followed by `BSGeometrySegmentData[num_segments]`
     ///   where each entry is `byte flags + uint start_index + uint num_primitives`
     ///   (no parent_array_index / sub_segments).
-    /// - **FO4+ (`bsver >= 130`)** — gated on `BsTriShape::data_size > 0`:
+    /// - **FO4+ (`bsver >= crate::version::bsver::FALLOUT4`)** — gated on `BsTriShape::data_size > 0`:
     ///   `uint num_primitives + uint num_segments + uint total_segments`
     ///   then `BSGeometrySegmentData[num_segments]` (`start_index +
     ///   num_primitives + parent_array_index + num_sub_segments +
@@ -1098,7 +1098,7 @@ impl BsSubIndexTriShapeData {
     /// reads the segment count regardless.
     fn parse(stream: &mut NifStream, shape: &BsTriShape) -> io::Result<Self> {
         let bsver = stream.bsver();
-        if bsver >= 130 {
+        if bsver >= crate::version::bsver::FALLOUT4 {
             // FO4+ / FO76. All fields gated on data_size > 0 — empty
             // template / stub meshes ship with no segmentation payload.
             if shape.data_size == 0 {
@@ -1186,7 +1186,7 @@ impl BsSubIndexTriShapeData {
                 shared,
             })
         } else {
-            // SSE (`bsver == 100`). Always present; pre-FO4 segments use
+            // SSE (`bsver == crate::version::bsver::SKYRIM_SE`). Always present; pre-FO4 segments use
             // a single byte for flags and don't carry parent_array_index
             // or sub-segments.
             let num_segments = stream.read_u32_le()?;
@@ -1358,7 +1358,7 @@ fn parse_geometry_data_base_inner(
     // 10.0.1.0. Files in the [10.0.1.0, 10.1.0.114) range (non-Bethesda
     // Gamebryo, pre-Civ IV era) read 4 phantom bytes, misaligning every
     // NiGeometryData afterward. See #326 / audit N1-01.
-    if stream.version() >= NifVersion(0x0A010072) {
+    if stream.version() >= NifVersion::V10_1_0_114 {
         let _group_id = stream.read_i32_le()?; // usually 0
     }
     let num_vertices_raw = stream.read_u16_le()? as usize;
@@ -1383,7 +1383,7 @@ fn parse_geometry_data_base_inner(
 
     // Data flags: present from v >= 10.0.1.0. Pre-Gamebryo stores UV set count
     // as a separate u16 field after normals + bounding sphere.
-    let data_flags = if stream.version() >= NifVersion(0x0A000100) {
+    let data_flags = if stream.version() >= NifVersion::V10_0_1_0 {
         let df = stream.read_u16_le()?;
         // Query the file's bsver directly — `variant().has_material_crc()`
         // would return false for the BSVER 35..=82 `Unknown` gap. The
@@ -1454,9 +1454,9 @@ fn parse_geometry_data_base_inner(
     // FO3-5-01.
     //
     // Pre-Gamebryo (v < 10.0.1.0) has a separate `num_uv_sets` u16 field.
-    let num_uv_sets = if stream.version() < NifVersion(0x0A000100) {
+    let num_uv_sets = if stream.version() < NifVersion::V10_0_1_0 {
         stream.read_u16_le()? as usize
-    } else if stream.bsver() > 0 && stream.version() == NifVersion(0x14020007) {
+    } else if stream.bsver() > 0 && stream.version() == NifVersion::V20_2_0_7 {
         // BSGeometryDataFlags path.
         (data_flags & 0x0001) as usize
     } else {
@@ -1469,7 +1469,7 @@ fn parse_geometry_data_base_inner(
     // bool IS still read; from v4.0.0.3 onward UV presence is derived from
     // `num_uv_sets`: in the pre-Gamebryo branch this came from the inline
     // u16 at line 701-702, otherwise from `data_flags & 0x3F`. See #325.
-    let has_uv = if stream.version() <= NifVersion(0x04000002) {
+    let has_uv = if stream.version() <= NifVersion::V4_0_0_2 {
         stream.read_byte_bool()?
     } else {
         num_uv_sets > 0
@@ -1487,12 +1487,12 @@ fn parse_geometry_data_base_inner(
     }
 
     // Consistency flags (version >= 10.0.1.0)
-    if stream.version() >= NifVersion(0x0A000100) {
+    if stream.version() >= NifVersion::V10_0_1_0 {
         let _consistency_flags = stream.read_u16_le()?;
     }
 
     // Additional data (version >= 20.0.0.4)
-    if stream.version() >= NifVersion(0x14000004) {
+    if stream.version() >= NifVersion::V20_0_0_4 {
         let _additional_data_ref = stream.read_block_ref()?;
     }
 
@@ -1518,7 +1518,7 @@ impl NiTriShapeData {
 
         // has_triangles bool: only present from v >= 10.0.1.0. In Morrowind-era
         // NIFs, triangles are always present when num_triangles > 0.
-        let has_triangles = if stream.version() >= NifVersion(0x0A000100) {
+        let has_triangles = if stream.version() >= NifVersion::V10_0_1_0 {
             stream.read_byte_bool()?
         } else {
             num_triangles > 0
@@ -1580,7 +1580,7 @@ impl NiTriStripsData {
         let strip_lengths = stream.read_u16_array(num_strips as usize)?;
 
         // has_strips: only from v >= 10.0.1.0. In Morrowind NIFs, strips always present.
-        let has_strips = if stream.version() >= NifVersion(0x0A000100) {
+        let has_strips = if stream.version() >= NifVersion::V10_0_1_0 {
             stream.read_byte_bool()?
         } else {
             num_strips > 0

@@ -87,7 +87,7 @@ pub(super) fn fo4_header() -> NifHeader {
 /// point3 fixtures use the FNV-style header.
 pub(super) fn fnv_header_bspline() -> NifHeader {
     NifHeader {
-        version: NifVersion(0x14020007),
+        version: NifVersion::V20_2_0_7,
         little_endian: true,
         user_version: 11,
         user_version_2: 34,

@@ -17,7 +17,7 @@ use crate::version::NifVersion;
 /// failures actually originated.
 fn pre_oblivion_header() -> NifHeader {
     NifHeader {
-        version: NifVersion(0x0a020000),
+        version: NifVersion::V10_2_0_0,
         little_endian: true,
         user_version: 10,
         user_version_2: 6,

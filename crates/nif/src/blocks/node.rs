@@ -108,7 +108,7 @@ impl NiNode {
         // non-Bethesda pre-FO4 Gamebryo files (Unknown variant, bsver=0)
         // still read the list correctly. Same pattern + rationale as
         // the `has_properties_list` fix in base.rs. See issue #160.
-        let effects = if stream.bsver() < 130 {
+        let effects = if stream.bsver() < crate::version::bsver::FALLOUT4 {
             stream.read_block_ref_list()?
         } else {
             Vec::new()
@@ -254,7 +254,7 @@ impl BsMultiBoundNode {
         let multi_bound_ref = stream.read_block_ref()?;
         // culling_mode is Skyrim+ only (BSVER >= 83). FO3/FNV (bsver=34)
         // stops after the multi_bound_ref.
-        let culling_mode = if stream.bsver() >= 83 {
+        let culling_mode = if stream.bsver() >= crate::version::bsver::SKYRIM_LE {
             stream.read_u32_le()?
         } else {
             0
@@ -503,7 +503,7 @@ impl NiSortAdjustNode {
         // Legacy accumulator ref (until 20.0.0.3) — Oblivion and later
         // don't serialize it. `until=` is inclusive per the version.rs
         // doctrine — field present at v <= 20.0.0.3.
-        if stream.version() <= crate::version::NifVersion(0x14000003) {
+        if stream.version() <= crate::version::NifVersion::V20_0_0_3 {
             let _accumulator = stream.read_block_ref()?;
         }
         Ok(Self { base, sorting_mode })
@@ -725,7 +725,7 @@ impl NiCamera {
         let num_screen_polygons = stream.read_u32_le()?;
 
         // num_screen_textures added at 4.2.1.0 — always present for our targets.
-        let num_screen_textures = if stream.version() >= crate::version::NifVersion(0x04020100) {
+        let num_screen_textures = if stream.version() >= crate::version::NifVersion::V4_2_1_0 {
             stream.read_u32_le()?
         } else {
             0
@@ -794,8 +794,8 @@ impl BsWeakReferenceNode {
         // BSWeakReference[] — nifly Nodes.cpp:166
         let num_weak_refs = stream.read_u32_le()?;
         for _ in 0..num_weak_refs {
-            // formID: present when bsver >= 173 (some Starfield builds).
-            if stream.bsver() >= 173 {
+            // formID: present when bsver >= crate::version::bsver::SF_FORM_ID (some Starfield builds).
+            if stream.bsver() >= crate::version::bsver::SF_FORM_ID {
                 let _form_id = stream.read_u32_le()?;
             }
             // BSResourceID: fileHash(u32) + extension([u8;4]) + dirHash(u32)

@@ -126,7 +126,7 @@ impl NiControllerSequence {
         let num_controlled_blocks = stream.read_u32_le()?;
 
         // Array Grow By (since 10.1.0.106)
-        let array_grow_by = if stream.version() >= NifVersion(0x0A01006A) {
+        let array_grow_by = if stream.version() >= NifVersion::V10_1_0_106 {
             stream.read_u32_le()?
         } else {
             0
@@ -153,7 +153,7 @@ impl NiControllerSequence {
         // corrupting the stream for every subsequent block. See #107.
         let bsver = stream.bsver();
         let uses_string_palette =
-            stream.version() >= NifVersion(0x0A020000) && stream.version() < NifVersion::STRING_TABLE_THRESHOLD;
+            stream.version() >= NifVersion::V10_2_0_0 && stream.version() < NifVersion::STRING_TABLE_THRESHOLD;
         let mut controlled_blocks = stream.allocate_vec(num_controlled_blocks)?;
         for _ in 0..num_controlled_blocks {
             let interpolator_ref = stream.read_block_ref()?;
@@ -230,8 +230,8 @@ impl NiControllerSequence {
         // NiSequence Phase: nif.xml `since="10.1.0.106" until="10.4.0.1"`.
         // Both boundaries are inclusive per the version.rs doctrine —
         // field present at v in [10.1.0.106, 10.4.0.1].
-        let phase = if stream.version() >= NifVersion(0x0A01006A)
-            && stream.version() <= NifVersion(0x0A040001)
+        let phase = if stream.version() >= NifVersion::V10_1_0_106
+            && stream.version() <= NifVersion::V10_4_0_1
         {
             stream.read_f32_le()?
         } else {
@@ -245,7 +245,7 @@ impl NiControllerSequence {
         // ship content at that exact version (Oblivion is 20.0.0.x,
         // pre-Oblivion sample files we've seen are 10.2.0.0), so this
         // is a no-op today; left in for completeness against nif.xml.
-        if stream.version() == NifVersion(0x0A01006A) {
+        if stream.version() == NifVersion::V10_1_0_106 {
             let _play_backwards = stream.read_u8()?;
         }
 
@@ -265,7 +265,7 @@ impl NiControllerSequence {
         // with BSVER >= 24) use the modern string-table layout and
         // skip this field. See #402 (audit premise was wrong — Oblivion
         // uses NiControllerSequence, not NiSequenceStreamHelper).
-        if stream.version() >= NifVersion(0x0A010071) && stream.version() < NifVersion::STRING_TABLE_THRESHOLD {
+        if stream.version() >= NifVersion::V10_1_0_113 && stream.version() < NifVersion::STRING_TABLE_THRESHOLD {
             let _deprecated_string_palette_ref = stream.read_block_ref()?;
         }
 
@@ -274,7 +274,7 @@ impl NiControllerSequence {
         //   Skyrim+ (BSVER > 28):   u16 count + Vec<Ref<BSAnimNotes>>
         // Normalise both into the same Vec so downstream consumers only
         // see one shape. Older BSVERs (< 24) carry no anim notes at all.
-        let anim_note_refs = if bsver > 28 {
+        let anim_note_refs = if bsver > crate::version::bsver::ANIM_NOTES_THRESHOLD {
             let num = stream.read_u16_le()? as u32;
             let mut refs = stream.allocate_vec(num)?;
             for _ in 0..num {

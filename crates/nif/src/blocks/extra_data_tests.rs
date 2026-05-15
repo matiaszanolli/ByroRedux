@@ -324,7 +324,7 @@ fn bs_anim_notes_zero_count_reads_only_header() {
 #[test]
 fn read_extra_data_name_returns_none_pre_10_0_1_0() {
     let header = NifHeader {
-        version: NifVersion(0x0A000006), // 10.0.0.6 — just below the gate
+        version: NifVersion::V10_0_0_6, // 10.0.0.6 — just below the gate
         little_endian: true,
         user_version: 0,
         user_version_2: 0,
@@ -359,7 +359,7 @@ fn read_extra_data_name_returns_none_pre_10_0_1_0() {
 #[test]
 fn ni_extra_data_gap_window_reads_only_subclass_body() {
     let header = NifHeader {
-        version: NifVersion(0x0A000006), // 10.0.0.6 — in the gap
+        version: NifVersion::V10_0_0_6, // 10.0.0.6 — in the gap
         little_endian: true,
         user_version: 0,
         user_version_2: 0,

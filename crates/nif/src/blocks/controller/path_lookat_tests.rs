@@ -112,7 +112,7 @@ fn make_header_pre_oblivion_v10_2() -> NifHeader {
     // Pre-Gamebryo content shipped in Oblivion's BSA — v=10.2.0.0
     // bsver=9 hits the `Phase` window in NiControllerSequence.
     NifHeader {
-        version: NifVersion(0x0A020000),
+        version: NifVersion::V10_2_0_0,
         little_endian: true,
         user_version: 10,
         user_version_2: 9,
@@ -274,7 +274,7 @@ fn nicontrollersequence_oblivion_skips_phase() {
                                                  // deprecated_string_palette_ref (within the [10.1.0.113, 20.1.0.1) window)
     data.extend_from_slice(&(-1i32).to_le_bytes());
     // anim notes: bsver=11 — `(24..=28).contains(&bsver)` false,
-    // bsver > 28 false → empty Vec (no bytes read).
+    // bsver > crate::version::bsver::ANIM_NOTES_THRESHOLD false → empty Vec (no bytes read).
 
     let original_len = data.len();
     // Sentinel that MUST NOT be consumed — over-consuming would

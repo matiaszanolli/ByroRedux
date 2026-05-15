@@ -56,7 +56,7 @@ impl NiLightColorController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
         // NiSingleInterpController: interpolator_ref (since 10.1.0.104).
-        let interpolator_ref = if stream.version() >= NifVersion(0x0A010068) {
+        let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
             stream.read_block_ref()?
         } else {
             BlockRef::NULL
@@ -179,7 +179,7 @@ pub struct NiMaterialColorController {
 impl NiMaterialColorController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
-        let interpolator_ref = if stream.version() >= NifVersion(0x0A010068) {
+        let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
             stream.read_block_ref()?
         } else {
             BlockRef::NULL
@@ -212,7 +212,7 @@ pub struct NiTextureTransformController {
 impl NiTextureTransformController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
-        let interpolator_ref = if stream.version() >= NifVersion(0x0A010068) {
+        let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
             stream.read_block_ref()?
         } else {
             BlockRef::NULL

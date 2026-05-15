@@ -457,7 +457,7 @@ fn bs_mesh_lod_tri_shape_dispatches_and_consumes_trailing_bytes() {
 /// per-segment bone-slot flags (SSE) / parent-array indices + cut
 /// offsets (FO4+) needed for dismemberment / locational damage.
 ///
-/// SSE-flavoured fixture (`bsver == 100` from `test_header()`): each
+/// SSE-flavoured fixture (`bsver == crate::version::bsver::SKYRIM_SE` from `test_header()`): each
 /// segment is `byte flags + uint start_index + uint num_primitives`
 /// (9 bytes/segment, no parent_array_index, no sub-segments).
 #[test]
@@ -503,7 +503,7 @@ fn bs_sub_index_tri_shape_sse_decodes_segment_table() {
     assert_eq!(stream.position() as usize, bytes.len());
 }
 
-/// Regression: #404 — BSSubIndexTriShape FO4+/FO76 path. `bsver >= 130`
+/// Regression: #404 — BSSubIndexTriShape FO4+/FO76 path. `bsver >= crate::version::bsver::FALLOUT4`
 /// adds `num_primitives + num_segments + total_segments` plus the
 /// sub-segment list per segment, and a trailing
 /// `BSGeometrySegmentSharedData` (segment_starts, per-segment shared
@@ -1153,7 +1153,7 @@ fn bs_dynamic_tri_shape_sets_full_precision_flag_after_position_overwrite() {
 /// mismatch but plowed ahead with the suspect `vertex_size_quads * 4`
 /// stride, silently misaligning every vertex past the first.
 ///
-/// Fixture: SSE BSTriShape (bsver < 130 → full-precision implicit) with
+/// Fixture: SSE BSTriShape (bsver < crate::version::bsver::FALLOUT4 → full-precision implicit) with
 /// `VF_VERTEX` set, `vertex_size_quads = 3` (deliberately wrong — only
 /// covers 12 of the 16 bytes the field actually consumes), 2 vertices,
 /// 0 triangles. data_size = 32 (= 2 × 16) implies the correct stride.
@@ -1230,7 +1230,7 @@ fn bs_tri_shape_data_size_mismatch_uses_derived_stride() {
 /// and any future consumer that read `bitangent_x` outside the
 /// assembly gate would silently take garbage on non-tangented meshes.
 ///
-/// Fixture: SSE BSTriShape (bsver < 130 → full-precision implicit)
+/// Fixture: SSE BSTriShape (bsver < crate::version::bsver::FALLOUT4 → full-precision implicit)
 /// with `VF_VERTEX` set, `VF_TANGENTS` clear, 1 vertex. Stuff a
 /// sentinel f32 (NaN-encoded `0xDEAD_BEEF`) in the trailing slot
 /// where pre-fix `bitangent_x` would have absorbed it. Post-fix the

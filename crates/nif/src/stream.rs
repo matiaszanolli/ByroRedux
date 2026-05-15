@@ -158,7 +158,7 @@ impl<'a> NifStream<'a> {
     /// that had a shader, which in turn made the block walker fail on
     /// every Oblivion static mesh and silently return empty scenes.
     pub fn read_bool(&mut self) -> io::Result<bool> {
-        if self.header.version >= NifVersion(0x04010001) {
+        if self.header.version >= NifVersion::V4_1_0_1 {
             // 4.1.0.1+: bool is u8
             Ok(self.read_u8()? != 0)
         } else {
@@ -441,7 +441,7 @@ impl<'a> NifStream<'a> {
     /// must read the name through this helper so the gate is in one
     /// place. See #329.
     pub fn read_extra_data_name(&mut self) -> io::Result<Option<Arc<str>>> {
-        if self.header.version < NifVersion(0x0A000100) {
+        if self.header.version < NifVersion::V10_0_1_0 {
             return Ok(None);
         }
         self.read_string()
@@ -746,7 +746,7 @@ mod tests {
     #[test]
     fn read_string_inline_below_20_1_0_1() {
         // Just below the threshold: 20.1.0.0 must still use inline strings.
-        let header = test_header(NifVersion(0x14010000));
+        let header = test_header(NifVersion::V20_1_0_0);
         let data: Vec<u8> = vec![
             0x03, 0x00, 0x00, 0x00, // length: 3
             b'f', b'o', b'o', //
@@ -758,7 +758,7 @@ mod tests {
     #[test]
     fn read_string_inline_old_version() {
         // Version < 20.1.0.3 reads length-prefixed inline
-        let header = test_header(NifVersion(0x0A000100)); // 10.0.1.0
+        let header = test_header(NifVersion::V10_0_1_0);
         let data: Vec<u8> = vec![
             0x04, 0x00, 0x00, 0x00, // length: 4
             b't', b'e', b's', b't', // "test"

@@ -48,16 +48,16 @@ pub struct BSShaderPPLightingProperty {
     pub shader: BSShaderPropertyData,
     pub texture_clamp_mode: u32,
     pub texture_set_ref: BlockRef,
-    /// Refraction strength (0.0–1.0). Present when bsver > 14.
+    /// Refraction strength (0.0–1.0). Present when bsver > crate::version::bsver::FO3_REFRACTION.
     pub refraction_strength: f32,
-    /// Refraction fire period. Present when bsver > 14.
+    /// Refraction fire period. Present when bsver > crate::version::bsver::FO3_REFRACTION.
     pub refraction_fire_period: i32,
-    /// Parallax max passes. Present when bsver > 24.
+    /// Parallax max passes. Present when bsver > crate::version::bsver::FO3_PARALLAX.
     pub parallax_max_passes: f32,
-    /// Parallax scale. Present when bsver > 24.
+    /// Parallax scale. Present when bsver > crate::version::bsver::FO3_PARALLAX.
     pub parallax_scale: f32,
-    /// Emissive glow color (RGBA). nif.xml: "Emissive Color" vercond="#BS_GT_FO3#" (bsver > 34).
-    /// Defaults to black/opaque when absent (FO3/FNV bsver <= 34).
+    /// Emissive glow color (RGBA). nif.xml: "Emissive Color" vercond="#BS_GT_FO3#" (bsver > crate::version::bsver::FO3_FNV).
+    /// Defaults to black/opaque when absent (FO3/FNV bsver <= crate::version::bsver::FO3_FNV).
     pub emissive_color: [f32; 4],
 }
 
@@ -79,7 +79,7 @@ impl BSShaderPPLightingProperty {
         // nif.xml:6245-6246 — Refraction Strength (f32) + Refraction Fire Period (i32)
         // vercond="#BSVER# #GT# 14" (strictly greater).
         let bsver = stream.bsver();
-        let (refraction_strength, refraction_fire_period) = if bsver > 14 {
+        let (refraction_strength, refraction_fire_period) = if bsver > crate::version::bsver::FO3_REFRACTION {
             (stream.read_f32_le()?, stream.read_i32_le()?)
         } else {
             (0.0, 0)
@@ -89,15 +89,15 @@ impl BSShaderPPLightingProperty {
         // vercond="#BSVER# #GT# 24" (strictly greater). FO3 ships content at
         // bsver=24 which must NOT carry these fields; the prior `>= 24` gate
         // over-read 8 phantom bytes on those files (#774 / FO3-1-PARGATE).
-        let (parallax_max_passes, parallax_scale) = if bsver > 24 {
+        let (parallax_max_passes, parallax_scale) = if bsver > crate::version::bsver::FO3_PARALLAX {
             (stream.read_f32_le()?, stream.read_f32_le()?)
         } else {
             (4.0, 1.0)
         };
 
-        // nif.xml:6250 — "Emissive Color" Color4 vercond="#BS_GT_FO3#" (i.e. bsver > 34).
-        // FO3/FNV (bsver <= 34) do not carry this field; Skyrim-era PPLighting does.
-        let emissive_color = if bsver > 34 {
+        // nif.xml:6250 — "Emissive Color" Color4 vercond="#BS_GT_FO3#" (i.e. bsver > crate::version::bsver::FO3_FNV).
+        // FO3/FNV (bsver <= crate::version::bsver::FO3_FNV) do not carry this field; Skyrim-era PPLighting does.
+        let emissive_color = if bsver > crate::version::bsver::FO3_FNV {
             [
                 stream.read_f32_le()?,
                 stream.read_f32_le()?,
@@ -162,7 +162,7 @@ impl BSShaderNoLightingProperty {
         let file_name = stream.read_sized_string()?;
 
         let (falloff_start_angle, falloff_stop_angle, falloff_start_opacity, falloff_stop_opacity) =
-            if stream.bsver() > 26 {
+            if stream.bsver() > crate::version::bsver::FLAGS_U32_THRESHOLD {
                 (
                     stream.read_f32_le()?,
                     stream.read_f32_le()?,
@@ -380,7 +380,7 @@ fn parse_skyrim_shader_base(
 ) -> io::Result<(u32, u32, Vec<u32>, Vec<u32>, [f32; 2], [f32; 2])> {
     let bsver = stream.bsver();
 
-    let (shader_flags_1, shader_flags_2) = if bsver < 132 {
+    let (shader_flags_1, shader_flags_2) = if bsver < crate::version::bsver::FO4_CRC_FLAGS {
         (stream.read_u32_le()?, stream.read_u32_le()?)
     } else {
         (0, 0)
@@ -388,10 +388,10 @@ fn parse_skyrim_shader_base(
 
     // Counts go through allocate_vec so a corrupt 0xFFFFFFFF can't OOM
     // before the inner u32 reads fail. See #764.
-    let (sf1_crcs, sf2_crcs) = if bsver >= 132 {
+    let (sf1_crcs, sf2_crcs) = if bsver >= crate::version::bsver::FO4_CRC_FLAGS {
         // #981 — bulk-read CRC arrays via `read_u32_array`.
         let num_sf1 = stream.read_u32_le()? as usize;
-        let num_sf2 = if bsver >= 152 {
+        let num_sf2 = if bsver >= crate::version::bsver::FO76_SF2_CRCS {
             stream.read_u32_le()? as usize
         } else {
             0
@@ -768,7 +768,7 @@ impl BSLightingShaderProperty {
         // #749 this fired on ANY non-empty Name, so every Starfield block
         // with an editor label (e.g. "Material_Slot_01") had its entire
         // PBR body silently defaulted to zero. See SF-D3-01.
-        if bsver >= 155 {
+        if bsver >= crate::version::bsver::FO76 {
             if let Some(name) = net.name.as_deref() {
                 if is_material_reference(name) {
                     return Ok(Self::material_reference_stub(net));
@@ -779,14 +779,14 @@ impl BSLightingShaderProperty {
         // Shader flags 1/2 — per nif.xml (`#NI_BS_LT_FO4#` =
         // `BSVER < 130` for the "SK" suffix variant; `#BS_FO4#` =
         // `BSVER == 130` strictly for the "FO4" suffix variant). Gate
-        // is `bsver <= 130`. At `bsver == 131` the pair is intentionally
+        // is `bsver <= crate::version::bsver::FALLOUT4`. At `bsver == crate::version::bsver::FO4_SHADER_GAP` the pair is intentionally
         // absent per the spec — dev-stream 131 ships no shader-flag
         // fields at all (neither the Skyrim u32 pair nor the BSVER >=
         // 132 CRC32 arrays). 34,995 FO4 vanilla NIFs parse 100% clean
         // against this gate shape; FO4-D1-H1 (#409) confirmed the gap
         // is correct against nif.xml after initial concern that BSVER
         // 131 would misalign.
-        let (shader_flags_1, shader_flags_2) = if bsver <= 130 {
+        let (shader_flags_1, shader_flags_2) = if bsver <= crate::version::bsver::FALLOUT4 {
             (stream.read_u32_le()?, stream.read_u32_le()?)
         } else {
             (0, 0)
@@ -798,7 +798,7 @@ impl BSLightingShaderProperty {
         // skipped, drifting every subsequent block read by 4 bytes
         // and mis-routing the shader-type dispatch through the FO4
         // table at `:990`. SF-D1-DISPATCH.
-        let fo76_shader_type = if bsver >= 155 {
+        let fo76_shader_type = if bsver >= crate::version::bsver::FO76 {
             stream.read_u32_le()?
         } else {
             0
@@ -808,9 +808,9 @@ impl BSLightingShaderProperty {
         // #981 — bulk-read via `read_u32_array`. The byte-budget gate
         // moves from `allocate_vec` into `read_pod_vec` so the OOM
         // guard from #764 is preserved.
-        let (sf1_crcs, sf2_crcs) = if bsver >= 132 {
+        let (sf1_crcs, sf2_crcs) = if bsver >= crate::version::bsver::FO4_CRC_FLAGS {
             let num_sf1 = stream.read_u32_le()? as usize;
-            let num_sf2 = if bsver >= 152 {
+            let num_sf2 = if bsver >= crate::version::bsver::FO76_SF2_CRCS {
                 stream.read_u32_le()? as usize
             } else {
                 0
@@ -830,7 +830,7 @@ impl BSLightingShaderProperty {
         // Starfield character / hair / face meshes routed through the
         // FO4 dispatch which mis-interprets the type-4/5 payload and
         // drops 12 B of tint data.
-        let shader_type = if bsver >= 155 {
+        let shader_type = if bsver >= crate::version::bsver::FO76 {
             fo76_shader_type
         } else {
             legacy_shader_type
@@ -847,7 +847,7 @@ impl BSLightingShaderProperty {
         let emissive_multiple = stream.read_f32_le()?;
 
         // Root Material (NiFixedString) — FO4+ only (BSVER >= 130).
-        if bsver >= 130 {
+        if bsver >= crate::version::bsver::FALLOUT4 {
             let _root_material = stream.read_string()?;
         }
 
@@ -866,7 +866,7 @@ impl BSLightingShaderProperty {
         let specular_strength = stream.read_f32_le()?;
 
         // Lighting effects — Skyrim only (BSVER < 130).
-        let (lighting_effect_1, lighting_effect_2) = if bsver < 130 {
+        let (lighting_effect_1, lighting_effect_2) = if bsver < crate::version::bsver::FALLOUT4 {
             (stream.read_f32_le()?, stream.read_f32_le()?)
         } else {
             (0.0, 0.0)
@@ -889,23 +889,23 @@ impl BSLightingShaderProperty {
             (0.0, 0.0, 0.0)
         };
 
-        let grayscale_to_palette_scale = if bsver >= 130 {
+        let grayscale_to_palette_scale = if bsver >= crate::version::bsver::FALLOUT4 {
             stream.read_f32_le()?
         } else {
             0.0
         };
 
-        let fresnel_power = if bsver >= 130 {
+        let fresnel_power = if bsver >= crate::version::bsver::FALLOUT4 {
             stream.read_f32_le()?
         } else {
             0.0
         };
 
-        let wetness = if bsver >= 130 {
+        let wetness = if bsver >= crate::version::bsver::FALLOUT4 {
             let spec_scale = stream.read_f32_le()?;
             let spec_power = stream.read_f32_le()?;
             let min_var = stream.read_f32_le()?;
-            let env_map_scale = if bsver == 130 {
+            let env_map_scale = if bsver == crate::version::bsver::FALLOUT4 {
                 stream.read_f32_le()?
             } else {
                 0.0
@@ -921,7 +921,7 @@ impl BSLightingShaderProperty {
             // widen the gate to `>= 130` so the whole wetness tail
             // aligns on FO4 (130), FO4 DLC (131-139), FO76 (155), and
             // Starfield (168+). See #403 / FO4-D1-C1.
-            let unknown_1 = if bsver >= 130 {
+            let unknown_1 = if bsver >= crate::version::bsver::FALLOUT4 {
                 stream.read_f32_le()?
             } else {
                 0.0
@@ -930,7 +930,7 @@ impl BSLightingShaderProperty {
             // `BSVER #GTE# 155`. Pre-fix the parser used `==` and
             // every Starfield (`bsver = 172`) WetnessParams under-
             // read by 4 bytes, drifting the rest of the block.
-            let unknown_2 = if bsver >= 155 {
+            let unknown_2 = if bsver >= crate::version::bsver::FO76 {
                 stream.read_f32_le()?
             } else {
                 0.0
@@ -961,7 +961,7 @@ impl BSLightingShaderProperty {
         let mut do_translucency = false;
         let mut translucency = None;
         let mut texture_arrays: Vec<BSTextureArray> = Vec::new();
-        if bsver >= 155 {
+        if bsver >= crate::version::bsver::FO76 {
             luminance = Some(LuminanceParams {
                 lum_emittance: stream.read_f32_le()?,
                 exposure_offset: stream.read_f32_le()?,
@@ -1013,9 +1013,9 @@ impl BSLightingShaderProperty {
         // hair / face meshes routed through the FO4 dispatch which
         // mis-interpreted the type-4/5 payload and dropped 12 B of
         // tint data.
-        let shader_type_data = if bsver >= 155 {
+        let shader_type_data = if bsver >= crate::version::bsver::FO76 {
             parse_shader_type_data_fo76(stream, shader_type)?
-        } else if bsver < 130 {
+        } else if bsver < crate::version::bsver::FALLOUT4 {
             parse_shader_type_data(stream, shader_type)?
         } else {
             parse_shader_type_data_fo4(stream, shader_type, bsver)?
@@ -1150,7 +1150,7 @@ fn parse_shader_type_data_fo4(
         1 => {
             let env_map_scale = stream.read_f32_le()?;
             // FO4-specific: SSR bools (BSVER 130–139).
-            if bsver >= 130 && bsver < 140 {
+            if bsver >= crate::version::bsver::FALLOUT4 && bsver < crate::version::bsver::FO4_ENV_SCALE {
                 let _use_ssr = stream.read_byte_bool()?;
                 let _wetness_use_ssr = stream.read_byte_bool()?;
             }
@@ -1163,7 +1163,7 @@ fn parse_shader_type_data_fo4(
                 stream.read_f32_le()?,
             ];
             // FO4-specific: skin tint alpha (BSVER 130–139).
-            if bsver >= 130 && bsver < 140 {
+            if bsver >= crate::version::bsver::FALLOUT4 && bsver < crate::version::bsver::FO4_ENV_SCALE {
                 let _skin_tint_alpha = stream.read_f32_le()?;
             }
             Ok(ShaderTypeData::SkinTint { skin_tint_color })
@@ -1379,7 +1379,7 @@ impl BSEffectShaderProperty {
         // reference (sibling of the BSLightingShaderProperty gate above).
         // The suffix-aware test ensures editor labels with no path suffix
         // continue through to the full body parse — see #749 / SF-D3-01.
-        if bsver >= 155 {
+        if bsver >= crate::version::bsver::FO76 {
             if let Some(name) = net.name.as_deref() {
                 if is_material_reference(name) {
                     return Ok(Self::material_reference_stub(net));
@@ -1389,9 +1389,9 @@ impl BSEffectShaderProperty {
 
         // Shader flags 1/2 — see sibling gate in
         // `BSLightingShaderProperty::parse` for the full nif.xml
-        // citation. `bsver == 131` is an intentional gap: neither the
+        // citation. `bsver == crate::version::bsver::FO4_SHADER_GAP` is an intentional gap: neither the
         // u32 pair nor the BSVER >= 132 CRC arrays are present. #409.
-        let (shader_flags_1, shader_flags_2) = if bsver <= 130 {
+        let (shader_flags_1, shader_flags_2) = if bsver <= crate::version::bsver::FALLOUT4 {
             (stream.read_u32_le()?, stream.read_u32_le()?)
         } else {
             (0, 0)
@@ -1399,9 +1399,9 @@ impl BSEffectShaderProperty {
 
         // #981 — bulk-read CRC arrays via `read_u32_array`; same
         // byte-budget guarantee as the BSEffectShaderData variant above.
-        let (sf1_crcs, sf2_crcs) = if bsver >= 132 {
+        let (sf1_crcs, sf2_crcs) = if bsver >= crate::version::bsver::FO4_CRC_FLAGS {
             let num_sf1 = stream.read_u32_le()? as usize;
-            let num_sf2 = if bsver >= 152 {
+            let num_sf2 = if bsver >= crate::version::bsver::FO76_SF2_CRCS {
                 stream.read_u32_le()? as usize
             } else {
                 0
@@ -1435,7 +1435,7 @@ impl BSEffectShaderProperty {
         // this on `BSVER #GTE# 155`. Pre-fix the parser used `==`
         // and every Starfield (`bsver = 172`) BSEffect block under-
         // read by 4 B, drifting the rest of the block. See #746.
-        let refraction_power = if bsver >= 155 {
+        let refraction_power = if bsver >= crate::version::bsver::FO76 {
             stream.read_f32_le()?
         } else {
             0.0
@@ -1463,7 +1463,7 @@ impl BSEffectShaderProperty {
         let greyscale_texture = stream.read_sized_string()?;
 
         // FO4+ additional textures (BSVER >= 130).
-        let (env_map_texture, normal_texture, env_mask_texture, env_map_scale) = if bsver >= 130 {
+        let (env_map_texture, normal_texture, env_mask_texture, env_map_scale) = if bsver >= crate::version::bsver::FALLOUT4 {
             let env = stream.read_sized_string()?;
             let norm = stream.read_sized_string()?;
             let mask = stream.read_sized_string()?;
@@ -1483,7 +1483,7 @@ impl BSEffectShaderProperty {
         let mut emittance_color = [0.0f32; 3];
         let mut emit_gradient_texture = String::new();
         let mut luminance = None;
-        if bsver >= 155 {
+        if bsver >= crate::version::bsver::FO76 {
             reflectance_texture = stream.read_sized_string()?;
             lighting_texture = stream.read_sized_string()?;
             emittance_color = [

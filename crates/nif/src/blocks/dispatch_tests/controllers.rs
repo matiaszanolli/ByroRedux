@@ -125,7 +125,7 @@ fn ni_bs_bone_lod_controller_skips_shape_groups_on_bethesda() {
     // FNV header — bsver=34, the BSVER on every creature skeleton
     // that R3 surfaced.
     let header = NifHeader {
-        version: NifVersion(0x14020007),
+        version: NifVersion::V20_2_0_7,
         little_endian: true,
         user_version: 11,
         user_version_2: 34,

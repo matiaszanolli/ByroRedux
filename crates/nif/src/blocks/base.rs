@@ -33,7 +33,7 @@ impl NiObjectNETData {
         // Pre-Gamebryo (v < 10.0.1.0): NiObjectNET stores a single extra_data ref
         // (head of a linked list) instead of a counted array. Each NiExtraData block
         // has a next_extra_data_ref field that chains them together.
-        let extra_data_refs = if stream.version() < NifVersion(0x0A000100) {
+        let extra_data_refs = if stream.version() < NifVersion::V10_0_1_0 {
             let r = stream.read_block_ref()?;
             if r.is_null() {
                 Vec::new()
@@ -75,7 +75,7 @@ impl NiAVObjectData {
         // Flags: u32 for BSVER > 26 (FO3+), u16 for older (Oblivion and non-Bethesda).
         // Use actual BSVER from header, not the variant's hardcoded value, to handle
         // transitional versions (e.g., Oblivion files with uv=11, bsver=11).
-        let flags = if stream.bsver() > 26 {
+        let flags = if stream.bsver() > crate::version::bsver::FLAGS_U32_THRESHOLD {
             stream.read_u32_le()?
         } else {
             stream.read_u16_le()? as u32
@@ -87,7 +87,7 @@ impl NiAVObjectData {
         // niftools/nifly — see version.rs doctrine). Field present at
         // versions <= 4.2.2.0. Morrowind ships at v4.0.0.2, Civ IV /
         // Culpa Innata / DAOC at v4.2.2.0 — all read the field.
-        if stream.version() <= NifVersion(0x04020200) {
+        if stream.version() <= NifVersion::V4_2_2_0 {
             let _velocity = stream.read_ni_point3()?;
         }
 
@@ -118,9 +118,9 @@ impl NiAVObjectData {
         //    [4.2.3.0, 10.0.0.x] range. See #328 / audit N1-04.
         //  - v >= 10.0.1.0: dedicated `NiCollisionObject` ref
         //    (since="10.0.1.0").
-        let collision_ref = if stream.version() >= NifVersion(0x0A000100) {
+        let collision_ref = if stream.version() >= NifVersion::V10_0_1_0 {
             stream.read_block_ref()?
-        } else if stream.version() <= NifVersion(0x04020200) {
+        } else if stream.version() <= NifVersion::V4_2_2_0 {
             skip_bounding_volume(stream)?;
             BlockRef::NULL
         } else {
@@ -320,7 +320,7 @@ mod niavobject_version_gate_tests {
     #[test]
     fn gap_window_reads_neither_bv_nor_collision_ref() {
         // 10.0.0.0 — firmly in the gap.
-        let header = header_at(NifVersion(0x0A000000));
+        let header = header_at(NifVersion::V10_0_0_0);
         let mut bytes = pre_gamebryo_prologue();
         // Properties list (bsver=0 ≤ 34 ⇒ list present): zero entries.
         bytes.extend_from_slice(&0u32.to_le_bytes());
@@ -347,7 +347,7 @@ mod niavobject_version_gate_tests {
     /// has_bv=false keeps the trailing body out of the fixture.
     #[test]
     fn pre_gamebryo_consumes_has_bounding_volume_bool() {
-        let header = header_at(NifVersion(0x04020100));
+        let header = header_at(NifVersion::V4_2_1_0);
         let mut bytes = pre_gamebryo_prologue();
         // Pre-Gamebryo velocity vector (3 f32) — see existing parse() branch.
         for _ in 0..3 {

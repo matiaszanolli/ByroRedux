@@ -110,7 +110,7 @@ fn skyrim_strings_extra_data_uses_sized_string_not_string_table_index() {
     use crate::blocks::extra_data::NiExtraData;
 
     let header = NifHeader {
-        version: NifVersion(0x14020007),
+        version: NifVersion::V20_2_0_7,
         little_endian: true,
         user_version: 12,
         user_version_2: 83, // Skyrim LE
@@ -173,7 +173,7 @@ fn skyrim_bs_bone_lod_extra_data_dispatches_and_parses() {
     use crate::blocks::extra_data::NiExtraData;
 
     let header = NifHeader {
-        version: NifVersion(0x14020007),
+        version: NifVersion::V20_2_0_7,
         little_endian: true,
         user_version: 12,
         user_version_2: 83, // Skyrim LE — SKY_AND_LATER gate

@@ -27,7 +27,7 @@
 //! drops the NiDynamicEffect plumbing entirely — both `Switch State`
 //! and the `Affected Nodes` list carry `vercond="#NI_BS_LT_FO4#"` in
 //! nif.xml line 3499-3504. The base parser below honours that gate via
-//! `stream.bsver() < 130`. Pre-#721 the parser unconditionally read the
+//! `stream.bsver() < crate::version::bsver::FALLOUT4`. Pre-#721 the parser unconditionally read the
 //! NiDynamicEffect tail on every NIF version >= 10.1.0.x, demoting 681
 //! mesh-embedded lights across FO4 / FO76 / Starfield Meshes archives
 //! through the outer `block_size`-driven recovery path.
@@ -61,16 +61,16 @@ impl NiLightBase {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let av = NiAVObjectData::parse(stream)?;
 
-        // NiDynamicEffect base — present only when bsver < 130 (FO4
+        // NiDynamicEffect base — present only when bsver < crate::version::bsver::FALLOUT4 (FO4
         // reparents NiLight directly onto NiAVObject, dropping both
         // fields per nif.xml `vercond="#NI_BS_LT_FO4#"`). Pre-#721 the
         // parser checked only the NIF version gate, so on FO4 / FO76 /
-        // Starfield (NIF 20.2.0.7, bsver >= 130) it consumed 5+ bytes
+        // Starfield (NIF 20.2.0.7, bsver >= crate::version::bsver::FALLOUT4) it consumed 5+ bytes
         // of NiLight color data as `switch_state + affected_nodes`,
         // throwing every mesh-embedded light through `block_size`
         // recovery as NiUnknown.
-        let pre_fo4 = stream.bsver() < 130;
-        let switch_state = if pre_fo4 && stream.version() >= NifVersion(0x0A01006A) {
+        let pre_fo4 = stream.bsver() < crate::version::bsver::FALLOUT4;
+        let switch_state = if pre_fo4 && stream.version() >= NifVersion::V10_1_0_106 {
             stream.read_u8()? != 0
         } else {
             true
@@ -285,7 +285,7 @@ impl NiSpotLight {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let point = NiPointLight::parse(stream)?;
         let outer_spot_angle = stream.read_f32_le()?;
-        let inner_spot_angle = if stream.version() >= NifVersion(0x14020005) {
+        let inner_spot_angle = if stream.version() >= NifVersion::V20_2_0_5 {
             stream.read_f32_le()?
         } else {
             0.0

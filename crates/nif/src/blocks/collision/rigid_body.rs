@@ -54,7 +54,7 @@ impl BhkRigidBody {
         // bhkEntityCInfo: response(1) + unused(1) + callback_delay(2) = 4 bytes
         stream.skip(4)?;
 
-        if bsver <= 34 {
+        if bsver <= crate::version::bsver::FO3_FNV {
             // bhkRigidBodyCInfo550_660 (Oblivion / FO3 / FNV)
             // Duplicated filter + entity CInfo (since 10.1.0.0).
             // Prefix layout (nif.xml line 2808):
@@ -66,7 +66,7 @@ impl BhkRigidBody {
             stream.skip(4)?; // unused
             stream.skip(4)?; // response + unused + callback_delay
             stream.skip(4)?; // unused
-        } else if bsver < 130 {
+        } else if bsver < crate::version::bsver::FALLOUT4 {
             // bhkRigidBodyCInfo2010 (Skyrim LE / SE — bsver 83-127).
             // Pre-#546 this prefix was missing entirely and the parser
             // walked straight into `Translation` from 20 bytes early,
@@ -85,7 +85,7 @@ impl BhkRigidBody {
             let _unknown_int_1 = stream.read_u32_le()?;
             stream.skip(4)?; // response + unused + callback_delay
         }
-        // bsver >= 130 (FO4+): bhkRigidBodyCInfo2014 has a very different
+        // bsver >= crate::version::bsver::FALLOUT4 (FO4+): bhkRigidBodyCInfo2014 has a very different
         // layout — motion system / deactivator / quality / penetration
         // depth / time factor are interleaved with callback delay. That
         // path is knowingly incomplete and is tracked separately; we
@@ -102,7 +102,7 @@ impl BhkRigidBody {
         let linear_damping = stream.read_f32_le()?;
         let angular_damping = stream.read_f32_le()?;
 
-        if bsver >= 83 {
+        if bsver >= crate::version::bsver::SKYRIM_LE {
             // Skyrim+: timeFactor, gravityFactor before friction
             let _time_factor = stream.read_f32_le()?;
             let _gravity_factor = stream.read_f32_le()?;
@@ -110,13 +110,13 @@ impl BhkRigidBody {
 
         let friction = stream.read_f32_le()?;
 
-        if bsver >= 83 {
+        if bsver >= crate::version::bsver::SKYRIM_LE {
             let _rolling_friction = stream.read_f32_le()?;
         }
 
         let restitution = stream.read_f32_le()?;
 
-        let (max_linear_velocity, max_angular_velocity, penetration_depth) = if bsver <= 34 {
+        let (max_linear_velocity, max_angular_velocity, penetration_depth) = if bsver <= crate::version::bsver::FO3_FNV {
             // Oblivion/FO3: max velocities + penetration depth (since 10.1.0.0)
             (
                 stream.read_f32_le()?,
@@ -140,10 +140,10 @@ impl BhkRigidBody {
         let solver_deactivation = stream.read_u8()?;
         let quality_type = stream.read_u8()?;
 
-        if bsver <= 34 {
+        if bsver <= crate::version::bsver::FO3_FNV {
             // Oblivion/FO3/FNV (CInfo550_660): Unused 05[12] padding.
             stream.skip(12)?;
-        } else if bsver < 130 {
+        } else if bsver < crate::version::bsver::FALLOUT4 {
             // Skyrim LE/SE (CInfo2010): AutoRemoveLevel(1) +
             // ResponseModifierFlags(1) + NumShapeKeysInContactPoint(1) +
             // ForceCollidedOntoPPU(bool,1) + Unused 04[12] = 16 B.
@@ -169,11 +169,11 @@ impl BhkRigidBody {
         // schema). No Bethesda title ships in the BSVER 76..=82 gap,
         // so the cutoff is structurally invisible to vanilla content
         // — but the parser doctrine pins to nif.xml's threshold and
-        // the previous `bsver < 83` value contradicted that without
+        // the previous `bsver < crate::version::bsver::SKYRIM_LE` value contradicted that without
         // shipping cause. Boundary tests cover bsver=75 (u32 path)
         // and bsver=76 (u16 path) at the bottom of this file. See
         // NIF-D2-NEW-05 (audit 2026-05-12), original landing #127.
-        let body_flags = if bsver < 76 {
+        let body_flags = if bsver < crate::version::bsver::RIGID_BODY_FLAGS16 {
             stream.read_u32_le()?
         } else {
             stream.read_u16_le()? as u32

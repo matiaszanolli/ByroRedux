@@ -669,15 +669,15 @@ impl NiTextKeyExtraData {
         // content (none in the pre-Gamebryo band); guards
         // pre-Gamebryo NetImmerse / Morrowind-era kf compat.
         let v = stream.version();
-        if v <= crate::version::NifVersion(0x04020200) {
+        if v <= crate::version::NifVersion::V4_2_2_0 {
             let _next_extra_data_ref = stream.read_block_ref()?;
-            if v >= crate::version::NifVersion(0x04000000) {
+            if v >= crate::version::NifVersion::V4_0_0_0 {
                 let _num_bytes = stream.read_u32_le()?;
             }
         }
         // NiObjectNET::name (only since 10.0.1.0; pre-Gamebryo and gap
         // window have no name field).
-        let name = if v >= crate::version::NifVersion(0x0A000100) {
+        let name = if v >= crate::version::NifVersion::V10_0_1_0 {
             stream.read_string()?
         } else {
             None

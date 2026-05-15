@@ -65,10 +65,10 @@ impl NiExtraData {
         // (inclusive per the version.rs doctrine — present at v4.2.2.0).
         // The legacy path therefore claims v <= 4.2.2.0; the gap path
         // covers v in (4.2.2.0, 10.0.1.0).
-        if stream.version() <= NifVersion(0x04020200) {
+        if stream.version() <= NifVersion::V4_2_2_0 {
             return Self::parse_legacy(stream, type_name);
         }
-        if stream.version() < NifVersion(0x0A000100) {
+        if stream.version() < NifVersion::V10_0_1_0 {
             return Self::parse_gap(stream, type_name);
         }
 
@@ -647,7 +647,7 @@ impl BsDistantObjectLargeRefExtraData {
         // NiExtraData base: name — gated since 10.0.1.0 per nif.xml.
         // SSE is well past that gate, so the name field is always present.
         let name = stream.read_extra_data_name()?;
-        // SSE bsver >= 83, so version >= 20.2.0.7 — `read_bool` reads a
+        // SSE bsver >= crate::version::bsver::SKYRIM_LE, so version >= 20.2.0.7 — `read_bool` reads a
         // single byte. Kept on the version-aware path for symmetry with
         // other NiExtraData subclasses.
         let large_ref = stream.read_bool()?;

@@ -393,7 +393,7 @@ fn parse_transform_data_xyz_rotation_reads_all_three_axes() {
 fn parse_transform_data_pre10_xyz_rotation_consumes_order_float() {
     // Build a header with version 10.0.1.0 (pre-10.1.0.0 boundary)
     let header = NifHeader {
-        version: NifVersion(0x0A000100), // 10.0.1.0
+        version: NifVersion::V10_0_1_0, // 10.0.1.0
         little_endian: true,
         user_version: 0,
         user_version_2: 0,
@@ -626,7 +626,7 @@ fn parse_transform_data_xyz_order_at_v10_1_0_0_exactly() {
 #[test]
 fn parse_transform_data_xyz_no_order_at_v10_1_0_1() {
     let header = NifHeader {
-        version: NifVersion(0x0A010001),
+        version: NifVersion::V10_1_0_1,
         little_endian: true,
         user_version: 0,
         user_version_2: 0,
@@ -662,7 +662,7 @@ fn parse_transform_data_xyz_no_order_at_v10_1_0_1() {
 #[test]
 fn parse_transform_data_xyz_with_order_below_v10_1_0_0() {
     let header = NifHeader {
-        version: NifVersion(0x0A000100), // v10.0.1.0 — below the until= boundary
+        version: NifVersion::V10_0_1_0, // v10.0.1.0 — below the until= boundary
         little_endian: true,
         user_version: 0,
         user_version_2: 0,

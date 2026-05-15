@@ -107,7 +107,7 @@ fn tile_shader_property_routes_to_dedicated_parser() {
 fn sky_shader_property_routes_to_dedicated_parser() {
     // FNV header (bsver = 34 — the audit corpus).
     let header = NifHeader {
-        version: NifVersion(0x14020007),
+        version: NifVersion::V20_2_0_7,
         little_endian: true,
         user_version: 11,
         user_version_2: 34,

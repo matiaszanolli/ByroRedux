@@ -8,7 +8,7 @@ use crate::version::NifVersion;
 /// NiUnknown pre-#546.
 fn skyrim_se_header() -> NifHeader {
     NifHeader {
-        version: NifVersion(0x14020007),
+        version: NifVersion::V20_2_0_7,
         little_endian: true,
         user_version: 12,
         user_version_2: 100,
@@ -159,8 +159,8 @@ fn bhk_rigid_body_t_skyrim_se_parses_identically() {
 }
 
 /// Boundary regression for NIF-D2-NEW-05 (audit 2026-05-12) — the
-/// `body_flags` width threshold is `bsver < 76` per nif.xml's
-/// `#SKY_AND_LATER#` resolution, not the pre-fix `bsver < 83`.
+/// `body_flags` width threshold is `bsver < crate::version::bsver::RIGID_BODY_FLAGS16` per nif.xml's
+/// `#SKY_AND_LATER#` resolution, not the pre-fix `bsver < crate::version::bsver::SKYRIM_LE`.
 ///
 /// Builds a Skyrim-shape `bhkRigidBody` body at the two bsver values
 /// straddling the threshold and asserts the parser consumed the
@@ -182,7 +182,7 @@ fn bhk_rigid_body_t_skyrim_se_parses_identically() {
 
 fn skyrim_header_at_bsver(bsver: u32) -> NifHeader {
     NifHeader {
-        version: NifVersion(0x14020007),
+        version: NifVersion::V20_2_0_7,
         little_endian: true,
         user_version: 12,
         user_version_2: bsver,
@@ -198,21 +198,21 @@ fn skyrim_header_at_bsver(bsver: u32) -> NifHeader {
 
 /// Same fixture shape as [`minimal_skyrim_bhk_rigid_body_bytes`] but
 /// the trailing `body_flags` is sized for the requested bsver: u32
-/// when `bsver < 76`, u16 otherwise.
+/// when `bsver < crate::version::bsver::RIGID_BODY_FLAGS16`, u16 otherwise.
 ///
 /// Returns `(bytes, body_flags_width_bytes)`. The width is what the
 /// boundary tests assert: the delta in consumed bytes between
 /// bsver=75 and bsver=76 must be exactly the 2-byte difference
 /// between a u32 and u16 read. Total parser-consumed length isn't
-/// asserted because at bsver < 83 the parser skips three Skyrim+
+/// asserted because at bsver < crate::version::bsver::SKYRIM_LE the parser skips three Skyrim+
 /// fields (time_factor + gravity_factor + rolling_friction = 12 B)
 /// that the bsver=100 base fixture supplies — the test fixture's
 /// trailing 12 B sit unconsumed and that's a separate (correct)
 /// behaviour from the body_flags width gate.
 fn skyrim_bhk_rigid_body_bytes_at_bsver(bsver: u32) -> (Vec<u8>, usize) {
     let (mut d, _mass) = minimal_skyrim_bhk_rigid_body_bytes();
-    let width = if bsver < 76 { 4 } else { 2 };
-    if bsver < 76 {
+    let width = if bsver < crate::version::bsver::RIGID_BODY_FLAGS16 { 4 } else { 2 };
+    if bsver < crate::version::bsver::RIGID_BODY_FLAGS16 {
         // Base fixture wrote u16 body_flags. Pad to u32.
         d.extend_from_slice(&0u16.to_le_bytes());
     }
@@ -277,7 +277,7 @@ fn bhk_rigid_body_body_flags_width_differs_by_2_at_threshold() {
         consumed_75.saturating_sub(consumed_76),
         2,
         "body_flags width must differ by 2 B (u32 vs u16) at the \
-         bsver < 76 threshold; pre-fix the threshold was 83 so both \
+         bsver < crate::version::bsver::RIGID_BODY_FLAGS16 threshold; pre-fix the threshold was 83 so both \
          bsvers consumed the same width and the boundary was wrong"
     );
 }

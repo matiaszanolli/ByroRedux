@@ -30,7 +30,7 @@ impl NiMaterialProperty {
         let net = NiObjectNETData::parse(stream)?;
         // NiMaterialProperty flags: since 3.0, until 10.0.1.2 (NOT present in Oblivion+).
         // `until=` is inclusive per the version.rs doctrine — field present at v10.0.1.2.
-        if stream.version() <= NifVersion(0x0A000102) {
+        if stream.version() <= NifVersion::V10_0_1_2 {
             let _flags = stream.read_u16_le()?;
         }
 
@@ -41,7 +41,7 @@ impl NiMaterialProperty {
         // `NifVariant` classification puts them in a different
         // boundary bucket than their actual `user_version_2` still
         // parse correctly. See #323 / #938.
-        let bethesda_compact = stream.bsver() >= 26;
+        let bethesda_compact = stream.bsver() >= crate::version::bsver::FLAGS_U32_THRESHOLD;
 
         let ambient = if bethesda_compact {
             NiColor {
@@ -194,8 +194,8 @@ impl NiTexturingProperty {
         // Flags: ushort until 10.0.1.2, TexturingFlags since 20.1.0.2.
         // Gap: versions in (10.0.1.2, 20.1.0.2) have NO flags field.
         // `until=` is inclusive per the version.rs doctrine — present at v10.0.1.2.
-        let flags = if stream.version() <= NifVersion(0x0A000102)
-            || stream.version() >= NifVersion(0x14010002)
+        let flags = if stream.version() <= NifVersion::V10_0_1_2
+            || stream.version() >= NifVersion::V20_1_0_2
         {
             stream.read_u16_le()?
         } else {
@@ -259,7 +259,7 @@ impl NiTexturingProperty {
         // recovery path (#395). The decal loop below is already
         // correctly version-branched and will absorb the slot
         // accounting once these reads stop poking through.
-        let is_v20_2_0_5_plus = stream.version() >= crate::version::NifVersion(0x14020005);
+        let is_v20_2_0_5_plus = stream.version() >= NifVersion::V20_2_0_5;
 
         let normal_texture = if is_v20_2_0_5_plus && texture_count > 6 {
             Self::read_tex_desc(stream)?
@@ -297,7 +297,7 @@ impl NiTexturingProperty {
         //               accidentally aligned with what was actually decal 0).
         //               Both bugs needed fixing together; either alone
         //               misaligns downstream blocks.
-        let num_decals = if stream.version() >= crate::version::NifVersion(0x14020005) {
+        let num_decals = if stream.version() >= NifVersion::V20_2_0_5 {
             texture_count.saturating_sub(8)
         } else {
             texture_count.saturating_sub(6)
@@ -333,7 +333,7 @@ impl NiTexturingProperty {
         // The version gate (>= 10.0.1.0) matches the historical
         // gate — pre-10.0.1.0 files don't carry the shader map list
         // at all.
-        if stream.version() >= crate::version::NifVersion(0x0A000100) {
+        if stream.version() >= NifVersion::V10_0_1_0 {
             let num_shader_textures = stream.read_u32_le()?;
             for _ in 0..num_shader_textures {
                 let has = stream.read_byte_bool()?;
@@ -347,7 +347,7 @@ impl NiTexturingProperty {
                     // 33 bytes short per entry and cascading into every
                     // following block. See #119 / audit NIF-302.
                     let _source_ref = stream.read_block_ref()?;
-                    if stream.version() >= crate::version::NifVersion(0x14010003) {
+                    if stream.version() >= NifVersion::V20_1_0_3 {
                         let _flags = stream.read_u16_le()?;
                     } else {
                         let _clamp = stream.read_u32_le()?;
@@ -392,7 +392,7 @@ impl NiTexturingProperty {
         }
         let source_ref = stream.read_block_ref()?;
 
-        if stream.version() >= crate::version::NifVersion(0x14010003) {
+        if stream.version() >= NifVersion::V20_1_0_3 {
             let flags = stream.read_u16_le()?;
             // nif.xml: Has Texture Transform (bool) since 10.1.0.0,
             // present in every modern file. We read the 32-byte TexDesc
@@ -421,7 +421,7 @@ impl NiTexturingProperty {
 
             // TexDesc PS2 L/K: nif.xml `until="10.4.0.1"` inclusive per the
             // version.rs doctrine — present at v <= 10.4.0.1.
-            if stream.version() <= crate::version::NifVersion(0x0A040001) {
+            if stream.version() <= NifVersion::V10_4_0_1 {
                 let _ps2_l = stream.read_u16_le()?;
                 let _ps2_k = stream.read_u16_le()?;
             }
@@ -490,7 +490,7 @@ impl NiFogProperty {
         let net = NiObjectNETData::parse(stream)?;
         // NiProperty.Flags: since 3.0, until 10.0.1.2 — not present in FO3+.
         // `until=` is inclusive per the version.rs doctrine — present at v10.0.1.2.
-        if stream.version() <= NifVersion(0x0A000102) {
+        if stream.version() <= NifVersion::V10_0_1_2 {
             let _prop_flags = stream.read_u16_le()?;
         }
         let flags = stream.read_u16_le()?;
@@ -676,7 +676,7 @@ impl NiStencilProperty {
             // first byte and drifted the rest of the record by 2 bytes.
             // No Bethesda title ships in this band; this guards pre-
             // Gamebryo compat.
-            let flags = if stream.version() <= NifVersion(0x0A000102) {
+            let flags = if stream.version() <= NifVersion::V10_0_1_2 {
                 stream.read_u16_le()?
             } else {
                 0

@@ -9,6 +9,7 @@ use super::controller::NiTimeControllerBase;
 use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
+use crate::version::NifVersion;
 use std::io;
 use std::sync::Arc;
 
@@ -215,7 +216,7 @@ pub fn parse_gravity_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock>
     let _turbulence = stream.read_f32_le()?;
     let _turbulence_scale = stream.read_f32_le()?;
     // world_aligned: since v20.0.0.4
-    if stream.version() >= crate::version::NifVersion(0x14000004) {
+    if stream.version() >= NifVersion::V20_0_0_4 {
         let _world_aligned = stream.read_byte_bool()?;
     }
     Ok(NiPSysBlock {
@@ -251,7 +252,7 @@ pub fn parse_rotation_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock
     let _base = NiPSysModifierBase::parse(stream)?;
     let _initial_speed = stream.read_f32_le()?;
     // speed_variation + initial_angle + angle_variation: since v20.0.0.2
-    if stream.version() >= crate::version::NifVersion(0x14000002) {
+    if stream.version() >= NifVersion::V20_0_0_2 {
         stream.skip(4 * 3)?; // 3 floats
     }
     // Random Rot Speed Sign — nif.xml line 4878 says `since 20.0.0.2`,
@@ -713,7 +714,7 @@ pub fn parse_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _interpolator_ref = stream.read_block_ref()?;
     let _modifier_name = stream.read_string()?;
     // NiPSysEmitterCtlr adds visibility interpolator ref (since v10.2)
-    if stream.version() >= crate::version::NifVersion(0x0A020000) {
+    if stream.version() >= NifVersion::V10_2_0_0 {
         let _vis_interpolator_ref = stream.read_block_ref()?;
     }
     Ok(NiPSysBlock {
@@ -726,7 +727,7 @@ pub fn parse_multi_target_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiP
     let _base = NiTimeControllerBase::parse(stream)?;
     let _interpolator_ref = stream.read_block_ref()?;
     let _modifier_name = stream.read_string()?;
-    if stream.version() >= crate::version::NifVersion(0x0A020000) {
+    if stream.version() >= NifVersion::V10_2_0_0 {
         let _vis_interpolator_ref = stream.read_block_ref()?;
     }
     let _max_emitters = stream.read_u16_le()?;
@@ -808,7 +809,7 @@ pub fn parse_particle_system(
         // active_material_index(u32) + dirty_flag(u8 since v20.2.0.7).
         // Present since v20.2.0.5, only on the pre-SSE branch — same
         // gate `NiTriShape::parse` uses (see tri_shape.rs:108).
-        if stream.version() >= NifVersion(0x14020005) {
+        if stream.version() >= NifVersion::V20_2_0_5 {
             let num_materials = stream.read_u32_le()?;
             // Each entry is 8 on-disk bytes (name_idx + extra_data); bound
             // the loop so a junk count can't OOM. See #388 / #407.
@@ -821,8 +822,8 @@ pub fn parse_particle_system(
             if stream.version() >= NifVersion::V20_2_0_7 {
                 let _dirty_flag = stream.read_u8()?;
             }
-        } else if stream.version() >= NifVersion(0x0A000100)
-            && stream.version() <= NifVersion(0x14010003)
+        } else if stream.version() >= NifVersion::V10_0_1_0
+            && stream.version() <= NifVersion::V20_1_0_3
         {
             // MaterialData "Has Shader" + name + impl. nif.xml gates
             // `since="10.0.1.0" until="20.1.0.3"`; both boundaries are
@@ -854,7 +855,7 @@ pub fn parse_particle_system(
         if is_bs_gte_sse {
             let _vertex_desc = stream.read_u64_le()?;
         }
-        if stream.bsver() >= 83 {
+        if stream.bsver() >= crate::version::bsver::SKYRIM_LE {
             let _far_begin = stream.read_u16_le()?;
             let _far_end = stream.read_u16_le()?;
             let _near_begin = stream.read_u16_le()?;
@@ -910,7 +911,7 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
     // BS202 stream = Bethesda file at version 20.2.0.7+ (bsver != 0). All
     // per-particle data arrays are *absent* on this path; only the bool
     // headers are written. See nif.xml `vercond="!#BS202#"` on every array.
-    let is_bs_202 = stream.version() >= NifVersion(0x14020007) && stream.bsver() > 0;
+    let is_bs_202 = stream.version() >= NifVersion::V20_2_0_7 && stream.bsver() > 0;
 
     // NiGeometryData base (shared with NiTriShapeData). For NiPSysData on
     // BS_GTE_FO3, the Vertices/Normals/Tangents/Colors/UV arrays have length
@@ -944,7 +945,7 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
     }
 
     // Has Rotations / Rotations: since 10.0.1.0, array only on !BS202.
-    if stream.version() >= NifVersion(0x0A000100) {
+    if stream.version() >= NifVersion::V10_0_1_0 {
         let has_rotations = stream.read_byte_bool()?;
         if has_rotations && !is_bs_202 {
             stream.skip(count * 16)?; // quaternion (4×f32)
@@ -952,7 +953,7 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
     }
 
     // Has Rotation Angles / Rotation Angles: since 20.0.0.4, array only on !BS202.
-    if stream.version() >= NifVersion(0x14000004) {
+    if stream.version() >= NifVersion::V20_0_0_4 {
         let has_rotation_angles = stream.read_byte_bool()?;
         if has_rotation_angles && !is_bs_202 {
             stream.skip(count * 4)?;
@@ -1009,7 +1010,7 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
         //                + Spawn Generation(2) + Code(2)                  = 28 B
         // Oblivion is 20.0.0.4 → 28-byte path.
         if !is_bs_202 {
-            let info_size: u64 = if stream.version() <= NifVersion(0x0A040001) {
+            let info_size: u64 = if stream.version() <= NifVersion::V10_4_0_1 {
                 40
             } else {
                 28
@@ -1017,14 +1018,14 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
             stream.skip(count * info_size)?;
         }
         // Has Rotation Speeds (since 20.0.0.2) — bool always read; array !BS202.
-        if stream.version() >= NifVersion(0x14000002) {
+        if stream.version() >= NifVersion::V20_0_0_2 {
             let has_rotation_speeds = stream.read_byte_bool()?;
             if has_rotation_speeds && !is_bs_202 {
                 stream.skip(count * 4)?;
             }
         }
         // Num Added Particles + Added Particles Base: !#BS202# only.
-        if !is_bs_202 && stream.version() >= NifVersion(0x14000002) {
+        if !is_bs_202 && stream.version() >= NifVersion::V20_0_0_2 {
             let _num_added = stream.read_u16_le()?;
             let _added_particles_base = stream.read_u16_le()?;
         }
@@ -1096,7 +1097,7 @@ pub fn parse_master_particle_system(stream: &mut NifStream) -> io::Result<NiPSys
     let _children = stream.read_block_ref_list()?;
     // FO4+ removes the effects list from NiNode (BSVER >= 130). Raw
     // bsver check to keep non-Bethesda Unknown variants correct — see #160.
-    if stream.bsver() < 130 {
+    if stream.bsver() < crate::version::bsver::FALLOUT4 {
         let _effects = stream.read_block_ref_list()?;
     }
     let _max_emitter_count = stream.read_u16_le()?;
@@ -1159,7 +1160,7 @@ mod tests {
         d.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count = 0
         d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = NULL
 
-        // ── NiAVObject extension (bsver > 26 ⇒ flags=u32) ──────────
+        // ── NiAVObject extension (bsver > crate::version::bsver::FLAGS_U32_THRESHOLD ⇒ flags=u32) ──────────
         d.extend_from_slice(&14u32.to_le_bytes()); // flags
         for _ in 0..3 {
             // translation
@@ -1172,7 +1173,7 @@ mod tests {
             }
         }
         d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
-                                                    // No properties list (bsver > 34).
+                                                    // No properties list (bsver > crate::version::bsver::FO3_FNV).
         d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
 
         // ── BS_GTE_SSE NiGeometry override ─────────────────────────
@@ -1182,7 +1183,7 @@ mod tests {
         }
         d.extend_from_slice(&(-1i32).to_le_bytes()); // skin_ref
 
-        // ── Shader / alpha refs (bsver > 34) ───────────────────────
+        // ── Shader / alpha refs (bsver > crate::version::bsver::FO3_FNV) ───────────────────────
         d.extend_from_slice(&(-1i32).to_le_bytes());
         d.extend_from_slice(&(-1i32).to_le_bytes());
 
@@ -1378,7 +1379,7 @@ mod tests {
     fn nigeo_base_bytes(num_vertices: u16, version: NifVersion) -> Vec<u8> {
         let mut d = Vec::new();
         // group_id since 10.1.0.114
-        if version >= NifVersion(0x0A010072) {
+        if version >= NifVersion::V10_1_0_114 {
             d.extend_from_slice(&0i32.to_le_bytes());
         }
         d.extend_from_slice(&num_vertices.to_le_bytes());
@@ -1394,7 +1395,7 @@ mod tests {
             d.extend_from_slice(&0.0f32.to_le_bytes());
         }
         // data_flags since 10.0.1.0
-        if version >= NifVersion(0x0A000100) {
+        if version >= NifVersion::V10_0_1_0 {
             d.extend_from_slice(&0u16.to_le_bytes());
         }
         d.push(0u8); // has_normals = false
@@ -1405,11 +1406,11 @@ mod tests {
         d.push(0u8); // has_vertex_colors = false
                      // (no UV sets — data_flags = 0)
                      // consistency_flags since 10.0.1.0
-        if version >= NifVersion(0x0A000100) {
+        if version >= NifVersion::V10_0_1_0 {
             d.extend_from_slice(&0u16.to_le_bytes());
         }
         // additional_data_ref since 20.0.0.4
-        if version >= NifVersion(0x14000004) {
+        if version >= NifVersion::V20_0_0_4 {
             d.extend_from_slice(&(-1i32).to_le_bytes());
         }
         d
@@ -1470,7 +1471,7 @@ mod tests {
         // per the version.rs doctrine). The Rotation Axis is present at
         // v <= 10.4.0.1; the layout shrinks to 28 B starting at v10.4.0.2.
         // This test exercises the 40-byte legacy layout.
-        let version = NifVersion(0x0A040000);
+        let version = NifVersion::V10_4_0_0;
         let header = NifHeader {
             version,
             little_endian: true,

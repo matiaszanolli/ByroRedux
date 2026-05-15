@@ -14,7 +14,7 @@ use crate::version::NifVersion;
 /// FO3+ header (NIF 20.2.0.7) — `Compressed` byte present.
 fn fo3_header() -> NifHeader {
     NifHeader {
-        version: NifVersion(0x14020007),
+        version: NifVersion::V20_2_0_7,
         little_endian: true,
         user_version: 11,
         user_version_2: 34,
@@ -126,7 +126,7 @@ fn pre_v20_2_0_7_skips_compressed_byte() {
     }
 
     let mut header = fo3_header();
-    header.version = NifVersion(0x14000005); // 20.0.0.5 (Oblivion)
+    header.version = NifVersion::V20_0_0_5; // 20.0.0.5 (Oblivion)
     header.user_version = 11;
     header.user_version_2 = 11;
 

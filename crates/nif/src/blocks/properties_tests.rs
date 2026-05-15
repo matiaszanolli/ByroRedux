@@ -330,7 +330,7 @@ fn parse_ni_texturing_property_apply_mode_at_v20_1_0_1_exactly() {
 #[test]
 fn parse_ni_texturing_property_no_apply_mode_at_v20_1_0_2() {
     let header = NifHeader {
-        version: NifVersion(0x14010002),
+        version: NifVersion::V20_1_0_2,
         little_endian: true,
         user_version: 0,
         user_version_2: 0,
@@ -366,7 +366,7 @@ fn parse_ni_texturing_property_no_apply_mode_at_v20_1_0_2() {
 #[test]
 fn parse_ni_texturing_property_with_apply_mode_below_v20_1_0_1() {
     let header = NifHeader {
-        version: NifVersion(0x14010000), // v20.1.0.0 — below the boundary
+        version: NifVersion::V20_1_0_0, // v20.1.0.0 — below the boundary
         little_endian: true,
         user_version: 0,
         user_version_2: 0,
@@ -611,7 +611,7 @@ fn parse_ni_texturing_property_transform_absent() {
 #[test]
 fn parse_ni_texturing_property_oblivion_skips_normal_parallax_slots() {
     let mut header = make_header(11, 11);
-    header.version = NifVersion(0x14000005); // v20.0.0.5 — Oblivion
+    header.version = NifVersion::V20_0_0_5; // v20.0.0.5 — Oblivion
     let mut data = Vec::new();
     // NiObjectNET on Oblivion (v20.0.0.5 < 20.1.0.1): name is a
     // length-prefixed inline string (u32 length, then bytes), not
@@ -749,7 +749,7 @@ fn num_decals_boundary_v20_2_0_5_count_9_yields_one() {
 #[test]
 fn num_decals_boundary_pre_v20_2_0_5_count_6_yields_zero() {
     let mut header = make_header(11, 11);
-    header.version = NifVersion(0x14000005); // v20.0.0.5 — Oblivion
+    header.version = NifVersion::V20_0_0_5; // v20.0.0.5 — Oblivion
     let mut data = Vec::new();
     // Oblivion NiObjectNET: inline-string name (u32 length + bytes).
     data.extend_from_slice(&0u32.to_le_bytes()); // name length = 0
@@ -780,7 +780,7 @@ fn num_decals_boundary_pre_v20_2_0_5_count_6_yields_zero() {
 #[test]
 fn num_decals_boundary_pre_v20_2_0_5_count_7_yields_one() {
     let mut header = make_header(11, 11);
-    header.version = NifVersion(0x14000005);
+    header.version = NifVersion::V20_0_0_5;
     let mut data = Vec::new();
     data.extend_from_slice(&0u32.to_le_bytes()); // name length
     data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count

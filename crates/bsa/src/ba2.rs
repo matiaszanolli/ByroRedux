@@ -71,6 +71,22 @@ const PADDING_BAADFOOD: u32 = 0xBAAD_F00D;
 const DDSD_PITCH: u32 = 0x8;
 const DDSD_LINEARSIZE: u32 = 0x80000;
 
+/// BTDX version for FO4 (original release) and FO76.
+/// 24-byte header, zlib compression only.
+const BA2_V_FO4: u32 = 1;
+/// BTDX version for Starfield GNRL+DX10 and FO4 patches.
+/// 32-byte header (base + 8 extra bytes), zlib compression.
+const BA2_V_STARFIELD_V2: u32 = 2;
+/// BTDX version for Starfield DX10 with LZ4 block compression support.
+/// 36-byte header (base + 12 extra bytes, including compression_method field).
+const BA2_V_STARFIELD_V3: u32 = 3;
+/// BTDX version for FO4 Next Gen Update texture archives.
+/// 24-byte header, zlib compression only.
+const BA2_V_FO4_NEXT_GEN_TEX: u32 = 7;
+/// BTDX version for FO4 Next Gen Update mesh archives.
+/// 24-byte header, zlib compression only.
+const BA2_V_FO4_NEXT_GEN_MESH: u32 = 8;
+
 /// Which file layout the archive uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ba2Variant {
@@ -200,13 +216,13 @@ impl Ba2Archive {
         // the v1 record-layout path. Mirrors the BSA reader's allowlist
         // discipline at `archive.rs:165-173`.
         let compression = match version {
-            1 | 7 | 8 => Ba2Compression::Zlib,
-            2 => {
+            BA2_V_FO4 | BA2_V_FO4_NEXT_GEN_TEX | BA2_V_FO4_NEXT_GEN_MESH => Ba2Compression::Zlib,
+            BA2_V_STARFIELD_V2 => {
                 let mut extra = [0u8; 8];
                 reader.read_exact(&mut extra)?;
                 Ba2Compression::Zlib
             }
-            3 => {
+            BA2_V_STARFIELD_V3 => {
                 let mut extra = [0u8; 8];
                 reader.read_exact(&mut extra)?;
                 let mut method_buf = [0u8; 4];

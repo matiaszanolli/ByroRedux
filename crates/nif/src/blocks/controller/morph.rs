@@ -62,8 +62,8 @@ impl NiGeomMorpherController {
         // ghost morph keys (audit O5-2 / #687).
         let version = stream.version();
         let bsver = stream.bsver();
-        if version >= NifVersion(0x0A020000)
-            && version <= NifVersion(0x14010003)
+        if version >= NifVersion::V10_2_0_0
+            && version <= NifVersion::V20_1_0_3
             && bsver != 0
             && bsver <= 11
         {
@@ -170,14 +170,14 @@ impl NiMorphData {
         let bsver = stream.bsver();
         let has_keys = version <= NifVersion::V10_1_0_0;
         let has_legacy_weight =
-            version >= NifVersion(0x0A010068) && version <= NifVersion(0x14010002) && bsver < 10;
+            version >= NifVersion::V10_1_0_104 && version <= NifVersion::V20_1_0_2 && bsver < 10;
 
         // Already bounded by the 65_536 sanity check above; route
         // through allocate_vec for consistency with #408 sweep.
         let mut morphs = stream.allocate_vec(num_morphs as u32)?;
         for _ in 0..num_morphs {
             // Frame name (string table indexed from 10.1.0.106).
-            let name = if version >= NifVersion(0x0A01006A) {
+            let name = if version >= NifVersion::V10_1_0_106 {
                 stream.read_string()?
             } else {
                 None

@@ -47,7 +47,7 @@ impl NiSourceTexture {
         // 10.0.1.3. Post-10.0.1.3 content with embedded textures relies
         // on the `Use External == 0` cond alone.
         let use_internal =
-            if !use_external && stream.version() <= crate::version::NifVersion(0x0A000103) {
+            if !use_external && stream.version() <= NifVersion::V10_0_1_3 {
                 stream.read_u8()? != 0
             } else {
                 true
@@ -99,7 +99,7 @@ impl NiSourceTexture {
         let is_static = stream.read_u8()? != 0;
 
         // nif.xml: Direct Render since 10.1.0.103 (0x0A010067), NOT 10.1.0.6.
-        if stream.version() >= crate::version::NifVersion(0x0A010067) {
+        if stream.version() >= NifVersion::V10_1_0_103 {
             let _direct_render = stream.read_byte_bool()?;
         }
 
@@ -170,7 +170,7 @@ impl NiPixelData {
         let pixel_format = stream.read_u32_le()?;
 
         // Version split at 10.4.0.2 — Oblivion/FO3+ use the "new" layout.
-        let old_layout = stream.version() < NifVersion(0x0A040002);
+        let old_layout = stream.version() < NifVersion::V10_4_0_2;
 
         if old_layout {
             // Pre-10.4.0.2: color masks, old bits per pixel, fast compare, tiling.
@@ -242,7 +242,7 @@ impl NiPixelData {
         let tiling = stream.read_u32_le()?;
 
         // sRGB Space — only since 20.3.0.4 (NOT Oblivion, NOT FO3).
-        if stream.version() >= NifVersion(0x14030004) {
+        if stream.version() >= NifVersion::V20_3_0_4 {
             let _srgb = stream.read_byte_bool()?;
         }
 
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn pre_oblivion_embedded_path_consumes_use_internal_byte_and_pixel_ref() {
         // v10.0.1.2 sits just below the v10.0.1.3 boundary; field present.
-        let header = make_pre_oblivion_header(NifVersion(0x0A000102));
+        let header = make_pre_oblivion_header(NifVersion::V10_0_1_2);
         let data = build_legacy_embedded_source_texture(/* use_internal = */ true, true);
         let mut stream = NifStream::new(&data, &header);
         let tex = NiSourceTexture::parse(&mut stream).unwrap();
@@ -429,7 +429,7 @@ mod tests {
     fn pre_oblivion_embedded_path_skips_pixel_ref_when_use_internal_is_zero() {
         // v10.0.1.2: inside the v10.0.1.3 `until=` boundary (inclusive)
         // so the `Use Internal` byte IS serialized.
-        let header = make_pre_oblivion_header(NifVersion(0x0A000102));
+        let header = make_pre_oblivion_header(NifVersion::V10_0_1_2);
         let data = build_legacy_embedded_source_texture(/* use_internal = */ false, false);
         let mut stream = NifStream::new(&data, &header);
         let tex = NiSourceTexture::parse(&mut stream).unwrap();
@@ -451,7 +451,7 @@ mod tests {
     /// subsequent field by 1 byte on legacy embedded textures.
     #[test]
     fn pre_oblivion_embedded_path_consumes_use_internal_at_v10_0_1_3_exactly() {
-        let header = make_pre_oblivion_header(NifVersion(0x0A000103));
+        let header = make_pre_oblivion_header(NifVersion::V10_0_1_3);
         let data = build_legacy_embedded_source_texture(/* use_internal = */ true, true);
         let mut stream = NifStream::new(&data, &header);
         let tex = NiSourceTexture::parse(&mut stream).unwrap();
@@ -480,7 +480,7 @@ mod tests {
     /// consumed, pixel ref read unconditionally on the embedded branch).
     #[test]
     fn post_10_0_1_4_embedded_path_skips_use_internal_byte() {
-        let header = make_pre_oblivion_header(NifVersion(0x0A000104));
+        let header = make_pre_oblivion_header(NifVersion::V10_0_1_4);
         let mut data = Vec::new();
         // NiObjectNET: empty name + empty extra_data + null controller.
         data.extend_from_slice(&0u32.to_le_bytes());
@@ -515,7 +515,7 @@ mod tests {
         // legacy embedded path WOULD read `use_internal` here, so a
         // misgated parser that read it regardless of `use_external`
         // would drift exactly 1 byte on this fixture.
-        let header = make_pre_oblivion_header(NifVersion(0x0A000102));
+        let header = make_pre_oblivion_header(NifVersion::V10_0_1_2);
         let mut data = Vec::new();
         // NiObjectNET: empty name + empty extra_data + null controller.
         data.extend_from_slice(&0u32.to_le_bytes()); // name length = 0
@@ -722,7 +722,7 @@ impl NiTextureEffect {
 
         // NiDynamicEffect base fields — same version gates as NiLight.
         // See crates/nif/src/blocks/light.rs for the full rationale.
-        let switch_state = if stream.version() >= NifVersion(0x0A01006A) {
+        let switch_state = if stream.version() >= NifVersion::V10_1_0_106 {
             stream.read_u8()? != 0
         } else {
             true
@@ -740,7 +740,7 @@ impl NiTextureEffect {
         let model_projection_translation = [p.x, p.y, p.z];
 
         let texture_filtering = stream.read_u32_le()?;
-        let max_anisotropy = if stream.version() >= NifVersion(0x14050004) {
+        let max_anisotropy = if stream.version() >= NifVersion::V20_5_0_4 {
             stream.read_u16_le()?
         } else {
             0
@@ -759,7 +759,7 @@ impl NiTextureEffect {
         // NiTextureEffect PS2 L/K: nif.xml `until="10.2.0.0"` inclusive
         // per the version.rs doctrine — present at v <= 10.2.0.0.
         // Oblivion (v20.0.0.5) sits well past the boundary.
-        let (ps2_l, ps2_k) = if stream.version() <= NifVersion(0x0A020000) {
+        let (ps2_l, ps2_k) = if stream.version() <= NifVersion::V10_2_0_0 {
             // No i16 reader in NifStream; sign-reinterpret the u16.
             let l = stream.read_u16_le()? as i16;
             let k = stream.read_u16_le()? as i16;
@@ -773,7 +773,7 @@ impl NiTextureEffect {
         // version.rs doctrine — present at v <= 4.1.0.12). No Bethesda
         // title ships in this band; guards pre-Gamebryo NetImmerse demo
         // / Civ IV / Dark Age of Camelot compat.
-        if stream.version() <= NifVersion(0x0401000C) {
+        if stream.version() <= NifVersion::V4_1_0_12 {
             let _unknown_short = stream.read_u16_le()?;
         }
 

@@ -68,7 +68,7 @@ use std::io;
 // module reachable from its descendants.
 
 fn read_havok_material(stream: &mut NifStream) -> io::Result<u32> {
-    if stream.version() <= NifVersion(0x0A000102) {
+    if stream.version() <= NifVersion::V10_0_1_2 {
         let _unknown_int = stream.read_u32_le()?;
     }
     stream.read_u32_le()

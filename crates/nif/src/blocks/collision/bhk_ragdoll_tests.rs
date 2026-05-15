@@ -16,7 +16,7 @@ use crate::version::NifVersion;
 /// index that's out of range.
 fn fo3_header() -> NifHeader {
     NifHeader {
-        version: NifVersion(0x14020007),
+        version: NifVersion::V20_2_0_7,
         little_endian: true,
         user_version: 11,
         user_version_2: 34,

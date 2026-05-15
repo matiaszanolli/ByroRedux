@@ -228,7 +228,7 @@ impl NiSingleInterpController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
         // NiSingleInterpController: interpolator ref (since 10.1.0.104)
-        let interpolator_ref = if stream.version() >= NifVersion(0x0A010068) {
+        let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
             stream.read_block_ref()?
         } else {
             BlockRef::NULL
@@ -520,13 +520,13 @@ impl NiFloatExtraDataController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiTimeControllerBase::parse(stream)?;
         // NiSingleInterpController.interpolator_ref (since 10.1.0.104).
-        let interpolator_ref = if stream.version() >= NifVersion(0x0A010068) {
+        let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
             stream.read_block_ref()?
         } else {
             BlockRef::NULL
         };
         // NiExtraDataController.extra_data_name (since 10.2.0.0).
-        let extra_data_name = if stream.version() >= NifVersion(0x0A020000) {
+        let extra_data_name = if stream.version() >= NifVersion::V10_2_0_0 {
             stream.read_string()?
         } else {
             None

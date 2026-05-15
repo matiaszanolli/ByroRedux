@@ -35,7 +35,7 @@ impl NiSkinInstance {
         // record by 4 bytes. Bethesda content (Oblivion 20.0.0.5+,
         // FO3+) is unaffected; this guards Civ IV / Freedom Force /
         // pre-Gamebryo NetImmerse compat.
-        let skin_partition_ref = if stream.version() >= NifVersion(0x0A010065) {
+        let skin_partition_ref = if stream.version() >= NifVersion::V10_1_0_101 {
             stream.read_block_ref()?
         } else {
             BlockRef::NULL
@@ -200,7 +200,7 @@ impl NiSkinPartition {
 
         // SSE (bsver in [100, 130)): global vertex data before partitions.
         // The variant classifier maps BSVER 101-129 to SkyrimSE; the exact
-        // `bsver == 100` check here dropped the SSE-specific data for every
+        // `bsver == crate::version::bsver::SKYRIM_SE` check here dropped the SSE-specific data for every
         // minor above 100, desynchronising the stream on all subsequent
         // partition reads. See #126 / audit NIF-206.
         let bsver = stream.bsver();
@@ -312,8 +312,8 @@ impl NiSkinPartition {
                 }
             };
 
-            // Skyrim+ trailing fields (bsver > 34).
-            if bsver > 34 {
+            // Skyrim+ trailing fields (bsver > crate::version::bsver::FO3_FNV).
+            if bsver > crate::version::bsver::FO3_FNV {
                 let _lod_level = stream.read_u8()?;
                 let _global_vb = stream.read_byte_bool()?;
             }
@@ -546,7 +546,7 @@ mod tests {
         data.push(1u8);
         // Bone indices: 3 verts × 2 = 6 bytes
         data.extend_from_slice(&[0u8, 1, 0, 1, 1, 0]);
-        // FNV bsver=34: no trailing LOD/Global fields (bsver > 34 is false)
+        // FNV bsver=34: no trailing LOD/Global fields (bsver > crate::version::bsver::FO3_FNV is false)
 
         let mut stream = NifStream::new(&data, &header);
         let part = NiSkinPartition::parse(&mut stream).unwrap();
@@ -598,7 +598,7 @@ mod tests {
         }
         // has_vertex_map=false, has_vertex_weights=false, has_faces=false, has_bone_indices=false.
         d.extend(&[0u8, 0, 0, 0]);
-        // Skyrim+ trailing (bsver > 34): lod_level(u8) + global_vb(bool).
+        // Skyrim+ trailing (bsver > crate::version::bsver::FO3_FNV): lod_level(u8) + global_vb(bool).
         d.push(0u8);
         d.push(0u8);
         // SSE per-partition: vertex_desc(u64) + triangles copy (0 bytes since num_tris=0).
@@ -607,9 +607,9 @@ mod tests {
     }
 
     /// Regression: #126 / audit NIF-206 — SSE-specific partition fields
-    /// must be consumed for bsver == 100 AND for the [101, 130) gap range
+    /// must be consumed for bsver == crate::version::bsver::SKYRIM_SE AND for the [101, 130) gap range
     /// (the variant classifier maps those to `SkyrimSE`). Previously
-    /// gated on `bsver == 100` exactly, so any minor above 100 produced
+    /// gated on `bsver == crate::version::bsver::SKYRIM_SE` exactly, so any minor above 100 produced
     /// a stream desync on the first partition.
     #[test]
     fn skin_partition_sse_100_consumes_sse_fields() {
@@ -755,7 +755,7 @@ mod tests {
     #[test]
     fn ni_skin_instance_skin_partition_present_at_10_1_0_101() {
         let header = NifHeader {
-            version: NifVersion(0x0A010065),
+            version: NifVersion::V10_1_0_101,
             little_endian: true,
             user_version: 0,
             user_version_2: 0,

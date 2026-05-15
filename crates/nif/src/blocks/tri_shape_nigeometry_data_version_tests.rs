@@ -66,7 +66,7 @@ fn nigeometry_data_bytes(
 /// absent (since 10.1.0.114).
 #[test]
 fn nigeometry_data_at_10_0_1_0_skips_keep_compress_flags() {
-    let header = header_at(NifVersion(0x0A000100)); // 10.0.1.0 — in the gap.
+    let header = header_at(NifVersion::V10_0_1_0); // 10.0.1.0 — in the gap.
     let bytes = nigeometry_data_bytes(
         /*include_group_id=*/ false, /*include_keep_compress=*/ false,
         /*include_consistency=*/ true,
@@ -107,7 +107,7 @@ fn nigeometry_data_at_10_1_0_0_reads_keep_compress_flags() {
 /// Gamebryo pre-Civ IV era).
 #[test]
 fn nigeometry_data_at_10_1_0_113_skips_group_id() {
-    let header = header_at(NifVersion(0x0A010071)); // 10.1.0.113 — one below.
+    let header = header_at(NifVersion::V10_1_0_113); // 10.1.0.113 — one below.
     let bytes = nigeometry_data_bytes(
         /*include_group_id=*/ false, /*include_keep_compress=*/ true,
         /*include_consistency=*/ true,
@@ -135,7 +135,7 @@ fn nigeometry_data_at_10_1_0_113_skips_group_id() {
 fn bs_geometry_data_flags_decodes_has_uv_bit0_only() {
     // FO3/FNV header: NIF 20.2.0.7, user_version=11, bsver=34.
     let header = NifHeader {
-        version: NifVersion(0x14020007),
+        version: NifVersion::V20_2_0_7,
         little_endian: true,
         user_version: 11,
         user_version_2: 34,
@@ -201,7 +201,7 @@ fn bs_geometry_data_flags_decodes_has_uv_bit0_only() {
 #[test]
 fn ni_geometry_data_flags_decodes_count_on_non_bethesda() {
     let header = NifHeader {
-        version: NifVersion(0x14020007),
+        version: NifVersion::V20_2_0_7,
         little_endian: true,
         user_version: 0,
         user_version_2: 0, // bsver=0 → NiGeometryDataFlags path
@@ -247,7 +247,7 @@ fn ni_geometry_data_flags_decodes_count_on_non_bethesda() {
 /// Dual-side for #326: at 10.1.0.114 the `group_id` i32 IS consumed.
 #[test]
 fn nigeometry_data_at_10_1_0_114_reads_group_id() {
-    let header = header_at(NifVersion(0x0A010072)); // 10.1.0.114 — threshold.
+    let header = header_at(NifVersion::V10_1_0_114); // 10.1.0.114 — threshold.
     let bytes = nigeometry_data_bytes(
         /*include_group_id=*/ true, /*include_keep_compress=*/ true,
         /*include_consistency=*/ true,

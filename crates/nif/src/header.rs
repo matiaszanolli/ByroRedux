@@ -74,7 +74,7 @@ impl NifHeader {
         // v20.0.0.3 (it sits in the Civ IV / Florensia non-Bethesda
         // 20.0.0.x gap window) so the in-the-wild impact is zero,
         // but the gate should still match nif.xml.
-        let little_endian = if version >= NifVersion(0x14000003) {
+        let little_endian = if version >= NifVersion::V20_0_0_3 {
             let e = read_u8(&mut cursor)?;
             e != 0
         } else {
@@ -87,7 +87,7 @@ impl NifHeader {
         // — go directly from `version` to `num_blocks` with no `user_version`
         // field, so reading one would corrupt num_blocks and blow up the
         // block parser with "failed to fill whole buffer".
-        let user_version = if version >= NifVersion(0x0A000108) {
+        let user_version = if version >= NifVersion::V10_0_1_8 {
             read_u32_le(&mut cursor)?
         } else {
             0
@@ -110,12 +110,12 @@ impl NifHeader {
         //   Max Filepath  ExportString, only if BS Version >= 103  (FO4+)
         //
         // Previously `user_version >= 3` alone (no version guard) — see #170.
-        let has_bs_stream_header = version == NifVersion(0x0A000102)
+        let has_bs_stream_header = version == NifVersion::V10_0_1_2
             || (user_version >= 3
                 && (version == NifVersion::V20_2_0_7
-                    || version == NifVersion(0x14000005) // 20.0.0.5
-                    || (version >= NifVersion::V10_1_0_0 // 10.1.0.0
-                        && version <= NifVersion(0x14000004) // 20.0.0.4
+                    || version == NifVersion::V20_0_0_5
+                    || (version >= NifVersion::V10_1_0_0
+                        && version <= NifVersion::V20_0_0_4
                         && user_version <= 11)));
         let user_version_2 = if has_bs_stream_header {
             read_u32_le(&mut cursor)?
@@ -145,7 +145,7 @@ impl NifHeader {
         let total_bytes = cursor.get_ref().len();
         let pos = cursor.position() as usize;
         let remaining = total_bytes.saturating_sub(pos);
-        let (block_types, block_type_indices) = if version >= NifVersion(0x05000001) {
+        let (block_types, block_type_indices) = if version >= NifVersion::V5_0_0_1 {
             // #408 — the type-strings array follows immediately. Each
             // entry is a length-prefixed string with a 4-byte length
             // prefix, so `count * 4` is a defensible byte-budget lower
@@ -197,7 +197,7 @@ impl NifHeader {
 
         // Block sizes — nif.xml: since 20.2.0.5. Previously gated at
         // 20.2.0.7 which missed 20.2.0.5 and 20.2.0.6 files. See #171.
-        let block_sizes = if version >= NifVersion(0x14020005) {
+        let block_sizes = if version >= NifVersion::V20_2_0_5 {
             // Per #388 — same byte-budget guard as the indices table.
             let pos = cursor.position() as usize;
             let remaining = total_bytes.saturating_sub(pos);
@@ -251,7 +251,7 @@ impl NifHeader {
 
         // Number of groups — nif.xml: since 5.0.0.6. Previously gated at
         // 10.0.1.0 which missed any 5.x–10.0.0.x file. See #171.
-        let num_groups = if version >= NifVersion(0x05000006) {
+        let num_groups = if version >= NifVersion::V5_0_0_6 {
             read_u32_le(&mut cursor)?
         } else {
             0
@@ -574,7 +574,7 @@ mod tests {
         buf.extend_from_slice(&0u32.to_le_bytes());
 
         let (header, offset) = NifHeader::parse(&buf).unwrap();
-        assert_eq!(header.version, NifVersion(0x14010000));
+        assert_eq!(header.version, NifVersion::V20_1_0_0);
         assert_eq!(header.user_version, 4);
         assert_eq!(header.user_version_2, 0);
         assert_eq!(header.num_blocks, 0);

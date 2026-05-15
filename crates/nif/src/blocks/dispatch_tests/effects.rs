@@ -33,14 +33,14 @@ fn oblivion_niavobject_bytes() -> Vec<u8> {
 /// Build an "empty NiAVObject" body sized for FO4+ (NIF 20.2.0.7,
 /// bsver 130). Same field order as Oblivion but: `name` is a string-
 /// table index (i32, -1 = absent), `flags` is u32, properties list is
-/// gone (bsver > 34), and the collision_ref is still present (NIF v
+/// gone (bsver > crate::version::bsver::FO3_FNV), and the collision_ref is still present (NIF v
 /// >= 10.0.1.0).
 fn fo4_niavobject_bytes() -> Vec<u8> {
     let mut d = Vec::new();
     d.extend_from_slice(&(-1i32).to_le_bytes()); // name idx (none)
     d.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
     d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
-    d.extend_from_slice(&0u32.to_le_bytes()); // flags (u32 since bsver > 26)
+    d.extend_from_slice(&0u32.to_le_bytes()); // flags (u32 since bsver > crate::version::bsver::FLAGS_U32_THRESHOLD)
     for _ in 0..3 {
         d.extend_from_slice(&0.0f32.to_le_bytes()); // translation
     }

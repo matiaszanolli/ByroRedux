@@ -92,7 +92,7 @@ fn fo76_header_with_name(name: &str) -> NifHeader {
 }
 
 /// Build the BSMultiBoundNode wire body (NiNode body + multi_bound_ref
-/// + culling_mode for bsver >= 83). Returns the byte vector ready to
+/// + culling_mode for bsver >= crate::version::bsver::SKYRIM_LE). Returns the byte vector ready to
 /// concatenate inside a BSDistantObjectInstancedNode payload.
 fn build_bs_multi_bound_node_body() -> Vec<u8> {
     let mut b = Vec::new();
@@ -112,7 +112,7 @@ fn build_bs_multi_bound_node_body() -> Vec<u8> {
         b.extend_from_slice(&r.to_le_bytes());
     }
     b.extend_from_slice(&1.0f32.to_le_bytes()); // scale
-                                                // Properties list is gated `bsver <= 34` (FO3/FNV/Oblivion); FO76
+                                                // Properties list is gated `bsver <= crate::version::bsver::FO3_FNV` (FO3/FNV/Oblivion); FO76
                                                 // bsver=155 skips it entirely — emitting a `0u32` here would shift
                                                 // every downstream field forward 4 bytes and the multi_bound_ref
                                                 // (-1) would be misread as a children count of 0xFFFFFFFF.
@@ -233,7 +233,7 @@ fn oblivion_node_subtypes_dispatch_with_correct_payload() {
 /// `NifVariant::Unknown` still read the correct fields. Previously
 /// the variant-based `has_properties_list` / `has_effects_list`
 /// helpers returned `false` for `Unknown`, so an Unknown variant
-/// with `bsver <= 34` (pre-Skyrim) would skip the properties list
+/// with `bsver <= crate::version::bsver::FO3_FNV` (pre-Skyrim) would skip the properties list
 /// and mis-align the stream on every NiAVObject.
 #[test]
 fn ni_node_parses_unknown_variant_with_low_bsver() {
@@ -276,7 +276,7 @@ fn ni_node_parses_unknown_variant_with_low_bsver() {
     data.extend_from_slice(&0i32.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&(-1i32).to_le_bytes());
-    // NiAVObject: flags u16 (bsver <= 26), transform, properties list,
+    // NiAVObject: flags u16 (bsver <= crate::version::bsver::FLAGS_U32_THRESHOLD), transform, properties list,
     // collision ref. Note flags is u16 here because bsver=0 < 26.
     data.extend_from_slice(&0u16.to_le_bytes()); // flags
     for _ in 0..3 {
@@ -372,7 +372,7 @@ fn bs_multi_bound_node_dispatches_with_multi_bound_ref() {
         .downcast_ref::<BsMultiBoundNode>()
         .expect("BSMultiBoundNode did not downcast to BsMultiBoundNode");
     assert_eq!(node.multi_bound_ref.index(), Some(42));
-    assert_eq!(node.culling_mode, 0); // default when bsver < 83
+    assert_eq!(node.culling_mode, 0); // default when bsver < crate::version::bsver::SKYRIM_LE
     assert_eq!(stream.position(), bytes.len() as u64);
 }
 
