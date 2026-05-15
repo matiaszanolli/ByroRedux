@@ -21,6 +21,11 @@ const FOURCC_BC5S: u32 = u32::from_le_bytes(*b"BC5S");
 const FOURCC_DX10: u32 = u32::from_le_bytes(*b"DX10");
 
 // DXGI format codes (subset we care about)
+const DXGI_FORMAT_R8G8B8A8_UNORM: u32 = 28;
+const DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: u32 = 29;
+// Single-channel uncompressed (#1074 / FO4-D2-008)
+const DXGI_FORMAT_R16_UNORM: u32 = 56; // 2 bytes/px — heightmaps, mono masks
+const DXGI_FORMAT_R8_UNORM: u32 = 61;  // 1 byte/px  — single-channel masks
 const DXGI_FORMAT_BC1_UNORM: u32 = 71;
 const DXGI_FORMAT_BC1_UNORM_SRGB: u32 = 72;
 const DXGI_FORMAT_BC2_UNORM: u32 = 74;
@@ -28,12 +33,17 @@ const DXGI_FORMAT_BC2_UNORM_SRGB: u32 = 75;
 const DXGI_FORMAT_BC3_UNORM: u32 = 77;
 const DXGI_FORMAT_BC3_UNORM_SRGB: u32 = 78;
 const DXGI_FORMAT_BC4_UNORM: u32 = 80;
+const DXGI_FORMAT_BC4_SNORM: u32 = 81; // 8 B/block — signed normal channel (#1074)
 const DXGI_FORMAT_BC5_UNORM: u32 = 83;
 const DXGI_FORMAT_BC5_SNORM: u32 = 84;
+// BGRA uncompressed (#1074 / FO4-D2-008) — FO4 normal maps ship as B8G8R8A8_UNORM
+const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87;     // 4 bytes/px
+const DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: u32 = 91; // 4 bytes/px — sRGB variant
+// BC6H HDR (#1074 / FO4-D2-008) — Starfield env maps; requires textureCompressionBC
+const DXGI_FORMAT_BC6H_UF16: u32 = 95; // 16 B/block — unsigned half-float
+const DXGI_FORMAT_BC6H_SF16: u32 = 96; // 16 B/block — signed half-float
 const DXGI_FORMAT_BC7_UNORM: u32 = 98;
 const DXGI_FORMAT_BC7_UNORM_SRGB: u32 = 99;
-const DXGI_FORMAT_R8G8B8A8_UNORM: u32 = 28;
-const DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: u32 = 29;
 
 /// Parsed DDS metadata — everything needed for Vulkan image creation.
 #[derive(Debug, Clone)]
@@ -182,6 +192,20 @@ fn map_fourcc(fourcc: u32) -> Result<(vk::Format, u32)> {
 
 fn map_dxgi_format(dxgi: u32) -> Result<(vk::Format, u32, bool)> {
     match dxgi {
+        // ── Uncompressed ─────────────────────────────────────────────────────
+        DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => {
+            Ok((vk::Format::R8G8B8A8_SRGB, 4, false))
+        }
+        // FO4 normal maps ship as B8G8R8A8_UNORM (ba2.rs:808). No special
+        // Vulkan feature required — universally supported on Vulkan 1.0 desktop.
+        DXGI_FORMAT_B8G8R8A8_UNORM => Ok((vk::Format::B8G8R8A8_UNORM, 4, false)),
+        DXGI_FORMAT_B8G8R8A8_UNORM_SRGB => Ok((vk::Format::B8G8R8A8_SRGB, 4, false)),
+        // Single-channel uncompressed — heightmaps and mono masks.
+        DXGI_FORMAT_R16_UNORM => Ok((vk::Format::R16_UNORM, 2, false)),
+        DXGI_FORMAT_R8_UNORM => Ok((vk::Format::R8_UNORM, 1, false)),
+        // ── Block-compressed ─────────────────────────────────────────────────
+        // All BC formats below require the `textureCompressionBC` Vulkan feature,
+        // already assumed by BC1-BC5/BC7 handling above. RTX 4070 Ti exposes it.
         DXGI_FORMAT_BC1_UNORM | DXGI_FORMAT_BC1_UNORM_SRGB => {
             Ok((vk::Format::BC1_RGB_SRGB_BLOCK, 8, true))
         }
@@ -192,13 +216,15 @@ fn map_dxgi_format(dxgi: u32) -> Result<(vk::Format, u32, bool)> {
             Ok((vk::Format::BC3_SRGB_BLOCK, 16, true))
         }
         DXGI_FORMAT_BC4_UNORM => Ok((vk::Format::BC4_UNORM_BLOCK, 8, true)),
+        DXGI_FORMAT_BC4_SNORM => Ok((vk::Format::BC4_SNORM_BLOCK, 8, true)),
         DXGI_FORMAT_BC5_UNORM => Ok((vk::Format::BC5_UNORM_BLOCK, 16, true)),
         DXGI_FORMAT_BC5_SNORM => Ok((vk::Format::BC5_SNORM_BLOCK, 16, true)),
+        // BC6H — HDR half-float env maps (Starfield). Signed and unsigned variants.
+        // Requires `textureCompressionBC` (same as BC1-BC7).
+        DXGI_FORMAT_BC6H_UF16 => Ok((vk::Format::BC6H_UFLOAT_BLOCK, 16, true)),
+        DXGI_FORMAT_BC6H_SF16 => Ok((vk::Format::BC6H_SFLOAT_BLOCK, 16, true)),
         DXGI_FORMAT_BC7_UNORM | DXGI_FORMAT_BC7_UNORM_SRGB => {
             Ok((vk::Format::BC7_SRGB_BLOCK, 16, true))
-        }
-        DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => {
-            Ok((vk::Format::R8G8B8A8_SRGB, 4, false))
         }
         _ => bail!("Unsupported DXGI format: {}", dxgi),
     }
@@ -238,6 +264,28 @@ mod tests {
         buf[80..84].copy_from_slice(&DDPF_FOURCC.to_le_bytes());
         // fourCC
         buf[84..88].copy_from_slice(fourcc);
+        buf
+    }
+
+    /// Build a DDS header with the DX10 extended header for a given DXGI format.
+    /// Used for the BA2 DX10 path which always emits the 148-byte extended header.
+    fn make_dx10_header(width: u32, height: u32, mip_count: u32, dxgi_format: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; HEADER_SIZE + DX10_EXT_SIZE + 256];
+        buf[0..4].copy_from_slice(b"DDS ");
+        buf[4..8].copy_from_slice(&124u32.to_le_bytes()); // DDS_HEADER.dwSize
+        buf[8..12].copy_from_slice(&0x0002_100Fu32.to_le_bytes()); // dwFlags
+        buf[12..16].copy_from_slice(&height.to_le_bytes());
+        buf[16..20].copy_from_slice(&width.to_le_bytes());
+        buf[28..32].copy_from_slice(&mip_count.to_le_bytes());
+        buf[76..80].copy_from_slice(&32u32.to_le_bytes()); // DDS_PIXELFORMAT.dwSize
+        buf[80..84].copy_from_slice(&DDPF_FOURCC.to_le_bytes());
+        buf[84..88].copy_from_slice(b"DX10"); // FourCC = "DX10"
+        // DX10 extended header at offset 128:
+        buf[128..132].copy_from_slice(&dxgi_format.to_le_bytes()); // dxgiFormat
+        buf[132..136].copy_from_slice(&3u32.to_le_bytes()); // resourceDimension = TEXTURE2D
+        buf[136..140].copy_from_slice(&0u32.to_le_bytes()); // miscFlag
+        buf[140..144].copy_from_slice(&1u32.to_le_bytes()); // arraySize
+        buf[144..148].copy_from_slice(&0u32.to_le_bytes()); // miscFlags2
         buf
     }
 
@@ -385,5 +433,85 @@ mod tests {
         //   = 65536 + 16384 + 4096 + 1024 + 256 + 64 + 16 + 4 + 1
         //   = 87381 pixels × 4 bytes = 349_524.
         assert_eq!(total, 349_524);
+    }
+
+    // ── #1074 / FO4-D2-008 — 7 previously-unsupported DXGI formats ───────────
+    //
+    // Before this fix, all 7 fell through to `bail!("Unsupported DXGI format: N")`
+    // and crashed texture upload from BA2 DX10 archives. Each test exercises the
+    // DX10 extended-header path (BA2-extracted textures always use DX10).
+
+    #[test]
+    fn dxgi_b8g8r8a8_unorm_maps_correctly() {
+        // FO4 normal maps commonly ship as B8G8R8A8_UNORM (DXGI 87).
+        let data = make_dx10_header(256, 256, 1, DXGI_FORMAT_B8G8R8A8_UNORM);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::B8G8R8A8_UNORM);
+        assert_eq!(meta.block_size, 4);
+        assert!(!meta.compressed);
+        assert_eq!(meta.data_offset, HEADER_SIZE + DX10_EXT_SIZE);
+    }
+
+    #[test]
+    fn dxgi_b8g8r8a8_unorm_srgb_maps_correctly() {
+        let data = make_dx10_header(128, 128, 1, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::B8G8R8A8_SRGB);
+        assert_eq!(meta.block_size, 4);
+        assert!(!meta.compressed);
+    }
+
+    #[test]
+    fn dxgi_r16_unorm_maps_correctly() {
+        // Heightmaps and single-channel 16-bit masks.
+        let data = make_dx10_header(512, 512, 1, DXGI_FORMAT_R16_UNORM);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::R16_UNORM);
+        assert_eq!(meta.block_size, 2);
+        assert!(!meta.compressed);
+    }
+
+    #[test]
+    fn dxgi_r8_unorm_maps_correctly() {
+        // Single-channel 8-bit masks.
+        let data = make_dx10_header(64, 64, 1, DXGI_FORMAT_R8_UNORM);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::R8_UNORM);
+        assert_eq!(meta.block_size, 1);
+        assert!(!meta.compressed);
+    }
+
+    #[test]
+    fn dxgi_bc4_snorm_maps_correctly() {
+        // Signed single-channel BC4 — used for signed normal map channels.
+        let data = make_dx10_header(256, 256, 1, DXGI_FORMAT_BC4_SNORM);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::BC4_SNORM_BLOCK);
+        assert_eq!(meta.block_size, 8);
+        assert!(meta.compressed);
+        // Verify mip_size uses BC block layout (same as BC4_UNORM).
+        assert_eq!(mip_size(256, 256, 0, meta.block_size, meta.compressed), 32768);
+    }
+
+    #[test]
+    fn dxgi_bc6h_uf16_maps_correctly() {
+        // Starfield HDR environment maps — unsigned half-float.
+        let data = make_dx10_header(128, 128, 1, DXGI_FORMAT_BC6H_UF16);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::BC6H_UFLOAT_BLOCK);
+        assert_eq!(meta.block_size, 16);
+        assert!(meta.compressed);
+        // 128×128 → 32×32 blocks × 16 bytes = 16384
+        assert_eq!(mip_size(128, 128, 0, meta.block_size, meta.compressed), 16384);
+    }
+
+    #[test]
+    fn dxgi_bc6h_sf16_maps_correctly() {
+        // Starfield HDR environment maps — signed half-float.
+        let data = make_dx10_header(128, 128, 1, DXGI_FORMAT_BC6H_SF16);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::BC6H_SFLOAT_BLOCK);
+        assert_eq!(meta.block_size, 16);
+        assert!(meta.compressed);
     }
 }
