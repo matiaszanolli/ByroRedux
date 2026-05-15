@@ -24,6 +24,56 @@ Commits hold that record.
 
 ---
 
+## Session 37 — Tech-debt sweep + ESM strings loader + NIF import fixes  (2026-05-15, 5ab6a8b8..94675f12, 25 commits)
+
+This session closed the bulk of the tech-debt batch filed in Session 36 (`#1037–#1053`),
+shipped two correctness fixes surfaced by the Skyrim and NIF audits, and repaired a
+binary-test regression introduced mid-session by the dead-code sweep.
+
+- **Magic-number sweep** (#1042) — Added 30+ `NifVersion` constants (V4\_0\_0\_0 through
+  V20\_5\_0\_4), 10 `bsver` module constants (OBLIVION, FO3\_REFRACTION, FO3\_PARALLAX,
+  FLAGS\_U32\_THRESHOLD, RIGID\_BODY\_FLAGS16, FO4\_CRC\_FLAGS, FO4\_ENV\_SCALE,
+  FO76\_SF2\_CRCS, SF\_FORM\_ID), and BSA/BA2 version constants. Swept all bare
+  `NifVersion(0x...)` hex literals out of 44 source files; replaced bsver decimal
+  comparisons with named constants throughout the block parsers.
+
+- **Code-quality fixes** (#1038, #1043, #1044, #1045, #1049, #1050, #1054, #1055,
+  #1057, #1058, #1072) — `build.rs` codegen for shader↔Rust constant drift;
+  `impl_ni_object!` macro + `read_array_of` combinator; Z-up→Y-up coord consolidation
+  in `core::math`; `CommonNamedFields`/`read_lstring_sub`/`WIRE_SIZE`; dead-code
+  batch (14 findings, `allow(dead_code)` 42→25); `scripts/test-summary.sh`; audit-skill
+  path rot; `StagingPool` threading through geometry-SSBO build; hardcoded Steam path
+  sweep (18 sites); MILESTONE markers on 4 parse-but-don't-consume stubs; WaterFlow doc.
+
+- **Renderer fixes** (#957, #958, #963, #993, #1021–#1023) — `instance_custom_index`
+  24-bit cap assert; `UPDATABLE_AS_FLAGS` shared constant for skinned BLAS/TLAS;
+  `UNIFORM_READ` in composite subpass dep; Skyrim WTHR.DALC 6-axis ambient cube consumed
+  (#993); HG `g` clamp + sun\_dir in volumetric inject; `sunAngularRadius` wired through
+  `GpuCamera.sky_tint.w`.
+
+- **ESM strings loader** (#989) — New `crates/plugin/src/esm/strings_table.rs`:
+  `StringsTable` parses `.STRINGS`/`.DLSTRINGS`/`.ILSTRINGS` binary format;
+  `StringTableSet` + `StringsTableGuard` RAII guard threads them into `parse_esm`
+  via a thread-local. `read_lstring_or_zstring` now resolves against the active table,
+  so Skyrim localized names (NPC names, book titles, cell titles) display as authored
+  strings instead of `<lstring 0xNNNNNNNN>` when the caller supplies the companion files.
+  6 tests.
+
+- **NIF import fix** (#976) — `BSLightingShaderProperty` walker branch replaced an inline
+  `.bgsm`/`.bgem` suffix check with `material_path_from_name`, matching the
+  `BSEffectShaderProperty` sibling. Starfield `.mat` JSON material refs now reach
+  `material_path` instead of being dropped. Zero inline suffix checks remain in
+  `crates/nif/src/import/`. 7 tests.
+
+- **Binary test regression** — `#1049`'s `#[cfg(test)]` gate on `SkinnedMesh::new` was
+  invisible to the binary crate's test compilation. Three test files
+  (`commands_tests.rs`, `bone_palette_overflow_tests.rs`, `skinning_e2e.rs`) updated
+  to `new_with_global(..., Mat4::IDENTITY)`.
+
+Net: 2134 → 2139 tests (+5), LOC non-test ~143 745 → ~151 085 (+7 340), source files 348 → 362 (+14), open issues 1009 → 1028 (+19).
+
+---
+
 ## Session 36 — Monolith-split sweep + post-tech-debt audit finishers  (2026-05-14, 98bbbcd..ca81c19, 35 commits)
 
 Session 35 left the audit-bundle pipeline cleared but the repo still

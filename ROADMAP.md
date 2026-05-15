@@ -12,14 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-05-14 (post-Session 35, audit-bundle close-out
-continuation: closed ~28 of the open Renderer-D / NIF-D / debug-server
-findings, shipped Skyrim WTHR end-to-end (#539 / M33-04..07), and ran
-the first dedicated `/audit-tech-debt` pass — 132 findings filed as 17
-batched issues #1037-#1053. SpeedTree Phase 1.5 placeholder finalised
-(MODB/BNAM sizing, normals + winding, Billboard ref); MESH_ID_FORMAT
-flipped to R32_UINT with MAX_INSTANCES = 0x40000. See
-[HISTORY.md](HISTORY.md)).
+**Last verified**: 2026-05-15 (post-Session 37: tech-debt sweep + ESM strings loader + NIF import fixes. See [HISTORY.md](HISTORY.md)).
 **Bench-of-record**: Prospector Saloon 133.5 FPS / 7.49 ms @ 2562
 entities — commit `220e8e1`, 2026-05-11, wall-clock bench, 300
 frames, RTX 4070 Ti @ 1280×720. Scene is glass-heavy (bottles,
@@ -631,16 +624,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-05-14, verified by `/session-close`.
+Ground-truth as of 2026-05-15, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~143 745                     |
-| Rust total lines                        | ~180 039                     |
-| Source files (non-test)                 | 348                          |
+| Rust source lines (non-test)            | ~151 085                     |
+| Rust total lines                        | ~180 741                     |
+| Source files (non-test)                 | 362                          |
 | Workspace members                       | 19                           |
-| Tests (last reported by ROADMAP)        | 2134 (Session 35 2109 + Session 36 +25 across post-tech-debt audit fixes #1024-#1036, the `KeyParse`/`bsver` finishers, and the 7-file monolith split sweep — see HISTORY Session 36). |
-| Open issue directories                  | 1009 (`.claude/issues/`)      |
+| Tests (last reported by ROADMAP)        | 2139 (Session 36 2134 + Session 37 +5: ESM strings loader #989 +6 tests, BSLightingShader .mat fix #976 +7 tests — net +5 after the SkinnedMesh::new caller update reset the binary count). |
+| Open issue directories                  | 1028 (`.claude/issues/`)      |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
