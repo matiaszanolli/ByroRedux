@@ -5,6 +5,7 @@
 //! SkinComputePipeline output buffer. Static (mesh-keyed) BLAS live in
 //! [`super::blas_static`]. See M29 Phase 2.
 
+use super::super::descriptors::memory_barrier;
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -714,21 +715,16 @@ impl AccelerationManager {
     /// not touch any field). Caller emits this between iterations of a
     /// build loop, **not** before the first iteration. See #642.
     pub fn record_scratch_serialize_barrier(&self, device: &ash::Device, cmd: vk::CommandBuffer) {
-        let barrier = vk::MemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
-            .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR);
+        // AS_BUILD_KHR → AS_BUILD_KHR (WRITE → WRITE: scratch serialise between
+        // skinned-BLAS build iterations). SAFETY: `cmd` is a recording command
+        // buffer the caller owns; the barrier touches only AS-build state.
         unsafe {
-            // SAFETY: `cmd` is a recording command buffer the caller
-            // owns; the barrier touches only AS-build state and has
-            // no aliasing concerns.
-            device.cmd_pipeline_barrier(
-                cmd,
+            memory_barrier(
+                device, cmd,
                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                vk::DependencyFlags::empty(),
-                &[barrier],
-                &[],
-                &[],
+                vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
             );
         }
     }

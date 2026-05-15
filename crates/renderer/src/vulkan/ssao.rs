@@ -7,7 +7,8 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
-    write_combined_image_sampler, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
+    memory_barrier, write_combined_image_sampler, write_storage_image, write_uniform_buffer,
+    DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use anyhow::{Context, Result};
@@ -515,20 +516,14 @@ impl SsaoPipeline {
         };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))?;
 
-        // Barrier: make the host write to the param UBO visible to the
-        // compute shader. Required by the Vulkan spec even for HOST_COHERENT
-        // memory (the execution dependency ensures ordering).
-        let ubo_barrier = vk::MemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::HOST_WRITE)
-            .dst_access_mask(vk::AccessFlags::UNIFORM_READ);
-        device.cmd_pipeline_barrier(
-            cmd,
+        // HOST → COMPUTE_SHADER (UBO flush before dispatch; required even for
+        // HOST_COHERENT memory — the execution dependency ensures ordering).
+        memory_barrier(
+            device, cmd,
             vk::PipelineStageFlags::HOST,
+            vk::AccessFlags::HOST_WRITE,
             vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[ubo_barrier],
-            &[],
-            &[],
+            vk::AccessFlags::UNIFORM_READ,
         );
 
         // Transition this frame's AO image to GENERAL for compute write.

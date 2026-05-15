@@ -119,6 +119,45 @@ pub fn color_subresource_mips(level_count: u32) -> vk::ImageSubresourceRange {
     }
 }
 
+// ── MemoryBarrier (global) helper ───────────────────────────────────
+
+/// Emit a single global-memory pipeline barrier on `cmd`.
+///
+/// Thin wrapper around `device.cmd_pipeline_barrier` for the pattern
+/// shared by all 13 renderer barrier sites: one `vk::MemoryBarrier`
+/// (no buffer / image specifics), `DependencyFlags::empty()`, and empty
+/// buffer- and image-barrier slices. Replaces the 8-line boilerplate at
+/// every call site without changing any access-mask semantics — all flag
+/// choices remain at the call site. See #1061 / TD3-103.
+///
+/// # Safety
+/// `cmd` must be a recording command buffer owned by the caller.
+/// Correct `src_stage` / `src_access` / `dst_stage` / `dst_access`
+/// values are the caller's responsibility — validation layers catch
+/// mismatches at runtime.
+#[inline]
+pub(crate) unsafe fn memory_barrier(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    src_stage: vk::PipelineStageFlags,
+    src_access: vk::AccessFlags,
+    dst_stage: vk::PipelineStageFlags,
+    dst_access: vk::AccessFlags,
+) {
+    let barrier = vk::MemoryBarrier::default()
+        .src_access_mask(src_access)
+        .dst_access_mask(dst_access);
+    device.cmd_pipeline_barrier(
+        cmd,
+        src_stage,
+        dst_stage,
+        vk::DependencyFlags::empty(),
+        std::slice::from_ref(&barrier),
+        &[],
+        &[],
+    );
+}
+
 // ── ImageMemoryBarrier helpers ───────────────────────────────────────
 
 /// UNDEFINED → GENERAL on a single-mip COLOR image with access masks

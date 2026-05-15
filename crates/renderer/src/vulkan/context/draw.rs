@@ -1,5 +1,6 @@
 //! Frame recording and submission — the per-frame hot path.
 
+use super::super::descriptors::memory_barrier;
 use super::super::material::GpuMaterial;
 use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
 use super::super::scene_buffer::{
@@ -774,17 +775,13 @@ impl VulkanContext {
                             // and the refit loop further down — both
                             // read the freshly-written output buffers
                             // as BLAS-build vertex input.
-                            let compute_to_blas = vk::MemoryBarrier::default()
-                                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
-                            self.device.cmd_pipeline_barrier(
-                                cmd,
+                            // COMPUTE_SHADER → ACCELERATION_STRUCTURE_BUILD_KHR
+                            memory_barrier(
+                                &self.device, cmd,
                                 vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::AccessFlags::SHADER_WRITE,
                                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                                vk::DependencyFlags::empty(),
-                                &[compute_to_blas],
-                                &[],
-                                &[],
+                                vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
                             );
                             // #911 — first-sight BLAS BUILDs piggyback
                             // on the per-frame `cmd` rather than each
@@ -885,17 +882,13 @@ impl VulkanContext {
                                 }
                             }
                             // BLAS refit writes → TLAS build reads.
-                            let blas_to_tlas = vk::MemoryBarrier::default()
-                                .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
-                                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
-                            self.device.cmd_pipeline_barrier(
-                                cmd,
+                            // ACCELERATION_STRUCTURE_BUILD_KHR → ACCELERATION_STRUCTURE_BUILD_KHR
+                            memory_barrier(
+                                &self.device, cmd,
                                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                                vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
                                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                                vk::DependencyFlags::empty(),
-                                &[blas_to_tlas],
-                                &[],
-                                &[],
+                                vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
                             );
                         }
                     }
@@ -989,18 +982,14 @@ impl VulkanContext {
                         // (FRAGMENT_SHADER for main render pass +
                         // COMPUTE_SHADER for caustic_splat.comp). See
                         // #415 for the COMPUTE_SHADER widening.
-                        let barrier = vk::MemoryBarrier::default()
-                            .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
-                            .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
-                        self.device.cmd_pipeline_barrier(
-                            cmd,
+                        // AS_BUILD_KHR → FRAGMENT_SHADER|COMPUTE_SHADER
+                        memory_barrier(
+                            &self.device, cmd,
                             vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                            vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
                             vk::PipelineStageFlags::FRAGMENT_SHADER
                                 | vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::DependencyFlags::empty(),
-                            &[barrier],
-                            &[],
-                            &[],
+                            vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
                         );
                         if let Some(tlas_handle) = accel.tlas_handle(frame) {
                             self.scene_buffers
@@ -1024,32 +1013,24 @@ impl VulkanContext {
                 // to the compute shader before dispatch. Required by Vulkan
                 // spec even for HOST_COHERENT memory. Instance data is NOT
                 // uploaded yet — it is built and uploaded after this dispatch.
-                let host_barrier = vk::MemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::HOST_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::UNIFORM_READ);
-                self.device.cmd_pipeline_barrier(
-                    cmd,
+                // HOST → COMPUTE_SHADER (light/camera UBO flush)
+                memory_barrier(
+                    &self.device, cmd,
                     vk::PipelineStageFlags::HOST,
+                    vk::AccessFlags::HOST_WRITE,
                     vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[host_barrier],
-                    &[],
-                    &[],
+                    vk::AccessFlags::SHADER_READ | vk::AccessFlags::UNIFORM_READ,
                 );
 
                 cc.dispatch(&self.device, cmd, frame);
                 // Barrier: compute writes → fragment reads on cluster SSBOs.
-                let barrier = vk::MemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
-                self.device.cmd_pipeline_barrier(
-                    cmd,
+                // COMPUTE_SHADER → FRAGMENT_SHADER (cluster SSBO outputs)
+                memory_barrier(
+                    &self.device, cmd,
                     vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::AccessFlags::SHADER_WRITE,
                     vk::PipelineStageFlags::FRAGMENT_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[barrier],
-                    &[],
-                    &[],
+                    vk::AccessFlags::SHADER_READ,
                 );
             }
         }
@@ -1522,25 +1503,19 @@ impl VulkanContext {
         // barriers — bundling them into this barrier is the same fold
         // and is tracked as the #961 sibling sweep. Required by Vulkan
         // spec even for HOST_COHERENT memory.
+        // HOST → VERTEX|FRAGMENT|COMPUTE|DRAW_INDIRECT (instance SSBO + UBOs)
         unsafe {
-            let instance_barrier = vk::MemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::HOST_WRITE)
-                .dst_access_mask(
-                    vk::AccessFlags::SHADER_READ
-                        | vk::AccessFlags::UNIFORM_READ
-                        | vk::AccessFlags::INDIRECT_COMMAND_READ,
-                );
-            self.device.cmd_pipeline_barrier(
-                cmd,
+            memory_barrier(
+                &self.device, cmd,
                 vk::PipelineStageFlags::HOST,
+                vk::AccessFlags::HOST_WRITE,
                 vk::PipelineStageFlags::VERTEX_SHADER
                     | vk::PipelineStageFlags::FRAGMENT_SHADER
                     | vk::PipelineStageFlags::COMPUTE_SHADER
                     | vk::PipelineStageFlags::DRAW_INDIRECT,
-                vk::DependencyFlags::empty(),
-                &[instance_barrier],
-                &[],
-                &[],
+                vk::AccessFlags::SHADER_READ
+                    | vk::AccessFlags::UNIFORM_READ
+                    | vk::AccessFlags::INDIRECT_COMMAND_READ,
             );
         }
 

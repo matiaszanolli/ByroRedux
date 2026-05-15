@@ -4,6 +4,7 @@
 //! single-mesh + batched builds, deferred destroy, eviction. Skinned
 //! (per-entity) BLAS live in [`super::blas_skinned`].
 
+use super::super::descriptors::memory_barrier;
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -682,18 +683,14 @@ impl AccelerationManager {
             }
 
             // Barrier: all builds must complete before querying compacted sizes.
-            let barrier = vk::MemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR)
-                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR);
+            // AS_BUILD_KHR → AS_BUILD_KHR (WRITE → READ for compaction query).
             unsafe {
-                device.cmd_pipeline_barrier(
-                    cmd,
+                memory_barrier(
+                    device, cmd,
                     vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                    vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
                     vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                    vk::DependencyFlags::empty(),
-                    &[barrier],
-                    &[],
-                    &[],
+                    vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
                 );
             }
 

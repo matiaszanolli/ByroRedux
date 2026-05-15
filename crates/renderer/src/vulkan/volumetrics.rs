@@ -43,7 +43,7 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
-    image_barrier_undef_to_general, write_storage_image, write_uniform_buffer,
+    image_barrier_undef_to_general, memory_barrier, write_storage_image, write_uniform_buffer,
     DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
@@ -697,17 +697,14 @@ impl VolumetricsPipeline {
         // dependency (HOST → COMPUTE) is still required by the spec
         // to make the write visible to the compute stage.
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(params))?;
-        let ubo_barrier = vk::MemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::HOST_WRITE)
-            .dst_access_mask(vk::AccessFlags::UNIFORM_READ);
-        device.cmd_pipeline_barrier(
-            cmd,
+        // HOST → COMPUTE_SHADER (UBO flush; execution dependency required even
+        // for HOST_COHERENT memory to make the write visible to the compute stage).
+        memory_barrier(
+            device, cmd,
             vk::PipelineStageFlags::HOST,
+            vk::AccessFlags::HOST_WRITE,
             vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[ubo_barrier],
-            &[],
-            &[],
+            vk::AccessFlags::UNIFORM_READ,
         );
 
         let subresource = vk::ImageSubresourceRange {

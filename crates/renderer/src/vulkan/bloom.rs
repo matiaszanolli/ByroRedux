@@ -51,8 +51,8 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
-    image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
-    write_uniform_buffer, DescriptorPoolBuilder,
+    image_barrier_undef_to_general, memory_barrier, write_combined_image_sampler,
+    write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -475,18 +475,13 @@ impl BloomPipeline {
             f.up_param_buffers[i].write_mapped(device, std::slice::from_ref(&p))?;
         }
 
-        // Visible HOST writes → COMPUTE reads.
-        let ubo_barrier = vk::MemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::HOST_WRITE)
-            .dst_access_mask(vk::AccessFlags::UNIFORM_READ);
-        device.cmd_pipeline_barrier(
-            cmd,
+        // HOST → COMPUTE_SHADER (UBO flush before dispatch).
+        memory_barrier(
+            device, cmd,
             vk::PipelineStageFlags::HOST,
+            vk::AccessFlags::HOST_WRITE,
             vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[ubo_barrier],
-            &[],
-            &[],
+            vk::AccessFlags::UNIFORM_READ,
         );
 
         let subresource = vk::ImageSubresourceRange {
