@@ -1,7 +1,7 @@
 //! ExtraData dispatch tests.
 //!
 //! Strings / integers / bone-LOD / connect-points / FO4 cloth / BSPosition /
-//! BSEyeCenter / distant-object-large-ref / collision-query proxy.
+//! BSEyeCenter / distant-object-large-ref / collision-query proxy / NiExtraData base.
 
 use super::{fnv_header_bspline, fo4_header, oblivion_header};
 use crate::blocks::*;
@@ -772,4 +772,59 @@ fn fo76_bs_collision_query_proxy_extra_data_round_trips_byte_array() {
         .expect("dispatch must produce BsCollisionQueryProxyExtraData");
     assert_eq!(proxy.data.as_slice(), payload);
     assert_eq!(stream.position() as usize, data.len());
+}
+
+/// Regression test for #1073 / FO4-D5-002 — bare `"NiExtraData"` RTTI name
+/// must dispatch through `NiExtraData::parse` and produce a name-only struct.
+///
+/// 100 FO4 facial morph NIFs (`meshes\actors\character\characterassets\morphs\*.nif`)
+/// each carry one block with RTTI string `"NiExtraData"` (the abstract base class
+/// used literally). Pre-fix these fell to NiUnknown, classifying every affected
+/// file as Truncated and pulling the FO4 clean-parse rate from 100% to 99.71%.
+///
+/// The block wire layout at FO4 (v20.2.0.7, string-table):
+///   Name: i32 string-table index (-1 = None)
+///
+/// nif.xml defines `NiExtraData` as a concrete block with only the inherited
+/// `Name` field; no additional data follows. The parser correctly reads the
+/// Name and returns a name-only struct via the default `_ =>` arm.
+#[test]
+fn fo4_ni_extra_data_bare_base_dispatches_and_parses() {
+    use crate::blocks::extra_data::NiExtraData;
+
+    // FO4 header (bsver=130, version=20.2.0.7) with string-table format.
+    // Name field = -1 (i32) → None. No additional data follows.
+    let header = fo4_header();
+    let mut data = Vec::new();
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // Name: string-table index -1 = None
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block("NiExtraData", &mut stream, Some(data.len() as u32))
+        .expect("bare 'NiExtraData' RTTI name must dispatch — pre-#1073 this fell to NiUnknown");
+
+    assert_eq!(
+        block.block_type_name(),
+        "NiExtraData",
+        "block_type_name must reflect the dispatched type name"
+    );
+    let extra = block
+        .as_any()
+        .downcast_ref::<NiExtraData>()
+        .expect("dispatch must produce NiExtraData");
+    assert!(
+        extra.name.is_none(),
+        "Name at string-table index -1 must resolve to None"
+    );
+    // Verify no phantom bytes were consumed beyond the Name field.
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "parser must consume exactly the Name field (4 bytes) with no trailing reads"
+    );
+    // All payload fields must be None (no additional data for the base class).
+    assert!(extra.string_value.is_none());
+    assert!(extra.integer_value.is_none());
+    assert!(extra.float_value.is_none());
+    assert!(extra.binary_data.is_none());
+    assert!(extra.bone_lods.is_none());
 }

@@ -504,7 +504,15 @@ pub fn parse_block(
         "NiSkinPartition" => Ok(Box::new(NiSkinPartition::parse(stream)?)),
         "BSSkin::Instance" => Ok(Box::new(BsSkinInstance::parse(stream)?)),
         "BSSkin::BoneData" => Ok(Box::new(BsSkinBoneData::parse(stream)?)),
-        "NiStringExtraData"
+        // #1073 / FO4-D5-002 — bare `"NiExtraData"` RTTI name. 100 FO4 FaceGen
+        // morph NIFs (`meshes\actors\character\characterassets\morphs\*.nif`) each
+        // carry one block whose RTTI class name is the abstract base class string
+        // literally. nif.xml defines `NiExtraData` as a concrete block with only
+        // the inherited `Name` field; pre-fix these fell to NiUnknown (block_size
+        // recovery), classifying every affected file as Truncated and pulling the
+        // FO4 clean-parse rate from 100% to 99.71%.
+        "NiExtraData"
+        | "NiStringExtraData"
         | "NiBinaryExtraData"
         | "NiIntegerExtraData"
         | "BSXFlags"
