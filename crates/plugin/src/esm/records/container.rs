@@ -4,7 +4,7 @@
 //! (`CNTO` for containers, `LVLO` for leveled lists). Each entry references
 //! a base item form by ID and gives a count or a level/chance.
 
-use super::common::{read_lstring_or_zstring, read_u32_at, read_zstring};
+use super::common::{read_u32_at, read_zstring, CommonNamedFields};
 use crate::esm::reader::SubRecord;
 
 /// One entry in a container's inventory list.
@@ -66,26 +66,23 @@ pub struct LeveledList {
 }
 
 pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
+    // Pre-populate the universal named fields (EDID / FULL / MODL / SCRI /
+    // VMAD) in one pass via the shared helper (TD3-006 / #1045).
+    let common = CommonNamedFields::from_subs(subs);
     let mut record = ContainerRecord {
         form_id,
-        editor_id: String::new(),
-        full_name: String::new(),
-        model_path: String::new(),
+        editor_id: common.editor_id,
+        full_name: common.full_name,
+        model_path: common.model_path,
         weight: 0.0,
         flags: 0,
         open_sound: 0,
         close_sound: 0,
-        script_form_id: 0,
+        script_form_id: common.script_form_id,
         contents: Vec::new(),
     };
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => record.editor_id = read_zstring(&sub.data),
-            b"FULL" => record.full_name = read_lstring_or_zstring(&sub.data),
-            b"MODL" => record.model_path = read_zstring(&sub.data),
-            b"SCRI" if sub.data.len() >= 4 => {
-                record.script_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
-            }
             // CNTO: item form ID (u32) + count (i32)
             b"CNTO" if sub.data.len() >= 8 => {
                 let item_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);

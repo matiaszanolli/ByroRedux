@@ -125,6 +125,15 @@ pub fn read_string_sub(subs: &[SubRecord], code: &[u8; 4]) -> Option<String> {
     find_sub(subs, code).map(read_zstring)
 }
 
+/// Read a sub-record as an lstring-or-zstring. Returns `None` if absent.
+///
+/// Collapses the `find_sub(subs, code).map(read_lstring_or_zstring)` two-liner
+/// that appears at every FULL / DESC / RNAM site. Use this instead of the
+/// open-coded pair. See TD3-007 / #1045.
+pub fn read_lstring_sub(subs: &[SubRecord], code: &[u8; 4]) -> Option<String> {
+    find_sub(subs, code).map(read_lstring_or_zstring)
+}
+
 pub fn read_u32_sub(subs: &[SubRecord], code: &[u8; 4]) -> Option<u32> {
     let data = find_sub(subs, code)?;
     if data.len() < 4 {
@@ -181,6 +190,48 @@ pub fn read_f32_at(data: &[u8], offset: usize) -> Option<f32> {
         data[offset + 2],
         data[offset + 3],
     ]))
+}
+
+/// Universal EDID / FULL / MODL / ICON / SCRI / VMAD fields that appear on
+/// almost every named record. Use `from_subs` to pre-populate these before
+/// the per-record type-specific sub-record walk (TD3-006 / #1045).
+///
+/// Does NOT include `value` or `weight` — those are item-specific and live
+/// on the per-record struct. `CommonItemFields` (below) embeds this struct
+/// and adds the item-only scalars.
+#[derive(Debug, Default, Clone)]
+pub struct CommonNamedFields {
+    pub editor_id: String,
+    pub full_name: String,
+    pub model_path: String,
+    pub icon_path: String,
+    /// Legacy attached-script reference (`SCRI`, Oblivion / FO3 / FNV).
+    pub script_form_id: u32,
+    /// True when the record carries a `VMAD` sub-record (Skyrim+ Papyrus VM).
+    pub has_script: bool,
+}
+
+impl CommonNamedFields {
+    /// Walk `subs` and populate the six universal named fields.
+    /// All other sub-records are silently ignored — the caller handles them
+    /// in its own loop.
+    pub fn from_subs(subs: &[SubRecord]) -> Self {
+        let mut out = Self::default();
+        for sub in subs {
+            match &sub.sub_type {
+                b"EDID" => out.editor_id = read_zstring(&sub.data),
+                b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
+                b"MODL" => out.model_path = read_zstring(&sub.data),
+                b"ICON" => out.icon_path = read_zstring(&sub.data),
+                b"SCRI" if sub.data.len() >= 4 => {
+                    out.script_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
+                }
+                b"VMAD" => out.has_script = true,
+                _ => {}
+            }
+        }
+        out
+    }
 }
 
 /// Common name+model+value+weight bundle that nearly every item record carries.

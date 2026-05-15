@@ -145,6 +145,16 @@ pub struct OblivionHdrLighting {
     pub tree_dimmer: f32,
 }
 
+impl OblivionHdrLighting {
+    /// Wire size of the full 14-field HNAM payload (Oblivion / FO3 / FNV).
+    /// 14 × f32 = 56 bytes. Used to gate the full decode path. See TD4-010.
+    pub const WIRE_SIZE: usize = 56;
+    /// Wire size of the legacy 4-field fog sub-record that predates `#537`.
+    /// 4 × f32 = 16 bytes. Retained for synthetic test fixtures only;
+    /// real game masters always ship the 56-byte form.
+    pub const WIRE_SIZE_LEGACY: usize = 16;
+}
+
 /// Skyrim+ directional-ambient lighting cube — one 32-byte entry per
 /// TOD slot from the DALC sub-record (4 entries: sunrise / day / sunset
 /// / night). Each entry is a 6-axis ambient probe + a "specular" colour +
@@ -353,7 +363,7 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRe
             // narrower gate (`== 16`) so synthetic tests that use a
             // 16-byte HNAM as a fog source keep compiling; real
             // Oblivion masters ship only the 56-byte form.
-            b"HNAM" if sub.data.len() == 56 => {
+            b"HNAM" if sub.data.len() == OblivionHdrLighting::WIRE_SIZE => {
                 // MILESTONE: M-LIGHT v2 (HDR sky / cloud relighting) — see #1057.
                 // Decoded today (all 14 f32 fields populated) but `weather_system`
                 // in `byroredux/src/systems/weather.rs` only reads the SDR
@@ -376,7 +386,7 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRe
                     tree_dimmer: read_f32_at(&sub.data, 52).unwrap_or(0.0),
                 });
             }
-            b"HNAM" if sub.data.len() == 16 => {
+            b"HNAM" if sub.data.len() == OblivionHdrLighting::WIRE_SIZE_LEGACY => {
                 // Legacy fixture path — synthetic tests pre-#537 built
                 // 16-byte HNAMs and used them as fog sources. Preserved
                 // so the M33-05 regression test (which asserts a real

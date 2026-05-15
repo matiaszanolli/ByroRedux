@@ -41,7 +41,7 @@
 //! wind tuning.
 
 use super::common::{
-    find_sub, read_f32_at, read_f32_sub, read_i16_at, read_lstring_or_zstring, read_string_sub,
+    find_sub, read_f32_at, read_f32_sub, read_i16_at, read_lstring_sub, read_string_sub,
     read_u32_sub,
 };
 use crate::esm::reader::SubRecord;
@@ -123,9 +123,7 @@ pub fn parse_tree(form_id: u32, subs: &[SubRecord]) -> TreeRecord {
     let editor_id = read_string_sub(subs, b"EDID").unwrap_or_default();
     let model_path = read_string_sub(subs, b"MODL").unwrap_or_default();
     let leaf_texture = read_string_sub(subs, b"ICON").unwrap_or_default();
-    let full_name = find_sub(subs, b"FULL")
-        .map(read_lstring_or_zstring)
-        .unwrap_or_default();
+    let full_name = read_lstring_sub(subs, b"FULL").unwrap_or_default();
     let bound_radius = read_f32_sub(subs, b"MODB").unwrap_or(0.0);
     let harvest_form = read_u32_sub(subs, b"PFIG");
 
