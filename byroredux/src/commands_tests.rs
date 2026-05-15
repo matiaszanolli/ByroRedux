@@ -34,7 +34,7 @@ fn skin_dump_renders_resolved_bone_with_world_and_palette() {
     // canonical "bone hasn't moved relative to bind" case).
     let bind_inv = Mat4::from_translation(Vec3::new(0.0, -5.0, 0.0));
     let skin_entity = world.spawn();
-    let skin = SkinnedMesh::new(Some(bone), vec![Some(bone)], vec![bind_inv]);
+    let skin = SkinnedMesh::new_with_global(Some(bone), vec![Some(bone)], vec![bind_inv], Mat4::IDENTITY);
     let lines = format_skin_dump(&world, skin_entity, &skin);
     let dump = lines.join("\n");
 
@@ -74,7 +74,7 @@ fn skin_dump_marks_unresolved_bone_slots() {
     let mut world = World::new();
     world.insert_resource(StringPool::new());
     let skin_entity = world.spawn();
-    let skin = SkinnedMesh::new(None, vec![None], vec![Mat4::IDENTITY]);
+    let skin = SkinnedMesh::new_with_global(None, vec![None], vec![Mat4::IDENTITY], Mat4::IDENTITY);
     let lines = format_skin_dump(&world, skin_entity, &skin);
     let dump = lines.join("\n");
     assert!(

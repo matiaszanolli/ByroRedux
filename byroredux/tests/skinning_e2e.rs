@@ -1039,7 +1039,7 @@ fn fnv_palette_responds_to_bone_transform() {
         .iter()
         .map(|b| Mat4::from_cols_array_2d(&b.bind_inverse))
         .collect();
-    let sm = SkinnedMesh::new(None, bones, binds);
+    let sm = SkinnedMesh::new_with_global(None, bones, binds, Mat4::IDENTITY);
 
     let baseline = sm.compute_palette(|_| Some(Mat4::IDENTITY));
     let target = 1u32;
@@ -1085,7 +1085,7 @@ fn fnv_kf_playback_drives_palette() {
         .iter()
         .map(|b| Mat4::from_cols_array_2d(&b.bind_inverse))
         .collect();
-    let sm = SkinnedMesh::new(None, bones, binds);
+    let sm = SkinnedMesh::new_with_global(None, bones, binds, Mat4::IDENTITY);
 
     let mut scratch = Vec::new();
     sm.compute_palette_into(&mut scratch, |_| Some(Mat4::IDENTITY));
@@ -1239,7 +1239,7 @@ fn sse_palette_responds_to_bone_transform() {
         .iter()
         .map(|b| Mat4::from_cols_array_2d(&b.bind_inverse))
         .collect();
-    let sm = SkinnedMesh::new(None, bones, binds);
+    let sm = SkinnedMesh::new_with_global(None, bones, binds, Mat4::IDENTITY);
 
     let baseline = sm.compute_palette(|_| Some(Mat4::IDENTITY));
     let target = 1u32;

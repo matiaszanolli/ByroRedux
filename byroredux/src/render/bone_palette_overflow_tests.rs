@@ -14,7 +14,7 @@ fn make_skinned_world(num_meshes: usize) -> World {
         world.insert(mesh_entity, GlobalTransform::IDENTITY);
         let bones = vec![Some(mesh_entity); MAX_BONES_PER_MESH];
         let binds = vec![Mat4::IDENTITY; MAX_BONES_PER_MESH];
-        world.insert(mesh_entity, SkinnedMesh::new(None, bones, binds));
+        world.insert(mesh_entity, SkinnedMesh::new_with_global(None, bones, binds, Mat4::IDENTITY));
     }
     world
 }
