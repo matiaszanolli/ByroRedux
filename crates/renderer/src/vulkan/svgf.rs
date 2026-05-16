@@ -211,19 +211,29 @@ pub struct SvgfPipeline {
 
     /// True until the first frame has written both slots — forces the
     /// shader to take the "no history" branch and reset moments.
-    frames_since_creation: u32,
-    /// Set to `true` in [`Self::dispatch`] after the compute dispatch
-    /// has been recorded into the per-frame command buffer; consumed +
-    /// cleared by [`Self::mark_frame_completed`] after the host-side
-    /// `queue_submit` returns success. Pre-#917 the
-    /// `frames_since_creation` counter advanced at dispatch-record time,
-    /// meaning a record-time-failure or submit-time-failure path would
-    /// leave the counter advanced without any corresponding GPU-side
-    /// history write — the next frame would then think a valid history
-    /// existed and skip the force-reset gate. The two-step recording-
-    /// then-completion handshake gates the counter advance on submit
-    /// success. See #917 / REN-D10-NEW-03.
-    dispatched_this_frame: bool,
+    /// Per-FIF write counter: how many times THIS slot has been written
+    /// successfully. `should_force_history_reset(self.frames_since_creation[frame])`
+    /// gates whether the slot has a valid prior frame to reproject from.
+    /// Pre-#964 this was a single `u32` shared across both slots; the
+    /// gate closed after frame 1 globally, but at `MAX_FRAMES_IN_FLIGHT
+    /// == 3` (a future bump that #918 already permits) the third slot's
+    /// first read would sample undefined history for any pixel that took
+    /// the alpha-blend / sky early-out on its first write. Per-slot
+    /// tracking pins the actual invariant ("has THIS slot been written
+    /// at least once") and works at any MFIF. (#964 / REN-D10-NEW-07)
+    frames_since_creation: [u32; MAX_FRAMES_IN_FLIGHT],
+    /// Per-FIF dispatch flag: set in [`Self::dispatch`] after the
+    /// compute dispatch has been recorded into the per-frame command
+    /// buffer; consumed + cleared by [`Self::mark_frame_completed`]
+    /// after the host-side `queue_submit` returns success. Pre-#917
+    /// the `frames_since_creation` counter advanced at dispatch-record
+    /// time, meaning a record-time-failure or submit-time-failure path
+    /// would leave the counter advanced without any corresponding
+    /// GPU-side history write — the next frame would then think a valid
+    /// history existed and skip the force-reset gate. The two-step
+    /// recording-then-completion handshake gates the counter advance on
+    /// submit success. See #917 / REN-D10-NEW-03. Per-FIF since #964.
+    dispatched_this_frame: [bool; MAX_FRAMES_IN_FLIGHT],
 }
 
 impl SvgfPipeline {
@@ -284,8 +294,8 @@ impl SvgfPipeline {
             param_buffers: Vec::new(),
             width,
             height,
-            frames_since_creation: 0,
-            dispatched_this_frame: false,
+            frames_since_creation: [0; MAX_FRAMES_IN_FLIGHT],
+            dispatched_this_frame: [false; MAX_FRAMES_IN_FLIGHT],
         };
 
         macro_rules! try_or_cleanup {
@@ -777,7 +787,7 @@ impl SvgfPipeline {
         // history-reset gate (params.z >= 0.5 in the shader) is what
         // protects against that. See `should_force_history_reset`'s
         // doc for the cross-link.
-        let first_frame = if should_force_history_reset(self.frames_since_creation) {
+        let first_frame = if should_force_history_reset(self.frames_since_creation[frame]) {
             1.0
         } else {
             0.0
@@ -920,7 +930,7 @@ impl SvgfPipeline {
         // `frames_since_creation` after `queue_submit` returns success;
         // a record-time error before this point leaves the flag false
         // and the counter doesn't advance.
-        self.dispatched_this_frame = true;
+        self.dispatched_this_frame[frame] = true;
         Ok(())
     }
 
@@ -932,9 +942,17 @@ impl SvgfPipeline {
     /// guarantees no advance on a skipped / failed dispatch. See #917 /
     /// REN-D10-NEW-03.
     pub fn mark_frame_completed(&mut self) {
-        if self.dispatched_this_frame {
-            self.frames_since_creation = self.frames_since_creation.saturating_add(1);
-            self.dispatched_this_frame = false;
+        // Per-FIF advance: iterate slots and bump whichever was just
+        // dispatched. With strict alternating frame indices only one
+        // slot has `dispatched_this_frame[i] == true` at a time, so
+        // the loop is O(MAX_FRAMES_IN_FLIGHT == 2) but correct at any
+        // MFIF count. (#964 / REN-D10-NEW-07)
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            if self.dispatched_this_frame[i] {
+                self.frames_since_creation[i] =
+                    self.frames_since_creation[i].saturating_add(1);
+                self.dispatched_this_frame[i] = false;
+            }
         }
     }
 
@@ -989,11 +1007,11 @@ impl SvgfPipeline {
 
         self.width = width;
         self.height = height;
-        self.frames_since_creation = 0; // history is meaningless after resize
+        self.frames_since_creation = [0; MAX_FRAMES_IN_FLIGHT]; // history is meaningless after resize
                                         // Drop any pending mark — pre-resize-recorded dispatch (if any)
                                         // never sees `queue_submit` because the resize path waited on
                                         // both fences. See #917.
-        self.dispatched_this_frame = false;
+        self.dispatched_this_frame = [false; MAX_FRAMES_IN_FLIGHT];
 
         let result = (|| -> Result<()> {
             for i in 0..MAX_FRAMES_IN_FLIGHT {
