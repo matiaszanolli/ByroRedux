@@ -2167,13 +2167,26 @@ impl VulkanContext {
                             } else {
                                 [0.0, 0.0, 0.0, 0.0]
                             };
+                        // Zero scattering (and therefore extinction, since
+                        // single-scattering-albedo = 1) for interior cells so
+                        // the volumetric integration is a no-op: T_cum = exp(0)
+                        // = 1, and composite `scene * vol.a + vol.rgb` becomes
+                        // `scene * 1 + 0 = scene`. Without this gate, interior
+                        // cells darkened by ~63% because extinction accumulated
+                        // over 128 slices at 0.005/m with no inscatter to
+                        // compensate (#1082 / REN-D18-002).
+                        let scatter_coef = if sky_params.is_exterior {
+                            super::super::volumetrics::DEFAULT_SCATTERING_COEF
+                        } else {
+                            0.0
+                        };
                         let vol_params = super::super::volumetrics::VolumetricsParams {
                             inv_view_proj: inv_vp_arr,
                             camera_pos: [
                                 camera_pos[0],
                                 camera_pos[1],
                                 camera_pos[2],
-                                super::super::volumetrics::DEFAULT_SCATTERING_COEF,
+                                scatter_coef,
                             ],
                             sun_dir: [
                                 sky_params.sun_direction[0],
