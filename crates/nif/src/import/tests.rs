@@ -1750,3 +1750,39 @@ fn bs_bound_lifts_to_imported_scene_in_y_up() {
     // old Z half-extent and vice versa. No sign flip.
     assert_eq!(half_extents, [4.0, 6.0, 5.0]);
 }
+
+/// #988 / SK-D5-NEW-09 — BSLODTriShape geometry was silently dropped by both
+/// import walkers because no NiLodTriShape downcast arm existed. The #838 parser
+/// fix added the type but the import path was never wired up.
+///
+/// Regression: a scene containing a BSLODTriShape (NiLodTriShape) under a root
+/// NiNode must import exactly one mesh (from lod.base, the inner NiTriShape),
+/// not zero.
+#[test]
+fn bs_lod_tri_shape_imports_geometry_not_dropped() {
+    use crate::blocks::tri_shape::NiLodTriShape;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+
+    // Root NiNode → BSLODTriShape (NiLodTriShape) → NiTriShapeData
+    let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
+    let lod = NiLodTriShape {
+        base: make_ni_tri_shape("LODTree", identity_transform(), 2, Vec::new()),
+        lod0_size: 100,
+        lod1_size: 50,
+        lod2_size: 25,
+    };
+    let data = make_tri_shape_data();
+    let scene = scene_from_blocks(vec![Box::new(root), Box::new(lod), Box::new(data)]);
+    let mut pool = StringPool::new();
+    let meshes = import_nif(&scene, &mut pool);
+
+    // Pre-#988: meshes.len() == 0 (silently dropped).
+    assert_eq!(
+        meshes.len(),
+        1,
+        "BSLODTriShape must produce 1 ImportedMesh, not be silently dropped"
+    );
+    let m = &meshes[0];
+    assert_eq!(m.name, Some(std::sync::Arc::from("LODTree")));
+    assert_eq!(m.positions.len(), 3, "triangle mesh has 3 positions");
+}

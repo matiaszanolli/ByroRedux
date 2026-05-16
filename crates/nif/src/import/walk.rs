@@ -7,7 +7,7 @@ use crate::blocks::node::{
     BsValueNode, BsWeakReferenceNode, NiBillboardNode, NiLODNode, NiNode, NiSortAdjustNode,
     NiSwitchNode,
 };
-use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
+use crate::blocks::tri_shape::{BsTriShape, NiLodTriShape, NiTriShape};
 use crate::blocks::NiObject;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiTransform};
@@ -406,6 +406,38 @@ pub(super) fn walk_node_hierarchical(
         }
     }
 
+    // BSLODTriShape (Skyrim/SSE distant-LOD geometry) — parsed as
+    // NiLodTriShape since #838. Body is an NiTriShape with three
+    // trailing LOD-size u32s. Delegate to the NiTriShape extraction
+    // path via the `.base` field; the LOD sizes are rendered at
+    // whatever detail the camera sees (future: expose lod*_size as a
+    // draw-distance hint for an LOD selector). Pre-#988 these shapes
+    // had no import arm and were silently dropped (#988 / SK-D5-NEW-09).
+    if let Some(lod) = block.as_any().downcast_ref::<NiLodTriShape>() {
+        let shape = &lod.base;
+        if shape.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(shape.av.net.name.as_deref()) {
+            return;
+        }
+        // Mirror of the NiTriShape branch above — see NIF-D4-NEW-04.
+        if let Some(parent_idx) = parent_node_idx {
+            if let Some(parent) = out.nodes.get(parent_idx) {
+                if parent.collision.is_none() {
+                    if let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
+                        out.nodes[parent_idx].collision = Some(collision);
+                    }
+                }
+            }
+        }
+        if let Some(mesh) = extract_mesh_local(scene, shape, inherited_props, pool) {
+            let mut mesh = mesh;
+            mesh.parent_node = parent_node_idx;
+            out.meshes.push(mesh);
+        }
+    }
+
     if let Some(shape) = block.as_any().downcast_ref::<BSGeometry>() {
         if shape.av.flags & 0x01 != 0 {
             return;
@@ -786,6 +818,23 @@ pub(super) fn walk_node_flat(
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
         push_shape_collision(scene, &mut collisions, shape.av.collision_ref, &world_transform);
         if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform, pool) {
+            out.push(mesh);
+        }
+    }
+
+    // BSLODTriShape (Skyrim/SSE distant-LOD) — see walk_node_local arm above.
+    // Flat-walk path identical to NiTriShape but delegating via .base (#988).
+    if let Some(lod) = block.as_any().downcast_ref::<NiLodTriShape>() {
+        let shape = &lod.base;
+        if shape.av.flags & 0x01 != 0 {
+            return;
+        }
+        if is_editor_marker(shape.av.net.name.as_deref()) {
+            return;
+        }
+        let world_transform = compose_transforms(parent_transform, &shape.av.transform);
+        push_shape_collision(scene, &mut collisions, shape.av.collision_ref, &world_transform);
+        if let Some(mesh) = extract_mesh(scene, shape, &world_transform, inherited_props, pool) {
             out.push(mesh);
         }
     }
