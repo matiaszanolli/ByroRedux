@@ -10,6 +10,7 @@ BSEffectShaderPropertyFloatController	6098	0
 BSFurnitureMarkerNode	197	0
 BSInvMarker	1597	0
 BSLODTriShape	23	0
+BSLagBoneController	163	0
 BSLightingShaderProperty	67105	0
 BSLightingShaderPropertyColorController	270	0
 BSLightingShaderPropertyFloatController	2982	0
@@ -19,6 +20,7 @@ BSMultiBoundNode	180	0
 BSMultiBoundOBB	176	0
 BSNiAlphaPropertyTestRefController	751	0
 BSOrderedNode	228	0
+BSProceduralLightningController	3	0
 BSRangeNode	41	0
 BSShaderTextureSet	57414	0
 BSTreeNode	20	0
@@ -45,7 +47,8 @@ NiFloatInterpolator	28788	0
 NiLookAtInterpolator	5	0
 NiMultiTargetTransformController	1051	0
 NiNode	109145	0
-NiPSysBlock	20905	0
+NiPSysBlock	19732	0
+NiParticleSystem	1173	0
 NiPathInterpolator	71	0
 NiPoint3Interpolator	1489	0
 NiPosData	1532	0
@@ -55,7 +58,6 @@ NiSkinInstance	11009	0
 NiSkinPartition	26708	0
 NiSwitchNode	41	0
 NiTextKeyExtraData	4097	0
-NiTimeController	166	0
 NiTransformData	14482	0
 NiTransformInterpolator	15415	0
 NiTriShape	74	0

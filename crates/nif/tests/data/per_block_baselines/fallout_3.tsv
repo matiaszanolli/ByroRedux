@@ -42,7 +42,8 @@ NiMaterialProperty	15850	0
 NiMorphData	17	0
 NiMultiTargetTransformController	438	0
 NiNode	25926	0
-NiPSysBlock	5947	0
+NiPSysBlock	5525	0
+NiParticleSystem	422	0
 NiPathInterpolator	15	0
 NiPoint3Interpolator	430	0
 NiPointLight	32	0
