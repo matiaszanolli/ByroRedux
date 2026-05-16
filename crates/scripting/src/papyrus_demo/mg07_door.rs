@@ -301,24 +301,6 @@ pub fn mg07_on_load_system(world: &World) {
 /// will encounter this exact compiler-tolerated pattern many times.
 pub fn mg07_on_activate_system(world: &World) {
     let player = world.resource::<PlayerEntity>().0;
-    let stage_state_done_10: bool;
-    {
-        let stage_state = world.resource::<QuestStageState>();
-        // Resolve MG07.getStageDone(10) once for all candidates this
-        // frame. Multiple MG07 instances would all check the same
-        // stage; one resource read is sufficient.
-        // (Practical: vanilla ships exactly one MG07LabyrinthianDoor
-        // REFR, but the translation must compose cleanly with
-        // hypothetical duplicates.)
-        // The actual quest form-ID depends on which entity we look
-        // at, so this short-circuit only works because the entire
-        // family of MG07 doors shares the same quest. Per-door
-        // resolution lives in the loop below.
-        // Pre-stash an empty placeholder; we'll re-resolve per door.
-        let _ = stage_state.get_stage(QuestFormId(0));
-        stage_state_done_10 = true; // unused; re-resolved per door
-    }
-    let _ = stage_state_done_10;
 
     // Two-phase: collect (read), then apply (write). Same shape as
     // the other R5 systems.
@@ -389,11 +371,9 @@ pub fn mg07_on_activate_system(world: &World) {
         return;
     }
 
-    // Phase 2 — apply. Mutate state, drop keystone, emit UI command,
-    // queue cross-reference activation for the tick system.
-    let mut pending_my_door_activates: Vec<EntityId> = Vec::new();
-    let _ = &mut pending_my_door_activates; // suppress unused-write warning until we use it below
-
+    // Phase 2 — apply. Mutate state, drop keystone, emit UI command.
+    // The actual cross-reference activation lands in
+    // `mg07_tick_system` post-wait, not here.
     for outcome in &outcomes {
         match outcome {
             Outcome::Success {
