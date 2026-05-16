@@ -1254,17 +1254,23 @@ impl VulkanContext {
         // is sized at `0x40000` (262144) to absorb dense Skyrim/FO4
         // city cells (~50K REFRs) with ~5× headroom. The SSBO is
         // sized to `MAX_INSTANCES`, so writes past that index would
-        // overrun the GPU-side allocation, not the mesh_id encoding.
-        // Debug-only — release builds keep the clamp behaviour in
-        // `upload_instances` rather than panicking on a busy frame.
-        debug_assert!(
-            gpu_instances.len() <= super::super::scene_buffer::MAX_INSTANCES,
-            "RP-1: visible instance count {} exceeds MAX_INSTANCES ({}). \
-             Bump MAX_INSTANCES or partition draws (the R32_UINT mesh_id \
-             encoding still has headroom up to 0x7FFFFFFF).",
-            gpu_instances.len(),
-            super::super::scene_buffer::MAX_INSTANCES,
-        );
+        // overrun the GPU-side allocation. `upload_instances` clamps to
+        // MAX_INSTANCES in release; we log and continue rather than
+        // panicking inside an active command-buffer recording (#956 /
+        // REN-D5-NEW-05 — a debug_assert! at this site leaks the
+        // in-flight cmd buffer on unwind).
+        if gpu_instances.len() > super::super::scene_buffer::MAX_INSTANCES {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                log::error!(
+                    "RP-1: visible instance count {} exceeds MAX_INSTANCES ({}). \
+                     Instances past the cap are silently dropped. \
+                     Bump MAX_INSTANCES or partition draws.",
+                    gpu_instances.len(),
+                    super::super::scene_buffer::MAX_INSTANCES,
+                );
+            });
+        }
         // Upload all instance data (scene + UI) to the SSBO in one flush.
         if !gpu_instances.is_empty() {
             self.scene_buffers
@@ -1640,15 +1646,25 @@ impl VulkanContext {
             // valid handle.
             let mut last_bound_mesh_handle: u32 = u32::MAX;
 
-            // Set initial depth bias to zero before first draw — Vulkan
-            // requires the dynamic state to be set before any draw call
-            // when the pipeline declares VK_DYNAMIC_STATE_DEPTH_BIAS.
-            self.device.cmd_set_depth_bias(cmd, 0.0, 0.0, 0.0);
-            // Same requirement for the new dynamic depth state.
+            // Pre-loop depth state initialization — only the two fields whose
+            // per-batch trackers use a real sentinel (not a "force-first" value):
+            //
+            //   depth_test/write: `last_z_test = true`, `last_z_write = true`.
+            //   When the first batch also wants true, the per-batch check skips
+            //   (`true != true` is false) — without this pre-loop set, those
+            //   dynamic states would never fire on a pure-opaque-first frame.
+            //
+            //   depth_bias and depth_compare_op are NOT pre-set here:
+            //   - depth_bias: `last_render_layer = None` ⇒ the per-batch
+            //     `set_cull_and_bias` helper fires unconditionally on the first
+            //     batch, covering the Vulkan "must be set before first draw"
+            //     requirement. The pre-set was pure waste (#955 / REN-D5-NEW-04).
+            //   - depth_compare_op: `last_z_function = u8::MAX` ⇒ the first batch
+            //     always fires `cmd_set_depth_compare_op` since u8::MAX matches no
+            //     real Gamebryo compare op (#955). Mirrors `#912` / REN-D5-NEW-03
+            //     which removed the redundant pre-set for `cmd_set_cull_mode`.
             self.device.cmd_set_depth_test_enable(cmd, true);
             self.device.cmd_set_depth_write_enable(cmd, true);
-            self.device
-                .cmd_set_depth_compare_op(cmd, vk::CompareOp::LESS_OR_EQUAL);
             // #912 / REN-D5-NEW-03 — pre-#912 this issued
             // `cmd_set_cull_mode(BACK)` unconditionally. The per-batch
             // `set_cull` helper now covers the "must be set before
