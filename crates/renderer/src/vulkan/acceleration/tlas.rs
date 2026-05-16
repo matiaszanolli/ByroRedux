@@ -486,6 +486,10 @@ impl AccelerationManager {
                 // gen-mismatch short-circuit, skipping the zip-compare
                 // since `last_blas_addresses` is empty anyway.
                 last_blas_map_gen: u64::MAX,
+                // 0 signals "no prior BUILD" — the first build_tlas call
+                // will always use BUILD mode (via needs_full_rebuild) and
+                // set this to instance_count. (#1083)
+                built_primitive_count: 0,
             });
         }
 
@@ -524,13 +528,25 @@ impl AccelerationManager {
             current_addresses_scratch
                 .push(unsafe { inst.acceleration_structure_reference.device_handle });
         }
-        let (use_update, _did_zip) = decide_use_update(
+        let (mut use_update, _did_zip) = decide_use_update(
             tlas.needs_full_rebuild,
             tlas.last_blas_map_gen,
             map_gen,
             &tlas.last_blas_addresses,
             &current_addresses_scratch,
         );
+
+        // VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03708: UPDATE must
+        // use the same primitiveCount as the source BUILD. When instance_count
+        // grows beyond what the last BUILD declared, we must force a full BUILD
+        // before the count increase becomes a VUID violation. This path fires
+        // only while `instance_count ∈ (built_primitive_count, max_instances]`
+        // — the TLAS already has capacity so no resize is needed, but the
+        // count mismatch would corrupt the BVH on NVIDIA / trip validation on
+        // debug builds. See #1083 / REN-D8-001.
+        if use_update && instance_count > tlas.built_primitive_count {
+            use_update = false;
+        }
 
         // Promote this frame's addresses to be next frame's "last", and
         // recover the previous "last" Vec into the manager-level scratch
@@ -710,18 +726,27 @@ impl AccelerationManager {
                 device_address: scratch_address,
             });
 
-        if use_update {
+        // primitiveCount for the range info:
+        // - BUILD: current instance_count; record it so UPDATE can match it.
+        // - UPDATE: must equal the BUILD count (VUID-…-pInfos-03708 — the guard
+        //   above ensures instance_count ≤ built_primitive_count here).
+        let range_primitive_count = if use_update {
             // REFIT path: reuse the existing accel as the source,
             // write the updated instance transforms into the same dst.
             build_info = build_info
                 .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
                 .src_acceleration_structure(tlas.accel);
+            // Must match the source BUILD's primitiveCount per VUID-03708.
+            tlas.built_primitive_count
         } else {
             build_info = build_info.mode(vk::BuildAccelerationStructureModeKHR::BUILD);
-        }
+            // Record so future UPDATEs know the count they must match.
+            tlas.built_primitive_count = instance_count;
+            instance_count
+        };
 
-        let range =
-            vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(instance_count);
+        let range = vk::AccelerationStructureBuildRangeInfoKHR::default()
+            .primitive_count(range_primitive_count);
 
         self.accel_loader.cmd_build_acceleration_structures(
             cmd,

@@ -87,4 +87,12 @@ pub struct TlasState {
     /// per-instance BLAS-address zip-compare that gates UPDATE
     /// eligibility otherwise. See #300.
     pub last_blas_map_gen: u64,
+    /// `primitiveCount` used in the most recent BUILD command for this
+    /// TLAS slot. The Vulkan spec (VUID-vkCmdBuildAccelerationStructuresKHR
+    /// -pInfos-03708) requires that UPDATE commands use the same
+    /// `primitiveCount` as the source BUILD. When `instance_count` grows
+    /// past this value (without triggering a resize that creates a fresh
+    /// TLAS), `build_tlas` forces a full BUILD and updates this field.
+    /// Mirrors `BlasEntry::built_vertex_count` / `built_index_count`. (#1083)
+    pub built_primitive_count: u32,
 }
