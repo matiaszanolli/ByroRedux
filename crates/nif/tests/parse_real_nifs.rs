@@ -194,6 +194,69 @@ fn parse_rate_starfield_all_meshes() {
     }
 }
 
+/// #1075 / FO4-D5-005 — Full FO4 mesh corpus across both vanilla
+/// archives (`Fallout4 - Meshes.ba2` + `Fallout4 - MeshesExtra.ba2`).
+/// The headline `parse_rate_fallout_4` test only opens the first; the
+/// `MeshesExtra` archive carries DLC mesh overrides, settlement
+/// construction pieces, weapon mods, and power-armor variants whose
+/// block-type coverage gaps are invisible to the existing test.
+/// Mirrors the Starfield multi-archive pattern (#754 / #759).
+///
+/// Per-archive minimums (clean %) — initial thresholds match the
+/// headline FO4 test; tighten after a first measurement.
+#[test]
+#[ignore]
+fn parse_rate_fo4_all_meshes() {
+    struct ArchiveSpec {
+        name: &'static str,
+        min_clean: f64,
+    }
+    let archives: &[ArchiveSpec] = &[
+        ArchiveSpec {
+            name: "Fallout4 - Meshes.ba2",
+            min_clean: 0.960, // Matches the headline test floor (post-#811)
+        },
+        ArchiveSpec {
+            name: "Fallout4 - MeshesExtra.ba2",
+            min_clean: 0.960, // Same floor — initial baseline pending first sweep
+        },
+    ];
+
+    let Some(_data_dir) = common::game_data_dir(Game::Fallout4) else {
+        return; // skip cleanly when FO4 is not installed
+    };
+
+    for spec in archives {
+        let Some(archive) = open_ba2_by_name(Game::Fallout4, spec.name) else {
+            eprintln!("[Fallout 4] skipping {}: not found", spec.name);
+            continue;
+        };
+        let stats = parse_all_nifs_in_archive(&archive, None);
+        stats.print_summary(&format!("Fallout 4/{}", spec.name));
+
+        assert!(
+            stats.total > 0,
+            "[Fallout 4/{}] expected at least one NIF",
+            spec.name
+        );
+        assert!(
+            stats.recoverable_rate() >= MIN_RECOVERABLE_RATE,
+            "[Fallout 4/{}] recoverable rate {:.2}% below 100% threshold ({} hard failures)",
+            spec.name,
+            stats.recoverable_rate() * 100.0,
+            stats.failures.len()
+        );
+        assert!(
+            stats.success_rate() >= spec.min_clean,
+            "[Fallout 4/{}] clean rate {:.2}% below {:.1}% minimum ({} truncated)",
+            spec.name,
+            stats.success_rate() * 100.0,
+            spec.min_clean * 100.0,
+            stats.truncated.len()
+        );
+    }
+}
+
 /// Smoke subset — runs the first 50 NIFs from each available game in one
 /// test so `cargo test -- --ignored` gives a fast signal without waiting
 /// for the full per-game sweep. Useful during parser refactors.

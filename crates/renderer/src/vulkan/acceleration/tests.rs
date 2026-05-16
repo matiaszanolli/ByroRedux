@@ -497,6 +497,52 @@ fn decide_empty_current_forces_build() {
     assert!(!did_zip);
 }
 
+/// #1096 / REN-D8-002 — pin the skip→add round-trip for
+/// `last_blas_addresses` decay. A draw command can be skipped on frame N
+/// because its BLAS is still under construction (`tlas_handle()` returned
+/// None); the next frame the BLAS is built and the draw is re-emitted.
+/// The `decide_use_update` zip-compare must catch this address-set
+/// change and force a BUILD rather than a stale-source UPDATE.
+///
+/// Scenario:
+///   Frame N:   `current = [a, _, c]` (b skipped — missing BLAS), but the
+///              caller's `build_instance_map` filters out the skipped
+///              draw so the *actual* address slice fed to `decide` is
+///              `[a, c]`. `last_blas_addresses` from the previous BUILD
+///              had `[a, b, c]`.
+///   Frame N+1: BLAS for `b` finishes; `current = [a, b, c]`. The
+///              `last_blas_addresses` after frame N's BUILD is now
+///              `[a, c]`. The address-set differs → must BUILD.
+#[test]
+fn decide_use_update_skip_then_add_round_trip_forces_build() {
+    // Frame N: post-skip state, address sequence has shrunk by one.
+    let cached_after_skip = vec![1u64, 3]; // pre-frame-N had [1,2,3]; b=2 was skipped
+    let current_full = vec![1u64, 2, 3]; // frame N+1: BLAS for b is back
+
+    // Same generation across both frames (no BLAS-map mutation), no
+    // forced full rebuild — the address-zip is the only signal.
+    let (use_update, did_zip) =
+        decide_use_update(false, 7, 7, &cached_after_skip, &current_full);
+    assert!(
+        !use_update,
+        "skip→add transition (address-set change) must force BUILD, \
+         not UPDATE the stale source"
+    );
+    assert!(did_zip, "address-mismatch path must run the zip-compare");
+
+    // Reverse direction: an entry was newly missing this frame (BLAS
+    // evicted). Same expectation — address-set change → BUILD.
+    let cached_full = vec![1u64, 2, 3];
+    let current_after_evict = vec![1u64, 3];
+    let (use_update, _) =
+        decide_use_update(false, 7, 7, &cached_full, &current_after_evict);
+    assert!(
+        !use_update,
+        "BLAS eviction (entry disappearing from address sequence) \
+         must force BUILD"
+    );
+}
+
 // ── build_instance_map (#419) ──────────────────────────────────
 //
 // The shared `draw_idx → ssbo_idx` mapping is the single source of

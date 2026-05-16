@@ -7,14 +7,24 @@ use gpu_allocator::vulkan as vk_alloc;
 use gpu_allocator::MemoryLocation;
 
 /// Query the physical device for a supported depth format.
+///
+/// #948 / REN-D4-NEW-02 — restricted to pure-depth formats. The packed
+/// `D32_SFLOAT_S8_UINT` / `D24_UNORM_S8_UINT` candidates were removed
+/// because the depth image view is created with `aspect_mask: DEPTH`
+/// only, while the render pass uses the combined-layout
+/// `DEPTH_STENCIL_READ_ONLY_OPTIMAL` final_layout. On a device that
+/// falls back to packed depth-stencil, the stencil aspect would never
+/// transition correctly. Bethesda content doesn't author stencil-tested
+/// decals so dropping packed-format support costs nothing. If a future
+/// renderer surface needs stencil, the packed format must come back
+/// with separate stencil-layout transitions (VK_KHR_separate_depth_
+/// stencil_layouts, Vulkan 1.2+).
 pub(super) fn find_depth_format(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
 ) -> Result<vk::Format> {
     let candidates = [
         vk::Format::D32_SFLOAT,
-        vk::Format::D32_SFLOAT_S8_UINT,
-        vk::Format::D24_UNORM_S8_UINT,
         vk::Format::D16_UNORM,
     ];
 
