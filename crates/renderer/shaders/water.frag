@@ -218,14 +218,14 @@ vec3 traceWaterRay(vec3 origin, vec3 direction, float maxDist, vec3 missFallback
     // material table / vertex SSBO / index SSBO bindings needed,
     // which would otherwise double the descriptor footprint.
     //
-    // TODO(M38-Phase2 / #1070): Returns a per-WATR constant — the water
-    // pipeline does not bind MaterialBuffer / GlobalVertexBuffer /
-    // GlobalIndexBuffer. To fetch the real hit albedo, extend
-    // WaterPipeline's descriptor set with those three SSBOs and call
-    // rayQueryGetIntersectionInstanceCustomIndexEXT to index into them.
-    // See also: caustic_splat.comp uses instances[instIdx].avgAlbedoR/G/B
-    // as a per-instance proxy that could approximate this without a full
-    // SSBO plumb.
+    // Deferred work (tracked under closed #1070 — M38 Phase 2 / #1110):
+    // Returns a per-WATR constant — the water pipeline does not bind
+    // MaterialBuffer / GlobalVertexBuffer / GlobalIndexBuffer. To fetch
+    // the real hit albedo, extend WaterPipeline's descriptor set with
+    // those three SSBOs and call rayQueryGetIntersectionInstanceCustom
+    // IndexEXT to index into them. See also: caustic_splat.comp uses
+    // instances[instIdx].avgAlbedoR/G/B as a per-instance proxy that
+    // could approximate this without a full SSBO plumb.
     //
     // The per-WATR `tint_reflect.rgb` (sourced from WATR DATA
     // reflection_color, #1069 / F-WAT-09) currently provides water-body-

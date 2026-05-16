@@ -68,11 +68,12 @@ layout(set = 0, binding = 4) uniform CameraUBO {
 // — deferred follow-up). Other per-material fields live on the
 // `MaterialBuffer` SSBO indexed by `materialId`.
 //
-// TODO(#1098 / REN-D13-001): migrate `avgAlbedoR/G/B` to GpuMaterial
-// and read via `materials[inst.materialId]`. Saves 16 B per instance
-// (avgAlbedo + _padAlbedo at offsets 96..112). Requires adding the
-// MaterialBuffer binding to the caustic compute pipeline's descriptor
-// set + updating the 5 GpuInstance struct mirrors in lockstep (see
+// Deferred work (tracked under closed #1098 / REN-D13-001, #1111):
+// migrate `avgAlbedoR/G/B` to GpuMaterial and read via
+// `materials[inst.materialId]`. Saves 16 B per instance (avgAlbedo +
+// _padAlbedo at offsets 96..112). Requires adding the MaterialBuffer
+// binding to the caustic compute pipeline's descriptor set + updating
+// the 5 GpuInstance struct mirrors in lockstep (see
 // `feedback_shader_struct_sync.md`).
 struct GpuInstance {
     mat4 model;
