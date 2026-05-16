@@ -135,6 +135,8 @@ fn is_havok_constraint_stub(type_name: &str) -> bool {
             | "bhkStiffSpringConstraint"
             | "bhkMalleableConstraint"
             | "bhkGenericConstraint"
+            // #979 / NIF-D5-NEW-03
+            | "bhkBallSocketConstraintChain"
     )
 }
 

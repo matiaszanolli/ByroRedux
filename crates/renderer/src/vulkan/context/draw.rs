@@ -567,6 +567,16 @@ impl VulkanContext {
         //     Final AS_BUILD_WRITE → AS_BUILD_INPUT_READ barrier hands
         //     fresh BLAS to TLAS below.
         //
+        // #661 / SY-4: the barriers below use the sync1 access flag
+        // `ACCELERATION_STRUCTURE_READ_KHR` (the only AS-read flag the
+        // sync1 API surface exposes). sync2 / `cmd_pipeline_barrier2`
+        // would use the more specific
+        // `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR`; on every
+        // shipping driver today the two are aliased so the sync1 form
+        // is equivalent. When the renderer migrates to sync2 (#bench-
+        // gate TBD), the dst_access on every COMPUTE→AS_BUILD barrier
+        // below should switch to the more specific flag.
+        //
         // Skips entirely when `skin_compute` / `accel_manager` are None
         // (no RT) or no draws are skinned.
         let skin_t0 = Instant::now();
@@ -1931,10 +1941,13 @@ impl VulkanContext {
             // geometry preceding the water, depth-write would be ON
             // and water would corrupt the depth buffer.
             //
-            // Cull mode: water pipeline declares it STATIC (NONE), so
-            // no `cmd_set_cull_mode` is needed when binding it. The
-            // subsequent UI pipeline also has cull static, so the
-            // mismatch doesn't leak to it.
+            // Cull mode: water pipeline declares it DYNAMIC (#1071 /
+            // F-WAT-11) — the caller is now required to emit
+            // `cmd_set_cull_mode(NONE)` before the draw. Done explicitly
+            // below regardless of the per-batch coalescing helper's
+            // `last_cull_mode` state because water is rendered through
+            // a separate, water-specific dispatch loop that doesn't
+            // route through the main per-batch helper.
             if !water_commands.is_empty() {
                 // #1026 / F-WAT-05 — pin the no-resort contract right
                 // before consuming `wc.instance_index`. The app's
@@ -1958,6 +1971,10 @@ impl VulkanContext {
                     self.device.cmd_set_depth_write_enable(cmd, false);
                     self.device
                         .cmd_set_depth_compare_op(cmd, vk::CompareOp::LESS_OR_EQUAL);
+                    // #1071 / F-WAT-11 — water pipeline declares CULL_MODE dynamic.
+                    // Emit the runtime override here so the draw uses NONE (water
+                    // surfaces are visible from above and below the camera plane).
+                    self.device.cmd_set_cull_mode(cmd, vk::CullModeFlags::NONE);
                     for wc in water_commands {
                         if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
                             self.device.cmd_bind_vertex_buffers(

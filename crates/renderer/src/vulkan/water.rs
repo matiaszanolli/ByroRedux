@@ -325,12 +325,15 @@ fn build_pipeline(
     // boats see the surface from above). Front/back are both
     // valid view sides for a water plane.
     //
-    // Static cull state is OK here because every other pipeline in
-    // the main render pass declares CULL_MODE dynamic (#930). When
-    // a triangle / blend pipeline binds after a water draw, it
-    // re-emits its own dynamic cull immediately, and when this
-    // pipeline binds it sets the cull mode dynamically (see
-    // `record_draw`'s caller contract).
+    // #1071 / F-WAT-11 — declare CULL_MODE dynamic to match every other
+    // pipeline in the main render pass (#930). The `cull_mode` value
+    // here is a no-op at runtime because the dynamic-state override
+    // takes precedence; we keep `NONE` as the "intended baseline" for
+    // pipeline introspection / debug-layer reads. The caller in
+    // `draw_frame` is now required to emit `cmd_set_cull_mode(NONE)`
+    // before the water draw (mirrors the triangle/blend pipelines'
+    // contract — the per-batch coalescing helper handles this when
+    // `last_cull_mode != Some(NONE)`).
     let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
         .rasterizer_discard_enable(false)
@@ -386,6 +389,9 @@ fn build_pipeline(
         vk::DynamicState::DEPTH_TEST_ENABLE,
         vk::DynamicState::DEPTH_WRITE_ENABLE,
         vk::DynamicState::DEPTH_COMPARE_OP,
+        // #1071 / F-WAT-11 — CULL_MODE dynamic; caller emits
+        // cmd_set_cull_mode(NONE) before the water draw.
+        vk::DynamicState::CULL_MODE,
     ];
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);

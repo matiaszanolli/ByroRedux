@@ -218,8 +218,15 @@ impl TextureRegistry {
         // UPDATE_AFTER_BIND allows writing new texture descriptors to a set
         // while a prior frame's command buffer still references it — safe
         // because only previously-unbound array indices are written.
+        // #954 / REN-D3-NEW-01: VARIABLE_DESCRIPTOR_COUNT unlocks
+        // allocating below `max_textures` if a future low-RAM startup
+        // path wants a smaller bindless array. No behaviour change today
+        // (the allocate-info matches the layout count); this is a
+        // defence-in-depth addition that costs zero perf and unlocks
+        // the variant for the future.
         let binding_flags = [vk::DescriptorBindingFlags::PARTIALLY_BOUND
-            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND];
+            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+            | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT];
         let mut binding_flags_info =
             vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
 

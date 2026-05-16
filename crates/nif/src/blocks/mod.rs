@@ -1066,6 +1066,15 @@ pub fn parse_block(
         "bhkMalleableConstraint" => {
             Ok(Box::new(BhkConstraint::parse(stream, "bhkMalleableConstraint")?))
         }
+        // #979 / NIF-D5-NEW-03 — multi-segment ball-socket joint chain
+        // (Havok spine / neck / tail ragdolls). Every Oblivion+ humanoid
+        // NPC references this; the missing dispatch arm pre-#979 either
+        // cascaded the rest of the NIF on Oblivion (no block_sizes) or
+        // silently dropped the constraint on FO3+ via block_size recovery
+        // — visible as detached-head ragdolls on death.
+        "bhkBallSocketConstraintChain" => {
+            Ok(Box::new(BhkConstraint::parse(stream, "bhkBallSocketConstraintChain")?))
+        }
         // Havok sphere-cluster collision (#394 / OBL-D5-H2). Oblivion
         // creature ragdolls ship these as compact bounding-volume
         // approximations. Without a parser the block_sizes-less

@@ -458,11 +458,20 @@ pub(crate) struct MaterialProvider {
     bgsm_cache: TemplateCache,
     /// BGEM has no template inheritance (the format carries no
     /// `root_material_path`), so we cache parsed files directly by path.
+    /// #951 / SAFE-26: bounded at `MAX_BGEM_CACHE_ENTRIES`. On overflow
+    /// the cache is cleared and a one-shot warn fires — working-set
+    /// rebuild is bounded by per-frame BGEM ref count (~100s typically).
     bgem_cache: HashMap<String, Arc<BgemFile>>,
     /// Paths we've already warned about so a broken file doesn't spam
-    /// the log on every cell load.
+    /// the log on every cell load. Bounded by `MAX_FAILED_PATHS`.
     failed_paths: HashSet<String>,
 }
+
+/// #951 / SAFE-26 — bounded-cache caps for `MaterialProvider`. Sized to
+/// comfortably hold the unique BGEM/BGSM-ref count of any single vanilla
+/// cell (~100s) plus a few cells of streaming residency.
+const MAX_BGEM_CACHE_ENTRIES: usize = 1024;
+const MAX_FAILED_PATHS: usize = 1024;
 
 impl MaterialProvider {
     pub(crate) fn new() -> Self {
@@ -513,6 +522,10 @@ impl MaterialProvider {
         match self.bgsm_cache.resolve(&mut reader, &key) {
             Ok(r) => Some(r),
             Err(e) => {
+                // #951 / SAFE-26 — bound failed_paths here too.
+                if self.failed_paths.len() >= MAX_FAILED_PATHS {
+                    self.failed_paths.clear();
+                }
                 if self.failed_paths.insert(key) {
                     log::warn!("BGSM resolve failed for '{}': {}", path, e);
                 }
@@ -539,10 +552,33 @@ impl MaterialProvider {
         match byroredux_bgsm::parse_bgem(&bytes) {
             Ok(parsed) => {
                 let arc = Arc::new(parsed);
+                // #951 / SAFE-26 — flush the cache on cap to bound
+                // long-streaming-session memory growth. Working set
+                // (typically 100s of unique BGEMs per cell) rebuilds
+                // on next access via parse_bgem.
+                if self.bgem_cache.len() >= MAX_BGEM_CACHE_ENTRIES {
+                    static ONCE: std::sync::Once = std::sync::Once::new();
+                    ONCE.call_once(|| {
+                        log::warn!(
+                            "MaterialProvider.bgem_cache hit cap ({} entries); \
+                             clearing — high-churn streaming session detected. \
+                             Set MAX_BGEM_CACHE_ENTRIES higher if this fires \
+                             frequently. (#951 / SAFE-26)",
+                            MAX_BGEM_CACHE_ENTRIES,
+                        );
+                    });
+                    self.bgem_cache.clear();
+                }
                 self.bgem_cache.insert(key, Arc::clone(&arc));
                 Some(arc)
             }
             Err(e) => {
+                // Bound failed_paths the same way — broken-content
+                // accumulates more slowly than working BGEM count, but
+                // capping both prevents the unbounded-growth class.
+                if self.failed_paths.len() >= MAX_FAILED_PATHS {
+                    self.failed_paths.clear();
+                }
                 if self.failed_paths.insert(key) {
                     log::warn!("BGEM parse failed for '{}': {}", path, e);
                 }
