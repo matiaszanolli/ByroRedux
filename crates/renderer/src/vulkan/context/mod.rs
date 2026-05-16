@@ -926,8 +926,10 @@ pub struct VulkanContext {
     /// after TAA, produces a multi-scale blurred bright-content
     /// texture that composite adds back to `combined` before the
     /// ACES tone-map. `None` when the down/up image-pyramid
-    /// allocation fails; composite's bloom binding falls back to a
-    /// black dummy so the additive contribution becomes a no-op.
+    /// allocation fails; engine initialization fails in that case
+    /// because composite requires the bloom output view for binding 7
+    /// (see construction guard at `VulkanContext::new`). Unlike other
+    /// optional pipelines (water, ssao), bloom cannot be soft-skipped.
     pub bloom: Option<BloomPipeline>,
     /// Water surface pipeline — renders `WaterPlane` entities as
     /// transparent draws inside the main render pass (subpass 0)
@@ -1571,10 +1573,16 @@ impl VulkanContext {
         // mip pyramids — does NOT need any input views at this stage
         // because the scene HDR view is rebound per-frame in
         // `dispatch()`. Constructed before composite so we can pass
-        // its output views into composite's binding 7. Soft-fail
-        // skipped: composite needs SOME view for binding 7, and the
-        // smaller image-view allocations are universally supported,
-        // so if this fails we fall through hard like volumetrics.
+        // its output views into composite's binding 7.
+        //
+        // No soft-fail path: composite unconditionally samples binding 7
+        // (`bloomTex`) and there is no specialisation-constant gate for
+        // the bloom-absent case. A black-dummy image would require a
+        // one-time command-buffer submit here; for now we treat bloom
+        // allocation failure as a hard init error (image-pyramid
+        // allocations are universally supported on all Vulkan 1.1+ GPUs).
+        // Tracked: #1081 — if a real dummy is ever needed, implement it
+        // in `CompositePipeline::new` with an optional `bloom_views`.
         let bloom = match BloomPipeline::new(
             &device,
             &gpu_allocator,
