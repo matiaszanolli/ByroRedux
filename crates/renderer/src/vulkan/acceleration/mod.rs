@@ -276,6 +276,33 @@ impl AccelerationManager {
                 tlas.instance_buffer_device.destroy(device, allocator);
             }
         }
+        // #1138 / CONC-D3-NEW-01 — drain `skinned_blas` here so
+        // `destroy()` is self-contained regardless of whether the
+        // caller pre-drained via `skinned_blas_entities` →
+        // `drop_skinned_blas`. Pre-fix the only correct shutdown path
+        // routed each entry through `pending_destroy_blas` first
+        // (`context/mod.rs::Drop`), and any caller that skipped that
+        // dance — a future test constructing `AccelerationManager`
+        // directly, or an error-path refactor in `App::shutdown` that
+        // bypasses the pre-drain — silently leaked every still-
+        // resident per-entity `VkAccelerationStructureKHR` + buffer
+        // because the `HashMap` drops as plain memory without the
+        // explicit `destroy_acceleration_structure` call. The App-
+        // level pre-drain remains in place as an optimization (it
+        // routes through `pending_destroy_blas` so the
+        // `MAX_FRAMES_IN_FLIGHT` countdown lets a still-flight refit
+        // finish), but is no longer a correctness requirement: the
+        // parent `device_wait_idle` (`context/mod.rs:1859` /
+        // `context/mod.rs:2093`) already settles every in-flight
+        // command-buffer reference, so destruction here is safe.
+        // SAFETY: caller of `destroy()` (unsafe fn) guarantees no
+        // command buffer is still referencing these resources — every
+        // production caller pairs the call with `device_wait_idle`.
+        for (_eid, mut entry) in self.skinned_blas.drain() {
+            self.accel_loader
+                .destroy_acceleration_structure(entry.accel, None);
+            entry.buffer.destroy(device, allocator);
+        }
         for scratch in &mut self.scratch_buffers {
             if let Some(mut s) = scratch.take() {
                 s.destroy(device, allocator);

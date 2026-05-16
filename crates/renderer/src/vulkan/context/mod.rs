@@ -2128,11 +2128,16 @@ impl Drop for VulkanContext {
                     }
                 }
                 if let Some(ref mut accel) = self.accel_manager {
-                    // Drop per-skinned-entity BLAS before the manager's
-                    // own destroy() runs — the BlasEntry buffer + accel
-                    // structure are owned by the manager but not in
-                    // `blas_entries`, so manager.destroy() wouldn't see
-                    // them. Walk + drop here.
+                    // Pre-drain per-skinned-entity BLAS via the
+                    // `pending_destroy_blas` queue so the
+                    // `MAX_FRAMES_IN_FLIGHT` countdown lets any in-flight
+                    // refit settle before destruction. Post-#1138 /
+                    // CONC-D3-NEW-01 `manager.destroy()` also drains
+                    // `skinned_blas` directly, so this pre-drain is now
+                    // an optimization (countdown-aware destruction)
+                    // rather than a correctness requirement — the
+                    // `device_wait_idle` above already covers any
+                    // in-flight reference.
                     for eid in accel.skinned_blas_entities() {
                         accel.drop_skinned_blas(eid);
                     }
