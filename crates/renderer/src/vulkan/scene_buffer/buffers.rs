@@ -88,6 +88,11 @@ pub struct SceneBuffers {
     /// state case. `None` until the first upload so the cold path
     /// is unconditional. See #878 / DIM8-01.
     pub(super) last_uploaded_material_hash: [Option<u64>; MAX_FRAMES_IN_FLIGHT],
+    /// Sibling dirty-gate for [`SceneBuffers::upload_instances`] —
+    /// MedTek ships ~530 KB/frame of GpuInstance data, static
+    /// interiors recompute the same byte-identical slice each frame.
+    /// See #1134 / PERF-D8-NEW-01 and #878 for the template.
+    pub(super) last_uploaded_instance_hash: [Option<u64>; MAX_FRAMES_IN_FLIGHT],
     /// One `INDIRECT_BUFFER`-usage buffer per frame-in-flight for
     /// `vkCmdDrawIndexedIndirect`. Holds
     /// `VkDrawIndexedIndirectCommand` entries uploaded CPU-side each
@@ -684,6 +689,7 @@ impl SceneBuffers {
             descriptor_sets,
             tlas_written: vec![false; MAX_FRAMES_IN_FLIGHT],
             last_uploaded_material_hash: [None; MAX_FRAMES_IN_FLIGHT],
+            last_uploaded_instance_hash: [None; MAX_FRAMES_IN_FLIGHT],
         })
     }
 }

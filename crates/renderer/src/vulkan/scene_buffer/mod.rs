@@ -30,6 +30,8 @@ pub use buffers::SceneBuffers;
 #[cfg(test)]
 mod gpu_instance_layout_tests;
 #[cfg(test)]
+mod instance_hash_tests;
+#[cfg(test)]
 mod material_hash_tests;
 #[cfg(test)]
 mod scene_descriptor_reflection_tests;

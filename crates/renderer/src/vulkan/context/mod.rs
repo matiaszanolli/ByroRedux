@@ -801,6 +801,33 @@ pub struct VulkanContext {
     /// per-frame `Vec::collect()` allocation that was untracked by the
     /// scratch-buffer pattern.
     indirect_draws_scratch: Vec<ash::vk::DrawIndexedIndirectCommand>,
+    /// Per-frame scratch for the skin-compute dispatch walker
+    /// (#1133 / PERF-D7-NEW-01). Pre-fix the skinned hot path
+    /// allocated 3 fresh containers per frame; on Prospector that's
+    /// ~9 reallocs × 34 NPCs × 60 fps ≈ 18 K reallocs/s. Same
+    /// `mem::take` → `clear()` → `mem::replace` pattern as the
+    /// instance / batch / indirect scratches above.
+    skin_dispatch_seen_scratch:
+        std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
+    /// Sibling of `skin_dispatch_seen_scratch` — entity → SkinPushConstants
+    /// + buffer handles for the per-frame compute dispatch.
+    skin_dispatches_scratch: Vec<(
+        byroredux_core::ecs::storage::EntityId,
+        super::skin_compute::SkinPushConstants,
+        vk::Buffer,
+        u32,
+        u32,
+    )>,
+    /// Sibling of `skin_dispatches_scratch` — first-sight BLAS BUILD
+    /// queue for entities that don't yet have a SkinSlot or skinned
+    /// BLAS. Drained by the batched on-cmd builder each frame.
+    skin_first_sight_builds_scratch: Vec<(
+        byroredux_core::ecs::storage::EntityId,
+        vk::Buffer,
+        u32,
+        vk::Buffer,
+        u32,
+    )>,
 
     // ── Screenshot capture ──────────────────────────────────────────
     screenshot_requested: Arc<AtomicBool>,
@@ -1788,6 +1815,9 @@ impl VulkanContext {
             gpu_instances_scratch: Vec::new(),
             batches_scratch: Vec::new(),
             indirect_draws_scratch: Vec::new(),
+            skin_dispatch_seen_scratch: std::collections::HashSet::new(),
+            skin_dispatches_scratch: Vec::new(),
+            skin_first_sight_builds_scratch: Vec::new(),
             screenshot_requested: Arc::new(AtomicBool::new(false)),
             screenshot_result: Arc::new(Mutex::new(None)),
             screenshot_staging: None,
@@ -1959,6 +1989,39 @@ impl VulkanContext {
             len: self.terrain_tile_scratch.len(),
             capacity: self.terrain_tile_scratch.capacity(),
             elem_size_bytes: size_of::<scene_buffer::GpuTerrainTile>(),
+        });
+        // #1133 — skin-path scratches. The HashSet's heap footprint
+        // isn't directly measurable through the public API; report
+        // its `len` against `capacity` for what we can see.
+        rows.push(ScratchRow {
+            name: "skin_dispatch_seen_scratch",
+            len: self.skin_dispatch_seen_scratch.len(),
+            capacity: self.skin_dispatch_seen_scratch.capacity(),
+            elem_size_bytes: size_of::<byroredux_core::ecs::storage::EntityId>(),
+        });
+        rows.push(ScratchRow {
+            name: "skin_dispatches_scratch",
+            len: self.skin_dispatches_scratch.len(),
+            capacity: self.skin_dispatches_scratch.capacity(),
+            elem_size_bytes: size_of::<(
+                byroredux_core::ecs::storage::EntityId,
+                super::skin_compute::SkinPushConstants,
+                vk::Buffer,
+                u32,
+                u32,
+            )>(),
+        });
+        rows.push(ScratchRow {
+            name: "skin_first_sight_builds_scratch",
+            len: self.skin_first_sight_builds_scratch.len(),
+            capacity: self.skin_first_sight_builds_scratch.capacity(),
+            elem_size_bytes: size_of::<(
+                byroredux_core::ecs::storage::EntityId,
+                vk::Buffer,
+                u32,
+                vk::Buffer,
+                u32,
+            )>(),
         });
         if let Some(accel) = &self.accel_manager {
             let (len, capacity) = accel.tlas_instances_scratch_telemetry();

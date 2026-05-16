@@ -220,3 +220,26 @@ pub(super) fn hash_material_slice(materials: &[super::super::material::GpuMateri
     hasher.write(bytes);
     hasher.finish()
 }
+
+/// Sibling of [`hash_material_slice`] for the [`SceneBuffers::upload_instances`]
+/// dirty-gate (#1134 / PERF-D8-NEW-01). MedTek ships 7359 draws at 72 B
+/// per `GpuInstance` ≈ 530 KB/frame; static interiors produce
+/// byte-identical slices in steady state so the copy + flush skip
+/// saves ~32 MB/s sustained PCIe at 60 fps.
+///
+/// `GpuInstance` is `#[repr(C)]` with f32 / u32 / packed-vec4 fields
+/// and zero implicit padding (`gpu_instance_layout_tests` pins this);
+/// the slice-byte cast is sound for the same reason `GpuMaterial`'s
+/// is.
+pub(super) fn hash_instance_slice(instances: &[super::gpu_types::GpuInstance]) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let byte_size = std::mem::size_of::<super::gpu_types::GpuInstance>() * instances.len();
+    // SAFETY: see hash_material_slice — same invariant on the producer
+    // side. The layout test pins the byte-size against a known constant
+    // so an unintended padding insert would surface there first.
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(instances.as_ptr() as *const u8, byte_size) };
+    hasher.write(bytes);
+    hasher.finish()
+}

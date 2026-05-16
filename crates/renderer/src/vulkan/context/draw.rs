@@ -606,15 +606,17 @@ impl VulkanContext {
                     // entities + their per-mesh metadata. Multiple
                     // draws of the same entity (rare; instanced rendering
                     // would hit this) coalesce on entity_id.
-                    use std::collections::HashSet;
-                    let mut seen: HashSet<EntityId> = HashSet::new();
-                    let mut dispatches: Vec<(
-                        EntityId,
-                        super::super::skin_compute::SkinPushConstants,
-                        vk::Buffer,
-                        u32,
-                        u32,
-                    )> = Vec::new();
+                    //
+                    // #1133 / PERF-D7-NEW-01 — `mem::take` from the
+                    // `skin_*_scratch` cluster on `self`, drop the
+                    // amortized capacity back at the end of the
+                    // skinned block (line ~911). Matches the pattern
+                    // documented at `context/mod.rs::Per-frame scratch
+                    // cluster`.
+                    let mut seen = std::mem::take(&mut self.skin_dispatch_seen_scratch);
+                    seen.clear();
+                    let mut dispatches = std::mem::take(&mut self.skin_dispatches_scratch);
+                    dispatches.clear();
                     for dc in draw_commands.iter() {
                         if dc.bone_offset == 0 {
                             continue;
@@ -679,13 +681,11 @@ impl VulkanContext {
                     // batch (the failure mode of the naive
                     // "record N back-to-back, each inline-resizing
                     // scratch" path).
-                    let mut first_sight_builds: Vec<(
-                        EntityId,
-                        vk::Buffer, // slot.output_buffer.buffer (BUILD input)
-                        u32,        // vertex_count
-                        vk::Buffer, // idx_buffer
-                        u32,        // idx_count
-                    )> = Vec::new();
+                    // #1133 — sibling scratch; same lifetime as `seen` /
+                    // `dispatches`. Replaced back into self at end of block.
+                    let mut first_sight_builds =
+                        std::mem::take(&mut self.skin_first_sight_builds_scratch);
+                    first_sight_builds.clear();
                     for &(entity_id, _push, idx_buffer, idx_count, vertex_count) in &dispatches {
                         let needs_slot = !self.skin_slots.contains_key(&entity_id);
                         if accel.should_rebuild_skinned_blas(entity_id) {
@@ -909,6 +909,13 @@ impl VulkanContext {
                             );
                         }
                     }
+
+                    // #1133 — return the skin-path scratches to `self`.
+                    // Same shape as the gpu_instances / batches replace
+                    // at the end of build_render_data → SSBO upload.
+                    self.skin_dispatch_seen_scratch = seen;
+                    self.skin_dispatches_scratch = dispatches;
+                    self.skin_first_sight_builds_scratch = first_sight_builds;
 
                     // #643 / MEM-2-1 — drop SkinSlots (and the matching
                     // skinned BLAS) for entities whose `last_used_frame`

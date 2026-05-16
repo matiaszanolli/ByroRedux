@@ -8,7 +8,7 @@ use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::*;
-use super::descriptors::hash_material_slice;
+use super::descriptors::{hash_instance_slice, hash_material_slice};
 use super::buffers::LightHeader;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -242,6 +242,20 @@ impl super::buffers::SceneBuffers {
         if count == 0 {
             return Ok(());
         }
+
+        // #1134 / PERF-D8-NEW-01 — dirty-gate via content hash, mirror
+        // of #878's upload_materials gate. MedTek ships ~530 KB/frame
+        // (7359 × 72 B); static interiors produce byte-identical
+        // slices each frame, so skipping the copy + flush in steady
+        // state saves ~32 MB/s sustained PCIe at 60 fps. Hash is
+        // computed over the clamped prefix actually written, so an
+        // overflow that drops trailing instances still re-uploads when
+        // the kept prefix changes.
+        let hash = hash_instance_slice(&instances[..count]);
+        if self.last_uploaded_instance_hash[frame_index] == Some(hash) {
+            return Ok(());
+        }
+
         let buf = &mut self.instance_buffers[frame_index];
         let mapped = buf.mapped_slice_mut()?;
         let byte_size = std::mem::size_of::<GpuInstance>() * count;
@@ -254,7 +268,9 @@ impl super::buffers::SceneBuffers {
                 byte_size,
             );
         }
-        buf.flush_if_needed(device)
+        buf.flush_if_needed(device)?;
+        self.last_uploaded_instance_hash[frame_index] = Some(hash);
+        Ok(())
     }
 
     /// Upload the deduplicated material table for the current
