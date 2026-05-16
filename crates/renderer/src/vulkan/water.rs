@@ -152,6 +152,15 @@ pub fn water_commands_match_draw_slots(
 }
 
 /// Owns the water graphics pipeline + its layout.
+///
+/// Extent-independent: viewport and scissor are dynamic state set per
+/// frame in the draw-recording path, and no descriptor binds reference
+/// a fixed-extent resource (G-buffer, depth, swapchain). No
+/// `recreate_on_resize` method exists — and intentionally so. Other
+/// pipelines (SVGF, TAA, Bloom, Composite) DO carry one because they
+/// own attachment-sized resources; if water ever picks up such a
+/// resource (e.g. a dedicated caustic accumulator), wire the resize
+/// hook at that time. See REN-D17-NEW-01 / #1130.
 pub struct WaterPipeline {
     pub pipeline: vk::Pipeline,
     pub pipeline_layout: vk::PipelineLayout,

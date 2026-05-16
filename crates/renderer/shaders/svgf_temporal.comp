@@ -100,7 +100,11 @@ void main() {
         return;
     }
 
-    // Back-project via motion vector.
+    // Back-project via motion vector. `motion` is in UV-space [0,1]
+    // (the gbuffer pass writes `currUV - prevUV`); `prevUV` is therefore
+    // also UV. The pixel-space threshold downstream (`length(motion *
+    // screen.xy) < 1.5`) converts to pixels via `screen.xy` before
+    // comparing — see the nearest-tap fallback gate below.
     vec2 uv = (vec2(p) + 0.5) * screen.zw;
     vec2 motion = texelFetch(motionTex, p, 0).rg;
     vec2 prevUV = uv - motion;
@@ -193,6 +197,11 @@ void main() {
             histAge /= wTotal;
             hasHistory = true;
         } else if (length(motion * screen.xy) < 1.5) {
+            // `motion` is in UV-space; `screen.xy` is image dimensions in
+            // pixels, so the product is pixel-space motion magnitude.
+            // `1.5` = sub-pixel motion threshold (1 full pixel + half-pixel
+            // bilinear-fall-through tolerance). REN-D10-NEW-01 / #1131.
+            //
             // All 4 bilinear taps failed mesh-ID consistency (e.g. single-pixel
             // silhouette between two surfaces sharing a mesh ID). Fall back to
             // nearest-tap when motion is sub-pixel — prevents per-frame history
