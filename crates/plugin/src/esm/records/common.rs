@@ -164,7 +164,7 @@ pub fn read_zstring(data: &[u8]) -> String {
 /// into the authored English / language-pack string) is tracked as
 /// a follow-up. See audit S6-03 / #348.
 pub fn read_lstring_or_zstring(data: &[u8]) -> String {
-    if is_localized_plugin() && data.len() == 4 {
+    if is_localized_plugin() && data.len() == std::mem::size_of::<u32>() {
         let id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         // Resolve against the active StringTableSet first (#989).
         // Falls back to the placeholder when no table is installed or

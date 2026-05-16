@@ -113,11 +113,12 @@ pub(super) fn load_references(
     // game is on the Havok-animation track (Skyrim+/FO4+) or the KF
     // isn't archived — NPCs in those cases just spawn without an
     // animation player. Gender variation is collapsed: FNV vanilla
-    // ships only `_male\idle.kf` and uses it for both genders; Phase
-    // 2.x can add a per-gender cache if a future game variant ships
+    // ships only `_male\idle.kf` and uses it for both genders. The
+    // `Gender` argument was dropped from these resolvers in #1117 /
+    // TD8-018; re-introduce it when a game variant actually ships
     // separate clips.
     let idle_clip_handle = if game.has_kf_animations() {
-        crate::npc_spawn::load_idle_clip(world, tex_provider, game, crate::npc_spawn::Gender::Male)
+        crate::npc_spawn::load_idle_clip(world, tex_provider, game)
     } else {
         None
     };

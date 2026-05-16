@@ -53,7 +53,7 @@ pub use byroredux_plugin::equip::Gender;
 ///
 /// Oblivion is not yet a target for NPC spawning (M41.0 closes on
 /// FNV first); the path is the same as FNV's by convention.
-pub fn humanoid_skeleton_path(game: GameKind, _gender: Gender) -> Option<&'static str> {
+pub fn humanoid_skeleton_path(game: GameKind) -> Option<&'static str> {
     match game {
         GameKind::Oblivion | GameKind::Fallout3NV => Some(r"meshes\characters\_male\skeleton.nif"),
         GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => {
@@ -78,10 +78,10 @@ pub fn humanoid_skeleton_path(game: GameKind, _gender: Gender) -> Option<&'stati
 ///
 /// Female humanoids on FNV vanilla re-use the male body (verified
 /// 2026-04-28 — `_female\` directory not present in vanilla
-/// Fallout - Meshes.bsa). Mods may add a separate female set;
-/// keeping the `Gender` split in the signature lets a future
-/// mod-aware lookup flip in without breaking the type.
-pub fn humanoid_body_paths(game: GameKind, _gender: Gender) -> &'static [&'static str] {
+/// Fallout - Meshes.bsa). Mods may add a separate female set; the
+/// gender split can be re-introduced on the signature at that point.
+/// See TD8-018 / #1117 for the placeholder-arg removal rationale.
+pub fn humanoid_body_paths(game: GameKind) -> &'static [&'static str] {
     match game {
         // Oblivion's mesh layout uses the same `_male\` directory shape
         // as FO3 / FNV; if Oblivion ships hands at different paths the
@@ -113,12 +113,11 @@ pub fn load_idle_clip(
     world: &mut World,
     tex_provider: &TextureProvider,
     game: GameKind,
-    gender: Gender,
 ) -> Option<u32> {
     if !game.has_kf_animations() {
         return None;
     }
-    let kf_path = humanoid_default_idle_kf_path(game, gender)?;
+    let kf_path = humanoid_default_idle_kf_path(game)?;
 
     // Fast path: clip already registered for this path. Skips the BSA
     // extract + NIF parse + channel conversion entirely. Without this
@@ -247,7 +246,7 @@ pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
 /// `chair_*`, `dlcanch*`, but no plain `idle.kf` base). Per-NPC
 /// overrides from IDLE form records and AI packages slot in on top
 /// once M42 / M47 land.
-pub fn humanoid_default_idle_kf_path(game: GameKind, _gender: Gender) -> Option<&'static str> {
+pub fn humanoid_default_idle_kf_path(game: GameKind) -> Option<&'static str> {
     match game {
         GameKind::Oblivion | GameKind::Fallout3NV => {
             Some(r"meshes\characters\_male\locomotion\mtidle.kf")
@@ -442,7 +441,7 @@ pub fn spawn_npc_entity(
 
     // 2. Skeleton. Owns the per-bone entities the body / head will
     //    skin against.
-    let skel_path = humanoid_skeleton_path(game, gender)?;
+    let skel_path = humanoid_skeleton_path(game)?;
     let skel_data = match tex_provider.extract_mesh(skel_path) {
         Some(d) => d,
         None => {
@@ -512,7 +511,7 @@ pub fn spawn_npc_entity(
     //    which case the NPC still gets a skeleton + head + whatever
     //    of the body was actually loadable. Pre-#793 only `upperbody`
     //    shipped, so every kf-era NPC rendered handless.
-    for body_path in humanoid_body_paths(game, gender) {
+    for body_path in humanoid_body_paths(game) {
         if body_covered && body_path.ends_with("upperbody.nif") {
             log::info!(
                 "NPC {:08X} ({}): equipped armor covers torso — skipping {}",
@@ -1042,7 +1041,7 @@ pub fn spawn_prebaked_npc_entity(
     //    skeleton.nif`). The pre-baked head NIF carries its own
     //    `BSTriShape`-skinned mesh that resolves bones against
     //    this skeleton via the shared `external_skeleton` map.
-    let skel_path = humanoid_skeleton_path(game, gender)?;
+    let skel_path = humanoid_skeleton_path(game)?;
     let skel_data = match tex_provider.extract_mesh(skel_path) {
         Some(d) => d,
         None => {
@@ -1286,24 +1285,19 @@ mod tests {
     #[test]
     fn skeleton_path_per_game() {
         assert_eq!(
-            humanoid_skeleton_path(GameKind::Fallout3NV, Gender::Male),
+            humanoid_skeleton_path(GameKind::Fallout3NV),
             Some(r"meshes\characters\_male\skeleton.nif"),
         );
         assert_eq!(
-            humanoid_skeleton_path(GameKind::Fallout3NV, Gender::Female),
-            // FNV/FO3 share the male skeleton across genders in vanilla.
-            Some(r"meshes\characters\_male\skeleton.nif"),
-        );
-        assert_eq!(
-            humanoid_skeleton_path(GameKind::Skyrim, Gender::Male),
+            humanoid_skeleton_path(GameKind::Skyrim),
             Some(r"meshes\actors\character\character assets\skeleton.nif"),
         );
         assert_eq!(
-            humanoid_skeleton_path(GameKind::Fallout4, Gender::Male),
+            humanoid_skeleton_path(GameKind::Fallout4),
             Some(r"meshes\actors\character\character assets\skeleton.nif"),
         );
         assert_eq!(
-            humanoid_skeleton_path(GameKind::Starfield, Gender::Male),
+            humanoid_skeleton_path(GameKind::Starfield),
             Some(r"meshes\actors\character\character assets\skeleton.nif"),
         );
     }
@@ -1315,26 +1309,24 @@ mod tests {
     #[test]
     fn body_paths_kf_era_include_separate_hand_meshes() {
         for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
-            for gender in [Gender::Male, Gender::Female] {
-                let paths = humanoid_body_paths(game, gender);
-                assert_eq!(
-                    paths.len(),
-                    3,
-                    "{game:?}/{gender:?} should ship upperbody + 2 hands, got {paths:?}",
-                );
-                assert!(
-                    paths.iter().any(|p| p.ends_with("upperbody.nif")),
-                    "{game:?}/{gender:?} missing upperbody: {paths:?}",
-                );
-                assert!(
-                    paths.iter().any(|p| p.ends_with("lefthand.nif")),
-                    "{game:?}/{gender:?} missing lefthand: {paths:?}",
-                );
-                assert!(
-                    paths.iter().any(|p| p.ends_with("righthand.nif")),
-                    "{game:?}/{gender:?} missing righthand: {paths:?}",
-                );
-            }
+            let paths = humanoid_body_paths(game);
+            assert_eq!(
+                paths.len(),
+                3,
+                "{game:?} should ship upperbody + 2 hands, got {paths:?}",
+            );
+            assert!(
+                paths.iter().any(|p| p.ends_with("upperbody.nif")),
+                "{game:?} missing upperbody: {paths:?}",
+            );
+            assert!(
+                paths.iter().any(|p| p.ends_with("lefthand.nif")),
+                "{game:?} missing lefthand: {paths:?}",
+            );
+            assert!(
+                paths.iter().any(|p| p.ends_with("righthand.nif")),
+                "{game:?} missing righthand: {paths:?}",
+            );
         }
     }
 
@@ -1350,7 +1342,7 @@ mod tests {
             GameKind::Fallout76,
             GameKind::Starfield,
         ] {
-            let paths = humanoid_body_paths(game, Gender::Male);
+            let paths = humanoid_body_paths(game);
             assert!(
                 paths.is_empty(),
                 "{game:?} should defer body to FaceGen path, got {paths:?}",
@@ -1361,15 +1353,15 @@ mod tests {
     #[test]
     fn idle_kf_path_only_for_kf_era_games() {
         // FNV / FO3 ship `.kf` clips.
-        assert!(humanoid_default_idle_kf_path(GameKind::Fallout3NV, Gender::Male).is_some());
-        assert!(humanoid_default_idle_kf_path(GameKind::Oblivion, Gender::Male).is_some());
+        assert!(humanoid_default_idle_kf_path(GameKind::Fallout3NV).is_some());
+        assert!(humanoid_default_idle_kf_path(GameKind::Oblivion).is_some());
 
         // Skyrim+ uses Havok `.hkx` — no `.kf` exists in vanilla.
         // Verified by BSA scan 2026-04-28 (Skyrim SE Meshes0 + Meshes1
         // + Animations BSAs all return 0 `.kf` hits).
-        assert!(humanoid_default_idle_kf_path(GameKind::Skyrim, Gender::Male).is_none());
-        assert!(humanoid_default_idle_kf_path(GameKind::Fallout4, Gender::Male).is_none());
-        assert!(humanoid_default_idle_kf_path(GameKind::Fallout76, Gender::Male).is_none());
-        assert!(humanoid_default_idle_kf_path(GameKind::Starfield, Gender::Male).is_none());
+        assert!(humanoid_default_idle_kf_path(GameKind::Skyrim).is_none());
+        assert!(humanoid_default_idle_kf_path(GameKind::Fallout4).is_none());
+        assert!(humanoid_default_idle_kf_path(GameKind::Fallout76).is_none());
+        assert!(humanoid_default_idle_kf_path(GameKind::Starfield).is_none());
     }
 }

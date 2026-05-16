@@ -16,6 +16,11 @@ use ash::vk;
 
 #[derive(Clone, Copy)]
 pub(super) struct LightHeader {
+    /// Light count for this frame. Rust never reads it back — the value
+    /// is byte-copied straight to the SSBO via the std430-packed write
+    /// in `upload::upload_lights`, where the shader consumes it as the
+    /// scene-buffer header. Annotate to silence dead-code (TD2-203).
+    #[allow(dead_code)]
     pub(super) count: u32,
     pub(super) _pad: [u32; 3],
 }
