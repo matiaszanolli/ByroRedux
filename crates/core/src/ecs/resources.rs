@@ -331,10 +331,12 @@ pub struct ScratchTelemetry {
     /// R1 / #780 — total `intern()` calls during last
     /// `build_render_data` (== `MaterialTable::interned_count()`,
     /// one tick per emitted `DrawCommand`). Dedup ratio =
-    /// `materials_unique / materials_interned`. A drop here flags a
-    /// regression (alignment hole, non-deterministic float in the
-    /// producer) that breaks byte-equality dedup before VRAM
-    /// pressure shows it.
+    /// `materials_interned / materials_unique` — how many intern calls
+    /// each unique material absorbs (higher = better dedup). Displayed by
+    /// the `mat.stats` console command. A drop here flags a regression
+    /// (alignment hole, non-deterministic float in the producer) that
+    /// breaks byte-equality dedup before VRAM pressure shows it.
+    /// (#1066 / REN-D14-NEW-06 — corrected from the prior inverted formula)
     pub materials_interned: usize,
 }
 

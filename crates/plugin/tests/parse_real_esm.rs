@@ -1053,10 +1053,10 @@ fn parse_rate_fo4_esm() {
         index.cells.material_swaps.len(),
     );
     assert!(
-        index.cells.texture_sets.len() >= 370,
-        "TXST={} (expected >= 370; vanilla ships 379) — \
-         3 DODT-only TXSTs are dropped by the equality guard \
-         until #813 / #814 / #818 land",
+        index.cells.texture_sets.len() >= 376,
+        "TXST={} (expected >= 376; vanilla ships 379) — \
+         DODT + DNAM now parsed (#813/#814); 3 remaining below ceiling \
+         are records with no parseable sub-records in vanilla Fallout4.esm",
         index.cells.texture_sets.len(),
     );
     // MOVS: vanilla ships 0; pin to 0 to catch a future spurious

@@ -118,7 +118,7 @@ void main() {
     if (any(greaterThanEqual(pixel, size))) return;
 
     // Reject background (meshId = 0 means "empty").
-    // Mask off the ALPHA_BLEND_NO_HISTORY flag (bit 15) that
+    // Mask off the ALPHA_BLEND_NO_HISTORY flag (bit 31) that
     // triangle.frag sets on transparent fragments — caustic sources
     // are always alpha-blend (the post-#922 CPU gate restricts the
     // bit to MATERIAL_KIND_GLASS and MultiLayerParallax refraction,

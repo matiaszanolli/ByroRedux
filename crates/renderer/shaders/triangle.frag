@@ -166,7 +166,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     // `compute_sky` paints behind the world (TOD / weather cross-fade
     // already wired upstream). Pre-fix the portal site hardcoded
     // `vec3(0.6, 0.75, 1.0)` and every window looked clear-noon.
-    vec4 skyTint;     // xyz = TOD/weather zenith colour, w = reserved
+    vec4 skyTint;     // xyz = TOD/weather zenith colour, w = sun_angular_radius (rad; SkyParams::sun_angular_radius, #1023)
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;

@@ -32,7 +32,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     // When z > 0 && w > 0, use pow(dist / z, w) instead of the linear
     // (dist - near) / (far - near) blend. See #865 / FNV-D3-NEW-06.
     vec4 fog_params;
-    vec4 depth_params;   // x = is_exterior (1.0 = sky enabled), y = exposure, z/w = unused
+    vec4 depth_params;   // x = is_exterior (1.0 = sky enabled), y = exposure, z = volumetric_consumed (bool as float), w = unused
     vec4 sky_zenith;     // xyz = zenith color (linear RGB), w = sun_size (cos threshold)
     vec4 sky_horizon;    // xyz = horizon color (linear RGB), w = unused
     vec4 sky_lower;      // xyz = below-horizon ground tint (WTHR SKY_LOWER), w = unused (#541)

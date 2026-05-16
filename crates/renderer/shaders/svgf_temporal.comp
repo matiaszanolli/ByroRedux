@@ -76,8 +76,12 @@ void main() {
     // consistency loop's normal-cone rejection.
     vec3 currN = octDecode(texelFetch(currNormalTex, p, 0).rg);
 
+    // mesh_id encoding: R32_UINT, bits 0-30 = instance id + 1, bit 31
+    // (0x80000000u) = ALPHA_BLEND_NO_HISTORY flag. Full contract in
+    // triangle.frag::computeMeshId and gbuffer.rs::MESH_ID_FORMAT. (#1091)
+    //
     // Background pixels (mesh_id 0 = sky/clear): no accumulation needed.
-    // Alpha-blend fragments (mesh_id bit 15 set by triangle.frag) take
+    // Alpha-blend fragments (mesh_id bit 31 set by triangle.frag) take
     // the same early-out: their indirect GI is effectively zero (the
     // glass path returns before writing real GI), and reprojecting
     // history across a glass-stable-depth flip produces visible

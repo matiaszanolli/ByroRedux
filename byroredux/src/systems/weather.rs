@@ -579,12 +579,30 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             let new_sky = tr.target.sky_colors;
             let new_fog = tr.target.fog;
             let new_tod = tr.target.tod_hours;
+            let tr_target_wind = tr.target.wind_speed;
+            let tr_target_dalc = tr.target.skyrim_dalc_per_tod;
             drop(tr);
             if let Some(mut wd) = world.try_resource_mut::<WeatherDataRes>() {
                 wd.sky_colors = new_sky;
                 wd.fog = new_fog;
                 wd.tod_hours = new_tod;
+                // #1101 / REN-D15-001 — promote wind_speed so cloud scroll
+                // uses the target weather after cross-fade completion.
+                // Without this the source weather's wind speed persists.
+                wd.wind_speed = tr_target_wind;
+                // #1102 / REN-D15-002 — promote DALC ambient cube so the
+                // Skyrim 6-axis directional ambient uses the target weather.
+                wd.skyrim_dalc_per_tod = tr_target_dalc;
             }
+            // Ordering invariant (#1103 / REN-D15-003): the promotion
+            // block above reads `tr.target.*` and writes into `wd.*` on
+            // the *same* weather_system invocation that computed the
+            // blend ratio (in the early part of this function). If
+            // weather_system is ever split into a timer-advance pass +
+            // a blend-apply pass, the promotion must move to the
+            // blend-apply pass to preserve lerp(src,tgt,1.0)=tgt
+            // semantics on the completion frame.
+            //
             // Latch the transition as done. Pre-fix this set
             // `duration_secs = f32::INFINITY` and relied on float
             // arithmetic to keep the blend ratio at 0 — the dormant

@@ -268,15 +268,18 @@ impl super::buffers::SceneBuffers {
         frame_index: usize,
         materials: &[super::super::material::GpuMaterial],
     ) -> Result<()> {
+        // intern() in MaterialTable already caps at MAX_MATERIALS before
+        // building this slice — materials.len() > MAX_MATERIALS is
+        // unreachable (#1064 / REN-D14-NEW-04). The debug_assert documents
+        // the invariant so a future refactor that breaks the cap surfaces
+        // immediately rather than silently truncating uploads.
+        debug_assert!(
+            materials.len() <= MAX_MATERIALS,
+            "upload_materials: len {} > MAX_MATERIALS {}; intern() should have capped",
+            materials.len(),
+            MAX_MATERIALS,
+        );
         let count = materials.len().min(MAX_MATERIALS);
-        if materials.len() > MAX_MATERIALS {
-            log::warn!(
-                "Material table overflow: {} materials submitted, capped at {} \
-                 — instances pointing past the cap silently default to material 0",
-                materials.len(),
-                MAX_MATERIALS,
-            );
-        }
         if count == 0 {
             return Ok(());
         }

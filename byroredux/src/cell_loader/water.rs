@@ -345,16 +345,17 @@ fn resolve_water_material(
             // wind_direction is in radians from north (UESP).
             if !matches!(kind, WaterKind::Calm) {
                 let theta = rec.params.wind_direction;
+                // Compute once — cos/sin were duplicated pre-#1068 (F-WAT-06).
+                let (sin_theta, cos_theta) = theta.sin_cos();
+                let speed = rec.params.wind_speed.abs().max(0.5);
                 flow = Some(WaterFlow {
-                    direction: [theta.cos(), 0.0, theta.sin()],
-                    speed: rec.params.wind_speed.abs().max(0.5),
+                    direction: [cos_theta, 0.0, sin_theta],
+                    speed,
                 });
                 // Rebuild scroll vectors to bias along the flow axis.
-                let dir = (theta.cos(), theta.sin());
-                let speed = rec.params.wind_speed.abs().max(0.5);
-                mat.scroll_a = [dir.0 * speed * 0.5, dir.1 * speed * 0.5];
+                mat.scroll_a = [cos_theta * speed * 0.5, sin_theta * speed * 0.5];
                 // Perpendicular shear at half speed for the second layer.
-                mat.scroll_b = [-dir.1 * speed * 0.25, dir.0 * speed * 0.25];
+                mat.scroll_b = [-sin_theta * speed * 0.25, cos_theta * speed * 0.25];
             }
             // TNAM is the diffuse / noise texture — used as the
             // bindless normal map for the shader. Empty path =

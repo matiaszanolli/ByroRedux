@@ -8,10 +8,10 @@
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec2 inUV;
 
-// R1 Phase 6 — `GpuInstance` collapsed to per-DRAW data only. UI
-// vertex stage reads `materialId` to look up the texture in the
-// `MaterialBuffer` SSBO; other per-material fields live exclusively
-// in `materials[materialId]` now. Layout mirror of triangle.{vert,frag}.
+// `GpuInstance` layout mirror of triangle.{vert,frag} for struct-size
+// lockstep. The UI vertex stage reads `textureIndex` (not `materialId`) —
+// UI draws bypass the MaterialBuffer and sample the bindless texture
+// directly via `textureIndex`. (#1065 / REN-D14-NEW-05)
 struct GpuInstance {
     mat4 model;
     uint textureIndex;     // offset 64 — diffuse / albedo (kept for parity)

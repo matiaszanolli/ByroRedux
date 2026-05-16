@@ -389,11 +389,16 @@ impl VulkanContext {
 
         // TAA sub-pixel jitter via Halton(2,3) sequence. Each frame shifts
         // the projection by a different sub-pixel offset in NDC so that
-        // temporal blending over ~8 frames reconstructs a super-sampled
-        // result. The offset is applied in the vertex shader AFTER motion
-        // vector computation so reprojection is jitter-free.
+        // temporal blending reconstructs a super-sampled result. The offset
+        // is applied in the vertex shader AFTER motion vector computation so
+        // reprojection is jitter-free.
+        //
+        // Period 16 (#1093 / REN-D11-002): Halton(2) natural period is 2,
+        // Halton(3) natural period is 3, LCM = 6. Using 16 (nearest power-
+        // of-2 ≥ 6) avoids the asymmetric Y-coverage gap that % 8 caused
+        // (the 9th Halton(3) sample ≈ 0.889 was never reached with % 8).
         let (jx, jy) = if self.taa.is_some() {
-            let idx = (self.frame_counter % 8) as u32 + 1; // 1-indexed
+            let idx = (self.frame_counter % 16) as u32 + 1; // 1-indexed
             let hx = halton(idx, 2);
             let hy = halton(idx, 3);
             // Map [0,1] → [-0.5, 0.5] pixels, then to NDC.
@@ -860,7 +865,9 @@ impl VulkanContext {
                                 // real refit attempt. Entities without a
                                 // slot land in `slots_failed` instead.
                                 self.last_skin_coverage_frame.refits_attempted += 1;
-                                accel.record_scratch_serialize_barrier(&self.device, cmd);
+                                // Scratch-serialize barrier is now self-emitted at the
+                                // top of refit_skinned_blas (blas_skinned.rs:555, #983).
+                                // Removed the redundant caller-side emit (#1095 / REN-D12-002).
                                 match accel.refit_skinned_blas(
                                     &self.device,
                                     cmd,
@@ -2267,9 +2274,10 @@ impl VulkanContext {
                 }
             }
 
-            // Bloom pyramid (M58). Reads the un-TAA'd scene HDR
-            // (composite.hdr_image_views[frame]) and writes a
-            // multi-scale blurred bright-content texture. Composite
+            // Bloom pyramid (M58). Reads the post-TAA resolved HDR
+            // (composite.hdr_image_views[frame] — TAA writes its output
+            // here, so bloom is post-TAA; #1107 / REN-D19-002) and writes
+            // a multi-scale blurred bright-content texture. Composite
             // adds bloom to `combined` before the ACES tone-map.
             // The render pass's final_layout already moved HDR to
             // SHADER_READ_ONLY_OPTIMAL, so the input is sample-ready.

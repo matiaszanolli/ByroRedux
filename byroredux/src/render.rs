@@ -357,12 +357,11 @@ pub(crate) fn build_render_data(
                 BONE_PALETTE_OVERFLOW_WARNED.call_once(|| {
                     log::warn!(
                         "bone_palette: skinned-mesh count exceeds MAX_TOTAL_BONES={} \
-                         slots ({} bones × {} meshes already pushed); remaining \
-                         skinned meshes silently fall back to bind pose. Bump \
-                         MAX_TOTAL_BONES or implement variable-stride packing (M29.5).",
+                         ({} bones already pushed); remaining skinned meshes silently \
+                         fall back to bind pose. Bump MAX_TOTAL_BONES or implement \
+                         variable-stride packing (M29.5).",
                         MAX_TOTAL_BONES,
-                        MAX_BONES_PER_MESH,
-                        skin_offsets.len(),
+                        bone_palette.len(),
                     );
                 });
                 break;
@@ -1434,7 +1433,19 @@ pub(crate) fn build_render_data(
             sun_color: sky_res.sun_color,
             sun_size: sky_res.sun_size,
             sun_intensity: sky_res.sun_intensity,
-            sun_angular_radius: sky_res.sun_angular_radius,
+            // Tangent-plane disk approximation valid only for α < ~0.05 rad
+            // (documented in triangle.frag:2418-2425). Debug-mode guard so a
+            // per-cell override above 0.1 rad fails loudly instead of silently
+            // producing biased penumbras. (#1109 / REN-D20-002)
+            sun_angular_radius: {
+                debug_assert!(
+                    sky_res.sun_angular_radius < 0.10,
+                    "sun_angular_radius {:.4} rad exceeds tangent-plane approximation \
+                     threshold (~0.05 rad); penumbra sampling will be visibly biased.",
+                    sky_res.sun_angular_radius,
+                );
+                sky_res.sun_angular_radius
+            },
             is_exterior: sky_res.is_exterior,
             cloud_scroll: scroll.0,
             cloud_tile_scale: sky_res.cloud_tile_scale,
