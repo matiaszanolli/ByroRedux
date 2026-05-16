@@ -180,13 +180,7 @@ fn create_image_views(
                     b: vk::ComponentSwizzle::IDENTITY,
                     a: vk::ComponentSwizzle::IDENTITY,
                 })
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                });
+                .subresource_range(super::descriptors::color_subresource_single_mip());
 
             unsafe {
                 device

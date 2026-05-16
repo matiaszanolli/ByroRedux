@@ -146,13 +146,7 @@ impl Attachment {
                             .image(img)
                             .view_type(vk::ImageViewType::TYPE_2D)
                             .format(format)
-                            .subresource_range(vk::ImageSubresourceRange {
-                                aspect_mask: vk::ImageAspectFlags::COLOR,
-                                base_mip_level: 0,
-                                level_count: 1,
-                                base_array_layer: 0,
-                                layer_count: 1,
-                            }),
+                            .subresource_range(super::descriptors::color_subresource_single_mip()),
                         None,
                     )
                     .with_context(|| format!("Failed to create {name_prefix} image view"))?
@@ -342,13 +336,7 @@ impl GBuffer {
                             .old_layout(vk::ImageLayout::UNDEFINED)
                             .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                             .image(img)
-                            .subresource_range(vk::ImageSubresourceRange {
-                                aspect_mask: vk::ImageAspectFlags::COLOR,
-                                base_mip_level: 0,
-                                level_count: 1,
-                                base_array_layer: 0,
-                                layer_count: 1,
-                            }),
+                            .subresource_range(super::descriptors::color_subresource_single_mip()),
                     );
                 }
             }

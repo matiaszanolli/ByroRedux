@@ -631,13 +631,7 @@ impl VolumetricsPipeline {
                         .image(image)
                         .view_type(vk::ImageViewType::TYPE_3D)
                         .format(FROXEL_FORMAT)
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        }),
+                        .subresource_range(super::descriptors::color_subresource_single_mip()),
                     None,
                 )
                 .with_context(|| format!("view {name}"))
@@ -709,13 +703,7 @@ impl VolumetricsPipeline {
             let clear_value = vk::ClearColorValue {
                 float32: [0.0, 0.0, 0.0, 1.0],
             };
-            let full_range = vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            };
+            let full_range = super::descriptors::color_subresource_single_mip();
             for slot in self
                 .lighting_volumes
                 .iter()
@@ -797,13 +785,7 @@ impl VolumetricsPipeline {
             vk::AccessFlags::UNIFORM_READ,
         );
 
-        let subresource = vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        };
+        let subresource = super::descriptors::color_subresource_single_mip();
 
         // ── Stage B: pre-injection barrier on the lighting volume ────
         // Both volumes live in GENERAL across their lifetime (set by
