@@ -588,7 +588,20 @@ impl AccelerationManager {
                 {
                     Ok(a) => a,
                     Err(e) => {
+                        // #1097 / REN-D8-003 — clean up previously-prepared
+                        // entries before bailing. Pre-fix, only the current
+                        // iteration's `result_buffer` was destroyed; entries
+                        // already in `prepared[0..i-1]` leaked their
+                        // GpuBuffer + VkAccelerationStructureKHR handles.
                         result_buffer.destroy(device, allocator);
+                        for mut p in prepared {
+                            // SAFETY: each entry's accel + buffer are owned
+                            // by `prepared` (just moved in by push); no
+                            // command buffer references them yet (the build
+                            // hasn't been recorded).
+                            self.accel_loader.destroy_acceleration_structure(p.accel, None);
+                            p.buffer.destroy(device, allocator);
+                        }
                         anyhow::bail!("Failed to create BLAS for mesh {mesh_handle}: {e}");
                     }
                 }

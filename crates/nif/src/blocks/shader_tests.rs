@@ -1073,6 +1073,64 @@ fn parse_bs_lighting_fo4_env_map_with_wetness() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
+/// #1080 / FO4-D3-009 — pin the BSVER 130 (FO4) BGSM-stopcond boundary.
+///
+/// The `BSLightingShaderProperty` BGSM stopcond fires only at BSVER ≥ 155
+/// (FO76+). For FO4 (BSVER=130), the full shader body MUST be parsed even
+/// when `net.name` carries a `.bgsm` path — the stopcond mechanism didn't
+/// exist in the FO4 era and dropping the body would silently lose every
+/// FO4 wetness/subsurface/fresnel value.
+///
+/// This guard test fails if a future refactor lowers the stopcond
+/// threshold from 155 to 130 (or removes the BSVER gate entirely):
+/// the FO4 EnvironmentMap shader_type_data parse would short-circuit
+/// before reading `env_map_scale = 0.75`.
+#[test]
+fn parse_bs_lighting_fo4_bgsm_name_does_not_stopcond() {
+    // Header at BSVER=130 with strings[0] = a `.bgsm` path.
+    let header = NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: 130,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: vec![Arc::from("materials\\actors\\ironarmor.bgsm")],
+        max_string_length: 32,
+        num_groups: 0,
+    };
+    let data = build_bs_lighting_fo4_env_map();
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+
+    // Full body MUST be parsed — the stopcond did NOT fire.
+    assert!(
+        !prop.material_reference,
+        "FO4 BSVER=130 with .bgsm name must NOT trip the stopcond \
+         (that mechanism is FO76+ only). See #1080 / FO4-D3-009."
+    );
+    // Wetness params present — the stopcond would skip these in FO76+.
+    let w = prop.wetness.as_ref().expect("FO4 wetness must be parsed");
+    assert!((w.spec_scale - 0.1).abs() < 1e-6);
+    assert!((w.unknown_1 - 0.95).abs() < 1e-6);
+    // Shader type 1 (EnvironmentMap) trailing data present.
+    match prop.shader_type_data {
+        ShaderTypeData::EnvironmentMap { env_map_scale } => {
+            assert!(
+                (env_map_scale - 0.75).abs() < 1e-6,
+                "FO4 EnvironmentMap env_map_scale must round-trip even \
+                 with a .bgsm name — see #1080."
+            );
+        }
+        _ => panic!("expected EnvironmentMap shader_type_data"),
+    }
+    // Whole record consumed — no trailing bytes left, confirming the
+    // parser walked the full FO4 BSLightingShaderProperty layout.
+    assert_eq!(stream.position(), data.len() as u64);
+}
+
 // ── #713 / NIF-D3-01 — Skyrim BSSkyShaderProperty / BSWaterShaderProperty ──
 
 /// Build a synthetic Skyrim LE (BSVER=83) `BSSkyShaderProperty`. Layout:

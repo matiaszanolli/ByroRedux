@@ -899,26 +899,22 @@ impl BsTriShape {
             }
         }
         shape.kind = BsTriShapeKind::Dynamic;
-        // #571 / SK-D1-02: surface the silent-import path. Vanilla
-        // Skyrim SE facegen ships `data_size > 0` (real triangles
-        // packed alongside the placeholder positions), so this
-        // branch is dormant on shipped content. A malformed or
-        // aggressively stripped-down mod facegen NIF that ships
-        // `data_size == 0` would land here — `parse()` skipped both
-        // the vertex and the triangle reads, `parse_dynamic`
-        // populated `vertices` from the trailing Vector4 array but
-        // `triangles` is still empty, and `extract_bs_tri_shape`
-        // would then bail at the `triangles.is_empty()` early
-        // return with zero log signal. Match the existing
-        // "verbose at import boundary" idiom and warn so the
-        // failure is audible.
+        // #571 / SK-D1-02: surface the silent-import path. Empirical
+        // measurement (#946 / SK-D5-NEW-08): every single
+        // BSDynamicTriShape in `Skyrim - Meshes0.bsa` (21 140 / 21 140)
+        // ships `data_size == 0` on the parent BSTriShape body — the
+        // pre-#946 doc claim that this branch "is dormant on shipped
+        // content" was empirically false. Demote from `warn!` to
+        // `debug!` so vanilla loads don't spam logs; the diagnostic
+        // is still available for `RUST_LOG=debug` runs investigating
+        // a specific mesh that silently fails to render.
         if !shape.vertices.is_empty() && shape.triangles.is_empty() {
-            log::warn!(
+            log::debug!(
                 "BSDynamicTriShape produced {} vertices but 0 triangles \
                  (data_size==0 on the BSTriShape body skipped the \
-                  triangle read; on shipped vanilla content this never \
-                  fires) — mesh will silently fail to render at the \
-                  import boundary",
+                  triangle read; expected on vanilla Skyrim SE facegen \
+                  meshes — see #946) — mesh will silently fail to render \
+                  at the import boundary",
                 shape.vertices.len()
             );
         }
@@ -1262,32 +1258,15 @@ pub(crate) fn renormalize_skin_weights(w: [f32; 4]) -> [f32; 4] {
 }
 
 /// Convert IEEE 754 half-precision float (u16) to f32.
+///
+/// #945 / SK-D1-NEW-04: deduplicated — the canonical implementation
+/// lives in `crate::import::mesh::half_to_f32` (re-exported from the
+/// private `decode` submodule via `pub(crate) use decode::*`). This
+/// wrapper stays as `pub(crate)` so callers within `blocks/` keep the
+/// local name.
+#[inline]
 pub(crate) fn half_to_f32(h: u16) -> f32 {
-    let sign = ((h >> 15) & 1) as u32;
-    let exp = ((h >> 10) & 0x1F) as u32;
-    let mantissa = (h & 0x3FF) as u32;
-
-    if exp == 0 {
-        if mantissa == 0 {
-            return f32::from_bits(sign << 31);
-        }
-        // Subnormal: normalize
-        let mut m = mantissa;
-        let mut e = 0i32;
-        while m & 0x400 == 0 {
-            m <<= 1;
-            e -= 1;
-        }
-        m &= 0x3FF;
-        let f_exp = (127 - 15 + 1 + e) as u32;
-        return f32::from_bits((sign << 31) | (f_exp << 23) | (m << 13));
-    }
-    if exp == 31 {
-        // Inf/NaN
-        return f32::from_bits((sign << 31) | (0xFF << 23) | (mantissa << 13));
-    }
-    let f_exp = exp + (127 - 15);
-    f32::from_bits((sign << 31) | (f_exp << 23) | (mantissa << 13))
+    crate::import::mesh::half_to_f32(h)
 }
 
 /// Convert a byte-normalized value [0, 255] to [-1.0, 1.0].

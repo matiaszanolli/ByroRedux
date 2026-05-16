@@ -463,7 +463,19 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
         //                     mode") and is NOT the cubemap flag — see
         //                     #595 for the prior stale-comment trap.
         let num_chunks = base[13] as usize;
-        let _chunk_hdr_len = u16::from_le_bytes(base[14..16].try_into().unwrap());
+        let chunk_hdr_len = u16::from_le_bytes(base[14..16].try_into().unwrap());
+        // #1079 / FO4-D2-009 — every vanilla FO4 DX10 record sets
+        // chunk_hdr_len = 24 (matches the chunk struct decoded at line ~496).
+        // A different value would indicate a future format extension or a
+        // corrupt archive; bail rather than silently misparse the rest of
+        // the record. Debug-only so release builds keep the prior tolerant
+        // behaviour (clamp at extraction time).
+        debug_assert_eq!(
+            chunk_hdr_len, 24,
+            "BA2 DX10 record has chunk_hdr_len={} (expected 24) — \
+             unknown variant or corrupt archive",
+            chunk_hdr_len,
+        );
         let height = u16::from_le_bytes(base[16..18].try_into().unwrap());
         let width = u16::from_le_bytes(base[18..20].try_into().unwrap());
         let num_mips = base[20];

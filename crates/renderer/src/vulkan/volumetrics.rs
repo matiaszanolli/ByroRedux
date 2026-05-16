@@ -188,6 +188,14 @@ pub struct VolumetricsPipeline {
     /// `new_inner` because dt is constant under linear slice
     /// distribution; Phase 5 will switch to per-frame exponential dt.
     integration_param_buffer: Option<GpuBuffer>,
+
+    /// Per-frame-in-flight latch: `true` once `write_tlas` has written
+    /// binding 2 for this slot. The injection descriptor set is created
+    /// with bindings 0/1 written but binding 2 (TLAS) deferred — the
+    /// caller is required to call `write_tlas` before `dispatch` each
+    /// frame the gate is on. `dispatch` debug_asserts this. (#1105 /
+    /// REN-D18-003)
+    tlas_written: [bool; MAX_FRAMES_IN_FLIGHT],
 }
 
 impl VolumetricsPipeline {
@@ -223,6 +231,7 @@ impl VolumetricsPipeline {
             integration_descriptor_sets: Vec::new(),
             integrated_volumes: Vec::new(),
             integration_param_buffer: None,
+            tlas_written: [false; MAX_FRAMES_IN_FLIGHT],
         };
 
         macro_rules! try_or_cleanup {
@@ -759,6 +768,17 @@ impl VolumetricsPipeline {
         frame: usize,
         params: &VolumetricsParams,
     ) -> Result<()> {
+        // #1105 / REN-D18-003 — injection descriptor binding 2 (TLAS) is
+        // not written at construction; caller is required to call
+        // write_tlas() each frame before dispatch. Without this latch
+        // the validation layer reports "descriptor not updated" noise in
+        // debug, and the injection shader's shadow ray would read an
+        // undefined acceleration structure.
+        debug_assert!(
+            self.tlas_written[frame],
+            "VolumetricsPipeline::dispatch called without prior write_tlas() for frame {}",
+            frame,
+        );
         // ── Stage A: write injection-pass UBO ────────────────────────
         // The buffer is HOST_VISIBLE + HOST_COHERENT via
         // `GpuBuffer::create_host_visible`, but the execution
@@ -913,7 +933,7 @@ impl VolumetricsPipeline {
     /// built), they should skip both `write_tlas` AND `dispatch`;
     /// composite will reuse the prior frame's integrated volume.
     pub fn write_tlas(
-        &self,
+        &mut self,
         device: &ash::Device,
         frame: usize,
         tlas: vk::AccelerationStructureKHR,
@@ -928,6 +948,9 @@ impl VolumetricsPipeline {
             .descriptor_count(1)
             .push_next(&mut accel_write);
         unsafe { device.update_descriptor_sets(&[write], &[]) };
+        // Latch so dispatch's debug_assert can verify the binding was
+        // written this session. (#1105 / REN-D18-003)
+        self.tlas_written[frame] = true;
     }
 
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {

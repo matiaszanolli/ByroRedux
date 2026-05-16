@@ -310,7 +310,12 @@ void main() {
         // attenuation chain. See REN-D13-NEW-07.
         float contrib = lum * lightFall * lightReach * travelFall * tintLum * strength;
 
-        uint fixed_val = uint(clamp(contrib * scale, 0.0, 4.0e7));
+        // Clamp anchored to the u32 atomic range: max representable
+        // post-scale is `0xFFFFFFFFu / scale`. The 4.0e7 magic constant
+        // was unanchored from CAUSTIC_FIXED_SCALE — a scale change would
+        // silently misalign. (#1099 / REN-D13-002)
+        float clamp_max = float(0xFFFFFFFFu) / scale;
+        uint fixed_val = uint(clamp(contrib * scale, 0.0, clamp_max));
         if (fixed_val == 0u) continue;
         imageAtomicAdd(causticAccum, hitPixel, fixed_val);
     }

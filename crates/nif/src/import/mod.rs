@@ -10,7 +10,7 @@
 pub mod collision;
 mod coord;
 mod material;
-mod mesh;
+pub(crate) mod mesh;
 mod transform;
 mod walk;
 
@@ -18,6 +18,7 @@ mod walk;
 // `effect_shader` field can name `BsEffectShaderData` without leaking
 // the internal module path.
 pub use material::{BsEffectShaderData, NoLightingFalloff, ShaderTypeFields};
+
 
 use crate::scene::NifScene;
 use crate::types::NiTransform;
