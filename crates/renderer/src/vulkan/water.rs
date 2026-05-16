@@ -99,7 +99,7 @@ const _: () = assert!(
 /// Built by the app's per-frame render code from `WaterPlane` ECS
 /// entities and passed alongside [`DrawCommand`] to
 /// [`VulkanContext::draw_frame`]. Kept separate from `DrawCommand` so
-/// the 112-byte push-constant block doesn't bloat every regular draw.
+/// the 128-byte push-constant block doesn't bloat every regular draw.
 ///
 /// The water entity must also appear as a regular `DrawCommand` so its
 /// `GpuInstance` slot (`instance_index`) is uploaded with the correct
@@ -200,7 +200,7 @@ impl WaterPipeline {
             }
         };
 
-        log::info!("Water pipeline created (water.vert + water.frag, SRC_ALPHA blend on HDR, cull NONE, depth-write off, 112B push constants)");
+        log::info!("Water pipeline created (water.vert + water.frag, SRC_ALPHA blend on HDR, cull NONE, depth-write off, 128B push constants)");
 
         Ok(Self {
             pipeline,
