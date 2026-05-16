@@ -9,7 +9,12 @@ use super::{BsaArchive, FileEntry, BSA_V_FO3_SKYRIM, BSA_V_OBLIVION, BSA_V_SKYRI
 use crate::safety::checked_entry_count;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufReader, Read, Seek};
+use std::io::{self, BufReader, Read};
+// `Seek` is only used via `reader.stream_position()` inside
+// `#[cfg(debug_assertions)]` blocks below — gate the import to match,
+// or release builds emit an "unused import" warning.
+#[cfg(debug_assertions)]
+use std::io::Seek;
 use std::path::Path;
 use std::sync::Mutex;
 

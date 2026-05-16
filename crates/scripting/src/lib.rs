@@ -11,6 +11,7 @@
 
 pub mod cleanup;
 pub mod events;
+pub mod papyrus_demo;
 pub mod timer;
 
 pub use cleanup::event_cleanup_system;
