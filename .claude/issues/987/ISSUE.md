@@ -1,12 +1,7 @@
-# Issue #987
+# #987 — NIF-D5-ORPHAN-C: Band C orphan-parse bucket — cloth / decal placement / collision-query proxy / inv markers / W-array (long-term deferred)
 
-**URL**: https://github.com/matiaszanolli/ByroRedux/issues/987
-**Title**: NIF-D5-ORPHAN-C: Band C orphan-parse bucket — cloth / decal placement / collision-query proxy / inv markers / W-array (long-term deferred)
-**Labels**: enhancement, nif-parser, import-pipeline, low
-**Parent**: #974 (orphan-parse meta) / #869 (original instance)
-**Audit source**: docs/audits/AUDIT_NIF_2026-05-12.md
-
----
+Labels: enhancement, nif-parser, import-pipeline, low
+State: OPEN
 
 **Source**: #974 Band C — orphan-parse follow-up (long-term deferred bucket)
 **Severity**: LOW (no shipping-cell-render impact; each needs a substantial subsystem that isn't on any current milestone)
@@ -47,4 +42,3 @@ Re-open with a specific implementation plan when:
 `docs/audits/AUDIT_NIF_2026-05-12.md` § HIGH → NIF-D5-NEW-01 (orphan-parse meta).
 
 Related: #974 (meta), #869 (original orphan-parse instance).
-

@@ -51,7 +51,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 2: BSA v104 Archive (Meshes + Textures)
 **Subagent**: `general-purpose`
-**Entry points**: `crates/bsa/src/archive.rs`
+**Entry points**: `crates/bsa/src/archive/`
 **Checklist**: Verify `Fallout - Meshes.bsa` lists + extracts cleanly. Texture archives (`Fallout - Textures.bsa`) DDS extraction produces valid BC1/BC3/BC5 headers. Sound archives — not needed for rendering but should open without error. Folder hash collisions across Fallout 3's ~150 subdirectories. Compare metrics vs FNV (same format, should behave identically).
 **Output**: `/tmp/audit/fo3/dim_2.md`
 

@@ -52,7 +52,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 2: BSA v103 Archive
 **Subagent**: `general-purpose`
-**Entry points**: `crates/bsa/src/archive.rs`
+**Entry points**: `crates/bsa/src/archive/`
 **Checklist**: BSA v103 header recognition (version byte) — **regression guard, decompression has been working since the 2026-04-17 sweep that confirmed 147 629 / 147 629 vanilla extractions clean**. Pre-2026-04-17 audits (and pre-#699 doc references) framed v103 as a blocker; that premise is dead. Verify the 16-byte folder-record offset is still respected (different from v104's 24 B), the bit 7-10 flag semantics still resolve via the v103 path, hash function still produces correct folder/file hashes, and full-archive sweep stays at 100 %. Only escalate to "open finding" if `meshes/*.nif` extraction starts failing on a previously-clean archive. Look for misleading diagnostics that paint v103 as broken without measurement.
 **Output**: `/tmp/audit/oblivion/dim_2.md`
 
@@ -64,7 +64,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 4: Rendering Path for Oblivion Shaders
 **Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/import/material/` (post-Session-35 split — mod / walker / shader_data), `crates/nif/src/import/walk.rs`, `crates/renderer/shaders/triangle.frag`
+**Entry points**: `crates/nif/src/import/material/` (post-Session-35 split — mod / walker / shader_data), `crates/nif/src/import/walk/`, `crates/renderer/shaders/triangle.frag`
 **Checklist**: NiTexturingProperty → `MaterialInfo` pipeline (base slot 0, dark slot 1, normal from bump slot per `#131`, detail, glow, gloss). NiMaterialProperty color mapping (raw monitor-space per 0e8efc6). NiAlphaProperty blend factor extraction (ensure all Gamebryo AlphaFunction enum values route correctly). NiStencilProperty / NiZBufferProperty / NiVertexColorProperty / NiSpecularProperty / NiWireframeProperty / NiDitherProperty / NiShadeProperty — do we honor them or drop them silently? Vertex color interaction with material color.
 **Output**: `/tmp/audit/oblivion/dim_4.md`
 

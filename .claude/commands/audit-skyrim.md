@@ -59,7 +59,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 2: BSA v105 (LZ4)
 **Subagent**: `general-purpose`
-**Entry points**: `crates/bsa/src/archive.rs`
+**Entry points**: `crates/bsa/src/archive/`
 **Checklist**: BSA v105 header format. LZ4 block decompression via `lz4_flex::block` — verify against known-good Skyrim mesh (e.g. sweetroll). Hash table layout differences vs v104. Folder record size. Embedded-name flag for files. Compressed-file flag priority (archive-level flag vs per-file flag — which wins when they disagree). Full-archive extraction sweep: `Skyrim - Meshes0.bsa` + `Skyrim - Textures*.bsa` all extract without error.
 **Output**: `/tmp/audit/skyrim/dim_2.md`
 
@@ -71,7 +71,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 4: BSEffectShaderProperty + Specialty Nodes
 **Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/blocks/properties.rs` (BSEffectShaderProperty), `crates/nif/src/import/walk.rs`, `crates/nif/src/blocks/mod.rs` (NiLodTriShape / BsLagBoneController / BsProceduralLightningController dispatch)
+**Entry points**: `crates/nif/src/blocks/properties.rs` (BSEffectShaderProperty), `crates/nif/src/import/walk/`, `crates/nif/src/blocks/mod.rs` (NiLodTriShape / BsLagBoneController / BsProceduralLightningController dispatch)
 **Checklist**: BSEffectShaderProperty soft_falloff_depth, greyscale_texture, lighting_influence, env_map_min_lod. BSDynamicTriShape (facegen dynamic verts). **`NiLodTriShape`** (Skyrim DLC tree LOD): inherits from NiTriBasedGeom per nif.xml — distinct wrapper, NOT routed through BSTriShape (#838 regression guard, 8d416cc). BSLODTriShape vs BSMeshLODTriShape vs BSSubIndexTriShape — distinct block types with distinct trailing data; dispatch + import must not confuse them. **`BsLagBoneController`** + **`BsProceduralLightningController`** (#837): dedicated parsers — without them ~120 by-design `block_size` WARN events fire per Meshes0 sweep. BSTreeNode wind-bone list parsing (SpeedTree). BSPackedCombined[Shared]GeomDataExtra — distant LOD batch layout. `as_ni_node` walker unwraps Skyrim NiNode subclasses (BSFadeNode, BSBlastNode, BSDamageStage, BSMultiBoundNode, BSTreeNode).
 **Output**: `/tmp/audit/skyrim/dim_4.md`
 
