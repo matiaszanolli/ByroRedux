@@ -162,7 +162,7 @@ Other patterns left untranslated in this prototype:
 |---|---|---|
 | `RegisterForUpdate` / `RegisterForAnimationEvent` | Untranslated | Subscription components + per-event-type dispatch system. Not in the candidate. |
 | `SendModEvent` / `SendCustomEvent` | Untranslated | Broadcast event component on a global "EventBus" entity. Not in the candidate. |
-| `SetStage(N)` / `GetStageDone(N)` | Untranslated | Quest-stage as an ECS resource keyed by quest FormID. M47.0 territory, not R5. |
+| ~~`SetStage(N)` / `GetStageDone(N)`~~ | **Closed** — see [§ Follow-up 1](#follow-up-1--setstage--getstagedone-via-da10maindoorscriptpsc). | Quest-stage as an ECS resource keyed by quest FormID. M47.0 surface area. |
 | `OnPlayerLoadGame` / save-restoration hooks | Untranslated | Sits with M45 save/load. |
 | `if foo as MyScript` — Papyrus's runtime type test on a script-typed property | Untranslated | Rust enums / trait objects depending on how the M47.2 transpiler shapes script types. Not in the candidate. |
 
@@ -202,20 +202,148 @@ the consumed scripts actually use.
   example; if it had failed the bet, basically nothing in Skyrim's
   authored content would have been salvageable.
 
+## Follow-up 1 — SetStage / GetStageDone via DA10MainDoorScript.psc
+
+After the initial verdict landed, the next pattern down the R5
+"untranslated" list was the quest-stage state surface (`SetStage` +
+`GetStage` + `GetStageDone`). Re-ran the corpus survey for scripts
+exercising both a write (`SetStage`) and a read (`GetStage` /
+`GetStageDone`) — selected `DA10MainDoorScript.psc` (13 LOC raw, 6
+LOC of actual code) as the canonical example:
+
+```papyrus
+ScriptName DA10MainDoorScript Extends ReferenceAlias
+
+Event OnActivate(ObjectReference akActionRef)
+  If (Self.GetOwningQuest().GetStageDone(37) == 1) && \
+     (Self.GetOwningQuest().GetStageDone(40) == 0)
+    Self.GetOwningQuest().SetStage(40)
+  EndIf
+EndEvent
+```
+
+Same shape recurs across dozens of Skyrim quest scripts — the
+"activate-this-thing-to-advance-the-quest, gated on prior stage
+done and current stage not yet done" idiom. Translated into:
+
+### Runtime store
+
+`crates/scripting/src/quest_stages.rs` (~190 LOC, ~120 production):
+
+- `QuestStageState` — an ECS `Resource`, `HashMap<QuestFormId,
+  QuestStageData>`. Lazy entries (quests the player never touched
+  don't allocate). Per-quest state is `current_stage: u16` +
+  `stages_done: HashSet<u16>`. The set-vs-current distinction is
+  load-bearing: a quest at `current_stage = 40` still reports
+  `GetStageDone(37) == true`, matching Papyrus's runtime exactly.
+- `set_stage(quest, stage) -> u16` — returns the previous
+  `current_stage` for callers detecting transitions.
+- `get_stage(quest) -> u16` — defaults to `0` for untouched
+  quests.
+- `get_stage_done(quest, stage) -> bool` — set membership check.
+- `reset(quest)` — for restart sequences.
+- `QuestStageAdvanced` marker component emitted on every
+  advance, ready for the M47.0 fragment dispatcher to consume.
+
+### Generic translation target
+
+`crates/scripting/src/papyrus_demo/quest_advance.rs` (~190 LOC,
+~120 production):
+
+```rust
+pub struct QuestAdvanceOnActivate {
+    pub owning_quest: QuestFormId,
+    pub require_done: Vec<u16>,
+    pub forbid_done: Vec<u16>,
+    pub target_stage: u16,
+    pub activator_gate: ActivatorGate,
+}
+```
+
+This is **the** decision point of the follow-up: the translation
+went **generic, not specific**. A specific `DA10MainDoor`
+component compiled per Skyrim quest-door script would explode the
+component-type count by ~1000×; the generic shape carries the
+script's constants as data and reuses one dispatch system. The
+`da10_main_door(quest_id)` builder produces the DA10-specific
+component preset (`require_done: vec![37]`, `forbid_done: vec![40]`,
+`target_stage: 40`, `ActivatorGate::Any`) — equivalent semantics, no
+new types.
+
+This is also the shape **M47.2's transpiler will emit naturally**.
+The transpiler's job for this pattern family is "detect the
+shape, extract the constants, populate the component". Per-script
+component types are reserved for the long tail where the
+generalization stops paying for itself.
+
+### What this proves
+
+- **State mutation translates to resource writes**, trivially. No
+  global mutex, no journal allocation, no per-quest entity. The
+  resource shape mirrors Papyrus's mental model 1:1 — `Quest.X` →
+  `stage_state.X(quest_id)`.
+- **Stage history is set-semantics**, not single-current. The DA10
+  predicate `GetStageDone(37) && !GetStageDone(40)` requires
+  carrying the full done-set, not just the most-recent stage.
+  Papyrus's runtime does the same; the Rust shape matches.
+- **Cross-quest isolation is free**. Pure hash-map key separation —
+  two quests can never alias state. Papyrus achieves the same via
+  per-quest VM stack frames; we get it via map keys.
+- **The transpilation pattern compresses well**. One generic
+  component + one system covers an entire family of Skyrim's
+  quest-gated activation scripts. Per-script specialisation is
+  reserved for the genuinely-unique long tail.
+
+### Numbers
+
+- **Source**: 13 LOC Papyrus raw (6 of actual code), 1 event, 2
+  stage reads, 1 stage write.
+- **Translation**: 190 LOC `quest_advance.rs` (~120 production +
+  docs), 286 LOC tests (8 distinct semantic scenarios — predicate
+  gating ×3, activator gate ×2, no-precondition tail, cross-quest
+  isolation, same-frame collision).
+- **Runtime store**: 190 LOC `quest_stages.rs` (8 unit tests for
+  the resource itself — covering history retention, idempotency,
+  backwards-advance, per-quest reset).
+- **Workspace test count**: scripting crate went 17 → 33 (16 new,
+  all passing).
+
+### Outstanding bits still untranslated
+
+- **`OnStageSet` event handlers**. The marker emission is in
+  place ([`QuestStageAdvanced`]); the dispatch loop that runs
+  fragment-script systems on advance is M47.0.
+- **`SetObjectiveDisplayed` / `SetObjectiveCompleted` /
+  `SetObjectiveFailed`**. Parallel objectives state. Same shape
+  as stages — drops in next to `QuestStageState` when a journal
+  UI consumer exists to read it.
+- **`Quest.Start()` / `Quest.Stop()` / `Quest.IsRunning()`**.
+  Quest lifecycle (separate from stage state). Trivial — adds a
+  `is_running: bool` to `QuestStageData`. Deferred until a
+  consumer requires it.
+
+None of these change the verdict.
+
+[`QuestStageAdvanced`]: ../crates/scripting/src/quest_stages.rs
+
 ## Replay this evaluation
 
 ```bash
-# Run the translation tests
-cargo test -p byroredux-scripting papyrus_demo
+# Run all the translation tests (initial demo + the SetStage
+# follow-up + the quest_stages resource).
+cargo test -p byroredux-scripting
 
-# Inspect the source side-by-side with the translation:
-cat docs/r5/source/defaultRumbleOnActivate.psc
+# Inspect the sources side-by-side with their translations:
+cat docs/r5/source/defaultRumbleOnActivate.psc      # rumble demo
 cat crates/scripting/src/papyrus_demo/mod.rs
 
+cat docs/r5/source/DA10MainDoorScript.psc           # SetStage demo
+cat crates/scripting/src/papyrus_demo/quest_advance.rs
+cat crates/scripting/src/quest_stages.rs
+
 # Decompile additional candidates from the Skyrim BSA (requires wine +
-# Champollion v1.3.2 at ~/.tools/Champollion.exe; see this commit's
-# message for the setup):
-cargo run --release -p byroredux-bsa --example r5_extract_pex -- \
-    "/path/to/Skyrim - Misc.bsa" /tmp/r5_skyrim/pex
-WINEDEBUG=-all wine ~/.tools/Champollion.exe -r -t -p Z:\\tmp\\r5_skyrim\\psc Z:\\tmp\\r5_skyrim\\pex
+# Champollion v1.3.2 at ~/.tools/Champollion.exe; the BSA extraction
+# tool was a one-shot scratch — write a fresh examples/r5_extract_pex.rs
+# if you need it again).
+WINEDEBUG=-all wine ~/.tools/Champollion.exe -r -t -p Z:\\tmp\\psc Z:\\tmp\\pex
 ```

@@ -189,15 +189,21 @@ impl Component for ControllerRumbleCommand {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Register every component this module introduces.
+pub mod quest_advance;
+
+/// Register every component this module + its submodules introduce.
 ///
 /// Mirrors [`crate::register`]'s shape so the App-level setup
 /// initialises the demo storages alongside the rest of the
-/// scripting subsystem.
+/// scripting subsystem. Resources backing the demos
+/// ([`PlayerEntity`], [`crate::quest_stages::QuestStageState`]) are
+/// inserted by the caller — they're per-app instance state, not
+/// per-world-init.
 pub fn register(world: &mut World) {
     world.register::<RumbleOnActivate>();
     world.register::<CameraShakeCommand>();
     world.register::<ControllerRumbleCommand>();
+    quest_advance::register(world);
 }
 
 /// Translation of Papyrus's per-state `Event OnActivate(actronaut)`
