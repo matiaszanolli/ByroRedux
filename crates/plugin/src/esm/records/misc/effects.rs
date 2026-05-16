@@ -76,6 +76,10 @@ pub fn parse_avif(form_id: u32, subs: &[SubRecord]) -> AvifRecord {
 //          → ARMA → race-specific MODL chain.
 //   BPTD — body part data; per-NPC dismemberment routing + biped
 //          slot count.
+//          Parse-but-don't-consume gate (TD5-016): gated on M41
+//          Phase 4 (physics/dismemberment system). Parser captures
+//          EDID + key scalars; full sub-record decode lands when the
+//          consuming subsystem arrives.
 //
 // All five are stub-form: EDID + a handful of key scalar / form-ref
 // fields. Full sub-record decoding lands when the consuming subsystem

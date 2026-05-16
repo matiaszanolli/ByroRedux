@@ -109,6 +109,12 @@ pub const WTHR_SNOW: u8 = 0x08;
 /// Consumer wiring (HDR eye-adaptation system) is follow-up work —
 /// this captures the authored values verbatim so the future bloom /
 /// sunlight-dimmer system has a canonical source.
+///
+/// **Parse-but-don't-consume gate (TD5-010):** no renderer system reads
+/// `OblivionHdrLighting` fields yet. Gated on Tier-5 renderer polish —
+/// the eye-adaptation / bloom / scene-dimmer pipeline (no ROADMAP row
+/// yet). The `oblivion_hdr` field on `WeatherRecord` is exported from
+/// this crate so the future consumer can land without touching the parser.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct OblivionHdrLighting {
     /// Rate the scene luminance meter tracks toward the target (0–65536).

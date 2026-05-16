@@ -86,11 +86,19 @@ pub struct TreeRecord {
     /// SNAM — leaf-index list. SpeedTree runtime walks this to know
     /// which leaf cards animate under wind versus stay rigid (vanilla
     /// canopy setups carry both kinds in a single tree).
+    ///
+    /// **Parse-but-don't-consume gate (TD5-011):** gated on SpeedTree
+    /// Phase 2 — real geometry tail (billboard→mesh, leaf animation).
+    /// Currently the importer returns a placeholder billboard
+    /// (`crates/spt/src/import/mod.rs:116-180`).
     pub leaf_indices: Vec<u32>,
     /// CNAM — canopy / wind parameters as raw f32. Field count varies
     /// across games (5 on Oblivion, 8 on FO3/FNV); semantics aren't
     /// pinned down here. Phases 2/4 of the SpeedTree plan consume this
     /// once `WindField` is wired.
+    ///
+    /// **Parse-but-don't-consume gate (TD5-011):** same milestone as
+    /// `leaf_indices` above — SpeedTree Phase 2.
     pub canopy_params: Vec<f32>,
     /// BNAM — billboard width / height on FO3/FNV. `None` on Oblivion
     /// (BNAM absent there) and Skyrim+ (TREE records dropped the field).
