@@ -2376,13 +2376,19 @@ impl VulkanContext {
             .signal_semaphores(&signal_semaphores);
 
         unsafe {
-            let queue = *self
+            // Bind the MutexGuard, deref inside the call — `*self
+            // .graphics_queue.lock()` would release the guard end-of-
+            // statement (vk::Queue is Copy) before `queue_submit` ran,
+            // defeating VUID-vkQueueSubmit-queue-00893 the Mutex was
+            // added to enforce. Mirrors the present-queue site below.
+            // See CONC-D2-NEW-01 (audit 2026-05-16).
+            let queue = self
                 .graphics_queue
                 .lock()
                 .expect("graphics queue lock poisoned");
             if let Err(e) = self
                 .device
-                .queue_submit(queue, &[submit_info], self.frame_sync.in_flight[frame])
+                .queue_submit(*queue, &[submit_info], self.frame_sync.in_flight[frame])
                 .context("queue_submit")
             {
                 // Submit failed — `image_available[frame]` was never
@@ -2391,11 +2397,13 @@ impl VulkanContext {
                 // acquire on this slot doesn't trip
                 // VUID-vkAcquireNextImageKHR-semaphore-01779.
                 // #910 / REN-D5-NEW-01.
+                drop(queue);
                 let _ = self
                     .frame_sync
                     .recreate_image_available_for_frame(&self.device, frame);
                 return Err(e);
             }
+            drop(queue);
         }
 
         // #917 / REN-D10-NEW-03 — advance SVGF + TAA `frames_since_

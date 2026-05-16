@@ -655,13 +655,19 @@ where
             }
         };
 
-        let q = *queue.lock().expect("graphics queue lock poisoned");
+        // Bind the MutexGuard, deref inside the call — `*queue.lock()`
+        // would release the guard end-of-statement (vk::Queue is Copy)
+        // before `queue_submit` ran, defeating VUID-vkQueueSubmit-queue-
+        // 00893 the Mutex was added to enforce. Mirrors the present-queue
+        // site at `context/draw.rs`. See CONC-D2-NEW-01 (audit 2026-05-16).
+        let q = queue.lock().expect("graphics queue lock poisoned");
         device
-            .queue_submit(q, &[submit_info], fence)
+            .queue_submit(*q, &[submit_info], fence)
             .context("submit one-time commands")?;
         device
             .wait_for_fences(&[fence], true, u64::MAX)
             .context("wait for one-time commands")?;
+        drop(q);
         if owned {
             device.destroy_fence(fence, None);
         }
