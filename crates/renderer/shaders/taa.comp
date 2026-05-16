@@ -176,7 +176,16 @@ void main() {
     vec3 var  = max(m2 / N - mean * mean, vec3(0.0));
     vec3 sigma = sqrt(var);
     // Karis-style variance clipping window: mean ± γ·σ.
-    const float gamma = 1.25;
+    //
+    // γ widened from 1.25 to 1.5 (#1108 / REN-D20-001): the prior value
+    // was calibrated for physical-sun-radius shadow noise (≈0.0047 rad),
+    // but the current `sunAngularRadius = 0.020 rad` (4× physical) gives
+    // penumbra edges higher per-frame variance. With γ=1.25 valid history
+    // samples near soft-shadow edges got rejected under camera motion,
+    // producing residual flicker. γ=1.5 widens the variance window enough
+    // to keep those samples while still rejecting genuine ghosting from
+    // disocclusions.
+    const float gamma = 1.5;
     vec3 yMin = mean - gamma * sigma;
     vec3 yMax = mean + gamma * sigma;
 
