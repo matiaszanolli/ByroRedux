@@ -57,7 +57,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 3: ESM Record Coverage (Fallout3.esm)
 **Subagent**: `general-purpose`
-**Entry points**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell.rs`
+**Entry points**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell/` (post-Session-34 split — walkers / helpers / support / wrld)
 **Checklist**: Parse `Fallout3.esm` through the shared FNV parser. Are there FO3-unique record types absent from FalloutNV.esm (e.g., pre-FNV formats for NPC_, DIAL, INFO)? Compare category counts: items, containers, NPCs, factions, globals, settings vs the FNV baseline of 13,684 structured records. CELL record XCLL/RCLR layout identity vs FNV. Water records (WATR) for rivers / ponds — parsed or skipped? NAVM differences?
 **Output**: `/tmp/audit/fo3/dim_3.md`
 

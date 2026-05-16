@@ -116,7 +116,7 @@ Default tech-debt findings to LOW unless one of the above fires.
 - `panic!("not yet")` / `panic!("not implemented")` — same reachability check
 - Functions that return `None` / `Vec::new()` / `Default::default()` with a comment like "// TODO: real impl" or "// stub"
 - Trait impls with empty method bodies that should do work (check against trait docs for required behavior)
-- `crates/plugin/src/legacy/{tes3,tes4,tes5,fo4}.rs` parser stubs — which records are fully wired vs still stubbed? (Cross-check against ROADMAP.md per-game compat matrix)
+- ESM per-game record coverage in `crates/plugin/src/esm/records/` — which records are fully wired vs still stubbed per game? (The legacy crates/plugin/src/legacy/{tes3,tes4,tes5,fo4}.rs per-game stubs were removed under `#390`; coverage now lives in the unified records tree. Cross-check against ROADMAP.md per-game compat matrix.)
 - Console commands in `byroredux/src/commands.rs` that exist but are no-ops or print "TODO"
 
 **Output**: `/tmp/audit/tech-debt/dim_5.md`
@@ -138,13 +138,19 @@ Default tech-debt findings to LOW unless one of the above fires.
 ### Dimension 7: Stale Documentation & Comments
 **Entry points**: `docs/`, `ROADMAP.md`, `HISTORY.md`, `README.md`, `CLAUDE.md`, `.claude/commands/audit-*.md`, doc comments in source
 **Checklist**:
-- File path / line refs in audit skills that drifted after the Session 34 split (`feedback_session34_layout.md` is the translation map — apply it)
+- Run `.claude/commands/_audit-validate.sh` first — it's the structural gate added under `#1114` / TD7-050 to catch audit-skill path drift on the commit that introduces it. If the script reports STALE refs, those are auto-eligible Dim 7 findings (effort: trivial).
 - Doc comments that reference renamed types (e.g., `// See OldStruct` where `OldStruct` was renamed)
 - "76-byte Vertex" -style numerical claims in doc comments that no longer match `Vertex::SIZE` (commit 1c388e5 fixed one batch of these — sweep for the rest)
 - ROADMAP.md milestones marked "in progress" but the underlying issues are all closed (or vice versa)
 - HISTORY.md entries that reference issues that were later reverted
 - README.md command examples that no longer work (`cargo run` flag changed, BSA path syntax changed)
 - `docs/legacy/` references to Gamebryo source paths that may have moved
+
+**Convention** (post-`#1114`): backticked path refs in audit-*.md claim
+"this path exists right now — find it." Forward-looking refs (a file
+that doesn't yet exist) or backwards-looking refs (a file that was
+deleted) must NOT use backticks. The validate script flags any
+backticked path that does not resolve.
 
 **Output**: `/tmp/audit/tech-debt/dim_7.md`
 
@@ -167,7 +173,7 @@ Default tech-debt findings to LOW unless one of the above fires.
   ```bash
   find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1 > 2000 && $2 != "total"' | sort -rn
   ```
-  As of 2026-05-13: `acceleration.rs` 4200, `dispatch_tests.rs` 3667, `cell/tests.rs` 3329, `draw.rs` 2554, `scene_buffer.rs` 2367, `context/mod.rs` 2348, `import/mesh.rs` 2212, `blocks/collision.rs` 2162, `nif/anim.rs` 2101. As of 2026-05-14 (post-Session-36 split sweep — #29e9f45/bd45caa/9c1f723/1fe5321/fe47706/014adc8/ca81c19): 7 of 9 closed; remaining are `context/draw.rs` 2571 and `context/mod.rs` 2363 (both Vulkan-recording-adjacent, see `feedback_speculative_vulkan_fixes.md`). For each, propose a split axis (by submodule responsibility, not by line count alone).
+  As of 2026-05-13: acceleration.rs (4200 LOC), dispatch_tests.rs (3667), cell/tests.rs (3329), draw.rs (2554), scene_buffer.rs (2367), context/mod.rs (2348), import/mesh.rs (2212), blocks/collision.rs (2162), nif/anim.rs (2101) — these pre-split paths are listed as a historical baseline; the files have since been split into submodules. As of 2026-05-14 (post-Session-36 split sweep — #29e9f45/bd45caa/9c1f723/1fe5321/fe47706/014adc8/ca81c19): 7 of 9 closed; remaining are `crates/renderer/src/vulkan/context/draw.rs` 2571 and `crates/renderer/src/vulkan/context/mod.rs` 2363 (both Vulkan-recording-adjacent, see `feedback_speculative_vulkan_fixes.md`). For each, propose a split axis (by submodule responsibility, not by line count alone).
 - Functions >200 LOC — propose extraction
 - Match arms >50 cases (these usually want a lookup table)
 - Nesting depth >5 (often a state-machine extraction candidate)

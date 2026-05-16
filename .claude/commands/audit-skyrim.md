@@ -53,7 +53,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 1: BSTriShape Vertex Format
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/bs_tri_shape.rs` (if present, else the BSTriShape parser in `blocks/`), `crates/nif/src/import/mesh/bs_tri_shape.rs`
+**Entry points**: `crates/nif/src/blocks/tri_shape.rs` (BSTriShape parser folded into the unified file post-Session-35), `crates/nif/src/import/mesh/bs_tri_shape.rs`
 **Checklist**: Vertex format flag bits (`VF_*`) mapped correctly — VERTEX, UV, NORMAL, TANGENT, COLOR, SKINNED, FULL_PRECISION, EYE_DATA. Half-precision u16 → f32 conversion numerically correct (IEEE 754 binary16 decode). Packed normals → tangent-space reconstruction. Vertex index stride (u16 vs u32) chosen from the BSVER or packed-vertex flag. `extract_bs_tri_shape` in `import/mesh/bs_tri_shape.rs` handles all flag combinations. Skinned-vertex `bone_indices` / `bone_weights` extraction matches the #178 skinning pipeline.
 **Output**: `/tmp/audit/skyrim/dim_1.md`
 
@@ -83,7 +83,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 6: ESM Readiness & Forward Blockers
 **Subagent**: `general-purpose`
-**Entry points**: `crates/plugin/src/legacy/tes5.rs`, `ROADMAP.md`
+**Entry points**: `crates/plugin/src/esm/records/` (TES5 records share the unified parser — the per-game legacy/tes5.rs stub was removed under `#390`), `ROADMAP.md`
 **Checklist**: TES5 ESM parser status (stub). What record types would a minimum "interior cell renders" require (CELL, REFR, STAT, LIGH, WEAP, ARMO)? TES5 group structure differences vs TES4 (Skyrim uses compressed records extensively — groups can be compressed). Skyrim-specific record types needed for proper rendering: NAVM (navmesh — not needed for render), LAND (different heightmap scale), LTEX, TXST, ADDN (addon nodes). Dialog/Quest format (TES5 introduced radiant story). FaceGen head part (HDPT) records — metadata for facegen but runtime is out of scope. Animation system (havok behavior graphs — out of scope, but BSBehaviorGraphExtraData should parse without error).
 **Output**: `/tmp/audit/skyrim/dim_6.md`
 

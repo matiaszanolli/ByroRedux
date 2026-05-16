@@ -75,7 +75,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Memory: walker should NOT load the whole file before iterating (mmap or chunked-read pattern) — verify on the largest `joshua01.spt` corpus entry
 
 ### Dimension 4: Placeholder Fallback
-**Entry points**: `crates/spt/src/import.rs` (or equivalent), `byroredux/src/scene/nif_loader.rs`, billboard mesh creation in `crates/renderer/src/mesh.rs`
+**Entry points**: `crates/spt/src/import/` (now a module directory), `byroredux/src/scene/nif_loader.rs`, billboard mesh creation in `crates/renderer/src/mesh.rs`
 **Checklist**:
 - When the walker fails OR no billboard tag was captured, importer returns a placeholder card (Quad mesh + magenta-checker placeholder texture OR the texture from the billboard tag if available)
 - Placeholder return is non-null — must never `Err` out of the cell loader (graceful degradation is the Phase 1 contract)

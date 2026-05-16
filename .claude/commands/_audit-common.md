@@ -118,6 +118,21 @@ See `.claude/commands/_audit-severity.md` for the unified severity scale (CRITIC
 - **Incremental writes** — append findings to the report as you go; do not hold everything in memory.
 - **One dimension at a time** — complete and write up one dimension before starting the next.
 
+## Path-Reference Convention (post-`#1114`)
+
+Backticked file/dir paths in any audit-*.md skill (or this file)
+**must resolve against the live repository tree**. The validate gate
+at `.claude/commands/_audit-validate.sh` enforces this and is the
+structural fix for the recurring TD7-* stale-path findings.
+
+- Backticks = "this path exists right now". The gate fails CI / the
+  audit if it doesn't.
+- Forward-looking refs (a file that doesn't yet exist) or
+  backwards-looking refs (a file that was deleted) **must not** use
+  backticks — write them as plain text or italics.
+- Run `.claude/commands/_audit-validate.sh` before committing edits
+  to any audit skill.
+
 ## Deduplication (MANDATORY)
 
 Before reporting ANY finding:

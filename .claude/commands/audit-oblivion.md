@@ -58,13 +58,13 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 3: ESM Record Coverage
 **Subagent**: `general-purpose`
-**Entry points**: `crates/plugin/src/esm/`, `crates/plugin/src/legacy/tes4.rs`
+**Entry points**: `crates/plugin/src/esm/` (TES4 records live alongside FNV / FO3 — the per-game legacy/tes4.rs stub was removed under `#390`)
 **Checklist**: TES4 header format differences (e.g., HEDR version 1.0 vs 0.94, group structure). What record types are Oblivion-unique (SPEL, ENCH, MGEF, BOOK, etc. — subset vs FNV)? Dialog/Quest record format: DIAL/INFO differ between Oblivion and later titles. CELL record format for Oblivion (XCLL, RCLR, etc.). Does `parse_esm_cells()` walker handle Oblivion's group layout? What would minimum "render a cell" require from the parser?
 **Output**: `/tmp/audit/oblivion/dim_3.md`
 
 ### Dimension 4: Rendering Path for Oblivion Shaders
 **Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/import/material.rs`, `crates/nif/src/import/walk.rs`, `crates/renderer/shaders/triangle.frag`
+**Entry points**: `crates/nif/src/import/material/` (post-Session-35 split — mod / walker / shader_data), `crates/nif/src/import/walk.rs`, `crates/renderer/shaders/triangle.frag`
 **Checklist**: NiTexturingProperty → `MaterialInfo` pipeline (base slot 0, dark slot 1, normal from bump slot per `#131`, detail, glow, gloss). NiMaterialProperty color mapping (raw monitor-space per 0e8efc6). NiAlphaProperty blend factor extraction (ensure all Gamebryo AlphaFunction enum values route correctly). NiStencilProperty / NiZBufferProperty / NiVertexColorProperty / NiSpecularProperty / NiWireframeProperty / NiDitherProperty / NiShadeProperty — do we honor them or drop them silently? Vertex color interaction with material color.
 **Output**: `/tmp/audit/oblivion/dim_4.md`
 

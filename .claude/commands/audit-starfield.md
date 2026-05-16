@@ -65,7 +65,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 4: Vertex Format & Mesh Variants
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/bs_tri_shape.rs` (or equivalent)
+**Entry points**: `crates/nif/src/blocks/tri_shape.rs` (BSTriShape parser folded into the unified file post-Session-35)
 **Checklist**: BSTriShape vertex format for Starfield. Any new VF_* flag bits introduced beyond FO4's set. Tangent-space reconstruction from packed normals. Vertex count limits (Starfield has much higher-detail meshes than FO4). BSGeometrySegmentData — current `block_size` skip is correct; any change in presence or layout for Starfield (the N23.9 note said full parsing deferred until segment metadata surfaces to rendering). Check for new `BSMeshLODTriShape` / `BSSubIndexTriShape` variants or replacements.
 **Output**: `/tmp/audit/starfield/dim_4.md`
 
