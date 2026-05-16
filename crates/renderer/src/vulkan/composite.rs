@@ -152,14 +152,15 @@ pub struct CompositePipeline {
     frag_module: vk::ShaderModule,
     /// Sampler for reading all the input textures (HDR, indirect, albedo).
     hdr_sampler: vk::Sampler,
-    /// Separate NEAREST sampler for integer-format attachments (R32_UINT
-    /// caustic accumulator). `hdr_sampler` uses `VK_FILTER_LINEAR` which
-    /// is illegal on UINT formats under VUID-vkCmdDraw-magFilter-04553
-    /// (integer formats don't expose `SAMPLED_IMAGE_FILTER_LINEAR_BIT`).
-    /// The fragment shader texelFetches this texture — filter mode is
-    /// cosmetically irrelevant, but the validation layer checks it
-    /// regardless.
-    caustic_sampler: vk::Sampler,
+    /// NEAREST sampler used for bindings that must NOT apply bilinear
+    /// interpolation across pixel boundaries:
+    ///   - Binding 1 (`indirectTex`, SVGF denoised RGBA16F): NEAREST
+    ///     preserves the per-pixel denoised values; LINEAR would add
+    ///     a second spatial-blur pass not part of the Schied 2017 model.
+    ///   - Binding 5 (`causticTex`, R32_UINT): NEAREST is required
+    ///     because integer formats don't expose FILTER_LINEAR, and binding
+    ///     a LINEAR sampler trips VUID-vkCmdDraw-magFilter-04553.
+    nearest_sampler: vk::Sampler,
     /// Per-frame parameter UBOs.
     param_buffers: Vec<GpuBuffer>,
 
@@ -258,7 +259,7 @@ impl CompositePipeline {
             vert_module: vk::ShaderModule::null(),
             frag_module: vk::ShaderModule::null(),
             hdr_sampler: vk::Sampler::null(),
-            caustic_sampler: vk::Sampler::null(),
+            nearest_sampler: vk::Sampler::null(),
             param_buffers: Vec::new(),
             width,
             height,
@@ -359,12 +360,12 @@ impl CompositePipeline {
                 .context("HDR sampler")
         });
 
-        // Separate NEAREST sampler for the R32_UINT caustic accumulator.
-        // Integer-format views don't expose FILTER_LINEAR, and binding an
-        // LINEAR sampler to a `usampler2D` trips
-        // VUID-vkCmdDraw-magFilter-04553 even though the fragment shader
-        // only ever uses `texelFetch` against this view.
-        partial.caustic_sampler = try_or_cleanup!(unsafe {
+        // NEAREST sampler for bindings that must not bilinearly interpolate:
+        // - indirect (binding 1, SVGF denoised RGBA16F): NEAREST preserves
+        //   the per-pixel denoised output; LINEAR adds a second blur pass.
+        // - caustic (binding 5, R32_UINT): NEAREST required — integer formats
+        //   don't expose FILTER_LINEAR (VUID-vkCmdDraw-magFilter-04553).
+        partial.nearest_sampler = try_or_cleanup!(unsafe {
             device
                 .create_sampler(
                     &vk::SamplerCreateInfo::default()
@@ -376,7 +377,7 @@ impl CompositePipeline {
                         .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
                     None,
                 )
-                .context("Caustic (R32_UINT) sampler")
+                .context("NEAREST sampler (indirect + caustic)")
         });
 
         // ── 3. Composite render pass ─────────────────────────────────
@@ -623,8 +624,10 @@ impl CompositePipeline {
                 .sampler(partial.hdr_sampler)
                 .image_view(partial.hdr_image_views[i])
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            // NEAREST: preserves per-pixel denoised values; LINEAR would add
+            // a second spatial-blur pass on top of what SVGF already applied.
             let indirect_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.hdr_sampler)
+                .sampler(partial.nearest_sampler)
                 .image_view(indirect_views[i])
                 .image_layout(indirect_layout)];
             let albedo_info = [vk::DescriptorImageInfo::default()
@@ -644,7 +647,7 @@ impl CompositePipeline {
                 .image_view(depth_view)
                 .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
             let caustic_info = [vk::DescriptorImageInfo::default()
-                .sampler(partial.caustic_sampler)
+                .sampler(partial.nearest_sampler)
                 .image_view(caustic_views[i])
                 .image_layout(vk::ImageLayout::GENERAL)];
             let volumetric_info = [vk::DescriptorImageInfo::default()
@@ -984,8 +987,9 @@ impl CompositePipeline {
                     .sampler(self.hdr_sampler)
                     .image_view(self.hdr_image_views[i])
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                // NEAREST: preserves per-pixel SVGF denoised values.
                 let indirect_info = [vk::DescriptorImageInfo::default()
-                    .sampler(self.hdr_sampler)
+                    .sampler(self.nearest_sampler)
                     .image_view(indirect_views[i])
                     .image_layout(indirect_layout)];
                 let albedo_info = [vk::DescriptorImageInfo::default()
@@ -1002,7 +1006,7 @@ impl CompositePipeline {
                     .image_view(depth_view)
                     .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)];
                 let caustic_info = [vk::DescriptorImageInfo::default()
-                    .sampler(self.caustic_sampler)
+                    .sampler(self.nearest_sampler)
                     .image_view(caustic_views[i])
                     .image_layout(vk::ImageLayout::GENERAL)];
                 let volumetric_info = [vk::DescriptorImageInfo::default()
@@ -1184,8 +1188,8 @@ impl CompositePipeline {
         if self.hdr_sampler != vk::Sampler::null() {
             unsafe { device.destroy_sampler(self.hdr_sampler, None) };
         }
-        if self.caustic_sampler != vk::Sampler::null() {
-            unsafe { device.destroy_sampler(self.caustic_sampler, None) };
+        if self.nearest_sampler != vk::Sampler::null() {
+            unsafe { device.destroy_sampler(self.nearest_sampler, None) };
         }
         for &view in &self.hdr_image_views {
             unsafe { device.destroy_image_view(view, None) };
