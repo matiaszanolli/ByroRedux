@@ -100,6 +100,38 @@ pub struct TaaPipeline {
     pub width: u32,
     pub height: u32,
 
+    /// Shared (not per-FIF) frame counter for the
+    /// [`should_force_history_reset`] bootstrap gate.
+    ///
+    /// SVGF moved its analogous counter to per-FIF `[u32; MAX_FRAMES_IN_FLIGHT]`
+    /// via #964 (REN-D10-NEW-07). TAA intentionally stays on a single `u32`
+    /// because all three reset entry points wipe the field for every slot at
+    /// once, and `should_force_history_reset(c) := c < MAX_FRAMES_IN_FLIGHT`
+    /// produces exactly one force-reset per slot during bootstrap when both
+    /// the counter and the FIF cycle increment in lockstep:
+    ///
+    /// 1. `new_inner` initialises to 0 with all history images in UNDEFINED.
+    /// 2. [`Self::signal_history_reset`] zeroes both slots together (called
+    ///    from cell-load / camera-teleport / pulse paths — there is no
+    ///    asymmetric per-slot reset entry point).
+    /// 3. [`Self::recreate_on_resize`] zeroes both slots together (the
+    ///    swapchain-resize path drops every history image).
+    ///
+    /// After any reset, `dispatch` increments the counter once per
+    /// `mark_frame_completed`, and the FIF index advances in step — so the
+    /// first `MAX_FRAMES_IN_FLIGHT` dispatches each see `force_reset=true`
+    /// exactly once, regardless of slot. The SVGF failure mode #964 fixed
+    /// (a hypothetical MFIF=3 bump where a globally-closed gate left the
+    /// third slot's first read sampling undefined history) does not apply
+    /// here because TAA dispatches in strict round-robin from `draw_frame`
+    /// — slot `f` is always dispatched on frame `f`, frame `f + MFIF`, etc.
+    /// — so a counter that closes at frame `MFIF` necessarily ran every
+    /// slot through its force-reset write.
+    ///
+    /// If a future refactor adds a per-slot reset path (e.g. selective
+    /// reactive history invalidation that only wipes one slot), migrate
+    /// this to `[u32; MAX_FRAMES_IN_FLIGHT]` mirroring SVGF's #964 layout.
+    /// REN-D12-NEW-01 (#1124).
     frames_since_creation: u32,
     /// Set in [`Self::dispatch`] once the compute dispatch has been
     /// recorded; consumed + cleared by [`Self::mark_frame_completed`]

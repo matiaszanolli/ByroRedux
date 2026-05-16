@@ -830,6 +830,217 @@ fn column_major_to_vk_transform_pins_row_major_3x4_output() {
     assert_eq!(t.matrix[8..12], [-1.0, 0.0, 0.0, 5.0]);
 }
 
+// ── #1123 / REN-D8-NEW-02 — built_primitive_count invariant ────
+//
+// The TLAS UPDATE path at `tlas.rs:753` runtime-asserts
+// `built_primitive_count == instance_count`. That assert is fed
+// by a bookkeeping chain inside `build_tlas` (decide_use_update
+// short-circuits + the `instance_count > built_primitive_count`
+// guard + the BUILD-mode `built_primitive_count = instance_count`
+// store). Pin the chain from outside the live Vulkan path by
+// replaying the same sequence on a `TlasBookkeeping` stand-in and
+// asserting the invariant after every "submit".
+//
+// Paired with REN-D8-NEW-01 (#1121) — the runtime assert covers
+// the failure at the firing site; this test pins the contract so
+// a refactor that breaks it before the assert ever runs fails in
+// `cargo test`.
+
+/// Minimal stand-in for the slice of `TlasState` the BUILD/UPDATE
+/// decision touches each frame. Captures the same fields production
+/// code carries on the per-FIF `TlasState`. Initialised to match a
+/// freshly-allocated TLAS (`needs_full_rebuild = true`,
+/// `last_blas_map_gen = u64::MAX`, `built_primitive_count = 0`).
+struct TlasBookkeeping {
+    needs_full_rebuild: bool,
+    last_blas_map_gen: u64,
+    last_blas_addresses: Vec<vk::DeviceAddress>,
+    built_primitive_count: u32,
+    /// Number of BUILDs / UPDATEs we've ever submitted from this
+    /// stand-in — used by the tests below to assert the right mode
+    /// fired for each frame.
+    builds: u32,
+    updates: u32,
+}
+
+impl TlasBookkeeping {
+    fn new() -> Self {
+        Self {
+            needs_full_rebuild: true,
+            last_blas_map_gen: u64::MAX,
+            last_blas_addresses: Vec::new(),
+            built_primitive_count: 0,
+            builds: 0,
+            updates: 0,
+        }
+    }
+
+    /// Replay one frame of `build_tlas`'s bookkeeping. Mirrors the
+    /// production sequence in `tlas.rs::build_tlas`:
+    ///
+    /// 1. Call `decide_use_update(needs_full_rebuild, last_gen,
+    ///    map_gen, cached, current)`.
+    /// 2. Apply the `instance_count > built_primitive_count` guard
+    ///    that forces BUILD when an UPDATE would exceed the source
+    ///    BUILD's primitive count (VUID-…-pInfos-03708).
+    /// 3. Swap `last_blas_addresses` and `current_addresses`.
+    /// 4. On BUILD, set `built_primitive_count = instance_count`.
+    ///    On UPDATE, leave it untouched.
+    /// 5. Clear `needs_full_rebuild` and remember `map_gen`.
+    fn submit_frame(&mut self, map_gen: u64, mut current_addresses: Vec<u64>) {
+        let instance_count = current_addresses.len() as u32;
+        let (mut use_update, _did_zip) = decide_use_update(
+            self.needs_full_rebuild,
+            self.last_blas_map_gen,
+            map_gen,
+            &self.last_blas_addresses,
+            &current_addresses,
+        );
+        if use_update && instance_count > self.built_primitive_count {
+            use_update = false;
+        }
+        std::mem::swap(&mut self.last_blas_addresses, &mut current_addresses);
+        if use_update {
+            self.updates += 1;
+        } else {
+            self.builds += 1;
+            self.built_primitive_count = instance_count;
+        }
+        self.needs_full_rebuild = false;
+        self.last_blas_map_gen = map_gen;
+    }
+
+    /// The invariant pinned by [`tlas.rs:753`]'s `debug_assert_eq!`.
+    /// Holds at every frame boundary so the next-frame UPDATE path
+    /// finds a consistent count and address-list pair.
+    fn assert_invariant(&self) {
+        assert_eq!(
+            self.built_primitive_count as usize,
+            self.last_blas_addresses.len(),
+            "built_primitive_count ({}) must equal last_blas_addresses.len() ({}) — \
+             see #1121 / REN-D8-NEW-01 runtime assert at tlas.rs:753",
+            self.built_primitive_count,
+            self.last_blas_addresses.len(),
+        );
+    }
+}
+
+/// The headline scenario from the issue: BUILD → UPDATE → shrink →
+/// UPDATE. Every transition must preserve the invariant, and the
+/// "shrink" frame (instance_count drops below `built_primitive_count`)
+/// must force a BUILD because the address-set length changed — without
+/// which the next UPDATE submit would feed stale tail data into the
+/// BVH on the difference range.
+#[test]
+fn tlas_built_primitive_count_invariant_holds_across_build_update_cycles() {
+    let mut state = TlasBookkeeping::new();
+    state.assert_invariant();
+
+    // Frame 0: BUILD (`needs_full_rebuild = true`). 3 instances.
+    state.submit_frame(7, vec![1, 2, 3]);
+    state.assert_invariant();
+    assert_eq!(state.builds, 1);
+    assert_eq!(state.updates, 0);
+    assert_eq!(state.built_primitive_count, 3);
+
+    // Frame 1: identical address-set, same map_gen → UPDATE. 3 instances.
+    state.submit_frame(7, vec![1, 2, 3]);
+    state.assert_invariant();
+    assert_eq!(state.builds, 1);
+    assert_eq!(state.updates, 1);
+    assert_eq!(state.built_primitive_count, 3);
+
+    // Frame 2: shrink to 2 instances. `cached.len() != current.len()`
+    // so `decide_use_update` forces BUILD. Without this transition's
+    // BUILD, the next UPDATE would read past the device buffer end.
+    state.submit_frame(7, vec![1, 2]);
+    state.assert_invariant();
+    assert_eq!(state.builds, 2);
+    assert_eq!(state.updates, 1);
+    assert_eq!(state.built_primitive_count, 2);
+
+    // Frame 3: same 2 instances, same map_gen → UPDATE. Now
+    // `last_blas_addresses.len() == built_primitive_count == 2`
+    // (post-shrink invariant); the UPDATE submits exactly 2 instances.
+    state.submit_frame(7, vec![1, 2]);
+    state.assert_invariant();
+    assert_eq!(state.builds, 2);
+    assert_eq!(state.updates, 2);
+    assert_eq!(state.built_primitive_count, 2);
+}
+
+/// Grow case: instance_count grows beyond `built_primitive_count`
+/// while the cached address sequence is shorter. `decide_use_update`
+/// already forces BUILD on the length mismatch, but the
+/// `instance_count > built_primitive_count` guard at `tlas.rs:547`
+/// is the second line of defence. Pin both work together.
+#[test]
+fn tlas_invariant_holds_when_instance_count_grows() {
+    let mut state = TlasBookkeeping::new();
+    state.submit_frame(7, vec![1, 2]);
+    state.assert_invariant();
+    assert_eq!(state.built_primitive_count, 2);
+
+    // Grow from 2 → 4 instances. cached.len() != current.len() →
+    // decide_use_update forces BUILD. Invariant after BUILD:
+    // built_primitive_count == 4 == last_blas_addresses.len().
+    state.submit_frame(7, vec![1, 2, 3, 4]);
+    state.assert_invariant();
+    assert_eq!(state.built_primitive_count, 4);
+    assert_eq!(state.builds, 2);
+    assert_eq!(state.updates, 0);
+}
+
+/// Map-gen mutation (cell load / unload / BLAS eviction frame)
+/// short-circuits `decide_use_update` to BUILD even when the address
+/// sequence is identical. Invariant must still hold after the
+/// dirty-flag-driven BUILD.
+#[test]
+fn tlas_invariant_holds_across_blas_map_generation_bumps() {
+    let mut state = TlasBookkeeping::new();
+    state.submit_frame(7, vec![1, 2, 3]);
+    state.submit_frame(7, vec![1, 2, 3]); // UPDATE
+    state.assert_invariant();
+    assert_eq!(state.updates, 1);
+
+    // Cell load bumped the BLAS map generation. Even though the
+    // address sequence happens to be unchanged this frame, the
+    // short-circuit in `decide_use_update` forces BUILD because
+    // addresses might have shifted.
+    state.submit_frame(8, vec![1, 2, 3]);
+    state.assert_invariant();
+    assert_eq!(state.builds, 2, "map_gen bump must force BUILD");
+}
+
+/// Empty → non-empty → empty round trip. Empty frames force BUILD
+/// via `decide_use_update`'s empty-current short-circuit. The
+/// invariant must survive `built_primitive_count = 0` on the empty
+/// BUILD and pick up the non-empty count on the next BUILD without
+/// any UPDATE accidentally reading stale `built_primitive_count`.
+#[test]
+fn tlas_invariant_holds_across_empty_frames() {
+    let mut state = TlasBookkeeping::new();
+
+    // Empty first frame — BUILD with primitive_count = 0.
+    state.submit_frame(7, vec![]);
+    state.assert_invariant();
+    assert_eq!(state.built_primitive_count, 0);
+    assert_eq!(state.builds, 1);
+
+    // Non-empty next frame — length mismatch from cached (0 → 3)
+    // forces BUILD. Invariant: built_primitive_count == 3 == len.
+    state.submit_frame(7, vec![1, 2, 3]);
+    state.assert_invariant();
+    assert_eq!(state.built_primitive_count, 3);
+    assert_eq!(state.builds, 2);
+
+    // Empty again — short-circuit forces BUILD with count = 0.
+    state.submit_frame(7, vec![]);
+    state.assert_invariant();
+    assert_eq!(state.built_primitive_count, 0);
+    assert_eq!(state.builds, 3);
+}
+
 /// Identity round-trip: the column-major identity matrix must
 /// emit the row-major identity 3×4 (with zero translation).
 /// Catches an accidental sign flip / index swap in the helper.
