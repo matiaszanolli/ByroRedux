@@ -5,6 +5,9 @@
 //! of "clearing the event queue."
 
 use crate::events::{ActivateEvent, AnimationTextKeyEvents, HitEvent, TimerExpired};
+use crate::papyrus_demo::{CameraShakeCommand, ControllerRumbleCommand};
+use crate::quest_stages::QuestStageAdvanced;
+use crate::recurring_update::OnUpdateEvent;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 
@@ -12,11 +15,24 @@ use byroredux_core::ecs::world::World;
 ///
 /// Must be registered as the LAST system in the scheduler so all
 /// gameplay systems have a chance to process events before cleanup.
+///
+/// Every new marker component introduced in the R5 prototype work
+/// is added here in lockstep. The contract: if a marker is meant to
+/// be visible for exactly one frame (the standard "transient event"
+/// pattern), it goes here. Subscriptions (e.g.
+/// [`crate::RecurringUpdate`]) deliberately do NOT — they outlive
+/// individual frames and are removed by the script's own
+/// `UnregisterFor*` logic.
 pub fn event_cleanup_system(world: &World, _dt: f32) {
     drain_component::<ActivateEvent>(world);
     drain_component::<HitEvent>(world);
     drain_component::<TimerExpired>(world);
     drain_component::<AnimationTextKeyEvents>(world);
+    // R5 prototype additions — all transient-by-design markers.
+    drain_component::<OnUpdateEvent>(world);
+    drain_component::<QuestStageAdvanced>(world);
+    drain_component::<CameraShakeCommand>(world);
+    drain_component::<ControllerRumbleCommand>(world);
 }
 
 /// Remove all instances of a component type from every entity.

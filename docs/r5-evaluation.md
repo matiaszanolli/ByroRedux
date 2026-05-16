@@ -160,7 +160,7 @@ Other patterns left untranslated in this prototype:
 
 | Pattern | Status | Closest ECS shape |
 |---|---|---|
-| `RegisterForUpdate` / `RegisterForAnimationEvent` | Untranslated | Subscription components + per-event-type dispatch system. Not in the candidate. |
+| ~~`RegisterForUpdate` / `OnUpdate` / `UnregisterForUpdate`~~ | **Closed (RegisterForUpdate half)** — see [§ Follow-up 2](#follow-up-2--registerforupdate--onupdate-via-dlc2ttr4aplayerscriptpsc). `RegisterForAnimationEvent` untranslated, same substrate shape. | Subscription components + per-event-type dispatch system. |
 | `SendModEvent` / `SendCustomEvent` | Untranslated | Broadcast event component on a global "EventBus" entity. Not in the candidate. |
 | ~~`SetStage(N)` / `GetStageDone(N)`~~ | **Closed** — see [§ Follow-up 1](#follow-up-1--setstage--getstagedone-via-da10maindoorscriptpsc). | Quest-stage as an ECS resource keyed by quest FormID. M47.0 surface area. |
 | `OnPlayerLoadGame` / save-restoration hooks | Untranslated | Sits with M45 save/load. |
@@ -326,6 +326,162 @@ None of these change the verdict.
 
 [`QuestStageAdvanced`]: ../crates/scripting/src/quest_stages.rs
 
+## Follow-up 2 — RegisterForUpdate / OnUpdate via DLC2TTR4aPlayerScript.psc
+
+After the SetStage half closed (§ Follow-up 1), the next pattern up
+the original "untranslated" table was `RegisterForUpdate` — the
+periodic-timer subscription system. Surveyed the corpus for
+scripts hitting `RegisterForUpdate(N)` + `UnregisterForUpdate()` +
+an `Event OnUpdate()` body. Selected `DLC2TTR4aPlayerScript.psc`
+(23 LOC raw, 13 of actual code, from Dragonborn DLC) as the
+canonical example. It hits the full lifecycle in isolation:
+
+```papyrus
+ScriptName DLC2TTR4aPlayerScript Extends ReferenceAlias
+
+Quest Property DLC2TTR4a Auto
+
+Event OnInit()
+  Self.RegisterForUpdate(5 as Float)
+EndEvent
+
+Event OnUpdate()
+  If Game.GetPlayer().GetActorValue("Variable05") > 0
+    DLC2TTR4a.SetStage(200)
+    Self.UnregisterForUpdate()
+  EndIf
+EndEvent
+```
+
+The "register on init, poll periodically, fire once on threshold
+cross, self-cancel" idiom is one of the two ways Papyrus does
+long-running observation (the other is `RegisterForCustomEvent`,
+pub/sub — separate work).
+
+### Reusable substrate: `RecurringUpdate` + `OnUpdateEvent`
+
+The novel piece is `crates/scripting/src/recurring_update.rs` (~155
+LOC production + 175 LOC tests):
+
+- **`RecurringUpdate { interval_secs, seconds_until_next }`** — the
+  subscription IS the component. Insert to register, remove to
+  cancel. The Papyrus runtime's subscription table becomes the
+  sparse-set storage; no separate registry.
+- **`OnUpdateEvent`** — transient marker emitted by the tick
+  system when an interval elapses. Per-script handlers query for
+  `(RecurringUpdate, OnUpdateEvent, MyScript)` and run their body.
+- **`recurring_update_tick_system(world, dt)`** — drives all
+  subscriptions on the same dt. Cumulative-overshoot handling:
+  re-arms via `seconds_until_next += interval_secs` so a long
+  frame doesn't lose phase. Missed fires drop (Papyrus's
+  documented behaviour for stalled scripts).
+- **Lifecycle parity with Papyrus**:
+    - `RegisterForUpdate(N)` doesn't fire immediately — first
+      OnUpdate is N seconds out. Pinned.
+    - `UnregisterForUpdate()` is observable in the next tick (no
+      late-fire on a removed subscription). Pinned.
+    - Handler-internal unsubscribe (the DLC2TTR4a "self-terminate"
+      idiom) works without races. Pinned.
+
+The substrate is RECURRENT-USE: every Papyrus script that uses
+`RegisterForUpdate` will subscribe via this same component +
+events. The DLC2TTR4a translation is the first consumer; future
+M47.2 transpiler emissions reuse the same primitives.
+
+### Per-script translation: `Dlc2Ttr4aPlayerScript`
+
+The script itself goes per-script, not generic. Reasoning in the
+new module's doc, summary version:
+
+- The constants ("Variable05", `> 0.0`, `SetStage(200)`) don't
+  match a recurring catalogue shape — other `RegisterForUpdate`
+  scripts poll different stats with different comparisons and
+  fire different side-effects.
+- A generic component would have ~6 fields covering a
+  small-and-varied surface; per-script is structurally cheaper
+  given the substrate already abstracts the timing.
+- The M47.2 transpiler can emit per-script components like this
+  one from the AST trivially. The transpiler's two-track design:
+  pattern-match common shapes into a small catalogue
+  (`QuestAdvanceOnActivate`, `RumbleOnActivate`) for ~70% of
+  scripts; emit per-script fall-throughs for the long tail.
+
+The per-script artifacts: 233 LOC across
+`papyrus_demo/dlc2_ttr4a.rs` + a 50-LOC `actor_stats.rs` stand-in
+for `GetActorValue` (the full ActorValue system is M47.1; the
+stub is enough for the demo).
+
+### What this proves
+
+- **Subscription IS the component.** Papyrus's
+  `RegisterForUpdate(N)` doesn't need a parallel registry —
+  insertion into the ECS storage replaces both. The lookup-time
+  cost is O(1), same as Papyrus's hash-keyed table.
+- **Self-cancel during handler is structurally safe.** The two-
+  phase collect-then-apply pattern (already used in the rumble +
+  SetStage demos) handles "handler removes its own subscription"
+  cleanly. The tick system has already finished by the time the
+  handler runs; the next tick observes the cancellation.
+- **Cross-entity stat reads compose cleanly.** Papyrus's
+  `Game.GetPlayer().GetActorValue("Variable05")` becomes a
+  resource-resolve plus a component read — three lookups, no
+  serialization, no proxy objects, no method-dispatch boxing.
+- **Missed-fire policy matches Papyrus by construction.** The
+  cumulative-overshoot tick logic emits one fire per tick
+  regardless of dt magnitude. Long-frame stalls don't burst-fire.
+- **Per-script vs generic emission strategies coexist.** The
+  transpiler design has both lanes; the DLC2TTR4a translation is
+  the first per-script demonstrator. Same crate, same patterns,
+  different emission decision based on whether the pattern fits
+  the catalogue.
+
+### Numbers
+
+- **Source**: 23 LOC Papyrus raw, 13 of actual code, 2 properties
+  (one Quest), 2 event handlers (`OnInit` + `OnUpdate`), 1
+  `RegisterForUpdate`, 1 `UnregisterForUpdate`, 1 cross-entity
+  read (`GetActorValue`), 1 `SetStage` write.
+- **Reusable substrate**: 155 LOC `recurring_update.rs` (~100
+  production + docs), 175 LOC substrate tests (9 distinct
+  scenarios pinning every lifecycle edge case).
+- **Per-script translation**: 233 LOC `dlc2_ttr4a.rs` (~140
+  production + docs), 246 LOC script-translation tests (10
+  scenarios covering OnInit idempotency, polling below/above
+  threshold, self-cancel, post-cancel quietness, cross-entity
+  isolation, missing-stat default).
+- **ActorStats stand-in**: 50 LOC, single component with
+  `get`/`set` and a `register` helper.
+- **Workspace test count**: scripting crate went 33 → 52 (19 new,
+  all passing).
+
+### Outstanding bits still untranslated
+
+- **`RegisterForAnimationEvent`** — same substrate shape
+  (subscription component + dispatch system) but the events come
+  from animation text-keys rather than a dt counter. The
+  scripting crate already has `AnimationTextKeyEvents` (from
+  M30); wiring it through a per-animation-event subscriber lands
+  with M47.0.
+- **`RegisterForCustomEvent` / `SendCustomEvent`** — pub/sub
+  pattern. Different shape: a global event bus with named events.
+  Conceptually a `EventBusSubscription { event_name, target }`
+  component plus a broadcast-dispatch system. Untranslated.
+- **`OnAnimationEvent(akSource, asEventName)`** event handler —
+  consumes the substrate above. Untranslated.
+- **`Quest.Start()` / `Quest.Stop()` / `Quest.IsRunning()`** —
+  lifecycle separate from stage state. Trivially extends
+  `QuestStageState` with a `is_running: bool`; deferred until a
+  consumer needs it.
+- **The full `Actor.GetActorValue` / ModActorValue surface** — the
+  prototype's stub is read-only and string-keyed; the production
+  shape (M47.1) plumbs through AVIF records + perk-modifier
+  composition.
+
+None change the verdict. The bet holds at three of four pattern
+axes (latent wait, state machine, cross-subsystem call, periodic
+timer); the fourth (pub/sub via custom events) is the only
+remaining structural unknown.
+
 ## Replay this evaluation
 
 ```bash
@@ -340,6 +496,10 @@ cat crates/scripting/src/papyrus_demo/mod.rs
 cat docs/r5/source/DA10MainDoorScript.psc           # SetStage demo
 cat crates/scripting/src/papyrus_demo/quest_advance.rs
 cat crates/scripting/src/quest_stages.rs
+
+cat docs/r5/source/DLC2TTR4aPlayerScript.psc        # RegisterForUpdate demo
+cat crates/scripting/src/papyrus_demo/dlc2_ttr4a.rs
+cat crates/scripting/src/recurring_update.rs
 
 # Decompile additional candidates from the Skyrim BSA (requires wine +
 # Champollion v1.3.2 at ~/.tools/Champollion.exe; the BSA extraction
