@@ -41,8 +41,7 @@
 //! wind tuning.
 
 use super::common::{
-    find_sub, read_f32_at, read_f32_sub, read_i16_at, read_lstring_sub, read_string_sub,
-    read_u32_sub,
+    find_sub, read_f32_at, read_f32_sub, read_i16_at, read_u32_sub, CommonNamedFields,
 };
 use crate::esm::reader::SubRecord;
 
@@ -128,10 +127,8 @@ impl TreeRecord {
 /// passes through silently rather than panicking — same convention as
 /// every other parser in this module.
 pub fn parse_tree(form_id: u32, subs: &[SubRecord]) -> TreeRecord {
-    let editor_id = read_string_sub(subs, b"EDID").unwrap_or_default();
-    let model_path = read_string_sub(subs, b"MODL").unwrap_or_default();
-    let leaf_texture = read_string_sub(subs, b"ICON").unwrap_or_default();
-    let full_name = read_lstring_sub(subs, b"FULL").unwrap_or_default();
+    // EDID / FULL / MODL / ICON via shared helper — TD3-203 / #1113.
+    let common = CommonNamedFields::from_subs(subs);
     let bound_radius = read_f32_sub(subs, b"MODB").unwrap_or(0.0);
     let harvest_form = read_u32_sub(subs, b"PFIG");
 
@@ -193,10 +190,10 @@ pub fn parse_tree(form_id: u32, subs: &[SubRecord]) -> TreeRecord {
 
     TreeRecord {
         form_id,
-        editor_id,
-        model_path,
-        leaf_texture,
-        full_name,
+        editor_id: common.editor_id,
+        model_path: common.model_path,
+        leaf_texture: common.icon_path,
+        full_name: common.full_name,
         bound_radius,
         bounds,
         leaf_indices,

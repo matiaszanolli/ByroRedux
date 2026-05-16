@@ -34,7 +34,7 @@
 //! See `byroredux::cell_loader::expand_scol_placements` (#585).
 
 use crate::esm::reader::SubRecord;
-use crate::esm::records::common::{read_lstring_or_zstring, read_string_sub};
+use crate::esm::records::common::CommonNamedFields;
 
 /// One per-child placement inside an SCOL — position / rotation
 /// (Euler XYZ, radians) / uniform scale.
@@ -119,24 +119,16 @@ pub struct ScolRecord {
 /// FULL is preserved for editor-mode display (see `ScolRecord::full_name`).
 /// Wire format is FO4-and-later; earlier games don't emit SCOL.
 pub fn parse_scol(form_id: u32, subs: &[SubRecord]) -> ScolRecord {
-    let editor_id = read_string_sub(subs, b"EDID").unwrap_or_default();
-    let model_path = read_string_sub(subs, b"MODL").unwrap_or_default();
+    // EDID + FULL + MODL via shared helper. FULL is lstring-aware per
+    // #816. TD3-203 / #1113.
+    let common = CommonNamedFields::from_subs(subs);
 
     let mut parts: Vec<ScolPart> = Vec::new();
     let mut current_base: Option<u32> = None;
     let mut filter: Vec<u32> = Vec::new();
-    let mut full_name = String::new();
 
     for sub in subs {
         match sub.sub_type.as_slice() {
-            b"FULL" => {
-                // #816 — localised display name. On localised plugins
-                // FULL is a 4-byte lstring index resolved at runtime
-                // via the strings table; non-localised plugins ship
-                // the inline cstring. Same routing as `PkinRecord::
-                // full_name` and item records' `full_name`.
-                full_name = read_lstring_or_zstring(&sub.data);
-            }
             b"ONAM" => {
                 if sub.data.len() >= 4 {
                     current_base = Some(u32::from_le_bytes([
@@ -203,18 +195,18 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord]) -> ScolRecord {
         log::debug!(
             "SCOL {:08X} ('{}') has zero ONAM/DATA pairs — mesh will fall back to MODL '{}'",
             form_id,
-            editor_id,
-            model_path,
+            common.editor_id,
+            common.model_path,
         );
     }
 
     ScolRecord {
         form_id,
-        editor_id,
-        model_path,
+        editor_id: common.editor_id,
+        model_path: common.model_path,
         parts,
         filter,
-        full_name,
+        full_name: common.full_name,
     }
 }
 

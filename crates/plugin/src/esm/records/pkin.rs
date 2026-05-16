@@ -41,7 +41,7 @@
 //! See audit FO4-DIM4-03 / #589.
 
 use crate::esm::reader::SubRecord;
-use crate::esm::records::common::{read_lstring_sub, read_string_sub};
+use crate::esm::records::common::CommonNamedFields;
 
 /// Parsed PKIN record.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,9 +74,9 @@ pub struct PkinRecord {
 /// are ignored. Empty input yields a `PkinRecord` with empty fields —
 /// the caller keys the map by `form_id` either way.
 pub fn parse_pkin(form_id: u32, subs: &[SubRecord]) -> PkinRecord {
-    let editor_id = read_string_sub(subs, b"EDID").unwrap_or_default();
-    // FULL is an lstring on Skyrim-localized plugins (#348).
-    let full_name = read_lstring_sub(subs, b"FULL").unwrap_or_default();
+    // EDID + FULL via shared helper (FULL is lstring on Skyrim-localized
+    // plugins per #348; helper handles both forms). TD3-203 / #1113.
+    let common = CommonNamedFields::from_subs(subs);
     let mut contents: Vec<u32> = Vec::new();
     let mut vnam_form_id = 0u32;
     let mut flags = 0u32;
@@ -130,8 +130,8 @@ pub fn parse_pkin(form_id: u32, subs: &[SubRecord]) -> PkinRecord {
 
     PkinRecord {
         form_id,
-        editor_id,
-        full_name,
+        editor_id: common.editor_id,
+        full_name: common.full_name,
         contents,
         vnam_form_id,
         flags,

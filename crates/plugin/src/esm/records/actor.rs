@@ -6,7 +6,7 @@
 //! as raw form IDs for now; full evaluation lands when the AI/combat
 //! systems come online.
 
-use super::common::{read_lstring_or_zstring, read_u32_at, read_zstring};
+use super::common::{read_lstring_or_zstring, read_u32_at, read_zstring, CommonNamedFields};
 use crate::esm::reader::{GameKind, SubRecord};
 
 /// One faction the NPC belongs to, with their rank within it.
@@ -286,11 +286,15 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
     // one site.
     let captures_fo4_face = game.uses_prebaked_facegen();
     let captures_runtime_facegen = game.has_runtime_facegen_recipe();
+    // EDID / FULL / MODL / VMAD shared with every named record — drain
+    // them through the helper so the per-record loop below only carries
+    // NPC-specific subrecords. TD3-203 / #1113.
+    let common = CommonNamedFields::from_subs(subs);
     let mut record = NpcRecord {
         form_id,
-        editor_id: String::new(),
-        full_name: String::new(),
-        model_path: String::new(),
+        editor_id: common.editor_id,
+        full_name: common.full_name,
+        model_path: common.model_path,
         race_form_id: 0,
         class_form_id: 0,
         voice_form_id: 0,
@@ -302,7 +306,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
         level: 1,
         disposition_base: 50,
         acbs_flags: 0,
-        has_script: false,
+        has_script: common.has_script,
         face_morphs: None,
         runtime_facegen: None,
     };
@@ -316,9 +320,6 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
 
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => record.editor_id = read_zstring(&sub.data),
-            b"FULL" => record.full_name = read_lstring_or_zstring(&sub.data),
-            b"MODL" => record.model_path = read_zstring(&sub.data),
             b"RNAM" if sub.data.len() >= 4 => {
                 record.race_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
             }
@@ -373,8 +374,6 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
                     record.disposition_base = i16::from_le_bytes([sub.data[20], sub.data[21]]);
                 }
             }
-            // VMAD presence-only flag — see `has_script` field doc.
-            b"VMAD" => record.has_script = true,
             // ── M41.0 Phase 1a — Pre-FO4 FaceGen recipe ────────────────
             // FGGS (50 × f32 sym morph weights), FGGA (30 × f32 asym),
             // FGTS (50 × f32 texture morphs). Vanilla bytes are exactly
@@ -538,10 +537,14 @@ fn read_f32_array_into(src: &[u8], dst: &mut [f32]) {
 }
 
 pub fn parse_race(form_id: u32, subs: &[SubRecord]) -> RaceRecord {
+    // Helper claims a single MODL; RACE records carry multiple body
+    // parts in MODL — keep that arm custom and ignore the helper's
+    // last-MODL string. TD3-203 / #1113.
+    let common = CommonNamedFields::from_subs(subs);
     let mut record = RaceRecord {
         form_id,
-        editor_id: String::new(),
-        full_name: String::new(),
+        editor_id: common.editor_id,
+        full_name: common.full_name,
         description: String::new(),
         skill_bonuses: Vec::new(),
         body_models: Vec::new(),
@@ -549,8 +552,6 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord]) -> RaceRecord {
 
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => record.editor_id = read_zstring(&sub.data),
-            b"FULL" => record.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => record.description = read_lstring_or_zstring(&sub.data),
             // DATA (FNV RACE): skill bonus pairs (u32 form + i8) ×7, then more.
             // We pull the first 7 pairs.
@@ -578,10 +579,11 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord]) -> RaceRecord {
 }
 
 pub fn parse_clas(form_id: u32, subs: &[SubRecord]) -> ClassRecord {
+    let common = CommonNamedFields::from_subs(subs);
     let mut record = ClassRecord {
         form_id,
-        editor_id: String::new(),
-        full_name: String::new(),
+        editor_id: common.editor_id,
+        full_name: common.full_name,
         description: String::new(),
         attribute_weights: [0u8; 7],
         tag_skills: Vec::new(),
@@ -589,8 +591,6 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord]) -> ClassRecord {
 
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => record.editor_id = read_zstring(&sub.data),
-            b"FULL" => record.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => record.description = read_lstring_or_zstring(&sub.data),
             // DATA layout (FNV CLAS): tag1..tag4 (4 × u32 form), flags (u32),
             // services (u32), trainer skill (i8), trainer level (u8),
@@ -619,10 +619,11 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord]) -> ClassRecord {
 }
 
 pub fn parse_fact(form_id: u32, subs: &[SubRecord]) -> FactionRecord {
+    let common = CommonNamedFields::from_subs(subs);
     let mut record = FactionRecord {
         form_id,
-        editor_id: String::new(),
-        full_name: String::new(),
+        editor_id: common.editor_id,
+        full_name: common.full_name,
         flags: 0,
         relations: Vec::new(),
         ranks: Vec::new(),
@@ -630,8 +631,6 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord]) -> FactionRecord {
 
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => record.editor_id = read_zstring(&sub.data),
-            b"FULL" => record.full_name = read_lstring_or_zstring(&sub.data),
             // DATA (FNV FACT): flags is a single byte per UESP
             // `Mod_File_Format/FACT` (FO3 / FNV). The tail is a
             // variable-width payload (FNV adds `u8 unknown + f32 crime
