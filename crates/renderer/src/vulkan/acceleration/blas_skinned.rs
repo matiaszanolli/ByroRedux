@@ -89,13 +89,15 @@ impl AccelerationManager {
             .geometry(vk::AccelerationStructureGeometryDataKHR { triangles });
         let primitive_count = index_count / 3;
 
-        // Build flags: see `UPDATABLE_AS_FLAGS` for the shared
-        // PREFER_FAST_TRACE | ALLOW_UPDATE rationale (#679 / REN-D8-NEW-08:
-        // skinned BLAS refits in-place ~600 frames between full builds, so
-        // trace cost dominates by ~6 orders of magnitude). #958 lifted the
-        // four UPDATE-target call sites to the shared constant to enforce
-        // VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667 by
-        // construction.
+        // Build flags: `SKINNED_BLAS_FLAGS` (`PREFER_FAST_BUILD |
+        // ALLOW_UPDATE`). The shared `UPDATABLE_AS_FLAGS` (FAST_TRACE)
+        // drives the TLAS-only path; skinned BLAS uses the dedicated
+        // FAST_BUILD constant. See R6a-prospector-regress (2026-05-16) —
+        // the empirical FAST_BUILD-vs-FAST_TRACE outcome went the
+        // opposite way from the "refits dominate by 6 orders of
+        // magnitude" theoretical math. VUID-03667 BUILD/UPDATE flag-set
+        // match is enforced by both call sites referencing the same
+        // constant.
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
             .flags(SKINNED_BLAS_FLAGS)
@@ -285,7 +287,9 @@ impl AccelerationManager {
         }
 
         let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
-        // Flags: shared `UPDATABLE_AS_FLAGS` — see #958 / REN-D8-NEW-14.
+        // Flags: `SKINNED_BLAS_FLAGS` — see R6a-prospector-regress
+        // (2026-05-16) for the split from the shared `UPDATABLE_AS_FLAGS`
+        // (TLAS) into the skinned-BLAS-only `PREFER_FAST_BUILD` arm.
 
         let mut prepared: Vec<PreparedSkinned> = Vec::with_capacity(entities.len());
         let mut results: Vec<(EntityId, Result<()>)> = Vec::with_capacity(entities.len());
@@ -647,9 +651,10 @@ impl AccelerationManager {
         // mode = UPDATE: src == dst == this entity's BLAS. Vulkan
         // refits in-place against the new vertex data; topology must
         // stay identical to the original BUILD's geometry. The shared
-        // `UPDATABLE_AS_FLAGS` constant guarantees this UPDATE's flag
+        // `SKINNED_BLAS_FLAGS` constant guarantees this UPDATE's flag
         // set matches the original BUILD (VUID-…-pInfos-03667). See
-        // #958 / REN-D8-NEW-14.
+        // R6a-prospector-regress (2026-05-16) for the split from
+        // `UPDATABLE_AS_FLAGS` (TLAS-only after that revision).
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
             .flags(SKINNED_BLAS_FLAGS)
