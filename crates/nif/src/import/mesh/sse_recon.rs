@@ -45,16 +45,13 @@ const VF_TANGENTS: u16 = 0x010;
 const VF_VERTEX_COLORS: u16 = 0x020;
 const VF_SKINNED: u16 = 0x040;
 const VF_EYE_DATA: u16 = 0x100;
-/// nif.xml `BSVertexDesc` flag: positions are 3 × f32 rather than
-/// 3 × f16. SSE-era buffers are unconditionally full-precision
-/// (the flag bit may or may not be set on the descriptor; the
-/// schema-struct identity guarantees the layout). FO4 (bsver
-/// 130+) gates full-precision on `(ARG & 0x401) == 0x401`. The
-/// SSE-only packed-buffer decoder relies on the SSE-band invariant
-/// — see `decode_sse_packed_buffer`'s "SSE-only contract" docstring
-/// and #888. Constant kept for the future FO4-extension branch.
-#[allow(dead_code)]
-const VF_FULL_PRECISION: u16 = 0x400;
+// `VF_FULL_PRECISION` (bit 0x400) is intentionally NOT re-declared
+// here. The SSE-only packed-buffer decoder doesn't consult it (the
+// schema-struct identity guarantees full-precision layout for SSE);
+// any future FO4-extension branch should import the canonical const
+// from `crates/nif/src/blocks/tri_shape.rs::VF_FULL_PRECISION` (where
+// the inline parser keys off it) rather than re-rolling. TD2-204 /
+// #1120.
 
 /// Resolve `shape.skin_ref` → `NiSkinInstance` (or
 /// `BsDismemberSkinInstance`) → `NiSkinPartition` and reconstruct

@@ -22,7 +22,9 @@ use super::buffer::GpuBuffer;
 use super::descriptors::{write_storage_buffer, DescriptorPoolBuilder};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
-use crate::shader_constants::{VERTEX_STRIDE_BYTES, VERTEX_STRIDE_FLOATS};
+use crate::shader_constants::VERTEX_STRIDE_BYTES;
+#[cfg(test)]
+use crate::shader_constants::VERTEX_STRIDE_FLOATS;
 use anyhow::{Context, Result};
 use ash::vk;
 

@@ -1,7 +1,7 @@
 //! Water record (`WATR`) and decoded water parameters.
 
 use super::super::common::{read_f32_at, read_lstring_or_zstring, read_u32_at, read_zstring};
-use crate::esm::reader::{GameKind, SubRecord};
+use crate::esm::reader::SubRecord;
 
 /// Water record — referenced by `CELL.XCWT` (water type form ID on a
 /// cell). Pre-fix every XCWT reference dangled at cell load.
@@ -304,12 +304,13 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord]) -> WatrRecord {
     out
 }
 
-/// Per-game-aware adapter from a parsed `WatrRecord` onto a
-/// `WaterParams` view. `GameKind` is plumbed for the day a divergent
-/// per-game decode path lands — today the per-game choice is made
-/// inside `parse_watr` (DATA vs DNAM sub-records), so this helper
-/// just returns the structured view.
-pub fn watr_to_params(record: &WatrRecord, _game: GameKind) -> WaterParams {
+/// Adapter from a parsed `WatrRecord` onto a `WaterParams` view.
+/// The per-game decode happens inside `parse_watr` (DATA vs DNAM
+/// sub-records); this helper just returns the structured view.
+/// Re-introduce a `GameKind` parameter when a divergent per-game
+/// projection actually ships (TD8-017 / #1120 — the placeholder was
+/// dropped per CLAUDE.md's "no `_var` hypothetical-future" rule).
+pub fn watr_to_params(record: &WatrRecord) -> WaterParams {
     record.params
 }
 

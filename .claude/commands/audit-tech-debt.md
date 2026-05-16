@@ -185,7 +185,7 @@ backticked path that does not resolve.
 ### Dimension 10: Audit-Finding Rot
 **Entry points**: `.claude/commands/audit-*.md`, `docs/audits/`, `.claude/issues/`
 **Checklist**:
-- Audit skill "must not regress" baselines (e.g., `audit-performance.md` lines referencing `streaming.rs:286`, `MAX_TOTAL_BONES` location, `scene_buffer/upload.rs::upload_materials`) — verify each line/symbol still exists; if drifted, propose a fix
+- Audit skill "must not regress" baselines — every backticked path in `audit-*.md` is now gated by `.claude/commands/_audit-validate.sh` (post-#1114). Run that gate first; any STALE refs it reports are auto-eligible Dim 10 findings (effort: trivial). For symbol-anchor refs that the gate can't verify (e.g., `crates/audio/src/lib.rs::drain_pending_oneshots`), spot-check that the function still exists.
 - "Existing: #NNN" callouts in skill files where the issue is now CLOSED — should the skill prose reference the closed-state baseline differently?
 - `.claude/issues/<N>/ISSUE.md` entries where the upstream GitHub issue was closed but the local file still says "Status: Open"
 - Audit reports in `docs/audits/` from >90 days ago whose CRITICAL/HIGH findings are not all triaged (open or closed) on GitHub
