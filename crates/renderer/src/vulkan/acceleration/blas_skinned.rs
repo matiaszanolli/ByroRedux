@@ -9,7 +9,7 @@ use super::super::descriptors::memory_barrier;
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
-use super::constants::UPDATABLE_AS_FLAGS;
+use super::constants::SKINNED_BLAS_FLAGS;
 use super::predicates::{
     is_scratch_aligned, scratch_needs_growth, should_rebuild_skinned_blas_after, submit_one_time,
     validate_refit_counts,
@@ -98,7 +98,7 @@ impl AccelerationManager {
         // construction.
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-            .flags(UPDATABLE_AS_FLAGS)
+            .flags(SKINNED_BLAS_FLAGS)
             .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
             .geometries(std::slice::from_ref(&geometry));
 
@@ -162,7 +162,7 @@ impl AccelerationManager {
             self.debug_assert_scratch_aligned(scratch_address, "build_skinned_blas");
             let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                .flags(UPDATABLE_AS_FLAGS)
+                .flags(SKINNED_BLAS_FLAGS)
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                 .dst_acceleration_structure(accel)
                 .geometries(std::slice::from_ref(&geometry))
@@ -327,7 +327,7 @@ impl AccelerationManager {
 
             let size_build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                .flags(UPDATABLE_AS_FLAGS)
+                .flags(SKINNED_BLAS_FLAGS)
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                 .geometries(std::slice::from_ref(&geometry));
 
@@ -448,7 +448,7 @@ impl AccelerationManager {
             }
             let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                .flags(UPDATABLE_AS_FLAGS)
+                .flags(SKINNED_BLAS_FLAGS)
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                 .dst_acceleration_structure(p.accel)
                 .geometries(std::slice::from_ref(&p.geometry))
@@ -652,7 +652,7 @@ impl AccelerationManager {
         // #958 / REN-D8-NEW-14.
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-            .flags(UPDATABLE_AS_FLAGS)
+            .flags(SKINNED_BLAS_FLAGS)
             .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
             .src_acceleration_structure(entry.accel)
             .dst_acceleration_structure(entry.accel)

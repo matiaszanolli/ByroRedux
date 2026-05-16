@@ -59,20 +59,40 @@ pub const SKINNED_BLAS_REFIT_THRESHOLD: u32 = 600;
 /// idle cost is one add + one compare per N iterations.
 pub(super) const BATCH_EVICTION_CHECK_INTERVAL: usize = 64;
 
-/// Build flags shared by every acceleration structure that's intended
-/// to receive `mode = UPDATE` refit calls (skinned BLAS + TLAS).
-/// Centralised so the BUILD/UPDATE pairs in `blas_skinned.rs`
-/// (`build_skinned_blas`, `build_skinned_blas_batched_on_cmd`,
-/// `refit_skinned_blas`) and `tlas.rs` (fresh `build_tlas` + the TLAS
+/// Build flags shared by TLAS BUILD + UPDATE call sites. Centralised so
+/// the BUILD/UPDATE pair in `tlas.rs` (fresh `build_tlas` + the TLAS
 /// update path) can't drift apart. Vulkan spec
 /// `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667` requires
 /// the UPDATE flags to match the source BUILD's flags exactly; the
 /// shared constant turns that invariant from "convention" into
 /// "enforced by the compiler". Counterpart of the function-local
-/// `STATIC_BLAS_FLAGS` in `blas_static.rs`. See #958 /
-/// REN-D8-NEW-14.
+/// `STATIC_BLAS_FLAGS` in `blas_static.rs`. See #958 / REN-D8-NEW-14.
+///
+/// **History**: prior to R6a-prospector-regress (2026-05-16) this also
+/// drove the skinned-BLAS BUILD+UPDATE call sites. Bench bisect against
+/// `6059e2ab` showed that flipping skinned BLAS from `PREFER_FAST_BUILD`
+/// → `PREFER_FAST_TRACE` cost ~-18% FPS on FNV Prospector despite the
+/// theoretical "refits dominate by 289×" math being correct (measured
+/// 0 BUILDs : 34 refits per frame in steady state). The skinned BLAS
+/// pair now uses `SKINNED_BLAS_FLAGS` below; TLAS stays here.
 pub(super) const UPDATABLE_AS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
     vk::BuildAccelerationStructureFlagsKHR::from_raw(
         vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE.as_raw()
+            | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE.as_raw(),
+    );
+
+/// Build flags for the skinned-BLAS BUILD + UPDATE call sites in
+/// `blas_skinned.rs` (`build_skinned_blas`, `build_skinned_blas_batched_on_cmd`,
+/// `refit_skinned_blas`). Same VUID-03667 BUILD/UPDATE-match invariant
+/// as `UPDATABLE_AS_FLAGS`; separate constant because skinned BLAS
+/// empirically benefits from `PREFER_FAST_BUILD` while TLAS stays on
+/// `PREFER_FAST_TRACE`. See R6a-prospector-regress (2026-05-16) — the
+/// `6059e2ab` flip from FAST_BUILD → FAST_TRACE on the skinned path
+/// cost ~18% FPS on FNV Prospector and ~3-5% on Whiterun / MedTek.
+/// Reverting only the skinned-BLAS arm restores the prior performance
+/// without disturbing the TLAS-side decision baked into #958.
+pub(super) const SKINNED_BLAS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
+    vk::BuildAccelerationStructureFlagsKHR::from_raw(
+        vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD.as_raw()
             | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE.as_raw(),
     );
