@@ -352,11 +352,15 @@ impl GBuffer {
                     );
                 }
             }
+            // NONE as srcStageMask: UNDEFINED → SHADER_READ_ONLY transitions
+            // discard prior content so there are no previous writes to expose.
+            // NONE is the Vulkan 1.3 replacement for the deprecated use of
+            // TOP_OF_PIPE as a source stage in memory barriers (#949 / #1100).
             // SAFETY: barriers are well-formed, device and cmd are valid.
             unsafe {
                 device.cmd_pipeline_barrier(
                     cmd,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::NONE,
                     vk::PipelineStageFlags::FRAGMENT_SHADER
                         | vk::PipelineStageFlags::COMPUTE_SHADER,
                     vk::DependencyFlags::empty(),

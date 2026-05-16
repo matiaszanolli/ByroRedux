@@ -648,10 +648,15 @@ impl CausticPipeline {
             // device/queue/pool validity; `cmd` is the recording buffer
             // from `with_one_time_commands`. Each barrier targets a slot
             // image we own.
+            // NONE as srcStageMask on UNDEFINED → GENERAL transitions: there
+            // are no previous writes to make visible (the prior contents are
+            // discarded), so TOP_OF_PIPE and NONE are semantically equivalent.
+            // NONE is the Vulkan 1.3 replacement for the deprecated use of
+            // TOP_OF_PIPE as a source stage in memory barriers (#949 / #1100).
             unsafe {
                 device.cmd_pipeline_barrier(
                     cmd,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::NONE,
                     vk::PipelineStageFlags::COMPUTE_SHADER,
                     vk::DependencyFlags::empty(),
                     &[],
