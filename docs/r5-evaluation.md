@@ -161,7 +161,7 @@ Other patterns left untranslated in this prototype:
 | Pattern | Status | Closest ECS shape |
 |---|---|---|
 | ~~`RegisterForUpdate` / `OnUpdate` / `UnregisterForUpdate`~~ | **Closed (RegisterForUpdate half)** — see [§ Follow-up 2](#follow-up-2--registerforupdate--onupdate-via-dlc2ttr4aplayerscriptpsc). `RegisterForAnimationEvent` untranslated, same substrate shape. | Subscription components + per-event-type dispatch system. |
-| `SendModEvent` / `SendCustomEvent` | Untranslated | Broadcast event component on a global "EventBus" entity. Not in the candidate. |
+| `SendModEvent` / `SendCustomEvent` | **Closed as a non-pattern** — see [§ Follow-up 3](#follow-up-3--mg07-cross-reference-call--the-vanilla-customevent-non-finding). Vanilla Bethesda content doesn't use these at all (raw-bytes grep across 21 901 .pex confirms). Pub/sub shape would be a marker on an EventBus entity if a SKSE/mod fixture ever required it. | Broadcast event component on a global "EventBus" entity. |
 | ~~`SetStage(N)` / `GetStageDone(N)`~~ | **Closed** — see [§ Follow-up 1](#follow-up-1--setstage--getstagedone-via-da10maindoorscriptpsc). | Quest-stage as an ECS resource keyed by quest FormID. M47.0 surface area. |
 | `OnPlayerLoadGame` / save-restoration hooks | Untranslated | Sits with M45 save/load. |
 | `if foo as MyScript` — Papyrus's runtime type test on a script-typed property | Untranslated | Rust enums / trait objects depending on how the M47.2 transpiler shapes script types. Not in the candidate. |
@@ -482,6 +482,217 @@ axes (latent wait, state machine, cross-subsystem call, periodic
 timer); the fourth (pub/sub via custom events) is the only
 remaining structural unknown.
 
+## Follow-up 3 — MG07 cross-reference call + the vanilla-CustomEvent non-finding
+
+Two outcomes from one investigation. First, the corpus survey for
+a pub/sub fixture returned an unexpected null result: **vanilla
+Bethesda content doesn't use `CustomEvent` or `ModEvent` at all**.
+Then the work re-scoped to the original R5 third-axis criterion
+(cross-reference method call) — translation landed via
+`MG07LabyrinthianDoorScript.psc`.
+
+### The vanilla-CustomEvent non-finding
+
+The R5 spec asked for one quest exercising "a cross-script
+callback". After the first three demos closed the latent-wait /
+state-machine / SetStage / RegisterForUpdate axes, the obvious
+next pattern was the Papyrus `RegisterForCustomEvent` / `SendCustomEvent`
+pub/sub mechanism — the runtime feature most often documented as
+"this is the way to do cross-script messaging" in modder docs.
+
+Surveyed the corpus:
+
+```
+Skyrim SE base + DLC (14 026 .pex files):
+  CustomEvent          declarations: 0
+  SendCustomEvent      call sites:    0
+  RegisterForCustomEvent call sites:  0
+  UnregisterForCustomEvent call sites: 0
+  SendModEvent         call sites:    0
+  RegisterForModEvent  call sites:    0
+  UnregisterForModEvent call sites:   0
+
+Fallout 4 base (7 875 .pex from Fallout4 - Misc.ba2):
+  (same patterns — zero results across the board)
+```
+
+Verified via raw-bytes `grep` against the .pex bytecode directly
+(not via Champollion) to rule out decompiler artifacts. **Zero
+hits**. Bethesda ships these mechanisms in the runtime stdlib
+(`Form.psc` carries the signatures, the .pex linker resolves
+them) but **does not use them in any shipped quest script**. The
+shipped patterns for cross-script messaging are:
+
+1. **Direct method calls on typed `ObjectReference Property`-held
+   targets** — e.g., `myDoor.activate(actronaut, False)` from
+   MG07 below. Bethesda's go-to pattern for "this script tells
+   that reference to do something."
+2. **Quest stage as a global rendezvous** — script A writes
+   `Quest.SetStage(N)`, script B polls `Quest.GetStageDone(N)`.
+   Documented and validated in [Follow-up 1](#follow-up-1--setstage--getstagedone-via-da10maindoorscriptpsc).
+3. **Quest fragment scripts** — engine fires per-stage scripts
+   via the QSDT fragment system on stage advance. M47.0 surface.
+4. **`StorageUtil` / `JContainers`** — SKSE-extender APIs that
+   add real K/V storage. NOT a Bethesda API and outside R5 scope.
+
+So the pub/sub axis isn't validated against shipped content
+because shipped content doesn't exercise it. The implication for
+M47.2:
+
+- The transpiler's CustomEvent / ModEvent emission can be **stubbed
+  with a panic / log-and-skip** for the initial release. No
+  vanilla content exercises it; mod content that does is targeting
+  an SKSE-dependent runtime anyway.
+- The pub/sub ECS shape (a global `EventBus` entity carrying
+  named markers + per-subscriber components) is sound on paper
+  but unvalidated against real bytecode. The non-finding becomes
+  the finding.
+
+The `r5_extract_pex_ba2.rs` BA2-side extractor + the FO4 BSA
+walk both stay in the repo — useful for future M47.2 corpus
+surveys, not just R5.
+
+### The MG07 cross-reference call demo
+
+The original R5 spec's third axis ("cross-script callback")
+turned out to be best validated by the same fixture stashed
+alongside the rumble demo months ago:
+`MG07LabyrinthianDoorScript.psc` (47 LOC raw, 23 of actual
+code, the "Hall of the Vigilant of Stendarr" lockout door in
+Labyrinthian — the door the player needs the Saarthal Amulet
+keystone to open during the College of Winterhold mid-game
+quest). The script ends its successful-activation branch with
+
+```papyrus
+myDoor.activate(actronaut, False)
+```
+
+— Papyrus's "tell another reference to do something." The
+target's `myDoor` property is a typed `ObjectReference` —
+resolved at edit-time to a placed REFR in the same cell.
+
+The ECS translation is the load-bearing finding of this
+follow-up:
+
+> **A Papyrus cross-reference method call lowers to a marker
+> component insert on the target entity's storage.** The same
+> `ActivateEvent` the engine emits when the player presses E on
+> a door is what one script emits when it tells another door to
+> activate. The cross-script boundary collapses to the same
+> surface as player input. No proxy object, no vtable, no
+> message-dispatch boxing.
+
+Concretely:
+
+```rust
+// Papyrus: myDoor.activate(actronaut, False)
+// ECS:
+events.insert(door.my_door, ActivateEvent { activator: player });
+```
+
+That's it. The target's own OnActivate-handling systems pick the
+event up next frame — they don't know (and don't need to know)
+whether the activation came from the player, an NPC, or another
+script.
+
+### What MG07 incidentally re-covers
+
+- `OnLoad` lifecycle event (the script's first-frame setup
+  hook). Maps to an `Uninitialized → Waiting` transition system
+  that runs once per component. Cell-streaming makes this
+  re-fire on re-load — matches Papyrus.
+- `Self.GotoState("waiting")` / `Self.GotoState("inactive")`
+  state-machine transitions. Same Rust enum shape as the rumble
+  demo.
+- `Utility.wait(delayAfterInsert)` latent wait. Same
+  `wait_remaining_secs: f32` inside-state-variant shape.
+- `Quest.GetStageDone(10)` predicate. Reuses the
+  `QuestStageState` resource from Follow-up 1.
+- Persistent script-instance state (`Bool beenOpened`). Just a
+  field on the script component.
+
+### What's deliberately stubbed
+
+The script touches more engine surface than the prototype can
+wire up in one pass; minimal stubs cover the bits:
+
+| Papyrus call | ECS stub |
+|---|---|
+| `Game.GetPlayer().GetItemCount(MG07Keystone)` | `KeystoneInventory` boolean on player |
+| `Game.GetPlayer().RemoveItem(MG07Keystone, …)` | flip the boolean off in-line |
+| `Self.blockActivation(True)` | `activation_blocked: bool` field, enforced explicitly in the OnActivate system |
+| `Self.disable(False)` | `disabled: bool` field, observed post-wait |
+| `Self.playAnimationAndWait("Insert", "Done")` | collapsed into `Utility.wait(delayAfterInsert)`'s counter — both are latent waits at the script-semantic level, the animation duration is engine surface not in scope for R5 |
+| `dunLabyrinthianDenialMSG.show(...)` | `UiMessageCommand { message_form_id }` marker on player |
+
+None of the stubs change the load-bearing observation about
+cross-reference activation — that translates fully with the
+already-built infrastructure.
+
+### The faithful-to-source bug pin
+
+The Papyrus source has a typo: at the equivalent of line 28 it
+writes `beenOpened == False` (comparison) where the author plainly
+meant `beenOpened = False` (assignment). The Papyrus compiler
+accepts both — the comparison-form compiles as a discarded
+expression, a silent no-op. Vanilla Skyrim ships this bug; the
+post-open lockout behaviour relies on `Self.disable()` (which
+DOES fire) rather than the `beenOpened` flag (which never flips).
+
+The translation **preserves** the bug. R5's contract is faithful
+translation; if M47.2 silently "fixes" typos it would diverge
+from shipped behaviour for the (possibly intentional, possibly
+accidental) cases where the bug carries the load. Pinned by the
+`beenopened_is_never_flipped_due_to_source_typo` test.
+
+### Numbers
+
+- **Source**: 47 LOC raw, 23 of actual code, 5 properties, 1
+  persistent `Bool`, 2 explicit named states (+ implicit default),
+  1 `OnLoad` handler, 1 `OnActivate` handler, 2 latent waits
+  (collapsed), 1 cross-reference method call, 1 UI message,
+  multiple Self-state mutations.
+- **Translation**: 380 LOC `mg07_door.rs` (~200 production + docs),
+  315 LOC tests (12 distinct semantic scenarios — OnLoad branches
+  ×3, BlockActivation enforcement, denial branches ×3, success
+  path ×2, mid-wait + post-wait gates ×2, faithful-bug pin).
+- **Workspace test count**: scripting crate went 52 → 64 (12
+  new, all passing).
+
+### R5 closing tally
+
+All four pattern axes from the original spec are now validated:
+
+| Axis | Fixture | Status |
+|---|---|---|
+| Latent wait | `defaultRumbleOnActivate.psc` | Closed (verdict) |
+| State machine | `defaultRumbleOnActivate.psc` | Closed (verdict) |
+| Cross-subsystem call | `defaultRumbleOnActivate.psc` (Game.shake*) + `MG07` (UI message) | Closed |
+| Cross-reference method call | `MG07LabyrinthianDoorScript.psc` (`myDoor.activate(...)`) | Closed (this follow-up) |
+| SetStage / GetStageDone | `DA10MainDoorScript.psc` | Closed (Follow-up 1) |
+| RegisterForUpdate / OnUpdate | `DLC2TTR4aPlayerScript.psc` | Closed (Follow-up 2) |
+| Custom-event pub/sub | (no vanilla fixture exists) | Non-pattern — Bethesda doesn't use it |
+
+**Verdict unchanged: go ECS-native.** Three follow-ups in, the
+bet has held against every pattern Bethesda actually uses in
+shipped content. The one structural unknown (pub/sub) turned out
+to be a non-pattern. M47.0 and M47.2 proceed as roadmapped, with
+the substrate `crates/scripting` has accumulated:
+
+- `ActivateEvent` / `HitEvent` / `TimerExpired` / `AnimationTextKeyEvents` (M30 baseline)
+- `ScriptTimer` (one-shot)
+- `RecurringUpdate` + `OnUpdateEvent` (periodic — Follow-up 2)
+- `QuestStageState` + `QuestStageAdvanced` (Follow-up 1)
+- `CameraShakeCommand` / `ControllerRumbleCommand` (cross-subsystem boundaries)
+- `UiMessageCommand` (Follow-up 3 — Message dispatch)
+- `event_cleanup_system` (canonical end-of-frame marker sweep)
+- `PlayerEntity` resource (the `Game.GetPlayer()` resolver)
+
+— covers the entire script-system substrate Bethesda quest
+content needs. Adding new marker types for future-discovered
+patterns is the same shape every time (Component impl + register
++ optionally drain in cleanup).
+
 ## Replay this evaluation
 
 ```bash
@@ -500,6 +711,9 @@ cat crates/scripting/src/quest_stages.rs
 cat docs/r5/source/DLC2TTR4aPlayerScript.psc        # RegisterForUpdate demo
 cat crates/scripting/src/papyrus_demo/dlc2_ttr4a.rs
 cat crates/scripting/src/recurring_update.rs
+
+cat docs/r5/source/MG07LabyrinthianDoorScript.psc   # cross-reference call demo
+cat crates/scripting/src/papyrus_demo/mg07_door.rs
 
 # Decompile additional candidates from the Skyrim BSA (requires wine +
 # Champollion v1.3.2 at ~/.tools/Champollion.exe; the BSA extraction

@@ -5,6 +5,7 @@
 //! of "clearing the event queue."
 
 use crate::events::{ActivateEvent, AnimationTextKeyEvents, HitEvent, TimerExpired};
+use crate::papyrus_demo::mg07_door::UiMessageCommand;
 use crate::papyrus_demo::{CameraShakeCommand, ControllerRumbleCommand};
 use crate::quest_stages::QuestStageAdvanced;
 use crate::recurring_update::OnUpdateEvent;
@@ -33,6 +34,7 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
     drain_component::<QuestStageAdvanced>(world);
     drain_component::<CameraShakeCommand>(world);
     drain_component::<ControllerRumbleCommand>(world);
+    drain_component::<UiMessageCommand>(world);
 }
 
 /// Remove all instances of a component type from every entity.

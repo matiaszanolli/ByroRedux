@@ -191,6 +191,7 @@ impl Component for ControllerRumbleCommand {
 
 pub mod actor_stats;
 pub mod dlc2_ttr4a;
+pub mod mg07_door;
 pub mod quest_advance;
 
 /// Register every component this module + its submodules introduce.
@@ -208,6 +209,7 @@ pub fn register(world: &mut World) {
     quest_advance::register(world);
     actor_stats::register(world);
     dlc2_ttr4a::register(world);
+    mg07_door::register(world);
 }
 
 /// Translation of Papyrus's per-state `Event OnActivate(actronaut)`
