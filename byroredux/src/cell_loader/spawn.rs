@@ -18,7 +18,10 @@ use byroredux_renderer::VulkanContext;
 use crate::asset_provider::{
     resolve_texture, resolve_texture_with_clamp, TextureProvider,
 };
-use crate::components::{AlphaBlend, DarkMapHandle, ExtraTextureMaps, NormalMapHandle, TwoSided};
+use crate::components::{
+    texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, ExtraTextureMaps, IsFxMesh, NormalMapHandle,
+    TwoSided,
+};
 
 use super::nif_import_registry::CachedNifImport;
 use super::pack_effect_shader_flags;
@@ -728,6 +731,14 @@ pub(super) fn spawn_placed_instances(
                 effect_shader_flags: pack_effect_shader_flags(mesh.effect_shader.as_ref()),
             },
         );
+        // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn
+        // time so build_render_data can skip them via a component query
+        // instead of running 6 substring scans per draw per frame.
+        if let Some(ref tp) = eff_texture_path {
+            if texture_path_is_fx_mesh(tp) {
+                world.insert(entity, IsFxMesh);
+            }
+        }
         // Load and attach normal map if the material specifies one.
         if let Some(ref nmap_path) = eff_normal_map {
             let h = resolve_texture(ctx, tex_provider, Some(nmap_path.as_str()));

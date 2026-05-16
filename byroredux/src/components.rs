@@ -39,6 +39,40 @@ impl Component for TwoSided {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Marker component for "FX" decorative meshes (`effects/fx*`, `fxsoftglow`,
+/// `fxpartglow`, `fxparttiny`, `fxlightrays`) that the renderer drops on
+/// the floor. Lifted from a per-draw, per-frame substring scan over the
+/// material's texture path to a one-time spawn-time classification per
+/// PERF-D3-NEW-02 / #1136 — at MedTek scale (~7000 draws × 6 needles)
+/// this saved ~26 M byte comparisons per frame.
+///
+/// Set in [`crate::cell_loader::spawn`] and [`crate::scene`] (the two
+/// `Material`-spawning sites); consumed in [`crate::render::build_render_data`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IsFxMesh;
+impl Component for IsFxMesh {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Returns `true` if `texture_path` matches any of the 6 "FX decoration"
+/// needles the renderer drops. Pulled out as a shared helper so the
+/// spawn-time tagger in `cell_loader::spawn` + `scene::nif_loader` and
+/// any future caller stays in lockstep. PERF-D3-NEW-02 / #1136.
+pub(crate) fn texture_path_is_fx_mesh(texture_path: &str) -> bool {
+    fn contains_ci(haystack: &str, needle: &str) -> bool {
+        haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+    }
+    contains_ci(texture_path, "effects\\fx")
+        || contains_ci(texture_path, "effects/fx")
+        || contains_ci(texture_path, "fxsoftglow")
+        || contains_ci(texture_path, "fxpartglow")
+        || contains_ci(texture_path, "fxparttiny")
+        || contains_ci(texture_path, "fxlightrays")
+}
+
 // `Decal` marker retired in #renderlayer — its semantic ("renders on
 // top of coplanar surfaces via depth bias") is now expressed as
 // `RenderLayer::Decal` from `byroredux_core::ecs::components::RenderLayer`.
@@ -976,6 +1010,49 @@ impl Default for FootstepScratch {
     fn default() -> Self {
         Self {
             triggers: Vec::with_capacity(32),
+        }
+    }
+}
+
+#[cfg(test)]
+mod fx_mesh_classification_tests {
+    //! PERF-D3-NEW-02 / #1136 — pin the 6-needle FX-decoration set so a
+    //! future refactor that adds, removes, or case-changes one needle can't
+    //! silently regress the per-frame skip path.
+    use super::texture_path_is_fx_mesh;
+
+    #[test]
+    fn matches_each_needle() {
+        // Mixed-case + both slash conventions to verify case-insensitive +
+        // path-style-insensitive matching.
+        for path in [
+            "meshes\\effects\\fx\\smoke01.nif",
+            "Meshes/Effects/Fx/Smoke01.nif",
+            "FxSoftGlow.nif",
+            "fxpartglow_red.nif",
+            "fxparttiny.nif",
+            "fxlightrays\\rays01.nif",
+        ] {
+            assert!(
+                texture_path_is_fx_mesh(path),
+                "expected FX classification on {path}",
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_fx_paths() {
+        for path in [
+            "meshes\\architecture\\house01.nif",
+            "meshes\\clutter\\ingredients\\sweetroll01.nif",
+            "fxbutreal.nif", // not in the needle set
+            "effectsbox.nif", // missing the trailing \\ or /
+            "",
+        ] {
+            assert!(
+                !texture_path_is_fx_mesh(path),
+                "expected NO FX classification on {path}",
+            );
         }
     }
 }

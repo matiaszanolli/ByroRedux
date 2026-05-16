@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::sync::Once;
 
 use crate::components::{
-    AlphaBlend, CellLightingRes, CloudSimState, DarkMapHandle, ExtraTextureMaps, NormalMapHandle,
-    SkyParamsRes, TerrainTileSlot, TwoSided,
+    AlphaBlend, CellLightingRes, CloudSimState, DarkMapHandle, ExtraTextureMaps, IsFxMesh,
+    NormalMapHandle, SkyParamsRes, TerrainTileSlot, TwoSided,
 };
 
 /// Once-per-session gate for the bone-palette overflow warn — see the
@@ -542,6 +542,10 @@ pub(crate) fn build_render_data(
     let extra_q = world.query::<ExtraTextureMaps>();
     let terrain_tile_q = world.query::<TerrainTileSlot>();
     let wb_q = world.query::<WorldBound>();
+    // PERF-D3-NEW-02 / #1136 — query once instead of 6 substring scans
+    // per draw per frame. Entities tagged at spawn by `cell_loader::spawn`
+    // + `scene::nif_loader` when the texture path matches an FX needle.
+    let fx_q = world.query::<IsFxMesh>();
     if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
             // Skip entities hidden by animation.
@@ -648,25 +652,14 @@ pub(crate) fn build_render_data(
                 // These are sprite-billboard fakes for bloom halos — in a RT
                 // renderer the actual point light already provides illumination
                 // and these quads just render as blown-out white surfaces.
-                if let Some(m) = mat {
-                    if let Some(ref tp) = m.texture_path {
-                        // Case-insensitive contains without allocation (#286).
-                        fn contains_ci(haystack: &str, needle: &str) -> bool {
-                            haystack
-                                .as_bytes()
-                                .windows(needle.len())
-                                .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
-                        }
-                        if contains_ci(tp, "effects\\fx")
-                            || contains_ci(tp, "effects/fx")
-                            || contains_ci(tp, "fxsoftglow")
-                            || contains_ci(tp, "fxpartglow")
-                            || contains_ci(tp, "fxparttiny")
-                            || contains_ci(tp, "fxlightrays")
-                        {
-                            continue;
-                        }
-                    }
+                // FX-decoration skip — PERF-D3-NEW-02 / #1136. The
+                // classification (texture-path substring scan over 6
+                // needles) is precomputed at spawn time and stored as
+                // an `IsFxMesh` marker so this hot path is one
+                // component-lookup instead of 6 byte-windowed substring
+                // scans per draw per frame.
+                if fx_q.as_ref().is_some_and(|q| q.get(entity).is_some()) {
+                    continue;
                 }
 
                 let (

@@ -26,7 +26,8 @@ use crate::asset_provider::{
     resolve_texture, MaterialProvider, TextureProvider,
 };
 use crate::components::{
-    AlphaBlend, DarkMapHandle, ExtraTextureMaps, NormalMapHandle, TwoSided,
+    texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, ExtraTextureMaps, IsFxMesh, NormalMapHandle,
+    TwoSided,
 };
 use crate::helpers::add_child;
 
@@ -812,6 +813,12 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 ),
             },
         );
+        // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
+        if let Some(ref tp) = owned_texture_path {
+            if texture_path_is_fx_mesh(tp) {
+                world.insert(entity, IsFxMesh);
+            }
+        }
 
         // Load and attach normal map texture handle.
         if let Some(ref nmap_path) = owned_normal_map {
