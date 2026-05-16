@@ -1105,4 +1105,143 @@ mod tests {
         assert!(GameKind::Skyrim.has_havok_animations());
         assert!(GameKind::Starfield.has_havok_animations());
     }
+
+    // ── Compressed record tests (#990 / SK-D6-NEW-02) ──────────────────
+    //
+    // `read_sub_records` had zero unit test coverage for the FLAG_COMPRESSED
+    // branch. These tests guard against: backend swaps (flate2 → miniz_oxide),
+    // decompressed-size prefix off-by-one, the data_size < 4 panic path, and
+    // silent byte-order changes in read_u32.
+
+    /// Build a raw sub-record payload byte-vector (same layout `read_sub_records`
+    /// parses) without going through a full record header.
+    fn build_sub_record_payload(sub_records: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        for (sub_type, data) in sub_records {
+            payload.extend_from_slice(*sub_type);
+            payload.extend_from_slice(&(data.len() as u16).to_le_bytes());
+            payload.extend_from_slice(data);
+        }
+        payload
+    }
+
+    /// Build a compressed record: zlib-encode the sub-record payload, prepend
+    /// the 4-byte decompressed-size header, and wrap in a Tes5Plus record with
+    /// FLAG_COMPRESSED set.
+    fn build_compressed_record(
+        typ: &[u8; 4],
+        form_id: u32,
+        sub_records: &[(&[u8; 4], &[u8])],
+    ) -> Vec<u8> {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let payload = build_sub_record_payload(sub_records);
+        let decompressed_size = payload.len() as u32;
+
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&payload).expect("zlib encode");
+        let compressed = encoder.finish().expect("zlib finish");
+
+        // data_size = 4 (decompressed-size prefix) + compressed_len.
+        let data_size = (4 + compressed.len()) as u32;
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(typ); // record type
+        buf.extend_from_slice(&data_size.to_le_bytes()); // data_size
+        buf.extend_from_slice(&FLAG_COMPRESSED.to_le_bytes()); // flags
+        buf.extend_from_slice(&form_id.to_le_bytes()); // form_id
+        // Tes5Plus trailing 8 bytes (vc_info + revision + version + unknown).
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&decompressed_size.to_le_bytes()); // 4-byte prefix
+        buf.extend_from_slice(&compressed);
+        buf
+    }
+
+    /// Happy path: a compressed STAT record with two sub-records round-trips
+    /// correctly through `read_sub_records`.
+    #[test]
+    fn compressed_record_round_trips_sub_records() {
+        let data = build_compressed_record(
+            b"STAT",
+            0x200,
+            &[(b"EDID", b"TreeLOD\0"), (b"MODL", b"meshes\\tree_lod.nif\0")],
+        );
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        let header = reader.read_record_header().unwrap();
+
+        // FLAG_COMPRESSED must be visible on the header.
+        assert_ne!(
+            header.flags & FLAG_COMPRESSED,
+            0,
+            "FLAG_COMPRESSED must be set on the header"
+        );
+
+        let subs = reader.read_sub_records(&header).unwrap();
+
+        assert_eq!(subs.len(), 2);
+        assert_eq!(&subs[0].sub_type, b"EDID");
+        assert_eq!(subs[0].data, b"TreeLOD\0");
+        assert_eq!(&subs[1].sub_type, b"MODL");
+        assert_eq!(subs[1].data, b"meshes\\tree_lod.nif\0");
+    }
+
+    /// Decompressed size embedded in the 4-byte prefix must match the actual
+    /// decompressed content length. This test verifies that the capacity hint
+    /// (`Vec::with_capacity(decompressed_size)`) is correct — a mismatch here
+    /// would panic or silently truncate on strict allocators.
+    #[test]
+    fn compressed_record_prefix_matches_payload_length() {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let payload = build_sub_record_payload(&[(b"FULL", b"Hello world\0")]);
+        let expected_len = payload.len();
+        let decompressed_size = payload.len() as u32;
+
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&payload).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let data_size = (4 + compressed.len()) as u32;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"MISC");
+        buf.extend_from_slice(&data_size.to_le_bytes());
+        buf.extend_from_slice(&FLAG_COMPRESSED.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes()); // form_id
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&decompressed_size.to_le_bytes());
+        buf.extend_from_slice(&compressed);
+
+        let mut reader = EsmReader::with_variant(&buf, EsmVariant::Tes5Plus);
+        let header = reader.read_record_header().unwrap();
+        let subs = reader.read_sub_records(&header).unwrap();
+
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].data.len() + 6, expected_len, // +6 for sub-type + length prefix
+            "decompressed payload length must match the 4-byte prefix");
+    }
+
+    /// Error path: data_size < 4 must be rejected with an error, not a panic.
+    #[test]
+    fn compressed_record_too_small_returns_error() {
+        // Build a record with FLAG_COMPRESSED but data_size = 3 (too small for prefix).
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"WEAP");
+        buf.extend_from_slice(&3u32.to_le_bytes()); // data_size = 3 — too small
+        buf.extend_from_slice(&FLAG_COMPRESSED.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // form_id
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&[0u8; 3]); // 3 bytes of body
+
+        let mut reader = EsmReader::with_variant(&buf, EsmVariant::Tes5Plus);
+        let header = reader.read_record_header().unwrap();
+        let result = reader.read_sub_records(&header);
+        assert!(
+            result.is_err(),
+            "data_size < 4 must return Err, got Ok"
+        );
+    }
 }
