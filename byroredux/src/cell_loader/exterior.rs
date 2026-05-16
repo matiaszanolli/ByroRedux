@@ -3,6 +3,7 @@
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
+use byroredux_core::math::coord::{cell_grid_to_world_yup, EXTERIOR_CELL_UNITS};
 use byroredux_core::math::Vec3;
 use byroredux_renderer::VulkanContext;
 use std::sync::Arc;
@@ -259,10 +260,10 @@ pub fn load_one_exterior_cell(
     // XCLW inherit the worldspace default, which the cell parser has
     // already collapsed into `cell.water_height` upstream.
     if let Some(water_height) = cell.water_height {
-        // Exterior cell origin in Y-up world coords (matches the
-        // terrain spawn convention): X = grid_x * 4096, Z = −grid_y * 4096.
-        let origin_x = gx as f32 * 4096.0;
-        let origin_z = -(gy as f32) * 4096.0;
+        // Exterior cell origin in Y-up world coords. The helper composes
+        // grid-scale and the Z-up→Y-up flip; see TD3-202 / #1112.
+        let origin = cell_grid_to_world_yup(gx, gy);
+        let half = water::exterior_half_extent();
         let _ = water::spawn_water_plane(
             world,
             ctx,
@@ -270,8 +271,8 @@ pub fn load_one_exterior_cell(
             &wctx.record_index.waters,
             water_height,
             cell.water_type_form,
-            (origin_x + 2048.0, origin_z - 2048.0),
-            water::exterior_half_extent(),
+            (origin.x + half, origin.z - half),
+            half,
             blas_sink,
         );
     }
@@ -310,8 +311,8 @@ pub fn load_one_exterior_cell(
     // initial-load camera-positioning path used by the bulk loader.
     let center = if let Some(ref land) = cell.landscape {
         let mid_height = land.heights[16 * 33 + 16];
-        let world_x = gx as f32 * 4096.0 + 16.0 * 128.0;
-        let world_y = gy as f32 * 4096.0 + 16.0 * 128.0;
+        let world_x = gx as f32 * EXTERIOR_CELL_UNITS + 16.0 * 128.0;
+        let world_y = gy as f32 * EXTERIOR_CELL_UNITS + 16.0 * 128.0;
         // Z-up → Y-up: (x, height, -y), plus 200 units above ground.
         Vec3::new(world_x, mid_height + 200.0, -world_y)
     } else {

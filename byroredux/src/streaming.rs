@@ -31,6 +31,7 @@
 //! state shape on this struct stay the same.
 
 use byroredux_core::ecs::storage::EntityId;
+use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
@@ -599,9 +600,8 @@ pub fn compute_streaming_deltas(
 /// source `(2048, 2048, 0)` lands at world `(2048, 0, -2048)` and
 /// resolves to grid `(0, 0)`.
 pub fn world_pos_to_grid(world_x: f32, world_z: f32) -> (i32, i32) {
-    const CELL: f32 = 4096.0;
-    let gx = (world_x / CELL).floor() as i32;
-    let gy = (-world_z / CELL).floor() as i32;
+    let gx = (world_x / EXTERIOR_CELL_UNITS).floor() as i32;
+    let gy = (-world_z / EXTERIOR_CELL_UNITS).floor() as i32;
     (gx, gy)
 }
 

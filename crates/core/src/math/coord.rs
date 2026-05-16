@@ -25,7 +25,44 @@
 //! into the ECS Transform rotation. Re-normalising at the import
 //! boundary preserves the invariant downstream consumers rely on.
 
-use glam::Quat;
+use glam::{Quat, Vec3};
+
+/// One Bethesda exterior cell spans 4096 world units on each side
+/// (32 × 33-vertex landscape grid at 128-unit spacing). This is the
+/// spec-defined cell size for every Gamebryo / Creation Engine title
+/// shipped to date (Oblivion through Starfield), so it's hard-coded
+/// rather than per-game / per-worldspace.
+///
+/// Sole source of truth post-`#1112` / TD3-202; pre-fix the literal
+/// `4096.0` appeared in cell_loader/water.rs, cell_loader/exterior.rs,
+/// cell_loader/spawn.rs, cell_loader/terrain.rs, streaming.rs, and
+/// crates/plugin/src/esm/cell/mod.rs, with at least one divergent
+/// bug-fix history (TD3-110 Z-flip sign disagreement).
+pub const EXTERIOR_CELL_UNITS: f32 = 4096.0;
+
+/// Cell-grid `(gx, gy)` → Y-up world-space origin of that cell's
+/// south-west corner. Composes the cell-size scale with the Z-up→Y-up
+/// flip in one step:
+///
+/// ```text
+/// world_x = gx * EXTERIOR_CELL_UNITS
+/// world_y = 0                                     (vertical — unset)
+/// world_z = -(gy * EXTERIOR_CELL_UNITS)           (negate-Y for Y-up)
+/// ```
+///
+/// Use this whenever a cell-grid coordinate needs to land in renderer
+/// world space directly. For paths that stay in Bethesda Z-up until a
+/// later boundary flip (e.g., terrain centering that does its own
+/// `Vec3::new(world_x, height, -world_y)`), reference
+/// `EXTERIOR_CELL_UNITS` directly instead of this helper.
+#[inline]
+pub fn cell_grid_to_world_yup(gx: i32, gy: i32) -> Vec3 {
+    Vec3::new(
+        gx as f32 * EXTERIOR_CELL_UNITS,
+        0.0,
+        -(gy as f32) * EXTERIOR_CELL_UNITS,
+    )
+}
 
 /// Convert a Z-up `[x, y, z]` position / translation to Y-up:
 /// `(x, y, z) → (x, z, -y)`. Identity for the X axis; new Y is the
@@ -171,5 +208,30 @@ mod tests {
         assert!((q.length() - 1.0).abs() < 1e-6);
         assert!((q.x).abs() < 1e-6 && (q.y).abs() < 1e-6 && (q.z).abs() < 1e-6);
         assert!((q.w - 1.0).abs() < 1e-6);
+    }
+
+    /// TD3-202 / #1112 — `EXTERIOR_CELL_UNITS` is a Bethesda spec
+    /// constant; if this test ever needs to change, every consumer
+    /// in cell_loader / streaming / plugin::esm::cell needs auditing.
+    #[test]
+    fn exterior_cell_units_matches_bethesda_spec() {
+        assert_eq!(EXTERIOR_CELL_UNITS, 4096.0);
+    }
+
+    /// TD3-202 — origin formula pins the Z-up→Y-up flip into one
+    /// place so callers can't accidentally re-roll the sign.
+    #[test]
+    fn cell_grid_origin_negates_y_for_yup() {
+        // (0, 0) → origin
+        assert_eq!(cell_grid_to_world_yup(0, 0), Vec3::ZERO);
+        // (+1, 0) → +X
+        assert_eq!(cell_grid_to_world_yup(1, 0), Vec3::new(4096.0, 0.0, 0.0));
+        // (0, +1) → -Z (Bethesda +Y is renderer -Z)
+        assert_eq!(cell_grid_to_world_yup(0, 1), Vec3::new(0.0, 0.0, -4096.0));
+        // (-2, -3) → (-8192, 0, 12288)
+        assert_eq!(
+            cell_grid_to_world_yup(-2, -3),
+            Vec3::new(-8192.0, 0.0, 12288.0)
+        );
     }
 }

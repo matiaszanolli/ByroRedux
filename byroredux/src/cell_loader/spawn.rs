@@ -10,6 +10,7 @@ use byroredux_core::ecs::{
     Billboard, GlobalTransform, LightSource, Material, MeshHandle, ParticleEmitter, TextureHandle,
     Transform, World,
 };
+use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
@@ -60,18 +61,18 @@ pub(crate) fn count_spawnable_nif_lights(
 /// to a hard point shadow if the light ever crosses the
 /// `contribution >= 0.001` gate).
 ///
-/// `4096.0` matches the cell-scale fallback already used at the
-/// NIF-direct spawn site for ambient / directional placeholders
-/// without an authored radius. Authored Bethesda XCLL radii are
-/// 256–4096 units, so this default is a "covers the cell" net,
-/// not a typical value — a malformed LIGH record that ships
+/// `EXTERIOR_CELL_UNITS` (4096) matches the cell-scale fallback
+/// already used at the NIF-direct spawn site for ambient / directional
+/// placeholders without an authored radius. Authored Bethesda XCLL
+/// radii are 256–4096 units, so this default is a "covers the cell"
+/// net, not a typical value — a malformed LIGH record that ships
 /// `radius=0` becomes visible rather than silently invisible.
 #[inline]
 pub(crate) fn light_radius_or_default(radius: f32) -> f32 {
     if radius > 0.0 {
         radius
     } else {
-        4096.0
+        EXTERIOR_CELL_UNITS
     }
 }
 

@@ -37,10 +37,7 @@ use byroredux_renderer::{Vertex, VulkanContext};
 use std::collections::HashMap;
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
-
-/// World extent of one exterior cell tile in Bethesda units. Matches
-/// the cell-loader-wide constant (see `cell_loader_terrain.rs`).
-const CELL_SIZE: f32 = 4096.0;
+use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 
 /// Default interior water-plane half-extent in Bethesda units when
 /// the cell loader has not yet computed the cell's reference bounds.
@@ -231,12 +228,12 @@ pub(super) fn spawn_water_plane(
     }
     // Volume extends from the surface down to a per-mode floor.
     // Interior planes get a tight 200-wu column (typical pool
-    // depth); exterior planes get the full 4096-wu column so deep
+    // depth); exterior planes get the full cell-width column so deep
     // ocean cells remain detectable. The exterior heuristic is
     // "half-extent > 1024 = exterior" — captures the spawn caller
     // contract without an explicit flag.
     let volume_depth = if half_extent > 1024.0 {
-        4096.0
+        EXTERIOR_CELL_UNITS
     } else {
         DEFAULT_INTERIOR_VOLUME_DEPTH
     };
@@ -387,7 +384,7 @@ pub(super) fn default_interior_half_extent() -> f32 {
 /// Convenience for the exterior path — one exterior cell quad.
 #[inline]
 pub(super) fn exterior_half_extent() -> f32 {
-    CELL_SIZE * 0.5
+    EXTERIOR_CELL_UNITS * 0.5
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@
 
 use super::reader::EsmReader;
 use anyhow::Result;
+use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use std::collections::HashMap;
 
 mod helpers;
@@ -693,14 +694,13 @@ impl WorldspaceRecord {
         if self.usable_min == (0.0, 0.0) && self.usable_max == (0.0, 0.0) {
             return None;
         }
-        const CELL_SIZE: f32 = 4096.0;
         let min = (
-            (self.usable_min.0 / CELL_SIZE).floor() as i32,
-            (self.usable_min.1 / CELL_SIZE).floor() as i32,
+            (self.usable_min.0 / EXTERIOR_CELL_UNITS).floor() as i32,
+            (self.usable_min.1 / EXTERIOR_CELL_UNITS).floor() as i32,
         );
         let max = (
-            (self.usable_max.0 / CELL_SIZE).floor() as i32,
-            (self.usable_max.1 / CELL_SIZE).floor() as i32,
+            (self.usable_max.0 / EXTERIOR_CELL_UNITS).floor() as i32,
+            (self.usable_max.1 / EXTERIOR_CELL_UNITS).floor() as i32,
         );
         Some((min, max))
     }

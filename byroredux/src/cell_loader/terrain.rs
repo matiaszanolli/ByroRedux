@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 
 use byroredux_core::ecs::{GlobalTransform, MeshHandle, TextureHandle, Transform, World};
+use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_plugin::esm;
 use byroredux_renderer::{Vertex, VulkanContext};
 
@@ -205,12 +206,11 @@ pub(super) fn spawn_terrain_mesh(
     land: &esm::cell::LandscapeData,
     blas_specs: &mut Vec<(u32, u32, u32)>,
 ) -> Option<usize> {
-    const CELL_SIZE: f32 = 4096.0;
     const GRID: usize = 33;
-    const SPACING: f32 = CELL_SIZE / 32.0; // 128.0
+    const SPACING: f32 = EXTERIOR_CELL_UNITS / 32.0; // 128.0
 
-    let origin_x = grid_x as f32 * CELL_SIZE;
-    let origin_y = grid_y as f32 * CELL_SIZE;
+    let origin_x = grid_x as f32 * EXTERIOR_CELL_UNITS;
+    let origin_y = grid_y as f32 * EXTERIOR_CELL_UNITS;
 
     // Collect cell-global splat layers before the vertex loop — we need
     // all 8 resolved before we can pack per-vertex weights. #470.
