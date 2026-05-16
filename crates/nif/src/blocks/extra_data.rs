@@ -444,6 +444,14 @@ pub struct DecalVectorBlock {
 ///
 /// Inherits NiFloatExtraData (NiExtraData + f32). Contains arrays of
 /// point/normal pairs defining where decals are projected onto geometry.
+///
+/// **Orphan-parse status** (#987 / NIF-D5-ORPHAN-C, Band C): the
+/// renderer-side decal pass hasn't been implemented — current decal
+/// handling is via NIF flag bits + render state, not a dedicated
+/// decal pipeline. Parsing the data keeps it available for a future
+/// renderer-decal-pass milestone; no consumer is on any current
+/// roadmap. Re-open #987 with a concrete plan when a dedicated decal
+/// pipeline lands.
 #[derive(Debug)]
 pub struct BsDecalPlacementVectorExtraData {
     pub name: Option<Arc<str>>,
@@ -514,6 +522,13 @@ impl BsBehaviorGraphExtraData {
 
 /// Inventory display marker — rotation and zoom for in-menu 3D preview.
 /// Rotation values are radians × 1000 stored as u16.
+///
+/// **Orphan-parse status** (#987 / NIF-D5-ORPHAN-C, Band C): the
+/// inventory-grid renderer (Pip-Boy in FO3/FNV/FO4, SkyrimUI
+/// inventory in Skyrim) is built on Scaleform/SWF and not on any
+/// current roadmap — the M48 SWF strategic decision (R4) is still
+/// open. Parsed for future use; consumer lands with an
+/// M-INVENTORY-UI milestone that hasn't been scheduled.
 #[derive(Debug)]
 pub struct BsInvMarker {
     pub name: Option<Arc<str>>,
@@ -547,6 +562,15 @@ impl BsInvMarker {
 ///
 /// nif.xml: `BSWArray inherit="NiExtraData" versions="#FO3_AND_LATER#"`.
 /// Fields: Num Items (u32) + Items ([i32; Num Items]).
+///
+/// **Orphan-parse status** (#987 / NIF-D5-ORPHAN-C, Band C):
+/// authored on FO3+ as pre-Skyrim Havok ragdoll constraint metadata
+/// (Havok 2010-era skin-weight indices). Skyrim+ uses
+/// `bhkRagdollSystem` / `bhkPhysicsSystem` instead; pre-Skyrim
+/// ragdolls fall back to the engine's default skeletal-pose-null
+/// path (acceptable for FO3 / FNV — combat ragdoll is a hit-effect,
+/// not a load-bearing systems gap). Re-open #987 if a pre-Skyrim
+/// ragdoll port is ever planned.
 #[derive(Debug)]
 pub struct BsWArray {
     pub name: Option<Arc<str>>,
@@ -573,6 +597,14 @@ impl BsWArray {
 /// drops it. `name` therefore stays `None` for every cloth block;
 /// kept on the struct as a placeholder for shape symmetry with the
 /// other `Bs*ExtraData` parsers.
+///
+/// **Orphan-parse status** (#987 / NIF-D5-ORPHAN-C, Band C): cloth
+/// simulation is not on any current milestone. M28 Rapier3D handles
+/// rigid bodies only — soft-body PBD or a dedicated cloth crate
+/// would need to land first. The 1 523 cloth-bearing FO4 / FO76 /
+/// Starfield NIFs (#722 closure tally) parse correctly today; their
+/// `data` blob is captured opaquely and waits for a future
+/// M-CLOTH milestone to consume.
 #[derive(Debug)]
 pub struct BsClothExtraData {
     pub name: Option<Arc<str>>,
@@ -603,6 +635,15 @@ impl BsClothExtraData {
 /// binary blob is opaque to us today; capturing it correctly prevents
 /// the previous `NiUnknown` silent drop on the 2 occurrences observed
 /// in `SeventySix - Meshes.ba2`. See #728 / NIF-D5-10.
+///
+/// **Orphan-parse status** (#987 / NIF-D5-ORPHAN-C, Band C): this
+/// is a BLAS-skip optimisation for query-only collision shapes
+/// (footstep raycasts, hover-target tests) — NOT a correctness gap.
+/// The default BLAS path produces the same query results, just with
+/// the full geometry instead of the simplified proxy. Optimisation
+/// pass is unlikely to ever rise to milestone status given the
+/// 2-occurrence footprint; parsed defensively to avoid the
+/// `NiUnknown` silent drop, no consumer expected.
 #[derive(Debug)]
 pub struct BsCollisionQueryProxyExtraData {
     pub data: Vec<u8>,
