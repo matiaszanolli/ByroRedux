@@ -63,6 +63,36 @@ fn main() {
     writeln!(out, "#define WORKGROUP_X {WORKGROUP_X}").unwrap();
     writeln!(out, "#define WORKGROUP_Y {WORKGROUP_Y}").unwrap();
     writeln!(out, "#define WORKGROUP_Z {WORKGROUP_Z}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// Clustered light culling thread count (no `u` suffix — used in").unwrap();
+    writeln!(out, "// `layout(local_size_x = THREADS_PER_CLUSTER)`).").unwrap();
+    writeln!(out, "#define THREADS_PER_CLUSTER {THREADS_PER_CLUSTER}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// Bloom + volumetrics tunables (floats — always decimal).").unwrap();
+    writeln!(out, "#define BLOOM_INTENSITY {BLOOM_INTENSITY:?}").unwrap();
+    writeln!(out, "#define VOLUME_FAR {VOLUME_FAR:?}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`).").unwrap();
+    writeln!(out, "#define WATER_CALM {WATER_CALM}u").unwrap();
+    writeln!(out, "#define WATER_RIVER {WATER_RIVER}u").unwrap();
+    writeln!(out, "#define WATER_RAPIDS {WATER_RAPIDS}u").unwrap();
+    writeln!(out, "#define WATER_WATERFALL {WATER_WATERFALL}u").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// Debug-viz bit flags (set via console for renderer bisects).").unwrap();
+    writeln!(out, "#define DBG_BYPASS_POM {DBG_BYPASS_POM}u").unwrap();
+    writeln!(out, "#define DBG_BYPASS_DETAIL {DBG_BYPASS_DETAIL}u").unwrap();
+    writeln!(out, "#define DBG_VIZ_NORMALS {DBG_VIZ_NORMALS}u").unwrap();
+    writeln!(out, "#define DBG_VIZ_TANGENT {DBG_VIZ_TANGENT}u").unwrap();
+    writeln!(out, "#define DBG_BYPASS_NORMAL_MAP {DBG_BYPASS_NORMAL_MAP}u").unwrap();
+    writeln!(out, "#define DBG_RESERVED_20 {DBG_RESERVED_20}u").unwrap();
+    writeln!(out, "#define DBG_VIZ_RENDER_LAYER {DBG_VIZ_RENDER_LAYER}u").unwrap();
+    writeln!(out, "#define DBG_VIZ_GLASS_PASSTHRU {DBG_VIZ_GLASS_PASSTHRU}u").unwrap();
+    writeln!(out, "#define DBG_DISABLE_SPECULAR_AA {DBG_DISABLE_SPECULAR_AA}u").unwrap();
+    writeln!(out, "#define DBG_DISABLE_HALF_LAMBERT_FILL {DBG_DISABLE_HALF_LAMBERT_FILL}u").unwrap();
 
     let out_path = Path::new("shaders/include/shader_constants.glsl");
     if let Some(parent) = out_path.parent() {

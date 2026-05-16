@@ -85,11 +85,11 @@ const BLOOM_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
 /// from 0.20 on Prospector saloon (sun-lit windows + chandelier
 /// globes had halos bleeding too far across walls); 0.15 keeps
 /// emissives obviously bloomed without flooding dim surfaces.
-/// Pinned in lockstep with `composite.frag`'s `BLOOM_INTENSITY`
-/// constant; update both at once. The proper fix (HDR-boost
-/// emissives globally) is tracked separately — see the "Color
-/// Space — Not sRGB" feedback memo.
-pub const DEFAULT_BLOOM_INTENSITY: f32 = 0.15;
+/// Source of truth lives in `crate::shader_constants::BLOOM_INTENSITY`;
+/// `build.rs` emits the matching `#define BLOOM_INTENSITY` into
+/// `composite.frag`. The proper fix (HDR-boost emissives globally) is
+/// tracked separately — see the "Color Space — Not sRGB" feedback memo.
+pub const DEFAULT_BLOOM_INTENSITY: f32 = crate::shader_constants::BLOOM_INTENSITY;
 
 #[repr(C)]
 #[derive(Clone, Copy)]

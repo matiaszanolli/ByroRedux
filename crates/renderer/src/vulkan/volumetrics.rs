@@ -99,8 +99,10 @@ pub const DEFAULT_PHASE_G: f32 = 0.4;
 
 /// Default volume extent (m). 200 m is a reasonable interior+near-
 /// exterior reach; longer ranges would need exponential slice
-/// distribution (Phase 5) to keep near-camera detail.
-pub const DEFAULT_VOLUME_FAR: f32 = 200.0;
+/// distribution (Phase 5) to keep near-camera detail. Source of truth
+/// is `crate::shader_constants::VOLUME_FAR`; `build.rs` emits the
+/// matching `#define VOLUME_FAR` into `composite.frag`.
+pub const DEFAULT_VOLUME_FAR: f32 = crate::shader_constants::VOLUME_FAR;
 
 /// Single source of truth for whether the composite shader actually
 /// consumes the integrated volumetric output. Pinned in lockstep with

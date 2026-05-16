@@ -35,3 +35,29 @@
 #define WORKGROUP_X 8
 #define WORKGROUP_Y 8
 #define WORKGROUP_Z 8
+
+// Clustered light culling thread count (no `u` suffix — used in
+// `layout(local_size_x = THREADS_PER_CLUSTER)`).
+#define THREADS_PER_CLUSTER 32
+
+// Bloom + volumetrics tunables (floats — always decimal).
+#define BLOOM_INTENSITY 0.15
+#define VOLUME_FAR 200.0
+
+// Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`).
+#define WATER_CALM 0u
+#define WATER_RIVER 1u
+#define WATER_RAPIDS 2u
+#define WATER_WATERFALL 3u
+
+// Debug-viz bit flags (set via console for renderer bisects).
+#define DBG_BYPASS_POM 1u
+#define DBG_BYPASS_DETAIL 2u
+#define DBG_VIZ_NORMALS 4u
+#define DBG_VIZ_TANGENT 8u
+#define DBG_BYPASS_NORMAL_MAP 16u
+#define DBG_RESERVED_20 32u
+#define DBG_VIZ_RENDER_LAYER 64u
+#define DBG_VIZ_GLASS_PASSTHRU 128u
+#define DBG_DISABLE_SPECULAR_AA 256u
+#define DBG_DISABLE_HALF_LAMBERT_FILL 512u

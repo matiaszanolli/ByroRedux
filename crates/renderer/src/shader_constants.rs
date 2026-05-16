@@ -58,6 +58,17 @@ mod tests {
             ("WORKGROUP_X", format!("#define WORKGROUP_X {WORKGROUP_X}")),
             ("WORKGROUP_Y", format!("#define WORKGROUP_Y {WORKGROUP_Y}")),
             ("WORKGROUP_Z", format!("#define WORKGROUP_Z {WORKGROUP_Z}")),
+            ("THREADS_PER_CLUSTER", format!("#define THREADS_PER_CLUSTER {THREADS_PER_CLUSTER}")),
+            ("BLOOM_INTENSITY", format!("#define BLOOM_INTENSITY {BLOOM_INTENSITY:?}")),
+            ("VOLUME_FAR", format!("#define VOLUME_FAR {VOLUME_FAR:?}")),
+            ("WATER_CALM", format!("#define WATER_CALM {WATER_CALM}u")),
+            ("WATER_RIVER", format!("#define WATER_RIVER {WATER_RIVER}u")),
+            ("WATER_RAPIDS", format!("#define WATER_RAPIDS {WATER_RAPIDS}u")),
+            ("WATER_WATERFALL", format!("#define WATER_WATERFALL {WATER_WATERFALL}u")),
+            ("DBG_BYPASS_POM", format!("#define DBG_BYPASS_POM {DBG_BYPASS_POM}u")),
+            ("DBG_VIZ_NORMALS", format!("#define DBG_VIZ_NORMALS {DBG_VIZ_NORMALS}u")),
+            ("DBG_BYPASS_NORMAL_MAP", format!("#define DBG_BYPASS_NORMAL_MAP {DBG_BYPASS_NORMAL_MAP}u")),
+            ("DBG_DISABLE_HALF_LAMBERT_FILL", format!("#define DBG_DISABLE_HALF_LAMBERT_FILL {DBG_DISABLE_HALF_LAMBERT_FILL}u")),
         ] {
             assert!(
                 header.contains(&expected),
@@ -85,5 +96,104 @@ mod tests {
                 "{shader}: must `#include \"include/shader_constants.glsl\"` at the top",
             );
         }
+    }
+
+    /// Helper: assert that the line declaring `name` in `src` (under a
+    /// `const <type> <name>` prefix) contains `value_token`.
+    /// Tolerates GLSL alignment padding (`const uint NAME     = 0u;`).
+    fn assert_shader_const_value(
+        src: &str,
+        decl_prefix: &str,
+        name: &str,
+        value_token: &str,
+        rust_origin: &str,
+    ) {
+        let needle = format!("{decl_prefix} {name}");
+        let pos = src
+            .find(&needle)
+            .unwrap_or_else(|| panic!("shader missing `{needle}` declaration"));
+        let line_end = src[pos..].find('\n').map(|n| pos + n).unwrap_or(src.len());
+        let line = src[pos..line_end].trim();
+        assert!(
+            line.contains(value_token),
+            "shader declaration `{line}` does not contain expected value token `{value_token}` \
+             (Rust side: {rust_origin})",
+        );
+    }
+
+    /// TD4-203 — `composite.frag::BLOOM_INTENSITY` must match
+    /// `shader_constants::BLOOM_INTENSITY`. When the shader migrates
+    /// to `#include "include/shader_constants.glsl"`, drop the local
+    /// declaration and rely on the auto-generated `#define`.
+    #[test]
+    fn composite_frag_bloom_intensity_matches() {
+        let src = include_str!("../shaders/composite.frag");
+        let token = format!("= {BLOOM_INTENSITY:?};");
+        assert_shader_const_value(src, "const float", "BLOOM_INTENSITY", &token, "BLOOM_INTENSITY");
+    }
+
+    /// TD4-204 — `composite.frag::VOLUME_FAR` must match
+    /// `shader_constants::VOLUME_FAR`. Same migration path.
+    #[test]
+    fn composite_frag_volume_far_matches() {
+        let src = include_str!("../shaders/composite.frag");
+        let token = format!("= {VOLUME_FAR:?};");
+        assert_shader_const_value(src, "const float", "VOLUME_FAR", &token, "VOLUME_FAR");
+    }
+
+    /// TD4-205 — Water motion-kind enum in `water.frag` must match
+    /// the Rust constants. WATR records key off these values.
+    #[test]
+    fn water_frag_motion_enum_matches() {
+        let src = include_str!("../shaders/water.frag");
+        for (name, value) in [
+            ("WATER_CALM", WATER_CALM),
+            ("WATER_RIVER", WATER_RIVER),
+            ("WATER_RAPIDS", WATER_RAPIDS),
+            ("WATER_WATERFALL", WATER_WATERFALL),
+        ] {
+            let token = format!("= {value}u;");
+            assert_shader_const_value(src, "const uint", name, &token, name);
+        }
+    }
+
+    /// TD4-206 — DBG_* bit flags in `triangle.frag` must match the
+    /// Rust constants. Console commands set these by name; drift
+    /// would silently route the wrong bit.
+    #[test]
+    fn triangle_frag_dbg_bits_match() {
+        let src = include_str!("../shaders/triangle.frag");
+        for (name, value) in [
+            ("DBG_BYPASS_POM", DBG_BYPASS_POM),
+            ("DBG_BYPASS_DETAIL", DBG_BYPASS_DETAIL),
+            ("DBG_VIZ_NORMALS", DBG_VIZ_NORMALS),
+            ("DBG_VIZ_TANGENT", DBG_VIZ_TANGENT),
+            ("DBG_BYPASS_NORMAL_MAP", DBG_BYPASS_NORMAL_MAP),
+            ("DBG_RESERVED_20", DBG_RESERVED_20),
+            ("DBG_VIZ_RENDER_LAYER", DBG_VIZ_RENDER_LAYER),
+            ("DBG_VIZ_GLASS_PASSTHRU", DBG_VIZ_GLASS_PASSTHRU),
+            ("DBG_DISABLE_SPECULAR_AA", DBG_DISABLE_SPECULAR_AA),
+            ("DBG_DISABLE_HALF_LAMBERT_FILL", DBG_DISABLE_HALF_LAMBERT_FILL),
+        ] {
+            let token = format!("= 0x{value:X}u;");
+            assert_shader_const_value(src, "const uint", name, &token, name);
+        }
+    }
+
+    /// TD4-208 — `cluster_cull.comp::THREADS_PER_CLUSTER` must match
+    /// `shader_constants::THREADS_PER_CLUSTER`. Shader currently shadows
+    /// the generated `#define`; both must agree.
+    #[test]
+    fn cluster_cull_threads_per_cluster_matches() {
+        let src = include_str!("../shaders/cluster_cull.comp");
+        // cluster_cull writes the value without `u` suffix.
+        let token = format!("= {THREADS_PER_CLUSTER};");
+        assert_shader_const_value(
+            src,
+            "const uint",
+            "THREADS_PER_CLUSTER",
+            &token,
+            "THREADS_PER_CLUSTER",
+        );
     }
 }
