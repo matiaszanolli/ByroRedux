@@ -336,10 +336,13 @@ impl Texture {
         // into the same cmd don't serialise on each other unnecessarily.
         let barrier_to_dst = image_barrier_undef_to_transfer_dst(image, meta.mip_count);
 
+        // NONE as srcStageMask: UNDEFINED → TRANSFER_DST_OPTIMAL has no
+        // prior writes to expose; NONE is the Vulkan 1.3 idiom
+        // post-#949 / #1100 / #1122.
         unsafe {
             device.cmd_pipeline_barrier(
                 cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::NONE,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::DependencyFlags::empty(),
                 &[],

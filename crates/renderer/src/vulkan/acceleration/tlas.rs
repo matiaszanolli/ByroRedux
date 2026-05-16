@@ -736,6 +736,27 @@ impl AccelerationManager {
             build_info = build_info
                 .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
                 .src_acceleration_structure(tlas.accel);
+            // #1121 / REN-D8-NEW-01 — pin the device-buffer ↔ build-info
+            // count match explicitly. The host→device copy above writes
+            // exactly `instance_count` instances; the UPDATE range below
+            // reads `built_primitive_count` instances out of the buffer.
+            // If those two diverge (a future refactor decouples
+            // built_primitive_count from BUILD-time count, or adds a
+            // UPDATE-without-prior-BUILD path), instances
+            // `[instance_count..built_primitive_count]` would feed stale
+            // tail data into the BVH — silent shadow / GI / reflection
+            // corruption on the difference range. Today the
+            // `decide_use_update` zip-compare forces BUILD on
+            // `cached_addresses.len() != current_addresses.len()`, so
+            // this assert holds by construction. Pin it so a future
+            // refactor that breaks the invariant fails loudly in debug.
+            debug_assert_eq!(
+                tlas.built_primitive_count, instance_count,
+                "TLAS UPDATE path: built_primitive_count ({}) must equal \
+                 instance_count ({}) — VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03708. \
+                 See #1121 / REN-D8-NEW-01.",
+                tlas.built_primitive_count, instance_count,
+            );
             // Must match the source BUILD's primitiveCount per VUID-03708.
             tlas.built_primitive_count
         } else {

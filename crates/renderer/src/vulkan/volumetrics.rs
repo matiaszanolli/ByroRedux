@@ -683,10 +683,13 @@ impl VolumetricsPipeline {
                         ),
                 );
             }
+            // NONE as srcStageMask: UNDEFINED → GENERAL on the lighting +
+            // integrated volumes has no prior writes to expose; NONE is
+            // the Vulkan 1.3 idiom post-#949 / #1100 / #1122.
             unsafe {
                 device.cmd_pipeline_barrier(
                     cmd,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::NONE,
                     vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
                     vk::DependencyFlags::empty(),
                     &[],

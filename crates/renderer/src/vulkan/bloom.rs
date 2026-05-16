@@ -390,10 +390,13 @@ impl BloomPipeline {
                     barriers.push(image_barrier_undef_to_general(mip.image));
                 }
             }
+            // NONE as srcStageMask: UNDEFINED → GENERAL on the bloom
+            // pyramid mips has no prior writes to expose; NONE is the
+            // Vulkan 1.3 idiom post-#949 / #1100 / #1122.
             unsafe {
                 device.cmd_pipeline_barrier(
                     cmd,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::NONE,
                     vk::PipelineStageFlags::COMPUTE_SHADER,
                     vk::DependencyFlags::empty(),
                     &[],

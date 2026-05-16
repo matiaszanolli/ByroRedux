@@ -746,6 +746,9 @@ impl SvgfPipeline {
             {
                 barriers.push(image_barrier_undef_to_general(slot.image));
             }
+            // NONE as srcStageMask: UNDEFINED → GENERAL on the SVGF
+            // history images has no prior writes to expose; NONE is the
+            // Vulkan 1.3 idiom post-#949 / #1100 / #1122.
             // SAFETY: caller of `initialize_layouts` (unsafe fn)
             // guarantees device/queue/pool validity; `cmd` is the
             // recording buffer from `with_one_time_commands`. Each
@@ -753,7 +756,7 @@ impl SvgfPipeline {
             unsafe {
                 device.cmd_pipeline_barrier(
                     cmd,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::NONE,
                     vk::PipelineStageFlags::COMPUTE_SHADER,
                     vk::DependencyFlags::empty(),
                     &[],

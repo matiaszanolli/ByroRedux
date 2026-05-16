@@ -440,6 +440,9 @@ impl SsaoPipeline {
                     .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                     .image(img)
                     .subresource_range(range);
+                // NONE as srcStageMask: UNDEFINED → TRANSFER_DST_OPTIMAL has
+                // no prior writes to expose; NONE is the Vulkan 1.3 idiom
+                // post-#949 / #1100 / #1122.
                 // SAFETY: caller of `initialize_ao_images` (unsafe fn,
                 // line 404) guarantees device/queue/pool validity. `cmd`
                 // is the recording buffer from `with_one_time_commands`.
@@ -449,7 +452,7 @@ impl SsaoPipeline {
                 unsafe {
                     device.cmd_pipeline_barrier(
                         cmd,
-                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        vk::PipelineStageFlags::NONE,
                         vk::PipelineStageFlags::TRANSFER,
                         vk::DependencyFlags::empty(),
                         &[],
