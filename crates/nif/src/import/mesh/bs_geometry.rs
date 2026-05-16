@@ -90,6 +90,33 @@ pub fn extract_bs_geometry(
 
     let uvs = mesh_data.uvs0.clone();
 
+    // Authored tangents from the UDEC3-packed `tangents_raw` channel.
+    // BSGeometry is Starfield-native Y-up — no Z-up → Y-up axis swap is
+    // needed (unlike the Oblivion/Skyrim NiBinaryExtraData path, which
+    // is Z-up and requires `bs_tangents_zup_to_yup`). The 2-bit W
+    // channel from `unpack_udec3_xyzw` carries the bitangent sign.
+    // Without this decode, every Starfield mesh fell through to the
+    // shader's screen-space derivative Path-2 in `perturbNormal`,
+    // producing lower-quality normal maps and inverted normals on
+    // UV-mirrored geometry (#1086 / REN-D16-001).
+    let tangents: Vec<[f32; 4]> = if !mesh_data.tangents_raw.is_empty() {
+        mesh_data
+            .tangents_raw
+            .iter()
+            .map(|&raw| {
+                let xyzw = unpack_udec3_xyzw(raw);
+                [xyzw[0], xyzw[1], xyzw[2], xyzw[3]]
+            })
+            .collect()
+    } else {
+        // No authored tangents — the renderer falls back to screen-space
+        // derivative TBN (Path 2). A future improvement could call
+        // synthesize_tangents here, but it requires a Y-up variant since
+        // BSGeometry data is already in engine space (unlike the Z-up
+        // input that NiTriShape / BSTriShape synthesis expects).
+        Vec::new()
+    };
+
     // Vertex colors: u8 RGBA → f32 [0, 1].
     let colors: Vec<[f32; 4]> = if !mesh_data.colors.is_empty() {
         mesh_data
@@ -146,13 +173,7 @@ pub fn extract_bs_geometry(
         positions,
         colors,
         normals,
-        // #783 / M-NORMALS — placeholder; the NiTriShape path
-        // overwrites this with the decoded `geom.tangents` below
-        // (see Edit). BSTriShape and SSE-packed paths leave it empty
-        // until the inline-vertex-stream tangent decode lands as a
-        // follow-up; the renderer falls back to screen-space
-        // derivative TBN for now on those.
-        tangents: Vec::new(),
+        tangents,
         uvs,
         indices,
         translation: zup_point_to_yup(t),
