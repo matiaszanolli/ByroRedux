@@ -9,12 +9,14 @@
 //!
 //! ## Phase 1 — skeleton (this file)
 //!
-//! Allocates the 3D froxel images (per frame-in-flight), runs a
-//! compute pass that clears them to (0 scattering, 1 transmittance).
-//! No visual change yet — purpose is to validate the plumbing
-//! (3D-image allocation, descriptor binding, dispatch shape, layout
-//! transitions, post-dispatch barrier) without producing artifacts
-//! on real content.
+//! Allocates the 3D froxel images (per frame-in-flight). After
+//! allocation, `initialize_layouts` transitions them to `GENERAL` and
+//! clears them to `(rgb=0 inscatter, a=1 transmittance)` so that the
+//! composite formula `final = scene * vol.a + vol.rgb` is a no-op on
+//! the first frame before the inject/integrate passes run. No visual
+//! change yet — purpose is to validate the plumbing (3D-image
+//! allocation, descriptor binding, dispatch shape, layout transitions,
+//! post-dispatch barrier) without producing artifacts on real content.
 //!
 //! ## Phase 2+ (planned, not yet implemented)
 //!
@@ -567,7 +569,13 @@ impl VolumetricsPipeline {
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
+            // TRANSFER_DST required for `initialize_layouts` to clear the
+            // image to (rgb=0, a=1) via `cmd_clear_color_image` (#1082).
+            .usage(
+                vk::ImageUsageFlags::STORAGE
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_DST,
+            )
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
         let image = unsafe {
@@ -638,10 +646,13 @@ impl VolumetricsPipeline {
         })
     }
 
-    /// One-time UNDEFINED → GENERAL transition for every froxel
-    /// volume (both injection-output and integration-output) so the
-    /// first dispatch and any subsequent sampling see a valid layout.
-    /// Call once after `new()`. Mirrors `SvgfPipeline::initialize_layouts`.
+    /// One-time UNDEFINED → GENERAL transition for every froxel volume
+    /// (both injection-output and integration-output) followed by a
+    /// `cmd_clear_color_image` that writes `(rgb=0 inscatter, a=1
+    /// transmittance)`. Without this clear, uninitialized `vol.a ≈ 0`
+    /// makes the composite formula `final = scene * vol.a + vol.rgb`
+    /// collapse the scene to black on the first frame volumetrics is
+    /// enabled (#1082). Call once after `new()`.
     pub unsafe fn initialize_layouts(
         &self,
         device: &ash::Device,
@@ -649,25 +660,82 @@ impl VolumetricsPipeline {
         pool: vk::CommandPool,
     ) -> Result<()> {
         super::texture::with_one_time_commands(device, queue, pool, |cmd| {
+            // ── 1. UNDEFINED → GENERAL layout transition ─────────────────
+            // dst_stage includes TRANSFER so the subsequent clear is
+            // ordered after the layout transition.
             let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 2);
             for slot in self
                 .lighting_volumes
                 .iter()
                 .chain(self.integrated_volumes.iter())
             {
-                barriers.push(image_barrier_undef_to_general(slot.image));
+                barriers.push(
+                    image_barrier_undef_to_general(slot.image)
+                        .dst_access_mask(
+                            vk::AccessFlags::SHADER_READ
+                                | vk::AccessFlags::SHADER_WRITE
+                                | vk::AccessFlags::TRANSFER_WRITE,
+                        ),
+                );
             }
             unsafe {
                 device.cmd_pipeline_barrier(
                     cmd,
                     vk::PipelineStageFlags::TOP_OF_PIPE,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
                     vk::DependencyFlags::empty(),
                     &[],
                     &[],
                     &barriers,
                 );
             }
+
+            // ── 2. Clear every froxel image to (inscatter=0, T=1) ───────
+            // Zero inscatter + unit transmittance is the correct "no fog"
+            // sentinel: composite `final = scene * vol.a + vol.rgb`
+            // becomes `scene * 1 + 0 = scene`. TRANSFER_DST usage was
+            // added to the image creation flags for this call (#1082).
+            let clear_value = vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            };
+            let full_range = vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            };
+            for slot in self
+                .lighting_volumes
+                .iter()
+                .chain(self.integrated_volumes.iter())
+            {
+                // SAFETY: image is in GENERAL layout (transition above),
+                // has TRANSFER_DST usage, and is not referenced by any
+                // in-flight command buffer (called once after new()).
+                unsafe {
+                    device.cmd_clear_color_image(
+                        cmd,
+                        slot.image,
+                        vk::ImageLayout::GENERAL,
+                        &clear_value,
+                        &[full_range],
+                    );
+                }
+            }
+
+            // ── 3. TRANSFER_WRITE → COMPUTE_SHADER barrier ──────────────
+            // Ensures the clear is visible before the first inject/integrate
+            // dispatch reads or writes the froxel images.
+            memory_barrier(
+                device,
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+            );
+
             Ok(())
         })
     }
