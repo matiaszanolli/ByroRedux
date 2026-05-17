@@ -315,6 +315,64 @@ pub(super) fn draw_command_eligible_for_tlas(draw_cmd: &DrawCommand) -> bool {
     draw_cmd.in_tlas && !draw_cmd.is_water
 }
 
+/// Prior writer to the shared `blas_scratch_buffer` within the current
+/// frame, as observed by the next AS build/refit step that wants to
+/// reuse the same scratch region. Captures the three submission
+/// contexts the scratch buffer participates in (see
+/// [`requires_scratch_serialize_barrier_before`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ScratchUser {
+    /// No prior op has touched the shared scratch this frame — first
+    /// build/refit since the scratch was allocated or grown. No
+    /// `AS_WRITE → AS_WRITE` barrier is required.
+    None,
+    /// A prior `cmd_build_acceleration_structures` (BUILD) was recorded
+    /// on the SAME command buffer earlier this frame
+    /// (`build_skinned_blas_batched_on_cmd` per-entity loop, or a
+    /// preceding refit). Self-evident scratch hazard — barrier needed.
+    SameSubmissionBuild,
+    /// A prior refit was recorded on the SAME command buffer (refit
+    /// loop in `draw_frame`). Same hazard shape as
+    /// `SameSubmissionBuild`; named separately so call sites stay
+    /// readable.
+    SameSubmissionRefit,
+    /// A separate submission emitted a BUILD via `submit_one_time`
+    /// (cell-load `build_blas_batched`) earlier this frame and the
+    /// host has since fence-waited that submission. Per Vulkan spec,
+    /// fence-wait establishes a *host*-side dependency only; the new
+    /// submission's commands still need a *device*-side
+    /// `AS_WRITE → AS_WRITE` memory dependency for any scratch
+    /// reuse. This is the load-bearing case for #983 / REN-D8-NEW-15
+    /// — validation layers do NOT catch it because they reason per-
+    /// submission.
+    CrossSubmissionBuildWithFenceWait,
+}
+
+/// Codifies the spec rule that drives `refit_skinned_blas` and
+/// `build_skinned_blas_batched_on_cmd` to self-emit
+/// [`record_scratch_serialize_barrier`]: any prior writer to the shared
+/// scratch — within or across submissions — requires an
+/// `AS_WRITE → AS_WRITE` memory dependency before the next AS build /
+/// refit that reuses that scratch.
+///
+/// The predicate is consulted by the regression test below; the
+/// production sites unconditionally emit the barrier (no live branch
+/// reads the result). The point is to make the
+/// "host fence-wait does NOT excuse a device-side barrier" rule
+/// inspectable + pinned by a unit test so a future refactor that moves
+/// the barrier from callee back to caller-side (because an optimizer
+/// noticed same-submission emit-count) is caught — see
+/// `AUDIT_CONCURRENCY_2026-05-16.md` Dim 5 / CONC-D5-NEW-01 / #1140.
+#[inline]
+pub(super) fn requires_scratch_serialize_barrier_before(prior: ScratchUser) -> bool {
+    match prior {
+        ScratchUser::None => false,
+        ScratchUser::SameSubmissionBuild
+        | ScratchUser::SameSubmissionRefit
+        | ScratchUser::CrossSubmissionBuildWithFenceWait => true,
+    }
+}
+
 /// Vulkan-spec compliance check for AS-build scratch addresses.
 ///
 /// Every `scratch_data.device_address` passed to

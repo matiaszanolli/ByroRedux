@@ -560,6 +560,13 @@ impl AccelerationManager {
         // load-bearing in code rather than docstring; the existing
         // caller-side emission at `context/draw.rs` becomes a
         // harmless idempotent duplicate. See #644 / MEM-2-2.
+        //
+        // The rule this implements is pinned by
+        // `predicates::requires_scratch_serialize_barrier_before`
+        // (#1140 / CONC-D5-NEW-01) — that predicate codifies the
+        // "host fence-wait does NOT excuse a device-side barrier"
+        // invariant so a future refactor moving the barrier
+        // caller-side is caught at `cargo test` time.
         self.record_scratch_serialize_barrier(device, cmd);
 
         // Capture scratch_align before the mutable borrow on

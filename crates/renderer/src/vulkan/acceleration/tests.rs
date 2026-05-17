@@ -1062,3 +1062,63 @@ fn column_major_to_vk_transform_identity_maps_to_3x4_identity() {
         ]
     );
 }
+
+// ── #1140 / CONC-D5-NEW-01 — scratch-serialize barrier invariant ─────
+//
+// These tests pin `requires_scratch_serialize_barrier_before` against
+// the four `ScratchUser` variants. Production sites unconditionally
+// self-emit the barrier; the predicate exists to document the rule
+// and pin the cross-submission case so a future refactor that drops
+// the self-emit "because validation layers don't flag it" is caught
+// at `cargo test` time. See `AUDIT_CONCURRENCY_2026-05-16.md` Dim 5.
+
+#[test]
+fn scratch_barrier_unneeded_for_first_op_of_frame() {
+    assert!(
+        !requires_scratch_serialize_barrier_before(ScratchUser::None),
+        "first AS build/refit of the frame has no prior writer — \
+         no AS_WRITE → AS_WRITE barrier should be required"
+    );
+}
+
+#[test]
+fn scratch_barrier_required_after_same_submission_build() {
+    assert!(
+        requires_scratch_serialize_barrier_before(ScratchUser::SameSubmissionBuild),
+        "BUILD-batch → refit / next-BUILD on the same cmd must \
+         serialise on the shared scratch"
+    );
+}
+
+#[test]
+fn scratch_barrier_required_between_refits() {
+    assert!(
+        requires_scratch_serialize_barrier_before(ScratchUser::SameSubmissionRefit),
+        "refit → refit on the same cmd must serialise on the shared \
+         scratch (per-iteration emit in the draw_frame refit loop)"
+    );
+}
+
+/// **Load-bearing case for #983 / REN-D8-NEW-15.** Vulkan host fence-wait
+/// after `submit_one_time` establishes a *host*-side dependency only;
+/// the next submission's commands still need a device-side
+/// AS_WRITE → AS_WRITE barrier when they reuse the shared scratch.
+/// Validation layers reason per-submission and do NOT flag this case,
+/// so the only safety net is the callee-side self-emit. If a future
+/// refactor moves the barrier to the caller side as an "optimization
+/// noticed via emit-count" (assuming same-submission semantics), this
+/// case silently regresses on cell-load-then-render frames.
+///
+/// The predicate result here is the contract that pins the rule.
+#[test]
+fn scratch_barrier_required_across_submission_despite_fence_wait() {
+    assert!(
+        requires_scratch_serialize_barrier_before(
+            ScratchUser::CrossSubmissionBuildWithFenceWait
+        ),
+        "Host fence-wait establishes host-side dependency only — \
+         device-side AS_WRITE → AS_WRITE barrier is still required \
+         when the next submission reuses the shared scratch buffer \
+         (see #983 / REN-D8-NEW-15 + #1140 / CONC-D5-NEW-01)"
+    );
+}
