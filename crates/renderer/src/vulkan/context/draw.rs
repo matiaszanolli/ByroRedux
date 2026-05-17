@@ -457,12 +457,23 @@ impl VulkanContext {
                 [pvp[12], pvp[13], pvp[14], pvp[15]],
             ],
             inv_view_proj: inv_vp_arr,
-            // w = monotonic frame counter for temporal jitter seed in shadow rays.
+            // w = monotonic frame counter for temporal jitter seed in
+            // shadow rays. Masked to the bottom 24 bits before the
+            // `u32 → f32` cast so consecutive frames remain
+            // distinguishable for the full uptime of the process:
+            // f32's mantissa stops resolving ±1 increments above 2^24,
+            // so a raw cast at frame 16_777_217 would map to the same
+            // `cameraPos.w` as frame 16_777_216 and the RT noise
+            // patterns (reservoir streaming, shadow / reflection /
+            // refraction jitter, GI hemisphere) would freeze. Wrap at
+            // 2^24 instead — the noise pattern repeats every ~3.2 days
+            // at 60 FPS (acceptable; TAA accumulation absorbs the
+            // discontinuity). See #1161 / REN-D9-NEW-08.
             position: [
                 camera_pos[0],
                 camera_pos[1],
                 camera_pos[2],
-                self.frame_counter as f32,
+                (self.frame_counter & 0xFFFFFF) as f32,
             ],
             flags: [
                 rt_flag,

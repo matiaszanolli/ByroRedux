@@ -720,7 +720,15 @@ fn parse_render_debug_flags_env() -> u32 {
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
-    /// Monotonic frame counter for temporal effects (jitter seed, accumulation).
+    /// Monotonic frame counter for temporal effects (jitter seed,
+    /// accumulation). Wraps at `u32::MAX` (~2.3 years at 60 FPS). When
+    /// uploaded to `GpuCamera.position[3]` in `draw_frame` the value
+    /// is masked to the bottom 24 bits before the `u32 → f32` cast so
+    /// f32 mantissa precision (±1 above 2^24) doesn't freeze the RT
+    /// noise patterns mid-session; see `draw.rs` upload site and
+    /// #1161 / REN-D9-NEW-08 for the boundary analysis. TAA and
+    /// SVGF read the raw u32 directly (no precision issue on the
+    /// Rust side).
     pub frame_counter: u32,
     /// Debug-only fragment-shader bypass flags piped through
     /// `GpuCamera.jitter[2]`. Read once from `BYROREDUX_RENDER_DEBUG`
