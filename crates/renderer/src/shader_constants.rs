@@ -200,20 +200,18 @@ mod tests {
         }
     }
 
-    /// TD4-208 — `cluster_cull.comp::THREADS_PER_CLUSTER` must match
-    /// `shader_constants::THREADS_PER_CLUSTER`. Shader currently shadows
-    /// the generated `#define`; both must agree.
+    /// TD4-208 / #1151 — `cluster_cull.comp` must NOT redeclare
+    /// `THREADS_PER_CLUSTER` as a `const uint`. The `#define`d value
+    /// from the included `shader_constants.glsl` is the single source
+    /// of truth. Positive coverage that the value flows through
+    /// correctly lives in `generated_header_contains_all_defines`.
     #[test]
-    fn cluster_cull_threads_per_cluster_matches() {
+    fn cluster_cull_threads_per_cluster_not_redeclared() {
         let src = include_str!("../shaders/cluster_cull.comp");
-        // cluster_cull writes the value without `u` suffix.
-        let token = format!("= {THREADS_PER_CLUSTER};");
-        assert_shader_const_value(
-            src,
-            "const uint",
-            "THREADS_PER_CLUSTER",
-            &token,
-            "THREADS_PER_CLUSTER",
+        assert!(
+            !src.contains("const uint THREADS_PER_CLUSTER"),
+            "cluster_cull.comp must not redeclare THREADS_PER_CLUSTER — \
+             the #define from shader_constants.glsl is the source of truth (#1151)",
         );
     }
 }

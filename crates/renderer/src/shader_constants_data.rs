@@ -35,8 +35,14 @@ pub const WORKGROUP_X: u32 = 8;
 pub const WORKGROUP_Y: u32 = 8;
 pub const WORKGROUP_Z: u32 = 8;
 
-// Clustered light culling thread count (one warp/wavefront wide).
-// Mirrored in `cluster_cull.comp` as `THREADS_PER_CLUSTER`.
+// Clustered light culling thread count (one warp/wavefront wide on
+// every IHV: NVIDIA = 32, AMD = 64 wavefront but a 32-thread workgroup
+// still maps cleanly to half a wave, Intel = 8/16/32 SIMD width
+// negotiates fine at this size). Consumed by `cluster_cull.comp` via
+// the `#include`d `#define` for both `layout(local_size_x = ...)` and
+// the thread-strided light scan loop. Omitted `u` suffix on the
+// generated `#define` so it can be used in the layout qualifier
+// (GLSL allows int literals but not `uint` literals there).
 pub const THREADS_PER_CLUSTER: u32 = 32;
 
 // M58 — bloom contribution coefficient. 0.15 (≈4× the Frostbite
