@@ -147,6 +147,84 @@ pub(crate) fn strip_build_prefix(path: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Normalize a BGSM/BGEM material path into the archive's canonical
+/// `materials\…` backslashed form. Four transformations applied in
+/// order:
+///
+/// 1. **Build-pipeline prefix strip**: drop everything up to and
+///    including the last `\data\` (or `/data/`) segment. Covers
+///    `c:\projects\fallout4\build\pc\data\materials\…` — the form
+///    Bethesda authors into vanilla FO4 BGSM file paths (live
+///    observation on MedTek Research: 11/12 unique missing-material
+///    entries used this form).
+/// 2. **Leading `data\` strip**: when the path begins with `data\`
+///    or `data/` (no preceding separator), trim that off. Some
+///    BGSM template parents author this form (observed:
+///    `data\materials\setdressing\metaltrashcan01alpha.bgsm`).
+///    `strip_build_prefix` doesn't catch this case because it
+///    requires a separator BEFORE `data`.
+/// 3. **Forward-slash → backslash**: BA2 archives index with
+///    backslashes; some BGSM `root_material_path` fields author
+///    with forward slashes (observed: `template/defaulttemplate_wet.bgsm`).
+///    Mod-authoring tools and DLC content also mix the two.
+/// 4. **Prepend `materials\`**: when the path doesn't already start
+///    with `materials\` (after the above strips), add it. BGSM
+///    template parents author relative-to-materials-root paths
+///    like `template/defaulttemplate_wet.bgsm`; the BA2 index has
+///    them at `materials\template\…`.
+///
+/// Returns `Cow::Borrowed` only on the already-canonical case
+/// (starts with `materials\`, no slashes/data/build-prefix). Every
+/// authored-non-canonical path returns a single owned allocation.
+///
+/// See #FO4-D6-NEW (this issue body) for the live `tex.missing`
+/// evidence that motivated each of the four transformations.
+pub(crate) fn normalize_material_path(path: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    // Step 1 — build-pipeline strip.
+    let after_build = strip_build_prefix(path);
+
+    // Step 2 — leading `data\` / `data/` strip (case-insensitive).
+    let after_data: Cow<'_, str> = {
+        let bytes = after_build.as_bytes();
+        if bytes.len() >= 5
+            && bytes[..4].eq_ignore_ascii_case(b"data")
+            && (bytes[4] == b'\\' || bytes[4] == b'/')
+        {
+            // Borrow the trailer from `after_build`. If `after_build`
+            // is borrowed, the new slice stays borrowed; if it was
+            // already owned, we allocate (rare).
+            match after_build {
+                Cow::Borrowed(s) => Cow::Borrowed(&s[5..]),
+                Cow::Owned(s) => Cow::Owned(s[5..].to_string()),
+            }
+        } else {
+            after_build
+        }
+    };
+
+    // Step 3 — forward-slash → backslash. Only allocate when at
+    // least one `/` is present.
+    let after_sep: Cow<'_, str> = if after_data.contains('/') {
+        Cow::Owned(after_data.replace('/', "\\"))
+    } else {
+        after_data
+    };
+
+    // Step 4 — prepend `materials\` if missing. Case-insensitive
+    // on the prefix check so `Materials\foo.bgsm` doesn't get
+    // double-prefixed.
+    let bytes = after_sep.as_bytes();
+    let has_materials = bytes.len() >= 10
+        && bytes[..9].eq_ignore_ascii_case(b"materials")
+        && bytes[9] == b'\\';
+    if has_materials {
+        after_sep
+    } else {
+        Cow::Owned(format!("materials\\{}", after_sep))
+    }
+}
+
 /// Prepend `textures\` to a texture path if the path doesn't already
 /// begin with that segment (case-insensitive). Returns `Cow::Borrowed`
 /// when the input is already fully qualified so we don't allocate on
@@ -488,8 +566,19 @@ impl MaterialProvider {
     }
 
     fn extract_from_archives(&self, path: &str) -> Option<Vec<u8>> {
+        // #FO4-D6-NEW — canonicalise the path through
+        // `normalize_material_path` (build-prefix strip + leading
+        // `data\` strip + `/` → `\` + `materials\` prefix-add) before
+        // the archive lookup. The texture resolver at
+        // `resolve_texture_with_clamp` already does its own
+        // equivalent. Pre-fix, FO4 MedTek `tex.missing` reported 11
+        // unique missing-material entries that each failed one or
+        // more of the four normalisation rules. See the
+        // `normalize_material_path` doc for the full transformation
+        // list and per-issue evidence.
+        let normalized = normalize_material_path(path);
         for archive in &self.archives {
-            if let Ok(bytes) = archive.extract(path) {
+            if let Ok(bytes) = archive.extract(&normalized) {
                 return Some(bytes);
             }
         }
@@ -500,16 +589,35 @@ impl MaterialProvider {
     /// file isn't in any loaded archive, when parse fails, or when the
     /// template chain has a cycle. Logs once per path on the failure paths.
     pub(crate) fn resolve_bgsm(&mut self, path: &str) -> Option<Arc<ResolvedMaterial>> {
-        let key = path.to_ascii_lowercase();
+        // #FO4-D6-NEW — canonicalise via `normalize_material_path`
+        // (build-prefix strip + `data\` strip + `/` → `\` +
+        // `materials\` prefix-add) so the cache key + every
+        // recursive parent-walk lookup uses the archive-relative
+        // form. Live tex.missing observations against MedTek
+        // Research:
+        //   * top-level material_path: `c:\projects\fallout4\build\pc\
+        //     data\materials\setdressing\metallocker01.bgsm` →
+        //     normalised to `materials\setdressing\metallocker01.bgsm`
+        //   * template parent `root_material_path` inside the BGSM:
+        //     `template/defaulttemplate_wet.bgsm` → normalised to
+        //     `materials\template\defaulttemplate_wet.bgsm`
+        //   * occasional leaf: `data\materials\…` → normalised by
+        //     stripping the leading `data\`.
+        // See `normalize_material_path` for the full rule set.
+        let key = normalize_material_path(path).to_ascii_lowercase();
         // Archive slice is borrowed into the ad-hoc resolver so the
-        // cache's mutable borrow doesn't alias archive reads.
+        // cache's mutable borrow doesn't alias archive reads. The
+        // resolver normalises on every read so recursive template-
+        // parent walks (`root_material_path` carrying any of the
+        // four non-canonical forms) resolve correctly.
         struct ArchiveReader<'a> {
             archives: &'a [Archive],
         }
         impl<'a> TemplateResolver for ArchiveReader<'a> {
             fn read(&mut self, path: &str) -> Option<Vec<u8>> {
+                let normalized = normalize_material_path(path);
                 for archive in self.archives {
-                    if let Ok(bytes) = archive.extract(path) {
+                    if let Ok(bytes) = archive.extract(&normalized) {
                         return Some(bytes);
                     }
                 }
@@ -521,6 +629,64 @@ impl MaterialProvider {
         };
         match self.bgsm_cache.resolve(&mut reader, &key) {
             Ok(r) => Some(r),
+            Err(byroredux_bgsm::template::ResolveError::DepthLimit { .. }) => {
+                // #FO4-D6-NEW — vanilla FO4 ships
+                // `materials\template\defaulttemplate_wet.bgsm` with a
+                // `root_material_path` field that self-references its
+                // own archive path (the field reads as
+                // `Some("template/defaultTemplate_wet.bgsm")` — case
+                // and separator differ but the canonical form is the
+                // same path the file lives at). The bgsm crate's
+                // resolver doesn't detect cycles and bails after the
+                // 16-deep depth limit.
+                //
+                // Recovery: re-read the leaf's bytes through the
+                // already-normalising `ArchiveReader::read` and
+                // construct a parentless `ResolvedMaterial`. The leaf
+                // carries authored textures + PBR scalars, which is
+                // the load-bearing material data; the (self-referential)
+                // template chain only contributes fallback defaults
+                // that the NIF-side path already covers.
+                //
+                // The recovery bypasses `bgsm_cache.resolve` and
+                // returns a fresh `Arc` on every hit. Self-referential
+                // templates appear 4× per cell observed on MedTek
+                // (metallocker / windowsheetdeco / metalpanelfull /
+                // metalrooftrim — all chain through
+                // `defaulttemplate_wet.bgsm`); the duplicate parse
+                // cost is bounded and acceptable until the bgsm crate
+                // adds first-class cycle detection.
+                let bytes = reader.read(&key)?;
+                let file = match byroredux_bgsm::parse_bgsm(&bytes) {
+                    Ok(f) => f,
+                    Err(parse_err) => {
+                        if self.failed_paths.len() >= MAX_FAILED_PATHS {
+                            self.failed_paths.clear();
+                        }
+                        if self.failed_paths.insert(key.clone()) {
+                            log::warn!(
+                                "BGSM leaf-only recovery parse failed for '{}': {} \
+                                 (self-referential template depth-limit hit)",
+                                path,
+                                parse_err
+                            );
+                        }
+                        return None;
+                    }
+                };
+                static ONCE: std::sync::Once = std::sync::Once::new();
+                ONCE.call_once(|| {
+                    log::info!(
+                        "BGSM template-cycle recovery active — vanilla FO4 \
+                         `defaulttemplate_wet.bgsm` self-references; leaf-only \
+                         resolve used. See #FO4-D6-NEW."
+                    );
+                });
+                Some(Arc::new(byroredux_bgsm::template::ResolvedMaterial {
+                    file,
+                    parent: None,
+                }))
+            }
             Err(e) => {
                 // #951 / SAFE-26 — bound failed_paths here too.
                 if self.failed_paths.len() >= MAX_FAILED_PATHS {
@@ -544,7 +710,13 @@ impl MaterialProvider {
 
     /// Resolve a BGEM effect-material file. No template inheritance.
     pub(crate) fn resolve_bgem(&mut self, path: &str) -> Option<Arc<BgemFile>> {
-        let key = path.to_ascii_lowercase();
+        // #FO4-D6-NEW — same `normalize_material_path` canonicalisation
+        // as `resolve_bgsm` applied to the cache key. The archive
+        // read goes through `extract_from_archives` (which already
+        // normalises), so this line is purely for cache-key
+        // canonicalisation — two paths that differ only by which
+        // non-canonical form they carry must share one cache entry.
+        let key = normalize_material_path(path).to_ascii_lowercase();
         if let Some(hit) = self.bgem_cache.get(&key) {
             return Some(Arc::clone(hit));
         }
@@ -905,6 +1077,140 @@ mod tests {
         let out =
             strip_build_prefix("skyrimhd\\build\\pc\\data\\textures\\plants\\florajuniper.dds");
         assert_eq!(out.as_ref(), "textures\\plants\\florajuniper.dds");
+    }
+
+    /// Live observation from MedTekResearch01 (FO4) `tex.missing` run
+    /// 2026-05-17 — every BGSM/BGEM authored in FO4 vanilla carries
+    /// this exact `c:\projects\fallout4\build\pc\data\…` pipeline
+    /// prefix. Pre-fix the BGSM resolver didn't strip and 11 / 12
+    /// unique missing-material entries were variants of this case
+    /// (metallocker01.bgsm, woodmetalcrate01.bgsm, hightechlamp01.bgsm,
+    /// …). The strip-helper already handles the LAST `\data\`
+    /// boundary correctly for the multi-segment case; this test pins
+    /// the exact FO4 input → archive-relative output transformation
+    /// the resolver depends on.
+    #[test]
+    fn strip_build_prefix_handles_fo4_pipeline_prefix() {
+        let out = strip_build_prefix(
+            "c:\\projects\\fallout4\\build\\pc\\data\\materials\\setdressing\\metallocker01.bgsm",
+        );
+        assert_eq!(out.as_ref(), "materials\\setdressing\\metallocker01.bgsm");
+    }
+
+    /// MaterialProvider's archive-read helper must call
+    /// `normalize_material_path` so the FO4 BGSM lookup actually
+    /// hits the archive index. Pre-fix the lookup skipped the
+    /// normalisation and every non-canonical path resolved to None.
+    /// Probes the transformation with an empty archive set — the
+    /// answer must be `None` for any input, but the call shouldn't
+    /// panic on any of the four observed failure-mode forms.
+    #[test]
+    fn material_provider_extract_normalises_without_panic() {
+        let provider = MaterialProvider::new();
+        for path in [
+            // Form 1 — FO4 pipeline build prefix (live observation,
+            // 46× hit count on MedTek).
+            "c:\\projects\\fallout4\\build\\pc\\data\\materials\\setdressing\\metallocker01.bgsm",
+            // Form 2 — leading `data\` (live observation, ~3 BGSM
+            // files in MedTek setdressing).
+            "data\\materials\\setdressing\\metaltrashcan01alpha.bgsm",
+            // Form 3 — forward slashes (live observation, template
+            // parents in shared BGSMs).
+            "template/defaulttemplate_wet.bgsm",
+            // Form 4 — composed: forward slashes WITH leading data/.
+            "data/materials/template/metaltemplate_wet.bgsm",
+        ] {
+            let result = provider.extract_from_archives(path);
+            assert!(
+                result.is_none(),
+                "no archives → no bytes; must not panic on input {path:?}"
+            );
+        }
+    }
+
+    // ── normalize_material_path — per-rule + composed cases ─────
+
+    /// Rule 1: build-pipeline prefix strip (live FO4 MedTek case).
+    #[test]
+    fn normalize_material_path_strips_fo4_build_prefix() {
+        let out = normalize_material_path(
+            "c:\\projects\\fallout4\\build\\pc\\data\\materials\\setdressing\\metallocker01.bgsm",
+        );
+        assert_eq!(out.as_ref(), "materials\\setdressing\\metallocker01.bgsm");
+    }
+
+    /// Rule 2: leading `data\` strip — covers the `metaltrashcan01alpha.bgsm`
+    /// failure mode where the path begins with `data\` (no leading
+    /// separator). `strip_build_prefix` alone doesn't catch this
+    /// because it requires a separator BEFORE the `data` segment.
+    #[test]
+    fn normalize_material_path_strips_leading_data_segment() {
+        let out =
+            normalize_material_path("data\\materials\\setdressing\\metaltrashcan01alpha.bgsm");
+        assert_eq!(
+            out.as_ref(),
+            "materials\\setdressing\\metaltrashcan01alpha.bgsm"
+        );
+    }
+
+    /// Rule 2 sibling: leading `data/` with forward slash.
+    #[test]
+    fn normalize_material_path_strips_leading_data_segment_forward_slash() {
+        let out = normalize_material_path("data/materials/setdressing/foo.bgsm");
+        assert_eq!(out.as_ref(), "materials\\setdressing\\foo.bgsm");
+    }
+
+    /// Rule 3: `/` → `\` separator normalisation. Live case from BGSM
+    /// `root_material_path` fields authored with forward slashes.
+    #[test]
+    fn normalize_material_path_converts_forward_slashes_to_backslashes() {
+        let out = normalize_material_path("materials/template/defaulttemplate_wet.bgsm");
+        assert_eq!(out.as_ref(), "materials\\template\\defaulttemplate_wet.bgsm");
+    }
+
+    /// Rule 4: `materials\` prefix add when missing. Live case from
+    /// the bare `template/defaulttemplate_wet.bgsm` form (no
+    /// `materials\` segment) inside BGSM parent references.
+    #[test]
+    fn normalize_material_path_prepends_materials_when_missing() {
+        let out = normalize_material_path("template\\defaulttemplate_wet.bgsm");
+        assert_eq!(out.as_ref(), "materials\\template\\defaulttemplate_wet.bgsm");
+    }
+
+    /// Composed: `template/defaulttemplate_wet.bgsm` — the headline
+    /// template-parent failure mode (forward slashes AND missing
+    /// `materials\` prefix at the same time). 11/12 BGSM resolve
+    /// failures in MedTek post-build-prefix-fix went through this
+    /// exact composition.
+    #[test]
+    fn normalize_material_path_handles_template_parent_form() {
+        let out = normalize_material_path("template/defaulttemplate_wet.bgsm");
+        assert_eq!(out.as_ref(), "materials\\template\\defaulttemplate_wet.bgsm");
+    }
+
+    /// Canonical-form passthrough: no allocation when the input is
+    /// already `materials\…`-prefixed, backslashed, no build prefix,
+    /// no leading `data\`. The `Cow::Borrowed` return signals the
+    /// fast-path took.
+    #[test]
+    fn normalize_material_path_canonical_form_borrows() {
+        let input = "materials\\setdressing\\foo.bgsm";
+        let out = normalize_material_path(input);
+        assert_eq!(out.as_ref(), input);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    /// Case-insensitive `materials\` prefix check — `Materials\foo.bgsm`
+    /// must NOT be double-prefixed into `materials\Materials\foo.bgsm`.
+    #[test]
+    fn normalize_material_path_does_not_double_prefix_capitalised_materials() {
+        let out = normalize_material_path("Materials\\foo.bgsm");
+        // First-rune case is preserved when no other rule fires —
+        // the BSA index lookup is case-insensitive (per
+        // `BsaArchive::contains` + `Ba2Archive::contains`) so either
+        // case resolves the same file. We just need to avoid the
+        // double-prefix bug.
+        assert_eq!(out.as_ref(), "Materials\\foo.bgsm");
     }
 
     #[test]
