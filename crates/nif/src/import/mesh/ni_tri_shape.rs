@@ -208,6 +208,13 @@ pub fn extract_mesh(
         parallax_map: mat.parallax_map,
         env_map: mat.env_map,
         env_mask: mat.env_mask,
+        // #1076 / FO4-D6-002 — NIF shader-texture-set slots
+        // don't expose these; populated downstream by
+        // `merge_bgsm_into_mesh` from BGSM/BGEM v>2.
+        specular_map: None,
+        lighting_map: None,
+        flow_map: None,
+        wrinkle_map: None,
         parallax_max_passes: mat.parallax_max_passes,
         parallax_height_scale: mat.parallax_height_scale,
         vertex_color_mode: mat.vertex_color_mode as u8,

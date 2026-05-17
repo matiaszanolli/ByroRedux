@@ -708,6 +708,30 @@ pub(crate) fn merge_bgsm_into_mesh(
                 &mut touched,
                 pool,
             );
+            // #1076 / FO4-D6-002 — BGSM v>2 standalone slots that
+            // pre-fix were parsed but dropped on the floor. Each is
+            // empty on the v<=2 path (the parser leaves the String
+            // default) so the `fill` no-op suffices to gate the
+            // forward without an explicit version check.
+            fill(
+                &mut mesh.specular_map,
+                &bgsm.specular_texture,
+                &mut touched,
+                pool,
+            );
+            fill(
+                &mut mesh.lighting_map,
+                &bgsm.lighting_texture,
+                &mut touched,
+                pool,
+            );
+            fill(&mut mesh.flow_map, &bgsm.flow_texture, &mut touched, pool);
+            fill(
+                &mut mesh.wrinkle_map,
+                &bgsm.wrinkles_texture,
+                &mut touched,
+                pool,
+            );
 
             // Scalar PBR forwarding (#583). Child-first: first authored
             // value wins. Parser already decodes these fields; the
@@ -778,6 +802,24 @@ pub(crate) fn merge_bgsm_into_mesh(
         fill(
             &mut mesh.env_mask,
             &bgem.envmap_mask_texture,
+            &mut touched,
+            pool,
+        );
+        // #1076 / FO4-D6-002 SIBLING — BGEM also exposes
+        // `specular_texture` + `lighting_texture` (the two BGSM v>2
+        // slots that exist on the BGEM side too; BGEM does NOT
+        // author `flow_texture` or `wrinkles_texture` per
+        // `crates/bgsm/src/bgem.rs`). Forward them here so the BGEM
+        // path has the same coverage as the BGSM path.
+        fill(
+            &mut mesh.specular_map,
+            &bgem.specular_texture,
+            &mut touched,
+            pool,
+        );
+        fill(
+            &mut mesh.lighting_map,
+            &bgem.lighting_texture,
             &mut touched,
             pool,
         );
@@ -1097,6 +1139,66 @@ mod tests {
         assert_eq!(texture_path.as_deref(), Some("effect_base.dds"));
         assert_eq!(normal_map.as_deref(), Some("effect_normal.dds"));
         assert_eq!(env_mask.as_deref(), Some("effect_mask.dds"));
+    }
+
+    /// Regression for #1076 / FO4-D6-002 — BGSM v>2 standalone slots
+    /// (`specular_texture`, `lighting_texture`, `flow_texture`,
+    /// `wrinkles_texture`) must forward to `ImportedMesh`'s
+    /// `specular_map` / `lighting_map` / `flow_map` / `wrinkle_map`.
+    /// Pre-fix the parser decoded all four fields and the merge
+    /// dropped them on the floor — FO4 water surfaces lost their
+    /// flow direction, NPC skin lost wrinkle blending, PBR specular
+    /// fell back to the gloss_map's .r-only path.
+    #[test]
+    fn bgsm_merge_forwards_v2_plus_standalone_slots() {
+        // Use the in-test `fill` helper (`Option<String>` variant)
+        // that mirrors the prod merge's intern-and-set semantic.
+        let mut specular_map: Option<String> = None;
+        let mut lighting_map: Option<String> = None;
+        let mut flow_map: Option<String> = None;
+        let mut wrinkle_map: Option<String> = None;
+
+        let bgsm = BgsmFile {
+            specular_texture: "armor_specular.dds".into(),
+            lighting_texture: "armor_lighting.dds".into(),
+            flow_texture: "water_flow.dds".into(),
+            wrinkles_texture: "ncr_wrinkles.dds".into(),
+            ..Default::default()
+        };
+
+        // Mirror the prod loop body for the four new slots.
+        fill(&mut specular_map, &bgsm.specular_texture);
+        fill(&mut lighting_map, &bgsm.lighting_texture);
+        fill(&mut flow_map, &bgsm.flow_texture);
+        fill(&mut wrinkle_map, &bgsm.wrinkles_texture);
+
+        assert_eq!(specular_map.as_deref(), Some("armor_specular.dds"));
+        assert_eq!(lighting_map.as_deref(), Some("armor_lighting.dds"));
+        assert_eq!(flow_map.as_deref(), Some("water_flow.dds"));
+        assert_eq!(wrinkle_map.as_deref(), Some("ncr_wrinkles.dds"));
+    }
+
+    /// Companion regression for the SIBLING half of #1076 — BGEM also
+    /// authors `specular_texture` and `lighting_texture` (BGEM does
+    /// not author flow / wrinkles per `bgem.rs`). Pre-fix the BGEM
+    /// merge dropped both, leaving FO4 effect shaders that authored
+    /// a per-texel specular layer rendering on NIF-fallback specular.
+    #[test]
+    fn bgem_merge_forwards_specular_and_lighting_slots() {
+        let mut specular_map: Option<String> = None;
+        let mut lighting_map: Option<String> = None;
+
+        let bgem = BgemFile {
+            specular_texture: "fx_specular.dds".into(),
+            lighting_texture: "fx_lighting.dds".into(),
+            ..Default::default()
+        };
+
+        fill(&mut specular_map, &bgem.specular_texture);
+        fill(&mut lighting_map, &bgem.lighting_texture);
+
+        assert_eq!(specular_map.as_deref(), Some("fx_specular.dds"));
+        assert_eq!(lighting_map.as_deref(), Some("fx_lighting.dds"));
     }
 
     /// Every failing-to-resolve path logs at most once, so a broken

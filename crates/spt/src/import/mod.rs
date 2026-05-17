@@ -313,6 +313,12 @@ fn placeholder_billboard_mesh(
         parallax_map: None,
         env_map: None,
         env_mask: None,
+        // #1076 / FO4-D6-002 — SpeedTree imports never resolve a
+        // BGSM/BGEM material path; these stay None.
+        specular_map: None,
+        lighting_map: None,
+        flow_map: None,
+        wrinkle_map: None,
         parallax_max_passes: None,
         parallax_height_scale: None,
         vertex_color_mode: 2,  // AmbientDiffuse

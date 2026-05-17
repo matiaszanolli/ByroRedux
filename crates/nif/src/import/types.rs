@@ -364,6 +364,36 @@ pub struct ImportedMesh {
     pub env_map: Option<FixedString>,
     /// Environment-reflection mask (BSShaderTextureSet slot 5). #452.
     pub env_mask: Option<FixedString>,
+    /// Standalone PBR specular texture (BGSM/BGEM v>2). FO4 authors
+    /// this as a per-texel specular colour layer separate from
+    /// `gloss_map` (which carries smooth/spec as a single .r-channel
+    /// strength mask). Forwarded from `BgsmFile.specular_texture` /
+    /// `BgemFile.specular_texture` by `merge_bgsm_into_mesh`. `None`
+    /// on NIF-only paths (the NIF shader-texture-set slots don't
+    /// expose this; Bethesda introduced the standalone slot when
+    /// BGSM v>2 split specular off from smooth). See #1076 /
+    /// FO4-D6-002.
+    pub specular_map: Option<FixedString>,
+    /// Pre-integrated lighting LUT (BGSM/BGEM v>2). FO4 authors this
+    /// for subsurface-style approximations and special-case lighting
+    /// curves (skin, hair, glow card composites). Forwarded from
+    /// `BgsmFile.lighting_texture` / `BgemFile.lighting_texture`.
+    /// `None` on NIF-only paths. See #1076 / FO4-D6-002.
+    pub lighting_map: Option<FixedString>,
+    /// Animated flow-direction map (BGSM v>2 only — BGEM doesn't
+    /// author this). FO4 water surfaces and stream/river meshes use
+    /// this to drive scrolling normal-map UVs in the direction the
+    /// flow texture encodes. Forwarded from `BgsmFile.flow_texture`.
+    /// `None` on every non-water FO4 material and on NIF-only paths.
+    /// See #1076 / FO4-D6-002.
+    pub flow_map: Option<FixedString>,
+    /// NPC age-wrinkle blend texture (BGSM v>2 only — BGEM doesn't
+    /// author this). FO4 / Skyrim SE skin shaders use this to blend
+    /// wrinkle detail into the head normal map driven by an
+    /// age-slider input. Forwarded from `BgsmFile.wrinkles_texture`.
+    /// `None` on every non-skin FO4 material and on NIF-only paths.
+    /// See #1076 / FO4-D6-002.
+    pub wrinkle_map: Option<FixedString>,
     /// Parallax-occlusion max ray-march passes (from
     /// `BSShaderPPLightingProperty` or Skyrim `ShaderTypeData::ParallaxOcc`).
     /// `None` when the material doesn't author a value. See #452.
