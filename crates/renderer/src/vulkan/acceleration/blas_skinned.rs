@@ -528,14 +528,18 @@ impl AccelerationManager {
     /// `cmd` must be a recording command buffer; `vertex_buffer` must
     /// already have the COMPUTE_SHADER_WRITE → AS_BUILD_INPUT_READ
     /// barrier in place. The shared `blas_scratch_buffer` serialise
-    /// barrier (`AS_WRITE → AS_WRITE`) is now emitted as the first
-    /// statement of this function — REN-D8-NEW-15 (audit
-    /// 2026-05-11). Pre-fix this was a caller-side precondition
-    /// documented but unenforced; the next refactor adding a 2nd
-    /// refit call site could have silently dropped it. The barrier
-    /// is idempotent (`MEMORY_READ | MEMORY_WRITE → MEMORY_READ |
-    /// MEMORY_WRITE`), so any redundant caller-side emission stays
-    /// harmless. See #644 / MEM-2-2 for the original landing.
+    /// barrier (`AS_WRITE → AS_WRITE`) is emitted as the first
+    /// statement of this function (see the body comment at the
+    /// `record_scratch_serialize_barrier` call below).
+    ///
+    /// Before #983 / REN-D8-NEW-15 (audit 2026-05-11) this barrier was
+    /// a caller-side precondition — documented but unenforced — so the
+    /// next refactor adding a 2nd refit call site could have silently
+    /// dropped it. The self-emit makes the precondition load-bearing
+    /// in code rather than docstring. The barrier is idempotent
+    /// (`MEMORY_READ | MEMORY_WRITE → MEMORY_READ | MEMORY_WRITE`), so
+    /// any redundant caller-side emission stays harmless. See #644 /
+    /// MEM-2-2 for the original landing.
     pub unsafe fn refit_skinned_blas(
         &mut self,
         device: &ash::Device,
