@@ -71,15 +71,93 @@ pub const WATER_RIVER: u32 = 1;
 pub const WATER_RAPIDS: u32 = 2;
 pub const WATER_WATERFALL: u32 = 3;
 
-// Debug-viz bit flags — runtime-set via console for renderer bisects.
-// Lockstep with `triangle.frag::DBG_*` constants (lines ~743-829).
+// Debug-viz bit flags packed into `jitter.z` by the renderer
+// (`parse_render_debug_flags_env` + `GpuCamera` upload). Runtime-set
+// via `BYROREDUX_RENDER_DEBUG=<bitmask>` env var or console for
+// renderer-artifact bisection. Branches collapse to free no-ops when
+// the env var is unset. Consumed by `triangle.frag` via the `#include`d
+// `#define`s; this file is the single source of truth.
+
+/// 0x1 — bypass parallax-occlusion mapping in the base-UV sampler.
 pub const DBG_BYPASS_POM: u32 = 0x1;
+
+/// 0x2 — bypass detail-map blend on the base albedo.
 pub const DBG_BYPASS_DETAIL: u32 = 0x2;
+
+/// 0x4 — visualize per-fragment world-space normal as colour.
 pub const DBG_VIZ_NORMALS: u32 = 0x4;
+
+/// 0x8 — visualize per-fragment tangent presence:
+///   * green = tangent present (vertex shader fed authored or synthesized
+///     data → Path 1 in `perturbNormal` fires).
+///   * red = zero tangent → screen-space derivative fallback (Path 2).
+/// Added under #783 follow-up.
 pub const DBG_VIZ_TANGENT: u32 = 0x8;
+
+/// 0x10 — skip the per-fragment normal-map perturbation entirely;
+/// lighting uses the geometric vertex normal. Use to bisect whether a
+/// chrome / posterization artifact originates from `perturbNormal`
+/// (Path 1 or Path 2 TBN bug) or from downstream specular / ambient
+/// code. Default-on path runs `perturbNormal`; this bit is the opt-out.
+/// 2026-05-03 / #786 closeout reinstated the default-on behaviour after
+/// the convention-swap fix at 5dde345 + the BSTriShape inline-tangent
+/// decode at b63ab0c.
 pub const DBG_BYPASS_NORMAL_MAP: u32 = 0x10;
+
+/// 0x20 — RESERVED. Pre-#1035 (in the 77aa2de → 5dde345 window) this
+/// bit was the opt-IN for `perturbNormal` while the default was off
+/// (was named `DBG_FORCE_NORMAL_MAP`). After #786 closed (2026-05-03)
+/// the default flipped back to on and the bit became a silent no-op.
+/// Kept reserved so existing diagnostic scripts using
+/// `BYROREDUX_RENDER_DEBUG=0x20` / `0x24` / `0x28` keep working as
+/// no-ops; renamed at #1035 to make the no-op status explicit in the
+/// bit catalog.
 pub const DBG_RESERVED_20: u32 = 0x20;
+
+/// 0x40 — visualize the per-entity content-class render layer driving
+/// the depth-bias ladder. Tints fragments by layer:
+///   * Architecture (0) → grey
+///   * Clutter (1)      → cyan
+///   * Actor (2)        → magenta
+///   * Decal (3)        → yellow
+/// The 2-bit layer is packed into `gpuInstance.flags` bits 4..5
+/// (`INSTANCE_RENDER_LAYER_SHIFT` / `_MASK` on the Rust side).
 pub const DBG_VIZ_RENDER_LAYER: u32 = 0x40;
+
+/// 0x80 — glass IOR refraction passthru-loop diagnostic (#789
+/// follow-up). Tints glass fragments by where the loop terminated:
+///   * black   — IOR not allowed (rtLOD ≥ 1.0, !isGlass post-LOD-downgrade,
+///     ray budget exhausted, isWindow not demoted).
+///   * red     — IOR fired but ray escaped scene (sky fallback).
+///   * yellow  — terminated on first hit, no passthru (different texture
+///     from start — desk / wall / non-glass behind the surface).
+///   * green   — passthru ×1, then non-self terminus (one self skip,
+///     then real scene geometry).
+///   * cyan    — passthru ×2 with non-self terminus (two self skips +
+///     real geometry, e.g. through one stacked beaker to wall behind).
+///   * magenta — budget exhausted, terminus STILL same-texture
+///     (passthru never escaped the glass — three+ glass surfaces in a
+///     row).
 pub const DBG_VIZ_GLASS_PASSTHRU: u32 = 0x80;
+
+/// 0x100 — disable specular antialiasing (`specularAaRoughness`).
+/// Every per-light + RT-reflection BRDF site widens the authored
+/// `roughness` by the screen-space normal-variance kernel before
+/// feeding it to GGX/Smith. Setting this bit returns to the raw
+/// authored roughness so the Kaplanyan-Hoffman 2016 bug-class
+/// (corrugated normal map → bright/dark stripes at distance) can be
+/// A/B'd against a regression suspect that turns out to be the spec-AA
+/// itself. Default-on; this bit is the opt-out.
 pub const DBG_DISABLE_SPECULAR_AA: u32 = 0x100;
+
+/// 0x200 — disable half-Lambert wrap on interior-fill directional.
+/// Interior cells upload the XCLL directional with `radius == -1` as
+/// a "subtle aesthetic fill" (`render::compute_directional_upload`).
+/// The default-on path uses half-Lambert (`dot(N,L) * 0.5 + 0.5`) for
+/// the diffuse term so corrugated normal maps don't produce pitch-
+/// black grooves where `NdotL → 0` (Nellis Museum was the canonical
+/// regression — bright/dark stripes following corrugation period
+/// across the entire hut interior). Specular still uses plain
+/// `NdotL` so back-facing fragments don't get fake highlights.
+/// Set this bit to A/B against the legacy Lambert path.
 pub const DBG_DISABLE_HALF_LAMBERT_FILL: u32 = 0x200;

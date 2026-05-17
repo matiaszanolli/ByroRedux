@@ -167,26 +167,36 @@ mod tests {
         }
     }
 
-    /// TD4-206 — DBG_* bit flags in `triangle.frag` must match the
-    /// Rust constants. Console commands set these by name; drift
-    /// would silently route the wrong bit.
+    /// TD4-206 / #1162 — `triangle.frag` must NOT redeclare any of the
+    /// 10 `DBG_*` bit flags as `const uint`. The `#define`d values from
+    /// the included `shader_constants.glsl` are the single source of
+    /// truth. A local `const uint DBG_FOO = 0xN u;` after `#include`
+    /// shadows the macro and breaks recompile-from-source (textually
+    /// substitutes to `const uint 1u = 0x1u;`). Positive coverage that
+    /// the value flows through correctly lives in
+    /// `generated_header_contains_all_defines` (verifies each `#define`
+    /// is emitted with the right value).
     #[test]
-    fn triangle_frag_dbg_bits_match() {
+    fn triangle_frag_dbg_bits_not_redeclared() {
         let src = include_str!("../shaders/triangle.frag");
-        for (name, value) in [
-            ("DBG_BYPASS_POM", DBG_BYPASS_POM),
-            ("DBG_BYPASS_DETAIL", DBG_BYPASS_DETAIL),
-            ("DBG_VIZ_NORMALS", DBG_VIZ_NORMALS),
-            ("DBG_VIZ_TANGENT", DBG_VIZ_TANGENT),
-            ("DBG_BYPASS_NORMAL_MAP", DBG_BYPASS_NORMAL_MAP),
-            ("DBG_RESERVED_20", DBG_RESERVED_20),
-            ("DBG_VIZ_RENDER_LAYER", DBG_VIZ_RENDER_LAYER),
-            ("DBG_VIZ_GLASS_PASSTHRU", DBG_VIZ_GLASS_PASSTHRU),
-            ("DBG_DISABLE_SPECULAR_AA", DBG_DISABLE_SPECULAR_AA),
-            ("DBG_DISABLE_HALF_LAMBERT_FILL", DBG_DISABLE_HALF_LAMBERT_FILL),
+        for name in [
+            "DBG_BYPASS_POM",
+            "DBG_BYPASS_DETAIL",
+            "DBG_VIZ_NORMALS",
+            "DBG_VIZ_TANGENT",
+            "DBG_BYPASS_NORMAL_MAP",
+            "DBG_RESERVED_20",
+            "DBG_VIZ_RENDER_LAYER",
+            "DBG_VIZ_GLASS_PASSTHRU",
+            "DBG_DISABLE_SPECULAR_AA",
+            "DBG_DISABLE_HALF_LAMBERT_FILL",
         ] {
-            let token = format!("= 0x{value:X}u;");
-            assert_shader_const_value(src, "const uint", name, &token, name);
+            let needle = format!("const uint {name}");
+            assert!(
+                !src.contains(&needle),
+                "triangle.frag must not redeclare {name} — \
+                 the #define from shader_constants.glsl is the source of truth (#1162)",
+            );
         }
     }
 
