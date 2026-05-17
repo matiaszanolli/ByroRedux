@@ -19,8 +19,9 @@ pub const MAX_LIGHTS_PER_CLUSTER: u32 = 32;
 pub const VERTEX_STRIDE_FLOATS: u32 = 25;
 pub const VERTEX_UV_OFFSET_FLOATS: u32 = 9;
 
-// Skinning
-pub const MAX_BONES_PER_MESH: u32 = 128;
+// Skinning — see `byroredux_core::ecs::components::skinned_mesh::MAX_BONES_PER_MESH`
+// for the vanilla-content survey that fixes this ceiling at 144 (FO76 prewardress = 133).
+pub const MAX_BONES_PER_MESH: u32 = 144;
 
 // Glass / IOR ray budget
 pub const GLASS_RAY_BUDGET: u32 = 8192;

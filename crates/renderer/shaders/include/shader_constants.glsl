@@ -21,7 +21,7 @@
 #define VERTEX_UV_OFFSET_FLOATS 9u
 
 // Skinning
-#define MAX_BONES_PER_MESH 128u
+#define MAX_BONES_PER_MESH 144u
 
 // Glass / IOR ray budget
 #define GLASS_RAY_BUDGET 8192u

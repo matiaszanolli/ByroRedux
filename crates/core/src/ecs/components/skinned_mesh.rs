@@ -23,10 +23,33 @@ use crate::ecs::storage::{Component, EntityId};
 use crate::math::Mat4;
 
 /// Maximum bones per skinned mesh. Matches the renderer's `MAX_BONES_PER_MESH`
-/// — the palette SSBO reserves this many slots per instance. Skyrim humanoid
-/// skeletons run ~60 bones; beast races push ~80; creatures vary. 128 gives
-/// comfortable headroom without ballooning GPU memory.
-pub const MAX_BONES_PER_MESH: usize = 128;
+/// — the palette SSBO reserves this many slots per instance.
+///
+/// Sized against a 2026-05-17 #1135 survey of `NiSkinInstance.bone_refs` /
+/// `BsDism::bone_refs` / `BsSkin::bone_refs` counts across vanilla mesh
+/// archives for the 7 supported games (see
+/// `crates/nif/examples/r6_bone_count_survey.rs`):
+///
+/// | Game        | Max bones |
+/// |-------------|-----------|
+/// | Oblivion    |        61 |
+/// | Fallout 3   |        47 |
+/// | FNV         |        80 |
+/// | Skyrim SE   |        77 |
+/// | Fallout 4   |       118 |
+/// | Fallout 76  |       133 |
+/// | Starfield   |       114 |
+///
+/// 144 = next multiple of 16 above the FO76 ceiling, giving ~8% slack for
+/// modded content without ballooning GPU memory. The previous value (128)
+/// silently dropped 5+ FO76 vanilla meshes (`prewardress`, `radtoad`,
+/// `deathclawoutfit`, `thequack_outfit`) into bind pose because the
+/// importer's `> MAX_BONES_PER_MESH` skip-skinning branch fired.
+///
+/// Variable-stride packing (M29.5 GPU palette dispatch) is the proper
+/// fix for the per-mesh padding waste tracked at #1135; this constant
+/// just buys the correctness margin until that lands.
+pub const MAX_BONES_PER_MESH: usize = 144;
 
 /// Binds a mesh entity to the bones that deform it each frame.
 ///
@@ -187,6 +210,35 @@ mod tests {
 
     fn identity_bind(n: usize) -> Vec<Mat4> {
         vec![Mat4::IDENTITY; n]
+    }
+
+    /// #1135 / PERF-D7-NEW-02 — pin the per-mesh bone ceiling against
+    /// the highest observed `NiSkinInstance::bone_refs.len()` across
+    /// vanilla mesh archives for the 7 supported games.
+    ///
+    /// Survey results (2026-05-17, see
+    /// `crates/nif/examples/r6_bone_count_survey.rs`):
+    ///   Oblivion 61 · FO3 47 · FNV 80 · Skyrim SE 77 ·
+    ///   FO4 118 · FO76 133 · Starfield 114.
+    ///
+    /// FO76 `meshes\clothes\prewardress\*.nif`, `radtoad`, and
+    /// `deathclawoutfit` push the ceiling. Dropping the constant below
+    /// 133 visibly regresses those (importer falls into the
+    /// `> MAX_BONES_PER_MESH` skip-skinning branch and they render in
+    /// bind pose). If this assertion fires after a constant lowering,
+    /// re-run `r6_bone_count_survey` on every vanilla mesh archive
+    /// before changing it.
+    #[test]
+    fn max_bones_per_mesh_covers_fo76_vanilla_ceiling() {
+        const FO76_VANILLA_MAX: usize = 133;
+        assert!(
+            MAX_BONES_PER_MESH >= FO76_VANILLA_MAX,
+            "MAX_BONES_PER_MESH={} would drop FO76 prewardress / radtoad / \
+             deathclawoutfit into bind pose (vanilla survey max={}). See \
+             #1135 / r6_bone_count_survey for the per-game breakdown.",
+            MAX_BONES_PER_MESH,
+            FO76_VANILLA_MAX,
+        );
     }
 
     #[test]

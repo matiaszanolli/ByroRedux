@@ -263,8 +263,8 @@ infrastructure that already lives in `scene_buffer/descriptors.rs:11`
 
 #### PERF-D7-NEW-02 — Fixed-stride bone palette wastes ~6.4 KB per skinned mesh on partial poses
 **Dimension**: TAA & GPU Skinning (Dim 7) / GPU Memory
-**Location**: `byroredux/src/render.rs:429-436`, `crates/core/src/ecs/components/skinned_mesh.rs:29` (`MAX_BONES_PER_MESH = 128`)
-**Status**: NEW
+**Location**: `byroredux/src/render.rs:429-436`, `crates/core/src/ecs/components/skinned_mesh.rs:29` (`MAX_BONES_PER_MESH = 128 → 144` post-#1135)
+**Status**: PARTIAL — structural fix (variable-stride packing) still deferred to M29.5. Pre-fix investigation surfaced a latent FO76 correctness bug (5+ vanilla meshes >128 bones silently rendered in bind pose); raised ceiling to 144 (#1135 commit) so all 7 vanilla-supported games render correctly. Waste increased ~12.5% as a side effect of the correctness fix; the M29.5 variable-stride dispatch will reverse that.
 **Description**: Every skinned mesh's bone palette is zero-padded to
 `MAX_BONES_PER_MESH = 128` slots so per-mesh `bone_offset` arithmetic in
 the shader is trivially `offset + local_index`. The padding loop at
