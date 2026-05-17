@@ -121,24 +121,34 @@ mod tests {
         );
     }
 
-    /// TD4-203 — `composite.frag::BLOOM_INTENSITY` must match
-    /// `shader_constants::BLOOM_INTENSITY`. When the shader migrates
-    /// to `#include "include/shader_constants.glsl"`, drop the local
-    /// declaration and rely on the auto-generated `#define`.
+    /// TD4-203 / #1126 — `composite.frag` must NOT redeclare
+    /// `BLOOM_INTENSITY` as a `const float`. The `#define`d value
+    /// from the included `shader_constants.glsl` is the single source
+    /// of truth. A local `const float BLOOM_INTENSITY = ...;` after
+    /// `#include` shadows the macro and breaks recompile-from-source
+    /// (textually substitutes to `const float 0.15 = 0.15;`). Positive
+    /// coverage that the value flows through correctly lives in
+    /// `generated_header_contains_all_defines` (verifies the `#define`
+    /// is emitted with the right value).
     #[test]
-    fn composite_frag_bloom_intensity_matches() {
+    fn composite_frag_bloom_intensity_not_redeclared() {
         let src = include_str!("../shaders/composite.frag");
-        let token = format!("= {BLOOM_INTENSITY:?};");
-        assert_shader_const_value(src, "const float", "BLOOM_INTENSITY", &token, "BLOOM_INTENSITY");
+        assert!(
+            !src.contains("const float BLOOM_INTENSITY"),
+            "composite.frag must not redeclare BLOOM_INTENSITY — \
+             the #define from shader_constants.glsl is the source of truth (#1126)",
+        );
     }
 
-    /// TD4-204 — `composite.frag::VOLUME_FAR` must match
-    /// `shader_constants::VOLUME_FAR`. Same migration path.
+    /// TD4-204 / #1126 — same shape as the BLOOM_INTENSITY check above.
     #[test]
-    fn composite_frag_volume_far_matches() {
+    fn composite_frag_volume_far_not_redeclared() {
         let src = include_str!("../shaders/composite.frag");
-        let token = format!("= {VOLUME_FAR:?};");
-        assert_shader_const_value(src, "const float", "VOLUME_FAR", &token, "VOLUME_FAR");
+        assert!(
+            !src.contains("const float VOLUME_FAR"),
+            "composite.frag must not redeclare VOLUME_FAR — \
+             the #define from shader_constants.glsl is the source of truth (#1126)",
+        );
     }
 
     /// TD4-205 — Water motion-kind enum in `water.frag` must match

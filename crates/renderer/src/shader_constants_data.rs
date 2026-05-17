@@ -39,12 +39,29 @@ pub const WORKGROUP_Z: u32 = 8;
 // Mirrored in `cluster_cull.comp` as `THREADS_PER_CLUSTER`.
 pub const THREADS_PER_CLUSTER: u32 = 32;
 
-// Bloom intensity — emissive contribution scale in composite.
-// Tuned 2026-04 sweep; lockstep with `composite.frag::BLOOM_INTENSITY`.
+// M58 — bloom contribution coefficient. 0.15 (≈4× the Frostbite
+// SIGGRAPH 2015 default of 0.04) compensates for Bethesda content
+// being LDR-authored: emissive surfaces sit in the 0–1 monitor-space
+// range rather than HDR cd/m², so a Frostbite-default intensity reads
+// as essentially-invisible. Hand-tuned downward from 0.20 on
+// Prospector saloon (sun-lit windows + chandelier globes were
+// producing halos that bled too far across walls); 0.15 keeps
+// emissives obviously bloomed without flooding dim surfaces.
+// Consumed by `composite.frag` via the `#include`d `#define`; mirrored
+// here so Rust-side `bloom::DEFAULT_BLOOM_INTENSITY` stays in lockstep.
+// See `feedback_color_space.md` for why we don't HDR-boost emissives
+// globally instead.
 pub const BLOOM_INTENSITY: f32 = 0.15;
 
-// Volumetric far plane (m) — froxel grid depth extent.
-// Lockstep with `composite.frag::VOLUME_FAR` + `volumetrics.rs::DEFAULT_VOLUME_FAR`.
+// M55 — volumetric far plane. Must match `volumetrics::DEFAULT_VOLUME_FAR`
+// (Rust side) and the `params.volume_extent.x` value passed to the
+// injection compute pass; otherwise the slice→view-distance mapping
+// disagrees and fog appears compressed or stretched. With Phase 3
+// pre-integration the per-fragment cost is now ONE sampler3D tap, so
+// no step-count dial is needed in `composite.frag` — quality scales
+// with the froxel resolution and dt set on the host. Consumed by
+// `composite.frag` (slice math) and `volumetrics_integrate.comp` (dt =
+// VOLUME_FAR / FROXEL_DEPTH).
 pub const VOLUME_FAR: f32 = 200.0;
 
 // Water motion-kind enum (WATR-driven, mapped per-WATR record).
