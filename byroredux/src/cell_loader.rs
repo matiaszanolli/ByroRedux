@@ -147,6 +147,187 @@ pub(crate) fn pack_effect_shader_flags(
     flags
 }
 
+/// Pack the three BGSM v>2 boolean flags
+/// ([`ImportedMesh::is_pbr`] / [`ImportedMesh::has_translucency`] /
+/// [`ImportedMesh::model_space_normals`]) into the `material_flag::BGSM_*`
+/// bit layout. Sibling to [`pack_effect_shader_flags`] — both contribute
+/// to the same `Material.effect_shader_flags` u32 by OR-composition at
+/// the importer boundary, then ride through to
+/// `GpuMaterial.material_flags` via `DrawCommand::to_gpu_material`.
+///
+/// The bits are populated today but **not yet read by any shader** —
+/// the shader-side PBR / SSS / model-space-normal gates in
+/// `triangle.frag` are Phase 2b of #1147 (RenderDoc-validated).
+/// Phase 2a (this packer) lands the data plumbing so the consumer can
+/// pick the flags up without re-parsing BGSM. See #1077 / FO4-D6-003.
+///
+/// [`ImportedMesh::is_pbr`]: byroredux_nif::import::ImportedMesh::is_pbr
+/// [`ImportedMesh::has_translucency`]: byroredux_nif::import::ImportedMesh::has_translucency
+/// [`ImportedMesh::model_space_normals`]: byroredux_nif::import::ImportedMesh::model_space_normals
+pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMesh) -> u32 {
+    use byroredux_renderer::vulkan::material::material_flag::{
+        BGSM_MODEL_SPACE_NORMALS, BGSM_PBR, BGSM_TRANSLUCENCY,
+    };
+    let mut flags = 0u32;
+    if mesh.is_pbr {
+        flags |= BGSM_PBR;
+    }
+    if mesh.has_translucency {
+        flags |= BGSM_TRANSLUCENCY;
+    }
+    if mesh.model_space_normals {
+        flags |= BGSM_MODEL_SPACE_NORMALS;
+    }
+    flags
+}
+
+#[cfg(test)]
+mod pack_bgsm_material_flags_tests {
+    //! Regression for #1147 Phase 2a (#1077 follow-up). Pins the
+    //! contract that the bool-to-bit-OR packer matches the
+    //! `material_flag::BGSM_*` layout the Phase 2b shader consumer
+    //! will read.
+
+    use super::pack_bgsm_material_flags;
+    use byroredux_nif::import::ImportedMesh;
+    use byroredux_renderer::vulkan::material::material_flag::{
+        BGSM_MODEL_SPACE_NORMALS, BGSM_PBR, BGSM_TRANSLUCENCY,
+    };
+
+    /// Build an empty-but-valid `ImportedMesh` with all 3 BGSM flags
+    /// clear. Only the fields the packer reads are set here; the rest
+    /// rely on `..Default::default()` (the type has no Default impl,
+    /// so this helper hand-constructs the relevant subset).
+    fn empty_mesh() -> ImportedMesh {
+        ImportedMesh {
+            positions: Vec::new(),
+            colors: Vec::new(),
+            normals: Vec::new(),
+            tangents: Vec::new(),
+            uvs: Vec::new(),
+            indices: Vec::new(),
+            translation: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+            texture_path: None,
+            material_path: None,
+            name: None,
+            has_alpha: false,
+            src_blend_mode: 6,
+            dst_blend_mode: 7,
+            alpha_test: false,
+            alpha_threshold: 0.0,
+            alpha_test_func: 6,
+            two_sided: false,
+            is_decal: false,
+            normal_map: None,
+            glow_map: None,
+            detail_map: None,
+            gloss_map: None,
+            dark_map: None,
+            parallax_map: None,
+            env_map: None,
+            env_mask: None,
+            specular_map: None,
+            lighting_map: None,
+            flow_map: None,
+            wrinkle_map: None,
+            is_pbr: false,
+            has_translucency: false,
+            model_space_normals: false,
+            parallax_max_passes: None,
+            parallax_height_scale: None,
+            vertex_color_mode: 2,
+            texture_clamp_mode: 0,
+            emissive_color: [0.0; 3],
+            emissive_mult: 0.0,
+            specular_color: [1.0; 3],
+            diffuse_color: [1.0; 3],
+            ambient_color: [1.0; 3],
+            specular_strength: 1.0,
+            glossiness: 80.0,
+            uv_offset: [0.0; 2],
+            uv_scale: [1.0; 2],
+            mat_alpha: 1.0,
+            env_map_scale: 1.0,
+            parent_node: None,
+            skin: None,
+            z_test: true,
+            z_write: true,
+            z_function: 3,
+            local_bound_center: [0.0; 3],
+            local_bound_radius: 0.0,
+            effect_shader: None,
+            material_kind: 0,
+            shader_type_fields: byroredux_nif::import::ShaderTypeFields::default(),
+            no_lighting_falloff: None,
+            wireframe: false,
+            flat_shading: false,
+            flags: 0,
+        }
+    }
+
+    #[test]
+    fn all_three_flags_off_produces_zero() {
+        let mesh = empty_mesh();
+        assert_eq!(pack_bgsm_material_flags(&mesh), 0);
+    }
+
+    #[test]
+    fn all_three_flags_on_produces_full_union() {
+        let mut mesh = empty_mesh();
+        mesh.is_pbr = true;
+        mesh.has_translucency = true;
+        mesh.model_space_normals = true;
+
+        let packed = pack_bgsm_material_flags(&mesh);
+        let expected = BGSM_PBR | BGSM_TRANSLUCENCY | BGSM_MODEL_SPACE_NORMALS;
+        assert_eq!(packed, expected);
+        // Sanity-check the canonical bit layout the Phase 2b shader
+        // consumer will read against — bits 5, 6, 7.
+        assert_eq!(packed & 0x20, BGSM_PBR);
+        assert_eq!(packed & 0x40, BGSM_TRANSLUCENCY);
+        assert_eq!(packed & 0x80, BGSM_MODEL_SPACE_NORMALS);
+    }
+
+    #[test]
+    fn individual_flags_produce_individual_bits() {
+        let mut mesh = empty_mesh();
+        mesh.is_pbr = true;
+        assert_eq!(pack_bgsm_material_flags(&mesh), BGSM_PBR);
+
+        let mut mesh = empty_mesh();
+        mesh.has_translucency = true;
+        assert_eq!(pack_bgsm_material_flags(&mesh), BGSM_TRANSLUCENCY);
+
+        let mut mesh = empty_mesh();
+        mesh.model_space_normals = true;
+        assert_eq!(pack_bgsm_material_flags(&mesh), BGSM_MODEL_SPACE_NORMALS);
+    }
+
+    /// The new BGSM bits must NOT collide with the existing
+    /// `EFFECT_*` (bits 1-4) or `VERTEX_COLOR_EMISSIVE` (bit 0)
+    /// bits. Pins the bit-layout contract from outside the
+    /// packer's source.
+    #[test]
+    fn bgsm_bits_do_not_collide_with_effect_bits() {
+        use byroredux_renderer::vulkan::material::material_flag::{
+            EFFECT_LIT, EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR, EFFECT_SOFT,
+            VERTEX_COLOR_EMISSIVE,
+        };
+        let bgsm_bits = BGSM_PBR | BGSM_TRANSLUCENCY | BGSM_MODEL_SPACE_NORMALS;
+        let prior_bits =
+            VERTEX_COLOR_EMISSIVE | EFFECT_SOFT | EFFECT_PALETTE_COLOR | EFFECT_PALETTE_ALPHA | EFFECT_LIT;
+        assert_eq!(
+            bgsm_bits & prior_bits,
+            0,
+            "BGSM_* bits (0x{:x}) overlap prior bits (0x{:x})",
+            bgsm_bits,
+            prior_bits,
+        );
+    }
+}
+
 #[cfg(test)]
 mod euler_zup_to_quat_yup_tests;
 #[cfg(test)]

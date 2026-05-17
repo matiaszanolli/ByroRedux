@@ -806,11 +806,16 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                             }
                         })
                     }),
-                // #890 Stage 2 — see cell_loader.rs for the
-                // identical packing site / explanation.
+                // #890 Stage 2 — BSEffectShader bits OR'd with
+                // #1077 / FO4-D6-003 Phase 2a BGSM v>2 bits at the
+                // importer boundary. Both contributors target the
+                // same `material_flag::*` bit layout so a single u32
+                // carries the union through to `GpuMaterial`. See
+                // `cell_loader.rs` for the identical packing pattern
+                // + the rationale for sharing the field.
                 effect_shader_flags: crate::cell_loader::pack_effect_shader_flags(
                     mesh.effect_shader.as_ref(),
-                ),
+                ) | crate::cell_loader::pack_bgsm_material_flags(mesh),
             },
         );
         // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.

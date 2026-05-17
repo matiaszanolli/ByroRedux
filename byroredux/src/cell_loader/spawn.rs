@@ -728,7 +728,16 @@ pub(super) fn spawn_placed_instances(
                 // per-bit re-encoding. Zero on the FO3/FNV
                 // `BSShaderNoLightingProperty` path (which shares the
                 // `effect_falloff` slot but has no SLSF1/SLSF2 bits).
-                effect_shader_flags: pack_effect_shader_flags(mesh.effect_shader.as_ref()),
+                //
+                // #1077 / FO4-D6-003 Phase 2a — the same u32 also
+                // carries the BGSM v>2 `pbr` / `translucency` /
+                // `model_space_normals` bits via the sibling
+                // `pack_bgsm_material_flags` packer. Both packers
+                // target the same `material_flag::*` bit layout, so
+                // a single OR-composition produces the union word
+                // the GpuMaterial consumes.
+                effect_shader_flags: pack_effect_shader_flags(mesh.effect_shader.as_ref())
+                    | super::pack_bgsm_material_flags(mesh),
             },
         );
         // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn

@@ -312,6 +312,39 @@ pub mod material_flag {
     /// the cell ambient + directional sun, parallel to the lit-mesh
     /// path. Live in Stage 2a.
     pub const EFFECT_LIT: u32 = 1 << 4;
+
+    // ── BGSM v>2 flags (#1077 / FO4-D6-003 Phase 2a) ─────────────────
+    //
+    // Captured CPU-side by the `pack_bgsm_material_flags` packer in
+    // `byroredux/src/cell_loader.rs` (mirror of `pack_effect_shader_flags`).
+    // OR'd into `effect_shader_flags` at the importer boundary and forwarded
+    // unchanged to `GpuMaterial.material_flags` by `DrawCommand::to_gpu_material`.
+    //
+    // **Today** these bits are written but not yet read by any shader —
+    // the shader-side path gating in `triangle.frag` is Phase 2b of
+    // #1147 (gated on RenderDoc A/B captures against FO4 content).
+    // Phase 2a lands the data plumbing so the consumer can pick it up
+    // without re-parsing BGSM.
+
+    /// `BgsmFile.pbr` (v>2) — material uses the FO4 PBR shading path.
+    /// When set, the fragment shader's metalness/roughness pipeline
+    /// should branch; when clear, the Gamebryo-legacy specular path
+    /// runs. Phase 2b shader consumer pending.
+    pub const BGSM_PBR: u32 = 1 << 5;
+    /// `BgsmFile.translucency` (v>=8) — material has subsurface
+    /// authoring. Drives SSS on skin / vegetation / glass /
+    /// thin-translucent surfaces. The parameter suite
+    /// (`translucency_subsurface_color`, `translucency_transmissive_scale`,
+    /// `translucency_turbulence`, etc.) lives on `BgsmFile` but isn't
+    /// surfaced on `Material` until the Phase 2b shader consumer
+    /// lands — only the gating bit propagates today.
+    pub const BGSM_TRANSLUCENCY: u32 = 1 << 6;
+    /// `BgsmFile.model_space_normals` — material's normal map is
+    /// authored in object/model space rather than tangent space.
+    /// When set, the fragment shader's normal decode skips the TBN
+    /// transform and uses the sampled normal directly. Phase 2b
+    /// shader consumer pending.
+    pub const BGSM_MODEL_SPACE_NORMALS: u32 = 1 << 7;
 }
 
 impl GpuMaterial {

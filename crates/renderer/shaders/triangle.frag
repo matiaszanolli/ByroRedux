@@ -139,6 +139,17 @@ layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
 // keep in lockstep when adding new bits.
 const uint MAT_FLAG_VERTEX_COLOR_EMISSIVE = 0x1u; // #695 / O4-03
 
+// MAT_FLAG_BGSM_PBR (0x20), MAT_FLAG_BGSM_TRANSLUCENCY (0x40), and
+// MAT_FLAG_BGSM_MODEL_SPACE_NORMALS (0x80) are populated by the
+// Rust side per #1077 Phase 2a (see `material_flag::BGSM_*` in
+// `crates/renderer/src/vulkan/material.rs`) but intentionally NOT
+// declared here yet. Phase 2b (#1147) will declare + read them
+// alongside the actual PBR / SSS / object-space-normal gating
+// branches in this file. Adding the consts without consumers
+// would invite drift if the next author edits one but not the
+// other; pinning the declaration to the consumer commit keeps
+// source-vs-SPV in lockstep.
+
 struct GpuLight {
     vec4 position_radius;  // xyz = position, w = radius
     vec4 color_type;       // rgb = color, w = type (0=point, 1=spot, 2=directional)
