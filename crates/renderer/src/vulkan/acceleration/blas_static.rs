@@ -8,7 +8,7 @@ use super::super::descriptors::memory_barrier;
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
-use super::constants::BATCH_EVICTION_CHECK_INTERVAL;
+use super::constants::{BATCH_EVICTION_CHECK_INTERVAL, STATIC_BLAS_FLAGS};
 use super::predicates::{scratch_needs_growth, should_evict_mid_batch, submit_one_time};
 use super::types::BlasEntry;
 use super::AccelerationManager;
@@ -185,33 +185,6 @@ impl AccelerationManager {
 
         let primitive_count = index_count / 3;
 
-        // Match the flag set used by the batched-build path (#658) so
-        // the single-shot path stays in lockstep. ALLOW_COMPACTION is
-        // a no-op on its own — no compact-copy phase is wired in here
-        // — but having the flag set means a future caller that wants
-        // to compact this BLAS can issue
-        // `cmd_copy_acceleration_structure(MODE = COMPACT)` against it
-        // without rebuilding from scratch. Today this path is reached
-        // only by UI-quad / single-mesh registration where compaction
-        // would save trivial bytes; routing an RT mesh through here
-        // (e.g. lazy first-sight upload) without the flag would
-        // silently consume the BLAS budget twice as fast as a
-        // batched-path peer.
-        //
-        // REN-D8-NEW-06 (audit 2026-05-09) flagged the flag as
-        // "wasted" because no caller currently runs the compact
-        // pass. The lockstep with the batched path is the load-
-        // bearing reason for keeping it — drop here without
-        // dropping at the batched build site (line 1534) would
-        // create an asymmetric compaction policy that's harder to
-        // reason about than one flag value across both paths.
-        // When the compact pass lands, it lights up on both paths
-        // simultaneously.
-        const STATIC_BLAS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
-            vk::BuildAccelerationStructureFlagsKHR::from_raw(
-                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE.as_raw()
-                    | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION.as_raw(),
-            );
         let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
             .flags(STATIC_BLAS_FLAGS)
@@ -548,10 +521,7 @@ impl AccelerationManager {
 
             let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                .flags(
-                    vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
-                        | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION,
-                )
+                .flags(STATIC_BLAS_FLAGS)
                 .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                 .geometries(std::slice::from_ref(&geometry));
 
@@ -670,10 +640,7 @@ impl AccelerationManager {
 
                 let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
                     .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                    .flags(
-                        vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
-                            | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION,
-                    )
+                    .flags(STATIC_BLAS_FLAGS)
                     .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
                     .dst_acceleration_structure(p.accel)
                     .geometries(std::slice::from_ref(&p.geometry))

@@ -65,8 +65,10 @@ pub(super) const BATCH_EVICTION_CHECK_INTERVAL: usize = 64;
 /// `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667` requires
 /// the UPDATE flags to match the source BUILD's flags exactly; the
 /// shared constant turns that invariant from "convention" into
-/// "enforced by the compiler". Counterpart of the function-local
-/// `STATIC_BLAS_FLAGS` in `blas_static.rs`. See #958 / REN-D8-NEW-14.
+/// "enforced by the compiler". Sibling of [`STATIC_BLAS_FLAGS`] and
+/// [`SKINNED_BLAS_FLAGS`] (the three module-level constants now cover
+/// the three BUILD-target families: TLAS / static BLAS / skinned BLAS).
+/// See #958 / REN-D8-NEW-14.
 ///
 /// **History**: prior to R6a-prospector-regress (2026-05-16) this also
 /// drove the skinned-BLAS BUILD+UPDATE call sites. Bench bisect against
@@ -95,4 +97,24 @@ pub(super) const SKINNED_BLAS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
     vk::BuildAccelerationStructureFlagsKHR::from_raw(
         vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD.as_raw()
             | vk::BuildAccelerationStructureFlagsKHR::ALLOW_UPDATE.as_raw(),
+    );
+
+/// Build flags for the static-BLAS BUILD call sites in `blas_static.rs`
+/// (`build_blas` single-shot + `build_blas_batched` per-mesh size-query
+/// + per-mesh record). Vulkan spec
+/// `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03801` requires the
+/// size-query and the record `BuildGeometryInfoKHR.flags` to match
+/// exactly; sharing the constant turns that VUID from convention into
+/// compiler-enforced invariant. Sibling lift of [`SKINNED_BLAS_FLAGS`]
+/// (`1775a7e6`), see #1137 / CONC-D2-NEW-02.
+///
+/// `ALLOW_COMPACTION` is set even though no caller currently runs the
+/// compact pass — the lockstep with the other static-BLAS sites is the
+/// load-bearing reason for keeping the flag. When the compact pass
+/// lands it lights up across all three call sites simultaneously
+/// without a flag-drift bisect (REN-D8-NEW-06 audit history).
+pub(super) const STATIC_BLAS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
+    vk::BuildAccelerationStructureFlagsKHR::from_raw(
+        vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE.as_raw()
+            | vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION.as_raw(),
     );
