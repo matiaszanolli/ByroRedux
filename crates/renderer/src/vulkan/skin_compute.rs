@@ -260,12 +260,13 @@ impl SkinComputePipeline {
         // palette, output). The chosen `max_slots` is the cell-load
         // ceiling for skinned entities — see the rationale comment at
         // `context/mod.rs::SKIN_MAX_SLOTS`. The architectural ceiling
-        // is `MAX_TOTAL_BONES / MAX_BONES_PER_MESH = 32768 / 128 = 256`
-        // (the bone-palette SSBO ceiling) — picking a smaller cap
-        // keeps it as a pressure signal. (The pre-#900 comment here
-        // claimed `max_slots == 32 (matches MAX_TOTAL_BONES /
-        // MAX_BONES_PER_MESH)` — that math was wrong; the ratio is
-        // 256, not 32.)
+        // is `MAX_TOTAL_BONES / MAX_BONES_PER_MESH` (the bone-palette
+        // SSBO ceiling) — picking a smaller cap keeps it as a pressure
+        // signal. (The pre-#900 comment here claimed `max_slots == 32
+        // (matches MAX_TOTAL_BONES / MAX_BONES_PER_MESH)` — that math
+        // was wrong; the ratio is the SSBO ceiling, not 32. Today's
+        // exact value depends on `MAX_BONES_PER_MESH`, currently 144
+        // per #1135, yielding floor(32768 / 144) = 227.)
         let pool_total = max_slots * (MAX_FRAMES_IN_FLIGHT as u32);
         // Slots are freed on entity destruction (cell unload);
         // FREE_DESCRIPTOR_SET allows `vkFreeDescriptorSets` rather
