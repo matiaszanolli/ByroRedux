@@ -320,6 +320,13 @@ pub(super) fn draw_command_eligible_for_tlas(draw_cmd: &DrawCommand) -> bool {
 /// reuse the same scratch region. Captures the three submission
 /// contexts the scratch buffer participates in (see
 /// [`requires_scratch_serialize_barrier_before`]).
+///
+/// **Test-only**: the production sites unconditionally self-emit the
+/// barrier; this enum + the predicate below exist purely so the rule
+/// is inspectable by the regression test in
+/// `acceleration::tests::scratch_barrier_*`. `#[cfg(test)]`-gated so
+/// the lib build doesn't carry dead diagnostic code.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ScratchUser {
     /// No prior op has touched the shared scratch this frame — first
@@ -363,6 +370,7 @@ pub(super) enum ScratchUser {
 /// the barrier from callee back to caller-side (because an optimizer
 /// noticed same-submission emit-count) is caught — see
 /// `AUDIT_CONCURRENCY_2026-05-16.md` Dim 5 / CONC-D5-NEW-01 / #1140.
+#[cfg(test)]
 #[inline]
 pub(super) fn requires_scratch_serialize_barrier_before(prior: ScratchUser) -> bool {
     match prior {
