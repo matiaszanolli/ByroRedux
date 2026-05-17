@@ -190,13 +190,7 @@ impl SsaoPipeline {
                         .image(ao_image)
                         .view_type(vk::ImageViewType::TYPE_2D)
                         .format(vk::Format::R8_UNORM)
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        }),
+                        .subresource_range(super::descriptors::color_subresource_single_mip()),
                     None,
                 )
             } {
@@ -423,13 +417,7 @@ impl SsaoPipeline {
         queue: &std::sync::Mutex<vk::Queue>,
         pool: vk::CommandPool,
     ) -> Result<()> {
-        let range = vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        };
+        let range = super::descriptors::color_subresource_single_mip();
         super::texture::with_one_time_commands(device, queue, pool, |cmd| {
             for &img in &self.ao_images {
                 // UNDEFINED → TRANSFER_DST for the clear.
@@ -547,13 +535,7 @@ impl SsaoPipeline {
             .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .new_layout(vk::ImageLayout::GENERAL)
             .image(ao_image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
+            .subresource_range(super::descriptors::color_subresource_single_mip());
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::FRAGMENT_SHADER,
@@ -586,13 +568,7 @@ impl SsaoPipeline {
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image(ao_image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
+            .subresource_range(super::descriptors::color_subresource_single_mip());
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,

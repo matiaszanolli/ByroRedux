@@ -615,13 +615,7 @@ impl SvgfPipeline {
                         .image(image)
                         .view_type(vk::ImageViewType::TYPE_2D)
                         .format(format)
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        }),
+                        .subresource_range(super::descriptors::color_subresource_single_mip()),
                     None,
                 )
                 .with_context(|| format!("view {name}"))
@@ -861,13 +855,7 @@ impl SvgfPipeline {
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::GENERAL)
                 .image(img)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
+                .subresource_range(super::descriptors::color_subresource_single_mip())
         };
         let img_barriers = [img_barrier(out_ind_img), img_barrier(out_mom_img)];
         device.cmd_pipeline_barrier(
@@ -903,13 +891,7 @@ impl SvgfPipeline {
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::GENERAL)
                 .image(img)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
+                .subresource_range(super::descriptors::color_subresource_single_mip())
         };
         let out_barriers = [out_barrier(out_ind_img), out_barrier(out_mom_img)];
         device.cmd_pipeline_barrier(

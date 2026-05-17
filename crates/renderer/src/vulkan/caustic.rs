@@ -485,13 +485,7 @@ impl CausticPipeline {
                             .image(img)
                             .view_type(vk::ImageViewType::TYPE_2D)
                             .format(CAUSTIC_FORMAT)
-                            .subresource_range(vk::ImageSubresourceRange {
-                                aspect_mask: vk::ImageAspectFlags::COLOR,
-                                base_mip_level: 0,
-                                level_count: 1,
-                                base_array_layer: 0,
-                                layer_count: 1,
-                            }),
+                            .subresource_range(super::descriptors::color_subresource_single_mip()),
                         None,
                     )
                     .context("caustic image view")?
@@ -729,13 +723,7 @@ impl CausticPipeline {
             .old_layout(vk::ImageLayout::GENERAL)
             .new_layout(vk::ImageLayout::GENERAL)
             .image(slot_img)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
+            .subresource_range(super::descriptors::color_subresource_single_mip());
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
@@ -749,13 +737,7 @@ impl CausticPipeline {
         let clear_value = vk::ClearColorValue {
             uint32: [0, 0, 0, 0],
         };
-        let clear_range = vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        };
+        let clear_range = super::descriptors::color_subresource_single_mip();
         device.cmd_clear_color_image(
             cmd,
             slot_img,
