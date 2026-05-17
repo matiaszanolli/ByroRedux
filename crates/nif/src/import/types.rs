@@ -394,6 +394,36 @@ pub struct ImportedMesh {
     /// `None` on every non-skin FO4 material and on NIF-only paths.
     /// See #1076 / FO4-D6-002.
     pub wrinkle_map: Option<FixedString>,
+    /// Material uses the FO4 PBR shading path (BGSM v>2 flag).
+    /// Forwarded from `BgsmFile.pbr`. When `true`, the renderer
+    /// should branch into the metalness/roughness PBR pipeline
+    /// rather than the Gamebryo-legacy specular path. `false` on
+    /// every BGEM material and on NIF-only paths (BGEM doesn't
+    /// author this flag — its effect-shader path is by definition
+    /// non-PBR). See #1077 / FO4-D6-003 (Phase 1: data
+    /// propagation; renderer-side gating in `triangle.frag` is
+    /// the deferred Phase 2 of #1077).
+    pub is_pbr: bool,
+    /// Material has subsurface-translucency authoring (BGSM v>=8
+    /// flag). Forwarded from `BgsmFile.translucency`. When `true`,
+    /// the renderer's subsurface-scattering path applies — skin,
+    /// vegetation, glass, thin-translucent materials. The
+    /// accompanying parameter suite (subsurface color, transmissive
+    /// scale, turbulence, thick-object flag, mix-albedo flag) lives
+    /// on `BgsmFile` and is not currently surfaced here — the
+    /// renderer-side consumer would also need to land before adding
+    /// the parameter fields. `false` on every BGEM material and on
+    /// NIF-only paths. See #1077 / FO4-D6-003.
+    pub has_translucency: bool,
+    /// Material's normal map is authored in object/model space
+    /// rather than the conventional tangent space. Forwarded from
+    /// `BgsmFile.model_space_normals`. When `true`, the fragment
+    /// shader's normal decode skips the TBN transform and uses the
+    /// sampled normal directly. Vanilla FO4 authors this for a
+    /// small set of static objects whose tangent space isn't
+    /// reliably reconstructable. `false` on every BGEM material and
+    /// on NIF-only paths. See #1077 / FO4-D6-003.
+    pub model_space_normals: bool,
     /// Parallax-occlusion max ray-march passes (from
     /// `BSShaderPPLightingProperty` or Skyrim `ShaderTypeData::ParallaxOcc`).
     /// `None` when the material doesn't author a value. See #452.

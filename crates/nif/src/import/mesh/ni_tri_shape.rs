@@ -215,6 +215,12 @@ pub fn extract_mesh(
         lighting_map: None,
         flow_map: None,
         wrinkle_map: None,
+        // #1077 / FO4-D6-003 — BGSM-only shader flags; NIF
+        // shader-texture-set doesn't surface these. Populated
+        // downstream by `merge_bgsm_into_mesh` from BgsmFile.
+        is_pbr: false,
+        has_translucency: false,
+        model_space_normals: false,
         parallax_max_passes: mat.parallax_max_passes,
         parallax_height_scale: mat.parallax_height_scale,
         vertex_color_mode: mat.vertex_color_mode as u8,

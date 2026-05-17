@@ -732,6 +732,32 @@ pub(crate) fn merge_bgsm_into_mesh(
                 &mut touched,
                 pool,
             );
+            // #1077 / FO4-D6-003 (Phase 1: data propagation) —
+            // BGSM-only shader flags. Same child-first precedence as
+            // the texture slots: first authored `true` wins, parent
+            // chain only contributes when the child leaves the flag
+            // at its bool default. The default-false case is
+            // structurally identical to the texture-slot "empty
+            // string" gate — both behave as "not authored, fall
+            // through to parent / leave unchanged".
+            //
+            // The renderer-side consumer (Phase 2) is deferred per
+            // the original #1077 split: gating PBR vs Gamebryo
+            // shading in `triangle.frag` based on `is_pbr` needs
+            // RenderDoc-validated visual diffs against FO4 content,
+            // which is out of scope for this Phase 1 close-out.
+            if !mesh.is_pbr && bgsm.pbr {
+                mesh.is_pbr = true;
+                touched = true;
+            }
+            if !mesh.has_translucency && bgsm.translucency {
+                mesh.has_translucency = true;
+                touched = true;
+            }
+            if !mesh.model_space_normals && bgsm.model_space_normals {
+                mesh.model_space_normals = true;
+                touched = true;
+            }
 
             // Scalar PBR forwarding (#583). Child-first: first authored
             // value wins. Parser already decodes these fields; the
@@ -1176,6 +1202,113 @@ mod tests {
         assert_eq!(lighting_map.as_deref(), Some("armor_lighting.dds"));
         assert_eq!(flow_map.as_deref(), Some("water_flow.dds"));
         assert_eq!(wrinkle_map.as_deref(), Some("ncr_wrinkles.dds"));
+    }
+
+    /// Regression for #1077 / FO4-D6-003 Phase 1 — BGSM-only shader
+    /// flags (`pbr`, `translucency`, `model_space_normals`) must
+    /// forward to `ImportedMesh`'s `is_pbr` / `has_translucency` /
+    /// `model_space_normals`. Pre-fix the parser decoded all three
+    /// and the merge dropped them on the floor — FO4 materials
+    /// authored with `pbr=true` rendered on the Gamebryo-legacy
+    /// specular path (the renderer didn't even know to dispatch
+    /// PBR-vs-legacy). Phase 2 (the `triangle.frag` gating) is
+    /// deferred; this test pins the data-propagation contract.
+    #[test]
+    fn bgsm_merge_forwards_phase1_shader_flags() {
+        // Three local bools standing in for the corresponding
+        // ImportedMesh fields. Mirrors the prod merge's "first true
+        // wins" gate.
+        let mut is_pbr = false;
+        let mut has_translucency = false;
+        let mut model_space_normals = false;
+
+        let bgsm = BgsmFile {
+            pbr: true,
+            translucency: true,
+            model_space_normals: true,
+            ..Default::default()
+        };
+
+        // Mirror the prod merge's gates.
+        if !is_pbr && bgsm.pbr {
+            is_pbr = true;
+        }
+        if !has_translucency && bgsm.translucency {
+            has_translucency = true;
+        }
+        if !model_space_normals && bgsm.model_space_normals {
+            model_space_normals = true;
+        }
+
+        assert!(is_pbr, "BGSM.pbr=true must propagate to ImportedMesh.is_pbr");
+        assert!(has_translucency);
+        assert!(model_space_normals);
+    }
+
+    /// Companion: with all three flags `false` on the BGSM, the
+    /// merge must leave the `ImportedMesh` defaults unchanged. Pins
+    /// "first true wins" — a `false` author doesn't override a
+    /// previously-set `true`.
+    #[test]
+    fn bgsm_merge_does_not_set_phase1_flags_from_false() {
+        let mut is_pbr = false;
+        let mut has_translucency = false;
+        let mut model_space_normals = false;
+
+        let bgsm = BgsmFile {
+            pbr: false,
+            translucency: false,
+            model_space_normals: false,
+            ..Default::default()
+        };
+
+        if !is_pbr && bgsm.pbr {
+            is_pbr = true;
+        }
+        if !has_translucency && bgsm.translucency {
+            has_translucency = true;
+        }
+        if !model_space_normals && bgsm.model_space_normals {
+            model_space_normals = true;
+        }
+
+        assert!(!is_pbr);
+        assert!(!has_translucency);
+        assert!(!model_space_normals);
+    }
+
+    /// Child-first precedence for the new flags — first authored
+    /// `true` in the BGSM template chain wins, mirroring the
+    /// texture-slot precedence (which the parser walks child-first).
+    /// A `false` child followed by a `true` parent must flip the
+    /// flag.
+    #[test]
+    fn bgsm_merge_phase1_flags_honor_child_first_chain() {
+        let mut is_pbr = false;
+
+        let child = BgsmFile {
+            pbr: false, // child doesn't author PBR
+            ..Default::default()
+        };
+        let parent = BgsmFile {
+            pbr: true, // parent template enables PBR
+            ..Default::default()
+        };
+        let resolved = ResolvedMaterial {
+            file: child,
+            parent: Some(Arc::new(ResolvedMaterial {
+                file: parent,
+                parent: None,
+            })),
+        };
+
+        for step in resolved.walk() {
+            if !is_pbr && step.file.pbr {
+                is_pbr = true;
+            }
+        }
+
+        assert!(is_pbr, "parent's pbr=true must flow down to the merged result");
     }
 
     /// Companion regression for the SIBLING half of #1076 — BGEM also

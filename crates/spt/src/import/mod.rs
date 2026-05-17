@@ -319,6 +319,10 @@ fn placeholder_billboard_mesh(
         lighting_map: None,
         flow_map: None,
         wrinkle_map: None,
+        // #1077 / FO4-D6-003 — SpeedTree never resolves BGSM/BGEM.
+        is_pbr: false,
+        has_translucency: false,
+        model_space_normals: false,
         parallax_max_passes: None,
         parallax_height_scale: None,
         vertex_color_mode: 2,  // AmbientDiffuse
