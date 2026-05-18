@@ -53,6 +53,25 @@ pub struct BlasEntry {
     /// REN-D12-NEW-01.
     pub built_vertex_count: u32,
     pub built_index_count: u32,
+    /// Build flags used by the original fresh BUILD. Validated against
+    /// the caller-supplied flags in
+    /// [`crate::vulkan::acceleration::predicates::validate_refit_inputs`]
+    /// on each UPDATE to defend the **flag-set half** of
+    /// `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667`
+    /// (the geometry-count half is pinned by
+    /// [`Self::built_vertex_count`] / [`Self::built_index_count`]).
+    ///
+    /// Today the convention "every BUILD/UPDATE pair references the
+    /// same `*_AS_FLAGS` constant" holds trivially; this field
+    /// promotes that convention from source-code custom to a runtime
+    /// pin. If a future BUILD site mistakenly uses
+    /// `UPDATABLE_AS_FLAGS` (TLAS flags) where the matching UPDATE
+    /// uses `SKINNED_BLAS_FLAGS`, the mismatch surfaces as a logged
+    /// error + safe fresh-BUILD fallback instead of a silent VUID
+    /// violation. Static BLAS use the field purely for telemetry —
+    /// they never refit, so the stored value is read-only there.
+    /// See #1145 / SAFE-D6-NEW-01.
+    pub built_flags: vk::BuildAccelerationStructureFlagsKHR,
 }
 
 /// Top-level acceleration structure state.

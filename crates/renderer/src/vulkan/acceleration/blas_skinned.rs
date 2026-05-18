@@ -12,7 +12,7 @@ use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::constants::SKINNED_BLAS_FLAGS;
 use super::predicates::{
     is_scratch_aligned, scratch_needs_growth, should_rebuild_skinned_blas_after,
-    validate_refit_counts,
+    validate_refit_counts, validate_refit_flags,
 };
 use super::types::BlasEntry;
 use super::AccelerationManager;
@@ -297,6 +297,9 @@ impl AccelerationManager {
                     refit_count: 0,
                     built_vertex_count: p.vertex_count,
                     built_index_count: p.index_count,
+                    // #1145 — record the flags this BUILD used so the
+                    // matching refit can VUID-03667-check the pairing.
+                    built_flags: SKINNED_BLAS_FLAGS,
                 },
             );
             results.push((p.entity_id, Ok(())));
@@ -383,13 +386,31 @@ impl AccelerationManager {
         // The validation is split into a pure helper
         // (`validate_refit_counts`) so it's unit-testable without a
         // Vulkan context.
-        let built_counts = self
+        let built_info = self
             .skinned_blas
             .get(&entity_id)
-            .map(|e| (e.built_vertex_count, e.built_index_count))
+            .map(|e| (e.built_vertex_count, e.built_index_count, e.built_flags))
             .with_context(|| format!("no skinned BLAS for entity {entity_id}"))?;
+        // #1145 — flag-set half of VUID-03667: assert the refit uses
+        // the same flags constant the BUILD recorded. The count half
+        // is checked just below.
+        if let Err(mismatch) = validate_refit_flags(built_info.2, SKINNED_BLAS_FLAGS) {
+            debug_assert!(
+                false,
+                "BLAS refit flag mismatch for entity {entity_id}: {mismatch}"
+            );
+            log::error!(
+                "BLAS refit flag mismatch for entity {entity_id}: {mismatch} — \
+                 dropping stale BLAS so next frame's first-sight path rebuilds. \
+                 See #1145 / VUID 03667 (flag-set half)."
+            );
+            self.drop_skinned_blas(entity_id);
+            return Err(anyhow::anyhow!(
+                "skinned BLAS refit flag mismatch for entity {entity_id}: {mismatch}"
+            ));
+        }
         if let Err(mismatch) =
-            validate_refit_counts(built_counts.0, built_counts.1, vertex_count, index_count)
+            validate_refit_counts(built_info.0, built_info.1, vertex_count, index_count)
         {
             debug_assert!(
                 false,

@@ -99,6 +99,38 @@ pub(super) fn validate_refit_counts(
     Ok(())
 }
 
+/// #1145 / SAFE-D6-NEW-01 — pure check that the caller-supplied BUILD
+/// flags for `refit_skinned_blas` match the flags the original fresh
+/// BUILD recorded into `BlasEntry::built_flags`. Returns `Ok` when
+/// they agree and a human-readable mismatch description otherwise.
+///
+/// Vulkan
+/// `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667` requires
+/// the BUILD flags bit-set at UPDATE to match the source BUILD's
+/// exactly. Today every BUILD/UPDATE pair references the same
+/// `*_AS_FLAGS` constant by source-code convention; this runtime pin
+/// turns a future drift (e.g. a BUILD site mistakenly using
+/// `UPDATABLE_AS_FLAGS` (TLAS) where the matching UPDATE uses
+/// `SKINNED_BLAS_FLAGS`) from a silent VUID violation into a logged
+/// error + safe fresh-BUILD fallback.
+///
+/// Split out so the check is unit-testable without a Vulkan context.
+#[inline]
+pub(super) fn validate_refit_flags(
+    built_flags: ash::vk::BuildAccelerationStructureFlagsKHR,
+    refit_flags: ash::vk::BuildAccelerationStructureFlagsKHR,
+) -> Result<(), String> {
+    if built_flags != refit_flags {
+        return Err(format!(
+            "BUILD-time flags ({:?}) differ from refit-time flags ({:?}); \
+             VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667 \
+             requires the flag bit-set at UPDATE to equal the source BUILD's",
+            built_flags, refit_flags
+        ));
+    }
+    Ok(())
+}
+
 /// Decide whether the next TLAS build can `UPDATE` (refit) or must
 /// `BUILD` from scratch. Pulled out as a pure function so the dirty-
 /// flag short-circuit logic introduced in #300 can be unit-tested

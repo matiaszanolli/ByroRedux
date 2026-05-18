@@ -334,6 +334,9 @@ impl AccelerationManager {
             refit_count: 0,
             built_vertex_count: vertex_count,
             built_index_count: index_count,
+            // #1145 — record for symmetry / telemetry. Static BLAS
+            // never refit so this field is read-only here.
+            built_flags: STATIC_BLAS_FLAGS,
         });
         // BLAS map mutated — see #300.
         self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
@@ -901,6 +904,9 @@ impl AccelerationManager {
                 refit_count: 0,
                 built_vertex_count: vertex_count,
                 built_index_count: index_count,
+                // #1145 — record for symmetry / telemetry. Static
+                // BLAS never refit so this field is read-only here.
+                built_flags: STATIC_BLAS_FLAGS,
             });
         }
         // BLAS map mutated (one bump for the whole batch — generation is

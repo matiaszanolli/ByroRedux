@@ -188,6 +188,45 @@ fn validate_refit_counts_rejects_full_mesh_swap() {
     assert!(validate_refit_counts(100, 300, 80, 240).is_err());
 }
 
+// ── #1145 / SAFE-D6-NEW-01 — flag-set half of VUID-03667 ────────────
+
+/// Identity case: same flag-set at BUILD and refit → no error.
+#[test]
+fn validate_refit_flags_accepts_matching_flags() {
+    use ash::vk::BuildAccelerationStructureFlagsKHR as F;
+    assert!(validate_refit_flags(
+        F::PREFER_FAST_BUILD | F::ALLOW_UPDATE,
+        F::PREFER_FAST_BUILD | F::ALLOW_UPDATE
+    )
+    .is_ok());
+    assert!(validate_refit_flags(F::empty(), F::empty()).is_ok());
+}
+
+/// SKINNED_BLAS_FLAGS vs UPDATABLE_AS_FLAGS — the realistic future
+/// drift the audit calls out. A BUILD site mistakenly using the TLAS
+/// flag constant (PREFER_FAST_TRACE) where the matching UPDATE uses
+/// the skinned constant (PREFER_FAST_BUILD) trips VUID-03667.
+#[test]
+fn validate_refit_flags_rejects_skinned_vs_updatable_drift() {
+    let err = validate_refit_flags(
+        super::constants::UPDATABLE_AS_FLAGS,
+        super::constants::SKINNED_BLAS_FLAGS,
+    )
+    .expect_err("FAST_TRACE vs FAST_BUILD drift must be rejected");
+    assert!(err.contains("03667"));
+}
+
+/// ALLOW_COMPACTION accidentally added on one side — VUID-03667
+/// fires on UPDATE because the bit set changed.
+#[test]
+fn validate_refit_flags_rejects_allow_compaction_drift() {
+    use ash::vk::BuildAccelerationStructureFlagsKHR as F;
+    let with_compaction = F::PREFER_FAST_BUILD | F::ALLOW_UPDATE | F::ALLOW_COMPACTION;
+    let without = F::PREFER_FAST_BUILD | F::ALLOW_UPDATE;
+    assert!(validate_refit_flags(without, with_compaction).is_err());
+    assert!(validate_refit_flags(with_compaction, without).is_err());
+}
+
 /// Sibling check: the threshold must be a sane number of frames.
 /// At 60 FPS the issue suggested ~10 s = 600 frames — too low
 /// would thrash the rebuild path, too high defeats the bug fix.
