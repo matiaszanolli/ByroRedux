@@ -307,17 +307,24 @@ impl Drop for WorldStreamingState {
 #[derive(Debug, PartialEq, Eq)]
 pub struct JoinTimeout;
 
-/// `JoinHandle::join` with a wall-clock timeout. The watcher-thread
-/// pattern works around the lack of a `join_timeout` API on
-/// `std::thread::JoinHandle`: spawn a one-shot mini-thread that
-/// joins the target handle and signals completion on a oneshot mpsc
-/// channel; main thread waits via `recv_timeout`. On timeout the
-/// watcher (and the thread it's still joining) is detached — they
-/// will exit naturally once the work-thread completes its current
-/// unit. The leaked watcher JoinHandle is bounded: at most one per
-/// `join_with_timeout` call site, and on the shutdown path the
-/// process exits shortly after so there's nothing meaningful to
-/// reclaim.
+/// `JoinHandle::join` with a wall-clock timeout. Poll-based on
+/// [`std::thread::JoinHandle::is_finished`] (stabilised in Rust
+/// 1.61) — no auxiliary watcher thread, no `Arc`-held-resource leak
+/// on the timeout path. The previous `mpsc::channel` + watcher-
+/// thread pattern (#1169) leaked one watcher thread per timeout,
+/// each holding the joined `JoinHandle` indefinitely; reaped by the
+/// OS at process exit but a real leak on any future non-terminal
+/// caller.
+///
+/// On `Ok(())`, the joined thread has terminated and `join()` has
+/// been called (consumes the handle). On `Err(JoinTimeout)`, the
+/// handle has been dropped — equivalent to detaching the thread,
+/// matching the contract of the old API.
+///
+/// Poll cadence: 10 ms. With a 1 s timeout (the production caller)
+/// that's ≤100 wakeups during shutdown — negligible CPU, and the
+/// fast path (worker exits within the first poll) is one extra
+/// `is_finished` check vs. an unconditional join.
 ///
 /// Unit-testable without a full streaming setup — see the
 /// `join_with_timeout_*` tests below.
@@ -325,37 +332,29 @@ pub fn join_with_timeout(
     handle: JoinHandle<()>,
     timeout: std::time::Duration,
 ) -> Result<(), JoinTimeout> {
-    let (done_tx, done_rx) = mpsc::channel::<()>();
-    let watcher = std::thread::Builder::new()
-        .name("byro-join-watcher".into())
-        .spawn(move || {
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if handle.is_finished() {
             // Swallow a panic in the joined thread — the caller's
             // contract is "thread is done," not "thread succeeded."
             // Panics in worker threads are already surfaced by the
             // worker itself (see `pre_parse_cell_panic_safe`).
             let _ = handle.join();
-            let _ = done_tx.send(());
-        });
-    match watcher {
-        Ok(_watcher_handle) => match done_rx.recv_timeout(timeout) {
-            Ok(()) => Ok(()),
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(JoinTimeout),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // Watcher panicked before sending — treat as "thread
-                // exited" since the join itself returned.
-                Ok(())
-            }
-        },
-        Err(e) => {
-            log::warn!(
-                "join_with_timeout: failed to spawn watcher thread: {e} — \
-                 caller will detach the joined handle"
-            );
-            // No watcher means we can't observe completion. Report
-            // timeout so the caller logs + moves on — same end state
-            // as if the watcher had been spawned and timed out.
-            Err(JoinTimeout)
+            return Ok(());
         }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            // Drop the handle here — detaches the thread, which will
+            // exit naturally once its current unit completes. Matches
+            // the prior contract: caller can move on.
+            drop(handle);
+            return Err(JoinTimeout);
+        }
+        // Sleep up to POLL_INTERVAL but never past the deadline so a
+        // short remaining window doesn't overshoot.
+        let remaining = deadline.saturating_duration_since(now);
+        std::thread::sleep(POLL_INTERVAL.min(remaining));
     }
 }
 
