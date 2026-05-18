@@ -107,7 +107,7 @@ crates/
     src/vulkan/dds.rs        DDS header parser (BC1/BC3/BC5, FourCC + DX10 extended, mip sizes)
     src/texture_registry.rs  TextureRegistry (path→handle cache, per-texture descriptor sets)
     src/mesh.rs              MeshRegistry, global vertex/index SSBOs, cube/triangle/quad helpers
-    src/vertex.rs            Vertex (position + color + normal + uv + bone_idx + bone_wt + splat0/1 + tangent), 9 attribute descriptions, 100 B / 25 floats
+    src/vertex.rs            Vertex (position + color + normal + uv + bone_idx + bone_wt + splat0/1 + tangent), 9 attribute descriptions, 100 B (19 f32 + 4 u32 + 8 u8)
     shaders/                 GLSL → SPIR-V (pre-compiled, include_bytes!) — see crates/renderer/shaders/ for the full set; key passes:
       triangle.vert/frag     Main geometry pass — PBR + RT ray queries (shadows, reflections, GI)
       svgf_temporal.comp     SVGF temporal accumulation with motion vector reprojection
