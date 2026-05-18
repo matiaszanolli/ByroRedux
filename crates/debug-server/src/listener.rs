@@ -233,8 +233,18 @@ fn listener_loop(
                     .ok();
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // No pending connection — sleep briefly to avoid busy-spin.
-                thread::sleep(Duration::from_millis(50));
+                // No pending connection — sleep briefly to avoid
+                // busy-spin. #1173 — 50 ms was inflating shutdown
+                // latency to ~50 ms worst-case (the listener can't
+                // observe the shutdown flag while parked here, and
+                // `set_nonblocking(true)` above means there's no
+                // kernel-level way to interrupt the sleep). Dropping
+                // to 5 ms keeps CPU negligible (~200 wakeups/s of a
+                // load-bearing-zero loop) and cuts the shutdown
+                // worst-case to ~5 ms — paired with the streaming
+                // shutdown's 1 s timeout, total process-exit
+                // latency drops from ~1.05 s to ~1.005 s.
+                thread::sleep(Duration::from_millis(5));
             }
             Err(e) => {
                 log::error!("Debug listener accept error: {}", e);
