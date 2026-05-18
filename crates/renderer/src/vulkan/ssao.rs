@@ -146,7 +146,13 @@ impl SsaoPipeline {
             };
             partial.ao_images.push(ao_image);
 
-            let ao_allocation = match allocator.lock().expect("allocator lock").allocate(
+            // Bind the allocate result to a local so the MutexGuard from
+            // `.lock()` drops at end-of-statement BEFORE the `match` runs.
+            // If kept inline as a match scrutinee, the temporary guard would
+            // live through the Err arm; that arm calls `partial.destroy`
+            // which re-locks the same non-reentrant `std::sync::Mutex` →
+            // single-thread deadlock on OOM. Fix #1163.
+            let alloc_result = allocator.lock().expect("allocator lock").allocate(
                 &gpu_allocator::vulkan::AllocationCreateDesc {
                     name: &format!("ssao_output_{fi}"),
                     // SAFETY: `ao_image` was just created above and pushed
@@ -156,10 +162,13 @@ impl SsaoPipeline {
                     linear: false,
                     allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
                 },
-            ) {
+            );
+            let ao_allocation = match alloc_result {
                 Ok(a) => a,
                 Err(e) => {
                     // SAFETY: see `partial.destroy` above — cleanup-on-error.
+                    // Allocator lock is dropped above; `partial.destroy`
+                    // safely re-acquires it.
                     unsafe { partial.destroy(device, allocator) };
                     return Err(anyhow::anyhow!("Failed to allocate AO memory {fi}: {e}"));
                 }
