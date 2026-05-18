@@ -24,6 +24,172 @@ Commits hold that record.
 
 ---
 
+## Session 39 — #1115 build_render_data refactor + concurrency audit closeout  (2026-05-17 → 2026-05-18, c265032e..48646895, 32 commits)
+
+Session 38 closed with R6a-stale-10 staged and the AUDIT_CONCURRENCY_2026-05-17 / AUDIT_TECH_DEBT_2026-05-17 reports filed uncommitted. This session opened by carrying over five trailing audit-finishers from the Session-38 batch, ground through the eight-step `build_render_data` decomposition (#1115 / TD9-001) that the renderer-audit moratorium gate had been holding, validated the post-refactor bench against the pre-refactor baseline (R6a-stale-10 closed at `b5726a18` — all three benches within the 5% gate), then transitioned overnight into a sixteen-issue closeout of the new concurrency audit's LOW/MEDIUM tier.
+
+- **Audit-finisher carry-over (#1126 / #1151 / #1157 / #1161 / #1162)** — five trailing fixes from the Session-38 audit-bundle batch landed before the refactor opened. `#1157` (REN-D10-NEW-10): seven shaders that `#include` shader_constants.glsl got the missing `#extension GL_GOOGLE_include_directive : require` (`0b237c80`). `#1126` (REN-D6-NEW-01) / `#1162` (REN-D10-NEW-10b) / `#1151` (TD4-302): dropped redundant `BLOOM_INTENSITY` / `VOLUME_FAR` / `DBG_*` / `THREADS_PER_CLUSTER` const-redeclarations that shadowed the include's definitions (`645d3b90`, `4d6cd407`, `6f78b1bf`). `#1161` (REN-D9-NEW-08): mask `frame_counter` to 24 bits before `u32 → f32` cast for `GpuCamera` upload to prevent silent precision loss after ~16.7M frames (`ed48920a`).
+
+- **#1115 `build_render_data` 8-step decomposition (TD9-001)** — the 1700-LOC `byroredux/src/render.rs` monolith promoted to a `byroredux/src/render/` directory module and split into seven per-topic siblings. Step 1 promotes `render.rs` → `render/mod.rs` (`1164917d`). Steps 2-7 extract `SkyParams` assembly (`a2d078c9`), light collection (`d9c63199`), water-plane re-emission (`b6bb5c2f`), particle billboard emission (`91e3b8b6`), camera viewport+frustum (`38d885aa`), and skinned-palette pass (`9d94dd56`). Step 8 lifts the static-mesh main loop into `render/static_meshes.rs` (`b5726a18`). Each step is its own commit so a future bisect against a render regression can binary-search through the split. The decomposition matches the post-Session-34 / 35 / 36 monolith-split pattern for `vulkan/context/`, `acceleration/`, `cell_loader/`, and `streaming/`.
+
+- **R6a-stale-10 closed (`646dfb43`, bench validation)** — post-refactor bench at `b5726a18` recovered all three companion targets within the 5% regression gate. Prospector 122.7 FPS / 8.15 ms @ 2563 entities (`-1.5%` vs `1775a7e6` baseline 124.6 / 8.03, within noise); Skyrim Whiterun 211.8 FPS / 4.72 ms @ 3210 entities (`-3.0%` vs 218.4 baseline, within gate); FO4 MedTek 68.5 FPS / 14.60 ms / brd_ms=6.96 @ 10 810 entities (`+2.1%` vs 67.1 baseline — slight improvement, `#1136` FX-mesh spawn-time tagging held its CPU win after the refactor). The bench-of-record moves to Prospector @ `b5726a18`; ROADMAP repro-command table refreshed.
+
+- **AUDIT_CONCURRENCY_2026-05-17 closeout (16 issues + 1 sibling closure)** — the concurrency audit filed at Session-38 close (six dimensions: ECS locking, Vulkan sync, resource lifecycle, thread safety, compute-AS-fragment chains, worker threads) shipped 17 NEW issues; 16 of them closed this session. **HIGH (1)**: `#1163` SSAO OOM allocator deadlock — `match allocator.lock().expect(...).allocate(...)` held the MutexGuard into the Err arm which re-locked via `partial.destroy`; hoisted to a `let` binding so the guard drops at end-of-statement (`980d9ed3`). **MEDIUM (3)**: `#1165` mirror in `context/helpers.rs:313` (depth-image init, `cf70b2d2`); `#1167` `WorldStreamingState` `Drop` impl mirrors `shutdown` for all exit paths (closes `#1168` `--bench-frames` CI-leak sub-case as a side-effect — every non-CloseRequested exit path was detaching the streaming worker, `a036ee56`). **LOW (12)**: ScreenshotBridge / ScreenshotHandle / encode-write all recover from mutex poison via `unwrap_or_else(|e| e.into_inner())` (`#1174` / `6f034425`); listener accept-race window folded into the `active_streams` lock scope (`#1172` / `734f2219`); listener `WouldBlock` poll cadence 50 ms → 5 ms (`#1173` / `b98e6604`); `join_with_timeout` rewritten to poll `Thread::is_finished` instead of spawning a watcher thread that leaks on timeout (`#1169` / `ae001b4b`); BSA / BA2 file-mutex `extract` paths recover from poison (`#1170` / `6451eec0`); CLAUDE.md vertex layout doc-rot (`#1153`); dead `TreeObjectBounds` re-export deleted (`#1154`); `SKINNED_BLAS_FLAGS` doc no longer cites deleted `build_skinned_blas` (`#1155`); `triangle.frag` line-number anchors → grep-friendly natural-language tags (`#1158` / `a55c24ac`); TLAS missing-samples scratch amortised via `mem::take` (`#1142` / `be802592`); water pipeline dynamic-state coverage pinned by forward-compat test (`#1129` / `ecb890fd`); `SKINNED_BLAS_FLAGS` / `UPDATABLE_AS_FLAGS` bit composition pinned by unit tests (`#1144` / `a2597487`); `BlasEntry.built_flags` field added + `validate_refit_flags` runtime check covers the VUID-03667 flag-set half (`#1145` / `b2fd533f`); 4 compute shaders converted to `WORKGROUP_X` / `WORKGROUP_Y` (`#1152` / `48646895`); `PartialNifImport: Send` compile-time pin via `const _: fn() = || { assert_send::<…>() }` (`#1171` / `9b4493cf`). **Skipped (4 NEW issues + #1156)**: `#1164` (HIGH, SSAO bind-failure asymmetry — wants RAII guard, deferred for review), `#1166` (MEDIUM, bloom pre-TAA wiring vs comment — needs design call between rewire and rewrite), `#1156` (MEDIUM, 80 stale `.claude/issues/<N>/ISSUE.md` files — three workflow-option choice), `#1127` (LOW, skinned BLAS scratch shrink — audit's suggested fix is unsafe since scratch is in-flight at function return; proper fix needs to extend `shrink_blas_scratch_to_fit` peak calc to include skinned entries).
+
+Net: tests 2257 → 2264 (+7 from concurrency audit closeout test additions — `validate_refit_flags` VUID-03667 flag-set half ×3, BLAS flag-composition pins ×2, water dynamic-state coverage ×1, ScreenshotBridge mutex poison recovery ×1), LOC non-test ~177 212 → ~178 011 (+799 from `render/` split + new tests + `Drop` impl + scratch-amortisation field), source files 452 → 459 (+7 from the seven new `render/*.rs` siblings — `render.rs` was promoted in place to `render/mod.rs`), open issue directories 1100 → 1119 (+19 from `/audit-publish`'s new issue trackers). **Bench-of-record moves to Prospector 122.7 FPS / 8.15 ms @ 2563 entities (`b5726a18`, 2026-05-17) — R6a-stale-10 closed.** 22 commits ahead of `origin/main` at session close.
+
+---
+
+## Session 38 — FO4 compat deepening + R5 verdict + audit-bundle closeout  (2026-05-15 → 2026-05-17, 05a5ae06..c265032e, 73 commits)
+
+This session opened with the AUDIT_FO4 sweep filed at Session 37 close,
+threaded the R6a-prospector-regress diagnosis (-18.5% Prospector FPS, root
+cause REN-D8-NEW-08 flipping skinned-BLAS to `FAST_TRACE`) through a
+same-session bisect-and-fix, closed R5 (Papyrus quest prototype) with a
+hand-translated reference script that locks the M47.0 hook shape, and then
+ground through a 40-issue audit-bundle closeout sweep spanning renderer
+correctness, concurrency hardening, and tech-debt.
+
+- **FO4 compat deepening (#1073 / #1074 / #1076 / #1077 / #1147 + AUDIT\_FO4\_2026-05-15)** —
+  6-dimension FO4 audit filed (`9d73478a`); per-block baseline regenerated
+  after #710 / #720 / #722 / #837 / #984 (`712d994d`). #1073 (FO4-D5-002):
+  `NiExtraData` dispatch arm closes FO4 FaceGen truncation (`fa341f58`).
+  #1074 (FO4-D2-008): 7 missing DXGI format mappings added to
+  `renderer/dds.rs` (`b863b8e1`). #1076 (FO4-D6-002): BGSM/BGEM v>2
+  standalone texture slots forwarded to `ImportedMesh` (`e55a8a47`). #1077
+  (FO4-D6-003 Phase 1): BGSM `pbr` / `translucency` / `model_space_normals`
+  flags forwarded to `ImportedMesh` (`ff7e8aa3`); Phase 2a plumbs them into
+  `GpuMaterial.material_flags` (`8300f5fa`, #1147). FO4 BGSM/BGEM
+  material-path normalisation drops MedTek `tex.missing` 12 → 6
+  (`91b03e6b`). 7 new FO4-D{2,3,4,5,6} issue templates filed for the
+  remaining audit dimensions (`37a2dac1`).
+
+- **R6a-prospector-regress closure (`1775a7e6`)** — 8-step bisect identified
+  REN-D8-NEW-08 ("Pick off 4 TLAS / acceleration LOWs from bundle #926",
+  `6059e2ab`) as the cause of the -18.5% Prospector FPS / +1.23 ms fence
+  regression between Session 33 close (`220e8e1`) and Session 37
+  (`c8519082`). Behavioural change: skinned BLAS BUILD+UPDATE flags flipped
+  `PREFER_FAST_BUILD` → `PREFER_FAST_TRACE`. Telemetry over 500 frames
+  confirmed the 1:289 BUILD:refit ratio the commit reasoned about — but the
+  empirical outcome reversed: at small skinned-BVH workloads (~5K-15K
+  tris/body) the FAST\_TRACE construction cost more per frame than
+  FAST\_BUILD by ~+0.77 ms fence on RTX 4070 Ti. Fix: split shared
+  `UPDATABLE_AS_FLAGS` into `UPDATABLE_AS_FLAGS` (TLAS, stays
+  `FAST_TRACE`) + `SKINNED_BLAS_FLAGS` (skinned BLAS, reverts to
+  `FAST_BUILD`). Recovers +15.8 FPS (108.8 → 124.6) on Prospector;
+  Whiterun 218.4 / FO4 MedTek 67.1 within noise of pre-regress baselines.
+  Safety audit report shipped at `fdc22b82`.
+
+- **R5 verdict — go ECS-native (`05b2fafa` + 3 follow-ups)** —
+  hand-translated `defaultRumbleOnActivate.psc` (50 LOC Papyrus, ships on
+  hundreds of vanilla Skyrim references) to
+  `crates/scripting/src/papyrus_demo/` (135 LOC production + 200 LOC tests).
+  All three R5 semantic gates (latent `Utility.Wait()`, multi-state
+  dispatch, cross-subsystem call) translate cleanly to ECS components +
+  dt-driven systems. **Load-bearing finding**: a Papyrus event handler with
+  a latent wait splits into two systems — pre-wait runs on the event,
+  post-wait runs when the dt counter reaches zero. Three follow-ups extend
+  the prototype: SetStage / GetStageDone via `DA10MainDoorScript.psc`
+  (`bdd005f1`), RegisterForUpdate / OnUpdate substrate via
+  `DLC2TTR4aPlayerScript.psc` (`8d054a9d`), cross-reference method call +
+  vanilla-CustomEvent non-finding via `MG07LabyrinthianDoor` (`58fe3ce4`).
+  M47.0 hook shape locked; M47.2 proceeds as a per-script transpiler
+  emitting this same shape. The stack-VM-as-ECS-system fallback is parked.
+  Full evaluation at `docs/r5-evaluation.md`; reference fixtures at
+  `docs/r5/source/`.
+
+- **Renderer audit closeouts (#955 / #956 / #964 / #1069 / #1070 /
+  #1081–#1087 / #1100 / #1108 / #1121–#1124 / #1130 / #1131)** — TAA YCoCg
+  variance clip gamma 1.25 → 1.5 (#1108 / `d9aeaea3`); SVGF
+  `frames_since_creation` per-FIF array (#964 / `6f1a256d`); SVGF NEAREST
+  sampler on denoised indirect binding 1 (#1085 / `5723b440`); BSGeometry
+  UDEC3-packed tangents extraction (#1086 / `9c91cc1a`); volumetric froxel
+  clear-to-(0,1) (#1082 / `0189b7ab`); volumetric scattering coefficient
+  zeroed for interior cells (#1084 / `aaa1b9bf`); TLAS
+  `built_primitive_count` tracking to prevent VUID-03708 (#1083 /
+  `3910b320`); WATR `reflection_color` propagated to `WaterMaterial` +
+  shader (#1069 / `8fc12b99`); `traceWaterRay` constant-colour limitation
+  documented (#1070 / `51281f3d`); 6 TOP\_OF\_PIPE → NONE migrations in
+  caustic + gbuffer + 5 other sites (#949 / #1100 / #1121 / `e658ed09` /
+  `a49eb945`); TLAS count invariant test added (#1122 + #1123); TAA
+  shared-counter rationale documented (#1124); redundant depth pre-sets
+  removed + panicking `debug_assert` replaced (#955 / #956 / `5cbdaf8c`);
+  stale "112-byte / 112B" references in `water.rs` updated to 128B
+  (#1087 / `61691170`); bloom/composite doc corrected to hard-fail (#1081
+  / `2b29c34b`); doc-comment audit findings (#1130 / #1131 / `1899d3fe`).
+
+- **Concurrency hardening (CONC-D2 / D3 / D5 series)** — queue MutexGuard
+  now held across `vkQueueSubmit` (CONC-D2-NEW-01 / `1608e6a2`);
+  `AccelerationManager::destroy` drains `skinned_blas` directly (#1138 /
+  CONC-D3-NEW-01 / `ec9ef7c1`); cross-submission scratch-serialize barrier
+  invariant pinned (#1140 / CONC-D5-NEW-01 / `878231a8`); dead sync
+  `build_skinned_blas` deleted (#1141 / CONC-D5-NEW-02 / `96cb6ab8`);
+  `STATIC_BLAS_FLAGS` lifted to module constant (#1137 / CONC-D2-NEW-02 /
+  `e9510554`); `refit_skinned_blas` safety docstring reworded (#1139 /
+  CONC-D3-NEW-02 / `0d006263`); stale `UPDATABLE_AS_FLAGS` doc-comments
+  refreshed (SAFE-D1-NEW-01 / PERF-D2-NEW-01 / `a1b1deb9`).
+
+- **Tech-debt sweep (#1110–#1150 + 4 midnight-run batches + 2 AUDIT_TECH_DEBT reports)** —
+  4 midnight-run batches landed 35 LOW/MEDIUM/INFO audit fixes
+  (`2b7e8e60`, `8ab81ee7`, `913f0827`, `f3fcc298`). Symbolic-ref / helper
+  migrations: 14 inline `ImageSubresourceRange` literals →
+  `color_subresource_single_mip()` (#1149 / `21980090`); 8 more
+  `color_subresource_single_mip()` adoptions (#1117 TD3-206 / `b86ed72d`);
+  13 inline memory-barrier sites → `memory_barrier` helper (#1061 /
+  `9c9e37d5`); `MAX_BONES_PER_MESH` literal math → symbolic refs (#1150 /
+  `c265032e`); 4096.0 exterior-cell-unit literal → `byroredux_core::math::coord`
+  (#1112 / `4358bb87`); `CommonNamedFields::from_subs` adopted in
+  actor / tree / pkin / scol parsers (#1113 / `2ab32ae0`); BLOOM /
+  VOLUME\_FAR / water-kind / DBG\_\* / THREADS\_PER\_CLUSTER mirrored into
+  `shader_constants` (#1119 / `15ee3169`). Perf: FX-mesh substring scan
+  lifted from per-frame draw loop to spawn-time marker (#1136 PERF-D3-NEW-02
+  / `aee85ef6`); skin-path scratch cluster + instance-buffer dirty-gate
+  (#1133 / #1134 / `4f55b2f1`); `MAX_BONES_PER_MESH` 128 → 144 to cover
+  FO76 vanilla ceiling (#1135 / `835793c7`). Audit-skill path-validate
+  gate installed (#1114 / `457b9914`); `audit-audio.md` migrated to
+  symbol-anchor refs (#1116 / `c8519082`); 5 Band-C parse-only rationale
+  notes added (#987 / `362a0737`). `AUDIT_TECH_DEBT_2026-05-16.md` filed
+  mid-session (`35a68567`); `AUDIT_TECH_DEBT_2026-05-17.md` filed at
+  session close (uncommitted, queues next session's batch).
+
+- **Monolith refactor sweep continued (#1118 TD9-002 / 003 / 004 / 006)** —
+  4 more `git mv` + per-topic sibling-chunk splits: `crates/bsa/src/archive.rs`
+  → responsibility-keyed submodules (`ba1c7a44`); `crates/nif/src/lib.rs`
+  tests lifted to sibling `tests.rs` (`1a413835`);
+  `crates/plugin/src/esm/records/mod.rs` → `index.rs` + `grup_walker.rs`
+  (`089ba022`); `crates/nif/src/import/walk.rs` promoted to directory
+  module with lifted tests (`fc4b3f11`). These four splits + the new
+  `papyrus_demo/` tree + Session-37 monolith-split test re-attachments
+  account for most of the +90 source-files delta.
+
+- **Per-game NIF compat + baselines (#988 / #990 / #991)** —
+  `NiLodTriShape` arm added to both import walkers (#988 / SK-D5-NEW-09
+  / `bd80acb0`); `FLAG_COMPRESSED` zlib-path unit tests for
+  `read_sub_records` (#990 / SK-D6-NEW-02 / `231ea1f1`); FNV / FO3 / FO76
+  / Skyrim SE per-block baselines regenerated post-#988 / #984 / #710 /
+  #720 / #722 / #837 (#991 / FNV-D1-NEW-01 / `890f885c`).
+
+- **ECS + parse hygiene (#1062 / #1063 / #1110 / #1111 / #1117 / #1120 /
+  #1146)** — two dead-code blocks removed from `mg07_on_activate_system`
+  (#1146 / ECS-D7-NEW-01 / `e464682b`); close-with-marker orphan TODOs
+  reframed (#1110 / #1111 / `b186e635`); 4 parse-but-don't-consume gate
+  markers added (#1062 / TD5-010..016 / `8dbed20f`); #1063 confirmed
+  already-fixed by prior work (`20d2628a`); #1117 cluster 1 quick wins
+  (TD2-201/203, TD4-209, TD8-018, TD10-003 / `a01b436c`); #1120 cluster
+  (TD2-204, TD8-017/019, TD10-005 + close TD2-202 / `50ecaf99`).
+
+Net: tests 2139 → 2257 (+118), LOC non-test ~151 085 → ~177 212 (+26 127
+from the 4 monolith splits + `papyrus_demo/` + audit-issue test coverage +
+Session-37 split-tree test re-attachments), source files 362 → 452 (+90),
+open issue directories 1028 → 1100 (+72), 11 commits ahead of origin/main
+at session close. **Bench-of-record holds at Prospector 124.6 FPS / 8.03
+ms @ 2563 entities (`1775a7e6`, 2026-05-16) — R6a-stale-9 staleness
+threshold tripped (34 commits past fix > 30; real Vulkan-barrier + perf
+changes landed since). R6a-stale-10 opens; re-bench scheduled for Session
+39.**
+
+---
+
 ## Session 37 — Tech-debt sweep + ESM strings loader + NIF import fixes  (2026-05-15, 5ab6a8b8..94675f12, 25 commits)
 
 This session closed the bulk of the tech-debt batch filed in Session 36 (`#1037–#1053`),

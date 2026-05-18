@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-05-17 (post-#1115 8-step build_render_data refactor + bench refresh; see [HISTORY.md](HISTORY.md)).
+**Last verified**: 2026-05-18 (Session 39 — concurrency audit closeout overnight; bench-of-record still `b5726a18` 2026-05-17 within 19-commit / 30-commit freshness gate; see [HISTORY.md](HISTORY.md)).
 **Bench-of-record**: Prospector Saloon 122.7 FPS / 8.15 ms @ 2563
 entities — at the post-refactor HEAD (`b5726a18`), 2026-05-17,
 wall-clock bench, 300 frames, RTX 4070 Ti @ 1280×720. Scene is
@@ -654,16 +654,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-05-17, verified by `/session-close`.
+Ground-truth as of 2026-05-18, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (non-test)            | ~177 212                     |
-| Rust total lines                        | ~187 415                     |
-| Source files (non-test)                 | 452                          |
+| Rust source lines (non-test)            | ~178 011                     |
+| Rust total lines                        | ~188 214                     |
+| Source files (non-test)                 | 459                          |
 | Workspace members                       | 19                           |
-| Tests (last reported by ROADMAP)        | 2257 (Session 37 2139 + Session 38 +118: audit-bundle closeout coverage — TLAS invariant test #1122, FLAG_COMPRESSED zlib path #990, BGSM standalone slots #1076/#1077, scratch-cluster dirty-gate #1133/#1134, papyrus_demo R5 prototype 200 LOC of tests, FO4 NiExtraData dispatch #1073, and the Session 36 monolith-split sweep finishers re-attaching their tests). |
-| Open issue directories                  | 1100 (`.claude/issues/`)     |
+| Tests (last reported by ROADMAP)        | 2264 (Session 37 2139 + Session 38 +118 + Session 39 +7: concurrency audit closeout test additions — `validate_refit_flags` VUID-03667 flag-set half (#1145) ×3, BLAS flag-composition pins (#1144) ×2, water pipeline dynamic-state coverage (#1129) ×1, ScreenshotBridge mutex poison recovery (#1174) ×1). |
+| Open issue directories                  | 1119 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
