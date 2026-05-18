@@ -1,6 +1,8 @@
 use super::*;
 use byroredux_core::ecs::components::material::ShaderTypeFields;
-use byroredux_core::ecs::{ActiveCamera, Camera, GlobalTransform, World};
+use byroredux_core::ecs::{
+    ActiveCamera, Camera, GlobalTransform, Material, MeshHandle, TextureHandle, World,
+};
 
 fn run_build(world: &World) -> Vec<DrawCommand> {
     let mut draw_commands = Vec::new();
