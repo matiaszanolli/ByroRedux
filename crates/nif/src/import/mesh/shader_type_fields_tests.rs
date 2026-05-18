@@ -33,6 +33,7 @@ fn lighting_shader_with(shader_type: u32, data: ShaderTypeData) -> BSLightingSha
         texture_set_ref: BlockRef::NULL,
         emissive_color: [0.0; 3],
         emissive_multiple: 1.0,
+        root_material_path: None,
         texture_clamp_mode: 3,
         alpha: 1.0,
         refraction_strength: 0.0,

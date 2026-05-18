@@ -91,6 +91,7 @@ fn make_bs_lighting_with_flags(flags1: u32, flags2: u32) -> BSLightingShaderProp
         texture_set_ref: BlockRef::NULL,
         emissive_color: [0.0; 3],
         emissive_multiple: 1.0,
+        root_material_path: None,
         texture_clamp_mode: 0,
         alpha: 1.0,
         refraction_strength: 0.0,

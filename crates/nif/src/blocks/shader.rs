@@ -11,6 +11,7 @@ use crate::stream::NifStream;
 use crate::types::BlockRef;
 use std::any::Any;
 use std::io;
+use std::sync::Arc;
 
 /// Returns `true` when `name` looks like a `.bgsm` / `.bgem` / `.mat`
 /// material file path. The FO76+/Starfield shader-property stopcond
@@ -666,6 +667,13 @@ pub struct BSLightingShaderProperty {
     pub texture_set_ref: BlockRef,
     pub emissive_color: [f32; 3],
     pub emissive_multiple: f32,
+    /// Root Material (NiFixedString, BSVER >= 130). Sidecar reference into
+    /// the `.bgsm` / `.bgem` / `.mat` material file when the editor authored
+    /// the material path here instead of via `net.name`. For Starfield this
+    /// is the fallback source for `material_path` when the stopcond at
+    /// `BSLightingShaderProperty::parse` did NOT fire (i.e. `net.name`
+    /// carried a non-material editor label). #1183 / SF-D1-NEW-01.
+    pub root_material_path: Option<Arc<str>>,
     pub texture_clamp_mode: u32,
     pub alpha: f32,
     pub refraction_strength: f32,
@@ -718,6 +726,10 @@ impl BSLightingShaderProperty {
             texture_set_ref: BlockRef::NULL,
             emissive_color: [0.0, 0.0, 0.0],
             emissive_multiple: 1.0,
+            // Stopcond fired on `net.name`, which IS the material path —
+            // the Root Material sidecar would carry redundant info at best
+            // and never gets reached.
+            root_material_path: None,
             // 3 = WRAP_S_WRAP_T — the most common Starfield default and safe
             // for the stopcond stub path. The authoritative value lives in the
             // companion .mat JSON file (SF-D6-03 / #762). When that parser
@@ -847,9 +859,14 @@ impl BSLightingShaderProperty {
         let emissive_multiple = stream.read_f32_le()?;
 
         // Root Material (NiFixedString) — FO4+ only (BSVER >= 130).
-        if bsver >= crate::version::bsver::FALLOUT4 {
-            let _root_material = stream.read_string()?;
-        }
+        // Captured into `root_material_path` so the importer can fall back
+        // to it when `net.name` is a non-material editor label and the
+        // stopcond at line 771 did not fire. #1183 / SF-D1-NEW-01.
+        let root_material_path = if bsver >= crate::version::bsver::FALLOUT4 {
+            stream.read_string()?
+        } else {
+            None
+        };
 
         let texture_clamp_mode = stream.read_u32_le()?;
         let alpha = stream.read_f32_le()?;
@@ -1038,6 +1055,7 @@ impl BSLightingShaderProperty {
             texture_set_ref,
             emissive_color,
             emissive_multiple,
+            root_material_path,
             texture_clamp_mode,
             alpha,
             refraction_strength,

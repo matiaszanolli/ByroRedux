@@ -36,6 +36,7 @@ fn minimal_lighting_shader_named(name: &str) -> BSLightingShaderProperty {
         texture_set_ref: BlockRef::NULL,
         emissive_color: [0.0; 3],
         emissive_multiple: 1.0,
+        root_material_path: None,
         texture_clamp_mode: 3,
         alpha: 1.0,
         refraction_strength: 0.0,
@@ -241,6 +242,62 @@ fn lighting_shader_name_takes_priority() {
     assert_eq!(
         resolved_path(&pool, mesh.material_path),
         Some("materials\\primary.bgsm")
+    );
+}
+
+/// #1183 — when `net.name` is a non-material editor label, the importer
+/// must fall back to the BSLightingShaderProperty `Root Material` sidecar
+/// for the BGSM/BGEM/MAT capture. Mirrors what Starfield content may
+/// author when the editor stores the path on the Root Material slot
+/// instead of `net.name`.
+#[test]
+fn lighting_shader_root_material_fallback_when_name_is_editor_label() {
+    let mut shader = minimal_lighting_shader_named("Material_Slot_01");
+    shader.material_reference = false;
+    shader.root_material_path = Some(Arc::from("materials\\fallback.bgsm"));
+    let mut scene = NifScene::default();
+    scene.blocks.push(Box::new(shader));
+    let (mesh, pool) = import(&scene, &renderable_shape(0));
+    assert_eq!(
+        resolved_path(&pool, mesh.material_path),
+        Some("materials\\fallback.bgsm"),
+        "root_material_path must back-fill material_path when net.name is a non-material editor label"
+    );
+}
+
+/// #1183 sibling — when both `net.name` and `Root Material` are material
+/// references, `net.name` wins (it's the legacy authoring path; Root
+/// Material is the fallback).
+#[test]
+fn lighting_shader_name_beats_root_material() {
+    let mut shader = minimal_lighting_shader_named("materials\\primary.bgsm");
+    shader.material_reference = false;
+    shader.root_material_path = Some(Arc::from("materials\\fallback.bgsm"));
+    let mut scene = NifScene::default();
+    scene.blocks.push(Box::new(shader));
+    let (mesh, pool) = import(&scene, &renderable_shape(0));
+    assert_eq!(
+        resolved_path(&pool, mesh.material_path),
+        Some("materials\\primary.bgsm"),
+        "net.name must take priority over root_material_path when both are material refs"
+    );
+}
+
+/// #1183 sibling — when `net.name` is an editor label AND Root Material
+/// is also a non-material editor label, no material_path is captured.
+/// Confirms the fallback runs through the same `is_material_reference`
+/// suffix gate.
+#[test]
+fn lighting_shader_non_material_root_material_is_ignored() {
+    let mut shader = minimal_lighting_shader_named("Material_Slot_01");
+    shader.material_reference = false;
+    shader.root_material_path = Some(Arc::from("not_a_material_ref"));
+    let mut scene = NifScene::default();
+    scene.blocks.push(Box::new(shader));
+    let (mesh, _pool) = import(&scene, &renderable_shape(0));
+    assert!(
+        mesh.material_path.is_none(),
+        "non-material root_material_path must not be captured"
     );
 }
 

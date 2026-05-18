@@ -118,8 +118,20 @@ pub(crate) fn extract_material_info_from_refs(
             // whitespace / null bytes are trimmed. Pre-#976 this used an
             // inline suffix check that missed `.mat` entirely. Mirrors the
             // BSEffectShaderProperty branch below. See #749.
+            //
+            // #1183 / SF-D1-NEW-01 — Starfield falls back to the
+            // BSLightingShaderProperty `Root Material` sidecar string when
+            // `net.name` carried a non-material editor label. The fallback
+            // runs through the same `is_material_reference` suffix gate so a
+            // Root Material that's also a non-material name is a no-op.
             info.material_path =
-                crate::import::mesh::material_path_from_name(shader.net.name.as_deref(), pool);
+                crate::import::mesh::material_path_from_name(shader.net.name.as_deref(), pool)
+                    .or_else(|| {
+                        crate::import::mesh::material_path_from_name(
+                            shader.root_material_path.as_deref(),
+                            pool,
+                        )
+                    });
             if let Some(ts_idx) = shader.texture_set_ref.index() {
                 if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                     if let Some(path) = tex_set.textures.first() {
