@@ -61,8 +61,13 @@ impl VulkanContext {
             png_bytes.len()
         );
 
-        // Store result for the debug server to pick up.
-        *self.screenshot_result.lock().unwrap() = Some(png_bytes);
+        // Store result for the debug server to pick up. #1174 — recover
+        // from poison so a prior PNG-encode panic doesn't take out
+        // every subsequent screenshot.
+        *self
+            .screenshot_result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(png_bytes);
     }
 
     /// If a screenshot was requested, record copy commands from the swapchain

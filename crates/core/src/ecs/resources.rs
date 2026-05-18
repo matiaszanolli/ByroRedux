@@ -94,7 +94,12 @@ impl ScreenshotBridge {
     }
 
     pub fn take_result(&self) -> Option<Vec<u8>> {
-        self.result.lock().unwrap().take()
+        // #1174 — recover from poison. The state inside the mutex
+        // (`Option<Vec<u8>>`) is a plain value with no invariants that
+        // a panicking writer could have left half-formed; treating a
+        // poisoned bridge as "PNG-encode failed → result empty" is the
+        // correct contract.
+        self.result.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
     /// Owner-gated result drain. Returns `Some(bytes)` only when the
@@ -107,7 +112,8 @@ impl ScreenshotBridge {
         if self.owner.load(std::sync::atomic::Ordering::Acquire) != owner {
             return None;
         }
-        let bytes = self.result.lock().unwrap().take()?;
+        // #1174 — see `take_result` for poison-recovery rationale.
+        let bytes = self.result.lock().unwrap_or_else(|e| e.into_inner()).take()?;
         // Release the bridge for the next consumer.
         self.owner
             .store(SCREENSHOT_OWNER_NONE, std::sync::atomic::Ordering::Release);
@@ -131,7 +137,13 @@ impl ScreenshotBridge {
         let had_request = self
             .requested
             .swap(false, std::sync::atomic::Ordering::AcqRel);
-        let had_result = self.result.lock().unwrap().take().is_some();
+        // #1174 — see `take_result` for poison-recovery rationale.
+        let had_result = self
+            .result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .is_some();
         // #1006 — release ownership so the next consumer can claim.
         self.owner
             .store(SCREENSHOT_OWNER_NONE, std::sync::atomic::Ordering::Release);
@@ -857,5 +869,45 @@ mod tests {
         assert_eq!(bridge.current_owner(), SCREENSHOT_OWNER_NONE);
         // Either consumer can claim a fresh bridge.
         assert!(bridge.try_claim(SCREENSHOT_OWNER_CLI));
+    }
+
+    /// #1174 — a panic in the encode path (or any other writer) leaves
+    /// the `result` mutex poisoned. Public API must recover transparently
+    /// so the bridge isn't a one-shot process-killer.
+    #[test]
+    fn screenshot_bridge_recovers_from_poisoned_mutex() {
+        use std::sync::Arc;
+
+        let bridge = Arc::new(idle_bridge());
+        // Seed a result so `take_result` has something to find.
+        *bridge.result.lock().unwrap() = Some(vec![0x42]);
+
+        // Poison the mutex by panicking inside a lock guard on a
+        // helper thread, then joining the resulting Err.
+        let poisoner = Arc::clone(&bridge);
+        let res = std::thread::spawn(move || {
+            let _guard = poisoner.result.lock().unwrap();
+            panic!("synthetic encode failure");
+        })
+        .join();
+        assert!(res.is_err(), "helper thread should have panicked");
+        assert!(
+            bridge.result.is_poisoned(),
+            "mutex should be poisoned after the panic"
+        );
+
+        // Every public accessor must succeed despite the poison.
+        let bytes = bridge.take_result();
+        assert_eq!(bytes, Some(vec![0x42]), "take_result recovers state");
+
+        // `cancel()` and `take_result_for` also recover; exercise both.
+        *bridge.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(vec![0x99]);
+        bridge.try_claim(SCREENSHOT_OWNER_CLI);
+        let claimed = bridge.take_result_for(SCREENSHOT_OWNER_CLI);
+        assert_eq!(claimed, Some(vec![0x99]));
+
+        *bridge.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(vec![0xAA]);
+        bridge.request();
+        assert!(bridge.cancel(), "cancel recovers + reports mutated state");
     }
 }

@@ -682,7 +682,9 @@ impl ScreenshotHandle {
 
     /// Take the screenshot result if available. Returns None if not ready.
     pub fn take_result(&self) -> Option<Vec<u8>> {
-        self.result.lock().unwrap().take()
+        // #1174 — recover from poison. Aliased to the same Arc<Mutex>
+        // as `ScreenshotBridge.result`; matching policy.
+        self.result.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 }
 
