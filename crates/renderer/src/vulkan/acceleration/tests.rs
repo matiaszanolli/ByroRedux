@@ -1122,3 +1122,45 @@ fn scratch_barrier_required_across_submission_despite_fence_wait() {
          (see #983 / REN-D8-NEW-15 + #1140 / CONC-D5-NEW-01)"
     );
 }
+
+// ── #1144 / SAFE-D1-NEW-02 — BUILD flag composition pins ─────────────
+//
+// `UPDATABLE_AS_FLAGS` and `SKINNED_BLAS_FLAGS` are bit-set composites
+// assembled via `from_raw(... .as_raw() | ...)`. Without a pinned
+// composition test, a typo on a future edit — e.g.
+// `PREFER_FAST_BUILD` → `PREFER_FAST_TRACE` on the skinned arm, or
+// accidentally adding `ALLOW_COMPACTION` — would compile and run
+// silently. Failure modes:
+//
+//   * `PREFER_FAST_TRACE` regression on the skinned arm: silent ~18%
+//     FPS regression on FNV Prospector (R6a-prospector-regress at
+//     1775a7e6 already lived through this once).
+//   * `ALLOW_COMPACTION` on an updatable BLAS:
+//     VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667 violation
+//     at the next UPDATE call — validation layer catches it in debug;
+//     release builds silently mis-render the skinned mesh.
+
+#[test]
+fn updatable_as_flags_is_fast_trace_plus_allow_update() {
+    use ash::vk::BuildAccelerationStructureFlagsKHR as F;
+    assert_eq!(
+        super::constants::UPDATABLE_AS_FLAGS,
+        F::PREFER_FAST_TRACE | F::ALLOW_UPDATE,
+        "UPDATABLE_AS_FLAGS must be exactly PREFER_FAST_TRACE | ALLOW_UPDATE — \
+         no ALLOW_COMPACTION (VUID-03667 would fire on UPDATE), no PREFER_FAST_BUILD \
+         (TLAS budget is FAST_TRACE per #958)."
+    );
+}
+
+#[test]
+fn skinned_blas_flags_is_fast_build_plus_allow_update() {
+    use ash::vk::BuildAccelerationStructureFlagsKHR as F;
+    assert_eq!(
+        super::constants::SKINNED_BLAS_FLAGS,
+        F::PREFER_FAST_BUILD | F::ALLOW_UPDATE,
+        "SKINNED_BLAS_FLAGS must be exactly PREFER_FAST_BUILD | ALLOW_UPDATE — \
+         FAST_BUILD beats FAST_TRACE empirically on the skinned-BLAS path (see \
+         R6a-prospector-regress 2026-05-16 at 1775a7e6 — flipping to FAST_TRACE \
+         cost ~18% FPS on FNV Prospector). No ALLOW_COMPACTION (VUID-03667)."
+    );
+}
