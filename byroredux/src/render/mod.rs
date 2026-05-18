@@ -1,15 +1,14 @@
 //! Per-frame render data collection from ECS queries.
 
-use byroredux_core::ecs::components::water::{WaterFlow, WaterKind, WaterPlane};
 use byroredux_core::ecs::{
     ActiveCamera, AnimatedUvTransform, AnimatedVisibility, Camera, EntityId, GlobalTransform,
     Material, MeshHandle, ParticleEmitter, RenderLayer, SkinnedMesh, TextureHandle,
-    TotalTime, Transform, World, WorldBound, MAX_BONES_PER_MESH,
+    Transform, World, WorldBound, MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES;
-use byroredux_renderer::vulkan::water::{WaterDrawCommand, WaterPush};
+use byroredux_renderer::vulkan::water::WaterDrawCommand;
 use byroredux_renderer::{MaterialTable, SkyParams};
 use rayon::slice::ParallelSliceMut;
 use std::collections::HashMap;
@@ -1328,116 +1327,10 @@ pub(crate) fn build_render_data(
     // `render::sky::build_sky_params`.
     let sky = sky::build_sky_params(world);
 
-    // ── Water-plane re-emit ───────────────────────────────────────
-    //
-    // Walk every `WaterPlane` entity, locate its already-emitted
-    // `DrawCommand` (the main mesh-iteration loop above produced it
-    // because water entities carry `MeshHandle`), flip its
-    // `is_water` flag so the regular triangle path skips it, and
-    // emit a parallel `WaterDrawCommand` whose `instance_index`
-    // matches the SSBO slot the renderer will assign to that draw.
-    //
-    // The slot-index ↔ Vec position map relies on the renderer's
-    // 1:1 contract: `gpu_instances` is populated by iterating
-    // `draw_commands` in order, and frustum-culled draws keep
-    // their SSBO slot per #516. So the index into
-    // `draw_commands` equals `gl_InstanceIndex` after upload.
-    //
-    // ⚠ No-resort contract (#1026 / F-WAT-05) — once the
-    // `instance_index` below is captured, `draw_commands` MUST NOT
-    // be re-ordered before the renderer consumes it. See the sort
-    // site above (line ~1245) for the full contract and the
-    // `debug_assert!` that fires in `draw_frame` if anyone breaks
-    // it.
-    //
-    // Linear scan over `draw_commands` per water entity is O(N×W);
-    // typical N is ~thousands of draws and W is ≤ ~3 water planes
-    // per cell, so this is well under a microsecond. A
-    // `HashMap<EntityId, usize>` would be premature for the
-    // expected scale.
-    let time_secs = world
-        .try_resource::<TotalTime>()
-        .map(|t| t.0)
-        .unwrap_or(0.0);
-    if let Some(wq) = world.query::<WaterPlane>() {
-        let fq = world.query::<WaterFlow>();
-        for (entity, plane) in wq.iter() {
-            let Some(idx) = draw_commands.iter().position(|c| c.entity_id == entity) else {
-                // Entity has WaterPlane but no DrawCommand was emitted —
-                // typically because the cell loader spawned the water
-                // entity but the mesh wasn't yet uploaded, or the
-                // entity is frustum-culled out of the regular emit
-                // path. Skip silently.
-                continue;
-            };
-            draw_commands[idx].is_water = true;
-
-            let flow = fq.as_ref().and_then(|q| q.get(entity).copied());
-            let (flow_dir, flow_speed) = match flow {
-                Some(f) => (f.direction, f.speed),
-                None => ([1.0, 0.0, 0.0], 0.0),
-            };
-
-            // ABI: matches `WaterPush` in `shaders/water.frag`.
-            // Each vec4 maps to one std430-scalar slot — see
-            // `crates/renderer/src/vulkan/water.rs::WaterPush` for
-            // the layout contract.
-            let mat = &plane.material;
-            let push = WaterPush {
-                timing: [
-                    time_secs,
-                    plane.kind as u8 as f32,
-                    mat.foam_strength,
-                    mat.ior,
-                ],
-                flow: [flow_dir[0], flow_dir[1], flow_dir[2], flow_speed],
-                shallow: [
-                    mat.shallow_color[0],
-                    mat.shallow_color[1],
-                    mat.shallow_color[2],
-                    mat.fog_near,
-                ],
-                deep: [
-                    mat.deep_color[0],
-                    mat.deep_color[1],
-                    mat.deep_color[2],
-                    mat.fog_far,
-                ],
-                scroll: [
-                    mat.scroll_a[0],
-                    mat.scroll_a[1],
-                    mat.scroll_b[0],
-                    mat.scroll_b[1],
-                ],
-                tune: [
-                    mat.uv_scale_a,
-                    mat.uv_scale_b,
-                    mat.shoreline_width,
-                    0.0, // reserved (reflectivity moved to tint_reflect.w in #1069)
-                ],
-                misc: [
-                    mat.fresnel_f0,
-                    0.0,
-                    WaterPush::pack_normal_index(mat.normal_map_index),
-                    0.0,
-                ],
-                tint_reflect: [
-                    mat.reflection_tint[0],
-                    mat.reflection_tint[1],
-                    mat.reflection_tint[2],
-                    mat.reflectivity,
-                ],
-            };
-            water_commands.push(WaterDrawCommand {
-                mesh_handle: draw_commands[idx].mesh_handle,
-                instance_index: idx as u32,
-                push,
-            });
-            // Silence WaterKind-unused warning on builds where the
-            // enum is only consumed by the f32 cast above.
-            let _ = WaterKind::Calm;
-        }
-    }
+    // Water-plane re-emit — see `render::water::reemit_water_planes`.
+    // MUST run after the sort above and before the renderer consumes
+    // draw_commands (no-resort contract, #1026 / F-WAT-05).
+    water::reemit_water_planes(world, draw_commands, water_commands);
 
     RenderFrameView {
         view_proj,
@@ -1458,6 +1351,7 @@ pub(crate) fn build_render_data(
 // references through.
 mod lights;
 mod sky;
+mod water;
 
 #[cfg(test)]
 mod bone_palette_overflow_tests;
