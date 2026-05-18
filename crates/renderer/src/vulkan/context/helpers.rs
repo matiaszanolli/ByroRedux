@@ -310,7 +310,15 @@ pub(super) fn create_depth_resources(
 
     let requirements = unsafe { device.get_image_memory_requirements(image) };
 
-    let allocation = match allocator.lock().expect("allocator lock poisoned").allocate(
+    // Bind the allocate result to a local so the MutexGuard from
+    // `.lock()` drops at end-of-statement BEFORE the `match` runs.
+    // Inline as a match scrutinee, the temporary guard would live
+    // through the Err arm. Today the arm only calls `destroy_image`
+    // (no re-lock → no deadlock), but the lock is held across a
+    // Vulkan API call for no reason, and any future cleanup path that
+    // touched the allocator from this arm would silently introduce a
+    // deadlock identical to #1163. Fix #1165.
+    let alloc_result = allocator.lock().expect("allocator lock poisoned").allocate(
         &vk_alloc::AllocationCreateDesc {
             name: "depth_buffer",
             requirements,
@@ -318,7 +326,8 @@ pub(super) fn create_depth_resources(
             linear: false,
             allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
         },
-    ) {
+    );
+    let allocation = match alloc_result {
         Ok(a) => a,
         Err(e) => {
             // Allocation failed — only `image` needs cleanup.
