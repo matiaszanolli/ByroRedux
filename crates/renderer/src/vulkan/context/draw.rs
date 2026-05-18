@@ -2309,16 +2309,25 @@ impl VulkanContext {
                 }
             }
 
-            // Bloom pyramid (M58). Reads the post-TAA resolved HDR
-            // (composite.hdr_image_views[frame] — TAA writes its output
-            // here, so bloom is post-TAA; #1107 / REN-D19-002) and writes
-            // a multi-scale blurred bright-content texture. Composite
-            // adds bloom to `combined` before the ACES tone-map.
-            // The render pass's final_layout already moved HDR to
-            // SHADER_READ_ONLY_OPTIMAL, so the input is sample-ready.
-            // Bloom uses TAA-jittered input but the blur pyramid
-            // suppresses sub-pixel jitter — visually equivalent to
-            // bloom on TAA output but with simpler wiring.
+            // Bloom pyramid (M58). Reads the raw pre-TAA HDR attachment
+            // (`composite.hdr_image_views[frame]` — the main render pass'
+            // HDR target, NOT TAA's output) and writes a multi-scale
+            // blurred bright-content texture. Composite adds bloom to
+            // `combined` before the ACES tone-map. The render pass's
+            // final_layout already moved HDR to SHADER_READ_ONLY_OPTIMAL,
+            // so the input is sample-ready.
+            //
+            // Why pre-TAA: TAA's resolved output is consumed by composite
+            // separately (`composite.rebind_hdr_views` rewires the
+            // descriptor at `context/mod.rs:1715-1717`, but the
+            // `hdr_image_views` field still references the raw attachment
+            // — only the descriptor was swapped). Bloom intentionally
+            // shares the raw view because the blur pyramid smears out
+            // sub-pixel jitter, making the bloom haloes spatially stable
+            // anyway. Final image = ACES(TAA-stable base + spatial bloom).
+            // #1166: the previous comment claimed bloom was post-TAA;
+            // that was wrong. #1107 / REN-D19-002 is the original
+            // rewire-composite-to-TAA work this commit references.
             if let Some(ref mut bloom) = self.bloom {
                 if let Some(ref composite) = self.composite {
                     let hdr_view = composite.hdr_image_views[frame];
