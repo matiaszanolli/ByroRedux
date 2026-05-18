@@ -63,7 +63,7 @@ pub use misc::{
 };
 pub use common::StringsTableGuard;
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
-pub use tree::{parse_tree, ObjectBounds as TreeObjectBounds, TreeRecord};
+pub use tree::{parse_tree, TreeRecord};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
 
 use super::cell::support::{
