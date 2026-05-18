@@ -114,6 +114,18 @@ pub struct PartialNifImport {
     pub embedded_clip: Option<byroredux_nif::anim::AnimationClip>,
 }
 
+// #1171 / CONC-D6-NEW-05 — compile-time guarantee that
+// `PartialNifImport: Send`. The cell-stream worker emits these across
+// `mpsc::Sender<LoadCellPayload>`, which requires `Send`. If a future
+// contributor adds a non-`Send` field to `NifScene` (e.g. an `Rc<…>`
+// for some compositional reason) or to any nested type, this fires at
+// the struct's declaration site rather than at the distant channel-
+// send call deep inside `cell_pre_parse_worker`.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<PartialNifImport>();
+};
+
 /// World-streaming state. Owned by `App` (not an ECS resource — needs
 /// to coexist on the same struct as `VulkanContext` and the texture /
 /// material providers, all of which the streaming driver borrows
