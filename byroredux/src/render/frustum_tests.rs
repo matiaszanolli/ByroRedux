@@ -1,4 +1,4 @@
-use super::*;
+use super::camera::FrustumPlanes;
 use byroredux_core::math::{Mat4, Vec3};
 
 fn perspective_vp() -> Mat4 {

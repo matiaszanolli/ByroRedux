@@ -1,11 +1,11 @@
 //! Per-frame render data collection from ECS queries.
 
 use byroredux_core::ecs::{
-    ActiveCamera, AnimatedUvTransform, AnimatedVisibility, Camera, EntityId, GlobalTransform,
+    ActiveCamera, AnimatedUvTransform, AnimatedVisibility, EntityId, GlobalTransform,
     Material, MeshHandle, RenderLayer, SkinnedMesh, TextureHandle,
     Transform, World, WorldBound, MAX_BONES_PER_MESH,
 };
-use byroredux_core::math::{Mat4, Vec3, Vec4};
+use byroredux_core::math::Mat4;
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES;
 use byroredux_renderer::vulkan::water::WaterDrawCommand;
@@ -69,46 +69,6 @@ fn f32_sortable_u32(value: f32) -> u32 {
 /// `ax + by + cz + d >= 0` means the point is inside. Planes are
 /// unnormalized — we normalize once at construction so the sphere
 /// test can compare directly against radius.
-struct FrustumPlanes {
-    planes: [Vec4; 6],
-}
-
-impl FrustumPlanes {
-    fn from_view_proj(m: Mat4) -> Self {
-        let r0 = m.row(0);
-        let r1 = m.row(1);
-        let r2 = m.row(2);
-        let r3 = m.row(3);
-
-        let mut planes = [
-            r3 + r0, // left
-            r3 - r0, // right
-            r3 + r1, // bottom
-            r3 - r1, // top
-            r3 + r2, // near
-            r3 - r2, // far
-        ];
-
-        for p in &mut planes {
-            let len = Vec3::new(p.x, p.y, p.z).length();
-            if len > 1e-10 {
-                *p /= len;
-            }
-        }
-
-        Self { planes }
-    }
-
-    fn contains_sphere(&self, center: Vec3, radius: f32) -> bool {
-        for p in &self.planes {
-            let dist = p.x * center.x + p.y * center.y + p.z * center.z + p.w;
-            if dist < -radius {
-                return false;
-            }
-        }
-        true
-    }
-}
 
 /// Pack per-draw depth state into a single u8 so consecutive same-state
 /// draws cluster: bit 0 = z_test, bit 1 = z_write, bits 4-7 = z_function.
@@ -438,41 +398,14 @@ pub(crate) fn build_render_data(
         }
     }
 
-    // Get camera view-projection + build frustum planes for culling.
-    // `cam_pos` is also captured here for the particle billboard pass —
-    // each live particle needs the active camera's world position to
-    // compute a face-camera rotation matrix in `build_particle_draws`.
-    let mut cam_pos = Vec3::ZERO;
-    let (view_proj, frustum, vp_mat) = if let Some(active) = world.try_resource::<ActiveCamera>() {
-        let cam_entity = active.0;
-        drop(active);
-
-        let cam_q = world.query::<Camera>();
-        let transform_q = world.query::<Transform>();
-
-        let vp = match (cam_q, transform_q) {
-            (Some(cq), Some(tq)) => {
-                let cam = cq.get(cam_entity);
-                let t = tq.get(cam_entity);
-                match (cam, t) {
-                    (Some(c), Some(t)) => {
-                        cam_pos = t.translation;
-                        c.projection_matrix() * Camera::view_matrix(t)
-                    }
-                    _ => Mat4::IDENTITY,
-                }
-            }
-            _ => Mat4::IDENTITY,
-        };
-        let frustum = FrustumPlanes::from_view_proj(vp);
-        (vp.to_cols_array(), frustum, vp)
-    } else {
-        (
-            Mat4::IDENTITY.to_cols_array(),
-            FrustumPlanes::from_view_proj(Mat4::IDENTITY),
-            Mat4::IDENTITY,
-        )
-    };
+    // Camera view-projection + frustum + cam_pos — see
+    // `render::camera::assemble_camera`.
+    let camera::CameraView {
+        view_proj,
+        frustum,
+        vp_mat,
+        cam_pos,
+    } = camera::assemble_camera(world);
 
     // ── Render-data query bundle (#246) ──────────────────────────────
     //
@@ -1196,6 +1129,7 @@ pub(crate) fn build_render_data(
 // one of the 8 query families in `build_render_data`; the parent
 // orchestrator above acquires the World queries once and threads
 // references through.
+mod camera;
 mod lights;
 mod particles;
 mod sky;
