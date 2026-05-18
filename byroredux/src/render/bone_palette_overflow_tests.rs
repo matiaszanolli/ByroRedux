@@ -1,6 +1,7 @@
 use super::*;
-use byroredux_core::ecs::{GlobalTransform, SkinnedMesh, World};
+use byroredux_core::ecs::{GlobalTransform, SkinnedMesh, World, MAX_BONES_PER_MESH};
 use byroredux_core::math::Mat4;
+use byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES;
 
 fn make_skinned_world(num_meshes: usize) -> World {
     let mut world = World::new();
