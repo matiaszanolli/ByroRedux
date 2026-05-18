@@ -446,14 +446,22 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
 // reach. Fix #420.
 vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
     rayQueryEXT rq;
-    // tMin = 0.05 matches the N_bias offset every caller already applies
-    // to `origin` (callers at lines 1633 and 2049 use bias 0.05 and 0.1
-    // respectively) and the convention every other ray-query site in
-    // this shader uses (1486, 1702, 2408, 2484). Pre-#1017 this was 0.01
-    // — five times smaller than the bias — which let perturbed-normal
-    // flips at grazing angles fire the ray back through the surface and
-    // self-hit, producing black speckle on metals. Same fix shape as the
-    // GI-tMin normalisation called out at line 2472.
+    // tMin = 0.05 matches the N_bias offset every caller already
+    // applies to `origin`. Live callers (grep for `traceReflection(`):
+    //   * glass IOR reflection — bias 0.05, maxDist 3000
+    //   * metal jittered reflection — bias 0.1, maxDist 5000
+    // Same 0.05 tMin convention every other ray-query site in this
+    // shader uses (grep `rayQueryInitializeEXT`): window portal,
+    // refraction loop, cluster shadow, GI bounce. Pre-#1017 this was
+    // 0.01 — five times smaller than the bias — which let perturbed-
+    // normal flips at grazing angles fire the ray back through the
+    // surface and self-hit, producing black speckle on metals. Same
+    // fix shape as the GI-tMin normalisation (grep `giRQ`).
+    //
+    // Note: previous revisions of this comment cited line numbers
+    // (1486/1633/1702/2049/2408/2472/2484) but Session 34's split
+    // and subsequent refactors drift them every release; #1158 fix
+    // (2026-05-18) replaces them with grep-friendly anchors.
     rayQueryInitializeEXT(
         rq, topLevelAS,
         gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
@@ -2461,9 +2469,10 @@ void main() {
             vec3 giDir = cosineWeightedHemisphere(N_geom, n1, n2);
             vec3 giOrigin = fragWorldPos + N_bias * 0.1;
 
-            // tMin = 0.05 matches the bias and the rest of the ray sites
-            // (refraction line 1063, window portal line 931). Pre-#669
-            // tMin was 0.5 — five times the bias — so grazing GI rays
+            // tMin = 0.05 matches the bias and the rest of the ray
+            // sites (grep `rayQueryInitializeEXT` — refraction loop,
+            // window portal). Pre-#669 tMin was 0.5 — five times the
+            // bias — so grazing GI rays
             // skipped any close-clutter intersections inside the first
             // 0.5u of travel and registered a false-far hit instead,
             // producing chronically over-bright AO on populated tables
