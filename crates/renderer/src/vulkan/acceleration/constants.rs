@@ -84,8 +84,10 @@ pub(super) const UPDATABLE_AS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
     );
 
 /// Build flags for the skinned-BLAS BUILD + UPDATE call sites in
-/// `blas_skinned.rs` (`build_skinned_blas`, `build_skinned_blas_batched_on_cmd`,
-/// `refit_skinned_blas`). Same VUID-03667 BUILD/UPDATE-match invariant
+/// `blas_skinned.rs` (`build_skinned_blas_batched_on_cmd`,
+/// `refit_skinned_blas`). The sibling sync `build_skinned_blas` was
+/// removed under #1141; only the batched-on-cmd path remains. Same
+/// VUID-03667 BUILD/UPDATE-match invariant
 /// as `UPDATABLE_AS_FLAGS`; separate constant because skinned BLAS
 /// empirically benefits from `PREFER_FAST_BUILD` while TLAS stays on
 /// `PREFER_FAST_TRACE`. See R6a-prospector-regress (2026-05-16) — the
