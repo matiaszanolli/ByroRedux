@@ -166,6 +166,30 @@ pub struct WaterPipeline {
     pub pipeline_layout: vk::PipelineLayout,
 }
 
+/// Dynamic states declared on the water graphics pipeline. Extracted
+/// to a module-level `const` (#1129) so the contents are inspectable
+/// from unit tests without spinning up a Vulkan device.
+///
+/// Every value the static rasterizer / depth-stencil sets and that
+/// the code comments label a "no-op baseline" must also appear here —
+/// otherwise the static value silently wins at runtime.
+///
+/// Current "no-op baseline" → dynamic-state pairings:
+///   * `rasterizer.cull_mode(NONE)`          → `CULL_MODE`
+///   * `depth_stencil.depth_test_enable`     → `DEPTH_TEST_ENABLE`
+///   * `depth_stencil.depth_write_enable`    → `DEPTH_WRITE_ENABLE`
+///   * `depth_stencil.depth_compare_op`      → `DEPTH_COMPARE_OP`
+pub(super) const WATER_PIPELINE_DYNAMIC_STATES: [vk::DynamicState; 6] = [
+    vk::DynamicState::VIEWPORT,
+    vk::DynamicState::SCISSOR,
+    vk::DynamicState::DEPTH_TEST_ENABLE,
+    vk::DynamicState::DEPTH_WRITE_ENABLE,
+    vk::DynamicState::DEPTH_COMPARE_OP,
+    // #1071 / F-WAT-11 — caller emits cmd_set_cull_mode(NONE) before
+    // the water draw.
+    vk::DynamicState::CULL_MODE,
+];
+
 impl WaterPipeline {
     /// Create the water pipeline.
     ///
@@ -392,16 +416,13 @@ fn build_pipeline(
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
 
-    let dynamic_states = [
-        vk::DynamicState::VIEWPORT,
-        vk::DynamicState::SCISSOR,
-        vk::DynamicState::DEPTH_TEST_ENABLE,
-        vk::DynamicState::DEPTH_WRITE_ENABLE,
-        vk::DynamicState::DEPTH_COMPARE_OP,
-        // #1071 / F-WAT-11 — CULL_MODE dynamic; caller emits
-        // cmd_set_cull_mode(NONE) before the water draw.
-        vk::DynamicState::CULL_MODE,
-    ];
+    // #1129 — extracted to a module-level `const` so the contents are
+    // inspectable from unit tests without needing a Vulkan device.
+    // Forward-compat trap: every static rasterizer / depth-stencil
+    // value documented as a "no-op baseline" MUST also appear in this
+    // list (or `water_pipeline_dynamic_states_cover_documented_no_ops`
+    // below fires).
+    let dynamic_states = WATER_PIPELINE_DYNAMIC_STATES;
     let dynamic_state =
         vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
@@ -443,6 +464,34 @@ mod tests {
     fn water_push_layout_is_128_bytes() {
         assert_eq!(std::mem::size_of::<WaterPush>(), 128);
         assert_eq!(std::mem::align_of::<WaterPush>(), 4);
+    }
+
+    /// #1129 — forward-compat trap. Every "no-op baseline" the water
+    /// rasterizer / depth-stencil sets statically MUST also appear in
+    /// `WATER_PIPELINE_DYNAMIC_STATES` — otherwise the static value
+    /// silently wins at runtime and the comment lies.
+    #[test]
+    fn water_pipeline_dynamic_states_cover_documented_no_ops() {
+        let states: &[vk::DynamicState] = &WATER_PIPELINE_DYNAMIC_STATES;
+        // The documented no-op pairings:
+        for required in [
+            vk::DynamicState::CULL_MODE,
+            vk::DynamicState::DEPTH_TEST_ENABLE,
+            vk::DynamicState::DEPTH_WRITE_ENABLE,
+            vk::DynamicState::DEPTH_COMPARE_OP,
+        ] {
+            assert!(
+                states.contains(&required),
+                "WATER_PIPELINE_DYNAMIC_STATES missing {required:?} — \
+                 a static value documented as a no-op baseline is no longer \
+                 overridden by the dynamic state. Either drop the static \
+                 value or add the dynamic-state declaration."
+            );
+        }
+        // VIEWPORT / SCISSOR are also required by every pipeline in the
+        // main render pass.
+        assert!(states.contains(&vk::DynamicState::VIEWPORT));
+        assert!(states.contains(&vk::DynamicState::SCISSOR));
     }
 
     #[test]
