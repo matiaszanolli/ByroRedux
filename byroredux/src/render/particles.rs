@@ -90,8 +90,10 @@ pub(super) fn emit_particles(
                 dst_blend: em.dst_blend,
                 two_sided: true, // billboard quads are single-faced; cull-off avoids back-face flicker on extreme angles
                 // Particles never use wireframe (sprites don't render
-                // line-by-line). #869.
+                // line-by-line) or flat-shading (no per-face geometry
+                // — billboards are screen-aligned quads). #869.
                 wireframe: false,
+                flat_shading: false,
                 is_decal: false,
                 // Particles ride emissive + alpha-blend with depth-write
                 // off — they never z-fight surfaces, so Architecture

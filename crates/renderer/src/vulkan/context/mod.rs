@@ -62,6 +62,11 @@ pub struct DrawCommand {
     /// `vk::PolygonMode::LINE` pipeline variant. Falls back to FILL
     /// silently when the device lacks `fillModeNonSolid`. See #869.
     pub wireframe: bool,
+    /// `NiShadeProperty.flags == 0` flat-shading request — when true the
+    /// per-instance `INSTANCE_FLAG_FLAT_SHADING` bit is set and the
+    /// fragment shader replaces the interpolated vertex normal with
+    /// the per-face screen-space derivative. See #869.
+    pub flat_shading: bool,
     /// Decal geometry — renders on top of coplanar surfaces via depth bias.
     pub is_decal: bool,
     /// Content-class layer for the per-layer depth-bias ladder. Replaces
@@ -2368,6 +2373,7 @@ mod draw_command_tests {
             dst_blend: 7,
             two_sided: false,
             wireframe: false,
+            flat_shading: false,
             is_decal: false,
             render_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
             bone_offset: 0,

@@ -153,6 +153,18 @@ pub const INSTANCE_RENDER_LAYER_MASK: u32 = 0x3;
 /// every draw command. See REN-D12-NEW-05 (audit 2026-05-09).
 pub const INSTANCE_FLAG_PRESKINNED: u32 = 1 << 6;
 
+/// `NiShadeProperty.flags == 0` flat-shading bit (#869). When set,
+/// the fragment shader replaces the interpolated vertex normal with
+/// the per-face derivative
+/// `normalize(cross(dFdx(world_pos), dFdy(world_pos)))` so the mesh
+/// reads as faceted. Off by default; set on a handful of Oblivion
+/// architectural pieces that author NiShadeProperty.
+///
+/// Bit 7 sits between PRESKINNED (bit 6) and the render-layer slot
+/// (bits 4..5 via [`INSTANCE_RENDER_LAYER_SHIFT`]) so no other reader
+/// collides. Lives below the terrain-tile-index window (bits 16..31).
+pub const INSTANCE_FLAG_FLAT_SHADING: u32 = 1 << 7;
+
 /// Engine-synthesized material kinds for [`GpuInstance::material_kind`].
 ///
 /// The low range (0..=19) is reserved for Skyrim+
@@ -186,3 +198,63 @@ pub const MATERIAL_KIND_GLASS: u32 = 100;
 /// branch in the fragment shader is the missing renderer-side dispatch
 /// (SK-D3-02 follow-up).
 pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #869 — every `INSTANCE_FLAG_*` bit must be distinct and must
+    /// not collide with the render-layer slot (bits 4..5) or the
+    /// terrain-tile-index window (bits 16..31). If a future flag
+    /// reuses a populated bit, both the CPU packing site
+    /// (`context/draw.rs`) and the shader-side `& N` test would
+    /// silently merge two unrelated meanings.
+    #[test]
+    fn instance_flag_bits_unique_and_outside_packed_windows() {
+        let layer_window: u32 = INSTANCE_RENDER_LAYER_MASK << INSTANCE_RENDER_LAYER_SHIFT;
+        let tile_window: u32 = INSTANCE_TERRAIN_TILE_MASK << INSTANCE_TERRAIN_TILE_SHIFT;
+        let flags: &[(&str, u32)] = &[
+            ("NON_UNIFORM_SCALE", INSTANCE_FLAG_NON_UNIFORM_SCALE),
+            ("ALPHA_BLEND", INSTANCE_FLAG_ALPHA_BLEND),
+            ("CAUSTIC_SOURCE", INSTANCE_FLAG_CAUSTIC_SOURCE),
+            ("TERRAIN_SPLAT", INSTANCE_FLAG_TERRAIN_SPLAT),
+            ("PRESKINNED", INSTANCE_FLAG_PRESKINNED),
+            ("FLAT_SHADING", INSTANCE_FLAG_FLAT_SHADING),
+        ];
+        for (i, (a_name, a)) in flags.iter().enumerate() {
+            // Each flag is a single bit.
+            assert_eq!(a.count_ones(), 1, "{a_name} is not a single bit: {a:#b}");
+            // No flag falls inside a packed-value window.
+            assert_eq!(
+                a & layer_window,
+                0,
+                "{a_name} ({a:#b}) collides with render-layer window {layer_window:#b}"
+            );
+            assert_eq!(
+                a & tile_window,
+                0,
+                "{a_name} ({a:#b}) collides with terrain-tile window {tile_window:#b}"
+            );
+            // No two flags share a bit.
+            for (b_name, b) in flags.iter().skip(i + 1) {
+                assert_eq!(
+                    a & b,
+                    0,
+                    "{a_name} ({a:#b}) and {b_name} ({b:#b}) share a bit"
+                );
+            }
+        }
+    }
+
+    /// #869 — the shader hard-codes `(inst.flags & 128u)` for the
+    /// flat-shading test. If the Rust-side constant ever shifts away
+    /// from bit 7, the shader would silently read the wrong bit.
+    #[test]
+    fn flat_shading_bit_pinned_at_128_for_shader_constant() {
+        assert_eq!(
+            INSTANCE_FLAG_FLAT_SHADING, 128,
+            "triangle.frag tests `(inst.flags & 128u)`; this constant must equal 128 \
+             or the shader-side check needs to be updated in lockstep"
+        );
+    }
+}

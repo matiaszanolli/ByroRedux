@@ -506,6 +506,10 @@ pub(super) fn collect_static_mesh_draws(
                     // back to FILL silently when the device lacks
                     // `fillModeNonSolid`.
                     wireframe: mat.map(|m| m.wireframe).unwrap_or(false),
+                    // #869 — NiShadeProperty.flags==0: sets the
+                    // `INSTANCE_FLAG_FLAT_SHADING` bit so the fragment
+                    // shader uses the per-face derivative for normals.
+                    flat_shading: mat.map(|m| m.flat_shading).unwrap_or(false),
                     is_decal,
                     // #renderlayer — final per-entity layer (already
                     // computed above as `render_layer_for_entity`,

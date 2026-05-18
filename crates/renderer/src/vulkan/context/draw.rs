@@ -5,7 +5,8 @@ use super::super::material::GpuMaterial;
 use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
 use super::super::scene_buffer::{
     self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
-    INSTANCE_FLAG_NON_UNIFORM_SCALE, INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_RENDER_LAYER_MASK,
+    INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_NON_UNIFORM_SCALE, INSTANCE_FLAG_TERRAIN_SPLAT,
+    INSTANCE_RENDER_LAYER_MASK,
     INSTANCE_RENDER_LAYER_SHIFT, INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT,
     MATERIAL_KIND_GLASS,
 };
@@ -1153,6 +1154,13 @@ impl VulkanContext {
             if let Some(tile_idx) = draw_cmd.terrain_tile_index {
                 flags |= INSTANCE_FLAG_TERRAIN_SPLAT;
                 flags |= (tile_idx & INSTANCE_TERRAIN_TILE_MASK) << INSTANCE_TERRAIN_TILE_SHIFT;
+            }
+            // #869 — NiShadeProperty.flags==0 flat-shading: fragment
+            // shader replaces interpolated normal with the per-face
+            // derivative when this bit is set. Per-instance gate so
+            // unflagged content pays zero extra cost.
+            if draw_cmd.flat_shading {
+                flags |= INSTANCE_FLAG_FLAT_SHADING;
             }
             // #renderlayer — pack the 2-bit layer discriminant into
             // bits 4..5 for the fragment shader's debug-viz branch
@@ -2584,6 +2592,7 @@ mod is_caustic_source_tests {
             dst_blend: 7,
             two_sided: false,
             wireframe: false,
+            flat_shading: false,
             is_decal: false,
             render_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
             bone_offset: 0,

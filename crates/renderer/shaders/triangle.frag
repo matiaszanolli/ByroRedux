@@ -779,6 +779,21 @@ void main() {
     // sample, and the POM parameters + parallax map index live on
     // the material.
     GpuInstance inst = instances[fragInstanceIndex];
+
+    // #869 — `NiShadeProperty.flags == 0` flat-shading. When
+    // `INSTANCE_FLAG_FLAT_SHADING` (Rust bit 7 = 128u) is set, replace
+    // the interpolated vertex normal with the per-face screen-space
+    // derivative so the mesh reads as faceted. Used by a handful of
+    // Oblivion architectural pieces; the per-instance gate means
+    // unflagged content pays zero extra cost (the `cross(dFdx, dFdy)`
+    // pair compiles out under branch coherence on uniform-flag
+    // workgroups). Downstream uses of `fragNormal` go through
+    // `fragNormalEffective` so normal-map perturbation, RT geometric
+    // hits, and G-buffer output all see the same effective normal.
+    vec3 fragNormalEffective = ((inst.flags & 128u) != 0u)
+        ? normalize(cross(dFdx(fragWorldPos), dFdy(fragWorldPos)))
+        : fragNormal;
+
     // R1 Phase 5 — deduplicated material payload. Single SSBO load per
     // fragment; downstream reads use `mat.<field>` instead of
     // `inst.<field>` for any per-material data. The legacy per-instance
@@ -811,7 +826,7 @@ void main() {
     // displaced height lookup lines up with the other samplers.
     vec2 sampleUV = baseUV;
     if (mat.parallaxMapIndex != 0u && (dbgFlags & DBG_BYPASS_POM) == 0u) {
-        vec3 N0 = normalize(fragNormal);
+        vec3 N0 = normalize(fragNormalEffective);
         vec3 V0 = normalize(cameraPos.xyz - fragWorldPos);
         sampleUV = parallaxDisplaceUV(
             baseUV,
@@ -916,7 +931,7 @@ void main() {
     // Normal sampling uses `sampleUV` so the parallax displacement
     // propagates into the bump detail (otherwise the normal map and
     // albedo would disagree on which texel belongs to each fragment).
-    vec3 N = normalize(fragNormal);
+    vec3 N = normalize(fragNormalEffective);
     // #783 / M-NORMALS — per-fragment normal-map perturbation.
     //
     // Re-enabled-by-default 2026-05-03 (#786 closeout). The
@@ -1613,7 +1628,7 @@ void main() {
         //                shape should drive the transmitted ray; micro-detail
         //                contributes via the roughness spread below.
         vec3 N_view = dot(N, V) < 0.0 ? -N : N;
-        vec3 _Ngeom = normalize(fragNormal);
+        vec3 _Ngeom = normalize(fragNormalEffective);
         vec3 N_geom_view = dot(_Ngeom, V) < 0.0 ? -_Ngeom : _Ngeom;
         float NdotV_v = max(dot(N_view, V), 0.05);
         float fresnelScalar = fresnelSchlick(NdotV_v, vec3(0.04)).r;
@@ -1924,12 +1939,12 @@ void main() {
         // did enter.
         if ((dbgFlags & DBG_VIZ_GLASS_PASSTHRU) != 0u) {
             outColor = vec4(0.0, 0.0, 0.0, 1.0);
-            outNormal = octEncode(normalize(fragNormal));
+            outNormal = octEncode(normalize(fragNormalEffective));
             outRawIndirect = vec4(0.0);
             outAlbedo = vec4(albedo, 1.0);
             return;
         }
-        N = normalize(fragNormal);
+        N = normalize(fragNormalEffective);
 
         // Diffuse mip-bias for fresnel-fallback glass — erase the
         // fine cross-hatch detail authored into Bethesda drinking-
@@ -1943,7 +1958,7 @@ void main() {
         // = 0x10 (bypass normal map) does NOT remove the cross-
         // hatch — meaning the pattern is in the diffuse texture
         // itself, not in the normal-map perturbation. The previous
-        // line (`N = normalize(fragNormal)`) already suppresses
+        // line (`N = normalize(fragNormalEffective)`) already suppresses
         // normal-map effects on glass.
         //
         // Trade-off: glass surfaces lose all fine diffuse detail
@@ -2465,7 +2480,7 @@ void main() {
             // direction in the GI hit's incoming-radiance lookup is
             // already noise-jittered, so trading a tiny per-pixel
             // directional bias for correct AO is a net win at 1-SPP.
-            vec3 N_geom = normalize(fragNormal);
+            vec3 N_geom = normalize(fragNormalEffective);
             vec3 giDir = cosineWeightedHemisphere(N_geom, n1, n2);
             vec3 giOrigin = fragWorldPos + N_bias * 0.1;
 
