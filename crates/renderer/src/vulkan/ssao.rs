@@ -174,22 +174,31 @@ impl SsaoPipeline {
                 }
             };
 
+            // Push the allocation BEFORE the bind so the partial-state
+            // invariant ("every pushed `ao_image` has a matching
+            // `ao_allocations` slot") is structural. On bind failure,
+            // `partial.destroy` then frees the allocation via the normal
+            // cleanup path — no separate explicit free, no asymmetry
+            // for a future reorder to turn into a double-free. #1164.
+            // SAFETY: `Allocation::memory` is `unsafe` because callers
+            // must not free the underlying `vk::DeviceMemory` directly;
+            // we never do — `partial.destroy` always routes through
+            // `allocator.free(allocation)`.
+            let mem = unsafe { ao_allocation.memory() };
+            let offset = ao_allocation.offset();
+            partial.ao_allocations.push(Some(ao_allocation));
+
             // SAFETY: `ao_image` matches the memory requirements that
-            // produced `ao_allocation`; bound once per image.
-            if let Err(e) = unsafe {
-                device.bind_image_memory(ao_image, ao_allocation.memory(), ao_allocation.offset())
-            } {
-                allocator
-                    .lock()
-                    .expect("allocator lock")
-                    .free(ao_allocation)
-                    .ok();
-                // SAFETY: cleanup-on-error after explicitly freeing the
-                // unboundallocation above.
+            // produced the allocation just pushed; bound once per image.
+            if let Err(e) =
+                unsafe { device.bind_image_memory(ao_image, mem, offset) }
+            {
+                // SAFETY: bind failed; the allocation is already owned
+                // by `partial.ao_allocations`, so `partial.destroy`
+                // frees it symmetrically with `partial.ao_images`.
                 unsafe { partial.destroy(device, allocator) };
                 return Err(anyhow::anyhow!("Failed to bind AO image memory {fi}: {e}"));
             }
-            partial.ao_allocations.push(Some(ao_allocation));
 
             // SAFETY: `ao_image` is bound to backing memory (line above).
             // View ownership transfers to `partial.ao_image_views` on Ok.
