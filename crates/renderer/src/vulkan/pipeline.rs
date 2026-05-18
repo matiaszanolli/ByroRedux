@@ -54,12 +54,17 @@ pub fn load_shader_module(device: &ash::Device, spv: &[u8]) -> Result<vk::Shader
 pub enum PipelineKey {
     /// Opaque: depth write on, no blend. Two-sided behavior comes from
     /// dynamic `cmd_set_cull_mode`, not a separate pipeline.
-    Opaque,
+    /// `wireframe=true` selects the `vk::PolygonMode::LINE` variant
+    /// for `NiWireframeProperty`-flagged content (#869); falls back
+    /// to FILL when the device lacks `fillModeNonSolid`.
+    Opaque { wireframe: bool },
     /// Blended: depth write off, blend on. `src`/`dst` are raw
     /// Gamebryo `AlphaFunction` enum values (0=ONE ... 10=SRC_ALPHA_SATURATE);
     /// see [`gamebryo_to_vk_blend_factor`]. Two-sided behavior comes from
     /// dynamic `cmd_set_cull_mode`, not a separate pipeline.
-    Blended { src: u8, dst: u8 },
+    /// `wireframe=true` selects the LINE variant (#869); cache key
+    /// already includes blend factors so the extra boolean fits.
+    Blended { src: u8, dst: u8, wireframe: bool },
 }
 
 /// Convert a Gamebryo `TestFunction` enum value (from
@@ -124,6 +129,11 @@ pub fn gamebryo_to_vk_blend_factor(v: u8) -> vk::BlendFactor {
 /// see [`PipelineKey`] for the rationale (#930).
 pub struct PipelineSet {
     pub opaque: vk::Pipeline,
+    /// Wireframe variant (`polygon_mode = LINE`). `None` when the device
+    /// doesn't expose `fillModeNonSolid`; callers fall back to `opaque`
+    /// in that case so `NiWireframeProperty` content still renders
+    /// (filled). #869.
+    pub opaque_wireframe: Option<vk::Pipeline>,
     pub layout: vk::PipelineLayout,
 }
 
@@ -149,9 +159,17 @@ pub fn create_triangle_pipeline(
     descriptor_set_layout: vk::DescriptorSetLayout,
     scene_set_layout: vk::DescriptorSetLayout,
     pipeline_cache: vk::PipelineCache,
+    wireframe_supported: bool,
 ) -> Result<PipelineSet> {
     let layout = build_triangle_pipeline_layout(device, descriptor_set_layout, scene_set_layout)?;
-    triangle_pipeline_inner(device, render_pass, extent, pipeline_cache, layout)
+    triangle_pipeline_inner(
+        device,
+        render_pass,
+        extent,
+        pipeline_cache,
+        layout,
+        wireframe_supported,
+    )
 }
 
 /// Recreate triangle pipelines reusing an existing pipeline layout.
@@ -162,8 +180,16 @@ pub fn recreate_triangle_pipelines(
     extent: vk::Extent2D,
     pipeline_cache: vk::PipelineCache,
     existing_layout: vk::PipelineLayout,
+    wireframe_supported: bool,
 ) -> Result<PipelineSet> {
-    triangle_pipeline_inner(device, render_pass, extent, pipeline_cache, existing_layout)
+    triangle_pipeline_inner(
+        device,
+        render_pass,
+        extent,
+        pipeline_cache,
+        existing_layout,
+        wireframe_supported,
+    )
 }
 
 fn triangle_pipeline_inner(
@@ -172,6 +198,7 @@ fn triangle_pipeline_inner(
     extent: vk::Extent2D,
     pipeline_cache: vk::PipelineCache,
     pipeline_layout: vk::PipelineLayout,
+    wireframe_supported: bool,
 ) -> Result<PipelineSet> {
     let vert_module = load_shader_module(device, TRIANGLE_VERT_SPV)?;
     let frag_module = load_shader_module(device, TRIANGLE_FRAG_SPV)?;
@@ -310,10 +337,24 @@ fn triangle_pipeline_inner(
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
 
-    let pipeline_infos = [
-        // Opaque pipeline — depth write on, no blend. Two-sided
-        // behavior comes from dynamic `cmd_set_cull_mode` per draw,
-        // not a separate pipeline (#930).
+    // Wireframe variant: clone the rasterizer with `polygon_mode(LINE)`
+    // when the device exposed `fillModeNonSolid`. When not, the variant
+    // is skipped and `NiWireframeProperty` content silently renders
+    // filled. #869.
+    let rasterizer_wireframe = vk::PipelineRasterizationStateCreateInfo::default()
+        .depth_clamp_enable(false)
+        .rasterizer_discard_enable(false)
+        .polygon_mode(vk::PolygonMode::LINE)
+        .line_width(1.0)
+        .cull_mode(vk::CullModeFlags::BACK)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .depth_bias_enable(true);
+
+    let mut pipeline_infos: Vec<vk::GraphicsPipelineCreateInfo> = Vec::with_capacity(2);
+    // Opaque pipeline — depth write on, no blend. Two-sided behavior
+    // comes from dynamic `cmd_set_cull_mode` per draw, not a separate
+    // pipeline (#930).
+    pipeline_infos.push(
         vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
             .vertex_input_state(&vertex_input)
@@ -327,7 +368,24 @@ fn triangle_pipeline_inner(
             .layout(pipeline_layout)
             .render_pass(render_pass)
             .subpass(0),
-    ];
+    );
+    if wireframe_supported {
+        pipeline_infos.push(
+            vk::GraphicsPipelineCreateInfo::default()
+                .stages(&shader_stages)
+                .vertex_input_state(&vertex_input)
+                .input_assembly_state(&input_assembly)
+                .viewport_state(&viewport_state)
+                .rasterization_state(&rasterizer_wireframe)
+                .multisample_state(&multisampling)
+                .depth_stencil_state(&depth_stencil_opaque)
+                .color_blend_state(&color_blending)
+                .dynamic_state(&dynamic_state)
+                .layout(pipeline_layout)
+                .render_pass(render_pass)
+                .subpass(0),
+        );
+    }
 
     let pipelines = unsafe {
         device
@@ -336,7 +394,10 @@ fn triangle_pipeline_inner(
             .context("Failed to create graphics pipelines")?
     };
 
-    log::info!("Graphics pipeline created (single opaque; blend variants lazy-cached by NiAlphaProperty (src, dst); two-sided via dynamic cull state)");
+    log::info!(
+        "Graphics pipeline created (opaque + {} wireframe; blend variants lazy-cached by (src, dst, wireframe))",
+        if wireframe_supported { "1" } else { "0 (fillModeNonSolid unavailable)" }
+    );
 
     // SAFETY: Shader modules are compiled into the pipeline objects during
     // create_graphics_pipelines and are no longer needed. Destroy them
@@ -347,8 +408,14 @@ fn triangle_pipeline_inner(
         device.destroy_shader_module(frag_module, None);
     }
 
+    let opaque_wireframe = if wireframe_supported {
+        Some(pipelines[1])
+    } else {
+        None
+    };
     Ok(PipelineSet {
         opaque: pipelines[0],
+        opaque_wireframe,
         layout: pipeline_layout,
     })
 }
@@ -372,6 +439,7 @@ pub fn create_blend_pipeline(
     pipeline_layout: vk::PipelineLayout,
     src: u8,
     dst: u8,
+    wireframe: bool,
 ) -> Result<vk::Pipeline> {
     let vert_module = load_shader_module(device, TRIANGLE_VERT_SPV)?;
     let frag_module = load_shader_module(device, TRIANGLE_FRAG_SPV)?;
@@ -409,12 +477,20 @@ pub fn create_blend_pipeline(
     // baked value is ignored at draw time. Two-sided alpha-blend
     // ordering split (FRONT-cull pass for back faces + BACK-cull
     // pass for front faces) is implemented via per-draw
-    // `cmd_set_cull_mode`, not separate pipelines (#930). Hard-coded
-    // `polygon_mode(FILL)`; wireframe routing deferred per #869.
+    // `cmd_set_cull_mode`, not separate pipelines (#930). #869:
+    // `polygon_mode` is now LINE for the wireframe variant; the
+    // factory caller (`get_or_create_blend_pipeline`) gates this on
+    // `caps.fill_mode_non_solid_supported`, so `wireframe=true` is
+    // only reachable when the device supports LINE rasterization.
+    let polygon_mode = if wireframe {
+        vk::PolygonMode::LINE
+    } else {
+        vk::PolygonMode::FILL
+    };
     let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
         .depth_clamp_enable(false)
         .rasterizer_discard_enable(false)
-        .polygon_mode(vk::PolygonMode::FILL)
+        .polygon_mode(polygon_mode)
         .line_width(1.0)
         .cull_mode(vk::CullModeFlags::BACK)
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
@@ -511,7 +587,10 @@ pub fn create_blend_pipeline(
         device.destroy_shader_module(frag_module, None);
     }
 
-    log::debug!("Blend pipeline created: src={src} ({src_factor:?}), dst={dst} ({dst_factor:?})");
+    log::debug!(
+        "Blend pipeline created: src={src} ({src_factor:?}), dst={dst} ({dst_factor:?}), \
+         wireframe={wireframe}"
+    );
 
     Ok(pipelines[0])
 }
@@ -735,11 +814,27 @@ mod tests {
     /// the same pipeline now.
     #[test]
     fn pipeline_key_distinguishes_combos_old_code_collapsed() {
-        let alpha = PipelineKey::Blended { src: 6, dst: 7 };
-        let additive = PipelineKey::Blended { src: 6, dst: 0 };
-        let glass_modulate = PipelineKey::Blended { src: 4, dst: 0 };
-        let premul_additive = PipelineKey::Blended { src: 0, dst: 0 };
-        let opaque = PipelineKey::Opaque;
+        let alpha = PipelineKey::Blended {
+            src: 6,
+            dst: 7,
+            wireframe: false,
+        };
+        let additive = PipelineKey::Blended {
+            src: 6,
+            dst: 0,
+            wireframe: false,
+        };
+        let glass_modulate = PipelineKey::Blended {
+            src: 4,
+            dst: 0,
+            wireframe: false,
+        };
+        let premul_additive = PipelineKey::Blended {
+            src: 0,
+            dst: 0,
+            wireframe: false,
+        };
+        let opaque = PipelineKey::Opaque { wireframe: false };
 
         let all = [alpha, additive, glass_modulate, premul_additive, opaque];
         for (i, a) in all.iter().enumerate() {
@@ -751,6 +846,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// #869 — wireframe is a key axis; FILL and LINE must not collide.
+    #[test]
+    fn pipeline_key_wireframe_is_distinct_axis() {
+        let opaque_fill = PipelineKey::Opaque { wireframe: false };
+        let opaque_line = PipelineKey::Opaque { wireframe: true };
+        assert_ne!(opaque_fill, opaque_line);
+        let blend_fill = PipelineKey::Blended {
+            src: 6,
+            dst: 7,
+            wireframe: false,
+        };
+        let blend_line = PipelineKey::Blended {
+            src: 6,
+            dst: 7,
+            wireframe: true,
+        };
+        assert_ne!(blend_fill, blend_line);
     }
 
     /// Regression: #398 (OBL-D4-H1) — every Gamebryo `TestFunction`

@@ -1209,14 +1209,19 @@ impl VulkanContext {
             // Two-sided is NOT a key axis (#930) — both opaque and
             // blended pipelines declare CULL_MODE as dynamic state, so
             // two-sided rendering uses per-draw `cmd_set_cull_mode`
-            // not a separate pipeline.
+            // not a separate pipeline. Wireframe IS a key axis (#869)
+            // because `polygon_mode` is static pipeline state — LINE
+            // and FILL each need their own pipeline.
             let pipeline_key = if draw_cmd.alpha_blend {
                 PipelineKey::Blended {
                     src: draw_cmd.src_blend,
                     dst: draw_cmd.dst_blend,
+                    wireframe: draw_cmd.wireframe,
                 }
             } else {
-                PipelineKey::Opaque
+                PipelineKey::Opaque {
+                    wireframe: draw_cmd.wireframe,
+                }
             };
 
             // Extend the current batch if this draw shares the same
@@ -1383,9 +1388,14 @@ impl VulkanContext {
         // every `PipelineKey::Blended` has a corresponding cache entry.
         // See #392 / #930 (two-sided dropped from key).
         for batch in &batches {
-            if let PipelineKey::Blended { src, dst } = batch.pipeline_key {
-                if !self.blend_pipeline_cache.contains_key(&(src, dst)) {
-                    if let Err(e) = self.get_or_create_blend_pipeline(src, dst) {
+            if let PipelineKey::Blended { src, dst, wireframe } = batch.pipeline_key {
+                // Normalize cache key against the device-cap gate so a
+                // disabled-wireframe device hits the same slot it would
+                // for a regular opaque blend. Matches the gate in
+                // `get_or_create_blend_pipeline`. #869.
+                let wireframe = wireframe && self.device_caps.fill_mode_non_solid_supported;
+                if !self.blend_pipeline_cache.contains_key(&(src, dst, wireframe)) {
+                    if let Err(e) = self.get_or_create_blend_pipeline(src, dst, wireframe) {
                         log::error!(
                             "Failed to create blend pipeline (src={src}, dst={dst}): {e}; \
                              draws using this combo will fall back to opaque pipeline"
@@ -1638,6 +1648,7 @@ impl VulkanContext {
             let mut last_pipeline_key = PipelineKey::Blended {
                 src: u8::MAX,
                 dst: u8::MAX,
+                wireframe: false,
             };
             // `Option` so the first batch always emits an explicit
             // `cmd_set_depth_bias` rather than relying on the
@@ -1749,17 +1760,24 @@ impl VulkanContext {
                 // `draw_cmd.two_sided`), not a separate pipeline (#930).
                 if batch.pipeline_key != last_pipeline_key {
                     let pipe = match batch.pipeline_key {
-                        PipelineKey::Opaque => self.pipeline,
-                        PipelineKey::Blended { src, dst } => {
+                        PipelineKey::Opaque { wireframe: false } => self.pipeline,
+                        // Wireframe falls back to FILL on devices
+                        // without `fillModeNonSolid`. #869.
+                        PipelineKey::Opaque { wireframe: true } => {
+                            self.pipeline_wireframe.unwrap_or(self.pipeline)
+                        }
+                        PipelineKey::Blended { src, dst, wireframe } => {
                             // Always present after the pre-population
                             // pass above. If creation failed earlier we
                             // fall back to the opaque pipeline rather
                             // than skipping the draw entirely — better
                             // a wrong-blend visible mesh than a vanished
                             // one. See #392.
+                            let wireframe =
+                                wireframe && self.device_caps.fill_mode_non_solid_supported;
                             *self
                                 .blend_pipeline_cache
-                                .get(&(src, dst))
+                                .get(&(src, dst, wireframe))
                                 .unwrap_or(&self.pipeline)
                         }
                     };
@@ -2565,6 +2583,7 @@ mod is_caustic_source_tests {
             src_blend: 6,
             dst_blend: 7,
             two_sided: false,
+            wireframe: false,
             is_decal: false,
             render_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
             bone_offset: 0,

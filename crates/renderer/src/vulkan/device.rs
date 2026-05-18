@@ -34,6 +34,15 @@ pub struct DeviceCapabilities {
     /// batches sharing `(pipeline_key, is_decal)` into a single
     /// command-buffer entry. See #309.
     pub multi_draw_indirect_supported: bool,
+    /// True if the physical device exposes `fillModeNonSolid` in
+    /// `VkPhysicalDeviceFeatures`. Required to bind a pipeline whose
+    /// `polygon_mode` is `vk::PolygonMode::LINE` (wireframe). Universally
+    /// available on desktop GPUs but missing on some mobile drivers.
+    /// When false, the wireframe pipeline variants are not created
+    /// and `NiWireframeProperty` meshes silently fall back to FILL —
+    /// the audit at #869 noted Oblivion vanilla ships zero wireframe
+    /// meshes, so the fallback is invisible to gameplay content.
+    pub fill_mode_non_solid_supported: bool,
     /// `maxPerStageDescriptorUpdateAfterBindSampledImages` from
     /// `VkPhysicalDeviceDescriptorIndexingProperties` (Vulkan 1.2 core),
     /// already clamped to a sane ceiling. The `TextureRegistry` sizes its
@@ -189,6 +198,7 @@ fn is_device_suitable(
         0.0
     };
     let multi_draw_indirect_supported = features.multi_draw_indirect == vk::TRUE;
+    let fill_mode_non_solid_supported = features.fill_mode_non_solid == vk::TRUE;
 
     // Query descriptor indexing properties for the UPDATE_AFTER_BIND bindless
     // array ceiling. Vulkan 1.2 core exposes this via the pNext chain on
@@ -285,6 +295,7 @@ fn is_device_suitable(
                 sampler_anisotropy_supported,
                 max_sampler_anisotropy,
                 multi_draw_indirect_supported,
+                fill_mode_non_solid_supported,
                 max_bindless_sampled_images,
                 min_accel_struct_scratch_offset_alignment,
             },
@@ -333,6 +344,12 @@ pub fn create_logical_device(
         // pre-#309 per-batch loop) kicks in if the device doesn't
         // expose it.
         .multi_draw_indirect(caps.multi_draw_indirect_supported)
+        // #869 — enables `vk::PolygonMode::LINE` so wireframe pipeline
+        // variants can be created. Silently downgrades to FILL when
+        // the device doesn't expose it (mobile / some compute-only
+        // GPUs); Oblivion vanilla ships zero wireframe meshes so the
+        // fallback is invisible to gameplay content.
+        .fill_mode_non_solid(caps.fill_mode_non_solid_supported)
         // Required for atomicAdd on the ray budget SSBO (binding 11) in
         // the fragment shader. Universally available on desktop Vulkan 1.0
         // GPUs; the RT mipmap system won't compile pipelines without it.

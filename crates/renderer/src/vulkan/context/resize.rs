@@ -135,6 +135,7 @@ impl VulkanContext {
                 destroy_render_pass_pipelines(
                     &self.device,
                     &mut self.pipeline,
+                    &mut self.pipeline_wireframe,
                     &mut self.blend_pipeline_cache,
                     &mut self.pipeline_ui,
                 );
@@ -207,8 +208,10 @@ impl VulkanContext {
                 self.swapchain_state.extent,
                 self.pipeline_cache,
                 self.pipeline_layout,
+                self.device_caps.fill_mode_non_solid_supported,
             )?;
             self.pipeline = pipelines.opaque;
+            self.pipeline_wireframe = pipelines.opaque_wireframe;
 
             self.pipeline_ui = pipeline::create_ui_pipeline(
                 &self.device,

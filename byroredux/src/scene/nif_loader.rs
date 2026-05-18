@@ -770,6 +770,11 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 alpha_threshold: mesh.alpha_threshold,
                 alpha_test_func: mesh.alpha_test_func,
                 material_kind: mesh.material_kind,
+                // #869 — NiWireframeProperty / NiShadeProperty captured
+                // by the NIF importer flow through here so the
+                // draw-time pipeline selector can route batches.
+                wireframe: mesh.wireframe,
+                flat_shading: mesh.flat_shading,
                 z_test: mesh.z_test,
                 z_write: mesh.z_write,
                 z_function: mesh.z_function,

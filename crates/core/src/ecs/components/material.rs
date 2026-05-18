@@ -114,6 +114,21 @@ pub struct Material {
     /// pre-fix `as u8` cast in the importer silently masked any value
     /// ≥ 256.
     pub material_kind: u32,
+    /// `NiWireframeProperty` flag (flags=1 enables wireframe rendering).
+    /// When true the renderer routes the batch through the
+    /// `vk::PolygonMode::LINE` pipeline variant (#869). Falls back to
+    /// FILL silently when the device lacks `fillModeNonSolid`.
+    /// Default false. Oblivion vanilla ships zero wireframe meshes;
+    /// the field exists for FO3/FNV mod content and future debug
+    /// overlays.
+    pub wireframe: bool,
+    /// `NiShadeProperty` flag (flags=0 requests flat shading).
+    /// When true the fragment shader replaces the interpolated vertex
+    /// normal with the per-face derivative `cross(dFdx(world_pos),
+    /// dFdy(world_pos))` so the mesh reads as faceted. Default false.
+    /// Used by a handful of Oblivion architectural pieces.
+    /// (#869 — flat-shading consumer lands in a follow-up commit.)
+    pub flat_shading: bool,
     /// Depth test enabled (`NiZBufferProperty.z_test`). Default true.
     /// Forwarded into the per-batch `vkCmdSetDepthTestEnable` call
     /// in the draw loop. See #398 (OBL-D4-H1).
@@ -229,6 +244,8 @@ impl Default for Material {
             alpha_threshold: 0.0,
             alpha_test_func: 6, // GREATEREQUAL default
             material_kind: 0,   // Default lit
+            wireframe: false,
+            flat_shading: false,
             z_test: true,
             z_write: true,
             z_function: 3, // LESSEQUAL — Gamebryo default

@@ -58,6 +58,10 @@ pub struct DrawCommand {
     /// when `alpha_blend` is true. 7 = INV_SRC_ALPHA (default).
     pub dst_blend: u8,
     pub two_sided: bool,
+    /// `NiWireframeProperty` flag — when true the batch routes to the
+    /// `vk::PolygonMode::LINE` pipeline variant. Falls back to FILL
+    /// silently when the device lacks `fillModeNonSolid`. See #869.
+    pub wireframe: bool,
     /// Decal geometry — renders on top of coplanar surfaces via depth bias.
     pub is_decal: bool,
     /// Content-class layer for the per-layer depth-bias ladder. Replaces
@@ -1014,6 +1018,10 @@ pub struct VulkanContext {
     /// CULL_MODE` the static value is ignored, so they compiled to
     /// identical machine code.
     pipeline: vk::Pipeline,
+    /// Opaque wireframe pipeline (`polygon_mode = LINE`). `None` when
+    /// the device lacks `fillModeNonSolid`; the draw-time selector
+    /// falls back to `pipeline` (filled) when this is `None`. #869.
+    pipeline_wireframe: Option<vk::Pipeline>,
     /// Lazy cache of blended pipelines, keyed by `(src, dst)` from
     /// `NiAlphaProperty.flags` (Gamebryo `AlphaFunction` enum). Each
     /// entry has depth-write disabled, blend on with the exact factor
@@ -1026,7 +1034,12 @@ pub struct VulkanContext {
     /// dropped from the key (same dynamic-CULL_MODE rationale as the
     /// opaque pipeline) — halves the cache size and removes a redundant
     /// `cmd_bind_pipeline` per `two_sided` flip in the alpha-blend pass.
-    blend_pipeline_cache: HashMap<(u8, u8), vk::Pipeline>,
+    /// Cache key: `(src, dst, wireframe)`. The wireframe boolean was
+    /// added under #869 — entries are independent per polygon mode so
+    /// a blend material with `NiWireframeProperty` gets its own
+    /// pipeline. Only reachable when `caps.fill_mode_non_solid_supported`
+    /// is true; callers must gate.
+    blend_pipeline_cache: HashMap<(u8, u8, bool), vk::Pipeline>,
     pipeline_ui: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     /// Mesh handle for the fullscreen quad used by UI overlay.
@@ -1353,7 +1366,10 @@ impl VulkanContext {
             None
         };
 
-        // 14. Graphics pipeline (with depth test + descriptor set layouts for set 0 + set 1)
+        // 14. Graphics pipeline (with depth test + descriptor set layouts for set 0 + set 1).
+        // `fill_mode_non_solid_supported` gates the wireframe variant
+        // (#869) — when false, only the FILL opaque pipeline is built
+        // and `NiWireframeProperty` content silently renders filled.
         let pipelines = pipeline::create_triangle_pipeline(
             &device,
             render_pass,
@@ -1361,6 +1377,7 @@ impl VulkanContext {
             texture_registry.descriptor_set_layout,
             scene_buffers.descriptor_set_layout,
             pipeline_cache,
+            device_caps.fill_mode_non_solid_supported,
         )?;
 
         // 15. UI overlay pipeline (no depth, alpha blend, passthrough shaders)
@@ -1770,6 +1787,7 @@ impl VulkanContext {
             render_pass,
             pipeline_cache,
             pipeline: pipelines.opaque,
+            pipeline_wireframe: pipelines.opaque_wireframe,
             blend_pipeline_cache: HashMap::new(),
             pipeline_ui,
             pipeline_layout: pipelines.layout,
@@ -1909,8 +1927,17 @@ impl VulkanContext {
     /// Pipelines created here are tied to the current render pass and
     /// must be destroyed and re-created on swapchain recreate
     /// ([`recreate_swapchain`](Self::recreate_swapchain)).
-    pub fn get_or_create_blend_pipeline(&mut self, src: u8, dst: u8) -> Result<vk::Pipeline> {
-        let key = (src, dst);
+    pub fn get_or_create_blend_pipeline(
+        &mut self,
+        src: u8,
+        dst: u8,
+        wireframe: bool,
+    ) -> Result<vk::Pipeline> {
+        // Downgrade wireframe → fill if the device doesn't support
+        // `vk::PolygonMode::LINE`. #869 — Oblivion vanilla ships zero
+        // wireframe meshes so the fallback is invisible to content.
+        let wireframe = wireframe && self.device_caps.fill_mode_non_solid_supported;
+        let key = (src, dst, wireframe);
         if let Some(&pipe) = self.blend_pipeline_cache.get(&key) {
             return Ok(pipe);
         }
@@ -1922,6 +1949,7 @@ impl VulkanContext {
             self.pipeline_layout,
             src,
             dst,
+            wireframe,
         )?;
         self.blend_pipeline_cache.insert(key, pipe);
         Ok(pipe)
@@ -2227,6 +2255,7 @@ impl Drop for VulkanContext {
             destroy_render_pass_pipelines(
                 &self.device,
                 &mut self.pipeline,
+                &mut self.pipeline_wireframe,
                 &mut self.blend_pipeline_cache,
                 &mut self.pipeline_ui,
             );
@@ -2338,6 +2367,7 @@ mod draw_command_tests {
             src_blend: 6,
             dst_blend: 7,
             two_sided: false,
+            wireframe: false,
             is_decal: false,
             render_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
             bone_offset: 0,

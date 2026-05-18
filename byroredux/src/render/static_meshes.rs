@@ -501,6 +501,11 @@ pub(super) fn collect_static_mesh_draws(
                     src_blend,
                     dst_blend,
                     two_sided,
+                    // #869 — NiWireframeProperty routes to the
+                    // `vk::PolygonMode::LINE` pipeline variant. Falls
+                    // back to FILL silently when the device lacks
+                    // `fillModeNonSolid`.
+                    wireframe: mat.map(|m| m.wireframe).unwrap_or(false),
                     is_decal,
                     // #renderlayer — final per-entity layer (already
                     // computed above as `render_layer_for_entity`,

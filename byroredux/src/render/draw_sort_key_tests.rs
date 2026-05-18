@@ -12,6 +12,7 @@ fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
         src_blend: 6,
         dst_blend: 7,
         two_sided,
+        wireframe: false,
         is_decal,
         render_layer: if is_decal {
             RenderLayer::Decal

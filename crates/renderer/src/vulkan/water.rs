@@ -513,6 +513,7 @@ mod tests {
             src_blend: 6,
             dst_blend: 7,
             two_sided: false,
+            wireframe: false,
             is_decal: false,
             render_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
             bone_offset: 0,
