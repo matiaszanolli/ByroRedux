@@ -198,13 +198,6 @@ fn listener_loop(
         }
         match listener.accept() {
             Ok((stream, addr)) => {
-                // Don't accept new clients after shutdown was signalled —
-                // they'd never observe it and would survive past the
-                // listener join.
-                if shutdown.load(Ordering::Acquire) {
-                    drop(stream);
-                    return;
-                }
                 log::info!("Debug client connected from {}", addr);
                 // #1009 — wrap the stream in `Arc` so the listener can
                 // hold a `Weak` reference for shutdown-side-channel
@@ -214,8 +207,21 @@ fn listener_loop(
                 // Weak entries before pushing the new one so the
                 // registry doesn't grow unbounded across the session.
                 let stream_arc = Arc::new(stream);
+                // #1172 — fold the post-accept shutdown check into the
+                // critical section that pushes onto `active_streams`.
+                // Pre-fix the check fired at the top of the Ok arm,
+                // leaving a window between push and spawn where a
+                // shutdown signal would still result in a per-client
+                // thread being spawned. Doing it under the lock here
+                // makes the check + push + spawn decision atomic.
                 {
                     let mut active = active_streams.lock().unwrap();
+                    if shutdown.load(Ordering::Acquire) {
+                        // Drop the strong Arc → closes the socket; the
+                        // Weak we never pushed won't survive either.
+                        drop(stream_arc);
+                        return;
+                    }
                     active.retain(|w| w.upgrade().is_some());
                     active.push(Arc::downgrade(&stream_arc));
                 }
