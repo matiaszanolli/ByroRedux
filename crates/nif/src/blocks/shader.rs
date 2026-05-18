@@ -877,9 +877,13 @@ impl BSLightingShaderProperty {
         {
             let sub = stream.read_f32_le()?;
             let rim = stream.read_f32_le()?;
-            // Backlight only present if rimlight is not the FLT_MAX sentinel.
-            // Use 3.0e38 threshold (below 3.4028235e38) to handle float precision.
-            let back = if rim < 3.0e38 {
+            // Backlight present iff Rimlight Power is the FLT_MAX sentinel,
+            // per nif.xml 6609: `cond="(Rimlight Power #GTE# #FLT_MAX#) #AND#
+            // (Rimlight Power #LT# #FLT_INF#)"`. Matches openmw
+            // `property.cpp:335` (`== FLT_MAX`) and nifly `Shaders.cpp:477`
+            // (`>= NiFloatMax && < NiFloatInf`). 3.0e38 stays within FLT_MAX
+            // float precision. #1175.
+            let back = if rim >= 3.0e38 && rim.is_finite() {
                 stream.read_f32_le()?
             } else {
                 0.0

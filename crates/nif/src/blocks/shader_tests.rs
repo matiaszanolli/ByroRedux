@@ -503,7 +503,9 @@ fn build_bs_lighting_fo4_env_map() -> Vec<u8> {
     // (the parser skips these with (0.0, 0.0))
     // FO4 common fields:
     data.extend_from_slice(&0.3f32.to_le_bytes()); // subsurface_rolloff
-    data.extend_from_slice(&2.5f32.to_le_bytes()); // rimlight_power (< FLT_MAX → has backlight)
+    // rimlight_power = FLT_MAX sentinel → has backlight (#1175). Pre-fix
+    // this fixture authored a finite 2.5 to match an inverted gate.
+    data.extend_from_slice(&f32::MAX.to_le_bytes()); // rimlight_power
     data.extend_from_slice(&1.0f32.to_le_bytes()); // backlight_power
     data.extend_from_slice(&0.7f32.to_le_bytes()); // grayscale_to_palette_scale
     data.extend_from_slice(&5.0f32.to_le_bytes()); // fresnel_power
@@ -593,9 +595,10 @@ fn bs_lighting_bsver_131_skips_flag_pair_and_crc_counts() {
         data.extend_from_slice(&v.to_le_bytes());
     }
     // FO4 common fields (BSVER 130..139): subsurface/rimlight/backlight/
-    // grayscale/fresnel.
+    // grayscale/fresnel. rimlight=FLT_MAX so backlight bytes are
+    // present per nif.xml 6609 (#1175).
     data.extend_from_slice(&0.3f32.to_le_bytes());
-    data.extend_from_slice(&2.5f32.to_le_bytes());
+    data.extend_from_slice(&f32::MAX.to_le_bytes());
     data.extend_from_slice(&1.0f32.to_le_bytes());
     data.extend_from_slice(&0.7f32.to_le_bytes());
     data.extend_from_slice(&5.0f32.to_le_bytes());
@@ -667,7 +670,8 @@ fn bs_lighting_bsver_132_reads_crc_counts_but_not_flag_pair() {
         data.extend_from_slice(&v.to_le_bytes());
     }
     data.extend_from_slice(&0.3f32.to_le_bytes());
-    data.extend_from_slice(&2.5f32.to_le_bytes());
+    // rimlight=FLT_MAX → backlight present (#1175 / nif.xml 6609).
+    data.extend_from_slice(&f32::MAX.to_le_bytes());
     data.extend_from_slice(&1.0f32.to_le_bytes());
     data.extend_from_slice(&0.7f32.to_le_bytes());
     data.extend_from_slice(&5.0f32.to_le_bytes());
@@ -1046,7 +1050,8 @@ fn parse_bs_lighting_fo4_env_map_with_wetness() {
     assert_eq!(prop.shader_flags_1, 0x80000000); // FO4 flags read correctly
     assert!((prop.glossiness - 0.5).abs() < 1e-6); // "smoothness" in FO4
     assert!((prop.subsurface_rolloff - 0.3).abs() < 1e-6);
-    assert!((prop.rimlight_power - 2.5).abs() < 1e-6);
+    // #1175: rimlight=FLT_MAX is the sentinel that gates Backlight presence.
+    assert_eq!(prop.rimlight_power, f32::MAX);
     assert!((prop.backlight_power - 1.0).abs() < 1e-6);
     assert!((prop.grayscale_to_palette_scale - 0.7).abs() < 1e-6);
     assert!((prop.fresnel_power - 5.0).abs() < 1e-6);
@@ -1070,6 +1075,55 @@ fn parse_bs_lighting_fo4_env_map_with_wetness() {
         }
         _ => panic!("expected EnvironmentMap"),
     }
+    assert_eq!(stream.position(), data.len() as u64);
+}
+
+/// #1175 — pin the inverted-case Backlight Power gate. Per nif.xml 6609,
+/// Backlight Power is present iff Rimlight Power is the FLT_MAX sentinel.
+/// When Rimlight Power is a real finite override (e.g. 2.5), no Backlight
+/// float follows on disk — the next 4 bytes are Grayscale to Palette Scale.
+///
+/// Pre-#1175 the gate was logically inverted (`rim < 3.0e38 → read backlight`),
+/// so a fixture with `rim=2.5` could match the inverted code by happening to
+/// author a backlight float. This test pins the spec-correct shape: a finite
+/// rim, NO backlight bytes, the grayscale value sits where backlight would.
+#[test]
+fn parse_bs_lighting_fo4_finite_rimlight_skips_backlight() {
+    let header = make_fo4_header();
+    let mut data = build_bs_lighting_fo4_env_map();
+
+    // Locate the rim/back/gray triple inside the assembled body. The
+    // helper writes `subsurface_rolloff=0.3` followed by `rim=FLT_MAX`,
+    // `back=1.0`, `gray=0.7`. We rewrite the first 12 bytes after the
+    // subsurface marker so the on-disk layout is:
+    //   rim = 2.5  (finite, NOT the FLT_MAX sentinel)
+    //   gray = 0.7  (immediately after rim — no backlight float)
+    //   fresnel = 5.0  (shifted 4 bytes earlier vs sentinel layout)
+    // and trim 4 trailing bytes so the buffer length matches.
+    let mut new_data = Vec::with_capacity(data.len() - 4);
+    let subsurface_off = data
+        .windows(4)
+        .position(|w| w == 0.3f32.to_le_bytes())
+        .expect("locate subsurface marker");
+    new_data.extend_from_slice(&data[..subsurface_off + 4]);
+    new_data.extend_from_slice(&2.5f32.to_le_bytes()); // rim (finite override)
+    // backlight bytes intentionally absent
+    new_data.extend_from_slice(&0.7f32.to_le_bytes()); // grayscale (was after backlight)
+    new_data.extend_from_slice(&5.0f32.to_le_bytes()); // fresnel
+    // skip past the four floats the helper wrote after subsurface
+    // (rim, back, gray, fresnel = 16 B); resume at wetness.
+    new_data.extend_from_slice(&data[subsurface_off + 4 + 4 * 4..]);
+    data = new_data;
+
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+    assert!((prop.rimlight_power - 2.5).abs() < 1e-6);
+    assert_eq!(
+        prop.backlight_power, 0.0,
+        "finite rimlight must leave backlight at its absent-field default"
+    );
+    assert!((prop.grayscale_to_palette_scale - 0.7).abs() < 1e-6);
+    assert!((prop.fresnel_power - 5.0).abs() < 1e-6);
     assert_eq!(stream.position(), data.len() as u64);
 }
 
