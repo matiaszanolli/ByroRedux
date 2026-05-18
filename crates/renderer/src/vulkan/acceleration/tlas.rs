@@ -84,7 +84,12 @@ impl AccelerationManager {
         // required adding ad-hoc logs every time. Bounded sample to
         // keep the log line readable; the count above stays exact.
         const MISSING_BLAS_SAMPLE_LIMIT: usize = 5;
-        let mut missing_samples: Vec<String> = Vec::new();
+        // #1142 — amortise the scratch Vec via `mem::take` (same
+        // ping-pong as `tlas_instances_scratch`). On healthy steady-
+        // state frames the scratch comes back empty and we save one
+        // small Vec allocation per frame.
+        let mut missing_samples = std::mem::take(&mut self.tlas_missing_samples_scratch);
+        missing_samples.clear();
         for (i, draw_cmd) in draw_commands.iter().enumerate() {
             // Two-axis eligibility (#516 + #1024 / F-WAT-03):
             //  - `in_tlas == false` skips particles / UI quads / other
@@ -789,6 +794,11 @@ impl AccelerationManager {
             instance_count as usize,
             512,
         );
+        // #1142 — restore the missing-samples scratch. Capacity is
+        // bounded by MISSING_BLAS_SAMPLE_LIMIT = 5, so no shrink
+        // is needed; the inner Strings are dropped by `clear()` on
+        // the next frame's `mem::take`.
+        self.tlas_missing_samples_scratch = missing_samples;
 
         Ok(())
     }

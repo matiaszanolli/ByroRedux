@@ -113,6 +113,15 @@ pub struct AccelerationManager {
     /// panic-safe restore + capacity-amortisation lag behaviours as
     /// `tlas_instances_scratch` (REN-D8-NEW-03 / NEW-09).
     pub(super) tlas_addresses_scratch: Vec<u64>,
+    /// Reusable scratch for the bounded sample of missing-BLAS log
+    /// strings emitted by `build_tlas`. Pre-#1142 this allocated a
+    /// fresh `Vec<String>` every frame regardless of whether anything
+    /// was actually missing — bounded by `MISSING_BLAS_SAMPLE_LIMIT
+    /// = 5` but heap-touching. Same `mem::take` ping-pong as the
+    /// sibling scratches; the inner `String` allocations on the miss
+    /// path are unavoidable (each is a unique `format!` describing a
+    /// specific entity / mesh handle).
+    pub(super) tlas_missing_samples_scratch: Vec<String>,
     /// Monotonic frame counter for BLAS LRU tracking. **Shared across
     /// every TLAS slot** — there's no per-slot counter. Each TLAS slot's
     /// `last_used_frame` field on its `BlasEntry` references stamp this
@@ -211,6 +220,7 @@ impl AccelerationManager {
             blas_scratch_buffer: None,
             tlas_instances_scratch: Vec::new(),
             tlas_addresses_scratch: Vec::new(),
+            tlas_missing_samples_scratch: Vec::new(),
             frame_counter: 0,
             total_blas_bytes: 0,
             static_blas_bytes: 0,
