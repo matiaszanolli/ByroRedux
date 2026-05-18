@@ -162,11 +162,17 @@ pub struct WorldStreamingState {
     /// `request_tx` (so the worker's recv loop exits) and joins this
     /// handle with a bounded timeout (#856). Kept inside `Option` so
     /// `shutdown` can move the handle out of `self` by destructure
-    /// without `JoinHandle: Default`.
+    /// without `JoinHandle: Default`. The [`Drop`] impl on
+    /// `WorldStreamingState` (#1167) mirrors that shutdown handshake
+    /// for any exit path that bypasses the explicit call.
     pub worker: Option<JoinHandle<()>>,
-    /// mpsc channel sending requests to the worker. Dropped on
-    /// `WorldStreamingState` Drop so the worker exits cleanly.
-    pub request_tx: mpsc::Sender<LoadCellRequest>,
+    /// mpsc channel sending requests to the worker. Wrapped in
+    /// `Option` so [`Drop`] (#1167) can `take()` it and drop the
+    /// sender BEFORE the worker `JoinHandle` is dropped — Rust's
+    /// declaration-order field-drop would otherwise drop the worker
+    /// (= detach) before the channel close, defeating the join. Send
+    /// sites go through [`WorldStreamingState::send_request`].
+    pub request_tx: Option<mpsc::Sender<LoadCellRequest>>,
     /// mpsc receiver for completed payloads. Drained each frame by the
     /// App driver; non-blocking via `try_recv`.
     pub payload_rx: mpsc::Receiver<LoadCellPayload>,
@@ -203,12 +209,25 @@ impl WorldStreamingState {
             radius_unload: radius_load + 1,
             last_player_grid: None,
             worker: Some(worker),
-            request_tx,
+            request_tx: Some(request_tx),
             payload_rx,
         }
     }
 
-    /// Graceful shutdown — drop the request channel so the worker's
+    /// Send a load request to the worker. Returns `Err` if the worker
+    /// channel has already been closed (Drop / shutdown). Hides the
+    /// `Option<Sender>` field shape introduced for the #1167 Drop fix.
+    pub fn send_request(
+        &self,
+        req: LoadCellRequest,
+    ) -> Result<(), mpsc::SendError<LoadCellRequest>> {
+        match self.request_tx.as_ref() {
+            Some(tx) => tx.send(req),
+            None => Err(mpsc::SendError(req)),
+        }
+    }
+
+    /// Graceful shutdown — close the request channel so the worker's
     /// recv loop exits, then join the worker with a bounded timeout.
     /// On timeout the worker is detached (matches the pre-#856
     /// unconditional-detach behaviour as a fallback). Replaces the
@@ -220,22 +239,27 @@ impl WorldStreamingState {
     /// network filesystems or contended spinning disks); a slow
     /// extract should not block process teardown indefinitely. See
     /// AUDIT_CONCURRENCY_2026-05-05.md / C6-NEW-03.
-    pub fn shutdown(self, timeout: std::time::Duration) {
-        let Self {
-            worker, request_tx, ..
-        } = self;
-        // Drop the sender *first*. The worker's `request_rx.recv()`
-        // returns Err on its next loop iteration and the thread exits.
-        // The matching `payload_rx` drop happens as part of the
-        // destructure's `..` (Drop runs on the discarded fields),
-        // closing the payload channel from the consumer side — if the
-        // worker is currently inside `payload_tx.send(payload)` it
-        // observes the closed receiver and bails via the existing
-        // post-#854 break path.
-        drop(request_tx);
-        let Some(handle) = worker else {
+    ///
+    /// Takes `&mut self` (#1167) — the [`Drop`] safety-net calls into
+    /// this same method, so both paths share one implementation. After
+    /// `shutdown` returns, subsequent calls (including the eventual
+    /// `Drop`) observe `worker: None` and short-circuit, so the join
+    /// runs exactly once.
+    pub fn shutdown(&mut self, timeout: std::time::Duration) {
+        // Take the worker handle so the eventual `Drop` skips the
+        // detaching path; the join below is the only place we wait on
+        // this thread.
+        let Some(handle) = self.worker.take() else {
             return;
         };
+        // Close the request channel BEFORE the join. The worker's
+        // `request_rx.recv()` returns Err on its next loop iteration
+        // and the thread exits. The matching `payload_rx` will be
+        // dropped automatically when `self` is dropped — if the worker
+        // is currently inside `payload_tx.send(payload)` it observes
+        // the closed receiver and bails via the existing post-#854
+        // break path.
+        let _ = self.request_tx.take();
         match join_with_timeout(handle, timeout) {
             Ok(()) => log::info!("cell-stream worker joined cleanly on shutdown"),
             Err(JoinTimeout) => log::warn!(
@@ -245,6 +269,22 @@ impl WorldStreamingState {
                 timeout
             ),
         }
+    }
+}
+
+/// Safety-net teardown for every exit path that doesn't go through the
+/// explicit [`WorldStreamingState::shutdown`] handshake (e.g. the
+/// `--bench-frames` natural exit at `main.rs` and the panic / error
+/// exits that call `event_loop.exit()` without first taking the
+/// streaming state out of `App`). See #1167 / CONC-D6-NEW-01.
+///
+/// Delegates to `shutdown` with a fixed 1 s timeout. If `shutdown` was
+/// already called explicitly, the take()'s inside it have set
+/// `worker = None` / `request_tx = None`, so this re-entry observes
+/// the short-circuit and is a no-op — the join runs exactly once.
+impl Drop for WorldStreamingState {
+    fn drop(&mut self) {
+        self.shutdown(std::time::Duration::from_secs(1));
     }
 }
 

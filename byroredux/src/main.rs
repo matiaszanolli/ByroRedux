@@ -797,7 +797,7 @@ impl App {
                 tex_provider: state.tex_provider.clone(),
                 cached_keys: cached_keys.clone(),
             };
-            if state.request_tx.send(req).is_err() {
+            if state.send_request(req).is_err() {
                 log::error!(
                     "Streaming worker channel closed; cell ({},{}) cannot be loaded",
                     gx,
@@ -1070,8 +1070,11 @@ impl ApplicationHandler for App {
                 // `request_tx` first, then joins with a 1-second
                 // bound so a slow `BsaArchive::extract()` can't
                 // block process teardown.
-                if let Some(state) = self.streaming.take() {
+                if let Some(mut state) = self.streaming.take() {
                     state.shutdown(std::time::Duration::from_secs(1));
+                    // `state` goes out of scope here. Drop runs but
+                    // `shutdown` already took `worker` and `request_tx`
+                    // so it short-circuits — the join is not repeated.
                 }
                 self.renderer.take();
                 self.window.take();

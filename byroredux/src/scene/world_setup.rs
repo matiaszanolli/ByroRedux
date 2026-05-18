@@ -586,7 +586,7 @@ pub(super) fn stream_initial_radius(
             tex_provider: state.tex_provider.clone(),
             cached_keys: cached_keys.clone(),
         };
-        if state.request_tx.send(req).is_err() {
+        if state.send_request(req).is_err() {
             log::error!(
                 "Streaming worker channel closed during initial-radius dispatch \
                  — cell ({},{}) cannot be loaded",
