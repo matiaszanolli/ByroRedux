@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::sync::Once;
 
 use crate::components::{
-    AlphaBlend, CellLightingRes, CloudSimState, DarkMapHandle, ExtraTextureMaps, IsFxMesh,
-    NormalMapHandle, SkyParamsRes, TerrainTileSlot, TwoSided,
+    AlphaBlend, CellLightingRes, DarkMapHandle, ExtraTextureMaps, IsFxMesh, NormalMapHandle,
+    SkyParamsRes, TerrainTileSlot, TwoSided,
 };
 
 /// Once-per-session gate for the bone-palette overflow warn — see the
@@ -1400,78 +1400,9 @@ pub(crate) fn build_render_data(
         .max(0.0);
     drop(cell_lit);
 
-    // Sky params from ECS resource (exterior cells) or default (interior/none).
-    // #803 — cloud scroll lives on `CloudSimState` (survives cell
-    // transitions); the rest comes from `SkyParamsRes` (rebuilt per
-    // exterior load). When CloudSimState is absent (interior-only
-    // session before any exterior load) the scroll defaults to zero.
-    let sky = if let Some(sky_res) = world.try_resource::<SkyParamsRes>() {
-        let clouds = world.try_resource::<CloudSimState>();
-        let scroll = clouds
-            .as_ref()
-            .map(|c| {
-                (
-                    c.cloud_scroll,
-                    c.cloud_scroll_1,
-                    c.cloud_scroll_2,
-                    c.cloud_scroll_3,
-                )
-            })
-            .unwrap_or_default();
-        SkyParams {
-            zenith_color: sky_res.zenith_color,
-            horizon_color: sky_res.horizon_color,
-            lower_color: sky_res.lower_color,
-            sun_direction: sky_res.sun_direction,
-            sun_color: sky_res.sun_color,
-            sun_size: sky_res.sun_size,
-            sun_intensity: sky_res.sun_intensity,
-            // Tangent-plane disk approximation valid only for α < ~0.05 rad
-            // (documented in triangle.frag:2418-2425). Debug-mode guard so a
-            // per-cell override above 0.1 rad fails loudly instead of silently
-            // producing biased penumbras. (#1109 / REN-D20-002)
-            sun_angular_radius: {
-                debug_assert!(
-                    sky_res.sun_angular_radius < 0.10,
-                    "sun_angular_radius {:.4} rad exceeds tangent-plane approximation \
-                     threshold (~0.05 rad); penumbra sampling will be visibly biased.",
-                    sky_res.sun_angular_radius,
-                );
-                sky_res.sun_angular_radius
-            },
-            is_exterior: sky_res.is_exterior,
-            cloud_scroll: scroll.0,
-            cloud_tile_scale: sky_res.cloud_tile_scale,
-            cloud_texture_index: sky_res.cloud_texture_index,
-            sun_texture_index: sky_res.sun_texture_index,
-            cloud_scroll_1: scroll.1,
-            cloud_tile_scale_1: sky_res.cloud_tile_scale_1,
-            cloud_texture_index_1: sky_res.cloud_texture_index_1,
-            cloud_scroll_2: scroll.2,
-            cloud_tile_scale_2: sky_res.cloud_tile_scale_2,
-            cloud_texture_index_2: sky_res.cloud_texture_index_2,
-            cloud_scroll_3: scroll.3,
-            cloud_tile_scale_3: sky_res.cloud_tile_scale_3,
-            cloud_texture_index_3: sky_res.cloud_texture_index_3,
-            // #993 — pass the per-TOD-lerped 6-axis ambient cube
-            // through to the renderer. Engine-Y-up axes (the
-            // Zup → Yup swap lives in DalcCubeYup::from_skyrim_zup).
-            dalc_cube: sky_res.current_dalc_cube.map(|c| {
-                byroredux_renderer::vulkan::context::SkyDalcCube {
-                    pos_x: c.pos_x,
-                    neg_x: c.neg_x,
-                    pos_y: c.pos_y,
-                    neg_y: c.neg_y,
-                    pos_z: c.pos_z,
-                    neg_z: c.neg_z,
-                    specular: c.specular,
-                    fresnel_power: c.fresnel_power,
-                }
-            }),
-        }
-    } else {
-        SkyParams::default()
-    };
+    // Sky params (TOD palette + cloud scroll + sun + DALC cube) — see
+    // `render::sky::build_sky_params`.
+    let sky = sky::build_sky_params(world);
 
     // ── Water-plane re-emit ───────────────────────────────────────
     //
@@ -1596,6 +1527,12 @@ pub(crate) fn build_render_data(
         sky,
     }
 }
+
+// Per-section sub-modules (TD9-001 sweep, #1115). Each sibling owns
+// one of the 8 query families in `build_render_data`; the parent
+// orchestrator above acquires the World queries once and threads
+// references through.
+mod sky;
 
 #[cfg(test)]
 mod bone_palette_overflow_tests;
