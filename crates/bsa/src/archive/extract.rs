@@ -27,7 +27,26 @@ impl BsaArchive {
         // one `open()` syscall per file with hundreds of meshes per cell
         // load. Mutex serialises the seek/read pair so concurrent
         // extracts can't trample each other's file cursor.
-        let mut file = self.file.lock().expect("BSA file mutex poisoned");
+        //
+        // #1170 — recover from poison instead of re-panicking. The file
+        // position state is fully reset by the `seek(SeekFrom::Start(...))`
+        // immediately below, so poison carries no recovery-required
+        // invariant: a previous panic mid-extract is bounded to that one
+        // failed extract, not a permanent worker-killer. The per-NIF
+        // rayon panic guard in `streaming::pre_parse_cell` was otherwise
+        // turning one parser panic into N panics across every subsequent
+        // extract.
+        let mut file = match self.file.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                log::warn!(
+                    "BSA file mutex was poisoned (parser panic in a prior \
+                     extract); recovering for path {}",
+                    path
+                );
+                poisoned.into_inner()
+            }
+        };
         file.seek(SeekFrom::Start(entry.offset))?;
 
         // Skip embedded file name prefix (bstring: 1 byte length + name).

@@ -364,7 +364,24 @@ impl Ba2Archive {
         })?;
 
         // Reuse the long-lived file handle — see #360.
-        let mut file = self.file.lock().expect("BA2 file mutex poisoned");
+        //
+        // #1170 — recover from poison instead of re-panicking. Each
+        // extract path (`extract_general` / `extract_dx10`) seeks to its
+        // own offset, so file position state is fully reset; a prior
+        // panic mid-extract poisons the mutex but carries no recovery-
+        // required invariant. Matches the sibling fix in
+        // `crates/bsa/src/archive/extract.rs`.
+        let mut file = match self.file.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                log::warn!(
+                    "BA2 file mutex was poisoned (parser panic in a prior \
+                     extract); recovering for path {}",
+                    path
+                );
+                poisoned.into_inner()
+            }
+        };
         match entry {
             Ba2Entry::General {
                 offset,
