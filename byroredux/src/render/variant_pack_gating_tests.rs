@@ -7,10 +7,16 @@ use byroredux_core::ecs::{
 fn run_build(world: &World) -> Vec<DrawCommand> {
     let mut draw_commands = Vec::new();
     let mut gpu_lights = Vec::new();
-    // M29.5 — pre-multiplied palette split into bone_world + bind_inverses.
+    // M29.6 — bone_world sparse-indexed by SkinSlotPool; bind_inverses
+    // moved to a persistent GPU SSBO.
     let mut bone_world = Vec::new();
-    let mut bind_inverses = Vec::new();
     let mut skin_offsets = HashMap::new();
+    // M29.6 — same `(MAX_TOTAL_BONES / MBPM) - 1` capacity as main.rs.
+    let max_skinned = ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
+        / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
+        - 1) as u32;
+    let mut skin_slot_pool =
+        byroredux_core::ecs::resources::SkinSlotPool::new(max_skinned);
     let mut material_table = byroredux_renderer::MaterialTable::new();
     let mut water_commands = Vec::new();
     let _ = build_render_data(
@@ -19,8 +25,8 @@ fn run_build(world: &World) -> Vec<DrawCommand> {
         &mut water_commands,
         &mut gpu_lights,
         &mut bone_world,
-        &mut bind_inverses,
         &mut skin_offsets,
+        &mut skin_slot_pool,
         &mut material_table,
         None,
     );

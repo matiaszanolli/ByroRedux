@@ -120,15 +120,21 @@ impl VulkanContext {
         view_proj: &[f32; 16],
         draw_commands: &[DrawCommand],
         lights: &[scene_buffer::GpuLight],
-        // M29.5 — two parallel input arrays for the GPU palette compute
-        // pass (`skin_palette.comp`). `bone_world[i]` is the per-slot
-        // raw world transform sourced from `GlobalTransform`;
-        // `bind_inverses[i]` is the matching `NiSkinData.boneTransform`.
-        // Length must match; the GPU writes
-        // `palette[i] = bone_world[i] * bind_inverses[i]` into the
-        // existing palette SSBO that raster + skin_vertices.comp read.
+        // M29.5/M29.6 — per-frame bone-world matrices for the GPU
+        // palette compute pass (`skin_palette.comp`). `bone_world[i]`
+        // is the per-slot raw world transform sourced from
+        // `GlobalTransform`; indexed by `skin_slot_id × MAX_BONES_PER_MESH`
+        // via the [`SkinSlotPool`]. The matching `bind_inverses` for
+        // each slot live in the persistent SSBO and are uploaded
+        // first-sight via `bind_inverse_pending_uploads` below.
         bone_world: &[[[f32; 4]; 4]],
-        bind_inverses: &[[[f32; 4]; 4]],
+        // M29.6 — first-sight `bind_inverses` uploads to schedule
+        // this frame. Each entry is `(slot_id, per-mesh bind_inverses)`;
+        // the renderer writes them into the persistent SSBO at the
+        // slot's offset before dispatching `skin_palette.comp`. Empty
+        // on frames with no fresh skinned-mesh first-sight (the
+        // steady-state case).
+        bind_inverse_pending_uploads: &[(u32, Vec<[[f32; 4]; 4]>)],
         materials: &[GpuMaterial],
         camera_pos: [f32; 3],
         ambient_color: [f32; 3],
@@ -558,33 +564,56 @@ impl VulkanContext {
         // Store this frame's viewProj as next frame's "previous" for motion vectors.
         self.prev_view_proj = *vp;
 
-        // M29.5 — upload the bone-world + bind-inverses input pair
-        // and schedule the staging→device copies. The
-        // `skin_palette.comp` dispatch below reads both and writes
-        // the existing palette SSBO (the buffer raster +
-        // `skin_vertices.comp` consume). The two slices are parallel
-        // (asserted on the upload site via `debug_assert_eq!`); CPU
-        // produces them in `build_skinned_palettes` post-M29.5.
-        debug_assert_eq!(
-            bone_world.len(),
-            bind_inverses.len(),
-            "M29.5: bone_world and bind_inverses must be parallel slices"
-        );
+        // M29.5/M29.6 — upload bone_world (per-frame) and any pending
+        // first-sight bind_inverses (write-once persistent SSBO). The
+        // skin_palette dispatch below reads both:
+        //   - bone_world from the per-frame DEVICE_LOCAL pair
+        //   - bind_inverses from the persistent DEVICE_LOCAL SSBO
+        // and writes the existing palette SSBO that raster +
+        // skin_vertices.comp consume.
         if !bone_world.is_empty() {
             self.scene_buffers
-                .upload_bone_inputs(&self.device, frame, bone_world, bind_inverses)
-                .unwrap_or_else(|e| log::warn!("Failed to upload bone inputs: {e}"));
+                .upload_bone_worlds(&self.device, frame, bone_world)
+                .unwrap_or_else(|e| log::warn!("Failed to upload bone_world: {e}"));
         }
-        // TRANSFER copies + visibility barrier on the input SSBOs.
-        // Internal no-op when `bone_input_upload_bytes[frame] == 0`.
         self.scene_buffers
-            .record_bone_inputs_copy(&self.device, cmd, frame);
+            .record_bone_world_copy(&self.device, cmd, frame);
 
-        // M29.5 — dispatch the palette-build compute pass. Writes the
-        // existing `bone_device_buffers[frame]` SSBO that raster
-        // (`triangle.vert:147-204` inline-skinning, set 1 binding 3 +
-        // binding 12) and `skin_vertices.comp` (set 0 binding 1 in
-        // SkinComputePipeline) read. Emits the
+        // M29.6 — drain pending bind_inverses first-sight uploads.
+        // Two-stage: write into HOST_VISIBLE staging, then record
+        // per-slot cmd_copy_buffer regions into the persistent SSBO,
+        // followed by a single TRANSFER → COMPUTE_SHADER barrier.
+        // No-op when the pending list is empty (steady-state).
+        let pending_capped = if !bind_inverse_pending_uploads.is_empty() {
+            self.scene_buffers
+                .upload_pending_bind_inverses(&self.device, bind_inverse_pending_uploads)
+                .unwrap_or_else(|e| {
+                    log::warn!("Failed to upload pending bind_inverses: {e}");
+                    0
+                })
+        } else {
+            0
+        };
+        if pending_capped > 0 {
+            let pending_slots: Vec<u32> = bind_inverse_pending_uploads
+                .iter()
+                .take(pending_capped)
+                .map(|(s, _)| *s)
+                .collect();
+            self.scene_buffers
+                .record_pending_bind_inverse_copies(
+                    &self.device,
+                    cmd,
+                    &pending_slots,
+                    pending_capped,
+                );
+        }
+
+        // M29.5/M29.6 — dispatch the palette-build compute pass.
+        // Writes the existing `bone_device_buffers[frame]` SSBO that
+        // raster (`triangle.vert:147-204` inline-skinning, set 1
+        // binding 3 + binding 12) and `skin_vertices.comp` (set 0
+        // binding 1 in SkinComputePipeline) read. Emits the
         // COMPUTE_SHADER_WRITE → (COMPUTE_SHADER_READ | VERTEX_SHADER_READ)
         // barrier on the palette buffer after the dispatch so both
         // downstream consumers see well-defined data.
@@ -593,15 +622,17 @@ impl VulkanContext {
             // Each palette slot is one mat4 = 64 B. Skip the dispatch
             // entirely when there are no skinned bones this frame —
             // the palette buffer retains its prior contents (slot 0
-            // identity from `seed_identity_bones` initialization or
-            // the previous frame's writes), so any raster sampling at
-            // `bone_offset = 0` falls through to the identity slot.
+            // identity from a previous frame's write, or zero on
+            // frame 0), so any raster sampling at `bone_offset = 0`
+            // either reads identity (post-warm) or garbage that
+            // never gets shaded (no entity points there).
             let bone_count = (bone_byte_size as usize
                 / std::mem::size_of::<[[f32; 4]; 4]>()) as u32;
             if bone_count > 0 {
                 let bone_world_buf = self.scene_buffers.bone_world_buffers()[frame].buffer;
                 let bind_inverse_buf =
-                    self.scene_buffers.bind_inverse_buffers()[frame].buffer;
+                    self.scene_buffers.bind_inverses_persistent().buffer;
+                let bind_inverse_size = self.scene_buffers.bone_buffer_size();
                 let palette_buf = self.scene_buffers.bone_buffers()[frame].buffer;
                 let palette_size = self.scene_buffers.bone_buffer_size();
                 unsafe {
@@ -612,7 +643,7 @@ impl VulkanContext {
                         bone_world_buf,
                         bone_byte_size,
                         bind_inverse_buf,
-                        bone_byte_size,
+                        bind_inverse_size,
                         palette_buf,
                         palette_size,
                         super::super::skin_compute::SkinPalettePushConstants {

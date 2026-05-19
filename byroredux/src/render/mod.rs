@@ -1,6 +1,8 @@
 //! Per-frame render data collection from ECS queries.
 
-use byroredux_core::ecs::{ActiveCamera, EntityId, Transform, World};
+use byroredux_core::ecs::{
+    resources::SkinSlotPool, ActiveCamera, EntityId, Transform, World,
+};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::vulkan::water::WaterDrawCommand;
 use byroredux_renderer::{MaterialTable, SkyParams};
@@ -217,12 +219,13 @@ pub(crate) struct RenderFrameView {
 /// Build the view-projection matrix and draw command list from ECS queries.
 ///
 /// All scratch buffers — `draw_commands`, `gpu_lights`, `bone_world`,
-/// `bind_inverses`, `skin_offsets` — are owned by the caller and
-/// cleared on entry so their heap allocations persist across frames.
-/// See #253 (`skin_offsets`), #243 (`draw_commands` / `gpu_lights` /
-/// `bone_world` scratch pattern), #M29.5 (`bone_world` + `bind_inverses`
-/// split — replaces the single pre-multiplied palette buffer with the
-/// two GPU-compute inputs).
+/// `skin_offsets` — are owned by the caller and cleared on entry so
+/// their heap allocations persist across frames. See #253
+/// (`skin_offsets`), #243 (`draw_commands` / `gpu_lights` /
+/// `bone_world` scratch pattern), M29.5 (the bone_world / bind_inverses
+/// GPU-compute split), M29.6 (`bind_inverses` promoted to a persistent
+/// SSBO indexed by [`SkinSlotPool`] slot — written once per
+/// skinned-mesh first-sight rather than per frame).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_render_data(
     world: &World,
@@ -230,8 +233,8 @@ pub(crate) fn build_render_data(
     water_commands: &mut Vec<WaterDrawCommand>,
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
     bone_world: &mut Vec<[[f32; 4]; 4]>,
-    bind_inverses: &mut Vec<[[f32; 4]; 4]>,
     skin_offsets: &mut HashMap<EntityId, u32>,
+    skin_slot_pool: &mut SkinSlotPool,
     material_table: &mut MaterialTable,
     particle_quad_handle: Option<u32>,
 ) -> RenderFrameView {
@@ -241,19 +244,19 @@ pub(crate) fn build_render_data(
     water_commands.clear();
     gpu_lights.clear();
     bone_world.clear();
-    bind_inverses.clear();
     skin_offsets.clear();
     // R1 Phase 2 — clear the material table so the per-frame dedup
     // starts from scratch. `intern` calls below populate it as the
     // mesh / particle paths emit DrawCommands.
     material_table.clear();
-    // M29.5 — slot 0 of BOTH inputs is identity so the GPU compute
-    // produces `palette[0] = identity × identity = identity`. Rigid
-    // meshes tagged with `bone_offset = 0` that somehow hit the
-    // skinning path fall here harmlessly. Keeping both arrays
-    // parallel from the first push enforces the
-    // `bone_world.len() == bind_inverses.len()` invariant that
-    // `skinned::build_skinned_palettes` asserts on entry.
+    // M29.6 — slot 0 of bone_world is identity. The persistent
+    // `bind_inverses` SSBO holds whatever identity was written at
+    // first-sight (the pool reserves slot 0; the renderer either
+    // pre-seeds it at startup or leaves it zero — palette dispatch
+    // overwrites `palette[0] = bone_world[0] × bind_inverses[0]`
+    // every frame, so a non-identity bind_inverses[0] would only
+    // matter if some draw with `bone_offset = 0` AND a non-trivial
+    // bone weight existed, which doesn't happen by construction).
     const IDENTITY_4X4: [[f32; 4]; 4] = [
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
@@ -261,18 +264,17 @@ pub(crate) fn build_render_data(
         [0.0, 0.0, 0.0, 1.0],
     ];
     bone_world.push(IDENTITY_4X4);
-    bind_inverses.push(IDENTITY_4X4);
 
     // First pass: skinned-mesh palette assembly — see
-    // `render::skinned::build_skinned_palettes`. Pushes per-bone
-    // raw world matrix + bind-inverse into the two parallel Vecs;
-    // the GPU `skin_palette.comp` does the per-slot multiply.
+    // `render::skinned::build_skinned_palettes`. Allocates pool slots,
+    // writes per-entity bone_world matrices into sparse slots, and
+    // queues first-sight `bind_inverses` uploads on the pool.
     skinned::build_skinned_palettes(
         world,
         frame_count,
         bone_world,
-        bind_inverses,
         skin_offsets,
+        skin_slot_pool,
     );
 
     // Camera view-projection + frustum + cam_pos — see

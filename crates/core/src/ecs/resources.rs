@@ -411,6 +411,311 @@ pub struct SkinCoverageStats {
 
 impl Resource for SkinCoverageStats {}
 
+// ────────────────────────────────────────────────────────────────────
+// M29.6 — per-entity persistent bone-palette slot pool
+// ────────────────────────────────────────────────────────────────────
+
+/// Per-entity persistent slot pool for the GPU bone-palette
+/// (`bone_world` + `bind_inverses`) SSBOs.
+///
+/// Pre-M29.6 the `build_skinned_palettes` pass packed every skinned
+/// entity into iteration-order slots — entity E could land at offset
+/// 100 one frame and offset 144 the next. M29.5's GPU compute pass
+/// works fine with that because both inputs (`bone_world` and
+/// `bind_inverses`) get re-uploaded per frame in the same packing.
+///
+/// M29.6 promotes `bind_inverses` to a persistent SSBO that's only
+/// written when an entity first appears. For that to work the slot ID
+/// must be stable across frames for a given entity — this resource
+/// owns the per-entity slot assignment.
+///
+/// Slot 0 is reserved for the global identity slot
+/// (`build_render_data` pushes IDENTITY at `bone_world[0]` /
+/// `bind_inverses[0]`); the pool's `next_slot` starts at 1 and
+/// `allocate` never returns 0.
+///
+/// Lifecycle:
+/// - First sight (entity in SkinnedMesh query but not yet in pool):
+///   `allocate(entity, frame)` returns a fresh slot ID and pushes
+///   `(slot, entity)` onto `pending_uploads`. The caller drains
+///   `pending_uploads` after `build_skinned_palettes` and the
+///   renderer schedules a one-time `bind_inverses` upload for each
+///   pending slot.
+/// - Steady-state: `allocate(entity, frame)` returns the existing
+///   slot ID and refreshes `last_seen_frame`.
+/// - Reclaim: `sweep(current_frame, min_idle)` returns slots whose
+///   entities haven't been seen for `min_idle` frames; the caller can
+///   then queue the slot for reuse. Slot data on the GPU is not
+///   cleared — overwritten by the next `allocate`'s upload.
+///
+/// Capacity: `max_skinned` is set at construction (typical value is
+/// `MAX_TOTAL_BONES / MAX_BONES_PER_MESH`, currently 32768 / 144 =
+/// 227); `allocate` returns `None` past it. The caller is expected to
+/// warn-once and fall back to bind-pose rendering for the overflowed
+/// entity. See `BONE_PALETTE_OVERFLOW_WARNED` in
+/// `byroredux::render::skinned`.
+pub struct SkinSlotPool {
+    /// Stable slot ID per entity. Values are in `1..=max_slot`; slot 0
+    /// is reserved.
+    entity_to_slot: std::collections::HashMap<super::storage::EntityId, u32>,
+    /// Recycled slot IDs (popped LIFO so the most-recently-freed slot
+    /// is reused first — cache-friendlier than FIFO on the persistent
+    /// `bind_inverses` SSBO).
+    free_list: Vec<u32>,
+    /// Monotonic ceiling for fresh allocations. Starts at 1 (slot 0
+    /// reserved). Bumped only when `free_list` is empty.
+    next_slot: u32,
+    /// Frame at which each entity was last seen via `mark_seen`.
+    /// Drives the `sweep` reclaim.
+    last_seen_frame: std::collections::HashMap<super::storage::EntityId, u64>,
+    /// `(slot_id, entity)` for entities that allocated a slot this
+    /// frame and still need their `bind_inverses` uploaded to the
+    /// persistent SSBO. Drained by the renderer once per frame.
+    pending_uploads: Vec<(u32, super::storage::EntityId)>,
+    /// Capacity — the pool refuses to allocate past `next_slot >
+    /// max_slot`. Set at construction; never changes.
+    max_slot: u32,
+    /// One-shot warn gate for the overflow path. Latched on first
+    /// `allocate` failure; never reset (the warn is observability,
+    /// not flow control).
+    overflow_warned: bool,
+}
+
+impl SkinSlotPool {
+    /// Construct a pool with capacity `max_skinned` (slots 1..=
+    /// `max_skinned` are allocatable; slot 0 is reserved).
+    pub fn new(max_skinned: u32) -> Self {
+        assert!(
+            max_skinned >= 1,
+            "SkinSlotPool requires capacity ≥ 1; got {max_skinned}"
+        );
+        Self {
+            entity_to_slot: std::collections::HashMap::new(),
+            free_list: Vec::new(),
+            next_slot: 1,
+            last_seen_frame: std::collections::HashMap::new(),
+            pending_uploads: Vec::new(),
+            max_slot: max_skinned,
+            overflow_warned: false,
+        }
+    }
+
+    /// Return the slot ID assigned to `entity`, allocating a fresh
+    /// slot on first sight. `Some(slot)` on success; `None` when the
+    /// pool is full (logs once per session — see `overflow_warned`).
+    ///
+    /// Side effects:
+    /// - First-sight calls push `(slot, entity)` onto `pending_uploads`.
+    /// - Every call refreshes `last_seen_frame[entity] = frame`.
+    pub fn allocate(
+        &mut self,
+        entity: super::storage::EntityId,
+        frame: u64,
+    ) -> Option<u32> {
+        if let Some(&slot) = self.entity_to_slot.get(&entity) {
+            self.last_seen_frame.insert(entity, frame);
+            return Some(slot);
+        }
+        let slot = if let Some(reused) = self.free_list.pop() {
+            reused
+        } else if self.next_slot <= self.max_slot {
+            let s = self.next_slot;
+            self.next_slot += 1;
+            s
+        } else {
+            if !self.overflow_warned {
+                self.overflow_warned = true;
+                log::warn!(
+                    "SkinSlotPool exhausted at capacity {} (slot 0 reserved). \
+                     Excess skinned entities silently fall back to bind pose. \
+                     Bump MAX_TOTAL_BONES or implement variable-stride packing.",
+                    self.max_slot,
+                );
+            }
+            return None;
+        };
+        self.entity_to_slot.insert(entity, slot);
+        self.last_seen_frame.insert(entity, frame);
+        self.pending_uploads.push((slot, entity));
+        Some(slot)
+    }
+
+    /// Refresh `last_seen_frame[entity]` without changing allocation.
+    /// Equivalent to `allocate` for already-resident entities; provided
+    /// as a separate entry-point for paths that look up the slot
+    /// without re-allocating.
+    pub fn mark_seen(&mut self, entity: super::storage::EntityId, frame: u64) {
+        if self.entity_to_slot.contains_key(&entity) {
+            self.last_seen_frame.insert(entity, frame);
+        }
+    }
+
+    /// Return the slot ID for `entity` without touching `last_seen_frame`
+    /// or `pending_uploads`. Returns `None` if the entity has never
+    /// been allocated. For draws that already routed through
+    /// `allocate`; useful for diagnostics.
+    pub fn get(&self, entity: super::storage::EntityId) -> Option<u32> {
+        self.entity_to_slot.get(&entity).copied()
+    }
+
+    /// Drain `pending_uploads`, returning the list of slots whose
+    /// `bind_inverses` haven't been uploaded yet. The caller (renderer)
+    /// must complete the GPU upload BEFORE the next compute dispatch
+    /// reads `bind_inverses_persistent[slot × MBPM ..]`.
+    pub fn drain_pending(&mut self) -> Vec<(u32, super::storage::EntityId)> {
+        std::mem::take(&mut self.pending_uploads)
+    }
+
+    /// Sweep entities idle for ≥ `min_idle` frames; return their slot
+    /// IDs to the free-list. Returns the freed slot IDs (caller can
+    /// log / telemetry if desired).
+    ///
+    /// `current_frame` should be the renderer's `frame_counter`;
+    /// `min_idle` is typically `MAX_FRAMES_IN_FLIGHT + 1` so a slot is
+    /// only reclaimed after no in-flight command buffer could
+    /// reference it.
+    pub fn sweep(&mut self, current_frame: u64, min_idle: u64) -> Vec<u32> {
+        let mut freed = Vec::new();
+        // Collect doomed entities first to avoid mutating the map
+        // while iterating.
+        let doomed: Vec<super::storage::EntityId> = self
+            .last_seen_frame
+            .iter()
+            .filter_map(|(entity, &last)| {
+                let idle = current_frame.saturating_sub(last);
+                if idle >= min_idle {
+                    Some(*entity)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for entity in doomed {
+            if let Some(slot) = self.entity_to_slot.remove(&entity) {
+                self.free_list.push(slot);
+                freed.push(slot);
+            }
+            self.last_seen_frame.remove(&entity);
+        }
+        freed
+    }
+
+    /// Number of slots currently allocated to entities. Diagnostic.
+    pub fn allocated_count(&self) -> usize {
+        self.entity_to_slot.len()
+    }
+
+    /// Free-list depth — slots reclaimed but not yet reused.
+    /// Diagnostic.
+    pub fn free_list_depth(&self) -> usize {
+        self.free_list.len()
+    }
+
+    /// Highest slot ID issued (or 0 if none). The skin_palette
+    /// dispatch covers slots `0..=max_used_slot` × MBPM. Diagnostic
+    /// and dispatch-sizing.
+    pub fn max_used_slot(&self) -> u32 {
+        self.next_slot.saturating_sub(1)
+    }
+}
+
+impl Resource for SkinSlotPool {}
+
+#[cfg(test)]
+mod skin_slot_pool_tests {
+    use super::SkinSlotPool;
+
+    #[test]
+    fn allocates_monotonically_then_recycles() {
+        let mut pool = SkinSlotPool::new(10);
+        let s1 = pool.allocate(1, 100).unwrap();
+        let s2 = pool.allocate(2, 100).unwrap();
+        let s3 = pool.allocate(3, 100).unwrap();
+        assert_eq!((s1, s2, s3), (1, 2, 3), "monotonic from slot 1");
+
+        // Free entity 2 by sweeping it past idle threshold.
+        // Need to also refresh 1 and 3 so they survive.
+        pool.mark_seen(1, 110);
+        pool.mark_seen(3, 110);
+        let freed = pool.sweep(110, /*min_idle=*/ 5);
+        assert_eq!(freed, vec![s2], "only entity 2 was idle past threshold");
+
+        // Next allocation should reuse slot 2.
+        let s4 = pool.allocate(4, 111).unwrap();
+        assert_eq!(s4, s2, "free-list LIFO reuse");
+    }
+
+    #[test]
+    fn returns_none_at_max_skinned() {
+        let mut pool = SkinSlotPool::new(3);
+        assert_eq!(pool.allocate(1, 0), Some(1));
+        assert_eq!(pool.allocate(2, 0), Some(2));
+        assert_eq!(pool.allocate(3, 0), Some(3));
+        assert_eq!(
+            pool.allocate(4, 0),
+            None,
+            "fourth allocation past capacity 3 must return None"
+        );
+        // Subsequent overflow calls still return None and don't panic.
+        assert_eq!(pool.allocate(5, 0), None);
+    }
+
+    #[test]
+    fn sweep_reclaims_unseen() {
+        let mut pool = SkinSlotPool::new(10);
+        let slot = pool.allocate(42, 100).unwrap();
+        // Frame 100 → 104, idle = 4 < min_idle 5 → keep.
+        assert_eq!(pool.sweep(104, 5), Vec::<u32>::new());
+        assert_eq!(pool.get(42), Some(slot));
+        // Frame 105, idle = 5 ≥ min_idle 5 → evict.
+        let freed = pool.sweep(105, 5);
+        assert_eq!(freed, vec![slot]);
+        assert_eq!(pool.get(42), None);
+    }
+
+    #[test]
+    fn first_allocation_queues_pending_upload() {
+        let mut pool = SkinSlotPool::new(10);
+        let _ = pool.allocate(7, 100).unwrap();
+        let pending = pool.drain_pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1, 7, "entity ID round-tripped");
+
+        // Steady-state allocate for the same entity must NOT push to
+        // pending_uploads (would re-upload the bind_inverses every
+        // frame, defeating M29.6's purpose).
+        let _ = pool.allocate(7, 101).unwrap();
+        assert!(
+            pool.drain_pending().is_empty(),
+            "steady-state allocate must not re-queue pending upload"
+        );
+    }
+
+    #[test]
+    fn never_returns_slot_zero() {
+        let mut pool = SkinSlotPool::new(5);
+        for entity_id in 1..=5u32 {
+            let slot = pool.allocate(entity_id, 0).unwrap();
+            assert_ne!(
+                slot, 0,
+                "slot 0 is reserved for global identity; pool must not allocate it"
+            );
+        }
+    }
+
+    #[test]
+    fn underflow_safe_when_last_used_in_future() {
+        // Defensive: if a caller bumps last_seen_frame to a value
+        // larger than current_frame (frame counter wrap / reset),
+        // sweep must not flip eviction true via wrap-around.
+        let mut pool = SkinSlotPool::new(5);
+        let _slot = pool.allocate(99, 200).unwrap();
+        // current=100, last=200, saturating_sub → idle=0 → keep.
+        assert_eq!(pool.sweep(100, 5), Vec::<u32>::new());
+        assert!(pool.get(99).is_some());
+    }
+}
+
 impl SkinCoverageStats {
     /// True when every visible skinned entity got a refit this frame.
     /// Reads correct only after `fill_skin_coverage_stats` populates

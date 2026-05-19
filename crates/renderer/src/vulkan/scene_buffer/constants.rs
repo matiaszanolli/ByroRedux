@@ -32,6 +32,17 @@ pub const MAX_TOTAL_BONES: usize = 32768;
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
 
+/// M29.6 — maximum number of `bind_inverses` first-sight uploads
+/// scheduled per frame. The HOST_VISIBLE staging buffer for these
+/// uploads is sized for this many concurrent slots; if more skinned
+/// entities first-appear in a single frame, the renderer caps the
+/// uploads at this count and defers the excess to the next frame.
+///
+/// 16 is generous: even a heavy cell-load that streams in a dozen
+/// NPCs at once stays under this ceiling. Staging buffer size at
+/// this value is `16 × 144 × 64 B = 144 KB`.
+pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = 16;
+
 /// Maximum instances per frame — `0x40000` (262144). Sized to
 /// absorb the densest observed Skyrim/FO4 city cells (Solitude,
 /// Whiterun draw distance, Diamond City — ~50K REFRs combined with

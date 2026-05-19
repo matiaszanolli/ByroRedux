@@ -656,14 +656,22 @@ impl SkinPaletteComputePipeline {
     }
 
     /// Record the palette-build dispatch. Must be called between the
-    /// bone_world + bind_inverses transfer-copies and any palette
-    /// consumer (the existing M29.3 `SkinComputePipeline::dispatch`
-    /// for RT, or the raster `triangle.vert` read).
+    /// bone_world transfer + bind_inverses first-sight transfers (if
+    /// any) and any palette consumer (the existing M29.3
+    /// `SkinComputePipeline::dispatch` for RT, or the raster
+    /// `triangle.vert` read).
+    ///
+    /// `bind_inverse_buffer` post-M29.6 points at the PERSISTENT
+    /// `bind_inverses` SSBO held on [`SceneBuffers`]. The same handle
+    /// is passed every frame; the underlying data is written once per
+    /// skinned-mesh first-sight via
+    /// [`SceneBuffers::record_pending_bind_inverse_copies`].
     ///
     /// The caller is responsible for emitting:
     ///   - TRANSFER_WRITE → COMPUTE_SHADER_READ barriers on
-    ///     `bone_world_buffer` + `bind_inverse_buffer` BEFORE this
-    ///     dispatch.
+    ///     `bone_world_buffer` (every frame) and on
+    ///     `bind_inverse_buffer` (frames with pending first-sight
+    ///     uploads only) BEFORE this dispatch.
     ///   - COMPUTE_SHADER_WRITE → (COMPUTE_SHADER_READ | VERTEX_SHADER_READ)
     ///     barrier on `palette_buffer` AFTER this dispatch.
     ///

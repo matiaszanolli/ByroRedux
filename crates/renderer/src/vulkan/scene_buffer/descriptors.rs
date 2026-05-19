@@ -172,14 +172,9 @@ impl super::buffers::SceneBuffers {
             buf.destroy(device, allocator);
         }
         self.bone_world_device_buffers.clear();
-        for buf in &mut self.bind_inverse_staging_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.bind_inverse_staging_buffers.clear();
-        for buf in &mut self.bind_inverse_device_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.bind_inverse_device_buffers.clear();
+        // M29.6 — single persistent SSBO + small staging.
+        self.bind_inverses_persistent.destroy(device, allocator);
+        self.bind_inverse_upload_staging.destroy(device, allocator);
         for buf in &mut self.instance_buffers {
             buf.destroy(device, allocator);
         }

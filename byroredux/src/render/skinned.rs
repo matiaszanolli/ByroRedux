@@ -1,51 +1,40 @@
 //! Skinned-mesh palette pass — extracted from `build_render_data` per #1115.
 //!
-//! M29.5 (#TBD): walks `SkinnedMesh` entities and pushes per-bone raw
-//! world transforms + bind-inverse matrices into two parallel output
-//! Vecs. The CPU no longer computes `palette[i] = bone_world × bind_inverses[i]`
-//! — the GPU `skin_palette.comp` pass does that multiply on the
-//! uploaded inputs and writes the existing palette SSBO. Downstream
-//! consumers (`skin_vertices.comp` for RT, `triangle.vert:147-204`
-//! inline-skinning for raster) are unchanged.
+//! M29.6: walks `SkinnedMesh` entities and writes per-bone raw world
+//! transforms into the sparse `bone_world_out` array at each entity's
+//! persistent slot offset (stable across frames; assigned by
+//! [`SkinSlotPool`]). Fresh slots queue a first-sight `bind_inverses`
+//! upload onto the pool's pending list, which the renderer drains in
+//! `draw_frame` and writes to the persistent `bind_inverses` SSBO. The
+//! GPU `skin_palette.comp` does the per-slot
+//! `palette[i] = bone_world[i] * bind_inverses[i]` multiply.
 //!
 //! Both queries are read-only (`GlobalTransform` lookup + `SkinnedMesh`
 //! iteration), so two separate read queries give the correct lock
 //! pattern — the previous `query_2_mut::<GT, SkinnedMesh>` took an
 //! unnecessary write lock on SkinnedMesh. See #246.
 //!
-//! Every skinned mesh reserves exactly `MAX_BONES_PER_MESH` slots in
-//! BOTH output Vecs so per-mesh bone-offset arithmetic stays trivial.
-//! The two Vecs are kept strictly parallel — `bone_world_out[k]`
-//! corresponds to `bind_inverses_out[k]` for every k, and the compute
-//! shader's per-slot multiply does `palette[k] = bone_world[k] *
-//! bind_inverses[k]`. Drift would silently corrupt every skinned vertex.
+//! Pre-M29.6 `bone_world_out` was packed densely by iteration order
+//! (slot offsets unstable across frames). M29.6 promotes it to a
+//! sparse layout indexed by `slot_id × MAX_BONES_PER_MESH`; idle slots
+//! retain stale data but no entity references them. The dispatch
+//! covers `(max_used_slot + 1) × MAX_BONES_PER_MESH` slots — stale-slot
+//! palettes are written but never read.
 
 use std::collections::HashMap;
 use std::sync::Once;
 
-use byroredux_core::ecs::{EntityId, GlobalTransform, SkinnedMesh, World, MAX_BONES_PER_MESH};
-use byroredux_core::math::Mat4;
-use byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES;
+use byroredux_core::ecs::{
+    resources::SkinSlotPool, EntityId, GlobalTransform, SkinnedMesh, World, MAX_BONES_PER_MESH,
+};
 
-/// Once-per-session gate for the bone-palette overflow warn. Keeps the
-/// log out of the per-frame hot path so the warn fires exactly the
-/// first time a cell's skinned-mesh count exceeds `MAX_TOTAL_BONES`.
-static BONE_PALETTE_OVERFLOW_WARNED: Once = Once::new();
-
-/// M41.0 Phase 1b.x followup — frame-gated dump of any palette slot
-/// whose bone entity resolved to `None` or whose `GlobalTransform`
-/// query returned `None` (both fall back to `Mat4::IDENTITY` in the
-/// bone_world slot). Both cases produce the long-thin-ribbon vertex
-/// artifact: identity-world × bind_inverse gives identity-palette,
-/// vertices weighted to that slot land at NIF skin-space coords while
+/// M41.0 Phase 1b.x followup — frame-gated dump of any bone whose
+/// entity resolved to `None` or whose `GlobalTransform` query returned
+/// `None` (both fall back to `Mat4::IDENTITY` in the bone_world slot).
+/// These cases produce the long-thin-ribbon vertex artifact: vertices
+/// weighted to the IDENTITY slot land at NIF skin-space coords while
 /// vertices weighted to well-resolved slots land at world coords, and
 /// triangles span the gap.
-///
-/// Post-M29.5 the dropout is detected at the bone-world resolution
-/// site rather than after the multiply — semantically equivalent
-/// (identity multiplied against any bind_inverse can't make the slot
-/// non-identity except when the bind_inverse itself is non-identity,
-/// in which case the artifact still surfaces visually).
 static SKIN_DROPOUT_DUMPED: Once = Once::new();
 
 const IDENTITY_4X4: [[f32; 4]; 4] = [
@@ -55,113 +44,123 @@ const IDENTITY_4X4: [[f32; 4]; 4] = [
     [0.0, 0.0, 0.0, 1.0],
 ];
 
-/// Compute every skinned mesh's bone-world + bind-inverses contributions
-/// and pad each mesh to `MAX_BONES_PER_MESH`. Mutates the caller-owned
-/// `bone_world_out`, `bind_inverses_out` (appending per-mesh blocks),
-/// and `skin_offsets` (entity → slot).
+/// Walk every `SkinnedMesh` entity and write per-bone world transforms
+/// into `bone_world_out` at the entity's persistent slot offset. Fresh
+/// slots get their `bind_inverses` pushed onto the pool's pending
+/// upload queue (drained by the renderer in `draw_frame`).
 ///
-/// `frame_count` gates the debug-only IDENTITY-dropout dump: must be
-/// ≥ 60 for the diagnostic to fire (gives the transform propagation
-/// system time to resolve bone matrices on first cell load).
+/// On exit:
+/// - `bone_world_out` is sized to `(pool.max_used_slot() + 1) × MAX_BONES_PER_MESH`
+///   and contains: slot 0 = identity (caller-seeded), allocated slots
+///   filled with per-bone world matrices, unused slots filled with
+///   identity (padded by this fn).
+/// - `skin_offsets[entity] = slot_id × MAX_BONES_PER_MESH` for every
+///   `SkinnedMesh` entity that successfully allocated a slot.
+/// - `pool.pending_uploads` contains entries for entities whose slots
+///   were freshly allocated this frame.
 ///
-/// **Parallel invariant**: `bone_world_out` and `bind_inverses_out`
-/// must be the same length on entry (caller seeds slot 0 of both with
-/// identity); the function preserves the invariant on exit so the
-/// GPU's `palette[k] = bone_world[k] * bind_inverses[k]` reads stay
-/// well-defined.
+/// `frame_count` drives the pool's `mark_seen` for steady-state
+/// entries and the dropout-debug-dump gate (≥ 60).
 pub(super) fn build_skinned_palettes(
     world: &World,
     frame_count: u64,
     bone_world_out: &mut Vec<[[f32; 4]; 4]>,
-    bind_inverses_out: &mut Vec<[[f32; 4]; 4]>,
     skin_offsets: &mut HashMap<EntityId, u32>,
+    pool: &mut SkinSlotPool,
 ) {
-    debug_assert_eq!(
-        bone_world_out.len(),
-        bind_inverses_out.len(),
-        "M29.5 parallel-Vec invariant: bone_world_out and bind_inverses_out \
-         must stay parallel; caller seeds slot 0 of both with identity"
-    );
     let gt_q = world.query::<GlobalTransform>();
     let skin_q = world.query::<SkinnedMesh>();
     let (Some(gt_q), Some(skin_q)) = (gt_q, skin_q) else {
         return;
     };
+
+    // Pass 1: pool allocation + dropout scan. Reads each
+    // SkinnedMesh, ensures it has a slot, marks it seen, records the
+    // slot offset on `skin_offsets`. Counts IDENTITY-dropouts (bone
+    // entity unresolved) for the debug dump.
+    let mut total_dropouts: u32 = 0;
+    let mut sample_entity: Option<(EntityId, u32, u32)> = None; // (entity, dropouts, bone_count)
     for (entity, skin) in skin_q.iter() {
-        // M29 — defensive guard against silent palette truncation.
-        // `bone_buffers` are sized for `MAX_TOTAL_BONES` slots and the
-        // renderer's `upload_bone_inputs` clamps writes; every skinned
-        // mesh past the ceiling silently falls back to bind pose with
-        // no error. Today this is unreachable for most content, but it
-        // fires on populated M41 cells. Log once per session and stop
-        // padding so the renderer's clamp is never reached.
-        if bone_world_out.len() + MAX_BONES_PER_MESH > MAX_TOTAL_BONES {
-            BONE_PALETTE_OVERFLOW_WARNED.call_once(|| {
+        let Some(slot) = pool.allocate(entity, frame_count) else {
+            // Pool full — entity rendered in bind pose this frame
+            // (skin_offsets stays unset; static_meshes draw loop
+            // falls through to bone_offset = 0 = identity slot).
+            continue;
+        };
+        skin_offsets.insert(entity, slot * (MAX_BONES_PER_MESH as u32));
+
+        if cfg!(debug_assertions) && frame_count >= 60 {
+            let mut dropout_count: u32 = 0;
+            for bone_entity in &skin.bones {
+                let resolved = match bone_entity {
+                    Some(e) => gt_q.get(*e).is_some(),
+                    None => false,
+                };
+                if !resolved {
+                    dropout_count += 1;
+                }
+            }
+            if dropout_count > 0 && sample_entity.is_none() {
+                sample_entity = Some((entity, dropout_count, skin.bones.len() as u32));
+            }
+            total_dropouts += dropout_count;
+        }
+    }
+
+    if cfg!(debug_assertions) && frame_count >= 60 && total_dropouts > 0 {
+        if let Some((entity, dropouts, bone_count)) = sample_entity {
+            SKIN_DROPOUT_DUMPED.call_once(|| {
                 log::warn!(
-                    "bone_palette: skinned-mesh count exceeds MAX_TOTAL_BONES={} \
-                     ({} bones already pushed); remaining skinned meshes silently \
-                     fall back to bind pose. Bump MAX_TOTAL_BONES or implement \
-                     variable-stride packing (M29.6).",
-                    MAX_TOTAL_BONES,
-                    bone_world_out.len(),
+                    "Phase 1b.x DROPOUT — sample skinned mesh entity {:?}: {} of {} bones \
+                     unresolved (frame {}, total dropouts this frame: {}). Cause: bone \
+                     entity was None at skin attach time, or its GlobalTransform query \
+                     returned None.",
+                    entity,
+                    dropouts,
+                    bone_count,
+                    frame_count,
+                    total_dropouts,
                 );
             });
-            break;
         }
-        let offset = bone_world_out.len() as u32;
-        let bone_count = skin.bones.len();
-        // M41.0 Phase 1b.x followup — count IDENTITY-dropouts (bone
-        // entity was None at skin attach time, or its GlobalTransform
-        // query returned None). The diagnostic is gated on
-        // `debug_assertions` so release builds pay zero cost (#929 /
-        // PERF-CPU-01); the compiler folds `cfg!(debug_assertions)` to
-        // a const and DCEs the entire branch.
-        let mut dropout_count: u32 = 0;
-        for (bone_entity, bind_inv) in skin.bones.iter().zip(skin.bind_inverses.iter()) {
+    }
+
+    // Pass 2: resize bone_world_out to cover slots 0..=max_used_slot
+    // and fill every slot with identity (caller seeded slot 0 already;
+    // we fill from current length up to the required size).
+    let required_slots = (pool.max_used_slot() as usize + 1) * MAX_BONES_PER_MESH;
+    if bone_world_out.len() < required_slots {
+        bone_world_out.resize(required_slots, IDENTITY_4X4);
+    }
+
+    // Pass 3: write per-entity bone_world ranges. Skipping `take`
+    // costs O(MAX_BONES_PER_MESH) per entity but the alternative
+    // (random index writes) bypasses the bounds check the
+    // resize+slice approach already paid for.
+    for (entity, skin) in skin_q.iter() {
+        let Some(&offset) = skin_offsets.get(&entity) else {
+            continue; // pool was full for this entity (rare)
+        };
+        let start = offset as usize;
+        let end = start + MAX_BONES_PER_MESH.min(skin.bones.len());
+        for (i, bone_entity) in skin.bones.iter().enumerate().take(MAX_BONES_PER_MESH) {
             let world_mat = match bone_entity {
                 Some(e) => match gt_q.get(*e) {
                     Some(gt) => gt.to_matrix(),
-                    None => {
-                        if cfg!(debug_assertions) {
-                            dropout_count += 1;
-                        }
-                        Mat4::IDENTITY
-                    }
+                    None => byroredux_core::math::Mat4::IDENTITY,
                 },
-                None => {
-                    if cfg!(debug_assertions) {
-                        dropout_count += 1;
-                    }
-                    Mat4::IDENTITY
-                }
+                None => byroredux_core::math::Mat4::IDENTITY,
             };
-            bone_world_out.push(world_mat.to_cols_array_2d());
-            bind_inverses_out.push(bind_inv.to_cols_array_2d());
+            bone_world_out[start + i] = world_mat.to_cols_array_2d();
         }
-        // Pad both arrays to MAX_BONES_PER_MESH with identity so the
-        // dense per-slot layout stays parallel and trivial per-mesh
-        // bone offsets are `offset + local_index`. Identity × identity
-        // = identity, so any draw whose `bone_offset` falls in the
-        // padded tail samples the identity transform.
-        for _ in bone_count..MAX_BONES_PER_MESH {
-            bone_world_out.push(IDENTITY_4X4);
-            bind_inverses_out.push(IDENTITY_4X4);
-        }
-
-        if cfg!(debug_assertions) && frame_count >= 60 && dropout_count > 0 {
-            SKIN_DROPOUT_DUMPED.call_once(|| {
-                log::warn!(
-                    "Phase 1b.x DROPOUT — skinned mesh entity {:?}: {} of {} bones \
-                     unresolved (frame {}). Cause: bone entity was None at skin \
-                     attach time, or its GlobalTransform query returned None.",
-                    entity,
-                    dropout_count,
-                    bone_count,
-                    frame_count,
-                );
-            });
-        }
-
-        skin_offsets.insert(entity, offset);
+        // Pad any per-mesh tail (when skin.bones.len() < MBPM) with
+        // identity. The resize already filled with identity, so this
+        // is a no-op; the `end` binding above is kept for clarity.
+        let _ = end;
     }
+
+    // Pass 4: sweep idle entries from the pool. min_idle =
+    // MAX_FRAMES_IN_FLIGHT + 1 = 3 so a slot is only reclaimed after
+    // no in-flight command buffer could reference it.
+    let _freed = pool.sweep(frame_count, 3);
 }

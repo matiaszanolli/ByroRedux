@@ -310,21 +310,19 @@ struct App {
     water_commands: Vec<byroredux_renderer::vulkan::water::WaterDrawCommand>,
     /// Reusable per-frame light buffer (cleared each frame, allocation retained).
     gpu_lights: Vec<byroredux_renderer::GpuLight>,
-    /// M29.5 — reusable per-frame bone-world matrices (column-major
-    /// mat4 entries; slot 0 always identity). One entry per palette
-    /// slot, dense layout parallel to `bind_inverses`. The renderer
-    /// uploads both arrays each frame via `upload_bone_inputs`; the
-    /// GPU `skin_palette.comp` does the per-slot `bone_world ×
+    /// M29.5/M29.6 — reusable per-frame bone-world matrices (column-
+    /// major mat4 entries; slot 0 always identity). Sparse layout
+    /// indexed by `skin_slot_id × MAX_BONES_PER_MESH`; the renderer
+    /// uploads it each frame via `upload_bone_worlds`. The GPU
+    /// `skin_palette.comp` does the per-slot `bone_world ×
     /// bind_inverses` multiply and writes the palette SSBO consumed
     /// by `skin_vertices.comp` + `triangle.vert` inline-skinning.
     bone_world: Vec<[[f32; 4]; 4]>,
-    /// M29.5 — reusable per-frame inverse-bind-pose matrices,
-    /// parallel to [`bone_world`]. NIF-static per skinned mesh
-    /// (sourced from `SkinnedMesh::bind_inverses`); the per-frame
-    /// upload model lets us ship M29.5 without a persistent slot
-    /// lifecycle. M29.6 will promote this to a write-once SSBO once
-    /// the per-skinned-mesh slot management is in place.
-    bind_inverses: Vec<[[f32; 4]; 4]>,
+    /// M29.6 — per-entity persistent slot pool for the bone-palette
+    /// SSBOs. Stable slot IDs across frames so the persistent
+    /// `bind_inverses` SSBO (uploaded once at first-sight) stays in
+    /// lockstep with the per-frame `bone_world` writes.
+    skin_slot_pool: byroredux_core::ecs::resources::SkinSlotPool,
     /// Reusable per-frame entity → bone-offset map. Populated by the
     /// skinned-mesh pass in `build_render_data` and read during draw
     /// command emission. Retained across frames so the HashMap's bucket
@@ -608,7 +606,19 @@ impl App {
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),
             bone_world: Vec::new(),
-            bind_inverses: Vec::new(),
+            // M29.6 — slot pool capacity. The persistent bind_inverses
+            // SSBO is sized for MAX_TOTAL_BONES bones (32768 with the
+            // current 2 MB target). Each pool slot occupies MBPM
+            // (currently 144) bones, and slot 0 is reserved for the
+            // global identity. So allocatable slot count =
+            // (MAX_TOTAL_BONES / MBPM) - 1 = floor(32768 / 144) - 1 =
+            // 226. Allocating one slot beyond would push the palette
+            // past the SSBO boundary.
+            skin_slot_pool: byroredux_core::ecs::resources::SkinSlotPool::new(
+                ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
+                    / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
+                    - 1) as u32,
+            ),
             skin_offsets: HashMap::new(),
             material_table: byroredux_renderer::MaterialTable::new(),
             bench_frames_target: None,
@@ -1113,8 +1123,8 @@ impl ApplicationHandler for App {
                         &mut self.water_commands,
                         &mut self.gpu_lights,
                         &mut self.bone_world,
-                        &mut self.bind_inverses,
                         &mut self.skin_offsets,
+                        &mut self.skin_slot_pool,
                         &mut self.material_table,
                         ctx.particle_quad_handle,
                     );
@@ -1225,13 +1235,44 @@ impl ApplicationHandler for App {
                     } else {
                         None
                     };
+                    // M29.6 — drain pending first-sight bind_inverses
+                    // uploads from the slot pool. The renderer writes
+                    // each (slot_id, mesh_bind_inverses) into the
+                    // persistent SSBO at the slot's offset before
+                    // dispatching skin_palette.comp. Empty on the
+                    // steady-state frame (no fresh skinned content).
+                    let pending = self.skin_slot_pool.drain_pending();
+                    let pending_with_data: Vec<(u32, Vec<[[f32; 4]; 4]>)> = pending
+                        .into_iter()
+                        .filter_map(|(slot, entity)| {
+                            self.world
+                                .get::<byroredux_core::ecs::SkinnedMesh>(entity)
+                                .map(|skin| {
+                                    let mut padded: Vec<[[f32; 4]; 4]> = skin
+                                        .bind_inverses
+                                        .iter()
+                                        .map(|m| m.to_cols_array_2d())
+                                        .collect();
+                                    padded.resize(
+                                        byroredux_core::ecs::components::MAX_BONES_PER_MESH,
+                                        [
+                                            [1.0, 0.0, 0.0, 0.0],
+                                            [0.0, 1.0, 0.0, 0.0],
+                                            [0.0, 0.0, 1.0, 0.0],
+                                            [0.0, 0.0, 0.0, 1.0],
+                                        ],
+                                    );
+                                    (slot, padded)
+                                })
+                        })
+                        .collect();
                     match ctx.draw_frame(
                         clear_color,
                         &frame.view_proj,
                         &self.draw_commands,
                         &self.gpu_lights,
                         &self.bone_world,
-                        &self.bind_inverses,
+                        &pending_with_data,
                         self.material_table.materials(),
                         frame.camera_pos,
                         frame.ambient,

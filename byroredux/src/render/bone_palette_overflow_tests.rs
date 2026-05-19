@@ -23,75 +23,78 @@ fn make_skinned_world(num_meshes: usize) -> World {
 fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, HashMap<EntityId, u32>) {
     let mut draw_commands = Vec::new();
     let mut gpu_lights = Vec::new();
-    // M29.5 — the single pre-multiplied palette became two parallel
-    // inputs (bone_world + bind_inverses) that the GPU multiplies. The
-    // overflow guard fires off bone_world.len() identically; we return
-    // bone_world to keep the test assertions byte-equivalent.
+    // M29.6 — pre-multiplied palette → sparse bone_world (slot-indexed)
+    // + persistent bind_inverses SSBO (GPU-only). The overflow guard
+    // now lives on the SkinSlotPool: when capacity is exhausted,
+    // allocate() returns None and the entity is dropped. We assert
+    // bone_world.len() reaches the resized ceiling = max_used_slot ×
+    // MBPM, which is byte-equivalent to the pre-M29.6 dense-pack
+    // length at full saturation.
     let mut bone_world = Vec::new();
-    let mut bind_inverses = Vec::new();
     let mut skin_offsets = HashMap::new();
     let mut material_table = byroredux_renderer::MaterialTable::new();
     let mut water_commands = Vec::new();
+    // M29.6 — capacity matches main.rs's `App::new` construction:
+    // (MAX_TOTAL_BONES / MBPM) - 1, with slot 0 reserved.
+    let max_skinned = ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
+        / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
+        - 1) as u32;
+    let mut skin_slot_pool =
+        byroredux_core::ecs::resources::SkinSlotPool::new(max_skinned);
     let _ = build_render_data(
         world,
         &mut draw_commands,
         &mut water_commands,
         &mut gpu_lights,
         &mut bone_world,
-        &mut bind_inverses,
         &mut skin_offsets,
+        &mut skin_slot_pool,
         &mut material_table,
         None,
-    );
-    debug_assert_eq!(
-        bone_world.len(),
-        bind_inverses.len(),
-        "M29.5 parallel-Vec invariant must hold post-build_render_data"
     );
     (bone_world, skin_offsets)
 }
 
 #[test]
 fn at_capacity_fills_palette_completely() {
-    // `MAX_SKINNED = MAX_TOTAL_BONES / MAX_BONES_PER_MESH`. The
-    // overflow check fires only when adding the NEXT mesh would
-    // exceed `MAX_TOTAL_BONES`; `MAX_SKINNED - 1` meshes plus the
-    // 1 identity slot at index 0 fit exactly at the boundary, so
-    // the palette completes without truncation. Document the
-    // exact off-by-one. (Pre-#900 this comment hardcoded the old
-    // 32-mesh / 4096-bone ceiling — REN-D12-NEW-02. Today's exact
-    // value depends on `MAX_BONES_PER_MESH`, currently 144 per
-    // #1135, yielding floor(32768 / 144) = 227.)
-    let max_skinned = MAX_TOTAL_BONES / MAX_BONES_PER_MESH;
-    let world = make_skinned_world(max_skinned - 1);
+    // M29.6 — slot pool capacity is `(MAX_TOTAL_BONES / MBPM) - 1`
+    // (slot 0 reserved for global identity). Spawning exactly that
+    // many entities fills every allocatable slot; the persistent
+    // bone_world array reaches `(max_used_slot + 1) × MBPM =
+    // MAX_TOTAL_BONES_rounded_down` entries.
+    let max_skinned = (MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1;
+    let world = make_skinned_world(max_skinned);
     let (palette, offsets) = run_build(&world);
     assert_eq!(
         offsets.len(),
-        max_skinned - 1,
+        max_skinned,
         "all {} meshes must register a bone offset",
-        max_skinned - 1
+        max_skinned
     );
-    // 1 identity slot + (max_skinned - 1) × MAX_BONES_PER_MESH
-    let expected_slots = 1 + (max_skinned - 1) * MAX_BONES_PER_MESH;
+    // M29.6 sparse-slot layout: slot 0 (identity) + slots 1..=
+    // max_skinned, each occupying MBPM bones → (max_skinned + 1)
+    // × MBPM total entries. floor(32768/144) × 144 = 32688.
+    let expected_slots = (max_skinned + 1) * MAX_BONES_PER_MESH;
     assert_eq!(palette.len(), expected_slots);
+    assert!(
+        expected_slots <= MAX_TOTAL_BONES,
+        "expected_slots={expected_slots} must fit inside MAX_TOTAL_BONES={MAX_TOTAL_BONES}"
+    );
 }
 
 #[test]
 fn over_capacity_breaks_loop_and_truncates_offsets() {
-    // `MAX_SKINNED + 1` meshes × `MAX_BONES_PER_MESH` bones
-    // requests one mesh past the bone-palette ceiling. The guard
-    // at the top of the loop trips before the offending mesh
-    // gets its offset registered, so `skin_offsets` holds
-    // strictly fewer entries than were requested and the
-    // palette stays at or below `MAX_TOTAL_BONES`. (Pre-#900
-    // this comment hardcoded the old 32-mesh / 4096-bone
-    // ceiling — REN-D12-NEW-02.)
-    let max_skinned = MAX_TOTAL_BONES / MAX_BONES_PER_MESH;
+    // M29.6 — requesting one more entity than the pool capacity
+    // makes the pool's `allocate` return `None` for the offending
+    // entity. That entity gets no slot, no `skin_offsets` entry,
+    // and renders in bind pose (bone_offset = 0 = identity slot).
+    // The palette stays bounded at the at-capacity ceiling.
+    let max_skinned = (MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1;
     let world = make_skinned_world(max_skinned + 1);
     let (palette, offsets) = run_build(&world);
     assert!(
         offsets.len() < max_skinned + 1,
-        "overflow guard must drop at least one mesh; got {} offsets for {} meshes",
+        "pool overflow must drop at least one mesh; got {} offsets for {} meshes",
         offsets.len(),
         max_skinned + 1
     );
