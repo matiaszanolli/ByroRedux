@@ -258,6 +258,26 @@ impl super::buffers::SceneBuffers {
             (MAX_BONES_PER_MESH * std::mem::size_of::<[[f32; 4]; 4]>()) as vk::DeviceSize;
         let mut copies: Vec<vk::BufferCopy> = Vec::with_capacity(capped);
         for (i, &slot_id) in pending_slots.iter().take(capped).enumerate() {
+            // M29.6 hotfix (#1193 / SAFE-D7-NEW-03) — defend against
+            // a SkinSlotPool constructed with capacity past
+            // `(MAX_TOTAL_BONES / MBPM) - 1`. The cmd_copy_buffer
+            // below would otherwise write past the persistent SSBO's
+            // 2 MB end (VUID-vkCmdCopyBuffer-dstOffset-00114) — UB on
+            // drivers without validation, device-lost otherwise.
+            // The pool's max_slot is enforced at construction, so a
+            // pool that respects the (MAX_TOTAL_BONES / MBPM) - 1
+            // ceiling will never trip this. The assert is the
+            // tripwire if a future constructor / test forgets the
+            // -1.
+            debug_assert!(
+                ((slot_id as usize) + 1) * MAX_BONES_PER_MESH <= MAX_TOTAL_BONES,
+                "M29.6 contract: slot_id {} would write past \
+                 bind_inverses_persistent end (MAX_TOTAL_BONES = {}). \
+                 SkinSlotPool capacity must be \
+                 ≤ (MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1",
+                slot_id,
+                MAX_TOTAL_BONES,
+            );
             copies.push(vk::BufferCopy {
                 src_offset: (i as vk::DeviceSize) * slot_byte_stride,
                 dst_offset: (slot_id as vk::DeviceSize) * slot_byte_stride,
@@ -307,6 +327,66 @@ impl super::buffers::SceneBuffers {
     /// dispatch entirely.
     pub fn bone_input_upload_bytes(&self, frame_index: usize) -> vk::DeviceSize {
         self.bone_input_upload_bytes[frame_index]
+    }
+
+    /// M29.6 hotfix (#1191 / SAFE-D7-NEW-01) — write identity matrices
+    /// into `bind_inverses_persistent` slot 0 (bytes
+    /// `0..MAX_BONES_PER_MESH × 64`). Required because the slot pool
+    /// reserves slot 0 for the "global identity slot" but never
+    /// pushes a pending upload for it, leaving the persistent SSBO's
+    /// slot 0 range as `create_device_local_uninit` garbage.
+    ///
+    /// Without this seed, pool-overflowed skinned entities (which
+    /// fall through to `bone_offset = 0`) would compute
+    /// `palette[0..MBPM] = identity × UNDEFINED` via the
+    /// `skin_palette.comp` dispatch — UB. With the seed,
+    /// `palette[0..MBPM] = identity × identity = identity` and the
+    /// fallback renders the entity in bind pose (the pre-M29.6
+    /// behaviour).
+    ///
+    /// Uses `cmd_update_buffer` for an inline write (no staging
+    /// needed since MBPM × 64 B = 9216 B is well under the
+    /// Vulkan-guaranteed 65536 B `vkCmdUpdateBuffer` payload limit).
+    /// Runs once at `VulkanContext::new` after `SceneBuffers` is
+    /// constructed; the data is persistent for the renderer's
+    /// lifetime.
+    pub fn seed_persistent_bind_inverses_identity(
+        &self,
+        device: &ash::Device,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+    ) -> Result<()> {
+        // 144 identity mat4s packed contiguously. cmd_update_buffer
+        // takes the data slice inline; the slice goes through the
+        // ash binding straight to vkCmdUpdateBuffer.
+        let identity = [
+            [1.0_f32, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let mut payload = Vec::with_capacity(MAX_BONES_PER_MESH);
+        for _ in 0..MAX_BONES_PER_MESH {
+            payload.push(identity);
+        }
+        // SAFETY: `[[f32; 4]; 4]` is repr(C); the byte slice has the
+        // same layout the GPU reads as `mat4`. Size pinned at
+        // MBPM × 64 = 9216 B, well within the 65536 B
+        // `vkCmdUpdateBuffer` limit. Inline-written from the
+        // command buffer; no staging buffer to manage.
+        let payload_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                payload.as_ptr() as *const u8,
+                payload.len() * std::mem::size_of::<[[f32; 4]; 4]>(),
+            )
+        };
+        let dst = self.bind_inverses_persistent.buffer;
+        super::super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
+            unsafe {
+                device.cmd_update_buffer(cmd, dst, 0, payload_bytes);
+            }
+            Ok(())
+        })
     }
 
     // M29.5 cleanup — `seed_identity_bones` removed here. The one-time

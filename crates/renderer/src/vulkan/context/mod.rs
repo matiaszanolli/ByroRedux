@@ -1273,16 +1273,26 @@ impl VulkanContext {
             device_caps.ray_query_supported,
         )?;
         // M29.5 cleanup — the pre-#921 startup seed of slot-0 identity
-        // into the palette buffer is no longer needed. The per-frame
-        // `skin_palette.comp` dispatch writes the palette unconditionally
-        // (CPU pushes slot-0 identity to both M29.5 input arrays in
-        // `build_render_data`, and `identity × identity = identity`).
-        // First-frame binding-12 reads still target the OTHER frame
-        // slot — that slot's first dispatch happens on frame N+1 within
-        // the same submission ordering, so binding-12 on frame 0 reads
-        // the uninitialised slot exactly once before being overwritten.
-        // For the rigid-vertex fallback path the slot-0 lookup falls
-        // through to identity by construction.
+        // into the palette buffer (`bone_device_buffers`) is no longer
+        // needed. The per-frame `skin_palette.comp` dispatch writes
+        // the palette unconditionally.
+        //
+        // M29.6 hotfix (#1191 / SAFE-D7-NEW-01) — but the persistent
+        // `bind_inverses_persistent` SSBO that the dispatch READS from
+        // DOES need a slot-0 seed: the slot pool reserves slot 0 for
+        // the global identity slot, never pushes a pending upload for
+        // it, and pool-overflowed skinned entities fall through to
+        // `bone_offset = 0`. Without this seed, `palette[0..MBPM] =
+        // identity × UNDEFINED = UB`. With the seed,
+        // `palette[0..MBPM] = identity × identity = identity` and the
+        // overflow case falls back to bind pose (pre-M29.6 behaviour).
+        scene_buffers
+            .seed_persistent_bind_inverses_identity(
+                &device,
+                &graphics_queue,
+                transfer_pool,
+            )
+            .context("seed bind_inverses_persistent slot 0 identity (M29.6 / #1191)")?;
 
         // 12b. Acceleration manager (RT only) — build empty TLAS so descriptors are valid
         let mut scene_buffers = scene_buffers;

@@ -1241,7 +1241,18 @@ impl ApplicationHandler for App {
                     // persistent SSBO at the slot's offset before
                     // dispatching skin_palette.comp. Empty on the
                     // steady-state frame (no fresh skinned content).
-                    let pending = self.skin_slot_pool.drain_pending();
+                    // M29.6 hotfix (#1192 / SAFE-D7-NEW-02) — pass the
+                    // renderer's staging-buffer cap to drain_pending so
+                    // entries past the cap stay in the pool and surface
+                    // on the next frame's drain. Pre-hotfix `drain_pending`
+                    // took the full queue and the renderer's
+                    // `upload_pending_bind_inverses` silently dropped the
+                    // tail, leaving entities allocated in
+                    // `pool.entity_to_slot` but never written to the
+                    // persistent SSBO.
+                    let pending = self.skin_slot_pool.drain_pending(
+                        byroredux_renderer::vulkan::scene_buffer::MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME,
+                    );
                     let pending_with_data: Vec<(u32, Vec<[[f32; 4]; 4]>)> = pending
                         .into_iter()
                         .filter_map(|(slot, entity)| {

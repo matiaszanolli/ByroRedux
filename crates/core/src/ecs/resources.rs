@@ -558,12 +558,22 @@ impl SkinSlotPool {
         self.entity_to_slot.get(&entity).copied()
     }
 
-    /// Drain `pending_uploads`, returning the list of slots whose
-    /// `bind_inverses` haven't been uploaded yet. The caller (renderer)
-    /// must complete the GPU upload BEFORE the next compute dispatch
-    /// reads `bind_inverses_persistent[slot × MBPM ..]`.
-    pub fn drain_pending(&mut self) -> Vec<(u32, super::storage::EntityId)> {
-        std::mem::take(&mut self.pending_uploads)
+    /// Drain up to `max` pending uploads, returning the list of slots
+    /// whose `bind_inverses` haven't been uploaded yet. The caller
+    /// (renderer) must complete the GPU upload BEFORE the next
+    /// compute dispatch reads `bind_inverses_persistent[slot × MBPM
+    /// ..]`. Any entries beyond `max` STAY in `pending_uploads` and
+    /// will surface on the next `drain_pending` call (M29.6 hotfix
+    /// #1192 / SAFE-D7-NEW-02 — the renderer's staging buffer has a
+    /// fixed `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME` cap; pre-
+    /// hotfix the renderer silently dropped the excess, leaving the
+    /// pool's `entity_to_slot` populated but the persistent SSBO
+    /// untouched at those slots).
+    ///
+    /// Pass `usize::MAX` to drain everything (the pre-hotfix shape).
+    pub fn drain_pending(&mut self, max: usize) -> Vec<(u32, super::storage::EntityId)> {
+        let n = self.pending_uploads.len().min(max);
+        self.pending_uploads.drain(..n).collect()
     }
 
     /// Sweep entities idle for ≥ `min_idle` frames; return their slot
@@ -677,7 +687,7 @@ mod skin_slot_pool_tests {
     fn first_allocation_queues_pending_upload() {
         let mut pool = SkinSlotPool::new(10);
         let _ = pool.allocate(7, 100).unwrap();
-        let pending = pool.drain_pending();
+        let pending = pool.drain_pending(usize::MAX);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].1, 7, "entity ID round-tripped");
 
@@ -686,8 +696,61 @@ mod skin_slot_pool_tests {
         // frame, defeating M29.6's purpose).
         let _ = pool.allocate(7, 101).unwrap();
         assert!(
-            pool.drain_pending().is_empty(),
+            pool.drain_pending(usize::MAX).is_empty(),
             "steady-state allocate must not re-queue pending upload"
+        );
+    }
+
+    /// M29.6 hotfix #1192 / SAFE-D7-NEW-02 — `drain_pending(max)` must
+    /// return at most `max` entries and KEEP the remainder in
+    /// `pending_uploads` for the next drain. Pre-hotfix `drain_pending`
+    /// took everything; the renderer's staging buffer cap silently
+    /// dropped the tail, leaving `entity_to_slot` populated but the
+    /// persistent SSBO untouched at those slots.
+    #[test]
+    fn drain_pending_respects_max_cap() {
+        let mut pool = SkinSlotPool::new(50);
+        for i in 0..20u32 {
+            let _ = pool.allocate(i, 100).unwrap();
+        }
+        let first = pool.drain_pending(16);
+        assert_eq!(first.len(), 16, "first drain takes at most max=16");
+        let second = pool.drain_pending(16);
+        assert_eq!(
+            second.len(),
+            4,
+            "second drain takes the remaining tail (20 - 16 = 4)"
+        );
+        assert!(
+            pool.drain_pending(16).is_empty(),
+            "third drain finds the queue empty"
+        );
+    }
+
+    /// M29.6 hotfix #1192 — entities whose pending upload was capped
+    /// must NOT be lost: their slot still maps via `entity_to_slot`,
+    /// and the queue tail surfaces on the next drain. The pool's
+    /// invariant is "every allocated entity surfaces in pending
+    /// exactly once over its lifetime"; the renderer's cap mustn't
+    /// turn that into "≤ MAX_PENDING entities over the lifetime".
+    #[test]
+    fn drain_pending_does_not_lose_capped_entities() {
+        let mut pool = SkinSlotPool::new(50);
+        let mut all_seen_slots = std::collections::HashSet::new();
+        for i in 0..20u32 {
+            let slot = pool.allocate(i, 100).unwrap();
+            all_seen_slots.insert((slot, i));
+        }
+        // Drain with cap = 16; the tail (4 entries) stays in pool.
+        let first_round: std::collections::HashSet<_> =
+            pool.drain_pending(16).into_iter().collect();
+        let second_round: std::collections::HashSet<_> =
+            pool.drain_pending(usize::MAX).into_iter().collect();
+        let combined: std::collections::HashSet<_> =
+            first_round.union(&second_round).copied().collect();
+        assert_eq!(
+            combined, all_seen_slots,
+            "every allocated entity must surface in some drain (#1192)"
         );
     }
 
