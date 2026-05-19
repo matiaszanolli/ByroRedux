@@ -70,6 +70,37 @@ pub const BLOOM_INTENSITY: f32 = 0.15;
 // VOLUME_FAR / FROXEL_DEPTH).
 pub const VOLUME_FAR: f32 = 200.0;
 
+// Per-instance flag bits on `GpuInstance.flags` (lower 16 bits — the
+// upper 16 bits pack the terrain-tile slot per
+// `INSTANCE_TERRAIN_TILE_SHIFT/MASK`). Authoritative Rust-side values
+// live in `crates/renderer/src/vulkan/scene_buffer/constants.rs`; this
+// shader-side mirror is pinned equal via
+// `instance_flag_bits_match_scene_buffer_consts` so the two layers
+// can't drift. See #1190 (TD4-NEW-01). The render-layer slot
+// (bits 4..5) and the reserved PRESKINNED bit (bit 6) are not
+// emitted as shader-side flags because nothing in GLSL reads them
+// today; if they grow consumers, add the bit + a matching `#define`
+// to keep the include the single source of truth.
+pub const INSTANCE_FLAG_NON_UNIFORM_SCALE: u32 = 1 << 0;
+pub const INSTANCE_FLAG_ALPHA_BLEND: u32 = 1 << 1;
+pub const INSTANCE_FLAG_CAUSTIC_SOURCE: u32 = 1 << 2;
+pub const INSTANCE_FLAG_TERRAIN_SPLAT: u32 = 1 << 3;
+pub const INSTANCE_FLAG_FLAT_SHADING: u32 = 1 << 7;
+
+// Per-material flag bits on `GpuMaterial.materialFlags`. Authoritative
+// Rust-side values live in `crates/renderer/src/vulkan/material.rs`
+// (`material_flag::*`); this shader-side mirror is pinned equal via
+// `material_flag_bits_match_material_consts`. See #1190. Bits
+// 5/6/7 (`BGSM_PBR / _TRANSLUCENCY / _MODEL_SPACE_NORMALS`) are
+// populated host-side by #1147 Phase 2a but not yet read by any
+// shader; add the `#define` here once Phase 2b lands the shader-side
+// branches.
+pub const MAT_FLAG_VERTEX_COLOR_EMISSIVE: u32 = 1 << 0;
+pub const MAT_FLAG_EFFECT_SOFT: u32 = 1 << 1;
+pub const MAT_FLAG_EFFECT_PALETTE_COLOR: u32 = 1 << 2;
+pub const MAT_FLAG_EFFECT_PALETTE_ALPHA: u32 = 1 << 3;
+pub const MAT_FLAG_EFFECT_LIT: u32 = 1 << 4;
+
 // Water motion-kind enum (WATR-driven, mapped per-WATR record).
 // Lockstep with `water.frag` and `byroredux/src/cell_loader/water.rs`.
 pub const WATER_CALM: u32 = 0;

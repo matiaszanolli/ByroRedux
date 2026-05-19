@@ -69,6 +69,16 @@ mod tests {
             ("DBG_VIZ_NORMALS", format!("#define DBG_VIZ_NORMALS {DBG_VIZ_NORMALS}u")),
             ("DBG_BYPASS_NORMAL_MAP", format!("#define DBG_BYPASS_NORMAL_MAP {DBG_BYPASS_NORMAL_MAP}u")),
             ("DBG_DISABLE_HALF_LAMBERT_FILL", format!("#define DBG_DISABLE_HALF_LAMBERT_FILL {DBG_DISABLE_HALF_LAMBERT_FILL}u")),
+            ("INSTANCE_FLAG_NON_UNIFORM_SCALE", format!("#define INSTANCE_FLAG_NON_UNIFORM_SCALE {INSTANCE_FLAG_NON_UNIFORM_SCALE}u")),
+            ("INSTANCE_FLAG_ALPHA_BLEND", format!("#define INSTANCE_FLAG_ALPHA_BLEND {INSTANCE_FLAG_ALPHA_BLEND}u")),
+            ("INSTANCE_FLAG_CAUSTIC_SOURCE", format!("#define INSTANCE_FLAG_CAUSTIC_SOURCE {INSTANCE_FLAG_CAUSTIC_SOURCE}u")),
+            ("INSTANCE_FLAG_TERRAIN_SPLAT", format!("#define INSTANCE_FLAG_TERRAIN_SPLAT {INSTANCE_FLAG_TERRAIN_SPLAT}u")),
+            ("INSTANCE_FLAG_FLAT_SHADING", format!("#define INSTANCE_FLAG_FLAT_SHADING {INSTANCE_FLAG_FLAT_SHADING}u")),
+            ("MAT_FLAG_VERTEX_COLOR_EMISSIVE", format!("#define MAT_FLAG_VERTEX_COLOR_EMISSIVE {MAT_FLAG_VERTEX_COLOR_EMISSIVE}u")),
+            ("MAT_FLAG_EFFECT_SOFT", format!("#define MAT_FLAG_EFFECT_SOFT {MAT_FLAG_EFFECT_SOFT}u")),
+            ("MAT_FLAG_EFFECT_PALETTE_COLOR", format!("#define MAT_FLAG_EFFECT_PALETTE_COLOR {MAT_FLAG_EFFECT_PALETTE_COLOR}u")),
+            ("MAT_FLAG_EFFECT_PALETTE_ALPHA", format!("#define MAT_FLAG_EFFECT_PALETTE_ALPHA {MAT_FLAG_EFFECT_PALETTE_ALPHA}u")),
+            ("MAT_FLAG_EFFECT_LIT", format!("#define MAT_FLAG_EFFECT_LIT {MAT_FLAG_EFFECT_LIT}u")),
         ] {
             assert!(
                 header.contains(&expected),
@@ -213,5 +223,114 @@ mod tests {
             "cluster_cull.comp must not redeclare THREADS_PER_CLUSTER — \
              the #define from shader_constants.glsl is the source of truth (#1151)",
         );
+    }
+
+    /// #1190 (TD4-NEW-01) — `triangle.frag` must NOT redeclare any
+    /// `MAT_FLAG_*` bit as a local `const uint`. The `#define`d
+    /// values from the included `shader_constants.glsl` are the
+    /// single source of truth, mirrored from `material_flag::*` in
+    /// `crates/renderer/src/vulkan/material.rs`. A local
+    /// `const uint MAT_FLAG_FOO = 0xN u;` after `#include` shadows
+    /// the macro and breaks recompile-from-source (textually
+    /// substitutes to `const uint 1u = 0x1u;`).
+    #[test]
+    fn triangle_frag_mat_flag_bits_not_redeclared() {
+        let src = include_str!("../shaders/triangle.frag");
+        for name in [
+            "MAT_FLAG_VERTEX_COLOR_EMISSIVE",
+            "MAT_FLAG_EFFECT_SOFT",
+            "MAT_FLAG_EFFECT_PALETTE_COLOR",
+            "MAT_FLAG_EFFECT_PALETTE_ALPHA",
+            "MAT_FLAG_EFFECT_LIT",
+        ] {
+            let needle = format!("const uint {name}");
+            assert!(
+                !src.contains(&needle),
+                "triangle.frag must not redeclare {name} — \
+                 the #define from shader_constants.glsl is the source of truth (#1190)",
+            );
+        }
+    }
+
+    /// #1190 (TD4-NEW-01) — `triangle.frag` + `triangle.vert` must
+    /// NOT test `inst.flags` with bare numeric literals. Every
+    /// active `inst.flags & N` site must use a `#define`d
+    /// `INSTANCE_FLAG_*` name from the included
+    /// `shader_constants.glsl`. The flat_shading bit (formerly
+    /// pinned at 128u by a single-purpose test) is now covered here
+    /// alongside every other instance-flag bit.
+    ///
+    /// This catches both the recurrence of the
+    /// `& 128u` / `& 8u` / `& 2u` / `& 1u` patterns the original
+    /// audit flagged, and any future hand-rolled bit added without
+    /// going through `shader_constants_data.rs`.
+    #[test]
+    fn triangle_shaders_use_named_instance_flag_constants() {
+        for (path, src) in [
+            ("triangle.frag", include_str!("../shaders/triangle.frag")),
+            ("triangle.vert", include_str!("../shaders/triangle.vert")),
+        ] {
+            // Skim each non-comment line for the offending pattern.
+            // The regex would be `inst\.flags\s*&\s*\d+u`, but a
+            // hand-rolled scan keeps the test free of regex deps.
+            for (lineno, line) in src.lines().enumerate() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//") || trimmed.starts_with("/*") {
+                    continue;
+                }
+                let Some(start) = line.find("inst.flags") else { continue };
+                let rest = &line[start + "inst.flags".len()..];
+                // The next non-whitespace char must be either nothing
+                // (declaration like `inst.flags = ...`), `.` (field
+                // access — there is none today, but future-proof),
+                // or `&`. If it's `&`, the token immediately after
+                // the `&` and whitespace must NOT be a digit.
+                let rest_trimmed = rest.trim_start();
+                let Some(after_amp) = rest_trimmed.strip_prefix('&') else { continue };
+                let after_amp_trimmed = after_amp.trim_start();
+                let Some(first_char) = after_amp_trimmed.chars().next() else { continue };
+                assert!(
+                    !first_char.is_ascii_digit(),
+                    "{path}:{} uses bare numeric literal on `inst.flags`; \
+                     use the `INSTANCE_FLAG_*` `#define` from shader_constants.glsl. \
+                     Offending line: `{}`",
+                    lineno + 1,
+                    line.trim(),
+                );
+            }
+        }
+    }
+
+    /// #1190 (TD4-NEW-01) — The shader-side mirror of `INSTANCE_FLAG_*`
+    /// in `shader_constants_data.rs` must equal the authoritative
+    /// Rust-side values in `scene_buffer/constants.rs`. Two layers,
+    /// one truth: drift here means the shader and the CPU pipeline
+    /// disagree on which bit means which thing.
+    #[test]
+    fn instance_flag_bits_match_scene_buffer_consts() {
+        use crate::vulkan::scene_buffer::{
+            INSTANCE_FLAG_ALPHA_BLEND as SB_ALPHA_BLEND,
+            INSTANCE_FLAG_CAUSTIC_SOURCE as SB_CAUSTIC_SOURCE,
+            INSTANCE_FLAG_FLAT_SHADING as SB_FLAT_SHADING,
+            INSTANCE_FLAG_NON_UNIFORM_SCALE as SB_NON_UNIFORM_SCALE,
+            INSTANCE_FLAG_TERRAIN_SPLAT as SB_TERRAIN_SPLAT,
+        };
+        assert_eq!(INSTANCE_FLAG_NON_UNIFORM_SCALE, SB_NON_UNIFORM_SCALE);
+        assert_eq!(INSTANCE_FLAG_ALPHA_BLEND, SB_ALPHA_BLEND);
+        assert_eq!(INSTANCE_FLAG_CAUSTIC_SOURCE, SB_CAUSTIC_SOURCE);
+        assert_eq!(INSTANCE_FLAG_TERRAIN_SPLAT, SB_TERRAIN_SPLAT);
+        assert_eq!(INSTANCE_FLAG_FLAT_SHADING, SB_FLAT_SHADING);
+    }
+
+    /// #1190 (TD4-NEW-01) — Same pin, for `MAT_FLAG_*` against
+    /// `material_flag::*` in `vulkan/material.rs`.
+    #[test]
+    fn material_flag_bits_match_material_consts() {
+        use crate::vulkan::material::material_flag;
+        assert_eq!(MAT_FLAG_VERTEX_COLOR_EMISSIVE, material_flag::VERTEX_COLOR_EMISSIVE);
+        assert_eq!(MAT_FLAG_EFFECT_SOFT, material_flag::EFFECT_SOFT);
+        assert_eq!(MAT_FLAG_EFFECT_PALETTE_COLOR, material_flag::EFFECT_PALETTE_COLOR);
+        assert_eq!(MAT_FLAG_EFFECT_PALETTE_ALPHA, material_flag::EFFECT_PALETTE_ALPHA);
+        assert_eq!(MAT_FLAG_EFFECT_LIT, material_flag::EFFECT_LIT);
     }
 }

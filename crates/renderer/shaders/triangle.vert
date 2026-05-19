@@ -171,7 +171,7 @@ void main() {
     // flags bit 0 when column lengths differ. See #273.
     mat3 m3 = mat3(xform);
     vec3 n;
-    if ((inst.flags & 1u) != 0u) {
+    if ((inst.flags & INSTANCE_FLAG_NON_UNIFORM_SCALE) != 0u) {
         float det = determinant(m3);
         n = (abs(det) > 1e-6) ? transpose(inverse(m3)) * inNormal : inNormal;
     } else {

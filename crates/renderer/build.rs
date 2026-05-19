@@ -75,6 +75,24 @@ fn main() {
     writeln!(out, "#define VOLUME_FAR {VOLUME_FAR:?}").unwrap();
     writeln!(out).unwrap();
 
+    writeln!(out, "// Per-instance flag bits (`GpuInstance.flags`, lower 16 bits).").unwrap();
+    writeln!(out, "// Authoritative values: scene_buffer/constants.rs. #1190.").unwrap();
+    writeln!(out, "#define INSTANCE_FLAG_NON_UNIFORM_SCALE {INSTANCE_FLAG_NON_UNIFORM_SCALE}u").unwrap();
+    writeln!(out, "#define INSTANCE_FLAG_ALPHA_BLEND {INSTANCE_FLAG_ALPHA_BLEND}u").unwrap();
+    writeln!(out, "#define INSTANCE_FLAG_CAUSTIC_SOURCE {INSTANCE_FLAG_CAUSTIC_SOURCE}u").unwrap();
+    writeln!(out, "#define INSTANCE_FLAG_TERRAIN_SPLAT {INSTANCE_FLAG_TERRAIN_SPLAT}u").unwrap();
+    writeln!(out, "#define INSTANCE_FLAG_FLAT_SHADING {INSTANCE_FLAG_FLAT_SHADING}u").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// Per-material flag bits (`GpuMaterial.materialFlags`).").unwrap();
+    writeln!(out, "// Authoritative values: vulkan/material.rs `material_flag::*`. #1190.").unwrap();
+    writeln!(out, "#define MAT_FLAG_VERTEX_COLOR_EMISSIVE {MAT_FLAG_VERTEX_COLOR_EMISSIVE}u").unwrap();
+    writeln!(out, "#define MAT_FLAG_EFFECT_SOFT {MAT_FLAG_EFFECT_SOFT}u").unwrap();
+    writeln!(out, "#define MAT_FLAG_EFFECT_PALETTE_COLOR {MAT_FLAG_EFFECT_PALETTE_COLOR}u").unwrap();
+    writeln!(out, "#define MAT_FLAG_EFFECT_PALETTE_ALPHA {MAT_FLAG_EFFECT_PALETTE_ALPHA}u").unwrap();
+    writeln!(out, "#define MAT_FLAG_EFFECT_LIT {MAT_FLAG_EFFECT_LIT}u").unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "// Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`).").unwrap();
     writeln!(out, "#define WATER_CALM {WATER_CALM}u").unwrap();
     writeln!(out, "#define WATER_RIVER {WATER_RIVER}u").unwrap();

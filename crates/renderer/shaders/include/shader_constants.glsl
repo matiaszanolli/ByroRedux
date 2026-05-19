@@ -44,6 +44,22 @@
 #define BLOOM_INTENSITY 0.15
 #define VOLUME_FAR 200.0
 
+// Per-instance flag bits (`GpuInstance.flags`, lower 16 bits).
+// Authoritative values: scene_buffer/constants.rs. #1190.
+#define INSTANCE_FLAG_NON_UNIFORM_SCALE 1u
+#define INSTANCE_FLAG_ALPHA_BLEND 2u
+#define INSTANCE_FLAG_CAUSTIC_SOURCE 4u
+#define INSTANCE_FLAG_TERRAIN_SPLAT 8u
+#define INSTANCE_FLAG_FLAT_SHADING 128u
+
+// Per-material flag bits (`GpuMaterial.materialFlags`).
+// Authoritative values: vulkan/material.rs `material_flag::*`. #1190.
+#define MAT_FLAG_VERTEX_COLOR_EMISSIVE 1u
+#define MAT_FLAG_EFFECT_SOFT 2u
+#define MAT_FLAG_EFFECT_PALETTE_COLOR 4u
+#define MAT_FLAG_EFFECT_PALETTE_ALPHA 8u
+#define MAT_FLAG_EFFECT_LIT 16u
+
 // Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`).
 #define WATER_CALM 0u
 #define WATER_RIVER 1u

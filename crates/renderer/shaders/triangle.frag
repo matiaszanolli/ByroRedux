@@ -19,7 +19,7 @@ layout(location = 7) in vec4 fragPrevClipPos;
 // Terrain splat weights — unorm bytes → vec4 in [0,1] (#470).
 // Interpolated linearly across the triangle. Non-terrain meshes
 // carry zero bytes here; the splat branch is gated on
-// `(inst.flags & 8u) != 0u`.
+// `(inst.flags & INSTANCE_FLAG_TERRAIN_SPLAT) != 0u`.
 layout(location = 8) in vec4 fragSplat0; // layers 0-3
 layout(location = 9) in vec4 fragSplat1; // layers 4-7
 // #783 / M-NORMALS — per-vertex tangent (xyz, world-space) +
@@ -135,10 +135,12 @@ layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
     GpuMaterial materials[];
 };
 
-// `GpuMaterial::material_flags` bit catalog. Mirrors the Rust
-// `crates/renderer/src/vulkan/material.rs::material_flag` module —
-// keep in lockstep when adding new bits.
-const uint MAT_FLAG_VERTEX_COLOR_EMISSIVE = 0x1u; // #695 / O4-03
+// `GpuMaterial::material_flags` bit catalog. The five active bits
+// (`MAT_FLAG_VERTEX_COLOR_EMISSIVE`, `_EFFECT_SOFT`,
+// `_EFFECT_PALETTE_COLOR`, `_EFFECT_PALETTE_ALPHA`, `_EFFECT_LIT`)
+// are now `#define`d in `include/shader_constants.glsl` (the single
+// source of truth, mirrored from `material_flag::*` in
+// `crates/renderer/src/vulkan/material.rs`). See #1190.
 
 // MAT_FLAG_BGSM_PBR (0x20), MAT_FLAG_BGSM_TRANSLUCENCY (0x40), and
 // MAT_FLAG_BGSM_MODEL_SPACE_NORMALS (0x80) are populated by the
@@ -781,7 +783,8 @@ void main() {
     GpuInstance inst = instances[fragInstanceIndex];
 
     // #869 — `NiShadeProperty.flags == 0` flat-shading. When
-    // `INSTANCE_FLAG_FLAT_SHADING` (Rust bit 7 = 128u) is set, replace
+    // `INSTANCE_FLAG_FLAT_SHADING` (bit 7, `#define`d via
+    // `include/shader_constants.glsl` per #1190) is set, replace
     // the interpolated vertex normal with the per-face screen-space
     // derivative so the mesh reads as faceted. Used by a handful of
     // Oblivion architectural pieces; the per-instance gate means
@@ -790,7 +793,7 @@ void main() {
     // workgroups). Downstream uses of `fragNormal` go through
     // `fragNormalEffective` so normal-map perturbation, RT geometric
     // hits, and G-buffer output all see the same effective normal.
-    vec3 fragNormalEffective = ((inst.flags & 128u) != 0u)
+    vec3 fragNormalEffective = ((inst.flags & INSTANCE_FLAG_FLAT_SHADING) != 0u)
         ? normalize(cross(dFdx(fragWorldPos), dFdy(fragWorldPos)))
         : fragNormal;
 
@@ -853,7 +856,7 @@ void main() {
     // per-tile `GpuTerrainTile` alpha-blend on top in layer order via
     // `mix(prev, layer, weight)`. Matches the UESP-documented ATXT
     // blend semantics. Static meshes skip the branch entirely.
-    if ((inst.flags & 8u) != 0u) {
+    if ((inst.flags & INSTANCE_FLAG_TERRAIN_SPLAT) != 0u) {
         uint tileIdx = (inst.flags >> 16) & 0xFFFFu;
         GpuTerrainTile tile = terrainTiles[nonuniformEXT(tileIdx)];
         vec4 splat[2] = vec4[2](fragSplat0, fragSplat1);
@@ -898,7 +901,7 @@ void main() {
     // channels bleed through as ghost-translucent surfaces. Gate
     // only fires on the pure-blend path (inst.flags bit 1) so it
     // can't regress existing alpha-test meshes.
-    if ((inst.flags & 2u) != 0u && aThresh == 0.0 && texColor.a < (1.0/255.0)) {
+    if ((inst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u && aThresh == 0.0 && texColor.a < (1.0/255.0)) {
         discard;
     }
 
@@ -992,7 +995,7 @@ void main() {
     // FO4 city cells exceeded that ceiling and wrap-collapsed to the
     // sky sentinel.
     uint meshIdBase = (uint(fragInstanceIndex) + 1u) & 0x7FFFFFFFu;
-    bool alphaBlendFrag = (inst.flags & 2u) != 0u;
+    bool alphaBlendFrag = (inst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u;
     outMeshID = meshIdBase | (alphaBlendFrag ? 0x80000000u : 0u);
 
     // Debug normal-visualization exit. World-space N is fully resolved
@@ -1132,10 +1135,10 @@ void main() {
     // travel end-to-end but await Stage 2b/2c shader consumers
     // (depth-attachment-as-shader-resource + bindless greyscale LUT
     // slot, respectively). Only `EFFECT_LIT` is acted on today.
-    const uint MAT_FLAG_EFFECT_SOFT          = 0x2u; // bit 1
-    const uint MAT_FLAG_EFFECT_PALETTE_COLOR = 0x4u; // bit 2
-    const uint MAT_FLAG_EFFECT_PALETTE_ALPHA = 0x8u; // bit 3
-    const uint MAT_FLAG_EFFECT_LIT           = 0x10u; // bit 4
+    // `MAT_FLAG_EFFECT_*` are `#define`d in
+    // `include/shader_constants.glsl` (#1190 — single source of truth
+    // mirrored from `material_flag::*` in
+    // `crates/renderer/src/vulkan/material.rs`).
     if (mat.materialKind == MATERIAL_KIND_EFFECT_SHADER) {
         vec3 emit = texColor.rgb
                   * vec3(mat.emissiveR, mat.emissiveG, mat.emissiveB)
@@ -1424,7 +1427,7 @@ void main() {
     // the portal-escape branch below — still texColor-gated but now
     // nested under a stable parent classification. See Tier C Phase 2.
     const uint MATERIAL_KIND_GLASS = 100u;
-    bool isAlphaBlend = (inst.flags & 2u) != 0u;
+    bool isAlphaBlend = (inst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u;
     bool isGlass = mat.materialKind == MATERIAL_KIND_GLASS && roughness < 0.35;
     bool isWindow = isGlass && texColor.a < 0.5 && texColor.a > 0.02;
 
