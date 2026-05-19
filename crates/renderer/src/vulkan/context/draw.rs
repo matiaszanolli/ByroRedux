@@ -230,18 +230,17 @@ impl VulkanContext {
         }
         self.frame_sync.images_in_flight[img] = self.frame_sync.in_flight[frame];
 
-        unsafe {
-            if let Err(e) = self
-                .device
-                .reset_fences(&[self.frame_sync.in_flight[frame]])
-                .context("reset_fences")
-            {
-                let _ = self
-                    .frame_sync
-                    .recreate_image_available_for_frame(&self.device, frame);
-                return Err(e);
-            }
-        }
+        // #952 / REN-D1-NEW-04 — `reset_fences` MOVED to immediately
+        // before `queue_submit`. Pre-fix this ran here, then ~2200
+        // lines of `?`-propagated fallible work followed before the
+        // submit re-signaled the fence. Any error in that window left
+        // the fence UNSIGNALED with no pending submit, and the next
+        // frame's both-slots `wait_for_fences(..., u64::MAX)` at
+        // lines 174-183 blocked forever — logical deadlock matching
+        // the resize-path window closed by #908. Reorder narrows the
+        // window to a single fallible call; the submit-failure error
+        // arm below additionally recreates the fence to cover that
+        // residual case.
 
         // Deferred-destroy tick. Runs AFTER `wait_for_fences` so every
         // resource whose countdown reaches zero this frame is
@@ -2428,6 +2427,31 @@ impl VulkanContext {
             .command_buffers(&command_buffers_to_submit)
             .signal_semaphores(&signal_semaphores);
 
+        // #952 / REN-D1-NEW-04 — `reset_fences` lands HERE, immediately
+        // before `queue_submit`. The Vulkan spec only requires the
+        // fence to be unsignaled at the moment of submit; resetting
+        // any earlier opens a deadlock window if a `?`-propagated
+        // error fires between the reset and the submit (was ~2200
+        // lines pre-fix, see the moved-from comment higher up).
+        unsafe {
+            if let Err(e) = self
+                .device
+                .reset_fences(&[self.frame_sync.in_flight[frame]])
+                .context("reset_fences")
+            {
+                // Pre-submit failure: the fence is still in its prior
+                // SIGNALED state (the reset is what would have moved it
+                // — and just errored), so the next frame's wait won't
+                // hang. The acquired `image_available[frame]` slot
+                // stays signal-pending though, so mirror the submit-
+                // failure recovery to clear it.
+                let _ = self
+                    .frame_sync
+                    .recreate_image_available_for_frame(&self.device, frame);
+                return Err(e);
+            }
+        }
+
         unsafe {
             // Bind the MutexGuard, deref inside the call — `*self
             // .graphics_queue.lock()` would release the guard end-of-
@@ -2454,6 +2478,14 @@ impl VulkanContext {
                 let _ = self
                     .frame_sync
                     .recreate_image_available_for_frame(&self.device, frame);
+                // #952 / REN-D1-NEW-04 — the reset_fences just above
+                // succeeded, so `in_flight[frame]` is UNSIGNALED with
+                // no pending submit (this one just failed). Recreate
+                // it as SIGNALED so the next frame's
+                // `wait_for_fences(..., u64::MAX)` doesn't block forever.
+                let _ = self
+                    .frame_sync
+                    .recreate_in_flight_for_frame(&self.device, frame);
                 return Err(e);
             }
             drop(queue);

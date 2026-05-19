@@ -238,6 +238,47 @@ impl FrameSync {
         Ok(())
     }
 
+    /// Destroy + recreate the `in_flight[frame]` fence in place. Used by
+    /// `draw_frame`'s submit-failure path: once `reset_fences` runs (now
+    /// immediately before `queue_submit`, post-#952), the fence is
+    /// UNSIGNALED with no pending submit. If `vkQueueSubmit` then fails,
+    /// the fence stays stuck — there is no `vkSignalFence` to flip it
+    /// back. The next frame's both-slots `wait_for_fences(..., u64::MAX)`
+    /// at `draw.rs:174-183` would block forever.
+    ///
+    /// Recreating destroys the unsignaled fence and replaces it with a
+    /// fresh `SIGNALED`-flagged one, mirroring the
+    /// `recreate_for_swapchain` pattern that handles the resize-path
+    /// leak (#908). #952 / REN-D1-NEW-04.
+    ///
+    /// # Safety
+    ///
+    /// - Caller guarantees no in-flight submit references the existing
+    ///   fence. `draw_frame`'s submit-failure arm sits in that window
+    ///   by construction (the submit that would have referenced it
+    ///   just failed; nothing else can be pending against this slot).
+    /// - `frame` must be `< MAX_FRAMES_IN_FLIGHT`.
+    /// - `device` must be the same one that allocated the existing
+    ///   fence.
+    pub unsafe fn recreate_in_flight_for_frame(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+    ) -> Result<()> {
+        let info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+        let new_fence = device
+            .create_fence(&info, None)
+            .context("Failed to recreate in_flight fence on submit-failure path")?;
+        let old = std::mem::replace(&mut self.in_flight[frame], new_fence);
+        device.destroy_fence(old, None);
+        log::warn!(
+            "draw_frame error-recovery: recreated in_flight[{}] after reset_fences \
+             left the fence unsignaled with no pending submit",
+            frame,
+        );
+        Ok(())
+    }
+
     pub unsafe fn destroy(&self, device: &ash::Device) {
         for &sem in &self.image_available {
             device.destroy_semaphore(sem, None);
