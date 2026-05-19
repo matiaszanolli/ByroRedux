@@ -231,10 +231,79 @@ pub struct RaceRecord {
     pub editor_id: String,
     pub full_name: String,
     pub description: String,
-    /// Skill bonuses: pairs of (skill AVIF form, bonus value).
-    pub skill_bonuses: Vec<(u32, i8)>,
+    /// Skill bonuses: 8 pairs of `(skill_index, bonus)` where
+    /// `skill_index` is the `SkillIndex` enum value (0x0C..=0x20 for
+    /// Oblivion's 21 skills; 0xFF = None for unused slots).
+    ///
+    /// Pre-#967 this field was typed as `Vec<(u32, i8)>` under the
+    /// premise that the bonus was form-keyed by `AVIF` reference.
+    /// OpenMW's `esm4/loadrace.cpp:135-153` (the canonical TES4 /
+    /// FO3 / FONV reader) reads `(u8 skill_index, u8 bonus) × 8`
+    /// from a 36-byte DATA — confirmed by the `subHdr.dataSize == 36`
+    /// gate they ship against vanilla content. Our previous wider
+    /// type was reading 5-byte strides through a 16-byte payload
+    /// and surfacing garbage `form_id` values.
+    pub skill_bonuses: Vec<(u8, i8)>,
     /// Body part model paths (head, body, hand, foot).
     pub body_models: Vec<String>,
+    /// Default body height per gender, from DATA — `(male, female)`.
+    /// Vanilla Oblivion / FO3 / FNV authors values in ~0.9..1.15.
+    /// Default `(1.0, 1.0)` when DATA is shorter than 36 bytes
+    /// (Skyrim ships 128-byte DATA which falls into a separate
+    /// reader arm not yet wired here).
+    pub base_height: (f32, f32),
+    /// Default body weight per gender, from DATA — `(male, female)`.
+    /// Vanilla values typically `(1.0, 1.0)`.
+    pub base_weight: (f32, f32),
+    /// `RACE_FLAGS` u32 tail of the 36-byte DATA. Bit 0 = Playable.
+    /// Other bits are documented per game (`BeastRace`, `Swims`,
+    /// `Flies` — vanilla Oblivion uses bit 0 + bit 2 = 0x05 for
+    /// playable beast-race overrides).
+    pub race_flags: u32,
+    /// Per-gender base attributes from the Oblivion-only `ATTR`
+    /// sub-record. 8 attributes per gender (Strength / Intelligence
+    /// / Willpower / Agility / Speed / Endurance / Personality /
+    /// Luck) × 2 = 16 bytes total. `None` outside Oblivion.
+    pub base_attributes: Option<RaceAttributes>,
+    /// Default hair form IDs from the Oblivion `DNAM` sub-record —
+    /// `(male, female)`. `None` when DNAM is absent (FO3 / FNV /
+    /// Skyrim use a different default-hair mechanism).
+    pub default_hair: Option<(u32, u32)>,
+    /// Default voice form IDs from the Oblivion `VNAM` sub-record —
+    /// `(male, female)`. `None` when VNAM is absent or has the
+    /// TES5 4-byte shape.
+    pub voice_forms: Option<(u32, u32)>,
+    /// FaceGen main clamp from `PNAM` (1 × f32). Vanilla value is
+    /// 5.0; `None` when the sub-record is absent.
+    pub facegen_main_clamp: Option<f32>,
+    /// FaceGen face clamp from `UNAM` (1 × f32). Vanilla value is
+    /// 3.0; `None` when the sub-record is absent.
+    pub facegen_face_clamp: Option<f32>,
+    /// Race-vs-race disposition adjustments from repeated `XNAM`
+    /// sub-records — each pair is `(other_race_form_id, adjustment)`.
+    /// Drives the Radiant-AI faction-mood calculation for Oblivion
+    /// NPCs interacting across racial lines.
+    pub race_reactions: Vec<(u32, i32)>,
+}
+
+/// Per-gender attribute block for `RaceRecord.base_attributes`
+/// (Oblivion `ATTR` sub-record). 8 attributes × 2 genders = 16 bytes.
+#[derive(Debug, Clone, Default)]
+pub struct RaceAttributes {
+    pub male: GenderedAttributes,
+    pub female: GenderedAttributes,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GenderedAttributes {
+    pub strength: u8,
+    pub intelligence: u8,
+    pub willpower: u8,
+    pub agility: u8,
+    pub speed: u8,
+    pub endurance: u8,
+    pub personality: u8,
+    pub luck: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -536,7 +605,7 @@ fn read_f32_array_into(src: &[u8], dst: &mut [f32]) {
     }
 }
 
-pub fn parse_race(form_id: u32, subs: &[SubRecord]) -> RaceRecord {
+pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecord {
     // Helper claims a single MODL; RACE records carry multiple body
     // parts in MODL — keep that arm custom and ignore the helper's
     // last-MODL string. TD3-203 / #1113.
@@ -548,29 +617,144 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord]) -> RaceRecord {
         description: String::new(),
         skill_bonuses: Vec::new(),
         body_models: Vec::new(),
+        base_height: (1.0, 1.0),
+        base_weight: (1.0, 1.0),
+        race_flags: 0,
+        base_attributes: None,
+        default_hair: None,
+        voice_forms: None,
+        facegen_main_clamp: None,
+        facegen_face_clamp: None,
+        race_reactions: Vec::new(),
     };
+
+    let is_oblivion = matches!(game, GameKind::Oblivion);
 
     for sub in subs {
         match &sub.sub_type {
             b"DESC" => record.description = read_lstring_or_zstring(&sub.data),
-            // DATA (FNV RACE): skill bonus pairs (u32 form + i8) ×7, then more.
-            // We pull the first 7 pairs.
-            b"DATA" => {
-                let pair_size = 5; // u32 form_id + i8 bonus
-                for i in 0..7 {
-                    let off = i * pair_size;
-                    if sub.data.len() < off + pair_size {
-                        break;
-                    }
-                    let f = read_u32_at(&sub.data, off).unwrap_or(0);
-                    let bonus = sub.data[off + 4] as i8;
-                    if f != 0 {
-                        record.skill_bonuses.push((f, bonus));
+            // DATA (TES4 / FO3 / FONV — 36 bytes total):
+            //   8 × (u8 skill_index, u8 bonus)    16 B
+            //   heightMale + heightFemale (2 × f32) 8 B
+            //   weightMale + weightFemale (2 × f32) 8 B
+            //   raceFlags (u32)                     4 B
+            // Pre-#967 this arm read 7 × (u32, i8) starting at offset 0,
+            // surfacing garbage form-keyed bonuses and dropping height/
+            // weight/flags entirely. Layout per OpenMW
+            // `esm4/loadrace.cpp:135-153` (canonical TES4-era reader).
+            // TES5 DATA is 128 / 164 bytes with a different layout —
+            // not yet wired here.
+            b"DATA" if sub.data.len() >= 36 => {
+                for i in 0..8 {
+                    let off = i * 2;
+                    let skill = sub.data[off];
+                    let bonus = sub.data[off + 1] as i8;
+                    // Skip 0xFF (Skill_None sentinel) — OpenMW maps
+                    // these into a HashMap keyed by SkillIndex, but
+                    // our flat Vec preserves authoring order without
+                    // dropping non-None slots. Skipping None keeps
+                    // the public Vec semantically "real skill
+                    // bonuses only," mirroring the FNV-era intent.
+                    if skill != 0xFF {
+                        record.skill_bonuses.push((skill, bonus));
                     }
                 }
+                let h_m = f32::from_le_bytes([
+                    sub.data[16],
+                    sub.data[17],
+                    sub.data[18],
+                    sub.data[19],
+                ]);
+                let h_f = f32::from_le_bytes([
+                    sub.data[20],
+                    sub.data[21],
+                    sub.data[22],
+                    sub.data[23],
+                ]);
+                let w_m = f32::from_le_bytes([
+                    sub.data[24],
+                    sub.data[25],
+                    sub.data[26],
+                    sub.data[27],
+                ]);
+                let w_f = f32::from_le_bytes([
+                    sub.data[28],
+                    sub.data[29],
+                    sub.data[30],
+                    sub.data[31],
+                ]);
+                record.base_height = (h_m, h_f);
+                record.base_weight = (w_m, w_f);
+                record.race_flags = read_u32_at(&sub.data, 32).unwrap_or(0);
             }
             // MODL appears multiple times in RACE for body parts. Collect them all.
             b"MODL" => record.body_models.push(read_zstring(&sub.data)),
+            // ── Oblivion-only sub-records (#967 / OBL-D3-NEW-03) ───────
+            // Plumbed under `is_oblivion` because TES5+ reuses these
+            // FourCCs with different payloads (e.g. TES5 VNAM is a
+            // 4-byte u32 instead of TES4's two form IDs at 8 bytes).
+            // Gating on `GameKind::Oblivion` avoids cross-game
+            // misreads when a future loader walks the same arm.
+            b"ATTR" if is_oblivion && sub.data.len() >= 16 => {
+                let mut attrs = RaceAttributes::default();
+                attrs.male.strength = sub.data[0];
+                attrs.male.intelligence = sub.data[1];
+                attrs.male.willpower = sub.data[2];
+                attrs.male.agility = sub.data[3];
+                attrs.male.speed = sub.data[4];
+                attrs.male.endurance = sub.data[5];
+                attrs.male.personality = sub.data[6];
+                attrs.male.luck = sub.data[7];
+                attrs.female.strength = sub.data[8];
+                attrs.female.intelligence = sub.data[9];
+                attrs.female.willpower = sub.data[10];
+                attrs.female.agility = sub.data[11];
+                attrs.female.speed = sub.data[12];
+                attrs.female.endurance = sub.data[13];
+                attrs.female.personality = sub.data[14];
+                attrs.female.luck = sub.data[15];
+                record.base_attributes = Some(attrs);
+            }
+            b"DNAM" if is_oblivion && sub.data.len() >= 8 => {
+                let male = read_u32_at(&sub.data, 0).unwrap_or(0);
+                let female = read_u32_at(&sub.data, 4).unwrap_or(0);
+                record.default_hair = Some((male, female));
+            }
+            b"VNAM" if is_oblivion && sub.data.len() >= 8 => {
+                let male = read_u32_at(&sub.data, 0).unwrap_or(0);
+                let female = read_u32_at(&sub.data, 4).unwrap_or(0);
+                record.voice_forms = Some((male, female));
+            }
+            b"PNAM" if is_oblivion && sub.data.len() >= 4 => {
+                record.facegen_main_clamp = Some(f32::from_le_bytes([
+                    sub.data[0],
+                    sub.data[1],
+                    sub.data[2],
+                    sub.data[3],
+                ]));
+            }
+            b"UNAM" if is_oblivion && sub.data.len() >= 4 => {
+                record.facegen_face_clamp = Some(f32::from_le_bytes([
+                    sub.data[0],
+                    sub.data[1],
+                    sub.data[2],
+                    sub.data[3],
+                ]));
+            }
+            b"XNAM" if is_oblivion && sub.data.len() >= 8 => {
+                let other_race = read_u32_at(&sub.data, 0).unwrap_or(0);
+                let adjustment = i32::from_le_bytes([
+                    sub.data[4],
+                    sub.data[5],
+                    sub.data[6],
+                    sub.data[7],
+                ]);
+                record.race_reactions.push((other_race, adjustment));
+            }
+            // CNAM intentionally skipped — its 4-byte payload mixes a
+            // bitmask + 2-byte field that OpenMW also skips (see
+            // `esm4/loadrace.cpp:232-251`). Authoritative semantics
+            // are undocumented; revisit when M41.0 Phase 3b needs it.
             _ => {}
         }
     }
@@ -1151,5 +1335,151 @@ mod tests {
         // FMRI captured but FMRS dropped → mismatched (1 vs 0) →
         // truncate to 0 → no morphs → block is empty → None.
         assert!(n.face_morphs.is_none());
+    }
+
+    // ── #967 / OBL-D3-NEW-03 — RACE Oblivion-shape DATA + subs ────────
+
+    /// Build a 36-byte Oblivion DATA payload: 8 × (u8 skill_index, u8
+    /// bonus) + heightM + heightF + weightM + weightF + raceFlags.
+    fn oblivion_data(
+        pairs: [(u8, i8); 8],
+        height: (f32, f32),
+        weight: (f32, f32),
+        flags: u32,
+    ) -> Vec<u8> {
+        let mut data = Vec::with_capacity(36);
+        for (skill, bonus) in pairs {
+            data.push(skill);
+            data.push(bonus as u8);
+        }
+        data.extend_from_slice(&height.0.to_le_bytes());
+        data.extend_from_slice(&height.1.to_le_bytes());
+        data.extend_from_slice(&weight.0.to_le_bytes());
+        data.extend_from_slice(&weight.1.to_le_bytes());
+        data.extend_from_slice(&flags.to_le_bytes());
+        assert_eq!(data.len(), 36);
+        data
+    }
+
+    #[test]
+    fn race_oblivion_data_reads_8_skill_pairs_plus_heights() {
+        // Nord-like sample: bonuses on Blade(0x0E) + Block(0x0F) +
+        // HeavyArmor(0x12) + Restoration(0x19) + LightArmor(0x1B);
+        // remaining slots = 0xFF (Skill_None sentinel, should drop).
+        let pairs = [
+            (0x0E_u8, 10_i8), // Blade +10
+            (0x0F, 5),        // Block +5
+            (0x12, 5),        // HeavyArmor +5
+            (0x19, 5),        // Restoration +5
+            (0x1B, 5),        // LightArmor +5
+            (0xFF, 0),        // Skill_None — drop
+            (0xFF, 0),
+            (0xFF, 0),
+        ];
+        let data = oblivion_data(pairs, (1.04, 1.0), (1.0, 1.0), 0x01);
+        let subs = vec![
+            sub(b"EDID", b"Nord\0"),
+            sub(b"FULL", b"Nord\0"),
+            sub(b"DATA", &data),
+        ];
+        let r = parse_race(0x10001, &subs, GameKind::Oblivion);
+        // 5 real bonuses, 3 None-sentinel slots dropped.
+        assert_eq!(r.skill_bonuses.len(), 5);
+        assert_eq!(r.skill_bonuses[0], (0x0E, 10));
+        assert_eq!(r.skill_bonuses[4], (0x1B, 5));
+        assert!((r.base_height.0 - 1.04).abs() < 1e-6);
+        assert!((r.base_height.1 - 1.0).abs() < 1e-6);
+        assert_eq!(r.race_flags, 0x01);
+    }
+
+    #[test]
+    fn race_oblivion_subrecords_captured() {
+        let attr = [
+            // male
+            50, 40, 30, 40, 30, 50, 30, 50, //
+            // female
+            40, 40, 30, 50, 30, 50, 40, 50,
+        ];
+        let mut dnam = Vec::new();
+        dnam.extend_from_slice(&0x000Au32.to_le_bytes()); // male hair
+        dnam.extend_from_slice(&0x000Bu32.to_le_bytes()); // female hair
+        let mut vnam = Vec::new();
+        vnam.extend_from_slice(&0x0100u32.to_le_bytes());
+        vnam.extend_from_slice(&0x0101u32.to_le_bytes());
+        let pnam = 5.0_f32.to_le_bytes();
+        let unam = 3.0_f32.to_le_bytes();
+        let mut xnam_breton = Vec::new();
+        xnam_breton.extend_from_slice(&0x10001u32.to_le_bytes()); // other race
+        xnam_breton.extend_from_slice(&(-5_i32).to_le_bytes());
+        let data = oblivion_data([(0xFF, 0); 8], (1.0, 1.0), (1.0, 1.0), 0);
+        let subs = vec![
+            sub(b"EDID", b"Breton\0"),
+            sub(b"DATA", &data),
+            sub(b"ATTR", &attr),
+            sub(b"DNAM", &dnam),
+            sub(b"VNAM", &vnam),
+            sub(b"PNAM", &pnam),
+            sub(b"UNAM", &unam),
+            sub(b"XNAM", &xnam_breton),
+        ];
+        let r = parse_race(0x10002, &subs, GameKind::Oblivion);
+        let a = r.base_attributes.expect("ATTR captured");
+        assert_eq!(a.male.strength, 50);
+        assert_eq!(a.male.luck, 50);
+        assert_eq!(a.female.strength, 40);
+        assert_eq!(r.default_hair, Some((0x000A, 0x000B)));
+        assert_eq!(r.voice_forms, Some((0x0100, 0x0101)));
+        assert_eq!(r.facegen_main_clamp, Some(5.0));
+        assert_eq!(r.facegen_face_clamp, Some(3.0));
+        assert_eq!(r.race_reactions, vec![(0x10001, -5)]);
+    }
+
+    /// SIBLING gate (audit completeness check #1) — FNV-tagged RACE
+    /// reuses the 36-byte DATA shape per OpenMW, but the Oblivion-only
+    /// sub-records (ATTR / DNAM / VNAM / PNAM / UNAM / XNAM) MUST be
+    /// dropped when `game != GameKind::Oblivion`. Otherwise a future
+    /// loader walking the same arm on TES5 would mis-read VNAM's
+    /// 4-byte equipment-type-flags payload as 2 form IDs.
+    #[test]
+    fn race_oblivion_subrecords_skipped_on_non_oblivion_games() {
+        let attr = [10u8; 16];
+        let mut dnam = Vec::new();
+        dnam.extend_from_slice(&0x000Au32.to_le_bytes());
+        dnam.extend_from_slice(&0x000Bu32.to_le_bytes());
+        let data = oblivion_data([(0xFF, 0); 8], (1.0, 1.0), (1.0, 1.0), 0);
+        let subs = vec![
+            sub(b"EDID", b"FnvHuman\0"),
+            sub(b"DATA", &data),
+            sub(b"ATTR", &attr),
+            sub(b"DNAM", &dnam),
+        ];
+        let r = parse_race(0x10003, &subs, GameKind::Fallout3NV);
+        assert!(r.base_attributes.is_none());
+        assert!(r.default_hair.is_none());
+        // DATA path still runs — FNV shares the 36-byte shape.
+        assert_eq!(r.race_flags, 0);
+    }
+
+    /// Multiple XNAM sub-records — each pair appends to the
+    /// `race_reactions` list in authoring order.
+    #[test]
+    fn race_multiple_xnam_pairs_collected() {
+        let data = oblivion_data([(0xFF, 0); 8], (1.0, 1.0), (1.0, 1.0), 0);
+        let mut x1 = Vec::new();
+        x1.extend_from_slice(&0x10010u32.to_le_bytes());
+        x1.extend_from_slice(&5_i32.to_le_bytes());
+        let mut x2 = Vec::new();
+        x2.extend_from_slice(&0x10011u32.to_le_bytes());
+        x2.extend_from_slice(&(-3_i32).to_le_bytes());
+        let subs = vec![
+            sub(b"EDID", b"Imperial\0"),
+            sub(b"DATA", &data),
+            sub(b"XNAM", &x1),
+            sub(b"XNAM", &x2),
+        ];
+        let r = parse_race(0x10004, &subs, GameKind::Oblivion);
+        assert_eq!(r.race_reactions.len(), 2);
+        assert_eq!(r.race_reactions[0], (0x10010, 5));
+        assert_eq!(r.race_reactions[1], (0x10011, -3));
     }
 }

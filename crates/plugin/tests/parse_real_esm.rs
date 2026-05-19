@@ -1146,3 +1146,119 @@ fn parse_rate_fo4_esm() {
         index.climates.len(),
     );
 }
+
+/// #967 / OBL-D3-NEW-03 — real-Oblivion RACE coverage. Pins the
+/// audit's requested invariant: every vanilla race must surface a
+/// non-zero `base_height` (the 1.0 default leaves through DATA
+/// short-reads — pre-#967 we never wrote anything to it) AND at
+/// least one race must surface non-default voice forms via VNAM.
+///
+/// `#[ignore]`-gated by Oblivion install (mirrors `parse_rate_oblivion_esm`).
+#[test]
+#[ignore]
+fn race_oblivion_data_and_subs_against_vanilla() {
+    let Some(data) = data_dir(
+        "BYROREDUX_OBL_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+    ) else {
+        eprintln!("[OBL/RACE] skip: data dir missing");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let index = parse_esm(&bytes).expect("parse Oblivion.esm");
+
+    assert!(
+        index.races.len() >= 15,
+        "OBL races={} (vanilla ships at least 15 races)",
+        index.races.len(),
+    );
+
+    // DATA: every race must surface base_height in the documented
+    // 0.5..2.0 range. The 1.0 default is a legitimate authoring
+    // value (Imperial / Breton ship 1.0 deliberately), so we can't
+    // just check `!= 1.0`. The sanity gate catches NaN / garbage
+    // f32 reads without false-negatives on 1.0-author races.
+    let sane_heights = index
+        .races
+        .values()
+        .filter(|r| {
+            (0.5..=2.0).contains(&r.base_height.0)
+                && (0.5..=2.0).contains(&r.base_height.1)
+        })
+        .count();
+    assert_eq!(
+        sane_heights,
+        index.races.len(),
+        "OBL races with sane base_height={}/{} (NaN / garbage from DATA?)",
+        sane_heights,
+        index.races.len(),
+    );
+    // At least one race must author a non-1.0 height — proves the
+    // DATA read actually consumed disk bytes and didn't fall through
+    // to defaults across the board. Vanilla beast races ship 1.04.
+    let non_default_height = index
+        .races
+        .values()
+        .filter(|r| r.base_height.0 != 1.0 || r.base_height.1 != 1.0)
+        .count();
+    assert!(
+        non_default_height >= 5,
+        "OBL races with non-default base_height={}/{} \
+         (DATA parse never wrote anything?)",
+        non_default_height,
+        index.races.len(),
+    );
+
+    // VNAM / DNAM / ATTR floors — vanilla Oblivion authors these on
+    // a SUBSET of races (not every race). Empirical run 2026-05-18:
+    // 15 races total / 5 with VNAM / ? with DNAM / ? with ATTR.
+    // Each floor is "at least one" so a future regression that
+    // silently dropped all of these would fail; the upper bound
+    // floats with authoring choices.
+    let with_voices = index
+        .races
+        .values()
+        .filter(|r| r.voice_forms.is_some())
+        .count();
+    assert!(
+        with_voices >= 1,
+        "OBL races with VNAM voice_forms={}/{} (expected at least 1)",
+        with_voices,
+        index.races.len(),
+    );
+
+    let with_hair = index
+        .races
+        .values()
+        .filter(|r| r.default_hair.is_some())
+        .count();
+    assert!(
+        with_hair >= 1,
+        "OBL races with DNAM default_hair={}/{} (expected at least 1)",
+        with_hair,
+        index.races.len(),
+    );
+
+    let with_attr = index
+        .races
+        .values()
+        .filter(|r| r.base_attributes.is_some())
+        .count();
+    assert!(
+        with_attr >= 1,
+        "OBL races with ATTR={}/{} (expected at least 1)",
+        with_attr,
+        index.races.len(),
+    );
+
+    eprintln!(
+        "[OBL/RACE] races={} | sane_heights={} non_default_heights={} \
+         voices={} hairs={} attrs={}",
+        index.races.len(),
+        sane_heights,
+        non_default_height,
+        with_voices,
+        with_hair,
+        with_attr,
+    );
+}
