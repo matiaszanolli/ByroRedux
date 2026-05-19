@@ -191,7 +191,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_10.md`
 
 ### Dimension 11: TAA — Temporal Antialiasing (M37.5)
-**Entry points**: `crates/renderer/src/vulkan/taa.rs`, `crates/renderer/shaders/taa.comp`, camera-UBO jitter assembly in `byroredux/src/render.rs` and `crates/renderer/src/vulkan/scene_buffer/`
+**Entry points**: `crates/renderer/src/vulkan/taa.rs`, `crates/renderer/shaders/taa.comp`, camera-UBO jitter assembly in `byroredux/src/render/camera.rs` and `crates/renderer/src/vulkan/scene_buffer/`
 **Checklist**:
 - Halton (2,3) sequence: index advances per frame, wraps without seam, jitter applied to projection matrix in NDC pixel units (not clip units)
 - Camera UBO carries the un-jittered projection alongside the jittered one (motion-vector reconstruction must use un-jittered)
@@ -208,7 +208,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_11.md`
 
 ### Dimension 12: GPU Skinning Compute + BLAS Refit (M29.5 + M29.3)
-**Entry points**: `crates/renderer/src/vulkan/skin_compute.rs`, `crates/renderer/shaders/skin_vertices.comp`, `crates/renderer/src/vulkan/acceleration/` (per-skinned-entity BLAS refit), `byroredux/src/render.rs` (skinned-mesh enumeration)
+**Entry points**: `crates/renderer/src/vulkan/skin_compute.rs`, `crates/renderer/shaders/skin_vertices.comp`, `crates/renderer/src/vulkan/acceleration/` (per-skinned-entity BLAS refit), `byroredux/src/render/skinned.rs` (skinned-mesh enumeration)
 **Checklist**:
 - `VERTEX_STRIDE_FLOATS = 25` matches `crates/renderer/src/vertex.rs::Vertex` exactly (100 B / vertex; widened from the pre-M-NORMALS 21 / 84 B per #783 once tangent + bitangent_sign landed). Drift here corrupts every skinned vertex
 - `SkinPushConstants` (vertex_offset, vertex_count, bone_offset) matches the GLSL `PushConstants` struct in skin_vertices.comp; total ≤ 128 B
@@ -217,7 +217,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - COMPUTE → AS-BUILD → FRAGMENT barrier chain: skin write → BLAS refit → ray-query read in fragment shader (audit barrier scopes match)
 - BLAS refit (UPDATE mode) called per frame for skinned entities; geometry count + vertex count must match the original BUILD or Vulkan validation faults
 - BLAS refit budget / LRU interaction: skinned BLAS must not be evicted by M36 LRU mid-frame (pin while in flight)
-- `MAX_TOTAL_BONES` overflow guard (in `byroredux/src/render.rs` — line may have drifted post-Session-34 split; search `MAX_TOTAL_BONES`, `Once`-gated warn) actually fires when the bone-palette buffer is full — silent truncation past the cap was the regression in M29. Pinned by `byroredux/src/render/bone_palette_overflow_tests.rs`
+- `MAX_TOTAL_BONES` overflow guard (in `byroredux/src/render/skinned.rs` — `Once`-gated warn at the bone-palette emit site) actually fires when the bone-palette buffer is full — silent truncation past the cap was the regression in M29. Pinned by `byroredux/src/render/bone_palette_overflow_tests.rs`
 - Workgroup size 64 matches `local_size_x` in skin_vertices.comp; dispatch uses `(vertex_count + 63) / 64` invocations
 - Phase status: confirm whether raster reads inline-skinning (`triangle.vert:147-204`) or pre-skinned (M29.3) — both are valid but cannot coexist in a single mesh
 **Output**: `/tmp/audit/renderer/dim_12.md`
@@ -238,7 +238,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_13.md`
 
 ### Dimension 14: Material Table (R1 Refactor — closed 2026-05-01, hardened 2026-05-04/05)
-**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer/` (GpuInstance, MAX_MATERIALS = 4096), `byroredux/src/render.rs` (build_render_data), all 5 shaders that declare `struct GpuInstance` (`triangle.vert`, `triangle.frag`, `ui.vert`, `water.vert`, `caustic_splat.comp`) — verify via `grep -l "struct GpuInstance" crates/renderer/shaders/`
+**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer/` (GpuInstance, MAX_MATERIALS = 4096), `byroredux/src/render/mod.rs` (build_render_data), `byroredux/src/render/static_meshes.rs` (material intern call sites), all 5 shaders that declare `struct GpuInstance` (`triangle.vert`, `triangle.frag`, `ui.vert`, `water.vert`, `caustic_splat.comp`) — verify via `grep -l "struct GpuInstance" crates/renderer/shaders/`
 **Checklist**:
 - `GpuMaterial` is exactly **260 bytes** (`gpu_material_size_is_260_bytes` test pins it; was 272 B until #804 / R1-N4 dropped the unread `avg_albedo_r/g/b` field). Any field add/remove must update both Rust + GLSL `struct GpuMaterial` in lockstep
 - Per-field offset pinning (`gpu_material_field_offsets_match_shader_contract`, #806): all 65 named-field offsets across 16 vec4 slots are asserted; size-only pin cannot catch within-vec4 reorders (e.g. swapping `texture_index ↔ normal_map_index`). Any new field must add a matching offset assertion
@@ -255,7 +255,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_14.md`
 
 ### Dimension 15: Sky / Weather / Exterior Lighting (M33 / M33.1 / M34)
-**Entry points**: `byroredux/src/systems/weather.rs` (weather_system; post-Session-34 split — was in monolithic systems.rs), `byroredux/src/render.rs` (sun arc + TOD palette assembly), `crates/plugin/src/esm/records/weather.rs`, `crates/renderer/shaders/triangle.frag` (sky gradient + cloud sample + fog application)
+**Entry points**: `byroredux/src/systems/weather.rs` (weather_system; post-Session-34 split — was in monolithic systems.rs), `byroredux/src/render/sky.rs` (sun arc + TOD palette assembly; post-#1115 split — was in monolithic render.rs), `crates/plugin/src/esm/records/weather.rs`, `crates/renderer/shaders/triangle.frag` (sky gradient + cloud sample + fog application)
 **Checklist**:
 - `weather_system` advances game time monotonically; sun arc derived from CLMT TNAM hours, not hardcoded
 - TOD color interpolation between WTHR NAM0 colors uses the right easing (linear vs cosine) — verify against legacy
@@ -330,7 +330,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/renderer/dim_19.md`
 
 ### Dimension 20: M-LIGHT v1 — Stochastic Soft Shadows
-**Entry points**: `crates/renderer/shaders/triangle.frag` (sun shadow ray + cone-sample), `byroredux/src/render.rs` (`sunAngularRadius` UBO field), `crates/renderer/src/vulkan/scene_buffer/`
+**Entry points**: `crates/renderer/shaders/triangle.frag` (sun shadow ray + cone-sample), `byroredux/src/render/sky.rs` (`sun_angular_radius` upload), `crates/renderer/src/vulkan/scene_buffer/`
 **Checklist**:
 - `sunAngularRadius` ships in the camera/scene UBO at the documented offset; current shipping value `0.020` (bumped from `0.0047`) — drift here changes shadow softness globally
 - Per-fragment single-tap stochastic cone sample around the sun direction: random offset derived from frame index + pixel coords (deterministic per-pixel-per-frame), not a true RNG that breaks TAA history

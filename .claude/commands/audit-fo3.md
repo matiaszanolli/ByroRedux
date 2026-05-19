@@ -63,7 +63,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 4: Rendering Path for FO3 Shaders
 **Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/import/material/{mod,walker,shader_data}.rs`, `byroredux/src/render.rs`, `crates/renderer/shaders/triangle.frag`
+**Entry points**: `crates/nif/src/import/material/{mod,walker,shader_data}.rs`, `byroredux/src/render/`, `crates/renderer/shaders/triangle.frag`
 **Checklist**: `BSShaderPPLightingProperty` flag bits mapped correctly (decal, alpha-test, two-sided, glow, window — per-game flag bit positions are NOT identical across FO3/FNV/Skyrim). Normal map handle extracted from `BSShaderTextureSet[1]`, not from the bump slot (Oblivion trap). Parallax depth / parallax map slot routed to the parallax branch in the fragment shader (if enabled). Cubemap / environment map slot. Refraction strength → glass tint path. Decal z-bias uses the NIF-flagged decal detection (not heuristic).
 **Output**: `/tmp/audit/fo3/dim_4.md`
 

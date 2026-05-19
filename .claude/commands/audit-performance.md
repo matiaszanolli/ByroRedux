@@ -48,7 +48,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/performance/dim_2.md`
 
 ### Dimension 3: Draw Call & Batching Overhead
-**Entry points**: `byroredux/src/render.rs` (build_render_data), `crates/renderer/src/vulkan/context/draw.rs` (draw loop)
+**Entry points**: `byroredux/src/render/mod.rs` (build_render_data), `byroredux/src/render/static_meshes.rs` (draw enumeration), `crates/renderer/src/vulkan/context/draw.rs` (draw loop)
 **Checklist**: Sort key efficiency, texture bind frequency, pipeline switch frequency, push constant overhead per draw, potential for instanced drawing (same mesh multiple transforms), draw call count vs entity count ratio.
 **Output**: `/tmp/audit/performance/dim_3.md`
 
@@ -74,7 +74,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/performance/dim_5.md`
 
 ### Dimension 6: CPU Allocation Hot Paths
-**Entry points**: `byroredux/src/systems/animation.rs` (animation_system, transform_propagation_system; post-Session-34 split), `byroredux/src/render.rs` (build_render_data)
+**Entry points**: `byroredux/src/systems/animation.rs` (animation_system, transform_propagation_system; post-Session-34 split), `byroredux/src/render/mod.rs` (build_render_data)
 **Checklist**: Per-frame Vec allocations (should use pre-allocated buffers?), String allocations in name lookups (already fixed with FixedString?), HashMap rebuilds, temporary Vec<DrawCommand> growth, scratch reuse vs realloc — diff against `ScratchTelemetry` baseline (337 KB / 320 B wasted on Prospector). Allocation findings should explicitly call out the dhat-infra gap (see Known Infrastructure Gap above) and note whether the proposed fix is testable today.
 **Output**: `/tmp/audit/performance/dim_6.md`
 
@@ -84,7 +84,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Output**: `/tmp/audit/performance/dim_7.md`
 
 ### Dimension 8: Material Table & SSBO Upload (R1)
-**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer/` (MaterialBuffer SSBO), `byroredux/src/render.rs` (material intern call sites)
+**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer/` (MaterialBuffer SSBO), `byroredux/src/render/static_meshes.rs` (material intern call sites)
 **Checklist**: Dedup ratio — N placements of the same material should produce 1 GpuMaterial entry; report dedup hit rate per cell. Per-frame upload size — should be O(unique materials), not O(draws). Hash-table churn — `MaterialTable::intern` should be O(1) amortized per lookup. SSBO resize policy — does the buffer over-allocate and reuse, or realloc-shrink each frame? GpuInstance struct size win — verify the post-R1 size (target 112 B vs ~400 B legacy) is realized in the `gpu_instance_is_112_bytes_std430_compatible` + `gpu_instance_field_offsets_match_shader_contract` + `gpu_instance_does_not_re_expand_with_per_material_fields` tests in `scene_buffer/gpu_instance_layout_tests.rs`. Memory bandwidth — confirm material table upload doesn't replace dedup wins with bandwidth losses on large scenes.
 **Output**: `/tmp/audit/performance/dim_8.md`
 

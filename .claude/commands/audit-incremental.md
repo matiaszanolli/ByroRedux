@@ -40,7 +40,7 @@ If `--since` provided: `git log --since="<date>" --oneline && git diff $(git log
 | **ESM Parser** | `crates/plugin/src/esm/**` (incl. `records/misc/**` post-Session-34 split: water/character/world/ai/magic/effects/equipment) | MEDIUM |
 | **Animation** | `crates/core/src/animation/**`, `crates/nif/src/anim/` (post-Session-35 split: `entry`, `sequence`, `controlled_block`, `transform`, `bspline`, `channel`, `keys`, `coord`, plus `types.rs` and `tests.rs`) | MEDIUM |
 | **Cell Loader** | `byroredux/src/cell_loader/**` (was monolithic `cell_loader.rs` pre-Session-34) | MEDIUM |
-| **Systems** | `byroredux/src/systems/**` (was monolithic `systems.rs` pre-Session-34) + `byroredux/src/render.rs` + `render/**` | MEDIUM |
+| **Systems** | `byroredux/src/systems/**` (was monolithic `systems.rs` pre-Session-34) + `byroredux/src/render/**` (was monolithic `render.rs` pre-#1115) | MEDIUM |
 | **Scene Setup** | `byroredux/src/scene/**` (was monolithic `scene.rs` pre-Session-34) | MEDIUM |
 | **Main Loop** | `byroredux/src/main.rs`, `byroredux/src/commands.rs` | MEDIUM |
 | **Asset Provider** | `byroredux/src/asset_provider.rs` (sibling-BSA auto-load, AE pipeline-path strip) | MEDIUM |
