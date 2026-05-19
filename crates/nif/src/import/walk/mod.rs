@@ -32,6 +32,21 @@ use byroredux_core::string::StringPool;
 /// variant). Used by the walkers to skip the host BSMultiBoundNode
 /// subtree until the M35 terrain-streaming milestone consumes the
 /// packed-extra payload.
+///
+/// Both variants currently warrant the skip:
+/// - **Baked** (distant-LOD batches): geometry lives inline in the
+///   packed-extra block; the subtree's NiNode children are empty
+///   shells. Skipping avoids spawning empty `ImportedNode` entries.
+/// - **Shared** (FO4+ interior precombines, `_oc.nif`): the BSTriShape
+///   children carry `num_vertices = 0` / empty vertex+triangle arrays;
+///   the real data lives in a companion `.csg`/`.psg` blob (Bethesda
+///   ships these as `Fallout4 - Geometry.csg` next to the BA2s).
+///   Walking the subtree still produces zero meshes because each
+///   BSTriShape's inline buffers are empty (#1188, Diamond City Dugout
+///   Inn 2026-05-19). Future CSG-loader work will populate these from
+///   the companion file; until then the cell-loader falls back to
+///   per-REFR rendering via the conditional absorption gate in
+///   `load_cell_with_masters`.
 fn has_packed_combined_geom_extra(scene: &NifScene, node: &NiNode) -> bool {
     for &ref_idx in &node.av.net.extra_data_refs {
         let Some(idx) = ref_idx.index() else { continue };

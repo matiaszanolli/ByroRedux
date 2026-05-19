@@ -39,6 +39,8 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
         lighting_template_form: None,
         ownership: None,
         regional_color_override: None,
+    precombined_mesh_hashes: Vec::new(),
+        absorbed_refs: std::collections::HashSet::new(),
     }
 }
 

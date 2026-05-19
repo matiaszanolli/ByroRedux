@@ -53,6 +53,13 @@ pub(super) fn load_references(
     mut mat_provider: Option<&mut MaterialProvider>,
     label: &str,
     load_order: &[String],
+    // #1188 — FO4+ PreCombined absorbed REFR form IDs. Skip placement
+    // for any REFR in this set: the CK's bake tool already folded
+    // its geometry into a `meshes\precombined\<cell>_<hash>_oc.nif`
+    // file that the precombined spawn step (later in this load) will
+    // bring in. Spawning here would produce double geometry +
+    // z-fighting on every wall / floor / ceiling.
+    absorbed_refs: &std::collections::HashSet<u32>,
 ) -> RefLoadResult {
     let mut entity_count = 0;
     // Number of mesh-bearing entities (those that receive a
@@ -77,6 +84,11 @@ pub(super) fn load_references(
     let mut stat_miss = 0u32;
     let mut stat_hit = 0u32;
     let mut enable_skipped = 0u32;
+    // #1188 — count REFRs skipped because the CK absorbed them into a
+    // precombined `_oc.nif`. Surfaced in the end-of-cell summary so an
+    // operator can spot a missing precombined-spawn step (would manifest
+    // as "absorbed=N but precombined_spawned=0" pair below).
+    let mut absorbed_skipped = 0u32;
     // Bounded sample of distinct miss FormIDs so an operator can
     // cross-reference in xEdit without flipping the whole log to
     // debug. Cap at 20 unique IDs; duplicates (same FormID placed
@@ -166,6 +178,16 @@ pub(super) fn load_references(
                 enable_skipped += 1;
                 continue;
             }
+        }
+
+        // #1188 — FO4+ PreCombined absorption skip. The bake tool
+        // already folded this REFR's geometry into one of the
+        // `meshes\precombined\<cell>_<hash>_oc.nif` files; the
+        // precombined-spawn pass will bring those in as single
+        // entities. Filtering here prevents double geometry.
+        if absorbed_refs.contains(&placed_ref.form_id) {
+            absorbed_skipped += 1;
+            continue;
         }
 
         // Convert the outer REFR's placement (Z-up Bethesda → Y-up
@@ -726,6 +748,13 @@ pub(super) fn load_references(
             enable_skipped,
         );
     }
+    if absorbed_skipped > 0 {
+        log::info!(
+            "  {} REFRs skipped via FO4 PreCombined absorption — geometry \
+             served by precombined-spawn pass (#1188)",
+            absorbed_skipped,
+        );
+    }
 
     // #881 / CELL-PERF-03 — drain queued DDS uploads with ONE
     // batched submit + ONE fence-wait. Pre-fix every fresh DDS
@@ -767,6 +796,19 @@ pub(super) fn load_references(
 /// once per unique NIF at this step — subsequent placements read
 /// from the cache without re-parsing. See runtime-spam incident from
 /// the `AnvilHeinrichOakenHallsHouse` trace.
+/// Public re-export of `parse_and_import_nif` for the precombined-mesh
+/// loader (#1188). `pub(super)` so only sibling modules in
+/// `cell_loader` can reach it.
+pub(super) fn parse_and_import_nif_pub(
+    nif_data: &[u8],
+    label: &str,
+    mat_provider: Option<&mut MaterialProvider>,
+    pool: &mut byroredux_core::string::StringPool,
+    mesh_resolver: Option<&dyn byroredux_nif::import::MeshResolver>,
+) -> Option<Arc<CachedNifImport>> {
+    parse_and_import_nif(nif_data, label, mat_provider, pool, mesh_resolver)
+}
+
 fn parse_and_import_nif(
     nif_data: &[u8],
     label: &str,

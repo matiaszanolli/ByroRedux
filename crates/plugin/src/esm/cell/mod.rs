@@ -222,6 +222,26 @@ pub struct CellData {
     /// in vanilla, occasional in mods). The renderer hasn't wired
     /// this into the LGTM fallback chain yet; see #970 / OBL-D3-NEW-06.
     pub regional_color_override: Option<[u8; 3]>,
+    /// FO4+ PreCombined Mesh hashes from the cell's `XCRI` sub-record.
+    /// Each hash points at a `meshes\precombined\<cell_formid:08x>_<hash:08x>_oc.nif`
+    /// file (typically in `Fallout4 - MeshesExtra.ba2`). Empty for
+    /// pre-FO4 cells and FO4 cells that don't use the precombined
+    /// optimization (debug cells, some mod content).
+    ///
+    /// XCRI format (#1188, empirically decoded against vanilla
+    /// `DmndDugoutInn01`): `u32 mesh_hash_count + u32 absorbed_refr_count
+    /// + N × u32 hashes + M × u32 refr_form_ids`. The hashes here are
+    /// the first half; the REFR list is unioned into [`absorbed_refs`].
+    pub precombined_mesh_hashes: Vec<u32>,
+    /// FO4+ REFRs absorbed into the cell's precombined meshes —
+    /// union of the XCRI ref-list (962 entries on Dugout Inn) and the
+    /// XPRI sub-record (additional 102 form IDs). The cell loader
+    /// MUST skip these REFRs during normal placement: their geometry
+    /// is already baked into the `_oc.nif` files referenced by
+    /// [`precombined_mesh_hashes`], and spawning them individually
+    /// would produce double geometry + z-fighting. Empty for non-FO4
+    /// cells. #1188.
+    pub absorbed_refs: std::collections::HashSet<u32>,
 }
 
 /// Ownership tuple from `XOWN` / `XRNK` / `XGLB` sub-records. Lives
@@ -251,6 +271,14 @@ pub struct CellOwnership {
 /// A placed object reference within a cell (REFR or ACHR).
 #[derive(Debug, Clone)]
 pub struct PlacedRef {
+    /// The REFR's own form ID (the placement-level identity).
+    /// Distinct from [`base_form_id`] (which is the STAT / FURN /
+    /// LIGH base record this REFR points at). Used by the FO4+
+    /// PreCombined Mesh filter (#1188) to skip REFRs absorbed into
+    /// `_oc.nif` files; the absorbed-refr list in `CellData::absorbed_refs`
+    /// is keyed on this field, NOT [`base_form_id`]. Defaults to 0
+    /// on legacy fixtures that pre-date the field.
+    pub form_id: u32,
     pub base_form_id: u32,
     /// Position in Bethesda units (Z-up).
     pub position: [f32; 3],

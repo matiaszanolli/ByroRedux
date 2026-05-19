@@ -93,7 +93,7 @@ pub fn load_cell_with_masters(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
-    mat_provider: Option<&mut MaterialProvider>,
+    mut mat_provider: Option<&mut MaterialProvider>,
 ) -> anyhow::Result<CellLoadResult> {
     // Mark the high-water entity id before loading. Everything spawned
     // by this load (including the designated cell_root at the end) gets
@@ -143,7 +143,37 @@ pub fn load_cell_with_masters(
         cell.references.len(),
     );
 
-    // 3. Load placed references.
+    // 3a. FO4+ PreCombined Mesh spawn (#1188). Run BEFORE REFR
+    // loading so the spawn count decides whether `cell.absorbed_refs`
+    // is honored. The shared-variant `_oc.nif` files defer their
+    // BSTriShape vertex/triangle data to a companion
+    // `Fallout4 - Geometry.csg` blob we don't yet parse, so spawning
+    // currently yields zero entities for vanilla FO4 cells; in that
+    // case we MUST render the original architecture REFRs (otherwise
+    // the cell renders as "props floating in a void"). Empty on
+    // non-FO4 cells — early-return inside the helper.
+    let (pc_spawned, _pc_misses) = super::precombined::spawn_precombined_meshes(
+        cell,
+        world,
+        ctx,
+        tex_provider,
+        mat_provider.as_deref_mut(),
+    );
+
+    // 3b. Load placed references. Honor `cell.absorbed_refs` only
+    // when the precombined spawn produced at least one entity — the
+    // XPRI list marks REFRs whose geometry is supposed to come from
+    // the precombine. With no precombine actually rendered, those
+    // REFRs are the only carrier of the architecture and must load
+    // normally (real Bethesda games take the same fallback path when
+    // `bUseCombinedObjects=0`).
+    static EMPTY_ABSORBED: std::sync::OnceLock<std::collections::HashSet<u32>> =
+        std::sync::OnceLock::new();
+    let absorbed = if pc_spawned > 0 {
+        &cell.absorbed_refs
+    } else {
+        EMPTY_ABSORBED.get_or_init(std::collections::HashSet::new)
+    };
     let result = load_references(
         &cell.references,
         &index.cells,
@@ -154,9 +184,10 @@ pub fn load_cell_with_masters(
         world,
         ctx,
         tex_provider,
-        mat_provider,
+        mat_provider.as_deref_mut(),
         &cell.editor_id,
         &load_order,
+        absorbed,
     );
 
     // 3a. Interior water plane from XCLW / XCWT — flooded ruins,

@@ -62,6 +62,7 @@ mod load;
 mod load_order;
 mod nif_import_registry;
 mod partial;
+mod precombined;
 mod references;
 mod refr;
 mod spawn;

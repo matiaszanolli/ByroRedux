@@ -23,6 +23,7 @@ fn resolved<'a>(pool: &'a StringPool, sym: Option<FixedString>) -> Option<&'a st
 
 fn empty_placed_ref(base_form_id: u32) -> PlacedRef {
     PlacedRef {
+        form_id: 0,
         base_form_id,
         position: [0.0; 3],
         rotation: [0.0; 3],

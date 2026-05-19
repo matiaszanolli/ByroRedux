@@ -351,6 +351,14 @@ pub(crate) fn parse_wrld_children(
                             lighting_template_form,
                             ownership,
                             regional_color_override,
+                            // Exterior cells don't author XCRI / XPRI
+                            // (FO4 precombines are interior-only in
+                            // vanilla; mod content rare). Empty here
+                            // is safe — the cell loader skips the
+                            // precombined-spawn step when both are
+                            // empty. #1188.
+                            precombined_mesh_hashes: Vec::new(),
+                            absorbed_refs: std::collections::HashSet::new(),
                         },
                     );
                     current_cell = Some(g);

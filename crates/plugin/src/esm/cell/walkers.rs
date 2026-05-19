@@ -88,6 +88,21 @@ pub(crate) fn parse_cell_group(
                 // and lets modded post-Oblivion cells still surface
                 // the override.
                 let mut regional_color_override: Option<[u8; 3]> = None;
+                // #1188 — FO4+ PreCombined Mesh references. XCRI holds
+                // (u32 mesh_count + u32 ref_count + N×u32 hashes +
+                // M×u32 absorbed-refr formids). XPRI holds a smaller
+                // additional list of refr formids absorbed by the
+                // precombines. Both lists feed `absorbed_refs` which
+                // the cell loader uses to skip individual REFR placement
+                // for the geometry baked into the `_oc.nif` files
+                // referenced by `precombined_mesh_hashes`.
+                //
+                // Empirically decoded against vanilla
+                // `DmndDugoutInn01` (form 0x00001E5D, 39 hashes / 962
+                // XCRI refs / 102 XPRI refs) — see the audit memory.
+                let mut precombined_mesh_hashes: Vec<u32> = Vec::new();
+                let mut absorbed_refs: std::collections::HashSet<u32> =
+                    std::collections::HashSet::new();
 
                 for sub in &subs {
                     match &sub.sub_type {
@@ -125,6 +140,70 @@ pub(crate) fn parse_cell_group(
                         b"LTMP" => lighting_template_form = read_form_id(&sub.data),
                         b"XCAS" => acoustic_space_form = read_form_id(&sub.data),
                         b"XCMO" => music_type_form = read_form_id(&sub.data),
+                        // #1188 — XCRI: FO4+ PreCombined Mesh references.
+                        //   `u32 mesh_count + u32 ref_count
+                        //    + mesh_count × u32 hashes
+                        //    + ref_count × u32 visibility-group refs`
+                        // For each hash, the precombined NIF file lives
+                        // at `meshes\precombined\<cell_fid:08x>_<hash:08x>_oc.nif`.
+                        //
+                        // The `ref_count`-sized tail is the
+                        // **visibility group** for the precombines —
+                        // refs participating in the combined-cull bake.
+                        // It is NOT "refs to skip individual spawn"
+                        // (the Dmnd Dugout Inn first-iteration regressed
+                        // the bar / couch / lamps because we treated
+                        // these as absorbed). Skip-placement is XPRI's
+                        // job, below.
+                        b"XCRI" if sub.data.len() >= 8 => {
+                            let mesh_count =
+                                u32::from_le_bytes(sub.data[0..4].try_into().unwrap()) as usize;
+                            let ref_count =
+                                u32::from_le_bytes(sub.data[4..8].try_into().unwrap()) as usize;
+                            let expected =
+                                8 + mesh_count.saturating_mul(4) + ref_count.saturating_mul(4);
+                            if expected != sub.data.len() {
+                                log::warn!(
+                                    "CELL {:08X} XCRI size mismatch: hdr={}+{} expected_payload={} \
+                                     actual={} — skipping",
+                                    header.form_id,
+                                    mesh_count,
+                                    ref_count,
+                                    expected,
+                                    sub.data.len(),
+                                );
+                            } else {
+                                precombined_mesh_hashes.reserve(mesh_count);
+                                let mut off = 8;
+                                for _ in 0..mesh_count {
+                                    let h = u32::from_le_bytes(
+                                        sub.data[off..off + 4].try_into().unwrap(),
+                                    );
+                                    precombined_mesh_hashes.push(h);
+                                    off += 4;
+                                }
+                                // We intentionally do NOT consume the
+                                // ref_count tail into `absorbed_refs`.
+                                // See XPRI below for the skip-placement
+                                // source of truth.
+                            }
+                        }
+                        // #1188 — XPRI: list of REFR formids absorbed
+                        // into precombines (~100 entries for FO4
+                        // interiors; matches the architecture-only
+                        // shell). The cell loader MUST skip these
+                        // REFRs' individual placement — their geometry
+                        // is already baked into the `_oc.nif` files
+                        // referenced by `precombined_mesh_hashes`.
+                        // Format: pure `N × u32`.
+                        b"XPRI" if sub.data.len() % 4 == 0 => {
+                            absorbed_refs.reserve(sub.data.len() / 4);
+                            for chunk in sub.data.chunks_exact(4) {
+                                let fid =
+                                    u32::from_le_bytes(chunk.try_into().unwrap());
+                                absorbed_refs.insert(fid);
+                            }
+                        }
                         // #693 / O3-N-05 — XCMT pre-Skyrim music enum
                         // (Oblivion / FO3 / FNV). 1-byte payload.
                         b"XCMT" if !sub.data.is_empty() => {
@@ -290,6 +369,8 @@ pub(crate) fn parse_cell_group(
                             lighting_template_form,
                             ownership,
                             regional_color_override,
+                            precombined_mesh_hashes,
+                            absorbed_refs,
                         },
                     );
                     current_cell = Some((header.form_id, editor_id));
@@ -526,6 +607,11 @@ pub(crate) fn parse_refr_group(
                     global_var_form_id: ownership_global,
                 });
                 refs.push(PlacedRef {
+                    // REFR's own form ID for the #1188 precombined-
+                    // absorption filter. Pre-fix this was dropped on
+                    // the floor; only `base_form_id` (the STAT this
+                    // REFR placed) was retained.
+                    form_id: header.form_id,
                     base_form_id,
                     position,
                     rotation,

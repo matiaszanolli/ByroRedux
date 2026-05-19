@@ -305,6 +305,7 @@ pub fn load_one_exterior_cell(
         mat_provider,
         &label,
         wctx.load_order.as_ref(),
+        &cell.absorbed_refs,
     );
 
     // Mid-cell terrain ground point — only meaningful for the
