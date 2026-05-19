@@ -566,6 +566,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "byroredux-sfmaterial"
+version = "0.1.0"
+dependencies = [
+ "byroredux-bsa",
+ "env_logger",
+ "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "byroredux-spt"
 version = "0.1.0"
 dependencies = [

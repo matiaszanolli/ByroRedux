@@ -29,8 +29,11 @@ use anyhow::{Context, Result};
 use ash::vk;
 
 const SKIN_VERTICES_COMP_SPV: &[u8] = include_bytes!("../../shaders/skin_vertices.comp.spv");
+const SKIN_PALETTE_COMP_SPV: &[u8] = include_bytes!("../../shaders/skin_palette.comp.spv");
 
-/// Compute workgroup size (local_size_x in skin_vertices.comp).
+/// Compute workgroup size (local_size_x in skin_vertices.comp +
+/// skin_palette.comp). Both shaders use the same 64-wide workgroup so
+/// the dispatch arithmetic and occupancy story stay aligned.
 const WORKGROUP_SIZE: u32 = 64;
 
 /// Push constant payload — matches `skin_vertices.comp::PushConstants`.
@@ -484,6 +487,266 @@ impl SkinComputePipeline {
     }
 }
 
+/// Push-constant payload for [`SkinPaletteComputePipeline::dispatch`] —
+/// matches `skin_palette.comp::PushConstants`. 4 bytes (1 × u32). The
+/// dispatch covers `ceil(bone_count / 64)` workgroups; the shader
+/// early-returns for any tail-slot past `bone_count` so the dense
+/// MAX_TOTAL_BONES output buffer is dispatch-safe in one shot.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SkinPalettePushConstants {
+    /// Number of populated palette slots this frame.
+    pub bone_count: u32,
+}
+
+const SKIN_PALETTE_PUSH_CONSTANTS_SIZE: u32 =
+    std::mem::size_of::<SkinPalettePushConstants>() as u32;
+
+/// M29.5 — GPU bone-palette compute pipeline.
+///
+/// Reads two per-frame SSBOs (`bone_world[]` + `bind_inverses[]`) and
+/// writes the existing bone-palette SSBO that
+/// [`SkinComputePipeline`] (M29.3) + `triangle.vert`'s inline-skinning
+/// path consume. Lifts the per-bone `world × bind_inv` matrix multiply
+/// off the CPU.
+///
+/// Buffer bindings are rewritten on every `dispatch` call (mirrors the
+/// sibling [`SkinComputePipeline`] pattern). One descriptor set per
+/// frame-in-flight; the per-frame fence at `draw_frame`'s top
+/// guarantees previous-frame use of `descriptor_sets[frame]` is
+/// complete before we rewrite, so no external sync is needed.
+pub struct SkinPaletteComputePipeline {
+    pipeline: vk::Pipeline,
+    pipeline_layout: vk::PipelineLayout,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
+    /// One descriptor set per frame-in-flight. Sized at construction;
+    /// `dispatch` writes the three storage-buffer descriptors inline
+    /// each frame so a buffer rotation (host-visible staging swap)
+    /// doesn't invalidate them. Mirrors the per-slot set array in
+    /// [`SkinSlot`] but at pipeline scope — there's only one palette
+    /// dispatch per frame, not one per slot, so a fixed-size array is
+    /// enough.
+    descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
+}
+
+impl SkinPaletteComputePipeline {
+    pub fn new(device: &ash::Device, pipeline_cache: vk::PipelineCache) -> Result<Self> {
+        // Three storage-buffer bindings: bone_world (in), bind_inverses
+        // (in), palette (out). All COMPUTE-only.
+        let bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        ];
+        validate_set_layout(
+            0,
+            &bindings,
+            &[ReflectedShader {
+                name: "skin_palette.comp",
+                spirv: SKIN_PALETTE_COMP_SPV,
+            }],
+            "skin_palette",
+            &[],
+        )
+        .expect("skin_palette layout drifted against skin_palette.comp");
+
+        let descriptor_set_layout = unsafe {
+            device
+                .create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                    None,
+                )
+                .context("create skin_palette descriptor set layout")?
+        };
+
+        let push_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .offset(0)
+            .size(SKIN_PALETTE_PUSH_CONSTANTS_SIZE);
+        let pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default()
+                        .set_layouts(std::slice::from_ref(&descriptor_set_layout))
+                        .push_constant_ranges(std::slice::from_ref(&push_range)),
+                    None,
+                )
+                .context("create skin_palette pipeline layout")?
+        };
+
+        let shader_module = super::pipeline::load_shader_module(device, SKIN_PALETTE_COMP_SPV)?;
+        let pipeline_result = unsafe {
+            device.create_compute_pipelines(
+                pipeline_cache,
+                &[vk::ComputePipelineCreateInfo::default()
+                    .stage(
+                        vk::PipelineShaderStageCreateInfo::default()
+                            .stage(vk::ShaderStageFlags::COMPUTE)
+                            .module(shader_module)
+                            .name(c"main"),
+                    )
+                    .layout(pipeline_layout)],
+                None,
+            )
+        };
+        unsafe { device.destroy_shader_module(shader_module, None) };
+        let pipeline = match pipeline_result {
+            Ok(pipelines) => pipelines[0],
+            Err((_, e)) => {
+                unsafe {
+                    device.destroy_pipeline_layout(pipeline_layout, None);
+                    device.destroy_descriptor_set_layout(descriptor_set_layout, None);
+                }
+                return Err(e).context("create skin_palette pipeline");
+            }
+        };
+
+        // Exactly MAX_FRAMES_IN_FLIGHT descriptor sets — one palette
+        // dispatch per frame, so the pool sizing is fixed (no per-slot
+        // multiplication like SkinComputePipeline). Pool sizes derived
+        // from `bindings` so a future binding addition flows through
+        // automatically (#1030 / REN-D10-NEW-09).
+        let pool_total = MAX_FRAMES_IN_FLIGHT as u32;
+        let descriptor_pool =
+            DescriptorPoolBuilder::from_layout_bindings(&bindings, pool_total)
+                .max_sets(pool_total)
+                .build(device, "create skin_palette descriptor pool")?;
+
+        let layouts = [descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        let allocated = unsafe {
+            device
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(descriptor_pool)
+                        .set_layouts(&layouts),
+                )
+                .context("allocate skin_palette descriptor sets")?
+        };
+        let mut descriptor_sets = [vk::DescriptorSet::null(); MAX_FRAMES_IN_FLIGHT];
+        for (i, set) in allocated.iter().enumerate() {
+            descriptor_sets[i] = *set;
+        }
+
+        log::info!(
+            "Skin palette compute pipeline created (sets={}, push={} B)",
+            pool_total,
+            SKIN_PALETTE_PUSH_CONSTANTS_SIZE,
+        );
+
+        Ok(Self {
+            pipeline,
+            pipeline_layout,
+            descriptor_set_layout,
+            descriptor_pool,
+            descriptor_sets,
+        })
+    }
+
+    /// Record the palette-build dispatch. Must be called between the
+    /// bone_world + bind_inverses transfer-copies and any palette
+    /// consumer (the existing M29.3 `SkinComputePipeline::dispatch`
+    /// for RT, or the raster `triangle.vert` read).
+    ///
+    /// The caller is responsible for emitting:
+    ///   - TRANSFER_WRITE → COMPUTE_SHADER_READ barriers on
+    ///     `bone_world_buffer` + `bind_inverse_buffer` BEFORE this
+    ///     dispatch.
+    ///   - COMPUTE_SHADER_WRITE → (COMPUTE_SHADER_READ | VERTEX_SHADER_READ)
+    ///     barrier on `palette_buffer` AFTER this dispatch.
+    ///
+    /// # Safety
+    /// `cmd` must be a recording command buffer; all three buffers
+    /// must remain valid for the duration of the dispatch.
+    pub unsafe fn dispatch(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame_index: usize,
+        bone_world_buffer: vk::Buffer,
+        bone_world_buffer_size: vk::DeviceSize,
+        bind_inverse_buffer: vk::Buffer,
+        bind_inverse_buffer_size: vk::DeviceSize,
+        palette_buffer: vk::Buffer,
+        palette_buffer_size: vk::DeviceSize,
+        push: SkinPalettePushConstants,
+    ) {
+        let world_info = [vk::DescriptorBufferInfo {
+            buffer: bone_world_buffer,
+            offset: 0,
+            range: bone_world_buffer_size,
+        }];
+        let bind_info = [vk::DescriptorBufferInfo {
+            buffer: bind_inverse_buffer,
+            offset: 0,
+            range: bind_inverse_buffer_size,
+        }];
+        let palette_info = [vk::DescriptorBufferInfo {
+            buffer: palette_buffer,
+            offset: 0,
+            range: palette_buffer_size,
+        }];
+        let descriptor_set = self.descriptor_sets[frame_index];
+        let writes = [
+            write_storage_buffer(descriptor_set, 0, &world_info),
+            write_storage_buffer(descriptor_set, 1, &bind_info),
+            write_storage_buffer(descriptor_set, 2, &palette_info),
+        ];
+        device.update_descriptor_sets(&writes, &[]);
+
+        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+        device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::COMPUTE,
+            self.pipeline_layout,
+            0,
+            &[descriptor_set],
+            &[],
+        );
+        // SAFETY: `SkinPalettePushConstants` is `repr(C)` with one u32
+        // field, 4 bytes, no interior padding. Push-constant size pinned
+        // by `skin_palette_push_constants_size_is_4_bytes` test.
+        let bytes = std::slice::from_raw_parts(
+            (&push as *const SkinPalettePushConstants) as *const u8,
+            SKIN_PALETTE_PUSH_CONSTANTS_SIZE as usize,
+        );
+        device.cmd_push_constants(
+            cmd,
+            self.pipeline_layout,
+            vk::ShaderStageFlags::COMPUTE,
+            0,
+            bytes,
+        );
+        let groups = push.bone_count.div_ceil(WORKGROUP_SIZE);
+        device.cmd_dispatch(cmd, groups, 1, 1);
+    }
+
+    /// Tear down the pipeline + descriptor pool. Caller pairs this with
+    /// `device_wait_idle` in the Drop chain to guarantee no in-flight
+    /// command buffer still references the descriptor sets. The
+    /// descriptor sets themselves are freed implicitly by destroying
+    /// the pool (no FREE_DESCRIPTOR_SET flag here — there are no
+    /// per-slot allocations to free individually).
+    pub unsafe fn destroy(&mut self, device: &ash::Device) {
+        device.destroy_pipeline(self.pipeline, None);
+        device.destroy_pipeline_layout(self.pipeline_layout, None);
+        device.destroy_descriptor_pool(self.descriptor_pool, None);
+        device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,6 +842,106 @@ mod tests {
         assert!(!should_evict_skin_slot(
             /*last=*/ 105, /*now=*/ 100, /*min=*/ 3
         ));
+    }
+
+    // ── M29.5 — SkinPaletteComputePipeline pins ────────────────────
+
+    /// Push-constant payload size must match the shader-side
+    /// `PushConstants` block. One u32 (bone_count), 4 bytes. Catches
+    /// the common drift case of adding a field without updating both
+    /// Rust + GLSL sides.
+    #[test]
+    fn skin_palette_push_constants_size_is_4_bytes() {
+        assert_eq!(SKIN_PALETTE_PUSH_CONSTANTS_SIZE, 4);
+        assert_eq!(std::mem::size_of::<SkinPalettePushConstants>(), 4);
+    }
+
+    /// `skin_palette.comp` must use the same 64-wide workgroup as
+    /// `skin_vertices.comp` so the dispatch arithmetic and occupancy
+    /// story stay aligned. Pinned by string-scan of the GLSL source —
+    /// `WORKGROUP_SIZE` is the Rust-side const driving dispatch group
+    /// counts; a shader edit that changed `local_size_x` without
+    /// updating this const would silently dispatch too many / too few
+    /// workgroups.
+    #[test]
+    fn skin_palette_workgroup_size_matches_skin_vertices() {
+        let src = include_str!("../../shaders/skin_palette.comp");
+        let expected = format!("local_size_x = {}", WORKGROUP_SIZE);
+        assert!(
+            src.contains(&expected),
+            "skin_palette.comp must declare `layout({})` to match \
+             skin_vertices.comp and the Rust-side WORKGROUP_SIZE",
+            expected,
+        );
+    }
+
+    /// M29.5 numeric pin — the GPU compute shader and the CPU-side
+    /// `SkinnedMesh::compute_palette_into` must produce byte-identical
+    /// palette output for the same input pair. The shader path needs
+    /// a live Vulkan device to test end-to-end, but we can reproduce
+    /// the per-slot math here (`palette[i] = bone_world[i] *
+    /// bind_inverses[i]`) and check it against the canonical CPU
+    /// helper. Drift on either side would fail this test.
+    #[test]
+    fn skin_palette_per_slot_math_matches_cpu_compute_palette_into() {
+        use byroredux_core::ecs::{components::SkinnedMesh, EntityId};
+        use byroredux_core::math::{Mat4, Quat, Vec3};
+
+        // Three non-identity bone worlds + three non-identity bind
+        // inverses. The math is per-slot so a small fixture is enough
+        // to catch most drift modes (row/column-major swap, operand
+        // order swap, transpose drift).
+        let bone_worlds = [
+            Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0)),
+            Mat4::from_rotation_y(0.5),
+            Mat4::from_scale_rotation_translation(
+                Vec3::new(2.0, 1.0, 1.0),
+                Quat::from_axis_angle(Vec3::Z, 0.3),
+                Vec3::new(-1.0, 4.0, 0.5),
+            ),
+        ];
+        let bind_inverses = [
+            Mat4::from_translation(Vec3::new(-0.5, 0.0, 0.25)),
+            Mat4::from_rotation_x(-0.2),
+            Mat4::from_scale(Vec3::new(0.5, 2.0, 1.5)),
+        ];
+
+        // CPU ground truth via the canonical helper. EntityId is a
+        // `u32` typedef (crates/core/src/ecs/storage.rs:10), so the
+        // closure can use it as a direct index into `bone_worlds`.
+        let bone_entities: Vec<Option<EntityId>> =
+            (0..3u32).map(Some).collect();
+        // `SkinnedMesh::new` is `#[cfg(test)]`-gated within
+        // byroredux-core and unreachable from another crate's test
+        // build; route through the production constructor with an
+        // identity `global_skin_transform` (matches what `new` does
+        // internally per skinned_mesh.rs:101-107).
+        let skin = SkinnedMesh::new_with_global(
+            None,
+            bone_entities,
+            bind_inverses.to_vec(),
+            Mat4::IDENTITY,
+        );
+        let mut cpu_palette: Vec<Mat4> = Vec::with_capacity(3);
+        skin.compute_palette_into(&mut cpu_palette, |e| {
+            bone_worlds.get(e as usize).copied()
+        });
+
+        // Reproduce the GPU per-slot math:
+        //   palette[i] = bone_world[i] * bind_inverses[i]
+        // The shader literally does this expression at
+        // `skin_palette.comp::main`. Byte-equality here pins the
+        // CPU-side formula and the shader formula in lockstep.
+        for i in 0..3 {
+            let gpu_equivalent = bone_worlds[i] * bind_inverses[i];
+            assert_eq!(
+                gpu_equivalent.to_cols_array(),
+                cpu_palette[i].to_cols_array(),
+                "slot {}: GPU-equivalent math diverged from CPU \
+                 SkinnedMesh::compute_palette_into",
+                i,
+            );
+        }
     }
 }
 

@@ -23,9 +23,13 @@ fn make_skinned_world(num_meshes: usize) -> World {
 fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, HashMap<EntityId, u32>) {
     let mut draw_commands = Vec::new();
     let mut gpu_lights = Vec::new();
-    let mut bone_palette = Vec::new();
+    // M29.5 — the single pre-multiplied palette became two parallel
+    // inputs (bone_world + bind_inverses) that the GPU multiplies. The
+    // overflow guard fires off bone_world.len() identically; we return
+    // bone_world to keep the test assertions byte-equivalent.
+    let mut bone_world = Vec::new();
+    let mut bind_inverses = Vec::new();
     let mut skin_offsets = HashMap::new();
-    let mut palette_scratch = Vec::new();
     let mut material_table = byroredux_renderer::MaterialTable::new();
     let mut water_commands = Vec::new();
     let _ = build_render_data(
@@ -33,13 +37,18 @@ fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, HashMap<EntityId, u32>) {
         &mut draw_commands,
         &mut water_commands,
         &mut gpu_lights,
-        &mut bone_palette,
+        &mut bone_world,
+        &mut bind_inverses,
         &mut skin_offsets,
-        &mut palette_scratch,
         &mut material_table,
         None,
     );
-    (bone_palette, skin_offsets)
+    debug_assert_eq!(
+        bone_world.len(),
+        bind_inverses.len(),
+        "M29.5 parallel-Vec invariant must hold post-build_render_data"
+    );
+    (bone_world, skin_offsets)
 }
 
 #[test]

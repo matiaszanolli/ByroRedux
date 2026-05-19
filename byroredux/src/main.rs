@@ -310,24 +310,26 @@ struct App {
     water_commands: Vec<byroredux_renderer::vulkan::water::WaterDrawCommand>,
     /// Reusable per-frame light buffer (cleared each frame, allocation retained).
     gpu_lights: Vec<byroredux_renderer::GpuLight>,
-    /// Reusable per-frame bone palette (column-major mat4 entries; slot 0
-    /// always identity). Walked by `build_render_data` for every
-    /// SkinnedMesh entity and uploaded once per frame.
-    bone_palette: Vec<[[f32; 4]; 4]>,
+    /// M29.5 — reusable per-frame bone-world matrices (column-major
+    /// mat4 entries; slot 0 always identity). One entry per palette
+    /// slot, dense layout parallel to `bind_inverses`. The renderer
+    /// uploads both arrays each frame via `upload_bone_inputs`; the
+    /// GPU `skin_palette.comp` does the per-slot `bone_world ×
+    /// bind_inverses` multiply and writes the palette SSBO consumed
+    /// by `skin_vertices.comp` + `triangle.vert` inline-skinning.
+    bone_world: Vec<[[f32; 4]; 4]>,
+    /// M29.5 — reusable per-frame inverse-bind-pose matrices,
+    /// parallel to [`bone_world`]. NIF-static per skinned mesh
+    /// (sourced from `SkinnedMesh::bind_inverses`); the per-frame
+    /// upload model lets us ship M29.5 without a persistent slot
+    /// lifecycle. M29.6 will promote this to a write-once SSBO once
+    /// the per-skinned-mesh slot management is in place.
+    bind_inverses: Vec<[[f32; 4]; 4]>,
     /// Reusable per-frame entity → bone-offset map. Populated by the
     /// skinned-mesh pass in `build_render_data` and read during draw
     /// command emission. Retained across frames so the HashMap's bucket
     /// allocation persists — see #253.
     skin_offsets: HashMap<byroredux_core::ecs::EntityId, u32>,
-    /// Per-SkinnedMesh scratch buffer — `build_render_data` clears it
-    /// once per skinned entity and asks `SkinnedMesh::compute_palette_into`
-    /// to refill. Hoisted onto the App struct so the Vec's capacity
-    /// persists across frames rather than re-growing from zero each
-    /// call. Typical capacity ~MAX_BONES_PER_MESH × 64 B ≈ 8 KB
-    /// (small, but the fresh allocation at the top of every frame was
-    /// observable in profilers). See #509 (PERF-2026-04-20 D6-L1) and
-    /// #243 / #253 for the other scratch hoists this follows.
-    palette_scratch: Vec<byroredux_core::math::Mat4>,
     /// R1 — per-frame deduplicated material table. Cleared at the
     /// top of `build_render_data`, populated as DrawCommands are
     /// emitted, uploaded as an SSBO before draw. Phase 2 builds it
@@ -605,9 +607,9 @@ impl App {
             draw_commands: Vec::new(),
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),
-            bone_palette: Vec::new(),
+            bone_world: Vec::new(),
+            bind_inverses: Vec::new(),
             skin_offsets: HashMap::new(),
-            palette_scratch: Vec::new(),
             material_table: byroredux_renderer::MaterialTable::new(),
             bench_frames_target: None,
             bench_hold: false,
@@ -1110,9 +1112,9 @@ impl ApplicationHandler for App {
                         &mut self.draw_commands,
                         &mut self.water_commands,
                         &mut self.gpu_lights,
-                        &mut self.bone_palette,
+                        &mut self.bone_world,
+                        &mut self.bind_inverses,
                         &mut self.skin_offsets,
-                        &mut self.palette_scratch,
                         &mut self.material_table,
                         ctx.particle_quad_handle,
                     );
@@ -1228,7 +1230,8 @@ impl ApplicationHandler for App {
                         &frame.view_proj,
                         &self.draw_commands,
                         &self.gpu_lights,
-                        &self.bone_palette,
+                        &self.bone_world,
+                        &self.bind_inverses,
                         self.material_table.materials(),
                         frame.camera_pos,
                         frame.ambient,

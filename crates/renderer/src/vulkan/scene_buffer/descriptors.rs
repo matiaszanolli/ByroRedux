@@ -166,6 +166,24 @@ impl super::buffers::SceneBuffers {
             buf.destroy(device, allocator);
         }
         self.bone_device_buffers.clear();
+        // M29.5 — bone-world + bind-inverse pairs for the palette
+        // compute pass. Destroy in the same group as the palette pair.
+        for buf in &mut self.bone_world_staging_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.bone_world_staging_buffers.clear();
+        for buf in &mut self.bone_world_device_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.bone_world_device_buffers.clear();
+        for buf in &mut self.bind_inverse_staging_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.bind_inverse_staging_buffers.clear();
+        for buf in &mut self.bind_inverse_device_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.bind_inverse_device_buffers.clear();
         for buf in &mut self.instance_buffers {
             buf.destroy(device, allocator);
         }

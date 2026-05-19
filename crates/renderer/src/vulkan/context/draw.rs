@@ -120,7 +120,15 @@ impl VulkanContext {
         view_proj: &[f32; 16],
         draw_commands: &[DrawCommand],
         lights: &[scene_buffer::GpuLight],
-        bone_palette: &[[[f32; 4]; 4]],
+        // M29.5 — two parallel input arrays for the GPU palette compute
+        // pass (`skin_palette.comp`). `bone_world[i]` is the per-slot
+        // raw world transform sourced from `GlobalTransform`;
+        // `bind_inverses[i]` is the matching `NiSkinData.boneTransform`.
+        // Length must match; the GPU writes
+        // `palette[i] = bone_world[i] * bind_inverses[i]` into the
+        // existing palette SSBO that raster + skin_vertices.comp read.
+        bone_world: &[[[f32; 4]; 4]],
+        bind_inverses: &[[[f32; 4]; 4]],
         materials: &[GpuMaterial],
         camera_pos: [f32; 3],
         ambient_color: [f32; 3],
@@ -549,19 +557,94 @@ impl VulkanContext {
             .unwrap_or_else(|e| log::warn!("Failed to upload DALC cube: {e}"));
         // Store this frame's viewProj as next frame's "previous" for motion vectors.
         self.prev_view_proj = *vp;
-        if !bone_palette.is_empty() {
+
+        // M29.5 — upload the bone-world + bind-inverses input pair
+        // and schedule the staging→device copies. The
+        // `skin_palette.comp` dispatch below reads both and writes
+        // the existing palette SSBO (the buffer raster +
+        // `skin_vertices.comp` consume). The two slices are parallel
+        // (asserted on the upload site via `debug_assert_eq!`); CPU
+        // produces them in `build_skinned_palettes` post-M29.5.
+        debug_assert_eq!(
+            bone_world.len(),
+            bind_inverses.len(),
+            "M29.5: bone_world and bind_inverses must be parallel slices"
+        );
+        if !bone_world.is_empty() {
             self.scene_buffers
-                .upload_bones(&self.device, frame, bone_palette)
-                .unwrap_or_else(|e| log::warn!("Failed to upload bone palette: {e}"));
+                .upload_bone_inputs(&self.device, frame, bone_world, bind_inverses)
+                .unwrap_or_else(|e| log::warn!("Failed to upload bone inputs: {e}"));
         }
-        // #921 / REN-D12-NEW-04 — schedule the staging→device copy +
-        // visibility barrier on the main command buffer BEFORE any
-        // shader stage reads the device-side bone palette (the M29 skin
-        // compute steady-state dispatch below, and binding 3 / 12 reads
-        // in the raster vertex stage). Idempotent w.r.t. the per-prime
-        // copies recorded inside the first-sight loop further down.
+        // TRANSFER copies + visibility barrier on the input SSBOs.
+        // Internal no-op when `bone_input_upload_bytes[frame] == 0`.
         self.scene_buffers
-            .record_bone_copy(&self.device, cmd, frame);
+            .record_bone_inputs_copy(&self.device, cmd, frame);
+
+        // M29.5 — dispatch the palette-build compute pass. Writes the
+        // existing `bone_device_buffers[frame]` SSBO that raster
+        // (`triangle.vert:147-204` inline-skinning, set 1 binding 3 +
+        // binding 12) and `skin_vertices.comp` (set 0 binding 1 in
+        // SkinComputePipeline) read. Emits the
+        // COMPUTE_SHADER_WRITE → (COMPUTE_SHADER_READ | VERTEX_SHADER_READ)
+        // barrier on the palette buffer after the dispatch so both
+        // downstream consumers see well-defined data.
+        if let Some(ref skin_palette) = self.skin_palette {
+            let bone_byte_size = self.scene_buffers.bone_input_upload_bytes(frame);
+            // Each palette slot is one mat4 = 64 B. Skip the dispatch
+            // entirely when there are no skinned bones this frame —
+            // the palette buffer retains its prior contents (slot 0
+            // identity from `seed_identity_bones` initialization or
+            // the previous frame's writes), so any raster sampling at
+            // `bone_offset = 0` falls through to the identity slot.
+            let bone_count = (bone_byte_size as usize
+                / std::mem::size_of::<[[f32; 4]; 4]>()) as u32;
+            if bone_count > 0 {
+                let bone_world_buf = self.scene_buffers.bone_world_buffers()[frame].buffer;
+                let bind_inverse_buf =
+                    self.scene_buffers.bind_inverse_buffers()[frame].buffer;
+                let palette_buf = self.scene_buffers.bone_buffers()[frame].buffer;
+                let palette_size = self.scene_buffers.bone_buffer_size();
+                unsafe {
+                    skin_palette.dispatch(
+                        &self.device,
+                        cmd,
+                        frame,
+                        bone_world_buf,
+                        bone_byte_size,
+                        bind_inverse_buf,
+                        bone_byte_size,
+                        palette_buf,
+                        palette_size,
+                        super::super::skin_compute::SkinPalettePushConstants {
+                            bone_count,
+                        },
+                    );
+                    // COMPUTE_SHADER_WRITE → SHADER_READ barrier on the
+                    // palette buffer covers both downstream consumers:
+                    // `skin_vertices.comp` (compute read in this same
+                    // command buffer below) and `triangle.vert` (vertex
+                    // read during the raster pass).
+                    let palette_barrier = vk::BufferMemoryBarrier::default()
+                        .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .buffer(palette_buf)
+                        .offset(0)
+                        .size(palette_size);
+                    self.device.cmd_pipeline_barrier(
+                        cmd,
+                        vk::PipelineStageFlags::COMPUTE_SHADER,
+                        vk::PipelineStageFlags::COMPUTE_SHADER
+                            | vk::PipelineStageFlags::VERTEX_SHADER,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[palette_barrier],
+                        &[],
+                    );
+                }
+            }
+        }
 
         // ── M29 Phase 2: GPU pre-skin + per-skinned-entity BLAS refit ─
         //

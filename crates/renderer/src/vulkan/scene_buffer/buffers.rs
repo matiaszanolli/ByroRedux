@@ -64,6 +64,35 @@ pub struct SceneBuffers {
     /// identity-slot size by the init seed so frames without skinned
     /// content still refresh the identity row.
     pub(super) bone_upload_bytes: Vec<vk::DeviceSize>,
+    /// M29.5 — per-frame raw bone-world matrices SSBO (staging pair).
+    /// CPU writes one mat4 per palette slot here ([`upload_bone_inputs`]);
+    /// [`record_bone_inputs_copy`] transfers staging → device before the
+    /// `skin_palette.comp` dispatch reads it as `set 0, binding 0`. Same
+    /// `MAX_TOTAL_BONES`-slot sizing as the existing palette pair.
+    pub(super) bone_world_staging_buffers: Vec<GpuBuffer>,
+    /// M29.5 — DEVICE_LOCAL companion of [`bone_world_staging_buffers`].
+    /// Bound as the `BoneWorldBuffer` input to `skin_palette.comp`. Not
+    /// bound on any raster descriptor set; the compute pass produces the
+    /// palette consumed by every other consumer.
+    pub(super) bone_world_device_buffers: Vec<GpuBuffer>,
+    /// M29.5 — per-frame inverse-bind-pose matrices SSBO (staging pair).
+    /// CPU writes one mat4 per palette slot here in lockstep with
+    /// `bone_world_staging_buffers`. The bind-inverses are NIF-static
+    /// per skinned mesh, but the per-frame upload model (Option A from
+    /// planning) lets us ship M29.5 without a persistent slot lifecycle;
+    /// follow-on M29.6 promotes this to a write-once SSBO.
+    pub(super) bind_inverse_staging_buffers: Vec<GpuBuffer>,
+    /// M29.5 — DEVICE_LOCAL companion of [`bind_inverse_staging_buffers`].
+    /// Bound as the `BindInverseBuffer` input to `skin_palette.comp` at
+    /// `set 0, binding 1`.
+    pub(super) bind_inverse_device_buffers: Vec<GpuBuffer>,
+    /// M29.5 — bytes most recently written into the bone-world /
+    /// bind-inverse staging pair (the two are always uploaded together
+    /// by [`upload_bone_inputs`] so a single count covers both copies).
+    /// [`record_bone_inputs_copy`] uses this to size the
+    /// staging→device copies; identical role to [`bone_upload_bytes`]
+    /// but for the M29.5 input SSBOs.
+    pub(super) bone_input_upload_bytes: Vec<vk::DeviceSize>,
     /// One SSBO per frame-in-flight (per-instance data for instanced drawing).
     /// Each entry contains model matrix + texture index + bone offset.
     pub(super) instance_buffers: Vec<GpuBuffer>,
@@ -314,6 +343,14 @@ struct SceneRenderBuffers {
     camera_buf_size: vk::DeviceSize,
     bone_staging_buffers: Vec<GpuBuffer>,
     bone_device_buffers: Vec<GpuBuffer>,
+    // M29.5 — see `SceneBuffers::{bone_world,bind_inverse}_*_buffers`
+    // docstrings. Same `bone_buf_size` sizing as the palette pair —
+    // mat4 × MAX_TOTAL_BONES — so the dense per-slot layout stays
+    // parallel between inputs and output.
+    bone_world_staging_buffers: Vec<GpuBuffer>,
+    bone_world_device_buffers: Vec<GpuBuffer>,
+    bind_inverse_staging_buffers: Vec<GpuBuffer>,
+    bind_inverse_device_buffers: Vec<GpuBuffer>,
     bone_buf_size: vk::DeviceSize,
     instance_buffers: Vec<GpuBuffer>,
     instance_buf_size: vk::DeviceSize,
@@ -371,6 +408,11 @@ fn allocate_scene_render_buffers(
     // frame by `record_bone_copy`.
     let mut bone_staging_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut bone_device_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    // M29.5 — see `SceneBuffers::{bone_world,bind_inverse}_*_buffers`.
+    let mut bone_world_staging_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    let mut bone_world_device_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    let mut bind_inverse_staging_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    let mut bind_inverse_device_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut material_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -395,6 +437,33 @@ fn allocate_scene_render_buffers(
             vk::BufferUsageFlags::TRANSFER_SRC,
         )?);
         bone_device_buffers.push(GpuBuffer::create_device_local_uninit(
+            device,
+            allocator,
+            bone_buf_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        )?);
+        // M29.5 — bone_world + bind_inverses input pair for skin_palette.comp.
+        // Same MAX_TOTAL_BONES × mat4 sizing as the palette pair so the
+        // shader's parallel `[slot]` indexing stays trivial.
+        bone_world_staging_buffers.push(GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            bone_buf_size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+        )?);
+        bone_world_device_buffers.push(GpuBuffer::create_device_local_uninit(
+            device,
+            allocator,
+            bone_buf_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+        )?);
+        bind_inverse_staging_buffers.push(GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            bone_buf_size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+        )?);
+        bind_inverse_device_buffers.push(GpuBuffer::create_device_local_uninit(
             device,
             allocator,
             bone_buf_size,
@@ -453,6 +522,10 @@ fn allocate_scene_render_buffers(
         camera_buf_size,
         bone_staging_buffers,
         bone_device_buffers,
+        bone_world_staging_buffers,
+        bone_world_device_buffers,
+        bind_inverse_staging_buffers,
+        bind_inverse_device_buffers,
         bone_buf_size,
         instance_buffers,
         instance_buf_size,
@@ -671,12 +744,25 @@ impl SceneBuffers {
             bufs.light_buf_size,
         );
 
+        // M29.5 — bone_input upload tracker mirrors `bone_upload_bytes`
+        // but covers the bone_world + bind_inverses staging pair. Seeded
+        // at 0 (no initial identity slot for the inputs — the palette's
+        // identity-slot seed flows from the existing `bone_device_buffers`
+        // path; the M29.5 inputs are only meaningful when there's
+        // skinned content present, which by definition writes them).
+        let bone_input_upload_bytes = vec![0; MAX_FRAMES_IN_FLIGHT];
+
         Ok(Self {
             light_buffers: bufs.light_buffers,
             camera_buffers: bufs.camera_buffers,
             bone_staging_buffers: bufs.bone_staging_buffers,
             bone_device_buffers: bufs.bone_device_buffers,
             bone_upload_bytes,
+            bone_world_staging_buffers: bufs.bone_world_staging_buffers,
+            bone_world_device_buffers: bufs.bone_world_device_buffers,
+            bind_inverse_staging_buffers: bufs.bind_inverse_staging_buffers,
+            bind_inverse_device_buffers: bufs.bind_inverse_device_buffers,
+            bone_input_upload_bytes,
             instance_buffers: bufs.instance_buffers,
             dalc_buffers: bufs.dalc_buffers,
             material_buffers: bufs.material_buffers,

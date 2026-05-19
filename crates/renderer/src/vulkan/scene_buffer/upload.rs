@@ -187,6 +187,155 @@ impl super::buffers::SceneBuffers {
         }
     }
 
+    /// M29.5 — write the per-frame bone-world + bind-inverses input
+    /// pair into the staging buffers consumed by `skin_palette.comp`.
+    ///
+    /// Replaces the host-side `bone_world × bind_inverses` multiply
+    /// that [`upload_bones`] used to receive pre-multiplied. The two
+    /// slices must be parallel (same length, same per-slot meaning) —
+    /// each `bone_world[i]` corresponds to its `bind_inverses[i]`, and
+    /// the compute pass writes `palette[i] = bone_world[i] *
+    /// bind_inverses[i]` into the existing `bone_device_buffers[frame]`
+    /// slot. Both slices are clamped at `MAX_TOTAL_BONES` to match the
+    /// SSBO sizing — the caller's overflow path (`render/skinned.rs`)
+    /// already gates upstream of this so the clamp is defensive only.
+    ///
+    /// Records the byte-count into `bone_input_upload_bytes[frame]`
+    /// for [`record_bone_inputs_copy`] to consume.
+    pub fn upload_bone_inputs(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        bone_world: &[[[f32; 4]; 4]],
+        bind_inverses: &[[[f32; 4]; 4]],
+    ) -> Result<()> {
+        debug_assert_eq!(
+            bone_world.len(),
+            bind_inverses.len(),
+            "bone_world and bind_inverses must be parallel slices (M29.5 \
+             per-slot palette[i] = world[i] * bind_inv[i])"
+        );
+        let count = bone_world.len().min(bind_inverses.len()).min(MAX_TOTAL_BONES);
+        if count == 0 {
+            self.bone_input_upload_bytes[frame_index] = 0;
+            return Ok(());
+        }
+
+        let byte_size = (std::mem::size_of::<[[f32; 4]; 4]>() * count) as vk::DeviceSize;
+        // bone_world
+        let world_buf = &mut self.bone_world_staging_buffers[frame_index];
+        let world_mapped = world_buf.mapped_slice_mut()?;
+        // SAFETY: [[f32;4];4] is repr(C)-compatible with std430 mat4.
+        // bone_world_staging_buffers are sized for MAX_TOTAL_BONES; count
+        // is clamped above.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bone_world.as_ptr() as *const u8,
+                world_mapped.as_mut_ptr(),
+                byte_size as usize,
+            );
+        }
+        world_buf.flush_if_needed(device)?;
+        // bind_inverses
+        let bind_buf = &mut self.bind_inverse_staging_buffers[frame_index];
+        let bind_mapped = bind_buf.mapped_slice_mut()?;
+        // SAFETY: same shape + size invariant as above. The two staging
+        // buffers were created back-to-back in `allocate_scene_render_buffers`
+        // with identical `bone_buf_size`.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bind_inverses.as_ptr() as *const u8,
+                bind_mapped.as_mut_ptr(),
+                byte_size as usize,
+            );
+        }
+        bind_buf.flush_if_needed(device)?;
+        self.bone_input_upload_bytes[frame_index] = byte_size;
+        Ok(())
+    }
+
+    /// M29.5 — record the staging→device copies for the bone_world +
+    /// bind_inverses pair and the visibility barrier that makes them
+    /// readable by `skin_palette.comp`.
+    ///
+    /// Layout: two `cmd_copy_buffer` calls followed by ONE buffer
+    /// barrier (TRANSFER_WRITE → COMPUTE_SHADER_READ) covering both
+    /// device buffers. The shader reads both at the same dispatch so
+    /// merging the barrier saves one pipeline-barrier emission per
+    /// frame without affecting visibility semantics.
+    ///
+    /// Caller (draw_frame) must invoke this AFTER [`upload_bone_inputs`]
+    /// for the same frame and BEFORE the `skin_palette` dispatch.
+    pub fn record_bone_inputs_copy(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame_index: usize,
+    ) {
+        let byte_size = self.bone_input_upload_bytes[frame_index];
+        if byte_size == 0 {
+            return;
+        }
+        let copy = vk::BufferCopy {
+            src_offset: 0,
+            dst_offset: 0,
+            size: byte_size,
+        };
+        unsafe {
+            device.cmd_copy_buffer(
+                cmd,
+                self.bone_world_staging_buffers[frame_index].buffer,
+                self.bone_world_device_buffers[frame_index].buffer,
+                &[copy],
+            );
+            device.cmd_copy_buffer(
+                cmd,
+                self.bind_inverse_staging_buffers[frame_index].buffer,
+                self.bind_inverse_device_buffers[frame_index].buffer,
+                &[copy],
+            );
+            // One barrier covering both device buffers — the next
+            // consumer (`skin_palette.comp`) reads both at the same
+            // dispatch so merging is correctness-equivalent.
+            let barriers = [
+                vk::BufferMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .buffer(self.bone_world_device_buffers[frame_index].buffer)
+                    .offset(0)
+                    .size(byte_size),
+                vk::BufferMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .buffer(self.bind_inverse_device_buffers[frame_index].buffer)
+                    .offset(0)
+                    .size(byte_size),
+            ];
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &barriers,
+                &[],
+            );
+        }
+    }
+
+    /// M29.5 — bytes most recently written by [`upload_bone_inputs`]
+    /// for `frame_index`. Used by `draw.rs` to size the skin_palette
+    /// dispatch (bone_count = byte_size / mat4_size). Returns 0 when
+    /// the frame had no skinned content, in which case the caller
+    /// should skip the dispatch entirely.
+    pub fn bone_input_upload_bytes(&self, frame_index: usize) -> vk::DeviceSize {
+        self.bone_input_upload_bytes[frame_index]
+    }
+
     /// Copy the identity-matrix seed in slot 0 of every staging buffer
     /// to its matching DEVICE_LOCAL slot via a one-time command buffer,
     /// so the first frame's binding-12 read (previous-frame palette) and
@@ -512,6 +661,24 @@ impl super::buffers::SceneBuffers {
     /// buffers are private.
     pub fn bone_buffers(&self) -> &[GpuBuffer] {
         &self.bone_device_buffers
+    }
+
+    /// M29.5 — per-frame DEVICE_LOCAL bone-world matrices buffers.
+    /// `skin_palette.comp` reads these as `BoneWorldBuffer` (set 0
+    /// binding 0). Populated each frame by [`upload_bone_inputs`] +
+    /// [`record_bone_inputs_copy`].
+    pub fn bone_world_buffers(&self) -> &[GpuBuffer] {
+        &self.bone_world_device_buffers
+    }
+
+    /// M29.5 — per-frame DEVICE_LOCAL inverse-bind-pose matrices.
+    /// `skin_palette.comp` reads these as `BindInverseBuffer` (set 0
+    /// binding 1). Same per-frame upload model as
+    /// [`bone_world_buffers`]; follow-on M29.6 will promote this to a
+    /// write-once SSBO once the per-skinned-mesh slot lifecycle is in
+    /// place.
+    pub fn bind_inverse_buffers(&self) -> &[GpuBuffer] {
+        &self.bind_inverse_device_buffers
     }
 
     /// Bone palette buffer size in bytes (`MAX_TOTAL_BONES × mat4`).

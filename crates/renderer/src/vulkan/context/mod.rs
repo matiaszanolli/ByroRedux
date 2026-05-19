@@ -891,6 +891,15 @@ pub struct VulkanContext {
     /// SkinSlots live in `skin_slots`; first-sight registration +
     /// per-frame dispatch + BLAS refit happen inside `draw_frame`.
     pub skin_compute: Option<super::skin_compute::SkinComputePipeline>,
+    /// M29.5 — GPU bone-palette compute pipeline. Reads the per-frame
+    /// `bone_world[]` + `bind_inverses[]` input SSBOs (held on
+    /// [`SceneBuffers`]) and writes the existing palette SSBO that
+    /// [`skin_compute`] (M29.3, RT) + raster `triangle.vert` consume.
+    /// `None` when RT is unsupported — matches [`skin_compute`]'s
+    /// gating; raster falls back to the legacy CPU-multiplied path
+    /// uploaded via the orphaned `upload_bones` site (left allocated
+    /// for one commit to bound diff blast radius; cleanup follows).
+    pub skin_palette: Option<super::skin_compute::SkinPaletteComputePipeline>,
     /// Per-skinned-entity SkinSlot — owns the skinned-vertex output
     /// buffer + per-frame descriptor sets. Populated lazily on first
     /// sight in draw_frame; entries are torn down on Drop. M40 cell
@@ -1371,6 +1380,32 @@ impl VulkanContext {
             None
         };
 
+        // 12d.5. M29.5 — GPU bone-palette compute pipeline. Same RT
+        // gate as `skin_compute` — the engine is RT-required per
+        // VRAM-baseline policy, so this branch is the production path
+        // on every supported config. Construction failure logs but
+        // doesn't abort; downstream `skin_palette.is_some()` checks
+        // skip the dispatch (no fallback exists in this commit — the
+        // legacy `upload_bones` path was removed when build_render_data
+        // switched to producing bone_world + bind_inverses).
+        let skin_palette = if device_caps.ray_query_supported {
+            match super::skin_compute::SkinPaletteComputePipeline::new(
+                &device,
+                pipeline_cache,
+            ) {
+                Ok(sp) => Some(sp),
+                Err(e) => {
+                    log::warn!(
+                        "Skin palette compute pipeline creation failed: {e} — \
+                         GPU bone-palette dispatch disabled (M29.5)"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // 14. Graphics pipeline (with depth test + descriptor set layouts for set 0 + set 1).
         // `fill_mode_non_solid_supported` gates the wireframe variant
         // (#869) — when false, only the FILL opaque pipeline is built
@@ -1811,6 +1846,7 @@ impl VulkanContext {
             accel_manager,
             cluster_cull,
             skin_compute,
+            skin_palette,
             skin_slots: std::collections::HashMap::new(),
             failed_skin_slots: std::collections::HashSet::new(),
             pending_skin_unload_victims: Vec::new(),
@@ -2199,6 +2235,12 @@ impl Drop for VulkanContext {
                 }
                 if let Some(ref mut sc) = self.skin_compute {
                     sc.destroy(&self.device);
+                }
+                // M29.5 — palette compute teardown. No per-slot
+                // allocations to drain (single dispatch per frame, not
+                // per-skinned-entity), so destroy is unconditional.
+                if let Some(ref mut sp) = self.skin_palette {
+                    sp.destroy(&self.device);
                 }
                 if let Some(ref mut ssao) = self.ssao {
                     ssao.destroy(&self.device, alloc);

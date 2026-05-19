@@ -7,9 +7,10 @@ use byroredux_core::ecs::{
 fn run_build(world: &World) -> Vec<DrawCommand> {
     let mut draw_commands = Vec::new();
     let mut gpu_lights = Vec::new();
-    let mut bone_palette = Vec::new();
+    // M29.5 — pre-multiplied palette split into bone_world + bind_inverses.
+    let mut bone_world = Vec::new();
+    let mut bind_inverses = Vec::new();
     let mut skin_offsets = HashMap::new();
-    let mut palette_scratch = Vec::new();
     let mut material_table = byroredux_renderer::MaterialTable::new();
     let mut water_commands = Vec::new();
     let _ = build_render_data(
@@ -17,9 +18,9 @@ fn run_build(world: &World) -> Vec<DrawCommand> {
         &mut draw_commands,
         &mut water_commands,
         &mut gpu_lights,
-        &mut bone_palette,
+        &mut bone_world,
+        &mut bind_inverses,
         &mut skin_offsets,
-        &mut palette_scratch,
         &mut material_table,
         None,
     );
