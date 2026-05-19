@@ -111,6 +111,14 @@ pub struct ScolRecord {
     /// item records' `full_name` (#348). No render impact today;
     /// preserved for editor-mode and audit tooling. See #816.
     pub full_name: String,
+    /// `true` when the record carries a `VMAD` (Papyrus script
+    /// attachment) sub-record. Vanilla FO4 SCOLs have none, but mod
+    /// content can attach scripts (animated decals, conditional
+    /// visibility, mod-driven physics). The cell loader propagates
+    /// this onto the spawned `StaticObject` so Papyrus event
+    /// dispatch doesn't skip script-bearing SCOLs. See #1178 /
+    /// FO4-D4-001.
+    pub has_script: bool,
 }
 
 /// Parse an SCOL record from its sub-record list. Unknown sub-records
@@ -126,9 +134,13 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord]) -> ScolRecord {
     let mut parts: Vec<ScolPart> = Vec::new();
     let mut current_base: Option<u32> = None;
     let mut filter: Vec<u32> = Vec::new();
+    // #1178 / FO4-D4-001 — flip when a `VMAD` (Papyrus script) sub-record
+    // is observed. Vanilla FO4 SCOLs ship none; mod content can attach.
+    let mut has_script = false;
 
     for sub in subs {
         match sub.sub_type.as_slice() {
+            b"VMAD" => has_script = true,
             b"ONAM" => {
                 if sub.data.len() >= 4 {
                     current_base = Some(u32::from_le_bytes([
@@ -207,6 +219,7 @@ pub fn parse_scol(form_id: u32, subs: &[SubRecord]) -> ScolRecord {
         parts,
         filter,
         full_name: common.full_name,
+        has_script,
     }
 }
 
@@ -411,5 +424,35 @@ mod tests {
         ];
         let rec = parse_scol(0x9999_AAAA, &subs);
         assert_eq!(rec.full_name, "");
+    }
+
+    /// #1178 / FO4-D4-001 — a `VMAD` sub-record flips `has_script`.
+    /// Mod-content SCOLs with Papyrus attached must surface this flag
+    /// so the cell loader propagates it onto the spawned StaticObject
+    /// and Papyrus event dispatch doesn't skip the placement. Vanilla
+    /// FO4 has no script-bearing SCOLs, so this codepath is exercised
+    /// only by the synthetic fixture below.
+    #[test]
+    fn parse_scol_vmad_subrecord_flips_has_script() {
+        let subs = vec![
+            edid("ScriptedScol"),
+            modl("SCOL\\Mod.esp\\CM_Scripted.NIF"),
+            // Synthetic VMAD payload — parse_scol only checks presence,
+            // not contents. Real VMAD bytes are a versioned blob with
+            // a property table; the cell loader's full Papyrus dispatch
+            // path consumes that separately.
+            mk_sub(b"VMAD", vec![0xAA, 0xBB, 0xCC, 0xDD]),
+        ];
+        let rec = parse_scol(0x9999_BEEF, &subs);
+        assert!(rec.has_script);
+    }
+
+    /// Sibling gate — when no `VMAD` is present, `has_script` stays
+    /// false. The vanilla case for every FO4 SCOL.
+    #[test]
+    fn parse_scol_without_vmad_leaves_has_script_false() {
+        let subs = vec![edid("PlainScol"), modl("SCOL\\Fallout4.esm\\CM00000001.NIF")];
+        let rec = parse_scol(0x9999_CAFE, &subs);
+        assert!(!rec.has_script);
     }
 }

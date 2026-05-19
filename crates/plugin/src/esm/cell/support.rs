@@ -338,10 +338,13 @@ pub(crate) fn parse_scol_group(
                         record_type: crate::record::RecordType::SCOL,
                         light_data: None,
                         addon_data: None,
-                        // `parse_scol` doesn't currently capture VMAD
-                        // presence — vanilla FO4 has no script-bearing
-                        // SCOLs; revisit if mods add them.
-                        has_script: false,
+                        // `parse_scol` now scans for VMAD presence per
+                        // #1178 / FO4-D4-001. Vanilla FO4 has no
+                        // script-bearing SCOLs; mod content can attach
+                        // (animated decals, conditional visibility, mod
+                        // physics). Propagate so Papyrus event dispatch
+                        // doesn't skip scripted SCOL placements.
+                        has_script: record.has_script,
                     },
                 );
             }

@@ -70,6 +70,7 @@ fn expand_scol_with_cached_cm_does_not_expand() {
             }],
             filter: Vec::new(),
             full_name: String::new(),
+            has_script: false,
         },
     );
     let synths = expand_scol_placements(
@@ -131,6 +132,7 @@ fn expand_scol_without_cached_cm_fans_out_every_placement() {
             ],
             filter: Vec::new(),
             full_name: String::new(),
+            has_script: false,
         },
     );
 
@@ -178,6 +180,7 @@ fn expand_scol_missing_from_statics_still_expands_via_scols_map() {
             }],
             filter: Vec::new(),
             full_name: String::new(),
+            has_script: false,
         },
     );
     let synths = expand_scol_placements(scol_id, Vec3::ZERO, Quat::IDENTITY, 1.0, &index);
@@ -208,6 +211,7 @@ fn expand_scol_propagates_outer_scale_into_translation_and_scale() {
             }],
             filter: Vec::new(),
             full_name: String::new(),
+            has_script: false,
         },
     );
     let outer_scale = 2.0;
