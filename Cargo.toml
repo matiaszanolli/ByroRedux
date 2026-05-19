@@ -11,6 +11,7 @@ members = [
     "crates/cxx-bridge",
     "crates/bsa",
     "crates/bgsm",
+    "crates/sfmaterial",
     "crates/ui",
     "crates/papyrus",
     "crates/facegen",
@@ -38,6 +39,7 @@ byroredux-nif = { path = "crates/nif" }
 byroredux-spt = { path = "crates/spt" }
 byroredux-bsa = { path = "crates/bsa" }
 byroredux-bgsm = { path = "crates/bgsm" }
+byroredux-sfmaterial = { path = "crates/sfmaterial" }
 byroredux-physics = { path = "crates/physics" }
 byroredux-cxx-bridge = { path = "crates/cxx-bridge" }
 byroredux-ui = { path = "crates/ui" }
