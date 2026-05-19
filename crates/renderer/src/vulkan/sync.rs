@@ -270,6 +270,15 @@ impl FrameSync {
             .create_fence(&info, None)
             .context("Failed to recreate in_flight fence on submit-failure path")?;
         let old = std::mem::replace(&mut self.in_flight[frame], new_fence);
+        // #1188 / REN-D1-NEW-05 — `draw_frame` writes
+        // `images_in_flight[img] = in_flight[frame]` BEFORE the submit
+        // that can fail. After we destroy `old` below, any matching
+        // `images_in_flight` slot would point at a destroyed handle;
+        // the next acquire returning the same image index then calls
+        // `wait_for_fences` on a dangling fence. Null those entries
+        // here — same shape as `recreate_for_swapchain`'s line-182
+        // whole-table wipe, scaled to the single-frame case.
+        invalidate_images_in_flight_for_fence(&mut self.images_in_flight, old);
         device.destroy_fence(old, None);
         log::warn!(
             "draw_frame error-recovery: recreated in_flight[{}] after reset_fences \
@@ -289,5 +298,62 @@ impl FrameSync {
         for &fence in &self.in_flight {
             device.destroy_fence(fence, None);
         }
+    }
+}
+
+/// Pure-Rust slot walk that nulls every `images_in_flight` entry equal
+/// to `old`. Factored out so the cross-reference invalidation can be
+/// unit-tested without a real Vulkan device — the destroy/create calls
+/// in `recreate_in_flight_for_frame` need a live `ash::Device`, but
+/// this loop is pointer-comparison only. #1188 / REN-D1-NEW-05.
+fn invalidate_images_in_flight_for_fence(slots: &mut [vk::Fence], old: vk::Fence) {
+    for slot in slots {
+        if *slot == old {
+            *slot = vk::Fence::null();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ash::vk::Handle;
+
+    fn sentinel(v: u64) -> vk::Fence {
+        vk::Fence::from_raw(v)
+    }
+
+    #[test]
+    fn invalidate_clears_matching_slots() {
+        let f_old = sentinel(0xDEAD_BEEF);
+        let f_other = sentinel(0xCAFE_F00D);
+        let null = vk::Fence::null();
+        let mut slots = vec![null, f_old, f_other, f_old, null];
+        invalidate_images_in_flight_for_fence(&mut slots, f_old);
+        assert_eq!(slots, vec![null, null, f_other, null, null]);
+    }
+
+    #[test]
+    fn invalidate_is_noop_when_old_is_absent() {
+        let f_keep = sentinel(0xAAAA_BBBB);
+        let f_old = sentinel(0xDEAD_BEEF);
+        let mut slots = vec![f_keep, vk::Fence::null(), f_keep];
+        let before = slots.clone();
+        invalidate_images_in_flight_for_fence(&mut slots, f_old);
+        assert_eq!(slots, before);
+    }
+
+    #[test]
+    fn invalidate_does_not_touch_null_slots_when_old_is_null() {
+        // Defensive: if `old` is `vk::Fence::null()` (impossible on the
+        // real submit-failure path — `in_flight[frame]` is always a
+        // live handle there — but worth pinning), null slots stay null.
+        let null = vk::Fence::null();
+        let f_live = sentinel(0xAAAA_BBBB);
+        let mut slots = vec![null, f_live, null];
+        invalidate_images_in_flight_for_fence(&mut slots, null);
+        // `null == null` so the null slots are "matched" and re-written
+        // to null — net effect identity. The live slot is untouched.
+        assert_eq!(slots, vec![null, f_live, null]);
     }
 }
