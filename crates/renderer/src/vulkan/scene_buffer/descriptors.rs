@@ -158,10 +158,6 @@ impl super::buffers::SceneBuffers {
             buf.destroy(device, allocator);
         }
         self.camera_buffers.clear();
-        for buf in &mut self.bone_staging_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.bone_staging_buffers.clear();
         for buf in &mut self.bone_device_buffers {
             buf.destroy(device, allocator);
         }

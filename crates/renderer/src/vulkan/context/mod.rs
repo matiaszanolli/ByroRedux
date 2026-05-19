@@ -896,9 +896,12 @@ pub struct VulkanContext {
     /// [`SceneBuffers`]) and writes the existing palette SSBO that
     /// [`skin_compute`] (M29.3, RT) + raster `triangle.vert` consume.
     /// `None` when RT is unsupported — matches [`skin_compute`]'s
-    /// gating; raster falls back to the legacy CPU-multiplied path
-    /// uploaded via the orphaned `upload_bones` site (left allocated
-    /// for one commit to bound diff blast radius; cleanup follows).
+    /// gating. With the orphaned legacy `upload_bones` path now
+    /// removed (M29.5 cleanup), a `None` here means the palette
+    /// buffer is never written, raster reads uninitialised data,
+    /// and skinned content renders as garbage. The engine's
+    /// VRAM-baseline policy makes RT mandatory, so this is treated
+    /// as dead-on-arrival rather than a supported degradation.
     pub skin_palette: Option<super::skin_compute::SkinPaletteComputePipeline>,
     /// Per-skinned-entity SkinSlot — owns the skinned-vertex output
     /// buffer + per-frame descriptor sets. Populated lazily on first
@@ -1269,11 +1272,17 @@ impl VulkanContext {
             &gpu_allocator,
             device_caps.ray_query_supported,
         )?;
-        // #921 — seed slot-0 identity in the DEVICE bone palette so the
-        // first frame's binding-12 read (which targets the OTHER frame
-        // slot, never written yet) doesn't surface uninitialized memory
-        // through the vertex shader's bone fetch.
-        scene_buffers.seed_identity_bones(&device, &graphics_queue, transfer_pool)?;
+        // M29.5 cleanup — the pre-#921 startup seed of slot-0 identity
+        // into the palette buffer is no longer needed. The per-frame
+        // `skin_palette.comp` dispatch writes the palette unconditionally
+        // (CPU pushes slot-0 identity to both M29.5 input arrays in
+        // `build_render_data`, and `identity × identity = identity`).
+        // First-frame binding-12 reads still target the OTHER frame
+        // slot — that slot's first dispatch happens on frame N+1 within
+        // the same submission ordering, so binding-12 on frame 0 reads
+        // the uninitialised slot exactly once before being overwritten.
+        // For the rigid-vertex fallback path the slot-0 lookup falls
+        // through to identity by construction.
 
         // 12b. Acceleration manager (RT only) — build empty TLAS so descriptors are valid
         let mut scene_buffers = scene_buffers;
@@ -1385,9 +1394,9 @@ impl VulkanContext {
         // VRAM-baseline policy, so this branch is the production path
         // on every supported config. Construction failure logs but
         // doesn't abort; downstream `skin_palette.is_some()` checks
-        // skip the dispatch (no fallback exists in this commit — the
-        // legacy `upload_bones` path was removed when build_render_data
-        // switched to producing bone_world + bind_inverses).
+        // skip the dispatch (no CPU-multiply fallback exists — the
+        // legacy `upload_bones` + staging-copy path is removed since
+        // M29.5 cleanup, and the engine has no supported no-RT mode).
         let skin_palette = if device_caps.ray_query_supported {
             match super::skin_compute::SkinPaletteComputePipeline::new(
                 &device,

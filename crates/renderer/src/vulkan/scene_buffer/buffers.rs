@@ -31,39 +31,18 @@ pub struct SceneBuffers {
     pub(super) light_buffers: Vec<GpuBuffer>,
     /// One UBO per frame-in-flight (camera data).
     pub(super) camera_buffers: Vec<GpuBuffer>,
-    /// HOST_VISIBLE | TRANSFER_SRC staging buffer per frame-in-flight that the
-    /// CPU writes the bone palette into each frame ([`upload_bones`]). The
-    /// matching [`bone_device_buffers`] slot is the actual storage-buffer
-    /// binding consumed by skinning shaders; [`record_bone_copy`] schedules
-    /// the staging→device transfer + visibility barrier on the command
-    /// buffer that will read the palette.
-    ///
-    /// Pre-#921 the descriptor pointed at this host-visible buffer
-    /// directly, so every skinned vertex performed a PCIe round-trip
-    /// through host-mapped storage per shader invocation (~2 MB read per
-    /// frame on a single skinned mesh and 4 KB × bones across every
-    /// fragment that referenced a bone — verified against AUDIT_RENDERER
-    /// Dim 12 / REN-D12-NEW-04).
-    pub(super) bone_staging_buffers: Vec<GpuBuffer>,
-    /// DEVICE_LOCAL | STORAGE_BUFFER | TRANSFER_DST bone palette per
-    /// frame-in-flight. Bound as descriptor binding 3 (current frame)
-    /// and binding 12 (previous frame, the OTHER slot in the ring — see
-    /// SH-3 / #641). Populated each frame by [`record_bone_copy`] via a
-    /// `cmd_copy_buffer` from the matching [`bone_staging_buffers`] slot
-    /// followed by a TRANSFER→COMPUTE_SHADER|VERTEX_SHADER memory barrier.
-    /// Slot 0 is seeded with the identity matrix at construction
-    /// (see [`seed_identity_bones`]) so rigid vertices that fall through
-    /// to the palette and binding-12 reads on the very first frame see
-    /// a valid transform.
+    /// DEVICE_LOCAL | STORAGE_BUFFER bone palette per frame-in-flight.
+    /// Bound as descriptor binding 3 (current frame) and binding 12
+    /// (previous frame, the OTHER slot in the ring — see SH-3 / #641).
+    /// Post-M29.5 this buffer is exclusively a compute-write target:
+    /// each frame's `skin_palette.comp` dispatch writes
+    /// `palette[i] = bone_world[i] * bind_inverses[i]`, gated by the
+    /// COMPUTE_SHADER_WRITE → (COMPUTE_SHADER_READ | VERTEX_SHADER_READ)
+    /// barrier emitted from `draw_frame`. Slot 0 is always identity
+    /// because [`build_render_data`] pushes identity to slot 0 of both
+    /// M29.5 input arrays, so the GPU produces `identity × identity =
+    /// identity` for that slot every frame.
     pub(super) bone_device_buffers: Vec<GpuBuffer>,
-    /// Bytes most recently written into [`bone_staging_buffers[frame]`]
-    /// by [`upload_bones`]. [`record_bone_copy`] copies exactly this
-    /// many bytes — avoids transferring the full ~2 MB
-    /// `MAX_TOTAL_BONES × mat4` slab when only a handful of bones were
-    /// actually written. Reset by [`upload_bones`]; pinned at the
-    /// identity-slot size by the init seed so frames without skinned
-    /// content still refresh the identity row.
-    pub(super) bone_upload_bytes: Vec<vk::DeviceSize>,
     /// M29.5 — per-frame raw bone-world matrices SSBO (staging pair).
     /// CPU writes one mat4 per palette slot here ([`upload_bone_inputs`]);
     /// [`record_bone_inputs_copy`] transfers staging → device before the
@@ -341,7 +320,6 @@ struct SceneRenderBuffers {
     light_buf_size: vk::DeviceSize,
     camera_buffers: Vec<GpuBuffer>,
     camera_buf_size: vk::DeviceSize,
-    bone_staging_buffers: Vec<GpuBuffer>,
     bone_device_buffers: Vec<GpuBuffer>,
     // M29.5 — see `SceneBuffers::{bone_world,bind_inverse}_*_buffers`
     // docstrings. Same `bone_buf_size` sizing as the palette pair —
@@ -406,7 +384,6 @@ fn allocate_scene_render_buffers(
     // + DEVICE_LOCAL storage. Descriptors bind the device buffers; the
     // staging buffer is written by `upload_bones` and transferred each
     // frame by `record_bone_copy`.
-    let mut bone_staging_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut bone_device_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     // M29.5 — see `SceneBuffers::{bone_world,bind_inverse}_*_buffers`.
     let mut bone_world_staging_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -430,17 +407,16 @@ fn allocate_scene_render_buffers(
             camera_buf_size,
             vk::BufferUsageFlags::UNIFORM_BUFFER,
         )?);
-        bone_staging_buffers.push(GpuBuffer::create_host_visible(
-            device,
-            allocator,
-            bone_buf_size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-        )?);
+        // Post-M29.5 the palette buffer is pure compute-write +
+        // shader-read — no TRANSFER_DST flag because the legacy
+        // staging→device copy is gone (palette built directly by
+        // `skin_palette.comp` from the bone_world + bind_inverses
+        // staging+device pairs below).
         bone_device_buffers.push(GpuBuffer::create_device_local_uninit(
             device,
             allocator,
             bone_buf_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
         )?);
         // M29.5 — bone_world + bind_inverses input pair for skin_palette.comp.
         // Same MAX_TOTAL_BONES × mat4 sizing as the palette pair so the
@@ -520,7 +496,6 @@ fn allocate_scene_render_buffers(
         light_buf_size,
         camera_buffers,
         camera_buf_size,
-        bone_staging_buffers,
         bone_device_buffers,
         bone_world_staging_buffers,
         bone_world_device_buffers,
@@ -709,20 +684,16 @@ impl SceneBuffers {
             create_scene_descriptors(device, rt_enabled, &bufs)?;
 
         // ── Seed initial buffer data ──────────────────────────────────────
-        // Seed slot 0 of each STAGING bone buffer with the identity matrix so
-        // rigid vertices that fall through to the palette produce correct
-        // positions rather than collapsing to origin. The matching device
-        // buffer is populated by `seed_identity_bones` once the caller can
-        // supply a queue + command pool for the initial transfer copy.
-        let identity: [[f32; 4]; 4] = [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ];
-        for buf in &mut bufs.bone_staging_buffers {
-            buf.write_mapped(device, std::slice::from_ref(&identity))?;
-        }
+        // Post-M29.5 the bone palette buffer no longer needs a startup
+        // identity seed: `build_render_data` always pushes slot-0
+        // identity to both M29.5 input arrays, so the per-frame
+        // `skin_palette.comp` dispatch writes
+        // `palette[0] = identity × identity = identity` unconditionally.
+        // First-frame consumers (raster + skin_vertices.comp) see the
+        // freshly-written palette since their stage barrier waits on
+        // COMPUTE_SHADER_WRITE → SHADER_READ inside the same command
+        // buffer.
+        //
         // Seed DALC UBOs with the disabled-default cube so frame 0's
         // fragment read on binding 14 sees a valid `flags.x = 0`
         // (shader's fallback path). Overwritten via `upload_dalc` when
@@ -731,11 +702,6 @@ impl SceneBuffers {
         for buf in &mut bufs.dalc_buffers {
             buf.write_mapped(device, std::slice::from_ref(&default_dalc))?;
         }
-        // Track the seeded identity so `record_bone_copy` on frame 0
-        // still propagates slot 0 to device memory even without skinned
-        // content.
-        let identity_bytes = std::mem::size_of::<[[f32; 4]; 4]>() as vk::DeviceSize;
-        let bone_upload_bytes = vec![identity_bytes; MAX_FRAMES_IN_FLIGHT];
 
         log::info!(
             "Scene buffers created: {} frames, {} max lights ({} bytes/frame)",
@@ -755,9 +721,7 @@ impl SceneBuffers {
         Ok(Self {
             light_buffers: bufs.light_buffers,
             camera_buffers: bufs.camera_buffers,
-            bone_staging_buffers: bufs.bone_staging_buffers,
             bone_device_buffers: bufs.bone_device_buffers,
-            bone_upload_bytes,
             bone_world_staging_buffers: bufs.bone_world_staging_buffers,
             bone_world_device_buffers: bufs.bone_world_device_buffers,
             bind_inverse_staging_buffers: bufs.bind_inverse_staging_buffers,

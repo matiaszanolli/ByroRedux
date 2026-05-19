@@ -6,7 +6,6 @@
 
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
-use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::*;
 use super::descriptors::{hash_instance_slice, hash_material_slice};
 use super::buffers::LightHeader;
@@ -80,112 +79,16 @@ impl super::buffers::SceneBuffers {
         self.dalc_buffers[frame_index].write_mapped(device, std::slice::from_ref(dalc))
     }
 
-    /// Upload the bone palette for the current frame-in-flight into the
-    /// HOST_VISIBLE staging buffer. The matching DEVICE_LOCAL slot is
-    /// populated by [`record_bone_copy`] once a recording command buffer
-    /// is available — until then the shader still sees last frame's
-    /// device contents.
-    ///
-    /// `palette` is packed contiguous mat4 entries in column-major glam
-    /// layout. Slot 0 is always the identity matrix — callers that
-    /// assemble multiple meshes into one palette should keep slot 0 as
-    /// identity and start writing mesh bones at slot 1.
-    ///
-    /// Writes at most `MAX_TOTAL_BONES` entries; extra are silently
-    /// clamped and logged once per session by the caller.
-    pub fn upload_bones(
-        &mut self,
-        device: &ash::Device,
-        frame_index: usize,
-        palette: &[[[f32; 4]; 4]],
-    ) -> Result<()> {
-        let count = palette.len().min(MAX_TOTAL_BONES);
-        if count == 0 {
-            return Ok(());
-        }
-
-        let byte_size = (std::mem::size_of::<[[f32; 4]; 4]>() * count) as vk::DeviceSize;
-        let buf = &mut self.bone_staging_buffers[frame_index];
-        let mapped = buf.mapped_slice_mut()?;
-        // SAFETY: [[f32; 4]; 4] is #[repr(C)]-compatible with std430 mat4.
-        // bone_staging_buffers are sized for MAX_TOTAL_BONES slots; count is clamped.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                palette.as_ptr() as *const u8,
-                mapped.as_mut_ptr(),
-                byte_size as usize,
-            );
-        }
-        buf.flush_if_needed(device)?;
-        // Record exactly how many bytes need to ride the staging→device
-        // copy for this frame so `record_bone_copy` doesn't transfer the
-        // full ~2 MB slab when only a few bones were written.
-        self.bone_upload_bytes[frame_index] = byte_size;
-        Ok(())
-    }
-
-    /// Record the staging→device bone-palette copy and the visibility
-    /// barrier on `cmd`, scoped to the bytes most recently written by
-    /// [`upload_bones`] for this frame.
-    ///
-    /// The barrier widens the dst stage mask to cover every consumer of
-    /// the device buffer:
-    ///   * `COMPUTE_SHADER` — M29 GPU pre-skin pass (`SkinComputePipeline`)
-    ///     reads the palette before issuing per-vertex skinning into the
-    ///     entity's output buffer.
-    ///   * `VERTEX_SHADER` — fallback CPU-feeds + raster vertex skinning
-    ///     read binding 3 (current frame) and binding 12 (previous frame).
-    ///
-    /// Callers MUST invoke this on every command buffer that consumes the
-    /// palette — both the main per-frame command buffer (steady-state
-    /// dispatch + raster vertex stage) and the one-time "prime" command
-    /// buffers used for first-sight skinned BLAS builds. The copy is
-    /// idempotent: a redundant call on the main cmd buffer after the prime
-    /// finished copies the same bytes again, which is harmless.
-    pub fn record_bone_copy(
-        &self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame_index: usize,
-    ) {
-        let byte_size = self.bone_upload_bytes[frame_index];
-        if byte_size == 0 {
-            return;
-        }
-        let copy = vk::BufferCopy {
-            src_offset: 0,
-            dst_offset: 0,
-            size: byte_size,
-        };
-        unsafe {
-            device.cmd_copy_buffer(
-                cmd,
-                self.bone_staging_buffers[frame_index].buffer,
-                self.bone_device_buffers[frame_index].buffer,
-                &[copy],
-            );
-            // Make the copied range visible to every shader stage that
-            // reads the palette. Buffer barrier (not global) so we don't
-            // perturb unrelated cache state on the same submission.
-            let barrier = vk::BufferMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .buffer(self.bone_device_buffers[frame_index].buffer)
-                .offset(0)
-                .size(byte_size);
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::VERTEX_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[barrier],
-                &[],
-            );
-        }
-    }
+    // M29.5 cleanup — `upload_bones` + `record_bone_copy` (the legacy
+    // pre-multiplied palette upload + staging→device transfer path)
+    // removed here. `build_render_data` now produces the two input
+    // arrays `bone_world` + `bind_inverses` rather than the
+    // multiplied palette; `upload_bone_inputs` + `record_bone_inputs_copy`
+    // (below) ship them to the device, and the new
+    // `skin_palette.comp` dispatch in `draw_frame` does the per-slot
+    // multiply and writes the palette buffer directly. The historical
+    // staging buffer + transfer-copy code is preserved in git history
+    // up to the M29.5-cleanup commit.
 
     /// M29.5 — write the per-frame bone-world + bind-inverses input
     /// pair into the staging buffers consumed by `skin_palette.comp`.
@@ -336,39 +239,14 @@ impl super::buffers::SceneBuffers {
         self.bone_input_upload_bytes[frame_index]
     }
 
-    /// Copy the identity-matrix seed in slot 0 of every staging buffer
-    /// to its matching DEVICE_LOCAL slot via a one-time command buffer,
-    /// so the first frame's binding-12 read (previous-frame palette) and
-    /// the rigid-vertex fallback path see a valid transform in slot 0
-    /// from frame 0. Mirrors the pre-#921 invariant where the
-    /// host-visible bone buffers were directly mapped and slot 0 was
-    /// seeded with the identity by `write_mapped` in `new()`.
-    pub fn seed_identity_bones(
-        &self,
-        device: &ash::Device,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
-    ) -> Result<()> {
-        let identity_bytes = std::mem::size_of::<[[f32; 4]; 4]>() as vk::DeviceSize;
-        super::super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
-            for i in 0..MAX_FRAMES_IN_FLIGHT {
-                let copy = vk::BufferCopy {
-                    src_offset: 0,
-                    dst_offset: 0,
-                    size: identity_bytes,
-                };
-                unsafe {
-                    device.cmd_copy_buffer(
-                        cmd,
-                        self.bone_staging_buffers[i].buffer,
-                        self.bone_device_buffers[i].buffer,
-                        &[copy],
-                    );
-                }
-            }
-            Ok(())
-        })
-    }
+    // M29.5 cleanup — `seed_identity_bones` removed here. The one-time
+    // startup transfer used to seed slot 0 of every frame-in-flight
+    // palette with the identity matrix so the first-frame binding-12
+    // read (previous-frame palette) saw a valid transform. Post-M29.5
+    // the per-frame `skin_palette.comp` dispatch writes slot 0 of the
+    // palette every frame (the CPU seeds slot 0 of both input arrays
+    // with identity in `build_render_data`, and `identity × identity =
+    // identity`), so the startup seed is redundant.
 
     /// Upload per-instance data for the current frame-in-flight.
     ///
