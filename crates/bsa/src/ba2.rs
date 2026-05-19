@@ -545,6 +545,43 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
             });
         }
 
+        // #1176 / FO4-D2-NEW-01 — DX10 chunks are concatenated in file
+        // order during `extract_dx10`; the synthesized DDS header
+        // declares dimensions matching `mip 0`, so the payload MUST
+        // start at the largest mip and walk downward. Vanilla FO4 /
+        // FO76 / Starfield archives always author in canonical
+        // mip-0-first order (`start_mip` monotonically non-decreasing).
+        // A hand-crafted or third-party-repacked archive that wrote
+        // chunks in non-canonical order (e.g. streaming-mip-tail-first)
+        // would silently produce a DDS whose header and pixel data
+        // disagreed — downstream loaders read garbage.
+        //
+        // Surface the anomaly: `debug_assert!` catches it in dev (CI +
+        // local), `log::warn!` flags it in release so an operator can
+        // spot the bad archive in the logs. Don't auto-sort — that
+        // would mask the malformed archive. Same pattern as the
+        // `num_mips == 0` warn at lines 512-519 and the
+        // `chunk_hdr_len != 24` debug_assert at lines 490-495.
+        let monotonic = chunks
+            .windows(2)
+            .all(|w| w[0].start_mip <= w[1].start_mip);
+        debug_assert!(
+            monotonic,
+            "BA2 DX10 chunks non-monotonic on start_mip: {:?} — \
+             synthesized DDS header would misdescribe payload",
+            chunks.iter().map(|c| c.start_mip).collect::<Vec<_>>(),
+        );
+        if !monotonic {
+            log::warn!(
+                "BA2 DX10 record at chunk 0x{:016x}: chunk start_mip \
+                 sequence is non-monotonic ({:?}) — archive likely \
+                 third-party-repackaged; downstream DDS payload will \
+                 mismatch the synthesized header",
+                reader.stream_position().unwrap_or(0),
+                chunks.iter().map(|c| c.start_mip).collect::<Vec<_>>(),
+            );
+        }
+
         out.push(Ba2Entry::Dx10 {
             dxgi_format,
             width,
