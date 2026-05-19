@@ -225,11 +225,17 @@ plus the metadata needed to recreate the header.
 ```
 DDS magic ("DDS ")
 DDS_HEADER (124 bytes)
-├── flags        = CAPS | HEIGHT | WIDTH | PIXELFORMAT | LINEARSIZE
+├── flags        = CAPS | HEIGHT | WIDTH | PIXELFORMAT
+│                  | { LINEARSIZE for block-compressed formats
+│                    | PITCH       for uncompressed DXGI formats per #594 }
 │                  ( | MIPMAPCOUNT if num_mips > 1 )
 ├── height, width
-├── pitchOrLinearSize  = computed for known DXGI formats (BC1/3/5/6/7),
-│                        falls back to total pixel data length otherwise
+├── pitchOrLinearSize  — per-format:
+│     BC1/2/3/4/5/6H/7:           DDSD_LINEARSIZE = block_bytes × block_count
+│     R8G8B8A8_(SRGB)/B8G8R8A8:   DDSD_PITCH      = 4 × width (post-#594)
+│     R16_UNORM:                  DDSD_PITCH      = 2 × width
+│     R8_UNORM:                   DDSD_PITCH      = 1 × width
+│     unknown formats:            DDSD_LINEARSIZE = total payload length
 ├── depth = 0
 ├── mip count = max(1, num_mips)
 ├── 11 reserved u32 = 0
@@ -244,15 +250,22 @@ DDS_HEADER (124 bytes)
 DX10 extension (20 bytes)
 ├── DXGI format
 ├── resource dimension = TEXTURE2D
-├── misc flag = TEXTURECUBE if cubemap
-├── array size = 1
+├── misc flag = TEXTURECUBE if cubemap (bit 0 of base header flags; verified
+│              against vanilla Textures1.ba2 cubemap entries — the 0x0800
+│              bit is "tile mode", NOT cubemap; see #595 for the prior
+│              stale-comment trap)
+├── array size = 6 for cubemaps, 1 otherwise (post-#593; pinned by
+│                `build_dds_header_cubemap_array_size_is_six`)
 └── miscFlags2 = 0
 ```
 
 The `linear_size_for()` helper computes a reasonable
 `dwPitchOrLinearSize` for block-compressed formats from the BC block size
-table; unknown formats fall back to the total pixel-data length, which at
-least lets a downstream loader size its output buffer.
+table; uncompressed RGBA / single-channel formats use a per-row pitch
+instead (`DDSD_PITCH`, #594 — pinned by
+`pitch_rgba8_unorm_matches_row_size_with_pitch_flag`); unknown formats
+fall back to the total pixel-data length so a downstream loader still
+gets a sized buffer.
 
 The reconstructed bytes are valid for downstream readers like our DDS
 parser in [`crates/renderer/src/vulkan/dds.rs`](../../crates/renderer/src/vulkan/dds.rs)
