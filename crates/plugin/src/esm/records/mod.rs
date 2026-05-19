@@ -384,7 +384,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 index.races.insert(fid, parse_race(fid, subs, game));
             })?,
             b"CLAS" => extract_records(&mut reader, end, b"CLAS", &mut |fid, subs| {
-                index.classes.insert(fid, parse_clas(fid, subs));
+                index.classes.insert(fid, parse_clas(fid, subs, game));
             })?,
             b"FACT" => extract_records(&mut reader, end, b"FACT", &mut |fid, subs| {
                 index.factions.insert(fid, parse_fact(fid, subs));

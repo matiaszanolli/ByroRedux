@@ -314,9 +314,43 @@ pub struct ClassRecord {
     pub description: String,
     /// 7 attribute weights (Strength, Perception, Endurance, Charisma,
     /// Intelligence, Agility, Luck) — order varies per game.
+    ///
+    /// **Game layout split (#968):** the FNV-era 35-byte DATA layout
+    /// encodes 4 × u32 tag skill form IDs + flags + services + trainer
+    /// data + 7 × u8 attribute weights. Oblivion's 52-byte DATA has a
+    /// completely different shape (2 × u32 primary attributes +
+    /// specialization + 7 × u32 major skills + flags + services +
+    /// trainer + 2 B pad) — `attribute_weights` is left at `[0; 7]`
+    /// for Oblivion-tagged records since the field is FNV-shaped.
+    /// Use [`Self::primary_attributes`] + [`Self::specialization`] on
+    /// Oblivion records instead.
     pub attribute_weights: [u8; 7],
-    /// Tag skill form IDs from DATA.
+    /// Tag skill form IDs from FNV DATA. Empty on Oblivion (see
+    /// [`Self::major_skills`] for the analogous field).
     pub tag_skills: Vec<u32>,
+    /// Oblivion-only: 2 × u32 primary attribute indices (0=Strength
+    /// .. 7=Luck per OpenMW's `SkillIndex` neighbour set). Read from
+    /// bytes 0..8 of the 52-byte DATA. `None` outside Oblivion.
+    pub primary_attributes: Option<(u32, u32)>,
+    /// Oblivion-only: u32 specialization at DATA offset 8.
+    /// `0 = Combat`, `1 = Magic`, `2 = Stealth`. `None` outside Oblivion.
+    pub specialization: Option<u32>,
+    /// Oblivion-only: 7 × u32 major skill indices (`SkillIndex` enum
+    /// values 0x0C..=0x20) at DATA offset 12..40. Empty outside
+    /// Oblivion.
+    ///
+    /// The audit description (#968) at filing time said "14 × u32",
+    /// but its own test assertion said `len() == 7`. Empirical probe
+    /// against vanilla `Oblivion.esm` confirms 7 majors: every CLAS
+    /// DATA sub-record is exactly 52 bytes, and Knight (form 0x836)
+    /// decodes as `[Block, Illusion, HeavyArmor, Blunt, Blade,
+    /// Speechcraft, HandToHand]`.
+    pub major_skills: Vec<u32>,
+    /// Oblivion-only: u32 race-class flags at DATA offset 40. Bit 0
+    /// = Playable. `None` outside Oblivion (the FNV 35-byte arm
+    /// reads its own `flags` into a different position; not split
+    /// out here because it's not a current consumer).
+    pub flags_oblivion: Option<u32>,
 }
 
 /// Faction-to-faction relation.
@@ -762,7 +796,7 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
     record
 }
 
-pub fn parse_clas(form_id: u32, subs: &[SubRecord]) -> ClassRecord {
+pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassRecord {
     let common = CommonNamedFields::from_subs(subs);
     let mut record = ClassRecord {
         form_id,
@@ -771,16 +805,57 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord]) -> ClassRecord {
         description: String::new(),
         attribute_weights: [0u8; 7],
         tag_skills: Vec::new(),
+        primary_attributes: None,
+        specialization: None,
+        major_skills: Vec::new(),
+        flags_oblivion: None,
     };
+
+    let is_oblivion = matches!(game, GameKind::Oblivion);
 
     for sub in subs {
         match &sub.sub_type {
             b"DESC" => record.description = read_lstring_or_zstring(&sub.data),
-            // DATA layout (FNV CLAS): tag1..tag4 (4 × u32 form), flags (u32),
-            // services (u32), trainer skill (i8), trainer level (u8),
-            // teaches level (u8), teaches max (u8), then 7 attribute weights (u8).
-            // 4*4 + 4 + 4 + 4 + 7 = 35 bytes.
-            b"DATA" if sub.data.len() >= 35 => {
+            // DATA layout (Oblivion CLAS — 48 or 52 bytes per empirical
+            // probe against vanilla Oblivion.esm, #968; histogram is
+            // 79 × 52-byte + 31 × 48-byte):
+            //   2 × u32 primary attribute indices         (offset 0..8)
+            //   u32 specialization (0=Combat/1=Mag/2=Sth) (offset 8..12)
+            //   7 × u32 major skill indices               (offset 12..40)
+            //   u32 race-class flags (bit 0 = Playable)   (offset 40..44)
+            //   u32 services                              (offset 44..48)
+            //   i8 trainer skill + u8 trainer level + 2 B (offset 48..52, OPTIONAL)
+            //
+            // Knight (form 0x836) is a 52-byte record: primary=(0=Strength,
+            // 6=Personality), spec=0 (Combat), majors=[0x0F Block, 0x17
+            // Illusion, 0x12 HeavyArmor, 0x10 Blunt, 0x0E Blade, 0x20
+            // Speechcraft, 0x11 HandToHand]. 31 vanilla classes
+            // (Hunter, Priest, Noble, TGGrayFoxClass, etc.) ship the
+            // 48-byte variant — same primary block, no trainer tail.
+            //
+            // The audit (#968) described the layout as 60 bytes / 14
+            // major skills — wrong on both counts. Its own test
+            // assertion said `len() == 7`, which matches the empirical
+            // truth.
+            b"DATA" if is_oblivion && sub.data.len() >= 48 => {
+                let a0 = read_u32_at(&sub.data, 0).unwrap_or(0);
+                let a1 = read_u32_at(&sub.data, 4).unwrap_or(0);
+                record.primary_attributes = Some((a0, a1));
+                record.specialization = read_u32_at(&sub.data, 8);
+                for i in 0..7 {
+                    if let Some(s) = read_u32_at(&sub.data, 12 + i * 4) {
+                        record.major_skills.push(s);
+                    }
+                }
+                record.flags_oblivion = read_u32_at(&sub.data, 40);
+            }
+            // DATA layout (FNV CLAS — 35 bytes): tag1..tag4 (4 × u32
+            // form), flags (u32), services (u32), trainer skill (i8),
+            // trainer level (u8), teaches level (u8), teaches max
+            // (u8), then 7 attribute weights (u8). Pre-#968 this arm
+            // ran for ALL games and read garbage from Oblivion's
+            // wider 52-byte layout.
+            b"DATA" if !is_oblivion && sub.data.len() >= 35 => {
                 for i in 0..4 {
                     let off = i * 4;
                     if let Some(f) = read_u32_at(&sub.data, off) {
@@ -1481,5 +1556,107 @@ mod tests {
         assert_eq!(r.race_reactions.len(), 2);
         assert_eq!(r.race_reactions[0], (0x10010, 5));
         assert_eq!(r.race_reactions[1], (0x10011, -3));
+    }
+
+    // ── #968 / OBL-D3-NEW-04 — CLAS Oblivion-shape DATA ──────────────
+
+    /// Build a 52-byte Oblivion CLAS DATA payload per the empirical
+    /// vanilla layout (#968):
+    ///   2 × u32 primary attributes (8 B)
+    ///   u32 specialization         (4 B)
+    ///   7 × u32 major skills       (28 B)
+    ///   u32 flags                  (4 B)
+    ///   u32 services               (4 B)
+    ///   i8 trainer + u8 level + 2 B pad (4 B)
+    fn oblivion_clas_data(
+        attrs: (u32, u32),
+        spec: u32,
+        majors: [u32; 7],
+        flags: u32,
+    ) -> Vec<u8> {
+        let mut data = Vec::with_capacity(52);
+        data.extend_from_slice(&attrs.0.to_le_bytes());
+        data.extend_from_slice(&attrs.1.to_le_bytes());
+        data.extend_from_slice(&spec.to_le_bytes());
+        for s in majors {
+            data.extend_from_slice(&s.to_le_bytes());
+        }
+        data.extend_from_slice(&flags.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes()); // services
+        data.extend_from_slice(&[0u8; 4]); // trainer skill + level + 2 pad
+        assert_eq!(data.len(), 52);
+        data
+    }
+
+    #[test]
+    fn clas_oblivion_knight_round_trips() {
+        // Knight (form 0x836 in vanilla Oblivion.esm) — primary
+        // attrs (Strength=0, Personality=6), specialization 0 = Combat,
+        // 7 majors per the empirical probe.
+        let data = oblivion_clas_data(
+            (0, 6),
+            0,
+            [0x0F, 0x17, 0x12, 0x10, 0x0E, 0x20, 0x11],
+            0x01, // Playable
+        );
+        let subs = vec![
+            sub(b"EDID", b"Knight\0"),
+            sub(b"FULL", b"Knight\0"),
+            sub(b"DATA", &data),
+        ];
+        let c = parse_clas(0x836, &subs, GameKind::Oblivion);
+        assert_eq!(c.primary_attributes, Some((0, 6)));
+        assert_eq!(c.specialization, Some(0));
+        assert_eq!(c.major_skills, vec![0x0F, 0x17, 0x12, 0x10, 0x0E, 0x20, 0x11]);
+        assert_eq!(c.flags_oblivion, Some(0x01));
+        // FNV-shape fields stay empty on Oblivion.
+        assert!(c.tag_skills.is_empty());
+        assert_eq!(c.attribute_weights, [0u8; 7]);
+    }
+
+    /// SIBLING gate (audit completeness check) — FNV-tagged CLAS hits
+    /// the 35-byte arm, NOT the Oblivion 52-byte arm. Even if the
+    /// payload happens to be 52 bytes (shouldn't be in real FNV
+    /// content, but defensive), the game gate routes correctly.
+    #[test]
+    fn clas_fnv_path_unchanged() {
+        let mut data = Vec::with_capacity(35);
+        // 4 × u32 tag skill form IDs
+        data.extend_from_slice(&0xC0DE_0001u32.to_le_bytes());
+        data.extend_from_slice(&0xC0DE_0002u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes()); // (filtered by !=0)
+        data.extend_from_slice(&0xC0DE_0003u32.to_le_bytes());
+        // flags + services + skill/level/teaches/max (16 + 4 = 20 bytes)
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 4]);
+        // 7 attribute weights
+        data.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(data.len(), 35);
+        let subs = vec![sub(b"EDID", b"NCRTrooper\0"), sub(b"DATA", &data)];
+        let c = parse_clas(0x600, &subs, GameKind::Fallout3NV);
+        assert_eq!(c.tag_skills, vec![0xC0DE_0001, 0xC0DE_0002, 0xC0DE_0003]);
+        assert_eq!(c.attribute_weights, [1, 2, 3, 4, 5, 6, 7]);
+        // Oblivion-only fields stay None.
+        assert!(c.primary_attributes.is_none());
+        assert!(c.specialization.is_none());
+        assert!(c.major_skills.is_empty());
+        assert!(c.flags_oblivion.is_none());
+    }
+
+    /// Boundary: a malformed Oblivion CLAS with < 52-byte DATA must
+    /// fall through cleanly (no panic, no off-the-end read). Both
+    /// game-specific arms gate on length.
+    #[test]
+    fn clas_oblivion_short_data_drops_silently() {
+        let data = vec![0u8; 40]; // less than 52
+        let subs = vec![sub(b"EDID", b"BadClass\0"), sub(b"DATA", &data)];
+        let c = parse_clas(0x837, &subs, GameKind::Oblivion);
+        // No arm fired; nothing crashed; all Oblivion-only fields stay None.
+        assert!(c.primary_attributes.is_none());
+        assert!(c.major_skills.is_empty());
+        // FNV arm would have fired at >= 35 — but we're game=Oblivion,
+        // so the gate skipped it.
+        assert!(c.tag_skills.is_empty());
     }
 }

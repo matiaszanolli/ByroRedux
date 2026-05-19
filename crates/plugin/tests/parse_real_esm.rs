@@ -1262,3 +1262,85 @@ fn race_oblivion_data_and_subs_against_vanilla() {
         with_attr,
     );
 }
+
+/// #968 / OBL-D3-NEW-04 — real-Oblivion CLAS coverage. Pins the
+/// audit's regression assertion: vanilla "Knight" class must surface
+/// `primary_attributes = Some((Strength, Personality))`,
+/// `specialization = Some(0 /* Combat */)`, and `major_skills.len() == 7`.
+///
+/// `#[ignore]`-gated by Oblivion install.
+#[test]
+#[ignore]
+fn clas_oblivion_knight_against_vanilla() {
+    let Some(data) = data_dir(
+        "BYROREDUX_OBL_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+    ) else {
+        eprintln!("[OBL/CLAS] skip: data dir missing");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let index = parse_esm(&bytes).expect("parse Oblivion.esm");
+
+    // Vanilla CLAS count: 111 in Oblivion.esm (empirical 2026-05-18).
+    assert!(
+        index.classes.len() >= 100,
+        "OBL classes={} (expected >= 100)",
+        index.classes.len(),
+    );
+
+    let knight = index
+        .classes
+        .values()
+        .find(|c| c.editor_id == "Knight")
+        .expect("vanilla Oblivion.esm must include the 'Knight' CLAS");
+
+    // Strength = 0, Personality = 6 per Oblivion's attribute enum
+    // (0..7 = Str/Int/Wil/Agi/Spd/End/Per/Luck).
+    assert_eq!(
+        knight.primary_attributes,
+        Some((0, 6)),
+        "Knight.primary_attributes = (Strength, Personality)",
+    );
+    assert_eq!(
+        knight.specialization,
+        Some(0),
+        "Knight.specialization = 0 (Combat)",
+    );
+    // Audit asserted major_skills.len() == 7; empirical decode of
+    // the 52-byte DATA confirms 7 (vs the audit prose's claim of 14).
+    assert_eq!(knight.major_skills.len(), 7);
+    // Vanilla majors: Block / Illusion / HeavyArmor / Blunt / Blade /
+    // Speechcraft / HandToHand (SkillIndex values).
+    assert_eq!(
+        knight.major_skills,
+        vec![0x0F, 0x17, 0x12, 0x10, 0x0E, 0x20, 0x11],
+        "Knight.major_skills = [Block, Illusion, HeavyArmor, Blunt, \
+         Blade, Speechcraft, HandToHand]",
+    );
+    // Playable flag.
+    assert_eq!(knight.flags_oblivion, Some(0x01));
+
+    // Sanity gate: every Oblivion class should surface primary
+    // attributes + 7 majors. Pre-#968 the FNV arm ran for Oblivion
+    // and produced garbage `attribute_weights` + nonsense `tag_skills`.
+    let with_primaries = index
+        .classes
+        .values()
+        .filter(|c| c.primary_attributes.is_some() && c.major_skills.len() == 7)
+        .count();
+    assert_eq!(
+        with_primaries,
+        index.classes.len(),
+        "OBL CLAS with primary_attributes + 7 majors = {}/{} \
+         (DATA parse failed on some?)",
+        with_primaries,
+        index.classes.len(),
+    );
+
+    eprintln!(
+        "[OBL/CLAS] classes={} | Knight ok | with_primaries={}",
+        index.classes.len(),
+        with_primaries,
+    );
+}
