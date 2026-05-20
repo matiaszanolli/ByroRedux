@@ -297,6 +297,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Two-sided rendering: water disables back-face cull (underwater view from below); confirm via dynamic CULL_MODE not pipeline duplicate
 - Sort key: water plane rendered after opaques, before transparents (or in transparent pass with alpha-blend) — verify against `render::sort_key` ordering
 - Material slot: water uses a distinct GpuMaterial entry (separate from glass) — verify dedup doesn't collapse them
+- Water-side caustic implementation status (deferred / wired) — `caustic_splat.comp:213-215` explicitly defers underwater caustics to `water.frag` (M38 architectural split: glass + MultiLayerParallax handled by `caustic_splat.comp`, water-side handled by the water shader itself). Verify whether `water.frag` has caustic synthesis wired (grep for `caustic` / `Caustic` / `imageAtomicAdd` in water.frag), or still deferred per #1210. If neither implemented nor tracked, file as a NEW finding. The 2026-05-19 Dim-17 audit caught this gap precisely because the issue had been previously closed alongside #1070 without filing a successor tracker
 **Output**: `/tmp/audit/renderer/dim_17.md`
 
 ### Dimension 18: Volumetric Lighting (M55)
