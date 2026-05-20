@@ -711,12 +711,14 @@ impl Resource for CloudSimState {}
 impl SkyParamsRes {
     /// Bindless texture handles owned by this resource.
     ///
-    /// Acquired in `scene.rs` via `texture_registry.load_dds` (sun) and
-    /// `acquire_by_path` (cloud layers); each call bumps the registry
-    /// refcount once. `cell_loader::unload_cell` consumes this iterator
-    /// to issue symmetric `drop_texture` calls so cell-cell transitions
-    /// don't leak VRAM (#626). Update this list whenever a new bindless
-    /// slot is added to the struct.
+    /// Acquired in `scene/world_setup.rs` via `texture_registry.load_dds`
+    /// (sun) and `acquire_by_path` (cloud layers); each call bumps the
+    /// registry refcount once. Resource is worldspace-scoped (#1199) —
+    /// the per-cell drop loop was removed from `unload_cell`. The
+    /// matching release will live in a future worldspace-transition
+    /// hook (door-walking interior↔exterior). Update this list whenever
+    /// a new bindless slot is added to the struct.
+    #[allow(dead_code)] // future worldspace-transition release hook (#1199)
     pub(crate) fn texture_indices(&self) -> [u32; 5] {
         [
             self.cloud_texture_index,

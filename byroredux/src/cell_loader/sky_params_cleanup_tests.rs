@@ -72,24 +72,25 @@ fn sky_params_resource_round_trip() {
     assert!(world.try_resource::<SkyParamsRes>().is_none());
 }
 
-/// #803 / STRM-N2 — `unload_cell` removes `SkyParamsRes` on every
-/// cell unload, then `apply_worldspace_weather` rebuilds it on the
-/// next exterior re-entry. Pre-fix the four cloud_scroll
-/// accumulators lived on `SkyParamsRes` and got reset to `[0, 0]`,
-/// producing a visible cloud snap-back on every interior↔exterior
-/// transition (~0.5 UV per 30 s indoors).
+/// #803 / STRM-N2 — `CloudSimState` is a survives-transitions
+/// resource, independent of `SkyParamsRes`'s lifecycle. Pre-#803 the
+/// four cloud_scroll accumulators lived on `SkyParamsRes` and got
+/// reset to `[0, 0]` on every interior↔exterior transition,
+/// producing a visible cloud snap-back (~0.5 UV per 30 s indoors).
 ///
 /// Lifting the accumulators onto a separate `CloudSimState`
-/// resource — which `unload_cell` does NOT remove — keeps the drift
-/// alive across cell boundaries, the same survives-transitions
-/// pattern `GameTimeRes` already uses for game-time persistence.
+/// resource keeps the drift alive across any cycle that touches
+/// `SkyParamsRes`, the same pattern `GameTimeRes` uses for game-time
+/// persistence.
 ///
 /// The test inserts a `CloudSimState` carrying non-zero scroll
 /// (simulating "the player has been outside for a while"), then
-/// performs the same unload/reinsert cycle the cell loader does on
-/// `SkyParamsRes`: removes `SkyParamsRes` only, reinserts a fresh
-/// copy. The asserted invariant: `CloudSimState` survives untouched
-/// on both sides of the cycle.
+/// performs a manual remove/reinsert cycle on `SkyParamsRes` —
+/// asserting `CloudSimState` survives untouched on both sides of
+/// the cycle. Note: post-#1199 production `unload_cell` no longer
+/// performs the remove half of this cycle (the resources are
+/// worldspace-scoped), but the test's invariant about
+/// `CloudSimState`'s independence still holds and is worth pinning.
 #[test]
 fn cloud_sim_state_survives_sky_params_unload_reload() {
     use crate::components::CloudSimState;
@@ -101,14 +102,14 @@ fn cloud_sim_state_survives_sky_params_unload_reload() {
         cloud_scroll_2: [0.18, 0.91],
         cloud_scroll_3: [0.50, 0.50],
     });
-    // Mirror `unload_cell`'s remove sequence (just `SkyParamsRes`,
-    // not `CloudSimState`).
+    // Manual remove/reinsert cycle on `SkyParamsRes` — pins the
+    // independence invariant. Production `unload_cell` no longer
+    // performs the remove half (worldspace-scoped per #1199), but if
+    // a future contributor reintroduces it, `CloudSimState` must
+    // still survive.
     world
         .remove_resource::<SkyParamsRes>()
         .expect("SkyParamsRes was inserted");
-    // Mirror `apply_worldspace_weather` re-creating the resource on
-    // re-entry. The freshly-built copy carries no scroll fields any
-    // more, so this reinsert can't perturb the accumulator.
     world.insert_resource(mk_sky([1, 2, 3, 4, 5]));
     let clouds = world
         .try_resource::<CloudSimState>()
@@ -117,4 +118,40 @@ fn cloud_sim_state_survives_sky_params_unload_reload() {
     assert_eq!(clouds.cloud_scroll_1, [0.71, 0.05]);
     assert_eq!(clouds.cloud_scroll_2, [0.18, 0.91]);
     assert_eq!(clouds.cloud_scroll_3, [0.50, 0.50]);
+}
+
+/// #1199 — `unload_cell` historically released worldspace-scoped
+/// resources (SkyParamsRes / CellLightingRes / WeatherDataRes /
+/// WeatherTransitionRes) and their bindless texture handles on every
+/// cell unload, expecting `apply_worldspace_weather` to re-acquire on
+/// the next cell load. The M40 streaming refactor moved acquisition
+/// to a single bootstrap call (scene.rs:226) and never re-instated
+/// per-cell re-acquire. The first cell-out-of-range event over-
+/// released the texture refcount (bindless slot redirected to the
+/// fallback checkerboard) and wiped WeatherDataRes — `weather_system`
+/// early-returned for the rest of the session, silently freezing
+/// exterior lighting after the first cell-boundary crossing.
+///
+/// `unload_cell` is Vulkan-dependent and can't run in a unit test;
+/// pin the regression at the source level by asserting the per-cell
+/// release patterns are not present in `unload.rs`. Re-adding any of
+/// them without a matching per-cell re-acquire in
+/// `load_one_exterior_cell` regresses #1199.
+#[test]
+fn unload_cell_does_not_release_worldspace_resources() {
+    let src = include_str!("unload.rs");
+    let banned_patterns: &[&str] = &[
+        "world.remove_resource::<SkyParamsRes>",
+        "world.remove_resource::<CellLightingRes>",
+        "world.remove_resource::<WeatherDataRes>",
+        "world.remove_resource::<WeatherTransitionRes>",
+    ];
+    for pat in banned_patterns {
+        assert!(
+            !src.contains(pat),
+            "unload.rs must not contain `{pat}` — worldspace-scoped per #1199. \
+             If a per-cell release is intentional, also add the matching \
+             per-cell re-acquire in load_one_exterior_cell.",
+        );
+    }
 }

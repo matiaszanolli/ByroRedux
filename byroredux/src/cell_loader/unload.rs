@@ -10,8 +10,7 @@ use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
 
 use crate::components::{
-    CellLightingRes, CellRootIndex, DarkMapHandle, ExtraTextureMaps, NormalMapHandle,
-    SkyParamsRes, TerrainTileSlot, WeatherDataRes, WeatherTransitionRes,
+    CellRootIndex, DarkMapHandle, ExtraTextureMaps, NormalMapHandle, TerrainTileSlot,
 };
 
 /// Tear down a cell: despawn every entity owned by `cell_root` and
@@ -123,26 +122,19 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     // walk.
     drop((mq, tq, nq, dq, eq, ttq));
 
-    // Sky textures live on `SkyParamsRes` (a Resource), not an ECS
-    // component, so the per-victim sweep above can't reach them. The
-    // bindless indices were acquired via `texture_registry.load_dds`
-    // (sun) and `acquire_by_path` (cloud layers) at scene load time —
-    // each bumped the registry refcount once. Without symmetric drops
-    // every cell-cell transition leaks 4 cloud + 1 sun texture (#626).
-    // The slot list is owned by `SkyParamsRes::texture_indices` so adding
-    // a new slot updates both sites in lockstep.
-    if let Some(sky) = world.try_resource::<SkyParamsRes>() {
-        for idx in sky.texture_indices() {
-            push_tex_drop(idx, &mut texture_drops);
-        }
-    }
-    // Cell-scoped state resources hold no texture refs but get replaced
-    // on the next `world.insert_resource` at cell load — clear them on
-    // unload so a between-load query doesn't see stale state.
-    world.remove_resource::<SkyParamsRes>();
-    world.remove_resource::<CellLightingRes>();
-    world.remove_resource::<WeatherDataRes>();
-    world.remove_resource::<WeatherTransitionRes>();
+    // `SkyParamsRes` / `CellLightingRes` / `WeatherDataRes` /
+    // `WeatherTransitionRes` and the bindless texture handles on
+    // `SkyParamsRes::texture_indices()` are worldspace-scoped — acquired
+    // once by `apply_worldspace_weather` (scene/world_setup.rs) at
+    // streaming bootstrap, not per cell load. The pre-#1199 pattern
+    // released them on every cell unload, expecting cell-load to
+    // re-acquire; `load_one_exterior_cell` never did. The first
+    // cell-out-of-range event over-released the texture refcount
+    // (bindless slot redirected to the fallback checkerboard) and
+    // wiped `WeatherDataRes`, silently freezing exterior lighting for
+    // the rest of the session. Their lifetime now matches the World; a
+    // future door-walking worldspace transition will release them at
+    // the boundary. See #1199.
 
     // Free terrain tile slots FIRST — late frames-in-flight reading the
     // SSBO then see either stale-but-valid data (if the slot was
