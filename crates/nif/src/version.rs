@@ -299,11 +299,32 @@ impl NifVariant {
         // includes `V20_0_0_4__11`. nif.xml line 196 itself lists the
         // version as "Oblivion, Fallout 3" — genuinely ambiguous.
         // Sample data would be needed to settle which side wins; the
-        // existing test `detect_oblivion_edge_cases` (line ~446) pins
-        // the prior decision that `(V20_0_0_4, 11, _)` is Oblivion,
-        // and no retail FO3 NIF ships at v20.0.0.4 so the impact is
-        // confined to pre-release / mod content. Leave as Oblivion
-        // until sample data justifies the flip.
+        // existing test `detect_oblivion_edge_cases` pins the prior
+        // decision that `(V20_0_0_4, 11, _)` is Oblivion, and no
+        // retail FO3 NIF ships at v20.0.0.4 so the impact is confined
+        // to pre-release / mod content. Leave as Oblivion until sample
+        // data justifies the flip.
+        //
+        // #1219 — fire a process-lifetime one-shot warn when the
+        // ambiguous `(V20_0_0_4, 11, _)` tuple is hit, so any modded
+        // FO3 corpus that exercises this case surfaces in the log
+        // (with the tuple values) and we can collect the sample data
+        // the audit asks for. Vanilla content never hits it; the warn
+        // is silent on every supported game today.
+        if version == NifVersion::V20_0_0_4 && user_version == 11 {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                log::warn!(
+                    "NifVariant::detect: ambiguous tuple (V20_0_0_4, \
+                     user_version=11, user_version_2={}) routed as Oblivion \
+                     pending sample-data disambiguation — nif.xml lists \
+                     v20.0.0.4 as \"Oblivion, Fallout 3\" and the `#FO3#` \
+                     verset includes V20_0_0_4__11. File a sample to flip \
+                     the routing (#1219).",
+                    user_version_2,
+                );
+            });
+        }
         if version == NifVersion::V20_0_0_4 || version == NifVersion::V20_0_0_5 {
             return Self::Oblivion;
         }
@@ -591,6 +612,41 @@ mod tests {
         // v20.2.0.7 with user_version=10 (some Oblivion mods)
         assert_eq!(
             NifVariant::detect(NifVersion::V20_2_0_7, 10, 25),
+            NifVariant::Oblivion,
+        );
+    }
+
+    /// #1219 — the ambiguous `(V20_0_0_4, user_version=11, _)` tuple
+    /// is the nif.xml "Oblivion, Fallout 3" case. Current routing
+    /// pins to Oblivion (no retail FO3 NIF ships at this version, so
+    /// any hit is pre-release / mod content). The one-shot warn at
+    /// `detect:307` surfaces the tuple in logs without breaking the
+    /// routing pin; this test guards the routing stays Oblivion until
+    /// sample data justifies flipping.
+    #[test]
+    fn detect_ambiguous_v20_0_0_4_uv11_stays_oblivion_pending_sample() {
+        // The audit's ambiguous tuple — primary case the warn fires on.
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_0_0_4, 11, 0),
+            NifVariant::Oblivion,
+            "ambiguous (V20_0_0_4, 11, 0) must route Oblivion until \
+             sample data justifies the flip",
+        );
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_0_0_4, 11, 34),
+            NifVariant::Oblivion,
+            "ambiguous (V20_0_0_4, 11, 34) must route Oblivion until \
+             sample data justifies the flip",
+        );
+        // Non-ambiguous neighbours (user_version != 11) must continue
+        // routing Oblivion via the unconditional v20.0.0.4 branch — the
+        // warn path must NOT shadow them.
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_0_0_4, 0, 0),
+            NifVariant::Oblivion,
+        );
+        assert_eq!(
+            NifVariant::detect(NifVersion::V20_0_0_4, 10, 0),
             NifVariant::Oblivion,
         );
     }
