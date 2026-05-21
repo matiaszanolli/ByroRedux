@@ -46,6 +46,15 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 
 /// Spawn the precombined `_oc.nif` files referenced by `cell.precombined_mesh_hashes`.
 ///
+/// `cell_origin` is the world-space position the bake should land at:
+/// - **Interior cells** (called from `load.rs`): pass `Vec3::ZERO` — the
+///   interior cell IS the world origin, so the bake's cell-local coords
+///   already are world coords (#1222 / D3-NEW-03).
+/// - **Exterior cells** (called from `exterior.rs`, #1221 / D3-NEW-02):
+///   pass `cell_grid_to_world_yup(gx, gy)` so the bake lands at the
+///   correct Commonwealth tile position. Without this offset every
+///   exterior precombine would stack at the world origin.
+///
 /// Returns `(spawned_entities, skipped_misses)` — the second number
 /// counts hashes whose `_oc.nif` file failed to extract from the
 /// asset chain (missing texture archive, mod-content cell that
@@ -53,6 +62,7 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_precombined_meshes(
     cell: &CellData,
+    cell_origin: Vec3,
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
@@ -62,9 +72,11 @@ pub(super) fn spawn_precombined_meshes(
         return (0, 0);
     }
 
-    // Identity transform — precombined NIFs are baked in cell-local
-    // coords so they sit at the cell origin with no rotation / scale.
-    let pos = Vec3::ZERO;
+    // Precombined NIFs are baked in cell-local coords; `cell_origin`
+    // shifts them into world space (zero for interior, cell-grid-
+    // derived for exterior). No rotation / scale — the bake is
+    // axis-aligned and at unit scale by construction.
+    let pos = cell_origin;
     let rot = Quat::IDENTITY;
     let scale = 1.0;
 

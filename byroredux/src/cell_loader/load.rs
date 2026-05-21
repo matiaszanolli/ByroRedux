@@ -154,6 +154,9 @@ pub fn load_cell_with_masters(
     // non-FO4 cells — early-return inside the helper.
     let (pc_spawned, _pc_misses) = super::precombined::spawn_precombined_meshes(
         cell,
+        // Interior cells: cell origin IS the world origin, so the
+        // bake's cell-local coords already are world coords. #1222.
+        Vec3::ZERO,
         world,
         ctx,
         tex_provider,

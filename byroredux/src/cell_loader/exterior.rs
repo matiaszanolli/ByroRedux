@@ -287,10 +287,47 @@ pub fn load_one_exterior_cell(
         );
     }
 
+    // FO4+ PreCombined Mesh spawn (#1221 / D3-NEW-02). Mirrors the
+    // interior loader's Phase-3a. `cell.precombined_mesh_hashes` and
+    // `cell.absorbed_refs` are populated post-#1220 by the exterior
+    // walker in `wrld.rs`; today (no CSG reader) the precombined
+    // import always returns zero meshes, so the conditional-absorption
+    // gate below ignores the XPRI list and renders REFRs as before.
+    // When the CSG reader lands, `pc_spawned > 0` becomes the common
+    // case for Commonwealth tiles and the absorption gate engages.
+    //
+    // `cell_grid_to_world_yup(gx, gy)` is the per-tile world-space
+    // origin (Y-up); the bake's cell-local coords are translated by
+    // this offset. Without it every tile's bake would stack at the
+    // world origin (#1222).
+    let mut mat_provider = mat_provider;
+    let cell_origin = cell_grid_to_world_yup(gx, gy);
+    let (pc_spawned, _pc_misses) = super::precombined::spawn_precombined_meshes(
+        cell,
+        cell_origin,
+        world,
+        ctx,
+        tex_provider,
+        mat_provider.as_deref_mut(),
+    );
+
     // Spawn placed references. Pre-#M40 every grid load went through a
     // single `load_references` over all 49 cells' refs; per-cell calls
     // share the process-lifetime `NifImportRegistry` so cross-cell mesh
     // re-use still hits the cache (#381).
+    //
+    // Honour `cell.absorbed_refs` only when the precombined spawn
+    // produced at least one entity — same fallback path the interior
+    // loader takes (#1188): with no precombined geometry rendered,
+    // those XPRI-listed REFRs are the only carrier of the architecture
+    // and must load normally. Mirrors `bUseCombinedObjects=0`.
+    static EMPTY_ABSORBED: std::sync::OnceLock<std::collections::HashSet<u32>> =
+        std::sync::OnceLock::new();
+    let absorbed = if pc_spawned > 0 {
+        &cell.absorbed_refs
+    } else {
+        EMPTY_ABSORBED.get_or_init(std::collections::HashSet::new)
+    };
     let label = format!("exterior({},{})", gx, gy);
     let result = load_references(
         &cell.references,
@@ -305,7 +342,7 @@ pub fn load_one_exterior_cell(
         mat_provider,
         &label,
         wctx.load_order.as_ref(),
-        &cell.absorbed_refs,
+        absorbed,
     );
 
     // Mid-cell terrain ground point — only meaningful for the
