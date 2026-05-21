@@ -509,14 +509,19 @@ fn build_bs_lighting_fo4_env_map() -> Vec<u8> {
     data.extend_from_slice(&1.0f32.to_le_bytes()); // backlight_power
     data.extend_from_slice(&0.7f32.to_le_bytes()); // grayscale_to_palette_scale
     data.extend_from_slice(&5.0f32.to_le_bytes()); // fresnel_power
-                                                   // WetnessParams (BSVER=130: 7 floats — #403 widened
-                                                   // unknown_1 gate to the full 130..155 FO4/FO76 range).
-                                                   // Order: spec_scale, spec_power, min_var, env_map_scale,
-                                                   // fresnel, metalness, unknown_1.
-    for v in [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.95] {
+                                                   // WetnessParams (BSVER=130: 6 floats). Order: spec_scale,
+                                                   // spec_power, min_var, fresnel, metalness, unknown_1.
+                                                   // #1223 — env_map_scale lives in the shader_type=1
+                                                   // (EnvironmentMap) trailing block at BSVER < FO4_ENV_SCALE
+                                                   // (140), NOT in wetness. Pre-#1223 this fixture wrote 7
+                                                   // floats with a bogus env_map_scale slot, encoding the
+                                                   // parser's old over-read gate; corrected here to match the
+                                                   // empirical FO4 wire format (5211/6455 vanilla BSLSP @ 140
+                                                   // bytes, 1192 @ 146 = 140 + 6 shader-type-1 trailing).
+    for v in [0.1f32, 0.2, 0.3, 0.5, 0.6, 0.95] {
         data.extend_from_slice(&v.to_le_bytes());
     }
-    // Shader type 1 trailing: env_map_scale + 2 bools (FO4 BSVER 130)
+    // Shader type 1 trailing: env_map_scale + 2 bools (FO4 BSVER < FO4_ENV_SCALE)
     data.extend_from_slice(&0.75f32.to_le_bytes()); // env_map_scale
     data.push(1u8); // use_ssr (bool)
     data.push(0u8); // wetness_use_ssr (bool)
@@ -1039,6 +1044,72 @@ fn parse_bs_effect_fo76_stopcond_short_circuits() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
+/// #1223 / D4-NEW-01 regression — the BSVER=130 BSLSP wire format does
+/// NOT carry `env_map_scale` in the wetness block. Pre-#1223 the
+/// wetness gate was `bsver == FALLOUT4`, which caused a bogus duplicate
+/// read of `env_map_scale` (once here, once in the shader_type=1
+/// trailing) and drifted every vanilla FO4 BSLSP by -4 (1.87M observed
+/// over-reads on the FO4 corpus, masquerading as parse-rate ok thanks
+/// to block_size recovery). This test pins the post-fix invariant:
+/// parsing a 140-byte BSVER=130 BSLSP fixture (shader_type=0, no
+/// trailing) consumes exactly 140 bytes — zero drift.
+#[test]
+fn parse_bs_lighting_fo4_bsver130_consumes_exactly_140_bytes() {
+    let header = make_fo4_header();
+    let mut data = Vec::new();
+    // shader_type=0 (Default) — no trailing data after wetness.
+    data.extend_from_slice(&0u32.to_le_bytes());
+    // NiObjectNET: name (string-ref), extras_count, controller
+    data.extend_from_slice(&3i32.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&(-1i32).to_le_bytes());
+    // shader_flags_1, shader_flags_2
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&1u32.to_le_bytes());
+    // uv_offset, uv_scale
+    for v in [0.0f32, 0.0, 1.0, 1.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    // texture_set_ref = NONE
+    data.extend_from_slice(&(-1i32).to_le_bytes());
+    // emissive_color, emissive_multiple
+    for v in [0.0f32, 0.0, 0.0, 1.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    // Root Material (string-ref)
+    data.extend_from_slice(&4i32.to_le_bytes());
+    // texture_clamp_mode, alpha, refraction_strength, glossiness
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    // specular_color, specular_strength
+    for v in [0.0f32, 0.0, 0.0, 0.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    // FO4 common: subsurface, rim, back (rim=FLT_MAX → back present)
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&f32::MAX.to_le_bytes());
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    // grayscale, fresnel_power
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    data.extend_from_slice(&5.0f32.to_le_bytes());
+    // WetnessParams: 6 floats at BSVER=130 — NO env_map_scale slot.
+    for v in [-1.0f32; 6] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    // No shader_type=0 trailing.
+    assert_eq!(data.len(), 140, "BSVER=130 + shader_type=0 wire format = 140 B");
+
+    let mut stream = NifStream::new(&data, &header);
+    let _prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+    assert_eq!(
+        stream.position(),
+        140,
+        "BSLSP at BSVER=130 must consume exactly 140 bytes — no env_map_scale duplicate-read (#1223)",
+    );
+}
+
 #[test]
 fn parse_bs_lighting_fo4_env_map_with_wetness() {
     let header = make_fo4_header();
@@ -1055,15 +1126,12 @@ fn parse_bs_lighting_fo4_env_map_with_wetness() {
     assert!((prop.backlight_power - 1.0).abs() < 1e-6);
     assert!((prop.grayscale_to_palette_scale - 0.7).abs() < 1e-6);
     assert!((prop.fresnel_power - 5.0).abs() < 1e-6);
-    // Wetness params — BSVER=130 reads 7 floats (see #403).
+    // Wetness params — BSVER=130 reads 6 floats (#1223). env_map_scale
+    // belongs to the shader_type=1 trailing block at BSVER < FO4_ENV_SCALE.
     let w = prop.wetness.as_ref().unwrap();
     assert!((w.spec_scale - 0.1).abs() < 1e-6);
-    assert!((w.env_map_scale - 0.4).abs() < 1e-6); // BSVER=130 has this
+    assert_eq!(w.env_map_scale, 0.0, "env_map_scale stays at default in wetness at BSVER < 140 (#1223)");
     assert!((w.metalness - 0.6).abs() < 1e-6);
-    // #403 regression: unknown_1 is now read for the whole 130..155
-    // range (was gated on `> 130` and silently dropped 4 bytes per
-    // FO4 lit mesh — observed as 1.87M "4-byte short" warnings on
-    // the real FO4 archive sweep).
     assert!(
         (w.unknown_1 - 0.95).abs() < 1e-6,
         "wetness.unknown_1 should round-trip at BSVER=130 (#403)"

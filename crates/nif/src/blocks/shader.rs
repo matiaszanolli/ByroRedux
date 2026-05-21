@@ -926,11 +926,27 @@ impl BSLightingShaderProperty {
             let spec_scale = stream.read_f32_le()?;
             let spec_power = stream.read_f32_le()?;
             let min_var = stream.read_f32_le()?;
-            let env_map_scale = if bsver == crate::version::bsver::FALLOUT4 {
-                stream.read_f32_le()?
-            } else {
-                0.0
-            };
+            // #1223 / D4-NEW-01 — env_map_scale does NOT live in
+            // wetness; it lives in `parse_shader_type_data_fo4`'s
+            // shader_type=1 (EnvironmentMap) trailing block. Pre-#1223
+            // the gate was `bsver == FALLOUT4`, which caused a bogus
+            // duplicate read at BSVER=130: the parser consumed 4 bytes
+            // here AND 4 bytes again in shader_type=1 trailing, drifting
+            // every vanilla FO4 BSLSP by -4 (over-read).
+            //
+            // The `FO4_ENV_SCALE = 140` constant's docstring claimed
+            // env_map_scale "moves inside wetness" at BSVER >= 140 —
+            // that claim doesn't hold against the Starfield (BSVER 168+)
+            // corpus: gating wetness env_map_scale on `>= FO4_ENV_SCALE`
+            // dropped Starfield Meshes01 parse rate from 97.21% to 95.77%.
+            // The empirical wire format keeps env_map_scale in shader-
+            // type=1 trailing across every BSVER we sweep today.
+            //
+            // Empirically pinned at BSVER=130: 5211 / 6455 BSLSP blocks
+            // ship at size=140 (shader_type=0), 1192 at size=146
+            // (shader_type=1 +6 trailing bytes = env_map_scale f32 +
+            // 2 SSR bools). Both produce drift=0 with the `false` gate.
+            let env_map_scale = 0.0f32;
             let fresnel = stream.read_f32_le()?;
             let metalness = stream.read_f32_le()?;
             // `Unknown 1` is nominally gated on `#BS_GT_130#` per nif.xml,
