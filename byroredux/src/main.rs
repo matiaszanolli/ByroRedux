@@ -1555,10 +1555,27 @@ impl ApplicationHandler for App {
                     let submit_ms = ft.submit_present_ns as f64 / n / 1e6;
                     let accounted = systems_ms * ticks_per_frame + brd_ms + ui_ms + draw_ms;
                     let unaccounted_ms = (wall_ms - accounted).max(0.0);
+                    // #1194 — per-pass GPU timer snapshot. The
+                    // SkinCoverageStats resource is filled at the end
+                    // of every `draw_frame`; values here are from the
+                    // last completed frame and represent one
+                    // `MAX_FRAMES_IN_FLIGHT` cycle of pipeline lag.
+                    // Reads 0.0 across the board when the driver
+                    // lacks `timestampComputeAndGraphics` or no
+                    // skinned/TAA work fired on the snapshot frame.
+                    // Surfaces `gpu_skin_disp` / `gpu_blas_refit` /
+                    // `gpu_taa` so PERF-DIM7-01/-02/-03 (#1195/#1196/
+                    // #1197) can measure rather than guess.
+                    let (gpu_skin_disp_ms, gpu_blas_refit_ms, gpu_taa_ms) = self
+                        .world
+                        .try_resource::<byroredux_core::ecs::SkinCoverageStats>()
+                        .map(|s| (s.gpu_skin_dispatch_ms, s.gpu_skin_blas_refit_ms, s.gpu_taa_ms))
+                        .unwrap_or((0.0, 0.0, 0.0));
                     println!(
                         "bench: frames={} wall_fps={:.1} wall_ms={:.2} \
                          brd_ms={:.2} ui_ms={:.2} draw_ms={:.2} \
                          [fence={:.2} tlas={:.2} ssbo={:.2} cmd={:.2} submit={:.2}] \
+                         [gpu_skin_disp={:.3} gpu_blas_refit={:.3} gpu_taa={:.3}] \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          entities={} meshes={} textures={} draws={}",
                         self.bench_frames_count,
@@ -1572,6 +1589,9 @@ impl ApplicationHandler for App {
                         ssbo_ms,
                         cmd_ms,
                         submit_ms,
+                        gpu_skin_disp_ms,
+                        gpu_blas_refit_ms,
+                        gpu_taa_ms,
                         systems_ms,
                         ticks_per_frame,
                         unaccounted_ms,

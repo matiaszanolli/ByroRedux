@@ -99,9 +99,18 @@ impl SkinSlot {
 /// dispatches / first-sight / refit loops; `fill_skin_coverage_stats`
 /// then copies them into the `SkinCoverageStats` resource. Reset each
 /// frame at the entry to the skinned section.
+///
+/// `dispatches_skipped` (#1194 / PERF-DIM7-INSTR): gates the
+/// PERF-DIM7-01 dispatch-dirty-gate work. When that fix lands, every
+/// entity whose bone palette is unchanged this frame increments this
+/// counter instead of running the compute dispatch. Today the value
+/// is always zero; instrumentation pre-staged so the dirty-gate
+/// commit drops in cleanly. `dispatches_total - dispatches_skipped`
+/// gives the GPU dispatch count actually issued.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SkinCoverageFrame {
     pub dispatches_total: u32,
+    pub dispatches_skipped: u32,
     pub first_sight_attempted: u32,
     pub first_sight_succeeded: u32,
     pub refits_attempted: u32,

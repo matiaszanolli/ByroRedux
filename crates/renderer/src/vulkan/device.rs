@@ -62,6 +62,25 @@ pub struct DeviceCapabilities {
     /// driver that returns a smaller alignment than the AS spec needs.
     /// Zero when `ray_query_supported` is false. See #659 / #260 R-05.
     pub min_accel_struct_scratch_offset_alignment: u32,
+    /// `VkPhysicalDeviceLimits::timestampPeriod` — nanoseconds per
+    /// `vkCmdWriteTimestamp` tick on this device. Multiply
+    /// `(end_tick - start_tick) * timestamp_period_ns` to get the
+    /// elapsed time in ns for the bracketed work. Typically `1.0` on
+    /// NVIDIA + AMD desktop drivers, `52.083...` on Intel Arc, but
+    /// the spec only guarantees > 0. Used by the per-pass GPU timer
+    /// (#1194 / PERF-DIM7-INSTR) — zero if `timestamp_supported`
+    /// is false (host driver lacks query support entirely).
+    pub timestamp_period_ns: f32,
+    /// `timestampComputeAndGraphics` from `VkPhysicalDeviceLimits`:
+    /// when true, both compute and graphics queues support
+    /// `vkCmdWriteTimestamp`. We only use the graphics queue today
+    /// so the weaker `timestamp_valid_bits[graphics_queue_family] > 0`
+    /// would suffice, but `timestampComputeAndGraphics` is the
+    /// universal-true guarantee and matches our usage. Zero on every
+    /// shipped desktop GPU is unheard of; the gate exists so the
+    /// query pool creation skips cleanly on a hypothetical driver
+    /// that lacks it.
+    pub timestamp_supported: bool,
 }
 
 /// Sum of `VkMemoryHeap.size` across every `DEVICE_LOCAL` heap exposed
@@ -298,6 +317,13 @@ fn is_device_suitable(
                 fill_mode_non_solid_supported,
                 max_bindless_sampled_images,
                 min_accel_struct_scratch_offset_alignment,
+                // #1194 — TIMESTAMP query support. `timestamp_period`
+                // is nanoseconds-per-tick (e.g. 1.0 on NVIDIA);
+                // `timestampComputeAndGraphics == true` means the
+                // graphics queue's timestamp_valid_bits is non-zero.
+                timestamp_period_ns: properties.limits.timestamp_period,
+                timestamp_supported: properties.limits.timestamp_compute_and_graphics
+                    == vk::TRUE,
             },
         ))),
         _ => Ok(None),

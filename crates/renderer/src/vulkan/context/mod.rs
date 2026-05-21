@@ -891,6 +891,16 @@ pub struct VulkanContext {
     /// SkinSlots live in `skin_slots`; first-sight registration +
     /// per-frame dispatch + BLAS refit happen inside `draw_frame`.
     pub skin_compute: Option<super::skin_compute::SkinComputePipeline>,
+    /// Per-pass GPU timer (#1194 / PERF-DIM7-INSTR). Brackets the
+    /// skin compute dispatch loop, skinned BLAS refit loop, and TAA
+    /// compute dispatch with `VkQueryPool` TIMESTAMP queries. `None`
+    /// when the driver lacks `timestampComputeAndGraphics` (extremely
+    /// rare on desktop GPUs — `VK_KHR_acceleration_structure` mandates
+    /// it on any device exposing RT). Read by `fill_skin_coverage_stats`
+    /// and surfaced through the `skin.coverage` console + bench
+    /// summary so PERF-DIM7-01 / -02 / -03 (#1195 / #1196 / #1197)
+    /// can be measured rather than guessed.
+    pub gpu_timers: Option<super::gpu_timers::GpuPerFrameTimers>,
     /// M29.5 — GPU bone-palette compute pipeline. Reads the per-frame
     /// `bone_world[]` + `bind_inverses[]` input SSBOs (held on
     /// [`SceneBuffers`]) and writes the existing palette SSBO that
@@ -1425,6 +1435,25 @@ impl VulkanContext {
             None
         };
 
+        // #1194 — per-pass GPU timer. Best-effort: failure to create
+        // the query pools (driver lacks timestamp_compute_and_graphics,
+        // or pool allocation errored) leaves `gpu_timers = None`, the
+        // brackets in `draw_frame` no-op, and `skin.coverage` shows
+        // `gpu_timer: unavailable` instead of ms values.
+        let gpu_timers = match super::gpu_timers::GpuPerFrameTimers::new(
+            &device,
+            &device_caps,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!(
+                    "GPU per-pass timer creation failed: {e} — PERF-DIM7 \
+                     instrumentation will read zeros"
+                );
+                None
+            }
+        };
+
         // 14. Graphics pipeline (with depth test + descriptor set layouts for set 0 + set 1).
         // `fill_mode_non_solid_supported` gates the wireframe variant
         // (#869) — when false, only the FILL opaque pipeline is built
@@ -1865,6 +1894,7 @@ impl VulkanContext {
             accel_manager,
             cluster_cull,
             skin_compute,
+            gpu_timers,
             skin_palette,
             skin_slots: std::collections::HashMap::new(),
             failed_skin_slots: std::collections::HashSet::new(),
@@ -2153,10 +2183,24 @@ impl VulkanContext {
     pub fn fill_skin_coverage_stats(&self, stats: &mut byroredux_core::ecs::SkinCoverageStats) {
         let f = self.last_skin_coverage_frame;
         stats.dispatches_total = f.dispatches_total;
+        stats.dispatches_skipped = f.dispatches_skipped;
         stats.first_sight_attempted = f.first_sight_attempted;
         stats.first_sight_succeeded = f.first_sight_succeeded;
         stats.refits_attempted = f.refits_attempted;
         stats.refits_succeeded = f.refits_succeeded;
+        // #1194 — GPU timer snapshot. Zeros when timer unavailable
+        // (driver lacks timestamp support) or first pipelined cycle
+        // hasn't completed.
+        if let Some(ref timers) = self.gpu_timers {
+            let snap = timers.last_snapshot();
+            stats.gpu_skin_dispatch_ms = snap.skin_dispatch_ms;
+            stats.gpu_skin_blas_refit_ms = snap.skin_blas_refit_ms;
+            stats.gpu_taa_ms = snap.taa_ms;
+        } else {
+            stats.gpu_skin_dispatch_ms = 0.0;
+            stats.gpu_skin_blas_refit_ms = 0.0;
+            stats.gpu_taa_ms = 0.0;
+        }
         stats.slots_active = self.skin_slots.len() as u32;
         stats.slot_pool_capacity = if self.skin_compute.is_some() {
             SKIN_MAX_SLOTS
@@ -2260,6 +2304,14 @@ impl Drop for VulkanContext {
                 // per-skinned-entity), so destroy is unconditional.
                 if let Some(ref mut sp) = self.skin_palette {
                     sp.destroy(&self.device);
+                }
+                // #1194 — per-pass GPU timer query pools. No per-frame
+                // resources beyond the pools themselves; destroyed
+                // unconditionally. Must wait for queue idle before
+                // calling — covered by the `device_wait_idle()` at the
+                // top of this Drop.
+                if let Some(ref mut timers) = self.gpu_timers {
+                    timers.destroy(&self.device);
                 }
                 if let Some(ref mut ssao) = self.ssao {
                     ssao.destroy(&self.device, alloc);

@@ -390,6 +390,11 @@ impl ConsoleCommand for SkinCoverageCommand {
             cov.dispatches_total,
         ));
         lines.push(format!(
+            "  dispatches_skipped     = {}  (#1194 — bone palette unchanged; \
+             dispatch elided. PERF-DIM7-01 is the first consumer)",
+            cov.dispatches_skipped,
+        ));
+        lines.push(format!(
             "  slots_active           = {} / {}  (pool {:.0}% full)",
             cov.slots_active,
             cov.slot_pool_capacity,
@@ -418,6 +423,22 @@ impl ConsoleCommand for SkinCoverageCommand {
         lines.push(format!(
             "  refits_succeeded       = {}",
             cov.refits_succeeded,
+        ));
+        // #1194 — per-pass GPU timer. ms == 0.0 means either the
+        // driver lacks timestampComputeAndGraphics OR the bracket
+        // didn't fire this snapshot (skinned chain skipped, TAA
+        // disabled, first pipelined cycle hasn't completed).
+        lines.push(format!(
+            "  gpu_skin_dispatch_ms   = {:.3}",
+            cov.gpu_skin_dispatch_ms,
+        ));
+        lines.push(format!(
+            "  gpu_skin_blas_refit_ms = {:.3}",
+            cov.gpu_skin_blas_refit_ms,
+        ));
+        lines.push(format!(
+            "  gpu_taa_ms             = {:.3}",
+            cov.gpu_taa_ms,
         ));
         if cov.dispatches_total == 0 {
             lines.push("  coverage: n/a (no skinned entities this frame)".to_string());

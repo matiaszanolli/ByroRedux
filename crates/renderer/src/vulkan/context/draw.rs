@@ -198,6 +198,18 @@ impl VulkanContext {
         }
         t.fence_wait_ns = fence_t0.elapsed().as_nanos() as u64;
 
+        // #1194 — read this slot's TIMESTAMP results (from the prior
+        // cycle's use of this slot), then reset the pool for the
+        // upcoming frame. The fence wait above proves the prior
+        // submission for this slot is complete, so query results
+        // are guaranteed available — no host stall here. First-cycle
+        // reads return zero (active_bits never set yet); steady-state
+        // reads are one MAX_FRAMES_IN_FLIGHT cycle behind, which is
+        // fine for per-pass instrumentation.
+        if let Some(ref mut timers) = self.gpu_timers {
+            timers.read_and_reset(&self.device, frame);
+        }
+
         // If a screenshot was captured last frame, the GPU is done — read it back.
         self.screenshot_finish_readback();
 
@@ -885,6 +897,16 @@ impl VulkanContext {
                     // buffer with current pose), then barrier, then
                     // refit BLAS.
                     if !dispatches.is_empty() {
+                        // #1194 — bracket the skin compute dispatch
+                        // loop. START sits before the per-entity
+                        // dispatches; END sits after the loop body
+                        // (before the COMPUTE→AS_BUILD barrier so
+                        // the bracket measures only the dispatches
+                        // themselves, not the barrier transition cost
+                        // which lands inside the BLAS refit window).
+                        if let Some(ref mut timers) = self.gpu_timers {
+                            timers.cmd_skin_dispatch_start(&self.device, cmd, frame);
+                        }
                         unsafe {
                             for &(entity_id, push, _, _, _) in &dispatches {
                                 let Some(slot) = self.skin_slots.get_mut(&entity_id) else {
@@ -909,6 +931,13 @@ impl VulkanContext {
                                     push,
                                 );
                             }
+                        }
+                        // #1194 — END of skin compute dispatch bracket
+                        // (before the COMPUTE→AS_BUILD barrier).
+                        if let Some(ref mut timers) = self.gpu_timers {
+                            timers.cmd_skin_dispatch_end(&self.device, cmd, frame);
+                        }
+                        unsafe {
                             // Compute writes (skinned vertex output
                             // buffers) → AS build input reads. Covers
                             // both the first-sight BUILD batch below
@@ -991,6 +1020,13 @@ impl VulkanContext {
                             // prior AS-build — same-stage
                             // AS_WRITE↔AS_WRITE on a queue with no
                             // in-flight build work.
+                            // #1194 — bracket the skinned-BLAS refit loop.
+                            // START is just before the loop body; END
+                            // is right after the AS_BUILD→AS_BUILD
+                            // barrier closes the refit window.
+                            if let Some(ref mut timers) = self.gpu_timers {
+                                timers.cmd_blas_refit_start(&self.device, cmd, frame);
+                            }
                             for &(entity_id, _, idx_buffer, idx_count, vertex_count) in &dispatches
                             {
                                 let Some(slot) = self.skin_slots.get(&entity_id) else {
@@ -1032,6 +1068,11 @@ impl VulkanContext {
                                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
                                 vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
                             );
+                        }
+                        // #1194 — END of skinned-BLAS refit bracket
+                        // (after the AS_BUILD→AS_BUILD barrier).
+                        if let Some(ref mut timers) = self.gpu_timers {
+                            timers.cmd_blas_refit_end(&self.device, cmd, frame);
                         }
                     }
 
@@ -2419,6 +2460,10 @@ impl VulkanContext {
             // log hinting at the cause. See #479.
             if !self.taa_failed {
                 if let Some(ref mut taa) = self.taa {
+                    // #1194 — bracket the TAA compute dispatch.
+                    if let Some(ref mut timers) = self.gpu_timers {
+                        timers.cmd_taa_start(&self.device, cmd, frame);
+                    }
                     if let Err(e) = taa.dispatch(&self.device, cmd, frame) {
                         log::error!(
                             "TAA dispatch failed — falling back to raw HDR for the rest of the session: {e}"
@@ -2427,6 +2472,9 @@ impl VulkanContext {
                         if let Some(ref mut composite) = self.composite {
                             composite.fall_back_to_raw_hdr(&self.device);
                         }
+                    }
+                    if let Some(ref mut timers) = self.gpu_timers {
+                        timers.cmd_taa_end(&self.device, cmd, frame);
                     }
                 }
             }

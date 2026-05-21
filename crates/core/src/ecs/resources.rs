@@ -383,6 +383,12 @@ pub struct SkinCoverageStats {
     /// Unique skinned entities in this frame's draw_commands (those with
     /// `bone_offset > 0`). Denominator for everything below.
     pub dispatches_total: u32,
+    /// Entities whose compute dispatch was elided this frame because the
+    /// bone palette hadn't changed since the previous dispatch (#1194 /
+    /// PERF-DIM7-INSTR). Pre-#1194 always zero — PERF-DIM7-01 (dispatch
+    /// dirty-gate, #1195) is the first consumer. `dispatches_total -
+    /// dispatches_skipped` gives the GPU dispatch count actually issued.
+    pub dispatches_skipped: u32,
     /// Entities currently holding a `SkinSlot` (gauge — not per-frame).
     pub slots_active: u32,
     /// Slot-pool capacity (`SKIN_MAX_SLOTS`). Constant after init.
@@ -407,6 +413,17 @@ pub struct SkinCoverageStats {
     /// out of the renderer each frame; the full count is in
     /// `slots_failed`.
     pub failed_entity_ids: Vec<super::storage::EntityId>,
+    /// Per-pass GPU elapsed time in milliseconds (#1194 /
+    /// PERF-DIM7-INSTR). One `MAX_FRAMES_IN_FLIGHT` cycle behind the
+    /// frame the stats were filled on — that's the pipeline lag
+    /// between writing TIMESTAMPs and reading them after the
+    /// frame's fence signals. Zero when the driver lacks
+    /// `timestampComputeAndGraphics` OR before the first complete
+    /// pipelined cycle OR when the corresponding bracket didn't run
+    /// (skin section skipped, TAA disabled, etc.).
+    pub gpu_skin_dispatch_ms: f32,
+    pub gpu_skin_blas_refit_ms: f32,
+    pub gpu_taa_ms: f32,
 }
 
 impl Resource for SkinCoverageStats {}
@@ -1021,6 +1038,36 @@ mod tests {
             ..Default::default()
         };
         assert!(!cov.fully_covered());
+    }
+
+    /// #1194 / PERF-DIM7-INSTR — `dispatches_skipped` + GPU timer
+    /// fields are new this commit. Pin: they default to zero and
+    /// don't affect `fully_covered` (the green-bar only reads
+    /// dispatch/refit counters). Future PERF-DIM7-01 / -02 / -03
+    /// fixes will increment `dispatches_skipped` and read the GPU
+    /// timer values; this test guards them against accidental
+    /// removal from the struct.
+    #[test]
+    fn skin_coverage_dim7_instr_fields_default_to_zero_and_dont_break_green_bar() {
+        let cov = SkinCoverageStats {
+            dispatches_total: 10,
+            refits_succeeded: 10,
+            dispatches_skipped: 4, // some entities elided this frame
+            gpu_skin_dispatch_ms: 1.234,
+            gpu_skin_blas_refit_ms: 2.345,
+            gpu_taa_ms: 0.456,
+            ..Default::default()
+        };
+        assert!(
+            cov.fully_covered(),
+            "instrumentation fields must not gate the green-bar — \
+             dispatches_skipped is a positive signal (work elided), \
+             not a regression",
+        );
+        assert_eq!(cov.dispatches_skipped, 4);
+        assert!((cov.gpu_skin_dispatch_ms - 1.234).abs() < 1e-6);
+        assert!((cov.gpu_skin_blas_refit_ms - 2.345).abs() < 1e-6);
+        assert!((cov.gpu_taa_ms - 0.456).abs() < 1e-6);
     }
 
     #[test]

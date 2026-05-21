@@ -11,6 +11,7 @@ pub mod debug;
 pub mod descriptors;
 pub mod device;
 pub mod gbuffer;
+pub mod gpu_timers;
 pub mod instance;
 pub mod material;
 pub mod pipeline;
