@@ -72,7 +72,10 @@ pub(crate) fn finish_partial_import(
 
     let crate::streaming::PartialNifImport {
         scene,
-        bsx: _,
+        // #1214 — surface BSXFlags onto the cache entry so the spawn
+        // site can attach a `BSXFlags` ECS row on the placement root.
+        // Pre-#1214 this field was discarded.
+        bsx,
         lights,
         particle_emitters,
         embedded_clip,
@@ -112,6 +115,11 @@ pub(crate) fn finish_partial_import(
         // Partial NIFs are decoded from streamed bytes — no SpeedTree
         // placeholder path runs through here, so no billboard mode.
         placement_root_billboard: None,
+        // #1214 — BSXFlags surfaced from the streaming partial. The
+        // editor-marker bit (0x20) is filtered upstream at line 53;
+        // any cached entry reaching here either has the bit clear OR
+        // the partial reader skipped the filter (mod content).
+        bsx_flags: bsx,
     });
 
     let freed_clip_handles = {

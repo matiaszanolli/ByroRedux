@@ -7,6 +7,7 @@
 //! and committing the per-cell NifImportRegistry deltas.
 
 use byroredux_core::ecs::{BillboardMode, GlobalTransform, LightSource, Transform, World};
+use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
@@ -550,6 +551,21 @@ pub(super) fn load_references(
                     .clip_handle_for(&cache_key)
             });
 
+            // #1212 / D1-NEW-01 — build the placement FormIdPair so the
+            // spawn site can attach a `FormIdComponent` on the placement
+            // root. Plugin lookup uses `placed_ref.form_id` against the
+            // load-order map (master + DLC + mod chain post-#445 remap).
+            // Unresolved plugin → "Engine.esm" placeholder so the
+            // intern still succeeds; the placement form-id itself is
+            // the unique key callers consume via `find_by_form_id`.
+            let placement_pair = {
+                let plugin_name =
+                    plugin_for_form_id(placed_ref.form_id, load_order).unwrap_or("Engine.esm");
+                FormIdPair {
+                    plugin: PluginId::from_filename(plugin_name),
+                    local: LocalFormId(placed_ref.form_id),
+                }
+            };
             let count = spawn_placed_instances(
                 world,
                 ctx,
@@ -563,6 +579,7 @@ pub(super) fn load_references(
                 clip_handle,
                 stat.record_type.render_layer(),
                 Some(cache_key.as_str()),
+                Some(placement_pair),
             );
             entity_count += count;
         }
@@ -886,6 +903,13 @@ fn parse_and_import_nif(
         // placement root, so we'd need a "which node corresponds to the
         // REFR placement" heuristic. Tracked alongside #994.
         placement_root_billboard: None,
+        // #1214 / D1-NEW-03 — surface the BSXFlags bits on the cache
+        // entry so the spawn site can attach a `BSXFlags` ECS row on
+        // the placement root. The editor-marker bit (0x20) is consumed
+        // above as an early-return; the remaining bits (havok-managed,
+        // ragdoll, articulated, externally-emitted-particles, etc.)
+        // ride through to the ECS for downstream consumers.
+        bsx_flags: bsx,
     }))
 }
 
@@ -1009,6 +1033,9 @@ fn parse_and_import_spt(
         particle_emitters: Vec::new(),
         embedded_clip: None,
         placement_root_billboard,
+        // SpeedTree `.spt` files carry no BSXFlags — they're a
+        // separate format outside the NIF block hierarchy. #1214.
+        bsx_flags: 0,
     }))
 }
 

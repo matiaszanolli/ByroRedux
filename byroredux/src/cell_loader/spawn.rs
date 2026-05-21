@@ -6,10 +6,12 @@
 //! `placement_root` parent. Driven by `load_references`; called once
 //! per placement at cell load time.
 
+use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::{
-    Billboard, GlobalTransform, LightSource, Material, MeshHandle, ParticleEmitter, TextureHandle,
-    Transform, World,
+    BSXFlags, Billboard, GlobalTransform, LightSource, LocalBound, Material, MeshHandle,
+    ParticleEmitter, TextureHandle, Transform, World,
 };
+use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
@@ -117,6 +119,18 @@ pub(super) fn spawn_placed_instances(
     // the unescalated base layer.
     base_layer: byroredux_core::ecs::components::RenderLayer,
     mesh_cache_key: Option<&str>,
+    // #1212 / D1-NEW-01 — placement form-id (placement-level identity,
+    // distinct from `base_form_id` of the referenced base record). When
+    // `Some`, the spawn site interns via `FormIdPool` and attaches a
+    // `FormIdComponent` to the placement root so `World::find_by_form_id`
+    // / debug-server `prid <fid>` / Papyrus `ObjectReference` lookups
+    // resolve to the entity. Pre-#1212 every cell-loaded REFR was
+    // invisible to those code paths.
+    //
+    // `None` is the precombined-spawn path (`precombined.rs`) — bake
+    // artifacts have no placement-level identity. Loose-NIF (single-NIF
+    // CLI view) also passes `None`.
+    placement_form_id_pair: Option<FormIdPair>,
 ) -> usize {
     use byroredux_core::ecs::{Name, Parent};
     use byroredux_renderer::Vertex;
@@ -151,6 +165,23 @@ pub(super) fn spawn_placed_instances(
     // Without this insertion `.spt` REFRs render as static quads.
     if let Some(mode) = cached.placement_root_billboard {
         world.insert(placement_root, Billboard::new(mode));
+    }
+    // #1212 / D1-NEW-01 — attach FormIdComponent so console / Papyrus /
+    // debug-server can locate this REFR by its placement form-id. The
+    // FormIdPool intern is a single write-lock per REFR; for cell loads
+    // measuring at 800–1000 REFRs (Megaton / Diamond City), the cost is
+    // dominated by the StringPool intern (#882) one level above this.
+    if let Some(pair) = placement_form_id_pair {
+        let fid = world.resource_mut::<FormIdPool>().intern(pair);
+        world.insert(placement_root, FormIdComponent(fid));
+    }
+    // #1214 / D1-NEW-03 — attach BSXFlags on the placement root when
+    // the NIF authored them. Editor-marker bit (0x20) is filtered at
+    // parse time (`references.rs:840`), so any cached entry reaching
+    // here either has the bit clear OR comes from a `.spt` /
+    // generated path with `bsx_flags = 0`.
+    if cached.bsx_flags != 0 {
+        world.insert(placement_root, BSXFlags(cached.bsx_flags));
     }
     // Pre-compute how many NIF lights will actually spawn. The
     // ESM-fallback gate at the bottom of this function uses this
@@ -640,6 +671,28 @@ pub(super) fn spawn_placed_instances(
         world.insert(
             entity,
             GlobalTransform::new(final_pos, final_rot, final_scale),
+        );
+        // #1213 / D1-NEW-02 — seed LocalBound from the mesh-local
+        // bounding sphere (`ImportedMesh.local_bound_center`,
+        // `.local_bound_radius`, both extracted by the NIF importer
+        // from `NiTriShapeData.center` / `BsTriShape.center` or
+        // computed from vertex positions). The bounds-propagation
+        // system at `byroredux/src/systems/bounds.rs:43-66` reads
+        // this row and produces a world-space `WorldBound` each
+        // frame; pre-#1213 no LocalBound row was ever inserted, so
+        // every WorldBound stayed at the component default (zero
+        // sphere) and downstream culling / RT-budget / cell-bounds
+        // consumers fell through to coarser approximations.
+        world.insert(
+            entity,
+            LocalBound::new(
+                Vec3::new(
+                    mesh.local_bound_center[0],
+                    mesh.local_bound_center[1],
+                    mesh.local_bound_center[2],
+                ),
+                mesh.local_bound_radius,
+            ),
         );
         // Parent/Children edge → embedded animation clip's subtree
         // walk discovers this mesh through `placement_root`.

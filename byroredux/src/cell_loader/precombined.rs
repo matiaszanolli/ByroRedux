@@ -174,6 +174,9 @@ pub(super) fn spawn_precombined_meshes(
             /* clip_handle = */ None,
             RenderLayer::Architecture,
             /* mesh_cache_key = */ Some(&path),
+            // Precombined entities are bake artifacts, not placed REFRs
+            // — no placement form-id. #1212.
+            /* placement_form_id_pair = */ None,
         );
         spawned += count;
     }

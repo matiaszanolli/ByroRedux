@@ -428,6 +428,12 @@ impl App {
         world.insert_resource(SelectedRef::default());
         world.insert_resource(InputState::default());
         world.insert_resource(StringPool::new());
+        // #1212 / D1-NEW-01 — FormIdPool is the intern table backing
+        // `FormIdComponent` and `World::find_by_form_id`. Every
+        // cell-loaded REFR's placement form-id interns through this
+        // pool at spawn time so console (`prid <fid>`), debug-server,
+        // and future Papyrus `ObjectReference` lookups all resolve.
+        world.insert_resource(byroredux_core::form_id::FormIdPool::new());
         world.insert_resource(AnimationClipRegistry::new());
         world.insert_resource(NameIndex::new());
         world.insert_resource(SubtreeCache::new());

@@ -62,6 +62,12 @@ pub(crate) struct CachedNifImport {
     /// currently leaves this `None` (see #994 — NIF cell-loader has
     /// the same gap, deferred).
     pub(super) placement_root_billboard: Option<BillboardMode>,
+    /// `BSXFlags` bits authored on the NIF root (havok-managed,
+    /// ragdoll, editor-marker, articulated, etc.). Captured at parse
+    /// time so the spawn site can attach a `BSXFlags` ECS row on the
+    /// placement root without re-reading the scene. See #1214 /
+    /// D1-NEW-03. `0` when the NIF authors no BSXFlags.
+    pub(super) bsx_flags: u32,
 }
 
 /// Process-lifetime cache of parsed-and-imported NIF scenes keyed by
