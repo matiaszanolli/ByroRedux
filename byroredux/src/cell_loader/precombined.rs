@@ -100,6 +100,24 @@ pub(super) fn spawn_precombined_meshes(
         };
 
         let cached = if let Some(c) = cached {
+            // #1217 / D2 FIND-3 — cache-hit on a zero-mesh entry surfaces
+            // post-mortem visibility for the CSG-deferred fallback. The
+            // first cache MISS fires the zero-contribution warn in
+            // `parse_and_import_nif` (#1215); subsequent cells re-using
+            // the same `_oc.nif` path hit this branch and skip the
+            // warn site. Without this debug line an operator only
+            // sees the first occurrence per process.
+            if c.meshes.is_empty()
+                && c.collisions.is_empty()
+                && c.lights.is_empty()
+            {
+                log::debug!(
+                    "PreCombined cache hit on zero-mesh entry: '{}' \
+                     (cell {:08X}) — CSG-deferred fallback",
+                    path,
+                    cell.form_id,
+                );
+            }
             c
         } else {
             // Cache miss — extract + parse + import + commit. Use the

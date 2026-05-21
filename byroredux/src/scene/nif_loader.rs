@@ -219,6 +219,20 @@ pub(super) fn parse_import_and_merge(
             merge_bgsm_into_mesh(mesh, provider, &mut pool);
         }
     }
+    // #1215 / D2 FIND-1 — sibling of the cell-loader zero-contribution
+    // warn at `cell_loader/references.rs:885+`. A loose NIF that parses
+    // cleanly but yields zero meshes is almost always either a CSG-
+    // deferred precombined `_oc.nif` (the user passing one directly via
+    // `--mesh meshes\precombined\...`) or a malformed scene. Surface
+    // it so `cargo run -- --bsa ... --mesh ...` debug sessions don't
+    // hit a silent empty render.
+    if imported.meshes.is_empty() {
+        log::warn!(
+            "NIF '{}' imported with zero meshes — likely CSG-deferred \
+             (`_oc.nif` Shared variant, #1188) or pure marker scene",
+            label,
+        );
+    }
     Some(imported)
 }
 

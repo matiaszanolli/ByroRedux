@@ -892,6 +892,27 @@ fn parse_and_import_nif(
             clip.bool_channels.len(),
         );
     }
+    // #1215 / D2 FIND-1 — surface zero-contribution imports loudly. A
+    // NIF that parses cleanly but yields no meshes / collisions / lights /
+    // emitters / clips is almost always either a CSG-deferred precombined
+    // `_oc.nif` (Shared variant, geometry in companion `.csg` blob —
+    // #1188) or a malformed scene. Pre-#1215 these were silently
+    // returned as empty `CachedNifImport` entries and the operator
+    // hit a "props in a void" symptom downstream with no log clue.
+    // The fix is observability-only — cache invariants unchanged.
+    if meshes.is_empty()
+        && collisions.is_empty()
+        && lights.is_empty()
+        && particle_emitters.is_empty()
+        && embedded_clip.is_none()
+    {
+        log::warn!(
+            "NIF '{}' imported with zero meshes / collisions / lights / \
+             emitters / clips — likely CSG-deferred (`_oc.nif` Shared \
+             variant, #1188) or pure marker scene",
+            label,
+        );
+    }
     Some(Arc::new(CachedNifImport {
         meshes,
         collisions,

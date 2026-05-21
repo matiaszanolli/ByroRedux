@@ -361,6 +361,29 @@ impl BsTriShape {
 
         let nv_u32 = num_vertices as u32;
         let is_skinned = vertex_attrs & VF_SKINNED != 0;
+        // #1216 / D2 FIND-2 — surface "no inline geometry + not a known
+        // sister-block carrier" cases at debug level. The parser can't
+        // see the walker-time context (was this shape under a
+        // BSPackedCombinedGeomDataExtra-bearing NiNode? a sister
+        // NiSkinPartition?) so the log records the AMBIGUOUS case and
+        // leaves disambiguation to whoever's reading the logs:
+        //  * FO4 precombined Shared variant (CSG-deferred, #1188) — expected.
+        //  * SSE skinned body (data on `NiSkinPartition`, #559) —
+        //    expected, filtered by `is_skinned`.
+        //  * Genuinely malformed shape — needs investigation.
+        // Surfaced via `RUST_LOG=byroredux_nif=debug`; `nif_stats` can
+        // grep the resulting log for per-archive counts. See audit
+        // memory: not raised to warn because vanilla FO4 ships 124,871
+        // legitimate zero-vertex shapes that would flood the default log.
+        if num_vertices == 0 && data_size == 0 && !is_skinned {
+            log::debug!(
+                "BSTriShape zero-vertex non-skinned shape \
+                 (num_triangles={}, vertex_desc=0x{:016x}) — either CSG-deferred \
+                 (`_oc.nif` Shared variant, #1188) or malformed",
+                num_triangles,
+                vertex_desc,
+            );
+        }
         // FO4 precombined LOD chunks (the dominant pattern in
         // `Fallout4 - MeshesExtra.ba2`) ship with `data_size == 0` and
         // non-trivial `num_vertices` / `num_triangles` — the actual
