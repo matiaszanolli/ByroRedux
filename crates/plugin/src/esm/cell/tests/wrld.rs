@@ -167,6 +167,136 @@ fn parse_wrld_captures_derived_worldspace_parent_link() {
     assert_eq!(se.usable_cell_bounds(), Some(((-10, -10), (10, 10))));
 }
 
+/// Build a synthetic CELL record (24-byte FNV/Skyrim header) from a
+/// sub-record list. Mirrors `build_wrld_record`'s shape; broken out
+/// so #1220's exterior precombined test can drop a CELL inside a
+/// WRLD-children group.
+fn build_cell_record(form_id: u32, subs: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+    let mut sub_data = Vec::new();
+    for (ty, payload) in subs {
+        put_sub(&mut sub_data, ty, payload);
+    }
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+    buf.extend_from_slice(&form_id.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]); // timestamp + VC + unknown
+    buf.extend_from_slice(&sub_data);
+    buf
+}
+
+/// Wrap a buffer in a GRUP-world-children header (group_type=1). The
+/// `wrld_form_id` becomes the group label per ESM convention — the
+/// walker uses this to bind the children back to their parent WRLD.
+fn build_world_children_group(wrld_form_id: u32, payload: &[u8]) -> Vec<u8> {
+    let mut group = Vec::new();
+    group.extend_from_slice(b"GRUP");
+    group.extend_from_slice(&((24 + payload.len()) as u32).to_le_bytes());
+    group.extend_from_slice(&wrld_form_id.to_le_bytes()); // label = parent WRLD form id
+    group.extend_from_slice(&1u32.to_le_bytes()); // group_type = 1 (world children)
+    group.extend_from_slice(&[0u8; 8]); // timestamp + VC
+    group.extend_from_slice(payload);
+    group
+}
+
+/// #1220 / D3-NEW-01 regression — exterior CELL XCRI + XPRI sub-records
+/// must populate `precombined_mesh_hashes` + `absorbed_refs`. Pre-fix
+/// the exterior walker hardcoded both to empty on the wrong premise
+/// that FO4 precombines are interior-only. The fix lifts the same
+/// match arms used by the interior walker; this test pins the
+/// behaviour against drift.
+#[test]
+fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
+    let wrld_fid: u32 = 0x0000_003C;
+    let cell_fid: u32 = 0x0001_2345;
+
+    // XCLC: grid (x, y) = (0, 0) for a Sanctuary-shaped tile.
+    let xclc = {
+        let mut v = Vec::with_capacity(8);
+        v.extend_from_slice(&0i32.to_le_bytes());
+        v.extend_from_slice(&0i32.to_le_bytes());
+        v
+    };
+    // XCRI: 2 mesh hashes + 3 visibility-group refs. Layout matches
+    // `walkers.rs:158-190` exactly: u32 mesh_count + u32 ref_count +
+    // mesh_count × u32 hashes + ref_count × u32 visibility refs (tail
+    // intentionally NOT consumed into absorbed_refs).
+    let xcri = {
+        let mut v = Vec::with_capacity(8 + 2 * 4 + 3 * 4);
+        v.extend_from_slice(&2u32.to_le_bytes()); // mesh_count
+        v.extend_from_slice(&3u32.to_le_bytes()); // ref_count (visibility group)
+        v.extend_from_slice(&0xDEAD_BEEF_u32.to_le_bytes()); // hash 0
+        v.extend_from_slice(&0xCAFE_BABE_u32.to_le_bytes()); // hash 1
+        v.extend_from_slice(&0x0100_0001_u32.to_le_bytes()); // vis-group ref (NOT absorbed)
+        v.extend_from_slice(&0x0100_0002_u32.to_le_bytes());
+        v.extend_from_slice(&0x0100_0003_u32.to_le_bytes());
+        v
+    };
+    // XPRI: 2 REFR formids that MUST land in absorbed_refs.
+    let xpri = {
+        let mut v = Vec::with_capacity(2 * 4);
+        v.extend_from_slice(&0x0200_0001_u32.to_le_bytes());
+        v.extend_from_slice(&0x0200_0002_u32.to_le_bytes());
+        v
+    };
+
+    let cell = build_cell_record(
+        cell_fid,
+        &[
+            (b"EDID", b"SanctuaryTile00\0".to_vec()),
+            (b"XCLC", xclc),
+            (b"XCRI", xcri),
+            (b"XPRI", xpri),
+        ],
+    );
+    let children = build_world_children_group(wrld_fid, &cell);
+
+    let wrld = build_wrld_record(
+        wrld_fid,
+        &[(b"EDID", b"Commonwealth\0".to_vec())],
+    );
+
+    // Layout the WRLD-GRUP payload as [WRLD record] + [children GRUP].
+    let mut wrld_grup_payload = Vec::new();
+    wrld_grup_payload.extend_from_slice(&wrld);
+    wrld_grup_payload.extend_from_slice(&children);
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"GRUP");
+    buf.extend_from_slice(&((24 + wrld_grup_payload.len()) as u32).to_le_bytes());
+    buf.extend_from_slice(b"WRLD"); // label
+    buf.extend_from_slice(&0u32.to_le_bytes()); // group_type = 0 (top-level)
+    buf.extend_from_slice(&[0u8; 8]); // timestamp + VC
+    buf.extend_from_slice(&wrld_grup_payload);
+
+    let (_worldspaces, _climates, exterior) = parse_synthetic_wrld(&buf);
+    let commonwealth = exterior
+        .get("commonwealth")
+        .expect("Commonwealth WRLD's children must be indexed");
+    let cell = commonwealth
+        .get(&(0, 0))
+        .expect("Sanctuary (0,0) exterior CELL must be decoded");
+
+    assert_eq!(
+        cell.precombined_mesh_hashes,
+        vec![0xDEAD_BEEF, 0xCAFE_BABE],
+        "exterior XCRI must populate precombined_mesh_hashes (pre-#1220 was always empty)",
+    );
+    assert_eq!(
+        cell.absorbed_refs.len(),
+        2,
+        "exterior XPRI must populate absorbed_refs (pre-#1220 was always empty)",
+    );
+    assert!(cell.absorbed_refs.contains(&0x0200_0001));
+    assert!(cell.absorbed_refs.contains(&0x0200_0002));
+    // Visibility-group refs (XCRI tail) must NOT leak into absorbed_refs —
+    // that was the regression from #1188 first-iteration where Dugout
+    // Inn's bar / couch / lamps went invisible.
+    assert!(!cell.absorbed_refs.contains(&0x0100_0001));
+    assert!(!cell.absorbed_refs.contains(&0x0100_0002));
+    assert!(!cell.absorbed_refs.contains(&0x0100_0003));
+}
+
 #[test]
 fn parse_wrld_truncated_payloads_default_safely() {
     // Defensive: a 1-byte PNAM (pre-Skyrim variant), an empty DATA,

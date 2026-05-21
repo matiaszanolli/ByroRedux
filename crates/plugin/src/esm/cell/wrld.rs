@@ -245,6 +245,21 @@ pub(crate) fn parse_wrld_children(
                 // LGTM/CLMT instead. Parse cross-game so modded
                 // exterior cells in any era still surface the override.
                 let mut regional_color_override: Option<[u8; 3]> = None;
+                // #1220 / D3-NEW-01 — FO4+ PreCombined Mesh references
+                // on EXTERIOR cells. Commonwealth open-world tiles
+                // (Concord, Sanctuary Hills, Boston, Diamond City
+                // Marketplace) ship per-tile precombined NIFs — this
+                // is FO4's headline performance feature, and the
+                // vast majority of the 124,871 entries in
+                // `Fallout4 - MeshesExtra.ba2` are exterior tiles.
+                // Pre-#1220 the exterior walker hardcoded empty,
+                // masquerading as "interior-only"; that left the
+                // optimisation unreachable for the cells it was
+                // designed for. Sub-record layout mirrors the
+                // interior path verbatim — see `walkers.rs:158-204`.
+                let mut precombined_mesh_hashes: Vec<u32> = Vec::new();
+                let mut absorbed_refs: std::collections::HashSet<u32> =
+                    std::collections::HashSet::new();
 
                 for sub in &subs {
                     match &sub.sub_type {
@@ -318,6 +333,58 @@ pub(crate) fn parse_wrld_children(
                             regional_color_override =
                                 Some([sub.data[0], sub.data[1], sub.data[2]]);
                         }
+                        // #1220 / D3-NEW-01 — XCRI: FO4+ PreCombined
+                        // Mesh hash list + visibility-group tail.
+                        // Layout exact mirror of the interior walker
+                        // at `walkers.rs:158-190`. The `ref_count`
+                        // tail is the visibility group, NOT the
+                        // skip-placement set — that's XPRI's job.
+                        b"XCRI" if sub.data.len() >= 8 => {
+                            let mesh_count =
+                                u32::from_le_bytes(sub.data[0..4].try_into().unwrap()) as usize;
+                            let ref_count =
+                                u32::from_le_bytes(sub.data[4..8].try_into().unwrap()) as usize;
+                            let expected =
+                                8 + mesh_count.saturating_mul(4) + ref_count.saturating_mul(4);
+                            if expected != sub.data.len() {
+                                log::warn!(
+                                    "CELL {:08X} XCRI size mismatch: hdr={}+{} expected_payload={} \
+                                     actual={} — skipping",
+                                    header.form_id,
+                                    mesh_count,
+                                    ref_count,
+                                    expected,
+                                    sub.data.len(),
+                                );
+                            } else {
+                                precombined_mesh_hashes.reserve(mesh_count);
+                                let mut off = 8;
+                                for _ in 0..mesh_count {
+                                    let h = u32::from_le_bytes(
+                                        sub.data[off..off + 4].try_into().unwrap(),
+                                    );
+                                    precombined_mesh_hashes.push(h);
+                                    off += 4;
+                                }
+                                // Visibility-group tail intentionally
+                                // not consumed — see XPRI below.
+                            }
+                        }
+                        // #1220 / D3-NEW-01 — XPRI: REFR formids
+                        // absorbed into the precombines. The cell
+                        // loader honours this set only when the
+                        // precombined-spawn pass produced > 0
+                        // entities (conditional-absorption gate in
+                        // `load.rs:170` for interiors; exterior
+                        // wiring lands separately under #1221).
+                        b"XPRI" if sub.data.len() % 4 == 0 => {
+                            absorbed_refs.reserve(sub.data.len() / 4);
+                            for chunk in sub.data.chunks_exact(4) {
+                                let fid =
+                                    u32::from_le_bytes(chunk.try_into().unwrap());
+                                absorbed_refs.insert(fid);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -351,14 +418,19 @@ pub(crate) fn parse_wrld_children(
                             lighting_template_form,
                             ownership,
                             regional_color_override,
-                            // Exterior cells don't author XCRI / XPRI
-                            // (FO4 precombines are interior-only in
-                            // vanilla; mod content rare). Empty here
-                            // is safe — the cell loader skips the
-                            // precombined-spawn step when both are
-                            // empty. #1188.
-                            precombined_mesh_hashes: Vec::new(),
-                            absorbed_refs: std::collections::HashSet::new(),
+                            // #1220 / D3-NEW-01 — FO4+ PreCombined Mesh
+                            // refs on exterior cells. The cell loader's
+                            // conditional-absorption gate ties XPRI
+                            // honour-vs-ignore to the precombined-spawn
+                            // count; exterior call-site wiring lands
+                            // separately under #1221. Until then these
+                            // fields are populated but the exterior
+                            // loader doesn't yet invoke the
+                            // precombined-spawn pass, so the absorbed
+                            // set is effectively dormant (REFRs render
+                            // as before).
+                            precombined_mesh_hashes,
+                            absorbed_refs,
                         },
                     );
                     current_cell = Some(g);
