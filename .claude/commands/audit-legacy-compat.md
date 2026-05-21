@@ -34,6 +34,11 @@ Identify gaps that block NIF loading, animation playback, or content rendering.
 - Gamebryo has 12 NiProperty types (alpha, texturing, material, zbuffer, etc.)
 - Which map to Vulkan pipeline state vs per-object components?
 - Is there a Material component in Redux?
+- **NiFogProperty is parsed but intentionally not dispatched** (#1224 / D4-NEW-02
+  closeout). Per-node fog override has no landing site on `Material` and the
+  renderer's fog path reads cell-scope `CellLighting` only; observed corpus is
+  1 vanilla FO3 block. Do not re-file as a finding — see `walker.rs` near the
+  end of `extract_material_info` for the deliberate-skip comment.
 
 ### 5. Animation Readiness
 - Gamebryo: NiTimeController → NiInterpolator → keyframes

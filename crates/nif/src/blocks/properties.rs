@@ -477,6 +477,19 @@ impl NiTexturingProperty {
 /// nif.xml: NiProperty → NiObjectNET → NiObject.
 /// NiProperty.Flags (until 10.0.1.2) NOT present in FO3+.
 /// Own field: FogFlags (u16) + fog_depth (f32) + fog_color (Color3).
+///
+/// **Parsed but not consumed downstream** (#1224 / D4-NEW-02). The
+/// material walker at `crates/nif/src/import/material/walker.rs` has
+/// no `get_as::<NiFogProperty>` arm: per-node fog overrides have no
+/// landing site on the `Material` ECS component (which carries no
+/// fog field), and the renderer's fog logic reads cell-scope
+/// `CellLighting.fog_*` exclusively. Adding a per-node fog path would
+/// require a new component AND a fragment-shader branch for an
+/// observed corpus of 1 block in vanilla FO3 — accepted as a
+/// deliberate gap. The 2026-04-30 audit's claim that NiFog was
+/// "wired into the material pipeline (#558 / #607)" was inaccurate:
+/// #558 / #607 covered the per-node generic fog ENABLE bit on
+/// inherited-property chains, not the NiFogProperty record itself.
 #[derive(Debug)]
 pub struct NiFogProperty {
     pub net: NiObjectNETData,

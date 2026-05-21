@@ -889,6 +889,19 @@ pub(crate) fn extract_material_info_from_refs(
             info.vertex_color_mode =
                 VertexColorMode::from_property(vcol.vertex_mode, vcol.lighting_mode);
         }
+
+        // #1224 / D4-NEW-02 — NiFogProperty is parsed (see
+        // `crates/nif/src/blocks/properties.rs::NiFogProperty`) but
+        // intentionally NOT dispatched here. Per-node fog overrides
+        // have no landing site on the `Material` ECS component, and
+        // the renderer's fog path reads cell-scope `CellLighting`
+        // exclusively. Adding a per-node fog component + shader
+        // branch for an observed corpus of 1 block in vanilla FO3
+        // is not justified. Documented so future audits don't refile
+        // the gap. The 2026-04-30 audit's claim that NiFog was
+        // "wired (#558 / #607)" referred to the per-node fog ENABLE
+        // bit on inherited-property chains, not the NiFogProperty
+        // record itself.
     }
 
     // Zero out specular strength **and color** when the property is
