@@ -1344,3 +1344,187 @@ fn clas_oblivion_knight_against_vanilla() {
         with_primaries,
     );
 }
+
+// ── #1181 / FO4-D4-004 — unconditional FO4-architecture fixture ─────────
+//
+// `parse_rate_fo4_esm` above is `#[ignore]`-gated because it needs the
+// real Fallout4.esm. CI without game data skips it, so the
+// five-map regression net (`texture_sets` / `scols` / `packins` /
+// `movables` / `material_swaps` floors in `EsmIndex::categories()`)
+// only fires on opt-in. A refactor that silently empties one of those
+// maps would not surface in default CI.
+//
+// This test builds a synthetic Fallout4-shape ESM in-memory — a TES4
+// header with HEDR version 1.0 (the FO4 dispatch band per
+// `reader.rs::GameKind::from_header`) followed by minimal SCOL / PKIN /
+// TXST / MSWP records. After `parse_esm` it asserts each typed map has
+// at least one entry. MOVS is omitted because vanilla Fallout4.esm
+// ships zero MOVS records — the dispatch arm is exercised by the
+// `parse_rate_fo4_esm` ignored-test (which still pins MOVS == 0).
+//
+// See audit `docs/audits/AUDIT_FO4_2026-05-18.md` D4-004 + #819 (real-
+// data harness) + #817 (five-map exposure).
+
+/// Build a 24-byte-header record (`typ`, `form_id`, sub-record list).
+/// Mirrors the helper in `crates/plugin/src/esm/records/tests.rs`
+/// (private to the unit-test cfg); duplicated here so this integration
+/// test stays self-contained.
+fn fixture_build_record(typ: &[u8; 4], form_id: u32, subs: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+    let mut sub_data = Vec::new();
+    for (st, data) in subs {
+        sub_data.extend_from_slice(*st);
+        sub_data.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(data);
+    }
+    let mut buf = Vec::new();
+    buf.extend_from_slice(typ);
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+    buf.extend_from_slice(&form_id.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]); // timestamp + VC + unknown
+    buf.extend_from_slice(&sub_data);
+    buf
+}
+
+/// Wrap a record payload in a top-level GRUP (`label`, group_type = 0).
+fn fixture_wrap_top_group(label: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    let total = 24 + payload.len();
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"GRUP");
+    buf.extend_from_slice(&(total as u32).to_le_bytes());
+    buf.extend_from_slice(label);
+    buf.extend_from_slice(&0u32.to_le_bytes()); // group_type = 0 (top-level)
+    buf.extend_from_slice(&[0u8; 8]); // timestamp + VC
+    buf.extend_from_slice(payload);
+    buf
+}
+
+/// Build a TES4 file header with HEDR version 1.0 — the FO4 dispatch
+/// band per `reader.rs::GameKind::from_header` (`0.98..=1.04` →
+/// `Fallout4`).
+fn fixture_build_fo4_tes4() -> Vec<u8> {
+    let mut hedr = Vec::new();
+    hedr.extend_from_slice(b"HEDR");
+    hedr.extend_from_slice(&12u16.to_le_bytes());
+    hedr.extend_from_slice(&1.0f32.to_le_bytes()); // FO4 version
+    hedr.extend_from_slice(&4u32.to_le_bytes()); // record_count (informational)
+    hedr.extend_from_slice(&0u32.to_le_bytes()); // next_object_id
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"TES4");
+    buf.extend_from_slice(&(hedr.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+    buf.extend_from_slice(&0u32.to_le_bytes()); // form_id
+    buf.extend_from_slice(&[0u8; 8]); // padding
+    buf.extend_from_slice(&hedr);
+    buf
+}
+
+#[test]
+fn parse_fo4_architecture_fixture_populates_typed_maps() {
+    // SCOL: empty subs still inserts (parse_scol_group has no record-
+    // contents condition on the insert). Minimal EDID makes the fixture
+    // realistic + survives the StaticObject `editor_id.is_empty()` gate.
+    let scol = fixture_build_record(
+        b"SCOL",
+        0x0010_0001,
+        &[(b"EDID", b"TestScol\0")],
+    );
+    let scol_group = fixture_wrap_top_group(b"SCOL", &scol);
+
+    // PKIN: same shape — EDID + the unconditional `packins.insert`.
+    let pkin = fixture_build_record(
+        b"PKIN",
+        0x0020_0001,
+        &[(b"EDID", b"TestPkin\0")],
+    );
+    let pkin_group = fixture_wrap_top_group(b"PKIN", &pkin);
+
+    // TXST: needs at least one TX00..TX07 or MNAM so the parsed
+    // `TextureSet` differs from `default()` — the walker's insert gate
+    // at `cell/support.rs:290` skips records that produce a default-
+    // valued set.
+    let txst = fixture_build_record(
+        b"TXST",
+        0x0030_0001,
+        &[
+            (b"EDID", b"TestTxst\0"),
+            (b"TX00", b"textures/test/diffuse.dds\0"),
+        ],
+    );
+    let txst_group = fixture_wrap_top_group(b"TXST", &txst);
+
+    // MSWP: unconditional insert in `parse_mswp_group`.
+    let mswp = fixture_build_record(
+        b"MSWP",
+        0x0040_0001,
+        &[(b"EDID", b"TestMswp\0")],
+    );
+    let mswp_group = fixture_wrap_top_group(b"MSWP", &mswp);
+
+    // Assemble the synthetic ESM: TES4 header + the four top-level
+    // GRUPs in any order. Walker dispatches by GRUP label so order is
+    // free — pick the same as vanilla (TXST → SCOL → PKIN → MSWP) for
+    // readability.
+    let mut esm = fixture_build_fo4_tes4();
+    esm.extend_from_slice(&txst_group);
+    esm.extend_from_slice(&scol_group);
+    esm.extend_from_slice(&pkin_group);
+    esm.extend_from_slice(&mswp_group);
+
+    let index = parse_esm(&esm).expect("parse synthetic FO4 fixture");
+
+    // HEDR → GameKind: 1.0 falls in the (0.98..=1.04) FO4 band.
+    assert_eq!(
+        index.game,
+        GameKind::Fallout4,
+        "synthetic HEDR=1.0 must classify as Fallout4 (got {:?})",
+        index.game,
+    );
+
+    // Five-map regression net floors (the actual #1181 contract).
+    // MOVS is intentionally omitted — vanilla ships zero MOVS records;
+    // the dispatch arm coverage lives in `parse_rate_fo4_esm`'s
+    // `assert_eq!(... movables.len(), 0)` pin.
+    assert!(
+        !index.cells.scols.is_empty(),
+        "SCOL dispatch arm dropped — `scols` map empty after parsing a \
+         synthetic SCOL record (#1181 / FO4-D4-004 net)",
+    );
+    assert!(
+        !index.cells.packins.is_empty(),
+        "PKIN dispatch arm dropped — `packins` map empty after parsing a \
+         synthetic PKIN record (#1181 / FO4-D4-004 net)",
+    );
+    assert!(
+        !index.cells.texture_sets.is_empty(),
+        "TXST dispatch arm dropped — `texture_sets` map empty after parsing \
+         a synthetic TXST record with TX00 populated (#1181 / FO4-D4-004 net)",
+    );
+    assert!(
+        !index.cells.material_swaps.is_empty(),
+        "MSWP dispatch arm dropped — `material_swaps` map empty after parsing \
+         a synthetic MSWP record (#1181 / FO4-D4-004 net)",
+    );
+
+    // Spot-check the form-IDs landed at the right keys — guards against
+    // a future refactor that inserts everything under the wrong map
+    // (e.g. SCOL → packins) which would still satisfy the non-empty
+    // floors above.
+    assert!(
+        index.cells.scols.contains_key(&0x0010_0001),
+        "SCOL form-id 0x00100001 not present in scols map",
+    );
+    assert!(
+        index.cells.packins.contains_key(&0x0020_0001),
+        "PKIN form-id 0x00200001 not present in packins map",
+    );
+    assert!(
+        index.cells.texture_sets.contains_key(&0x0030_0001),
+        "TXST form-id 0x00300001 not present in texture_sets map",
+    );
+    assert!(
+        index.cells.material_swaps.contains_key(&0x0040_0001),
+        "MSWP form-id 0x00400001 not present in material_swaps map",
+    );
+}
