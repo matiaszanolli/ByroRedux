@@ -179,6 +179,10 @@ pub(super) fn emit_particles(
                 // #890 Stage 2 — particles never carry
                 // BSEffectShaderProperty flag bits.
                 effect_shader_flags: 0,
+                // #890 Stage 2c — particles never carry the greyscale
+                // palette LUT either; the bindless 0 slot signals
+                // "no LUT" in the shader.
+                greyscale_lut_index: 0,
                 is_water: false,
             };
             // #781 / PERF-N4 — dedup material payload.

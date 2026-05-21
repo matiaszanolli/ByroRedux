@@ -26,8 +26,8 @@ use crate::asset_provider::{
     resolve_texture, MaterialProvider, TextureProvider,
 };
 use crate::components::{
-    texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, ExtraTextureMaps, IsFxMesh, NormalMapHandle,
-    TwoSided,
+    texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle,
+    IsFxMesh, NormalMapHandle, TwoSided,
 };
 use crate::helpers::add_child;
 
@@ -835,6 +835,13 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 effect_shader_flags: crate::cell_loader::pack_effect_shader_flags(
                     mesh.effect_shader.as_ref(),
                 ) | crate::cell_loader::pack_bgsm_material_flags(mesh),
+                // #890 Stage 2c — BSEffectShaderProperty greyscale LUT
+                // path captured here; resolved to a bindless handle by
+                // `resolve_material_textures` at draw-build time.
+                greyscale_texture: mesh
+                    .effect_shader
+                    .as_ref()
+                    .and_then(|es| es.greyscale_texture.clone()),
             },
         );
         // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
@@ -856,6 +863,16 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             let h = resolve_texture(ctx, tex_provider, Some(dark_path.as_str()));
             if h != ctx.texture_registry.fallback() {
                 world.insert(entity, DarkMapHandle(h));
+            }
+        }
+        // #890 Stage 2c — BSEffectShaderProperty greyscale LUT. Mirrors
+        // the cell_loader::spawn site.
+        if let Some(ref lut_path) =
+            mesh.effect_shader.as_ref().and_then(|es| es.greyscale_texture.as_ref())
+        {
+            let h = resolve_texture(ctx, tex_provider, Some(lut_path.as_str()));
+            if h != ctx.texture_registry.fallback() {
+                world.insert(entity, GreyscaleLutHandle(h));
             }
         }
         // #399 — three NiTexturingProperty extra slots packed into one

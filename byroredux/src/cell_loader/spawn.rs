@@ -21,8 +21,8 @@ use crate::asset_provider::{
     resolve_texture, resolve_texture_with_clamp, TextureProvider,
 };
 use crate::components::{
-    texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, ExtraTextureMaps, IsFxMesh, NormalMapHandle,
-    TwoSided,
+    texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle,
+    IsFxMesh, NormalMapHandle, TwoSided,
 };
 
 use super::nif_import_registry::CachedNifImport;
@@ -411,6 +411,10 @@ pub(super) fn spawn_placed_instances(
         material_path: Option<String>,
         detail_map: Option<String>,
         dark_map: Option<String>,
+        /// #890 Stage 2c — BSEffectShaderProperty greyscale LUT path.
+        /// Skyrim+ only; `None` on every non-effect mesh and the
+        /// FO3/FNV BSShaderNoLightingProperty path.
+        greyscale_texture: Option<String>,
         name_sym: Option<byroredux_core::string::FixedString>,
     }
     fn resolve_to_owned(
@@ -450,6 +454,16 @@ pub(super) fn spawn_placed_instances(
                 // (no REFR-overlay path for these today).
                 let detail_map = resolve_to_owned(&pool, mesh.detail_map);
                 let dark_map = resolve_to_owned(&pool, mesh.dark_map);
+                // #890 Stage 2c — BSEffectShaderProperty greyscale LUT
+                // path. Lives on the nested `effect_shader` payload as
+                // `Option<String>` (not a `FixedString` because the
+                // importer captures it post-stopcond on the modern
+                // shader-property path, which already owns its
+                // resolved strings).
+                let greyscale_texture = mesh
+                    .effect_shader
+                    .as_ref()
+                    .and_then(|es| es.greyscale_texture.clone());
                 // Intern the mesh name in the same lock — see #882's
                 // second hotspot. `mesh.name: Option<Arc<str>>`. The
                 // `pool.intern` call must follow the resolves so the
@@ -467,6 +481,7 @@ pub(super) fn spawn_placed_instances(
                     material_path,
                     detail_map,
                     dark_map,
+                    greyscale_texture,
                     name_sym,
                 }
             })
@@ -597,6 +612,7 @@ pub(super) fn spawn_placed_instances(
         let eff_material_path = paths.material_path.clone();
         let eff_detail_map = paths.detail_map.clone();
         let eff_dark_map = paths.dark_map.clone();
+        let eff_greyscale_texture = paths.greyscale_texture.clone();
 
         // Load texture (shared resolve: cache → BSA → fallback).
         // #610 — pass the diffuse-slot `TexClampMode` so the bindless
@@ -794,6 +810,11 @@ pub(super) fn spawn_placed_instances(
                 // the GpuMaterial consumes.
                 effect_shader_flags: pack_effect_shader_flags(mesh.effect_shader.as_ref())
                     | super::pack_bgsm_material_flags(mesh),
+                // #890 Stage 2c — BSEffectShaderProperty greyscale LUT
+                // path. Resolved to a bindless handle below + attached
+                // as a `GreyscaleLutHandle` so the per-frame draw build
+                // can populate `GpuMaterial.greyscale_lut_index`.
+                greyscale_texture: eff_greyscale_texture.clone(),
             },
         );
         // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn
@@ -816,6 +837,16 @@ pub(super) fn spawn_placed_instances(
             let h = resolve_texture(ctx, tex_provider, Some(dark_path.as_str()));
             if h != ctx.texture_registry.fallback() {
                 world.insert(entity, DarkMapHandle(h));
+            }
+        }
+        // #890 Stage 2c — BSEffectShaderProperty greyscale LUT. Only
+        // attach the component when the path resolves to a real handle
+        // so the SparseSet stays small + the shader's `handle != 0`
+        // gate remains a meaningful disable signal.
+        if let Some(ref lut_path) = eff_greyscale_texture {
+            let h = resolve_texture(ctx, tex_provider, Some(lut_path.as_str()));
+            if h != ctx.texture_registry.fallback() {
+                world.insert(entity, GreyscaleLutHandle(h));
             }
         }
         // #399 — Resolve glow / detail / gloss texture handles. All three

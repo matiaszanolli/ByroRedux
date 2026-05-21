@@ -169,6 +169,14 @@ pub struct Material {
     /// `effect_falloff` slot but has no SLSF1/SLSF2 vocabulary).
     /// See #890 / SK-D4-NEW-04.
     pub effect_shader_flags: u32,
+    /// `BSEffectShaderProperty.greyscale_texture` path (Skyrim+) — the
+    /// 1D-as-2D colour palette LUT indexed by the source texture's
+    /// luminance when `EFFECT_PALETTE_COLOR` / `EFFECT_PALETTE_ALPHA`
+    /// are set. Captured at NIF importer ingestion; resolved to a
+    /// bindless texture handle by `cell_loader::resolve_material_textures`
+    /// and forwarded to `GpuMaterial.greyscale_lut_index` at draw build
+    /// time. `None` for every non-BSEffect mesh. See #890 Stage 2c.
+    pub greyscale_texture: Option<String>,
 }
 
 /// View-angle + soft-depth falloff cone captured from
@@ -252,6 +260,7 @@ impl Default for Material {
             shader_type_fields: None,
             effect_falloff: None,
             effect_shader_flags: 0,
+            greyscale_texture: None,
         }
     }
 }

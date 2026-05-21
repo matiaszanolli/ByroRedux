@@ -568,6 +568,7 @@ mod tests {
             material_id: 0,
             vertex_color_emissive: false,
             effect_shader_flags: 0,
+            greyscale_lut_index: 0,
             is_water,
         }
     }

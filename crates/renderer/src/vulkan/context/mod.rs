@@ -276,6 +276,16 @@ pub struct DrawCommand {
     /// per-bit re-encoding. `0` on every non-BSEffect mesh.
     /// See #890 Stage 2 / SK-D4-NEW-04.
     pub effect_shader_flags: u32,
+    /// Bindless handle for the `BSEffectShaderProperty.greyscale_texture`
+    /// palette LUT (#890 Stage 2c). `0` (the sentinel "missing texture"
+    /// slot) means "no LUT" — the shader treats it as a disable signal
+    /// even if `EFFECT_PALETTE_COLOR` / `EFFECT_PALETTE_ALPHA` are set,
+    /// matching legacy behaviour where greyscale-mapped meshes without
+    /// a valid LUT fall back to the raw source texture. Resolved by
+    /// `cell_loader::resolve_material_textures` from
+    /// `MaterialInfo::effect_shader::greyscale_texture`; populates
+    /// `GpuMaterial::greyscale_lut_index` 1:1 via `to_gpu_material`.
+    pub greyscale_lut_index: u32,
     /// `true` for water-surface entities — the triangle-pipeline path
     /// in `draw_frame` skips this command (only its `GpuInstance` SSBO
     /// slot is populated), and a parallel `WaterDrawCommand` in the
@@ -387,7 +397,7 @@ impl DrawCommand {
                 }
                 flags
             },
-            _pad_falloff: 0.0,
+            greyscale_lut_index: self.greyscale_lut_index,
         }
     }
 
@@ -502,6 +512,8 @@ impl DrawCommand {
         h.write_u32(self.effect_falloff[2].to_bits()); // start_opacity
         h.write_u32(self.effect_falloff[3].to_bits()); // stop_opacity
         h.write_u32(self.effect_falloff[4].to_bits()); // soft_falloff_depth
+        // greyscale LUT bindless handle (#890 Stage 2c)
+        h.write_u32(self.greyscale_lut_index);
         h.finish()
     }
 }
@@ -2547,6 +2559,9 @@ mod draw_command_tests {
                 | crate::vulkan::material::material_flag::EFFECT_PALETTE_COLOR
                 | crate::vulkan::material::material_flag::EFFECT_PALETTE_ALPHA
                 | crate::vulkan::material::material_flag::EFFECT_LIT,
+            // Non-zero LUT handle so the hash-walk contract covers this
+            // field (zero would dedup with the default and hide a drift).
+            greyscale_lut_index: 7,
             is_water: false,
         }
     }

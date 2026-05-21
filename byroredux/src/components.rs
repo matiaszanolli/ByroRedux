@@ -95,6 +95,20 @@ impl Component for DarkMapHandle {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Bindless texture handle for a `BSEffectShaderProperty.greyscale_texture`
+/// colour palette LUT (Skyrim+). When attached, the fragment shader's
+/// `MATERIAL_KIND_EFFECT_SHADER` branch samples
+/// `textures[handle]` at `vec2(source.r, 0.5)` to remap a greyscale-
+/// authored source texture (typical for fire / explosion / VFX atlases)
+/// into authored colour. Only attached when the importer captured a
+/// non-empty `greyscale_texture` path AND it resolved to a real texture
+/// (so the shader's `handle != 0` gate is meaningful). See #890 Stage 2c.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GreyscaleLutHandle(pub(crate) u32);
+impl Component for GreyscaleLutHandle {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Bindless texture indices for the three NiTexturingProperty slots that
 /// previously populated `Material` but never reached `GpuInstance`:
 /// glow (slot 4 — emissive overlay), detail (slot 2 — high-frequency

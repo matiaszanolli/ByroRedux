@@ -71,6 +71,7 @@ fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
         material_id: 0,
         vertex_color_emissive: false,
         effect_shader_flags: 0,
+        greyscale_lut_index: 0,
         is_water: false,
     }
 }

@@ -126,9 +126,13 @@ struct GpuMaterial {
     float multiLayerRefractionScale, multiLayerInnerScaleU, multiLayerInnerScaleV, sparkleR;
     // sparkle GB + sparkle_intensity + falloff_start (224-236)
     float sparkleG, sparkleB, sparkleIntensity, falloffStartAngle;
-    // falloff_stop + opacities + soft_falloff_depth + pad (240-256, total 260)
+    // falloff_stop + opacities + soft_falloff_depth (240-252)
     float falloffStopAngle, falloffStartOpacity, falloffStopOpacity, softFalloffDepth;
-    float _padFalloff;
+    // #890 Stage 2c — bindless handle for
+    // `BSEffectShaderProperty.greyscale_texture`. 0 = no LUT (the
+    // shader's effect branch then samples the source texture raw).
+    // Closes the 260 B struct.
+    uint greyscaleLutIndex;
 };
 
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
@@ -1140,6 +1144,48 @@ void main() {
     // mirrored from `material_flag::*` in
     // `crates/renderer/src/vulkan/material.rs`).
     if (mat.materialKind == MATERIAL_KIND_EFFECT_SHADER) {
+        // #890 Stage 2c — `SLSF1::Greyscale_To_PaletteColor` /
+        // `Greyscale_To_PaletteAlpha`. The source texture is a
+        // greyscale ramp (red channel == intensity); the
+        // `greyscale_texture` is a 1D-as-2D colour palette LUT that
+        // remaps that ramp into authored colour + alpha. Vanilla
+        // Skyrim fire / explosion / magic VFX rely on this — pre-fix
+        // the renderer sampled the source raw, producing the iridescent
+        // rainbow flames the user reported at Whiterun's hearth.
+        //
+        // Sampler:
+        //   - U = source.a (the intensity index). Skyrim fire / VFX
+        //     atlases ship as DXT5 with the meaningful flame intensity
+        //     in the alpha channel — DXT5 stores alpha as a separate
+        //     high-fidelity block while RGB shares a lower-bit-rate
+        //     block, so authors push the visible gradient into alpha.
+        //     `FXFireAtlas04.dds` (Whiterun hearth) follows this.
+        //   - V = 0.5 (the LUT ships as 64×64 DXT5 but is
+        //     semantically 1D; centre-row sample dodges DXT edge
+        //     artifacts on both top and bottom block boundaries)
+        //
+        // Gated on `greyscaleLutIndex != 0u` so meshes that authored
+        // the flag but lack a resolved LUT (missing BSA / FX content
+        // mod) fall through to the legacy raw-texture path instead of
+        // sampling slot 0 (the magenta-checker placeholder).
+        vec4 sourceColor = texColor;
+        if ((mat.materialFlags & (MAT_FLAG_EFFECT_PALETTE_COLOR
+                                  | MAT_FLAG_EFFECT_PALETTE_ALPHA)) != 0u
+            && mat.greyscaleLutIndex != 0u) {
+            vec4 lut = texture(
+                textures[nonuniformEXT(mat.greyscaleLutIndex)],
+                vec2(sourceColor.a, 0.5));
+            if ((mat.materialFlags & MAT_FLAG_EFFECT_PALETTE_COLOR) != 0u) {
+                texColor.rgb = lut.rgb;
+            }
+            if ((mat.materialFlags & MAT_FLAG_EFFECT_PALETTE_ALPHA) != 0u) {
+                // Source alpha continues to gate visibility; the LUT
+                // alpha modulates on top so the palette can fade the
+                // hot core (high source.a) differently from the cool
+                // tail.
+                texColor.a *= lut.a;
+            }
+        }
         vec3 emit = texColor.rgb
                   * vec3(mat.emissiveR, mat.emissiveG, mat.emissiveB)
                   * mat.emissiveMult;

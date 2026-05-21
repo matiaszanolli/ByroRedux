@@ -177,7 +177,22 @@ pub struct GpuMaterial {
     pub falloff_start_opacity: f32, // offset 244
     pub falloff_stop_opacity: f32,  // offset 248
     pub soft_falloff_depth: f32,    // offset 252
-    pub _pad_falloff: f32,          // offset 256 → total 260
+    /// #890 Stage 2c — bindless texture index of the BSEffectShaderProperty
+    /// `greyscale_texture` (1D color LUT). `0` means "no LUT bound"
+    /// (the renderer falls back to sampling the source texture as
+    /// plain RGB, which produces visibly wrong output for content that
+    /// authored `MAT_FLAG_EFFECT_PALETTE_COLOR` — every Skyrim+ flame,
+    /// most magic spells, FO4 power-armor glow effects). When the
+    /// material's `EFFECT_PALETTE_COLOR` or `EFFECT_PALETTE_ALPHA`
+    /// bit is set and this index is non-zero, the fragment shader's
+    /// `MATERIAL_KIND_EFFECT_SHADER` branch samples the LUT at
+    /// `vec2(texColor.a, 0.5)` (1D-as-2D — Skyrim DXT5 fire atlases
+    /// store the meaningful flame intensity in the alpha channel) and
+    /// uses the LUT result as the visible colour. See
+    /// `triangle.frag` (`MATERIAL_KIND_EFFECT_SHADER` branch) +
+    /// `cell_loader/spawn.rs` (resolution site). Previously named
+    /// `_pad_falloff` — repacked #890 Stage 2c.
+    pub greyscale_lut_index: u32,   // offset 256 → total 260
 }
 
 impl Default for GpuMaterial {
@@ -259,7 +274,7 @@ impl Default for GpuMaterial {
             falloff_start_opacity: 1.0,
             falloff_stop_opacity: 1.0,
             soft_falloff_depth: 0.0,
-            _pad_falloff: 0.0,
+            greyscale_lut_index: 0,
         }
     }
 }
@@ -297,14 +312,15 @@ pub mod material_flag {
     pub const EFFECT_SOFT: u32 = 1 << 1;
     /// `SLSF1::Greyscale_To_PaletteColor` (nif.xml bit 4) — sample the
     /// `greyscale_texture` as a colour palette LUT indexed by the
-    /// source-texture luminance. Stage 2a plumbs the bit; the shader
-    /// consumer awaits the bindless `greyscale_lut_index` slot on
-    /// `GpuMaterial` (#890 Stage 2c — needs a new texture-index slot
-    /// and `_pad_falloff` repack).
+    /// source-texture luminance. The shader-side consumer (Stage 2c,
+    /// #890) lives in `triangle.frag`'s `MATERIAL_KIND_EFFECT_SHADER`
+    /// branch and samples `textures[greyscaleLutIndex]` at
+    /// `vec2(source.r, 0.5)` when this flag is set and
+    /// `greyscale_lut_index != 0`.
     pub const EFFECT_PALETTE_COLOR: u32 = 1 << 2;
     /// `SLSF1::Greyscale_To_PaletteAlpha` (nif.xml bit 5) — same
-    /// `greyscale_texture` indexed for the alpha channel. Stage 2a
-    /// plumbing; Stage 2c shader consumer.
+    /// `greyscale_texture` indexed for the alpha channel. Stage 2c
+    /// shader consumer samples the LUT's alpha at the same UV.
     pub const EFFECT_PALETTE_ALPHA: u32 = 1 << 3;
     /// `SLSF2::Effect_Lighting` (nif.xml bit 30) — scene-lit
     /// `BSEffectShaderProperty` surface. The fragment shader's
@@ -385,8 +401,9 @@ impl Eq for GpuMaterial {}
 /// `vulkan::context::draw_command_tests`. Any new GpuMaterial field
 /// MUST be added to BOTH walks (and to the contract test).
 ///
-/// `_pad_falloff` is intentionally excluded — it's always 0.0; including
-/// it would only re-hash a constant.
+/// `greyscale_lut_index` (offset 256, #890 Stage 2c) is hashed at the
+/// end of the walk — distinct LUT handles must produce distinct hashes
+/// so palette-colour effect materials don't dedup across LUTs.
 pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
     use std::hash::Hasher;
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -470,6 +487,8 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
     h.write_u32(mat.falloff_start_opacity.to_bits());
     h.write_u32(mat.falloff_stop_opacity.to_bits());
     h.write_u32(mat.soft_falloff_depth.to_bits());
+    // greyscale LUT bindless handle (#890 Stage 2c, offset 256)
+    h.write_u32(mat.greyscale_lut_index);
     h.finish()
 }
 
@@ -897,8 +916,9 @@ mod tests {
         assert_eq!(offset_of!(GpuMaterial, falloff_stop_opacity), 248);
         assert_eq!(offset_of!(GpuMaterial, soft_falloff_depth), 252);
 
-        // ── trailing pad to round to 260 B (offset 256) ────────────
-        assert_eq!(offset_of!(GpuMaterial, _pad_falloff), 256);
+        // ── greyscale palette LUT bindless handle, #890 Stage 2c
+        //    (offset 256, completes the 260 B struct) ─────────────
+        assert_eq!(offset_of!(GpuMaterial, greyscale_lut_index), 256);
     }
 
     #[test]
@@ -1056,6 +1076,45 @@ mod tests {
         assert_ne!(table.intern(a), table.intern(b));
         // Slot 0 = seeded neutral, slot 1 = `a`, slot 2 = `b`. #807.
         assert_eq!(table.len(), 3);
+    }
+
+    /// #890 Stage 2c — two `BSEffectShaderProperty` materials that
+    /// differ ONLY in their `greyscale_lut_index` MUST dedup to
+    /// distinct slots. Pre-Stage-2c the field at offset 256 was
+    /// `_pad_falloff`, intentionally excluded from
+    /// `hash_gpu_material_fields` (and therefore from
+    /// `MaterialTable::intern`'s reverse index) because it was always
+    /// 0.0. Now that the slot carries a real bindless handle, the
+    /// hash MUST include it — otherwise two fire-effect meshes
+    /// referencing different palette LUTs (e.g.
+    /// `GradFireExplosion.dds` vs `GradPlasmaCold.dds`) would collapse
+    /// to the same `material_id` and the second mesh would sample
+    /// the wrong LUT.
+    #[test]
+    fn greyscale_lut_index_difference_is_distinct() {
+        let mut table = MaterialTable::new();
+        let mut a = GpuMaterial::default();
+        let mut b = GpuMaterial::default();
+        a.material_kind = 101; // MATERIAL_KIND_EFFECT_SHADER
+        a.material_flags = material_flag::EFFECT_PALETTE_COLOR;
+        a.greyscale_lut_index = 42;
+        b.material_kind = 101;
+        b.material_flags = material_flag::EFFECT_PALETTE_COLOR;
+        b.greyscale_lut_index = 43;
+        let id_a = table.intern(a);
+        let id_b = table.intern(b);
+        assert_ne!(
+            id_a, id_b,
+            "different greyscale_lut_index must NOT dedup — pre-Stage-2c the offset-256 \
+             slot was excluded from hash_gpu_material_fields"
+        );
+        // Sanity: the hash function itself must produce different
+        // outputs so the reverse-index lookup splits them.
+        assert_ne!(
+            hash_gpu_material_fields(&a),
+            hash_gpu_material_fields(&b),
+            "hash_gpu_material_fields must include greyscale_lut_index"
+        );
     }
 
     /// Float-bit equality check — two materials whose only difference

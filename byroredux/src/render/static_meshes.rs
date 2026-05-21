@@ -27,7 +27,10 @@ use byroredux_core::math::Mat4;
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
 
-use crate::components::{AlphaBlend, DarkMapHandle, ExtraTextureMaps, IsFxMesh, NormalMapHandle, TerrainTileSlot, TwoSided};
+use crate::components::{
+    AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, IsFxMesh, NormalMapHandle,
+    TerrainTileSlot, TwoSided,
+};
 
 use super::camera::FrustumPlanes;
 use super::f32_sortable_u32;
@@ -112,6 +115,10 @@ pub(super) fn collect_static_mesh_draws(
     let nmap_q = world.query::<NormalMapHandle>();
     let dmap_q = world.query::<DarkMapHandle>();
     let extra_q = world.query::<ExtraTextureMaps>();
+    // #890 Stage 2c — bindless handle for `BSEffectShaderProperty`
+    // greyscale palette LUT. Sparse: ~50–200 entities per Skyrim cell
+    // (fire effects, magic VFX, alchemy steam) vs ~5K total meshes.
+    let lut_q = world.query::<GreyscaleLutHandle>();
     let terrain_tile_q = world.query::<TerrainTileSlot>();
     let wb_q = world.query::<WorldBound>();
     // PERF-D3-NEW-02 / #1136 — query once instead of 6 substring scans
@@ -178,6 +185,18 @@ pub(super) fn collect_static_mesh_draws(
                     .as_ref()
                     .and_then(|q| q.get(entity))
                     .map(|d| d.0)
+                    .unwrap_or(0);
+                // #890 Stage 2c — only non-zero on entities the
+                // importer flagged with a `BSEffectShaderProperty
+                // .greyscale_texture` AND the path resolved to a real
+                // bindless handle. The fragment shader gates the LUT
+                // sample on `handle != 0u`, so the default-zero
+                // fall-through is the "no LUT, sample source texture
+                // raw" path.
+                let greyscale_lut_index = lut_q
+                    .as_ref()
+                    .and_then(|q| q.get(entity))
+                    .map(|h| h.0)
                     .unwrap_or(0);
                 // #399 — three NiTexturingProperty extra slots packed in
                 // one component to keep the per-frame query count fixed.
@@ -611,6 +630,7 @@ pub(super) fn collect_static_mesh_draws(
                     // matches `GpuMaterial::material_flags` so
                     // `to_gpu_material` ORs the word straight in.
                     effect_shader_flags: mat.map(|m| m.effect_shader_flags).unwrap_or(0),
+                    greyscale_lut_index,
                     is_water: false,
                 };
                 // #781 / PERF-N4 — `intern_by_hash` skips the
