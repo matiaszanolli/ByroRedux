@@ -527,7 +527,7 @@ pub(crate) fn setup_scene(
         // happens on the FIRST scheduler-driven tick, not this one —
         // which is correct, since the body isn't spawned yet.
         byroredux_physics::physics_sync_system(world, 0.0);
-        // M28.5 / #1230 follow-up — `physics_sync_system` inserts the
+        // M28.5 spawn-fallback fix — `physics_sync_system` inserts the
         // colliders into `ColliderSet` but `QueryPipeline` only learns
         // about them as a side-effect of `pipeline.step()`. We haven't
         // stepped yet (dt=0), so the BVH is empty and `cast_ray_down`
@@ -581,7 +581,7 @@ pub(crate) fn setup_scene(
                             log::warn!(
                                 "M28.5 spawn ray-cast: NO floor found under ({:.1}, \
                                  {:.1}) within {:.1} BU; falling back to \
-                                 aabb.max.y + 200 (#1230 spawn fallback)",
+                                 aabb.max.y + 200 (M28.5 spawn fallback)",
                                 cam_pos.x,
                                 cam_pos.z,
                                 max_distance,

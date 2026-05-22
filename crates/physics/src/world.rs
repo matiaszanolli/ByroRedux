@@ -272,7 +272,7 @@ impl PhysicsWorld {
 
         let mut controller = KinematicCharacterController::default();
         controller.up = Vector::y_axis();
-        // M28.5 / #1230 follow-up — at Skyrim's 70 BU/m scale, 0.5 BU
+        // M28.5 KCC offset — at Skyrim's 70 BU/m scale, 0.5 BU
         // was only 7 mm of skin between the capsule and any surface,
         // letting the KCC's swept cast graze TriMesh edges and tunnel
         // through tiny gaps (Whiterun Bannered Mare floor planks have
