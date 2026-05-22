@@ -188,6 +188,135 @@ fn expand_scol_missing_from_statics_still_expands_via_scols_map() {
     assert_eq!(synths[0].0, 0x0010_0001);
 }
 
+// ── #1182 — SCOL-of-SCOL recursion ─────────────────────────────────
+//
+// Pre-#1182 `expand_scol_placements` was single-level: a SCOL whose
+// `parts[i].base_form_id` referenced another SCOL emitted the inner
+// SCOL's base form ID as an opaque placement, silently dropping the
+// inner SCOL's child tree.
+
+#[test]
+fn expand_scol_recurses_into_nested_scol() {
+    let mut index = EsmCellIndex::default();
+    // Outer SCOL — no cached CM, must expand.
+    let outer_id = 0x0080_0001;
+    // Inner SCOL — same, child of outer.
+    let inner_id = 0x0080_0002;
+    // Leaf STAT — terminal child of inner.
+    let leaf_id = 0x0010_0001;
+
+    index.scols.insert(
+        outer_id,
+        ScolRecord {
+            form_id: outer_id,
+            editor_id: "Outer".to_string(),
+            model_path: String::new(),
+            parts: vec![ScolPart {
+                base_form_id: inner_id,
+                placements: vec![ScolPlacement {
+                    pos: [100.0, 0.0, 0.0],
+                    rot: [0.0, 0.0, 0.0],
+                    scale: 1.0,
+                }],
+            }],
+            filter: Vec::new(),
+            full_name: String::new(),
+            has_script: false,
+        },
+    );
+    index.scols.insert(
+        inner_id,
+        ScolRecord {
+            form_id: inner_id,
+            editor_id: "Inner".to_string(),
+            model_path: String::new(),
+            parts: vec![ScolPart {
+                base_form_id: leaf_id,
+                placements: vec![ScolPlacement {
+                    pos: [10.0, 0.0, 0.0],
+                    rot: [0.0, 0.0, 0.0],
+                    scale: 1.0,
+                }],
+            }],
+            filter: Vec::new(),
+            full_name: String::new(),
+            has_script: false,
+        },
+    );
+
+    let synths = expand_scol_placements(outer_id, Vec3::ZERO, Quat::IDENTITY, 1.0, &index);
+    assert_eq!(synths.len(), 1, "inner SCOL's leaf must fan out");
+    assert_eq!(synths[0].0, leaf_id, "leaf form ID survives the chain");
+    // Outer placement Z-up [100,0,0] → Y-up [100,0,0]; inner placement
+    // Z-up [10,0,0] → Y-up [10,0,0]. Composed: outer_pos + outer_rot ×
+    // (outer_scale × inner_pos) = (0+100, 0, 0) + identity × (1 × (10,0,0))
+    // applied through inner-rel-to-outer: final = (100+10, 0, 0).
+    assert_eq!(synths[0].1, Vec3::new(110.0, 0.0, 0.0));
+}
+
+#[test]
+fn expand_scol_recursion_bounded_by_depth_cap() {
+    // Cycle: A → B → A. The depth cap (MAX_PKIN_DEPTH = 4) must stop
+    // recursion in a finite number of steps and fall through to the
+    // leaf-path single-entry emission for the cycle terminal.
+    let mut index = EsmCellIndex::default();
+    let a = 0x0090_0001;
+    let b = 0x0090_0002;
+    index.scols.insert(
+        a,
+        ScolRecord {
+            form_id: a,
+            editor_id: "A".to_string(),
+            model_path: String::new(),
+            parts: vec![ScolPart {
+                base_form_id: b,
+                placements: vec![ScolPlacement {
+                    pos: [0.0, 0.0, 0.0],
+                    rot: [0.0, 0.0, 0.0],
+                    scale: 1.0,
+                }],
+            }],
+            filter: Vec::new(),
+            full_name: String::new(),
+            has_script: false,
+        },
+    );
+    index.scols.insert(
+        b,
+        ScolRecord {
+            form_id: b,
+            editor_id: "B".to_string(),
+            model_path: String::new(),
+            parts: vec![ScolPart {
+                base_form_id: a,
+                placements: vec![ScolPlacement {
+                    pos: [0.0, 0.0, 0.0],
+                    rot: [0.0, 0.0, 0.0],
+                    scale: 1.0,
+                }],
+            }],
+            filter: Vec::new(),
+            full_name: String::new(),
+            has_script: false,
+        },
+    );
+
+    // Must terminate; the leaf at the depth cap emits a single
+    // synthetic placement rather than recursing forever.
+    let synths = expand_scol_placements(a, Vec3::ZERO, Quat::IDENTITY, 1.0, &index);
+    assert!(
+        !synths.is_empty(),
+        "depth-capped recursion must still emit a synthetic placement"
+    );
+    // The synthetic placements are bounded by MAX_PKIN_DEPTH × 1
+    // placement per level; at depth 4 we get 1 synthesised leaf.
+    assert!(
+        synths.len() <= 4,
+        "recursion bounded by MAX_PKIN_DEPTH, got {}",
+        synths.len(),
+    );
+}
+
 /// Outer REFR's scale propagates into both the translation
 /// composition and the synthetic scale (synth = outer × local).
 #[test]

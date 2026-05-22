@@ -9,7 +9,7 @@
 //! were silently dropped.
 use super::*;
 use byroredux_plugin::esm::cell::EsmCellIndex;
-use byroredux_plugin::esm::records::PkinRecord;
+use byroredux_plugin::esm::records::{PkinRecord, ScolPart, ScolPlacement, ScolRecord};
 
 fn mk_pkin(form_id: u32, editor_id: &str, contents: Vec<u32>) -> PkinRecord {
     PkinRecord {
@@ -215,4 +215,113 @@ fn expand_pkin_non_pkin_children_pass_through_unchanged() {
     assert_eq!(synths.len(), 2);
     assert_eq!(synths[0].0, stat_a);
     assert_eq!(synths[1].0, stat_b);
+}
+
+// ── #1180 — PKIN → SCOL recursion ──────────────────────────────────
+//
+// Pre-#1180 a PKIN whose `contents` list referenced a SCOL emitted
+// the SCOL's base form ID as an opaque placement, silently dropping
+// the SCOL's child tree. The PKIN expander now consults the SCOL
+// expander for SCOL-typed children up to the shared depth cap.
+
+#[test]
+fn expand_pkin_recurses_into_scol_child() {
+    let mut index = EsmCellIndex::default();
+    let pkin_id = 0x0067_0001;
+    let scol_id = 0x0067_0002;
+    let leaf_id = 0x0010_0001;
+    index
+        .packins
+        .insert(pkin_id, mk_pkin(pkin_id, "PkinWithScol", vec![scol_id]));
+    // SCOL has no cached CM model_path → must expand.
+    index.scols.insert(
+        scol_id,
+        ScolRecord {
+            form_id: scol_id,
+            editor_id: "ScolChild".to_string(),
+            model_path: String::new(),
+            parts: vec![ScolPart {
+                base_form_id: leaf_id,
+                placements: vec![ScolPlacement {
+                    pos: [50.0, 0.0, 0.0],
+                    rot: [0.0, 0.0, 0.0],
+                    scale: 1.0,
+                }],
+            }],
+            filter: Vec::new(),
+            full_name: String::new(),
+            has_script: false,
+        },
+    );
+
+    let outer_pos = Vec3::new(1000.0, 0.0, 0.0);
+    let synths = expand_pkin_placements(pkin_id, outer_pos, Quat::IDENTITY, 1.0, &index)
+        .expect("PKIN with SCOL child must expand");
+    assert_eq!(
+        synths.len(),
+        1,
+        "SCOL child's leaf placement must fan out"
+    );
+    assert_eq!(synths[0].0, leaf_id);
+    // Outer (1000,0,0) + SCOL placement Y-up (50,0,0) = (1050,0,0).
+    assert_eq!(synths[0].1, Vec3::new(1050.0, 0.0, 0.0));
+}
+
+#[test]
+fn expand_pkin_with_cached_scol_child_does_not_recurse() {
+    // If the SCOL child has a cached CM model_path, the SCOL expander
+    // returns the single base-form-id entry rather than fanning out.
+    // The PKIN expander's non-empty check sees a 1-element vec and
+    // takes it — same result as the pre-#1180 leaf path. Pin this
+    // non-regression so the cached-CM hot path doesn't accidentally
+    // start fanning out vanilla content.
+    let mut index = EsmCellIndex::default();
+    let pkin_id = 0x0068_0001;
+    let scol_id = 0x0068_0002;
+    let leaf_id = 0x0010_0001;
+    index
+        .packins
+        .insert(pkin_id, mk_pkin(pkin_id, "PkinWithCachedScol", vec![scol_id]));
+    // SCOL with a cached CM*.NIF — vanilla 2616/2617 path. Expand
+    // should bail with single-entry.
+    index.statics.insert(
+        scol_id,
+        byroredux_plugin::esm::cell::StaticObject {
+            form_id: scol_id,
+            editor_id: "CachedScol".to_string(),
+            model_path: r"SCOL\Fallout4.esm\CM00680002.NIF".to_string(),
+            record_type: byroredux_plugin::record::RecordType::STAT,
+            light_data: None,
+            addon_data: None,
+            has_script: false,
+        },
+    );
+    index.scols.insert(
+        scol_id,
+        ScolRecord {
+            form_id: scol_id,
+            editor_id: "CachedScol".to_string(),
+            model_path: r"SCOL\Fallout4.esm\CM00680002.NIF".to_string(),
+            parts: vec![ScolPart {
+                base_form_id: leaf_id,
+                placements: vec![ScolPlacement {
+                    pos: [50.0, 0.0, 0.0],
+                    rot: [0.0, 0.0, 0.0],
+                    scale: 1.0,
+                }],
+            }],
+            filter: Vec::new(),
+            full_name: String::new(),
+            has_script: false,
+        },
+    );
+
+    let outer_pos = Vec3::new(1000.0, 0.0, 0.0);
+    let synths = expand_pkin_placements(pkin_id, outer_pos, Quat::IDENTITY, 1.0, &index)
+        .expect("PKIN with cached SCOL still expands");
+    assert_eq!(synths.len(), 1);
+    // Cached path emits SCOL's own form id at outer position — the
+    // downstream cell_loader resolves model_path normally.
+    assert_eq!(synths[0].0, scol_id);
+    assert_eq!(synths[0].1, outer_pos);
 }

@@ -285,10 +285,13 @@ pub(crate) fn build_refr_texture_overlay(
     Some(ov)
 }
 
-/// Maximum PKIN-of-PKIN recursion depth (#635 / FNV-D3-06). Vanilla FO4
-/// has zero PKIN-of-PKIN nesting; mods occasionally chain a few levels
-/// deep but never (sanely) more than a handful. The cap exists as a
-/// guard against author-error cycles, not a normal-case constraint.
+/// Maximum nesting depth for PKIN-of-PKIN / SCOL-of-SCOL / cross-recursion
+/// (#635 / FNV-D3-06, #1180, #1182). Vanilla FO4 has zero nesting; mods
+/// occasionally chain a few levels deep but never (sanely) more than a
+/// handful. The cap exists as a guard against author-error cycles, not a
+/// normal-case constraint. Shared across the PKIN and SCOL expanders so
+/// a deep PKIN-of-SCOL-of-PKIN chain inherits the same author-loop
+/// guard.
 const MAX_PKIN_DEPTH: u32 = 4;
 
 /// Expand a PKIN (Pack-In) REFR into synthetic children.
@@ -356,6 +359,27 @@ fn expand_pkin_placements_with_depth(
                 continue;
             }
         }
+        // #1180 / FO4-D4-003 — when a PKIN child resolves to a SCOL,
+        // fan the SCOL out via its own expander. Otherwise modded
+        // PKINs containing SCOL form IDs emit base-form-only
+        // placements and silently drop the SCOL's child tree. The
+        // SCOL expander applies its own SCOL-of-SCOL recursion gate
+        // (#1182), bounded by the shared `MAX_PKIN_DEPTH`. LVLI
+        // children are still single-level — unimplemented per #386.
+        if depth + 1 < MAX_PKIN_DEPTH && index.scols.contains_key(&child_form_id) {
+            let nested = expand_scol_placements_with_depth(
+                child_form_id,
+                outer_pos,
+                outer_rot,
+                outer_scale,
+                index,
+                depth + 1,
+            );
+            if !nested.is_empty() {
+                out.extend(nested);
+                continue;
+            }
+        }
         out.push((child_form_id, outer_pos, outer_rot, outer_scale));
     }
     Some(out)
@@ -382,14 +406,29 @@ fn expand_pkin_placements_with_depth(
 /// Vanilla FO4 ships 2616 / 2617 SCOLs with a cached `CM*.NIF` in
 /// `statics[base].model_path`, so the normal path runs for those.
 /// Mod-added SCOLs (and vanilla SCOLs whose CM file is absent under a
-/// previsibine-bypass loadout) hit the expansion branch. Single-level
-/// only — vanilla FO4 has no SCOL-of-SCOL nesting. See #585.
+/// previsibine-bypass loadout) hit the expansion branch. SCOL-of-SCOL
+/// nesting is resolved recursively up to [`MAX_PKIN_DEPTH`] levels
+/// (#1182 / FO4-D4-005) so a child SCOL's placements fan out instead
+/// of being silently dropped at the caller's `index.statics.get`
+/// lookup. Vanilla FO4 has no SCOL-of-SCOL — the recursion is forward
+/// insurance against future Bethesda DLC / modded content. See #585.
 pub(crate) fn expand_scol_placements(
     base_form_id: u32,
     outer_pos: Vec3,
     outer_rot: Quat,
     outer_scale: f32,
     index: &esm::cell::EsmCellIndex,
+) -> Vec<(u32, Vec3, Quat, f32)> {
+    expand_scol_placements_with_depth(base_form_id, outer_pos, outer_rot, outer_scale, index, 0)
+}
+
+fn expand_scol_placements_with_depth(
+    base_form_id: u32,
+    outer_pos: Vec3,
+    outer_rot: Quat,
+    outer_scale: f32,
+    index: &esm::cell::EsmCellIndex,
+    depth: u32,
 ) -> Vec<(u32, Vec3, Quat, f32)> {
     // Expand only when the outer REFR's base is a SCOL with no valid
     // cached model. `statics.get(base).model_path` empty — or the base
@@ -422,6 +461,25 @@ pub(crate) fn expand_scol_placements(
             let final_pos = outer_rot * (outer_scale * local_pos) + outer_pos;
             let final_rot = outer_rot * local_rot;
             let final_scale = outer_scale * p.scale;
+            // #1182 / FO4-D4-005 — recurse into nested SCOLs up to
+            // the shared depth cap. Past the cap, fall through to the
+            // leaf path so the synthetic placement at least gets
+            // logged via stat-miss accounting (matches PKIN behaviour
+            // — bounded against accidental cycles).
+            if depth + 1 < MAX_PKIN_DEPTH && index.scols.contains_key(&part.base_form_id) {
+                let nested = expand_scol_placements_with_depth(
+                    part.base_form_id,
+                    final_pos,
+                    final_rot,
+                    final_scale,
+                    index,
+                    depth + 1,
+                );
+                if !nested.is_empty() {
+                    out.extend(nested);
+                    continue;
+                }
+            }
             out.push((part.base_form_id, final_pos, final_rot, final_scale));
         }
     }
