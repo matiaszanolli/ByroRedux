@@ -160,6 +160,19 @@ pub struct CharacterMoveParams {
 }
 
 impl PhysicsWorld {
+    /// Rebuild the `QueryPipeline` BVH from the current `ColliderSet`.
+    ///
+    /// `pipeline.step()` updates the query pipeline as a side-effect of
+    /// each physics tick, but newly-inserted colliders are invisible to
+    /// `cast_ray` / `intersection_with_shape` / etc. until the next
+    /// step runs. M28.5 character spawn needs to ray-cast the floor
+    /// BEFORE the first physics tick (the spawn position depends on
+    /// the result), so we call this explicitly after newcomer
+    /// registration to flush the BVH.
+    pub fn update_query_pipeline(&mut self) {
+        self.query_pipeline.update(&self.colliders);
+    }
+
     /// Cast a downward ray from `origin` and return the Y-coordinate
     /// of the first solid hit (the highest solid surface below the
     /// ray's start point), if any. Used by M28.5 character spawn to
@@ -169,6 +182,10 @@ impl PhysicsWorld {
     ///
     /// Ranges over fixed (static) colliders only. `max_distance` is
     /// in BU; pass the AABB height + slack.
+    ///
+    /// **Caller must have called [`update_query_pipeline`]** since the
+    /// last collider insertion, otherwise the BVH is stale and the ray
+    /// will report no hits even when colliders exist.
     ///
     /// Returns the world-space Y of the hit; the caller adds capsule
     /// `half_height + offset` to place the capsule centre above the

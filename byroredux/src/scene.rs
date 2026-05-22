@@ -520,13 +520,23 @@ pub(crate) fn setup_scene(
         // Stage::Physics, but the character body needs to spawn at a
         // position that doesn't overlap any cell collider. We need
         // the static-collider AABB to pick a safe Y. Force one early
-        // physics tick (dt=0 so no movement, just newcomer registration
-        // + query-pipeline build) so the AABB is available.
+        // physics tick (dt=0 so no movement, just newcomer registration)
+        // so the AABB is available.
         //
         // This also means the player body's own newcomer registration
         // happens on the FIRST scheduler-driven tick, not this one —
         // which is correct, since the body isn't spawned yet.
         byroredux_physics::physics_sync_system(world, 0.0);
+        // M28.5 / #1230 follow-up — `physics_sync_system` inserts the
+        // colliders into `ColliderSet` but `QueryPipeline` only learns
+        // about them as a side-effect of `pipeline.step()`. We haven't
+        // stepped yet (dt=0), so the BVH is empty and `cast_ray_down`
+        // returns `None` for every shot. Flush the BVH explicitly so
+        // the spawn ray-cast sees the cell architecture.
+        {
+            let mut pw = world.resource_mut::<byroredux_physics::PhysicsWorld>();
+            pw.update_query_pipeline();
+        }
 
         // Spawn the character by ray-casting straight down from
         // `aabb.max.y + 50 BU` and placing the capsule centre at

@@ -112,7 +112,15 @@ pub struct CharacterController {
     /// down. 50° matches Bethesda's NavMesh slope limit.
     pub max_slope_climb_deg: f32,
     /// Ground-snap distance. BU. Holds the character on terrain
-    /// rolls without bouncing per-step.
+    /// rolls without bouncing per-step. Rapier KCC engages this on
+    /// the grounded → airborne transition: if the next frame's
+    /// motion would leave the character ungrounded but solid ground
+    /// exists within this distance below, the KCC pulls the body
+    /// down to maintain contact. Must be ≥ `step_height` to handle
+    /// Bethesda interior floor TriMesh gaps (~1-2 BU vertex stitching
+    /// errors between adjacent floor tiles in stock content — the
+    /// classic Whiterun Bannered Mare plank gap that drops a 0.5
+    /// BU offset capsule straight through to the void).
     pub snap_to_ground: f32,
 
     // ── Runtime state (written by character_controller_system) ───
@@ -148,7 +156,7 @@ impl CharacterController {
         terminal_velocity: -2000.0,
         step_height: 32.0,
         max_slope_climb_deg: 50.0,
-        snap_to_ground: 8.0,
+        snap_to_ground: 32.0,
         vertical_velocity: 0.0,
         is_grounded: false,
         wants_jump: false,

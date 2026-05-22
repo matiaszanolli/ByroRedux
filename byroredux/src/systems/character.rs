@@ -174,7 +174,26 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         jump_fired,
     );
 
-    let desired_translation = horizontal_translation + Vec3::Y * vertical_velocity * dt;
+    // M28.5 follow-up — when grounded and not jumping, send a small
+    // *fixed* downward probe instead of the gravity-integrated motion.
+    // The integrated motion is `g * dt² = -23 * dt = ~-0.4 BU` per
+    // 60 fps frame, which the KCC tries to satisfy via collide-and-
+    // slide; numerical drift on inclined floor TriMeshes lets the
+    // character creep down 0.05 BU/frame even while reported grounded.
+    // After ~800 frames that's a 40 BU sink, by which point the
+    // capsule's lower edge has slipped past a floor tile and snap-to-
+    // ground fails. Replacing the integration with a `step_height`-
+    // tall downward probe keeps `snap_to_ground` engaged every frame
+    // (Rapier triggers snap on grounded→airborne transitions) without
+    // accumulating any velocity that would survive landing. This is
+    // the Bethesda-engine convention: gravity is suppressed while
+    // grounded; only the falling-edge of ground contact unlocks it.
+    let desired_vertical = if controller.is_grounded && !jump_fired {
+        -controller.step_height
+    } else {
+        vertical_velocity * dt
+    };
+    let desired_translation = horizontal_translation + Vec3::Y * desired_vertical;
 
     // Ask Rapier's KCC for the collide-and-slide-corrected motion.
     let pw = world.resource::<byroredux_physics::PhysicsWorld>();
