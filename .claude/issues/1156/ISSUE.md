@@ -1,5 +1,13 @@
-# TD10-001: 80 stale .claude/issues/<N>/ISSUE.md files mark issues OPEN while GitHub says CLOSED
-
+title:	TD10-001: 80 stale .claude/issues/<N>/ISSUE.md files mark issues OPEN while GitHub says CLOSED
+state:	OPEN
+author:	matiaszanolli (Matias Zanolli)
+labels:	medium, tech-debt
+comments:	0
+assignees:	
+projects:	
+milestone:	
+number:	1156
+--
 ## Source Audit
 `docs/audits/AUDIT_TECH_DEBT_2026-05-17.md` — Dimension 10 (Audit-Finding Rot)
 

@@ -187,7 +187,7 @@ backticked path that does not resolve.
 **Checklist**:
 - Audit skill "must not regress" baselines — every backticked path in `audit-*.md` is now gated by `.claude/commands/_audit-validate.sh` (post-#1114). Run that gate first; any STALE refs it reports are auto-eligible Dim 10 findings (effort: trivial). For symbol-anchor refs that the gate can't verify (e.g., `crates/audio/src/lib.rs::drain_pending_oneshots`), spot-check that the function still exists.
 - "Existing: #NNN" callouts in skill files where the issue is now CLOSED — should the skill prose reference the closed-state baseline differently?
-- `.claude/issues/<N>/ISSUE.md` entries where the upstream GitHub issue was closed but the local file still says "Status: Open"
+- ~~`.claude/issues/<N>/ISSUE.md` entries where the upstream GitHub issue was closed but the local file still says "Status: Open"~~ — **dropped per TD10-001 / #1156**: local issue files are immutable snapshots of the issue as filed; state drift is expected and not a finding. GitHub is authoritative for current state. If you need live state during an audit, query `gh issue view <N> --json state` directly.
 - Audit reports in `docs/audits/` from >90 days ago whose CRITICAL/HIGH findings are not all triaged (open or closed) on GitHub
 - Skill files that reference dimension counts (e.g., "all 9 dimensions") that don't match the current dimension list
 

@@ -1,7 +1,13 @@
-# SF-D2-NEW-02: CLAUDE.md "22 Starfield texture BA2s" claim stale; actual count is 30
-
-**Labels**: documentation, low
-
+title:	SF-D2-NEW-02: CLAUDE.md "22 Starfield texture BA2s" claim stale; actual count is 30
+state:	OPEN
+author:	matiaszanolli (Matias Zanolli)
+labels:	documentation, low
+comments:	0
+assignees:	
+projects:	
+milestone:	
+number:	1185
+--
 **Source**: [`docs/audits/AUDIT_STARFIELD_2026-05-18.md`](docs/audits/AUDIT_STARFIELD_2026-05-18.md)
 **Dimension**: BA2 v2/v3 LZ4 Block Decompression
 **Severity**: LOW (doc rot, not a parser bug)

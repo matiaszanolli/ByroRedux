@@ -52,6 +52,8 @@ argument-hint: "<path-to-audit-report>"
    ```
    Write `ISSUE.md` with the finding details.
 
+   **Immutable-snapshot convention** (TD10-001 / #1156): `.claude/issues/<N>/ISSUE.md` is a snapshot of the issue **as filed**, not a live mirror. GitHub is the authoritative source for current state — query via `gh issue view <N> --json state` when you need the live state. Do NOT write a `State:` or `Status:` field; if writing the body via `gh issue view --json body`, the state in the resulting JSON reflects fetch time, not now. Audits that need live state should query GitHub, not read the local file. This convention applies symmetrically to `INVESTIGATION.md` and any sibling files created by `/fix-issue`.
+
 9. **Summary** — print a table:
    | Finding | Action | Reason |
    |---------|--------|--------|
