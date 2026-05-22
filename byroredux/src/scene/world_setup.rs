@@ -188,7 +188,7 @@ pub(crate) fn climate_tod_hours(
 /// worldspaces and bare-DLC parses). Pre-#M40 this was inlined in the
 /// `--grid` CLI arm next to the bulk loader; factoring it out lets
 /// the streaming system bootstrap reuse it.
-pub(super) fn apply_worldspace_weather(
+pub(crate) fn apply_worldspace_weather(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
@@ -545,7 +545,7 @@ pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [
 /// sync is bounded — the bootstrap is single-threaded by design — but
 /// it keeps the post-bootstrap streaming loop using exactly one code
 /// path for cell load (no separate sync vs async branches).
-pub(super) fn stream_initial_radius(
+pub(crate) fn stream_initial_radius(
     world: &mut World,
     ctx: &mut VulkanContext,
     state: &mut WorldStreamingState,

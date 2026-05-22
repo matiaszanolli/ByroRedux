@@ -156,60 +156,90 @@ pub fn take_pending_transition(
     slot.0.take()
 }
 
-/// Outcome of the orchestrator — surfaced so the main loop can log /
-/// react to failures without inspecting the resource itself.
-#[derive(Debug)]
-pub enum TransitionOutcome {
-    /// Transition succeeded; the world is now at the destination cell.
-    Applied {
-        /// Engine-space (Y-up) world position where the camera was set.
-        camera_position: Vec3,
-        /// Diagnostic — destination editor-id (interior) or
-        /// `"<worldspace> ({gx},{gy})"` (exterior).
-        destination_label: String,
-    },
-    /// Transition was dropped because the destination variant isn't
-    /// implemented yet (interior↔exterior swap = Stage 3b work).
-    /// The orchestrator logs the request; the queue entry is consumed
-    /// either way so the engine doesn't retry on every frame.
-    NotImplemented {
-        destination_label: String,
-        reason: &'static str,
-    },
-    /// Transition failed at the loader layer — destination cell not
-    /// found in the plugin set, ESM parse error, etc. Logged at error
-    /// level; the engine continues with whatever cell was previously
-    /// loaded (no rollback).
-    Failed {
-        destination_label: String,
-        error: String,
-    },
+/// Tear down the currently-loaded interior cell, if any. Reads
+/// [`CurrentCellRoot`] — `Some(root)` means
+/// `load_cell_with_masters` was the last cell entry point and there's
+/// an interior to drop. Always clears `CurrentCellRoot` to `None` so
+/// the orchestrator can re-stamp on the next load.
+///
+/// Used by [`load_interior_cell`] and the App-level Interior→Exterior
+/// path (which needs to drop the interior before spinning up the
+/// streaming state).
+pub fn unload_current_interior(
+    world: &mut byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::VulkanContext,
+) {
+    let prev_root = world
+        .try_resource::<CurrentCellRoot>()
+        .and_then(|r| r.0);
+    if let Some(prev) = prev_root {
+        log::info!("Transition: unloading prior interior cell (root {prev})");
+        super::unload_cell(world, ctx, prev);
+    }
+    world.insert_resource(CurrentCellRoot(None));
 }
 
-/// Execute a pending interior cell transition. Caller must already
-/// have:
-///   1. Drained any active exterior streaming state (if transitioning
-///      OUT of exterior — App-owned, not visible from World).
-///   2. Passed `take_pending_transition` output through, so the queue
-///      is empty before this returns.
+/// Reposition the [`ActiveCamera`] at a destination spawn point.
+/// Pure World mutation — used by both Interior→Interior and
+/// Interior→Exterior / Exterior→Interior paths.
+pub fn reposition_camera(
+    world: &mut byroredux_core::ecs::World,
+    dest_pos: Vec3,
+    dest_rot: Quat,
+) {
+    if let Some(active) = world.try_resource::<byroredux_core::ecs::ActiveCamera>() {
+        let cam_entity = active.0;
+        drop(active);
+        if let Some(mut tq) = world.query_mut::<byroredux_core::ecs::Transform>() {
+            if let Some(transform) = tq.get_mut(cam_entity) {
+                transform.translation = dest_pos;
+                transform.rotation = dest_rot;
+            }
+        }
+    }
+}
+
+/// Load an interior cell as part of a transition. Tears down any prior
+/// interior, calls `load_cell_with_masters` for the destination, then
+/// repositions the camera. The caller is responsible for draining any
+/// exterior `WorldStreamingState` before this fires — that lives on
+/// `App`, not `World`, so the orchestrator can't reach it.
 ///
-/// On entry, [`CurrentCellRoot`] tells the orchestrator whether a
-/// previous interior cell is loaded and needs to be unloaded first;
-/// `None` means a clean slate (engine boot or post-exterior-shutdown).
-///
-/// Side effects on success:
-///   - Old cell (if any) torn down via `unload_cell`.
-///   - Destination cell loaded via `load_cell_with_masters`, which
-///     re-stamps [`CurrentCellRoot`] + replaces [`super::LoadedCellIndex`].
-///   - Active camera repositioned to destination.position (Y-up flip)
-///     and rotated to destination.rotation (Y-up Quat).
-pub fn execute_pending(
+/// Returns the engine-Y-up camera position on success so the App can
+/// log + signal the SVGF/TAA temporal-discontinuity recovery window.
+pub fn load_interior_cell(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
     tex_provider: &crate::asset_provider::TextureProvider,
     mat_provider: Option<&mut crate::asset_provider::MaterialProvider>,
-    transition: PendingCellTransition,
-) -> TransitionOutcome {
+    editor_id: &str,
+    masters: &[String],
+    esm_path: &str,
+    dest_pos_zup: [f32; 3],
+    dest_rot_zup: [f32; 3],
+) -> Result<Vec3, String> {
+    unload_current_interior(world, ctx);
+    super::load_cell_with_masters(
+        masters,
+        esm_path,
+        editor_id,
+        world,
+        ctx,
+        tex_provider,
+        mat_provider,
+    )
+    .map_err(|e| format!("{e:#}"))?;
+
+    let dest_pos = position_zup_to_yup(dest_pos_zup);
+    let dest_rot = rotation_zup_to_yup_quat(dest_rot_zup);
+    reposition_camera(world, dest_pos, dest_rot);
+    Ok(dest_pos)
+}
+
+/// Log header used by both interior and exterior orchestrator entries.
+/// Pulled out so the App-level dispatcher and the in-module helpers
+/// emit one consistent format.
+pub fn log_transition_header(transition: &PendingCellTransition) -> String {
     let dest_label = match &transition.destination {
         TransitionDestination::Interior { editor_id, .. } => format!("interior '{editor_id}'"),
         TransitionDestination::Exterior {
@@ -224,81 +254,7 @@ pub fn execute_pending(
         transition.destination_position_zup[1],
         transition.destination_position_zup[2],
     );
-
-    let (editor_id, masters, esm_path) = match transition.destination {
-        TransitionDestination::Interior {
-            editor_id,
-            masters,
-            esm_path,
-        } => (editor_id, masters, esm_path),
-        TransitionDestination::Exterior { .. } => {
-            // Stage 3b — interior↔exterior swap requires WorldStreamingState
-            // lifecycle hooks the orchestrator doesn't have access to from
-            // here (state lives in App, not World). Drop the request.
-            return TransitionOutcome::NotImplemented {
-                destination_label: dest_label,
-                reason: "interior↔exterior transition is M40 Phase 2 Stage 3b",
-            };
-        }
-    };
-
-    // 1. Tear down the current interior cell (if any). The
-    // CurrentCellRoot resource is `Some` iff `load_cell_with_masters`
-    // was the last cell-load entry point; `None` for fresh-boot
-    // (sweet-roll / loose-NIF mode) or for exterior-streaming mode
-    // (where the resource is left unset by the streaming entry points).
-    let prev_root = world
-        .try_resource::<CurrentCellRoot>()
-        .and_then(|r| r.0);
-    if let Some(prev) = prev_root {
-        log::info!("Transition: unloading prior interior cell (root {prev})");
-        super::unload_cell(world, ctx, prev);
-    }
-    // Clear the tracker before reloading; `load_cell_with_masters`
-    // re-stamps it at the end of its successful return.
-    world.insert_resource(CurrentCellRoot(None));
-
-    // 2. Load the destination interior cell. Re-uses the same entry
-    // point that the boot path calls, so the resource side-effects
-    // (LoadedCellIndex, CurrentCellRoot, CellLightingRes, …) match
-    // boot-path semantics 1:1.
-    let load_result = super::load_cell_with_masters(
-        &masters,
-        &esm_path,
-        &editor_id,
-        world,
-        ctx,
-        tex_provider,
-        mat_provider,
-    );
-    match load_result {
-        Ok(_) => {}
-        Err(e) => {
-            return TransitionOutcome::Failed {
-                destination_label: dest_label,
-                error: format!("{e:#}"),
-            };
-        }
-    }
-
-    // 3. Reposition the active camera at the destination spawn point.
-    let dest_pos = position_zup_to_yup(transition.destination_position_zup);
-    let dest_rot = rotation_zup_to_yup_quat(transition.destination_rotation_zup);
-    if let Some(active) = world.try_resource::<byroredux_core::ecs::ActiveCamera>() {
-        let cam_entity = active.0;
-        drop(active);
-        if let Some(mut tq) = world.query_mut::<byroredux_core::ecs::Transform>() {
-            if let Some(transform) = tq.get_mut(cam_entity) {
-                transform.translation = dest_pos;
-                transform.rotation = dest_rot;
-            }
-        }
-    }
-
-    TransitionOutcome::Applied {
-        camera_position: dest_pos,
-        destination_label: dest_label,
-    }
+    dest_label
 }
 
 #[cfg(test)]

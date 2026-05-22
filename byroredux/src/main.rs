@@ -830,13 +830,20 @@ impl App {
     /// dispatch the orchestrator. Runs once per frame after
     /// `step_streaming`. No-op on frames with no pending transition.
     ///
-    /// Provider construction is per-transition: the orchestrator
-    /// needs `TextureProvider` + `MaterialProvider` to load the
-    /// destination cell, and neither lives on `App` outside the
-    /// exterior-streaming path. Rebuilding from CLI args matches the
-    /// scene-setup pattern; the cost is a few-hundred-ms BSA re-open
-    /// per transition, acceptable for Stage 3a's single-trigger flow.
-    /// Stage 3b will share providers with the streaming state.
+    /// Dispatches on the destination variant:
+    ///
+    /// * `Interior` — tear down any active exterior streaming state
+    ///   (drain `state.loaded`, shutdown the worker thread), then
+    ///   call `cell_loader::load_interior_cell` for the destination.
+    /// * `Exterior` — tear down current interior (if any), tear down
+    ///   existing streaming state, build a fresh `ExteriorWorldContext`
+    ///   + `WorldStreamingState` for the destination worldspace,
+    ///   stream initial radius, reposition camera.
+    ///
+    /// Provider construction is per-transition: rebuilding from CLI
+    /// args matches the boot-time `scene::setup_scene` pattern. The
+    /// cost is a few-hundred-ms BSA re-open per transition, acceptable
+    /// for the single-trigger door flow.
     fn step_cell_transition(&mut self) {
         let Some(ctx) = self.renderer.as_mut() else {
             return;
@@ -847,60 +854,188 @@ impl App {
             return;
         };
 
-        // Rebuild providers from CLI args — matches `scene::setup_scene`.
+        let dest_label = cell_loader::log_transition_header(&pending);
         let args: Vec<String> = std::env::args().collect();
-        let tex_provider = crate::asset_provider::build_texture_provider(&args);
-        let mut mat_provider = crate::asset_provider::build_material_provider(&args);
 
-        let outcome = cell_loader::execute_pending(
-            &mut self.world,
-            ctx,
-            &tex_provider,
-            Some(&mut mat_provider),
-            pending,
-        );
-        match outcome {
-            cell_loader::TransitionOutcome::Applied {
-                camera_position,
-                destination_label,
+        // Default exterior-load radius — re-use the CLI default (3 →
+        // 7×7 grid). A future enhancement can plumb the boot-time
+        // `--radius` through `LoadedPluginSet` to honor the operator's
+        // chosen value across transitions.
+        const DEFAULT_TRANSITION_RADIUS: i32 = 3;
+
+        match pending.destination {
+            cell_loader::TransitionDestination::Interior {
+                editor_id,
+                masters,
+                esm_path,
             } => {
-                log::info!(
-                    "Cell transition applied: → {} at world ({:.1}, {:.1}, {:.1})",
-                    destination_label,
-                    camera_position.x,
-                    camera_position.y,
-                    camera_position.z,
-                );
-                // Streamed/swapped cells produce a fresh TLAS + zero
-                // motion-vector history for every pixel — bump the
-                // SVGF/TAA recovery window so the transient is washed
-                // out in ~8 frames instead of 30+ at steady-state α.
-                // Mirrors the cell-load handler in
-                // `consume_streaming_payload`. See #801 / STRM-N1.
-                ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+                // Exterior → Interior: drain the streaming state before
+                // the interior load fires. Mirrors the CloseRequested
+                // shutdown sequence: unload every loaded cell so its
+                // BLAS / mesh / texture refs drain, flush deferred
+                // destroys, then shutdown the worker with a bounded
+                // timeout. The owned providers held by the streaming
+                // state drop alongside the take().
+                if self.streaming.is_some() {
+                    drain_streaming_state(&mut self.world, ctx, &mut self.streaming);
+                }
+                let tex_provider = crate::asset_provider::build_texture_provider(&args);
+                let mut mat_provider = crate::asset_provider::build_material_provider(&args);
+                match cell_loader::load_interior_cell(
+                    &mut self.world,
+                    ctx,
+                    &tex_provider,
+                    Some(&mut mat_provider),
+                    &editor_id,
+                    &masters,
+                    &esm_path,
+                    pending.destination_position_zup,
+                    pending.destination_rotation_zup,
+                ) {
+                    Ok(cam_pos) => {
+                        log::info!(
+                            "Cell transition applied: → {} at world ({:.1}, {:.1}, {:.1})",
+                            dest_label,
+                            cam_pos.x,
+                            cam_pos.y,
+                            cam_pos.z,
+                        );
+                        ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+                    }
+                    Err(e) => {
+                        log::error!("Cell transition to {} FAILED: {}", dest_label, e);
+                    }
+                }
             }
-            cell_loader::TransitionOutcome::NotImplemented {
-                destination_label,
-                reason,
+            cell_loader::TransitionDestination::Exterior {
+                worldspace,
+                grid,
+                masters,
+                esm_path,
             } => {
-                log::warn!(
-                    "Cell transition to {} dropped: {}",
-                    destination_label,
-                    reason,
-                );
-            }
-            cell_loader::TransitionOutcome::Failed {
-                destination_label,
-                error,
-            } => {
-                log::error!(
-                    "Cell transition to {} FAILED: {}",
-                    destination_label,
-                    error,
-                );
+                // 1. Tear down any active interior cell first — its
+                // CurrentCellRoot would otherwise leak alongside the
+                // new streaming state. No-op on the
+                // Exterior→Exterior cross-worldspace path (no interior
+                // was loaded).
+                cell_loader::unload_current_interior(&mut self.world, ctx);
+
+                // 2. Tear down any existing streaming state. Always
+                // rebuild on exterior-destination transitions, even
+                // intra-worldspace, so the orchestrator's failure
+                // mode is uniform.
+                if self.streaming.is_some() {
+                    drain_streaming_state(&mut self.world, ctx, &mut self.streaming);
+                }
+
+                // 3. Build the fresh streaming context for the
+                // destination worldspace + initial grid. `wrld_override`
+                // pins the worldspace to what the reverse-lookup
+                // returned so the heuristic search inside
+                // `build_exterior_world_context` doesn't pick something
+                // else.
+                let tex_provider = crate::asset_provider::build_texture_provider(&args);
+                let mat_provider = crate::asset_provider::build_material_provider(&args);
+                match cell_loader::build_exterior_world_context(
+                    &masters,
+                    &esm_path,
+                    grid.0,
+                    grid.1,
+                    DEFAULT_TRANSITION_RADIUS,
+                    Some(&worldspace),
+                ) {
+                    Ok(wctx) => {
+                        crate::scene::apply_worldspace_weather(
+                            &mut self.world,
+                            ctx,
+                            &tex_provider,
+                            &wctx,
+                        );
+                        let mut state = streaming::WorldStreamingState::new(
+                            wctx,
+                            tex_provider,
+                            mat_provider,
+                            DEFAULT_TRANSITION_RADIUS,
+                        );
+                        state.last_player_grid = Some(grid);
+                        let _ = crate::scene::stream_initial_radius(
+                            &mut self.world,
+                            ctx,
+                            &mut state,
+                            grid.0,
+                            grid.1,
+                        );
+                        self.streaming = Some(state);
+
+                        // 4. Reposition the camera at the destination
+                        // spawn point. `stream_initial_radius` returned
+                        // a "load-centre" pose for the initial boot
+                        // path, but here we want the XTEL-authored
+                        // spawn, not the cell centre.
+                        let dest_pos =
+                            cell_loader::position_zup_to_yup(pending.destination_position_zup);
+                        let dest_rot =
+                            cell_loader::rotation_zup_to_yup_quat(pending.destination_rotation_zup);
+                        cell_loader::reposition_camera(&mut self.world, dest_pos, dest_rot);
+
+                        log::info!(
+                            "Cell transition applied: → {} at world ({:.1}, {:.1}, {:.1})",
+                            dest_label,
+                            dest_pos.x,
+                            dest_pos.y,
+                            dest_pos.z,
+                        );
+                        ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "Cell transition to {} FAILED at exterior context build: {:#}",
+                            dest_label,
+                            e,
+                        );
+                    }
+                }
             }
         }
     }
+
+}
+
+/// Tear down the active exterior streaming state: drain every loaded
+/// cell via `unload_cell`, flush the renderer's deferred-destroy
+/// queues, then shutdown the worker thread with a bounded timeout.
+/// Leaves `*streaming_slot = None` on return.
+///
+/// Free function (not an `App` method) so the caller can split-borrow
+/// `&mut self.world` / `&mut self.streaming` / `&mut self.renderer`
+/// without aliasing — the `App` method form fights the borrow checker
+/// when `ctx` was already extracted from `self.renderer.as_mut()`.
+///
+/// Pulled out of the `WindowEvent::CloseRequested` handler so
+/// transition flows can re-use the same teardown sequence — the
+/// shutdown ordering invariants (loaded cells before worker join
+/// before context drop) are identical at door transitions.
+fn drain_streaming_state(
+    world: &mut byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::VulkanContext,
+    streaming_slot: &mut Option<streaming::WorldStreamingState>,
+) {
+    let Some(mut state) = streaming_slot.take() else {
+        return;
+    };
+    let cells: Vec<_> = state.loaded.drain().collect();
+    log::info!(
+        "Cell transition: draining {} streamed cells before swap",
+        cells.len()
+    );
+    for ((_gx, _gy), slot) in cells {
+        cell_loader::unload_cell(world, ctx, slot.cell_root);
+    }
+    // Mirrors the CloseRequested path — release per-queue Arc
+    // clones explicitly before tearing down the rest of the
+    // streaming state.
+    ctx.flush_pending_destroys();
+    state.shutdown(std::time::Duration::from_secs(1));
 }
 
 /// Apply a single worker-pre-parsed [`streaming::LoadCellPayload`]:

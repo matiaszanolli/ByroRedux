@@ -75,8 +75,9 @@ mod exterior;
 
 pub use index::LoadedCellIndex;
 pub use transition::{
-    execute_pending, take_pending_transition, CurrentCellRoot, LoadedPluginSet,
-    PendingCellTransition, PendingCellTransitionSlot, TransitionDestination, TransitionOutcome,
+    load_interior_cell, log_transition_header, position_zup_to_yup, reposition_camera,
+    rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior, CurrentCellRoot,
+    LoadedPluginSet, PendingCellTransition, PendingCellTransitionSlot, TransitionDestination,
 };
 
 // Public re-exports — keep the existing `crate::cell_loader::FOO`
