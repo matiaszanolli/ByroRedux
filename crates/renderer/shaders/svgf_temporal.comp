@@ -218,7 +218,21 @@ void main() {
                 // resurrect a same-mesh-but-different-normal tap that
                 // the bilinear loop just rejected.
                 vec3 nearN = octDecode(texelFetch(prevNormalTex, q, 0).rg);
-                if (nearID == currID && dot(currN, nearN) >= 0.9) {
+                // #904 / #992 — mask bit 31 (ALPHA_BLEND_NO_HISTORY)
+                // before comparing instance IDs. Mirrors the bilinear
+                // loop's mask at line ~156 above — same "same surface"
+                // check, so same predicate. Without this mask, a
+                // same-instance opaque ↔ alpha-blend transition
+                // (glass props with stage-controlled opacity, cloaks
+                // moving between alpha-tested and alpha-blended draws)
+                // produces a one-frame disocclusion sparkle on this
+                // sub-pixel-motion fallback path while the dominant
+                // bilinear loop above handles it cleanly. REN-D10-NEW-12.
+                // Note: `currID`'s bit 31 is guaranteed unset by the
+                // early-out near line ~97, so masking `currID` is a
+                // no-op in practice — kept for symmetry so the two
+                // predicates stay co-maintainable.
+                if ((nearID & 0x7FFFFFFFu) == (currID & 0x7FFFFFFFu) && dot(currN, nearN) >= 0.9) {
                     vec4 sMom = texelFetch(prevMomentsHistTex, q, 0);
                     histInd   = texelFetch(prevIndirectHistTex, q, 0).rgb;
                     histMom   = sMom.xy;

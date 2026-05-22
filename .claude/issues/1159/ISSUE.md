@@ -1,16 +1,26 @@
-# #1159 — REN-D10-NEW-12: SVGF nearest-tap fallback compares nearID == currID without ALPHA_BLEND_NO_HISTORY mask
+title:	REN-D10-NEW-12: SVGF nearest-tap fallback compares nearID == currID without ALPHA_BLEND_NO_HISTORY mask
+state:	OPEN
+author:	matiaszanolli (Matias Zanolli)
+labels:	bug, low, renderer
+comments:	0
+assignees:	
+projects:	
+milestone:	
+number:	1159
+--
+## Source Audit
+`docs/audits/AUDIT_RENDERER_2026-05-17_DIM9_DIM10.md` — Dimension 10 (Denoiser & Composite)
 
-**Severity**: LOW
-**Domain**: renderer
-**Status**: OPEN
-**Source Audit**: `docs/audits/AUDIT_RENDERER_2026-05-17_DIM9_DIM10.md` — Dimension 10
+## Severity
+**LOW** — niche disocclusion sparkle on same-instance opaque ↔ alpha-blend transitions at sub-pixel motion. Real but narrow.
 
 ## Location
-
 `crates/renderer/shaders/svgf_temporal.comp:217`
 
-## Description
+## Status
+**NEW** at HEAD `c265032e`.
 
+## Description
 The bilinear consistency loop at lines 140-192 masks bit 31 (the `ALPHA_BLEND_NO_HISTORY` marker added by #904 / #992) on both `prevID` and `currID` before comparing:
 
 ```glsl
@@ -25,8 +35,28 @@ if (nearID == currID && dot(currN, nearN) >= 0.9) {
 
 The early-out at line 97 already guarantees `currID`'s bit 31 is unset (the shader returns before this code for sky / current-alpha-blend), so the only way the comparison falsely fails is when `nearID` has bit 31 set (previous frame was alpha-blend at this pixel) and the underlying 31-bit instance ID happens to match. Same-instance opaque ↔ alpha-blend transitions are rare but real (glass props with stage-controlled opacity, character cloaks moving between alpha-tested and alpha-blended draw paths during animation phases).
 
-## Suggested Fix
+## Evidence
+Compare `svgf_temporal.comp:151` (masked):
+```glsl
+if ((prevID & 0x7FFFFFFFu) != (currID & 0x7FFFFFFFu)) continue;
+```
 
+with `:217` (unmasked):
+```glsl
+if (nearID == currID && dot(currN, nearN) >= 0.9) {
+```
+
+Both gates serve the same "same surface" check.
+
+## Impact
+Niche. The fallback only fires when:
+1. All 4 bilinear taps were rejected by the SH-5 normal-cone check (`dot(currN, prevN) < 0.9`), AND
+2. Motion magnitude < 1.5 px, AND
+3. The same-instance opaque/alpha-blend transition is in progress at this sub-pixel.
+
+Under those conditions, a single-frame disocclusion sparkle on the transitioning fragment instead of the smooth fallback the masking was designed to give.
+
+## Suggested Fix
 Mirror the bilinear loop's mask — 1-line change:
 
 ```glsl
@@ -35,7 +65,16 @@ if ((nearID & 0x7FFFFFFFu) == (currID & 0x7FFFFFFFu) && dot(currN, nearN) >= 0.9
 
 No behavioural change in the dominant path (currID's bit 31 is always 0 by the early-out, so masking currID is a no-op; masking nearID is the actual fix).
 
-## Related
+## Completeness Checks
+- [ ] **UNSAFE**: N/A
+- [ ] **SIBLING**: Cross-check sibling mesh-ID comparisons in the same file (already audited — only these two sites)
+- [ ] **DROP**: N/A
+- [ ] **LOCK_ORDER**: N/A
+- [ ] **FFI**: N/A
+- [ ] **TESTS**: Hard to unit-test in isolation; rely on visual A/B at the next prospector/Markarth probe.  Add a comment block linking `:217` to `:151` as a co-maintenance hint.
 
+## Related
 - #904 / #992 — alpha-blend bit-31 encoding into mesh-ID (R32_UINT format)
 - #1131 — sub-pixel motion fallback added in REN-D10-NEW-01; this finding catches the masking inconsistency introduced alongside it
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
