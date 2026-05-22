@@ -1,8 +1,13 @@
-# #1147 — FO4-D6-003 Phase 2: gate PBR / SSS / model-space-normals paths in triangle.frag (renderer-side wiring of #1077)
-
-Labels: enhancement, renderer, medium
-State: OPEN
-
+title:	FO4-D6-003 Phase 2: gate PBR / SSS / model-space-normals paths in triangle.frag (renderer-side wiring of #1077)
+state:	OPEN
+author:	matiaszanolli (Matias Zanolli)
+labels:	enhancement, medium, renderer
+comments:	1
+assignees:	
+projects:	
+milestone:	
+number:	1147
+--
 ## Description
 
 Follow-up to #1077 Phase 1 (closed in $COMMIT). Phase 1 surfaced
