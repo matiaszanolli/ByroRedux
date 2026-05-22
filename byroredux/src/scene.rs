@@ -528,23 +528,58 @@ pub(crate) fn setup_scene(
         // which is correct, since the body isn't spawned yet.
         byroredux_physics::physics_sync_system(world, 0.0);
 
-        // Spawn the character ABOVE any potentially-conflicting
-        // collider so KCC's penetration-fix doesn't shove it through
-        // an architecture mesh on frame 0. The REFR-bounds centerline
-        // is too close to interior floors for Bethesda content
-        // (Whiterun Bannered Mare REFRs span Y 0-400, but the static
-        // collider AABB extends Y 26-576; spawning at REFR-Y-center
-        // 200 puts the character inside an architecture TriMesh).
+        // Spawn the character by ray-casting straight down from
+        // `aabb.max.y + 50 BU` and placing the capsule centre at
+        // `hit.y + half_height + offset_skin`. This lands on the
+        // FIRST solid floor under the camera's XZ rather than on the
+        // building's exterior roof — pre-fix the `aabb.max.y + 200`
+        // approach placed the spawn above the cell's tallest collider,
+        // which for Whiterun Bannered Mare is the exterior roof
+        // (gap-ridden TriMesh — slipping through tiny cracks dropped
+        // the player straight into the void).
         //
-        // Place the spawn at `aabb.max.y + 200 BU` so the capsule
-        // starts well above the cell ceiling, then falls cleanly
-        // through air onto the highest floor under the XZ position.
-        // Falls back to `cam_pos - eye_height` when there are still
-        // no static colliders (cell load returned no bhk data).
+        // Fallback chain:
+        //   1. Ray-cast finds floor → place capsule above it.
+        //   2. AABB known but no ray hit → `aabb.max.y + 200` (pre-fix
+        //      behaviour; rare).
+        //   3. No static colliders parsed yet → `cam_pos - eye_height`.
+        //
+        // Offset 4.0 BU matches the KCC's `controller.offset`, so the
+        // capsule rests against (not embedded in) the floor surface.
         let body_pos = {
             let pw = world.resource::<byroredux_physics::PhysicsWorld>();
             match pw.static_colliders_aabb() {
-                Some((_, max, _)) => Vec3::new(cam_pos.x, max[1] + 200.0, cam_pos.z),
+                Some((min, max, _)) => {
+                    let aabb_height = (max[1] - min[1]).max(1.0);
+                    // Start the ray ~50 BU above the top of the cell.
+                    let ray_origin = Vec3::new(cam_pos.x, max[1] + 50.0, cam_pos.z);
+                    // Look down through the entire cell + slack.
+                    let max_distance = aabb_height + 100.0;
+                    match pw.cast_ray_down(ray_origin, max_distance) {
+                        Some(hit_y) => {
+                            log::info!(
+                                "M28.5 spawn ray-cast: hit floor at y={:.1} under \
+                                 ({:.1}, {:.1}); placing capsule at y={:.1}",
+                                hit_y,
+                                cam_pos.x,
+                                cam_pos.z,
+                                hit_y + cc.half_height + 4.0,
+                            );
+                            Vec3::new(cam_pos.x, hit_y + cc.half_height + 4.0, cam_pos.z)
+                        }
+                        None => {
+                            log::warn!(
+                                "M28.5 spawn ray-cast: NO floor found under ({:.1}, \
+                                 {:.1}) within {:.1} BU; falling back to \
+                                 aabb.max.y + 200 (#1230 spawn fallback)",
+                                cam_pos.x,
+                                cam_pos.z,
+                                max_distance,
+                            );
+                            Vec3::new(cam_pos.x, max[1] + 200.0, cam_pos.z)
+                        }
+                    }
+                }
                 None => cam_pos - Vec3::Y * cc.eye_height,
             }
         };

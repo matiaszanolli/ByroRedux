@@ -160,6 +160,46 @@ pub struct CharacterMoveParams {
 }
 
 impl PhysicsWorld {
+    /// Cast a downward ray from `origin` and return the Y-coordinate
+    /// of the first solid hit (the highest solid surface below the
+    /// ray's start point), if any. Used by M28.5 character spawn to
+    /// place the body on the actual floor rather than at
+    /// `aabb.max.y + N` which lands on the building's exterior roof
+    /// — that roof has structural gaps the KCC can slip through.
+    ///
+    /// Ranges over fixed (static) colliders only. `max_distance` is
+    /// in BU; pass the AABB height + slack.
+    ///
+    /// Returns the world-space Y of the hit; the caller adds capsule
+    /// `half_height + offset` to place the capsule centre above the
+    /// surface.
+    pub fn cast_ray_down(
+        &self,
+        origin: byroredux_core::math::Vec3,
+        max_distance: f32,
+    ) -> Option<f32> {
+        use rapier3d::prelude::*;
+        let ray = Ray::new(
+            point![origin.x, origin.y, origin.z],
+            vector![0.0, -1.0, 0.0],
+        );
+        // Restrict to fixed bodies — we don't want to spawn the player
+        // standing on a dropped barrel. `exclude_dynamic()` is an
+        // associated-fn constructor on `QueryFilter`, not a builder
+        // method; call it directly.
+        let filter = QueryFilter::exclude_dynamic();
+        self.query_pipeline
+            .cast_ray(
+                &self.bodies,
+                &self.colliders,
+                &ray,
+                max_distance,
+                /* solid = */ true,
+                filter,
+            )
+            .map(|(_handle, toi)| origin.y - toi)
+    }
+
     /// Diagnostic — compute the AABB of all static colliders in the
     /// world, plus the count. Returns `None` when there are no static
     /// colliders. Used by the M28.5 controller's one-shot "collider
@@ -215,7 +255,17 @@ impl PhysicsWorld {
 
         let mut controller = KinematicCharacterController::default();
         controller.up = Vector::y_axis();
-        controller.offset = CharacterLength::Absolute(0.5);
+        // M28.5 / #1230 follow-up — at Skyrim's 70 BU/m scale, 0.5 BU
+        // was only 7 mm of skin between the capsule and any surface,
+        // letting the KCC's swept cast graze TriMesh edges and tunnel
+        // through tiny gaps (Whiterun Bannered Mare floor planks have
+        // ~1-2 BU vertex-gaps where adjacent collision triangles meet;
+        // the 0.5 BU offset wasn't enough margin). 4 BU (~5.7 cm) is
+        // a typical Rapier KCC offset for Bethesda-scale content —
+        // wide enough to keep the capsule from grazing edges, narrow
+        // enough that 80 BU doorways still admit the 36 BU-diameter
+        // capsule with ~22 BU of margin per side.
+        controller.offset = CharacterLength::Absolute(4.0);
         controller.slide = true;
         controller.autostep = Some(CharacterAutostep {
             max_height: CharacterLength::Absolute(params.step_height.max(0.0)),

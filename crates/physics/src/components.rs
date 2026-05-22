@@ -35,10 +35,13 @@ pub struct PlayerBody {
 }
 
 impl PlayerBody {
-    /// Default human-shaped capsule: ~144 BU tall, ~56 BU wide.
+    /// Vanilla-Skyrim-sized humanoid capsule: 128 BU tall, 36 BU wide.
+    /// Matches CommonLib's `bhkCharController` dimensions for a Nord
+    /// male — `2 * (46 + 18) = 128 BU ≈ 1.83 m` at Skyrim's 70 BU/m
+    /// scale.
     pub const HUMAN: Self = Self {
-        half_height: 72.0,
-        radius: 28.0,
+        half_height: 46.0,
+        radius: 18.0,
     };
 }
 
@@ -70,7 +73,8 @@ impl Component for PlayerBody {
 /// **Coordinate frame**: capsule is `capsule_y` (vertical), so
 /// `half_height` excludes the hemispherical caps — total visible
 /// height = `2 * (half_height + radius)`. Default `HUMAN` matches
-/// `PlayerBody::HUMAN` (~144 BU tall, ~56 BU wide).
+/// `PlayerBody::HUMAN` (128 BU tall, 36 BU wide — vanilla Skyrim
+/// actor-capsule dimensions).
 #[derive(Debug, Clone, Copy)]
 pub struct CharacterController {
     // ── Shape ────────────────────────────────────────────────────
@@ -125,13 +129,19 @@ pub struct CharacterController {
 }
 
 impl CharacterController {
-    /// Bethesda-default humanoid character — 144 BU tall, 56 BU wide,
+    /// Vanilla-Skyrim-sized humanoid character — 128 BU tall, 36 BU
+    /// wide (matches CommonLib's `bhkCharController` for a Nord male),
     /// 50° slope, 32 BU step, 220 BU/sec walk speed (~3.14 m/s,
     /// Skyrim's documented player walk speed).
+    ///
+    /// `eye_height = 52` puts the camera 116 BU above feet on a 128 BU
+    /// capsule — matches Skyrim's 1st-person eye height. The test
+    /// `character_controller_human_dimensions` asserts `eye_height <
+    /// half_height + radius` to keep the eye inside the visible capsule.
     pub const HUMAN: Self = Self {
-        half_height: 72.0,
-        radius: 28.0,
-        eye_height: 58.0,
+        half_height: 46.0,
+        radius: 18.0,
+        eye_height: 52.0,
         move_speed: 220.0,
         jump_velocity: 380.0,
         gravity: -1373.4, // 2× PhysicsWorld earth gravity for snappier feel
