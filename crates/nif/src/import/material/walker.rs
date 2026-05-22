@@ -885,9 +885,20 @@ pub(crate) fn extract_material_info_from_refs(
         // ambient/diffuse contributions, a SRC_AMB_DIFF vertex_mode
         // becomes effectively invisible — demote to `Ignore` so the
         // renderer skips the `texColor * fragColor` double-count.
-        if let Some(vcol) = scene.get_as::<NiVertexColorProperty>(idx) {
-            info.vertex_color_mode =
-                VertexColorMode::from_property(vcol.vertex_mode, vcol.lighting_mode);
+        //
+        // #1208 — gate on `!info.has_material_data`. A Skyrim+ mesh
+        // that authors both `BSLightingShaderProperty` (Skyrim+ shader
+        // path; default AmbientDiffuse is the intended mode) AND a
+        // legacy `NiVertexColorProperty` in the inherited NiNode
+        // property chain previously let the legacy property silently
+        // overwrite the Skyrim+ intent. Mirrors the
+        // `if info.texture_path.is_none()` precedence pattern used by
+        // every other secondary-source consumer in this loop.
+        if !info.has_material_data {
+            if let Some(vcol) = scene.get_as::<NiVertexColorProperty>(idx) {
+                info.vertex_color_mode =
+                    VertexColorMode::from_property(vcol.vertex_mode, vcol.lighting_mode);
+            }
         }
 
         // #1224 / D4-NEW-02 — NiFogProperty is parsed (see

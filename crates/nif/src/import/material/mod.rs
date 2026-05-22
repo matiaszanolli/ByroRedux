@@ -1030,3 +1030,10 @@ mod sky_water_shader_tests;
 /// that dropped all `.mat` references.
 #[cfg(test)]
 mod lighting_shader_mat_tests;
+
+/// Regression tests for #1208 (NIF-D4-NEW-08) — inherited
+/// `NiVertexColorProperty` must not overwrite the Skyrim+ shader-driven
+/// `vertex_color_mode` when `BSLightingShaderProperty` has already
+/// populated `has_material_data`.
+#[cfg(test)]
+mod vertex_color_precedence_tests;
