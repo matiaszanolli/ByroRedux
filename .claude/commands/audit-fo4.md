@@ -47,7 +47,7 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 1: NIF BSVER 130 + Half-Float Vertices
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/tri_shape.rs` (BSTriShape parser folded into the unified file post-Session-35), `crates/nif/src/import/mesh/bs_tri_shape.rs`
+**Entry points**: `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs` (BSTriShape parser; split out into `tri_shape/bs_tri_shape.rs` post-#1118, 2026-05-20), `crates/nif/src/import/mesh/bs_tri_shape.rs`
 **Checklist**: VF_FULL_PRECISION flag resolution — default-half unless set. Half-float decode matches IEEE 754 binary16 (including denormals and NaN). BSSubIndexTriShape segment data walked correctly (FO4 uses this extensively for actors). Skinned-vertex bone indices + weights extraction honors packed layout. BSVER 130 trailing fields on BSLightingShaderProperty: subsurface, rimlight, backlight, fresnel, wetness (Unknown 1 for BSVER > 130). Next-Gen patch NIFs (slightly different BSVER values) still dispatch correctly.
 **Output**: `/tmp/audit/fo4/dim_1.md`
 

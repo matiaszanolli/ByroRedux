@@ -389,9 +389,10 @@ All three previously-deferred Starfield BA2 gaps are now resolved:
   beyond v2's 8-byte extension (the compression method field). No other
   structural differences.
 
-Verified against 22 Starfield texture archives (~128K DX10 textures)
-and 53 vanilla Fallout 4 BA2 archives (v1/v7/v8 GNRL + DX10), zero
-extraction failures.
+Verified against the 30 Starfield texture archives shipped
+post-Shattered-Space (~128K+ DX10 textures; was 22 as of Session 7,
+re-checked 2026-05-21 per #1185) and 53 vanilla Fallout 4 BA2 archives
+(v1/v7/v8 GNRL + DX10), zero extraction failures.
 
 ## Tests
 

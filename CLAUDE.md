@@ -306,8 +306,9 @@ renders fully populated. Tools: new `crates/nif/examples/trace_block.rs`
 that dumps per-block positions + 64-byte hex peeks for parser debugging.
 Session 7: Starfield BA2 v3 DX10 texture extraction — v3 header has a
 12-byte extension (not 8) with a compression_method field; LZ4 block
-decompression via lz4_flex::block. Verified against 22 Starfield texture
-archives (~128K DX10 textures) + 53 vanilla FO4 BA2s (v1/v7/v8), zero
+decompression via lz4_flex::block. Verified against the 30 Starfield
+texture archives shipped post-Shattered-Space (was 22 as of Session 7;
+re-checked 2026-05-21, #1185) + 53 vanilla FO4 BA2s (v1/v7/v8), zero
 failures. BA2 support now verified end-to-end for every version/variant.
 Session 8: 35 commits. M30 Phase 1 — Papyrus language parser (logos lexer +
 Pratt expression parser, 45 tests). M31 — RT performance at scale (batched

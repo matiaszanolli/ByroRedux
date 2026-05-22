@@ -65,14 +65,14 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ### Dimension 4: Vertex Format & Mesh Variants
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/tri_shape.rs` (BSTriShape parser folded into the unified file post-Session-35)
+**Entry points**: `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs` (BSTriShape parser; split out into `tri_shape/bs_tri_shape.rs` post-#1118, 2026-05-20)
 **Checklist**: BSTriShape vertex format for Starfield. Any new VF_* flag bits introduced beyond FO4's set. Tangent-space reconstruction from packed normals. Vertex count limits (Starfield has much higher-detail meshes than FO4). BSGeometrySegmentData — current `block_size` skip is correct; any change in presence or layout for Starfield (the N23.9 note said full parsing deferred until segment metadata surfaces to rendering). Check for new `BSMeshLODTriShape` / `BSSubIndexTriShape` variants or replacements.
 **Output**: `/tmp/audit/starfield/dim_4.md`
 
 ### Dimension 5: Real-Data Validation
 **Subagent**: `general-purpose`
 **Entry points**: `crates/nif/examples/nif_stats.rs`, `crates/nif/tests/parse_real_nifs.rs`
-**Checklist**: Parse rate holds at 100% on 31058 Starfield NIFs via `BYROREDUX_STARFIELD_DATA=... cargo test -p byroredux-nif --test parse_real_nifs -- --ignored starfield`. Verify all 22 Starfield texture archives + 53 vanilla + patch BA2s listed in the roadmap extract cleanly (session 7 validated ~128K DX10 textures + 0 failures — make sure that still holds). Pick 5 representative meshes: a clutter item, a ship hull, a character body, a weapon, a landscape feature. Trace each through `import_nif_scene`. Watch for `NiUnknown` placeholders in the block histogram — these would indicate new block types introduced since N23.9.
+**Checklist**: Parse rate holds at 100% on 31058 Starfield NIFs via `BYROREDUX_STARFIELD_DATA=... cargo test -p byroredux-nif --test parse_real_nifs -- --ignored starfield`. Verify all Starfield texture archives matching `Starfield - *Textures*.ba2` (30 as of 2026-05-21 post-Shattered-Space, was 22 in Session 7 — per #1185) + 53 vanilla + patch BA2s listed in the roadmap extract cleanly (session 7 validated ~128K DX10 textures + 0 failures — make sure that still holds). Pick 5 representative meshes: a clutter item, a ship hull, a character body, a weapon, a landscape feature. Trace each through `import_nif_scene`. Watch for `NiUnknown` placeholders in the block histogram — these would indicate new block types introduced since N23.9.
 **Output**: `/tmp/audit/starfield/dim_5.md`
 
 ### Dimension 6: ESM Roadmap & Forward Blockers

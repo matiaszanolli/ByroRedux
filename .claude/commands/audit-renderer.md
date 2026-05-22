@@ -167,7 +167,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Window portal rays: through-ray direction, 2000-unit distance limit; window-portal demote path on glass that would otherwise infinite-loop (#789 — texture-equality identity check breaks the IOR refraction self-passthrough on coincident glass surfaces)
 - IOR refraction: roughness spread basis built via Frisvad orthonormal basis (#820 / REN-D9-NEW-01) — the legacy `cross(N, world-up)` construction degenerates near vertical surfaces; verify Frisvad is in use and tangent/bitangent are unit-length
 - IOR refraction: ray budget is `GLASS_RAY_BUDGET = 8192` (raised from 512 in 9a4dc15) — verify cap is wired and not silently exceeded; sky-tint fallback on miss is replaced by cell-ambient for interiors (bb53fd5 — no more open-sky tint inside dungeons)
-- IOR refraction diagnostics: `DBG_VIZ_GLASS_PASSTHRU = 0x80` flag exposes the passthrough decision per-fragment for bisecting glass loops; verify it's still wired in `triangle.frag:1517+, 1568, 1717` and not stripped by a refactor
+- IOR refraction diagnostics: `DBG_VIZ_GLASS_PASSTHRU = 0x80` flag exposes the passthrough decision per-fragment for bisecting glass loops; verify it's still wired in `triangle.frag` (symbol-anchored: `DBG_VIZ_GLASS_PASSTHRU` callsites at the diagnostic-state setup + the two viz-write branches in the refraction/glass loop) and not stripped by a refactor
 - Interleaved gradient noise: frame counter seeded correctly, no visible patterns
 - All ray queries: `rayQueryInitializeEXT` flags (gl_RayFlagsTerminateOnFirstHitEXT for shadows + reflection + glass)
 - All ray queries: TLAS binding is the correct descriptor (set 1, binding 2)
@@ -265,16 +265,16 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Sky gradient: zenith → horizon RGB pulled from active TOD palette, applied in non-RT miss-fill path; consistent with the GI miss "sky fill contribution" used in Dim 9
 - Sun directional: direction vector from sun arc, color/intensity from TOD, shadow ray budget bounded
 - Fog: applied to direct lighting only, NOT to indirect (composite Dim 10 invariant — re-check after sky changes)
-- Interior fill at 0.6× ambient + `radius=-1` (unshadowed); `triangle.frag:1321` gates RT shadow on `radius >= 0` — verify gate hasn't drifted
+- Interior fill at 0.6× ambient + `radius=-1` (unshadowed); `triangle.frag` `isInteriorFill = radius < 0.0` gates RT shadow on `!isInteriorFill` — verify the gate (symbol-anchored, post-#1200 convention) hasn't drifted
 - Disabled-WTHR fallback: when no weather record loaded, defaults must produce neutral lighting (no NaN, no pitch-black)
 - M40 streaming interaction: cell transition does not strobe TOD (palette is per-worldspace + global TOD clock, not per-cell)
 **Output**: `/tmp/audit/renderer/dim_15.md`
 
 ### Dimension 16: Tangent-Space & Normal Maps (M-NORMALS, Sessions 26–29)
-**Entry points**: `crates/nif/src/import/mesh/tangent.rs` (extract_tangents_from_extra_data, synthesize_tangents), `crates/nif/src/import/mesh/bs_tri_shape.rs` (BSTriShape inline-tangent decode), `crates/nif/src/blocks/tri_shape.rs` (VF_TANGENTS = 0x010, packed-vertex tangent stride), `crates/renderer/shaders/triangle.frag` (perturbNormal, DBG_BYPASS_NORMAL_MAP / DBG_VIZ_NORMALS / DBG_VIZ_TANGENT)
+**Entry points**: `crates/nif/src/import/mesh/tangent.rs` (extract_tangents_from_extra_data, synthesize_tangents), `crates/nif/src/import/mesh/bs_tri_shape.rs` (BSTriShape inline-tangent decode), `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs` (VF_TANGENTS = 0x010, packed-vertex tangent stride; split out post-#1118, 2026-05-20), `crates/renderer/shaders/triangle.frag` (perturbNormal, DBG_BYPASS_NORMAL_MAP / DBG_VIZ_NORMALS / DBG_VIZ_TANGENT)
 **Checklist**:
 - Oblivion / FO3 / FNV path: per-vertex tangents pulled from `NiBinaryExtraData` named `"Tangent space (binormal & tangent vectors)"` — Bethesda's blob is `[tangents..., bitangents...]` Z-up, but their "tangent" field is actually `∂P/∂V` and "bitangent" is `∂P/∂U` (`CalcTangentSpace` swap). The decoder MUST read the **bitangent half** (offset `num_verts * 12`) into `Vertex.tangent.xyz` and use the tangent half to derive the bitangent sign — handedness regression here was #786 (fixed 5dde345). Audit for any new path that re-reads the blob without honoring the swap
-- FO4+ BSTriShape inline tangents: when `VF_TANGENTS | VF_NORMALS` are both set on the packed-vertex flag (`tri_shape.rs::BSTriShape` packed-vertex loop, ~lines 665-730), tangents ship inline in the packed-vertex blob, NOT in a separate `NiBinaryExtraData`. This is distinct from the Skyrim path; verify the FO4 inline decode (#795 / #796, b63ab0c) still fires and is not gated behind the wrong BSVER
+- FO4+ BSTriShape inline tangents: when `VF_TANGENTS | VF_NORMALS` are both set on the packed-vertex flag (`tri_shape/bs_tri_shape.rs::BsTriShape` packed-vertex loop, symbol-anchored per post-#1040 convention), tangents ship inline in the packed-vertex blob, NOT in a separate `NiBinaryExtraData`. This is distinct from the Skyrim path; verify the FO4 inline decode (#795 / #796, b63ab0c) still fires and is not gated behind the wrong BSVER
 - Synthesized fallback: when the authored blob is missing or malformed (size mismatch warns, see `mesh.rs:87`), the importer falls through to nifly's `CalcTangentSpace` synthesis (`synthesize_tangents`). Verify the fallback path produces unit-length tangents and consistent bitangent signs
 - Bitangent sign convention: `B = bitangent_sign * cross(N, T)` — the sign is reconstructed shader-side from `Vertex.tangent.w`. Verify the convention is consistent across the three import paths (Bethesda authored, FO4 inline, synthesized)
 - Coordinate conversion: Z-up (Gamebryo) → Y-up (renderer) applied to tangent xyz components in lockstep with normal conversion (no path that converts N but not T, or vice versa)
@@ -337,7 +337,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - Per-fragment single-tap stochastic cone sample around the sun direction: random offset derived from frame index + pixel coords (deterministic per-pixel-per-frame), not a true RNG that breaks TAA history
 - Shadow ray flags include `gl_RayFlagsTerminateOnFirstHitEXT` (no closest-hit needed; visibility query only)
 - TAA accumulation absorbs the per-frame noise — verify the YCoCg clamp tolerance allows the noise to converge (too-tight clamp = persistent noise; too-loose = over-blur)
-- Interior `radius=-1` gate (`triangle.frag:1321`) still bypasses the cone sample — soft-shadow code must not fire inside interior cells
+- Interior `radius=-1` gate (`triangle.frag` `isInteriorFill = radius < 0.0`, symbol-anchored) still bypasses the cone sample — soft-shadow code must not fire inside interior cells
 - Disocclusion: when TAA mesh-id mismatches discard history, the un-converged single-sample frame is visible — verify the fallback isn't black (a black single-sample frame is the regression pattern)
 **Output**: `/tmp/audit/renderer/dim_20.md`
 
