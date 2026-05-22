@@ -38,10 +38,20 @@ pub const IDENTITY_BONE_SLOT: u32 = 0;
 /// entities first-appear in a single frame, the renderer caps the
 /// uploads at this count and defers the excess to the next frame.
 ///
-/// 16 is generous: even a heavy cell-load that streams in a dozen
-/// NPCs at once stays under this ceiling. Staging buffer size at
-/// this value is `16 × 144 × 64 B = 144 KB`.
-pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = 16;
+/// Pre-#1198 this was 16 (matching the typical heavy-cell-load count).
+/// Bumped to 227 (= `MAX_TOTAL_BONES / MAX_BONES_PER_MESH` =
+/// `32768 / 144`) — the actual slot-pool capacity. The pre-fix cap
+/// produced a one-frame bind-pose glitch when more than 16 skinned
+/// NPCs first-sighted in a single frame (FO4 MedTek: 23 SkinnedMesh
+/// entities; FO3 Megaton REFR spill on first entry). Per #1191's
+/// identity-fallback contract the deferred entities rendered in bind
+/// pose for one frame, then snapped to skinned pose on frame N+1.
+///
+/// Staging buffer size at this value is
+/// `227 × MAX_BONES_PER_MESH (144) × 64 B ≈ 2 MB` — trivial on the
+/// 6 GB VRAM target. With the bump the per-frame upload cap matches
+/// the slot pool's actual capacity, eliminating the one-frame glitch.
+pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = 227;
 
 /// Maximum instances per frame — `0x40000` (262144). Sized to
 /// absorb the densest observed Skyrim/FO4 city cells (Solitude,
