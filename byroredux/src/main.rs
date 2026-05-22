@@ -825,6 +825,82 @@ impl App {
             }
         }
     }
+
+    /// Drain any queued [`cell_loader::PendingCellTransition`] and
+    /// dispatch the orchestrator. Runs once per frame after
+    /// `step_streaming`. No-op on frames with no pending transition.
+    ///
+    /// Provider construction is per-transition: the orchestrator
+    /// needs `TextureProvider` + `MaterialProvider` to load the
+    /// destination cell, and neither lives on `App` outside the
+    /// exterior-streaming path. Rebuilding from CLI args matches the
+    /// scene-setup pattern; the cost is a few-hundred-ms BSA re-open
+    /// per transition, acceptable for Stage 3a's single-trigger flow.
+    /// Stage 3b will share providers with the streaming state.
+    fn step_cell_transition(&mut self) {
+        let Some(ctx) = self.renderer.as_mut() else {
+            return;
+        };
+        let Some(pending) =
+            cell_loader::take_pending_transition(&self.world)
+        else {
+            return;
+        };
+
+        // Rebuild providers from CLI args — matches `scene::setup_scene`.
+        let args: Vec<String> = std::env::args().collect();
+        let tex_provider = crate::asset_provider::build_texture_provider(&args);
+        let mut mat_provider = crate::asset_provider::build_material_provider(&args);
+
+        let outcome = cell_loader::execute_pending(
+            &mut self.world,
+            ctx,
+            &tex_provider,
+            Some(&mut mat_provider),
+            pending,
+        );
+        match outcome {
+            cell_loader::TransitionOutcome::Applied {
+                camera_position,
+                destination_label,
+            } => {
+                log::info!(
+                    "Cell transition applied: → {} at world ({:.1}, {:.1}, {:.1})",
+                    destination_label,
+                    camera_position.x,
+                    camera_position.y,
+                    camera_position.z,
+                );
+                // Streamed/swapped cells produce a fresh TLAS + zero
+                // motion-vector history for every pixel — bump the
+                // SVGF/TAA recovery window so the transient is washed
+                // out in ~8 frames instead of 30+ at steady-state α.
+                // Mirrors the cell-load handler in
+                // `consume_streaming_payload`. See #801 / STRM-N1.
+                ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+            }
+            cell_loader::TransitionOutcome::NotImplemented {
+                destination_label,
+                reason,
+            } => {
+                log::warn!(
+                    "Cell transition to {} dropped: {}",
+                    destination_label,
+                    reason,
+                );
+            }
+            cell_loader::TransitionOutcome::Failed {
+                destination_label,
+                error,
+            } => {
+                log::error!(
+                    "Cell transition to {} FAILED: {}",
+                    destination_label,
+                    error,
+                );
+            }
+        }
+    }
 }
 
 /// Apply a single worker-pre-parsed [`streaming::LoadCellPayload`]:
@@ -1497,6 +1573,12 @@ impl ApplicationHandler for App {
         // for this frame. No-ops outside `--esm + --grid` exterior
         // mode and when the player hasn't crossed a boundary.
         self.step_streaming();
+
+        // Cell-transition dispatch (M40 Phase 2 Stage 3). Drains the
+        // `PendingCellTransitionSlot` posted by `door.teleport`
+        // (and future F-key activate) and dispatches the orchestrator.
+        // No-op when the slot is `None` — the common per-frame case.
+        self.step_cell_transition();
 
         // Update window title with stats (throttled: every 16 frames ≈ 4×/sec at 60fps).
         let config_debug = self.world.resource::<EngineConfig>().debug_logging;

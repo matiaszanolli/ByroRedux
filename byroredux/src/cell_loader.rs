@@ -68,11 +68,16 @@ mod references;
 mod refr;
 mod spawn;
 mod terrain;
+mod transition;
 mod unload;
 mod water;
 mod exterior;
 
 pub use index::LoadedCellIndex;
+pub use transition::{
+    execute_pending, take_pending_transition, CurrentCellRoot, LoadedPluginSet,
+    PendingCellTransition, PendingCellTransitionSlot, TransitionDestination, TransitionOutcome,
+};
 
 // Public re-exports — keep the existing `crate::cell_loader::FOO`
 // call sites in main.rs / streaming.rs / commands.rs working without

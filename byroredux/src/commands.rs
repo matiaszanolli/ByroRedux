@@ -11,9 +11,11 @@ use byroredux_core::string::StringPool;
 use std::collections::HashMap;
 
 use byroredux_core::ecs::SystemList;
-use crate::cell_loader::LoadedCellIndex;
+use crate::cell_loader::{
+    LoadedCellIndex, LoadedPluginSet, PendingCellTransition, PendingCellTransitionSlot,
+    TransitionDestination,
+};
 use crate::components::{DoorTeleport, InputState};
-use byroredux_plugin::esm::cell::CellRef;
 
 struct HelpCommand;
 impl ConsoleCommand for HelpCommand {
@@ -1332,27 +1334,33 @@ fn fmt_opt_rgb(v: Option<[f32; 3]>) -> String {
     }
 }
 
-/// `door.teleport <entity_id>` — inspect a door REFR's XTEL teleport
-/// payload and resolve its destination cell.
+/// `door.teleport <entity_id>` — fire a cell transition through a
+/// door's XTEL destination.
 ///
-/// Reads the [`DoorTeleport`] component (stamped at spawn time when the
-/// REFR carries an XTEL sub-record — M40 Phase 2 Stage 1 plumbing) and
-/// queries the loaded [`LoadedCellIndex`] for the destination REFR's
-/// parent cell. Reports the destination FormID, position (Bethesda
-/// Z-up), rotation, and the parent cell (interior editor-ID or
-/// exterior worldspace + grid).
+/// Pipeline:
+///   1. Read [`DoorTeleport`] on the entity → destination form-id +
+///      Bethesda-Z-up position / rotation.
+///   2. Resolve form-id → parent cell via [`LoadedCellIndex`].
+///   3. Queue a [`PendingCellTransition`] for the main loop to consume
+///      next frame. The orchestrator unloads the current cell, loads
+///      the destination, and repositions the camera.
 ///
-/// **Today this is observation-only** — the cell-swap orchestrator
-/// (Phase 3) hasn't landed, so the camera does not actually transport.
-/// Use this to verify the XTEL plumbing reaches the runtime and the
-/// reverse-lookup hits the right cell before wiring the swap path.
+/// The queueing pattern works around the console-command system's
+/// `&World`-only access — actual cell load/unload requires `&mut
+/// World + &mut VulkanContext` which only the main loop has. The
+/// deferred resource is consumed by `step_cell_transition` in
+/// `main.rs`.
+///
+/// Stage 3a scope: interior-cell destinations are wired end-to-end.
+/// Exterior destinations queue the request but the orchestrator
+/// returns `NotImplemented` (Stage 3b will spin up the streaming
+/// state). Either way the command reports its findings.
 ///
 /// Natural usage:
 ///   1. `cargo run -- --esm FalloutNV.esm --cell GSDocMitchellHouse --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --bench-hold`
-///   2. `byro-dbg` → `entities DoorTeleport` to list plumbed doors
-///   3. `door.teleport <id>` on the front door
-///   4. Expect: destination cell = Goodsprings worldspace exterior grid
-///      containing the destination REFR's position.
+///   2. `byro-dbg` → `entities DoorTeleport` lists plumbed doors
+///   3. `door.teleport <id>` on the back door (links to another interior cell)
+///   4. Expect: scene re-loads, camera lands at the destination spawn point.
 struct DoorTeleportCommand;
 impl ConsoleCommand for DoorTeleportCommand {
     fn name(&self) -> &str {
@@ -1400,25 +1408,19 @@ impl ConsoleCommand for DoorTeleportCommand {
 
         // 2. Resolve destination FormID → parent cell. Requires
         // LoadedCellIndex to be present (set by `load_cell_with_masters`
-        // for interior loads; exterior streaming wiring is Phase 2).
+        // for interior loads; exterior streaming wiring is Stage 3b).
         let Some(index) = world.try_resource::<LoadedCellIndex>() else {
             lines.push(
                 "  (no LoadedCellIndex resource — cannot resolve parent cell. \
-                 Interior cell load needed; exterior wiring is Phase 2.)"
+                 Interior cell load needed; exterior wiring is Stage 3b.)"
                     .to_string(),
             );
             return CommandOutput::lines(lines);
         };
-        match index.0.cell_for_refr_form_id(door.destination_form_id) {
-            Some(CellRef::Interior { editor_id }) => {
-                lines.push(format!("  destination cell: interior '{editor_id}'"));
-            }
-            Some(CellRef::Exterior { worldspace, grid }) => {
-                lines.push(format!(
-                    "  destination cell: exterior worldspace '{}' grid ({}, {})",
-                    worldspace, grid.0, grid.1
-                ));
-            }
+        // Materialise an owned variant so we can drop the index borrow
+        // before grabbing the LoadedPluginSet read below.
+        let owned_cell = match index.0.cell_for_refr_form_id(door.destination_form_id) {
+            Some(c) => c.to_owned(),
             None => {
                 lines.push(format!(
                     "  destination cell: NOT FOUND — destination FormID {:08X} \
@@ -1427,8 +1429,70 @@ impl ConsoleCommand for DoorTeleportCommand {
                      or an XTEL pointing at a malformed REFR.",
                     door.destination_form_id
                 ));
+                return CommandOutput::lines(lines);
             }
-        }
+        };
+        drop(index);
+
+        // 3. Snapshot the CLI plugin config so the orchestrator can
+        // call `load_cell_with_masters` for the destination.
+        let Some(plugin_set) = world.try_resource::<LoadedPluginSet>() else {
+            lines.push(
+                "  (no LoadedPluginSet resource — engine was not booted with --esm, \
+                 so no cell-load context is available. door.teleport requires an \
+                 ESM-driven boot.)"
+                    .to_string(),
+            );
+            return CommandOutput::lines(lines);
+        };
+        let masters = plugin_set.masters.clone();
+        let esm_path = plugin_set.esm_path.clone();
+        drop(plugin_set);
+
+        // 4. Build the destination + queue the transition.
+        use byroredux_plugin::esm::cell::OwnedCellRef;
+        let (destination, dest_label) = match owned_cell {
+            OwnedCellRef::Interior { editor_id } => {
+                let label = format!("interior '{editor_id}'");
+                (
+                    TransitionDestination::Interior {
+                        editor_id,
+                        masters,
+                        esm_path,
+                    },
+                    label,
+                )
+            }
+            OwnedCellRef::Exterior { worldspace, grid } => {
+                let label = format!("exterior '{worldspace}' ({},{})", grid.0, grid.1);
+                (
+                    TransitionDestination::Exterior {
+                        worldspace,
+                        grid,
+                        masters,
+                        esm_path,
+                    },
+                    label,
+                )
+            }
+        };
+        lines.push(format!("  destination cell: {dest_label}"));
+
+        let Some(mut slot) = world.try_resource_mut::<PendingCellTransitionSlot>() else {
+            lines.push(
+                "  (no PendingCellTransitionSlot resource — engine boot did not \
+                 install the slot, the transition cannot be queued.)"
+                    .to_string(),
+            );
+            return CommandOutput::lines(lines);
+        };
+        slot.0 = Some(PendingCellTransition {
+            destination,
+            source_refr_form_id: 0, // Source REFR form-id discovery is Stage 4 work.
+            destination_position_zup: door.position_zup,
+            destination_rotation_zup: door.rotation_zup,
+        });
+        lines.push("  queued: transition will fire on the next frame's main loop tick".into());
         CommandOutput::lines(lines)
     }
 }

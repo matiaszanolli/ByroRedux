@@ -78,6 +78,14 @@ pub(crate) fn setup_scene(
     let mut has_nif_content = false;
     let mut nif_root: Option<EntityId> = None;
 
+    // Pending-cell-transition slot — pre-inserted so `&World`-only
+    // trigger sites (`door.teleport` console command, M40 Phase 2
+    // Stage 4 F-key activate) can write the queued transition via
+    // `resource_mut` without structural insertion. The main loop's
+    // per-frame `take_pending_transition` drains the slot back to
+    // `None`. See cell_loader::transition.
+    world.insert_resource(cell_loader::PendingCellTransitionSlot::default());
+
     // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
     if let Some(esm_idx) = args.iter().position(|a| a == "--esm") {
         let esm_path = args.get(esm_idx + 1).cloned();
@@ -136,6 +144,18 @@ pub(crate) fn setup_scene(
             .collect();
         if !masters.is_empty() {
             log::info!("Load order: masters={:?}, main='{:?}'", masters, esm_path);
+        }
+
+        // M40 Phase 2 Stage 3 — snapshot the CLI plugin config so the
+        // transition orchestrator can re-call `load_cell_with_masters`
+        // for the destination of a portal swap without re-parsing CLI
+        // args. Inserted whenever --esm is present, before either
+        // interior or exterior dispatch.
+        if let Some(ref path) = esm_path {
+            world.insert_resource(cell_loader::LoadedPluginSet {
+                masters: masters.clone(),
+                esm_path: path.clone(),
+            });
         }
 
         if let (Some(ref esm_path), Some(ref cell_id)) = (&esm_path, &cell_id) {

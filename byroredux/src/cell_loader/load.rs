@@ -255,6 +255,15 @@ pub fn load_cell_with_masters(
     // Replaces any prior load's index wholesale.
     world.insert_resource(super::LoadedCellIndex(std::sync::Arc::new(index.cells)));
 
+    // M40 Phase 2 Stage 3 — record the just-spawned cell root so the
+    // transition orchestrator can unload it on the next swap. Cleared
+    // by `transition::execute_pending` before each load; the exterior
+    // streaming entry points leave this as `None` (they track their
+    // own `state.loaded` map). Insert wholesale on every interior load
+    // so a transition from one interior to another updates the tracker
+    // even when the resource was already present from the prior load.
+    world.insert_resource(super::CurrentCellRoot(Some(cell_root)));
+
     Ok(CellLoadResult {
         cell_name,
         entity_count,
