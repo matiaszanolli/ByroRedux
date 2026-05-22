@@ -75,7 +75,18 @@ impl AccelerationManager {
         // design rasterized but not in TLAS). A frame with 200
         // particle draws would spam the warning every second
         // suggesting an RT regression that didn't exist.
-        let mut missing_blas: usize = 0;
+        // #1228 — split the `missing_blas` count by cause so operators
+        // reading the rate-limited warn below can tell at a glance
+        // whether the warmup is benign (skinned-only — transient first-
+        // sight gaps that resolve when `build_skinned_blas_batched_on_cmd`
+        // runs) or load-bearing (`rigid` — an LRU eviction got something
+        // the draw still references; should be near-zero in steady
+        // state). Pre-fix a single `missing_blas` counter conflated the
+        // two causes plus the SSBO-skip case so triage required reading
+        // the sample strings instead of the summary line.
+        let mut missing_skinned_blas: usize = 0;
+        let mut missing_rigid_blas: usize = 0;
+        let mut missing_ssbo_instance: usize = 0;
         // REN-D8-NEW-14 — capture the first few offenders so the
         // warn-rate-limited log below identifies which meshes /
         // entities are dropping out of the TLAS instead of just
@@ -118,7 +129,7 @@ impl AccelerationManager {
                     // here the entity will be invisible to RT this
                     // frame, but raster's inline-skinning path still
                     // renders it correctly).
-                    missing_blas += 1;
+                    missing_skinned_blas += 1;
                     if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
                         missing_samples
                             .push(format!("skinned entity {:?} (no BLAS)", draw_cmd.entity_id));
@@ -130,7 +141,7 @@ impl AccelerationManager {
             } else {
                 let mesh_handle = draw_cmd.mesh_handle as usize;
                 let Some(Some(blas)) = self.blas_entries.get_mut(mesh_handle) else {
-                    missing_blas += 1;
+                    missing_rigid_blas += 1;
                     if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
                         missing_samples
                             .push(format!("rigid mesh_handle={} (no BLAS)", mesh_handle));
@@ -145,7 +156,7 @@ impl AccelerationManager {
             // and `mesh_registry` diverge (e.g. a BLAS briefly survives
             // its source mesh during eviction).
             let Some(ssbo_idx) = instance_map.get(i).copied().flatten() else {
-                missing_blas += 1;
+                missing_ssbo_instance += 1;
                 if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
                     missing_samples.push(format!(
                         "mesh_handle={} (no SSBO instance — evicted?)",
@@ -232,7 +243,8 @@ impl AccelerationManager {
         }
 
         let instance_count = instances.len() as u32;
-        if missing_blas > 0 && frame_index == 0 {
+        let missing_blas_total = missing_skinned_blas + missing_rigid_blas + missing_ssbo_instance;
+        if missing_blas_total > 0 && frame_index == 0 {
             // Log once per second (at 60fps, frame_index 0 fires 30×/s — good enough).
             static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let now = std::time::SystemTime::now()
@@ -249,16 +261,20 @@ impl AccelerationManager {
                         missing_samples.len(),
                         if missing_samples.len() == 1 { "" } else { "s" },
                         missing_samples.join("; "),
-                        if missing_blas > missing_samples.len() {
+                        if missing_blas_total > missing_samples.len() {
                             "; ..."
                         } else {
                             ""
                         },
                     )
                 };
+                // #1228 — break the count down so operators can tell
+                // benign warmup (skinned-only) from a persistent eviction
+                // bug (rigid > 0 in steady state) at a glance.
                 log::warn!(
-                    "TLAS: {} instances from {} draw commands ({} lack BLAS — no RT shadows for those meshes){}",
-                    instance_count, draw_commands.len(), missing_blas, sample
+                    "TLAS: {} instances from {} draw commands ({} lack BLAS — skinned={}, rigid={}, ssbo_evicted={} — no RT shadows for those meshes){}",
+                    instance_count, draw_commands.len(), missing_blas_total,
+                    missing_skinned_blas, missing_rigid_blas, missing_ssbo_instance, sample
                 );
             }
         }
