@@ -221,6 +221,14 @@ pub fn extract_mesh(
         is_pbr: false,
         has_translucency: false,
         model_space_normals: false,
+        // #1147 Phase 2b — BGSM v>=8 translucency suite. Defaulted
+        // to zero / false; populated by `apply_bgsm_chain` from
+        // `BgsmFile` when the material file is present.
+        translucency_subsurface_color: [0.0; 3],
+        translucency_transmissive_scale: 0.0,
+        translucency_turbulence: 0.0,
+        translucency_thick_object: false,
+        translucency_mix_albedo: false,
         parallax_max_passes: mat.parallax_max_passes,
         parallax_height_scale: mat.parallax_height_scale,
         vertex_color_mode: mat.vertex_color_mode as u8,

@@ -833,6 +833,14 @@ pub(super) fn spawn_placed_instances(
                 // the GpuMaterial consumes.
                 effect_shader_flags: pack_effect_shader_flags(mesh.effect_shader.as_ref())
                     | super::pack_bgsm_material_flags(mesh),
+                // #1147 Phase 2b — forward BGSM v>=8 translucency suite
+                // from ImportedMesh. Only meaningful when the matching
+                // `MAT_FLAG_BGSM_TRANSLUCENCY` bit is set on
+                // effect_shader_flags above (handled by
+                // pack_bgsm_material_flags); harmless to forward otherwise.
+                translucency_subsurface_color: mesh.translucency_subsurface_color,
+                translucency_transmissive_scale: mesh.translucency_transmissive_scale,
+                translucency_turbulence: mesh.translucency_turbulence,
                 // #890 Stage 2c — BSEffectShaderProperty greyscale LUT
                 // path. Resolved to a bindless handle below + attached
                 // as a `GreyscaleLutHandle` so the per-frame draw build

@@ -433,6 +433,30 @@ pub struct ImportedMesh {
     /// reliably reconstructable. `false` on every BGEM material and
     /// on NIF-only paths. See #1077 / FO4-D6-003.
     pub model_space_normals: bool,
+    /// `BgsmFile.translucency_subsurface_color` (v>=8). RGB of the
+    /// transmitted/scattered light beneath the surface. Used by the
+    /// renderer's SSS approximation when `has_translucency` is also
+    /// set. `[0.0; 3]` by default (no contribution when the gating
+    /// flag is unset). See #1147 / FO4-D6-003 Phase 2b.
+    pub translucency_subsurface_color: [f32; 3],
+    /// `BgsmFile.translucency_transmissive_scale` (v>=8). Intensity
+    /// scalar for the back-side transmission term. 0.0 = no SSS
+    /// contribution; typical BGSM range 0.5–4.0. #1147 Phase 2b.
+    pub translucency_transmissive_scale: f32,
+    /// `BgsmFile.translucency_turbulence` (v>=8). Noise-driven
+    /// perturbation to the transmission term so SSS doesn't appear
+    /// uniformly smooth on varied materials (vegetation, frost-rimed
+    /// glass). 0.0 = no turbulence. #1147 Phase 2b.
+    pub translucency_turbulence: f32,
+    /// `BgsmFile.translucency_thick_object` (v>=8). True for thick
+    /// volumes (skin, wax) — changes the SSS view-dependent falloff
+    /// shape. False for thin sheets (leaves, paper). #1147 Phase 2b.
+    pub translucency_thick_object: bool,
+    /// `BgsmFile.translucency_mix_albedo_with_subsurface_color`
+    /// (v>=8). True for skin-like materials where albedo tints the
+    /// transmission; false for foliage-like materials with strong
+    /// pigment colour. #1147 Phase 2b.
+    pub translucency_mix_albedo: bool,
     /// Parallax-occlusion max ray-march passes (from
     /// `BSShaderPPLightingProperty` or Skyrim `ShaderTypeData::ParallaxOcc`).
     /// `None` when the material doesn't author a value. See #452.

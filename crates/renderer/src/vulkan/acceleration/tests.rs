@@ -77,6 +77,9 @@ fn make_draw_command(in_tlas: bool, is_water: bool) -> DrawCommand {
         vertex_color_emissive: false,
         effect_shader_flags: 0,
         greyscale_lut_index: 0,
+        translucency_subsurface_color: [0.0; 3],
+        translucency_transmissive_scale: 0.0,
+        translucency_turbulence: 0.0,
         is_water,
     }
 }

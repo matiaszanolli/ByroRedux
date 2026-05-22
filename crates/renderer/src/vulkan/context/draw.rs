@@ -2916,6 +2916,9 @@ mod is_caustic_source_tests {
             vertex_color_emissive: false,
             effect_shader_flags: 0,
             greyscale_lut_index: 0,
+            translucency_subsurface_color: [0.0; 3],
+            translucency_transmissive_scale: 0.0,
+            translucency_turbulence: 0.0,
             is_water: false,
         }
     }

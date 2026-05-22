@@ -286,6 +286,14 @@ pub struct DrawCommand {
     /// `MaterialInfo::effect_shader::greyscale_texture`; populates
     /// `GpuMaterial::greyscale_lut_index` 1:1 via `to_gpu_material`.
     pub greyscale_lut_index: u32,
+    /// #1147 Phase 2b — BGSM v>=8 translucency suite, forwarded to
+    /// `GpuMaterial.translucency_*`. Default zeros (no contribution
+    /// when `MAT_FLAG_BGSM_TRANSLUCENCY` is unset). Populated by
+    /// `byroredux::render::static_meshes::collect_static_mesh_draws`
+    /// from the per-entity [`byroredux_core::ecs::Material`] component.
+    pub translucency_subsurface_color: [f32; 3],
+    pub translucency_transmissive_scale: f32,
+    pub translucency_turbulence: f32,
     /// `true` for water-surface entities — the triangle-pipeline path
     /// in `draw_frame` skips this command (only its `GpuInstance` SSBO
     /// slot is populated), and a parallel `WaterDrawCommand` in the
@@ -398,6 +406,15 @@ impl DrawCommand {
                 flags
             },
             greyscale_lut_index: self.greyscale_lut_index,
+            // #1147 Phase 2b — BGSM v>=8 translucency suite. The
+            // `MAT_FLAG_BGSM_TRANSLUCENCY` bit in `material_flags`
+            // gates whether the shader reads these (set by
+            // `cell_loader::pack_bgsm_material_flags`).
+            translucency_subsurface_r: self.translucency_subsurface_color[0],
+            translucency_subsurface_g: self.translucency_subsurface_color[1],
+            translucency_subsurface_b: self.translucency_subsurface_color[2],
+            translucency_transmissive_scale: self.translucency_transmissive_scale,
+            translucency_turbulence: self.translucency_turbulence,
         }
     }
 
@@ -514,6 +531,15 @@ impl DrawCommand {
         h.write_u32(self.effect_falloff[4].to_bits()); // soft_falloff_depth
         // greyscale LUT bindless handle (#890 Stage 2c)
         h.write_u32(self.greyscale_lut_index);
+        // #1147 Phase 2b — BGSM v>=8 translucency suite. Must mirror
+        // the `to_gpu_material` field order so the hash stays
+        // byte-equal-safe (#781 contract; pinned by
+        // `material_hash_matches_gpu_material_field_hash`).
+        h.write_u32(self.translucency_subsurface_color[0].to_bits());
+        h.write_u32(self.translucency_subsurface_color[1].to_bits());
+        h.write_u32(self.translucency_subsurface_color[2].to_bits());
+        h.write_u32(self.translucency_transmissive_scale.to_bits());
+        h.write_u32(self.translucency_turbulence.to_bits());
         h.finish()
     }
 }
@@ -2562,6 +2588,11 @@ mod draw_command_tests {
             // Non-zero LUT handle so the hash-walk contract covers this
             // field (zero would dedup with the default and hide a drift).
             greyscale_lut_index: 7,
+            // Non-zero translucency so the hash-walk covers these
+            // fields too (#1147 Phase 2b).
+            translucency_subsurface_color: [0.5, 0.4, 0.3],
+            translucency_transmissive_scale: 1.5,
+            translucency_turbulence: 0.25,
             is_water: false,
         }
     }

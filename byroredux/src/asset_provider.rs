@@ -926,6 +926,25 @@ pub(crate) fn merge_bgsm_into_mesh(
                 touched = true;
             }
 
+            // #1147 Phase 2b — BGSM v>=8 translucency suite. Same
+            // child-first precedence as the flags above. The
+            // `has_translucency` flag is the gate; if the child
+            // already set it, the corresponding subsurface params
+            // also came from the child and we don't overwrite them.
+            // If `has_translucency` is set by this chain entry but
+            // the params are still at default-zero, propagate them.
+            if bgsm.translucency
+                && mesh.translucency_transmissive_scale == 0.0
+                && mesh.translucency_subsurface_color == [0.0; 3]
+            {
+                mesh.translucency_subsurface_color = bgsm.translucency_subsurface_color;
+                mesh.translucency_transmissive_scale = bgsm.translucency_transmissive_scale;
+                mesh.translucency_turbulence = bgsm.translucency_turbulence;
+                mesh.translucency_thick_object = bgsm.translucency_thick_object;
+                mesh.translucency_mix_albedo = bgsm.translucency_mix_albedo_with_subsurface_color;
+                touched = true;
+            }
+
             // Scalar PBR forwarding (#583). Child-first: first authored
             // value wins. Parser already decodes these fields; the
             // pre-fix merge dropped them on the floor.

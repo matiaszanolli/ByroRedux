@@ -323,6 +323,13 @@ fn placeholder_billboard_mesh(
         is_pbr: false,
         has_translucency: false,
         model_space_normals: false,
+        // #1147 Phase 2b — translucency suite (zero default; SpeedTree
+        // is BGSM-free).
+        translucency_subsurface_color: [0.0; 3],
+        translucency_transmissive_scale: 0.0,
+        translucency_turbulence: 0.0,
+        translucency_thick_object: false,
+        translucency_mix_albedo: false,
         parallax_max_passes: None,
         parallax_height_scale: None,
         vertex_color_mode: 2,  // AmbientDiffuse

@@ -192,7 +192,39 @@ pub struct GpuMaterial {
     /// `triangle.frag` (`MATERIAL_KIND_EFFECT_SHADER` branch) +
     /// `cell_loader/spawn.rs` (resolution site). Previously named
     /// `_pad_falloff` — repacked #890 Stage 2c.
-    pub greyscale_lut_index: u32,   // offset 256 → total 260
+    pub greyscale_lut_index: u32,   // offset 256
+
+    // ── BGSM translucency parameter suite (vec4 #18; offsets 260-280) ─
+    //
+    // #1147 / FO4-D6-003 Phase 2b. The translucency fields are read by
+    // `triangle.frag` only when `material_flags & BGSM_TRANSLUCENCY != 0`
+    // (matches the SLSF1/SLSF2 gating pattern the EFFECT_PALETTE_COLOR
+    // family uses). Stored as scalar f32s rather than a `vec3 + f32`
+    // pair so the byte-Hash dedup contract holds (per
+    // `feedback_audit_findings.md`: std430 vec3 alignment would
+    // silently desync the raw-bytes hash).
+    /// `BgsmFile.translucency_subsurface_color.r`. Authored RGB of the
+    /// transmitted/scattered light beneath the surface. Multiplied by
+    /// the per-fragment albedo when `BGSM_TRANSLUCENCY_MIX_ALBEDO` is
+    /// set; used raw otherwise. Default zero — no contribution when
+    /// the gating flag is unset.
+    pub translucency_subsurface_r: f32, // offset 260
+    pub translucency_subsurface_g: f32, // offset 264
+    pub translucency_subsurface_b: f32, // offset 268
+    /// `BgsmFile.translucency_transmissive_scale`. Intensity scalar
+    /// for the back-side / wraparound transmission term. Higher =
+    /// brighter rim glow on thin objects. BGSM-authored range is
+    /// typically 0.5 – 4.0 on FO4 content.
+    pub translucency_transmissive_scale: f32, // offset 272
+
+    // ── BGSM translucency turbulence (vec4 #19; offsets 276-280) ─────
+    /// `BgsmFile.translucency_turbulence`. Adds a noise-driven
+    /// perturbation to the transmission term so SSS doesn't appear
+    /// uniformly smooth on materials authored for variation
+    /// (vegetation, frost-rimmed glass). 0.0 = no turbulence. The
+    /// shader consumes it as a multiplier on a `sin(viewDotN * k)`
+    /// term to keep cost trivial.
+    pub translucency_turbulence: f32, // offset 276 → total 280
 }
 
 impl Default for GpuMaterial {
@@ -275,6 +307,15 @@ impl Default for GpuMaterial {
             falloff_stop_opacity: 1.0,
             soft_falloff_depth: 0.0,
             greyscale_lut_index: 0,
+            // #1147 Phase 2b — neutral defaults so legacy materials
+            // (BGSM_TRANSLUCENCY flag unset, ~99% of FO3/FNV/Skyrim
+            // content) read these as no-ops even if the shader-side
+            // gating ever desyncs from the flag check.
+            translucency_subsurface_r: 0.0,
+            translucency_subsurface_g: 0.0,
+            translucency_subsurface_b: 0.0,
+            translucency_transmissive_scale: 0.0,
+            translucency_turbulence: 0.0,
         }
     }
 }
@@ -361,6 +402,17 @@ pub mod material_flag {
     /// transform and uses the sampled normal directly. Phase 2b
     /// shader consumer pending.
     pub const BGSM_MODEL_SPACE_NORMALS: u32 = 1 << 7;
+    /// `BgsmFile.translucency_thick_object` (v>=8) — the translucent
+    /// surface is a thick volume (skin / muscle / wax) rather than a
+    /// thin sheet (paper / leaf / cloth). Changes the SSS path's
+    /// view-dependent transmission falloff. #1147 Phase 2b.
+    pub const BGSM_TRANSLUCENCY_THICK_OBJECT: u32 = 1 << 8;
+    /// `BgsmFile.translucency_mix_albedo_with_subsurface_color` (v>=8)
+    /// — the SSS path's transmitted colour mixes the per-fragment
+    /// albedo into the authored `translucency_subsurface_color`
+    /// rather than using the latter raw. Skyrim+ skin shaders set
+    /// this; FO4 vegetation typically does not. #1147 Phase 2b.
+    pub const BGSM_TRANSLUCENCY_MIX_ALBEDO: u32 = 1 << 9;
 }
 
 impl GpuMaterial {
@@ -489,6 +541,15 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
     h.write_u32(mat.soft_falloff_depth.to_bits());
     // greyscale LUT bindless handle (#890 Stage 2c, offset 256)
     h.write_u32(mat.greyscale_lut_index);
+    // #1147 Phase 2b — BGSM v>=8 translucency suite (offsets 260-280).
+    // Must match `DrawCommand::material_hash` walk order so the two
+    // hashes stay byte-equal-safe (pinned by
+    // `material_hash_matches_gpu_material_field_hash`).
+    h.write_u32(mat.translucency_subsurface_r.to_bits());
+    h.write_u32(mat.translucency_subsurface_g.to_bits());
+    h.write_u32(mat.translucency_subsurface_b.to_bits());
+    h.write_u32(mat.translucency_transmissive_scale.to_bits());
+    h.write_u32(mat.translucency_turbulence.to_bits());
     h.finish()
 }
 
@@ -724,9 +785,15 @@ mod tests {
     /// no shader read `mat.avgAlbedo*` — caustic_splat.comp + the
     /// triangle.frag GI miss path both sample from the per-instance
     /// `GpuInstance.avgAlbedo*` copy instead).
+    ///
+    /// Grew 260 → 280 under #1147 / FO4-D6-003 Phase 2b (+20 B for
+    /// `translucency_subsurface_r/g/b` + `translucency_transmissive_scale`
+    /// + `translucency_turbulence`). Function and test name kept as
+    /// "260" so a future size shift updates them in lockstep with
+    /// the assertion.
     #[test]
     fn gpu_material_size_is_260_bytes() {
-        assert_eq!(std::mem::size_of::<GpuMaterial>(), 260);
+        assert_eq!(std::mem::size_of::<GpuMaterial>(), 280);
     }
 
     /// `#[repr(C)]` puts no implicit padding between f32/u32 fields,
@@ -783,6 +850,11 @@ mod tests {
             "multiLayerRefractionScale,",
             "sparkleIntensity,", "falloffStartAngle;",
             "falloffStopAngle,", "falloffStartOpacity,", "falloffStopOpacity,", "softFalloffDepth;",
+            "greyscaleLutIndex;",
+            // #1147 Phase 2b — BGSM translucency suite
+            "translucencySubsurfaceR,", "translucencySubsurfaceG,", "translucencySubsurfaceB;",
+            "translucencyTransmissiveScale;",
+            "translucencyTurbulence;",
         ] {
             assert!(
                 src.contains(name),
@@ -917,8 +989,16 @@ mod tests {
         assert_eq!(offset_of!(GpuMaterial, soft_falloff_depth), 252);
 
         // ── greyscale palette LUT bindless handle, #890 Stage 2c
-        //    (offset 256, completes the 260 B struct) ─────────────
+        //    (offset 256) ─────────────────────────────────────────
         assert_eq!(offset_of!(GpuMaterial, greyscale_lut_index), 256);
+
+        // ── BGSM translucency parameter suite, #1147 Phase 2b
+        //    (offsets 260-280) ─────────────────────────────────────
+        assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_r), 260);
+        assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_g), 264);
+        assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_b), 268);
+        assert_eq!(offset_of!(GpuMaterial, translucency_transmissive_scale), 272);
+        assert_eq!(offset_of!(GpuMaterial, translucency_turbulence), 276);
     }
 
     #[test]

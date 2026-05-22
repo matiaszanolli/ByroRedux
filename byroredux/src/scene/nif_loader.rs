@@ -867,6 +867,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 effect_shader_flags: crate::cell_loader::pack_effect_shader_flags(
                     mesh.effect_shader.as_ref(),
                 ) | crate::cell_loader::pack_bgsm_material_flags(mesh),
+                // #1147 Phase 2b — forward BGSM v>=8 translucency suite.
+                translucency_subsurface_color: mesh.translucency_subsurface_color,
+                translucency_transmissive_scale: mesh.translucency_transmissive_scale,
+                translucency_turbulence: mesh.translucency_turbulence,
                 // #890 Stage 2c — BSEffectShaderProperty greyscale LUT
                 // path captured here; resolved to a bindless handle by
                 // `resolve_material_textures` at draw-build time.

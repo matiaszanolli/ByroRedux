@@ -131,8 +131,16 @@ struct GpuMaterial {
     // #890 Stage 2c — bindless handle for
     // `BSEffectShaderProperty.greyscale_texture`. 0 = no LUT (the
     // shader's effect branch then samples the source texture raw).
-    // Closes the 260 B struct.
+    // Offset 256.
     uint greyscaleLutIndex;
+    // #1147 Phase 2b — BGSM v>=8 translucency suite. Read only when
+    // `materialFlags & MAT_FLAG_BGSM_TRANSLUCENCY != 0u`. Layout must
+    // match the Rust `GpuMaterial::translucency_*` block byte-for-byte
+    // (pinned by `gpu_material_field_offsets_match_shader_contract`).
+    float translucencySubsurfaceR, translucencySubsurfaceG, translucencySubsurfaceB;
+    float translucencyTransmissiveScale;
+    // Final field — closes the 280 B struct.
+    float translucencyTurbulence;
 };
 
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
@@ -146,16 +154,17 @@ layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
 // source of truth, mirrored from `material_flag::*` in
 // `crates/renderer/src/vulkan/material.rs`). See #1190.
 
-// MAT_FLAG_BGSM_PBR (0x20), MAT_FLAG_BGSM_TRANSLUCENCY (0x40), and
-// MAT_FLAG_BGSM_MODEL_SPACE_NORMALS (0x80) are populated by the
-// Rust side per #1077 Phase 2a (see `material_flag::BGSM_*` in
-// `crates/renderer/src/vulkan/material.rs`) but intentionally NOT
-// declared here yet. Phase 2b (#1147) will declare + read them
-// alongside the actual PBR / SSS / object-space-normal gating
-// branches in this file. Adding the consts without consumers
-// would invite drift if the next author edits one but not the
-// other; pinning the declaration to the consumer commit keeps
-// source-vs-SPV in lockstep.
+// #1147 Phase 2b — BGSM v>=2 / v>=8 flags. Bits 5-9 of
+// `materialFlags`. Mirror of `material_flag::BGSM_*` consts on the
+// Rust side; the Phase 2a packer in `byroredux/src/cell_loader.rs`
+// (`pack_bgsm_material_flags`) writes these bits per ImportedMesh's
+// `is_pbr`/`has_translucency`/`model_space_normals` flags. Consumers
+// land below in this file.
+#define MAT_FLAG_BGSM_PBR                       (1u << 5)
+#define MAT_FLAG_BGSM_TRANSLUCENCY              (1u << 6)
+#define MAT_FLAG_BGSM_MODEL_SPACE_NORMALS       (1u << 7)
+#define MAT_FLAG_BGSM_TRANSLUCENCY_THICK_OBJECT (1u << 8)
+#define MAT_FLAG_BGSM_TRANSLUCENCY_MIX_ALBEDO   (1u << 9)
 
 struct GpuLight {
     vec4 position_radius;  // xyz = position, w = radius
@@ -970,7 +979,25 @@ void main() {
     if (normalMapIdx != 0u
         && (dbgFlags & DBG_BYPASS_NORMAL_MAP) == 0u)
     {
-        N = perturbNormal(N, fragWorldPos, sampleUV, normalMapIdx, fragTangent);
+        // #1147 Phase 2b — BGSM `model_space_normals` flag (FO4 v>2
+        // BGSM-authored materials) skips the TBN transform and uses
+        // the sampled normal directly. Bethesda authors object-space
+        // normals on a small set of static meshes whose tangent space
+        // isn't reliably reconstructable; in that case the normal map
+        // already carries world-space (or model-space, treated as the
+        // same here since the static mesh's local frame matches the
+        // world frame after the placement transform) normals and the
+        // tangent-space TBN multiply would double-rotate them. The
+        // same `* 2.0 - 1.0` decode + BC5 Z-reconstruction the
+        // tangent-space path uses applies, just without the TBN.
+        if ((mat.materialFlags & MAT_FLAG_BGSM_MODEL_SPACE_NORMALS) != 0u) {
+            vec3 mn = texture(textures[nonuniformEXT(normalMapIdx)], sampleUV).rgb;
+            mn = mn * 2.0 - 1.0;
+            mn.z = sqrt(max(0.0, 1.0 - dot(mn.xy, mn.xy)));
+            N = normalize(mn);
+        } else {
+            N = perturbNormal(N, fragWorldPos, sampleUV, normalMapIdx, fragTangent);
+        }
     }
 
     // ── G-buffer outputs (Phase 1) ────────────────────────────────────
@@ -1402,7 +1429,24 @@ void main() {
     //       that doesn't exist yet; add alongside the FO4 env-reflect
     //       cubemap path.
 
-    vec3 F0 = mix(vec3(0.04), albedo, metalness);
+    // #1147 Phase 2b — PBR vs Gamebryo F0 gate. The standard PBR
+    // `mix(0.04, albedo, metalness)` works correctly for everything
+    // EXCEPT BGSM-authored metals on FO4+, where the author specified
+    // the metal's reflectance via `specularR/G/B` (e.g. raw_metal_diff
+    // BGSMs ship 0.95 / 0.93 / 0.88 for steel). Using `albedo` for
+    // those silently desaturates the metal's tint at grazing angles
+    // because the BC1-compressed albedo is dimmer than the authored
+    // specular RGB. The gate routes the BGSM-PBR path to the
+    // specular-color F0 (correct PBR metals); legacy / NIF paths keep
+    // the `albedo` fallback. Conservative for non-BGSM-PBR content;
+    // visible improvement on FO4 metals.
+    vec3 F0;
+    if ((mat.materialFlags & MAT_FLAG_BGSM_PBR) != 0u) {
+        vec3 specColAuth = vec3(mat.specularR, mat.specularG, mat.specularB);
+        F0 = mix(vec3(0.04), specColAuth, metalness);
+    } else {
+        F0 = mix(vec3(0.04), albedo, metalness);
+    }
 
     // Precompute the emissive term. Per Gamebryo's D3D9 FFP material model
     // (matching NiMaterialProperty / BSShaderPPLighting), the final color is
@@ -2327,6 +2371,59 @@ void main() {
 
             // Accumulate as if unshadowed.
             Lo += brdfResult * unshadowedRadiance;
+
+            // #1147 Phase 2b — subsurface translucency. Adds a back-
+            // side wraparound term so light leaks through thin
+            // translucent surfaces (skin, leaves, paper, frost-rimed
+            // glass). Gated on `MAT_FLAG_BGSM_TRANSLUCENCY` so legacy
+            // content (every NIF without a v>=8 BGSM) gets exactly
+            // zero contribution. The math is a Bethesda-style "fake
+            // SSS" — back-light approximation by inverted N·L, mixed
+            // with the authored subsurface colour. Cheap (no extra
+            // texture sample, no extra ray), visible on authored
+            // materials.
+            if ((mat.materialFlags & MAT_FLAG_BGSM_TRANSLUCENCY) != 0u) {
+                // Back-side wraparound: when the surface faces away
+                // from the light (NdotL low), some light "wraps"
+                // through. `clamp(-N·L, 0, 1)` would peak at the
+                // anti-light direction; the half-wrap `(1 + N·L) * 0.5`
+                // peaks at NdotL=1 instead — we want the back side, so
+                // use the inversion.
+                float backDotL = max(-dot(N, L), 0.0);
+                // Optional turbulence — noise perturbation so SSS
+                // doesn't look like a uniform back-light. Cheap
+                // sinusoidal proxy (no extra sample).
+                float turb = mat.translucencyTurbulence;
+                float turbMod = 1.0 + turb * 0.5
+                    * sin(NdotV * 11.0 + fragWorldPos.x * 0.013);
+                // Thick-object: when set (skin, wax), the transmission
+                // is more diffuse and less view-dependent — fold the
+                // back-side term less aggressively. When clear (thin
+                // sheet — leaf, paper), the transmission spikes near
+                // the silhouette and falls off fast.
+                float thicknessShape =
+                    ((mat.materialFlags & MAT_FLAG_BGSM_TRANSLUCENCY_THICK_OBJECT) != 0u)
+                        ? backDotL
+                        : pow(backDotL, 4.0);
+                // Mix-albedo: the transmitted colour tints the
+                // authored subsurface RGB by the surface albedo
+                // (skin-like) vs uses the subsurface RGB raw
+                // (foliage-like with chlorophyll-driven greens).
+                vec3 subsurfaceCol = vec3(
+                    mat.translucencySubsurfaceR,
+                    mat.translucencySubsurfaceG,
+                    mat.translucencySubsurfaceB
+                );
+                vec3 sssTint =
+                    ((mat.materialFlags & MAT_FLAG_BGSM_TRANSLUCENCY_MIX_ALBEDO) != 0u)
+                        ? subsurfaceCol * albedo
+                        : subsurfaceCol;
+                Lo += sssTint
+                    * mat.translucencyTransmissiveScale
+                    * thicknessShape
+                    * turbMod
+                    * unshadowedRadiance;
+            }
 
             // Per-light ambient fill. Was 0.08; reduced to 0.02 to
             // resolve the over-saturated low-contrast lighting on

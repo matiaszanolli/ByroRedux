@@ -183,6 +183,9 @@ pub(super) fn emit_particles(
                 // palette LUT either; the bindless 0 slot signals
                 // "no LUT" in the shader.
                 greyscale_lut_index: 0,
+                translucency_subsurface_color: [0.0; 3],
+                translucency_transmissive_scale: 0.0,
+                translucency_turbulence: 0.0,
                 is_water: false,
             };
             // #781 / PERF-N4 — dedup material payload.

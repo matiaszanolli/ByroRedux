@@ -631,6 +631,18 @@ pub(super) fn collect_static_mesh_draws(
                     // `to_gpu_material` ORs the word straight in.
                     effect_shader_flags: mat.map(|m| m.effect_shader_flags).unwrap_or(0),
                     greyscale_lut_index,
+                    // #1147 Phase 2b — BGSM v>=8 translucency suite.
+                    // Gated at the shader by `MAT_FLAG_BGSM_TRANSLUCENCY`
+                    // (packed via `pack_bgsm_material_flags`).
+                    translucency_subsurface_color: mat
+                        .map(|m| m.translucency_subsurface_color)
+                        .unwrap_or([0.0; 3]),
+                    translucency_transmissive_scale: mat
+                        .map(|m| m.translucency_transmissive_scale)
+                        .unwrap_or(0.0),
+                    translucency_turbulence: mat
+                        .map(|m| m.translucency_turbulence)
+                        .unwrap_or(0.0),
                     is_water: false,
                 };
                 // #781 / PERF-N4 — `intern_by_hash` skips the

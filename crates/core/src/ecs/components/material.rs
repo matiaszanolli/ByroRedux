@@ -169,6 +169,16 @@ pub struct Material {
     /// `effect_falloff` slot but has no SLSF1/SLSF2 vocabulary).
     /// See #890 / SK-D4-NEW-04.
     pub effect_shader_flags: u32,
+    /// #1147 Phase 2b — BGSM v>=8 translucency suite. Forwarded from
+    /// `ImportedMesh.translucency_subsurface_color` etc.; gated at the
+    /// renderer by `material_flags & MAT_FLAG_BGSM_TRANSLUCENCY`
+    /// (packed via `pack_bgsm_material_flags`). `[0.0; 3]` and `0.0`
+    /// defaults so legacy / non-BGSM-v>=8 content evaluates the SSS
+    /// path as zero contribution even if the gating flag were
+    /// erroneously set.
+    pub translucency_subsurface_color: [f32; 3],
+    pub translucency_transmissive_scale: f32,
+    pub translucency_turbulence: f32,
     /// `BSEffectShaderProperty.greyscale_texture` path (Skyrim+) — the
     /// 1D-as-2D colour palette LUT indexed by the source texture's
     /// luminance when `EFFECT_PALETTE_COLOR` / `EFFECT_PALETTE_ALPHA`
@@ -260,6 +270,11 @@ impl Default for Material {
             shader_type_fields: None,
             effect_falloff: None,
             effect_shader_flags: 0,
+            // #1147 Phase 2b — BGSM translucency suite defaults
+            // (zeros; no SSS contribution when the gating flag is unset).
+            translucency_subsurface_color: [0.0; 3],
+            translucency_transmissive_scale: 0.0,
+            translucency_turbulence: 0.0,
             greyscale_texture: None,
         }
     }

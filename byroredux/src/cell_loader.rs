@@ -177,6 +177,7 @@ pub(crate) fn pack_effect_shader_flags(
 pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMesh) -> u32 {
     use byroredux_renderer::vulkan::material::material_flag::{
         BGSM_MODEL_SPACE_NORMALS, BGSM_PBR, BGSM_TRANSLUCENCY,
+        BGSM_TRANSLUCENCY_MIX_ALBEDO, BGSM_TRANSLUCENCY_THICK_OBJECT,
     };
     let mut flags = 0u32;
     if mesh.is_pbr {
@@ -187,6 +188,17 @@ pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMes
     }
     if mesh.model_space_normals {
         flags |= BGSM_MODEL_SPACE_NORMALS;
+    }
+    // #1147 Phase 2b — translucency parameter-shape bits. Only
+    // meaningful when `BGSM_TRANSLUCENCY` is also set, but pack them
+    // unconditionally so the shader's predicate `is_thick` /
+    // `mix_albedo` reads the authored value directly. The shader
+    // already gates the whole SSS block on `BGSM_TRANSLUCENCY`.
+    if mesh.translucency_thick_object {
+        flags |= BGSM_TRANSLUCENCY_THICK_OBJECT;
+    }
+    if mesh.translucency_mix_albedo {
+        flags |= BGSM_TRANSLUCENCY_MIX_ALBEDO;
     }
     flags
 }
@@ -245,6 +257,12 @@ mod pack_bgsm_material_flags_tests {
             is_pbr: false,
             has_translucency: false,
             model_space_normals: false,
+            // #1147 Phase 2b — translucency suite (zero default).
+            translucency_subsurface_color: [0.0; 3],
+            translucency_transmissive_scale: 0.0,
+            translucency_turbulence: 0.0,
+            translucency_thick_object: false,
+            translucency_mix_albedo: false,
             parallax_max_passes: None,
             parallax_height_scale: None,
             vertex_color_mode: 2,
