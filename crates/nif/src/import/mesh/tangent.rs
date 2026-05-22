@@ -350,6 +350,163 @@ pub fn bs_tangents_zup_to_yup(zup: &[[f32; 4]]) -> Vec<[f32; 4]> {
     zup.iter().map(|t| [t[0], t[2], -t[1], t[3]]).collect()
 }
 
+/// Y-up sibling of [`synthesize_tangents`] for inputs already in the
+/// renderer's coordinate space — namely Starfield `BSGeometry` (positions
+/// + normals decoded Y-up by the BSGeometryMeshData parser) and SSE
+/// skin-reconstructed `BSTriShape` (positions / normals / uvs filled
+/// from `try_reconstruct_sse_geometry` which writes Y-up). The Z-up
+/// flavour applies a `(x, y, z) → (x, z, -y)` swap at both the
+/// per-vertex finalize and the accumulator-to-Y-up conversion; this
+/// flavour skips both swaps.
+///
+/// Inputs:
+///   - `positions_yup` / `normals_yup`: already-Y-up, length == num_verts
+///   - `uvs`: per-vertex 2D coordinates, length == num_verts
+///   - `triangles`: u16 indices, 3 per triangle
+///
+/// Output: `Vec<[f32; 4]>` length == num_verts. Empty when any input is
+/// missing or vertex counts don't line up; caller falls back to the
+/// shader's screen-space derivative TBN path (Path 2).
+///
+/// Aligned with the deferred-comment recommendation in
+/// `import/mesh/bs_geometry.rs:112-118` (#1086) — Starfield BSGeometry
+/// can swap its Path-2 fallback for Path-1 by routing through here
+/// when authored UDEC3 tangents are absent. Also unblocks #1204
+/// (SSE-reconstructed BSTriShape with empty `VF_TANGENTS`).
+pub fn synthesize_tangents_yup(
+    positions_yup: &[[f32; 3]],
+    normals_yup: &[[f32; 3]],
+    uvs: &[[f32; 2]],
+    triangles: &[[u16; 3]],
+) -> Vec<[f32; 4]> {
+    let n = positions_yup.len();
+    if n == 0 || normals_yup.len() != n || uvs.len() != n {
+        return Vec::new();
+    }
+
+    let mut tan_u = vec![[0.0f32; 3]; n];
+    let mut tan_v = vec![[0.0f32; 3]; n];
+
+    for tri in triangles {
+        let i1 = tri[0] as usize;
+        let i2 = tri[1] as usize;
+        let i3 = tri[2] as usize;
+        if i1 >= n || i2 >= n || i3 >= n {
+            continue;
+        }
+
+        let v1 = positions_yup[i1];
+        let v2 = positions_yup[i2];
+        let v3 = positions_yup[i3];
+        let w1 = uvs[i1];
+        let w2 = uvs[i2];
+        let w3 = uvs[i3];
+
+        let x1 = v2[0] - v1[0];
+        let x2 = v3[0] - v1[0];
+        let y1 = v2[1] - v1[1];
+        let y2 = v3[1] - v1[1];
+        let z1 = v2[2] - v1[2];
+        let z2 = v3[2] - v1[2];
+
+        let s1 = w2[0] - w1[0];
+        let s2 = w3[0] - w1[0];
+        let t1 = w2[1] - w1[1];
+        let t2 = w3[1] - w1[1];
+
+        let det = s1 * t2 - s2 * t1;
+        let r = if det >= 0.0 { 1.0 } else { -1.0 };
+
+        let mut sdir = [
+            (t2 * x1 - t1 * x2) * r,
+            (t2 * y1 - t1 * y2) * r,
+            (t2 * z1 - t1 * z2) * r,
+        ];
+        let mut tdir = [
+            (s1 * x2 - s2 * x1) * r,
+            (s1 * y2 - s2 * y1) * r,
+            (s1 * z2 - s2 * z1) * r,
+        ];
+
+        normalize_inplace(&mut sdir);
+        normalize_inplace(&mut tdir);
+
+        for &i in &[i1, i2, i3] {
+            tan_u[i][0] += sdir[0];
+            tan_u[i][1] += sdir[1];
+            tan_u[i][2] += sdir[2];
+            tan_v[i][0] += tdir[0];
+            tan_v[i][1] += tdir[1];
+            tan_v[i][2] += tdir[2];
+        }
+    }
+
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let n_yup = normals_yup[i];
+        let tangent_in = tan_u[i];
+        let bitangent_in = tan_v[i];
+
+        let (tangent_yup, bitangent_yup) = if vec3_is_zero(&tangent_in) || vec3_is_zero(&bitangent_in)
+        {
+            // Degenerate fallback (nifly: permute N components). Since
+            // we're already Y-up, the permutation lives in Y-up space
+            // too — pick `[n_yup.y, n_yup.z, n_yup.x]` and let B fall
+            // out of `cross(N, T)` so the basis is right-handed.
+            let t_y = [n_yup[1], n_yup[2], n_yup[0]];
+            let b_y = [
+                n_yup[1] * t_y[2] - n_yup[2] * t_y[1],
+                n_yup[2] * t_y[0] - n_yup[0] * t_y[2],
+                n_yup[0] * t_y[1] - n_yup[1] * t_y[0],
+            ];
+            (t_y, b_y)
+        } else {
+            // Gram-Schmidt against N (no Z-up→Y-up swap — inputs are
+            // already in renderer space).
+            let mut t_yup = tangent_in;
+            let mut b_yup = bitangent_in;
+
+            normalize_inplace(&mut t_yup);
+            let dot_nt = n_yup[0] * t_yup[0] + n_yup[1] * t_yup[1] + n_yup[2] * t_yup[2];
+            t_yup = [
+                t_yup[0] - n_yup[0] * dot_nt,
+                t_yup[1] - n_yup[1] * dot_nt,
+                t_yup[2] - n_yup[2] * dot_nt,
+            ];
+            normalize_inplace(&mut t_yup);
+
+            normalize_inplace(&mut b_yup);
+            let dot_nb = n_yup[0] * b_yup[0] + n_yup[1] * b_yup[1] + n_yup[2] * b_yup[2];
+            b_yup = [
+                b_yup[0] - n_yup[0] * dot_nb,
+                b_yup[1] - n_yup[1] * dot_nb,
+                b_yup[2] - n_yup[2] * dot_nb,
+            ];
+            let dot_tb = t_yup[0] * b_yup[0] + t_yup[1] * b_yup[1] + t_yup[2] * b_yup[2];
+            b_yup = [
+                b_yup[0] - t_yup[0] * dot_tb,
+                b_yup[1] - t_yup[1] * dot_tb,
+                b_yup[2] - t_yup[2] * dot_tb,
+            ];
+            normalize_inplace(&mut b_yup);
+            (t_yup, b_yup)
+        };
+
+        let cross_nt = [
+            n_yup[1] * tangent_yup[2] - n_yup[2] * tangent_yup[1],
+            n_yup[2] * tangent_yup[0] - n_yup[0] * tangent_yup[2],
+            n_yup[0] * tangent_yup[1] - n_yup[1] * tangent_yup[0],
+        ];
+        let dot_b_cross = bitangent_yup[0] * cross_nt[0]
+            + bitangent_yup[1] * cross_nt[1]
+            + bitangent_yup[2] * cross_nt[2];
+        let sign = if dot_b_cross < 0.0 { -1.0 } else { 1.0 };
+
+        out.push([tangent_yup[0], tangent_yup[1], tangent_yup[2], sign]);
+    }
+    out
+}
+
 #[inline]
 pub fn vec3_is_zero(v: &[f32; 3]) -> bool {
     v[0] * v[0] + v[1] * v[1] + v[2] * v[2] < 1e-12

@@ -130,41 +130,51 @@ pub fn extract_bs_tri_shape(
     //      shader's screen-space derivative TBN.
     //
     // All three return Y-up tangents matching `Vertex.tangent`'s contract.
+    //
+    // Note on the synthesis branches: the rebuilt `triangles_for_synth`
+    // bridges shapes whose inline `shape.triangles` was emptied by
+    // SSE-reconstruction. BSTriShape caps at u16 indices on disk so the
+    // cast is safe; if the mesh ever exceeds 65k vertices the synth
+    // simply produces fewer tangents and the empty result triggers the
+    // shader's Path-2 fallback (no regression vs pre-fix behaviour).
+    let triangles_for_synth: Vec<[u16; 3]> = if shape.triangles.is_empty() {
+        indices
+            .chunks_exact(3)
+            .filter_map(|c| {
+                if c[0] <= u16::MAX as u32 && c[1] <= u16::MAX as u32 && c[2] <= u16::MAX as u32 {
+                    Some([c[0] as u16, c[1] as u16, c[2] as u16])
+                } else {
+                    None
+                }
+            })
+            .collect()
+    } else {
+        shape.triangles.clone()
+    };
     let tangents: Vec<[f32; 4]> = if let Some(t) = sse_tangents.filter(|v| !v.is_empty()) {
         t
     } else if !shape.tangents.is_empty() {
         bs_tangents_zup_to_yup(&shape.tangents)
     } else if !shape.normals.is_empty() && !shape.uvs.is_empty() {
-        // Synthesize from positions + normals + UVs + triangles (all
-        // raw Z-up — `synthesize_tangents` does the axis swap
+        // Synthesize from positions + normals + UVs + triangles (raw
+        // Z-up inputs — `synthesize_tangents` does the axis swap
         // internally, matching the NiTriShape path's behaviour).
-        let triangles_for_synth: Vec<[u16; 3]> = if shape.triangles.is_empty() {
-            // SSE-reconstructed mesh whose inline triangle array is
-            // empty — rebuild from `indices`. BSTriShape caps at u16
-            // indices on disk so the cast is safe; if the mesh ever
-            // exceeds 65k vertices the synth simply produces fewer
-            // tangents and the empty result triggers the shader's
-            // Path-2 fallback (no regression vs pre-fix behaviour).
-            indices
-                .chunks_exact(3)
-                .filter_map(|c| {
-                    if c[0] <= u16::MAX as u32 && c[1] <= u16::MAX as u32 && c[2] <= u16::MAX as u32
-                    {
-                        Some([c[0] as u16, c[1] as u16, c[2] as u16])
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        } else {
-            shape.triangles.clone()
-        };
         synthesize_tangents(
             &shape.vertices,
             &shape.normals,
             &shape.uvs,
             &triangles_for_synth,
         )
+    } else if !normals.is_empty() && !uvs.is_empty() && !positions.is_empty() {
+        // #1204 — SSE-reconstructed BSTriShape whose vertex descriptor
+        // lacks `VF_TANGENTS`: `shape.normals` / `shape.uvs` are empty
+        // (the geometry lives in `positions` / `normals` / `uvs` from
+        // `try_reconstruct_sse_geometry`, all already Y-up). Without
+        // this branch every such mesh fell through to `Vec::new()`,
+        // forcing Path-2 (screen-space derivative TBN) and inheriting
+        // the #1104 UV-mirror handedness bug. Route to the Y-up
+        // synthesis sibling so Path-1 fires instead.
+        synthesize_tangents_yup(&positions, &normals, &uvs, &triangles_for_synth)
     } else {
         Vec::new()
     };
