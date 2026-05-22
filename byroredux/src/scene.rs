@@ -475,17 +475,57 @@ pub(crate) fn setup_scene(
     );
     world.insert_resource(ActiveCamera(cam));
 
-    // NOTE: M28 Phase 1 attached a `PlayerBody::HUMAN` capsule to the
-    // camera so the fly cam would collide with world geometry. That
-    // path doesn't actually work as a camera rig — physics_sync_system
-    // Phase 4 clobbers the rotation the fly camera writes each frame
-    // (locking the view to the body's initial yaw), and setting linvel
-    // directly overrides gravity so the player can't fall. A proper
-    // kinematic character controller lands in M28.5; until then, the
-    // fly camera stays free-fly and physics runs only on world +
-    // clutter bodies spawned by the cell loader.
+    // M28.5 — Player rig selection. Default to Character mode when
+    // CLI booted with `--esm` (cell content present) AND not opted
+    // out via `--fly`; default to FlyCam otherwise. `--player` forces
+    // Character mode even in non-cell modes (loose-NIF debug).
+    let want_fly = args.iter().any(|a| a == "--fly");
+    let want_player = args.iter().any(|a| a == "--player");
+    let has_esm = args.iter().any(|a| a == "--esm");
+    let player_mode = if want_fly {
+        crate::systems::PlayerMode::FlyCam
+    } else if want_player || has_esm {
+        crate::systems::PlayerMode::Character
+    } else {
+        crate::systems::PlayerMode::FlyCam
+    };
+    world.insert_resource(player_mode);
+
+    // M28.5 — Spawn the player character body when in Character mode.
+    // The body sits at `cam_pos` (the camera's initial spawn point)
+    // minus eye_height so the eyes end up where the camera was.
+    // `character_controller_system` will then take over per-frame
+    // updates; `camera_follow_system` re-pins the camera to the body
+    // head each frame.
+    if player_mode == crate::systems::PlayerMode::Character {
+        use byroredux_physics::CharacterController;
+        let cc = CharacterController::HUMAN;
+        let body_pos = cam_pos - Vec3::Y * cc.eye_height;
+        let body = world.spawn();
+        world.insert(body, Transform::new(body_pos, Quat::IDENTITY, 1.0));
+        world.insert(body, GlobalTransform::new(body_pos, Quat::IDENTITY, 1.0));
+        world.insert(body, cc);
+        world.insert_resource(crate::systems::PlayerEntity(Some(body)));
+        log::info!(
+            "M28.5 player character spawned at ({:.1}, {:.1}, {:.1}); eyes at ({:.1}, {:.1}, {:.1})",
+            body_pos.x,
+            body_pos.y,
+            body_pos.z,
+            cam_pos.x,
+            cam_pos.y,
+            cam_pos.z,
+        );
+    } else {
+        // FlyCam mode — the PlayerEntity resource still exists (so
+        // systems can early-return on `.0.is_none()` instead of
+        // panicking on absent resource), it's just empty.
+        world.insert_resource(crate::systems::PlayerEntity::default());
+    }
 
     // Initialize fly camera yaw/pitch from the initial look direction.
+    // Even in Character mode the InputState yaw/pitch drives the
+    // camera + WASD alignment — there's no separate character-mode
+    // input path.
     {
         let mut input = world.resource_mut::<InputState>();
         input.yaw = forward.x.atan2(-forward.z);

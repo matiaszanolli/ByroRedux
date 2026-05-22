@@ -506,6 +506,10 @@ impl App {
                 .writes::<Transform>()
                 .writes_resource::<byroredux_physics::PhysicsWorld>(),
         );
+        // M28.5 — kinematic character controller. Runs in Stage::Early
+        // alongside the fly cam; each system gates itself on
+        // `PlayerMode` so only one fires per frame.
+        scheduler.add_to(Stage::Early, crate::systems::character_controller_system);
         scheduler.add_to(Stage::Early, weather_system);
         scheduler.add_to(Stage::Early, byroredux_scripting::timer_tick_system);
         scheduler.add_to(Stage::Update, animation_system);
@@ -548,6 +552,14 @@ impl App {
         // frame.
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::submersion_system);
         scheduler.add_to(Stage::Physics, byroredux_physics::physics_sync_system);
+        // M28.5 — camera follow runs in Stage::Late, AFTER
+        // `physics_sync_system` has settled the kinematic body's
+        // post-step pose. Must run BEFORE `audio_system` /
+        // `submersion_system` (both read camera GlobalTransform).
+        // The character system writes both Transform and
+        // GlobalTransform on the camera to bypass the missing
+        // late-stage propagation pass.
+        scheduler.add_to(Stage::Late, crate::systems::camera_follow_system);
         // M44 Phase 6 — cell-acoustics → reverb send (#846). Runs
         // before `audio_system` so any new spatial track constructed
         // this frame picks up the right send level. Already-playing

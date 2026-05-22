@@ -109,6 +109,142 @@ impl Default for PhysicsWorld {
 
 impl Resource for PhysicsWorld {}
 
+/// Result of a [`PhysicsWorld::move_character`] step. Mirrors Rapier's
+/// `EffectiveCharacterMovement` but with engine-side types so callers
+/// don't pull in `rapier3d::prelude::*`. See M28.5.
+#[derive(Debug, Clone, Copy)]
+pub struct CharacterMoveResult {
+    /// Effective translation in engine world-space (Y-up). Apply this
+    /// to the character body's Transform + queue as the kinematic
+    /// next-translation.
+    pub translation: byroredux_core::math::Vec3,
+    /// Whether the character ended the step touching the ground.
+    /// Read by the controller system to gate jump triggers + zero
+    /// vertical velocity on landing.
+    pub grounded: bool,
+    /// Whether the character is currently sliding down a steep slope
+    /// (slope > `max_slope_climb_deg`). Not consumed today; surfaced
+    /// for future stamina / damage hooks.
+    pub is_sliding_down_slope: bool,
+}
+
+/// Movement-step parameters for [`PhysicsWorld::move_character`]. Pure
+/// data so the engine-side controller stays decoupled from
+/// `rapier3d::control::KinematicCharacterController` field layout.
+#[derive(Debug, Clone, Copy)]
+pub struct CharacterMoveParams {
+    /// Capsule half-height (Y-axis), excludes caps. BU.
+    pub capsule_half_height: f32,
+    /// Capsule radius. BU.
+    pub capsule_radius: f32,
+    /// Current body position in engine world-space (Y-up).
+    pub position: byroredux_core::math::Vec3,
+    /// Desired translation for this step (engine world-space).
+    /// Caller is responsible for combining horizontal motion with
+    /// gravity-integrated vertical motion into a single vector.
+    pub desired_translation: byroredux_core::math::Vec3,
+    /// Time-step (seconds) for ground-detection friction.
+    pub dt: f32,
+    /// Max climbable slope, degrees. KCC default 50°.
+    pub max_slope_climb_deg: f32,
+    /// Auto-step max height, BU. KCC default 32 BU (~46 cm — covers
+    /// canonical Bethesda stairs).
+    pub step_height: f32,
+    /// Ground-snap distance, BU. Holds the character on terrain
+    /// rolls without per-step bouncing.
+    pub snap_to_ground: f32,
+    /// Optional rapier collider handle to exclude from the
+    /// shapecast — pass the character's own collider here so the
+    /// KCC doesn't self-hit.
+    pub exclude_collider: Option<rapier3d::prelude::ColliderHandle>,
+}
+
+impl PhysicsWorld {
+    /// Drive a kinematic character body forward one step using
+    /// Rapier's `KinematicCharacterController` (M28.5). Returns the
+    /// effective collide-and-slide-corrected motion + grounded status.
+    ///
+    /// Caller is responsible for:
+    ///   1. Combining horizontal WASD-driven motion with vertical
+    ///      gravity-integrated motion into `params.desired_translation`.
+    ///   2. Applying `result.translation` to the character body's
+    ///      `Transform` (engine-side) AND
+    ///      `set_next_kinematic_translation` (Rapier-side) so the
+    ///      simulation + ECS stay in lockstep.
+    ///   3. Resetting `vertical_velocity` to 0 on `result.grounded`
+    ///      transitions and to `jump_velocity` on jump triggers.
+    pub fn move_character(&self, params: CharacterMoveParams) -> CharacterMoveResult {
+        use rapier3d::control::{
+            CharacterAutostep, CharacterLength, KinematicCharacterController,
+        };
+        use rapier3d::prelude::*;
+
+        let mut controller = KinematicCharacterController::default();
+        controller.up = Vector::y_axis();
+        controller.offset = CharacterLength::Absolute(0.5);
+        controller.slide = true;
+        controller.autostep = Some(CharacterAutostep {
+            max_height: CharacterLength::Absolute(params.step_height.max(0.0)),
+            min_width: CharacterLength::Absolute(params.capsule_radius.max(0.1)),
+            include_dynamic_bodies: false,
+        });
+        controller.max_slope_climb_angle = params.max_slope_climb_deg.to_radians();
+        // Min slide angle: half-way between climb limit and 90° — once
+        // the slope is steeper than this, the controller starts
+        // sliding the character down instead of trying to hold pose.
+        controller.min_slope_slide_angle =
+            ((params.max_slope_climb_deg + 90.0) * 0.5).to_radians();
+        controller.snap_to_ground = if params.snap_to_ground > 0.0 {
+            Some(CharacterLength::Absolute(params.snap_to_ground))
+        } else {
+            None
+        };
+
+        let shape = SharedShape::capsule_y(
+            params.capsule_half_height.max(1e-3),
+            params.capsule_radius.max(1e-3),
+        );
+        let pos = Isometry::translation(
+            params.position.x,
+            params.position.y,
+            params.position.z,
+        );
+        let desired = Vector::new(
+            params.desired_translation.x,
+            params.desired_translation.y,
+            params.desired_translation.z,
+        );
+
+        let filter = if let Some(exclude) = params.exclude_collider {
+            QueryFilter::default().exclude_collider(exclude)
+        } else {
+            QueryFilter::default()
+        };
+
+        let result = controller.move_shape(
+            params.dt.max(1e-6),
+            &self.bodies,
+            &self.colliders,
+            &self.query_pipeline,
+            shape.as_ref(),
+            &pos,
+            desired,
+            filter,
+            |_| {},
+        );
+
+        CharacterMoveResult {
+            translation: byroredux_core::math::Vec3::new(
+                result.translation.x,
+                result.translation.y,
+                result.translation.z,
+            ),
+            grounded: result.grounded,
+            is_sliding_down_slope: result.is_sliding_down_slope,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

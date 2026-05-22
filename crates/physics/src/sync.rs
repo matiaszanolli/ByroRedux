@@ -45,6 +45,31 @@ pub fn set_linear_velocity(world: &World, entity: EntityId, velocity: glam::Vec3
     }
 }
 
+/// M28.5 — queue the next kinematic translation on a body by ECS
+/// `EntityId`. Used by `byroredux::systems::character_controller_system`
+/// to push the post-KCC-corrected position into Rapier so other
+/// bodies' queries see the player at the right spot.
+///
+/// Mirrors [`set_linear_velocity`]'s shape — opaque to callers that
+/// don't depend on rapier3d directly. Returns `false` if the entity
+/// has no physics handle yet.
+pub fn set_kinematic_translation(world: &World, entity: EntityId, translation: glam::Vec3) -> bool {
+    let handles = match world
+        .query::<RapierHandles>()
+        .and_then(|q| q.get(entity).copied())
+    {
+        Some(h) => h,
+        None => return false,
+    };
+    let mut pw = world.resource_mut::<PhysicsWorld>();
+    if let Some(body) = pw.bodies.get_mut(handles.body) {
+        body.set_next_kinematic_translation(vec3_to_na(translation));
+        true
+    } else {
+        false
+    }
+}
+
 /// Scheduler-compatible physics tick. Place after transform propagation.
 pub fn physics_sync_system(world: &World, dt: f32) {
     if world.try_resource::<PhysicsWorld>().is_none() {
@@ -92,6 +117,14 @@ struct Newcomer {
 enum NewcomerSource {
     Shape(CollisionShape),
     Player(PlayerBody),
+    /// M28.5 — kinematic character body for the player rig. Registers
+    /// as `KinematicPositionBased` with a capsule collider; controlled
+    /// each frame by `byroredux::systems::character_controller_system`
+    /// via Rapier's `KinematicCharacterController.move_shape`.
+    Character {
+        half_height: f32,
+        radius: f32,
+    },
 }
 
 fn collect_newcomers(world: &World) -> Vec<Newcomer> {
@@ -126,6 +159,51 @@ fn collect_newcomers(world: &World) -> Vec<Newcomer> {
                 global: *global,
                 source: NewcomerSource::Shape(shape.clone()),
                 lock_rotations: false,
+            });
+        }
+    }
+
+    // (helper free fn defined at end of file for the character
+    //  controller — `set_next_kinematic_translation`-by-Vec3.)
+    // Path C: M28.5 — CharacterController marker entities. Take
+    // priority over PlayerBody (Path B is the legacy Dynamic capsule
+    // path the M28 Phase 1 attempt used; CharacterController is the
+    // active kinematic-controlled player rig).
+    if let Some(char_q) = world.query::<crate::components::CharacterController>() {
+        let handles_q = world.query::<RapierHandles>();
+        for (entity, character) in char_q.iter() {
+            if let Some(ref hq) = handles_q {
+                if hq.contains(entity) {
+                    continue;
+                }
+            }
+            let Some(global) = gq.get(entity) else {
+                continue;
+            };
+            // KinematicPositionBased — the controller system writes
+            // `set_next_kinematic_translation` each frame after
+            // collide-and-slide resolution; Rapier moves the body to
+            // the queued position on the next step without applying
+            // any dynamics. Mass / damping fields are ignored for
+            // kinematic bodies; defaults are fine.
+            let body_data = RigidBodyData {
+                motion_type: MotionType::Keyframed,
+                mass: 80.0,
+                friction: 0.5,
+                restitution: 0.0,
+                linear_damping: 0.0,
+                angular_damping: 0.0,
+            };
+            out.push(Newcomer {
+                entity,
+                body_type: RigidBodyType::KinematicPositionBased,
+                body_data,
+                global: *global,
+                source: NewcomerSource::Character {
+                    half_height: character.half_height,
+                    radius: character.radius,
+                },
+                lock_rotations: true,
             });
         }
     }
@@ -196,6 +274,13 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
                 vec![(
                     rapier3d::prelude::Isometry::identity(),
                     SharedShape::capsule_y(p.half_height.max(1e-3), p.radius.max(1e-3)),
+                )]
+            }
+            NewcomerSource::Character { half_height, radius } => {
+                use rapier3d::prelude::SharedShape;
+                vec![(
+                    rapier3d::prelude::Isometry::identity(),
+                    SharedShape::capsule_y(half_height.max(1e-3), radius.max(1e-3)),
                 )]
             }
         };

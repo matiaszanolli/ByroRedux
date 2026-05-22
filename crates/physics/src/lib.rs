@@ -20,6 +20,6 @@ pub mod convert;
 pub mod sync;
 pub mod world;
 
-pub use components::{PlayerBody, RapierHandles};
-pub use sync::{physics_sync_system, set_linear_velocity};
-pub use world::PhysicsWorld;
+pub use components::{CharacterController, PlayerBody, RapierHandles};
+pub use sync::{physics_sync_system, set_kinematic_translation, set_linear_velocity};
+pub use world::{CharacterMoveParams, CharacterMoveResult, PhysicsWorld, PHYSICS_DT};

@@ -4,9 +4,25 @@ use byroredux_core::ecs::{ActiveCamera, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 
 use crate::components::InputState;
+use crate::systems::character::PlayerMode;
 
 /// Fly camera system: WASD + mouse look. Updates the active camera's Transform.
+///
+/// Early-returns when `PlayerMode == Character` so the M28.5 character
+/// rig is the sole driver of camera + body motion in player mode.
+/// FlyCam stays the default for `--mesh` / `--tree` / `--fly` debug
+/// modes.
 pub(crate) fn fly_camera_system(world: &World, dt: f32) {
+    // M28.5 gate — character mode owns the camera via
+    // `camera_follow_system`; the fly camera would fight it for
+    // Transform writes.
+    let mode = world
+        .try_resource::<PlayerMode>()
+        .map(|r| *r)
+        .unwrap_or_default();
+    if mode == PlayerMode::Character {
+        return;
+    }
     let Some(active) = world.try_resource::<ActiveCamera>() else {
         return;
     };
