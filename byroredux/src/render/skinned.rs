@@ -137,6 +137,19 @@ pub(super) fn build_skinned_palettes(
     // costs O(MAX_BONES_PER_MESH) per entity but the alternative
     // (random index writes) bypasses the bounds check the
     // resize+slice approach already paid for.
+    //
+    // #1195 / PERF-DIM7-01 — at the same time, compute a per-entity
+    // FNV-1a hash over the freshly-written bone slice and feed it to
+    // `pool.try_mark_pose_dirty`. Idle skinned NPCs (no bone movement
+    // frame-to-frame) converge to "not dirty" on the second
+    // consecutive frame; the renderer's dispatch + refit loops then
+    // skip the GPU work for those entities. First-sight always hits
+    // the dirty branch so the output buffer + BLAS get populated.
+    //
+    // `clear_pose_dirty` MUST run before this loop so each frame
+    // starts with an empty dirty set (we only re-mark entities whose
+    // hash actually changed).
+    pool.clear_pose_dirty();
     for (entity, skin) in skin_q.iter() {
         let Some(&offset) = skin_offsets.get(&entity) else {
             continue; // pool was full for this entity (rare)
@@ -157,10 +170,78 @@ pub(super) fn build_skinned_palettes(
         // identity. The resize already filled with identity, so this
         // is a no-op; the `end` binding above is kept for clarity.
         let _ = end;
+
+        // #1195 / PERF-DIM7-01 — hash exactly the per-entity slice
+        // we just wrote. Using `end` (which clamps to the actual bone
+        // count) instead of `start + MBPM` avoids hashing the
+        // identity-padded tail; per-entity hash stays stable across
+        // frames as long as the actual bone matrices don't change.
+        let hash = pose_hash(&bone_world_out[start..end]);
+        let _dirty = pool.try_mark_pose_dirty(entity, hash);
     }
 
     // Pass 4: sweep idle entries from the pool. min_idle =
     // MAX_FRAMES_IN_FLIGHT + 1 = 3 so a slot is only reclaimed after
     // no in-flight command buffer could reference it.
     let _freed = pool.sweep(frame_count, 3);
+}
+
+/// FNV-1a hash over the f32 bits of a bone-matrix slice. Stable across
+/// frames as long as the underlying matrix values are unchanged; ~16
+/// ops per matrix (~512 ops for a 32-bone NPC). At ~1 ns/op that's
+/// ~0.5 µs per entity — well below the ~5 µs GPU dispatch cost it
+/// avoids on idle entities. #1195 / PERF-DIM7-01.
+///
+/// Uses `to_bits()` rather than raw byte cast so the hash is
+/// endian-independent and avoids `unsafe`. NaN matrices hash by their
+/// raw bit pattern — different NaN encodings would mismatch and
+/// re-trigger a dispatch (correct fail-open behaviour).
+fn pose_hash(mats: &[[[f32; 4]; 4]]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut h: u64 = FNV_OFFSET;
+    for mat in mats {
+        for row in mat {
+            for &f in row {
+                h ^= f.to_bits() as u64;
+                h = h.wrapping_mul(FNV_PRIME);
+            }
+        }
+    }
+    h
+}
+
+#[cfg(test)]
+mod pose_hash_tests {
+    use super::pose_hash;
+
+    #[test]
+    fn identical_slices_hash_identically() {
+        let a = [[[1.0, 2.0, 3.0, 4.0]; 4]; 2];
+        let b = [[[1.0, 2.0, 3.0, 4.0]; 4]; 2];
+        assert_eq!(pose_hash(&a), pose_hash(&b));
+    }
+
+    #[test]
+    fn single_bit_change_changes_hash() {
+        let mut a = [[[0.0; 4]; 4]; 1];
+        a[0][0][0] = 1.0;
+        let mut b = a;
+        b[0][0][0] = 1.000_000_1; // tiny f32 perturbation
+        assert_ne!(
+            pose_hash(&a),
+            pose_hash(&b),
+            "f32::to_bits captures sub-epsilon changes"
+        );
+    }
+
+    #[test]
+    fn empty_slice_yields_offset_basis() {
+        // `pose_hash(&[])` should equal the FNV-1a offset basis — the
+        // zero-pass case. Documents that an entity with zero bones
+        // (degenerate but possible during construction) gets a
+        // well-defined hash that's stable across frames.
+        let h = pose_hash(&[]);
+        assert_eq!(h, 0xcbf29ce484222325);
+    }
 }

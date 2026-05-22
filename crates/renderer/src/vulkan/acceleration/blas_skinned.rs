@@ -571,6 +571,14 @@ impl AccelerationManager {
         self.skinned_blas.get(&entity_id)
     }
 
+    /// `true` when a per-entity skinned BLAS exists for `entity_id`.
+    /// Used by the dispatch / refit skip gate (#1195 / #1196) — refit
+    /// is only safe to skip when the BLAS is already live; first-sight
+    /// entities still need their BUILD pass before the skip can apply.
+    pub fn has_skinned_blas(&self, entity_id: EntityId) -> bool {
+        self.skinned_blas.contains_key(&entity_id)
+    }
+
     /// Drop a per-skinned-entity BLAS. Routes through `pending_destroy_blas`
     /// with a `MAX_FRAMES_IN_FLIGHT`-frame countdown so the acceleration
     /// structure is never destroyed while a command buffer still references

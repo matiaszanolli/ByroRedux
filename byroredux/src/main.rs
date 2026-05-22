@@ -1526,6 +1526,12 @@ impl ApplicationHandler for App {
                         frame_timings.as_mut(),
                         &self.water_commands,
                         compute_underwater_params(&self.world),
+                        // #1195 / PERF-DIM7-01 — per-frame pose-dirty
+                        // set populated by `build_skinned_palettes` via
+                        // `SkinSlotPool::try_mark_pose_dirty`. Drives
+                        // both the skin compute skip and the paired
+                        // skinned-BLAS refit skip (#1196).
+                        self.skin_slot_pool.pose_dirty(),
                     ) {
                         Ok(needs_recreate) => {
                             if is_benching {

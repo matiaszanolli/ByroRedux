@@ -496,6 +496,16 @@ pub struct SkinSlotPool {
     /// `allocate` failure; never reset (the warn is observability,
     /// not flow control).
     overflow_warned: bool,
+    /// Per-entity hash of the last-uploaded `bone_world` slice. Set by
+    /// `try_mark_pose_dirty`; absent for entities that haven't been
+    /// hashed yet. #1195 / PERF-DIM7-01.
+    last_pose_hash: std::collections::HashMap<super::storage::EntityId, u64>,
+    /// Entities whose pose hash differs from the previous frame's
+    /// (or who have never been hashed). Cleared at frame start by
+    /// `clear_pose_dirty`; populated by `try_mark_pose_dirty`. Drained
+    /// by the renderer to gate skin compute dispatch + skinned-BLAS
+    /// refit. #1195 / PERF-DIM7-01, paired with #1196 / PERF-DIM7-02.
+    pose_dirty: std::collections::HashSet<super::storage::EntityId>,
 }
 
 impl SkinSlotPool {
@@ -514,6 +524,8 @@ impl SkinSlotPool {
             pending_uploads: Vec::new(),
             max_slot: max_skinned,
             overflow_warned: false,
+            last_pose_hash: std::collections::HashMap::new(),
+            pose_dirty: std::collections::HashSet::new(),
         }
     }
 
@@ -623,6 +635,14 @@ impl SkinSlotPool {
                 freed.push(slot);
             }
             self.last_seen_frame.remove(&entity);
+            // #1195 / PERF-DIM7-01 — evicted entities must drop their
+            // stale pose hash too; otherwise a recycled slot ID under
+            // a new entity could collide with the prior tenant's hash
+            // map entry (the keying is by EntityId so collisions are
+            // impossible in practice, but dropping is the right
+            // hygiene — keeps the map bounded to live entities).
+            self.last_pose_hash.remove(&entity);
+            self.pose_dirty.remove(&entity);
         }
         freed
     }
@@ -643,6 +663,50 @@ impl SkinSlotPool {
     /// and dispatch-sizing.
     pub fn max_used_slot(&self) -> u32 {
         self.next_slot.saturating_sub(1)
+    }
+
+    /// Update the per-entity pose hash; mark dirty (and return `true`)
+    /// when the new hash differs from the stored one (or the entity
+    /// has never been hashed). #1195 / PERF-DIM7-01.
+    ///
+    /// Callers compute `new_hash` over the entity's bone-matrix slice
+    /// of `bone_world_out` after [`crate::ecs::components::SkinnedMesh`]
+    /// pose construction in `build_skinned_palettes`. The renderer
+    /// drains [`pose_dirty`](Self::pose_dirty) once per frame and
+    /// uses it to gate skin compute dispatch + skinned-BLAS refit.
+    ///
+    /// First-sight (no prior hash) always returns `true`. Idle bone
+    /// poses converge to "not dirty" on the second consecutive frame.
+    pub fn try_mark_pose_dirty(
+        &mut self,
+        entity: super::storage::EntityId,
+        new_hash: u64,
+    ) -> bool {
+        let dirty = match self.last_pose_hash.get(&entity) {
+            Some(&old) => old != new_hash,
+            None => true,
+        };
+        if dirty {
+            self.last_pose_hash.insert(entity, new_hash);
+            self.pose_dirty.insert(entity);
+        }
+        dirty
+    }
+
+    /// Clear the dirty set; called at the start of each frame before
+    /// `build_skinned_palettes` repopulates it. Leaves
+    /// [`last_pose_hash`](Self::last_pose_hash) intact so the next
+    /// frame's hash comparison still has a baseline. #1195.
+    pub fn clear_pose_dirty(&mut self) {
+        self.pose_dirty.clear();
+    }
+
+    /// Read-only view of the per-frame dirty entity set. The renderer
+    /// uses this to gate skin compute dispatch (#1195) and skinned-
+    /// BLAS refit (#1196) — entities NOT in this set whose slots
+    /// already have populated output + live BLAS can skip both passes.
+    pub fn pose_dirty(&self) -> &std::collections::HashSet<super::storage::EntityId> {
+        &self.pose_dirty
     }
 }
 
@@ -793,6 +857,89 @@ mod skin_slot_pool_tests {
         // current=100, last=200, saturating_sub → idle=0 → keep.
         assert_eq!(pool.sweep(100, 5), Vec::<u32>::new());
         assert!(pool.get(99).is_some());
+    }
+
+    // ── #1195 / PERF-DIM7-01 — pose-dirty gate ────────────────────
+
+    #[test]
+    fn first_sight_pose_is_always_dirty() {
+        let mut pool = SkinSlotPool::new(5);
+        // Entity 1 has never been hashed → first call must return
+        // dirty so the renderer dispatches at least once. The
+        // "skip dispatch when unchanged" optimisation must never
+        // bypass first-sight; otherwise the output buffer is never
+        // populated and the BLAS holds garbage.
+        let dirty = pool.try_mark_pose_dirty(1, 0x1234);
+        assert!(dirty, "first hash for an entity must report dirty");
+        assert!(
+            pool.pose_dirty().contains(&1),
+            "first-sight entity must land in the dirty set"
+        );
+    }
+
+    #[test]
+    fn unchanged_pose_is_not_dirty_on_second_call() {
+        let mut pool = SkinSlotPool::new(5);
+        let _ = pool.try_mark_pose_dirty(1, 0xCAFE);
+        pool.clear_pose_dirty();
+
+        // Same hash → not dirty; idle skinned entity skips dispatch.
+        let dirty = pool.try_mark_pose_dirty(1, 0xCAFE);
+        assert!(!dirty, "same hash must not report dirty");
+        assert!(
+            !pool.pose_dirty().contains(&1),
+            "stable-pose entity must not re-enter the dirty set"
+        );
+    }
+
+    #[test]
+    fn changed_pose_re_dirties() {
+        let mut pool = SkinSlotPool::new(5);
+        let _ = pool.try_mark_pose_dirty(1, 0xCAFE);
+        pool.clear_pose_dirty();
+        let _ = pool.try_mark_pose_dirty(1, 0xCAFE);
+        pool.clear_pose_dirty();
+
+        // Hash changes (bone moved) → dirty again.
+        let dirty = pool.try_mark_pose_dirty(1, 0xDEAD);
+        assert!(dirty, "hash mismatch must report dirty");
+        assert!(pool.pose_dirty().contains(&1));
+    }
+
+    #[test]
+    fn clear_pose_dirty_preserves_baseline_hash() {
+        // `clear_pose_dirty` runs at the top of every frame to empty
+        // the per-frame dirty set; it must NOT wipe `last_pose_hash`,
+        // because the next-frame comparison needs that baseline. If
+        // the baseline were wiped, every frame would re-mark every
+        // entity dirty — defeating the optimisation entirely.
+        let mut pool = SkinSlotPool::new(5);
+        let _ = pool.try_mark_pose_dirty(1, 0xCAFE);
+        pool.clear_pose_dirty();
+        // Same hash now → must still report not-dirty (baseline survived).
+        assert!(!pool.try_mark_pose_dirty(1, 0xCAFE));
+    }
+
+    #[test]
+    fn sweep_drops_stale_pose_hash_with_slot() {
+        // When an entity's slot is reclaimed by `sweep`, its pose hash
+        // should be evicted too — otherwise the map grows without
+        // bound across long-running sessions (NPC churn from cell
+        // streaming, particle skinned-mesh churn).
+        let mut pool = SkinSlotPool::new(5);
+        let _ = pool.allocate(7, 100);
+        let _ = pool.try_mark_pose_dirty(7, 0xCAFE);
+        // Sweep with idle threshold low enough to evict.
+        let freed = pool.sweep(110, /*min_idle=*/ 5);
+        assert_eq!(freed.len(), 1, "entity 7 idle past threshold → evicted");
+        // After eviction, re-allocating entity 7 must hit the
+        // first-sight dirty branch again — proving the stale hash
+        // was dropped.
+        pool.clear_pose_dirty();
+        assert!(
+            pool.try_mark_pose_dirty(7, 0xCAFE),
+            "re-allocated entity must hit first-sight dirty after sweep"
+        );
     }
 }
 

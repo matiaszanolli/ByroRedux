@@ -161,6 +161,17 @@ impl VulkanContext {
         // units. `[0, 0, 0, 0]` disables underwater FX. Computed by
         // the app from the camera's `SubmersionState` component.
         underwater: [f32; 4],
+        // #1195 / PERF-DIM7-01 — per-frame dirty set for the skin
+        // compute dispatch + skinned-BLAS refit gate. Entities NOT in
+        // this set whose slots already have `has_populated_output = true`
+        // AND a live BLAS skip both compute dispatch and refit. The
+        // set is populated by `build_skinned_palettes` via
+        // `SkinSlotPool::try_mark_pose_dirty`; an empty set on a frame
+        // with N skinned entities means every NPC is idle (no bones
+        // moved frame-to-frame) and N dispatches + N refits are
+        // suppressed. First-sight (no populated output yet) ignores
+        // the set and always dispatches. Paired with #1196.
+        pose_dirty: &std::collections::HashSet<EntityId>,
     ) -> Result<bool> {
         let frame = self.current_frame;
         // Use a local to avoid borrow complexity; copy out at end.
@@ -896,6 +907,23 @@ impl VulkanContext {
                     // every registered skinned slot (refresh output
                     // buffer with current pose), then barrier, then
                     // refit BLAS.
+                    //
+                    // #1195 / PERF-DIM7-01 — dispatch is gated on the
+                    // per-entity pose-dirty bit. Idle skinned entities
+                    // (no bone movement since the previous frame) skip
+                    // the GPU dispatch entirely; the output buffer
+                    // already holds last frame's pose and the BLAS
+                    // already references it.
+                    //
+                    // Safety: the skip path is gated on
+                    // `slot.has_populated_output` — first-sight slots
+                    // (output buffer uninitialised) MUST dispatch
+                    // unconditionally, otherwise the BLAS would refit
+                    // against garbage memory. The flag is set true the
+                    // first time we actually dispatch for the slot.
+                    // The LRU bump happens on the skip path too so
+                    // quiescent slots aren't reaped by the eviction
+                    // sweep.
                     if !dispatches.is_empty() {
                         // #1194 — bracket the skin compute dispatch
                         // loop. START sits before the per-entity
@@ -912,13 +940,25 @@ impl VulkanContext {
                                 let Some(slot) = self.skin_slots.get_mut(&entity_id) else {
                                     continue;
                                 };
-                                // #643 / MEM-2-1 — bump LRU before the
-                                // dispatch so the eviction sweep below
-                                // sees this entity as "active this
-                                // frame" and won't drop it. Mirrors
-                                // the BLAS-side `last_used_frame` bump
-                                // in `acceleration.rs::build_tlas`.
+                                // #643 / MEM-2-1 — bump LRU first
+                                // (before the skip gate) so the
+                                // eviction sweep below sees this
+                                // entity as "active this frame" even
+                                // when the dispatch is skipped.
                                 slot.last_used_frame = self.frame_counter as u64;
+
+                                // #1195 / PERF-DIM7-01 — skip the
+                                // dispatch when the entity's pose is
+                                // unchanged AND the output buffer is
+                                // already populated. First-sight slots
+                                // always fall through to the dispatch
+                                // below (their `has_populated_output`
+                                // is still false).
+                                let is_dirty = pose_dirty.contains(&entity_id);
+                                if slot.has_populated_output && !is_dirty {
+                                    self.last_skin_coverage_frame.dispatches_skipped += 1;
+                                    continue;
+                                }
                                 skin_pipeline.dispatch(
                                     &self.device,
                                     cmd,
@@ -930,6 +970,10 @@ impl VulkanContext {
                                     bone_buffer_size,
                                     push,
                                 );
+                                // Flip the "populated" bit on the
+                                // first successful dispatch so the
+                                // next-frame skip gate can fire.
+                                slot.has_populated_output = true;
                             }
                         }
                         // #1194 — END of skin compute dispatch bracket
@@ -1032,6 +1076,37 @@ impl VulkanContext {
                                 let Some(slot) = self.skin_slots.get(&entity_id) else {
                                     continue;
                                 };
+                                // #1196 / PERF-DIM7-02 — paired refit
+                                // gate. Same predicate as the dispatch
+                                // skip above: if the entity's pose was
+                                // unchanged this frame AND the slot
+                                // already has a populated output AND a
+                                // live BLAS, skip the refit. The BLAS
+                                // still references the same output
+                                // buffer; nothing changed underneath
+                                // it. First-sight entities (populated
+                                // output just set true above OR BLAS
+                                // freshly built this frame via
+                                // `first_sight_builds`) fall through
+                                // to the refit unconditionally — `accel`
+                                // checks for an existing BLAS internally
+                                // and the first-sight BUILD already
+                                // covered them anyway. The skip uses
+                                // the same `pose_dirty` set so the two
+                                // decisions can't diverge — the "split
+                                // decisions are the trap" warning from
+                                // the audit.
+                                let is_dirty = pose_dirty.contains(&entity_id);
+                                if slot.has_populated_output
+                                    && !is_dirty
+                                    && accel.has_skinned_blas(entity_id)
+                                {
+                                    // Skip path mirrors the dispatch
+                                    // skip — counts via `dispatches_skipped`
+                                    // is the dispatch's responsibility;
+                                    // refit just falls through silently.
+                                    continue;
+                                }
                                 // Past the slot gate → coverage counts a
                                 // real refit attempt. Entities without a
                                 // slot land in `slots_failed` instead.

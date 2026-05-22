@@ -77,13 +77,24 @@ pub struct SkinSlot {
     vertex_count: u32,
     /// LRU bookkeeping: frame counter at the most-recent dispatch into
     /// this slot. Bumped from `VulkanContext::draw_frame`'s skin chain
-    /// every time the entity appears in `draw_commands`. Read by the
-    /// per-frame eviction sweep — a slot whose `last_used_frame`
+    /// every time the entity appears in `draw_commands` (including
+    /// skip-path entries — see #1195 — so quiescent slots are NOT
+    /// evicted as a side effect of the dispatch-dirty gate). Read by
+    /// the per-frame eviction sweep — a slot whose `last_used_frame`
     /// trails the current frame by more than `MAX_FRAMES_IN_FLIGHT`
     /// has no in-flight reference and is safe to destroy
     /// synchronously. Same threshold the static `evict_unused_blas`
     /// path uses for non-skinned BLAS. See #643 / MEM-2-1.
     pub last_used_frame: u64,
+    /// #1195 / PERF-DIM7-01 — flips `true` after the first successful
+    /// `skin_pipeline.dispatch` for this slot. Before that flip, the
+    /// output buffer holds uninitialised memory and dispatching it as
+    /// BLAS input would produce garbage geometry, so the dispatch-
+    /// dirty gate MUST NOT skip dispatch until this is `true`. The
+    /// paired #1196 BLAS refit gate piggy-backs on the same invariant
+    /// (refit reads `output_buffer` as input — no point refitting
+    /// over uninitialised data).
+    pub has_populated_output: bool,
 }
 
 impl SkinSlot {
@@ -381,6 +392,10 @@ impl SkinComputePipeline {
             // frame counter on the first dispatch (and every
             // subsequent one). #643 / MEM-2-1.
             last_used_frame: 0,
+            // #1195 — flips `true` after the first successful dispatch
+            // for this slot. Until then the dispatch-dirty gate must
+            // always dispatch (output buffer is uninitialised).
+            has_populated_output: false,
         })
     }
 
