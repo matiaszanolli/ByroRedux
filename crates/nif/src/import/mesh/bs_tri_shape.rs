@@ -5,7 +5,7 @@
 
 
 
-use crate::blocks::tri_shape::BsTriShape;
+use crate::blocks::tri_shape::{BsTriShape, BsTriShapeKind};
 use crate::scene::NifScene;
 use crate::types::NiTransform;
 
@@ -254,6 +254,23 @@ pub fn extract_bs_tri_shape(
         wireframe: mat.wireframe,
         flat_shading: mat.flat_shading,
         flags: shape.av.flags,
+        // #1207 / NIF-DIM4-07 — surface FO4 BSLODTriShape distant-LOD
+        // triangle-count cutoffs (parser already captured them via
+        // `BsTriShapeKind::LOD`). Future M35 LOD selector will consult
+        // these. `None` on every non-LOD variant.
+        bs_lod_cutoffs: match &shape.kind {
+            BsTriShapeKind::LOD { lod0, lod1, lod2 } => Some([*lod0, *lod1, *lod2]),
+            _ => None,
+        },
+        // #1206 / NIF-DIM4-06 — surface BSSubIndexTriShape segmentation
+        // payload (parser already captured the full segments table +
+        // shared SSF metadata via `BsTriShapeKind::SubIndex`). Future
+        // dismemberment / body-part-segmentation system will consult
+        // this. `None` on every non-SubIndex variant.
+        bs_sub_index: match &shape.kind {
+            BsTriShapeKind::SubIndex(data) => Some((**data).clone()),
+            _ => None,
+        },
     })
 }
 

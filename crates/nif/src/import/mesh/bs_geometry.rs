@@ -242,6 +242,11 @@ pub fn extract_bs_geometry(
         wireframe: mat.wireframe,
         flat_shading: mat.flat_shading,
         flags: shape.av.flags,
+        // #1207 / #1206 — BSGeometry (Starfield) doesn't carry the
+        // FO4-era BSTriShape LOD / SubIndex discriminator; both fields
+        // are None.
+        bs_lod_cutoffs: None,
+        bs_sub_index: None,
     })
 }
 

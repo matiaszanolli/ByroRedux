@@ -40,6 +40,8 @@ pub(crate) use tangent::*;
 #[cfg(test)]
 mod bs_geometry_tangent_tests;
 #[cfg(test)]
+mod bs_tri_shape_kind_passthrough_tests;
+#[cfg(test)]
 mod bs_tri_shape_partition_remap_tests;
 #[cfg(test)]
 mod bs_tri_shape_shader_flag_tests;

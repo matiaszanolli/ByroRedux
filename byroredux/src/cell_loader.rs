@@ -274,6 +274,8 @@ mod pack_bgsm_material_flags_tests {
             wireframe: false,
             flat_shading: false,
             flags: 0,
+            bs_lod_cutoffs: None,
+            bs_sub_index: None,
         }
     }
 

@@ -352,6 +352,8 @@ fn placeholder_billboard_mesh(
         no_lighting_falloff: None,
         wireframe: false,
         flat_shading: false,
+        bs_lod_cutoffs: None,
+        bs_sub_index: None,
     }
 }
 

@@ -258,6 +258,15 @@ pub struct TreeBones {
 /// `crate::blocks::node` directly.
 pub use crate::blocks::node::BsRangeKind;
 
+/// Re-export the `BsSubIndexTriShapeData` segmentation payload from
+/// the parser side so callers downstream of `ImportedMesh` don't have
+/// to reach into `crate::blocks::tri_shape` directly. Mirrors the
+/// [`BsRangeKind`] re-export pattern. See #1206 — pre-fix the importer
+/// dropped the `BsTriShapeKind::SubIndex` discriminator, making the
+/// dismemberment / body-part segmentation payload invisible to
+/// consumers downstream of the NIF crate.
+pub use crate::blocks::tri_shape::BsSubIndexTriShapeData;
+
 /// A mesh extracted from a NIF file, ready for GPU upload.
 #[derive(Debug)]
 pub struct ImportedMesh {
@@ -561,6 +570,23 @@ pub struct ImportedMesh {
     /// recompute gated on a per-batch flag. Until then this bool is captured
     /// but not consulted on the render path.
     pub flat_shading: bool,
+    /// FO4 `BSLODTriShape` distant-LOD triangle-count cutoffs `[lod0,
+    /// lod1, lod2]` — the three thresholds an eventual M35 LOD selector
+    /// will consult to choose which LOD level to draw at distance. Pre-#1207
+    /// the parser captured these via [`BsTriShapeKind::LOD`] but the importer
+    /// dropped them, leaving the future LOD path with no authored input.
+    /// `None` on every non-LOD BSTriShape (the vast majority of meshes).
+    pub bs_lod_cutoffs: Option<[u32; 3]>,
+    /// `BSSubIndexTriShape` segmentation payload — segments table +
+    /// optional FO4+ shared SSF metadata. Drives dismemberment /
+    /// body-part segmentation / locational damage on actor meshes
+    /// across Skyrim SE DLC, FO4, and FO76. Pre-#1206 the parser
+    /// decoded the full [`BsSubIndexTriShapeData`] body via
+    /// [`BsTriShapeKind::SubIndex`] but the importer dropped the
+    /// discriminator entirely; the dismemberment system implementation
+    /// (deferred) has nothing to consume. `None` on every non-SubIndex
+    /// BSTriShape and every NiTriShape / BSGeometry.
+    pub bs_sub_index: Option<BsSubIndexTriShapeData>,
 }
 
 /// Per-bone binding for a skinned mesh. Bone space is Y-up (converted

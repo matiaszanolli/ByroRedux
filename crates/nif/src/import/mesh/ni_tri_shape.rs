@@ -258,6 +258,10 @@ pub fn extract_mesh(
         wireframe: mat.wireframe,
         flat_shading: mat.flat_shading,
         flags: shape.av.flags,
+        // #1207 / #1206 — NiTriShape never carries the FO4+ LOD or
+        // SubIndex BSTriShape discriminator; both fields are None.
+        bs_lod_cutoffs: None,
+        bs_sub_index: None,
     })
 }
 
