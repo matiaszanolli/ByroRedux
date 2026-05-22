@@ -440,12 +440,20 @@ impl CompositePipeline {
             .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::UNIFORM_READ);
 
         // Outgoing dependency: ensure swapchain write finishes before present.
+        //
+        // #1160 / REN-D10-NEW-13 — DST-side `NONE` is the Vulkan 1.3
+        // canonical form for "no further synchronization required";
+        // mirrors the SVGF / SSAO / caustic `initialize_layouts` sites
+        // already migrated under #949 / #1100 / #1121 / #1122 on the
+        // SRC side. `BOTTOM_OF_PIPE` is still accepted under the spec's
+        // compatibility clause, but `NONE` makes the "no downstream
+        // stage to wait on" intent explicit.
         let composite_dep_out = vk::SubpassDependency::default()
             .src_subpass(0)
             .dst_subpass(vk::SUBPASS_EXTERNAL)
             .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
             .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags::BOTTOM_OF_PIPE)
+            .dst_stage_mask(vk::PipelineStageFlags::NONE)
             .dst_access_mask(vk::AccessFlags::empty());
 
         let attachments = [composite_color];

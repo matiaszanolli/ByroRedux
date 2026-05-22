@@ -186,10 +186,13 @@ pub(super) fn create_render_pass(
         // guarantee on its own — the FRAGMENT_SHADER + COMPUTE_SHADER
         // pair is what actually gates the downstream reads (composite
         // fragment shader for HDR color, SSAO compute shader for
-        // depth in READ_ONLY layout). composite.rs:408 and
-        // screenshot.rs:164 also use BOTTOM_OF_PIPE in `dst_stage_mask`
-        // but pair it with an empty `dst_access_mask`, which the spec
-        // permits — so they're left alone.
+        // depth in READ_ONLY layout). The two sibling sites that
+        // previously paired `BOTTOM_OF_PIPE` with an empty
+        // `dst_access_mask` (composite.rs outgoing dep + screenshot.rs
+        // present-layout transition) migrated to
+        // `vk::PipelineStageFlags::NONE` under #1160 / REN-D10-NEW-13,
+        // matching the SRC-side `TOP_OF_PIPE → NONE` sweep done under
+        // #949 / #1100 / #1121 / #1122.
         .dst_stage_mask(
             vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
         )

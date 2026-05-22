@@ -163,10 +163,15 @@ impl VulkanContext {
                     .layer_count(1),
             );
 
+        // #1160 / REN-D10-NEW-13 — DST-side `NONE` is the Vulkan 1.3
+        // canonical form for "no further synchronization required",
+        // paired with an empty `dst_access_mask` (per the barrier
+        // configured above at line ~157). Matches the SRC-side
+        // migrations under #949 / #1100 / #1121 / #1122.
         self.device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            vk::PipelineStageFlags::NONE,
             vk::DependencyFlags::empty(),
             &[],
             &[],
