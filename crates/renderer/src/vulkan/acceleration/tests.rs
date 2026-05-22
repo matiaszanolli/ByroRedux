@@ -793,23 +793,65 @@ fn scratch_shrink_skipped_on_exactly_2x_ratio() {
     assert!(!scratch_should_shrink(64 * MB, 32 * MB));
 }
 
-/// #682 / MEM-2-7 — the policy that gates `shrink_tlas_scratch_to_fit`
-/// is the same `scratch_should_shrink` that gates the BLAS path,
-/// but the TLAS scratch failure mode is distinct: a single big
-/// exterior frame (8 K+ instances → MB-scale build scratch) used
-/// to pin that capacity for the rest of the session. Pin the
-/// canonical scenario here so a future tweak to the threshold
-/// surfaces in the diff for both #495 (BLAS) and #682 (TLAS)
-/// failure modes.
+// ── tlas_scratch_should_shrink (#1226) ────────────────────────────
+//
+// Pre-#1226 the TLAS scratch shrink path called `scratch_should_shrink`
+// with its 16 MB BLAS-scale slack; TLAS scratch lives at tens of KB to
+// <1 MB so the entire mechanism was dead code. The new predicate uses
+// a 256 KB TLAS-calibrated slack. Tests below pin the threshold math
+// against realistic TLAS scratch scales.
+const KB: vk::DeviceSize = 1024;
+
 #[test]
-fn tlas_scratch_shrink_fires_after_exterior_peak() {
-    // 8 K-instance exterior cell can land scratch at ~32 MB on
-    // typical desktop drivers; settling into a small interior
-    // typically needs <1 MB. Ratio = 32× and excess = 31 MB
-    // > 16 MB SLACK → shrink.
-    let exterior_peak = 32 * MB;
-    let interior_steady = 1 * MB;
-    assert!(scratch_should_shrink(exterior_peak, interior_steady));
+fn tlas_scratch_shrink_fires_at_realistic_excess() {
+    // Big exterior frame settles into a small interior: 4 MB peak now,
+    // 256 KB working. Ratio = 16× and excess = 3.75 MB
+    // > 256 KB slack → shrink.
+    let exterior_capacity = 4 * MB;
+    let interior_steady = 256 * KB;
+    assert!(tlas_scratch_should_shrink(exterior_capacity, interior_steady));
+}
+
+#[test]
+fn tlas_scratch_shrink_skipped_below_2x_ratio() {
+    // Capacity 1.5× the new peak — no churn.
+    assert!(!tlas_scratch_should_shrink(900 * KB, 600 * KB));
+}
+
+#[test]
+fn tlas_scratch_shrink_skipped_when_excess_under_tlas_slack() {
+    // Ratio is huge (50×) but excess is only 196 KB — below the
+    // 256 KB slack. Don't churn through a free+create for a tiny win.
+    assert!(!tlas_scratch_should_shrink(200 * KB, 4 * KB));
+}
+
+#[test]
+fn tlas_scratch_shrink_fires_at_zero_peak_when_over_slack() {
+    // Slot drained between frames — peak == 0; 512 KB current,
+    // excess 512 KB > 256 KB slack → shrink.
+    assert!(tlas_scratch_should_shrink(512 * KB, 0));
+}
+
+#[test]
+fn tlas_scratch_shrink_skipped_on_exactly_2x_ratio() {
+    // Strict `>` ratio check — equality doesn't trigger.
+    assert!(!tlas_scratch_should_shrink(1024 * KB, 512 * KB));
+}
+
+/// Regression: pre-#1226 the TLAS scratch shrink path called
+/// `scratch_should_shrink` (BLAS-scale slack), which permanently
+/// disabled shrink at realistic TLAS scales. Pin both predicates
+/// against the same realistic input so the slack-scale mismatch
+/// surfaces in the diff if the call site ever drifts back.
+#[test]
+fn blas_scale_slack_disables_shrink_at_tlas_scale() {
+    // 4 MB current, 256 KB peak — exactly the canonical TLAS-scale
+    // scenario the new predicate fires on. The BLAS-scale predicate
+    // refuses to shrink (excess = 3.75 MB < 16 MB slack).
+    let capacity = 4 * MB;
+    let peak = 256 * KB;
+    assert!(tlas_scratch_should_shrink(capacity, peak));
+    assert!(!scratch_should_shrink(capacity, peak));
 }
 
 /// #659 — `is_scratch_aligned` enforces the AS-spec

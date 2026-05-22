@@ -5,7 +5,9 @@
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::constants::WORKING_SET_FLOOR;
-use super::predicates::{scratch_should_shrink, tlas_instance_should_shrink};
+use super::predicates::{
+    scratch_should_shrink, tlas_instance_should_shrink, tlas_scratch_should_shrink,
+};
 use super::AccelerationManager;
 use ash::vk;
 
@@ -246,7 +248,11 @@ impl AccelerationManager {
 
         // Live slot — compare against last fresh-build peak.
         let peak = self.tlas_scratch_peak_bytes[slot_index];
-        if peak == 0 || !scratch_should_shrink(current, peak) {
+        // #1226 — TLAS scratch lives at tens of KB to <1 MB; the
+        // BLAS-scale `scratch_should_shrink` (16 MB slack) effectively
+        // disabled shrink on this path. Switch to the TLAS-calibrated
+        // predicate (256 KB slack).
+        if peak == 0 || !tlas_scratch_should_shrink(current, peak) {
             return false;
         }
 

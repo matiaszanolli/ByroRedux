@@ -13,7 +13,21 @@ use ash::vk;
 /// 16 MB is the scale BLAS scratch lives at (a single 80–200 MB
 /// build is plausible; the slack is ~10% of that). See `#495` and
 /// `scratch_should_shrink`.
+///
+/// **BLAS-only scale — do not reuse for TLAS scratch.** TLAS scratch
+/// lives at tens of KB to <1 MB; a 16 MB slack permanently disables
+/// shrink there. Use [`TLAS_SCRATCH_SLACK_BYTES`] +
+/// [`tlas_scratch_should_shrink`] for the TLAS path. See #1226.
 pub(super) const BLAS_REBUILD_SLACK_BYTES: vk::DeviceSize = 16 * 1024 * 1024;
+
+/// Slack margin on TLAS scratch shrink (#1226). TLAS scratch buffers
+/// live at tens of KB to <1 MB at typical instance counts (1024-8192
+/// instances → ~64-256 KB scratch); the BLAS-scratch 16 MB slack would
+/// effectively never trigger here. 256 KB is the same order as a
+/// large TLAS scratch — wide enough to absorb adjacent-cell-load
+/// variance, narrow enough to actually fire when a big exterior peak
+/// settles back into a small interior working set.
+pub(super) const TLAS_SCRATCH_SLACK_BYTES: vk::DeviceSize = 256 * 1024;
 
 /// Slack margin on TLAS instance-buffer shrink (`#645` / MEM-2-3).
 /// TLAS instance buffers are 64 B/entry and live at MB scale, so the

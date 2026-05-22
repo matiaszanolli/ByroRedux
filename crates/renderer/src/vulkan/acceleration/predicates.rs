@@ -7,7 +7,7 @@
 
 use super::constants::{
     BLAS_REBUILD_SLACK_BYTES, MIN_BLAS_BUDGET_BYTES, SKINNED_BLAS_REFIT_THRESHOLD,
-    TLAS_REBUILD_SLACK_BYTES,
+    TLAS_REBUILD_SLACK_BYTES, TLAS_SCRATCH_SLACK_BYTES,
 };
 use crate::vulkan::context::DrawCommand;
 use anyhow::Result;
@@ -262,6 +262,21 @@ pub(super) fn scratch_needs_growth(
 pub(super) fn scratch_should_shrink(current_capacity: vk::DeviceSize, peak_required: vk::DeviceSize) -> bool {
     current_capacity > peak_required.saturating_mul(2)
         && current_capacity.saturating_sub(peak_required) > BLAS_REBUILD_SLACK_BYTES
+}
+
+/// TLAS-scratch hysteresis decision (#1226). Mirrors
+/// [`scratch_should_shrink`]'s `2× + slack` shape but with a
+/// TLAS-scratch-calibrated slack: TLAS scratch lives at tens of KB to
+/// <1 MB, so the BLAS-scratch 16 MB slack permanently disabled shrink
+/// on this path. Pre-fix the TLAS scratch shrink mechanism (#682) was
+/// effectively dead code. Pure function so the unit test can pin the
+/// threshold math without a live Vulkan device.
+pub(super) fn tlas_scratch_should_shrink(
+    current_capacity: vk::DeviceSize,
+    peak_required: vk::DeviceSize,
+) -> bool {
+    current_capacity > peak_required.saturating_mul(2)
+        && current_capacity.saturating_sub(peak_required) > TLAS_SCRATCH_SLACK_BYTES
 }
 
 /// Hysteresis decision for the TLAS instance buffer pair (`#645` /
