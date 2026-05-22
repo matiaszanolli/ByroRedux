@@ -220,11 +220,19 @@ impl Ba2Archive {
             BA2_V_STARFIELD_V2 => {
                 let mut extra = [0u8; 8];
                 reader.read_exact(&mut extra)?;
+                // #1186 — defense-in-depth: log the trailing 2×u32 the
+                // community RE'd as "compressed name-table size +
+                // reserved" so a malformed archive failure surfaces here
+                // (header boundary) instead of 50 records deep in
+                // read_general_records. Mirrors the `0xBAADF00D` padding
+                // debug-log inside read_general_records.
+                log_v2_v3_extra_bytes("v2", &extra, name_table_offset, reader.stream_position()?);
                 Ba2Compression::Zlib
             }
             BA2_V_STARFIELD_V3 => {
                 let mut extra = [0u8; 8];
                 reader.read_exact(&mut extra)?;
+                log_v2_v3_extra_bytes("v3", &extra, name_table_offset, reader.stream_position()?);
                 let mut method_buf = [0u8; 4];
                 reader.read_exact(&mut method_buf)?;
                 let method = u32::from_le_bytes(method_buf);
@@ -412,6 +420,51 @@ impl Ba2Archive {
                 self.compression,
             ),
         }
+    }
+}
+
+/// Defense-in-depth header sanity log for the Starfield v2 / v3 trailing
+/// 8 bytes (community-RE'd as `compressed_name_table_size: u32` +
+/// `reserved: u32`). Logs both fields at trace level so a malformed
+/// archive's failure surfaces here at the header boundary instead of
+/// 50 records deep inside `read_general_records` (where the symptom
+/// is the confusing `failed to fill whole buffer`).
+///
+/// Emits a debug-level warning when the size field claims more bytes
+/// before the name table than physically exist (`stream_pos + size >
+/// name_table_offset` — the gap can't be larger than the gap). The
+/// check is intentionally loose: well-formed archives commonly write a
+/// size smaller than the gap (the field is "compressed name-table
+/// size", not "remaining bytes"), so a true value-shape mismatch only
+/// fires when the field is wildly out of bounds.
+///
+/// Models the `padding != 0xBAADF00D` debug-log inside
+/// [`read_general_records`] — cheap header-boundary sanity check.
+/// See #1186.
+fn log_v2_v3_extra_bytes(label: &str, extra: &[u8; 8], name_table_offset: u64, stream_pos: u64) {
+    let size = u32::from_le_bytes(extra[0..4].try_into().unwrap());
+    let reserved = u32::from_le_bytes(extra[4..8].try_into().unwrap());
+    log::trace!(
+        "BA2 {} extra header bytes: compressed_name_table_size={} \
+         reserved={:#x} (stream_pos={:#x}, name_table_offset={:#x})",
+        label,
+        size,
+        reserved,
+        stream_pos,
+        name_table_offset,
+    );
+    let projected_end = stream_pos.saturating_add(size as u64);
+    if projected_end > name_table_offset {
+        log::debug!(
+            "BA2 {} compressed_name_table_size={} would project past \
+             name_table_offset={:#x} (stream_pos={:#x}, projected_end={:#x}); \
+             header likely malformed",
+            label,
+            size,
+            name_table_offset,
+            stream_pos,
+            projected_end,
+        );
     }
 }
 
