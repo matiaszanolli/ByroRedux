@@ -14,7 +14,7 @@
 //! in the inherited-property loop.
 
 use super::*;
-use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+use crate::blocks::base::NiObjectNETData;
 use crate::blocks::properties::NiVertexColorProperty;
 use crate::blocks::shader::{BSLightingShaderProperty, ShaderTypeData};
 use crate::blocks::NiObject;

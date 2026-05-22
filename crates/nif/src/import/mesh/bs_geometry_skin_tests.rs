@@ -9,7 +9,6 @@ use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
 use crate::blocks::bs_geometry::{BSGeometry, BSGeometryMesh, BSGeometryMeshKind};
 use crate::blocks::node::NiNode;
 use crate::blocks::skin::{BsSkinBoneData, BsSkinBoneTrans, BsSkinInstance};
-use crate::blocks::NiObject;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiMatrix3, NiPoint3, NiTransform};
 use std::sync::Arc;
