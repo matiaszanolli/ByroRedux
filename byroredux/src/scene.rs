@@ -475,21 +475,36 @@ pub(crate) fn setup_scene(
     );
     world.insert_resource(ActiveCamera(cam));
 
-    // M28.5 — Player rig selection. Default to Character mode when
-    // CLI booted with `--esm` (cell content present) AND not opted
-    // out via `--fly`; default to FlyCam otherwise. `--player` forces
-    // Character mode even in non-cell modes (loose-NIF debug).
+    // M28.5 — Player rig selection. Character mode requires actual
+    // content in the world (cell loaded successfully OR loose NIF
+    // loaded) — spawning the capsule into an empty void falls forever
+    // and the user sees a blank screen with no way to diagnose. Gate
+    // on `has_nif_content` so a failed `--esm` load (missing BSA /
+    // missing ESM at the CLI-given path) silently falls back to
+    // FlyCam, which at least shows the sweet-roll cubes. The log
+    // shows the underlying load error either way.
+    //
+    //   --fly                       → FlyCam (force, useful for debug)
+    //   --player                    → Character (force, even with no content)
+    //   --esm/--mesh/--tree loaded  → Character (default for content)
+    //   no content                  → FlyCam (default)
     let want_fly = args.iter().any(|a| a == "--fly");
     let want_player = args.iter().any(|a| a == "--player");
-    let has_esm = args.iter().any(|a| a == "--esm");
     let player_mode = if want_fly {
         crate::systems::PlayerMode::FlyCam
-    } else if want_player || has_esm {
+    } else if want_player || has_nif_content {
         crate::systems::PlayerMode::Character
     } else {
         crate::systems::PlayerMode::FlyCam
     };
     world.insert_resource(player_mode);
+    if player_mode == crate::systems::PlayerMode::FlyCam {
+        log::info!(
+            "Player rig: FlyCam (use `--player` to force Character mode without cell content)"
+        );
+    } else {
+        log::info!("Player rig: Character (M28.5 kinematic capsule + gravity)");
+    }
 
     // M28.5 — Spawn the player character body when in Character mode.
     // The body sits at `cam_pos` (the camera's initial spawn point)
