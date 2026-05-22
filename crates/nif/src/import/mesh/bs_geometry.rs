@@ -27,12 +27,14 @@ pub fn extract_bs_geometry(
     // Try each LOD slot in order; use the first one that yields geometry.
     let mesh_data_owned: Option<BSGeometryMeshData>;
     let mesh_data: &BSGeometryMeshData = if shape.has_internal_geom_data() {
-        // Stage A: inline geometry embedded in the NIF.
-        let m = shape.meshes.first().and_then(|m| match &m.kind {
+        // Stage A: inline geometry embedded in the NIF. Iterate every LOD
+        // slot — `meshes.first()` was a #982 short-circuit that silently
+        // returned `None` when LOD 0 was `External` despite later LODs
+        // being `Internal` (#1209). Matches the Stage-B iteration.
+        shape.meshes.iter().find_map(|m| match &m.kind {
             BSGeometryMeshKind::Internal { mesh_data } => Some(mesh_data),
             BSGeometryMeshKind::External { .. } => None,
-        })?;
-        m
+        })?
     } else {
         // Stage B: external `.mesh` companion file. Try each LOD slot until
         // one resolves. When no resolver is provided, skip external geometry.

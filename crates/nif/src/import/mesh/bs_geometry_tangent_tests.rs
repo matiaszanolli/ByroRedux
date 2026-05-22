@@ -1,10 +1,12 @@
-//! Regression tests for BSGeometry tangent extraction (#1086 / REN-D16-001).
+//! Regression tests for BSGeometry tangent extraction (#1086 / REN-D16-001)
+//! and LOD-slot iteration in `extract_bs_geometry` (#1209).
 //!
 //! Guards against the regression where `extract_bs_geometry` returned
 //! `tangents: Vec::new()` for all Starfield meshes, forcing every mesh
 //! to the shader's screen-space derivative Path-2 in `perturbNormal`.
 
 use crate::blocks::bs_geometry::unpack_udec3_xyzw;
+use crate::blocks::bs_geometry::{BSGeometryMesh, BSGeometryMeshData, BSGeometryMeshKind};
 
 /// Helper: encode 10-bit x/y/z and 2-bit w into a UDEC3 word.
 fn encode_udec3(x: u32, y: u32, z: u32, w: u32) -> u32 {
@@ -77,4 +79,85 @@ fn empty_tangents_raw_produces_empty_vec() {
         Vec::new()
     };
     assert!(tangents.is_empty(), "empty tangents_raw must yield Vec::new()");
+}
+
+// ── #1209: Stage-A LOD-slot iteration ──────────────────────────────
+//
+// Pre-#1209, Stage A pulled `shape.meshes.first()` and bailed when LOD 0
+// was `External` even though a later slot carried `Internal` geometry.
+// Stage B already iterated. These tests pin the symmetric iteration on
+// the `Internal` branch using the same `iter().find_map(...)` pattern
+// that landed in `extract_bs_geometry`.
+
+fn make_internal(version: u32) -> BSGeometryMesh {
+    BSGeometryMesh {
+        tri_size: 0,
+        num_verts: 0,
+        flags: 0,
+        kind: BSGeometryMeshKind::Internal {
+            mesh_data: BSGeometryMeshData {
+                version,
+                triangles: Vec::new(),
+                scale: 0.0,
+                weights_per_vert: 0,
+                vertices: Vec::new(),
+                uvs0: Vec::new(),
+                uvs1: Vec::new(),
+                colors: Vec::new(),
+                normals_raw: Vec::new(),
+                tangents_raw: Vec::new(),
+                skin_weights: Vec::new(),
+                lods: Vec::new(),
+                meshlets: Vec::new(),
+                cull_data: Vec::new(),
+            },
+        },
+    }
+}
+
+fn make_external(name: &str) -> BSGeometryMesh {
+    BSGeometryMesh {
+        tri_size: 0,
+        num_verts: 0,
+        flags: 0,
+        kind: BSGeometryMeshKind::External {
+            mesh_name: name.to_owned(),
+        },
+    }
+}
+
+/// Mirrors the post-#1209 Stage-A selector: take the first `Internal`
+/// LOD slot regardless of position.
+fn select_internal(meshes: &[BSGeometryMesh]) -> Option<&BSGeometryMeshData> {
+    meshes.iter().find_map(|m| match &m.kind {
+        BSGeometryMeshKind::Internal { mesh_data } => Some(mesh_data),
+        BSGeometryMeshKind::External { .. } => None,
+    })
+}
+
+#[test]
+fn stage_a_iter_picks_internal_when_lod0_is_external() {
+    // [External, Internal] — the pre-#1209 short-circuit bailed with None.
+    let meshes = vec![make_external("ignored.mesh"), make_internal(2)];
+    let picked = select_internal(&meshes).expect("must find LOD-1 Internal");
+    assert_eq!(picked.version, 2);
+}
+
+#[test]
+fn stage_a_iter_picks_lod0_when_internal() {
+    let meshes = vec![make_internal(2), make_external("ignored.mesh")];
+    let picked = select_internal(&meshes).expect("must find LOD-0 Internal");
+    assert_eq!(picked.version, 2);
+}
+
+#[test]
+fn stage_a_iter_returns_none_when_all_external() {
+    let meshes = vec![make_external("a.mesh"), make_external("b.mesh")];
+    assert!(select_internal(&meshes).is_none());
+}
+
+#[test]
+fn stage_a_iter_returns_none_when_meshes_empty() {
+    let meshes: Vec<BSGeometryMesh> = Vec::new();
+    assert!(select_internal(&meshes).is_none());
 }

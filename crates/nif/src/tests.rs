@@ -118,6 +118,7 @@ fn nif_scene_struct_carries_truncated_field() {
         link_errors: 0,
         drift_histogram: std::collections::BTreeMap::new(),
         stubbed_drift_histogram: std::collections::BTreeMap::new(),
+        havok_scale: 7.0,
     };
     assert!(scene.truncated);
     assert_eq!(scene.dropped_block_count, 3);

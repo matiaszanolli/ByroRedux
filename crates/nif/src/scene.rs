@@ -383,6 +383,7 @@ mod validate_refs_tests {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            havok_scale: 7.0,
         };
         assert!(scene.validate_refs().is_empty());
     }
@@ -400,6 +401,7 @@ mod validate_refs_tests {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            havok_scale: 7.0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
@@ -425,6 +427,7 @@ mod validate_refs_tests {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            havok_scale: 7.0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 2);
@@ -448,6 +451,7 @@ mod validate_refs_tests {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            havok_scale: 7.0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
@@ -467,6 +471,7 @@ mod validate_refs_tests {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            havok_scale: 7.0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
