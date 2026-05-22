@@ -439,6 +439,146 @@ fn starfield_textures01_ba2_v3_dx10_extracts_lz4_block_dds() {
     );
 }
 
+/// Starfield corpus-wide BA2 sweep — discovers every `Starfield - *.ba2`
+/// (plus the `Constellation - *` Shattered Space DLC archives) in the
+/// data directory at runtime, opens each via `Ba2Archive::open`, and
+/// extracts one representative entry per archive. Reports per-archive
+/// pass/fail rather than aborting on the first failure so a single
+/// corrupted archive doesn't mask the rest of the corpus.
+///
+/// Mirrors `fo4_meshes_ba2_v8_brute_force_extract_zero_errors` but
+/// scoped to the slower whole-corpus walk (~30 archives, dozens of GB
+/// when fully read; the per-archive single-entry sample keeps wall-time
+/// reasonable). Session 7 validated this externally — this test pins the
+/// claim in-tree so post-Shattered-Space content updates that drop or
+/// rename archives surface as a test diff rather than silent regression.
+/// See #1184.
+///
+/// Failure modes the sweep catches:
+/// - new archive version (unknown major bytes-out at open)
+/// - DDS / DX10 header reconstruction divergence on a corpus subset
+/// - LZ4 block decompression on the v3 sub-corpus
+/// - GNRL extraction on the v2 / v3 mesh sub-corpus
+#[test]
+#[ignore]
+fn starfield_full_corpus_ba2_sweep() {
+    let Some(data) = starfield_data_dir() else {
+        eprintln!("Skipping: BYROREDUX_STARFIELD_DATA not set and default path missing");
+        return;
+    };
+
+    // Discover every Bethesda BA2 in the Data directory. The
+    // `Starfield - *.ba2` glob covers the base game; the
+    // `Constellation - *.ba2` set covers Shattered Space; CC / mod
+    // archives also drop into the same directory so we accept any
+    // `.ba2`. Filter out non-Bethesda producers downstream if needed.
+    let mut archives: Vec<PathBuf> = match std::fs::read_dir(&data) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.extension()
+                    .and_then(|x| x.to_str())
+                    .map(|x| x.eq_ignore_ascii_case("ba2"))
+                    .unwrap_or(false)
+            })
+            .collect(),
+        Err(e) => {
+            eprintln!("Skipping: unable to read {data:?}: {e}");
+            return;
+        }
+    };
+    archives.sort();
+    assert!(
+        !archives.is_empty(),
+        "Starfield Data dir at {data:?} has no .ba2 files — environment misconfigured?",
+    );
+
+    #[derive(Debug)]
+    struct ArchiveResult {
+        path: PathBuf,
+        version: Option<u32>,
+        variant: Option<Ba2Variant>,
+        outcome: Result<(String, usize), String>,
+    }
+
+    let mut results: Vec<ArchiveResult> = Vec::with_capacity(archives.len());
+    for path in &archives {
+        let outcome = match Ba2Archive::open(path) {
+            Err(e) => ArchiveResult {
+                path: path.clone(),
+                version: None,
+                variant: None,
+                outcome: Err(format!("open failed: {e}")),
+            },
+            Ok(archive) => {
+                let version = archive.version();
+                let variant = archive.variant();
+                // GNRL archives are loose-file blobs (.nif / .psc / .strings / ...);
+                // DX10 archives are textures. Pick a suffix the variant
+                // actually carries: ".nif" / ".pex" / ".psc" / ".strings"
+                // for GNRL, ".dds" for DX10.
+                let suffix: &[&str] = match variant {
+                    Ba2Variant::General => &[".nif", ".pex", ".psc", ".strings"],
+                    Ba2Variant::Dx10 => &[".dds"],
+                };
+                let entry = suffix
+                    .iter()
+                    .find_map(|s| pick_entry(&archive, s))
+                    .or_else(|| archive.list_files().into_iter().next().map(|s| s.to_string()));
+                let outcome = match entry {
+                    None => Err("archive has zero listable entries".to_string()),
+                    Some(e) => match archive.extract(&e) {
+                        Ok(bytes) => Ok((e, bytes.len())),
+                        Err(err) => Err(format!("extract '{e}' failed: {err}")),
+                    },
+                };
+                ArchiveResult {
+                    path: path.clone(),
+                    version: Some(version),
+                    variant: Some(variant),
+                    outcome,
+                }
+            }
+        };
+        results.push(outcome);
+    }
+
+    let mut failures: Vec<&ArchiveResult> = Vec::new();
+    for r in &results {
+        let name = r.path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+        match &r.outcome {
+            Ok((entry, bytes)) => {
+                eprintln!(
+                    "  OK   {name}  v{}  {:?}  → '{entry}' ({} bytes)",
+                    r.version.unwrap_or(0),
+                    r.variant.unwrap(),
+                    bytes,
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "  ERR  {name}  v{}  {:?}  : {e}",
+                    r.version.map(|v| v as i32).unwrap_or(-1),
+                    r.variant,
+                );
+                failures.push(r);
+            }
+        }
+    }
+    eprintln!(
+        "Starfield BA2 corpus sweep: {} archives, {} OK, {} failures",
+        results.len(),
+        results.len() - failures.len(),
+        failures.len(),
+    );
+    if !failures.is_empty() {
+        panic!(
+            "Starfield corpus sweep produced {} archive failures (audit #1184: must be 0)",
+            failures.len()
+        );
+    }
+}
+
 /// Starfield v2 DX10 (zlib) — open `Constellation - Textures.ba2`,
 /// extract a DDS, assert DDS magic. This guards the DX10 path for
 /// Starfield DLC archives that use v2 (zlib) rather than v3 (LZ4),
