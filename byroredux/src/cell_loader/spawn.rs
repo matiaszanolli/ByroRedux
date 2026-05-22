@@ -21,8 +21,8 @@ use crate::asset_provider::{
     resolve_texture, resolve_texture_with_clamp, TextureProvider,
 };
 use crate::components::{
-    texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle,
-    IsFxMesh, NormalMapHandle, TwoSided,
+    texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, DoorTeleport, ExtraTextureMaps,
+    GreyscaleLutHandle, IsFxMesh, NormalMapHandle, TwoSided,
 };
 
 use super::nif_import_registry::CachedNifImport;
@@ -131,6 +131,12 @@ pub(super) fn spawn_placed_instances(
     // artifacts have no placement-level identity. Loose-NIF (single-NIF
     // CLI view) also passes `None`.
     placement_form_id_pair: Option<FormIdPair>,
+    // M40 Phase 2 Stage 1 — XTEL teleport payload from `PlacedRef.teleport`.
+    // When `Some`, the placement root carries a `DoorTeleport` component
+    // that the `door.teleport` console command (and the future F-key
+    // activate system) reads to drive cell-swap orchestration. `None` on
+    // every non-door REFR + on the precombined / loose-NIF spawn paths.
+    teleport: Option<esm::cell::TeleportDest>,
 ) -> usize {
     use byroredux_core::ecs::{Name, Parent};
     use byroredux_renderer::Vertex;
@@ -174,6 +180,23 @@ pub(super) fn spawn_placed_instances(
     if let Some(pair) = placement_form_id_pair {
         let fid = world.resource_mut::<FormIdPool>().intern(pair);
         world.insert(placement_root, FormIdComponent(fid));
+    }
+    // M40 Phase 2 Stage 1 — XTEL portal plumbing. When the REFR carries
+    // a teleport destination, stamp a `DoorTeleport` component on the
+    // placement root so the console command + future F-key activate
+    // system can resolve "this door leads to <cell>, materialise at
+    // <position> with <rotation>". Pre-Phase-2 every XTEL parsed at
+    // the ESM layer landed on the floor — `TeleportDest` rode along on
+    // `PlacedRef` since #412 but no consumer existed.
+    if let Some(t) = teleport {
+        world.insert(
+            placement_root,
+            DoorTeleport {
+                destination_form_id: t.destination,
+                position_zup: t.position,
+                rotation_zup: t.rotation,
+            },
+        );
     }
     // #1214 / D1-NEW-03 — attach BSXFlags on the placement root when
     // the NIF authored them. Editor-marker bit (0x20) is filtered at

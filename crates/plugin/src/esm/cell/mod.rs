@@ -855,6 +855,99 @@ impl EsmCellIndex {
         self.movables.extend(other.movables);
         self.material_swaps.extend(other.material_swaps);
     }
+
+    /// Locate the parent cell of a placed REFR by its placement-level
+    /// FormID. Returns `None` when no loaded cell contains a REFR with
+    /// that FormID — typically because the destination lives in an
+    /// unloaded master plugin, a DLC that wasn't passed on the CLI, or
+    /// the FormID is malformed.
+    ///
+    /// M40 Phase 2 Stage 1 (door-teleport plumbing): the `door.teleport`
+    /// console command and the upcoming F-key activate system feed an
+    /// XTEL destination FormID through this helper to decide which
+    /// cell to load. Today it scans interior + exterior maps linearly
+    /// — vanilla `Skyrim.esm` carries ~63 k REFRs across ~3 k cells,
+    /// so the worst-case lookup is ~63 k comparisons. That's fine for
+    /// console-driven testing; Phase 2 Stage 2 will materialise a
+    /// `HashMap<u32, CellRef>` reverse index built once at plugin-load
+    /// so the F-key path stays cheap.
+    pub fn cell_for_refr_form_id(&self, refr_form_id: u32) -> Option<CellRef<'_>> {
+        for cell in self.cells.values() {
+            if cell
+                .references
+                .iter()
+                .any(|r| r.form_id == refr_form_id)
+            {
+                return Some(CellRef::Interior {
+                    editor_id: &cell.editor_id,
+                });
+            }
+        }
+        for (worldspace, grids) in &self.exterior_cells {
+            for ((gx, gy), cell) in grids {
+                if cell
+                    .references
+                    .iter()
+                    .any(|r| r.form_id == refr_form_id)
+                {
+                    return Some(CellRef::Exterior {
+                        worldspace,
+                        grid: (*gx, *gy),
+                    });
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Result of `EsmCellIndex::cell_for_refr_form_id` — either an interior
+/// cell (load via `--cell <editor_id>`) or an exterior cell (load the
+/// containing worldspace's grid via `--wrld <name> --grid <gx>,<gy>`).
+///
+/// Lifetime is tied to the `EsmCellIndex` whose maps own the strings.
+/// Callers that need owned data should clone the editor_id / worldspace
+/// strings explicitly via [`CellRef::to_owned`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellRef<'a> {
+    Interior {
+        editor_id: &'a str,
+    },
+    Exterior {
+        worldspace: &'a str,
+        grid: (i32, i32),
+    },
+}
+
+impl<'a> CellRef<'a> {
+    /// Materialise an owned (`String`-backed) copy so the result can
+    /// outlive the borrowing `EsmCellIndex`. Console commands that
+    /// log the result rely on this.
+    pub fn to_owned(&self) -> OwnedCellRef {
+        match self {
+            CellRef::Interior { editor_id } => OwnedCellRef::Interior {
+                editor_id: (*editor_id).to_string(),
+            },
+            CellRef::Exterior { worldspace, grid } => OwnedCellRef::Exterior {
+                worldspace: (*worldspace).to_string(),
+                grid: *grid,
+            },
+        }
+    }
+}
+
+/// Owned-string variant of [`CellRef`] for sites that need to outlive
+/// the borrowing `EsmCellIndex` (logs, returned values, resource
+/// queries). Produced by [`CellRef::to_owned`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnedCellRef {
+    Interior {
+        editor_id: String,
+    },
+    Exterior {
+        worldspace: String,
+        grid: (i32, i32),
+    },
 }
 
 /// Parse an ESM file and extract cells, worldspaces, and base object definitions.

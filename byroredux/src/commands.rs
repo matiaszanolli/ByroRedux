@@ -11,7 +11,9 @@ use byroredux_core::string::StringPool;
 use std::collections::HashMap;
 
 use byroredux_core::ecs::SystemList;
-use crate::components::InputState;
+use crate::cell_loader::LoadedCellIndex;
+use crate::components::{DoorTeleport, InputState};
+use byroredux_plugin::esm::cell::CellRef;
 
 struct HelpCommand;
 impl ConsoleCommand for HelpCommand {
@@ -1330,6 +1332,107 @@ fn fmt_opt_rgb(v: Option<[f32; 3]>) -> String {
     }
 }
 
+/// `door.teleport <entity_id>` — inspect a door REFR's XTEL teleport
+/// payload and resolve its destination cell.
+///
+/// Reads the [`DoorTeleport`] component (stamped at spawn time when the
+/// REFR carries an XTEL sub-record — M40 Phase 2 Stage 1 plumbing) and
+/// queries the loaded [`LoadedCellIndex`] for the destination REFR's
+/// parent cell. Reports the destination FormID, position (Bethesda
+/// Z-up), rotation, and the parent cell (interior editor-ID or
+/// exterior worldspace + grid).
+///
+/// **Today this is observation-only** — the cell-swap orchestrator
+/// (Phase 3) hasn't landed, so the camera does not actually transport.
+/// Use this to verify the XTEL plumbing reaches the runtime and the
+/// reverse-lookup hits the right cell before wiring the swap path.
+///
+/// Natural usage:
+///   1. `cargo run -- --esm FalloutNV.esm --cell GSDocMitchellHouse --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --bench-hold`
+///   2. `byro-dbg` → `entities DoorTeleport` to list plumbed doors
+///   3. `door.teleport <id>` on the front door
+///   4. Expect: destination cell = Goodsprings worldspace exterior grid
+///      containing the destination REFR's position.
+struct DoorTeleportCommand;
+impl ConsoleCommand for DoorTeleportCommand {
+    fn name(&self) -> &str {
+        "door.teleport"
+    }
+    fn description(&self) -> &str {
+        "Inspect a door's XTEL destination (usage: door.teleport <entity_id>)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let trimmed = args.trim();
+        let Ok(entity_id) = trimmed.parse::<EntityId>() else {
+            return CommandOutput::line(format!(
+                "door.teleport: failed to parse entity id from `{trimmed}` — \
+                 usage: door.teleport <entity_id>"
+            ));
+        };
+
+        // 1. Look up the DoorTeleport component on the target entity.
+        let door = world
+            .query::<DoorTeleport>()
+            .and_then(|q| q.get(entity_id).copied());
+        let Some(door) = door else {
+            return CommandOutput::line(format!(
+                "Entity {entity_id} has no DoorTeleport component — \
+                 either it's not a door REFR, or the cell wasn't loaded \
+                 from an ESM that authored XTEL on it"
+            ));
+        };
+
+        let mut lines = vec![
+            format!("Door {entity_id} teleport payload:"),
+            format!(
+                "  destination FormID: {:08X}",
+                door.destination_form_id
+            ),
+            format!(
+                "  destination position (Z-up): ({:.2}, {:.2}, {:.2})",
+                door.position_zup[0], door.position_zup[1], door.position_zup[2]
+            ),
+            format!(
+                "  destination rotation (rad):  ({:.4}, {:.4}, {:.4})",
+                door.rotation_zup[0], door.rotation_zup[1], door.rotation_zup[2]
+            ),
+        ];
+
+        // 2. Resolve destination FormID → parent cell. Requires
+        // LoadedCellIndex to be present (set by `load_cell_with_masters`
+        // for interior loads; exterior streaming wiring is Phase 2).
+        let Some(index) = world.try_resource::<LoadedCellIndex>() else {
+            lines.push(
+                "  (no LoadedCellIndex resource — cannot resolve parent cell. \
+                 Interior cell load needed; exterior wiring is Phase 2.)"
+                    .to_string(),
+            );
+            return CommandOutput::lines(lines);
+        };
+        match index.0.cell_for_refr_form_id(door.destination_form_id) {
+            Some(CellRef::Interior { editor_id }) => {
+                lines.push(format!("  destination cell: interior '{editor_id}'"));
+            }
+            Some(CellRef::Exterior { worldspace, grid }) => {
+                lines.push(format!(
+                    "  destination cell: exterior worldspace '{}' grid ({}, {})",
+                    worldspace, grid.0, grid.1
+                ));
+            }
+            None => {
+                lines.push(format!(
+                    "  destination cell: NOT FOUND — destination FormID {:08X} \
+                     not in any cell loaded from the current plugin set. \
+                     Likely an unloaded DLC master (e.g. --master DeadMoney.esm) \
+                     or an XTEL pointing at a malformed REFR.",
+                    door.destination_form_id
+                ));
+            }
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(HelpCommand);
@@ -1346,6 +1449,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(CamWhereCommand);
     registry.register(CamPosCommand);
     registry.register(CamTpCommand);
+    registry.register(DoorTeleportCommand);
     registry.register(SysAccessesCommand);
     registry.register(SkinListCommand);
     registry.register(SkinDumpCommand);

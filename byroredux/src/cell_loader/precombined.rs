@@ -195,6 +195,10 @@ pub(super) fn spawn_precombined_meshes(
             // Precombined entities are bake artifacts, not placed REFRs
             // — no placement form-id. #1212.
             /* placement_form_id_pair = */ None,
+            // Precombines absorb static architecture / clutter; doors
+            // are excluded from the absorption set by Bethesda's bake
+            // pipeline, so this path never carries XTEL.
+            /* teleport = */ None,
         );
         spawned += count;
     }

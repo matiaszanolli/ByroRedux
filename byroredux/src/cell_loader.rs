@@ -58,6 +58,7 @@ use crate::components::{
 };
 
 mod euler;
+mod index;
 mod load;
 mod load_order;
 mod nif_import_registry;
@@ -70,6 +71,8 @@ mod terrain;
 mod unload;
 mod water;
 mod exterior;
+
+pub use index::LoadedCellIndex;
 
 // Public re-exports — keep the existing `crate::cell_loader::FOO`
 // call sites in main.rs / streaming.rs / commands.rs working without

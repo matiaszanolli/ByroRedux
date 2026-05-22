@@ -580,6 +580,7 @@ pub(super) fn load_references(
                 stat.record_type.render_layer(),
                 Some(cache_key.as_str()),
                 Some(placement_pair),
+                placed_ref.teleport,
             );
             entity_count += count;
         }

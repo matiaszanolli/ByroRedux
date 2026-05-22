@@ -241,10 +241,24 @@ pub fn load_cell_with_masters(
     let cell_root = world.spawn();
     stamp_cell_root(world, cell_root, first_entity, last_entity);
 
+    // Capture the cell's editor_id BEFORE the `index.cells` move below
+    // — `cell` borrows from `index.cells.cells`, so the borrow has to
+    // end before the move consumes the parent map.
+    let cell_name = cell.editor_id.clone();
+    let entity_count = result.entity_count;
+    let center = result.center;
+
+    // M40 Phase 2 Stage 1 — surface the parsed cell index as a World
+    // resource so `&World` readers (door.teleport console command,
+    // future F-key activate system) can resolve XTEL destination
+    // FormIDs back to their parent cells without re-parsing the ESM.
+    // Replaces any prior load's index wholesale.
+    world.insert_resource(super::LoadedCellIndex(std::sync::Arc::new(index.cells)));
+
     Ok(CellLoadResult {
-        cell_name: cell.editor_id.clone(),
-        entity_count: result.entity_count,
-        center: result.center,
+        cell_name,
+        entity_count,
+        center,
         lighting: resolved_lighting,
     })
 }

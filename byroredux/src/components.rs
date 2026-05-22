@@ -39,6 +39,39 @@ impl Component for TwoSided {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// REFR placement carries an XTEL teleport destination — this entity is
+/// a door whose activation transports the player to another cell.
+///
+/// Captured from `PlacedRef.teleport` at spawn time (M40 Phase 2 Stage 1,
+/// data plumbing). The destination FormID is the *target* REFR
+/// (typically another door in the destination cell); the position +
+/// rotation are the spot the player materializes at, in Bethesda Z-up
+/// world units / radians.
+///
+/// `EsmCellIndex::cell_for_refr_form_id` resolves `destination_form_id`
+/// back to the parent cell (interior editor-ID or exterior worldspace +
+/// grid). The `door.teleport` console command consumes both halves
+/// today; Stage 4 wires an `ActivateEvent`-driven system around the
+/// same lookup for F-key proximity activate.
+///
+/// Sparse storage — Bethesda content ships ~0.1% of REFRs as doors
+/// (rough estimate from FNV Goodsprings exterior + Megaton interior).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DoorTeleport {
+    /// Destination REFR's FormID. Resolved against the load-order
+    /// remapped plugin index via `EsmCellIndex::cell_for_refr_form_id`.
+    pub(crate) destination_form_id: u32,
+    /// Destination position in Bethesda units (Z-up). The consumer
+    /// flips to engine Y-up via the `coord` helper at camera-set time.
+    pub(crate) position_zup: [f32; 3],
+    /// Destination Euler rotation in radians (X, Y, Z). Conversion to
+    /// the renderer's quaternion is the consumer's responsibility.
+    pub(crate) rotation_zup: [f32; 3],
+}
+impl Component for DoorTeleport {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Marker component for "FX" decorative meshes (`effects/fx*`, `fxsoftglow`,
 /// `fxpartglow`, `fxparttiny`, `fxlightrays`) that the renderer drops on
 /// the floor. Lifted from a per-draw, per-frame substring scan over the
