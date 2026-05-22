@@ -453,6 +453,14 @@ pub fn synthesize_tangents_yup(
             // we're already Y-up, the permutation lives in Y-up space
             // too — pick `[n_yup.y, n_yup.z, n_yup.x]` and let B fall
             // out of `cross(N, T)` so the basis is right-handed.
+            //
+            // Note: this permutation is NOT the Y-up image of the Z-up
+            // flavor's `[n_zup.y, n_zup.z, n_zup.x]` permutation —
+            // both produce valid orthogonal tangents for the degenerate
+            // case but the chosen direction differs by space. Documented
+            // divergence (AUDIT_INCREMENTAL_2026-05-22 ID-4); both are
+            // acceptable since the degenerate case has no canonical
+            // tangent and any orthogonal-to-N direction is correct.
             let t_y = [n_yup[1], n_yup[2], n_yup[0]];
             let b_y = [
                 n_yup[1] * t_y[2] - n_yup[2] * t_y[1],

@@ -633,29 +633,24 @@ impl MaterialProvider {
                 // #FO4-D6-NEW — vanilla FO4 ships
                 // `materials\template\defaulttemplate_wet.bgsm` with a
                 // `root_material_path` field that self-references its
-                // own archive path (the field reads as
-                // `Some("template/defaultTemplate_wet.bgsm")` — case
-                // and separator differ but the canonical form is the
-                // same path the file lives at). The bgsm crate's
-                // resolver doesn't detect cycles and bails after the
-                // 16-deep depth limit.
+                // own archive path. POST-#1148 the bgsm crate detects
+                // cycles internally and returns a cycle-broken chain
+                // (parent=None at the cycle anchor), so this catch is
+                // a safety net only — it now fires for theoretical
+                // >16-deep chains, NOT the documented `defaulttemplate_
+                // wet.bgsm` self-reference (which the resolver handles).
                 //
-                // Recovery: re-read the leaf's bytes through the
-                // already-normalising `ArchiveReader::read` and
-                // construct a parentless `ResolvedMaterial`. The leaf
-                // carries authored textures + PBR scalars, which is
-                // the load-bearing material data; the (self-referential)
-                // template chain only contributes fallback defaults
-                // that the NIF-side path already covers.
+                // Recovery (when this DOES fire, on genuine deep chains):
+                // re-read the leaf's bytes through the already-normalising
+                // `ArchiveReader::read` and construct a parentless
+                // `ResolvedMaterial`. The leaf carries authored textures
+                // + PBR scalars, which is the load-bearing material data.
                 //
-                // The recovery bypasses `bgsm_cache.resolve` and
-                // returns a fresh `Arc` on every hit. Self-referential
-                // templates appear 4× per cell observed on MedTek
-                // (metallocker / windowsheetdeco / metalpanelfull /
-                // metalrooftrim — all chain through
-                // `defaulttemplate_wet.bgsm`); the duplicate parse
-                // cost is bounded and acceptable until the bgsm crate
-                // adds first-class cycle detection.
+                // Vanilla content tops out at depth 3, so the safety net
+                // is effectively dormant. Keeping it preserves the
+                // graceful-degradation guarantee against any future
+                // mod / DLC content that authors >16-deep chains.
+                // See audit AUDIT_INCREMENTAL_2026-05-22 ID-5.
                 let bytes = reader.read(&key)?;
                 let file = match byroredux_bgsm::parse_bgsm(&bytes) {
                     Ok(f) => f,

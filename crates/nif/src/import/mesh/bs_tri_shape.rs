@@ -131,25 +131,35 @@ pub fn extract_bs_tri_shape(
     //
     // All three return Y-up tangents matching `Vertex.tangent`'s contract.
     //
-    // Note on the synthesis branches: the rebuilt `triangles_for_synth`
-    // bridges shapes whose inline `shape.triangles` was emptied by
-    // SSE-reconstruction. BSTriShape caps at u16 indices on disk so the
-    // cast is safe; if the mesh ever exceeds 65k vertices the synth
-    // simply produces fewer tangents and the empty result triggers the
+    // The synthesis branches share a rebuilt `triangles_for_synth`
+    // because shapes whose inline `shape.triangles` was emptied by
+    // SSE-reconstruction need to recover the triangle list from
+    // `indices`. BSTriShape caps at u16 indices on disk so the cast
+    // is safe; if the mesh ever exceeds 65k vertices the synth simply
+    // produces fewer tangents and the empty result triggers the
     // shader's Path-2 fallback (no regression vs pre-fix behaviour).
-    let triangles_for_synth: Vec<[u16; 3]> = if shape.triangles.is_empty() {
-        indices
-            .chunks_exact(3)
-            .filter_map(|c| {
-                if c[0] <= u16::MAX as u32 && c[1] <= u16::MAX as u32 && c[2] <= u16::MAX as u32 {
-                    Some([c[0] as u16, c[1] as u16, c[2] as u16])
-                } else {
-                    None
-                }
-            })
-            .collect()
-    } else {
-        shape.triangles.clone()
+    // Wrapped in a closure so the allocation only fires when at least
+    // one synthesis branch reaches it — the common cases
+    // (`sse_tangents.is_some()` and `shape.tangents.is_empty()` == false)
+    // skip the rebuild entirely (audit AUDIT_INCREMENTAL_2026-05-22 ID-3).
+    let build_triangles_for_synth = || -> Vec<[u16; 3]> {
+        if shape.triangles.is_empty() {
+            indices
+                .chunks_exact(3)
+                .filter_map(|c| {
+                    if c[0] <= u16::MAX as u32
+                        && c[1] <= u16::MAX as u32
+                        && c[2] <= u16::MAX as u32
+                    {
+                        Some([c[0] as u16, c[1] as u16, c[2] as u16])
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            shape.triangles.clone()
+        }
     };
     let tangents: Vec<[f32; 4]> = if let Some(t) = sse_tangents.filter(|v| !v.is_empty()) {
         t
@@ -163,7 +173,7 @@ pub fn extract_bs_tri_shape(
             &shape.vertices,
             &shape.normals,
             &shape.uvs,
-            &triangles_for_synth,
+            &build_triangles_for_synth(),
         )
     } else if !normals.is_empty() && !uvs.is_empty() && !positions.is_empty() {
         // #1204 — SSE-reconstructed BSTriShape whose vertex descriptor
@@ -174,7 +184,7 @@ pub fn extract_bs_tri_shape(
         // forcing Path-2 (screen-space derivative TBN) and inheriting
         // the #1104 UV-mirror handedness bug. Route to the Y-up
         // synthesis sibling so Path-1 fires instead.
-        synthesize_tangents_yup(&positions, &normals, &uvs, &triangles_for_synth)
+        synthesize_tangents_yup(&positions, &normals, &uvs, &build_triangles_for_synth())
     } else {
         Vec::new()
     };
