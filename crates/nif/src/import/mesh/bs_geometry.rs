@@ -146,6 +146,12 @@ pub fn extract_bs_geometry(
         pool,
     );
 
+    // #1203 — resolve the BSSkin::Instance + BSSkin::BoneData chain
+    // hanging off `skin_instance_ref`. Per-vertex bone indices + weights
+    // are intentionally left empty here — the BSGeometry parser doesn't
+    // surface them yet (separate work).
+    let skin = extract_skin_bs_geometry(scene, shape);
+
     let t = &world_transform.translation;
     let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
 
@@ -229,7 +235,7 @@ pub fn extract_bs_geometry(
         mat_alpha: mat.alpha,
         env_map_scale: mat.env_map_scale,
         parent_node: None,
-        skin: None,
+        skin,
         z_test: mat.z_test,
         z_write: mat.z_write,
         z_function: mat.z_function,

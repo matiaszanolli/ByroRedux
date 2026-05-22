@@ -10,6 +10,7 @@ use crate::blocks::node::NiNode;
 use crate::blocks::skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
 };
+use crate::blocks::bs_geometry::BSGeometry;
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
@@ -208,6 +209,61 @@ pub fn extract_skin_bs_tri_shape(
     }
 
     None
+}
+
+/// Extract `ImportedSkin` for a Starfield `BSGeometry` via `skin_instance_ref`.
+/// Resolves the linked `BSSkin::Instance` + `BSSkin::BoneData` and builds the
+/// engine-side bone list with bind-inverse transforms. Per-vertex bone
+/// indices + weights are intentionally left empty here — the BSGeometry
+/// parser doesn't surface them yet (the segmented mesh-data table is
+/// separate work); when it does, this extractor's signature should grow
+/// a `num_vertices` parameter and the densify path matching
+/// `extract_skin_ni_tri_shape`'s `vertex_bone_*` plumbing. See #1203.
+///
+/// Mirrors the FO4+ BSSkin path in `extract_skin_bs_tri_shape` — only
+/// the geometry container differs.
+pub fn extract_skin_bs_geometry(
+    scene: &NifScene,
+    shape: &BSGeometry,
+) -> Option<ImportedSkin> {
+    let skin_idx = shape.skin_instance_ref.index()?;
+
+    let inst = scene.get_as::<BsSkinInstance>(skin_idx)?;
+    let bone_data = scene.get_as::<BsSkinBoneData>(inst.bone_data_ref.index()?)?;
+    if bone_data.bones.len() != inst.bone_refs.len() {
+        log::debug!(
+            "BSGeometry skin: BsSkinBoneData bone count ({}) != BsSkinInstance bone_refs count ({})",
+            bone_data.bones.len(),
+            inst.bone_refs.len(),
+        );
+        return None;
+    }
+    let mut bones = Vec::with_capacity(inst.bone_refs.len());
+    for (i, bone_ref) in inst.bone_refs.iter().enumerate() {
+        let name =
+            resolve_node_name(scene, *bone_ref).unwrap_or_else(|| Arc::from(format!("Bone{}", i)));
+        let bt = &bone_data.bones[i];
+        bones.push(ImportedBone {
+            name,
+            bind_inverse: bs_bone_to_inverse_matrix(bt),
+            bounding_sphere: bt.bounding_sphere,
+        });
+    }
+    let skeleton_root = resolve_node_name(scene, inst.skeleton_root_ref);
+    // BSSkin (FO4+/Skyrim SE/Starfield) doesn't carry a per-skin global
+    // transform; identity matches the OpenMW FO4-mesh fallback.
+    Some(ImportedSkin {
+        bones,
+        skeleton_root,
+        vertex_bone_indices: Vec::new(),
+        vertex_bone_weights: Vec::new(),
+        global_skin_transform: [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+    })
 }
 
 /// Remap a `BsTriShape`'s inline `[u8; 4]` partition-local bone
