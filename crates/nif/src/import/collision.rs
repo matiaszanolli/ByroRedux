@@ -3,8 +3,11 @@
 //! Pipeline: NiNode.collision_ref → bhkCollisionObject → bhkRigidBody → shape tree
 //! → CollisionShape + RigidBodyData (physics-agnostic ECS components).
 //!
-//! Havok coordinates are scaled (typically ×7.0 for Oblivion, ×7.0 for FO3+)
-//! and converted from Z-up to Y-up.
+//! Havok coordinates are scaled per-game (×7.0 for TES4/FO3/FNV, ×69.99
+//! for Skyrim+/FO4) and converted from Z-up to Y-up. The scale lives on
+//! the parsed [`NifScene`] (`havok_scale` field, populated by
+//! `havok_scale_for` at parse time) so consumers don't have to
+//! re-detect the game variant per call.
 
 use crate::blocks::collision::*;
 use crate::blocks::tri_shape::NiTriStripsData;
@@ -13,9 +16,6 @@ use crate::types::BlockRef;
 
 use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
 use byroredux_core::math::{Quat, Vec3};
-
-/// Default Havok-to-Gamebryo scale factor (7.0 for all Bethesda games).
-const HAVOK_SCALE: f32 = 7.0;
 
 /// Extract collision data from a NiAVObject's collision_ref.
 ///
@@ -30,6 +30,7 @@ pub fn extract_collision(
     let body_idx = coll_obj.body_ref.index()?;
     let body = scene.get_as::<BhkRigidBody>(body_idx)?;
 
+    let scale = scene.havok_scale;
     let mut shape = resolve_shape(scene, body.shape_ref)?;
 
     // Apply rigid body center-of-mass offset and orientation to the shape.
@@ -39,7 +40,7 @@ pub fn extract_collision(
         body.translation[0],
         body.translation[1],
         body.translation[2],
-    ) * HAVOK_SCALE;
+    ) * scale;
     let body_rotation = havok_quat_to_engine(body.rotation);
 
     let has_offset = body_translation.length_squared() > 1e-6
@@ -70,13 +71,14 @@ pub fn extract_collision(
 
 /// Recursively resolve a bhk shape block into a CollisionShape enum.
 fn resolve_shape(scene: &NifScene, shape_ref: BlockRef) -> Option<CollisionShape> {
+    let scale = scene.havok_scale;
     let idx = shape_ref.index()?;
     let block = scene.get(idx)?;
 
     // Sphere
     if let Some(s) = block.as_any().downcast_ref::<BhkSphereShape>() {
         return Some(CollisionShape::Ball {
-            radius: s.radius * HAVOK_SCALE,
+            radius: s.radius * scale,
         });
     }
 
@@ -84,16 +86,16 @@ fn resolve_shape(scene: &NifScene, shape_ref: BlockRef) -> Option<CollisionShape
     if let Some(s) = block.as_any().downcast_ref::<BhkBoxShape>() {
         let [hx, hy, hz] = s.dimensions;
         return Some(CollisionShape::Cuboid {
-            half_extents: havok_to_engine(hx, hy, hz) * HAVOK_SCALE,
+            half_extents: havok_to_engine(hx, hy, hz) * scale,
         });
     }
 
     // Capsule
     if let Some(s) = block.as_any().downcast_ref::<BhkCapsuleShape>() {
-        let p1 = havok_to_engine(s.point1[0], s.point1[1], s.point1[2]) * HAVOK_SCALE;
-        let p2 = havok_to_engine(s.point2[0], s.point2[1], s.point2[2]) * HAVOK_SCALE;
+        let p1 = havok_to_engine(s.point1[0], s.point1[1], s.point1[2]) * scale;
+        let p2 = havok_to_engine(s.point2[0], s.point2[1], s.point2[2]) * scale;
         let half_height = (p2 - p1).length() * 0.5;
-        let radius = s.radius1.max(s.radius2) * HAVOK_SCALE;
+        let radius = s.radius1.max(s.radius2) * scale;
         return Some(CollisionShape::Capsule {
             half_height,
             radius,
@@ -102,10 +104,10 @@ fn resolve_shape(scene: &NifScene, shape_ref: BlockRef) -> Option<CollisionShape
 
     // Cylinder
     if let Some(s) = block.as_any().downcast_ref::<BhkCylinderShape>() {
-        let p1 = havok_to_engine(s.point1[0], s.point1[1], s.point1[2]) * HAVOK_SCALE;
-        let p2 = havok_to_engine(s.point2[0], s.point2[1], s.point2[2]) * HAVOK_SCALE;
+        let p1 = havok_to_engine(s.point1[0], s.point1[1], s.point1[2]) * scale;
+        let p2 = havok_to_engine(s.point2[0], s.point2[1], s.point2[2]) * scale;
         let half_height = (p2 - p1).length() * 0.5;
-        let radius = s.cylinder_radius * HAVOK_SCALE;
+        let radius = s.cylinder_radius * scale;
         return Some(CollisionShape::Cylinder {
             half_height,
             radius,
@@ -117,7 +119,7 @@ fn resolve_shape(scene: &NifScene, shape_ref: BlockRef) -> Option<CollisionShape
         let verts: Vec<Vec3> = s
             .vertices
             .iter()
-            .map(|v| havok_to_engine(v[0], v[1], v[2]) * HAVOK_SCALE)
+            .map(|v| havok_to_engine(v[0], v[1], v[2]) * scale)
             .collect();
         return Some(CollisionShape::ConvexHull { vertices: verts });
     }
@@ -147,7 +149,7 @@ fn resolve_shape(scene: &NifScene, shape_ref: BlockRef) -> Option<CollisionShape
     // Transform shape — apply 4x4 transform to child shape.
     if let Some(s) = block.as_any().downcast_ref::<BhkTransformShape>() {
         let child = resolve_shape(scene, s.shape_ref)?;
-        let (translation, rotation) = decompose_havok_matrix(&s.transform);
+        let (translation, rotation) = decompose_havok_matrix(&s.transform, scale);
         return Some(CollisionShape::Compound {
             children: vec![(translation, rotation, Box::new(child))],
         });
@@ -162,14 +164,14 @@ fn resolve_shape(scene: &NifScene, shape_ref: BlockRef) -> Option<CollisionShape
     if let Some(s) = block.as_any().downcast_ref::<BhkPackedNiTriStripsShape>() {
         let data_idx = s.data_ref.index()?;
         let data = scene.get_as::<HkPackedNiTriStripsData>(data_idx)?;
-        return resolve_packed_mesh(data);
+        return resolve_packed_mesh(data, scale);
     }
 
     // Compressed mesh (Skyrim+) — resolve via data ref.
     if let Some(s) = block.as_any().downcast_ref::<BhkCompressedMeshShape>() {
         let data_idx = s.data_ref.index()?;
         let data = scene.get_as::<BhkCompressedMeshShapeData>(data_idx)?;
-        return resolve_compressed_mesh(data);
+        return resolve_compressed_mesh(data, scale);
     }
 
     // Phantom (trigger volume) — resolve inner shape.
@@ -190,6 +192,7 @@ fn resolve_tri_strips_collision(
     scene: &NifScene,
     shape: &BhkNiTriStripsShape,
 ) -> Option<CollisionShape> {
+    let scale = scene.havok_scale;
     let mut all_verts = Vec::new();
     let mut all_indices = Vec::new();
 
@@ -203,7 +206,7 @@ fn resolve_tri_strips_collision(
 
         let base_idx = all_verts.len() as u32;
         for v in &data.vertices {
-            all_verts.push(havok_to_engine(v.x, v.y, v.z) * HAVOK_SCALE);
+            all_verts.push(havok_to_engine(v.x, v.y, v.z) * scale);
         }
         // Convert triangle strips to triangles.
         for strip in &data.strips {
@@ -236,7 +239,7 @@ fn resolve_tri_strips_collision(
 }
 
 /// Convert hkPackedNiTriStripsData into a TriMesh.
-fn resolve_packed_mesh(data: &HkPackedNiTriStripsData) -> Option<CollisionShape> {
+fn resolve_packed_mesh(data: &HkPackedNiTriStripsData, scale: f32) -> Option<CollisionShape> {
     if data.vertices.is_empty() {
         return None;
     }
@@ -244,7 +247,7 @@ fn resolve_packed_mesh(data: &HkPackedNiTriStripsData) -> Option<CollisionShape>
     let vertices: Vec<Vec3> = data
         .vertices
         .iter()
-        .map(|v| havok_to_engine(v[0], v[1], v[2]) * HAVOK_SCALE)
+        .map(|v| havok_to_engine(v[0], v[1], v[2]) * scale)
         .collect();
 
     let indices: Vec<[u32; 3]> = data
@@ -268,11 +271,11 @@ fn havok_quat_to_engine(q: [f32; 4]) -> Quat {
 }
 
 /// Decompose a Havok 4x4 matrix into (translation, rotation) in engine space.
-fn decompose_havok_matrix(m: &[[f32; 4]; 4]) -> (Vec3, Quat) {
+fn decompose_havok_matrix(m: &[[f32; 4]; 4], scale: f32) -> (Vec3, Quat) {
     // Translation from column 3 (row-major: m[3][0..3]).
-    let tx = m[3][0] * HAVOK_SCALE;
-    let ty = m[3][1] * HAVOK_SCALE;
-    let tz = m[3][2] * HAVOK_SCALE;
+    let tx = m[3][0] * scale;
+    let ty = m[3][1] * scale;
+    let tz = m[3][2] * scale;
     let translation = havok_to_engine(tx, ty, tz);
 
     // Rotation from upper 3x3, converted to engine space.
@@ -303,7 +306,7 @@ fn decompose_havok_matrix(m: &[[f32; 4]; 4]) -> (Vec3, Quat) {
 ///
 /// Merges big tris (full-precision) and chunk tris (quantized, strip-based)
 /// into a single vertex/index buffer in engine space.
-fn resolve_compressed_mesh(data: &BhkCompressedMeshShapeData) -> Option<CollisionShape> {
+fn resolve_compressed_mesh(data: &BhkCompressedMeshShapeData, scale: f32) -> Option<CollisionShape> {
     let mut all_verts = Vec::new();
     let mut all_indices = Vec::new();
 
@@ -311,7 +314,7 @@ fn resolve_compressed_mesh(data: &BhkCompressedMeshShapeData) -> Option<Collisio
     if !data.big_tris.is_empty() {
         let base = all_verts.len() as u32;
         for v in &data.big_verts {
-            all_verts.push(havok_to_engine(v[0], v[1], v[2]) * HAVOK_SCALE);
+            all_verts.push(havok_to_engine(v[0], v[1], v[2]) * scale);
         }
         for tri in &data.big_tris {
             all_indices.push([
@@ -337,7 +340,7 @@ fn resolve_compressed_mesh(data: &BhkCompressedMeshShapeData) -> Option<Collisio
             let x = tx + qv[0] as f32 * error;
             let y = ty + qv[1] as f32 * error;
             let z = tz + qv[2] as f32 * error;
-            all_verts.push(havok_to_engine(x, y, z) * HAVOK_SCALE);
+            all_verts.push(havok_to_engine(x, y, z) * scale);
         }
 
         // Havok chunk indices reference into the flat u16 vertex component array

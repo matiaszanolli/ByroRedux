@@ -95,6 +95,23 @@ pub struct NifScene {
     /// non-actor / non-skeleton meshes). See NIF-D3-NEW-06 (audit
     /// 2026-05-12).
     pub stubbed_drift_histogram: BTreeMap<String, BTreeMap<i64, u32>>,
+    /// Havok-to-engine unit scale for this NIF. Computed from the
+    /// header version triplet at parse time via `havok_scale_for_variant`
+    /// in `lib.rs`; consumed by `import::collision::extract_collision`
+    /// to scale rigid-body translations + shape extents into engine
+    /// units.
+    ///
+    /// Per niftools / havok-format documentation:
+    ///   - Morrowind / Oblivion / FO3 / FNV: **7.0**
+    ///   - Skyrim (LE+SE) / FO4 / FO76 / Starfield: **69.99125**
+    ///
+    /// Pre-#1230 the importer hardcoded 7.0 across every game, so
+    /// Skyrim+ collision was imported at 1/10 the correct size —
+    /// the entire collision world was squished near origin while the
+    /// character / camera lived at architectural coordinates. M28.5
+    /// surfaced this as "character falls forever, KCC never finds a
+    /// floor."
+    pub havok_scale: f32,
 }
 
 impl Default for NifScene {
@@ -108,6 +125,11 @@ impl Default for NifScene {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            // Default to the TES4/FO3/FNV scale — tests + test fixtures
+            // that build `NifScene::default()` (no header) get the
+            // pre-#1230 behaviour, so any test that didn't care about
+            // the scale before continues to not care.
+            havok_scale: 7.0,
         }
     }
 }
@@ -340,6 +362,7 @@ mod validate_refs_tests {
             link_errors: 0,
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
+            havok_scale: 7.0,
         };
         assert!(scene.validate_refs().is_empty());
     }

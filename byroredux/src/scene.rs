@@ -515,7 +515,39 @@ pub(crate) fn setup_scene(
     if player_mode == crate::systems::PlayerMode::Character {
         use byroredux_physics::CharacterController;
         let cc = CharacterController::HUMAN;
-        let body_pos = cam_pos - Vec3::Y * cc.eye_height;
+
+        // M28.5 — physics_sync_system normally runs in the scheduler's
+        // Stage::Physics, but the character body needs to spawn at a
+        // position that doesn't overlap any cell collider. We need
+        // the static-collider AABB to pick a safe Y. Force one early
+        // physics tick (dt=0 so no movement, just newcomer registration
+        // + query-pipeline build) so the AABB is available.
+        //
+        // This also means the player body's own newcomer registration
+        // happens on the FIRST scheduler-driven tick, not this one —
+        // which is correct, since the body isn't spawned yet.
+        byroredux_physics::physics_sync_system(world, 0.0);
+
+        // Spawn the character ABOVE any potentially-conflicting
+        // collider so KCC's penetration-fix doesn't shove it through
+        // an architecture mesh on frame 0. The REFR-bounds centerline
+        // is too close to interior floors for Bethesda content
+        // (Whiterun Bannered Mare REFRs span Y 0-400, but the static
+        // collider AABB extends Y 26-576; spawning at REFR-Y-center
+        // 200 puts the character inside an architecture TriMesh).
+        //
+        // Place the spawn at `aabb.max.y + 200 BU` so the capsule
+        // starts well above the cell ceiling, then falls cleanly
+        // through air onto the highest floor under the XZ position.
+        // Falls back to `cam_pos - eye_height` when there are still
+        // no static colliders (cell load returned no bhk data).
+        let body_pos = {
+            let pw = world.resource::<byroredux_physics::PhysicsWorld>();
+            match pw.static_colliders_aabb() {
+                Some((_, max, _)) => Vec3::new(cam_pos.x, max[1] + 200.0, cam_pos.z),
+                None => cam_pos - Vec3::Y * cc.eye_height,
+            }
+        };
         let body = world.spawn();
         world.insert(body, Transform::new(body_pos, Quat::IDENTITY, 1.0));
         world.insert(body, GlobalTransform::new(body_pos, Quat::IDENTITY, 1.0));

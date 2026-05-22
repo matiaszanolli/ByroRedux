@@ -160,6 +160,40 @@ pub struct CharacterMoveParams {
 }
 
 impl PhysicsWorld {
+    /// Diagnostic — compute the AABB of all static colliders in the
+    /// world, plus the count. Returns `None` when there are no static
+    /// colliders. Used by the M28.5 controller's one-shot "collider
+    /// world overlaps character XZ?" sanity log.
+    pub fn static_colliders_aabb(
+        &self,
+    ) -> Option<([f32; 3], [f32; 3], u32)> {
+        use rapier3d::prelude::*;
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        let mut count = 0u32;
+        for (_h, c) in self.colliders.iter() {
+            if let Some(parent) = c.parent() {
+                if let Some(rb) = self.bodies.get(parent) {
+                    if rb.body_type() == RigidBodyType::Fixed {
+                        let aabb = c.compute_aabb();
+                        min[0] = min[0].min(aabb.mins.x);
+                        min[1] = min[1].min(aabb.mins.y);
+                        min[2] = min[2].min(aabb.mins.z);
+                        max[0] = max[0].max(aabb.maxs.x);
+                        max[1] = max[1].max(aabb.maxs.y);
+                        max[2] = max[2].max(aabb.maxs.z);
+                        count += 1;
+                    }
+                }
+            }
+        }
+        if count == 0 {
+            None
+        } else {
+            Some((min, max, count))
+        }
+    }
+
     /// Drive a kinematic character body forward one step using
     /// Rapier's `KinematicCharacterController` (M28.5). Returns the
     /// effective collide-and-slide-corrected motion + grounded status.

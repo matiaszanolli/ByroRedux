@@ -78,6 +78,23 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     if dt <= 0.0 {
         return;
     }
+    // M28.5 — clamp dt at 1/30 s (33 ms). The first scheduler tick
+    // after engine boot ships a `dt` equal to "wall-clock from App
+    // construction to first frame" — for a Whiterun cell load that's
+    // ~8 seconds of BSA decode + NIF parse + Vulkan upload. Without
+    // the clamp, gravity × dt = -1373 × 8 = -11000 BU/s, instantly
+    // capped at terminal velocity -2000, producing a -15 700 BU
+    // first-frame translation. Character ends up 15 km below the
+    // cell with no chance of recovery, camera follows, user sees a
+    // black screen. Bethesda engines do the same clamp for the same
+    // reason (a frame hitch should never teleport the player across
+    // a room).
+    //
+    // 1/30 s is a reasonable cap — frames above that are perceived
+    // as hitches anyway, and the simulation behaviour for any frame
+    // taking >33 ms degrades to "freeze for one tick", not "teleport".
+    const MAX_DT: f32 = 1.0 / 30.0;
+    let dt = dt.min(MAX_DT);
     let mode = world
         .try_resource::<PlayerMode>()
         .map(|r| *r)
@@ -175,6 +192,65 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     drop(pw);
 
     let new_pos = current_pos + result.translation;
+
+    // Diagnostic for M28.5 smoke-testing — log body state for the
+    // first 5 frames + when grounded transitions + every 60 frames
+    // if airborne. Surfaces "I fell into the void" / "I'm stuck in a
+    // wall" failure modes that otherwise present as black-screen with
+    // no other signal.
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    static FRAME: AtomicU32 = AtomicU32::new(0);
+    static WAS_GROUNDED: AtomicBool = AtomicBool::new(false);
+    let frame = FRAME.fetch_add(1, Ordering::Relaxed);
+    let prev_grounded = WAS_GROUNDED.swap(result.grounded, Ordering::Relaxed);
+    let grounded_transition = prev_grounded != result.grounded;
+    if frame < 5
+        || grounded_transition
+        || (!result.grounded && frame.is_multiple_of(60))
+    {
+        let pw = world.resource::<byroredux_physics::PhysicsWorld>();
+        let body_count = pw.body_count();
+        // Dump the AABB of all static colliders ONCE (frame 0) so the
+        // operator can see whether the collision world overlaps the
+        // character's XZ position. If the bhk import scale is wrong,
+        // the colliders cluster tiny near origin while the character
+        // spawns at architectural coordinates — KCC traces miss
+        // everything.
+        if frame == 0 {
+            match pw.static_colliders_aabb() {
+                Some((min, max, count)) => log::info!(
+                    "M28.5 static collider AABB: x [{:.1}, {:.1}], y [{:.1}, {:.1}], \
+                     z [{:.1}, {:.1}] ({} fixed colliders); character at \
+                     ({:.1}, {:.1}, {:.1})",
+                    min[0],
+                    max[0],
+                    min[1],
+                    max[1],
+                    min[2],
+                    max[2],
+                    count,
+                    current_pos.x,
+                    current_pos.y,
+                    current_pos.z,
+                ),
+                None => log::warn!(
+                    "M28.5 NO STATIC COLLIDERS in the Rapier world — every body is \
+                     Dynamic/Kinematic. Cell has no parsed bhk static architecture."
+                ),
+            }
+        }
+        log::info!(
+            "M28.5 frame {}: body Y {:.1}→{:.1} (Δ {:.3}), v {:.1}, grounded={}, rapier_bodies={}{}",
+            frame,
+            current_pos.y,
+            new_pos.y,
+            result.translation.y,
+            vertical_velocity,
+            result.grounded,
+            body_count,
+            if grounded_transition { " [TRANSITION]" } else { "" },
+        );
+    }
 
     // Write back: Transform + CharacterController state + Rapier
     // kinematic-next-position (so other bodies see the player at the

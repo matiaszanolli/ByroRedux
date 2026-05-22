@@ -65,6 +65,43 @@ pub struct ParseOptions {
 }
 
 /// Animation block type names that can be skipped in geometry-only mode.
+/// Havok-to-engine unit scale for the NIF's game variant. Per the
+/// niftools / havok-format references:
+///
+///   - Morrowind / Oblivion / FO3 / FNV: 7.0
+///   - Skyrim (LE + SE) / FO4 / FO76 / Starfield: 69.99125
+///
+/// Detected from the NifHeader's version triplet via
+/// [`version::NifVariant::detect`]. The result is stamped on every
+/// `NifScene` returned from [`parse_nif`] so the import pipeline can
+/// scale collision shapes correctly without re-detecting per-call.
+///
+/// Pre-#1230 the collision importer hardcoded 7.0 across every game,
+/// so Skyrim+ collision was imported at 1/10 the correct size — the
+/// entire collision world was squished near origin while the
+/// character / camera lived at architectural coordinates. M28.5
+/// surfaced this as "character falls forever, KCC never finds a
+/// floor on Whiterun Bannered Mare."
+fn havok_scale_for(header: &NifHeader) -> f32 {
+    use version::NifVariant;
+    match NifVariant::detect(header.version, header.user_version, header.user_version_2) {
+        NifVariant::Morrowind
+        | NifVariant::Oblivion
+        | NifVariant::Fallout3
+        | NifVariant::FalloutNV => 7.0,
+        NifVariant::SkyrimLE
+        | NifVariant::SkyrimSE
+        | NifVariant::Fallout4
+        | NifVariant::Fallout76
+        | NifVariant::Starfield => 69.99125,
+        // Unknown variant — fall back to the pre-#1230 default. Safer
+        // than guessing; the worst case is collision misalignment on
+        // an exotic NIF, which is the failure mode the user already
+        // expects from `Unknown`.
+        NifVariant::Unknown => 7.0,
+    }
+}
+
 fn is_animation_block(type_name: &str) -> bool {
     matches!(
         type_name,
@@ -707,6 +744,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         link_errors: 0,
         drift_histogram: scene_drift_histogram,
         stubbed_drift_histogram: scene_stubbed_drift_histogram,
+        havok_scale: havok_scale_for(&header),
     };
     // Opt-in dangling-ref walk (#892). Off by default; debug builds,
     // `nif_stats`, and integration sweeps flip
