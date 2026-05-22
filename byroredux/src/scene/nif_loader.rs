@@ -221,16 +221,48 @@ pub(super) fn parse_import_and_merge(
     }
     // #1215 / D2 FIND-1 — sibling of the cell-loader zero-contribution
     // warn at `cell_loader/references.rs:885+`. A loose NIF that parses
-    // cleanly but yields zero meshes is almost always either a CSG-
-    // deferred precombined `_oc.nif` (the user passing one directly via
-    // `--mesh meshes\precombined\...`) or a malformed scene. Surface
-    // it so `cargo run -- --bsa ... --mesh ...` debug sessions don't
-    // hit a silent empty render.
+    // cleanly but yields zero meshes can be:
+    //   - CSG-deferred precombined `_oc.nif` (the user passing one
+    //     directly via `--mesh meshes\precombined\...`) — #1188
+    //   - pure marker scene (NiNode-only, no geometry)
+    //   - per-NPC FaceGen geometry (`facegendata\facegeom\…`) — when
+    //     these import with zero meshes it's almost always an importer
+    //     bug, not a legitimate empty-scene case (#1225)
+    //   - any other authored / authoring-tool path that silently
+    //     dropped its meshes through the import filter chain
+    //
+    // #1225 — pre-fix the warn listed only the first two hypotheses
+    // even when the path matched FaceGen, sending audits down dead
+    // ends. Branch the prose so the diagnostic points at the real
+    // class of failure.
     if imported.meshes.is_empty() {
+        let label_lower = label.to_lowercase();
+        let cause_hint = if label_lower.contains("facegendata")
+            && label_lower.contains("facegeom")
+        {
+            "per-NPC FaceGen geometry (`facegendata\\facegeom\\…`) — \
+             expected head + body geometry; this is almost certainly \
+             an importer bug, not a legitimate empty-scene case. \
+             Investigate per-shape filter chain (APP_CULLED, stopcond), \
+             skin resolution against the external skeleton, and BSVER \
+             dispatch (LE 130 vs SSE 138). See #1225."
+        } else if label_lower.ends_with("_oc.nif")
+            || label_lower.contains("\\precombined\\")
+            || label_lower.contains("/precombined/")
+        {
+            "looks like CSG-deferred precombined geometry (`_oc.nif` \
+             Shared variant). The geometry is reconstructed via CSG \
+             at cell-load time; the NIF itself is mesh-free by design. \
+             See #1188."
+        } else {
+            "check importer filter chain (APP_CULLED, stopcond), skin \
+             resolution, and BSVER dispatch. May also be a pure \
+             marker scene (NiNode-only) if no geometry was authored."
+        };
         log::warn!(
-            "NIF '{}' imported with zero meshes — likely CSG-deferred \
-             (`_oc.nif` Shared variant, #1188) or pure marker scene",
+            "NIF '{}' imported with zero meshes — {}",
             label,
+            cause_hint,
         );
     }
     Some(imported)
