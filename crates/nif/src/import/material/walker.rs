@@ -110,6 +110,17 @@ pub(crate) fn extract_material_info_from_refs(
 ) -> MaterialInfo {
     let mut info = MaterialInfo::default();
 
+    // Skyrim+: dedicated alpha_property_ref — processed BEFORE the
+    // shader-property block so the BSEffectShader implicit-blend gate
+    // (#1202) can consult `alpha_property_consumed`. A `flags=0`
+    // NiAlphaProperty here records the explicit-opaque intent and
+    // keeps the implicit blend at line 427 from firing.
+    if let Some(idx) = alpha_property_ref.index() {
+        if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
+            apply_alpha_flags(&mut info, alpha);
+        }
+    }
+
     // Skyrim+: dedicated shader_property_ref
     if let Some(idx) = shader_property_ref.index() {
         if let Some(shader) = scene.get_as::<BSLightingShaderProperty>(idx) {
@@ -423,7 +434,16 @@ pub(crate) fn extract_material_info_from_refs(
             // NiAlphaProperty (that path owns explicit src/dst blend
             // factors and must not be overwritten). See #354 / audit
             // S4-03.
-            if !info.alpha_blend && !info.alpha_test {
+            //
+            // #1202 — gate on `alpha_property_consumed` instead of the
+            // value-shape `!alpha_blend && !alpha_test`: a
+            // `NiAlphaProperty { flags: 0 }` (explicit opaque) leaves
+            // both bits false but signals an explicit choice that this
+            // implicit-blend write must NOT overwrite. The
+            // `alpha_property_ref` Skyrim+ branch now runs before this
+            // shader block so the flag is up to date by the time we
+            // reach here.
+            if !info.alpha_property_consumed {
                 info.alpha_blend = true;
                 // The src/dst defaults live on `MaterialInfo::default`
                 // as SRC_ALPHA / INV_SRC_ALPHA — correct for the
@@ -476,13 +496,6 @@ pub(crate) fn extract_material_info_from_refs(
         }
     }
 
-    // Skyrim+: dedicated alpha_property_ref
-    if let Some(idx) = alpha_property_ref.index() {
-        if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
-            apply_alpha_flags(&mut info, alpha);
-        }
-    }
-
     // FO3/FNV/Oblivion: single pass over shape + inherited properties.
     // Shape properties first so they take priority (#208). Empty for
     // BsTriShape (Skyrim+ binds via shader_property_ref only).
@@ -491,7 +504,14 @@ pub(crate) fn extract_material_info_from_refs(
             continue;
         };
 
-        if !info.alpha_blend && !info.alpha_test {
+        // #1201 — gate on `alpha_property_consumed`, not on the
+        // `!alpha_blend && !alpha_test` value-shape. A shape that
+        // authors `NiAlphaProperty { flags: 0 }` (explicit "no
+        // blending, no test") leaves both fields false but `apply_
+        // alpha_flags` marks consumption — so the cascade gate must
+        // honour the intent, not just the resulting bit values.
+        // #982 added the data plumbing but the consumer was missed.
+        if !info.alpha_property_consumed {
             if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
                 apply_alpha_flags(&mut info, alpha);
             }
