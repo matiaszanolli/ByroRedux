@@ -59,6 +59,16 @@ pub(crate) fn capture_effect_shader_data(shader: &BSEffectShaderProperty) -> BsE
             &shader.sf1_crcs,
             &shader.sf2_crcs,
         ),
+        // #1205 — FO76-only fields (BSVER == 155). Parser stores
+        // textures as `String` (empty on non-FO76); collapse empties
+        // to `None` per the `opt()` pattern. `emittance_color` doesn't
+        // have a "missing" wire signal, so use the all-zero RGB triple
+        // as the sentinel — Bethesda's pre-FO76 default.
+        reflectance_texture: opt(&shader.reflectance_texture),
+        lighting_texture: opt(&shader.lighting_texture),
+        emit_gradient_texture: opt(&shader.emit_gradient_texture),
+        emittance_color: (shader.emittance_color != [0.0; 3]).then_some(shader.emittance_color),
+        luminance: shader.luminance.clone(),
     }
 }
 

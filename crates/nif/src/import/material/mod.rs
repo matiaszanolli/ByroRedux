@@ -7,7 +7,8 @@ use crate::blocks::properties::{
 use crate::blocks::shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
     BSShaderPPLightingProperty, BSShaderTextureSet, BSSkyShaderProperty, BSWaterShaderProperty,
-    ShaderTypeData, SkyShaderProperty, TallGrassShaderProperty, TileShaderProperty,
+    LuminanceParams, ShaderTypeData, SkyShaderProperty, TallGrassShaderProperty,
+    TileShaderProperty,
 };
 use crate::blocks::texture::NiSourceTexture;
 use crate::blocks::tri_shape::NiTriShape;
@@ -809,6 +810,28 @@ pub struct BsEffectShaderData {
     /// `base_color × base_color_scale`. Stage 2 wires the lit shading.
     /// See #890.
     pub effect_lit: bool,
+    /// FO76 reflectance texture (BSVER == 155). Drives the surface's
+    /// metallic / reflectance lookup on FO76 emissive materials.
+    /// Empty path collapses to `None`. Renderer-side consumption is
+    /// follow-up work — capture-only today. See #1205.
+    pub reflectance_texture: Option<String>,
+    /// FO76 lighting texture (BSVER == 155). Per-material lighting
+    /// LUT (similar role to FO76's `_l.dds` channels). Empty path
+    /// collapses to `None`. See #1205.
+    pub lighting_texture: Option<String>,
+    /// FO76 emit gradient texture (BSVER == 155). Drives the
+    /// per-fragment emittance gradient on glow planes / UI overlays.
+    /// Empty path collapses to `None`. See #1205.
+    pub emit_gradient_texture: Option<String>,
+    /// FO76 emittance color `[r, g, b]` (BSVER == 155). Multiplied
+    /// with the emit-gradient lookup; `None` when the parser saw the
+    /// `[0, 0, 0]` Bethesda-default sentinel. See #1205.
+    pub emittance_color: Option<[f32; 3]>,
+    /// FO76 luminance parameters (BSVER == 155). Drives the
+    /// HDR-emittance / exposure-clamp envelope for emissive surfaces.
+    /// `None` on pre-FO76 content where the parser left the slot
+    /// empty. See #1205.
+    pub luminance: Option<LuminanceParams>,
 }
 
 impl Default for MaterialInfo {

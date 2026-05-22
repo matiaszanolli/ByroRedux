@@ -290,3 +290,80 @@ fn capture_all_four_bits_together() {
     assert!(captured.effect_palette_alpha);
     assert!(captured.effect_lit);
 }
+
+// ── #1205 — FO76 quintet (BSVER == 155) capture-side plumbing ──────
+//
+// Pre-fix the BSEffectShaderProperty parser read these five fields off
+// the wire but `capture_effect_shader_data` had no destination for them
+// on `BsEffectShaderData`. They're additive data plumbing — the
+// renderer-side dispatch is follow-up work. Tests pin the
+// capture round-trip + empty-collapse semantics.
+
+#[test]
+fn fo76_defaults_collapse_to_none() {
+    // The `fully_populated_fo4_shader` fixture writes empty strings +
+    // `[0.0; 3]` + `None` for the FO76 quintet — verify capture
+    // collapses to all-None.
+    let shader = fully_populated_fo4_shader();
+    let captured = capture_effect_shader_data(&shader);
+    assert_eq!(captured.reflectance_texture, None);
+    assert_eq!(captured.lighting_texture, None);
+    assert_eq!(captured.emit_gradient_texture, None);
+    assert_eq!(captured.emittance_color, None);
+    assert!(captured.luminance.is_none());
+}
+
+#[test]
+fn fo76_quintet_round_trips_through_capture() {
+    let mut shader = fully_populated_fo4_shader();
+    shader.reflectance_texture = "fx/refl.dds".to_string();
+    shader.lighting_texture = "fx/lit.dds".to_string();
+    shader.emit_gradient_texture = "fx/emit_grad.dds".to_string();
+    shader.emittance_color = [1.5, 0.5, 2.0];
+    shader.luminance = Some(crate::blocks::shader::LuminanceParams {
+        lum_emittance: 100.0,
+        exposure_offset: -2.0,
+        final_exposure_min: 0.01,
+        final_exposure_max: 8.0,
+    });
+
+    let captured = capture_effect_shader_data(&shader);
+    assert_eq!(captured.reflectance_texture.as_deref(), Some("fx/refl.dds"));
+    assert_eq!(captured.lighting_texture.as_deref(), Some("fx/lit.dds"));
+    assert_eq!(
+        captured.emit_gradient_texture.as_deref(),
+        Some("fx/emit_grad.dds")
+    );
+    assert_eq!(captured.emittance_color, Some([1.5, 0.5, 2.0]));
+    let lum = captured.luminance.expect("luminance must round-trip");
+    assert_eq!(lum.lum_emittance, 100.0);
+    assert_eq!(lum.exposure_offset, -2.0);
+    assert_eq!(lum.final_exposure_min, 0.01);
+    assert_eq!(lum.final_exposure_max, 8.0);
+}
+
+#[test]
+fn fo76_emittance_color_zero_treated_as_sentinel() {
+    // `[0, 0, 0]` is Bethesda's pre-FO76 default — the capture surfaces
+    // it as `None` so consumers can distinguish "FO76 set black" (very
+    // rare) from "non-FO76 with zero-fill" (the common case). Documented
+    // sentinel-pattern; if a real corpus turns up a literal-black FO76
+    // emittance this test must change deliberately.
+    let mut shader = fully_populated_fo4_shader();
+    shader.emittance_color = [0.0, 0.0, 0.0];
+    let captured = capture_effect_shader_data(&shader);
+    assert_eq!(captured.emittance_color, None);
+}
+
+#[test]
+fn fo76_partial_texture_population() {
+    // Only some of the FO76 texture slots populated — every present one
+    // surfaces; absent ones stay None. Mirrors the pre-existing FO4
+    // env-map / env-mask partial-population behaviour.
+    let mut shader = fully_populated_fo4_shader();
+    shader.reflectance_texture = "fx/refl.dds".to_string();
+    let captured = capture_effect_shader_data(&shader);
+    assert_eq!(captured.reflectance_texture.as_deref(), Some("fx/refl.dds"));
+    assert_eq!(captured.lighting_texture, None);
+    assert_eq!(captured.emit_gradient_texture, None);
+}
