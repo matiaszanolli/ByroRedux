@@ -137,7 +137,7 @@ pub(super) fn spawn_placed_instances(
     // activate system) reads to drive cell-swap orchestration. `None` on
     // every non-door REFR + on the precombined / loose-NIF spawn paths.
     teleport: Option<esm::cell::TeleportDest>,
-) -> usize {
+) -> (byroredux_core::ecs::EntityId, usize) {
     use byroredux_core::ecs::{Name, Parent};
     use byroredux_renderer::Vertex;
 
@@ -1009,5 +1009,11 @@ pub(super) fn spawn_placed_instances(
         world.insert(player_entity, player);
     }
 
-    count
+    // M47.0 Phase 3b — return the placement_root alongside the
+    // entity count so the caller (cell_loader/references.rs) can
+    // attach script-state components keyed on the REFR's base
+    // record `script_form_id`. Pre-Phase-3b the function returned
+    // only the count; callers that don't need the placement_root
+    // (precombined.rs bake artifacts) `_`-discard the first element.
+    (placement_root, count)
 }

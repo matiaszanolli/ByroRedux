@@ -179,7 +179,11 @@ pub(super) fn spawn_precombined_meshes(
         // already), no embedded clip handle (precombines are static),
         // no light data (precombines exclude lights — those stay as
         // individual REFRs outside the absorption set).
-        let count = spawn_placed_instances(
+        // M47.0 Phase 3b — discard the placement_root return.
+        // Precombined bake artifacts have no per-REFR script binding
+        // (they're geometry merges, not source REFRs); script attach
+        // runs only on the references.rs call site.
+        let (_placement_root, count) = spawn_placed_instances(
             world,
             ctx,
             &cached,

@@ -566,7 +566,7 @@ pub(super) fn load_references(
                     local: LocalFormId(placed_ref.form_id),
                 }
             };
-            let count = spawn_placed_instances(
+            let (placement_root, count) = spawn_placed_instances(
                 world,
                 ctx,
                 &cached,
@@ -583,6 +583,15 @@ pub(super) fn load_references(
                 placed_ref.teleport,
             );
             entity_count += count;
+
+            // M47.0 Phase 3b — attach script state to the placement
+            // root. `child_form_id` is the leaf base record (SCOL /
+            // PKIN children each get their own; non-expanded REFRs
+            // pass placed_ref.base_form_id verbatim). Index → SCPT →
+            // editor_id → ScriptRegistry → spawner; misses fall
+            // through silently per Phase 2's "unregistered scripts are
+            // common" contract. See docs/engine/m47-0-design.md.
+            attach_script_for_refr(world, placement_root, child_form_id, record_index);
         }
     }
 
@@ -1059,6 +1068,85 @@ fn parse_and_import_spt(
         // separate format outside the NIF block hierarchy. #1214.
         bsx_flags: 0,
     }))
+}
+
+/// M47.0 Phase 3b — attach script-state components to a freshly-spawned
+/// REFR's placement root. Three-stage lookup:
+///
+/// 1. `EsmIndex::base_record_script(base_form_id)` → SCPT form_id (or
+///    `None` if the base record has no script).
+/// 2. `EsmIndex.scripts.get(&script_form_id)` → `ScriptRecord` (or
+///    `None` if the cross-ref dangled — a real data issue, but
+///    survivable; logged at debug).
+/// 3. `ScriptRegistry.lookup(&script.editor_id)` → spawn fn (or
+///    `None` if M47.0 doesn't yet ship a handler for this script —
+///    by far the most common miss path, ~1 256 / 1 257 vanilla FO3
+///    scripts unregistered as of Phase 2).
+///
+/// Fall-through on every `None` is silent — see Phase 2 contract: M47.0
+/// only ships hand-translated equivalents for ~5 R5-prototype scripts;
+/// every other SCPT in vanilla content correctly reaches a "no spawner
+/// registered" leaf and contributes nothing observable.
+///
+/// The function takes `&mut World` because the spawner mutates it (each
+/// spawner does `query_mut::<…>().insert(entity, …)`). The
+/// `ScriptRegistry` resource borrow is scoped tightly so the spawner
+/// can re-borrow World freely.
+fn attach_script_for_refr(
+    world: &mut byroredux_core::ecs::world::World,
+    entity: byroredux_core::ecs::EntityId,
+    base_form_id: u32,
+    index: &esm::records::EsmIndex,
+) {
+    let Some(script_form_id) = index.base_record_script(base_form_id) else {
+        return;
+    };
+    let Some(script) = index.scripts.get(&script_form_id) else {
+        // SCPT cross-ref dangled. Pre-#443 the SCPT records weren't
+        // parsed at all; post-#443 the index is populated, so a miss
+        // here is genuinely a broken plugin / parser bug rather than
+        // a missing-consumer story.
+        log::debug!(
+            "M47.0: SCRI {script_form_id:08X} on base {base_form_id:08X} not in index.scripts (dangling cross-ref)",
+        );
+        return;
+    };
+    // Scope the registry borrow tightly — the spawn fn that comes back
+    // is a function pointer (Copy), so we can drop the borrow before
+    // invoking the spawner with `&mut World`.
+    let spawn_fn = {
+        let Some(registry) = world.try_resource::<byroredux_scripting::ScriptRegistry>() else {
+            // Engine init didn't insert the registry — a programming
+            // error. Log loudly the first time per process so the
+            // misconfiguration surfaces during cell load instead of
+            // silently disabling every script in the engine.
+            log::error!(
+                "M47.0: ScriptRegistry resource missing — \
+                 byroredux_scripting::register and ScriptRegistry init \
+                 must run before cell load. Script attach disabled."
+            );
+            return;
+        };
+        registry.lookup(&script.editor_id)
+    };
+    let Some(spawn_fn) = spawn_fn else {
+        // Most common miss path: a real SCPT with no Phase-2 handler.
+        // log::trace! so it's available with `--RUST_LOG=trace` for
+        // debugging without polluting INFO/DEBUG-level logs (a 1 200-
+        // REFR cell load would emit ~1 200 misses).
+        log::trace!(
+            "M47.0: no spawner registered for SCPT editor_id '{}' (form {:08X})",
+            script.editor_id,
+            script_form_id,
+        );
+        return;
+    };
+    spawn_fn(world, entity);
+    log::debug!(
+        "M47.0: attached script '{}' (SCPT {:08X}) to entity {entity:?} via base {base_form_id:08X}",
+        script.editor_id,
+        script_form_id,
+    );
 }
 
 #[cfg(test)]
