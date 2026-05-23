@@ -149,7 +149,31 @@ fn flatten_to_parts(
             }
             let pts: Vec<Point3<f32>> = vertices.iter().copied().map(vec3_to_point).collect();
             let idx: Vec<[u32; 3]> = indices.clone();
-            out.push((parent_iso, SharedShape::trimesh(pts, idx)));
+            // M28.5 follow-up — `FIX_INTERNAL_EDGES` is the Rapier-
+            // documented fix for "incorrect contact normals on flat
+            // surfaces" caused by per-triangle normals flipping
+            // abruptly at shared edges. Without it, a kinematic
+            // capsule sliding across multiple triangles of a closed
+            // interior shell can pick up a normal pointing the wrong
+            // way at the seam between two triangles and get pushed
+            // *through* the wall instead of along it (the user's
+            // observed "boundary pointing outside" symptom). Per
+            // `parry3d-0.17.6/src/shape/trimesh.rs:270-276`, this
+            // flag computes per-vertex / per-edge pseudo-normals from
+            // adjacent triangles and uses them during contact
+            // generation. It implies `ORIENTED` (treat the mesh as a
+            // closed surface with outward normals — which Bethesda's
+            // bhk collision shells are, by construction) and
+            // `MERGE_DUPLICATE_VERTICES` (Bethesda content frequently
+            // has coincident vertices at seams between adjacent
+            // architectural pieces; without the merge, those seams
+            // look like topological holes to the pseudo-normal
+            // computation).
+            use rapier3d::parry::shape::TriMeshFlags;
+            out.push((
+                parent_iso,
+                SharedShape::trimesh_with_flags(pts, idx, TriMeshFlags::FIX_INTERNAL_EDGES),
+            ));
         }
     }
 }

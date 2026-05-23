@@ -538,25 +538,64 @@ pub(crate) fn setup_scene(
             pw.update_query_pipeline();
         }
 
-        // Spawn the character by ray-casting straight down from
-        // `aabb.max.y + 50 BU` and placing the capsule centre at
-        // `hit.y + half_height + offset_skin`. This lands on the
-        // FIRST solid floor under the camera's XZ rather than on the
-        // building's exterior roof — pre-fix the `aabb.max.y + 200`
-        // approach placed the spawn above the cell's tallest collider,
-        // which for Whiterun Bannered Mare is the exterior roof
-        // (gap-ridden TriMesh — slipping through tiny cracks dropped
-        // the player straight into the void).
+        // Spawn precedence:
+        //   1. **Door-teleporter spawn** — find any REFR with a
+        //      `DoorTeleport` component (XTEL — the entries/exits of
+        //      this cell) and place the player at that door's
+        //      `Transform.translation`, offset upward by capsule
+        //      `half_height + offset_skin` so the capsule's feet rest
+        //      on the door's floor reference. This matches Bethesda's
+        //      own spawn convention — when you teleport INTO a cell,
+        //      you appear at the door REFR that pointed at the cell
+        //      you came from. Spawning at one of THIS cell's doors at
+        //      cold-start gives the same "you walked in here" effect
+        //      without needing to know which exterior cell you came
+        //      from. See user-requested change M28.5 follow-up:
+        //      "always spawn in the proper spawn point for a room
+        //      (this should be on the end of a teleporter object like
+        //      a door)".
+        //   2. **Ray-cast down** — when there's no DoorTeleport in
+        //      the cell (debug `--mesh` loads, exterior cells without
+        //      teleporter REFRs, etc.) — fall back to the previous
+        //      M28.5 strategy: ray-cast from `aabb.max.y + 50 BU` and
+        //      place the capsule above the first solid floor.
+        //   3. **AABB + slack** — ray-cast found nothing within the
+        //      AABB-height + 100 BU budget. Place at `aabb.max.y +
+        //      200` (very rare; was the pre-#1230 path).
+        //   4. **No static colliders** — bare `cam_pos - eye_height`.
         //
-        // Fallback chain:
-        //   1. Ray-cast finds floor → place capsule above it.
-        //   2. AABB known but no ray hit → `aabb.max.y + 200` (pre-fix
-        //      behaviour; rare).
-        //   3. No static colliders parsed yet → `cam_pos - eye_height`.
-        //
-        // Offset 4.0 BU matches the KCC's `controller.offset`, so the
-        // capsule rests against (not embedded in) the floor surface.
-        let body_pos = {
+        // Offset 4.0 BU on the upward shift matches the KCC's
+        // `controller.offset`, so the capsule rests against (not
+        // embedded in) the door's floor reference.
+        let door_spawn = {
+            let dq = world.query::<crate::components::DoorTeleport>();
+            let tq = world.query::<Transform>();
+            match (dq, tq) {
+                (Some(dq), Some(tq)) => dq
+                    .iter()
+                    .find_map(|(entity, _door)| tq.get(entity).map(|t| t.translation)),
+                _ => None,
+            }
+        };
+        let body_pos = if let Some(door_pos) = door_spawn {
+            let spawn = Vec3::new(
+                door_pos.x,
+                door_pos.y + cc.half_height + 4.0,
+                door_pos.z,
+            );
+            log::info!(
+                "M28.5 spawn at door teleporter: door at ({:.1}, {:.1}, {:.1}); \
+                 placing capsule at ({:.1}, {:.1}, {:.1}) (user request — \
+                 spawn at teleporter object)",
+                door_pos.x,
+                door_pos.y,
+                door_pos.z,
+                spawn.x,
+                spawn.y,
+                spawn.z,
+            );
+            spawn
+        } else {
             let pw = world.resource::<byroredux_physics::PhysicsWorld>();
             match pw.static_colliders_aabb() {
                 Some((min, max, _)) => {
@@ -569,7 +608,8 @@ pub(crate) fn setup_scene(
                         Some(hit_y) => {
                             log::info!(
                                 "M28.5 spawn ray-cast: hit floor at y={:.1} under \
-                                 ({:.1}, {:.1}); placing capsule at y={:.1}",
+                                 ({:.1}, {:.1}); placing capsule at y={:.1} (no \
+                                 DoorTeleport in cell — fell through to ray-cast)",
                                 hit_y,
                                 cam_pos.x,
                                 cam_pos.z,

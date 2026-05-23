@@ -398,6 +398,114 @@ pub(crate) fn camera_follow_system(world: &World, _dt: f32) {
     }
 }
 
+/// Toggle [`PlayerMode`] between `Character` and `FlyCam` with
+/// position-snap semantics modelled on Bethesda's `tcl` (toggle
+/// collision) console command. Called from the keyboard handler in
+/// `main.rs` when F is tapped (edge-triggered, no key-repeat).
+///
+/// **Fly → Character**: snap the character body to the camera's
+/// current position (minus `eye_height` so the eyes end up where the
+/// camera was). Vertical velocity zeroed; grounded reset to false so
+/// gravity re-engages next tick. Net effect: player "lands" wherever
+/// the freeflight camera was looking from.
+///
+/// **Character → Fly**: no position writes required.
+/// `camera_follow_system` had been writing the active camera at
+/// `body_pos + eye_height`, so the fly cam takes over from the same
+/// world position. The character body stays alive — its controller
+/// system early-returns on FlyCam mode, freezing the body in place
+/// until the user toggles back.
+///
+/// Logs the new mode at INFO so the user gets feedback without an
+/// in-engine console.
+pub fn toggle_player_mode(world: &mut byroredux_core::ecs::World) {
+    let current = world
+        .try_resource::<PlayerMode>()
+        .map(|r| *r)
+        .unwrap_or_default();
+    let next = match current {
+        PlayerMode::FlyCam => PlayerMode::Character,
+        PlayerMode::Character => PlayerMode::FlyCam,
+    };
+
+    // On Fly → Character, snap the character body to the active
+    // camera's position. The player entity may be absent (engine
+    // booted with `--mesh` / `--tree` / `--fly` flags that didn't
+    // spawn a character body); in that case bail with a warn — the
+    // toggle is a no-op and we stay in FlyCam.
+    if matches!(next, PlayerMode::Character) {
+        let player_entity = world
+            .try_resource::<PlayerEntity>()
+            .and_then(|r| r.0);
+        let Some(player) = player_entity else {
+            log::warn!(
+                "Walk/Fly toggle: no PlayerEntity registered \
+                 (engine booted without a character body — \
+                 `--mesh` / `--tree` / `--fly`? Use a `--cell` \
+                 invocation to spawn one). Staying in FlyCam mode."
+            );
+            return;
+        };
+        let cam_entity = match world.try_resource::<ActiveCamera>() {
+            Some(active) => active.0,
+            None => {
+                log::warn!("Walk/Fly toggle: no ActiveCamera resource. Aborting toggle.");
+                return;
+            }
+        };
+        let (cam_pos, eye_height) = {
+            let Some(tq) = world.query::<Transform>() else {
+                return;
+            };
+            let Some(cam_t) = tq.get(cam_entity) else {
+                log::warn!("Walk/Fly toggle: ActiveCamera entity has no Transform. Aborting.");
+                return;
+            };
+            let pos = cam_t.translation;
+            drop(tq);
+            let Some(cq) = world.query::<byroredux_physics::CharacterController>() else {
+                return;
+            };
+            let height = cq.get(player).map(|c| c.eye_height).unwrap_or(52.0);
+            (pos, height)
+        };
+        let body_pos = cam_pos - Vec3::Y * eye_height;
+        {
+            let Some(mut tq) = world.query_mut::<Transform>() else {
+                return;
+            };
+            if let Some(t) = tq.get_mut(player) {
+                t.translation = body_pos;
+                t.rotation = Quat::IDENTITY;
+            }
+        }
+        {
+            let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>() else {
+                return;
+            };
+            if let Some(c) = cq.get_mut(player) {
+                // Clear momentum so the body doesn't carry a stale
+                // free-fall velocity from before the user entered
+                // FlyCam mode. Gravity re-engages on the next
+                // controller tick.
+                c.vertical_velocity = 0.0;
+                c.is_grounded = false;
+                c.wants_jump = false;
+            }
+        }
+        // Sync the kinematic Rapier body to the new transform so the
+        // KCC's next-frame collide-and-slide query starts from the
+        // correct position rather than the pre-toggle frozen one.
+        byroredux_physics::set_kinematic_translation(world, player, body_pos);
+    }
+
+    *world.resource_mut::<PlayerMode>() = next;
+    log::info!(
+        "Player mode → {:?} (F key — toggle walk/fly)",
+        next
+    );
+}
+
 /// Compute the world-space horizontal motion vector for the character
 /// from yaw, WASD-direction, speed, and dt. Pure function — pulled
 /// out for test pinning.

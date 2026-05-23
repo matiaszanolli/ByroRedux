@@ -44,7 +44,7 @@ use crate::render::build_render_data;
 use crate::systems::{
     animation_system, billboard_system, fly_camera_system, footstep_system, log_stats_system,
     make_transform_propagation_system, make_world_bound_propagation_system, particle_system,
-    spin_system, weather_system,
+    spin_system, toggle_player_mode, weather_system,
 };
 use byroredux_core::ecs::SystemList;
 
@@ -1592,6 +1592,26 @@ impl ApplicationHandler for App {
                                         win.set_cursor_visible(true);
                                     }
                                 }
+                            } else if code == KeyCode::KeyF && !event.repeat {
+                                // M28.5 follow-up — Walk ↔ Fly mode toggle.
+                                // Temporary debug binding until an in-engine
+                                // console (byro-dbg embed) is available. Models
+                                // Bethesda's `tcl` (toggle collision) command:
+                                // - Fly → Character: snap the character body to
+                                //   the camera's current world position (so the
+                                //   player "lands" wherever the freeflight cam
+                                //   was looking from). The character_controller
+                                //   then takes over from there.
+                                // - Character → Fly: no-op on positions —
+                                //   `camera_follow_system` had been writing the
+                                //   active camera at `body_pos + eye_height`
+                                //   anyway, so the fly cam takes over from the
+                                //   same place. The character body stays alive
+                                //   but `character_controller_system` early-
+                                //   returns on FlyCam mode, so it freezes in
+                                //   place until the user toggles back.
+                                drop(input);
+                                toggle_player_mode(&mut self.world);
                             } else {
                                 input.keys_held.insert(code);
                             }
