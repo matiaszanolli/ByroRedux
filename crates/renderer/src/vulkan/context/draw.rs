@@ -173,6 +173,24 @@ impl VulkanContext {
         // the set and always dispatches. Paired with #1196.
         pose_dirty: &std::collections::HashSet<EntityId>,
     ) -> Result<bool> {
+        // #1211 / REN-SAFETY — skip the frame when the main framebuffers
+        // Vec is empty. `recreate_swapchain` destroys framebuffers up
+        // front and only rebuilds them at the end (`resize.rs:564`);
+        // any `?`-propagated failure between those two points leaves
+        // the Vec at `len == 0`. The app-level caller logs the recreate
+        // error and queues `event_loop.exit()`, but exit is queued —
+        // the next `RedrawRequested` already in flight would index
+        // `framebuffers[frame]` and panic.
+        //
+        // Return BEFORE `acquire_next_image` so `image_available[frame]`
+        // is not left signal-pending without a paired wait. `Ok(false)`
+        // (not `Ok(true)`) avoids a recreate-retry loop when the
+        // underlying surface is still invalid — recovery rides the
+        // next `Resized` / focus event instead.
+        if self.framebuffers.is_empty() {
+            return Ok(false);
+        }
+
         let frame = self.current_frame;
         // Use a local to avoid borrow complexity; copy out at end.
         let mut t = FrameTimings::default();
@@ -2973,5 +2991,61 @@ mod is_caustic_source_tests {
         // material_kind=5 = SkinTint. Bethesda character skin meshes.
         // Pre-#922 false positive on the alpha-blend body slot.
         assert!(!is_caustic_source(&cmd(5, 0.0)));
+    }
+}
+
+/// Regression for #1211 / REN-SAFETY. `draw_frame` must early-return
+/// when `self.framebuffers` is empty (the state left behind when
+/// `recreate_swapchain` fails partway). Without the guard the first
+/// indexing access at the `RenderPassBeginInfo::framebuffer(...)` site
+/// panics with `index out of bounds`, taking the process down on
+/// surface-lost events that are normal Vulkan (window minimize,
+/// monitor disconnect, compositor restart, NVIDIA driver mismatch
+/// falling back to RADV).
+///
+/// Live unit test against a mocked `VulkanContext` is impractical —
+/// 70+ Vulkan-loader fields with no safe defaults. Static source
+/// assertion mirrors the precedent set by
+/// `resize.rs::old_image_views_destroyed_between_new_swapchain_creation_and_old_destroy`
+/// (#654 ordering check).
+#[cfg(test)]
+mod framebuffers_empty_guard_tests {
+    #[test]
+    fn draw_frame_guards_on_empty_framebuffers_before_acquire() {
+        let src = include_str!("draw.rs");
+
+        // The guard text — must be present somewhere in the file.
+        let guard_pos = src
+            .find("if self.framebuffers.is_empty() {")
+            .expect("draw_frame must guard on empty framebuffers (#1211)");
+
+        // The fence-wait + acquire happen inside `draw_frame` and
+        // must come AFTER the guard. We anchor on `wait_for_fences`
+        // (the first fallible Vulkan call in `draw_frame`) and
+        // `acquire_next_image` (the call that signals
+        // `image_available[frame]` — the semaphore that would leak
+        // if we early-return after acquire). Both must appear after
+        // the guard.
+        let wait_pos = src
+            .find(".wait_for_fences(")
+            .expect("draw_frame should call wait_for_fences");
+        let acquire_pos = src
+            .find(".acquire_next_image(")
+            .expect("draw_frame should call acquire_next_image");
+
+        assert!(
+            guard_pos < wait_pos,
+            "framebuffers.is_empty() guard must come BEFORE \
+             wait_for_fences — no point waiting for a frame we're \
+             about to skip. (#1211)"
+        );
+        assert!(
+            guard_pos < acquire_pos,
+            "framebuffers.is_empty() guard must come BEFORE \
+             acquire_next_image — otherwise the image_available \
+             semaphore is left signal-pending without a paired wait, \
+             tripping VUID-vkAcquireNextImageKHR-semaphore-01779 on \
+             the next acquire. (#1211)"
+        );
     }
 }
