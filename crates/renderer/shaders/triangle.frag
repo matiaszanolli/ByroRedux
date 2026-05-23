@@ -643,15 +643,21 @@ vec2 parallaxDisplaceUV(
 ) {
     // Build TBN from screen-space derivatives (same recipe as
     // perturbNormal — keep the derivation identical so the tangent
-    // basis is consistent across the two passes).
+    // basis is consistent across the two passes). The `screenSign`
+    // multiplier on B encodes UV-mirror handedness so V_ts.y has
+    // the same sign convention on mirrored shells as on non-mirrored
+    // ones — otherwise parallax slide along V would be inverted on
+    // every symmetrical mesh half. Companion fix to #1104; the
+    // perturbNormal Path-2 site carries the same correction.
     vec3 dPdx = dFdx(worldPos);
     vec3 dPdy = dFdy(worldPos);
     vec2 dUVdx = dFdx(uv);
     vec2 dUVdy = dFdy(uv);
     vec3 T = normalize(dPdx * dUVdy.y - dPdy * dUVdx.y);
     vec3 B = normalize(dPdy * dUVdx.x - dPdx * dUVdy.x);
+    float screenSign = sign(dUVdx.x * dUVdy.y - dUVdx.y * dUVdy.x);
     T = normalize(T - dot(T, N) * N);
-    B = cross(N, T);
+    B = screenSign * cross(N, T);
 
     // View direction in tangent space. xy is the planar slide the
     // ray makes per unit of depth; z > 0 means we're looking into
@@ -761,9 +767,20 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx, vec4 verte
     vec3 T = normalize(dPdx * dUVdy.y - dPdy * dUVdx.y);
     vec3 B = normalize(dPdy * dUVdx.x - dPdx * dUVdy.x);
 
-    // Ensure TBN is right-handed relative to N.
+    // Ensure TBN is right-handed relative to N. The `cross(N, T)`
+    // reconstruction loses the sign of the UV-Jacobian determinant
+    // — i.e. on UV-mirrored shells (any symmetrical mesh half) the
+    // bitangent would always come out right-handed, flipping the
+    // tangent-space normal across the mirror seam. Multiply by the
+    // determinant sign so B follows the authored +V direction in
+    // both orientations. Path-1 (authored tangent) carries this sign
+    // explicitly via `vertexTangent.w`; this is the Path-2 analog.
+    // See #1104 (REN-D16-002). Critical for every Starfield mesh
+    // since SF BSGeometry tangents land empty until #1086 lands a
+    // tangent extractor, so every SF mesh reaches this fallback.
+    float screenSign = sign(dUVdx.x * dUVdy.y - dUVdx.y * dUVdy.x);
     T = normalize(T - dot(T, N) * N);
-    B = cross(N, T);
+    B = screenSign * cross(N, T);
 
     mat3 TBN = mat3(T, B, N);
     return normalize(TBN * tangentNormal);
