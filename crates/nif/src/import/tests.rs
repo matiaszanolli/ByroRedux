@@ -1786,3 +1786,33 @@ fn bs_lod_tri_shape_imports_geometry_not_dropped() {
     assert_eq!(m.name, Some(std::sync::Arc::from("LODTree")));
     assert_eq!(m.positions.len(), 3, "triangle mesh has 3 positions");
 }
+
+/// #1235 / LC-D1-NEW-01 — `extract_root_flags` returns the root NiNode's
+/// raw `NiAVObject.flags` so the cell-loader spawn site can attach a
+/// `SceneFlags` ECS row on the placement root (parity with the loose-NIF
+/// loader at `byroredux/src/scene/nif_loader.rs:450-452`).
+#[test]
+fn extract_root_flags_returns_root_av_flags() {
+    let mut root = make_ni_node(identity_transform(), Vec::new());
+    // DISABLE_SORTING (0x0040) | IS_NODE (0x0100) — arbitrary realistic mix.
+    root.av.flags = 0x0140;
+    let scene = scene_from_blocks(vec![Box::new(root)]);
+    assert_eq!(extract_root_flags(&scene), 0x0140);
+}
+
+/// Empty scene → 0 (the SpeedTree `.spt` placeholder + generated-content
+/// paths in `cell_loader/references.rs` rely on this fall-through).
+#[test]
+fn extract_root_flags_returns_zero_when_no_root() {
+    let scene = scene_from_blocks(Vec::new());
+    assert_eq!(extract_root_flags(&scene), 0);
+}
+
+/// Root present but isn't a NiNode (synthetic — vanilla content always
+/// roots in a NiNode subclass, but we want graceful degradation) → 0.
+#[test]
+fn extract_root_flags_returns_zero_when_root_is_not_a_ninode() {
+    let data = make_tri_shape_data();
+    let scene = scene_from_blocks(vec![Box::new(data)]);
+    assert_eq!(extract_root_flags(&scene), 0);
+}

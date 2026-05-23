@@ -334,6 +334,29 @@ pub fn extract_bsx_flags(scene: &NifScene) -> u32 {
     0
 }
 
+/// Extract `NiAVObject.flags` from the root NiNode. Returns 0 if the
+/// scene has no root or the root is not a NiNode (e.g. a malformed NIF
+/// with no scene graph). Mirrors [`extract_bsx_flags`] — captured at
+/// import time so the cell-loader spawn site can attach a `SceneFlags`
+/// ECS row on the placement root without re-walking the scene. See #1235
+/// / LC-D1-NEW-01. `APP_CULLED` (bit 0) is already filtered import-side
+/// in `walk/mod.rs`, so callers don't need to re-check it.
+pub fn extract_root_flags(scene: &NifScene) -> u32 {
+    let Some(root_idx) = scene.root_index else {
+        return 0;
+    };
+    let Some(root_block) = scene.blocks.get(root_idx) else {
+        return 0;
+    };
+    if let Some(node) = root_block
+        .as_any()
+        .downcast_ref::<crate::blocks::node::NiNode>()
+    {
+        return node.av.flags;
+    }
+    0
+}
+
 pub fn import_nif_lights(scene: &NifScene) -> Vec<ImportedLight> {
     let mut lights = Vec::new();
     let Some(root_idx) = scene.root_index else {

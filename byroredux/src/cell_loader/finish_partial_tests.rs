@@ -23,6 +23,7 @@ fn dummy_cached() -> Arc<CachedNifImport> {
         embedded_clip: None,
         placement_root_billboard: None,
         bsx_flags: 0,
+        root_flags: 0,
     })
 }
 
@@ -30,6 +31,7 @@ fn dummy_partial() -> crate::streaming::PartialNifImport {
     crate::streaming::PartialNifImport {
         scene: byroredux_nif::scene::NifScene::default(),
         bsx: 0,
+        root_flags: 0,
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,

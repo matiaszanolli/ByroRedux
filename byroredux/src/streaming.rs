@@ -106,6 +106,10 @@ pub struct PartialNifImport {
     /// BSXFlags bit-set extracted from the scene root. The drain step
     /// honours the `0x20` editor-marker bit (skip insertion).
     pub bsx: u32,
+    /// Root NiNode `NiAVObject.flags` (SELECTIVE_UPDATE / DISABLE_SORTING
+    /// / DISPLAY_OBJECT / IS_NODE / …) for placement-root SceneFlags
+    /// parity with the loose-NIF loader. See #1235 / LC-D1-NEW-01.
+    pub root_flags: u32,
     /// Lights — pool-free import path.
     pub lights: Vec<byroredux_nif::import::ImportedLight>,
     /// Particle emitters — pool-free import path.
@@ -543,12 +547,14 @@ fn pre_parse_cell(
                     }
                 };
                 let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
+                let root_flags = byroredux_nif::import::extract_root_flags(&scene);
                 let lights = byroredux_nif::import::import_nif_lights(&scene);
                 let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
                 let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
                 Some(PartialNifImport {
                     scene,
                     bsx,
+                    root_flags,
                     lights,
                     particle_emitters,
                     embedded_clip,

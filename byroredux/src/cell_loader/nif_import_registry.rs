@@ -68,6 +68,15 @@ pub(crate) struct CachedNifImport {
     /// placement root without re-reading the scene. See #1214 /
     /// D1-NEW-03. `0` when the NIF authors no BSXFlags.
     pub(super) bsx_flags: u32,
+    /// `NiAVObject.flags` from the root NiNode (SELECTIVE_UPDATE,
+    /// DISABLE_SORTING, DISPLAY_OBJECT, IS_NODE, …). Captured at parse
+    /// time so the spawn site can attach a `SceneFlags` ECS row on the
+    /// placement root — parity with the loose-NIF loader's per-node
+    /// `SceneFlags::from_nif` insert. APP_CULLED (bit 0) is already
+    /// filtered import-side, so reaching the cache means the bit is
+    /// clear. See #1235 / LC-D1-NEW-01. `0` when the NIF has no scene
+    /// graph (SpeedTree placeholder, generated content).
+    pub(super) root_flags: u32,
 }
 
 /// Process-lifetime cache of parsed-and-imported NIF scenes keyed by

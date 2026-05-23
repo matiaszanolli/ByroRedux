@@ -76,6 +76,9 @@ pub(crate) fn finish_partial_import(
         // site can attach a `BSXFlags` ECS row on the placement root.
         // Pre-#1214 this field was discarded.
         bsx,
+        // #1235 / LC-D1-NEW-01 — root NiAVObject.flags for placement-root
+        // SceneFlags parity with the loose-NIF loader.
+        root_flags,
         lights,
         particle_emitters,
         embedded_clip,
@@ -120,6 +123,9 @@ pub(crate) fn finish_partial_import(
         // any cached entry reaching here either has the bit clear OR
         // the partial reader skipped the filter (mod content).
         bsx_flags: bsx,
+        // #1235 / LC-D1-NEW-01 — root NiAVObject.flags surfaced from
+        // the streaming partial for placement-root SceneFlags parity.
+        root_flags,
     });
 
     let freed_clip_handles = {

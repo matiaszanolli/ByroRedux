@@ -9,7 +9,7 @@
 use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::{
     BSXFlags, Billboard, GlobalTransform, LightSource, LocalBound, Material, MeshHandle,
-    ParticleEmitter, TextureHandle, Transform, World,
+    ParticleEmitter, SceneFlags, TextureHandle, Transform, World,
 };
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
@@ -205,6 +205,17 @@ pub(super) fn spawn_placed_instances(
     // generated path with `bsx_flags = 0`.
     if cached.bsx_flags != 0 {
         world.insert(placement_root, BSXFlags(cached.bsx_flags));
+    }
+    // #1235 / LC-D1-NEW-01 — attach SceneFlags on the placement root for
+    // parity with the loose-NIF loader (`scene/nif_loader.rs:450-452`).
+    // APP_CULLED (bit 0) is filtered import-side in `walk/mod.rs`, so
+    // any cached entry reaching here has the bit clear; the remaining
+    // bits (SELECTIVE_UPDATE / DISABLE_SORTING / DISPLAY_OBJECT /
+    // IS_NODE) ride through for downstream consumers (future
+    // visibility-toggle systems, alpha-sort draw order, animation-cost
+    // gating).
+    if cached.root_flags != 0 {
+        world.insert(placement_root, SceneFlags::from_nif(cached.root_flags));
     }
     // Pre-compute how many NIF lights will actually spawn. The
     // ESM-fallback gate at the bottom of this function uses this
@@ -733,6 +744,14 @@ pub(super) fn spawn_placed_instances(
                 mesh.local_bound_radius,
             ),
         );
+        // #1235 / LC-D1-NEW-01 — attach SceneFlags for parity with the
+        // loose-NIF loader (`scene/nif_loader.rs:789-791`). APP_CULLED
+        // shapes never reach this point (filtered import-side in
+        // `walk/mod.rs`); the remaining NiAVObject bits ride through
+        // for downstream consumers.
+        if mesh.flags != 0 {
+            world.insert(entity, SceneFlags::from_nif(mesh.flags));
+        }
         // Parent/Children edge → embedded animation clip's subtree
         // walk discovers this mesh through `placement_root`.
         world.insert(entity, Parent(placement_root));
