@@ -218,15 +218,23 @@ impl TextureRegistry {
         // UPDATE_AFTER_BIND allows writing new texture descriptors to a set
         // while a prior frame's command buffer still references it — safe
         // because only previously-unbound array indices are written.
-        // #954 / REN-D3-NEW-01: VARIABLE_DESCRIPTOR_COUNT unlocks
-        // allocating below `max_textures` if a future low-RAM startup
-        // path wants a smaller bindless array. No behaviour change today
-        // (the allocate-info matches the layout count); this is a
-        // defence-in-depth addition that costs zero perf and unlocks
-        // the variant for the future.
+        //
+        // #954 originally added `VARIABLE_DESCRIPTOR_COUNT` here as a
+        // forward-looking knob to allow allocating below `max_textures`
+        // for a hypothetical low-RAM startup path. The matching
+        // `VkDescriptorSetVariableDescriptorCountAllocateInfo` was never
+        // wired into the allocation below, and the
+        // `descriptorBindingVariableDescriptorCount` device feature
+        // wasn't enabled either, so the flag was driving the validation
+        // layer to report descriptorCount=0 on every descriptor write —
+        // previously hidden by the sync2 noise that the device-create
+        // diff just cleared. Dropping the flag restores the layout to
+        // what the allocator and the device features actually support.
+        // When/if a real low-RAM path lands, re-add the flag *and* the
+        // allocate-info struct *and* enable the device feature in
+        // device.rs in the same change.
         let binding_flags = [vk::DescriptorBindingFlags::PARTIALLY_BOUND
-            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
-            | vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT];
+            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND];
         let mut binding_flags_info =
             vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
 
