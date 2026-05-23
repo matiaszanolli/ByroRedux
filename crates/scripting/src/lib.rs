@@ -10,6 +10,7 @@
 //! cleanup removes it at end of frame.
 
 pub mod cleanup;
+pub mod condition;
 pub mod events;
 pub mod papyrus_demo;
 pub mod quest_stages;
@@ -18,6 +19,10 @@ pub mod registry;
 pub mod timer;
 
 pub use cleanup::event_cleanup_system;
+pub use condition::{
+    evaluate as evaluate_condition_list, evaluate_condition, evaluate_function,
+    ConditionContext, ConditionFunction,
+};
 pub use events::{
     ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, HitEvent, OnCellLoadEvent,
     OnEquipEvent, OnTriggerEnterEvent, TimerExpired,

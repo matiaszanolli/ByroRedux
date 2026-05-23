@@ -5,4 +5,11 @@ edition.workspace = true
 
 [dependencies]
 byroredux-core = { workspace = true }
+# M47.1 — scripting needs the `Condition` / `ConditionList` types
+# from `byroredux_plugin::esm::records::condition` so the evaluator
+# can operate on parser-produced data. No cycle: plugin parses ESM
+# bytes (knows nothing about runtime), scripting evaluates against
+# ECS state (depends on parsed data shapes). Same direction as the
+# already-present byroredux_core <- byroredux_plugin chain.
+byroredux-plugin = { workspace = true }
 log = { workspace = true }

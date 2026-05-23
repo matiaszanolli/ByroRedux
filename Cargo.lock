@@ -562,6 +562,7 @@ name = "byroredux-scripting"
 version = "0.1.0"
 dependencies = [
  "byroredux-core",
+ "byroredux-plugin",
  "log",
 ]
 

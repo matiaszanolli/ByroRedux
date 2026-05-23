@@ -15,6 +15,7 @@
 pub mod actor;
 pub mod climate;
 pub mod common;
+pub mod condition;
 pub mod container;
 pub mod global;
 pub mod items;
