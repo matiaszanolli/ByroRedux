@@ -11,6 +11,7 @@ built, where the code lives, and what guarantees it makes.
 | [Architecture Overview](architecture.md) | all | Design principles, workspace layout, crate dependency graph |
 | [ECS](ecs.md) | core | Components, storage backends, queries, scheduler, resources |
 | [Vulkan Renderer](renderer.md) | renderer | Init chain, RT pipeline, multi-light, BLAS/TLAS, swapchain |
+| [Shadow Pipeline Trade-offs](shadow-pipeline-tradeoffs.md) | renderer | Alpha-era constants (`W_CLAMP`, TAA γ, M=8, 24-bit seed) with invalidation conditions |
 | [NIF Parser](nif-parser.md) | nif | Block-type dispatch (~190 entries), version handling, robustness; per-game parse-rate matrix in [Game Compatibility](game-compatibility.md) |
 | [Archives (BSA + BA2)](archives.md) | bsa | BSA v103/104/105, BA2 v1/2/3/7/8, GNRL + DX10 |
 | [ESM Records](esm-records.md) | plugin | Cell loading, items, NPCs, factions, leveled lists |

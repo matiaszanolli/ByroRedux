@@ -4,6 +4,9 @@ A clean Rust + Vulkan rebuild of the Gamebryo / Creation engine lineage
 (Oblivion → Starfield). Linux-first. Not a port — a ground-up rebuild
 that understands the legacy architecture and builds modern equivalents.
 
+![Whiterun Bannered Mare (Skyrim)](docs/screenshots/whiterun-bannered-mare.png)
+*The Bannered Mare in Whiterun, loaded from `Skyrim.esm` + BSAs — RT multi-light on, though a few lighting glitches remain.*
+
 ![Anvil Heinrich Oaken Halls (Oblivion)](docs/screenshots/anvil-oaken-halls.png)
 *Anvil Heinrich Oaken Halls loaded directly from `Oblivion.esm` + meshes + textures BSAs — RT multi-light with ray-query shadows.*
 
@@ -67,9 +70,13 @@ Saloon), Skyrim SE (Whiterun Bannered Mare), FO4 (MedTekResearch01).
 Per-cell entity counts and bench numbers live in [ROADMAP Project
 Stats](ROADMAP.md#project-stats), refreshed per `/session-close`.
 Full RT pipeline + sky/atmosphere + exterior sun operational. Skinning
-chain verified end-to-end (M29 closed); GPU palette dispatch deferred
-to M29.5. World streaming Phase 1 shipped (single-cell async
-pre-parse); multi-cell grid pending. NPC spawning (M41) shipped Phase 1
+chain verified end-to-end (M29 closed) with GPU bone-palette compute
+pass + persistent SSBO slot pool (M29.5 / M29.6, Session 40). World
+streaming Phase 1 (single-cell async pre-parse) + Phase 2
+(interior↔exterior cell-swap via `script.activate <door>`) shipped;
+multi-cell grid pending. Kinematic character controller (M28.5)
+replaces fly-cam-only on-foot movement — gravity + collide-and-slide +
+jump, walk/fly toggle on `T`. NPC spawning (M41) shipped Phase 1
 (T-pose humanoid + skeleton + body + hands + head + FaceGen morphs) and
 Phase 2 close-out (`Inventory` / `EquipmentSlots` ECS + ARMO/ARMA/LVLI
 dispatch + worn-mesh resolver). FO4 humanoid armor meshes pending a
@@ -108,8 +115,11 @@ cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored
 cargo run -p byro-dbg
 ```
 
-**Controls**: Escape captures mouse, WASD + mouse flies, Space/Shift
-raise/lower, Ctrl for speed boost.
+**Controls**: Escape captures mouse, WASD + mouse moves, Space/Shift
+raise/lower (fly mode) or jump (walk mode), Ctrl for speed boost. Press
+`T` to toggle walk ↔ fly. Walk mode is the M28.5 kinematic capsule
+(gravity + collide-and-slide + autostep); fly mode keeps the legacy
+no-clip cam.
 
 **Sibling archive auto-load.** When `--bsa` / `--textures-bsa` points
 at an unsuffixed `.bsa` / `.ba2` (e.g. `Fallout - Textures.bsa`), the
