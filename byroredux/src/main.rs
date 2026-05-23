@@ -37,12 +37,12 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::commands::build_command_registry;
 use crate::components::{
-    CellRootIndex, FootstepConfig, InputState, NameIndex, Spinning, SubtreeCache,
+    CellRootIndex, FootstepConfig, InputState, NameIndex, SubtreeCache,
 };
 use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
-    animation_system, billboard_system, fly_camera_system, footstep_system, log_stats_system,
+    animation_system, billboard_system, footstep_system, log_stats_system,
     make_transform_propagation_system, make_world_bound_propagation_system, particle_system,
     spin_system, toggle_player_mode, weather_system,
 };
@@ -502,37 +502,27 @@ impl App {
         // as "Unknown" in the conflict report until migrated). Drive
         // further migrations off the `sys.accesses` console output.
         let mut scheduler = Scheduler::new();
+        // M27 Phase 3 — `fly_camera_system` and `character_controller_system`
+        // are runtime-mutually-exclusive (each early-returns on the
+        // wrong `PlayerMode`), so the scheduler's access analyzer
+        // paired them up and surfaced a Transform + PhysicsWorld
+        // WriteWrite conflict that's structurally impossible at
+        // runtime. `player_controller_system` dispatches to one of
+        // the two inner systems per frame; declared accesses are the
+        // union of both inner systems' accesses.
         scheduler.add_to_with_access(
             Stage::Early,
-            fly_camera_system,
-            Access::new()
-                // M27 — `fly_camera_system` early-returns on
-                // `PlayerMode::Character`, so it reads the resource
-                // every frame. Pre-M27 the declaration omitted this
-                // read; the gate worked at runtime via the RwLock but
-                // the access analyzer reported no conflict against any
-                // hypothetical writer.
-                .reads_resource::<crate::systems::PlayerMode>()
-                .reads_resource::<ActiveCamera>()
-                .reads_resource::<InputState>()
-                .reads::<byroredux_physics::RapierHandles>()
-                .writes::<Transform>()
-                .writes_resource::<byroredux_physics::PhysicsWorld>(),
-        );
-        // M28.5 — kinematic character controller. Runs in Stage::Early
-        // alongside the fly cam; each system gates itself on
-        // `PlayerMode` so only one fires per frame.
-        scheduler.add_to_with_access(
-            Stage::Early,
-            crate::systems::character_controller_system,
+            crate::systems::player_controller_system,
             Access::new()
                 .reads_resource::<crate::systems::PlayerMode>()
                 .reads_resource::<crate::systems::PlayerEntity>()
+                .reads_resource::<ActiveCamera>()
                 .reads_resource::<InputState>()
                 .reads_resource::<byroredux_physics::PhysicsWorld>()
                 .writes_resource::<byroredux_physics::PhysicsWorld>()
                 .reads::<byroredux_physics::CharacterController>()
                 .writes::<byroredux_physics::CharacterController>()
+                .reads::<byroredux_physics::RapierHandles>()
                 .reads::<Transform>()
                 .writes::<Transform>(),
         );
@@ -588,11 +578,16 @@ impl App {
                 .writes::<byroredux_scripting::events::AnimationTextKeyEvents>()
                 .writes::<byroredux_core::animation::AnimationStack>(),
         );
-        scheduler.add_to_with_access(
-            Stage::Update,
-            spin_system,
-            Access::new().reads::<Spinning>().writes::<Transform>(),
-        );
+        // M27 Phase 3 — `spin_system` writes Transform on entities
+        // tagged with `Spinning` (the demo cube). `animation_system`
+        // also writes Transform on its own (disjoint) entity set.
+        // They never touch the same entity, but the analyzer can't see
+        // that — they pair as a WriteWrite Transform conflict. Moving
+        // `spin_system` to exclusive sequences it after the Update
+        // parallel batch and removes the conflict from the report
+        // without changing observable behaviour. Cost: ~µs of lost
+        // parallelism on the demo cube; negligible.
+        scheduler.add_exclusive(Stage::Update, spin_system);
         scheduler.add_to_with_access(
             Stage::PostUpdate,
             make_transform_propagation_system(),
@@ -686,18 +681,18 @@ impl App {
         // phases (one-shot dispatch, listener pose sync, looping
         // emitter lifecycle) flesh it out without touching the
         // schedule wiring.
-        scheduler.add_to_with_access(
-            Stage::Late,
-            byroredux_audio::audio_system,
-            Access::new()
-                .writes_resource::<byroredux_audio::AudioWorld>()
-                .reads::<byroredux_audio::AudioListener>()
-                .reads::<byroredux_core::ecs::GlobalTransform>()
-                .reads::<byroredux_audio::OneShotSound>()
-                .writes::<byroredux_audio::OneShotSound>()
-                .reads::<byroredux_audio::AudioEmitter>()
-                .writes::<byroredux_audio::AudioEmitter>(),
-        );
+        //
+        // M27 Phase 3 — registered as **exclusive** so it sequences
+        // after the Late parallel batch. The ordering comment at
+        // line 650-656 above ("MUST run BEFORE audio_system" /
+        // "Must run BEFORE audio_system") encodes a real
+        // dependency that the parallel batch can't guarantee on its
+        // own; exclusive sequencing makes the dependency structural.
+        // Side effect: removes two analyzer-visible conflicts
+        // (camera_follow ↔ audio on GlobalTransform; reverb_zone ↔
+        // audio on AudioWorld) — exclusive systems aren't paired
+        // against anything in the access report.
+        scheduler.add_exclusive(Stage::Late, byroredux_audio::audio_system);
         scheduler.add_to_with_access(
             Stage::Late,
             log_stats_system,

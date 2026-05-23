@@ -58,6 +58,33 @@ pub enum PlayerMode {
 
 impl Resource for PlayerMode {}
 
+/// M27 Phase 3 — single Stage::Early entry point for player control.
+///
+/// Branches on [`PlayerMode`] and dispatches to either
+/// [`super::fly_camera_system`] or [`character_controller_system`]. The
+/// two bodies are runtime-mutually-exclusive: each early-returns on
+/// the wrong mode, so registering them as separate parallel-stage
+/// systems made the scheduler's access analyzer pair them up and
+/// surface a `Transform` + `PhysicsWorld` `WriteWrite` conflict that
+/// is structurally impossible at runtime. Folding them under one
+/// dispatcher removes the conflict cleanly without changing semantics
+/// — the inner systems keep their identities + unit-testability and
+/// run exactly as before, just through one indirection.
+///
+/// Access (declared at registration in `byroredux/src/main.rs`) is the
+/// union of the two inner systems' accesses. The `PlayerMode` read
+/// here is itself part of that union.
+pub(crate) fn player_controller_system(world: &World, dt: f32) {
+    let mode = world
+        .try_resource::<PlayerMode>()
+        .map(|r| *r)
+        .unwrap_or_default();
+    match mode {
+        PlayerMode::FlyCam => super::fly_camera_system(world, dt),
+        PlayerMode::Character => character_controller_system(world, dt),
+    }
+}
+
 /// Drive the kinematic character body forward one frame.
 ///
 /// Reads:
