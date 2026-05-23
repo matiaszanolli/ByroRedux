@@ -961,7 +961,15 @@ pub(crate) fn merge_bgsm_into_mesh(
                 touched = true;
             }
             if !set_glossiness {
-                mesh.glossiness = bgsm.smoothness;
+                // BGSM authors `smoothness` 0–1 (Bethesda Material Editor
+                // convention); `Material::glossiness` is on the 0–100 NIF
+                // scale (`classify_pbr` divides by 100). Multiply by 100
+                // to normalize — without this, BGSM-driven FO4 materials
+                // that don't keyword-match the metal/wood/glass arms in
+                // `classify_pbr` fell through to the glossiness fallback
+                // with `roughness=0.95`, killing direct specular and the
+                // RT-reflection metalness/roughness gate (Med-Tek floors).
+                mesh.glossiness = bgsm.smoothness * 100.0;
                 set_glossiness = true;
                 touched = true;
             }
@@ -1766,7 +1774,10 @@ mod tests {
                 set_specular = true;
             }
             if !set_glossiness {
-                glossiness = bgsm.smoothness;
+                // Mirror of the production conversion (`bgsm.smoothness * 100.0`)
+                // — 0–1 smoothness on the BGSM side becomes 0–100 glossiness
+                // on the Material side.
+                glossiness = bgsm.smoothness * 100.0;
                 set_glossiness = true;
             }
             if !set_alpha {
@@ -1791,7 +1802,8 @@ mod tests {
         assert_eq!(emissive_mult, 7.0);
         assert_eq!(specular_color, [0.9, 0.8, 0.7]);
         assert_eq!(specular_strength, 3.5);
-        assert_eq!(glossiness, 0.85);
+        // BGSM smoothness 0.85 → 85.0 on the Material 0–100 scale.
+        assert_eq!(glossiness, 85.0);
         assert_eq!(mat_alpha, 0.25);
         assert_eq!(uv_offset, [0.1, 0.2]);
         assert_eq!(uv_scale, [2.0, 3.0]);

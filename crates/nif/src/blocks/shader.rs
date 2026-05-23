@@ -872,8 +872,22 @@ impl BSLightingShaderProperty {
         let alpha = stream.read_f32_le()?;
         let refraction_strength = stream.read_f32_le()?;
 
-        // Glossiness (Skyrim) or Smoothness (FO4+).
-        let glossiness = stream.read_f32_le()?;
+        // Glossiness (Skyrim, 0–100) or Smoothness (FO4+, 0–1). The on-disk
+        // field is the same f32 slot, but the two games author it on
+        // different scales. Normalize FO4+ smoothness to the 0–100
+        // glossiness scale here so every downstream consumer
+        // (`Material::glossiness`, `classify_pbr`'s `1 - glossiness/100`
+        // fallback) sees one convention. Without this, FO4 BSLightingShader
+        // materials whose texture path doesn't keyword-match (e.g.
+        // Med-Tek polished floors) fall through to the glossiness
+        // fallback with `glossiness=0.8 → roughness=0.95`, killing
+        // direct specular and the RT-reflection metalness/roughness gate.
+        let glossiness_raw = stream.read_f32_le()?;
+        let glossiness = if bsver >= crate::version::bsver::FALLOUT4 {
+            glossiness_raw * 100.0
+        } else {
+            glossiness_raw
+        };
 
         let specular_color = [
             stream.read_f32_le()?,

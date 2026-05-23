@@ -806,7 +806,11 @@ fn parse_bs_lighting_fo76_minimal() {
     assert_eq!(prop.shader_type, 0); // FO76 Default
     assert!(prop.sf1_crcs.is_empty());
     assert!(prop.sf2_crcs.is_empty());
-    assert!((prop.glossiness - 0.6).abs() < 1e-6);
+    // FO76 authors smoothness 0–1 on the wire; parser normalizes to
+    // the 0–100 glossiness scale. Wire 0.6 → 60.0 post-normalize.
+    // 1e-4 tolerance because 0.6_f32 * 100.0 = 60.000004 — the float
+    // error in the 0.6 representation amplifies by 100×.
+    assert!((prop.glossiness - 60.0).abs() < 1e-4);
     assert!((prop.grayscale_to_palette_scale - 0.4).abs() < 1e-6);
     assert!((prop.fresnel_power - 4.2).abs() < 1e-6);
     let w = prop
@@ -1119,7 +1123,11 @@ fn parse_bs_lighting_fo4_env_map_with_wetness() {
     let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
     assert_eq!(prop.shader_type, 1);
     assert_eq!(prop.shader_flags_1, 0x80000000); // FO4 flags read correctly
-    assert!((prop.glossiness - 0.5).abs() < 1e-6); // "smoothness" in FO4
+    // FO4 authors this as "smoothness" 0–1; parser normalizes to the
+    // 0–100 glossiness scale so downstream consumers stay in one convention.
+    // Wire byte is 0.5 → post-normalize = 50.0. 1e-4 tolerance because
+    // the conversion amplifies the f32 representation error by 100×.
+    assert!((prop.glossiness - 50.0).abs() < 1e-4);
     assert!((prop.subsurface_rolloff - 0.3).abs() < 1e-6);
     // #1175: rimlight=FLT_MAX is the sentinel that gates Backlight presence.
     assert_eq!(prop.rimlight_power, f32::MAX);
@@ -1605,7 +1613,9 @@ fn parse_bs_lighting_fo76_editor_label_does_not_short_circuit() {
         "stopcond must not fire for non-path Name (pre-#749 it did)",
     );
     // Spot-check that the trailing body actually populated.
-    assert!((prop.glossiness - 0.6).abs() < 1e-6);
+    // Wire smoothness 0.6 → 60.0 after FO4+ normalize (see shader.rs:876).
+    // 1e-4 tolerance because 0.6_f32 * 100.0 = 60.000004.
+    assert!((prop.glossiness - 60.0).abs() < 1e-4);
     assert!((prop.fresnel_power - 4.2).abs() < 1e-6);
     assert!(prop.wetness.is_some());
     assert!(prop.luminance.is_some());
