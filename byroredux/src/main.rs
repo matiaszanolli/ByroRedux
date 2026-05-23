@@ -494,6 +494,22 @@ impl App {
         // Register scripting component storages.
         byroredux_scripting::register(&mut world);
 
+        // M47.0 Phase 2 — build the script registry mapping SCPT
+        // `editor_id` → spawner. Populated here by every demo module
+        // exposing a `register_spawners` entry point; the cell
+        // loader's per-REFR walk (Phase 3) will look up each REFR's
+        // base record's `script_form_id` → SCPT → editor_id against
+        // this registry. Inserted as a resource so it survives the
+        // whole engine lifetime and stays modifiable by downstream
+        // crates that ship additional script translations.
+        let mut script_registry = byroredux_scripting::ScriptRegistry::new();
+        byroredux_scripting::papyrus_demo::register_spawners(&mut script_registry);
+        log::info!(
+            "ScriptRegistry initialised with {} editor_id mappings",
+            script_registry.len()
+        );
+        world.insert_resource(script_registry);
+
         // Build the system schedule — stages run sequentially, systems
         // within each stage run in parallel via rayon. Three systems
         // here demonstrate the R7 declared-access pattern via

@@ -14,6 +14,7 @@ pub mod events;
 pub mod papyrus_demo;
 pub mod quest_stages;
 pub mod recurring_update;
+pub mod registry;
 pub mod timer;
 
 pub use cleanup::event_cleanup_system;
@@ -21,6 +22,7 @@ pub use events::{
     ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, HitEvent, TimerExpired,
 };
 pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, RecurringUpdate};
+pub use registry::{ScriptRegistry, ScriptSpawnFn};
 pub use timer::{timer_tick_system, ScriptTimer};
 
 use byroredux_core::ecs::world::World;
