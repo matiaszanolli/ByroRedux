@@ -822,10 +822,13 @@ impl ConsoleCommand for SysAccessesCommand {
 
         let mut lines = Vec::new();
         lines.push(format!(
-            "Scheduler access report — {} systems, {} undeclared, \
-             {} known conflicts, {} unknown pairs",
+            "Scheduler access report — {} systems, {} undeclared \
+             ({} parallel + {} exclusive), {} known conflicts, \
+             {} unknown pairs",
             report.system_count(),
             report.undeclared_count(),
+            report.undeclared_parallel_count(),
+            report.undeclared_exclusive_count(),
             report.known_conflict_count(),
             report.unknown_pair_count(),
         ));

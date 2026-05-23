@@ -269,6 +269,69 @@ impl Scheduler {
         Ok(self)
     }
 
+    /// Add an exclusive system to `stage` with an explicit access
+    /// declaration (R7).
+    ///
+    /// Mirror of [`add_to_with_access`](Self::add_to_with_access) for the
+    /// exclusive phase. The conflict analyzer at
+    /// [`access_report`](Self::access_report) only walks parallel-stage
+    /// pairs today, so a declared access on an exclusive system doesn't
+    /// surface new conflict rows — but it *does* take the system out of
+    /// the [`AccessReport::undeclared_count`] /
+    /// [`AccessReport::undeclared_exclusive_count`] totals, which is the
+    /// migration KPI the operator drives toward zero via `sys.accesses`.
+    /// Closures and bare `fn(&World, f32)` items have no way to override
+    /// `System::access` themselves; this is their declaration channel.
+    /// See #1236.
+    pub fn add_exclusive_with_access<S: System + 'static>(
+        &mut self,
+        stage: Stage,
+        system: S,
+        access: Access,
+    ) -> &mut Self {
+        let name = system.name().to_string();
+        if self.has_system(&name) {
+            log::warn!(
+                "Scheduler: duplicate exclusive system name '{}' in stage {:?} \
+                 (with declared access — see add_exclusive)",
+                name,
+                stage,
+            );
+        }
+        self.stages
+            .entry(stage)
+            .or_insert_with(StageData::new)
+            .exclusive
+            .push(SystemEntry {
+                system: Box::new(system),
+                declared_override: Some(access),
+            });
+        self
+    }
+
+    /// Strict sibling of [`add_exclusive_with_access`] — rejects duplicate names.
+    /// See #312 / #1236.
+    pub fn try_add_exclusive_with_access<S: System + 'static>(
+        &mut self,
+        stage: Stage,
+        system: S,
+        access: Access,
+    ) -> Result<&mut Self, String> {
+        let name = system.name().to_string();
+        if self.has_system(&name) {
+            return Err(name);
+        }
+        self.stages
+            .entry(stage)
+            .or_insert_with(StageData::new)
+            .exclusive
+            .push(SystemEntry {
+                system: Box::new(system),
+                declared_override: Some(access),
+            });
+        Ok(self)
+    }
+
     /// Run all systems: stages in order, parallel within each stage.
     ///
     /// # Re-entry
@@ -448,12 +511,43 @@ impl AccessReport {
     }
 
     /// How many systems still have `declared = None`. Drives the "X
-    /// systems undeclared" line in the console command.
+    /// systems undeclared" line in the console command. Counts both
+    /// parallel and exclusive phases; see [`undeclared_parallel_count`]
+    /// and [`undeclared_exclusive_count`] for the per-phase split (#1237).
+    ///
+    /// [`undeclared_parallel_count`]: Self::undeclared_parallel_count
+    /// [`undeclared_exclusive_count`]: Self::undeclared_exclusive_count
     pub fn undeclared_count(&self) -> usize {
         self.stages
             .iter()
             .flat_map(|s| s.systems.iter())
             .filter(|row| row.declared.is_none())
+            .count()
+    }
+
+    /// Subset of [`undeclared_count`](Self::undeclared_count) restricted
+    /// to parallel-stage systems. This is the population the conflict
+    /// analyzer can actually reason about — driving this to zero closes
+    /// out every `Unknown` row in the conflict report. See #1237.
+    pub fn undeclared_parallel_count(&self) -> usize {
+        self.stages
+            .iter()
+            .flat_map(|s| s.systems.iter())
+            .filter(|row| !row.is_exclusive && row.declared.is_none())
+            .count()
+    }
+
+    /// Subset of [`undeclared_count`](Self::undeclared_count) restricted
+    /// to exclusive-stage systems. Driving this to zero is purely a
+    /// documentation / introspection win — exclusive systems run serially
+    /// and the conflict analyzer skips them today — but it gates any
+    /// future cross-stage analysis that would want a full picture. See
+    /// #1236 + #1237.
+    pub fn undeclared_exclusive_count(&self) -> usize {
+        self.stages
+            .iter()
+            .flat_map(|s| s.systems.iter())
+            .filter(|row| row.is_exclusive && row.declared.is_none())
             .count()
     }
 
@@ -939,5 +1033,119 @@ mod tests {
         assert!(stage.systems.iter().any(|r| r.is_exclusive));
         // Only one parallel system → no pairs to analyze.
         assert!(stage.conflicts.is_empty());
+    }
+
+    // ── #1236: add_exclusive_with_access lets closures/fns declare ──────
+
+    /// #1236 — `add_exclusive_with_access` attaches a `declared_override`
+    /// on the exclusive vector so closure / bare-fn exclusives can carry
+    /// access metadata that the blanket Fn impl can't surface via
+    /// `System::access`. Verifies the report row shows `declared = Some(_)`
+    /// and that `undeclared_count` decrements accordingly.
+    #[test]
+    fn add_exclusive_with_access_attaches_declaration() {
+        let mut scheduler = Scheduler::new();
+        // Plain `add_exclusive` — declared stays None.
+        scheduler.add_exclusive(Stage::Late, |_w: &World, _dt: f32| {});
+        // _with_access variant — declared lands on the row.
+        scheduler.add_exclusive_with_access(
+            Stage::Late,
+            |_w: &World, _dt: f32| {},
+            Access::new().writes::<Position>(),
+        );
+
+        let report = scheduler.access_report();
+        assert_eq!(report.system_count(), 2);
+        assert_eq!(
+            report.undeclared_count(),
+            1,
+            "the plain add_exclusive stays undeclared; the _with_access one declares"
+        );
+
+        let stage = &report.stages[0];
+        let declared_rows: Vec<_> = stage
+            .systems
+            .iter()
+            .filter(|r| r.declared.is_some())
+            .collect();
+        assert_eq!(declared_rows.len(), 1);
+        assert!(declared_rows[0].is_exclusive);
+        let declared = declared_rows[0].declared.as_ref().unwrap();
+        assert_eq!(declared.components_write.len(), 1);
+        assert!(declared.components_write[0]
+            .type_name
+            .ends_with("Position"));
+    }
+
+    /// #1236 — `try_add_exclusive_with_access` rejects duplicates by
+    /// name, mirroring `try_add_to_with_access` on the parallel side
+    /// and `try_add_exclusive` on the lax-exclusive side.
+    #[test]
+    fn try_add_exclusive_with_access_rejects_duplicate() {
+        let mut scheduler = Scheduler::new();
+        scheduler
+            .try_add_exclusive_with_access(
+                Stage::Late,
+                DamagePosition,
+                Access::new().writes::<Position>(),
+            )
+            .ok();
+        let result = scheduler.try_add_exclusive_with_access(
+            Stage::Late,
+            DamagePosition,
+            Access::new().writes::<Position>(),
+        );
+        match result {
+            Err(name) => assert_eq!(name, "DamagePosition"),
+            Ok(_) => panic!("duplicate exclusive _with_access should be rejected"),
+        }
+        assert_eq!(scheduler.system_names().len(), 1);
+    }
+
+    // ── #1237: per-phase undeclared split ───────────────────────────────
+
+    /// #1237 — `undeclared_parallel_count` + `undeclared_exclusive_count`
+    /// partition the union `undeclared_count` by phase so the operator
+    /// can tell apart "parallel-stage systems not yet migrated" from
+    /// "exclusive-stage systems not yet declared." Drives the `sys.accesses`
+    /// console breakdown.
+    #[test]
+    fn undeclared_count_splits_into_parallel_and_exclusive() {
+        let mut scheduler = Scheduler::new();
+        // Two parallel — one declared, one not.
+        scheduler.add_to(Stage::Update, |_w: &World, _dt: f32| {});
+        scheduler.add_to_with_access(
+            Stage::Update,
+            DamagePosition,
+            Access::new().writes::<Position>(),
+        );
+        // Three exclusive — two undeclared (lax-add) + one declared.
+        scheduler.add_exclusive(Stage::Late, |_w: &World, _dt: f32| {});
+        scheduler.add_exclusive(Stage::Late, |_w: &World, _dt: f32| {});
+        scheduler.add_exclusive_with_access(
+            Stage::Late,
+            |_w: &World, _dt: f32| {},
+            Access::new().reads::<Position>(),
+        );
+
+        let report = scheduler.access_report();
+        assert_eq!(report.system_count(), 5);
+        // Union: 1 parallel undeclared + 2 exclusive undeclared = 3.
+        assert_eq!(report.undeclared_count(), 3);
+        assert_eq!(
+            report.undeclared_parallel_count(),
+            1,
+            "only the lax parallel closure stays undeclared"
+        );
+        assert_eq!(
+            report.undeclared_exclusive_count(),
+            2,
+            "the two lax exclusive closures stay undeclared"
+        );
+        // Round-trip invariant: the split always sums to the union.
+        assert_eq!(
+            report.undeclared_parallel_count() + report.undeclared_exclusive_count(),
+            report.undeclared_count(),
+        );
     }
 }
