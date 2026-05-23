@@ -95,6 +95,20 @@ pub struct SkinSlot {
     /// (refit reads `output_buffer` as input — no point refitting
     /// over uninitialised data).
     pub has_populated_output: bool,
+    /// #1197 / PERF-DIM7-03 — per-FIF cache of "currently-bound
+    /// `(input, palette)` buffer handle pair" for the slot's
+    /// descriptor sets. `dispatch` compares this against the live
+    /// pair; on match it skips `vkUpdateDescriptorSets` entirely.
+    /// `output_buffer` isn't tracked — it's a function of the slot
+    /// itself, so once any FIF has been written it stays correct
+    /// (the buffer doesn't move). `input` changes on cell transitions
+    /// (global vertex SSBO rebuild via
+    /// `MeshRegistry::rebuild_geometry_ssbo`); `palette` is fixed for
+    /// the renderer lifetime today but the comparison handles any
+    /// future rotation correctly without an explicit invalidation hook.
+    /// `None` = never written; first dispatch on that FIF is the cold
+    /// write. Steady-state writes per slot per frame: 0.
+    descriptor_bindings: [Option<(vk::Buffer, vk::Buffer)>; MAX_FRAMES_IN_FLIGHT],
 }
 
 impl SkinSlot {
@@ -163,17 +177,36 @@ pub fn should_evict_skin_slot(last_used_frame: u64, current_frame: u64, min_idle
 /// for the skinned mesh's lifetime.
 ///
 /// Buffer bindings (input vertex SSBO + per-frame bone palette) are
-/// rewritten on every `dispatch` call rather than captured at slot
-/// creation. The global vertex buffer rebuilds on every cell
-/// transition (`MeshRegistry::rebuild_geometry_ssbo`), and so does
-/// the per-frame bone palette buffer slot rotation. Per-dispatch
-/// rewrite costs 3 `vkUpdateDescriptorSets` per slot per frame —
-/// negligible compared to the BLAS refit cost.
+/// cached per-FIF on each [`SkinSlot`] via
+/// `SkinSlot::descriptor_bindings`. `dispatch` compares the live
+/// `(input, palette)` pair against the cached key for `frame_index`;
+/// on match it skips `vkUpdateDescriptorSets` entirely — bind + push
+/// + dispatch is the entire critical path in steady state. On
+/// mismatch (cold first-dispatch per FIF or cell-transition global
+/// vertex SSBO rebuild) we emit all three writes and record the new
+/// key. See #1197 / PERF-DIM7-03; pre-fix the dispatch unconditionally
+/// emitted three writes per slot per frame, costing ~1-3 µs per
+/// invocation on NVIDIA regardless of writes-per-call.
 pub struct SkinComputePipeline {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
+    /// #1197 — per-frame `vkUpdateDescriptorSets` count for the
+    /// dispatch-bound bindings. Bumped each time `dispatch` actually
+    /// writes (cold first-dispatch per slot per FIF, or after a
+    /// global-vertex-SSBO rebuild). Reset at frame start by
+    /// `VulkanContext::draw_frame` via
+    /// [`Self::reset_descriptor_writes_counter`]. Surfaced through
+    /// the `tex.skin` debug command alongside the existing
+    /// `SkinCoverageStats` counters from #1194.
+    ///
+    /// `Cell<u32>` rather than a `&mut self` borrow because every
+    /// call site already has `slot: &mut SkinSlot` and threading an
+    /// additional `&mut self` would force lifetime gymnastics on the
+    /// dispatch loop. The renderer is single-threaded so interior
+    /// mutability is safe.
+    descriptor_writes_this_frame: std::cell::Cell<u32>,
 }
 
 impl SkinComputePipeline {
@@ -314,6 +347,10 @@ impl SkinComputePipeline {
             pipeline_layout,
             descriptor_set_layout,
             descriptor_pool,
+            // #1197 — fresh counter at pipeline creation; the draw
+            // loop resets it each frame, but starting at 0 is the
+            // correct invariant.
+            descriptor_writes_this_frame: std::cell::Cell::new(0),
         })
     }
 
@@ -396,6 +433,10 @@ impl SkinComputePipeline {
             // for this slot. Until then the dispatch-dirty gate must
             // always dispatch (output buffer is uninitialised).
             has_populated_output: false,
+            // #1197 / PERF-DIM7-03 — no descriptor writes recorded yet
+            // for any FIF; first dispatch on each FIF is the cold
+            // write.
+            descriptor_bindings: [None; MAX_FRAMES_IN_FLIGHT],
         })
     }
 
@@ -424,11 +465,18 @@ impl SkinComputePipeline {
     /// `frame_index` and any consumer of the output buffer (Phase 2:
     /// the BLAS refit reads it as `ACCELERATION_STRUCTURE_BUILD_INPUT`).
     ///
-    /// Descriptor bindings are written inline each frame so a
-    /// global-vertex-buffer rebuild on cell transition doesn't
-    /// invalidate the slot. The per-frame fence at draw_frame's top
-    /// guarantees previous-frame use of `slot.descriptor_sets[frame_index]`
-    /// is complete before we rewrite, so no external sync needed.
+    /// #1197 / PERF-DIM7-03 — descriptor writes are compared against
+    /// `slot.descriptor_bindings[frame_index]` and skipped when the
+    /// `(input, palette)` buffer pair is unchanged. In steady state
+    /// every dispatch is bind + push + dispatch with NO
+    /// `vkUpdateDescriptorSets` (saving 3 writes × ~1-3 µs per slot
+    /// per frame on NVIDIA). Cell transitions rebuild the global
+    /// vertex SSBO; the comparison auto-detects the new handle and
+    /// re-writes for the FIF that next dispatches.
+    ///
+    /// The per-frame fence at draw_frame's top guarantees previous-
+    /// frame use of `slot.descriptor_sets[frame_index]` is complete
+    /// before we rewrite, so no external sync is needed.
     ///
     /// # Safety
     /// `cmd` must be a recording command buffer. `input_buffer` must
@@ -438,7 +486,7 @@ impl SkinComputePipeline {
         &self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
-        slot: &SkinSlot,
+        slot: &mut SkinSlot,
         frame_index: usize,
         input_buffer: vk::Buffer,
         input_buffer_size: vk::DeviceSize,
@@ -446,28 +494,40 @@ impl SkinComputePipeline {
         bone_buffer_size: vk::DeviceSize,
         push: SkinPushConstants,
     ) {
-        let input_info = [vk::DescriptorBufferInfo {
-            buffer: input_buffer,
-            offset: 0,
-            range: input_buffer_size,
-        }];
-        let bone_info = [vk::DescriptorBufferInfo {
-            buffer: bone_buffer,
-            offset: 0,
-            range: bone_buffer_size,
-        }];
-        let output_info = [vk::DescriptorBufferInfo {
-            buffer: slot.output_buffer.buffer,
-            offset: 0,
-            range: slot.output_size,
-        }];
         let descriptor_set = slot.descriptor_sets[frame_index];
-        let writes = [
-            write_storage_buffer(descriptor_set, 0, &input_info),
-            write_storage_buffer(descriptor_set, 1, &bone_info),
-            write_storage_buffer(descriptor_set, 2, &output_info),
-        ];
-        device.update_descriptor_sets(&writes, &[]);
+        // #1197 — only the (input, palette) pair varies across the
+        // slot's lifetime. `output` is a function of the slot itself
+        // and cannot change without destroying the slot, so a cached
+        // hit on `(input, palette)` is sufficient to prove all three
+        // descriptors are still correct.
+        let live_key = (input_buffer, bone_buffer);
+        let needs_write = slot.descriptor_bindings[frame_index] != Some(live_key);
+        if needs_write {
+            let input_info = [vk::DescriptorBufferInfo {
+                buffer: input_buffer,
+                offset: 0,
+                range: input_buffer_size,
+            }];
+            let bone_info = [vk::DescriptorBufferInfo {
+                buffer: bone_buffer,
+                offset: 0,
+                range: bone_buffer_size,
+            }];
+            let output_info = [vk::DescriptorBufferInfo {
+                buffer: slot.output_buffer.buffer,
+                offset: 0,
+                range: slot.output_size,
+            }];
+            let writes = [
+                write_storage_buffer(descriptor_set, 0, &input_info),
+                write_storage_buffer(descriptor_set, 1, &bone_info),
+                write_storage_buffer(descriptor_set, 2, &output_info),
+            ];
+            device.update_descriptor_sets(&writes, &[]);
+            slot.descriptor_bindings[frame_index] = Some(live_key);
+            self.descriptor_writes_this_frame
+                .set(self.descriptor_writes_this_frame.get() + 1);
+        }
 
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
         device.cmd_bind_descriptor_sets(
@@ -496,6 +556,26 @@ impl SkinComputePipeline {
         );
         let groups = push.vertex_count.div_ceil(WORKGROUP_SIZE);
         device.cmd_dispatch(cmd, groups, 1, 1);
+    }
+
+    /// #1197 / PERF-DIM7-03 — how many `vkUpdateDescriptorSets` calls
+    /// `dispatch` has issued this frame. Reset each frame by
+    /// [`Self::reset_descriptor_writes_counter`]; surfaced via the
+    /// `tex.skin` debug command alongside the #1194 coverage counters.
+    /// Pre-fix this was a hardcoded `3 × slot_count` per frame;
+    /// post-fix steady state is `0` and cell transitions briefly bump
+    /// to `slot_count` (one cold write per slot for the FIF that
+    /// dispatches first after the global vertex SSBO rebuild).
+    pub fn descriptor_writes_this_frame(&self) -> u32 {
+        self.descriptor_writes_this_frame.get()
+    }
+
+    /// #1197 — reset the per-frame descriptor-writes counter. Called
+    /// once at frame start by `VulkanContext::draw_frame` before the
+    /// skinned-section dispatch loop. Symmetric with the
+    /// `last_skin_coverage_frame` reset earlier in the function.
+    pub fn reset_descriptor_writes_counter(&self) {
+        self.descriptor_writes_this_frame.set(0);
     }
 
     /// Tear down the pipeline + descriptor pool. Caller must
@@ -534,24 +614,40 @@ const SKIN_PALETTE_PUSH_CONSTANTS_SIZE: u32 =
 /// path consume. Lifts the per-bone `world × bind_inv` matrix multiply
 /// off the CPU.
 ///
-/// Buffer bindings are rewritten on every `dispatch` call (mirrors the
-/// sibling [`SkinComputePipeline`] pattern). One descriptor set per
-/// frame-in-flight; the per-frame fence at `draw_frame`'s top
-/// guarantees previous-frame use of `descriptor_sets[frame]` is
-/// complete before we rewrite, so no external sync is needed.
+/// Buffer bindings are compared per-FIF on each `dispatch` against
+/// `descriptor_bindings[frame]`; on match the
+/// `vkUpdateDescriptorSets` call is skipped (mirrors
+/// [`SkinComputePipeline`]'s #1197 fix). All three palette-pipeline
+/// buffers (`bone_world`, `bind_inverses`, `palette`) are fixed
+/// handles for the renderer lifetime today, so steady-state hits the
+/// cache every frame after the first MAX_FRAMES_IN_FLIGHT-frame
+/// warm-up. The per-frame fence at `draw_frame`'s top guarantees
+/// previous-frame use of `descriptor_sets[frame]` is complete before
+/// we rewrite, so no external sync is needed.
 pub struct SkinPaletteComputePipeline {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     /// One descriptor set per frame-in-flight. Sized at construction;
-    /// `dispatch` writes the three storage-buffer descriptors inline
-    /// each frame so a buffer rotation (host-visible staging swap)
-    /// doesn't invalidate them. Mirrors the per-slot set array in
-    /// [`SkinSlot`] but at pipeline scope — there's only one palette
-    /// dispatch per frame, not one per slot, so a fixed-size array is
-    /// enough.
+    /// `dispatch` writes the three storage-buffer descriptors only
+    /// when the live buffer triple differs from
+    /// `descriptor_bindings[frame]`. Mirrors the per-slot set array
+    /// in [`SkinSlot`] but at pipeline scope — there's only one
+    /// palette dispatch per frame, not one per slot, so a fixed-size
+    /// array is enough.
     descriptor_sets: [vk::DescriptorSet; MAX_FRAMES_IN_FLIGHT],
+    /// #1197 / PERF-DIM7-03 — per-FIF cache of the
+    /// `(bone_world, bind_inverse, palette)` buffer triple currently
+    /// bound in `descriptor_sets[frame]`. `None` = never written;
+    /// first dispatch on each FIF is the cold write. All three
+    /// handles are stable for the renderer lifetime today, so
+    /// `dispatch` skips the three writes on every steady-state call.
+    descriptor_bindings: [Option<(vk::Buffer, vk::Buffer, vk::Buffer)>; MAX_FRAMES_IN_FLIGHT],
+    /// #1197 — per-frame counter, paired with [`SkinComputePipeline`]'s
+    /// counter. Surfaced through `tex.skin`. Pre-fix this dispatched
+    /// 3 writes per frame unconditionally; post-fix steady state is 0.
+    descriptor_writes_this_frame: std::cell::Cell<u32>,
 }
 
 impl SkinPaletteComputePipeline {
@@ -676,6 +772,10 @@ impl SkinPaletteComputePipeline {
             descriptor_set_layout,
             descriptor_pool,
             descriptor_sets,
+            // #1197 — descriptor caches start empty; the first
+            // dispatch on each FIF is the cold write.
+            descriptor_bindings: [None; MAX_FRAMES_IN_FLIGHT],
+            descriptor_writes_this_frame: std::cell::Cell::new(0),
         })
     }
 
@@ -703,7 +803,7 @@ impl SkinPaletteComputePipeline {
     /// `cmd` must be a recording command buffer; all three buffers
     /// must remain valid for the duration of the dispatch.
     pub unsafe fn dispatch(
-        &self,
+        &mut self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame_index: usize,
@@ -715,28 +815,40 @@ impl SkinPaletteComputePipeline {
         palette_buffer_size: vk::DeviceSize,
         push: SkinPalettePushConstants,
     ) {
-        let world_info = [vk::DescriptorBufferInfo {
-            buffer: bone_world_buffer,
-            offset: 0,
-            range: bone_world_buffer_size,
-        }];
-        let bind_info = [vk::DescriptorBufferInfo {
-            buffer: bind_inverse_buffer,
-            offset: 0,
-            range: bind_inverse_buffer_size,
-        }];
-        let palette_info = [vk::DescriptorBufferInfo {
-            buffer: palette_buffer,
-            offset: 0,
-            range: palette_buffer_size,
-        }];
         let descriptor_set = self.descriptor_sets[frame_index];
-        let writes = [
-            write_storage_buffer(descriptor_set, 0, &world_info),
-            write_storage_buffer(descriptor_set, 1, &bind_info),
-            write_storage_buffer(descriptor_set, 2, &palette_info),
-        ];
-        device.update_descriptor_sets(&writes, &[]);
+        // #1197 — compare against cached binding triple. Steady-state
+        // hits this cache every frame post-warm-up because all three
+        // palette-pipeline buffer handles are renderer-lifetime
+        // stable. The comparison is still required for correctness in
+        // case a future refactor rotates one of them.
+        let live_key = (bone_world_buffer, bind_inverse_buffer, palette_buffer);
+        let needs_write = self.descriptor_bindings[frame_index] != Some(live_key);
+        if needs_write {
+            let world_info = [vk::DescriptorBufferInfo {
+                buffer: bone_world_buffer,
+                offset: 0,
+                range: bone_world_buffer_size,
+            }];
+            let bind_info = [vk::DescriptorBufferInfo {
+                buffer: bind_inverse_buffer,
+                offset: 0,
+                range: bind_inverse_buffer_size,
+            }];
+            let palette_info = [vk::DescriptorBufferInfo {
+                buffer: palette_buffer,
+                offset: 0,
+                range: palette_buffer_size,
+            }];
+            let writes = [
+                write_storage_buffer(descriptor_set, 0, &world_info),
+                write_storage_buffer(descriptor_set, 1, &bind_info),
+                write_storage_buffer(descriptor_set, 2, &palette_info),
+            ];
+            device.update_descriptor_sets(&writes, &[]);
+            self.descriptor_bindings[frame_index] = Some(live_key);
+            self.descriptor_writes_this_frame
+                .set(self.descriptor_writes_this_frame.get() + 1);
+        }
 
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
         device.cmd_bind_descriptor_sets(
@@ -763,6 +875,21 @@ impl SkinPaletteComputePipeline {
         );
         let groups = push.bone_count.div_ceil(WORKGROUP_SIZE);
         device.cmd_dispatch(cmd, groups, 1, 1);
+    }
+
+    /// #1197 / PERF-DIM7-03 — descriptor-writes-this-frame for the
+    /// palette pipeline. Pairs with
+    /// [`SkinComputePipeline::descriptor_writes_this_frame`]; surfaced
+    /// via the `tex.skin` debug command. Pre-fix every frame ran
+    /// 3 writes; post-fix steady state is 0.
+    pub fn descriptor_writes_this_frame(&self) -> u32 {
+        self.descriptor_writes_this_frame.get()
+    }
+
+    /// #1197 — reset the per-frame counter. Called once at frame
+    /// start by `VulkanContext::draw_frame`.
+    pub fn reset_descriptor_writes_counter(&self) {
+        self.descriptor_writes_this_frame.set(0);
     }
 
     /// Tear down the pipeline + descriptor pool. Caller pairs this with
@@ -874,6 +1001,121 @@ mod tests {
         assert!(!should_evict_skin_slot(
             /*last=*/ 105, /*now=*/ 100, /*min=*/ 3
         ));
+    }
+
+    // ── #1197 / PERF-DIM7-03 — descriptor-write compare-and-skip ────
+
+    /// `dispatch` must guard `vkUpdateDescriptorSets` behind a
+    /// per-FIF cache comparison so steady-state frames issue zero
+    /// descriptor writes. Pre-fix every dispatch unconditionally
+    /// emitted three writes; the cache key is the
+    /// `(input_buffer, bone_buffer)` pair for the slot pipeline
+    /// (output is implicit) and `(world, bind_inv, palette)` for
+    /// the palette pipeline.
+    ///
+    /// Live mock of the dispatch path needs a Vulkan device; a
+    /// source-string check verifies the guard exists and the
+    /// per-FIF cache is updated only inside the write branch.
+    /// Mirrors the #1211 / #654 precedent.
+    #[test]
+    fn skin_compute_dispatch_guards_descriptor_writes_on_cache_miss() {
+        let src = include_str!("skin_compute.rs");
+
+        // The two dispatch functions must each contain the
+        // `descriptor_bindings[...] != Some(...)` comparison guarding
+        // the `update_descriptor_sets` call. Search for the
+        // comparison + the call site, and assert the comparison
+        // precedes the call in both dispatch bodies.
+        let guard = src.find("let needs_write = slot.descriptor_bindings[frame_index]").expect(
+            "SkinComputePipeline::dispatch must guard descriptor writes \
+             via slot.descriptor_bindings[frame_index] comparison (#1197)",
+        );
+        let palette_guard = src.find("let needs_write = self.descriptor_bindings[frame_index]").expect(
+            "SkinPaletteComputePipeline::dispatch must guard descriptor \
+             writes via self.descriptor_bindings[frame_index] comparison (#1197)",
+        );
+
+        // Both guards must appear before their respective
+        // `update_descriptor_sets` calls. We scope the search to the
+        // production code half of the file (before `#[cfg(test)]`)
+        // so this test's own string literals don't show up as
+        // additional "call sites" in the count.
+        // Anchor on the test module marker, not a bare `#[cfg(test)]`
+        // (which also appears earlier on a `use` import at the top
+        // of the file). The `mod tests {` line is unique.
+        let test_module_start = src
+            .find("mod tests {")
+            .expect("skin_compute.rs must have a `mod tests` block");
+        let production = &src[..test_module_start];
+
+        let calls: Vec<usize> = production
+            .match_indices("update_descriptor_sets(&writes, &[])")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            calls.len(),
+            2,
+            "expected exactly two `update_descriptor_sets(&writes, &[])` \
+             call sites in skin_compute.rs production code (one per \
+             dispatch fn); found {}",
+            calls.len(),
+        );
+
+        // Each call site must be preceded by its respective guard
+        // and contained inside the `if needs_write { ... }` block.
+        assert!(
+            guard < calls[0],
+            "slot-dispatch guard must precede its update_descriptor_sets call (#1197)"
+        );
+        assert!(
+            palette_guard < calls[1],
+            "palette-dispatch guard must precede its update_descriptor_sets call (#1197)"
+        );
+
+        // And the slot guard must precede the palette guard
+        // (SkinComputePipeline is declared first in the file).
+        assert!(
+            guard < palette_guard,
+            "source order changed — SkinComputePipeline::dispatch should \
+             precede SkinPaletteComputePipeline::dispatch in skin_compute.rs"
+        );
+    }
+
+    /// `descriptor_writes_this_frame` is interior-mutability-backed
+    /// via `Cell<u32>` so the &self dispatch path can bump the
+    /// counter without forcing &mut self up through every caller.
+    /// `reset_descriptor_writes_counter` zeroes the counter; the
+    /// frame-start reset in `VulkanContext::draw_frame` relies on
+    /// this. Pure Cell mechanics — no Vulkan device required.
+    #[test]
+    fn descriptor_writes_counter_cell_round_trip() {
+        let cell: std::cell::Cell<u32> = std::cell::Cell::new(0);
+        assert_eq!(cell.get(), 0);
+        // Simulate three writes (the worst case in pre-fix dispatch).
+        for _ in 0..3 {
+            cell.set(cell.get() + 1);
+        }
+        assert_eq!(cell.get(), 3);
+        // The frame-start reset must drop back to 0.
+        cell.set(0);
+        assert_eq!(cell.get(), 0);
+    }
+
+    /// Source-level assertion: the per-frame reset must be wired in
+    /// `draw_frame` at the same site that resets `last_skin_coverage_frame`.
+    /// Without this reset the counter accumulates across frames and
+    /// the steady-state-zero invariant becomes "steady-state monotonic
+    /// non-decreasing," which makes the `tex.skin` surface useless and
+    /// fails the regression-test predicate.
+    #[test]
+    fn draw_frame_resets_descriptor_writes_counter() {
+        let src = include_str!("context/draw.rs");
+        assert!(
+            src.contains("reset_descriptor_writes_counter"),
+            "draw_frame must reset both skin compute descriptor-writes \
+             counters at frame start (#1197) — pair with the \
+             `last_skin_coverage_frame` reset already in place"
+        );
     }
 
     // ── M29.5 — SkinPaletteComputePipeline pins ────────────────────

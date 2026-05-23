@@ -202,6 +202,16 @@ impl VulkanContext {
         // coverage_stats` snapshots it after `Scheduler::run`.
         self.last_skin_coverage_frame =
             super::super::skin_compute::SkinCoverageFrame::default();
+        // #1197 / PERF-DIM7-03 — reset per-frame descriptor-writes
+        // counters on both skin compute pipelines. The dispatch
+        // bodies bump these only when they actually call
+        // `vkUpdateDescriptorSets`; steady state stays at 0.
+        if let Some(ref p) = self.skin_compute {
+            p.reset_descriptor_writes_counter();
+        }
+        if let Some(ref p) = self.skin_palette {
+            p.reset_descriptor_writes_counter();
+        }
 
         // Wait for this frame-in-flight slot AND the previous slot to be
         // available. SVGF's temporal pass reads the previous slot's G-buffer
@@ -658,7 +668,7 @@ impl VulkanContext {
         // COMPUTE_SHADER_WRITE → (COMPUTE_SHADER_READ | VERTEX_SHADER_READ)
         // barrier on the palette buffer after the dispatch so both
         // downstream consumers see well-defined data.
-        if let Some(ref skin_palette) = self.skin_palette {
+        if let Some(ref mut skin_palette) = self.skin_palette {
             let bone_byte_size = self.scene_buffers.bone_input_upload_bytes(frame);
             // Each palette slot is one mat4 = 64 B. Skip the dispatch
             // entirely when there are no skinned bones this frame —
