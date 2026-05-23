@@ -494,7 +494,23 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 index.enchantments.insert(fid, parse_ench(fid, subs));
             })?,
             b"MGEF" => extract_records(&mut reader, end, b"MGEF", &mut |fid, subs| {
-                index.magic_effects.insert(fid, parse_mgef(fid, subs));
+                let rec = parse_mgef(fid, subs);
+                // #969 / OBL-D3-NEW-05 — Oblivion's SPEL/ENCH/ALCH/INGR
+                // EFID values are the 4-char effect code (raw bytes),
+                // NOT a u32 FormID like every other Bethesda game. Build
+                // a code→FormID side index so the (pending) magic-system
+                // runtime can resolve EFID lookups on Oblivion content.
+                // Gated on the game variant so an FNV/Skyrim MGEF that
+                // happens to have a 4-char EDID prefix can't shadow an
+                // Oblivion entry on a multi-game session. `read_zstring`
+                // already strips the trailing null, so a real Oblivion
+                // code lands here as `editor_id.len() == 4`.
+                if game == GameKind::Oblivion {
+                    if let Ok(code) = <[u8; 4]>::try_from(rec.editor_id.as_bytes()) {
+                        index.magic_effects_by_code.insert(code, fid);
+                    }
+                }
+                index.magic_effects.insert(fid, rec);
             })?,
             // AVIF actor-value records (#519). Pre-fix every NPC
             // skill-bonus, BOOK skill-book teach ref, and AVIF-keyed

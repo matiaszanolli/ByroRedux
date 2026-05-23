@@ -123,6 +123,18 @@ pub struct EsmIndex {
     pub enchantments: HashMap<u32, EnchRecord>,
     /// `MGEF` magic effects — universal bridge for Actor Value mods.
     pub magic_effects: HashMap<u32, MgefRecord>,
+    /// Oblivion-only secondary index: 4-char effect code → MGEF FormID.
+    /// On Oblivion, SPEL/ENCH/ALCH/INGR cross-reference effects via
+    /// `EFID` whose raw bytes ARE the 4-char effect code (e.g., `b"FIDG"`
+    /// for Feather, `b"DGFA"` for Damage Fatigue), NOT a u32 FormID.
+    /// A FormID-keyed lookup on Oblivion EFID values resolves to
+    /// garbage; this secondary map lets a consumer
+    /// `magic_effects_by_code[code]` → MGEF FormID → `magic_effects[fid]`.
+    /// Populated only when `game == GameKind::Oblivion` and the EDID
+    /// is exactly 4 ASCII bytes (the fixed-format Oblivion shape).
+    /// FO3/FNV/Skyrim+ leave this map empty and use the FormID-keyed
+    /// `magic_effects` map directly. See #969 / OBL-D3-NEW-05.
+    pub magic_effects_by_code: HashMap<[u8; 4], u32>,
     /// `AVIF` actor-value definitions — SPECIAL attributes, governed
     /// skills, resistances, resources. Cross-referenced by NPC
     /// `skill_bonuses`, BOOK skill-book teach forms, perk entry-point
@@ -387,6 +399,9 @@ impl EsmIndex {
             ("spells", |s| s.spells.len()),
             ("enchantments", |s| s.enchantments.len()),
             ("magic_effects", |s| s.magic_effects.len()),
+            // #969 / OBL-D3-NEW-05 — Oblivion-only 4-char-code → MGEF
+            // FormID secondary map. Empty on non-Oblivion games.
+            ("magic_effects_by_code", |s| s.magic_effects_by_code.len()),
             ("actor_values", |s| s.actor_values.len()),
             ("activators", |s| s.activators.len()),
             ("terminals", |s| s.terminals.len()),
@@ -547,6 +562,11 @@ impl EsmIndex {
         self.spells.extend(other.spells);
         self.enchantments.extend(other.enchantments);
         self.magic_effects.extend(other.magic_effects);
+        // #969 / OBL-D3-NEW-05 — Oblivion DLC may redefine an MGEF;
+        // last-write-wins matches `magic_effects` itself. The map is
+        // empty on non-Oblivion plugins so extending is a no-op there.
+        self.magic_effects_by_code
+            .extend(other.magic_effects_by_code);
         self.actor_values.extend(other.actor_values);
         self.activators.extend(other.activators);
         self.terminals.extend(other.terminals);

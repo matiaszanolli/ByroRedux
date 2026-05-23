@@ -835,8 +835,11 @@ fn categories_table_row_count_pinned() {
     // Bumped 88 → 93 in #966 (OBL-D3-NEW-02: BSGN, CLOT, APPA,
     //   SGST, SLGM — Oblivion-unique base records that previously
     //   fell through the catch-all skip).
+    // Bumped 93 → 94 in #969 (OBL-D3-NEW-05: magic_effects_by_code —
+    //   Oblivion-only 4-char-code → MGEF FormID secondary index for
+    //   SPEL/ENCH/ALCH/INGR EFID resolution).
     // Bump in lockstep with the struct + `categories()` edits.
-    assert_eq!(EsmIndex::categories().len(), 93);
+    assert_eq!(EsmIndex::categories().len(), 94);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring
@@ -949,4 +952,201 @@ fn build_localized_tes4() -> Vec<u8> {
     buf.extend_from_slice(&[0u8; 8]); // padding
     buf.extend_from_slice(&hedr);
     buf
+}
+
+// ── #969 / OBL-D3-NEW-05 — Oblivion `magic_effects_by_code` map ─────
+//
+// Oblivion uses a 20-byte record / group header. The `EsmVariant`
+// detector triggers Oblivion mode when bytes 20..24 of the file are
+// `b"HEDR"`. The Tes5Plus helpers above all use 24-byte headers so we
+// add Oblivion-shaped builders here, scoped to this regression.
+
+/// Build an Oblivion-format record (20-byte header).
+fn build_record_obl(typ: &[u8; 4], form_id: u32, subs: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+    let mut sub_data = Vec::new();
+    for (st, data) in subs {
+        sub_data.extend_from_slice(*st);
+        sub_data.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(data);
+    }
+    let mut buf = Vec::new();
+    buf.extend_from_slice(typ);
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+    buf.extend_from_slice(&form_id.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 4]); // vc_info (4 bytes on Oblivion vs 8 on Tes5Plus)
+    buf.extend_from_slice(&sub_data);
+    buf
+}
+
+/// Wrap an Oblivion record blob in a top-level GRUP (20-byte header).
+fn wrap_group_obl(label: &[u8; 4], record: &[u8]) -> Vec<u8> {
+    let total = 20 + record.len();
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"GRUP");
+    buf.extend_from_slice(&(total as u32).to_le_bytes());
+    buf.extend_from_slice(label);
+    buf.extend_from_slice(&0u32.to_le_bytes()); // group_type = top
+    buf.extend_from_slice(&[0u8; 4]); // stamp (4 bytes on Oblivion)
+    buf.extend_from_slice(record);
+    buf
+}
+
+/// Build an Oblivion TES4 header with HEDR 1.0. The variant detector
+/// picks `EsmVariant::Oblivion` because bytes 20..24 spell `"HEDR"`
+/// (only possible with the 20-byte record header).
+fn build_oblivion_tes4() -> Vec<u8> {
+    let mut hedr = Vec::new();
+    hedr.extend_from_slice(b"HEDR");
+    hedr.extend_from_slice(&12u16.to_le_bytes());
+    hedr.extend_from_slice(&1.0f32.to_le_bytes()); // Oblivion HEDR version
+    hedr.extend_from_slice(&0u32.to_le_bytes()); // record_count
+    hedr.extend_from_slice(&0u32.to_le_bytes()); // next_object_id
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"TES4");
+    buf.extend_from_slice(&(hedr.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+    buf.extend_from_slice(&0u32.to_le_bytes()); // form_id
+    buf.extend_from_slice(&[0u8; 4]); // vc_info — keeps total header at 20 bytes
+    buf.extend_from_slice(&hedr);
+    buf
+}
+
+/// Regression for #969 / OBL-D3-NEW-05. Oblivion MGEF records carry
+/// EDIDs that are the fixed-format 4-char effect code (e.g., `b"FIDG"`
+/// for Feather, `b"DGFA"` for Damage Fatigue). SPEL/ENCH/ALCH/INGR
+/// reference effects via `EFID` whose raw bytes ARE the 4-char code,
+/// NOT a u32 FormID. The `magic_effects_by_code` side index lets a
+/// (pending) magic-system runtime resolve EFID lookups on Oblivion
+/// content without re-walking the FormID-keyed map.
+#[test]
+fn oblivion_mgef_populates_magic_effects_by_code() {
+    let mut buf = build_oblivion_tes4();
+
+    // Two MGEF records: "FIDG" (Feather) at form_id 0x111, "DGFA"
+    // (Damage Fatigue) at 0x222. Both use a 5-byte EDID payload
+    // (4 chars + trailing null).
+    let mgef_feather = build_record_obl(
+        b"MGEF",
+        0x0000_0111,
+        &[
+            (b"EDID", b"FIDG\0".to_vec()),
+            (b"FULL", b"Feather\0".to_vec()),
+            (b"DATA", 0x0000_0001u32.to_le_bytes().to_vec()),
+        ],
+    );
+    let mgef_damage_fatigue = build_record_obl(
+        b"MGEF",
+        0x0000_0222,
+        &[
+            (b"EDID", b"DGFA\0".to_vec()),
+            (b"FULL", b"Damage Fatigue\0".to_vec()),
+            (b"DATA", 0x0000_0002u32.to_le_bytes().to_vec()),
+        ],
+    );
+
+    let mut group_content = Vec::new();
+    group_content.extend_from_slice(&mgef_feather);
+    group_content.extend_from_slice(&mgef_damage_fatigue);
+    let mgef_group = wrap_group_obl(b"MGEF", &group_content);
+    buf.extend_from_slice(&mgef_group);
+
+    let index = parse_esm(&buf).expect("parse_esm");
+    assert_eq!(
+        index.game,
+        GameKind::Oblivion,
+        "fixture must classify as Oblivion (HEDR 1.0 + 20-byte header)"
+    );
+
+    // FormID-keyed map still populated unchanged.
+    assert_eq!(index.magic_effects.len(), 2);
+    assert!(index.magic_effects.contains_key(&0x0000_0111));
+    assert!(index.magic_effects.contains_key(&0x0000_0222));
+
+    // Secondary 4-char-code map populated for both effects.
+    assert_eq!(
+        index.magic_effects_by_code.len(),
+        2,
+        "Oblivion MGEFs with 4-char EDIDs must populate magic_effects_by_code (#969)"
+    );
+    assert_eq!(index.magic_effects_by_code.get(b"FIDG"), Some(&0x0000_0111));
+    assert_eq!(index.magic_effects_by_code.get(b"DGFA"), Some(&0x0000_0222));
+}
+
+/// Sibling check for #969 — FO3/FNV/Skyrim+ MGEF EDIDs are full names
+/// (e.g., `"RadiationPoisoning"`) and use FormID-keyed EFID lookups.
+/// The 4-char-code secondary map must stay empty on non-Oblivion
+/// content so it can't shadow the FormID-keyed lookup or accidentally
+/// resolve to the wrong MGEF if the consumer queries it.
+#[test]
+fn non_oblivion_mgef_leaves_magic_effects_by_code_empty() {
+    let mut subs: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
+    subs.push((b"EDID", b"RadiationPoisoning\0".to_vec()));
+    subs.push((b"DATA", 0x0000_0009u32.to_le_bytes().to_vec()));
+    let mgef = build_record(b"MGEF", 0x0000_00A7, &subs);
+    let mgef_group = wrap_group(b"MGEF", &mgef);
+
+    // Default TES4 (Tes5Plus, HEDR 0.0) classifies as Fallout3NV.
+    let mut buf = build_record(b"TES4", 0, &[]);
+    buf.extend_from_slice(&mgef_group);
+
+    let index = parse_esm(&buf).expect("parse_esm");
+    assert_eq!(index.game, GameKind::Fallout3NV);
+    assert_eq!(index.magic_effects.len(), 1);
+    assert!(
+        index.magic_effects_by_code.is_empty(),
+        "non-Oblivion MGEFs must NOT populate magic_effects_by_code (#969) — \
+         FormID-keyed `magic_effects` is the only valid lookup for these games"
+    );
+}
+
+/// Defensive case for #969 — an Oblivion MGEF with an unexpected
+/// EDID length (not exactly 4 bytes after null-strip) must not panic
+/// and must not pollute `magic_effects_by_code`. Real Oblivion content
+/// always uses 4-char codes, but mod content / corrupt files might
+/// not, and the parser must remain robust.
+#[test]
+fn oblivion_mgef_with_non_4char_edid_skips_by_code_map() {
+    let mut buf = build_oblivion_tes4();
+    let mgef = build_record_obl(
+        b"MGEF",
+        0x0000_0333,
+        &[
+            (b"EDID", b"TooLong\0".to_vec()), // 7 chars — not Oblivion shape
+            (b"DATA", 0u32.to_le_bytes().to_vec()),
+        ],
+    );
+    buf.extend_from_slice(&wrap_group_obl(b"MGEF", &mgef));
+
+    let index = parse_esm(&buf).expect("parse_esm");
+    assert_eq!(index.game, GameKind::Oblivion);
+    assert_eq!(index.magic_effects.len(), 1);
+    assert!(
+        index.magic_effects_by_code.is_empty(),
+        "Oblivion MGEFs with non-4-char EDIDs must NOT populate the map (#969)"
+    );
+}
+
+/// `merge_from` must carry `magic_effects_by_code` across DLC merges
+/// with last-write-wins semantics, matching the `magic_effects` map
+/// itself. Without this, a multi-plugin Oblivion load (Oblivion.esm +
+/// DLC) would lose the side index from earlier plugins.
+#[test]
+fn merge_from_carries_magic_effects_by_code() {
+    let mut a = EsmIndex::default();
+    a.magic_effects_by_code.insert(*b"FIDG", 0x0000_0111);
+    a.magic_effects_by_code.insert(*b"DGFA", 0x0000_0222);
+
+    let mut b = EsmIndex::default();
+    // Overrides "FIDG" — last-write-wins.
+    b.magic_effects_by_code.insert(*b"FIDG", 0x0000_0AAA);
+    b.magic_effects_by_code.insert(*b"DGAT", 0x0000_0BBB);
+
+    a.merge_from(b);
+
+    assert_eq!(a.magic_effects_by_code.len(), 3);
+    assert_eq!(a.magic_effects_by_code.get(b"FIDG"), Some(&0x0000_0AAA));
+    assert_eq!(a.magic_effects_by_code.get(b"DGFA"), Some(&0x0000_0222));
+    assert_eq!(a.magic_effects_by_code.get(b"DGAT"), Some(&0x0000_0BBB));
 }
