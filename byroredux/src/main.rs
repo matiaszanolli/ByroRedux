@@ -547,6 +547,55 @@ impl App {
                 .writes::<byroredux_scripting::ScriptTimer>()
                 .writes::<byroredux_scripting::TimerExpired>(),
         );
+        // M47.0 Phase 1 — R5 papyrus_demo dispatchers. These are
+        // event-driven (early-return when no ActivateEvent /
+        // OnUpdateEvent / RecurringUpdate is present), so they
+        // contribute zero work to frames without scripted activity.
+        // Registered as exclusive in Update so they run serially
+        // after the parallel batch — keeps M27's zero-conflict
+        // report intact without forcing each demo to declare its
+        // (component-heavy) access surface. Declared access lands
+        // when the demos move to Stage::Script in a follow-up; for
+        // now they ride the same "trivial gameplay system =
+        // exclusive" lane as spin_system / footstep_system /
+        // particle_system. See docs/engine/m47-0-design.md.
+        //
+        // Signature note: the 6 World-only demos predate engine
+        // wiring (R5 was a prototype against unit tests that called
+        // them directly). The blanket `impl<F: FnMut(&World, f32)>
+        // System for F` requires the `dt` arg, so we adapt via inline
+        // closures that drop the unused parameter. Renaming the demo
+        // signatures themselves would break ~30 unit-test call sites
+        // in papyrus_demo/tests.rs that intentionally call without
+        // dt; closures are cheaper.
+        scheduler.add_exclusive(Stage::Update, |world: &World, _dt: f32| {
+            byroredux_scripting::papyrus_demo::rumble_on_activate_system(world)
+        });
+        scheduler.add_exclusive(
+            Stage::Update,
+            byroredux_scripting::papyrus_demo::rumble_tick_system,
+        );
+        scheduler.add_exclusive(Stage::Update, |world: &World, _dt: f32| {
+            byroredux_scripting::papyrus_demo::quest_advance::quest_advance_on_activate_system(
+                world,
+            )
+        });
+        scheduler.add_exclusive(Stage::Update, |world: &World, _dt: f32| {
+            byroredux_scripting::papyrus_demo::dlc2_ttr4a::dlc2_ttr4a_on_init_system(world)
+        });
+        scheduler.add_exclusive(Stage::Update, |world: &World, _dt: f32| {
+            byroredux_scripting::papyrus_demo::dlc2_ttr4a::dlc2_ttr4a_on_update_system(world)
+        });
+        scheduler.add_exclusive(Stage::Update, |world: &World, _dt: f32| {
+            byroredux_scripting::papyrus_demo::mg07_door::mg07_on_load_system(world)
+        });
+        scheduler.add_exclusive(Stage::Update, |world: &World, _dt: f32| {
+            byroredux_scripting::papyrus_demo::mg07_door::mg07_on_activate_system(world)
+        });
+        scheduler.add_exclusive(
+            Stage::Update,
+            byroredux_scripting::papyrus_demo::mg07_door::mg07_tick_system,
+        );
         scheduler.add_to_with_access(
             Stage::Update,
             animation_system,

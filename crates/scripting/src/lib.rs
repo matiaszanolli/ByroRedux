@@ -36,5 +36,13 @@ pub fn register(world: &mut World) {
     world.register::<AnimationTextKeyEvents>();
     world.register::<ScriptTimer>();
     recurring_update::register(world);
-    log::info!("Scripting subsystem initialized (ECS events + timers)");
+    // M47.0 Phase 1 — register the R5 prototype storages so
+    // `papyrus_demo` scripts can attach their state components when
+    // their owning REFR spawns. Without this call, `query_mut::<…>`
+    // returns None for every script-state component and the demo
+    // systems no-op. The cell-loader-driven attach lands in Phase 3;
+    // this Phase 1 step is the minimum plumbing that makes the demo
+    // surface live at runtime. See docs/engine/m47-0-design.md.
+    papyrus_demo::register(world);
+    log::info!("Scripting subsystem initialized (ECS events + timers + papyrus_demo)");
 }
