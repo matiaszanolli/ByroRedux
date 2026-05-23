@@ -110,12 +110,18 @@ pub fn extract_bs_geometry(
                 [xyzw[0], xyzw[1], xyzw[2], xyzw[3]]
             })
             .collect()
+    } else if !normals.is_empty() && !uvs.is_empty() && !positions.is_empty() {
+        // #1232 — no authored UDEC3 tangents but geometry is otherwise
+        // populated. Route through the Y-up synthesis sibling instead of
+        // dropping to `Vec::new()`, which would force every such mesh to
+        // the shader's screen-space derivative Path-2 in `perturbNormal`
+        // and inherit the #1104 UV-mirror handedness bug. Mirrors the
+        // #1204 BSTriShape SSE-reconstructed branch — both consumers
+        // share the helper now that `synthesize_tangents_yup` exists.
+        // `mesh_data.triangles` is already `Vec<[u16; 3]>`, so no index
+        // conversion is needed (BSGeometry is Starfield-native Y-up).
+        synthesize_tangents_yup(&positions, &normals, &uvs, &mesh_data.triangles)
     } else {
-        // No authored tangents — the renderer falls back to screen-space
-        // derivative TBN (Path 2). A future improvement could call
-        // synthesize_tangents here, but it requires a Y-up variant since
-        // BSGeometry data is already in engine space (unlike the Z-up
-        // input that NiTriShape / BSTriShape synthesis expects).
         Vec::new()
     };
 

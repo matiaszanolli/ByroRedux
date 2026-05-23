@@ -63,22 +63,61 @@ fn tangent_extraction_count_and_values() {
     }
 }
 
-/// Empty tangents_raw → Vec::new() (screen-space derivative fallback).
+/// #1232 — empty `tangents_raw` paired with populated geometry must
+/// route through `synthesize_tangents_yup` rather than dropping to
+/// `Vec::new()`. Pre-#1232 the fallback produced empty tangents,
+/// forcing every BSGeometry mesh without authored UDEC3 tangents to
+/// `perturbNormal` Path-2 (screen-space derivative TBN), which
+/// inherits the #1104 UV-mirror handedness bug.
+///
+/// This test exercises the helper directly with a synthetic triangle.
+/// The full extract path is too involved for a unit test (requires a
+/// `BSGeometry` block + `NifScene` + `StringPool`); the in-extractor
+/// gate is the matching `else if !normals.is_empty() && !uvs.is_empty()
+/// && !positions.is_empty()` branch in `bs_geometry.rs`. Mirrors the
+/// shape of `synthesize_tangents_yup_*` tests in
+/// `tangent_convention_tests.rs`.
 #[test]
-fn empty_tangents_raw_produces_empty_vec() {
-    let tangents_raw: Vec<u32> = Vec::new();
-    let tangents: Vec<[f32; 4]> = if !tangents_raw.is_empty() {
-        tangents_raw
-            .iter()
-            .map(|&raw| {
-                let xyzw = unpack_udec3_xyzw(raw);
-                [xyzw[0], xyzw[1], xyzw[2], xyzw[3]]
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    assert!(tangents.is_empty(), "empty tangents_raw must yield Vec::new()");
+fn empty_tangents_raw_routes_through_synthesize_when_geometry_populated() {
+    use super::tangent::synthesize_tangents_yup;
+    // Single triangle in the XZ plane (Y-up), UV unit square so the
+    // synthesised tangent lands on +X.
+    let positions = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+    let normals = vec![[0.0, 1.0, 0.0]; 3];
+    let uvs = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+    let triangles: Vec<[u16; 3]> = vec![[0, 1, 2]];
+    let tangents = synthesize_tangents_yup(&positions, &normals, &uvs, &triangles);
+    assert_eq!(
+        tangents.len(),
+        3,
+        "synthesize_tangents_yup must return one tangent per vertex \
+         when geometry is populated — empty result regresses to Path-2 \
+         (#1232)"
+    );
+    // Sanity: tangent direction lies in the +X half-plane for the
+    // canonical UV-aligned triangle (DPDU points +X for +U direction).
+    for t in &tangents {
+        assert!(
+            t[0] > 0.5,
+            "tangent.x must point along +U direction, got {:?}",
+            t
+        );
+    }
+}
+
+/// Empty `tangents_raw` AND empty geometry (degenerate input) — the
+/// helper returns `Vec::new()` and the extractor's fall-through arm
+/// produces the same. Guards against a future "always synthesize" bug
+/// that would panic on the degenerate path.
+#[test]
+fn empty_tangents_raw_and_empty_geometry_yields_empty_vec() {
+    use super::tangent::synthesize_tangents_yup;
+    let positions: Vec<[f32; 3]> = Vec::new();
+    let normals: Vec<[f32; 3]> = Vec::new();
+    let uvs: Vec<[f32; 2]> = Vec::new();
+    let triangles: Vec<[u16; 3]> = Vec::new();
+    let tangents = synthesize_tangents_yup(&positions, &normals, &uvs, &triangles);
+    assert!(tangents.is_empty(), "degenerate input must yield Vec::new()");
 }
 
 // ── #1209: Stage-A LOD-slot iteration ──────────────────────────────
