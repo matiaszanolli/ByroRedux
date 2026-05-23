@@ -687,6 +687,46 @@ mod tests {
         assert_eq!(order.load(Ordering::SeqCst), 3);
     }
 
+    // ── #1238: pin the chain across ALL five stages, not just three ─────
+
+    /// #1238 — sibling of `stages_run_in_order` covering the two stages
+    /// the original test left out (`Physics`, `Late`). The `BTreeMap<Stage, _>`
+    /// iteration uses `Stage`'s `Ord` derive over the explicit `= N`
+    /// discriminants — if a future commit reorders the enum or inserts
+    /// a stage between two existing ones, this test catches the drift.
+    #[test]
+    fn all_five_stages_run_in_order() {
+        let order = Arc::new(AtomicU32::new(0));
+        let o0 = Arc::clone(&order);
+        let o1 = Arc::clone(&order);
+        let o2 = Arc::clone(&order);
+        let o3 = Arc::clone(&order);
+        let o4 = Arc::clone(&order);
+
+        let mut scheduler = Scheduler::new();
+        // Register out of stage order so the test verifies the BTreeMap
+        // sort, not the registration sequence.
+        scheduler.add_to(Stage::Late, move |_w: &World, _dt: f32| {
+            assert_eq!(o4.fetch_add(1, Ordering::SeqCst), 4);
+        });
+        scheduler.add_to(Stage::Early, move |_w: &World, _dt: f32| {
+            assert_eq!(o0.fetch_add(1, Ordering::SeqCst), 0);
+        });
+        scheduler.add_to(Stage::Physics, move |_w: &World, _dt: f32| {
+            assert_eq!(o3.fetch_add(1, Ordering::SeqCst), 3);
+        });
+        scheduler.add_to(Stage::PostUpdate, move |_w: &World, _dt: f32| {
+            assert_eq!(o2.fetch_add(1, Ordering::SeqCst), 2);
+        });
+        scheduler.add_to(Stage::Update, move |_w: &World, _dt: f32| {
+            assert_eq!(o1.fetch_add(1, Ordering::SeqCst), 1);
+        });
+
+        let world = World::new();
+        scheduler.run(&world, 0.0);
+        assert_eq!(order.load(Ordering::SeqCst), 5, "every stage must run exactly once");
+    }
+
     // ── Mutation visible across stages ──────────────────────────────────
 
     #[test]
