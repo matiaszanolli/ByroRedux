@@ -1,4 +1,6 @@
 pub mod expr;
+pub mod script;
+pub mod stmt;
 
 use crate::ast::*;
 use crate::error::ParseError;
@@ -28,6 +30,28 @@ impl Parser {
 
     pub fn into_errors(self) -> Vec<ParseError> {
         self.errors
+    }
+
+    /// Current token-stream position. Used by speculative parsers
+    /// (`parse_var_decl_or_expr`) to snapshot before a tentative
+    /// match. Pair with [`Self::restore`].
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
+
+    /// Current diagnostic count. Pair with [`Self::pos`] for full
+    /// speculative-parse snapshot (a failed tentative match should
+    /// not leave its errors in the report).
+    pub fn error_count(&self) -> usize {
+        self.errors.len()
+    }
+
+    /// Restore a snapshot captured via [`Self::pos`] + [`Self::error_count`].
+    /// Truncates the error list to undo any errors pushed during the
+    /// speculative parse.
+    pub fn restore(&mut self, pos: usize, error_count: usize) {
+        self.pos = pos;
+        self.errors.truncate(error_count);
     }
 
     // ── Token access ──────────────────────────────────
