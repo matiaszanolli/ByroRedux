@@ -506,6 +506,13 @@ impl App {
             Stage::Early,
             fly_camera_system,
             Access::new()
+                // M27 — `fly_camera_system` early-returns on
+                // `PlayerMode::Character`, so it reads the resource
+                // every frame. Pre-M27 the declaration omitted this
+                // read; the gate worked at runtime via the RwLock but
+                // the access analyzer reported no conflict against any
+                // hypothetical writer.
+                .reads_resource::<crate::systems::PlayerMode>()
                 .reads_resource::<ActiveCamera>()
                 .reads_resource::<InputState>()
                 .reads::<byroredux_physics::RapierHandles>()
@@ -515,16 +522,86 @@ impl App {
         // M28.5 — kinematic character controller. Runs in Stage::Early
         // alongside the fly cam; each system gates itself on
         // `PlayerMode` so only one fires per frame.
-        scheduler.add_to(Stage::Early, crate::systems::character_controller_system);
-        scheduler.add_to(Stage::Early, weather_system);
-        scheduler.add_to(Stage::Early, byroredux_scripting::timer_tick_system);
-        scheduler.add_to(Stage::Update, animation_system);
+        scheduler.add_to_with_access(
+            Stage::Early,
+            crate::systems::character_controller_system,
+            Access::new()
+                .reads_resource::<crate::systems::PlayerMode>()
+                .reads_resource::<crate::systems::PlayerEntity>()
+                .reads_resource::<InputState>()
+                .reads_resource::<byroredux_physics::PhysicsWorld>()
+                .writes_resource::<byroredux_physics::PhysicsWorld>()
+                .reads::<byroredux_physics::CharacterController>()
+                .writes::<byroredux_physics::CharacterController>()
+                .reads::<Transform>()
+                .writes::<Transform>(),
+        );
+        scheduler.add_to_with_access(
+            Stage::Early,
+            weather_system,
+            Access::new()
+                .reads_resource::<crate::components::WeatherDataRes>()
+                .writes_resource::<crate::components::WeatherDataRes>()
+                .reads_resource::<crate::components::WeatherTransitionRes>()
+                .writes_resource::<crate::components::WeatherTransitionRes>()
+                .writes_resource::<crate::components::GameTimeRes>()
+                .reads_resource::<crate::components::CellLightingRes>()
+                .writes_resource::<crate::components::CellLightingRes>()
+                .writes_resource::<crate::components::SkyParamsRes>()
+                .writes_resource::<crate::components::CloudSimState>(),
+        );
+        scheduler.add_to_with_access(
+            Stage::Early,
+            byroredux_scripting::timer_tick_system,
+            Access::new()
+                .writes::<byroredux_scripting::ScriptTimer>()
+                .writes::<byroredux_scripting::TimerExpired>(),
+        );
+        scheduler.add_to_with_access(
+            Stage::Update,
+            animation_system,
+            // M27 — animation_system writes the full set of animated-
+            // channel storages (every channel a clip may target). The
+            // declaration is the UNION across all paths; individual
+            // frames touch a subset depending on which clips are
+            // playing. See `byroredux/src/systems/animation.rs:305`.
+            Access::new()
+                .reads_resource::<byroredux_core::animation::AnimationClipRegistry>()
+                .writes_resource::<byroredux_core::animation::AnimationClipRegistry>()
+                .reads_resource::<crate::components::SubtreeCache>()
+                .writes_resource::<crate::components::SubtreeCache>()
+                .reads_resource::<crate::components::NameIndex>()
+                .writes_resource::<crate::components::NameIndex>()
+                .writes_resource::<byroredux_core::string::StringPool>()
+                .reads::<byroredux_core::ecs::Name>()
+                .writes::<Transform>()
+                .writes::<byroredux_core::animation::RootMotionDelta>()
+                .writes::<byroredux_core::ecs::AnimatedVisibility>()
+                .writes::<byroredux_core::ecs::AnimatedDiffuseColor>()
+                .writes::<byroredux_core::ecs::AnimatedEmissiveColor>()
+                .writes::<byroredux_core::ecs::AnimatedAlpha>()
+                .writes::<byroredux_core::ecs::AnimatedUvTransform>()
+                .writes::<byroredux_core::ecs::AnimatedShaderFloat>()
+                .writes::<byroredux_core::ecs::AnimatedMorphWeights>()
+                .writes::<byroredux_core::ecs::LightSource>()
+                .writes::<byroredux_core::animation::AnimationPlayer>()
+                .writes::<byroredux_scripting::events::AnimationTextKeyEvents>()
+                .writes::<byroredux_core::animation::AnimationStack>(),
+        );
         scheduler.add_to_with_access(
             Stage::Update,
             spin_system,
             Access::new().reads::<Spinning>().writes::<Transform>(),
         );
-        scheduler.add_to(Stage::PostUpdate, make_transform_propagation_system());
+        scheduler.add_to_with_access(
+            Stage::PostUpdate,
+            make_transform_propagation_system(),
+            Access::new()
+                .reads::<byroredux_core::ecs::Parent>()
+                .reads::<byroredux_core::ecs::Children>()
+                .reads::<Transform>()
+                .writes::<byroredux_core::ecs::GlobalTransform>(),
+        );
         // M44 Phase 3.5: footstep dispatch. Reads `GlobalTransform`
         // for the world-space spawn position, so it MUST run after
         // `make_transform_propagation_system()` — otherwise the
@@ -557,7 +634,19 @@ impl App {
         // underwater composite tint) read the result later in the
         // frame.
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::submersion_system);
-        scheduler.add_to(Stage::Physics, byroredux_physics::physics_sync_system);
+        scheduler.add_to_with_access(
+            Stage::Physics,
+            byroredux_physics::physics_sync_system,
+            Access::new()
+                .reads_resource::<byroredux_physics::PhysicsWorld>()
+                .writes_resource::<byroredux_physics::PhysicsWorld>()
+                .reads::<byroredux_core::ecs::components::CollisionShape>()
+                .reads::<byroredux_core::ecs::components::RigidBodyData>()
+                .reads::<byroredux_core::ecs::GlobalTransform>()
+                .reads::<byroredux_physics::RapierHandles>()
+                .writes::<byroredux_physics::RapierHandles>()
+                .writes::<Transform>(),
+        );
         // M28.5 — camera follow runs in Stage::Late, AFTER
         // `physics_sync_system` has settled the kinematic body's
         // post-step pose. Must run BEFORE `audio_system` /
@@ -565,21 +654,50 @@ impl App {
         // The character system writes both Transform and
         // GlobalTransform on the camera to bypass the missing
         // late-stage propagation pass.
-        scheduler.add_to(Stage::Late, crate::systems::camera_follow_system);
+        scheduler.add_to_with_access(
+            Stage::Late,
+            crate::systems::camera_follow_system,
+            Access::new()
+                .reads_resource::<crate::systems::PlayerEntity>()
+                .reads_resource::<ActiveCamera>()
+                .reads_resource::<InputState>()
+                .reads::<byroredux_physics::CharacterController>()
+                .reads::<byroredux_core::ecs::GlobalTransform>()
+                .writes::<byroredux_core::ecs::GlobalTransform>()
+                .reads::<Transform>()
+                .writes::<Transform>(),
+        );
         // M44 Phase 6 — cell-acoustics → reverb send (#846). Runs
         // before `audio_system` so any new spatial track constructed
         // this frame picks up the right send level. Already-playing
         // sounds keep their construction-time send (kira contract);
         // long-running ambients across interior/exterior transitions
         // are tracked separately in AUD-D5-NEW-06.
-        scheduler.add_to(Stage::Late, crate::systems::reverb_zone_system);
+        scheduler.add_to_with_access(
+            Stage::Late,
+            crate::systems::reverb_zone_system,
+            Access::new()
+                .reads_resource::<crate::components::CellLightingRes>()
+                .writes_resource::<byroredux_audio::AudioWorld>(),
+        );
         // M44 Phase 1 — audio update runs in Stage::Late so it sees
         // final world transforms after propagation. The Phase 1 body
         // is a stub (see byroredux_audio::audio_system); future
         // phases (one-shot dispatch, listener pose sync, looping
         // emitter lifecycle) flesh it out without touching the
         // schedule wiring.
-        scheduler.add_to(Stage::Late, byroredux_audio::audio_system);
+        scheduler.add_to_with_access(
+            Stage::Late,
+            byroredux_audio::audio_system,
+            Access::new()
+                .writes_resource::<byroredux_audio::AudioWorld>()
+                .reads::<byroredux_audio::AudioListener>()
+                .reads::<byroredux_core::ecs::GlobalTransform>()
+                .reads::<byroredux_audio::OneShotSound>()
+                .writes::<byroredux_audio::OneShotSound>()
+                .reads::<byroredux_audio::AudioEmitter>()
+                .writes::<byroredux_audio::AudioEmitter>(),
+        );
         scheduler.add_to_with_access(
             Stage::Late,
             log_stats_system,
