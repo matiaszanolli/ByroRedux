@@ -578,18 +578,54 @@ pub(crate) fn setup_scene(
             }
         };
         let body_pos = if let Some(door_pos) = door_spawn {
+            // Door REFRs are placed at the door's outer threshold — the
+            // boundary between cell interior and exterior. Spawning the
+            // capsule at exactly `door_pos` puts its centre on that
+            // boundary; with capsule radius 18 BU the capsule projects
+            // beyond the static-collider AABB and lands in the void
+            // (observed at WhiterunBanneredMare: door Z=1152.0, AABB
+            // Z_max=1151.9, character free-falls). Push the spawn
+            // *inward* along the XZ vector from door to the static-
+            // collider AABB centre so the capsule lands on architecture
+            // every time, independent of door rotation conventions or
+            // per-game subtleties. Y stays at door height — the door
+            // floor IS the spawn floor.
+            const INWARD_NUDGE_BU: f32 = 64.0;
+            let inward_xz = {
+                let pw = world.resource::<byroredux_physics::PhysicsWorld>();
+                pw.static_colliders_aabb().and_then(|(min, max, _)| {
+                    let centre = Vec3::new(
+                        0.5 * (min[0] + max[0]),
+                        0.0,
+                        0.5 * (min[2] + max[2]),
+                    );
+                    let to_centre =
+                        Vec3::new(centre.x - door_pos.x, 0.0, centre.z - door_pos.z);
+                    let len_sq = to_centre.length_squared();
+                    if len_sq > 1.0 {
+                        Some(to_centre / len_sq.sqrt())
+                    } else {
+                        // Door is at the AABB centre already — no
+                        // meaningful inward direction. Skip the nudge.
+                        None
+                    }
+                })
+            };
+            let nudge = inward_xz.unwrap_or(Vec3::ZERO) * INWARD_NUDGE_BU;
             let spawn = Vec3::new(
-                door_pos.x,
+                door_pos.x + nudge.x,
                 door_pos.y + cc.half_height + 4.0,
-                door_pos.z,
+                door_pos.z + nudge.z,
             );
             log::info!(
                 "M28.5 spawn at door teleporter: door at ({:.1}, {:.1}, {:.1}); \
-                 placing capsule at ({:.1}, {:.1}, {:.1}) (user request — \
-                 spawn at teleporter object)",
+                 inward nudge ({:.1}, _, {:.1}) BU; placing capsule at \
+                 ({:.1}, {:.1}, {:.1})",
                 door_pos.x,
                 door_pos.y,
                 door_pos.z,
+                nudge.x,
+                nudge.z,
                 spawn.x,
                 spawn.y,
                 spawn.z,
@@ -637,6 +673,36 @@ pub(crate) fn setup_scene(
         world.insert(body, Transform::new(body_pos, Quat::IDENTITY, 1.0));
         world.insert(body, GlobalTransform::new(body_pos, Quat::IDENTITY, 1.0));
         world.insert(body, cc);
+        // M28.5 follow-up — character body flows through the unified
+        // Path A in `physics_sync_system`. Attach the capsule + body
+        // data so `register_newcomers` builds the Rapier body from the
+        // same code path as every NIF-imported collider. The
+        // `CharacterKinematic` motion type maps to Rapier's
+        // `KinematicPositionBased` but signals to `push_kinematic` that
+        // it must NOT push the ECS Transform each frame — the character
+        // controller system drives the pose explicitly via
+        // `set_kinematic_translation`.
+        use byroredux_core::ecs::components::collision::{
+            CollisionShape, MotionType, RigidBodyData,
+        };
+        world.insert(
+            body,
+            CollisionShape::Capsule {
+                half_height: cc.half_height,
+                radius: cc.radius,
+            },
+        );
+        world.insert(
+            body,
+            RigidBodyData {
+                motion_type: MotionType::CharacterKinematic,
+                mass: 80.0,
+                friction: 0.5,
+                restitution: 0.0,
+                linear_damping: 0.0,
+                angular_damping: 0.0,
+            },
+        );
         world.insert_resource(crate::systems::PlayerEntity(Some(body)));
         log::info!(
             "M28.5 player character spawned at ({:.1}, {:.1}, {:.1}); eyes at ({:.1}, {:.1}, {:.1})",

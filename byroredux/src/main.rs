@@ -439,6 +439,12 @@ impl App {
         world.insert_resource(SubtreeCache::new());
         world.insert_resource(CellRootIndex::new());
         world.insert_resource(byroredux_physics::PhysicsWorld::new());
+        // M28.5 follow-up — engine-wide contact / KCC tunables. Owned
+        // as a resource so a single edit propagates through every
+        // collider spawn path (Path A NIF imports, character kinematic
+        // capsule) and the KCC offset stays in lockstep. Defaults match
+        // the pre-unification inline values.
+        world.insert_resource(byroredux_physics::ContactConfig::default());
         // M44 Phase 1 — audio world. Init failure (no audio device,
         // CI, headless server) leaves the inner `AudioManager` as
         // `None` and every subsequent audio operation no-ops. Boot

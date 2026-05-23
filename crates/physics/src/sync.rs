@@ -19,7 +19,8 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder, RigidBodyType};
 
-use crate::components::{PlayerBody, RapierHandles};
+use crate::components::RapierHandles;
+use crate::config::ContactConfig;
 use crate::convert::{
     collision_shape_to_parts, iso_from_trs, quat_from_na, vec3_from_translation, vec3_to_na,
 };
@@ -103,28 +104,27 @@ pub fn physics_sync_system(world: &World, dt: f32) {
 // ── Phase 1 ─────────────────────────────────────────────────────────────
 
 /// Snapshot of one entity to register in Rapier.
+///
+/// One unified path: every newcomer carries the engine `CollisionShape`,
+/// `RigidBodyData` (with motion type), and `GlobalTransform`. The
+/// rotation-lock decision is derived from `motion_type` — character
+/// kinematic bodies (and only those) lock rotations, everything else
+/// follows the body data verbatim.
 struct Newcomer {
     entity: EntityId,
-    body_type: RigidBodyType,
+    shape: CollisionShape,
     body_data: RigidBodyData,
     global: GlobalTransform,
-    // Mutually exclusive: either a parsed collision shape (from NIF) or
-    // a PlayerBody marker that implies a capsule built from its fields.
-    source: NewcomerSource,
-    lock_rotations: bool,
 }
 
-enum NewcomerSource {
-    Shape(CollisionShape),
-    Player(PlayerBody),
-    /// M28.5 — kinematic character body for the player rig. Registers
-    /// as `KinematicPositionBased` with a capsule collider; controlled
-    /// each frame by `byroredux::systems::character_controller_system`
-    /// via Rapier's `KinematicCharacterController.move_shape`.
-    Character {
-        half_height: f32,
-        radius: f32,
-    },
+impl Newcomer {
+    fn body_type(&self) -> RigidBodyType {
+        motion_type_to_rapier(self.body_data.motion_type)
+    }
+
+    fn lock_rotations(&self) -> bool {
+        matches!(self.body_data.motion_type, MotionType::CharacterKinematic)
+    }
 }
 
 fn collect_newcomers(world: &World) -> Vec<Newcomer> {
@@ -134,109 +134,32 @@ fn collect_newcomers(world: &World) -> Vec<Newcomer> {
         return out;
     };
 
-    // Path A: entities with CollisionShape + RigidBodyData from NIF import.
-    if let (Some(shape_q), Some(body_q)) = (
+    let (Some(shape_q), Some(body_q)) = (
         world.query::<CollisionShape>(),
         world.query::<RigidBodyData>(),
-    ) {
-        let handles_q = world.query::<RapierHandles>();
-        for (entity, shape) in shape_q.iter() {
-            if let Some(ref hq) = handles_q {
-                if hq.contains(entity) {
-                    continue;
-                }
-            }
-            let Some(body_data) = body_q.get(entity) else {
-                continue;
-            };
-            let Some(global) = gq.get(entity) else {
-                continue;
-            };
-            out.push(Newcomer {
-                entity,
-                body_type: motion_type_to_rapier(body_data.motion_type),
-                body_data: body_data.clone(),
-                global: *global,
-                source: NewcomerSource::Shape(shape.clone()),
-                lock_rotations: false,
-            });
-        }
-    }
+    ) else {
+        return out;
+    };
 
-    // (helper free fn defined at end of file for the character
-    //  controller — `set_next_kinematic_translation`-by-Vec3.)
-    // Path C: M28.5 — CharacterController marker entities. Take
-    // priority over PlayerBody (Path B is the legacy Dynamic capsule
-    // path the M28 Phase 1 attempt used; CharacterController is the
-    // active kinematic-controlled player rig).
-    if let Some(char_q) = world.query::<crate::components::CharacterController>() {
-        let handles_q = world.query::<RapierHandles>();
-        for (entity, character) in char_q.iter() {
-            if let Some(ref hq) = handles_q {
-                if hq.contains(entity) {
-                    continue;
-                }
-            }
-            let Some(global) = gq.get(entity) else {
+    let handles_q = world.query::<RapierHandles>();
+    for (entity, shape) in shape_q.iter() {
+        if let Some(ref hq) = handles_q {
+            if hq.contains(entity) {
                 continue;
-            };
-            // KinematicPositionBased — the controller system writes
-            // `set_next_kinematic_translation` each frame after
-            // collide-and-slide resolution; Rapier moves the body to
-            // the queued position on the next step without applying
-            // any dynamics. Mass / damping fields are ignored for
-            // kinematic bodies; defaults are fine.
-            let body_data = RigidBodyData {
-                motion_type: MotionType::Keyframed,
-                mass: 80.0,
-                friction: 0.5,
-                restitution: 0.0,
-                linear_damping: 0.0,
-                angular_damping: 0.0,
-            };
-            out.push(Newcomer {
-                entity,
-                body_type: RigidBodyType::KinematicPositionBased,
-                body_data,
-                global: *global,
-                source: NewcomerSource::Character {
-                    half_height: character.half_height,
-                    radius: character.radius,
-                },
-                lock_rotations: true,
-            });
-        }
-    }
-
-    // Path B: PlayerBody marker entities without a CollisionShape.
-    if let Some(player_q) = world.query::<PlayerBody>() {
-        let handles_q = world.query::<RapierHandles>();
-        for (entity, player) in player_q.iter() {
-            if let Some(ref hq) = handles_q {
-                if hq.contains(entity) {
-                    continue;
-                }
             }
-            let Some(global) = gq.get(entity) else {
-                continue;
-            };
-            let body_data = RigidBodyData {
-                motion_type: MotionType::Dynamic,
-                mass: 80.0,
-                friction: 0.5,
-                restitution: 0.0,
-                linear_damping: 2.0,
-                angular_damping: 5.0,
-            };
-            out.push(Newcomer {
-                entity,
-                body_type: RigidBodyType::Dynamic,
-                body_data,
-                global: *global,
-                source: NewcomerSource::Player(*player),
-                lock_rotations: true,
-            });
         }
+        let Some(body_data) = body_q.get(entity) else {
+            continue;
+        };
+        let Some(global) = gq.get(entity) else {
+            continue;
+        };
+        out.push(Newcomer {
+            entity,
+            shape: shape.clone(),
+            body_data: body_data.clone(),
+            global: *global,
+        });
     }
 
     out
@@ -245,16 +168,25 @@ fn collect_newcomers(world: &World) -> Vec<Newcomer> {
 fn motion_type_to_rapier(m: MotionType) -> RigidBodyType {
     match m {
         MotionType::Static => RigidBodyType::Fixed,
-        MotionType::Keyframed => RigidBodyType::KinematicPositionBased,
+        MotionType::Keyframed | MotionType::CharacterKinematic => {
+            RigidBodyType::KinematicPositionBased
+        }
         MotionType::Dynamic => RigidBodyType::Dynamic,
     }
 }
 
 fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
+    // Snapshot `ContactConfig` once per batch. Defaults if missing — the
+    // resource is optional for backwards compatibility with embedders
+    // that don't insert it explicitly. (See `byroredux::scene` for the
+    // engine-side install.)
+    let cfg = world
+        .try_resource::<ContactConfig>()
+        .map(|r| *r)
+        .unwrap_or_default();
+
     let mut pw = world.resource_mut::<PhysicsWorld>();
 
-    // Build Rapier objects outside the per-entity insert loop so we can
-    // keep the code shape simple.
     let mut registered: Vec<(EntityId, RapierHandles)> = Vec::with_capacity(newcomers.len());
 
     for n in newcomers {
@@ -264,35 +196,19 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         // idiomatic path for mixed-composite compositions (#373, which
         // eliminated the 9,555/30s parry3d panic storm the previous
         // single-compound path produced on exterior cells).
-        let parts: Vec<(
-            rapier3d::prelude::Isometry<f32>,
-            rapier3d::prelude::SharedShape,
-        )> = match &n.source {
-            NewcomerSource::Shape(s) => collision_shape_to_parts(s),
-            NewcomerSource::Player(p) => {
-                use rapier3d::prelude::SharedShape;
-                vec![(
-                    rapier3d::prelude::Isometry::identity(),
-                    SharedShape::capsule_y(p.half_height.max(1e-3), p.radius.max(1e-3)),
-                )]
-            }
-            NewcomerSource::Character { half_height, radius } => {
-                use rapier3d::prelude::SharedShape;
-                vec![(
-                    rapier3d::prelude::Isometry::identity(),
-                    SharedShape::capsule_y(half_height.max(1e-3), radius.max(1e-3)),
-                )]
-            }
-        };
+        let parts = collision_shape_to_parts(&n.shape, &cfg);
         if parts.is_empty() {
             continue;
         }
 
-        let mut body_builder = RigidBodyBuilder::new(n.body_type)
+        let body_type = n.body_type();
+        let lock_rotations = n.lock_rotations();
+
+        let mut body_builder = RigidBodyBuilder::new(body_type)
             .position(iso_from_trs(n.global.translation, n.global.rotation))
             .linear_damping(n.body_data.linear_damping)
             .angular_damping(n.body_data.angular_damping);
-        if n.lock_rotations {
+        if lock_rotations {
             body_builder = body_builder.lock_rotations();
         }
         let body = body_builder.build();
@@ -309,6 +225,7 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         // configured mass — Rapier sums collider masses on insertion.
         // Friction/restitution copy onto every collider identically.
         let part_mass = n.body_data.mass.max(0.0) / parts.len() as f32;
+        let contact_skin = cfg.default_contact_skin_bu.max(0.0);
         let mut first_collider_handle: Option<rapier3d::prelude::ColliderHandle> = None;
         for (iso, shape) in parts {
             let collider = ColliderBuilder::new(shape)
@@ -316,6 +233,7 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
                 .friction(n.body_data.friction)
                 .restitution(n.body_data.restitution)
                 .mass(part_mass)
+                .contact_skin(contact_skin)
                 .build();
             let handle = colliders.insert_with_parent(collider, body_handle, bodies);
             if first_collider_handle.is_none() {
@@ -378,6 +296,12 @@ fn push_kinematic(world: &World) {
         let Some(body_data) = body_q.get(entity) else {
             continue;
         };
+        // Only `Keyframed` bodies (doors, platforms, scripted props)
+        // track their ECS `GlobalTransform` automatically. Character
+        // kinematic bodies are driven explicitly by the character
+        // controller system via `set_kinematic_translation`; pushing
+        // the ECS Transform here would race with the controller's
+        // KCC-corrected pose write.
         if body_data.motion_type != MotionType::Keyframed {
             continue;
         }

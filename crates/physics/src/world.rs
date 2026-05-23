@@ -157,6 +157,12 @@ pub struct CharacterMoveParams {
     /// shapecast — pass the character's own collider here so the
     /// KCC doesn't self-hit.
     pub exclude_collider: Option<rapier3d::prelude::ColliderHandle>,
+    /// `KinematicCharacterController.offset` distance in BU. Sourced
+    /// from `ContactConfig::kcc_offset_bu` by the controller system;
+    /// surfaced as a param so `move_character` stays pure (no resource
+    /// lookups on PhysicsWorld). Wider keeps the capsule from grazing
+    /// TriMesh edges; narrower lets the player fit tighter clearances.
+    pub kcc_offset_bu: f32,
 }
 
 impl PhysicsWorld {
@@ -277,12 +283,11 @@ impl PhysicsWorld {
         // letting the KCC's swept cast graze TriMesh edges and tunnel
         // through tiny gaps (Whiterun Bannered Mare floor planks have
         // ~1-2 BU vertex-gaps where adjacent collision triangles meet;
-        // the 0.5 BU offset wasn't enough margin). 4 BU (~5.7 cm) is
-        // a typical Rapier KCC offset for Bethesda-scale content —
-        // wide enough to keep the capsule from grazing edges, narrow
-        // enough that 80 BU doorways still admit the 36 BU-diameter
-        // capsule with ~22 BU of margin per side.
-        controller.offset = CharacterLength::Absolute(4.0);
+        // the 0.5 BU offset wasn't enough margin). The value lives on
+        // `ContactConfig::kcc_offset_bu` (default 4 BU ≈ 5.7 cm) and
+        // is plumbed through `CharacterMoveParams` so a single resource
+        // edit can re-tune every character.
+        controller.offset = CharacterLength::Absolute(params.kcc_offset_bu.max(0.0));
         controller.slide = true;
         controller.autostep = Some(CharacterAutostep {
             max_height: CharacterLength::Absolute(params.step_height.max(0.0)),
@@ -357,7 +362,7 @@ mod tests {
     /// produces exactly one part (every primitive variant does; the
     /// tests here only feed primitives).
     fn single_shape(s: &CollisionShape) -> rapier3d::prelude::SharedShape {
-        let mut parts = collision_shape_to_parts(s);
+        let mut parts = collision_shape_to_parts(s, &crate::config::ContactConfig::DEFAULT);
         assert_eq!(parts.len(), 1, "test helper expects a single part");
         parts.swap_remove(0).1
     }

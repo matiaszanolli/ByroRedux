@@ -53,14 +53,31 @@ impl Component for CollisionShape {
 }
 
 /// Rigid body motion type — controls how the physics engine treats the body.
+///
+/// Maps onto Rapier's `RigidBodyType` at the physics layer; the
+/// `CharacterKinematic` variant maps to the same `KinematicPositionBased`
+/// type as `Keyframed` but signals to the spawn site that the body
+/// represents an upright character capsule (rotations locked, driven
+/// manually by `character_controller_system` via KCC `move_shape`
+/// rather than tracking a `GlobalTransform`). The split exists so
+/// `physics_sync_system::push_kinematic` doesn't try to write a
+/// transform-derived pose onto a character body each frame — only
+/// `Keyframed` bodies (doors, platforms, scripted props) take that path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MotionType {
     /// Fixed in place, infinite mass (walls, floors, static architecture).
     Static,
     /// Moved by animation/script, not by physics forces (doors, platforms).
+    /// Pushed each frame from the entity's `GlobalTransform`.
     Keyframed,
     /// Fully simulated by the physics engine (crates, bottles, debris).
     Dynamic,
+    /// Kinematic body whose pose is driven by the character-controller
+    /// system, not by the ECS transform. Rotations locked. The sync
+    /// system registers it but does NOT push poses from
+    /// `GlobalTransform`; the controller calls
+    /// `set_kinematic_translation` explicitly each frame.
+    CharacterKinematic,
 }
 
 /// Rigid body properties extracted from bhkRigidBody.

@@ -3,6 +3,7 @@
 //! Engine code speaks glam. Rapier speaks nalgebra. Keep the adapter
 //! confined here so the rest of the crate never sees nalgebra types.
 
+use crate::config::ContactConfig;
 use byroredux_core::ecs::components::collision::CollisionShape;
 use byroredux_core::math::{Quat, Vec3};
 use nalgebra::{Isometry3, Point3, UnitQuaternion, Vector3};
@@ -75,9 +76,18 @@ pub fn iso_from_trs(translation: Vec3, rotation: Quat) -> Isometry3<f32> {
 ///
 /// An empty compound with no viable leaves emits a single tiny-ball
 /// part so the caller can still register a collider.
-pub fn collision_shape_to_parts(shape: &CollisionShape) -> Vec<(Isometry3<f32>, SharedShape)> {
+///
+/// `cfg` carries the engine-wide TriMesh flags. The default
+/// (`ContactConfig::DEFAULT`) preserves the pre-unification behaviour
+/// (`FIX_INTERNAL_EDGES`, which transitively ORs in `ORIENTED |
+/// MERGE_DUPLICATE_VERTICES`); callers that need to override per-shape
+/// can pass a `ContactConfig` with a different `trimesh_flags`.
+pub fn collision_shape_to_parts(
+    shape: &CollisionShape,
+    cfg: &ContactConfig,
+) -> Vec<(Isometry3<f32>, SharedShape)> {
     let mut out: Vec<(Isometry3<f32>, SharedShape)> = Vec::new();
-    flatten_to_parts(shape, Isometry3::identity(), &mut out);
+    flatten_to_parts(shape, Isometry3::identity(), cfg, &mut out);
     if out.is_empty() {
         out.push((Isometry3::identity(), SharedShape::ball(1e-3)));
     }
@@ -91,13 +101,14 @@ pub fn collision_shape_to_parts(shape: &CollisionShape) -> Vec<(Isometry3<f32>, 
 fn flatten_to_parts(
     shape: &CollisionShape,
     parent_iso: Isometry3<f32>,
+    cfg: &ContactConfig,
     out: &mut Vec<(Isometry3<f32>, SharedShape)>,
 ) {
     match shape {
         CollisionShape::Compound { children } => {
             for (t, r, child) in children {
                 let composed = parent_iso * iso_from_trs(*t, *r);
-                flatten_to_parts(child, composed, out);
+                flatten_to_parts(child, composed, cfg, out);
             }
         }
         CollisionShape::Ball { radius } => {
@@ -149,31 +160,19 @@ fn flatten_to_parts(
             }
             let pts: Vec<Point3<f32>> = vertices.iter().copied().map(vec3_to_point).collect();
             let idx: Vec<[u32; 3]> = indices.clone();
-            // M28.5 follow-up — `FIX_INTERNAL_EDGES` is the Rapier-
-            // documented fix for "incorrect contact normals on flat
-            // surfaces" caused by per-triangle normals flipping
-            // abruptly at shared edges. Without it, a kinematic
-            // capsule sliding across multiple triangles of a closed
-            // interior shell can pick up a normal pointing the wrong
-            // way at the seam between two triangles and get pushed
-            // *through* the wall instead of along it (the user's
-            // observed "boundary pointing outside" symptom). Per
-            // `parry3d-0.17.6/src/shape/trimesh.rs:270-276`, this
-            // flag computes per-vertex / per-edge pseudo-normals from
-            // adjacent triangles and uses them during contact
-            // generation. It implies `ORIENTED` (treat the mesh as a
-            // closed surface with outward normals — which Bethesda's
-            // bhk collision shells are, by construction) and
-            // `MERGE_DUPLICATE_VERTICES` (Bethesda content frequently
-            // has coincident vertices at seams between adjacent
-            // architectural pieces; without the merge, those seams
-            // look like topological holes to the pseudo-normal
-            // computation).
+            // M28.5 follow-up — TriMesh contact-normal treatment is
+            // owned by `ContactConfig::trimesh_flags`. The default
+            // (`FIX_INTERNAL_EDGES`, which transitively ORs in
+            // `ORIENTED | MERGE_DUPLICATE_VERTICES`) fixes per-edge
+            // normal flips at shared triangle seams — without it a
+            // kinematic capsule sliding across a closed interior shell
+            // can pick up a normal pointing the wrong way at the seam
+            // and get pushed *through* the wall instead of along it.
+            // See parry3d-0.17.6/src/shape/trimesh.rs:270-276 and the
+            // pin tests in `crate::config`.
             use rapier3d::parry::shape::TriMeshFlags;
-            out.push((
-                parent_iso,
-                SharedShape::trimesh_with_flags(pts, idx, TriMeshFlags::FIX_INTERNAL_EDGES),
-            ));
+            let flags = TriMeshFlags::from_bits_truncate(cfg.trimesh_flags.0);
+            out.push((parent_iso, SharedShape::trimesh_with_flags(pts, idx, flags)));
         }
     }
 }
@@ -182,6 +181,12 @@ fn flatten_to_parts(
 mod tests {
     use super::*;
     use rapier3d::prelude::ShapeType;
+
+    /// Test helper — call `collision_shape_to_parts` with the default
+    /// `ContactConfig` so existing assertions stay shape-agnostic.
+    fn parts(shape: &CollisionShape) -> Vec<(Isometry3<f32>, SharedShape)> {
+        collision_shape_to_parts(shape, &ContactConfig::DEFAULT)
+    }
 
     #[test]
     fn vec3_roundtrip() {
@@ -221,7 +226,7 @@ mod tests {
 
     #[test]
     fn ball_maps_to_one_rapier_ball() {
-        let parts = collision_shape_to_parts(&CollisionShape::Ball { radius: 2.0 });
+        let parts = parts(&CollisionShape::Ball { radius: 2.0 });
         assert_eq!(parts.len(), 1);
         assert_eq!(shape_type_of(&parts, 0), ShapeType::Ball);
         assert_eq!(parts[0].1.as_ball().unwrap().radius, 2.0);
@@ -230,7 +235,7 @@ mod tests {
 
     #[test]
     fn cuboid_maps_to_one_rapier_cuboid() {
-        let parts = collision_shape_to_parts(&CollisionShape::Cuboid {
+        let parts = parts(&CollisionShape::Cuboid {
             half_extents: Vec3::new(1.0, 2.0, 3.0),
         });
         assert_eq!(parts.len(), 1);
@@ -240,7 +245,7 @@ mod tests {
 
     #[test]
     fn capsule_maps_to_one_rapier_capsule() {
-        let parts = collision_shape_to_parts(&CollisionShape::Capsule {
+        let parts = parts(&CollisionShape::Capsule {
             half_height: 5.0,
             radius: 1.5,
         });
@@ -276,7 +281,7 @@ mod tests {
             children: vec![(Vec3::new(0.0, 2.0, 0.0), Quat::IDENTITY, Box::new(inner))],
         };
 
-        let parts = collision_shape_to_parts(&outer);
+        let parts = parts(&outer);
         assert_eq!(parts.len(), 2, "both inner balls should survive");
         for (_, s) in &parts {
             assert_ne!(
@@ -310,7 +315,7 @@ mod tests {
         let level1 = CollisionShape::Compound {
             children: vec![(Vec3::new(0.0, 1.0, 0.0), Quat::IDENTITY, Box::new(level2))],
         };
-        let parts = collision_shape_to_parts(&level1);
+        let parts = parts(&level1);
         assert_eq!(parts.len(), 1);
         assert_eq!(shape_type_of(&parts, 0), ShapeType::Ball);
         assert!((parts[0].0.translation.y - 3.0).abs() < 1e-6);
@@ -325,7 +330,7 @@ mod tests {
         let outer = CollisionShape::Compound {
             children: vec![(Vec3::ZERO, Quat::IDENTITY, Box::new(inner))],
         };
-        let parts = collision_shape_to_parts(&outer);
+        let parts = parts(&outer);
         assert_eq!(parts.len(), 1);
         assert_eq!(shape_type_of(&parts, 0), ShapeType::Ball);
     }
@@ -354,7 +359,7 @@ mod tests {
                 (Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, Box::new(ball)),
             ],
         };
-        let parts = collision_shape_to_parts(&compound);
+        let parts = parts(&compound);
         assert_eq!(parts.len(), 2);
         let types: Vec<ShapeType> = parts.iter().map(|(_, s)| s.shape_type()).collect();
         assert!(types.contains(&ShapeType::TriMesh));
@@ -370,7 +375,7 @@ mod tests {
             Vec3::new(0.0, 0.0, 1.0),
         ];
         let idx = vec![[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
-        let parts = collision_shape_to_parts(&CollisionShape::TriMesh {
+        let parts = parts(&CollisionShape::TriMesh {
             vertices: verts,
             indices: idx,
         });
@@ -382,7 +387,7 @@ mod tests {
 
     #[test]
     fn empty_trimesh_falls_back_to_ball_part() {
-        let parts = collision_shape_to_parts(&CollisionShape::TriMesh {
+        let parts = parts(&CollisionShape::TriMesh {
             vertices: vec![],
             indices: vec![],
         });

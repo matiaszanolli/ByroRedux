@@ -196,6 +196,13 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     let desired_translation = horizontal_translation + Vec3::Y * desired_vertical;
 
     // Ask Rapier's KCC for the collide-and-slide-corrected motion.
+    // Snapshot ContactConfig once per tick — the offset is the only
+    // value the KCC consumes and we don't want to hold a separate
+    // resource borrow across the PhysicsWorld read.
+    let kcc_offset = world
+        .try_resource::<byroredux_physics::ContactConfig>()
+        .map(|r| r.kcc_offset_bu)
+        .unwrap_or(byroredux_physics::ContactConfig::DEFAULT.kcc_offset_bu);
     let pw = world.resource::<byroredux_physics::PhysicsWorld>();
     let result = pw.move_character(byroredux_physics::CharacterMoveParams {
         capsule_half_height: controller.half_height,
@@ -207,6 +214,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         step_height: controller.step_height,
         snap_to_ground: controller.snap_to_ground,
         exclude_collider: collider_handle,
+        kcc_offset_bu: kcc_offset,
     });
     drop(pw);
 

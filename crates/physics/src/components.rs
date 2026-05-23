@@ -19,36 +19,6 @@ impl Component for RapierHandles {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Marker for the player-controlled body.
-///
-/// The physics sync system treats entities with this marker specially:
-/// - rotations are locked (player stays upright)
-/// - the fly camera system writes `linvel` instead of mutating `Transform`
-/// - the body is built as a dynamic capsule even if no `CollisionShape`
-///   was attached by a NIF
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PlayerBody {
-    /// Capsule half-height (Bethesda units, Y-up).
-    pub half_height: f32,
-    /// Capsule radius (Bethesda units).
-    pub radius: f32,
-}
-
-impl PlayerBody {
-    /// Vanilla-Skyrim-sized humanoid capsule: 128 BU tall, 36 BU wide.
-    /// Matches CommonLib's `bhkCharController` dimensions for a Nord
-    /// male — `2 * (46 + 18) = 128 BU ≈ 1.83 m` at Skyrim's 70 BU/m
-    /// scale.
-    pub const HUMAN: Self = Self {
-        half_height: 46.0,
-        radius: 18.0,
-    };
-}
-
-impl Component for PlayerBody {
-    type Storage = SparseSetStorage<Self>;
-}
-
 /// Kinematic character-controller body (M28.5). The high-level
 /// player rig — combines the capsule shape used by the physics layer
 /// with the movement-state fields the per-frame controller system
@@ -73,8 +43,7 @@ impl Component for PlayerBody {
 /// **Coordinate frame**: capsule is `capsule_y` (vertical), so
 /// `half_height` excludes the hemispherical caps — total visible
 /// height = `2 * (half_height + radius)`. Default `HUMAN` matches
-/// `PlayerBody::HUMAN` (128 BU tall, 36 BU wide — vanilla Skyrim
-/// actor-capsule dimensions).
+/// vanilla Skyrim actor-capsule dimensions (128 BU tall, 36 BU wide).
 #[derive(Debug, Clone, Copy)]
 pub struct CharacterController {
     // ── Shape ────────────────────────────────────────────────────
@@ -170,13 +139,6 @@ impl Component for CharacterController {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn player_body_human_dimensions() {
-        let p = PlayerBody::HUMAN;
-        assert!(p.half_height > 0.0);
-        assert!(p.radius > 0.0);
-    }
 
     #[test]
     fn character_controller_human_dimensions() {
