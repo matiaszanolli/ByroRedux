@@ -488,6 +488,55 @@ impl EsmIndex {
     /// [`categories`] so the line stays in lockstep with [`total`]. See
     /// #634 / FNV-D2-06.
     ///
+    /// M47.0 Phase 3 — look up the SCPT `form_id` attached to a base
+    /// record by walking every record map that captures
+    /// `script_form_id` in its parser today: activators (ACTI),
+    /// containers (CONT), terminals (TERM), items (WEAP / ARMO /
+    /// AMMO / MISC / KEYM / ALCH / INGR / BOOK / NOTE — anything that
+    /// routes through `CommonItemFields`). Returns `None` when
+    /// `base_form_id` isn't found OR the matched record has
+    /// `script_form_id == 0` (the "no script attached" sentinel).
+    ///
+    /// **Coverage gaps to close later:**
+    /// - DOOR / LIGH / FURN / etc. — these currently land in
+    ///   `cells.statics` (bulk MODL catch-all), not typed maps, and
+    ///   the static record doesn't carry `script_form_id`. Lifting
+    ///   them into typed maps (with the SCRI field) is sibling work
+    ///   tracked alongside M47.0.
+    /// - NPC_ / CREA — `NpcRecord` doesn't have a top-level
+    ///   `script_form_id` field today (NPCs CAN have attached scripts
+    ///   via SCRI but the parser drops it). NPC scripts arrive with
+    ///   M47.0 follow-ups when actor AI hooks need them.
+    /// - Skyrim+ VMAD-attached scripts — the per-instance script
+    ///   override mechanism. Decoded by M47.2, not by this lookup.
+    ///
+    /// **Stable contract**: the returned form_id is always either
+    /// a valid SCPT key in `EsmIndex.scripts` OR `None`. Callers can
+    /// chain `.and_then(|fid| index.scripts.get(&fid))` safely.
+    pub fn base_record_script(&self, base_form_id: u32) -> Option<u32> {
+        // Helper to nil-out the "0 = no script" sentinel.
+        fn nonzero(form_id: u32) -> Option<u32> {
+            if form_id == 0 {
+                None
+            } else {
+                Some(form_id)
+            }
+        }
+        if let Some(r) = self.activators.get(&base_form_id) {
+            return nonzero(r.script_form_id);
+        }
+        if let Some(r) = self.containers.get(&base_form_id) {
+            return nonzero(r.script_form_id);
+        }
+        if let Some(r) = self.terminals.get(&base_form_id) {
+            return nonzero(r.script_form_id);
+        }
+        if let Some(r) = self.items.get(&base_form_id) {
+            return nonzero(r.common.script_form_id);
+        }
+        None
+    }
+
     /// [`categories`]: Self::categories
     /// [`total`]: Self::total
     pub fn category_breakdown(&self) -> String {
@@ -579,5 +628,51 @@ impl EsmIndex {
         self.apparatuses.extend(other.apparatuses);
         self.sigil_stones.extend(other.sigil_stones);
         self.soul_gems.extend(other.soul_gems);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::esm::records::ActiRecord;
+
+    #[test]
+    fn base_record_script_returns_none_for_unknown_id() {
+        let idx = EsmIndex::default();
+        assert!(idx.base_record_script(0x0000_1234).is_none());
+    }
+
+    #[test]
+    fn base_record_script_finds_activator_script() {
+        let mut idx = EsmIndex::default();
+        idx.activators.insert(
+            0xAAAA_0001,
+            ActiRecord {
+                form_id: 0xAAAA_0001,
+                script_form_id: 0xBBBB_0001,
+                ..Default::default()
+            },
+        );
+        assert_eq!(idx.base_record_script(0xAAAA_0001), Some(0xBBBB_0001));
+    }
+
+    #[test]
+    fn base_record_script_treats_zero_script_form_id_as_no_script() {
+        // ACTI with script_form_id == 0 (the "no script attached"
+        // sentinel) must resolve to None, NOT Some(0). Without this
+        // gate the caller would chain into `index.scripts.get(&0)`
+        // which would always miss and the caller couldn't distinguish
+        // "this base record has no script" from "this base record has
+        // a dangling script reference."
+        let mut idx = EsmIndex::default();
+        idx.activators.insert(
+            0xAAAA_0002,
+            ActiRecord {
+                form_id: 0xAAAA_0002,
+                script_form_id: 0,
+                ..Default::default()
+            },
+        );
+        assert!(idx.base_record_script(0xAAAA_0002).is_none());
     }
 }
