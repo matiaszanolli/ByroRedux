@@ -295,3 +295,174 @@ fn full_lifecycle_round_trip_via_event_then_tick() {
         RumbleState::Active
     );
 }
+
+// ── M47.0 Phase 6 — end-to-end integration tests ────────────────
+//
+// The R5 tests above bypass the script registry by directly inserting
+// `RumbleOnActivate` on the lever. The integration tests below
+// exercise the FULL Phase 1-5 chain:
+//   1. Build a world with `crate::register` (Phase 1 wiring).
+//   2. Build a `ScriptRegistry` + `register_spawners` (Phase 2 +
+//      Phase 3a/3b).
+//   3. Run the spawner via the registry's lookup path → component
+//      lands on the entity (simulates the cell loader's
+//      `attach_script_for_refr`).
+//   4. Fire `ActivateEvent` (simulates the `script.activate`
+//      console command from Phase 4).
+//   5. Run `rumble_on_activate_system` (Phase 1's scheduler
+//      registration would do this automatically in the engine; the
+//      test calls it explicitly).
+//   6. Assert the post-state matches the e2e expected outcome.
+
+/// Build a world with the FULL M47.0 plumbing in place — scripting
+/// crate `register`, a `ScriptRegistry` populated by
+/// `papyrus_demo::register_spawners`, and a player entity wired into
+/// the [`PlayerEntity`] resource. Mirrors what the engine's main.rs
+/// does at boot.
+fn setup_world_with_registry() -> (World, EntityId, crate::ScriptRegistry) {
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PlayerEntity(player));
+    let mut registry = crate::ScriptRegistry::new();
+    crate::papyrus_demo::register_spawners(&mut registry);
+    (world, player, registry)
+}
+
+#[test]
+fn registry_spawner_attaches_rumble_component_on_lookup_hit() {
+    // Phase 2+3 contract: editor_id "defaultRumbleOnActivate" → spawner
+    // → `RumbleOnActivate` lands on the supplied entity at .psc defaults.
+    let (mut world, _player, registry) = setup_world_with_registry();
+    let lever = world.spawn();
+    assert!(
+        !world.has::<RumbleOnActivate>(lever),
+        "lever must not have RumbleOnActivate before spawner runs"
+    );
+
+    let spawn_fn = registry
+        .lookup("defaultRumbleOnActivate")
+        .expect("Phase 2 registers defaultRumbleOnActivate");
+    spawn_fn(&mut world, lever);
+
+    let rumble = world
+        .get::<RumbleOnActivate>(lever)
+        .expect("spawner must insert RumbleOnActivate");
+    assert_eq!(rumble.state, RumbleState::Active);
+    assert_eq!(rumble.camera_intensity, 0.25); // .psc default
+    assert_eq!(rumble.duration, 0.25); // .psc default
+    assert!(rumble.repeatable); // .psc default
+}
+
+#[test]
+fn registry_lookup_miss_for_unregistered_editor_id_returns_none() {
+    // Phase 3b contract: an unregistered SCPT.editor_id is silently
+    // skipped by the cell loader. Verify the lookup-half of that
+    // contract returns None so the loader's fall-through fires.
+    let (_world, _player, registry) = setup_world_with_registry();
+    assert!(registry.lookup("SomeMod_NoSuchScript").is_none());
+    assert!(registry.lookup("").is_none());
+    // Case sensitivity (Phase 2 contract).
+    assert!(registry.lookup("DEFAULTRUMBLEONACTIVATE").is_none());
+}
+
+#[test]
+fn full_e2e_pipeline_registry_spawn_then_activate_then_state_machine() {
+    // The integration smoke test for M47.0: walk the entire Phase
+    // 1-5 chain end-to-end on a synthetic entity.
+    let (mut world, player, registry) = setup_world_with_registry();
+    let lever = world.spawn();
+
+    // Phase 3b — spawner attaches state via registry lookup.
+    let spawn_fn = registry.lookup("defaultRumbleOnActivate").unwrap();
+    spawn_fn(&mut world, lever);
+    assert_eq!(
+        world.get::<RumbleOnActivate>(lever).unwrap().state,
+        RumbleState::Active
+    );
+
+    // Phase 4 — emit ActivateEvent (simulates `script.activate` cmd
+    // or the gameplay use-key path).
+    let mut activate_q = world.query_mut::<ActivateEvent>().unwrap();
+    activate_q.insert(lever, ActivateEvent { activator: player });
+    drop(activate_q);
+
+    // Phase 1 — dispatcher system runs (engine scheduler would call
+    // this; the test calls it directly).
+    rumble_on_activate_system(&world);
+
+    // Assert: Active → Busy transition fired, cross-subsystem
+    // commands landed on the player.
+    let post_state = world.get::<RumbleOnActivate>(lever).unwrap().state;
+    assert!(
+        matches!(post_state, RumbleState::Busy { .. }),
+        "expected Busy state post-activate, got {:?}",
+        post_state
+    );
+    assert!(
+        world.has::<CameraShakeCommand>(player),
+        "Phase 1 dispatcher must emit CameraShakeCommand on the player"
+    );
+    assert!(
+        world.has::<ControllerRumbleCommand>(player),
+        "Phase 1 dispatcher must emit ControllerRumbleCommand on the player"
+    );
+
+    // Phase 1+3 (continuation) — tick the wait counter; Active state
+    // restored because `repeatable: true`.
+    rumble_tick_system(&world, 0.5); // longer than .psc duration (0.25)
+    assert_eq!(
+        world.get::<RumbleOnActivate>(lever).unwrap().state,
+        RumbleState::Active,
+        "post-tick repeatable rumble must return to Active"
+    );
+}
+
+#[test]
+fn on_cell_load_event_storage_registered_and_insertable() {
+    // Phase 5 contract: the OnCellLoadEvent storage is registered by
+    // `scripting::register`. The cell-loader emit site (Phase 5 in
+    // `byroredux/src/cell_loader/references.rs`) inserts the marker
+    // after `spawn_fn` runs. Mirror that here to confirm the storage
+    // surface works.
+    let mut world = World::new();
+    crate::register(&mut world);
+    let entity = world.spawn();
+    let mut q = world
+        .query_mut::<crate::OnCellLoadEvent>()
+        .expect("OnCellLoadEvent storage must be registered by crate::register");
+    q.insert(entity, crate::OnCellLoadEvent);
+    drop(q);
+    assert!(world.has::<crate::OnCellLoadEvent>(entity));
+}
+
+#[test]
+fn on_trigger_enter_event_and_on_equip_event_storages_registered() {
+    // Phase 5 contract: OnTriggerEnterEvent + OnEquipEvent are
+    // structurally available (storage registered, marker insertable)
+    // even though their emit sites land in follow-up work
+    // (Rapier sensors + M41 equip pipeline). Scripts can declare
+    // these queries today and the engine will start firing them once
+    // the emit sites materialize.
+    let mut world = World::new();
+    crate::register(&mut world);
+    let trigger_volume = world.spawn();
+    let player = world.spawn();
+    let item = world.spawn();
+    let npc = world.spawn();
+
+    {
+        let mut q = world.query_mut::<crate::OnTriggerEnterEvent>().unwrap();
+        q.insert(
+            trigger_volume,
+            crate::OnTriggerEnterEvent { triggerer: player },
+        );
+    }
+    assert!(world.has::<crate::OnTriggerEnterEvent>(trigger_volume));
+
+    {
+        let mut q = world.query_mut::<crate::OnEquipEvent>().unwrap();
+        q.insert(item, crate::OnEquipEvent { wearer: npc });
+    }
+    assert!(world.has::<crate::OnEquipEvent>(item));
+}

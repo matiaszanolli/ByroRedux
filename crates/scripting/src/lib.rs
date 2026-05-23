@@ -19,7 +19,8 @@ pub mod timer;
 
 pub use cleanup::event_cleanup_system;
 pub use events::{
-    ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, HitEvent, TimerExpired,
+    ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, HitEvent, OnCellLoadEvent,
+    OnEquipEvent, OnTriggerEnterEvent, TimerExpired,
 };
 pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, RecurringUpdate};
 pub use registry::{ScriptRegistry, ScriptSpawnFn};
@@ -37,6 +38,17 @@ pub fn register(world: &mut World) {
     world.register::<TimerExpired>();
     world.register::<AnimationTextKeyEvents>();
     world.register::<ScriptTimer>();
+    // M47.0 Phase 5 — canonical event markers. OnCellLoadEvent +
+    // OnTriggerEnterEvent + OnEquipEvent join the existing
+    // ActivateEvent / HitEvent / TimerExpired in the script-event
+    // catalog. Emit sites land per-phase:
+    //   * OnCellLoadEvent — emitted by the cell loader's
+    //     `attach_script_for_refr` (Phase 5, this commit).
+    //   * OnTriggerEnterEvent — deferred to Rapier sensor wiring.
+    //   * OnEquipEvent — deferred to M41 equip pipeline integration.
+    world.register::<OnCellLoadEvent>();
+    world.register::<OnTriggerEnterEvent>();
+    world.register::<OnEquipEvent>();
     recurring_update::register(world);
     // M47.0 Phase 1 — register the R5 prototype storages so
     // `papyrus_demo` scripts can attach their state components when

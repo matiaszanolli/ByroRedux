@@ -1497,6 +1497,80 @@ impl ConsoleCommand for DoorTeleportCommand {
     }
 }
 
+/// `script.activate <entity_id>` — M47.0 Phase 4 emit site for
+/// [`ActivateEvent`].
+///
+/// Inserts an `ActivateEvent { activator: player }` marker component
+/// on the named entity. Consumed by every script that handles
+/// `OnActivate` — today, the [`papyrus_demo::rumble_on_activate_system`]
+/// is the canonical consumer, but downstream M47.0 demos
+/// (quest_advance, mg07_door, …) drain the same marker.
+///
+/// **Why a console command instead of an input handler**: M47.0's
+/// scope is "the event-hooks runtime exists and works" — the
+/// canonical Bethesda use-key + raycast wiring touches M28.5 input
+/// architecture (per-frame input snapshot, camera-forward raycast,
+/// activation reticle UI) which is gameplay-UX scope. The console
+/// command demonstrates the e2e activation flow without the UX
+/// commitment; gameplay-driven activate lands as a follow-up to
+/// M28.5.
+///
+/// Usage: `script.activate <entity_id>` — entity_id matches what
+/// `entities` / `prid` print.
+///
+/// The `activator` field on the inserted marker is filled with the
+/// [`PlayerEntity`] resource when present (so scripts that gate on
+/// "activator == player" still match), or `EntityId(0)` as a benign
+/// fallback when no PlayerEntity has been inserted (test fixtures).
+///
+/// [`ActivateEvent`]: byroredux_scripting::ActivateEvent
+/// [`papyrus_demo::rumble_on_activate_system`]: byroredux_scripting::papyrus_demo::rumble_on_activate_system
+struct ScriptActivateCommand;
+impl ConsoleCommand for ScriptActivateCommand {
+    fn name(&self) -> &str {
+        "script.activate"
+    }
+    fn description(&self) -> &str {
+        "Emit ActivateEvent on an entity (usage: script.activate <entity_id>)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let trimmed = args.trim();
+        let Ok(entity_id) = trimmed.parse::<u32>() else {
+            return CommandOutput::line(format!(
+                "script.activate: failed to parse entity id from `{trimmed}` — \
+                 usage: script.activate <entity_id>"
+            ));
+        };
+
+        // Resolve `activator` — prefer the canonical PlayerEntity
+        // resource when set, fall back to EntityId(0) for fixtures
+        // / pre-scene-setup activations.
+        let activator: byroredux_core::ecs::EntityId = world
+            .try_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+            .map(|p| p.0)
+            .unwrap_or(0);
+
+        // Insert the marker. `query_mut` returns None if the storage
+        // was never registered — that would mean `scripting::register`
+        // didn't run, a programming error rather than a missing
+        // entity. The early-return is the same shape as `door.teleport`.
+        let Some(mut q) = world.query_mut::<byroredux_scripting::ActivateEvent>() else {
+            return CommandOutput::line(
+                "script.activate: ActivateEvent storage not registered — \
+                 scripting::register must run at engine init.",
+            );
+        };
+        q.insert(
+            entity_id,
+            byroredux_scripting::ActivateEvent { activator },
+        );
+
+        CommandOutput::line(format!(
+            "script.activate: ActivateEvent emitted on entity {entity_id} (activator = {activator})"
+        ))
+    }
+}
+
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(HelpCommand);
@@ -1519,6 +1593,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(SkinDumpCommand);
     registry.register(MemFragCommand);
     registry.register(LightDumpCommand);
+    registry.register(ScriptActivateCommand);
     registry
 }
 

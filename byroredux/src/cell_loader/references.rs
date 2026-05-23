@@ -1142,6 +1142,16 @@ fn attach_script_for_refr(
         return;
     };
     spawn_fn(world, entity);
+
+    // M47.0 Phase 5 — emit OnCellLoadEvent on the freshly-attached
+    // entity so the script's first-tick init hook fires on the same
+    // frame the cell loads. Mirrors Papyrus `OnLoad` semantics. The
+    // marker is drained by `event_cleanup_system` at end-of-frame,
+    // so each script sees exactly one OnCellLoad per cell entry.
+    if let Some(mut q) = world.query_mut::<byroredux_scripting::OnCellLoadEvent>() {
+        q.insert(entity, byroredux_scripting::OnCellLoadEvent);
+    }
+
     log::debug!(
         "M47.0: attached script '{}' (SCPT {:08X}) to entity {entity:?} via base {base_form_id:08X}",
         script.editor_id,
