@@ -77,11 +77,15 @@
 //! for per-script lowerings.
 
 use super::PlayerEntity;
+use crate::condition::{evaluate as evaluate_condition_list, ConditionContext};
 use crate::events::ActivateEvent;
 use crate::quest_stages::{QuestFormId, QuestStageAdvanced, QuestStageState};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::world::World;
+use byroredux_plugin::esm::records::condition::{
+    ComparisonOp, Condition, ConditionList, ConditionValue, RunOn,
+};
 
 /// "On activation, if the owning quest's stage predicates hold,
 /// advance the quest to `target_stage`."
@@ -98,16 +102,19 @@ pub struct QuestAdvanceOnActivate {
     /// resolves it once at script-attach time and stores the FormID
     /// here.
     pub owning_quest: QuestFormId,
-    /// Stage(s) that must be in `stages_done` for the advance to
-    /// fire. AND-combined with `forbid_done`. Empty means
-    /// "no precondition" (covers the "any activation advances"
-    /// long-tail).
-    pub require_done: Vec<u16>,
-    /// Stage(s) that must NOT be in `stages_done`. AND-combined
-    /// with `require_done`. Typically a singleton matching
-    /// `target_stage` — Papyrus's `!GetStageDone(N) → SetStage(N)`
-    /// idempotency idiom.
-    pub forbid_done: Vec<u16>,
+    /// M47.1 — Papyrus stage predicates lowered to a generic
+    /// [`ConditionList`]. The DA10 source's
+    /// `GetStageDone(37) == 1 && GetStageDone(40) == 0` becomes
+    /// two CTDAs (function 59, comparator Eq, comparand 1.0 and 0.0)
+    /// AND-combined. The advantage over the previous bespoke
+    /// `require_done` / `forbid_done` vecs is that the same data
+    /// shape now covers ALL Papyrus pre-condition patterns —
+    /// `HasPerk(...) || GetActorValue(...) >= 50`, faction gates,
+    /// distance checks, the lot — without per-script schema
+    /// expansion. Empty list = "no precondition" (`evaluate` returns
+    /// `true` on empty), preserving the "advance unconditionally"
+    /// semantics the bespoke vecs covered.
+    pub conditions: ConditionList,
     /// Stage written via `SetStage` when conditions are satisfied.
     pub target_stage: u16,
     /// Activator gate — if `Some(activator_kind)`, the activation's
@@ -148,14 +155,33 @@ pub enum ActivatorGate {
 /// equivalent constructions from the AST. Tests use this builder
 /// to validate the translation is byte-faithful to the .psc source.
 pub fn da10_main_door(owning_quest: QuestFormId) -> QuestAdvanceOnActivate {
+    // M47.1 — bespoke `require_done`/`forbid_done` vecs replaced
+    // by a `ConditionList` of CTDAs. The two source predicates
+    // (`GetStageDone(37) == 1`, `GetStageDone(40) == 0`) lower to
+    // two CTDAs with function_index=59 (GetStageDone), comparator
+    // Eq, comparands 1.0 and 0.0. AND-combined (both `or_next=false`).
+    let cond_get_stage_done = |stage: u16, expected: f32| Condition {
+        function_index: 59, // GetStageDone
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(expected),
+        param_1: owning_quest.0,
+        param_2: stage as u32,
+        run_on: RunOn::Subject,
+        reference_form_id: 0,
+        extra_data_id: 0,
+        or_next: false,
+    };
     QuestAdvanceOnActivate {
         owning_quest,
-        // Papyrus: `GetStageDone(37) == 1` → require 37 done.
-        require_done: vec![37],
-        // Papyrus: `GetStageDone(40) == 0` → forbid 40 done.
-        forbid_done: vec![40],
-        // Papyrus: `SetStage(40)` → target 40. (Self-forbids
-        // re-firing once 40 has been set — idempotency.)
+        conditions: vec![
+            // Papyrus: `GetStageDone(37) == 1` → stage 37 must be done.
+            cond_get_stage_done(37, 1.0),
+            // Papyrus: `GetStageDone(40) == 0` → stage 40 must NOT
+            // be done. (Self-forbids re-firing once 40 has been set
+            // — idempotency.)
+            cond_get_stage_done(40, 0.0),
+        ],
+        // Papyrus: `SetStage(40)` → target 40.
         target_stage: 40,
         // DA10's source has no player gate.
         activator_gate: ActivatorGate::Any,
@@ -217,33 +243,30 @@ pub fn quest_advance_on_activate_system(world: &World) {
         target_stage: u16,
     }
     let mut pending: Vec<PendingAdvance> = Vec::new();
-    {
-        let stage_state = world.resource::<QuestStageState>();
-        for (entity, ev) in events.iter() {
-            let Some(comp) = advances.get(entity) else {
-                continue;
-            };
-            // Activator gate.
-            if matches!(comp.activator_gate, ActivatorGate::PlayerOnly)
-                && ev.activator != player_entity
-            {
-                continue;
-            }
-            // Stage predicates.
-            let all_required_done = comp
-                .require_done
-                .iter()
-                .all(|s| stage_state.get_stage_done(comp.owning_quest, *s));
-            let none_forbidden_done = comp
-                .forbid_done
-                .iter()
-                .all(|s| !stage_state.get_stage_done(comp.owning_quest, *s));
-            if all_required_done && none_forbidden_done {
-                pending.push(PendingAdvance {
-                    quest: comp.owning_quest,
-                    target_stage: comp.target_stage,
-                });
-            }
+    for (entity, ev) in events.iter() {
+        let Some(comp) = advances.get(entity) else {
+            continue;
+        };
+        // Activator gate.
+        if matches!(comp.activator_gate, ActivatorGate::PlayerOnly)
+            && ev.activator != player_entity
+        {
+            continue;
+        }
+        // M47.1 — stage predicates evaluated through the generic
+        // `ConditionList` evaluator. The subject for the condition
+        // context is the activator (Papyrus's `Self` on this script
+        // type binds to the alias's REFR, which is what `entity`
+        // here represents). The evaluator handles the OR-precedence
+        // grouping automatically — DA10's two-AND case is trivial,
+        // but the same code path covers HasPerk-or-FactionRank
+        // disjunctions, multi-condition gates, etc.
+        let ctx = ConditionContext::for_subject(entity);
+        if evaluate_condition_list(&comp.conditions, world, &ctx) {
+            pending.push(PendingAdvance {
+                quest: comp.owning_quest,
+                target_stage: comp.target_stage,
+            });
         }
     }
     drop(advances);

@@ -64,6 +64,12 @@ pub enum ConditionFunction {
     /// for `param_1` quest in the `QuestStageState` resource.
     /// FO3 / FNV / Skyrim index 58.
     GetStage,
+    /// `GetStageDone(quest_form_id, stage) → f32`. Returns 1.0 if
+    /// `stage` (param_2) for `quest_form_id` (param_1) has been
+    /// reached at any point, 0.0 otherwise. Bethesda's standard
+    /// idempotency primitive for "this quest milestone has fired
+    /// before." FO3 / FNV / Skyrim index 59.
+    GetStageDone,
     /// `GetFactionRank(faction_form_id) → f32`. Returns -1 when the
     /// Run-On isn't in the faction; integer rank otherwise.
     /// FO3 / FNV / Skyrim index 60. Stubbed today: always returns -1
@@ -94,6 +100,7 @@ impl ConditionFunction {
             9 => Self::GetActorValue,
             36 => Self::GetDistance,
             58 => Self::GetStage,
+            59 => Self::GetStageDone,
             60 => Self::GetFactionRank,
             71 => Self::GetIsID,
             99 => Self::HasPerk,
@@ -272,6 +279,23 @@ pub fn evaluate_function(
                 return 0.0;
             };
             state.get_stage(QuestFormId(condition.param_1)) as f32
+        }
+        ConditionFunction::GetStageDone => {
+            // GetStageDone(quest_form_id, stage). param_1 = quest
+            // FormID, param_2 = stage. Returns 1.0 when the stage
+            // has been reached, 0.0 otherwise. The Bethesda
+            // idempotency primitive — "this milestone fired before."
+            use crate::quest_stages::{QuestFormId, QuestStageState};
+            let Some(state) = world.try_resource::<QuestStageState>() else {
+                return 0.0;
+            };
+            let quest = QuestFormId(condition.param_1);
+            let stage = condition.param_2 as u16;
+            if state.get_stage_done(quest, stage) {
+                1.0
+            } else {
+                0.0
+            }
         }
         ConditionFunction::GetFactionRank => {
             // FO3 / FNV / Skyrim: GetFactionRank returns -1 when the

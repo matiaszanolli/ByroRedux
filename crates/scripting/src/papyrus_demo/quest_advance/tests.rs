@@ -183,17 +183,17 @@ fn player_only_gate_filters_non_player_activator() {
 // ── No-precondition long tail ────────────────────────────────
 
 /// Some scripts (the auto-generated `[A-Z]F_*FragmentScript.pex`
-/// scene fragments) have empty `require_done` / `forbid_done`
-/// vectors — they advance unconditionally on activate. Pin the
-/// vacuous-true reduction semantic.
+/// scene fragments) have empty `conditions` — they advance
+/// unconditionally on activate. M47.1 pin: the evaluator returns
+/// `true` on an empty `ConditionList`, preserving the vacuous-true
+/// reduction the bespoke `require_done` / `forbid_done` vecs had.
 #[test]
 fn empty_predicates_advance_unconditionally() {
     let (world, player, door) = setup_da10_world();
     {
         let mut q = world.query_mut::<QuestAdvanceOnActivate>().unwrap();
         let comp = q.get_mut(door).unwrap();
-        comp.require_done.clear();
-        comp.forbid_done.clear();
+        comp.conditions.clear();
         comp.target_stage = 20;
     }
 
