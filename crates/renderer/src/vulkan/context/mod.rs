@@ -2498,7 +2498,7 @@ impl Drop for VulkanContext {
                     // earlier in the teardown sequence; no in-flight
                     // command buffer references the per-FIF accumulator
                     // images. #1255 / Phase C of #1210.
-                    unsafe { wca.destroy(&self.device, alloc) };
+                    wca.destroy(&self.device, alloc);
                 }
                 if let Some(ref mut svgf) = self.svgf {
                     svgf.destroy(&self.device, alloc);

@@ -2764,18 +2764,19 @@ impl VulkanContext {
         let submit_t0 = Instant::now();
         let wait_semaphores = [self.frame_sync.image_available[frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        // #906 / REN-D1-NEW-02 — render_finished is per FRAME-IN-FLIGHT,
-        // not per image. Pre-fix the per-image index left a MAILBOX
-        // race where a discarded queued present (spec-legal under
-        // MAILBOX) would leave `render_finished[image]` signaled, and
-        // the next frame re-acquiring that image would re-signal it
-        // (VUID-vkQueueSubmit-pSignalSemaphores-00067). Per-frame keys
-        // off `in_flight[frame]` instead — the fence wait at line 149
-        // already guarantees the previous submit on this slot has
-        // retired, so the semaphore is unsignaled by the time we
-        // reuse it. Matches the canonical Khronos / Vulkan-Tutorial
-        // sample pattern.
-        let signal_semaphores = [self.frame_sync.render_finished[frame]];
+        // render_finished is PER SWAPCHAIN IMAGE. Re-using the same
+        // semaphore on a per-frame-in-flight cycle (the pre-revert #906
+        // pattern) trips VUID-vkQueueSubmit-pSignalSemaphores-00067
+        // whenever swapchain_image_count > MAX_FRAMES_IN_FLIGHT: the
+        // slot's submit re-signals `render_finished[slot]` while a
+        // prior present on a different image is still tracking the
+        // same handle. Per-image keys off the acquire boundary —
+        // `acquire_next_image` returning `image_index` guarantees the
+        // prior present of that image (and its semaphore consumption)
+        // has completed. See `sync::FrameSync` doc for the full
+        // rationale + the Khronos issue 2007 MAILBOX-discard
+        // clarification that made this safe again.
+        let signal_semaphores = [self.frame_sync.render_finished[img]];
         let command_buffers_to_submit = [cmd];
 
         let submit_info = vk::SubmitInfo::default()

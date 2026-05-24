@@ -40,29 +40,36 @@ const _: () = assert!(
 /// `image_available` semaphores are per frame-in-flight — one is signaled
 /// per `acquire_next_image` call and waited on by the same frame's submit.
 ///
-/// `render_finished` semaphores are per frame-in-flight — signaled by the
-/// frame's render submit, waited on by `vkQueuePresentKHR`. Per-frame (not
-/// per-image) keys off the frame slot's `in_flight[frame]` fence — when the
-/// CPU reuses a slot via `wait_for_fences`, the submit (which signaled
-/// `render_finished[frame]`) has retired and is safe to re-signal.
+/// `render_finished` semaphores are PER SWAPCHAIN IMAGE — signaled by the
+/// frame's render submit, waited on by `vkQueuePresentKHR`. Per-image
+/// keys off the acquire boundary: when `acquire_next_image` returns image
+/// index `i`, the implementation guarantees the previous present of image
+/// `i` has completed and the matching `render_finished[i]` semaphore is
+/// fully consumed. Re-signaling is therefore always safe.
 ///
-/// Pre-#906 / REN-D1-NEW-02 this was per swapchain image, which had a
-/// validation hazard under MAILBOX present mode: if the present engine
-/// REPLACED a queued present without waiting on its semaphore (per VK
-/// spec — MAILBOX is allowed to discard the queued entry), the
-/// `render_finished[image]` stayed signaled, and the next frame
-/// re-acquiring that image would submit with a still-signaled semaphore
-/// in `pSignalSemaphores` (VUID-vkQueueSubmit-pSignalSemaphores-00067).
-/// Per-frame-in-flight matches the canonical Khronos / Vulkan-Tutorial
-/// pattern and sidesteps the MAILBOX discard race entirely.
+/// Pre-#906 we used per-image; #906 moved to per-frame-in-flight citing a
+/// MAILBOX-discard race (semaphore signal would survive a discarded present).
+/// That premise was based on the pre-2023 spec text; current spec (clarified
+/// via Khronos issue 2007) requires the implementation to consume / reset
+/// wait semaphores even on MAILBOX discard. The per-frame pattern that
+/// replaced it has its OWN hazard, observed in the Skyrim Riverwood run:
+/// with swapchain_image_count (3) > MAX_FRAMES_IN_FLIGHT (2) under FIFO,
+/// a slot's submit re-signals `render_finished[slot]` while the prior
+/// present of some other image still holds the same handle in its
+/// pSignalSemaphores tracking, tripping
+/// VUID-vkQueueSubmit-pSignalSemaphores-00067 (
+/// "Swapchain image N was presented but was not re-acquired, so semaphore
+/// may still be in use and cannot be safely reused with image index M").
+/// Per-image flips this back to the canonical pattern used by the current
+/// Vulkan-Samples HelloTriangle and avoids both races.
 ///
 /// Fences are per frame-in-flight for CPU-side throttling.
 pub struct FrameSync {
     /// One per frame-in-flight — signaled when an image is acquired.
     pub image_available: Vec<vk::Semaphore>,
-    /// One per frame-in-flight — signaled by the frame's render submit,
-    /// waited on by the matching frame's present. See type-level doc
-    /// for the MAILBOX-discard rationale (#906).
+    /// One per SWAPCHAIN IMAGE — signaled by the frame's render submit
+    /// (indexed by the acquired image_index), waited on by the matching
+    /// `queue_present`. See type-level doc for the per-image rationale.
     pub render_finished: Vec<vk::Semaphore>,
     /// One per frame-in-flight — CPU waits on these to throttle submission.
     pub in_flight: Vec<vk::Fence>,
@@ -111,10 +118,11 @@ pub fn create_sync_objects(
         }
     }
 
-    // One render-finished semaphore per frame-in-flight (#906 /
-    // REN-D1-NEW-02). See `FrameSync` doc for the MAILBOX rationale.
-    let mut render_finished = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-    for _ in 0..MAX_FRAMES_IN_FLIGHT {
+    // One render-finished semaphore per SWAPCHAIN IMAGE. See `FrameSync`
+    // doc for the per-image rationale (canonical Khronos pattern;
+    // avoids VUID-00067 across both FIFO and MAILBOX).
+    let mut render_finished = Vec::with_capacity(swapchain_image_count);
+    for _ in 0..swapchain_image_count {
         unsafe {
             render_finished.push(
                 device
@@ -153,23 +161,30 @@ pub fn create_sync_objects(
 }
 
 impl FrameSync {
-    /// Resize the per-image fence-aliasing tracker for a new swapchain
-    /// image count AND recreate `in_flight` fences as SIGNALED. Must
-    /// be called after `device_wait_idle` so no previous image-fence
-    /// reference is in use.
+    /// Resize the per-image fence-aliasing tracker AND the per-image
+    /// `render_finished` semaphore Vec for a new swapchain image count,
+    /// then recreate `in_flight` fences as SIGNALED. Must be called
+    /// after `device_wait_idle` so no previous image-fence / image-
+    /// semaphore reference is in use.
     ///
-    /// Post-#906 `render_finished` is per frame-in-flight (constant
-    /// size), so the per-image-semaphore destroy/recreate dance is
-    /// gone. What stays is the `in_flight` fence recreation, added in
-    /// #908 / REN-D1-NEW-01: `draw_frame` calls `reset_fences` at
-    /// `context/draw.rs:191` *before* `queue_submit`. Any `?`-
-    /// propagated error between those two points leaves the fence
-    /// UNSIGNALED with no submit queued to ever signal it. The
-    /// preceding `device_wait_idle` doesn't transition UNSIGNALED
-    /// fences back to SIGNALED, so the next `wait_for_fences`
-    /// (`draw.rs:147` — the both-slots wait at the top of each frame)
-    /// would deadlock at `u64::MAX` timeout. Destroying + recreating
-    /// the fences with `SIGNALED` here is safe because
+    /// `render_finished` semaphore recreation: post the revert to
+    /// per-image (`render_finished[image_index]`), the Vec length must
+    /// track `swapchain_image_count`. The CALLER passes the swapchain
+    /// recreation through `device_wait_idle` before reaching this
+    /// function, so destroy + recreate is safe (no in-flight present
+    /// holds any of the old handles). This was the path that #906
+    /// originally removed; the per-frame replacement turned out to have
+    /// VUID-00067 issues of its own, so we're back. See `FrameSync` doc.
+    ///
+    /// `in_flight` fence recreation (added in #908 / REN-D1-NEW-01):
+    /// `draw_frame` calls `reset_fences` immediately before
+    /// `queue_submit`. Any `?`-propagated error between those two
+    /// points leaves the fence UNSIGNALED with no submit queued to
+    /// ever signal it. The preceding `device_wait_idle` doesn't
+    /// transition UNSIGNALED fences back to SIGNALED, so the next
+    /// `wait_for_fences` (the both-slots wait at the top of each
+    /// frame) would deadlock at `u64::MAX` timeout. Destroying +
+    /// recreating the fences with `SIGNALED` here is safe because
     /// `device_wait_idle` guarantees no command buffer is referencing
     /// them, and it sidesteps the missing `vkSignalFence` API. Cost
     /// is two `vkDestroyFence` + two `vkCreateFence` per resize —
@@ -181,6 +196,24 @@ impl FrameSync {
     ) -> Result<()> {
         self.images_in_flight = vec![vk::Fence::null(); swapchain_image_count];
 
+        // Per-image render_finished — destroy old, create N fresh ones
+        // for the new image count. device_wait_idle (caller-side, before
+        // entering this function) guarantees no present is still using
+        // any of the old handles.
+        let sem_info = vk::SemaphoreCreateInfo::default();
+        for sem in &self.render_finished {
+            device.destroy_semaphore(*sem, None);
+        }
+        self.render_finished.clear();
+        self.render_finished.reserve(swapchain_image_count);
+        for _ in 0..swapchain_image_count {
+            self.render_finished.push(
+                device
+                    .create_semaphore(&sem_info, None)
+                    .context("Failed to recreate render_finished semaphore after resize")?,
+            );
+        }
+
         let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         for fence in &mut self.in_flight {
             device.destroy_fence(*fence, None);
@@ -190,8 +223,9 @@ impl FrameSync {
         }
 
         log::info!(
-            "Sync objects recreated for {} swapchain images ({} in_flight fences re-signaled)",
+            "Sync objects recreated for {} swapchain images ({} render_finished semaphores, {} in_flight fences re-signaled)",
             swapchain_image_count,
+            self.render_finished.len(),
             self.in_flight.len(),
         );
         Ok(())
