@@ -948,13 +948,15 @@ impl BSLightingShaderProperty {
             // here AND 4 bytes again in shader_type=1 trailing, drifting
             // every vanilla FO4 BSLSP by -4 (over-read).
             //
-            // The `FO4_ENV_SCALE = 140` constant's docstring claimed
-            // env_map_scale "moves inside wetness" at BSVER >= 140 —
-            // that claim doesn't hold against the Starfield (BSVER 168+)
-            // corpus: gating wetness env_map_scale on `>= FO4_ENV_SCALE`
-            // dropped Starfield Meshes01 parse rate from 97.21% to 95.77%.
-            // The empirical wire format keeps env_map_scale in shader-
-            // type=1 trailing across every BSVER we sweep today.
+            // The `FO4_DLC_UPPER = 140` constant (formerly named
+            // `FO4_ENV_SCALE` per #1242 — see version.rs for the
+            // rename rationale) was previously docstring'd as a
+            // wetness-relocation threshold; that claim doesn't hold
+            // against the Starfield (BSVER 168+) corpus. Gating
+            // wetness env_map_scale on `>= FO4_DLC_UPPER` dropped
+            // Starfield Meshes01 parse rate from 97.21% to 95.77%.
+            // The empirical wire format keeps env_map_scale in
+            // shader-type=1 trailing across every BSVER we sweep today.
             //
             // Empirically pinned at BSVER=130: 5211 / 6455 BSLSP blocks
             // ship at size=140 (shader_type=0), 1192 at size=146
@@ -1202,7 +1204,7 @@ fn parse_shader_type_data_fo4(
         1 => {
             let env_map_scale = stream.read_f32_le()?;
             // FO4-specific: SSR bools (BSVER 130–139).
-            if bsver >= crate::version::bsver::FALLOUT4 && bsver < crate::version::bsver::FO4_ENV_SCALE {
+            if bsver >= crate::version::bsver::FALLOUT4 && bsver < crate::version::bsver::FO4_DLC_UPPER {
                 let _use_ssr = stream.read_byte_bool()?;
                 let _wetness_use_ssr = stream.read_byte_bool()?;
             }
@@ -1215,7 +1217,7 @@ fn parse_shader_type_data_fo4(
                 stream.read_f32_le()?,
             ];
             // FO4-specific: skin tint alpha (BSVER 130–139).
-            if bsver >= crate::version::bsver::FALLOUT4 && bsver < crate::version::bsver::FO4_ENV_SCALE {
+            if bsver >= crate::version::bsver::FALLOUT4 && bsver < crate::version::bsver::FO4_DLC_UPPER {
                 let _skin_tint_alpha = stream.read_f32_le()?;
             }
             Ok(ShaderTypeData::SkinTint { skin_tint_color })

@@ -231,10 +231,21 @@ pub mod bsver {
     /// (`bsver >= FO4_CRC_FLAGS`). Corresponds to nif.xml's
     /// `#BS_GTE_132#` predicate.
     pub const FO4_CRC_FLAGS: u32 = 132;
-    /// FO4 patch — `env_map_scale` moves inside an extended wetness
-    /// block. Content with `bsver >= FO4_ENV_SCALE` uses the new
-    /// layout; `bsver < FO4_ENV_SCALE` keeps the old position.
-    pub const FO4_ENV_SCALE: u32 = 140;
+    /// Exclusive upper bound of the FO4-DLC range that authors the
+    /// `BSEffectShaderProperty` SSR / skin-tint trailing bools — i.e.
+    /// the range `FALLOUT4..FO4_DLC_UPPER` (BSVER 130..=139) carries
+    /// `use_ssr` / `wetness_use_ssr` after `env_map_scale` on
+    /// shader_type = 1 (EnvironmentMap) and `skin_tint_alpha` after
+    /// the RGB triple on shader_type = 5 (SkinTint). FO76+
+    /// (`bsver >= FO76 = 155`) does NOT carry these fields.
+    ///
+    /// The previous interpretation (`env_map_scale` "moves inside
+    /// wetness" at this BSVER) was empirically wrong — gating wetness
+    /// env_map_scale on this threshold dropped Starfield Meshes01
+    /// parse rate from 97.21% → 95.77%. See `shader.rs:943-957` for
+    /// the empirical evidence and #1223 for the fix that obsoleted
+    /// the wetness claim.
+    pub const FO4_DLC_UPPER: u32 = 140;
     /// Lower bound for FO76 SF2 CRC arrays (`bsver >= FO76_SF2_CRCS`).
     /// The `num_sf2` count field is only present at this BSVER and
     /// above; below it the SF2 array is always empty.

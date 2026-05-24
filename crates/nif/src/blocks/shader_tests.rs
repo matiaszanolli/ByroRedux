@@ -512,7 +512,7 @@ fn build_bs_lighting_fo4_env_map() -> Vec<u8> {
                                                    // WetnessParams (BSVER=130: 6 floats). Order: spec_scale,
                                                    // spec_power, min_var, fresnel, metalness, unknown_1.
                                                    // #1223 — env_map_scale lives in the shader_type=1
-                                                   // (EnvironmentMap) trailing block at BSVER < FO4_ENV_SCALE
+                                                   // (EnvironmentMap) trailing block at BSVER < FO4_DLC_UPPER
                                                    // (140), NOT in wetness. Pre-#1223 this fixture wrote 7
                                                    // floats with a bogus env_map_scale slot, encoding the
                                                    // parser's old over-read gate; corrected here to match the
@@ -521,7 +521,7 @@ fn build_bs_lighting_fo4_env_map() -> Vec<u8> {
     for v in [0.1f32, 0.2, 0.3, 0.5, 0.6, 0.95] {
         data.extend_from_slice(&v.to_le_bytes());
     }
-    // Shader type 1 trailing: env_map_scale + 2 bools (FO4 BSVER < FO4_ENV_SCALE)
+    // Shader type 1 trailing: env_map_scale + 2 bools (FO4 BSVER < FO4_DLC_UPPER)
     data.extend_from_slice(&0.75f32.to_le_bytes()); // env_map_scale
     data.push(1u8); // use_ssr (bool)
     data.push(0u8); // wetness_use_ssr (bool)
@@ -1135,7 +1135,7 @@ fn parse_bs_lighting_fo4_env_map_with_wetness() {
     assert!((prop.grayscale_to_palette_scale - 0.7).abs() < 1e-6);
     assert!((prop.fresnel_power - 5.0).abs() < 1e-6);
     // Wetness params — BSVER=130 reads 6 floats (#1223). env_map_scale
-    // belongs to the shader_type=1 trailing block at BSVER < FO4_ENV_SCALE.
+    // belongs to the shader_type=1 trailing block at BSVER < FO4_DLC_UPPER.
     let w = prop.wetness.as_ref().unwrap();
     assert!((w.spec_scale - 0.1).abs() < 1e-6);
     assert_eq!(w.env_map_scale, 0.0, "env_map_scale stays at default in wetness at BSVER < 140 (#1223)");
