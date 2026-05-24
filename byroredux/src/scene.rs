@@ -704,6 +704,18 @@ pub(crate) fn setup_scene(
             },
         );
         world.insert_resource(crate::systems::PlayerEntity(Some(body)));
+        // M47.0 — the scripting crate's papyrus_demo systems
+        // (rumble_on_activate, quest_advance, mg07_door,
+        // dlc2_ttr4a) fetch this resource UNCONDITIONALLY at the
+        // top of their bodies, before the event-loop early-return.
+        // Distinct struct from `crate::systems::PlayerEntity` —
+        // papyrus_demo's `PlayerEntity(EntityId)` has no Option
+        // wrapper (designed assuming caller always inserts), so an
+        // absent resource panics on the first frame. Bind to the
+        // same `body` entity so any future scripting-driven player
+        // lookup (Game.GetPlayer().GetReference()) resolves to the
+        // M28.5 capsule. See the M47.0 / R5 closeout.
+        world.insert_resource(byroredux_scripting::papyrus_demo::PlayerEntity(body));
         log::info!(
             "M28.5 player character spawned at ({:.1}, {:.1}, {:.1}); eyes at ({:.1}, {:.1}, {:.1})",
             body_pos.x,
@@ -718,6 +730,15 @@ pub(crate) fn setup_scene(
         // systems can early-return on `.0.is_none()` instead of
         // panicking on absent resource), it's just empty.
         world.insert_resource(crate::systems::PlayerEntity::default());
+        // M47.0 — papyrus_demo's PlayerEntity has no Option wrapper
+        // and its consumer systems fetch the resource before the
+        // event-loop early-return. Spawn an empty placeholder
+        // entity so the resource fetch resolves; the scripting
+        // systems no-op on it because the placeholder has no
+        // Player / Camera / Reference components. Cost: one
+        // unused EntityId.
+        let placeholder = world.spawn();
+        world.insert_resource(byroredux_scripting::papyrus_demo::PlayerEntity(placeholder));
     }
 
     // Initialize fly camera yaw/pitch from the initial look direction.
