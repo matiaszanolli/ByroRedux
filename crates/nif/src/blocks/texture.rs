@@ -620,6 +620,175 @@ mod tests {
         assert_eq!(pix.pixel_data[0], 255); // first pixel R
         assert_eq!(stream.position() as usize, data.len());
     }
+
+    // ── #1240: NiTextureEffect FO4+ NiDynamicEffect gate ─────────────
+
+    /// Build a Skyrim SE header (BSVER=100). Below FALLOUT4=130, so
+    /// the NiDynamicEffect base fields are present in the wire format.
+    fn make_skyrim_se_header() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 100,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// Build a FO4 header (BSVER=130). At/above FALLOUT4, the
+    /// NiDynamicEffect base fields are absent — this is the gate that
+    /// pre-#1240 was missing on NiTextureEffect.
+    fn make_fo4_header() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 130,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// Minimal NiAVObjectData wire bytes for a string-table NIF
+    /// (Skyrim+/FO4 — both >= STRING_TABLE_THRESHOLD=V20_1_0_1). Empty
+    /// name + extra_data + null controller + zero flags + identity
+    /// transform + no properties + null collision.
+    fn av_object_bytes_string_table() -> Vec<u8> {
+        let mut d = Vec::new();
+        // NiObjectNET (post-string-table): 4-byte string index (-1 = None).
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // name index
+                                                     // extra_data: count + refs
+        d.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
+                                                  // controller_ref
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        // NiAVObject flags (u32 since bsver > 26)
+        d.extend_from_slice(&0u32.to_le_bytes());
+        // transform (NiTransform = 3×3 matrix + 3 floats translation + 1 scale)
+        // identity rotation
+        for row in 0..3 {
+            for col in 0..3 {
+                let v: f32 = if row == col { 1.0 } else { 0.0 };
+                d.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        // translation
+        for _ in 0..3 {
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // scale
+        d.extend_from_slice(&1.0f32.to_le_bytes());
+        // properties list — gated on bsver() <= 34; Skyrim BSVER 100 + FO4
+        // BSVER 130 both skip this field entirely.
+        // collision_ref (since v10.0.1.0)
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        d
+    }
+
+    /// NiTextureEffect tail starting from the model_projection_matrix
+    /// (i.e. everything AFTER the NiDynamicEffect base fields). Uses a
+    /// distinctive matrix value (m[0][0] = 7.5) so the test can assert
+    /// the parser landed at the right byte offset.
+    fn texture_effect_tail() -> Vec<u8> {
+        let mut d = Vec::new();
+        // model_projection_matrix (3×3 floats)
+        d.extend_from_slice(&7.5f32.to_le_bytes());
+        for _ in 1..9 {
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // model_projection_translation (3 floats)
+        for _ in 0..3 {
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // texture_filtering u32 + texture_clamping u32 + texture_type u32
+        // + coordinate_generation_type u32
+        for _ in 0..4 {
+            d.extend_from_slice(&0u32.to_le_bytes());
+        }
+        // source_texture_ref BlockRef (i32)
+        d.extend_from_slice(&(-1i32).to_le_bytes());
+        // enable_plane u8 + NiPlane (vec3 + f32)
+        d.push(0u8);
+        for _ in 0..4 {
+            d.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        // PS2 L/K only present at v <= 10.2.0.0 — Skyrim/FO4 (v20.2.0.7)
+        // skip these. No unknown_short either (gated v <= 4.1.0.12).
+        d
+    }
+
+    /// #1240 regression — on FO4 (BSVER >= 130), `NiTextureEffect`
+    /// MUST NOT read the `Switch State` / `Affected Nodes` NiDynamicEffect
+    /// base fields. Pre-#1240 the parser unconditionally consumed them,
+    /// over-reading by 5 bytes (u8 + u32) and garbaging every downstream
+    /// field. Build a FO4 fixture with NO NiDynamicEffect bytes between
+    /// the NiAVObjectData tail and the projection matrix; assert the
+    /// matrix value lands intact.
+    #[test]
+    fn ni_texture_effect_skips_dynamic_effect_base_on_fo4() {
+        let header = make_fo4_header();
+        let mut d = av_object_bytes_string_table();
+        d.extend_from_slice(&texture_effect_tail());
+        let mut stream = NifStream::new(&d, &header);
+        let effect = NiTextureEffect::parse(&mut stream)
+            .expect("FO4 NiTextureEffect should parse cleanly post-#1240");
+        assert_eq!(
+            effect.model_projection_matrix.rows[0][0], 7.5,
+            "FO4 path must reach the projection matrix at the right offset \
+             (pre-#1240 over-read by 5 bytes and read garbage here)"
+        );
+        // Defaults preserved.
+        assert!(
+            effect.switch_state,
+            "switch_state defaults to true when the field is absent"
+        );
+        assert!(
+            effect.affected_nodes.is_empty(),
+            "affected_nodes empty when the field is absent"
+        );
+        assert_eq!(stream.position() as usize, d.len());
+    }
+
+    /// #1240 sibling — on Skyrim SE (BSVER 100, < FALLOUT4), the
+    /// NiDynamicEffect base fields ARE present. Assert the parser still
+    /// reads them and lands on the projection matrix at the matching
+    /// offset. This guards against an over-correction that would
+    /// regress Skyrim+ NiTextureEffect content along with the FO4 fix.
+    #[test]
+    fn ni_texture_effect_reads_dynamic_effect_base_on_skyrim() {
+        let header = make_skyrim_se_header();
+        let mut d = av_object_bytes_string_table();
+        // NiDynamicEffect base — present on Skyrim (BSVER < 130).
+        d.push(1u8); // switch_state = true
+        d.extend_from_slice(&2u32.to_le_bytes()); // num_affected_nodes
+        d.extend_from_slice(&0xCAFEu32.to_le_bytes()); // node hash 1
+        d.extend_from_slice(&0xBEEFu32.to_le_bytes()); // node hash 2
+        d.extend_from_slice(&texture_effect_tail());
+        let mut stream = NifStream::new(&d, &header);
+        let effect = NiTextureEffect::parse(&mut stream)
+            .expect("Skyrim NiTextureEffect should still parse the NiDynamicEffect base");
+        assert!(effect.switch_state, "switch_state read from wire");
+        assert_eq!(
+            effect.affected_nodes,
+            vec![0xCAFE, 0xBEEF],
+            "affected_nodes hashes survive the round-trip"
+        );
+        assert_eq!(
+            effect.model_projection_matrix.rows[0][0], 7.5,
+            "Skyrim path must reach the projection matrix at the right offset"
+        );
+        assert_eq!(stream.position() as usize, d.len());
+    }
 }
 
 // ── NiTextureEffect ────────────────────────────────────────────────────
@@ -722,12 +891,22 @@ impl NiTextureEffect {
 
         // NiDynamicEffect base fields — same version gates as NiLight.
         // See crates/nif/src/blocks/light.rs for the full rationale.
-        let switch_state = if stream.version() >= NifVersion::V10_1_0_106 {
+        //
+        // #1240 — mirror #721's BSVER < FALLOUT4 gate. FO4 reparented
+        // NiDynamicEffect's subclasses straight onto NiAVObject and
+        // dropped the dynamic-effect plumbing (Switch State + Affected
+        // Nodes are absent at BSVER ≥ 130). nif.xml lines 3499/3504
+        // carry `vercond="#NI_BS_LT_FO4#"` on both fields. NiLightBase
+        // got the fix under #721; NiTextureEffect was missed in the
+        // same sweep. The two are the only NiDynamicEffect subclasses
+        // in nif.xml (verified 2026-05-23), so this closes the gap.
+        let pre_fo4 = stream.bsver() < crate::version::bsver::FALLOUT4;
+        let switch_state = if pre_fo4 && stream.version() >= NifVersion::V10_1_0_106 {
             stream.read_u8()? != 0
         } else {
             true
         };
-        let affected_nodes = if stream.version() >= NifVersion::V10_1_0_0 {
+        let affected_nodes = if pre_fo4 && stream.version() >= NifVersion::V10_1_0_0 {
             // #981 — bulk-read affected-nodes u32 array.
             let count = stream.read_u32_le()? as usize;
             stream.read_u32_array(count)?
