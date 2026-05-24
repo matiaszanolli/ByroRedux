@@ -1,6 +1,7 @@
 //! Equipment / crafting / generic-record records.
 
-use super::super::common::{read_f32_at, read_lstring_or_zstring, read_u32_at, read_zstring};
+use super::super::common::{read_lstring_or_zstring, read_zstring};
+use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::{GameKind, SubRecord};
 
 /// ARMA — armor addon record. Race-specific biped slot variants for
@@ -77,24 +78,26 @@ pub fn parse_arma(form_id: u32, subs: &[SubRecord], game: GameKind) -> ArmaRecor
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"BMDT" if sub.data.len() >= 8 => {
-                out.biped_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
-                out.general_flags = read_u32_at(&sub.data, 4).unwrap_or(0);
+                let mut r = SubReader::new(&sub.data);
+                out.biped_flags = r.u32_or_default();
+                out.general_flags = r.u32_or_default();
             }
             b"BOD2" if is_skyrim_or_later && sub.data.len() >= 4 => {
-                out.biped_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.biped_flags = SubReader::new(&sub.data).u32_or_default();
             }
             b"DNAM" if !is_skyrim_or_later && sub.data.len() >= 4 => {
-                out.dt = i16::from_le_bytes([sub.data[0], sub.data[1]]);
-                out.dr = i16::from_le_bytes([sub.data[2], sub.data[3]]);
+                let mut r = SubReader::new(&sub.data);
+                out.dt = r.i16_or_default();
+                out.dr = r.i16_or_default();
             }
             b"RNAM" if is_skyrim_or_later && sub.data.len() >= 4 => {
-                out.race_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.race_form_id = SubReader::new(&sub.data).u32_or_default();
             }
             b"MODL" => {
                 if is_skyrim_or_later {
                     // Skyrim+ ARMA additional-races: 4-byte FormID per
                     // entry. Multiple MODL sub-records can appear.
-                    if let Some(id) = read_u32_at(&sub.data, 0) {
+                    if let Ok(id) = SubReader::new(&sub.data).u32() {
                         out.additional_races.push(id);
                     }
                 } else if out.male_biped_model.is_empty() {
@@ -198,10 +201,10 @@ pub fn parse_cobj(form_id: u32, subs: &[SubRecord]) -> CobjRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"CNAM" if sub.data.len() >= 4 => {
-                out.created_form = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.created_form = SubReader::new(&sub.data).u32_or_default();
             }
             b"BNAM" if sub.data.len() >= 4 => {
-                out.workbench_form = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.workbench_form = SubReader::new(&sub.data).u32_or_default();
             }
             _ => {}
         }
@@ -311,13 +314,9 @@ pub fn parse_slgm(form_id: u32, subs: &[SubRecord]) -> SlgmRecord {
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"MODL" => out.model_path = read_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 8 => {
-                out.value = i32::from_le_bytes([
-                    sub.data[0],
-                    sub.data[1],
-                    sub.data[2],
-                    sub.data[3],
-                ]);
-                out.weight = read_f32_at(&sub.data, 4).unwrap_or(0.0);
+                let mut r = SubReader::new(&sub.data);
+                out.value = r.i32_or_default();
+                out.weight = r.f32_or_default();
             }
             b"SOUL" if !sub.data.is_empty() => out.current_soul = sub.data[0],
             b"SLCP" if !sub.data.is_empty() => out.soul_capacity = sub.data[0],

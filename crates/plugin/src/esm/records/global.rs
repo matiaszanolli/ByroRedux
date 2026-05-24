@@ -6,8 +6,9 @@
 //! determined by either an FNAM byte (GLOB) or by the editor_id prefix
 //! convention (GMST: `s`/`f`/`i` for string/float/int).
 
-use super::common::{read_f32_at, read_zstring};
+use super::common::read_zstring;
 use crate::esm::reader::SubRecord;
+use crate::esm::sub_reader::SubReader;
 
 /// A typed value stored in a GLOB or GMST record.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,7 +59,7 @@ pub fn parse_glob(form_id: u32, subs: &[SubRecord]) -> GlobalRecord {
                         sub.data[2],
                         sub.data[3],
                     ])),
-                    _ => SettingValue::Float(read_f32_at(&sub.data, 0).unwrap_or(0.0)),
+                    _ => SettingValue::Float(SubReader::new(&sub.data).f32_or_default()),
                 };
             }
             _ => {}
@@ -88,7 +89,7 @@ pub fn parse_gmst(form_id: u32, subs: &[SubRecord]) -> GameSetting {
     // convention: i… = int, f… = float, s… = string, b… = bool/short.
     let value = match editor_id.as_bytes().first().copied() {
         Some(b'f') if data_bytes.len() >= 4 => {
-            SettingValue::Float(read_f32_at(&data_bytes, 0).unwrap_or(0.0))
+            SettingValue::Float(SubReader::new(&data_bytes).f32_or_default())
         }
         Some(b'i') if data_bytes.len() >= 4 => SettingValue::Int(i32::from_le_bytes([
             data_bytes[0],

@@ -37,7 +37,8 @@
 //! Skyrim ships ~1500. See audit `FNV-D2-02` / #630.
 
 use crate::esm::reader::SubRecord;
-use crate::esm::records::common::{read_u32_at, read_zstring};
+use crate::esm::records::common::read_zstring;
+use crate::esm::sub_reader::SubReader;
 
 /// Parsed FLST record — flat array of FormID references in authoring order.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -64,7 +65,7 @@ pub fn parse_flst(form_id: u32, subs: &[SubRecord]) -> FlstRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"LNAM" => {
-                if let Some(id) = read_u32_at(&sub.data, 0) {
+                if let Ok(id) = SubReader::new(&sub.data).u32() {
                     out.entries.push(id);
                 }
             }

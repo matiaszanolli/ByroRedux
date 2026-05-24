@@ -1,6 +1,7 @@
 //! Magic / perks records.
 
-use super::super::common::{read_lstring_or_zstring, read_u32_at, read_zstring};
+use super::super::common::{read_lstring_or_zstring, read_zstring};
+use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
 
 /// `PERK` perk / trait record. Holds the condition list + entry-point
@@ -63,8 +64,10 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"SPIT" if sub.data.len() >= 16 => {
-                out.cost = read_u32_at(&sub.data, 0).unwrap_or(0);
-                out.spell_flags = read_u32_at(&sub.data, 12).unwrap_or(0);
+                let mut r = SubReader::new(&sub.data);
+                out.cost = r.u32_or_default();
+                r.skip_or_eof(8); // type (u32) + level (u32) at offsets 4..12
+                out.spell_flags = r.u32_or_default();
             }
             _ => {}
         }
@@ -98,7 +101,7 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord]) -> MgefRecord {
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 4 => {
-                out.effect_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.effect_flags = SubReader::new(&sub.data).u32_or_default();
             }
             _ => {}
         }
@@ -151,10 +154,11 @@ pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
             // appended a `cast_type` u32 making it 20 — guard `>= 16`
             // so both layouts decode the shared prefix safely.
             b"ENIT" if sub.data.len() >= 16 => {
-                out.enchantment_type = read_u32_at(&sub.data, 0).unwrap_or(0);
-                out.charge_amount = read_u32_at(&sub.data, 4).unwrap_or(0);
-                out.enchant_cost = read_u32_at(&sub.data, 8).unwrap_or(0);
-                out.enchant_flags = read_u32_at(&sub.data, 12).unwrap_or(0);
+                let mut r = SubReader::new(&sub.data);
+                out.enchantment_type = r.u32_or_default();
+                out.charge_amount = r.u32_or_default();
+                out.enchant_cost = r.u32_or_default();
+                out.enchant_flags = r.u32_or_default();
             }
             _ => {}
         }

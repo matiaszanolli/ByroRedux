@@ -9,7 +9,7 @@
 //! Adding more fields later is straightforward; the parsers walk sub-records
 //! by 4-char code and ignore anything they don't recognize.
 
-use super::common::{read_u32_at, CommonItemFields};
+use super::common::CommonItemFields;
 use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
@@ -335,7 +335,7 @@ pub fn parse_armo(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
             // string; `CommonItemFields::from_subs` already captured
             // it into `common.model_path`, so we leave it alone there.
             b"MODL" if is_skyrim_or_later => {
-                if let Some(id) = read_u32_at(&sub.data, 0) {
+                if let Ok(id) = SubReader::new(&sub.data).u32() {
                     armatures.push(id);
                 }
             }

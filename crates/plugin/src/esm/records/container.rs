@@ -4,8 +4,9 @@
 //! (`CNTO` for containers, `LVLO` for leveled lists). Each entry references
 //! a base item form by ID and gives a count or a level/chance.
 
-use super::common::{read_u32_at, read_zstring, CommonNamedFields};
+use super::common::{read_zstring, CommonNamedFields};
 use crate::esm::reader::SubRecord;
+use crate::esm::sub_reader::SubReader;
 
 /// One entry in a container's inventory list.
 #[derive(Debug, Clone, Copy)]
@@ -85,9 +86,9 @@ pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
         match &sub.sub_type {
             // CNTO: item form ID (u32) + count (i32)
             b"CNTO" if sub.data.len() >= 8 => {
-                let item_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
-                let count =
-                    i32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]);
+                let mut r = SubReader::new(&sub.data);
+                let item_form_id = r.u32_or_default();
+                let count = r.i32_or_default();
                 record.contents.push(InventoryEntry {
                     item_form_id,
                     count,
@@ -101,19 +102,19 @@ pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
             // every vanilla FNV trash bag / loot crate was invisible
             // to gameplay systems.
             b"DATA" if sub.data.len() >= 4 => {
-                record.weight =
-                    f32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
+                let mut r = SubReader::new(&sub.data);
+                record.weight = r.f32_or_default();
                 if sub.data.len() >= 5 {
-                    record.flags = sub.data[4];
+                    record.flags = r.u8_or_default();
                 }
             }
             // SNAM: open sound form ID
             b"SNAM" if sub.data.len() >= 4 => {
-                record.open_sound = read_u32_at(&sub.data, 0).unwrap_or(0);
+                record.open_sound = SubReader::new(&sub.data).u32_or_default();
             }
             // QNAM: close sound form ID
             b"QNAM" if sub.data.len() >= 4 => {
-                record.close_sound = read_u32_at(&sub.data, 0).unwrap_or(0);
+                record.close_sound = SubReader::new(&sub.data).u32_or_default();
             }
             _ => {}
         }
@@ -137,9 +138,11 @@ pub fn parse_leveled_list(form_id: u32, subs: &[SubRecord]) -> LeveledList {
             b"LVLF" if !sub.data.is_empty() => record.flags = sub.data[0],
             // LVLO: level(u16) + pad(u16) + form_id(u32) + count(u16) + pad(u16)
             b"LVLO" if sub.data.len() >= 12 => {
-                let level = u16::from_le_bytes([sub.data[0], sub.data[1]]);
-                let entry_form = read_u32_at(&sub.data, 4).unwrap_or(0);
-                let count = u16::from_le_bytes([sub.data[8], sub.data[9]]);
+                let mut r = SubReader::new(&sub.data);
+                let level = r.u16_or_default();
+                r.skip_or_eof(2); // pad u16 at offset 2..4
+                let entry_form = r.u32_or_default();
+                let count = r.u16_or_default();
                 record.entries.push(LeveledEntry {
                     level,
                     form_id: entry_form,

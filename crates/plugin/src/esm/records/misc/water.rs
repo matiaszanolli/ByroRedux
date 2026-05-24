@@ -1,6 +1,7 @@
 //! Water record (`WATR`) and decoded water parameters.
 
-use super::super::common::{read_f32_at, read_lstring_or_zstring, read_u32_at, read_zstring};
+use super::super::common::{read_lstring_or_zstring, read_zstring};
+use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
 
 /// Water record — referenced by `CELL.XCWT` (water type form ID on a
@@ -153,32 +154,32 @@ fn u8_to_linear(byte: u8) -> f32 {
 /// offset is past the buffer end.
 fn decode_data(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
-    if data.len() >= 4 {
-        p.wind_speed = read_f32_at(data, 0).unwrap_or(p.wind_speed);
+    let mut r = SubReader::new(data);
+    if let Ok(v) = r.f32() {
+        p.wind_speed = v;
     }
-    if data.len() >= 8 {
-        p.wind_direction = read_f32_at(data, 4).unwrap_or(p.wind_direction);
+    if let Ok(v) = r.f32() {
+        p.wind_direction = v;
     }
-    if data.len() >= 12 {
-        p.wave_amplitude = read_f32_at(data, 8).unwrap_or(p.wave_amplitude);
+    if let Ok(v) = r.f32() {
+        p.wave_amplitude = v;
     }
-    if data.len() >= 16 {
-        p.wave_frequency = read_f32_at(data, 12).unwrap_or(p.wave_frequency);
+    if let Ok(v) = r.f32() {
+        p.wave_frequency = v;
     }
     // skip sun_power at 16..20 — unused by the flat-mesh shader.
-    if data.len() >= 24 {
-        p.reflectivity = read_f32_at(data, 20)
-            .unwrap_or(p.reflectivity)
-            .clamp(0.0, 1.0);
+    r.skip_or_eof(4);
+    if let Ok(v) = r.f32() {
+        p.reflectivity = v.clamp(0.0, 1.0);
     }
-    if data.len() >= 28 {
-        p.fresnel = read_f32_at(data, 24).unwrap_or(p.fresnel).clamp(0.0, 1.0);
+    if let Ok(v) = r.f32() {
+        p.fresnel = v.clamp(0.0, 1.0);
     }
-    if data.len() >= 32 {
-        p.fog_near = read_f32_at(data, 28).unwrap_or(p.fog_near).max(0.0);
+    if let Ok(v) = r.f32() {
+        p.fog_near = v.max(0.0);
     }
-    if data.len() >= 36 {
-        p.fog_far = read_f32_at(data, 32).unwrap_or(p.fog_far).max(p.fog_near + 1.0);
+    if let Ok(v) = r.f32() {
+        p.fog_far = v.max(p.fog_near + 1.0);
     }
     if data.len() >= 40 {
         p.shallow_color = [
@@ -216,31 +217,34 @@ fn decode_dnam_skyrim(data: &[u8]) -> WaterParams {
     if data.len() < 52 {
         return p;
     }
-    if data.len() >= 8 {
-        p.wind_speed = read_f32_at(data, 4).unwrap_or(p.wind_speed);
+    let mut r = SubReader::new(data);
+    // 4-byte unknown / version tag at offset 0; FNV-shaped prefix starts at 4.
+    r.skip_or_eof(4);
+    if let Ok(v) = r.f32() {
+        p.wind_speed = v;
     }
-    if data.len() >= 12 {
-        p.wind_direction = read_f32_at(data, 8).unwrap_or(p.wind_direction);
+    if let Ok(v) = r.f32() {
+        p.wind_direction = v;
     }
-    if data.len() >= 16 {
-        p.wave_amplitude = read_f32_at(data, 12).unwrap_or(p.wave_amplitude);
+    if let Ok(v) = r.f32() {
+        p.wave_amplitude = v;
     }
-    if data.len() >= 20 {
-        p.wave_frequency = read_f32_at(data, 16).unwrap_or(p.wave_frequency);
+    if let Ok(v) = r.f32() {
+        p.wave_frequency = v;
     }
-    if data.len() >= 28 {
-        p.reflectivity = read_f32_at(data, 24)
-            .unwrap_or(p.reflectivity)
-            .clamp(0.0, 1.0);
+    // skip sun_power at 20..24 — unused by the flat-mesh shader.
+    r.skip_or_eof(4);
+    if let Ok(v) = r.f32() {
+        p.reflectivity = v.clamp(0.0, 1.0);
     }
-    if data.len() >= 32 {
-        p.fresnel = read_f32_at(data, 28).unwrap_or(p.fresnel).clamp(0.0, 1.0);
+    if let Ok(v) = r.f32() {
+        p.fresnel = v.clamp(0.0, 1.0);
     }
-    if data.len() >= 36 {
-        p.fog_near = read_f32_at(data, 32).unwrap_or(p.fog_near).max(0.0);
+    if let Ok(v) = r.f32() {
+        p.fog_near = v.max(0.0);
     }
-    if data.len() >= 40 {
-        p.fog_far = read_f32_at(data, 36).unwrap_or(p.fog_far).max(p.fog_near + 1.0);
+    if let Ok(v) = r.f32() {
+        p.fog_far = v.max(p.fog_near + 1.0);
     }
     if data.len() >= 44 {
         p.shallow_color = [
@@ -291,9 +295,9 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord]) -> WatrRecord {
             b"GNAM" => {
                 // 12 bytes = three u32 FormIDs (noise layer 0/1/2).
                 // Fewer bytes → unfilled slots stay at zero.
-                let count = (sub.data.len() / 4).min(3);
-                for i in 0..count {
-                    if let Some(fid) = read_u32_at(&sub.data, i * 4) {
+                let mut r = SubReader::new(&sub.data);
+                for i in 0..3 {
+                    if let Ok(fid) = r.u32() {
                         out.noise_textures[i] = fid;
                     }
                 }

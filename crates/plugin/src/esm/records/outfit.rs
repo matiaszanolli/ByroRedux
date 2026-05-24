@@ -25,7 +25,8 @@
 //! Skyrim SE / FO4 / FO76 / Starfield.
 
 use crate::esm::reader::SubRecord;
-use crate::esm::records::common::{read_u32_at, read_zstring};
+use crate::esm::records::common::read_zstring;
+use crate::esm::sub_reader::SubReader;
 
 /// Parsed OTFT record — flat array of item FormIDs (ARMO or LVLI).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -49,7 +50,7 @@ pub fn parse_otft(form_id: u32, subs: &[SubRecord]) -> OtftRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"INAM" if sub.data.len() >= 4 => {
-                if let Some(id) = read_u32_at(&sub.data, 0) {
+                if let Ok(id) = SubReader::new(&sub.data).u32() {
                     out.items.push(id);
                 }
             }

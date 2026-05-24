@@ -24,7 +24,8 @@
 //! (cloud colours come from the cloud TEXTURE paths in
 //! DNAM/CNAM/ANAM/BNAM, not NAM0). See issue #729 / EXT-RENDER-1.
 
-use super::common::{read_f32_at, read_zstring};
+use super::common::read_zstring;
+use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::{GameKind, SubRecord};
 
 /// Number of color groups in NAM0.
@@ -344,10 +345,11 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRe
             // FNV + FO3 weather defaulted to `fog_day_far = 10000.0`
             // independent of weather type. See audit M33-04 / #536.
             b"FNAM" if sub.data.len() >= 16 => {
-                record.fog_day_near = read_f32_at(&sub.data, 0).unwrap_or(0.0);
-                record.fog_day_far = read_f32_at(&sub.data, 4).unwrap_or(10000.0);
-                record.fog_night_near = read_f32_at(&sub.data, 8).unwrap_or(0.0);
-                record.fog_night_far = read_f32_at(&sub.data, 12).unwrap_or(10000.0);
+                let mut r = SubReader::new(&sub.data);
+                record.fog_day_near = r.f32().unwrap_or(0.0);
+                record.fog_day_far = r.f32().unwrap_or(10000.0);
+                record.fog_night_near = r.f32().unwrap_or(0.0);
+                record.fog_night_far = r.f32().unwrap_or(10000.0);
             }
 
             // HNAM — Oblivion-only HDR / eye-adapt / sunlight-dimmer
@@ -375,21 +377,22 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRe
                 // in `byroredux/src/systems/weather.rs` only reads the SDR
                 // colors. Wire the HDR fields when the renderer side ships
                 // HDR sky/cloud relighting.
+                let mut r = SubReader::new(&sub.data);
                 record.oblivion_hdr = Some(OblivionHdrLighting {
-                    eye_adapt_speed: read_f32_at(&sub.data, 0).unwrap_or(0.0),
-                    blur_radius: read_f32_at(&sub.data, 4).unwrap_or(0.0),
-                    blur_passes: read_f32_at(&sub.data, 8).unwrap_or(0.0),
-                    emissive_mult: read_f32_at(&sub.data, 12).unwrap_or(0.0),
-                    target_lum: read_f32_at(&sub.data, 16).unwrap_or(0.0),
-                    upper_lum_clamp: read_f32_at(&sub.data, 20).unwrap_or(0.0),
-                    bright_scale: read_f32_at(&sub.data, 24).unwrap_or(0.0),
-                    bright_clamp: read_f32_at(&sub.data, 28).unwrap_or(0.0),
-                    lum_ramp_no_tex: read_f32_at(&sub.data, 32).unwrap_or(0.0),
-                    lum_ramp_min: read_f32_at(&sub.data, 36).unwrap_or(0.0),
-                    lum_ramp_max: read_f32_at(&sub.data, 40).unwrap_or(0.0),
-                    sunlight_dimmer: read_f32_at(&sub.data, 44).unwrap_or(0.0),
-                    grass_dimmer: read_f32_at(&sub.data, 48).unwrap_or(0.0),
-                    tree_dimmer: read_f32_at(&sub.data, 52).unwrap_or(0.0),
+                    eye_adapt_speed: r.f32_or_default(),
+                    blur_radius: r.f32_or_default(),
+                    blur_passes: r.f32_or_default(),
+                    emissive_mult: r.f32_or_default(),
+                    target_lum: r.f32_or_default(),
+                    upper_lum_clamp: r.f32_or_default(),
+                    bright_scale: r.f32_or_default(),
+                    bright_clamp: r.f32_or_default(),
+                    lum_ramp_no_tex: r.f32_or_default(),
+                    lum_ramp_min: r.f32_or_default(),
+                    lum_ramp_max: r.f32_or_default(),
+                    sunlight_dimmer: r.f32_or_default(),
+                    grass_dimmer: r.f32_or_default(),
+                    tree_dimmer: r.f32_or_default(),
                 });
             }
             b"HNAM" if sub.data.len() == OblivionHdrLighting::WIRE_SIZE_LEGACY => {
@@ -398,10 +401,11 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRe
                 // so the M33-05 regression test (which asserts a real
                 // 56-byte HNAM does NOT clobber FNAM fog) keeps its
                 // counterpart. No vanilla master ships this shape.
-                record.fog_day_near = read_f32_at(&sub.data, 0).unwrap_or(0.0);
-                record.fog_day_far = read_f32_at(&sub.data, 4).unwrap_or(10000.0);
-                record.fog_night_near = read_f32_at(&sub.data, 8).unwrap_or(0.0);
-                record.fog_night_far = read_f32_at(&sub.data, 12).unwrap_or(10000.0);
+                let mut r = SubReader::new(&sub.data);
+                record.fog_day_near = r.f32().unwrap_or(0.0);
+                record.fog_day_far = r.f32().unwrap_or(10000.0);
+                record.fog_night_near = r.f32().unwrap_or(0.0);
+                record.fog_night_far = r.f32().unwrap_or(10000.0);
             }
 
             // DATA: general weather data (15 bytes, shared by Oblivion,
@@ -582,10 +586,11 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
             // model). Trailing 4 are day/night fog power + max —
             // captured in a follow-up; v1 discards.
             b"FNAM" if sub.data.len() >= SKYRIM_FNAM_SIZE => {
-                record.fog_day_near = read_f32_at(&sub.data, 0).unwrap_or(0.0);
-                record.fog_day_far = read_f32_at(&sub.data, 4).unwrap_or(10000.0);
-                record.fog_night_near = read_f32_at(&sub.data, 8).unwrap_or(0.0);
-                record.fog_night_far = read_f32_at(&sub.data, 12).unwrap_or(10000.0);
+                let mut r = SubReader::new(&sub.data);
+                record.fog_day_near = r.f32().unwrap_or(0.0);
+                record.fog_day_far = r.f32().unwrap_or(10000.0);
+                record.fog_night_near = r.f32().unwrap_or(0.0);
+                record.fog_night_far = r.f32().unwrap_or(10000.0);
             }
 
             // DATA — 19 bytes. v1 extracts wind speed + classification.
@@ -670,7 +675,11 @@ fn parse_skyrim_dalc(data: &[u8]) -> SkyrimAmbientCube {
         pos_z: read_color(16),
         neg_z: read_color(20),
         specular: read_color(24),
-        fresnel_power: read_f32_at(data, 28).unwrap_or(1.0),
+        fresnel_power: {
+            let mut r = SubReader::new(data);
+            r.skip_or_eof(28);
+            r.f32().unwrap_or(1.0)
+        },
     }
 }
 

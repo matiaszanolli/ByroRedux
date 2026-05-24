@@ -212,48 +212,6 @@ pub fn read_f32_sub(subs: &[SubRecord], code: &[u8; 4]) -> Option<f32> {
     Some(f32::from_le_bytes([data[0], data[1], data[2], data[3]]))
 }
 
-/// Read a u32 form ID at a known byte offset within a sub-record's data.
-pub fn read_u32_at(data: &[u8], offset: usize) -> Option<u32> {
-    if data.len() < offset + 4 {
-        return None;
-    }
-    Some(u32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ]))
-}
-
-/// Read a u16 at a known byte offset within a sub-record's data.
-pub fn read_u16_at(data: &[u8], offset: usize) -> Option<u16> {
-    if data.len() < offset + 2 {
-        return None;
-    }
-    Some(u16::from_le_bytes([data[offset], data[offset + 1]]))
-}
-
-/// Read an i16 at a known byte offset.
-pub fn read_i16_at(data: &[u8], offset: usize) -> Option<i16> {
-    if data.len() < offset + 2 {
-        return None;
-    }
-    Some(i16::from_le_bytes([data[offset], data[offset + 1]]))
-}
-
-/// Read an f32 at a known byte offset.
-pub fn read_f32_at(data: &[u8], offset: usize) -> Option<f32> {
-    if data.len() < offset + 4 {
-        return None;
-    }
-    Some(f32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ]))
-}
-
 /// Universal EDID / FULL / MODL / ICON / SCRI / VMAD fields that appear on
 /// almost every named record. Use `from_subs` to pre-populate these before
 /// the per-record type-specific sub-record walk (TD3-006 / #1045).
@@ -286,7 +244,8 @@ impl CommonNamedFields {
                 b"MODL" => out.model_path = read_zstring(&sub.data),
                 b"ICON" => out.icon_path = read_zstring(&sub.data),
                 b"SCRI" if sub.data.len() >= 4 => {
-                    out.script_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
+                    out.script_form_id = crate::esm::sub_reader::SubReader::new(&sub.data)
+                        .u32_or_default();
                 }
                 b"VMAD" => out.has_script = true,
                 _ => {}
@@ -333,7 +292,8 @@ impl CommonItemFields {
                 b"MODL" => out.model_path = read_zstring(&sub.data),
                 b"ICON" => out.icon_path = read_zstring(&sub.data),
                 b"SCRI" if sub.data.len() >= 4 => {
-                    out.script_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
+                    out.script_form_id = crate::esm::sub_reader::SubReader::new(&sub.data)
+                        .u32_or_default();
                 }
                 // VMAD presence-only flag — see `has_script` field doc.
                 b"VMAD" => out.has_script = true,

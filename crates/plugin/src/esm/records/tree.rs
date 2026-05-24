@@ -41,9 +41,10 @@
 //! wind tuning.
 
 use super::common::{
-    find_sub, read_f32_at, read_f32_sub, read_i16_at, read_u32_sub, CommonNamedFields,
+    find_sub, read_f32_sub, read_u32_sub, CommonNamedFields,
 };
 use crate::esm::reader::SubRecord;
+use crate::esm::sub_reader::SubReader;
 
 /// Object bounds from an OBND sub-record (6 × i16, [−x, −y, −z, +x, +y, +z]).
 /// Captured raw — the cell loader converts to engine units when needed.
@@ -136,17 +137,10 @@ pub fn parse_tree(form_id: u32, subs: &[SubRecord]) -> TreeRecord {
         if data.len() < 12 {
             return None;
         }
+        let mut r = SubReader::new(data);
         Some(ObjectBounds {
-            min: [
-                read_i16_at(data, 0)?,
-                read_i16_at(data, 2)?,
-                read_i16_at(data, 4)?,
-            ],
-            max: [
-                read_i16_at(data, 6)?,
-                read_i16_at(data, 8)?,
-                read_i16_at(data, 10)?,
-            ],
+            min: [r.i16().ok()?, r.i16().ok()?, r.i16().ok()?],
+            max: [r.i16().ok()?, r.i16().ok()?, r.i16().ok()?],
         })
     });
 
@@ -170,11 +164,14 @@ pub fn parse_tree(form_id: u32, subs: &[SubRecord]) -> TreeRecord {
 
     // CNAM is 5 × f32 on Oblivion, 8 × f32 on FO3/FNV. Read every full
     // f32 — semantics deferred to the SpeedTree runtime.
-    let canopy_params = find_sub(subs, b"CNAM")
+    let canopy_params: Vec<f32> = find_sub(subs, b"CNAM")
         .map(|data| {
-            (0..data.len() / 4)
-                .map(|i| read_f32_at(data, i * 4).unwrap_or(0.0))
-                .collect()
+            let mut r = SubReader::new(data);
+            let mut out = Vec::with_capacity(data.len() / 4);
+            while let Ok(v) = r.f32() {
+                out.push(v);
+            }
+            out
         })
         .unwrap_or_default();
 
@@ -185,7 +182,8 @@ pub fn parse_tree(form_id: u32, subs: &[SubRecord]) -> TreeRecord {
         if data.len() < 8 {
             return None;
         }
-        Some((read_f32_at(data, 0)?, read_f32_at(data, 4)?))
+        let mut r = SubReader::new(data);
+        Some((r.f32().ok()?, r.f32().ok()?))
     });
 
     TreeRecord {

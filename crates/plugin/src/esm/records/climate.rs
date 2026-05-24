@@ -4,7 +4,8 @@
 //! Each worldspace references one climate via CNAM; the climate lists
 //! the possible weathers with relative chances.
 
-use super::common::{read_u32_at, read_zstring};
+use super::common::read_zstring;
+use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::{GameKind, SubRecord};
 
 /// A weather entry in the climate's weather list.
@@ -90,12 +91,10 @@ pub fn parse_clmt(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClimateRe
                     | GameKind::Starfield => 12,
                 };
                 let count = sub.data.len() / entry_size;
-                for i in 0..count {
-                    let offset = i * entry_size;
-                    if let (Some(fid), Some(chance_bits)) = (
-                        read_u32_at(&sub.data, offset),
-                        read_u32_at(&sub.data, offset + 4),
-                    ) {
+                let trailing_pad = entry_size - 8;
+                let mut r = SubReader::new(&sub.data);
+                for _ in 0..count {
+                    if let (Ok(fid), Ok(chance_bits)) = (r.u32(), r.u32()) {
                         if fid != 0 {
                             record.weathers.push(ClimateWeather {
                                 weather_form_id: fid,
@@ -105,6 +104,7 @@ pub fn parse_clmt(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClimateRe
                             });
                         }
                     }
+                    r.skip_or_eof(trailing_pad);
                 }
             }
 

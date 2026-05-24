@@ -6,8 +6,9 @@
 //! as raw form IDs for now; full evaluation lands when the AI/combat
 //! systems come online.
 
-use super::common::{read_lstring_or_zstring, read_u32_at, read_zstring, CommonNamedFields};
+use super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
 use crate::esm::reader::{GameKind, SubRecord};
+use crate::esm::sub_reader::SubReader;
 
 /// One faction the NPC belongs to, with their rank within it.
 #[derive(Debug, Clone, Copy)]
@@ -424,18 +425,19 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
     for sub in subs {
         match &sub.sub_type {
             b"RNAM" if sub.data.len() >= 4 => {
-                record.race_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
+                record.race_form_id = SubReader::new(&sub.data).u32_or_default();
             }
             b"CNAM" if sub.data.len() >= 4 => {
-                record.class_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
+                record.class_form_id = SubReader::new(&sub.data).u32_or_default();
             }
             b"VTCK" if sub.data.len() >= 4 => {
-                record.voice_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
+                record.voice_form_id = SubReader::new(&sub.data).u32_or_default();
             }
             // SNAM (FNV NPC_): faction form ID (u32) + rank (i8) + pad x3
             b"SNAM" if sub.data.len() >= 8 => {
-                let faction = read_u32_at(&sub.data, 0).unwrap_or(0);
-                let rank = sub.data[4] as i8;
+                let mut r = SubReader::new(&sub.data);
+                let faction = r.u32_or_default();
+                let rank = r.u8_or_default() as i8;
                 record.factions.push(FactionMembership {
                     faction_form_id: faction,
                     rank,
@@ -443,38 +445,42 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             }
             // CNTO: shared with CONT
             b"CNTO" if sub.data.len() >= 8 => {
+                let mut r = SubReader::new(&sub.data);
                 record.inventory.push(NpcInventoryEntry {
-                    item_form_id: read_u32_at(&sub.data, 0).unwrap_or(0),
-                    count: i32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]),
+                    item_form_id: r.u32_or_default(),
+                    count: r.i32_or_default(),
                 });
             }
             b"PKID" if sub.data.len() >= 4 => {
                 record
                     .ai_packages
-                    .push(read_u32_at(&sub.data, 0).unwrap_or(0));
+                    .push(SubReader::new(&sub.data).u32_or_default());
             }
             // DOFT — Skyrim+ default outfit FormID. Pre-Skyrim games
             // don't emit DOFT (NPCs equip directly from inventory).
             // Stored as Option so the equip pipeline can dispatch on
             // presence without ambiguity vs the null-form sentinel.
             b"DOFT" if sub.data.len() >= 4 => {
-                record.default_outfit = read_u32_at(&sub.data, 0);
+                record.default_outfit = SubReader::new(&sub.data).u32().ok();
             }
             b"INAM" if sub.data.len() >= 4 => {
-                record.death_item_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
+                record.death_item_form_id = SubReader::new(&sub.data).u32_or_default();
             }
             // ACBS (FNV NPC_): flags(u32), fatigue(u16), barter(u16), level(i16),
             // calc_min(u16), calc_max(u16), speed_mult(u16), karma(f32),
             // disposition_base(i16), template_flags(u16)
             b"ACBS" if sub.data.len() >= 24 => {
-                record.acbs_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
-                record.level = i16::from_le_bytes([sub.data[8], sub.data[9]]);
+                let mut r = SubReader::new(&sub.data);
+                record.acbs_flags = r.u32_or_default();
+                r.skip_or_eof(4); // fatigue(u16) + barter(u16)
+                record.level = r.i16_or_default();
                 // disposition_base is i16 at offset 20 (per UESP /
                 // FalloutSnip). Pre-#377 the parser read a single byte
                 // here, so any value outside 0..=127 lost its high byte
                 // (and signed values past -128 had the sign chopped).
+                r.skip_or_eof(10); // calc_min/calc_max/speed_mult (u16 × 3) + karma (f32)
                 if sub.data.len() >= 22 {
-                    record.disposition_base = i16::from_le_bytes([sub.data[20], sub.data[21]]);
+                    record.disposition_base = r.i16_or_default();
                 }
             }
             // ── M41.0 Phase 1a — Pre-FO4 FaceGen recipe ────────────────
@@ -498,39 +504,32 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
                 recipe.hair_color_rgb = Some([sub.data[0], sub.data[1], sub.data[2]]);
             }
             b"HNAM" if captures_runtime_facegen && sub.data.len() >= 4 => {
-                recipe.hair_form_id = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
+                recipe.hair_form_id = Some(SubReader::new(&sub.data).u32_or_default());
             }
             b"LNAM" if captures_runtime_facegen && sub.data.len() >= 4 => {
-                recipe.unused_lnam = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
+                recipe.unused_lnam = Some(SubReader::new(&sub.data).u32_or_default());
             }
             b"ENAM" if captures_runtime_facegen && sub.data.len() >= 4 => {
-                recipe.eyes_form_id = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
+                recipe.eyes_form_id = Some(SubReader::new(&sub.data).u32_or_default());
             }
             // FNV / FO3 PNAM = single eyebrow HDPT FormID. The FO4 PNAM
             // arm below carries a different semantic (head-parts list);
             // the two are guarded by `captures_runtime_facegen` vs
             // `captures_fo4_face` and never both fire on a single record.
             b"PNAM" if captures_runtime_facegen && sub.data.len() >= 4 => {
-                recipe.eyebrow_form_id = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
+                recipe.eyebrow_form_id = Some(SubReader::new(&sub.data).u32_or_default());
             }
             // ── #591 / FO4-DIM6-06 face-morph block ────────────────────
             // FO4+/FO76/Starfield only. Pre-fix, all of these arms ran
             // unconditionally; FNV `PNAM` (eyebrow HDPT FormID) was
             // misread as an FO4 head-parts entry. See `captures_fo4_face`.
             b"FMRI" if captures_fo4_face && sub.data.len() >= 4 => {
-                fmri_forms.push(read_u32_at(&sub.data, 0).unwrap_or(0));
+                fmri_forms.push(SubReader::new(&sub.data).u32_or_default());
             }
             b"FMRS" if captures_fo4_face && sub.data.len() >= 36 => {
-                let mut s = [0f32; 9];
-                for (i, slot) in s.iter_mut().enumerate() {
-                    let off = i * 4;
-                    *slot = f32::from_le_bytes([
-                        sub.data[off],
-                        sub.data[off + 1],
-                        sub.data[off + 2],
-                        sub.data[off + 3],
-                    ]);
-                }
+                let s = SubReader::new(&sub.data)
+                    .f32_array::<9>()
+                    .unwrap_or([0.0; 9]);
                 fmrs_settings.push(s);
             }
             // MSDK / MSDV are parallel arrays of u32 / f32 entries; on
@@ -556,23 +555,16 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             // length-only `>= 16` heuristic — Skyrim WTHR-record
             // siblings sharing the QNAM tag never reach this parser.
             b"QNAM" if captures_fo4_face && sub.data.len() >= 16 => {
-                let mut t = [0f32; 4];
-                for (i, slot) in t.iter_mut().enumerate() {
-                    let off = i * 4;
-                    *slot = f32::from_le_bytes([
-                        sub.data[off],
-                        sub.data[off + 1],
-                        sub.data[off + 2],
-                        sub.data[off + 3],
-                    ]);
-                }
+                let t = SubReader::new(&sub.data)
+                    .f32_array::<4>()
+                    .unwrap_or([0.0; 4]);
                 face.texture_lighting = Some(t);
             }
             b"HCLF" if captures_fo4_face && sub.data.len() >= 4 => {
-                face.hair_color = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
+                face.hair_color = Some(SubReader::new(&sub.data).u32_or_default());
             }
             b"BCLF" if captures_fo4_face && sub.data.len() >= 4 => {
-                face.body_color = Some(read_u32_at(&sub.data, 0).unwrap_or(0));
+                face.body_color = Some(SubReader::new(&sub.data).u32_or_default());
             }
             // PNAM on FO4+ NPCs accumulates head-part FormIDs (one per
             // sub-record). FNV / FO3 PNAM is captured by the kf-era
@@ -581,7 +573,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             // `captures_runtime_facegen`, both keyed off `GameKind`
             // semantic predicates.
             b"PNAM" if captures_fo4_face && sub.data.len() >= 4 => {
-                face.head_parts.push(read_u32_at(&sub.data, 0).unwrap_or(0));
+                face.head_parts.push(SubReader::new(&sub.data).u32_or_default());
             }
             _ => {}
         }
@@ -679,10 +671,10 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
             // TES5 DATA is 128 / 164 bytes with a different layout —
             // not yet wired here.
             b"DATA" if sub.data.len() >= 36 => {
-                for i in 0..8 {
-                    let off = i * 2;
-                    let skill = sub.data[off];
-                    let bonus = sub.data[off + 1] as i8;
+                let mut r = SubReader::new(&sub.data);
+                for _ in 0..8 {
+                    let skill = r.u8_or_default();
+                    let bonus = r.u8_or_default() as i8;
                     // Skip 0xFF (Skill_None sentinel) — OpenMW maps
                     // these into a HashMap keyed by SkillIndex, but
                     // our flat Vec preserves authoring order without
@@ -693,33 +685,13 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
                         record.skill_bonuses.push((skill, bonus));
                     }
                 }
-                let h_m = f32::from_le_bytes([
-                    sub.data[16],
-                    sub.data[17],
-                    sub.data[18],
-                    sub.data[19],
-                ]);
-                let h_f = f32::from_le_bytes([
-                    sub.data[20],
-                    sub.data[21],
-                    sub.data[22],
-                    sub.data[23],
-                ]);
-                let w_m = f32::from_le_bytes([
-                    sub.data[24],
-                    sub.data[25],
-                    sub.data[26],
-                    sub.data[27],
-                ]);
-                let w_f = f32::from_le_bytes([
-                    sub.data[28],
-                    sub.data[29],
-                    sub.data[30],
-                    sub.data[31],
-                ]);
+                let h_m = r.f32_or_default();
+                let h_f = r.f32_or_default();
+                let w_m = r.f32_or_default();
+                let w_f = r.f32_or_default();
                 record.base_height = (h_m, h_f);
                 record.base_weight = (w_m, w_f);
-                record.race_flags = read_u32_at(&sub.data, 32).unwrap_or(0);
+                record.race_flags = r.u32_or_default();
             }
             // MODL appears multiple times in RACE for body parts. Collect them all.
             b"MODL" => record.body_models.push(read_zstring(&sub.data)),
@@ -750,39 +722,27 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
                 record.base_attributes = Some(attrs);
             }
             b"DNAM" if is_oblivion && sub.data.len() >= 8 => {
-                let male = read_u32_at(&sub.data, 0).unwrap_or(0);
-                let female = read_u32_at(&sub.data, 4).unwrap_or(0);
+                let mut r = SubReader::new(&sub.data);
+                let male = r.u32_or_default();
+                let female = r.u32_or_default();
                 record.default_hair = Some((male, female));
             }
             b"VNAM" if is_oblivion && sub.data.len() >= 8 => {
-                let male = read_u32_at(&sub.data, 0).unwrap_or(0);
-                let female = read_u32_at(&sub.data, 4).unwrap_or(0);
+                let mut r = SubReader::new(&sub.data);
+                let male = r.u32_or_default();
+                let female = r.u32_or_default();
                 record.voice_forms = Some((male, female));
             }
             b"PNAM" if is_oblivion && sub.data.len() >= 4 => {
-                record.facegen_main_clamp = Some(f32::from_le_bytes([
-                    sub.data[0],
-                    sub.data[1],
-                    sub.data[2],
-                    sub.data[3],
-                ]));
+                record.facegen_main_clamp = Some(SubReader::new(&sub.data).f32_or_default());
             }
             b"UNAM" if is_oblivion && sub.data.len() >= 4 => {
-                record.facegen_face_clamp = Some(f32::from_le_bytes([
-                    sub.data[0],
-                    sub.data[1],
-                    sub.data[2],
-                    sub.data[3],
-                ]));
+                record.facegen_face_clamp = Some(SubReader::new(&sub.data).f32_or_default());
             }
             b"XNAM" if is_oblivion && sub.data.len() >= 8 => {
-                let other_race = read_u32_at(&sub.data, 0).unwrap_or(0);
-                let adjustment = i32::from_le_bytes([
-                    sub.data[4],
-                    sub.data[5],
-                    sub.data[6],
-                    sub.data[7],
-                ]);
+                let mut r = SubReader::new(&sub.data);
+                let other_race = r.u32_or_default();
+                let adjustment = r.i32_or_default();
                 record.race_reactions.push((other_race, adjustment));
             }
             // CNAM intentionally skipped — its 4-byte payload mixes a
@@ -838,16 +798,17 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
             // assertion said `len() == 7`, which matches the empirical
             // truth.
             b"DATA" if is_oblivion && sub.data.len() >= 48 => {
-                let a0 = read_u32_at(&sub.data, 0).unwrap_or(0);
-                let a1 = read_u32_at(&sub.data, 4).unwrap_or(0);
+                let mut r = SubReader::new(&sub.data);
+                let a0 = r.u32_or_default();
+                let a1 = r.u32_or_default();
                 record.primary_attributes = Some((a0, a1));
-                record.specialization = read_u32_at(&sub.data, 8);
-                for i in 0..7 {
-                    if let Some(s) = read_u32_at(&sub.data, 12 + i * 4) {
+                record.specialization = r.u32().ok();
+                for _ in 0..7 {
+                    if let Ok(s) = r.u32() {
                         record.major_skills.push(s);
                     }
                 }
-                record.flags_oblivion = read_u32_at(&sub.data, 40);
+                record.flags_oblivion = r.u32().ok();
             }
             // DATA layout (FNV CLAS — 35 bytes): tag1..tag4 (4 × u32
             // form), flags (u32), services (u32), trainer skill (i8),
@@ -856,18 +817,19 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
             // ran for ALL games and read garbage from Oblivion's
             // wider 52-byte layout.
             b"DATA" if !is_oblivion && sub.data.len() >= 35 => {
-                for i in 0..4 {
-                    let off = i * 4;
-                    if let Some(f) = read_u32_at(&sub.data, off) {
+                let mut r = SubReader::new(&sub.data);
+                for _ in 0..4 {
+                    if let Ok(f) = r.u32() {
                         if f != 0 {
                             record.tag_skills.push(f);
                         }
                     }
                 }
-                // Skip flags + services + skill/level/teaches bytes (16 + 4 = 20).
-                // Attribute weights start at offset 28.
+                // Skip flags + services + skill/level/teaches bytes (4 + 4 + 4 = 12).
+                // Attribute weights start at offset 28 (cursor sits at 16 after the 4 × u32 tag block).
+                r.skip_or_eof(12);
                 for i in 0..7 {
-                    record.attribute_weights[i] = sub.data.get(28 + i).copied().unwrap_or(0);
+                    record.attribute_weights[i] = r.u8_or_default();
                 }
             }
             _ => {}
@@ -911,11 +873,11 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord]) -> FactionRecord {
             // to be correct for vanilla values 0..=3 but would silently
             // truncate any future mod that extends the enum past 255.
             b"XNAM" if sub.data.len() >= 8 => {
-                let other = read_u32_at(&sub.data, 0).unwrap_or(0);
-                let modifier =
-                    i32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]);
+                let mut r = SubReader::new(&sub.data);
+                let other = r.u32_or_default();
+                let modifier = r.i32_or_default();
                 let combat = if sub.data.len() >= 12 {
-                    read_u32_at(&sub.data, 8).unwrap_or(0) as u8
+                    r.u32_or_default() as u8
                 } else {
                     0
                 };

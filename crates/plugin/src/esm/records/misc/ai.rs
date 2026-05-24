@@ -1,6 +1,7 @@
 //! AI / dialogue / quest / combat-style records.
 
-use super::super::common::{read_lstring_or_zstring, read_u32_at, read_zstring};
+use super::super::common::{read_lstring_or_zstring, read_zstring};
+use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
 
 /// `PACK` AI package record. 30-procedure scheduling system
@@ -33,8 +34,9 @@ pub fn parse_pack(form_id: u32, subs: &[SubRecord]) -> PackRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"PKDT" if sub.data.len() >= 8 => {
-                out.package_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
-                out.procedure_type = read_u32_at(&sub.data, 4).unwrap_or(0);
+                let mut r = SubReader::new(&sub.data);
+                out.package_flags = r.u32_or_default();
+                out.procedure_type = r.u32_or_default();
             }
             _ => {}
         }
@@ -72,7 +74,7 @@ pub fn parse_qust(form_id: u32, subs: &[SubRecord]) -> QustRecord {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"SCRI" if sub.data.len() >= 4 => {
-                out.script_ref = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.script_ref = SubReader::new(&sub.data).u32_or_default();
             }
             b"DATA" if sub.data.len() >= 2 => {
                 out.quest_flags = sub.data[0];
@@ -145,7 +147,7 @@ pub fn parse_dial(form_id: u32, subs: &[SubRecord]) -> DialRecord {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"QSTI" if sub.data.len() >= 4 => {
-                if let Some(q) = read_u32_at(&sub.data, 0) {
+                if let Ok(q) = SubReader::new(&sub.data).u32() {
                     out.quest_refs.push(q);
                 }
             }
@@ -168,12 +170,12 @@ pub fn parse_info(form_id: u32, subs: &[SubRecord]) -> InfoRecord {
                 out.response_type = sub.data[0];
             }
             b"TCLT" if sub.data.len() >= 4 => {
-                if let Some(t) = read_u32_at(&sub.data, 0) {
+                if let Ok(t) = SubReader::new(&sub.data).u32() {
                     out.topic_links.push(t);
                 }
             }
             b"PNAM" if sub.data.len() >= 4 => {
-                out.previous_info = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.previous_info = SubReader::new(&sub.data).u32_or_default();
             }
             _ => {}
         }
@@ -206,7 +208,7 @@ pub fn parse_mesg(form_id: u32, subs: &[SubRecord]) -> MesgRecord {
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             b"QNAM" if sub.data.len() >= 4 => {
-                out.owner_quest = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.owner_quest = SubReader::new(&sub.data).u32_or_default();
             }
             _ => {}
         }
@@ -238,7 +240,7 @@ pub fn parse_csty(form_id: u32, subs: &[SubRecord]) -> CstyRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"CSTD" if sub.data.len() >= 4 => {
-                out.csty_flags = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.csty_flags = SubReader::new(&sub.data).u32_or_default();
             }
             _ => {}
         }

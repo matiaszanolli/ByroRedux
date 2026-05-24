@@ -19,7 +19,8 @@
 //! UESP. Skyrim+ uses `VMAD` instead (Papyrus attached data) — different
 //! layout, tracked via `CommonItemFields.has_script`.
 
-use super::common::{read_u32_at, read_zstring};
+use super::common::read_zstring;
+use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
 
 /// Script type byte (from `SCHR.script_type`). Values come from the
@@ -119,22 +120,21 @@ pub fn parse_scpt(form_id: u32, subs: &[SubRecord]) -> ScriptRecord {
             // Minimum 16 bytes for the three u32s + script_type u16 +
             // flags u16. FO3+ extends flags to u32 → 20 bytes total.
             b"SCHR" if sub.data.len() >= 16 => {
-                let unused_pad = read_u32_at(&sub.data, 0).unwrap_or(0);
-                let _ = unused_pad; // Leading u32 is a legacy padding slot.
-                record.num_refs = read_u32_at(&sub.data, 4).unwrap_or(0);
-                record.compiled_size = read_u32_at(&sub.data, 8).unwrap_or(0);
-                record.var_count = read_u32_at(&sub.data, 12).unwrap_or(0);
+                let mut r = SubReader::new(&sub.data);
+                r.skip_or_eof(4); // Leading u32 is a legacy padding slot.
+                record.num_refs = r.u32_or_default();
+                record.compiled_size = r.u32_or_default();
+                record.var_count = r.u32_or_default();
                 if sub.data.len() >= 18 {
-                    let ty = u16::from_le_bytes([sub.data[16], sub.data[17]]);
+                    let ty = r.u16().unwrap_or(0);
                     record.script_type = ScriptType::from_u16(ty);
                 }
                 // flags: Oblivion stores u16, FO3+ stores u32 tail.
                 // Accept either — we don't decode specific bits yet,
-                // just preserve the value.
+                // just preserve the value. Strict u32 read fails-silently
+                // when only a u16 tail is present (Oblivion 20-byte SCHR).
                 if sub.data.len() >= 20 {
-                    record.flags = read_u32_at(&sub.data, 18).unwrap_or(0);
-                } else if sub.data.len() >= 20 {
-                    record.flags = u16::from_le_bytes([sub.data[18], sub.data[19]]) as u32;
+                    record.flags = r.u32().unwrap_or(0);
                 }
             }
             b"SCDA" => {
@@ -148,8 +148,10 @@ pub fn parse_scpt(form_id: u32, subs: &[SubRecord]) -> ScriptRecord {
             // The name arrives in the paired SCVR that immediately
             // follows.
             b"SLSD" if sub.data.len() >= 9 => {
-                let index = read_u32_at(&sub.data, 0).unwrap_or(0);
-                let var_type = sub.data[8];
+                let mut r = SubReader::new(&sub.data);
+                let index = r.u32_or_default();
+                r.skip_or_eof(4); // unknown u32 at offset 4..8
+                let var_type = r.u8_or_default();
                 pending_local = Some((index, var_type));
             }
             b"SCVR" => {
@@ -173,14 +175,14 @@ pub fn parse_scpt(form_id: u32, subs: &[SubRecord]) -> ScriptRecord {
             // SCRV: numeric cross-record refs (local var referencing a
             // script-owned variable). u32 FormID per entry.
             b"SCRV" if sub.data.len() >= 4 => {
-                if let Some(fid) = read_u32_at(&sub.data, 0) {
+                if let Ok(fid) = SubReader::new(&sub.data).u32() {
                     record.ref_form_ids.push(fid);
                 }
             }
             // SCRO: object cross-record refs (bytecode literal). u32
             // FormID per entry.
             b"SCRO" if sub.data.len() >= 4 => {
-                if let Some(fid) = read_u32_at(&sub.data, 0) {
+                if let Ok(fid) = SubReader::new(&sub.data).u32() {
                     record.ref_form_ids.push(fid);
                 }
             }

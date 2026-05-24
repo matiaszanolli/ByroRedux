@@ -1,7 +1,8 @@
 //! World-definition records — navigation, regions, encounter zones,
 //! lighting templates, image-space adapters, activators, terminals.
 
-use super::super::common::{read_f32_at, read_lstring_or_zstring, read_u32_at, read_zstring};
+use super::super::common::{read_lstring_or_zstring, read_zstring};
+use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
 
 /// Navigation mesh master record (`NAVI`). Skyrim+ splits navigation
@@ -25,7 +26,7 @@ pub fn parse_navi(form_id: u32, subs: &[SubRecord]) -> NaviRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"NVER" if sub.data.len() >= 4 => {
-                out.version = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.version = SubReader::new(&sub.data).u32_or_default();
             }
             _ => {}
         }
@@ -52,7 +53,7 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord]) -> NavmRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"NVER" if sub.data.len() >= 4 => {
-                out.version = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.version = SubReader::new(&sub.data).u32_or_default();
             }
             _ => {}
         }
@@ -85,7 +86,7 @@ pub fn parse_regn(form_id: u32, subs: &[SubRecord]) -> RegnRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"WNAM" if sub.data.len() >= 4 => {
-                out.weather_form = read_u32_at(&sub.data, 0);
+                out.weather_form = SubReader::new(&sub.data).u32().ok();
             }
             b"RCLR" if sub.data.len() >= 3 => {
                 out.color = Some([sub.data[0], sub.data[1], sub.data[2]]);
@@ -122,10 +123,11 @@ pub fn parse_eczn(form_id: u32, subs: &[SubRecord]) -> EcznRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 7 => {
-                out.owner_form = read_u32_at(&sub.data, 0).unwrap_or(0);
-                out.rank = sub.data[4];
-                out.min_level = sub.data[5];
-                out.flags = sub.data[6];
+                let mut r = SubReader::new(&sub.data);
+                out.owner_form = r.u32_or_default();
+                out.rank = r.u8_or_default();
+                out.min_level = r.u8_or_default();
+                out.flags = r.u8_or_default();
             }
             _ => {}
         }
@@ -175,33 +177,17 @@ pub fn parse_lgtm(form_id: u32, subs: &[SubRecord]) -> LgtmRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 20 => {
-                let d = &sub.data;
-                out.ambient = [
-                    d[0] as f32 / 255.0,
-                    d[1] as f32 / 255.0,
-                    d[2] as f32 / 255.0,
-                ];
-                out.directional = [
-                    d[4] as f32 / 255.0,
-                    d[5] as f32 / 255.0,
-                    d[6] as f32 / 255.0,
-                ];
-                out.fog_color = [
-                    d[8] as f32 / 255.0,
-                    d[9] as f32 / 255.0,
-                    d[10] as f32 / 255.0,
-                ];
-                out.fog_near = read_f32_at(d, 12).unwrap_or(0.0);
-                out.fog_far = read_f32_at(d, 16).unwrap_or(0.0);
-                if d.len() >= 32 {
-                    out.directional_fade = read_f32_at(d, 28);
-                }
-                if d.len() >= 36 {
-                    out.fog_clip = read_f32_at(d, 32);
-                }
-                if d.len() >= 40 {
-                    out.fog_power = read_f32_at(d, 36);
-                }
+                let mut r = SubReader::new(&sub.data);
+                out.ambient = r.rgb_color().unwrap_or([0.0; 3]);
+                out.directional = r.rgb_color().unwrap_or([0.0; 3]);
+                out.fog_color = r.rgb_color().unwrap_or([0.0; 3]);
+                out.fog_near = r.f32_or_default();
+                out.fog_far = r.f32_or_default();
+                // skip rotation_x + rotation_y (2 × i32) before the optional tail.
+                r.skip_or_eof(8);
+                out.directional_fade = r.f32().ok();
+                out.fog_clip = r.f32().ok();
+                out.fog_power = r.f32().ok();
             }
             _ => {}
         }
@@ -298,10 +284,10 @@ pub fn parse_acti(form_id: u32, subs: &[SubRecord]) -> ActiRecord {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"MODL" => out.model_path = read_zstring(&sub.data),
-            b"SCRI" => out.script_form_id = read_u32_at(&sub.data, 0).unwrap_or(0),
-            b"SNAM" => out.sound_form_id = read_u32_at(&sub.data, 0).unwrap_or(0),
+            b"SCRI" => out.script_form_id = SubReader::new(&sub.data).u32_or_default(),
+            b"SNAM" => out.sound_form_id = SubReader::new(&sub.data).u32_or_default(),
             b"RNAM" | b"RADR" => {
-                out.radio_form_id = read_u32_at(&sub.data, 0).unwrap_or(0);
+                out.radio_form_id = SubReader::new(&sub.data).u32_or_default();
             }
             _ => {}
         }
@@ -354,7 +340,7 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord]) -> TermRecord {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"MODL" => out.model_path = read_zstring(&sub.data),
-            b"SCRI" => out.script_form_id = read_u32_at(&sub.data, 0).unwrap_or(0),
+            b"SCRI" => out.script_form_id = SubReader::new(&sub.data).u32_or_default(),
             b"ANAM" => out.password = read_zstring(&sub.data),
             b"DNAM" => out.footer_text = read_zstring(&sub.data),
             b"BSIZ" if !sub.data.is_empty() => {

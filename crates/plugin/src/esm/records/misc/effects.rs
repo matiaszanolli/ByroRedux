@@ -1,6 +1,7 @@
 //! Effects / FX / VATS / impact records.
 
-use super::super::common::{read_f32_at, read_lstring_or_zstring, read_u32_at, read_zstring};
+use super::super::common::{read_lstring_or_zstring, read_zstring};
+use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
 
 /// Actor Value Information record (`AVIF`). Defines the ~30 actor
@@ -48,14 +49,13 @@ pub fn parse_avif(form_id: u32, subs: &[SubRecord]) -> AvifRecord {
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             b"ANAM" => out.abbreviation = read_zstring(&sub.data),
-            b"CNAM" => out.category = read_u32_at(&sub.data, 0).unwrap_or(0),
+            b"CNAM" => out.category = SubReader::new(&sub.data).u32_or_default(),
             b"AVSK" if sub.data.len() >= 16 => {
-                out.skill_scaling = Some([
-                    read_f32_at(&sub.data, 0).unwrap_or(0.0),
-                    read_f32_at(&sub.data, 4).unwrap_or(0.0),
-                    read_f32_at(&sub.data, 8).unwrap_or(0.0),
-                    read_f32_at(&sub.data, 12).unwrap_or(0.0),
-                ]);
+                out.skill_scaling = Some(
+                    SubReader::new(&sub.data)
+                        .f32_array::<4>()
+                        .unwrap_or([0.0; 4]),
+                );
             }
             _ => {}
         }
@@ -114,8 +114,10 @@ pub fn parse_proj(form_id: u32, subs: &[SubRecord]) -> ProjRecord {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 12 => {
-                out.flags = read_u32_at(&sub.data, 0).unwrap_or(0);
-                out.muzzle_speed = read_f32_at(&sub.data, 8).unwrap_or(0.0);
+                let mut r = SubReader::new(&sub.data);
+                out.flags = r.u32_or_default();
+                r.skip_or_eof(4); // skip the 4-byte field at offset 4..8
+                out.muzzle_speed = r.f32_or_default();
             }
             _ => {}
         }
@@ -182,9 +184,9 @@ pub fn parse_imod(form_id: u32, subs: &[SubRecord]) -> ImodRecord {
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 8 => {
-                out.value =
-                    i32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
-                out.weight = read_f32_at(&sub.data, 4).unwrap_or(0.0);
+                let mut r = SubReader::new(&sub.data);
+                out.value = r.i32_or_default();
+                out.weight = r.f32_or_default();
             }
             _ => {}
         }
@@ -216,7 +218,7 @@ pub fn parse_repu(form_id: u32, subs: &[SubRecord]) -> RepuRecord {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 4 => {
-                out.base_value = read_f32_at(&sub.data, 0).unwrap_or(0.0);
+                out.base_value = SubReader::new(&sub.data).f32_or_default();
             }
             _ => {}
         }
@@ -250,8 +252,10 @@ pub fn parse_expl(form_id: u32, subs: &[SubRecord]) -> ExplRecord {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DATA" if sub.data.len() >= 16 => {
-                out.damage = read_f32_at(&sub.data, 8).unwrap_or(0.0);
-                out.radius = read_f32_at(&sub.data, 12).unwrap_or(0.0);
+                let mut r = SubReader::new(&sub.data);
+                r.skip_or_eof(8); // damage starts at offset 8
+                out.damage = r.f32_or_default();
+                out.radius = r.f32_or_default();
             }
             _ => {}
         }
