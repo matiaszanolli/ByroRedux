@@ -367,6 +367,13 @@ struct App {
     /// Forwarded every `WindowEvent` so egui can grab clicks /
     /// keypresses when the overlay is visible.
     debug_ui: Option<byroredux_debug_ui::DebugUiState>,
+    /// Latched flag: the Entities panel asked us to rebuild its
+    /// list this frame. Cleared at the start of every frame; set
+    /// true by Phase 4b's `PanelOutputs::refresh_entities`. Held
+    /// here (not in `DebugUiState`) because the snapshot is built
+    /// from `&self.world`, which `DebugUiState::run`'s closure
+    /// can't reach.
+    debug_ui_refresh_entities: bool,
 }
 
 impl App {
@@ -832,6 +839,7 @@ impl App {
             #[cfg(feature = "debug-server")]
             debug_server,
             debug_ui: None,
+            debug_ui_refresh_entities: false,
         }
     }
 
@@ -1446,22 +1454,27 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                // Phase 4 — run the egui closure here, before we
-                // borrow `ctx` mutably, so the borrow checker
-                // doesn't have to weave a partial-borrow split
-                // through the long `if let Some(ref mut ctx)` body
-                // below. Stash the resulting `FullOutput` + a
-                // clone of the egui context (cheap — `Context` is
-                // internally Arc'd) so the VulkanContext can
-                // consume both inside its draw_frame pipeline.
-                let egui_frame = if let (Some(ref mut ui), Some(ref win)) =
+                // Phase 4 — populate the panel snapshot from the
+                // World, run egui (gets `PanelOutputs` back), apply
+                // those outputs, then stash the FullOutput +
+                // egui::Context for the renderer to consume.
+                let snapshot = build_debug_ui_snapshot(
+                    &self.world,
+                    self.debug_ui_refresh_entities,
+                );
+                self.debug_ui_refresh_entities = false;
+
+                let (egui_frame, outputs) = if let (Some(ref mut ui), Some(ref win)) =
                     (self.debug_ui.as_mut(), self.window.as_ref())
                 {
-                    ui.run(win, byroredux_debug_ui::placeholder_ui);
-                    ui.take_output().map(|out| (ui.egui_ctx.clone(), out))
+                    let outputs = ui.run(win, &snapshot);
+                    let frame = ui.take_output().map(|out| (ui.egui_ctx.clone(), out));
+                    (frame, outputs)
                 } else {
-                    None
+                    (None, byroredux_debug_ui::PanelOutputs::default())
                 };
+
+                apply_debug_ui_outputs(&mut self.world, outputs, &mut self.debug_ui_refresh_entities);
 
                 if let Some(ref mut ctx) = self.renderer {
                     if let Some((egui_ctx, output)) = egui_frame {
@@ -2118,6 +2131,86 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Phase 4b — build the per-frame [`PanelSnapshot`] the egui
+/// overlay reads. Always populates `metrics`; the entity list is
+/// rebuilt only when the Entities panel asked to refresh (avoids
+/// walking the Name component query every frame for an overlay
+/// that's hidden most of the time).
+fn build_debug_ui_snapshot(
+    world: &World,
+    refresh_entities: bool,
+) -> byroredux_debug_ui::PanelSnapshot {
+    let metrics = world
+        .try_resource::<byroredux_core::ecs::MetricsSnapshot>()
+        .map(|m| byroredux_debug_ui::panels::MetricsSnapshotView {
+            sampled_at_secs: m.sampled_at_secs,
+            cpu_pct: m.cpu_pct,
+            ram_used_mb: m.ram_used_mb,
+            ram_total_mb: m.ram_total_mb,
+            process_ram_mb: m.process_ram_mb,
+            vram_used_mb: m.vram_used_mb,
+            vram_reserved_mb: m.vram_reserved_mb,
+            vram_budget_mb: m.vram_budget_mb,
+            gpu_pass_ms: m.gpu_pass_ms.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        });
+
+    let entities = if refresh_entities {
+        // Resolve `Name` through the world's StringPool — `Name`
+        // holds a `FixedString` symbol, not the resolved string.
+        let mut out: Vec<(u32, String)> = Vec::new();
+        if let (Some(q), Some(pool)) = (
+            world.query::<byroredux_core::ecs::Name>(),
+            world.try_resource::<StringPool>(),
+        ) {
+            for (id, name) in q.iter() {
+                let resolved = pool.resolve(name.0).map(|s| s.to_string()).unwrap_or_default();
+                out.push((id, resolved));
+            }
+        }
+        Some(out)
+    } else {
+        None
+    };
+
+    byroredux_debug_ui::PanelSnapshot { metrics, entities }
+}
+
+/// Phase 4b — apply the [`PanelOutputs`] the overlay produced back
+/// to the world: queued loads go onto the same
+/// `PendingDebugLoadSlot` the debug-server's `Load*` handlers
+/// write, console expressions dispatch through the
+/// `CommandRegistry`. The refresh flag latches for the next frame's
+/// snapshot build.
+fn apply_debug_ui_outputs(
+    world: &mut World,
+    outputs: byroredux_debug_ui::PanelOutputs,
+    refresh_entities_flag: &mut bool,
+) {
+    if outputs.refresh_entities {
+        *refresh_entities_flag = true;
+    }
+    if !outputs.queued_loads.is_empty() {
+        let mut slot = world.resource_mut::<byroredux_core::ecs::PendingDebugLoadSlot>();
+        for load in outputs.queued_loads {
+            match load {
+                byroredux_debug_ui::QueuedLoad::Nif { path, label } => {
+                    slot.push(byroredux_core::ecs::PendingDebugLoad::Nif { path, label });
+                }
+            }
+        }
+    }
+    for expr in outputs.console_evals {
+        // Dispatch via the CommandRegistry — same path the
+        // debug-server's Eval request takes. Log the response so
+        // the operator sees it in the engine console even though
+        // the egui panel doesn't show response text directly yet.
+        if let Some(reg) = world.try_resource::<CommandRegistry>() {
+            let output = reg.execute(world, &expr);
+            log::info!("debug-ui console: {} → {}", expr, output.lines.join(" | "));
         }
     }
 }

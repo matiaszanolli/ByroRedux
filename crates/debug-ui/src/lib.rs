@@ -30,6 +30,8 @@
 //! reads the egui pixels-per-point + viewport ID directly from the
 //! resource so the App doesn't have to thread a separate context.
 
+pub mod panels;
+
 use std::sync::Arc;
 
 use byroredux_core::ecs::Resource;
@@ -37,6 +39,8 @@ use egui_winit::winit;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
+
+pub use panels::{PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad};
 
 /// Persistent egui state shared between the App's event loop and
 /// the renderer's draw pass.
@@ -59,7 +63,26 @@ pub struct DebugUiState {
     /// stale shapes. `None` when the overlay is hidden or before
     /// the first frame.
     last_output: Option<egui::FullOutput>,
+    /// Per-panel input + history state (loader form fields,
+    /// console buffer + log, active tab). Persisted across frames.
+    pub panels: PanelState,
 }
+
+/// Per-panel input + history state. Lives on [`DebugUiState`] so it
+/// persists across frames the way egui's internal widget memory does.
+#[derive(Default, Clone)]
+pub struct PanelState {
+    pub active_tab: PanelTab,
+    pub loader_path: String,
+    pub loader_label: String,
+    pub console_input: String,
+    /// Bounded scrollback for the Console tab.
+    pub console_history: Vec<String>,
+}
+
+/// Cap on the Console tab's scrollback so a long debugging session
+/// doesn't grow unbounded.
+pub const CONSOLE_HISTORY_CAP: usize = 200;
 
 impl Resource for DebugUiState {}
 
@@ -89,6 +112,17 @@ impl DebugUiState {
             egui_ctx,
             egui_winit,
             last_output: None,
+            panels: PanelState::default(),
+        }
+    }
+
+    /// Append a line to the console scrollback, trimming the oldest
+    /// entries past [`CONSOLE_HISTORY_CAP`].
+    pub fn push_console_line(&mut self, line: String) {
+        self.panels.console_history.push(line);
+        if self.panels.console_history.len() > CONSOLE_HISTORY_CAP {
+            let overflow = self.panels.console_history.len() - CONSOLE_HISTORY_CAP;
+            self.panels.console_history.drain(..overflow);
         }
     }
 
@@ -114,22 +148,27 @@ impl DebugUiState {
         }
     }
 
-    /// Build one egui frame. Calls the supplied closure with the
-    /// `egui::Context`; the closure draws whatever windows /
-    /// panels are appropriate for the current state. The resulting
-    /// `FullOutput` is stashed for the renderer to consume.
+    /// Run one egui frame against a pre-built [`PanelSnapshot`].
+    /// Returns the operator's actions in [`PanelOutputs`] — the
+    /// binary applies those to the World after this method returns
+    /// (queueing loads, dispatching console expressions, etc.). The
+    /// closure-as-arg form of the Phase-4a placeholder is gone
+    /// because the panels need the snapshot + outputs by value, not
+    /// the binary's `&self.world` (which would conflict with the
+    /// `&mut self.debug_ui` borrow).
     ///
-    /// No-op when [`Self::visible`] is false.
-    pub fn run(&mut self, window: &Window, ui: impl FnOnce(&egui::Context)) {
+    /// Returns an empty `PanelOutputs` when the overlay is hidden.
+    pub fn run(&mut self, window: &Window, snapshot: &PanelSnapshot) -> PanelOutputs {
         if !self.visible {
-            return;
+            return PanelOutputs::default();
         }
         let raw_input = self.egui_winit.take_egui_input(window);
-        // Use the begin_pass / end_pass split so the closure can be
-        // FnOnce — `Context::run` takes FnMut today, which would
-        // force every caller to wrap state-consuming closures.
+        // begin_pass / end_pass split so the panel draw can capture
+        // `&mut self.panels` without the `Context::run`'s FnMut
+        // sugar fighting the borrow.
         self.egui_ctx.begin_pass(raw_input);
-        ui(&self.egui_ctx);
+        let mut outputs = PanelOutputs::default();
+        panels::draw(&self.egui_ctx, snapshot, &mut self.panels, &mut outputs);
         let output = self.egui_ctx.end_pass();
         // Hand the platform output back to egui-winit so OS-level
         // cursor / clipboard changes get applied. Done here (not
@@ -137,6 +176,7 @@ impl DebugUiState {
         self.egui_winit
             .handle_platform_output(window, output.platform_output.clone());
         self.last_output = Some(output);
+        outputs
     }
 
     /// Drain the stashed `FullOutput`. The renderer calls this in
@@ -152,22 +192,6 @@ impl DebugUiState {
     pub fn pixels_per_point(&self) -> f32 {
         self.egui_ctx.pixels_per_point()
     }
-}
-
-/// Convenience: a no-op default UI closure for Phase 4a. Renders a
-/// single titled window with placeholder text. Phase 4b swaps this
-/// for the real panel stack.
-pub fn placeholder_ui(ctx: &egui::Context) {
-    egui::Window::new("ByroRedux Debug UI")
-        .resizable(true)
-        .show(ctx, |ui| {
-            ui.label("Phase 4a: overlay is rendering.");
-            ui.label("Phase 4b will replace this with live panels:");
-            ui.label("  · Metrics (CPU / RAM / VRAM / GPU)");
-            ui.label("  · Loader (NIF + cell)");
-            ui.label("  · Entities");
-            ui.label("  · Console");
-        });
 }
 
 // Re-export the public-facing pieces of the upstream crates so the
