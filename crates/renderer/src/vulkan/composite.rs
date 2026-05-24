@@ -179,6 +179,7 @@ impl CompositePipeline {
     /// at write time — callers must pass `indirect_is_general=true` when
     /// wiring up the SVGF output.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
@@ -190,6 +191,7 @@ impl CompositePipeline {
         albedo_views: &[vk::ImageView],
         depth_view: vk::ImageView,
         caustic_views: &[vk::ImageView],
+        water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
         volumetric_views: &[vk::ImageView],
         bloom_views: &[vk::ImageView],
         bindless_layout: vk::DescriptorSetLayout,
@@ -207,6 +209,7 @@ impl CompositePipeline {
             albedo_views,
             depth_view,
             caustic_views,
+            water_caustic_views,
             volumetric_views,
             bloom_views,
             bindless_layout,
@@ -231,6 +234,7 @@ impl CompositePipeline {
         albedo_views: &[vk::ImageView],
         depth_view: vk::ImageView,
         caustic_views: &[vk::ImageView],
+        water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
         volumetric_views: &[vk::ImageView],
         bloom_views: &[vk::ImageView],
         bindless_layout: vk::DescriptorSetLayout,
@@ -240,6 +244,7 @@ impl CompositePipeline {
         debug_assert_eq!(indirect_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(albedo_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(caustic_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(water_caustic_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(volumetric_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(bloom_views.len(), MAX_FRAMES_IN_FLIGHT);
         // Build a partially-valid Self so we can use destroy() for cleanup
@@ -550,6 +555,17 @@ impl CompositePipeline {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // 8: water-side caustic accumulator (#1257 / Phase E of
+            // #1210). R32_UINT sampled view, NEAREST filter required
+            // per the existing integer-format-sampling rule (binding 5
+            // sibling). Composite sums this alongside binding 5 so
+            // both caustic writers (caustic_splat.comp + water.frag)
+            // contribute to the same direct-light caustic term.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(8)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         validate_set_layout(
             0,
@@ -652,6 +668,12 @@ impl CompositePipeline {
                 .sampler(partial.nearest_sampler)
                 .image_view(caustic_views[i])
                 .image_layout(vk::ImageLayout::GENERAL)];
+            // #1257 / Phase E of #1210 — water-side caustic sibling.
+            // Same R32_UINT sampler (NEAREST) as the binding-5 caustic.
+            let water_caustic_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.nearest_sampler)
+                .image_view(water_caustic_views[i])
+                .image_layout(vk::ImageLayout::GENERAL)];
             let volumetric_info = [vk::DescriptorImageInfo::default()
                 .sampler(partial.hdr_sampler)
                 .image_view(volumetric_views[i])
@@ -670,6 +692,7 @@ impl CompositePipeline {
                 write_combined_image_sampler(set, 5, &caustic_info),
                 write_combined_image_sampler(set, 6, &volumetric_info),
                 write_combined_image_sampler(set, 7, &bloom_info),
+                write_combined_image_sampler(set, 8, &water_caustic_info), // #1257
             ];
             // SAFETY: descriptor sets owned by `partial`; writes reference
             // HDR / depth / indirect / albedo / caustic / volumetric /
@@ -881,6 +904,7 @@ impl CompositePipeline {
         albedo_views: &[vk::ImageView],
         depth_view: vk::ImageView,
         caustic_views: &[vk::ImageView],
+        water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
         volumetric_views: &[vk::ImageView],
         bloom_views: &[vk::ImageView],
         width: u32,
@@ -1005,6 +1029,11 @@ impl CompositePipeline {
                     .sampler(self.nearest_sampler)
                     .image_view(caustic_views[i])
                     .image_layout(vk::ImageLayout::GENERAL)];
+                // #1257 / Phase E of #1210 — water-side caustic sibling.
+                let water_caustic_info = [vk::DescriptorImageInfo::default()
+                    .sampler(self.nearest_sampler)
+                    .image_view(water_caustic_views[i])
+                    .image_layout(vk::ImageLayout::GENERAL)];
                 let volumetric_info = [vk::DescriptorImageInfo::default()
                     .sampler(self.hdr_sampler)
                     .image_view(volumetric_views[i])
@@ -1013,11 +1042,12 @@ impl CompositePipeline {
                     .sampler(self.hdr_sampler)
                     .image_view(bloom_views[i])
                     .image_layout(vk::ImageLayout::GENERAL)];
-                // Typed [_; 8] array — compile catches divergence from
-                // the 8-binding layout (#905). Init path mirrors this
-                // exact shape at the post-`new()` writer above.
+                // Typed [_; 9] array (was [_; 8] pre-#1257) — compile
+                // catches divergence from the 9-binding layout. Init
+                // path at the post-`new()` writer above mirrors this
+                // exact shape.
                 let set = self.descriptor_sets[i];
-                let writes: [vk::WriteDescriptorSet; 8] = [
+                let writes: [vk::WriteDescriptorSet; 9] = [
                     write_combined_image_sampler(set, 0, &hdr_info),
                     write_combined_image_sampler(set, 1, &indirect_info),
                     write_combined_image_sampler(set, 2, &albedo_info),
@@ -1026,6 +1056,7 @@ impl CompositePipeline {
                     write_combined_image_sampler(set, 5, &caustic_info),
                     write_combined_image_sampler(set, 6, &volumetric_info),
                     write_combined_image_sampler(set, 7, &bloom_info),
+                    write_combined_image_sampler(set, 8, &water_caustic_info),
                 ];
                 // SAFETY: descriptor sets owned by `self`; writes
                 // reference freshly-recreated HDR views (owned by `self`)

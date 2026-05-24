@@ -64,6 +64,16 @@ layout(set = 0, binding = 6) uniform sampler3D volumetricFroxel;
 // at full screen resolution with bilinear hardware filtering;
 // added to `combined` before ACES per Frostbite §8.
 layout(set = 0, binding = 7) uniform sampler2D bloomTex;
+// #1257 / Phase E of #1210 — water-side caustic accumulator (R32_UINT,
+// NEAREST sampler per the existing integer-format-sampling rule
+// documented at composite.rs:360). Written by water.frag's
+// `imageAtomicAdd` during the main render pass (#1256), read here
+// after the post-render-pass barrier (#1255). Summed alongside
+// `causticTex` so both writers (caustic_splat.comp for glass +
+// MultiLayerParallax, water.frag for water surfaces) contribute to
+// the same composited direct-light caustic term — they share the
+// CAUSTIC_FIXED_SCALE fixed-point convention.
+layout(set = 0, binding = 8) uniform usampler2D waterCausticTex;
 
 // Set 1: bindless texture array from TextureRegistry — shared with the
 // main geometry pipeline. Used here to sample WTHR cloud textures by index.
@@ -332,8 +342,16 @@ void main() {
         // decode here and add a warm-white contribution scaled by the
         // receiver's own albedo so colored surfaces pick up the caustic
         // with their own tint.
+        //
+        // #1257 / Phase E of #1210 — sum the water-side caustic
+        // accumulator alongside the glass-/MultiLayerParallax-side
+        // one. Both writers share `CAUSTIC_FIXED_SCALE` (the
+        // generated `#define` in `shader_constants.glsl`) so their
+        // fixed-point sums are on a unified luminance basis; one
+        // `causticLum` carries the combined contribution downstream.
         uint causticRaw = texelFetch(causticTex, ivec2(gl_FragCoord.xy), 0).r;
-        float causticLum = float(causticRaw) / CAUSTIC_FIXED_SCALE;
+        uint waterCausticRaw = texelFetch(waterCausticTex, ivec2(gl_FragCoord.xy), 0).r;
+        float causticLum = float(causticRaw + waterCausticRaw) / CAUSTIC_FIXED_SCALE;
         vec3 caustic = albedo * causticLum;
 
         vec3 combined = direct + indirect * albedo + caustic;

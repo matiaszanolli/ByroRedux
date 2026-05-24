@@ -1883,6 +1883,19 @@ impl VulkanContext {
                 ));
             }
         };
+        // #1257 / Phase E of #1210 — water-side caustic sampled views.
+        // None on init failure → use the existing causticAccum views
+        // as a degenerate fallback so binding 8 has a valid resource.
+        // This is safe: water.frag's writes go to a NEVER-bound image
+        // when the accumulator failed init, so composite at binding 8
+        // reads the same all-zero causticAccum (which is correct for
+        // "no water caustics this session").
+        let water_caustic_views: Vec<vk::ImageView> = match water_caustic_accum {
+            Some(ref a) => (0..super::sync::MAX_FRAMES_IN_FLIGHT)
+                .map(|i| a.sampled_view(i))
+                .collect(),
+            None => caustic_views.clone(),
+        };
         let mut composite = match CompositePipeline::new(
             &device,
             &gpu_allocator,
@@ -1894,6 +1907,7 @@ impl VulkanContext {
             &albedo_views,
             depth_image_view,
             &caustic_views,
+            &water_caustic_views,
             &volumetric_views,
             &bloom_views,
             texture_registry.descriptor_set_layout,

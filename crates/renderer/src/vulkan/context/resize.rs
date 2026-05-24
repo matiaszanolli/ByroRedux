@@ -525,6 +525,13 @@ impl VulkanContext {
         // Recreate composite pipeline's HDR images + swapchain framebuffers
         // with the new extent. Also rewrites descriptor sets to point at
         // the new indirect + albedo + caustic + volumetric + bloom views.
+        // #1257 / Phase E of #1210 — gather the resized water-caustic
+        // sampled views. Same fall-back-to-existing-caustic shape as
+        // the init path in context::new.
+        let water_caustic_views: Vec<vk::ImageView> = match self.water_caustic_accum.as_ref() {
+            Some(a) => (0..MAX_FRAMES_IN_FLIGHT).map(|i| a.sampled_view(i)).collect(),
+            None => caustic_views.clone(),
+        };
         if let Some(ref mut composite) = self.composite {
             composite.recreate_on_resize(
                 &self.device,
@@ -537,6 +544,7 @@ impl VulkanContext {
                 &albedo_views,
                 self.depth_image_view,
                 &caustic_views,
+                &water_caustic_views,
                 &volumetric_views,
                 &bloom_views,
                 self.swapchain_state.extent.width,
