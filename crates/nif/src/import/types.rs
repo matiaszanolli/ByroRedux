@@ -500,6 +500,45 @@ pub struct ImportedMesh {
     pub specular_strength: f32,
     /// Glossiness / smoothness.
     pub glossiness: f32,
+    /// `BSLightingShaderProperty.refraction_strength` (every BSVER 83+
+    /// BSLSP authors this). Drives refractive distortion magnitude on
+    /// Skyrim+ / FO4 / FO76 surfaces. Default 0.0 (no refraction).
+    /// Renderer-side consumption deferred to the Skyrim+ PBR pass
+    /// paired with the BGSM v>=8 suite (#1147). See #1241 /
+    /// NIF-DIM4-NEW-01.
+    pub refraction_strength: f32,
+    /// `BSLightingShaderProperty.lighting_effect_1` (Skyrim subsurface
+    /// scattering scalar, BSVER < FO4, gated by `SLSF2_Soft_Lighting`).
+    /// Drives per-material SSS rolloff on skin / soft-cloth / wax.
+    /// Default 0.0. See #1241.
+    pub lighting_effect_1: f32,
+    /// `BSLightingShaderProperty.lighting_effect_2` (Skyrim backlight
+    /// scalar, BSVER < FO4, gated by `SLSF2_Back_Lighting`). Drives
+    /// the back-lit translucency on hair / foliage / fabric edges.
+    /// Default 0.0. See #1241.
+    pub lighting_effect_2: f32,
+    /// `BSLightingShaderProperty.subsurface_rolloff` (FO4 BSVER 130–139).
+    /// Per-material SSS rolloff envelope. Default 0.0. See #1241.
+    pub subsurface_rolloff: f32,
+    /// `BSLightingShaderProperty.rimlight_power` (FO4 BSVER 130–139).
+    /// Per-material rim-light exponent (power-armor edges, NPC skin
+    /// rim). Default 0.0. See #1241.
+    pub rimlight_power: f32,
+    /// `BSLightingShaderProperty.backlight_power` (FO4 BSVER 130–139,
+    /// paired with `rimlight_power < FLT_MAX`). Per-material backlight
+    /// exponent. Default 0.0. See #1241.
+    pub backlight_power: f32,
+    /// `BSLightingShaderProperty.grayscale_to_palette_scale` (FO4+
+    /// BSVER >= 130). Modulator on the greyscale→palette LUT remap
+    /// (NPC face tints, gradient palette swaps). Default 1.0 = no
+    /// scale (matches the BSLSP parser stub at `shader.rs:748`).
+    /// See #1241.
+    pub grayscale_to_palette_scale: f32,
+    /// `BSLightingShaderProperty.fresnel_power` (FO4+ BSVER >= 130).
+    /// Per-material Schlick exponent for the Fresnel rim term.
+    /// Default 5.0 (standard Schlick exponent, matches the BSLSP
+    /// parser stub at `shader.rs:749`). See #1241.
+    pub fresnel_power: f32,
     /// UV texture coordinate offset [u, v].
     pub uv_offset: [f32; 2],
     /// UV texture coordinate scale [u, v].

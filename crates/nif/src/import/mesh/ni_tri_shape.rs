@@ -242,6 +242,18 @@ pub fn extract_mesh(
         ambient_color: mat.ambient_color,
         specular_strength: mat.specular_strength,
         glossiness: mat.glossiness,
+        // #1241 — BSLSP PBR scalars. NiTriShape is the pre-Skyrim path
+        // (Oblivion/FO3/FNV) so these almost always sit at defaults;
+        // forward anyway so a Skyrim+ NIF that ships an NiTriShape
+        // alongside a BSLightingShaderProperty still gets them through.
+        refraction_strength: mat.refraction_strength,
+        lighting_effect_1: mat.lighting_effect_1,
+        lighting_effect_2: mat.lighting_effect_2,
+        subsurface_rolloff: mat.subsurface_rolloff,
+        rimlight_power: mat.rimlight_power,
+        backlight_power: mat.backlight_power,
+        grayscale_to_palette_scale: mat.grayscale_to_palette_scale,
+        fresnel_power: mat.fresnel_power,
         uv_offset: mat.uv_offset,
         uv_scale: mat.uv_scale,
         mat_alpha: mat.alpha,

@@ -514,6 +514,45 @@ pub(super) struct MaterialInfo {
     /// lighting glitches in the new PBR pipeline.
     pub specular_enabled: bool,
     pub glossiness: f32,
+    /// `BSLightingShaderProperty.refraction_strength` — refractive
+    /// distortion magnitude (every BSVER 83+ BSLSP authors this).
+    /// Default 0.0 = no refraction. Renderer dispatch is deferred to
+    /// the Skyrim+ PBR pass paired with the BGSM v>=8 suite (#1147);
+    /// captured here so the silent drop at the importer boundary is
+    /// closed. See #1241 / NIF-DIM4-NEW-01.
+    pub refraction_strength: f32,
+    /// `BSLightingShaderProperty.lighting_effect_1` — Skyrim subsurface
+    /// scattering scalar (BSVER < FO4, gated by `SLSF2_Soft_Lighting`).
+    /// Drives the per-material SSS rolloff on skin / soft-cloth / wax
+    /// surfaces. Default 0.0 = no SSS contribution. See #1241.
+    pub lighting_effect_1: f32,
+    /// `BSLightingShaderProperty.lighting_effect_2` — Skyrim backlight
+    /// scalar (BSVER < FO4, gated by `SLSF2_Back_Lighting`). Drives the
+    /// back-lit translucency term on hair / foliage / fabric edges.
+    /// Default 0.0 = no backlight. See #1241.
+    pub lighting_effect_2: f32,
+    /// `BSLightingShaderProperty.subsurface_rolloff` — FO4 BSVER 130–139.
+    /// Per-material SSS rolloff envelope. Default 0.0. See #1241.
+    pub subsurface_rolloff: f32,
+    /// `BSLightingShaderProperty.rimlight_power` — FO4 BSVER 130–139.
+    /// Per-material rim-light exponent (power-armor edge highlight,
+    /// NPC skin rim). Default 0.0. See #1241.
+    pub rimlight_power: f32,
+    /// `BSLightingShaderProperty.backlight_power` — FO4 BSVER 130–139.
+    /// Per-material backlight exponent (paired with `rimlight_power`
+    /// when `< FLT_MAX`). Default 0.0. See #1241.
+    pub backlight_power: f32,
+    /// `BSLightingShaderProperty.grayscale_to_palette_scale` — FO4+
+    /// BSVER >= 130. Modulator on the greyscale→palette LUT remap
+    /// (NPC face tints, gradient-driven palette swaps). Default 1.0
+    /// = no scale (matches the BSLSP parser stub default at
+    /// `shader.rs:748`). See #1241.
+    pub grayscale_to_palette_scale: f32,
+    /// `BSLightingShaderProperty.fresnel_power` — FO4+ BSVER >= 130.
+    /// Per-material Schlick exponent for the Fresnel rim term.
+    /// Default 5.0 (standard Schlick exponent, matches the BSLSP
+    /// parser stub default at `shader.rs:749`). See #1241.
+    pub fresnel_power: f32,
     pub uv_offset: [f32; 2],
     pub uv_scale: [f32; 2],
     /// Ambient color (RGB) from `NiMaterialProperty.ambient`. Modulates
@@ -866,6 +905,18 @@ impl Default for MaterialInfo {
             diffuse_color: [1.0, 1.0, 1.0],
             specular_enabled: true,
             glossiness: 80.0,
+            // BSLightingShaderProperty PBR scalars — defaults mirror
+            // the parser stub at `crates/nif/src/blocks/shader.rs:739-749`
+            // so the no-author fallback is the same as the stopcond
+            // fallback. See #1241.
+            refraction_strength: 0.0,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            grayscale_to_palette_scale: 1.0,
+            fresnel_power: 5.0,
             uv_offset: [0.0, 0.0],
             uv_scale: [1.0, 1.0],
             // Default to white so the per-material ambient term acts as
@@ -1060,3 +1111,15 @@ mod lighting_shader_mat_tests;
 /// populated `has_material_data`.
 #[cfg(test)]
 mod vertex_color_precedence_tests;
+
+/// Regression tests for #1241 (NIF-DIM4-NEW-01) —
+/// `BSLightingShaderProperty` PBR scalars (`refraction_strength`,
+/// `lighting_effect_1/2`, `subsurface_rolloff`, `rimlight_power`,
+/// `backlight_power`, `grayscale_to_palette_scale`, `fresnel_power`)
+/// must land on `MaterialInfo` and propagate through every mesh
+/// extractor into `ImportedMesh`. Pre-fix the walker captured the
+/// `emissive_*` / `glossiness` / `uv_*` / `alpha` neighbours but
+/// dropped these 7, so the parser's per-BSVER capture investment
+/// (#1175, #115, #403) never surfaced.
+#[cfg(test)]
+mod lighting_shader_pbr_tests;

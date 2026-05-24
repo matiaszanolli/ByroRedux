@@ -341,6 +341,16 @@ fn placeholder_billboard_mesh(
         ambient_color: [1.0; 3],
         specular_strength: 0.0,
         glossiness: 0.0,
+        // #1241 — SpeedTree billboards never resolve a
+        // BSLightingShaderProperty; defaults mirror MaterialInfo.
+        refraction_strength: 0.0,
+        lighting_effect_1: 0.0,
+        lighting_effect_2: 0.0,
+        subsurface_rolloff: 0.0,
+        rimlight_power: 0.0,
+        backlight_power: 0.0,
+        grayscale_to_palette_scale: 1.0,
+        fresnel_power: 5.0,
         uv_offset: [0.0, 0.0],
         uv_scale: [1.0, 1.0],
         mat_alpha: 1.0,

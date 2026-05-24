@@ -274,6 +274,16 @@ mod pack_bgsm_material_flags_tests {
             ambient_color: [1.0; 3],
             specular_strength: 1.0,
             glossiness: 80.0,
+            // #1241 — BSLSP PBR scalars; test helper sticks to
+            // MaterialInfo defaults (mirror of the BSLSP parser stub).
+            refraction_strength: 0.0,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            grayscale_to_palette_scale: 1.0,
+            fresnel_power: 5.0,
             uv_offset: [0.0; 2],
             uv_scale: [1.0; 2],
             mat_alpha: 1.0,

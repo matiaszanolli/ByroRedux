@@ -255,6 +255,18 @@ pub fn extract_bs_tri_shape(
         ambient_color: mat.ambient_color,
         specular_strength: mat.specular_strength,
         glossiness: mat.glossiness,
+        // #1241 — BSLSP PBR scalars. BsTriShape is the Skyrim+ / FO4 /
+        // FO76 path so these carry authored values per BSVER band
+        // (Skyrim: lighting_effect_1/2; FO4 130–139: subsurface_rolloff
+        // + rim/back power; FO4+ 130+: grayscale + fresnel + refraction).
+        refraction_strength: mat.refraction_strength,
+        lighting_effect_1: mat.lighting_effect_1,
+        lighting_effect_2: mat.lighting_effect_2,
+        subsurface_rolloff: mat.subsurface_rolloff,
+        rimlight_power: mat.rimlight_power,
+        backlight_power: mat.backlight_power,
+        grayscale_to_palette_scale: mat.grayscale_to_palette_scale,
+        fresnel_power: mat.fresnel_power,
         uv_offset: mat.uv_offset,
         uv_scale: mat.uv_scale,
         mat_alpha: mat.alpha,

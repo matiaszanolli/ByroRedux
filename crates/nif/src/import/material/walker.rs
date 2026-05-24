@@ -298,6 +298,20 @@ pub(crate) fn extract_material_info_from_refs(
             info.uv_scale = shader.uv_scale;
             info.has_uv_transform = true;
             info.alpha = shader.alpha;
+            // PBR scalars on every BSLSP body — none of these were
+            // surfaced before #1241 (NIF-DIM4-NEW-01). The parser
+            // captures them per BSVER gate at `shader.rs:679-695`;
+            // out-of-band BSVERs leave the parser-side defaults
+            // (matching MaterialInfo's own defaults), so the copy
+            // is a literal forward in every era.
+            info.refraction_strength = shader.refraction_strength;
+            info.lighting_effect_1 = shader.lighting_effect_1;
+            info.lighting_effect_2 = shader.lighting_effect_2;
+            info.subsurface_rolloff = shader.subsurface_rolloff;
+            info.rimlight_power = shader.rimlight_power;
+            info.backlight_power = shader.backlight_power;
+            info.grayscale_to_palette_scale = shader.grayscale_to_palette_scale;
+            info.fresnel_power = shader.fresnel_power;
             // No narrowing here — pre-#570 the cast was `as u8` which
             // silently masked any `shader_type >= 256`. Both sides of
             // the pipeline are u32 now (parser → ImportedMesh → ECS
