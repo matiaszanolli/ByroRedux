@@ -2423,6 +2423,11 @@ impl VulkanContext {
             stats.gpu_tlas_build_ms = snap.tlas_build_ms;
             stats.gpu_cluster_cull_ms = snap.cluster_cull_ms;
             stats.gpu_svgf_ms = snap.svgf_ms;
+            stats.gpu_composite_ms = snap.composite_ms;
+            stats.gpu_ssao_ms = snap.ssao_ms;
+            stats.gpu_bloom_ms = snap.bloom_ms;
+            stats.gpu_caustic_splat_ms = snap.caustic_splat_ms;
+            stats.gpu_volumetrics_ms = snap.volumetrics_ms;
         } else {
             stats.gpu_skin_dispatch_ms = 0.0;
             stats.gpu_skin_blas_refit_ms = 0.0;
@@ -2431,6 +2436,11 @@ impl VulkanContext {
             stats.gpu_tlas_build_ms = 0.0;
             stats.gpu_cluster_cull_ms = 0.0;
             stats.gpu_svgf_ms = 0.0;
+            stats.gpu_composite_ms = 0.0;
+            stats.gpu_ssao_ms = 0.0;
+            stats.gpu_bloom_ms = 0.0;
+            stats.gpu_caustic_splat_ms = 0.0;
+            stats.gpu_volumetrics_ms = 0.0;
         }
         stats.slots_active = self.skin_slots.len() as u32;
         stats.slot_pool_capacity = if self.skin_compute.is_some() {

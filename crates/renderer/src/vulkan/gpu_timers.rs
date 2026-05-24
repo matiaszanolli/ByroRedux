@@ -20,12 +20,25 @@
 //! | 11   | cluster light culling dispatch — end   |
 //! | 12   | SVGF temporal dispatch — start         |
 //! | 13   | SVGF temporal dispatch — end           |
+//! | 14   | composite pass — start                 |
+//! | 15   | composite pass — end                   |
+//! | 16   | SSAO compute dispatch — start          |
+//! | 17   | SSAO compute dispatch — end            |
+//! | 18   | bloom pyramid (full) — start           |
+//! | 19   | bloom pyramid (full) — end             |
+//! | 20   | caustic splat compute — start          |
+//! | 21   | caustic splat compute — end            |
+//! | 22   | volumetrics inject+integrate — start   |
+//! | 23   | volumetrics inject+integrate — end     |
 //!
 //! The original three brackets (skin / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work. The four added in debug-UI
-//! Phase 6 (main render / TLAS / cluster cull / SVGF) closed the
-//! "540 ms invisible" gap surfaced by the egui overlay's Metrics
-//! panel.
+//! Phase 6 (main render / TLAS / cluster cull / SVGF) and the five
+//! added in Phase 7 (composite / SSAO / bloom / caustic splat /
+//! volumetrics) close the remaining "438 ms unaccounted" gap that
+//! Phase 6's instrumentation surfaced — `main_render` was only
+//! 35 ms, so the bottleneck has to live in one of the five
+//! Phase-7-bracketed passes.
 //!
 //! ## Lifecycle
 //!
@@ -61,8 +74,8 @@ use ash::vk;
 
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 
-/// One TIMESTAMP query per bracket endpoint × seven brackets.
-const QUERIES_PER_FRAME: u32 = 14;
+/// One TIMESTAMP query per bracket endpoint × twelve brackets.
+const QUERIES_PER_FRAME: u32 = 24;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -78,6 +91,16 @@ const Q_CLUSTER_CULL_START: u32 = 10;
 const Q_CLUSTER_CULL_END: u32 = 11;
 const Q_SVGF_START: u32 = 12;
 const Q_SVGF_END: u32 = 13;
+const Q_COMPOSITE_START: u32 = 14;
+const Q_COMPOSITE_END: u32 = 15;
+const Q_SSAO_START: u32 = 16;
+const Q_SSAO_END: u32 = 17;
+const Q_BLOOM_START: u32 = 18;
+const Q_BLOOM_END: u32 = 19;
+const Q_CAUSTIC_SPLAT_START: u32 = 20;
+const Q_CAUSTIC_SPLAT_END: u32 = 21;
+const Q_VOLUMETRICS_START: u32 = 22;
+const Q_VOLUMETRICS_END: u32 = 23;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -102,6 +125,23 @@ pub struct GpuTimerSnapshot {
     /// SVGF temporal accumulation compute dispatch — motion-vector
     /// reprojection of last frame's denoised indirect.
     pub svgf_ms: f32,
+    /// Composite pass — fullscreen fragment shader combining HDR +
+    /// SVGF indirect + albedo + bloom + caustic + volumetrics into
+    /// the swapchain image with ACES tone-mapping. Phase-7 bracket.
+    pub composite_ms: f32,
+    /// SSAO compute — 16 samples per pixel, full-screen. Phase-7.
+    pub ssao_ms: f32,
+    /// Bloom pyramid (downsample + upsample chain combined) compute.
+    /// Phase-7.
+    pub bloom_ms: f32,
+    /// Caustic splat compute — RT-traced per-refractive-pixel
+    /// caustic accumulator. Phase-7.
+    pub caustic_splat_ms: f32,
+    /// Volumetrics inject + integrate combined. Reads `0.0` when
+    /// `VOLUMETRIC_OUTPUT_CONSUMED` is false (the current default —
+    /// composite multiplies the result by 0). Phase-7 bracket
+    /// confirms the gate is actually holding.
+    pub volumetrics_ms: f32,
 }
 
 /// Per-frame-in-flight TIMESTAMP query pools.
@@ -123,13 +163,18 @@ pub struct GpuPerFrameTimers {
     last_snapshot: GpuTimerSnapshot,
 }
 
-const BIT_SKIN_DISPATCH: u16 = 0x01;
-const BIT_BLAS_REFIT: u16 = 0x02;
-const BIT_TAA: u16 = 0x04;
-const BIT_MAIN_RENDER: u16 = 0x08;
-const BIT_TLAS_BUILD: u16 = 0x10;
-const BIT_CLUSTER_CULL: u16 = 0x20;
-const BIT_SVGF: u16 = 0x40;
+const BIT_SKIN_DISPATCH: u16 = 0x0001;
+const BIT_BLAS_REFIT: u16 = 0x0002;
+const BIT_TAA: u16 = 0x0004;
+const BIT_MAIN_RENDER: u16 = 0x0008;
+const BIT_TLAS_BUILD: u16 = 0x0010;
+const BIT_CLUSTER_CULL: u16 = 0x0020;
+const BIT_SVGF: u16 = 0x0040;
+const BIT_COMPOSITE: u16 = 0x0080;
+const BIT_SSAO: u16 = 0x0100;
+const BIT_BLOOM: u16 = 0x0200;
+const BIT_CAUSTIC_SPLAT: u16 = 0x0400;
+const BIT_VOLUMETRICS: u16 = 0x0800;
 
 impl GpuPerFrameTimers {
     /// Create one TIMESTAMP query pool per frame-in-flight slot.
@@ -218,6 +263,24 @@ impl GpuPerFrameTimers {
         }
         if bits & BIT_SVGF != 0 {
             snap.svgf_ms = Self::read_bracket(device, pool, Q_SVGF_START, self.ticks_to_ms);
+        }
+        if bits & BIT_COMPOSITE != 0 {
+            snap.composite_ms =
+                Self::read_bracket(device, pool, Q_COMPOSITE_START, self.ticks_to_ms);
+        }
+        if bits & BIT_SSAO != 0 {
+            snap.ssao_ms = Self::read_bracket(device, pool, Q_SSAO_START, self.ticks_to_ms);
+        }
+        if bits & BIT_BLOOM != 0 {
+            snap.bloom_ms = Self::read_bracket(device, pool, Q_BLOOM_START, self.ticks_to_ms);
+        }
+        if bits & BIT_CAUSTIC_SPLAT != 0 {
+            snap.caustic_splat_ms =
+                Self::read_bracket(device, pool, Q_CAUSTIC_SPLAT_START, self.ticks_to_ms);
+        }
+        if bits & BIT_VOLUMETRICS != 0 {
+            snap.volumetrics_ms =
+                Self::read_bracket(device, pool, Q_VOLUMETRICS_START, self.ticks_to_ms);
         }
         self.last_snapshot = snap;
 
@@ -491,6 +554,176 @@ impl GpuPerFrameTimers {
             );
         }
         self.active_bits[frame] |= BIT_SVGF;
+    }
+
+    // ── Phase-7 brackets (closing the 438ms gap) ─────────────────
+
+    pub fn cmd_composite_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_COMPOSITE_START,
+            );
+        }
+    }
+
+    /// Composite END uses BOTTOM_OF_PIPE so the timestamp waits for
+    /// the fragment shader + color-attachment-write to retire (the
+    /// actual cost of the fullscreen pass).
+    pub fn cmd_composite_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.pools[frame],
+                Q_COMPOSITE_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_COMPOSITE;
+    }
+
+    pub fn cmd_ssao_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_SSAO_START,
+            );
+        }
+    }
+
+    pub fn cmd_ssao_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_SSAO_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_SSAO;
+    }
+
+    pub fn cmd_bloom_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_BLOOM_START,
+            );
+        }
+    }
+
+    pub fn cmd_bloom_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_BLOOM_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_BLOOM;
+    }
+
+    pub fn cmd_caustic_splat_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_CAUSTIC_SPLAT_START,
+            );
+        }
+    }
+
+    pub fn cmd_caustic_splat_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_CAUSTIC_SPLAT_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_CAUSTIC_SPLAT;
+    }
+
+    pub fn cmd_volumetrics_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_VOLUMETRICS_START,
+            );
+        }
+    }
+
+    pub fn cmd_volumetrics_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_VOLUMETRICS_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_VOLUMETRICS;
     }
 
     /// Destroy every query pool. Caller must wait for queue idle

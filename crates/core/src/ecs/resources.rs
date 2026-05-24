@@ -470,6 +470,18 @@ pub struct SkinCoverageStats {
     pub gpu_tlas_build_ms: f32,
     pub gpu_cluster_cull_ms: f32,
     pub gpu_svgf_ms: f32,
+    /// Phase-7 brackets — added to close the "438 ms unaccounted"
+    /// gap that Phase 6's instrumentation exposed (main_render
+    /// itself reads only ~35 ms on a Skyrim interior, so the
+    /// bottleneck has to live in one of these five). Naming
+    /// retained on `SkinCoverageStats` for historical
+    /// compatibility; the resource is the canonical landing pad
+    /// for every per-pass GPU timer now, not just skin-related.
+    pub gpu_composite_ms: f32,
+    pub gpu_ssao_ms: f32,
+    pub gpu_bloom_ms: f32,
+    pub gpu_caustic_splat_ms: f32,
+    pub gpu_volumetrics_ms: f32,
 }
 
 impl Resource for SkinCoverageStats {}

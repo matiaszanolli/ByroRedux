@@ -2628,7 +2628,14 @@ impl VulkanContext {
                         .and_then(|accel| accel.tlas_handle(frame));
                     if let Some(tlas) = tlas_handle {
                         caustic.write_tlas(&self.device, frame, tlas);
-                        if let Err(e) = caustic.dispatch(&self.device, cmd, frame) {
+                        if let Some(ref mut timers) = self.gpu_timers {
+                            timers.cmd_caustic_splat_start(&self.device, cmd, frame);
+                        }
+                        let caustic_result = caustic.dispatch(&self.device, cmd, frame);
+                        if let Some(ref mut timers) = self.gpu_timers {
+                            timers.cmd_caustic_splat_end(&self.device, cmd, frame);
+                        }
+                        if let Err(e) = caustic_result {
                             log::error!(
                                 "Caustic dispatch failed — pass disabled for the rest of the session: {e}"
                             );
@@ -2734,7 +2741,14 @@ impl VulkanContext {
                                 0.0,
                             ],
                         };
-                        if let Err(e) = vol.dispatch(&self.device, cmd, frame, &vol_params) {
+                        if let Some(ref mut timers) = self.gpu_timers {
+                            timers.cmd_volumetrics_start(&self.device, cmd, frame);
+                        }
+                        let vol_result = vol.dispatch(&self.device, cmd, frame, &vol_params);
+                        if let Some(ref mut timers) = self.gpu_timers {
+                            timers.cmd_volumetrics_end(&self.device, cmd, frame);
+                        }
+                        if let Err(e) = vol_result {
                             log::warn!("Volumetrics dispatch failed: {e}");
                         }
                     }
@@ -2783,9 +2797,15 @@ impl VulkanContext {
                     [vp[8], vp[9], vp[10], vp[11]],
                     [vp[12], vp[13], vp[14], vp[15]],
                 ];
-                if let Err(e) =
-                    ssao.dispatch(&self.device, cmd, frame, &vp_arr, &inv_vp_arr, camera_pos)
-                {
+                if let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_ssao_start(&self.device, cmd, frame);
+                }
+                let ssao_result =
+                    ssao.dispatch(&self.device, cmd, frame, &vp_arr, &inv_vp_arr, camera_pos);
+                if let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_ssao_end(&self.device, cmd, frame);
+                }
+                if let Err(e) = ssao_result {
                     log::warn!("SSAO dispatch failed: {e}");
                 }
             }
@@ -2812,7 +2832,14 @@ impl VulkanContext {
             if let Some(ref mut bloom) = self.bloom {
                 if let Some(ref composite) = self.composite {
                     let hdr_view = composite.hdr_image_views[frame];
-                    if let Err(e) = bloom.dispatch(&self.device, cmd, frame, hdr_view) {
+                    if let Some(ref mut timers) = self.gpu_timers {
+                        timers.cmd_bloom_start(&self.device, cmd, frame);
+                    }
+                    let bloom_result = bloom.dispatch(&self.device, cmd, frame, hdr_view);
+                    if let Some(ref mut timers) = self.gpu_timers {
+                        timers.cmd_bloom_end(&self.device, cmd, frame);
+                    }
+                    if let Err(e) = bloom_result {
                         log::warn!("Bloom dispatch failed: {e}");
                     }
                 }
@@ -2832,7 +2859,13 @@ impl VulkanContext {
             // SHADER_READ_ONLY_OPTIMAL.
             if let Some(ref composite) = self.composite {
                 let bindless_set = self.texture_registry.descriptor_set(frame);
+                if let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_composite_start(&self.device, cmd, frame);
+                }
                 composite.dispatch(&self.device, cmd, frame, img, bindless_set);
+                if let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_composite_end(&self.device, cmd, frame);
+                }
             }
 
             // Debug-UI overlay (Phase 4 of the debug-UI plan).
