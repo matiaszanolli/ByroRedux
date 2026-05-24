@@ -125,13 +125,11 @@ impl SkinSlot {
 /// then copies them into the `SkinCoverageStats` resource. Reset each
 /// frame at the entry to the skinned section.
 ///
-/// `dispatches_skipped` (#1194 / PERF-DIM7-INSTR): gates the
-/// PERF-DIM7-01 dispatch-dirty-gate work. When that fix lands, every
-/// entity whose bone palette is unchanged this frame increments this
-/// counter instead of running the compute dispatch. Today the value
-/// is always zero; instrumentation pre-staged so the dirty-gate
-/// commit drops in cleanly. `dispatches_total - dispatches_skipped`
-/// gives the GPU dispatch count actually issued.
+/// `dispatches_skipped` (#1194 / PERF-DIM7-INSTR): incremented by the
+/// dispatch-dirty gate (#1195 / PERF-DIM7-01) when an entity's bone
+/// palette is unchanged from the previous frame — the compute dispatch
+/// is suppressed and this counter bumps instead. `dispatches_total -
+/// dispatches_skipped` gives the GPU dispatch count actually issued.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SkinCoverageFrame {
     pub dispatches_total: u32,

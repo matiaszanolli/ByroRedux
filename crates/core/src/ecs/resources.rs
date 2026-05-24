@@ -420,9 +420,9 @@ pub struct SkinCoverageStats {
     /// `bone_offset > 0`). Denominator for everything below.
     pub dispatches_total: u32,
     /// Entities whose compute dispatch was elided this frame because the
-    /// bone palette hadn't changed since the previous dispatch (#1194 /
-    /// PERF-DIM7-INSTR). Pre-#1194 always zero — PERF-DIM7-01 (dispatch
-    /// dirty-gate, #1195) is the first consumer. `dispatches_total -
+    /// bone palette hadn't changed since the previous dispatch. Counter
+    /// landed in #1194 / PERF-DIM7-INSTR; incremented by the dispatch-
+    /// dirty gate (#1195 / PERF-DIM7-01). `dispatches_total -
     /// dispatches_skipped` gives the GPU dispatch count actually issued.
     pub dispatches_skipped: u32,
     /// Entities currently holding a `SkinSlot` (gauge — not per-frame).
@@ -1224,12 +1224,12 @@ mod tests {
     }
 
     /// #1194 / PERF-DIM7-INSTR — `dispatches_skipped` + GPU timer
-    /// fields are new this commit. Pin: they default to zero and
-    /// don't affect `fully_covered` (the green-bar only reads
-    /// dispatch/refit counters). Future PERF-DIM7-01 / -02 / -03
-    /// fixes will increment `dispatches_skipped` and read the GPU
-    /// timer values; this test guards them against accidental
-    /// removal from the struct.
+    /// fields. Pin: they default to zero and don't affect
+    /// `fully_covered` (the green-bar only reads dispatch/refit
+    /// counters). PERF-DIM7-01 / -02 / -03 (#1195 / #1196 / #1197)
+    /// landed the consumers that increment `dispatches_skipped` and
+    /// populate the GPU timer values; this test guards the fields
+    /// against accidental removal from the struct.
     #[test]
     fn skin_coverage_dim7_instr_fields_default_to_zero_and_dont_break_green_bar() {
         let cov = SkinCoverageStats {
