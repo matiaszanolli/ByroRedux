@@ -87,7 +87,19 @@
       "Bash(disown sleep:*)",
       "Bash(target/release/byro-dbg)",
       "Bash(disown)",
-      "Bash(RUST_LOG=info target/release/byroredux)"
+      "Bash(RUST_LOG=info target/release/byroredux)",
+      "WebFetch(domain:www.niftools.org)",
+      "Bash(kill %1 wait)",
+      "Bash(tee /tmp/fo3_nif_debug/parse_output.txt)",
+      "Bash(tee /tmp/fo3_nif_debug/dump_nif_output.txt)",
+      "Bash(glslangValidator -V triangle.vert -o /tmp/triangle.vert.spv)",
+      "Bash(glslangValidator -V triangle.frag -o /tmp/triangle.frag.spv)",
+      "Bash(glslangValidator -V ui.vert -o /tmp/ui.vert.spv)",
+      "Bash(glslangValidator -V ui.frag -o /tmp/ui.frag.spv)",
+      "Bash(glslangValidator -V triangle.vert -o /tmp/test_vert.spv)",
+      "Bash(glslangValidator -V triangle.frag -o /tmp/test_frag.spv)",
+      "Read(//mnt/data/src/gamebyro-redux/crates/renderer/shaders/{for\\(i=1;i<=NF;i++\\) if\\($i ~ /passed/\\) {gsub\\(/[^0-9]/**)",
+      "Bash(mkdir -p /tmp/audit/performance)"
     ],
     "additionalDirectories": [
       "/mnt/data/src/gamebyro-redux/.claude",
@@ -110,7 +122,24 @@
       "/mnt/data/src/gamebyro-redux/.claude/issues/226",
       "/mnt/data/src/gamebyro-redux/.claude/issues/228",
       "/mnt/data/src/gamebyro-redux/.claude/issues/167",
-      "/mnt/data/src/gamebyro-redux/.claude/issues/211"
+      "/mnt/data/src/gamebyro-redux/.claude/issues/211",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/29",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/39",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/30",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/35",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/25",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/21",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/28",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/22",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/40",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/27",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/32",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/23",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/6",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/26",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/7",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/31",
+      "/mnt/data/src/gamebyro-redux/.claude/issues/24"
     ]
   }
 }
