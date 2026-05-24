@@ -27,10 +27,11 @@ pub use components::{
     ActiveCamera, AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
     AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,
     AnimatedUvTransform, AnimatedVisibility, BSBound, BSXFlags, Billboard, BillboardMode, Camera,
-    CellRoot, Children, EmitterShape, GlobalTransform, LightSource, LocalBound, Material,
-    MeshHandle, Name, Parent, ParticleEmitter, ParticleForceField, ParticleSoA, RenderLayer,
-    SceneFlags, SkinnedMesh,
-    TextureHandle, Transform, WorldBound, MAX_BONES_PER_MESH,
+    CellRoot, Children, EmitterShape, GlobalTransform, LightFlicker, LightSource, LocalBound,
+    Material, MeshHandle, Name, Parent, ParticleEmitter, ParticleForceField, ParticleSoA,
+    RenderLayer, SceneFlags, SkinnedMesh, TextureHandle, Transform, WorldBound,
+    LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
+    MAX_BONES_PER_MESH,
 };
 pub use debug_load::{PendingDebugLoad, PendingDebugLoadSlot};
 pub use game_profiles::{GameProfileEntry, GameProfileRegistry};

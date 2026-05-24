@@ -50,10 +50,10 @@ use crate::components::{
 use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
-    animation_system, billboard_system, compute_underwater_params, footstep_system,
-    log_stats_system, make_transform_propagation_system, make_world_bound_propagation_system,
-    metrics_sample_system, particle_system, spin_system, toggle_player_mode, weather_system,
-    MetricsState,
+    animate_lights_system, animation_system, billboard_system, compute_underwater_params,
+    footstep_system, log_stats_system, make_transform_propagation_system,
+    make_world_bound_propagation_system, metrics_sample_system, particle_system, spin_system,
+    toggle_player_mode, weather_system, MetricsState,
 };
 use byroredux_core::ecs::SystemList;
 
@@ -659,6 +659,13 @@ impl App {
         // without changing observable behaviour. Cost: ~µs of lost
         // parallelism on the demo cube; negligible.
         scheduler.add_exclusive(Stage::Update, spin_system);
+        // Phase 17 — procedural light flicker. Writes
+        // LightSource.intensity + Transform.translation on entities
+        // with a LightFlicker companion. Exclusive in Update so it
+        // sequences AFTER the parallel batch (no Transform conflict
+        // with animation_system / spin_system) but BEFORE
+        // PostUpdate's transform propagation reads the result.
+        scheduler.add_exclusive(Stage::Update, animate_lights_system);
         scheduler.add_to_with_access(
             Stage::PostUpdate,
             make_transform_propagation_system(),

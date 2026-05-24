@@ -6,7 +6,10 @@
 //! path), expanding container placements, resolving base records,
 //! and committing the per-cell NifImportRegistry deltas.
 
-use byroredux_core::ecs::{BillboardMode, GlobalTransform, LightSource, Transform, World};
+use byroredux_core::ecs::{
+    BillboardMode, GlobalTransform, LightFlicker, LightSource, Transform, World,
+    LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
+};
 use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
@@ -360,6 +363,7 @@ pub(super) fn load_references(
                             ..Default::default()
                         },
                     );
+                    attach_light_flicker_if_needed(world, entity, ld, ref_pos);
                     entity_count += 1;
                 }
                 continue;
@@ -1165,6 +1169,52 @@ fn attach_script_for_refr(
         "M47.0: attached script '{}' (SCPT {:08X}) to entity {entity:?} via base {base_form_id:08X}",
         script.editor_id,
         script_form_id,
+    );
+}
+
+/// Phase 17 — attach a [`LightFlicker`] component when the light's
+/// FNAM flags request flicker / pulse animation. No-op for static
+/// lights (the common case for sun proxies, exterior fill, mage
+/// spells), so the per-frame `animate_lights_system` iterates only
+/// the candle / torch / chandelier slice via sparse-set membership.
+///
+/// `base_translation` is captured from `ref_pos` so the animator can
+/// restore the un-jittered position each frame and the movement
+/// amplitude doesn't accumulate. Seeds `phase_offset_secs` from the
+/// entity id so a room full of identical candles doesn't flicker in
+/// lockstep — deterministic per session, scene-stable across cell
+/// reloads since EntityIds reset on cell unload.
+fn attach_light_flicker_if_needed(
+    world: &mut World,
+    entity: byroredux_core::ecs::EntityId,
+    ld: &byroredux_plugin::esm::cell::LightData,
+    base_translation: byroredux_core::math::Vec3,
+) {
+    const FLICKER_MASK: u32 = LIGHT_FLAG_FLICKER
+        | LIGHT_FLAG_FLICKER_SLOW
+        | LIGHT_FLAG_PULSE
+        | LIGHT_FLAG_PULSE_SLOW;
+    if ld.flags & FLICKER_MASK == 0 {
+        return;
+    }
+    // Pre-Skyrim LIGH records truncate after byte 16 — `period_secs`
+    // reads as 0.0 then. Fall back to 0.5 s (the Skyrim vanilla
+    // default for candle FNAM authoring) so flicker still
+    // visibly fires on those records.
+    let period_secs = if ld.period_secs > 0.0 { ld.period_secs } else { 0.5 };
+    // EntityId-derived phase offset in [0, period). The wrap-around
+    // is automatic because the animator computes `phase = (t +
+    // phase_offset) / period` mod 1. Cheap, deterministic, no RNG.
+    let phase_offset_secs = (entity.wrapping_mul(2654435761) as f32 / u32::MAX as f32) * period_secs;
+    world.insert(
+        entity,
+        LightFlicker {
+            period_secs,
+            intensity_amplitude: ld.intensity_amplitude,
+            movement_amplitude: ld.movement_amplitude,
+            base_translation: [base_translation.x, base_translation.y, base_translation.z],
+            phase_offset_secs,
+        },
     );
 }
 

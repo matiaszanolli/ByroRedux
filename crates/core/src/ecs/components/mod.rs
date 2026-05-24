@@ -42,7 +42,10 @@ pub use hierarchy::{Children, Parent};
 pub use inventory::{
     EquipmentSlots, Inventory, InventoryIndex, ItemInstanceId, ItemStack, MAX_BIPED_SLOTS,
 };
-pub use light::LightSource;
+pub use light::{
+    LightFlicker, LightSource, LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE,
+    LIGHT_FLAG_PULSE_SLOW,
+};
 pub use local_bound::LocalBound;
 pub use material::Material;
 pub use mesh::MeshHandle;

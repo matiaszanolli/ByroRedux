@@ -485,6 +485,22 @@ pub struct LightData {
     pub radius: f32,
     pub color: [f32; 3],
     pub flags: u32,
+    /// FNAM flicker / pulse period in seconds. Authored on most
+    /// vanilla Skyrim candles + chandeliers; combined with the
+    /// `Flicker` / `Pulse` (Slow) bits in `flags` and
+    /// `intensity_amplitude` / `movement_amplitude` to drive the
+    /// per-frame light animation. Zero when the LIGH record's
+    /// DATA subrecord is truncated (pre-Skyrim / loose LIGH
+    /// records that ship only the 16-byte header). Phase 17a.
+    pub period_secs: f32,
+    /// Percent intensity variation (e.g. 0.25 = ±25% around the
+    /// authored intensity). Read straight from bytes 32-35 of the
+    /// DATA subrecord. Phase 17a.
+    pub intensity_amplitude: f32,
+    /// Position jitter amplitude in Bethesda units (BU). The
+    /// flicker system offsets the light's local translation by a
+    /// noise vector scaled by this value. Phase 17a.
+    pub movement_amplitude: f32,
     /// FO4 `XPWR` powered-state FormID — references the circuit node
     /// this light connects to (Sanctuary fuse boxes, Vault 111
     /// breaker-panel switch). `None` on every non-FO4 record and on

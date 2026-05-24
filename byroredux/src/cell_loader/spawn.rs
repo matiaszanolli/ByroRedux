@@ -8,8 +8,9 @@
 
 use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::{
-    BSXFlags, Billboard, GlobalTransform, LightSource, LocalBound, Material, MeshHandle,
-    ParticleEmitter, SceneFlags, TextureHandle, Transform, World,
+    BSXFlags, Billboard, GlobalTransform, LightFlicker, LightSource, LocalBound, Material,
+    MeshHandle, ParticleEmitter, SceneFlags, TextureHandle, Transform, World, LIGHT_FLAG_FLICKER,
+    LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
 };
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
@@ -1006,6 +1007,31 @@ pub(super) fn spawn_placed_instances(
                         ..Default::default()
                     },
                 );
+                // Phase 17 — attach the LightFlicker companion when the
+                // LIGH record asks for it. `ref_pos` is the candle/
+                // chandelier's placement root and the right base for
+                // the per-frame movement-amplitude jitter to restore
+                // toward. Mirrors the inline path in
+                // `references.rs::attach_light_flicker_if_needed`.
+                const FLICKER_MASK: u32 = LIGHT_FLAG_FLICKER
+                    | LIGHT_FLAG_FLICKER_SLOW
+                    | LIGHT_FLAG_PULSE
+                    | LIGHT_FLAG_PULSE_SLOW;
+                if ld.flags & FLICKER_MASK != 0 {
+                    let period_secs = if ld.period_secs > 0.0 { ld.period_secs } else { 0.5 };
+                    let phase_offset_secs =
+                        (entity.wrapping_mul(2654435761) as f32 / u32::MAX as f32) * period_secs;
+                    world.insert(
+                        entity,
+                        LightFlicker {
+                            period_secs,
+                            intensity_amplitude: ld.intensity_amplitude,
+                            movement_amplitude: ld.movement_amplitude,
+                            base_translation: [ref_pos.x, ref_pos.y, ref_pos.z],
+                            phase_offset_secs,
+                        },
+                    );
+                }
             }
         }
         count += 1;
