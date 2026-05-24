@@ -1,9 +1,6 @@
-# Issue #877 (OPEN): NIF-PERF-13: pre_parse_cell runs extract_mesh inside rayon closure — BSA mutex serializes I/O across workers
+# NIF-PERF-13: pre_parse_cell runs extract_mesh inside rayon closure — BSA mutex serializes I/O across workers
 
-URL: https://github.com/matiaszanolli/ByroRedux/issues/877
-
----
-
+**GitHub**: https://github.com/matiaszanolli/ByroRedux/issues/877
 ## Description
 
 `byroredux/src/streaming.rs:364-368` calls `tex_provider.extract_mesh(&path)` inside the rayon `into_par_iter` worker closure. `BsaArchive` and `Ba2Archive` both wrap their `File` in `Mutex<File>` (`crates/bsa/src/archive.rs:119`, `crates/bsa/src/ba2.rs:78`).

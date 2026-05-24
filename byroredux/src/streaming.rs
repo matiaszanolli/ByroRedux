@@ -515,27 +515,52 @@ fn pre_parse_cell(
         );
     }
 
-    // Extract + parse each unique NIF in parallel via rayon. Each path
-    // is independent: `extract_mesh` is `&self` on a `Send + Sync`
-    // provider (the underlying BSA/BA2 wrap their `File` in `Mutex<File>`,
-    // so concurrent extracts serialise on the file mutex but parse +
-    // import work parallelises fully). On a 7950X this drops a 100-model
-    // exterior cell from ~300 ms (1 core) to ~40-50 ms (8 rayon
-    // workers). #830 / NIF-PERF-06.
+    // Two-phase pre-parse (#877 / NIF-PERF-13):
+    //   Phase 1 — SERIAL BSA extract on one thread. The BSA / BA2
+    //     readers wrap `File` in `Mutex<File>` (`bsa/archive.rs:119`,
+    //     `bsa/ba2.rs:78`), so concurrent `extract_mesh` calls would
+    //     queue on the mutex and pay both the lock-acquire overhead
+    //     and a context switch per worker — the worst case shape for
+    //     a short-blob hot path. Doing the I/O serially on one thread
+    //     pays zero lock contention.
+    //   Phase 2 — PARALLEL parse + import on the `(path, bytes)` pairs.
+    //     The CPU-bound parse / import work fans out cleanly across
+    //     rayon workers without any shared-mutex bottleneck.
+    //
+    // Pre-#877 the entire pipeline ran inside the rayon closure,
+    // including the BSA mutex acquire — workers spent most of their
+    // wall-clock queued on the mutex on small-NIF-heavy interior
+    // cells. Original #830 / NIF-PERF-06 closeout already shipped the
+    // ~6-7× single-core → multi-core speedup; this lift on top is the
+    // remaining ~10-20% the mutex was eating.
     //
     // Errors are recorded as `None` entries so the drain step caches
     // the negative result and downstream placements skip silently.
     let model_paths: Vec<String> = model_paths.into_iter().collect();
-    let results: Vec<(String, Option<PartialNifImport>)> = model_paths
+
+    // Phase 1: serial extract. One BSA mutex acquire per NIF, no
+    // contention. `None` for paths the BSA doesn't carry (skipped
+    // silently — same semantics as the pre-#877 inline check).
+    let extracted: Vec<(String, Option<Vec<u8>>)> = model_paths
+        .into_iter()
+        .map(|p| {
+            let bytes = tex_provider.extract_mesh(&p);
+            (p, bytes)
+        })
+        .collect();
+
+    // Phase 2: parallel parse + import. No shared mutex on the hot
+    // path; each worker owns its `Vec<u8>` for the whole closure.
+    let results: Vec<(String, Option<PartialNifImport>)> = extracted
         .into_par_iter()
-        .map(|path| {
+        .map(|(path, bytes)| {
             // Per-NIF panic guard — converts a parser-level panic into
             // the same `None` failure marker used by the regular Err
             // path. Without this, a panic would propagate through
             // rayon's `collect()` and tear down the worker thread
-            // (#854).
+            // (#854). Preserved verbatim across the #877 refactor.
             let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let Some(bytes) = tex_provider.extract_mesh(&path) else {
+                let Some(bytes) = bytes else {
                     log::debug!("[stream-worker] NIF not in BSA: '{}'", path);
                     return None;
                 };
