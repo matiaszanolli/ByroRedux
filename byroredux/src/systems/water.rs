@@ -140,3 +140,34 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         *state = new_state;
     }
 }
+
+/// Pack the active camera's submersion state into the
+/// `[deep_color.rgb, depth]` vec4 the renderer consumes as
+/// underwater fog parameters. Returns `[0; 4]` when the camera is
+/// out of water (or no active camera). Moved out of `main.rs`
+/// under TD9-NEW-01 / #1267 to keep the binary entry file below
+/// the 2000-LOC ceiling.
+pub fn compute_underwater_params(world: &World) -> [f32; 4] {
+    let active = world.try_resource::<ActiveCamera>().map(|a| a.0);
+    let Some(cam_entity) = active else {
+        return [0.0; 4];
+    };
+    let Some(sq) = world.query::<SubmersionState>() else {
+        return [0.0; 4];
+    };
+    let Some(state) = sq.get(cam_entity) else {
+        return [0.0; 4];
+    };
+    if !state.head_submerged || state.depth <= 0.0 {
+        return [0.0; 4];
+    }
+    let Some(mat) = state.material.as_ref() else {
+        return [0.0; 4];
+    };
+    [
+        mat.deep_color[0],
+        mat.deep_color[1],
+        mat.deep_color[2],
+        state.depth,
+    ]
+}

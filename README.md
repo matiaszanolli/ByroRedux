@@ -62,6 +62,16 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
   authoritative spec) and the Gamebryo 2.3 source tree for byte-exact
   serialization. No proprietary bits linked — just data understood.
 
+## Why ByroRedux exists
+
+Gamebryo and its descendant Creation Engine power some of the most modded, most replayed RPGs ever shipped --- Oblivion, the Fallout 3D era, Skyrim, Starfield. Twenty-plus years of community work has built ecosystems around them that no other game engine can claim. But the engines themselves have aged in ways their players know intimately: 32-bit memory ceilings retrofitted into 64-bit address spaces, single-threaded game loops bolted onto modern CPUs, renderer paths layered on top of paths layered on top of fixed-function assumptions from 2002. The result is engines that ship great games but require workarounds, community patches, and engine extenders to remain playable on current hardware.
+
+ByroRedux is a ground-up reimplementation that treats the legacy data as authoritative and the legacy code as documentation. Same NIFs, same BSAs, same ESM/ESP records, same Papyrus scripts --- but parsed, validated, and rendered by a modern Rust + Vulkan stack designed from day one around the constraints the originals couldn't anticipate: GPU raytracing, multi-core scheduling, deterministic resource lifetimes, automated regression testing across every supported game.
+
+The project is FOSS-only by design. No proprietary dependencies, no closed-source middleware, no licensed binaries. Vulkan instead of DirectX, Rapier3D instead of Havok, Ruffle instead of Scaleform, the niftools community spec instead of reverse-engineered binary patches. Every component is auditable, replaceable, and outlives any single vendor. That matters because the originals don't have that property --- Bethesda's modding community has spent two decades reverse-engineering things that should never have been opaque in the first place.
+
+The goal is not a replacement for the original engines. The goal is a reference implementation: a place where the architecture is legible, the data formats are documented in working code, and the next twenty years of community modding has a foundation that won't decay with each Windows update.
+
 ## State
 
 Interior cells load and render end-to-end across five games — Oblivion
