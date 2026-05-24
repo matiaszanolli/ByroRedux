@@ -258,7 +258,14 @@ impl VulkanContext {
         // If a screenshot was captured last frame, the GPU is done — read it back.
         self.screenshot_finish_readback();
 
-        // Acquire next swapchain image.
+        // Acquire next swapchain image. Bracketed (Phase 9) so a
+        // FIFO-present-mode block waiting for the next image is
+        // surfaced in `CpuFrameTimings.acquire_ms` rather than
+        // disappearing into the gap between fence_wait and
+        // cmd_record. The acquire itself blocks until the image
+        // is available; on most desktop drivers + Wayland/X11
+        // compositors this is also where vsync ends up.
+        let acquire_t0 = Instant::now();
         let (image_index, suboptimal) = unsafe {
             match self.swapchain_state.swapchain_loader.acquire_next_image(
                 self.swapchain_state.swapchain,
@@ -271,6 +278,7 @@ impl VulkanContext {
                 Err(e) => anyhow::bail!("acquire_next_image: {:?}", e),
             }
         };
+        t.acquire_ns = acquire_t0.elapsed().as_nanos() as u64;
 
         let img = image_index as usize;
 

@@ -520,6 +520,23 @@ pub struct CpuFrameTimings {
     /// plus any vsync / present-mode-FIFO stall. The other place
     /// "missing" GPU work hides.
     pub submit_present_ms: f32,
+    /// `vkAcquireNextImageKHR` CPU stall. Falls in the gap
+    /// between `fence_wait` and `cmd_record`. With FIFO present
+    /// mode + a low swapchain image count this is where the
+    /// compositor / vsync block lands. Phase 9 of the debug-UI
+    /// plan added the bracket after a reading showed
+    /// fence_wait + submit_present both trivial yet a 390 ms
+    /// per-frame gap.
+    pub acquire_ms: f32,
+    /// Wall time between the END of one frame and the START of
+    /// the next. Captures the period winit hands the thread back
+    /// to the OS — Wayland frame-callback wait, compositor
+    /// throttling, the ECS scheduler tick in `about_to_wait`,
+    /// any event-loop sleep. If `acquire_ms` is small but this
+    /// is large, the bottleneck is *outside* the engine's render
+    /// path (compositor, OS, ECS systems running between
+    /// frames). Phase 9.
+    pub between_frames_ms: f32,
 }
 
 impl Resource for CpuFrameTimings {}

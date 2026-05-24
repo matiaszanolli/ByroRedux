@@ -375,6 +375,13 @@ struct App {
     /// from `&self.world`, which `DebugUiState::run`'s closure
     /// can't reach.
     debug_ui_refresh_entities: bool,
+    /// Phase 9 — timestamp at the END of the previous
+    /// RedrawRequested handler. Subtracting from `Instant::now()`
+    /// at the START of the next RedrawRequested yields
+    /// "between_frames_ms" in `CpuFrameTimings`. `None` until
+    /// the first frame closes; the per-frame writer uses 0.0 on
+    /// the first frame so the panel doesn't show garbage.
+    last_redraw_end: Option<Instant>,
 }
 
 impl App {
@@ -853,6 +860,7 @@ impl App {
             debug_server,
             debug_ui: None,
             debug_ui_refresh_entities: false,
+            last_redraw_end: None,
         }
     }
 
@@ -1718,7 +1726,12 @@ impl ApplicationHandler for App {
                             // surface fence_wait_ms / submit_present_ms.
                             // The bench-mode accumulator below reads
                             // the same `frame_timings` local — both
-                            // paths see the same data.
+                            // paths see the same data. Phase 9 added
+                            // `acquire_ms` (closes the gap between
+                            // fence_wait and cmd_record) and
+                            // `between_frames_ms` (closes the gap
+                            // between successive RedrawRequested
+                            // events — compositor / scheduler).
                             if let Some(ref ft) = frame_timings {
                                 const NS_TO_MS: f32 = 1.0e-6;
                                 let mut cpu_t = self
@@ -1730,6 +1743,11 @@ impl ApplicationHandler for App {
                                 cpu_t.cmd_record_ms = ft.cmd_record_ns as f32 * NS_TO_MS;
                                 cpu_t.submit_present_ms =
                                     ft.submit_present_ns as f32 * NS_TO_MS;
+                                cpu_t.acquire_ms = ft.acquire_ns as f32 * NS_TO_MS;
+                                cpu_t.between_frames_ms = self
+                                    .last_redraw_end
+                                    .map(|t| t.elapsed().as_nanos() as f32 * NS_TO_MS)
+                                    .unwrap_or(0.0);
                             }
                             if is_benching {
                                 self.bench_render_ns += render_t0.elapsed().as_nanos() as u64;
@@ -1766,6 +1784,15 @@ impl ApplicationHandler for App {
                         }
                     }
                 }
+                // Phase 9 — stamp end-of-RedrawRequested. The next
+                // RedrawRequested computes
+                // `now() - last_redraw_end` as `between_frames_ms`
+                // (compositor wait + scheduler.run + any
+                // about_to_wait host work). Set unconditionally
+                // here even if the inner `if let Some(ref mut ctx)`
+                // branch was skipped, so the metric remains
+                // continuous across renderer-down frames.
+                self.last_redraw_end = Some(Instant::now());
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {

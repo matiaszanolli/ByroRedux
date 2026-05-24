@@ -775,6 +775,13 @@ pub struct FrameTimings {
     pub cmd_record_ns: u64,
     /// `queue_submit` + `queue_present` — driver overhead + vsync stall.
     pub submit_present_ns: u64,
+    /// `vkAcquireNextImageKHR` — CPU stall waiting for the next
+    /// swapchain image to become available. With FIFO present
+    /// mode + a low swapchain image count, this is where the
+    /// compositor / vsync block hides. Added in Phase 9 to close
+    /// the "390 ms unaccounted with fence_wait + submit_present
+    /// both trivial" gap.
+    pub acquire_ns: u64,
 }
 
 /// Handle for requesting and retrieving screenshots from outside the render loop.

@@ -132,6 +132,8 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         // Names match the `FrameTimings` field names so a reader
         // can grep one term across both the bench output and the
         // overlay panel.
+        cpu_pass_ms.insert("acquire".to_string(), cpu.acquire_ms);
+        cpu_pass_ms.insert("between_frames".to_string(), cpu.between_frames_ms);
         cpu_pass_ms.insert("cmd_record".to_string(), cpu.cmd_record_ms);
         cpu_pass_ms.insert("fence_wait".to_string(), cpu.fence_wait_ms);
         cpu_pass_ms.insert("ssbo_build".to_string(), cpu.ssbo_build_ms);
