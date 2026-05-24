@@ -255,7 +255,18 @@ pub struct GpuMaterial {
     /// `mix(vec3(1.0), albedo, sheenTint)` is the per-pixel sheen
     /// colour the lobe multiplies into. Default 0.0 → white sheen.
     /// See #1249.
-    pub sheen_tint: f32, // offset 292 → total 296
+    pub sheen_tint: f32, // offset 292
+    /// Anisotropic GGX strength [0, 1] (#1250). Drives the standard
+    /// Disney `aspect = sqrt(1 - anisotropic * 0.9)` split:
+    /// `ax = roughness / aspect, ay = roughness * aspect`. Default
+    /// 0.0 → isotropic (`ax = ay = roughness`); the anisotropic GGX
+    /// helper degenerates exactly to the isotropic NDF in that case,
+    /// preserving the pre-#1250 lobe shape for legacy NIF content.
+    /// Hair / brushed metal / vinyl materials grow visible directional
+    /// streak when authored values land. The `0.9` cap prevents
+    /// complete needle degeneracy at anisotropic = 1. Reference:
+    /// knightcrawler25/GLSL-PathTracer `pathtrace.glsl:100-102` (MIT).
+    pub anisotropic: f32, // offset 296 → total 300
 }
 
 impl Default for GpuMaterial {
@@ -359,6 +370,10 @@ impl Default for GpuMaterial {
             subsurface: 0.0,
             sheen: 0.0,
             sheen_tint: 0.0,
+            // #1250 — isotropic default. ax = ay = roughness; the
+            // anisotropic GGX helper produces the same lobe shape as
+            // the legacy isotropic distributionGGX call.
+            anisotropic: 0.0,
         }
     }
 }
@@ -603,6 +618,8 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
     h.write_u32(mat.subsurface.to_bits());
     h.write_u32(mat.sheen.to_bits());
     h.write_u32(mat.sheen_tint.to_bits());
+    // #1250 — anisotropic GGX strength (offset 296). Same lockstep.
+    h.write_u32(mat.anisotropic.to_bits());
     h.finish()
 }
 
@@ -844,12 +861,14 @@ mod tests {
     /// + `translucency_turbulence`), then 280 → 284 under #1248 (+4 B
     /// for `ior`, the per-material refractive index that drives
     /// Schlick F0 derivation), then 284 → 296 under #1249 (+12 B for
-    /// the Disney diffuse lobe — `subsurface` + `sheen` + `sheen_tint`).
-    /// Function and test name kept as "260" so a future size shift
-    /// updates them in lockstep with the assertion.
+    /// the Disney diffuse lobe — `subsurface` + `sheen` + `sheen_tint`),
+    /// then 296 → 300 under #1250 (+4 B for `anisotropic`, the GGX
+    /// ax/ay aspect ratio driver). Function and test name kept as
+    /// "260" so a future size shift updates them in lockstep with
+    /// the assertion.
     #[test]
     fn gpu_material_size_is_260_bytes() {
-        assert_eq!(std::mem::size_of::<GpuMaterial>(), 296);
+        assert_eq!(std::mem::size_of::<GpuMaterial>(), 300);
     }
 
     /// `#[repr(C)]` puts no implicit padding between f32/u32 fields,
@@ -915,6 +934,8 @@ mod tests {
             "ior;",
             // #1249 — Disney diffuse lobe (subsurface + sheen + sheenTint)
             "subsurface;", "sheen;", "sheenTint;",
+            // #1250 — anisotropic GGX ax/ay driver
+            "anisotropic;",
         ] {
             assert!(
                 src.contains(name),
@@ -1067,6 +1088,9 @@ mod tests {
         assert_eq!(offset_of!(GpuMaterial, subsurface), 284);
         assert_eq!(offset_of!(GpuMaterial, sheen), 288);
         assert_eq!(offset_of!(GpuMaterial, sheen_tint), 292);
+
+        // ── Anisotropic GGX (#1250, offset 296) ───────────────────
+        assert_eq!(offset_of!(GpuMaterial, anisotropic), 296);
     }
 
     #[test]

@@ -146,6 +146,12 @@ pub struct DrawCommand {
     /// Disney "sheen tint" (#1249) — `0` = white sheen, `1` = tinted
     /// by base colour (per Disney's `mix(vec3(1), albedo, sheenTint)`).
     pub sheen_tint: f32,
+    /// Anisotropic GGX strength (#1250) [0, 1]. Drives the
+    /// Disney `aspect = sqrt(1 - anisotropic * 0.9)` split into
+    /// `ax = roughness / aspect, ay = roughness * aspect` at the
+    /// shader. Default 0.0 → isotropic (the anisotropic NDF
+    /// degenerates exactly to the legacy isotropic GGX).
+    pub anisotropic: f32,
     /// Emissive intensity multiplier.
     pub emissive_mult: f32,
     /// Emissive color (RGB).
@@ -440,6 +446,8 @@ impl DrawCommand {
             subsurface: self.subsurface,
             sheen: self.sheen,
             sheen_tint: self.sheen_tint,
+            // #1250 — anisotropic GGX strength.
+            anisotropic: self.anisotropic,
         }
     }
 
@@ -574,6 +582,8 @@ impl DrawCommand {
         h.write_u32(self.subsurface.to_bits());
         h.write_u32(self.sheen.to_bits());
         h.write_u32(self.sheen_tint.to_bits());
+        // #1250 — anisotropic GGX strength (offset 296). Same lockstep.
+        h.write_u32(self.anisotropic.to_bits());
         h.finish()
     }
 }
@@ -2587,6 +2597,9 @@ mod draw_command_tests {
             subsurface: 0.42,
             sheen: 0.18,
             sheen_tint: 0.66,
+            // #1250 — distinct non-default anisotropy so the hash
+            // walk exercises the field independently.
+            anisotropic: 0.27,
             emissive_mult: 1.5,
             emissive_color: [0.11, 0.22, 0.33],
             specular_strength: 0.91,

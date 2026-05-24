@@ -2965,6 +2965,7 @@ mod is_caustic_source_tests {
             subsurface: 0.0, // #1249
             sheen: 0.0,
             sheen_tint: 0.0,
+            anisotropic: 0.0, // #1250
             emissive_mult: 0.0,
             emissive_color: [0.0; 3],
             specular_strength: 0.0,

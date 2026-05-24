@@ -566,6 +566,10 @@ pub(super) fn collect_static_mesh_draws(
                     subsurface: 0.0,
                     sheen: 0.0,
                     sheen_tint: 0.0,
+                    // #1250 — isotropic GGX. Hair / brushed-metal
+                    // anisotropy is BGSM-only metadata not yet
+                    // authored on the legacy NIF path.
+                    anisotropic: 0.0,
                     emissive_mult,
                     emissive_color,
                     specular_strength,

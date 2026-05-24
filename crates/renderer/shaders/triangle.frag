@@ -154,6 +154,12 @@ struct GpuMaterial {
     float subsurface;
     float sheen;
     float sheenTint;
+    // #1250 — anisotropic GGX strength. 0 = isotropic
+    // (ax = ay = roughness; distributionGGXAniso degenerates to the
+    // legacy distributionGGX lobe shape). 1 = maximum anisotropy
+    // capped at `aspect = sqrt(0.1)` so the lobe doesn't fully
+    // degenerate into a needle. Closes the 300 B struct.
+    float anisotropic;
 };
 
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
@@ -591,6 +597,54 @@ float distributionGGX(float NdotH, float roughness) {
     float a2 = a * a;
     float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
     return a2 / (PI * denom * denom);
+}
+
+// Anisotropic GGX (Disney convention) — Trowbridge-Reitz with
+// independent roughness along the tangent (ax) and bitangent (ay)
+// axes. Drives directional specular streak on hair, brushed metal,
+// vinyl, satin. Reduces exactly to `distributionGGX` when ax == ay
+// (the legacy isotropic case the default ax = ay = roughness path
+// hits). Reference: knightcrawler25/GLSL-PathTracer (MIT)
+// `src/shaders/common/sampling.glsl:90-95` — `GTR2Aniso`.
+//
+// `HdotX` and `HdotY` are the half-vector projections onto the
+// surface tangent and bitangent; combined with `NdotH` they form
+// the H-vector's full tangent-space coordinates. Caller computes
+// these from the world-space H + the per-fragment tangent /
+// bitangent. See #1250.
+float distributionGGXAniso(float NdotH, float HdotX, float HdotY, float ax, float ay) {
+    float ax2 = ax * ax;
+    float ay2 = ay * ay;
+    float denom = HdotX * HdotX / ax2 + HdotY * HdotY / ay2 + NdotH * NdotH;
+    return 1.0 / (PI * ax * ay * denom * denom);
+}
+
+// Derive Disney ax / ay from per-material perceptual roughness +
+// anisotropic strength. `aspect = sqrt(1 - anisotropic * 0.9)` caps
+// the lobe stretch at sqrt(0.1) so anisotropic = 1 doesn't produce
+// a fully degenerate needle (Disney convention).
+//
+// Convention sync: `distributionGGX` (above) computes
+// `a = roughness²` internally and feeds `a² = α²` into the NDF
+// denominator — i.e. α (linear GGX roughness) = roughness² in this
+// shader's convention. To stay byte-identical with the isotropic
+// path when `anisotropic = 0`, we apply the same `roughness²`
+// remap here and let `distributionGGXAniso` consume the resulting
+// `ax` / `ay` directly (its formula squares them as `ax*ax` /
+// `ay*ay` so the final α² magnitude matches the isotropic NDF).
+//
+// 0.025 floor mirrors `specularAaRoughness`'s `filteredR² ≥ 0.025²`
+// clamp — preserves the BSLightingShader gloss-cap behaviour
+// documented at that helper. The audit's "drop to 0.001" suggestion
+// is deferred pending a RenderDoc bench on extreme-gloss materials
+// (see #1250 closeout).
+//
+// See #1250 / GLSL-PathTracer `pathtrace.glsl:100-102` (MIT).
+void deriveAxAy(float roughness, float anisotropic, out float ax, out float ay) {
+    float alpha = roughness * roughness; // shader convention: α = roughness²
+    float aspect = sqrt(1.0 - anisotropic * 0.9);
+    ax = max(0.025 * 0.025, alpha / aspect);
+    ay = max(0.025 * 0.025, alpha * aspect);
 }
 
 // Geometry function (Smith's Schlick-GGX).
@@ -2322,7 +2376,27 @@ void main() {
         float aaRoughness = ((dbgFlags & DBG_DISABLE_SPECULAR_AA) != 0u)
             ? roughness
             : specularAaRoughness(N, roughness);
-        float D = distributionGGX(NdotH, aaRoughness);
+        // #1250 — anisotropic GGX gate. Skipped when mat.anisotropic
+        // is zero (every legacy NIF) so the cheaper isotropic NDF
+        // stays on the fast path. Tangent guard: fragTangent.xyz can
+        // be zero on synthetic / pre-tangent content (see #783
+        // perturbNormal fallback) — fall back to isotropic in that
+        // case rather than feeding a zero tangent into HdotX/HdotY.
+        float D;
+        if (mat.anisotropic > 0.0
+            && dot(fragTangent.xyz, fragTangent.xyz) > 1e-4)
+        {
+            vec3 T = normalize(fragTangent.xyz);
+            vec3 B = normalize(cross(N, T)) * fragTangent.w;
+            float HdotX = dot(H, T);
+            float HdotY = dot(H, B);
+            float ax;
+            float ay;
+            deriveAxAy(aaRoughness, mat.anisotropic, ax, ay);
+            D = distributionGGXAniso(NdotH, HdotX, HdotY, ax, ay);
+        } else {
+            D = distributionGGX(NdotH, aaRoughness);
+        }
         float G = geometrySmith(NdotV, NdotL, aaRoughness);
         vec3 F = fresnelSchlick(HdotV, F0);
 
@@ -2512,7 +2586,26 @@ void main() {
             float aaRoughness = ((dbgFlags & DBG_DISABLE_SPECULAR_AA) != 0u)
                 ? roughness
                 : specularAaRoughness(N, roughness);
-            float D = distributionGGX(NdotH, aaRoughness);
+            // #1250 — anisotropic GGX gate. Mirrors the fallback-
+            // directional path above. Skipped on every legacy NIF
+            // (mat.anisotropic == 0); only fires when authored data
+            // surfaces directional roughness AND a valid tangent
+            // exists at this fragment.
+            float D;
+            if (mat.anisotropic > 0.0
+                && dot(fragTangent.xyz, fragTangent.xyz) > 1e-4)
+            {
+                vec3 T = normalize(fragTangent.xyz);
+                vec3 B = normalize(cross(N, T)) * fragTangent.w;
+                float HdotX = dot(H, T);
+                float HdotY = dot(H, B);
+                float ax;
+                float ay;
+                deriveAxAy(aaRoughness, mat.anisotropic, ax, ay);
+                D = distributionGGXAniso(NdotH, HdotX, HdotY, ax, ay);
+            } else {
+                D = distributionGGX(NdotH, aaRoughness);
+            }
             float G = geometrySmith(NdotV, NdotL, aaRoughness);
             vec3 F = fresnelSchlick(HdotV, F0);
 

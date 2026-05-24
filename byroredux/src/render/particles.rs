@@ -123,6 +123,8 @@ pub(super) fn emit_particles(
                 subsurface: 0.0,
                 sheen: 0.0,
                 sheen_tint: 0.0,
+                // #1250 — isotropic GGX (legacy ax = ay = roughness²).
+                anisotropic: 0.0,
                 // Emissive carries the particle color * alpha so the
                 // existing fragment-shader emissive add lights the quad
                 // with no scene-light dependency. Alpha is folded into
