@@ -1901,6 +1901,18 @@ impl VulkanContext {
             );
         }
 
+        // #1255 / Phase C of #1210 — clear the water-caustic
+        // accumulator BEFORE the main render pass begins. water.frag
+        // (Phase D consumer, not yet activated) will atomic-add into
+        // it during the main pass; the post-render-pass barrier
+        // below sequences those writes to the composite read.
+        // Skipped when the accumulator failed init (None) — graceful
+        // degrade matches the rest of the renderer's optional-pipeline
+        // policy.
+        if let Some(ref wca) = self.water_caustic_accum {
+            unsafe { wca.clear_pre_render_pass(&self.device, cmd, frame) };
+        }
+
         let cmd_t0 = Instant::now();
         unsafe {
             self.device
@@ -2362,6 +2374,7 @@ impl VulkanContext {
                                 &wc.push,
                                 mesh.index_count,
                                 wc.instance_index,
+                                frame, // #1255 — selects set 2 per-FIF water-caustic descriptor
                             );
                         }
                     }
@@ -2445,6 +2458,17 @@ impl VulkanContext {
             }
 
             self.device.cmd_end_render_pass(cmd);
+
+            // #1255 / Phase C of #1210 — sequence water.frag's
+            // imageAtomicAdd writes (FRAGMENT_SHADER WRITE during the
+            // main pass) so composite's FRAGMENT_SHADER READ in the
+            // composite pass sees them. Render-pass-end is implicit
+            // sync for color-attachment writes; descriptor-image
+            // atomic writes need an explicit barrier. Skipped when
+            // the accumulator failed init.
+            if let Some(ref wca) = self.water_caustic_accum {
+                wca.barrier_post_render_pass(&self.device, cmd, frame);
+            }
 
             // SVGF temporal accumulation (Phase 3): reprojects previous
             // frame's accumulated indirect, blends with raw 1-SPP indirect

@@ -27,3 +27,4 @@ pub mod taa;
 pub mod texture;
 pub mod volumetrics;
 pub mod water;
+pub mod water_caustic;

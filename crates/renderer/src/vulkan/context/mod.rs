@@ -1089,6 +1089,14 @@ pub struct VulkanContext {
     /// rendering for the rest of the session (same robustness policy
     /// as every other optional pipeline in the renderer).
     pub water: Option<WaterPipeline>,
+    /// Per-FIF R32_UINT accumulator for water-side caustic synthesis
+    /// (#1255 / Phase C of #1210). Cleared BEFORE the main render
+    /// pass each frame so `water.frag`'s `imageAtomicAdd` calls in
+    /// the main pass accumulate against zeros; composite samples it
+    /// alongside the existing `caustic.causticTex`. `None` when
+    /// image creation failed (degrades gracefully — water renders
+    /// without caustic contribution, same as pre-#1255 behaviour).
+    pub water_caustic_accum: Option<super::water_caustic::WaterCausticAccum>,
     /// Permanent-failure latch for the TAA compute pass. Set on the
     /// first `taa.dispatch` error in a session. When set: the TAA
     /// dispatch is skipped on every subsequent frame and composite's
@@ -1580,6 +1588,45 @@ impl VulkanContext {
             }
         };
 
+        // 15b. Water-caustic accumulator (#1255 / Phase C of #1210).
+        // Per-FIF R32_UINT image, cleared pre-render-pass each frame,
+        // written by `water.frag::imageAtomicAdd` during the main
+        // pass (once Phase D activates the consumer), sampled by
+        // `composite.frag` (Phase E) alongside the existing caustic
+        // accumulator. Failure degrades gracefully — water still
+        // renders, just without the caustic contribution path.
+        let water_caustic_accum = match super::water_caustic::WaterCausticAccum::new(
+            &device,
+            &gpu_allocator,
+            swapchain_state.extent.width,
+            swapchain_state.extent.height,
+        ) {
+            Ok(a) => Some(a),
+            Err(e) => {
+                log::warn!(
+                    "Water-caustic accumulator creation failed: {e} — water-side caustics disabled this session"
+                );
+                None
+            }
+        };
+
+        // Wire the WaterPipeline's set 2 descriptors at the matching
+        // WaterCausticAccum slot views. Skipped when either side
+        // failed init — WaterPipeline's set 2 stays bindable (the
+        // pool + sets exist) but points at null views; record_draw
+        // binds the set unconditionally so the pipeline-layout is
+        // satisfied even when the consumer (Phase D) isn't active
+        // yet. Without the accumulator the descriptor stays
+        // uninitialised; safe because Phase D's shader-side read is
+        // gated on `sunDirection.w > 0` and won't fire during the
+        // scaffold-only window.
+        if let (Some(ref w), Some(ref accum)) = (water.as_ref(), water_caustic_accum.as_ref()) {
+            let views: Vec<vk::ImageView> = (0..super::sync::MAX_FRAMES_IN_FLIGHT)
+                .map(|i| accum.storage_view(i))
+                .collect();
+            w.update_water_caustic_descriptors(&device, &views);
+        }
+
         // 14a. SSAO pipeline (reads depth buffer after render pass)
         let ssao = match SsaoPipeline::new(
             &device,
@@ -1991,6 +2038,7 @@ impl VulkanContext {
             volumetrics,
             bloom,
             water,
+            water_caustic_accum,
             taa_failed: false,
             svgf_failed: false,
             svgf_recovery_frames: 0,
@@ -2412,6 +2460,13 @@ impl Drop for VulkanContext {
                 }
                 if let Some(ref mut w) = self.water {
                     w.destroy(&self.device);
+                }
+                if let Some(ref mut wca) = self.water_caustic_accum {
+                    // SAFETY: parent Drop runs after `device_wait_idle`
+                    // earlier in the teardown sequence; no in-flight
+                    // command buffer references the per-FIF accumulator
+                    // images. #1255 / Phase C of #1210.
+                    unsafe { wca.destroy(&self.device, alloc) };
                 }
                 if let Some(ref mut svgf) = self.svgf {
                     svgf.destroy(&self.device, alloc);

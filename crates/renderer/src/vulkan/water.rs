@@ -164,6 +164,17 @@ pub fn water_commands_match_draw_slots(
 pub struct WaterPipeline {
     pub pipeline: vk::Pipeline,
     pub pipeline_layout: vk::PipelineLayout,
+    /// Set 2 descriptor layout — single STORAGE_IMAGE binding for the
+    /// water-caustic accumulator (#1255 / Phase C of #1210). Bound at
+    /// `record_draw` time from the per-FIF `descriptor_sets[frame]`.
+    pub(super) water_caustic_set_layout: vk::DescriptorSetLayout,
+    /// Pool that allocates the per-FIF descriptor sets above.
+    pub(super) water_caustic_descriptor_pool: vk::DescriptorPool,
+    /// Per-FIF descriptor sets pointing at the matching slot of
+    /// `WaterCausticAccum`. Populated by `update_water_caustic_descriptors`
+    /// at swapchain init / recreate time so the per-frame draw can bind
+    /// them directly without re-writing.
+    pub(super) water_caustic_descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
 /// Dynamic states declared on the water graphics pipeline. Extracted
@@ -206,8 +217,84 @@ impl WaterPipeline {
         descriptor_set_layout: vk::DescriptorSetLayout,
         scene_set_layout: vk::DescriptorSetLayout,
     ) -> Result<Self> {
-        // ── Pipeline layout: set 0 + set 1 (compat) + push constants ──
-        let set_layouts = [descriptor_set_layout, scene_set_layout];
+        // ── Set 2 layout: single STORAGE_IMAGE for the water-caustic
+        // accumulator (#1255 / Phase C of #1210). water.frag binding
+        // matches: `layout(set = 2, binding = 0, r32ui)
+        //          uniform uimage2D waterCausticAccum;`. Even when
+        // Phase D hasn't activated the consumer yet, the descriptor
+        // set must exist so the pipeline layout is reachable.
+        let water_caustic_binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let water_caustic_bindings = [water_caustic_binding];
+        let water_caustic_set_layout = unsafe {
+            device
+                .create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default()
+                        .bindings(&water_caustic_bindings),
+                    None,
+                )
+                .context("water-caustic set layout")?
+        };
+
+        // Descriptor pool — one STORAGE_IMAGE per FIF slot.
+        let pool_sizes = [vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::STORAGE_IMAGE)
+            .descriptor_count(super::sync::MAX_FRAMES_IN_FLIGHT as u32)];
+        let water_caustic_descriptor_pool = match unsafe {
+            device
+                .create_descriptor_pool(
+                    &vk::DescriptorPoolCreateInfo::default()
+                        .max_sets(super::sync::MAX_FRAMES_IN_FLIGHT as u32)
+                        .pool_sizes(&pool_sizes),
+                    None,
+                )
+                .context("water-caustic descriptor pool")
+        } {
+            Ok(p) => p,
+            Err(e) => {
+                // SAFETY: layout was just created; no descriptor sets
+                // allocated from it yet; safe to destroy.
+                unsafe { device.destroy_descriptor_set_layout(water_caustic_set_layout, None) };
+                return Err(e);
+            }
+        };
+
+        // Allocate per-FIF descriptor sets up-front. Caller wires the
+        // image views via `update_water_caustic_descriptors` once the
+        // WaterCausticAccum is created (typically at the same scope as
+        // WaterPipeline::new — see context::new). Until then the sets
+        // are uninitialised; record_draw should NOT bind them until
+        // after the first descriptor write.
+        let layouts = vec![water_caustic_set_layout; super::sync::MAX_FRAMES_IN_FLIGHT];
+        let water_caustic_descriptor_sets = match unsafe {
+            device
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(water_caustic_descriptor_pool)
+                        .set_layouts(&layouts),
+                )
+                .context("water-caustic descriptor sets")
+        } {
+            Ok(s) => s,
+            Err(e) => {
+                // SAFETY: pool just created, no sets in flight; safe to destroy.
+                unsafe {
+                    device.destroy_descriptor_pool(water_caustic_descriptor_pool, None);
+                    device.destroy_descriptor_set_layout(water_caustic_set_layout, None);
+                }
+                return Err(e);
+            }
+        };
+
+        // ── Pipeline layout: set 0 + set 1 (compat) + set 2 (water-caustic) + push constants ──
+        let set_layouts = [
+            descriptor_set_layout,
+            scene_set_layout,
+            water_caustic_set_layout,
+        ];
         let push_range = vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
@@ -217,10 +304,21 @@ impl WaterPipeline {
             .set_layouts(&set_layouts)
             .push_constant_ranges(&push_ranges);
 
-        let pipeline_layout = unsafe {
+        let pipeline_layout = match unsafe {
             device
                 .create_pipeline_layout(&layout_info, None)
-                .context("water pipeline layout")?
+                .context("water pipeline layout")
+        } {
+            Ok(l) => l,
+            Err(e) => {
+                // SAFETY: sets / pool / layout above all just created;
+                // destroy in reverse order to avoid leaking on partial init.
+                unsafe {
+                    device.destroy_descriptor_pool(water_caustic_descriptor_pool, None);
+                    device.destroy_descriptor_set_layout(water_caustic_set_layout, None);
+                }
+                return Err(e);
+            }
         };
 
         // ── Pipeline ──
@@ -228,17 +326,58 @@ impl WaterPipeline {
             Ok(p) => p,
             Err(e) => {
                 // Clean up the layout on failure so we don't leak.
-                unsafe { device.destroy_pipeline_layout(pipeline_layout, None) };
+                unsafe {
+                    device.destroy_pipeline_layout(pipeline_layout, None);
+                    device.destroy_descriptor_pool(water_caustic_descriptor_pool, None);
+                    device.destroy_descriptor_set_layout(water_caustic_set_layout, None);
+                }
                 return Err(e);
             }
         };
 
-        log::info!("Water pipeline created (water.vert + water.frag, SRC_ALPHA blend on HDR, cull NONE, depth-write off, 128B push constants)");
+        log::info!("Water pipeline created (water.vert + water.frag, SRC_ALPHA blend on HDR, cull NONE, depth-write off, 128B push constants, set 2 = water-caustic STORAGE_IMAGE)");
 
         Ok(Self {
             pipeline,
             pipeline_layout,
+            water_caustic_set_layout,
+            water_caustic_descriptor_pool,
+            water_caustic_descriptor_sets,
         })
+    }
+
+    /// Point the per-FIF descriptor sets at the given accumulator's
+    /// storage views. Call once after construction AND after every
+    /// `WaterCausticAccum::recreate_on_resize` (the view handles
+    /// change on resize). Safe to call multiple times — descriptor
+    /// updates are idempotent for the same image view.
+    ///
+    /// `accum_views` must have length `MAX_FRAMES_IN_FLIGHT`, indexed
+    /// by frame.
+    pub fn update_water_caustic_descriptors(
+        &self,
+        device: &ash::Device,
+        accum_views: &[vk::ImageView],
+    ) {
+        debug_assert_eq!(
+            accum_views.len(),
+            super::sync::MAX_FRAMES_IN_FLIGHT,
+            "accum_views must be per-FIF",
+        );
+        for (frame, &view) in accum_views.iter().enumerate() {
+            let img_info = [vk::DescriptorImageInfo::default()
+                .image_view(view)
+                .image_layout(vk::ImageLayout::GENERAL)];
+            let write = vk::WriteDescriptorSet::default()
+                .dst_set(self.water_caustic_descriptor_sets[frame])
+                .dst_binding(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(&img_info);
+            // SAFETY: descriptor set / binding / type all match the
+            // layout declared above; image_info length == 1 ==
+            // descriptor_count.
+            unsafe { device.update_descriptor_sets(&[write], &[]) };
+        }
     }
 
     /// Record a single water draw into a command buffer that is
@@ -273,8 +412,27 @@ impl WaterPipeline {
         push: &WaterPush,
         index_count: u32,
         instance_index: u32,
+        frame: usize,
     ) {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+
+        // #1255 / Phase C of #1210 — bind set 2 (water-caustic
+        // accumulator storage image). Set 0 + set 1 are already
+        // bound by the caller (triangle-pipeline descriptors stay
+        // compatible across the water draw); only the new set is
+        // bound here. The descriptor view itself is wired by
+        // `update_water_caustic_descriptors` at swapchain init /
+        // recreate time. Phase D activates the in-shader consumer;
+        // until then the descriptor is bound but unread (legal:
+        // unused descriptors don't trip validation).
+        device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline_layout,
+            2,
+            &[self.water_caustic_descriptor_sets[frame]],
+            &[],
+        );
 
         let bytes = std::slice::from_raw_parts(
             (push as *const WaterPush) as *const u8,
@@ -311,6 +469,19 @@ impl WaterPipeline {
         if self.pipeline_layout != vk::PipelineLayout::null() {
             device.destroy_pipeline_layout(self.pipeline_layout, None);
             self.pipeline_layout = vk::PipelineLayout::null();
+        }
+        // #1255 / Phase C of #1210 — destroy the set 2 descriptor
+        // pool + layout. Pool first so the per-FIF descriptor sets
+        // (allocated from it) free implicitly. Idempotent via
+        // null-handle guards, same policy as the pipeline pair above.
+        if self.water_caustic_descriptor_pool != vk::DescriptorPool::null() {
+            device.destroy_descriptor_pool(self.water_caustic_descriptor_pool, None);
+            self.water_caustic_descriptor_pool = vk::DescriptorPool::null();
+            self.water_caustic_descriptor_sets.clear();
+        }
+        if self.water_caustic_set_layout != vk::DescriptorSetLayout::null() {
+            device.destroy_descriptor_set_layout(self.water_caustic_set_layout, None);
+            self.water_caustic_set_layout = vk::DescriptorSetLayout::null();
         }
     }
 }

@@ -414,6 +414,41 @@ impl VulkanContext {
                 self.swapchain_state.extent.height,
             )?;
         }
+        // #1255 / Phase C of #1210 — water-caustic accumulator
+        // resizes alongside the existing caustic image. SAFETY:
+        // `recreate_swapchain` paid `device_wait_idle` earlier so
+        // no in-flight command buffer references the old slots.
+        if let Some(ref mut wca) = self.water_caustic_accum {
+            let allocator = self
+                .allocator
+                .as_ref()
+                .expect("allocator missing during resize");
+            unsafe {
+                if let Err(e) = wca.recreate_on_resize(
+                    &self.device,
+                    allocator,
+                    self.swapchain_state.extent.width,
+                    self.swapchain_state.extent.height,
+                ) {
+                    log::warn!(
+                        "Water-caustic accumulator resize failed: {e} — disabling for the rest of the session"
+                    );
+                    wca.destroy(&self.device, allocator);
+                    self.water_caustic_accum = None;
+                }
+            }
+        }
+        // Rebind WaterPipeline's set 2 to the new accumulator views
+        // (the recreate above produced fresh `vk::ImageView` handles
+        // per FIF slot). Skipped when either side dropped out above.
+        if let (Some(ref w), Some(ref accum)) =
+            (self.water.as_ref(), self.water_caustic_accum.as_ref())
+        {
+            let views: Vec<vk::ImageView> = (0..MAX_FRAMES_IN_FLIGHT)
+                .map(|i| accum.storage_view(i))
+                .collect();
+            w.update_water_caustic_descriptors(&self.device, &views);
+        }
         let caustic_views: Vec<vk::ImageView> = match self.caustic {
             Some(ref c) => (0..MAX_FRAMES_IN_FLIGHT)
                 .map(|i| c.sampled_view(i))
