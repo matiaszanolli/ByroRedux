@@ -716,6 +716,15 @@ pub(crate) fn setup_scene(
         // lookup (Game.GetPlayer().GetReference()) resolves to the
         // M28.5 capsule. See the M47.0 / R5 closeout.
         world.insert_resource(byroredux_scripting::papyrus_demo::PlayerEntity(body));
+        // M47.0 — same pattern as PlayerEntity above. The
+        // quest_advance / dlc2_ttr4a / mg07_door dispatcher systems
+        // do `world.resource_mut::<QuestStageState>()` unconditionally
+        // (set_stage writes), and mg07_door also `resource()`-reads it
+        // for stage-gated activation. QuestStageState::default() is
+        // an empty HashMap — scripts populate it lazily on first
+        // set_stage. M47.1 condition functions GetStage / GetStageDone
+        // already use try_resource so they're safe on absence.
+        world.insert_resource(byroredux_scripting::quest_stages::QuestStageState::default());
         log::info!(
             "M28.5 player character spawned at ({:.1}, {:.1}, {:.1}); eyes at ({:.1}, {:.1}, {:.1})",
             body_pos.x,
@@ -739,6 +748,10 @@ pub(crate) fn setup_scene(
         // unused EntityId.
         let placeholder = world.spawn();
         world.insert_resource(byroredux_scripting::papyrus_demo::PlayerEntity(placeholder));
+        // M47.0 — same insert as the Character-mode branch above so
+        // the quest-stage-aware systems don't panic on FlyCam scenes
+        // (debug bench, --mesh standalone NIF loads, headless smoke).
+        world.insert_resource(byroredux_scripting::quest_stages::QuestStageState::default());
     }
 
     // Initialize fly camera yaw/pitch from the initial look direction.
