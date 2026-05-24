@@ -1884,7 +1884,8 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let now = Instant::now();
+        let atw_pre_t0 = Instant::now();
+        let now = atw_pre_t0;
         // `BYROREDUX_FIXED_DT=<seconds>` overrides the wall-clock dt
         // with a fixed value so simulation state at frame N is
         // reproducible across runs. Used by the golden-frame
@@ -1968,13 +1969,20 @@ impl ApplicationHandler for App {
             ctx.fill_skin_coverage_stats(&mut cov);
         }
 
+        // End of pre-scheduler phase (Phase 10 bracket).
+        let atw_pre_ns = atw_pre_t0.elapsed().as_nanos() as u64;
+
         // Run all systems.
         let systems_t0 = Instant::now();
         self.scheduler.run(&self.world, dt);
+        let atw_scheduler_ns = systems_t0.elapsed().as_nanos() as u64;
         if self.bench_frames_target.is_some() && self.renderer.is_some() {
-            self.bench_systems_ns += systems_t0.elapsed().as_nanos() as u64;
+            self.bench_systems_ns += atw_scheduler_ns;
             self.bench_systems_ticks += 1;
         }
+
+        // Post-scheduler phase starts here (Phase 10 bracket).
+        let atw_post_t0 = Instant::now();
 
         // World cell streaming (M40 Phase 1a). Runs after the
         // scheduler so the scheduler-driven `fly_camera_system` has
@@ -2198,6 +2206,21 @@ impl ApplicationHandler for App {
                 }
             }
         }
+
+        // Phase 10 — write the about_to_wait phase timings into
+        // `CpuFrameTimings` so the egui Metrics panel can show
+        // where the 501 ms `between_frames` gap (Phase 9) is
+        // actually spent inside this handler. Pre / scheduler /
+        // post split lets the operator localize without
+        // per-system instrumentation.
+        const NS_TO_MS: f32 = 1.0e-6;
+        let atw_post_ns = atw_post_t0.elapsed().as_nanos() as u64;
+        let mut cpu_t = self
+            .world
+            .resource_mut::<byroredux_core::ecs::CpuFrameTimings>();
+        cpu_t.atw_pre_ms = atw_pre_ns as f32 * NS_TO_MS;
+        cpu_t.atw_scheduler_ms = atw_scheduler_ns as f32 * NS_TO_MS;
+        cpu_t.atw_post_ms = atw_post_ns as f32 * NS_TO_MS;
     }
 }
 

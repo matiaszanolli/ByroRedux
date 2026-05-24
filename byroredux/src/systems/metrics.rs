@@ -131,8 +131,14 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
     if let Some(cpu) = world.try_resource::<CpuFrameTimings>() {
         // Names match the `FrameTimings` field names so a reader
         // can grep one term across both the bench output and the
-        // overlay panel.
+        // overlay panel. Phase 10 atw_* split `between_frames`
+        // into pre / scheduler / post — should sum close to
+        // between_frames since about_to_wait runs entirely
+        // inside that gap.
         cpu_pass_ms.insert("acquire".to_string(), cpu.acquire_ms);
+        cpu_pass_ms.insert("atw_post".to_string(), cpu.atw_post_ms);
+        cpu_pass_ms.insert("atw_pre".to_string(), cpu.atw_pre_ms);
+        cpu_pass_ms.insert("atw_scheduler".to_string(), cpu.atw_scheduler_ms);
         cpu_pass_ms.insert("between_frames".to_string(), cpu.between_frames_ms);
         cpu_pass_ms.insert("cmd_record".to_string(), cpu.cmd_record_ms);
         cpu_pass_ms.insert("fence_wait".to_string(), cpu.fence_wait_ms);

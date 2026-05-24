@@ -537,6 +537,25 @@ pub struct CpuFrameTimings {
     /// path (compositor, OS, ECS systems running between
     /// frames). Phase 9.
     pub between_frames_ms: f32,
+    /// Wall time in the `about_to_wait`'s pre-scheduler phase:
+    /// dt update, entity-walk handle dedup (`meshes_in_use` /
+    /// `textures_in_use`), DebugStats refresh, scratch +
+    /// skin-coverage fill from the renderer. The entity walk
+    /// alone is O(entity_count); on dense cells this can grow.
+    /// Phase 10.
+    pub atw_pre_ms: f32,
+    /// Wall time of `Scheduler::run` — runs every registered ECS
+    /// system in stage order. The biggest single block of work
+    /// in `about_to_wait`; any pathology that holds the host
+    /// (kira mutex, physics island fence, audio queue flush)
+    /// lands here. Phase 10.
+    pub atw_scheduler_ms: f32,
+    /// Wall time of the post-scheduler steps in `about_to_wait`:
+    /// `step_streaming` (M40 exterior streaming drain),
+    /// `step_debug_loads` (debug-UI queued NIF / cell loads),
+    /// `step_cell_transition` (`door.teleport` dispatch), window
+    /// title update. Phase 10.
+    pub atw_post_ms: f32,
 }
 
 impl Resource for CpuFrameTimings {}
