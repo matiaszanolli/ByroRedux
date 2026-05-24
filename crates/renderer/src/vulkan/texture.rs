@@ -3,7 +3,8 @@
 use super::allocator::SharedAllocator;
 use super::buffer::{StagingGuard, StagingPool};
 use super::descriptors::{
-    image_barrier_transfer_dst_to_shader_read, image_barrier_undef_to_transfer_dst,
+    color_subresource_mips, image_barrier_transfer_dst_to_shader_read,
+    image_barrier_undef_to_transfer_dst,
 };
 use anyhow::{Context, Result};
 use ash::vk;
@@ -378,13 +379,7 @@ impl Texture {
             .image(image)
             .view_type(vk::ImageViewType::TYPE_2D)
             .format(meta.format)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: meta.mip_count,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
+            .subresource_range(color_subresource_mips(meta.mip_count));
 
         let image_view = unsafe {
             device

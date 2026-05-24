@@ -1,6 +1,7 @@
 //! Screenshot capture — copies the composited swapchain image to a staging
 //! buffer for CPU readback and PNG encoding.
 
+use super::super::descriptors::color_subresource_single_mip;
 use super::VulkanContext;
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -105,12 +106,7 @@ impl VulkanContext {
             .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
             .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
             .image(swapchain_image)
-            .subresource_range(
-                vk::ImageSubresourceRange::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .level_count(1)
-                    .layer_count(1),
-            );
+            .subresource_range(color_subresource_single_mip());
 
         self.device.cmd_pipeline_barrier(
             cmd,
@@ -156,12 +152,7 @@ impl VulkanContext {
             .src_access_mask(vk::AccessFlags::TRANSFER_READ)
             .dst_access_mask(vk::AccessFlags::empty())
             .image(swapchain_image)
-            .subresource_range(
-                vk::ImageSubresourceRange::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .level_count(1)
-                    .layer_count(1),
-            );
+            .subresource_range(color_subresource_single_mip());
 
         // #1160 / REN-D10-NEW-13 — DST-side `NONE` is the Vulkan 1.3
         // canonical form for "no further synchronization required",
