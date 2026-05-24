@@ -391,6 +391,13 @@ impl App {
         world.insert_resource(DebugStats::default());
         world.insert_resource(ScratchTelemetry::default());
         world.insert_resource(SkinCoverageStats::default());
+        // CPU-side per-frame timings — fence_wait / submit_present /
+        // etc. Filled by the binary's RedrawRequested handler after
+        // each `draw_frame` from the renderer's `FrameTimings`
+        // struct. Surfaces the "GPU stall hidden from per-pass
+        // timestamps" diagnostic the debug UI's Metrics panel
+        // exposed at Phase 7.
+        world.insert_resource(byroredux_core::ecs::CpuFrameTimings::default());
         // Debug-UI sampler state + the aggregated snapshot. Snapshot is
         // empty until `metrics_sample_system` fires its first tick
         // (~500 ms in), at which point CPU / RAM / VRAM / GPU pass
@@ -1611,11 +1618,18 @@ impl ApplicationHandler for App {
                         byroredux_core::types::Color::CORNFLOWER_BLUE.as_array()
                     };
                     let render_t0 = Instant::now();
-                    let mut frame_timings = if is_benching {
-                        Some(byroredux_renderer::FrameTimings::default())
-                    } else {
-                        None
-                    };
+                    // Phase 8 — always populate `FrameTimings`, not
+                    // just under `--bench`, so the egui Metrics
+                    // panel can surface CPU-side `fence_wait_ms` /
+                    // `submit_present_ms`. Per-frame overhead is
+                    // four `Instant::now()` calls — negligible.
+                    // Pre-Phase-8 this was gated on `is_benching`
+                    // and the diagnostic that exposed the "311 ms
+                    // gap between GPU timestamps and wall frame"
+                    // had to fall back to `--bench` output to read
+                    // these fields.
+                    let mut frame_timings =
+                        Some(byroredux_renderer::FrameTimings::default());
                     // M29.6 — drain pending first-sight bind_inverses
                     // uploads from the slot pool. The renderer writes
                     // each (slot_id, mesh_bind_inverses) into the
@@ -1698,6 +1712,25 @@ impl ApplicationHandler for App {
                                 s.batch_count = last_draw_stats.batch_count;
                                 s.indirect_call_count = last_draw_stats.indirect_call_count;
                             });
+                            // Phase 8 — write the freshly-filled
+                            // FrameTimings into `CpuFrameTimings` every
+                            // frame so the egui Metrics panel can
+                            // surface fence_wait_ms / submit_present_ms.
+                            // The bench-mode accumulator below reads
+                            // the same `frame_timings` local — both
+                            // paths see the same data.
+                            if let Some(ref ft) = frame_timings {
+                                const NS_TO_MS: f32 = 1.0e-6;
+                                let mut cpu_t = self
+                                    .world
+                                    .resource_mut::<byroredux_core::ecs::CpuFrameTimings>();
+                                cpu_t.fence_wait_ms = ft.fence_wait_ns as f32 * NS_TO_MS;
+                                cpu_t.tlas_build_ms = ft.tlas_build_ns as f32 * NS_TO_MS;
+                                cpu_t.ssbo_build_ms = ft.ssbo_build_ns as f32 * NS_TO_MS;
+                                cpu_t.cmd_record_ms = ft.cmd_record_ns as f32 * NS_TO_MS;
+                                cpu_t.submit_present_ms =
+                                    ft.submit_present_ns as f32 * NS_TO_MS;
+                            }
                             if is_benching {
                                 self.bench_render_ns += render_t0.elapsed().as_nanos() as u64;
                                 if let Some(ft) = frame_timings {
@@ -2162,6 +2195,7 @@ fn build_debug_ui_snapshot(
             vram_reserved_mb: m.vram_reserved_mb,
             vram_budget_mb: m.vram_budget_mb,
             gpu_pass_ms: m.gpu_pass_ms.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+            cpu_pass_ms: m.cpu_pass_ms.iter().map(|(k, v)| (k.clone(), *v)).collect(),
         });
 
     let entities = if refresh_entities {

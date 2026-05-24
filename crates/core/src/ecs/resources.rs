@@ -484,6 +484,46 @@ pub struct SkinCoverageStats {
     pub gpu_volumetrics_ms: f32,
 }
 
+/// CPU-side per-frame wall-clock breakdown — populated by the
+/// binary's main loop using the `byroredux_renderer::FrameTimings`
+/// struct `draw_frame` fills.
+///
+/// **Why this resource exists**: the GPU TIMESTAMP brackets in
+/// `SkinCoverageStats` measure only work bracketed inside the main
+/// command buffer. Operations that happen OUTSIDE that bracket —
+/// the fence wait at the top of `draw_frame`, the `vkQueueSubmit`
+/// + `vkQueuePresentKHR` block at the end, the egui set_textures
+/// transfer-queue submit-and-wait — are invisible to those
+/// brackets. A pathology surfaced by Phase 7 instrumentation
+/// (sum of 12 GPU brackets = 78 ms vs 389 ms wall frame time = 311 ms
+/// "missing") drove the addition of this resource: if `fence_wait_ms`
+/// or `submit_present_ms` is large, the bottleneck is a GPU stall
+/// or a present-mode block that GPU timestamps can't see.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CpuFrameTimings {
+    /// `vkWaitForFences` at the top of `draw_frame` — CPU stall
+    /// waiting for the previous frame's GPU work to complete. If
+    /// this is large, the GPU is genuinely the bottleneck even
+    /// when the per-pass GPU TIMESTAMPs sum to less.
+    pub fence_wait_ms: f32,
+    /// CPU work for the TLAS build path (instance map gather +
+    /// command record). The GPU AS build runs async; this is
+    /// the host-side overhead.
+    pub tlas_build_ms: f32,
+    /// Instance SSBO fill + upload (memcpy + indirect draws).
+    /// Dominant CPU-side work per frame on dense cells.
+    pub ssbo_build_ms: f32,
+    /// All command-buffer recording between begin_render_pass
+    /// and end_command_buffer.
+    pub cmd_record_ms: f32,
+    /// `vkQueueSubmit` + `vkQueuePresentKHR` — driver overhead
+    /// plus any vsync / present-mode-FIFO stall. The other place
+    /// "missing" GPU work hides.
+    pub submit_present_ms: f32,
+}
+
+impl Resource for CpuFrameTimings {}
+
 impl Resource for SkinCoverageStats {}
 
 // ────────────────────────────────────────────────────────────────────

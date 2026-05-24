@@ -55,6 +55,17 @@ pub struct MetricsSnapshot {
     /// `"taa"` today; extensible without breaking the wire
     /// protocol).
     pub gpu_pass_ms: BTreeMap<String, f32>,
+    /// CPU-side wall-clock breakdown of `draw_frame`, in
+    /// milliseconds. Surfaces operations the GPU TIMESTAMP
+    /// brackets in `gpu_pass_ms` can't see — the fence wait at
+    /// the top of `draw_frame`, the queue submit + present at
+    /// the bottom, and CPU work for cmd-buffer recording. When
+    /// the bracketed GPU work sums to less than wall frame time,
+    /// the missing time hides here. Phase 8 of the debug-UI plan
+    /// added this to diagnose a 311 ms gap between summed GPU
+    /// pass times (78 ms) and wall frame time (389 ms) on a
+    /// Skyrim interior.
+    pub cpu_pass_ms: BTreeMap<String, f32>,
 }
 
 impl Resource for MetricsSnapshot {}

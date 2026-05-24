@@ -41,6 +41,11 @@ pub struct MetricsSnapshotView {
     pub vram_reserved_mb: u64,
     pub vram_budget_mb: u64,
     pub gpu_pass_ms: Vec<(String, f32)>,
+    /// CPU-side per-frame wall-clock breakdown
+    /// (`fence_wait` / `submit_present` / `cmd_record` / etc.).
+    /// Surfaces operations the GPU TIMESTAMP brackets can't see —
+    /// fence-blocked waits, present stalls, host-side recording.
+    pub cpu_pass_ms: Vec<(String, f32)>,
 }
 
 /// Actions the panels asked the App to perform. Drained by the
@@ -161,7 +166,8 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
     // GPU passes
     ui.add_space(6.0);
     ui.separator();
-    ui.label(egui::RichText::new("GPU passes").strong());
+    let gpu_total: f32 = m.gpu_pass_ms.iter().map(|(_, v)| *v).sum();
+    ui.label(egui::RichText::new(format!("GPU passes — Σ {:.3} ms", gpu_total)).strong());
     if m.gpu_pass_ms.is_empty() {
         ui.label("(none reported)");
     } else {
@@ -170,6 +176,29 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
             .striped(true)
             .show(ui, |ui| {
                 for (name, ms) in &m.gpu_pass_ms {
+                    ui.label(name);
+                    ui.monospace(format!("{:.3} ms", ms));
+                    ui.end_row();
+                }
+            });
+    }
+
+    // CPU pass times — Phase 8 of the debug-UI plan. Surfaces
+    // fence_wait / submit_present / cmd_record so a "GPU
+    // timestamps sum < wall frame time" gap localises to the
+    // CPU-side culprit.
+    ui.add_space(6.0);
+    ui.separator();
+    let cpu_total: f32 = m.cpu_pass_ms.iter().map(|(_, v)| *v).sum();
+    ui.label(egui::RichText::new(format!("CPU draw_frame — Σ {:.3} ms", cpu_total)).strong());
+    if m.cpu_pass_ms.is_empty() {
+        ui.label("(none reported)");
+    } else {
+        egui::Grid::new("cpu_passes_grid")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                for (name, ms) in &m.cpu_pass_ms {
                     ui.label(name);
                     ui.monospace(format!("{:.3} ms", ms));
                     ui.end_row();

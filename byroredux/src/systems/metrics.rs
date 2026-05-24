@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use byroredux_core::ecs::{
-    MetricsSnapshot, Resource, SkinCoverageStats, TotalTime, World,
+    CpuFrameTimings, MetricsSnapshot, Resource, SkinCoverageStats, TotalTime, World,
 };
 use byroredux_renderer::vulkan::allocator::{AllocatorResource, GpuMemoryBudget};
 use sysinfo::{Pid, System};
@@ -127,6 +127,18 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         gpu_pass_ms.insert("volumetrics".to_string(), cov.gpu_volumetrics_ms);
     }
 
+    let mut cpu_pass_ms: BTreeMap<String, f32> = BTreeMap::new();
+    if let Some(cpu) = world.try_resource::<CpuFrameTimings>() {
+        // Names match the `FrameTimings` field names so a reader
+        // can grep one term across both the bench output and the
+        // overlay panel.
+        cpu_pass_ms.insert("cmd_record".to_string(), cpu.cmd_record_ms);
+        cpu_pass_ms.insert("fence_wait".to_string(), cpu.fence_wait_ms);
+        cpu_pass_ms.insert("ssbo_build".to_string(), cpu.ssbo_build_ms);
+        cpu_pass_ms.insert("submit_present".to_string(), cpu.submit_present_ms);
+        cpu_pass_ms.insert("tlas_build".to_string(), cpu.tlas_build_ms);
+    }
+
     let sampled_at_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -142,4 +154,5 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
     snap.vram_reserved_mb = vram_reserved_b / (1024 * 1024);
     snap.vram_budget_mb = vram_budget_b / (1024 * 1024);
     snap.gpu_pass_ms = gpu_pass_ms;
+    snap.cpu_pass_ms = cpu_pass_ms;
 }
