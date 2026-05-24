@@ -107,11 +107,13 @@ pub fn create_swapchain(
     let image_views = create_image_views(device, &images, format.format)?;
 
     log::info!(
-        "Swapchain created: {}x{}, {} images, format {:?}",
+        "Swapchain created: {}x{}, {} images, format {:?}, present_mode {:?} (available: {:?})",
         extent.width,
         extent.height,
         images.len(),
         format.format,
+        present_mode,
+        present_modes,
     );
 
     Ok(SwapchainState {
@@ -137,7 +139,38 @@ fn choose_surface_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatK
 }
 
 fn choose_present_mode(modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
-    // Mailbox (triple-buffered) if available, otherwise FIFO (always available).
+    // `BYROREDUX_PRESENT_MODE=fifo|mailbox|immediate|fifo_relaxed` lets
+    // the operator override the default selection for perf testing.
+    // Useful when a Wayland compositor is gating frame callbacks
+    // tighter than the GPU+CPU budget needs — switching to
+    // IMMEDIATE bypasses the compositor's pacing entirely (at the
+    // cost of tearing). On X11 + 4070 Ti the default MAILBOX should
+    // give uncapped triple-buffered behaviour. Phase 13 added the
+    // override so the 18-FPS "stuck" ceiling could be diagnosed
+    // without recompiling.
+    if let Ok(requested) = std::env::var("BYROREDUX_PRESENT_MODE") {
+        let candidate = match requested.to_ascii_lowercase().as_str() {
+            "fifo" => Some(vk::PresentModeKHR::FIFO),
+            "mailbox" => Some(vk::PresentModeKHR::MAILBOX),
+            "immediate" => Some(vk::PresentModeKHR::IMMEDIATE),
+            "fifo_relaxed" => Some(vk::PresentModeKHR::FIFO_RELAXED),
+            _ => None,
+        };
+        if let Some(c) = candidate {
+            if modes.contains(&c) {
+                log::info!("BYROREDUX_PRESENT_MODE override → {:?}", c);
+                return c;
+            } else {
+                log::warn!(
+                    "BYROREDUX_PRESENT_MODE={:?} not supported by surface (have {:?}); \
+                     falling back to default selection",
+                    c,
+                    modes,
+                );
+            }
+        }
+    }
+    // Default: Mailbox (triple-buffered) if available, otherwise FIFO (always available).
     if modes.contains(&vk::PresentModeKHR::MAILBOX) {
         vk::PresentModeKHR::MAILBOX
     } else {
