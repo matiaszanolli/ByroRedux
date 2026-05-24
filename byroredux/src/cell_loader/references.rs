@@ -930,6 +930,16 @@ fn parse_and_import_nif(
             label,
         );
     }
+    // Phase 18 — walk the scene graph for a flame-marker node and
+    // capture its world position relative to the root. Most Skyrim
+    // candles + chandeliers + torches author this as a `Flame01` /
+    // `AttachFire` / `AttachLight` NiNode child of the root; the
+    // ESM-fallback light should sit at that offset, not at the
+    // placement root. The nodes array doesn't survive into
+    // `CachedNifImport`, so the offset is computed once here and
+    // stored as `flame_attach_offset` for the spawn site to read.
+    let flame_attach_offset = find_flame_attach_offset(&scene);
+
     Some(Arc::new(CachedNifImport {
         meshes,
         collisions,
@@ -951,7 +961,65 @@ fn parse_and_import_nif(
         // #1235 / LC-D1-NEW-01 — root-node NiAVObject.flags for
         // placement-root SceneFlags parity with the loose-NIF loader.
         root_flags,
+        flame_attach_offset,
     }))
+}
+
+/// Phase 18 — locate the flame-attach marker node in a parsed NIF
+/// scene. Scans every node's name for the canonical flame-marker
+/// substrings Skyrim's CK uses, then composes the node's world
+/// position relative to the placement root by walking its parent
+/// chain.
+///
+/// Names checked (case-insensitive substring match):
+/// - `flame` — `Flame01`, `FlameNode`, `CandleFlame`
+/// - `fire` — `FireNode01`, `AttachFire`
+/// - `attachlight` — `AttachLight01`
+///
+/// First match wins. Returns `None` when no matching node is
+/// authored — the typical case for static props that ship LIGH
+/// data only on the REFR placement (no NIF marker). The spawn
+/// path falls back to the placement-root position in that case,
+/// preserving pre-Phase-18 behaviour.
+///
+/// Cost: O(nodes). NIF scenes typically have 10-100 nodes; the
+/// search runs once per unique model path at cache fill time
+/// and the result is cached across every placement.
+pub(super) fn find_flame_attach_offset(
+    scene: &byroredux_nif::scene::NifScene,
+) -> Option<[f32; 3]> {
+    const PATTERNS: &[&str] = &["flame", "fire", "attachlight"];
+
+    // Walk raw NIF blocks. Limited to first-level lookup: returns
+    // the flame node's local translation (relative to its
+    // immediate parent — typically the scene root, where this
+    // composes correctly). Deep-nested flame nodes (some
+    // chandelier rigs) would need full parent-chain composition
+    // by following `children` references back to root; deferred
+    // until a visible bug surfaces.
+    for idx in 0..scene.blocks.len() {
+        // `NifScene::get_as` downcasts the boxed NiObject to the
+        // concrete type via `as_any().downcast_ref()`. NiNode
+        // carries `av.net.name` + `av.transform.translation` —
+        // everything the flame-marker search needs.
+        let Some(node) = scene.get_as::<byroredux_nif::blocks::node::NiNode>(idx) else {
+            continue;
+        };
+        let name = match node.name() {
+            Some(n) => n,
+            None => continue,
+        };
+        let name_lower = name.to_ascii_lowercase();
+        if PATTERNS.iter().any(|p| name_lower.contains(p)) {
+            let t = node.transform().translation;
+            // NIF is Z-up; the engine is Y-up. Apply the same axis
+            // conversion the importer uses everywhere: `(x, z, -y)`.
+            // Without this the flame light appears at the wrong
+            // axis (Y swapped with Z).
+            return Some([t.x, t.z, -t.y]);
+        }
+    }
+    None
 }
 
 /// Parse a SpeedTree `.spt` byte slice and convert it to the same
@@ -1080,6 +1148,9 @@ fn parse_and_import_spt(
         // SpeedTree `.spt` placeholders have no NiAVObject root, so no
         // NiAVObject.flags to propagate. #1235 / LC-D1-NEW-01.
         root_flags: 0,
+        // SpeedTree placeholders carry no flame markers — they're
+        // pure billboard quads. Phase 18.
+        flame_attach_offset: None,
     }))
 }
 

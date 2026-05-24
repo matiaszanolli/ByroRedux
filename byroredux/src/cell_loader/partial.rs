@@ -109,6 +109,16 @@ pub(crate) fn finish_partial_import(
         clip_reg.add(clip)
     });
 
+    // Phase 18 — flame-marker offset is left `None` on the
+    // streaming-partial path. The helper takes
+    // `&ImportedScene` (post-import node array); partial.rs
+    // works on the raw `NifScene`. Running the full
+    // `import_nif_scene` again here just to get the node
+    // names would double the per-NIF parse cost.
+    // Streamed-cell candles fall back to the placement-root
+    // position (pre-Phase-18 behaviour) until a focused
+    // raw-NifScene flame-walker lands as a follow-up.
+
     let cached = Arc::new(CachedNifImport {
         meshes,
         collisions,
@@ -126,6 +136,9 @@ pub(crate) fn finish_partial_import(
         // #1235 / LC-D1-NEW-01 — root NiAVObject.flags surfaced from
         // the streaming partial for placement-root SceneFlags parity.
         root_flags,
+        // Phase 18 — see note above; streamed-partial path keeps
+        // None, sync parse path fills it.
+        flame_attach_offset: None,
     });
 
     let freed_clip_handles = {

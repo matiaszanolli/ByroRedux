@@ -24,6 +24,7 @@ fn dummy_cached() -> Arc<CachedNifImport> {
         placement_root_billboard: None,
         bsx_flags: 0,
         root_flags: 0,
+        flame_attach_offset: None,
     })
 }
 

@@ -998,8 +998,37 @@ pub(super) fn spawn_placed_instances(
         // agreed there should be a light. Track real spawns instead.
         if let Some(ld) = light_data {
             if spawned_nif_lights == 0 && count == 0 {
+                // Phase 18 — when the cache walked a flame-marker
+                // node, spawn the light at that world-space offset
+                // (transformed by the REFR's rotation + scale + pos)
+                // as a *separate* entity rather than attaching to the
+                // mesh entity at the placement root. Mirrors the
+                // NiLight path above; matches Skyrim's authoring
+                // intent where the LIGH placement points at the
+                // candle's flame node, not the candle base.
+                //
+                // No flame marker → keep the pre-Phase-18 behaviour
+                // and attach to the mesh entity at the placement
+                // root. Most LIGH records on mesh REFRs ship without
+                // a flame marker (interior fill, lantern bases), so
+                // the fallback is the common path.
+                let (light_entity, light_pos) =
+                    if let Some(flame_offset) = cached.flame_attach_offset {
+                        let local =
+                            Vec3::new(flame_offset[0], flame_offset[1], flame_offset[2]);
+                        let world_pos = ref_rot * (ref_scale * local) + ref_pos;
+                        let e = world.spawn();
+                        world.insert(e, Transform::from_translation(world_pos));
+                        world.insert(
+                            e,
+                            GlobalTransform::new(world_pos, Quat::IDENTITY, 1.0),
+                        );
+                        (e, world_pos)
+                    } else {
+                        (entity, ref_pos)
+                    };
                 world.insert(
-                    entity,
+                    light_entity,
                     LightSource {
                         radius: light_radius_or_default(ld.radius),
                         color: ld.color,
@@ -1007,27 +1036,27 @@ pub(super) fn spawn_placed_instances(
                         ..Default::default()
                     },
                 );
-                // Phase 17 — attach the LightFlicker companion when the
-                // LIGH record asks for it. `ref_pos` is the candle/
-                // chandelier's placement root and the right base for
-                // the per-frame movement-amplitude jitter to restore
-                // toward. Mirrors the inline path in
-                // `references.rs::attach_light_flicker_if_needed`.
+                // Phase 17 — flicker companion. `light_pos` is the
+                // freshly-resolved position (either flame-marker
+                // world pos or placement root); the animator
+                // restores to it each frame so jitter doesn't
+                // accumulate.
                 const FLICKER_MASK: u32 = LIGHT_FLAG_FLICKER
                     | LIGHT_FLAG_FLICKER_SLOW
                     | LIGHT_FLAG_PULSE
                     | LIGHT_FLAG_PULSE_SLOW;
                 if ld.flags & FLICKER_MASK != 0 {
                     let period_secs = if ld.period_secs > 0.0 { ld.period_secs } else { 0.5 };
-                    let phase_offset_secs =
-                        (entity.wrapping_mul(2654435761) as f32 / u32::MAX as f32) * period_secs;
+                    let phase_offset_secs = (light_entity.wrapping_mul(2654435761) as f32
+                        / u32::MAX as f32)
+                        * period_secs;
                     world.insert(
-                        entity,
+                        light_entity,
                         LightFlicker {
                             period_secs,
                             intensity_amplitude: ld.intensity_amplitude,
                             movement_amplitude: ld.movement_amplitude,
-                            base_translation: [ref_pos.x, ref_pos.y, ref_pos.z],
+                            base_translation: [light_pos.x, light_pos.y, light_pos.z],
                             phase_offset_secs,
                         },
                     );

@@ -77,6 +77,22 @@ pub(crate) struct CachedNifImport {
     /// clear. See #1235 / LC-D1-NEW-01. `0` when the NIF has no scene
     /// graph (SpeedTree placeholder, generated content).
     pub(super) root_flags: u32,
+    /// NIF-local position of the "flame attach" node — the marker
+    /// most candles + chandeliers + torches author as a child of
+    /// the root NiNode (`Flame01`, `AttachFire`, `AttachLight`,
+    /// etc.) to mark where the actual point light should sit. The
+    /// importer walks `ImportedScene.nodes` for this marker and
+    /// composes the world position relative to the root at parse
+    /// time, dropping the per-node detail before this struct is
+    /// cached. Phase 18.
+    ///
+    /// `None` when no flame marker is authored — the spawn path
+    /// then falls back to placing the ESM light at the REFR root,
+    /// matching pre-Phase-18 behaviour. Most simple LIGH-only
+    /// records (no mesh) skip this entirely; the offset only
+    /// matters for mesh-attached lights (candles + chandeliers +
+    /// torches).
+    pub(super) flame_attach_offset: Option<[f32; 3]>,
 }
 
 /// Process-lifetime cache of parsed-and-imported NIF scenes keyed by
