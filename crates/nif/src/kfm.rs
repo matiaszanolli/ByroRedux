@@ -683,6 +683,7 @@ impl<'a> KfmReader<'a> {
     /// (each element is at least one byte on disk), not
     /// `size_of::<T>()` — see the equivalent rationale on
     /// [`NifStream::allocate_vec`]. See #388.
+    #[must_use = "allocate_vec returns a sized Vec; bind it (the KFM-local twin of NifStream::allocate_vec — see #831 / #1246)"]
     fn allocate_vec<T>(&self, count: u32) -> io::Result<Vec<T>> {
         let pos = self.cursor.position() as usize;
         let remaining = self.cursor.get_ref().len().saturating_sub(pos);

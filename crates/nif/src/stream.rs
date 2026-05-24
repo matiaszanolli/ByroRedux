@@ -299,6 +299,15 @@ impl<'a> NifStream<'a> {
     /// no padding bytes / no validity invariants beyond "any bit pattern
     /// is sound" (true for `u16`, `u32`, `f32`, `[f32; N]`, and
     /// `#[repr(C)]` 3-or-4-float structs). LE host required.
+    ///
+    /// `#[must_use]` symmetry with [`Self::allocate_vec`] (#831): a
+    /// `stream.read_pod_vec(n)?;` call that drops the binding silently
+    /// runs the full `count * size_of::<T>()` zero-init + read_exact
+    /// and discards the result. Use [`Self::skip`] to advance the
+    /// cursor without reading. The public `read_*_array` wrappers
+    /// carry the attribute independently because `#[must_use]` does
+    /// not propagate through the wrapper return. See #1246.
+    #[must_use = "read_pod_vec returns a populated Vec; bind it or call stream.skip() to advance the cursor without reading"]
     pub(crate) fn read_pod_vec<T: Copy + Default>(&mut self, count: usize) -> io::Result<Vec<T>> {
         let byte_count = count.checked_mul(std::mem::size_of::<T>()).ok_or_else(|| {
             io::Error::new(
@@ -333,28 +342,39 @@ impl<'a> NifStream<'a> {
         Ok(out)
     }
 
+    // `#[must_use]` on each wrapper below carries the same rationale
+    // as `read_pod_vec`: a `stream.read_*_array(n)?;` that drops the
+    // binding still runs the full bulk read + alloc + drop. The
+    // attribute does NOT propagate through the wrapper return type,
+    // so it has to live on every public surface. See #1246.
+
     /// Read `count` NiPoint3 values (3×f32 each) in one bulk read.
+    #[must_use = "read_*_array returns a populated Vec; bind it or use stream.skip()"]
     pub fn read_ni_point3_array(&mut self, count: usize) -> io::Result<Vec<NiPoint3>> {
         self.read_pod_vec::<NiPoint3>(count)
     }
 
     /// Read `count` RGBA color values (4×f32 each) in one bulk read.
+    #[must_use = "read_*_array returns a populated Vec; bind it or use stream.skip()"]
     pub fn read_ni_color4_array(&mut self, count: usize) -> io::Result<Vec<[f32; 4]>> {
         self.read_pod_vec::<[f32; 4]>(count)
     }
 
     /// Read `count` generic 2D vectors (2×f32 each) in one bulk read.
     /// Alias for `read_uv_array`; use whichever name reads better at the call site.
+    #[must_use = "read_*_array returns a populated Vec; bind it or use stream.skip()"]
     pub fn read_vec2_array(&mut self, count: usize) -> io::Result<Vec<[f32; 2]>> {
         self.read_uv_array(count)
     }
 
     /// Read `count` UV pairs (2×f32 each) in one bulk read.
+    #[must_use = "read_*_array returns a populated Vec; bind it or use stream.skip()"]
     pub fn read_uv_array(&mut self, count: usize) -> io::Result<Vec<[f32; 2]>> {
         self.read_pod_vec::<[f32; 2]>(count)
     }
 
     /// Read `count` u16 values in one bulk read.
+    #[must_use = "read_*_array returns a populated Vec; bind it or use stream.skip()"]
     pub fn read_u16_array(&mut self, count: usize) -> io::Result<Vec<u16>> {
         self.read_pod_vec::<u16>(count)
     }
@@ -365,6 +385,7 @@ impl<'a> NifStream<'a> {
     /// interpretation only. Used by `NiBSplineData`'s compact
     /// control-points stream where the on-disk u16 is reinterpreted
     /// as i16 by the consumer. See #981 / NIF-D6-NEW-05.
+    #[must_use = "read_*_array returns a populated Vec; bind it or use stream.skip()"]
     pub fn read_i16_array(&mut self, count: usize) -> io::Result<Vec<i16>> {
         self.read_pod_vec::<i16>(count)
     }
@@ -375,6 +396,7 @@ impl<'a> NifStream<'a> {
     /// `[u16; 3]` / `[f32; 2]` / `[f32; 4]` cases do. Replaces the
     /// `read_u8` × 4 push-loop pattern in BSGeometry color decode
     /// (#873).
+    #[must_use = "read_*_array returns a populated Vec; bind it or use stream.skip()"]
     pub fn read_u8_quad_array(&mut self, count: usize) -> io::Result<Vec<[u8; 4]>> {
         self.read_pod_vec::<[u8; 4]>(count)
     }
@@ -385,11 +407,13 @@ impl<'a> NifStream<'a> {
     /// 3)` — `[u16; 3]` is POD, alignment 2 ≥ 1, all bit patterns sound,
     /// so the underlying `read_pod_vec` cast is identical to the
     /// existing `[f32; 2]` / `[f32; 4]` / `NiPoint3` cases. #874.
+    #[must_use = "read_*_array returns a populated Vec; bind it or use stream.skip()"]
     pub fn read_u16_triple_array(&mut self, count: usize) -> io::Result<Vec<[u16; 3]>> {
         self.read_pod_vec::<[u16; 3]>(count)
     }
 
     /// Read `count` u32 values in one bulk read.
+    #[must_use = "read_*_array returns a populated Vec; bind it or use stream.skip()"]
     pub fn read_u32_array(&mut self, count: usize) -> io::Result<Vec<u32>> {
         self.read_pod_vec::<u32>(count)
     }
@@ -397,11 +421,13 @@ impl<'a> NifStream<'a> {
     /// Read `count` i32 values in one bulk read. Identical byte layout
     /// to [`Self::read_u32_array`]; signedness is a Rust-side
     /// reinterpretation only. See #981 / NIF-D6-NEW-05.
+    #[must_use = "read_*_array returns a populated Vec; bind it or use stream.skip()"]
     pub fn read_i32_array(&mut self, count: usize) -> io::Result<Vec<i32>> {
         self.read_pod_vec::<i32>(count)
     }
 
     /// Read `count` f32 values in one bulk read.
+    #[must_use = "read_*_array returns a populated Vec; bind it or use stream.skip()"]
     pub fn read_f32_array(&mut self, count: usize) -> io::Result<Vec<f32>> {
         self.read_pod_vec::<f32>(count)
     }
@@ -412,6 +438,7 @@ impl<'a> NifStream<'a> {
     /// and other consumers already store — exposing the array
     /// variant separately avoids a `Vec<NiPoint3>` → `Vec<[f32; 3]>`
     /// round-trip at the call site. See #981 / NIF-D6-NEW-05.
+    #[must_use = "read_*_array returns a populated Vec; bind it or use stream.skip()"]
     pub fn read_f32_triple_array(&mut self, count: usize) -> io::Result<Vec<[f32; 3]>> {
         self.read_pod_vec::<[f32; 3]>(count)
     }
