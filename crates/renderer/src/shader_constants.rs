@@ -161,19 +161,29 @@ mod tests {
         );
     }
 
-    /// TD4-205 — Water motion-kind enum in `water.frag` must match
-    /// the Rust constants. WATR records key off these values.
+    /// TD4-205 / #1256 — Water motion-kind enum source-of-truth.
+    /// Pre-#1256 water.frag declared local `const uint WATER_CALM = 0u;`
+    /// (etc.) duplicating the `#define`s in `shader_constants.glsl`.
+    /// #1256 made water.frag `#include` the generated header so the
+    /// constants flow through directly; the local `const uint`
+    /// declarations now collide with the macros at compile time
+    /// (preventing the redeclaration class of bug).
+    ///
+    /// Post-#1256 this test verifies water.frag does NOT redeclare —
+    /// mirror of `triangle_frag_dbg_bits_not_redeclared` (line 189)
+    /// pattern. The positive coverage that the values flow through
+    /// correctly lives in `generated_header_contains_all_defines`
+    /// (verifies each `#define` is emitted with the right value).
     #[test]
     fn water_frag_motion_enum_matches() {
         let src = include_str!("../shaders/water.frag");
-        for (name, value) in [
-            ("WATER_CALM", WATER_CALM),
-            ("WATER_RIVER", WATER_RIVER),
-            ("WATER_RAPIDS", WATER_RAPIDS),
-            ("WATER_WATERFALL", WATER_WATERFALL),
-        ] {
-            let token = format!("= {value}u;");
-            assert_shader_const_value(src, "const uint", name, &token, name);
+        for name in ["WATER_CALM", "WATER_RIVER", "WATER_RAPIDS", "WATER_WATERFALL"] {
+            let needle = format!("const uint {name}");
+            assert!(
+                !src.contains(&needle),
+                "water.frag must not redeclare {name} — \
+                 the #define from shader_constants.glsl is the source of truth (#1256)",
+            );
         }
     }
 

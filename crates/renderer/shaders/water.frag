@@ -1,6 +1,14 @@
 #version 460
 #extension GL_EXT_ray_query : enable
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+
+// Shared shader-side constants (CAUSTIC_FIXED_SCALE, MAT_FLAG_* bits,
+// INSTANCE_FLAG_* bits, etc.) — generated from
+// `crates/renderer/src/shader_constants_data.rs` by build.rs so the
+// Rust + GLSL sides stay byte-equal. Required for #1256's
+// `imageAtomicAdd` fixed-point scale match against caustic_splat.comp.
+#include "include/shader_constants.glsl"
 
 // ── Water surface fragment shader ─────────────────────────────────────
 //
@@ -62,10 +70,11 @@ layout(push_constant) uniform WaterPush {
     vec4 tint_reflect;
 } push;
 
-const uint WATER_CALM      = 0u;
-const uint WATER_RIVER     = 1u;
-const uint WATER_RAPIDS    = 2u;
-const uint WATER_WATERFALL = 3u;
+// WATER_CALM / WATER_RIVER / WATER_RAPIDS / WATER_WATERFALL now come
+// from `include/shader_constants.glsl` (generated from Rust). The
+// pre-#1256 local `const uint` declarations were a duplicate of the
+// shared #defines; #1256's include directive made the duplicates a
+// redefinition error.
 
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vWorldNormal;
@@ -103,6 +112,15 @@ layout(set = 1, binding = 1) uniform CameraUBO {
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
+
+// #1256 / Phase D of #1210 — water-side caustic accumulator.
+// Per-FIF R32_UINT storage image owned by WaterCausticAccum (#1255),
+// cleared pre-render-pass each frame in `context::draw::draw_frame`,
+// written here via `imageAtomicAdd` (single eta + single bounce per
+// REN-D13-NEW-04), sampled by composite (#1257, Phase E) alongside
+// the existing causticTex. Bound at set 2 binding 0 per the
+// WaterPipeline pipeline-layout shape declared in #1255.
+layout(set = 2, binding = 0, r32ui) uniform uimage2D waterCausticAccum;
 
 const float PI = 3.14159265359;
 const float REFLECTION_MAX_DIST = 5000.0;
@@ -490,67 +508,90 @@ void main() {
 
     outColor = vec4(surfaceColor, alpha);
 
-    // ── #1210 Phase D landing slot — water-side caustic synthesis ──
+    // ── #1256 / Phase D of #1210 — water-side caustic splat ─────────
     //
-    // The CameraUBO now carries `sunDirection` (Phase A+B scaffold of
-    // #1210). When the dedicated `water_caustic_accum` storage image is
-    // wired into this pipeline (Phase C follow-up — needs WaterPipeline
-    // descriptor-set growth + per-frame clear in draw.rs + composite
-    // sample binding in composite.frag/.rs), the synthesis lands here:
+    // Cast a shadow ray toward the sun. On miss (sun visible above
+    // this water fragment) refract sunlight through the bumped water
+    // normal into the underwater medium, find the floor by tracing
+    // the refracted ray against the TLAS, project the world-space
+    // hit back to screen-space, and `imageAtomicAdd` a fixed-point
+    // luminance contribution to `waterCausticAccum`. Composite
+    // (Phase E, #1257) samples + adds it to direct lighting.
     //
-    //   if (sunDirection.w > 0.0) {                                // sun active
-    //       vec3 sunRay = normalize(sunDirection.xyz);              // light-travel direction
-    //       vec3 toSun = -sunRay;                                   // ray from fragment to sun
-    //       // Shadow ray (TLAS already bound at set 1 binding 2)
-    //       rayQueryEXT shadowRq;
-    //       rayQueryInitializeEXT(shadowRq, topLevelAS,
-    //                             gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-    //                             0xFF, vWorldPos + N * 0.05, 0.001, toSun, 10000.0);
-    //       rayQueryProceedEXT(shadowRq);
-    //       bool sunVisible =
-    //           rayQueryGetIntersectionTypeEXT(shadowRq, true) == gl_RayQueryCommittedIntersectionNoneEXT;
-    //       if (sunVisible) {
-    //           // Snell refraction into water (η_air→water = 1/1.33).
-    //           // Single eta per REN-D13-NEW-04 — no chromatic split.
-    //           vec3 refractDir = refract(sunRay, N, 1.0 / 1.33);
-    //           if (length(refractDir) > 1e-4) {
-    //               // Floor hit via second ray (no separate depth bound here).
-    //               rayQueryEXT floorRq;
-    //               rayQueryInitializeEXT(floorRq, topLevelAS,
-    //                                     gl_RayFlagsOpaqueEXT, 0xFF,
-    //                                     vWorldPos, 0.001, refractDir, 5000.0);
-    //               rayQueryProceedEXT(floorRq);
-    //               if (rayQueryGetIntersectionTypeEXT(floorRq, true) !=
-    //                   gl_RayQueryCommittedIntersectionNoneEXT) {
-    //                   float dist = rayQueryGetIntersectionTEXT(floorRq, true);
-    //                   vec3 floorWorld = vWorldPos + refractDir * dist;
-    //                   vec4 floorClip = viewProj * vec4(floorWorld, 1.0);
-    //                   if (floorClip.w > 0.0) {
-    //                       vec2 ndc = floorClip.xy / floorClip.w;
-    //                       vec2 uv01 = ndc * 0.5 + 0.5;
-    //                       if (all(greaterThanEqual(uv01, vec2(0.0)))
-    //                           && all(lessThanEqual(uv01, vec2(1.0)))) {
-    //                           ivec2 pixel = ivec2(uv01 * screen.xy);
-    //                           // Fixed-point luminance with the same scale
-    //                           // caustic_splat.comp uses (CAUSTIC_FIXED_SCALE in
-    //                           // shader_constants.glsl). Constraints per
-    //                           // REN-D13-NEW-04: single eta, single bounce.
-    //                           uint fixed_val = uint(CAUSTIC_FIXED_SCALE * sunDirection.w);
-    //                           imageAtomicAdd(waterCausticAccum, pixel, fixed_val);
-    //                       }
-    //                   }
-    //               }
-    //           }
-    //       }
-    //   }
+    // Constraints per REN-D13-NEW-04 (audit 2026-05-09):
+    //   • Single eta — no per-channel chromatic split (no
+    //     wavelength dispersion). η = 1.0/1.33 (air → water).
+    //   • Single bounce — no reflection-then-refraction chains.
     //
-    // Composite reads `water_caustic_accum` alongside the existing
-    // `causticTex` (composite.frag:56) and adds the contribution to
-    // direct light — same shape as the #321 Option A path.
-    //
-    // Until Phase C / D / E land: water-side caustics remain absent
-    // (the M38 architectural-split deferral noted in
-    // `caustic_splat.comp:213-215` still applies). The scaffold above
-    // is here so the eventual implementation has a documented landing
-    // slot + the sun-direction input pre-plumbed.
+    // Magnitude pinning: the fixed-point scale matches
+    // caustic_splat.comp's so the two accumulators sum on a
+    // shared luminance basis (composite divides each by the same
+    // CAUSTIC_FIXED_SCALE). `clamp_max = 0xFFFFFFFFu / scale`
+    // mirrors the #1099 anchor — prevents wraparound when a hot
+    // sun + perpendicular surface fragment dumps a large value.
+    if (sunDirection.w > 0.0) {
+        vec3 sunRay = normalize(sunDirection.xyz);       // light-travel direction
+        // 1. Shadow ray toward sun (terminate-on-first-hit).
+        rayQueryEXT shadowRq;
+        rayQueryInitializeEXT(
+            shadowRq, topLevelAS,
+            gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+            0xFF, vWorldPos + N * 0.05, 0.001, -sunRay, 10000.0
+        );
+        rayQueryProceedEXT(shadowRq);
+        bool sunVisible =
+            rayQueryGetIntersectionTypeEXT(shadowRq, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT;
+        if (sunVisible) {
+            // 2. Snell refraction. refract() returns vec3(0) on
+            // total-internal-reflection, which can't happen for
+            // light entering the denser medium from above — but
+            // length-gate anyway in case `sunRay` is grazing.
+            vec3 refractDir = refract(sunRay, N, 1.0 / 1.33);
+            if (length(refractDir) > 1e-4) {
+                // 3. Find floor via TLAS ray (single bounce).
+                rayQueryEXT floorRq;
+                rayQueryInitializeEXT(
+                    floorRq, topLevelAS,
+                    gl_RayFlagsOpaqueEXT, 0xFF,
+                    vWorldPos, 0.001, refractDir, 5000.0
+                );
+                rayQueryProceedEXT(floorRq);
+                if (rayQueryGetIntersectionTypeEXT(floorRq, true)
+                    != gl_RayQueryCommittedIntersectionNoneEXT) {
+                    float floorT = rayQueryGetIntersectionTEXT(floorRq, true);
+                    vec3 floorWorld = vWorldPos + refractDir * floorT;
+                    // 4. Project floor hit to screen-space.
+                    vec4 floorClip = viewProj * vec4(floorWorld, 1.0);
+                    if (floorClip.w > 0.0) {
+                        vec2 ndc = floorClip.xy / floorClip.w;
+                        vec2 uv01 = ndc * 0.5 + 0.5;
+                        if (all(greaterThanEqual(uv01, vec2(0.0)))
+                            && all(lessThanEqual(uv01, vec2(1.0)))) {
+                            ivec2 pixel = ivec2(uv01 * screen.xy);
+                            // 5. Directional weighting — caustic
+                            // intensity scales with how
+                            // perpendicular the water surface is
+                            // to the sun (Lambert cosine on the
+                            // light side). Grazing sun = dim
+                            // caustic; noon sun overhead = full.
+                            // Travel falloff matches caustic_splat
+                            // (1 / (1 + t²·k)) — caustics fade with
+                            // depth as the refracted column spreads.
+                            float NdotSun = max(dot(N, -sunRay), 0.0);
+                            float travelFall = 1.0 / (1.0 + floorT * floorT * 1e-4);
+                            float contrib = sunDirection.w * NdotSun * travelFall;
+                            float scale = CAUSTIC_FIXED_SCALE;
+                            float clamp_max = float(0xFFFFFFFFu) / scale;
+                            uint fixed_val =
+                                uint(clamp(contrib * scale, 0.0, clamp_max));
+                            if (fixed_val != 0u) {
+                                imageAtomicAdd(waterCausticAccum, pixel, fixed_val);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
