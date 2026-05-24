@@ -50,15 +50,23 @@ fn skip_emitter_base(stream: &mut NifStream) -> io::Result<()> {
     //   initial_color (Color4 = 4 floats) +
     //   initial_radius + life_span = 12 floats = 48 bytes.
     stream.skip(4 * 12)?;
-    // Bethesda BS_GTE_FO3 (BSVER >= 34) adds two trailing floats:
-    // `radius_variation` (since 10.4.0.1) and `life_span_variation`,
-    // bumping the base to 14 floats = 56 bytes. Empirically:
-    //   FNV (BSVER 34, version 20.2.0.7): 14 floats (audit D5-F2 — 8-byte
-    //   under-read on every Box/Cylinder/Sphere/Mesh emitter pre-#383).
-    //   Oblivion (BSVER 11, version 20.0.0.5): 12 floats (the BS_GTE_FO3
-    //   gate keeps these 2 floats out, so we don't over-read and shift
-    //   downstream blocks into garbage).
-    if stream.bsver() >= 34 {
+    // Two trailing floats — `Radius Variation` and `Life Span Variation`
+    // — per nif.xml gate `since="10.4.0.1"` (#1239).
+    //
+    // Pre-#1239 the gate was `bsver() >= 34` (BS_GTE_FO3), which excluded
+    // Oblivion (bsver=11, version 20.0.0.5 — still ≥ 10.4.0.1). The
+    // #383 closure's claim that "Oblivion parsed cleanly with the shorter
+    // layouts" held at the aggregate parse-rate level (most Oblivion
+    // meshes are non-particle) but missed the cell-effect content:
+    // `Oblivion - Meshes.bsa` shipped 219 truncated NIFs (15 182 dropped
+    // blocks, ~2.7 pp of clean rate) because every NiPSys*Emitter
+    // subclass under-read by 8 bytes, cascading into the next block's
+    // header read and tripping `check_alloc`'s hard cap.
+    //
+    // Switching to the nif.xml version gate covers both Oblivion AND
+    // every later Bethesda title (FNV/FO3/Skyrim+ all have
+    // version ≥ 10.4.0.1 = 20.x), so no regression of #383.
+    if stream.version() >= NifVersion::V10_4_0_1 {
         stream.skip(4 * 2)?;
     }
     Ok(())
@@ -1322,6 +1330,58 @@ mod tests {
         let mut stream = NifStream::new(&d, &header);
         let block = parse_sphere_emitter(&mut stream)
             .expect("FNV NiPSysSphereEmitter should parse cleanly");
+        assert_eq!(stream.position() as usize, d.len());
+        assert_eq!(block.original_type, "NiPSysSphereEmitter");
+    }
+
+    /// Regression: #1239 — `skip_emitter_base`'s gate on the trailing
+    /// 2 floats (`Radius Variation` + `Life Span Variation`) was
+    /// `bsver() >= 34` (BS_GTE_FO3), which excluded Oblivion (bsver=11,
+    /// version 20.0.0.5). Per nif.xml `Radius Variation since="10.4.0.1"`,
+    /// Oblivion's version 20.0.0.5 is well past that gate. The
+    /// pre-#1239 gate caused every NiPSys*Emitter on Oblivion to
+    /// under-read by 8 bytes, cascading into the next block and
+    /// truncating 219 NIFs (15 182 dropped blocks) in
+    /// `Oblivion - Meshes.bsa`. Switching to the nif.xml version gate
+    /// (`version >= V10_4_0_1`) covers Oblivion AND keeps FNV/Skyrim+
+    /// reading the same 14 floats they always did.
+    ///
+    /// `parse_sphere_emitter` exercises the full
+    /// modifier+emitter+volume+radius chain on Oblivion. The 13-byte
+    /// modifier base is shared with FNV (it doesn't change between
+    /// `make_header_fnv` and `make_header_oblivion` because the
+    /// affected fields aren't version-gated on the modifier base).
+    /// Modifier-base bytes for Oblivion. The string is length-prefixed
+    /// inline (Oblivion v20.0.0.4 is below `STRING_TABLE_THRESHOLD`
+    /// = V20_1_0_1) rather than a 4-byte string-table index, so this
+    /// can't share `modifier_base_bytes` with the FNV side.
+    fn modifier_base_bytes_oblivion() -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&0u32.to_le_bytes()); // name length = 0 → None
+        d.extend_from_slice(&0u32.to_le_bytes()); // order
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // target ref
+        d.push(1u8); // active
+        d
+    }
+
+    #[test]
+    fn parse_sphere_emitter_consumes_full_block_oblivion() {
+        let header = make_header_oblivion();
+        let mut d = modifier_base_bytes_oblivion();
+        // 56 bytes of emitter base (14 floats, including the +2 from
+        // the post-#1239 gate — pre-fix Oblivion would read only 48
+        // and over-read the next block by 8 bytes).
+        d.extend_from_slice(&[0u8; 56]);
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // volume emitter object ref
+        d.extend_from_slice(&1.5f32.to_le_bytes()); // radius
+
+        // 13 base + 56 emitter + 4 volume + 4 radius = 77 bytes — wire
+        // layout is identical across the Oblivion and FNV eras post-#1239.
+        assert_eq!(d.len(), 77);
+
+        let mut stream = NifStream::new(&d, &header);
+        let block = parse_sphere_emitter(&mut stream)
+            .expect("Oblivion NiPSysSphereEmitter should parse cleanly post-#1239");
         assert_eq!(stream.position() as usize, d.len());
         assert_eq!(block.original_type, "NiPSysSphereEmitter");
     }
