@@ -405,6 +405,12 @@ impl App {
         // timestamps" diagnostic the debug UI's Metrics panel
         // exposed at Phase 7.
         world.insert_resource(byroredux_core::ecs::CpuFrameTimings::default());
+        // Per-system wall-time list (Phase 11). Filled by
+        // `Scheduler::run` at the end of each invocation, sorted
+        // desc. The egui Metrics panel renders the top entries
+        // so the operator can see which ECS system dominates
+        // `atw_scheduler_ms`.
+        world.insert_resource(byroredux_core::ecs::SchedulerSystemTimings::default());
         // Debug-UI sampler state + the aggregated snapshot. Snapshot is
         // empty until `metrics_sample_system` fires its first tick
         // (~500 ms in), at which point CPU / RAM / VRAM / GPU pass
@@ -2246,6 +2252,7 @@ fn build_debug_ui_snapshot(
             vram_budget_mb: m.vram_budget_mb,
             gpu_pass_ms: m.gpu_pass_ms.iter().map(|(k, v)| (k.clone(), *v)).collect(),
             cpu_pass_ms: m.cpu_pass_ms.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+            top_systems_ms: m.top_systems_ms.clone(),
         });
 
     let entities = if refresh_entities {

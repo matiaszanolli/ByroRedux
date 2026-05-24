@@ -10,9 +10,12 @@
 //! in their stage completes. Use this for cleanup or barrier systems.
 
 use super::access::{analyze_pair, Access, AccessConflict};
+use super::resource::Resource;
 use super::system::System;
 use super::world::World;
 use std::collections::BTreeMap;
+use std::sync::Mutex;
+use std::time::Instant;
 
 #[cfg(feature = "parallel-scheduler")]
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
@@ -83,6 +86,32 @@ impl StageData {
 
 pub struct Scheduler {
     stages: BTreeMap<Stage, StageData>,
+}
+
+/// World resource — per-system wall-time of the most recent
+/// `Scheduler::run`, sorted descending by milliseconds. Phase 11
+/// of the debug-UI plan added this to localize which ECS system
+/// dominates the 547 ms `atw_scheduler_ms` budget surfaced at
+/// Phase 10. Rayon-parallel systems all report their own wall
+/// time; on a stage where N systems run in parallel the sum of
+/// reported times exceeds the stage's wall clock by a factor up
+/// to N — that's the parallelism gain. A single system reading
+/// far above the stage wall time means it dominates and the
+/// others run "for free" alongside it.
+pub struct SchedulerSystemTimings {
+    /// `(system_name, ms)` pairs sorted descending. Re-populated
+    /// at the end of every `Scheduler::run`.
+    pub systems: Vec<(String, f32)>,
+}
+
+impl Resource for SchedulerSystemTimings {}
+
+impl Default for SchedulerSystemTimings {
+    fn default() -> Self {
+        Self {
+            systems: Vec::new(),
+        }
+    }
 }
 
 impl Scheduler {
@@ -376,24 +405,69 @@ impl Scheduler {
     /// (some parallel systems ran, some didn't; mid-stage exclusive
     /// systems are guaranteed to have not run). See #867.
     pub fn run(&mut self, world: &World, dt: f32) {
+        // Phase 11 — per-system wall-time tracker. Each system
+        // pushes `(name, ns)` here as it completes; final list is
+        // sorted desc + handed off to the
+        // `SchedulerSystemTimings` resource for the debug-UI.
+        // Cost: one `Instant::now()` + one Mutex-lock-push per
+        // system per frame. Mutex contention is bounded by the
+        // rayon worker count (≤ 1 lock per worker per stage), so
+        // a ~20-system schedule pays ~20 µs at most.
+        let timings: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
         for (_stage, data) in &mut self.stages {
             // Phase 1: run parallel systems concurrently.
             #[cfg(feature = "parallel-scheduler")]
             {
-                data.parallel
-                    .par_iter_mut()
-                    .for_each(|entry| entry.system.run(world, dt));
+                data.parallel.par_iter_mut().for_each(|entry| {
+                    // Take an owned String up front — `name()`
+                    // borrows `entry.system` immutably and would
+                    // otherwise conflict with the `&mut` run call
+                    // below.
+                    let name = entry.system.name().to_string();
+                    let t0 = Instant::now();
+                    entry.system.run(world, dt);
+                    let ns = t0.elapsed().as_nanos() as u64;
+                    timings
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((name, ns));
+                });
             }
             #[cfg(not(feature = "parallel-scheduler"))]
             {
                 for entry in &mut data.parallel {
+                    let name = entry.system.name().to_string();
+                    let t0 = Instant::now();
                     entry.system.run(world, dt);
+                    let ns = t0.elapsed().as_nanos() as u64;
+                    timings
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((name, ns));
                 }
             }
             // Phase 2: run exclusive systems sequentially.
             for entry in &mut data.exclusive {
+                let name = entry.system.name().to_string();
+                let t0 = Instant::now();
                 entry.system.run(world, dt);
+                let ns = t0.elapsed().as_nanos() as u64;
+                timings
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((name, ns));
             }
+        }
+        // Sort desc + write to the resource. Missing resource is
+        // not an error — older callers that never insert it just
+        // pay the Mutex-build cost and discard the result.
+        let mut all = timings.into_inner().unwrap_or_else(|e| e.into_inner());
+        all.sort_by(|a, b| b.1.cmp(&a.1));
+        if let Some(mut out) = world.try_resource_mut::<SchedulerSystemTimings>() {
+            out.systems.clear();
+            const NS_TO_MS: f32 = 1.0e-6;
+            out.systems
+                .extend(all.into_iter().map(|(n, ns)| (n, ns as f32 * NS_TO_MS)));
         }
     }
 

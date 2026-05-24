@@ -66,6 +66,14 @@ pub struct MetricsSnapshot {
     /// pass times (78 ms) and wall frame time (389 ms) on a
     /// Skyrim interior.
     pub cpu_pass_ms: BTreeMap<String, f32>,
+    /// Per-system wall-time of the most recent `Scheduler::run`,
+    /// sorted descending by milliseconds. Phase 11 — added to
+    /// localize the system inside `atw_scheduler_ms` that
+    /// dominates the frame budget when the scheduler reads ~500 ms.
+    /// Entries with `0.0` ms (didn't run or sub-microsecond) are
+    /// included for completeness; consumers can filter by their
+    /// own threshold.
+    pub top_systems_ms: Vec<(String, f32)>,
 }
 
 impl Resource for MetricsSnapshot {}

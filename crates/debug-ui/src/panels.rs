@@ -46,6 +46,10 @@ pub struct MetricsSnapshotView {
     /// Surfaces operations the GPU TIMESTAMP brackets can't see —
     /// fence-blocked waits, present stalls, host-side recording.
     pub cpu_pass_ms: Vec<(String, f32)>,
+    /// Per-system wall-time of the most recent `Scheduler::run`,
+    /// sorted desc by ms. Surfaces the ECS system that dominates
+    /// `atw_scheduler_ms` when that bracket reads ~500 ms. Phase 11.
+    pub top_systems_ms: Vec<(String, f32)>,
 }
 
 /// Actions the panels asked the App to perform. Drained by the
@@ -199,6 +203,31 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
             .striped(true)
             .show(ui, |ui| {
                 for (name, ms) in &m.cpu_pass_ms {
+                    ui.label(name);
+                    ui.monospace(format!("{:.3} ms", ms));
+                    ui.end_row();
+                }
+            });
+    }
+
+    // Top systems — Phase 11. The scheduler hands out a desc-
+    // sorted list of every system's wall-time. Show the top
+    // (≤ 10) so the operator can see which ECS system dominates
+    // `atw_scheduler_ms`.
+    ui.add_space(6.0);
+    ui.separator();
+    let sys_count = m.top_systems_ms.len();
+    ui.label(
+        egui::RichText::new(format!("Top systems (of {})", sys_count)).strong(),
+    );
+    if m.top_systems_ms.is_empty() {
+        ui.label("(none reported — scheduler hasn't run yet)");
+    } else {
+        egui::Grid::new("top_systems_grid")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                for (name, ms) in m.top_systems_ms.iter().take(10) {
                     ui.label(name);
                     ui.monospace(format!("{:.3} ms", ms));
                     ui.end_row();

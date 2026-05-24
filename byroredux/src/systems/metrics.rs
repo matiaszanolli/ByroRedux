@@ -19,7 +19,8 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use byroredux_core::ecs::{
-    CpuFrameTimings, MetricsSnapshot, Resource, SkinCoverageStats, TotalTime, World,
+    CpuFrameTimings, MetricsSnapshot, Resource, SchedulerSystemTimings, SkinCoverageStats,
+    TotalTime, World,
 };
 use byroredux_renderer::vulkan::allocator::{AllocatorResource, GpuMemoryBudget};
 use sysinfo::{Pid, System};
@@ -152,6 +153,14 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    // Phase 11 — top-N system timings. Cloning the whole list is
+    // fine; the scheduler caps it at the registered system count
+    // (~25 today) so this is a few hundred bytes.
+    let top_systems_ms: Vec<(String, f32)> = world
+        .try_resource::<SchedulerSystemTimings>()
+        .map(|t| t.systems.clone())
+        .unwrap_or_default();
+
     let mut snap = world.resource_mut::<MetricsSnapshot>();
     snap.sampled_at_secs = sampled_at_secs;
     snap.cpu_pct = cpu_pct;
@@ -163,4 +172,5 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
     snap.vram_budget_mb = vram_budget_b / (1024 * 1024);
     snap.gpu_pass_ms = gpu_pass_ms;
     snap.cpu_pass_ms = cpu_pass_ms;
+    snap.top_systems_ms = top_systems_ms;
 }
