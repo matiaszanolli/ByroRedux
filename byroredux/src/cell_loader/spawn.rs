@@ -851,7 +851,13 @@ pub(super) fn spawn_placed_instances(
                 // a single OR-composition produces the union word
                 // the GpuMaterial consumes.
                 effect_shader_flags: pack_effect_shader_flags(mesh.effect_shader.as_ref())
-                    | super::pack_bgsm_material_flags(mesh),
+                    | super::pack_bgsm_material_flags(mesh)
+                    | refr_overlay
+                        .filter(|o| o.model_space_normals)
+                        .map(|_| {
+                            byroredux_renderer::vulkan::material::material_flag::BGSM_MODEL_SPACE_NORMALS
+                        })
+                        .unwrap_or(0),
                 // #1147 Phase 2b — forward BGSM v>=8 translucency suite
                 // from ImportedMesh. Only meaningful when the matching
                 // `MAT_FLAG_BGSM_TRANSLUCENCY` bit is set on

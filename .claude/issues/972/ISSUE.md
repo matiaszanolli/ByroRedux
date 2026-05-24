@@ -1,7 +1,6 @@
 # FO4-D4-NEW-09: TextureSet HasModelSpaceNormals flag parsed but renderer never branches on it
 
-**Labels**: bug, renderer, low, legacy-compat
-
+**GitHub**: https://github.com/matiaszanolli/ByroRedux/issues/972
 **Audit**: `docs/audits/AUDIT_FO4_2026-05-11_DIM4.md`
 **Severity**: LOW
 **Domain**: ESM / FO4 / renderer normal-decode

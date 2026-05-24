@@ -74,6 +74,16 @@ pub(crate) struct RefrTextureOverlay {
     /// through so the spawn path can walk it once it knows the host
     /// mesh's per-shape material assignments.
     pub(crate) material_swaps: Vec<esm::records::MaterialSwapEntry>,
+    /// `TextureSet.flags & 0x04` — DNAM `HasModelSpaceNormals` bit
+    /// (FO4 TXST records). Set when the overlay's normal slot came
+    /// from a TXST that explicitly authors a model-space normal map
+    /// (vs the default tangent-space). Fed into the spawn-side
+    /// `effect_shader_flags` OR with the BGSM-sourced bit from
+    /// `pack_bgsm_material_flags` so the renderer's existing
+    /// `MAT_FLAG_BGSM_MODEL_SPACE_NORMALS` consumer at
+    /// `triangle.frag:1019` fires for direct-TXST overrides too —
+    /// not just BGSM-routed materials. See #972 / FO4-D4-NEW-09.
+    pub(crate) model_space_normals: bool,
 }
 
 impl RefrTextureOverlay {
@@ -91,6 +101,12 @@ impl RefrTextureOverlay {
     }
 
     fn merge_from_texture_set(&mut self, ts: &esm::cell::TextureSet, pool: &mut StringPool) {
+        // Capture the normal-slot state BEFORE the fill so we can detect
+        // whether this TXST actually contributed the normal (first-wins
+        // policy in `fill`). The model-space-normals flag is meaningful
+        // only when this TXST's normal slot is the one the renderer
+        // ends up sampling.
+        let normal_was_empty = self.normal.is_none();
         Self::fill(&mut self.diffuse, ts.diffuse.as_deref(), pool);
         Self::fill(&mut self.normal, ts.normal.as_deref(), pool);
         Self::fill(&mut self.glow, ts.glow.as_deref(), pool);
@@ -100,6 +116,19 @@ impl RefrTextureOverlay {
         Self::fill(&mut self.inner, ts.inner.as_deref(), pool);
         Self::fill(&mut self.specular, ts.specular.as_deref(), pool);
         Self::fill(&mut self.material_path, ts.material_path.as_deref(), pool);
+        // #972 / FO4-D4-NEW-09 — propagate `HasModelSpaceNormals` (bit 2
+        // of `TextureSet.flags`) only when this TXST actually contributed
+        // the normal slot. Two TXSTs layered on the same REFR (XATO →
+        // XTNM) could disagree on the flag — the one that wrote the
+        // normal owns the interpretation. Skip when the normal slot was
+        // already populated by an earlier source.
+        const TXST_FLAG_MODEL_SPACE_NORMALS: u16 = 0x04;
+        if normal_was_empty
+            && self.normal.is_some()
+            && (ts.flags & TXST_FLAG_MODEL_SPACE_NORMALS) != 0
+        {
+            self.model_space_normals = true;
+        }
     }
 
     /// Apply a single XTXR slot swap. `slot_index` picks one of TX00..TX07
@@ -138,6 +167,14 @@ impl RefrTextureOverlay {
             _ => return,
         };
         *dest = Some(pool.intern(path));
+        // #972 / FO4-D4-NEW-09 — XTXR for slot 1 (normal) replaces the
+        // normal source, so adopt the new TXST's `HasModelSpaceNormals`
+        // bit as well. Later XTXR for the same slot wins on both the
+        // path and the flag (authoring-order semantics).
+        if slot_index == 1 {
+            const TXST_FLAG_MODEL_SPACE_NORMALS: u16 = 0x04;
+            self.model_space_normals = (ts.flags & TXST_FLAG_MODEL_SPACE_NORMALS) != 0;
+        }
     }
 
     /// Walk the overlay's `material_path` BGSM/BGEM chain and fill any
