@@ -1267,6 +1267,15 @@ impl App {
     /// present mode the compositor still vsyncs presentation but
     /// the render loop runs uncapped.
     fn render_one_frame(&mut self, event_loop: &ActiveEventLoop) {
+        // Phase 15 — bracket render_one_frame in three phases
+        // so the egui Metrics panel can pin which one of
+        // pre-draw / draw_frame call / post-draw is hiding the
+        // ~30 ms we still can't see (Phase-14 surfaced
+        // render_one_frame's total wall as ~47 ms while the
+        // GPU + per-call CPU brackets sum to ~18 ms).
+        let rof_pre_t0 = Instant::now();
+        let mut rof_pre_draw_ns: u64 = 0;
+        let mut rof_draw_call_ns: u64 = 0;
         // Phase 4 — populate the panel snapshot from the
         // World, run egui (gets `PanelOutputs` back), apply
         // those outputs, then stash the FullOutput +
@@ -1410,6 +1419,9 @@ impl App {
                         })
                 })
                 .collect();
+            // Phase 15 — close pre-draw bracket, open draw-call.
+            rof_pre_draw_ns = rof_pre_t0.elapsed().as_nanos() as u64;
+            let rof_draw_call_t0 = Instant::now();
             match ctx.draw_frame(
                 clear_color,
                 &frame.view_proj,
@@ -1489,6 +1501,10 @@ impl App {
                     event_loop.exit();
                 }
             }
+            // Phase 15 — close draw-call bracket. Post-draw
+            // includes the remaining work in this scope plus
+            // the `last_redraw_end` stamp below.
+            rof_draw_call_ns = rof_draw_call_t0.elapsed().as_nanos() as u64;
         }
         // Phase 9 — stamp end-of-frame. Next `render_one_frame`
         // call computes `now() - last_redraw_end` as
@@ -1498,6 +1514,21 @@ impl App {
         // so the metric remains continuous across renderer-down
         // frames.
         self.last_redraw_end = Some(Instant::now());
+        // Phase 15 — close post-draw bracket and fold the
+        // three-phase split into CpuFrameTimings. atw_post
+        // surfaces render_one_frame's WALL total; this split
+        // shows which phase inside it dominates.
+        const NS_TO_MS: f32 = 1.0e-6;
+        let rof_post_draw_ns = rof_pre_t0
+            .elapsed()
+            .as_nanos()
+            .saturating_sub((rof_pre_draw_ns + rof_draw_call_ns) as u128) as u64;
+        let mut cpu_t = self
+            .world
+            .resource_mut::<byroredux_core::ecs::CpuFrameTimings>();
+        cpu_t.rof_pre_draw_ms = rof_pre_draw_ns as f32 * NS_TO_MS;
+        cpu_t.rof_draw_call_ms = rof_draw_call_ns as f32 * NS_TO_MS;
+        cpu_t.rof_post_draw_ms = rof_post_draw_ns as f32 * NS_TO_MS;
     }
 }
 

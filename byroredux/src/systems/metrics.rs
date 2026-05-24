@@ -143,6 +143,9 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         cpu_pass_ms.insert("between_frames".to_string(), cpu.between_frames_ms);
         cpu_pass_ms.insert("cmd_record".to_string(), cpu.cmd_record_ms);
         cpu_pass_ms.insert("fence_wait".to_string(), cpu.fence_wait_ms);
+        cpu_pass_ms.insert("rof_draw_call".to_string(), cpu.rof_draw_call_ms);
+        cpu_pass_ms.insert("rof_post_draw".to_string(), cpu.rof_post_draw_ms);
+        cpu_pass_ms.insert("rof_pre_draw".to_string(), cpu.rof_pre_draw_ms);
         cpu_pass_ms.insert("ssbo_build".to_string(), cpu.ssbo_build_ms);
         cpu_pass_ms.insert("submit_present".to_string(), cpu.submit_present_ms);
         cpu_pass_ms.insert("tlas_build".to_string(), cpu.tlas_build_ms);

@@ -556,6 +556,23 @@ pub struct CpuFrameTimings {
     /// `step_cell_transition` (`door.teleport` dispatch), window
     /// title update. Phase 10.
     pub atw_post_ms: f32,
+    /// `render_one_frame`'s pre-draw_frame phase: egui run,
+    /// build_render_data (ECS walk producing draw_commands),
+    /// material table refresh, ScratchTelemetry update, UI
+    /// manager (Ruffle SWF) tick + texture upload, geometry SSBO
+    /// rebuild check. Phase 15.
+    pub rof_pre_draw_ms: f32,
+    /// Wall time of the `draw_frame` CPU call itself. Subtract
+    /// the sum of `acquire_ms + fence_wait_ms + cmd_record_ms +
+    /// ssbo_build_ms + tlas_build_ms + submit_present_ms` to see
+    /// how much hidden host wait the GPU brackets miss
+    /// (egui set_textures' internal queue submit, implicit
+    /// barriers, etc.). Phase 15.
+    pub rof_draw_call_ms: f32,
+    /// `render_one_frame`'s post-draw_frame phase: FrameTimings
+    /// fold into `CpuFrameTimings`, bench accumulator update,
+    /// swapchain recreate, `last_redraw_end` stamp. Phase 15.
+    pub rof_post_draw_ms: f32,
 }
 
 impl Resource for CpuFrameTimings {}
