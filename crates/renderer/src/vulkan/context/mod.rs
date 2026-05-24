@@ -1601,7 +1601,25 @@ impl VulkanContext {
             swapchain_state.extent.width,
             swapchain_state.extent.height,
         ) {
-            Ok(a) => Some(a),
+            Ok(a) => {
+                // One-time UNDEFINED → GENERAL transition so the first
+                // frame's `clear_pre_render_pass` doesn't trip
+                // VUID-vkCmdDraw-None-09600 (the barrier assumes
+                // `oldLayout = GENERAL`). Mirror of CausticPipeline's
+                // initialize_layouts call at line 1800 above.
+                if let Err(e) = unsafe {
+                    a.initialize_layouts(&device, &graphics_queue, transfer_pool)
+                } {
+                    log::warn!(
+                        "Water-caustic initialize_layouts failed: {e} — disabling for the rest of the session"
+                    );
+                    let mut a_mut = a;
+                    unsafe { a_mut.destroy(&device, &gpu_allocator) };
+                    None
+                } else {
+                    Some(a)
+                }
+            }
             Err(e) => {
                 log::warn!(
                     "Water-caustic accumulator creation failed: {e} — water-side caustics disabled this session"

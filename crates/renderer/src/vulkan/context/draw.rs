@@ -2375,6 +2375,8 @@ impl VulkanContext {
                                 mesh.index_count,
                                 wc.instance_index,
                                 frame, // #1255 — selects set 2 per-FIF water-caustic descriptor
+                                self.texture_registry.descriptor_set(frame), // #1258 — set 0
+                                self.scene_buffers.descriptor_set(frame),    // #1258 — set 1
                             );
                         }
                     }

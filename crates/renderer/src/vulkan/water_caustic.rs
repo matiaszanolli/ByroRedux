@@ -30,7 +30,7 @@
 
 use super::allocator::SharedAllocator;
 use super::caustic::CAUSTIC_FORMAT;
-use super::descriptors::color_subresource_single_mip;
+use super::descriptors::{color_subresource_single_mip, image_barrier_undef_to_general};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -208,6 +208,52 @@ impl WaterCausticAccum {
             storage_view,
             sampled_view,
             allocation: Some(alloc),
+        })
+    }
+
+    /// One-time UNDEFINED → GENERAL transition on every per-FIF slot
+    /// so the first `clear_pre_render_pass` (which uses
+    /// `oldLayout = GENERAL`) doesn't trip
+    /// VUID-vkCmdDraw-None-09600. Mirror of
+    /// `CausticPipeline::initialize_layouts` — both this and the
+    /// caustic accumulator are freshly-created in `UNDEFINED` per
+    /// `vk::ImageCreateInfo` spec.
+    ///
+    /// Call ONCE after [`Self::new`] AND after
+    /// [`Self::recreate_on_resize`].
+    ///
+    /// # Safety
+    /// Device + queue + pool must be valid; queue must support
+    /// graphics/transfer (for pipeline barriers via the
+    /// `with_one_time_commands` fenced submit).
+    pub unsafe fn initialize_layouts(
+        &self,
+        device: &ash::Device,
+        queue: &std::sync::Mutex<vk::Queue>,
+        pool: vk::CommandPool,
+    ) -> Result<()> {
+        super::texture::with_one_time_commands(device, queue, pool, |cmd| {
+            let mut barriers = Vec::with_capacity(self.slots.len());
+            for slot in &self.slots {
+                barriers.push(image_barrier_undef_to_general(slot.image));
+            }
+            // SAFETY: caller's unsafe-fn contract. NONE as srcStageMask
+            // on UNDEFINED → GENERAL transitions: there are no prior
+            // writes to make visible. dstStage = FRAGMENT_SHADER because
+            // water.frag is the first reader/writer (not COMPUTE_SHADER
+            // like the caustic version — different consumer pipeline).
+            unsafe {
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::NONE,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &barriers,
+                );
+            }
+            Ok(())
         })
     }
 

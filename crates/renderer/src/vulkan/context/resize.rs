@@ -435,6 +435,17 @@ impl VulkanContext {
                     );
                     wca.destroy(&self.device, allocator);
                     self.water_caustic_accum = None;
+                } else if let Err(e) =
+                    wca.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
+                {
+                    // Fresh per-FIF slot images come up UNDEFINED again
+                    // after recreate; if the transition fails we can't
+                    // safely use the accumulator this session.
+                    log::warn!(
+                        "Water-caustic initialize_layouts after resize failed: {e} — disabling for the rest of the session"
+                    );
+                    wca.destroy(&self.device, allocator);
+                    self.water_caustic_accum = None;
                 }
             }
         }

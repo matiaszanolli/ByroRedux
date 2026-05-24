@@ -413,18 +413,48 @@ impl WaterPipeline {
         index_count: u32,
         instance_index: u32,
         frame: usize,
+        bindless_texture_set: vk::DescriptorSet, // set 0 — passed in by caller
+        scene_set: vk::DescriptorSet,            // set 1 — passed in by caller
     ) {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
 
+        // Pre-#1258: WaterPipeline assumed the prior triangle-pipeline's
+        // set 0 + set 1 bindings stayed live across `cmd_bind_pipeline`.
+        // That's only true when both pipelines' layouts are "compatible
+        // for set N" per the Vulkan spec — which requires identical
+        // push-constant ranges AS WELL as identical set-layout handles.
+        // Triangle has NO push constants; water has 128 B (WaterPush at
+        // FRAGMENT + VERTEX stages). The push-range mismatch un-binds
+        // ALL descriptor sets when `cmd_bind_pipeline(WaterPipeline)`
+        // runs, so every water draw fired without sets 0 + 1 → spammy
+        // VUID-vkCmdDrawIndexed-None-08600 on Riverwood (first cell
+        // with actual water draws to surface the latent bug).
+        //
+        // Fix: rebind sets 0 + 1 explicitly through THIS pipeline's
+        // layout, then bind set 2 (water-caustic). The descriptor
+        // handles are the same the triangle path uses; only the
+        // pipeline_layout differs. See #1258.
+        device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline_layout,
+            0,
+            &[bindless_texture_set],
+            &[],
+        );
+        device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline_layout,
+            1,
+            &[scene_set],
+            &[],
+        );
+
         // #1255 / Phase C of #1210 — bind set 2 (water-caustic
-        // accumulator storage image). Set 0 + set 1 are already
-        // bound by the caller (triangle-pipeline descriptors stay
-        // compatible across the water draw); only the new set is
-        // bound here. The descriptor view itself is wired by
-        // `update_water_caustic_descriptors` at swapchain init /
-        // recreate time. Phase D activates the in-shader consumer;
-        // until then the descriptor is bound but unread (legal:
-        // unused descriptors don't trip validation).
+        // accumulator storage image). The descriptor view itself is
+        // wired by `update_water_caustic_descriptors` at swapchain
+        // init / recreate time.
         device.cmd_bind_descriptor_sets(
             cmd,
             vk::PipelineBindPoint::GRAPHICS,
