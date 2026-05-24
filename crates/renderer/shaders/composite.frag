@@ -263,7 +263,22 @@ vec3 compute_sky(vec3 dir) {
             float disc_r = sqrt(max(0.0, 1.0 - sun_size * sun_size));
             vec2 uv = vec2(dot(dir, tangent), dot(dir, bitangent)) / max(disc_r, 1e-4);
             uv = uv * 0.5 + 0.5;
-            vec4 sprite = texture(textures[nonuniformEXT(sun_tex_idx)], uv);
+            // Force mip 0. Default `texture()` uses derivative-based
+            // mip selection which goes badly wrong here: the UV is
+            // divided by `disc_r` (~0.017 for a ~1° wide sun) so
+            // adjacent-pixel UV deltas are ~0.06 even though both
+            // pixels sit inside a 100-pixel-wide disc. The sampler
+            // then picks mip 4-5 of a 256×256 sprite and the sun
+            // renders as ~8 visible texels (~16 pixels each — see
+            // the user-reported screenshot, ByroRedux | 1 FPS frame
+            // 2026-05-24). The sprite is supposed to look sharp
+            // regardless of disc screen-size; mip 0 + bilinear gives
+            // ~2.5 source texels per output pixel at typical disc
+            // widths, which is supersampling (sharp, no aliasing).
+            // Sub-pixel discs at very large render distances would
+            // alias on mip 0, but the disc is bright enough that
+            // small-disc aliasing is invisible against `sun_intensity`.
+            vec4 sprite = textureLod(textures[nonuniformEXT(sun_tex_idx)], uv, 0.0);
             disc_color = sun_col * sprite.rgb;
         }
 
