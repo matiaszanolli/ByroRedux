@@ -162,3 +162,34 @@ crossterm = "0.28"
 egui = "0.33"
 egui-winit = { version = "0.33", default-features = false, features = ["links", "wayland", "x11"] }
 egui-ash-renderer = { version = "0.11", features = ["gpu-allocator"] }
+
+# ── Debug-build optimisation for math-heavy deps (Phase 12) ─────
+#
+# Diagnosis: on a Skyrim interior (Sleeping Giant Inn, 3211 ECS
+# entities, hundreds of static `bhkRigidBody`-imported colliders),
+# the debug-UI Metrics panel measured `physics_sync_system =
+# 414 ms` per frame — single system dominating the 555 ms wall
+# frame. Root cause: rapier3d / parry3d / nalgebra run with
+# `opt-level = 0` in debug builds, where the per-iteration math
+# (matrix multiplies, BVH descents, narrow-phase contact tests)
+# is ~100× slower than release. The engine code itself benefits
+# from being unoptimised (fast iteration, debuggable stacks), so
+# the right answer is per-package optimisation: keep the engine
+# at the default `opt-level = 0`, lift the math crates to 3.
+#
+# Pattern lifted from the Bevy / Macroquad playbook. The
+# `--release` build is unaffected (already opt-level=3 globally).
+
+[profile.dev.package.rapier3d]
+opt-level = 3
+
+[profile.dev.package.parry3d]
+opt-level = 3
+
+[profile.dev.package.nalgebra]
+opt-level = 3
+
+# `glam` is also math-heavy and on the engine's hot transform
+# path; lifting it makes the whole ECS faster in debug too.
+[profile.dev.package.glam]
+opt-level = 3
