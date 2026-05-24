@@ -361,6 +361,12 @@ struct App {
     #[cfg(feature = "debug-server")]
     #[allow(dead_code)]
     debug_server: Option<byroredux_debug_server::DebugServerHandle>,
+    /// Debug-UI overlay state — egui context + winit input
+    /// translator. `None` until `resumed` constructs the window;
+    /// initialised once at boot and outlives the rest of the App.
+    /// Forwarded every `WindowEvent` so egui can grab clicks /
+    /// keypresses when the overlay is visible.
+    debug_ui: Option<byroredux_debug_ui::DebugUiState>,
 }
 
 impl App {
@@ -825,6 +831,7 @@ impl App {
             streaming: None,
             #[cfg(feature = "debug-server")]
             debug_server,
+            debug_ui: None,
         }
     }
 
@@ -1276,6 +1283,23 @@ impl ApplicationHandler for App {
                     ),
                 );
 
+                // Phase 4 of the debug-UI plan — initialise the
+                // egui overlay before the first frame. The pass
+                // needs the live VulkanContext (allocator +
+                // swapchain), so this has to land between
+                // `VulkanContext::new` and the first `draw_frame`.
+                // Failure here is non-fatal: log + skip — the
+                // engine still renders, the operator just doesn't
+                // get the overlay.
+                let mut ctx = ctx;
+                if let Err(e) = ctx.init_egui(
+                    byroredux_renderer::vulkan::sync::MAX_FRAMES_IN_FLIGHT,
+                ) {
+                    log::warn!("debug-UI overlay init failed: {e:#}");
+                }
+                let debug_ui_state = byroredux_debug_ui::DebugUiState::new(event_loop, &win);
+                self.debug_ui = Some(debug_ui_state);
+
                 self.renderer = Some(ctx);
                 self.window = Some(win);
                 self.last_frame = Instant::now();
@@ -1315,6 +1339,31 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        // Debug-UI event forwarding — egui sees every WindowEvent
+        // before the camera input layer. When the overlay is
+        // visible AND egui claims to have consumed the event (e.g.
+        // a click inside an egui window, a keypress targeting a
+        // text field), the rest of the dispatch is skipped so the
+        // fly camera doesn't move with the cursor that's busy
+        // dragging an egui slider. CloseRequested + Resized always
+        // run their normal handlers — egui doesn't care about
+        // those.
+        let egui_consumed = if let (Some(ref mut state), Some(ref win)) =
+            (self.debug_ui.as_mut(), self.window.as_ref())
+        {
+            state.on_window_event(win, &event).consumed
+        } else {
+            false
+        };
+        if egui_consumed
+            && !matches!(
+                event,
+                WindowEvent::CloseRequested | WindowEvent::Resized(_)
+            )
+        {
+            return;
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 log::info!("Close requested — shutting down");
@@ -1397,7 +1446,27 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // Phase 4 — run the egui closure here, before we
+                // borrow `ctx` mutably, so the borrow checker
+                // doesn't have to weave a partial-borrow split
+                // through the long `if let Some(ref mut ctx)` body
+                // below. Stash the resulting `FullOutput` + a
+                // clone of the egui context (cheap — `Context` is
+                // internally Arc'd) so the VulkanContext can
+                // consume both inside its draw_frame pipeline.
+                let egui_frame = if let (Some(ref mut ui), Some(ref win)) =
+                    (self.debug_ui.as_mut(), self.window.as_ref())
+                {
+                    ui.run(win, byroredux_debug_ui::placeholder_ui);
+                    ui.take_output().map(|out| (ui.egui_ctx.clone(), out))
+                } else {
+                    None
+                };
+
                 if let Some(ref mut ctx) = self.renderer {
+                    if let Some((egui_ctx, output)) = egui_frame {
+                        ctx.submit_egui_frame(egui_ctx, output);
+                    }
                     let is_benching = self.bench_frames_target.is_some();
 
                     let brd_t0 = Instant::now();
@@ -1688,6 +1757,18 @@ impl ApplicationHandler for App {
                                 //   place until the user toggles back.
                                 drop(input);
                                 toggle_player_mode(&mut self.world);
+                            } else if code == KeyCode::F3 && !event.repeat {
+                                // Phase 4 of the debug-UI plan — F3
+                                // toggles the egui overlay. Doesn't
+                                // touch InputState so the camera
+                                // input layer is uninterrupted (the
+                                // overlay's own egui-winit handler
+                                // is the source of truth for any
+                                // mouse / keyboard egui needs).
+                                drop(input);
+                                if let Some(ref mut ui) = self.debug_ui {
+                                    ui.toggle();
+                                }
                             } else {
                                 input.keys_held.insert(code);
                             }

@@ -1240,6 +1240,19 @@ pub struct VulkanContext {
 
     pub allocator: Option<SharedAllocator>,
 
+    /// Debug-UI overlay pass (Phase 4 of the debug-UI plan). `None`
+    /// until [`Self::init_egui`] is called — the binary opts in at
+    /// boot after the window + allocator are live. Drawn into the
+    /// swapchain image immediately after composite + before the
+    /// screenshot copy.
+    pub egui_pass: Option<super::egui_pass::EguiPass>,
+    /// Per-frame egui handoff: `(context, output)` stashed by
+    /// [`Self::submit_egui_frame`] right before `draw_frame`,
+    /// consumed by `draw_frame` after composite. `None` on frames
+    /// where the overlay is hidden — the egui pass simply skips
+    /// for the frame.
+    pub egui_pending_output: Option<(egui::Context, egui::FullOutput)>,
+
     /// Graphics queue, wrapped in a Mutex for Vulkan-required external
     /// synchronization (VUID-vkQueueSubmit-queue-00893). All queue
     /// submissions (draw_frame, texture/buffer uploads) must lock this.
@@ -2077,6 +2090,8 @@ impl VulkanContext {
             present_queue,
             swapchain_state,
             allocator: Some(gpu_allocator),
+            egui_pass: None,
+            egui_pending_output: None,
             render_pass,
             pipeline_cache,
             pipeline: pipelines.opaque,
@@ -2425,6 +2440,41 @@ impl VulkanContext {
     // draw_frame is in draw.rs
     // build_blas_for_mesh, register_ui_quad, swapchain_extent, log_memory_usage are in resources.rs
     // recreate_swapchain is in resize.rs
+
+    /// Initialise the debug-UI overlay pass (Phase 4 of the
+    /// debug-UI plan). Called once by the binary after
+    /// `VulkanContext::new` returns and the allocator is wired into
+    /// the world. Idempotent — repeated calls reuse the existing
+    /// pass instead of leaking GPU resources.
+    pub fn init_egui(&mut self, in_flight_frames: usize) -> anyhow::Result<()> {
+        if self.egui_pass.is_some() {
+            return Ok(());
+        }
+        let allocator = self.allocator.clone().ok_or_else(|| {
+            anyhow::anyhow!("VulkanContext::init_egui: allocator not initialised")
+        })?;
+        let pass = super::egui_pass::EguiPass::new(
+            self.device.clone(),
+            allocator,
+            self.swapchain_state.format.format,
+            &self.swapchain_state.image_views,
+            self.swapchain_state.extent,
+            in_flight_frames,
+        )?;
+        self.egui_pass = Some(pass);
+        Ok(())
+    }
+
+    /// Stash one frame's egui context + `FullOutput`. The next
+    /// `draw_frame` consumes it after composite. Called from the
+    /// binary's main loop right before invoking `draw_frame`. No-op
+    /// when [`Self::egui_pass`] hasn't been initialised — the
+    /// overlay is opt-in.
+    pub fn submit_egui_frame(&mut self, ctx: egui::Context, output: egui::FullOutput) {
+        if self.egui_pass.is_some() {
+            self.egui_pending_output = Some((ctx, output));
+        }
+    }
 }
 
 // Method implementations split across submodules:
@@ -2441,6 +2491,14 @@ impl Drop for VulkanContext {
         // to satisfy Vulkan object lifetime requirements.
         unsafe {
             let _ = self.device.device_wait_idle();
+
+            // Egui pass destroys its render pass + framebuffers
+            // here; its `Renderer` field's own Drop tears down the
+            // pipeline + descriptor pool + per-frame buffer pools
+            // when the `Option<EguiPass>` itself drops below.
+            if let Some(mut pass) = self.egui_pass.take() {
+                pass.destroy(&self.device);
+            }
 
             self.destroy_screenshot_staging();
 

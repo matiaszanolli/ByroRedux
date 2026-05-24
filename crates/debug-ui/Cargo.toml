@@ -1,0 +1,16 @@
+[package]
+name = "byroredux-debug-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+byroredux-core = { workspace = true }
+byroredux-renderer = { workspace = true }
+egui = { workspace = true }
+egui-winit = { workspace = true }
+egui-ash-renderer = { workspace = true }
+ash = { workspace = true }
+gpu-allocator = { workspace = true }
+winit = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }

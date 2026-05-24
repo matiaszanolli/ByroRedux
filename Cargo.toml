@@ -18,6 +18,7 @@ members = [
     "crates/audio",
     "crates/debug-protocol",
     "crates/debug-server",
+    "crates/debug-ui",
     "tools/byro-dbg",
     "byroredux",
 ]
@@ -48,11 +49,18 @@ byroredux-facegen = { path = "crates/facegen" }
 byroredux-audio = { path = "crates/audio" }
 byroredux-debug-protocol = { path = "crates/debug-protocol" }
 byroredux-debug-server = { path = "crates/debug-server" }
+byroredux-debug-ui = { path = "crates/debug-ui" }
 
 # Vulkan / GPU
 ash = "0.38"
 ash-window = "0.13"
-gpu-allocator = { version = "0.27", features = ["vulkan"] }
+# Bumped 0.27 → 0.28 to align with egui-ash-renderer 0.11.0's
+# transitive pin (one allocator copy in the dep graph, not two).
+# 0.27 → 0.28 is a minor API bump — `Allocation::is_null` removed,
+# `Allocator::report` renamed to `generate_report`. The renderer
+# already uses `generate_report` (see allocator.rs), so the bump
+# is source-compatible.
+gpu-allocator = { version = "0.28", features = ["vulkan"] }
 rspirv = "0.12"
 
 # Windowing
@@ -143,3 +151,14 @@ sysinfo = { version = "0.30", default-features = false }
 # the same versions without per-crate drift.
 ratatui = "0.28"
 crossterm = "0.28"
+
+# Embedded debug-UI overlay (Phase 4 of the debug-UI plan).
+# egui 0.33 + egui-winit 0.33 are the latest series that
+# egui-ash-renderer 0.11.0 pins through its transitive deps —
+# bumping our direct dep to 0.34 puts two copies of `egui` in the
+# graph and breaks the FullOutput pass-through. The
+# `gpu-allocator` feature lets egui-ash-renderer share our
+# `SharedAllocator` instead of standing up a parallel allocator.
+egui = "0.33"
+egui-winit = { version = "0.33", default-features = false, features = ["links", "wayland", "x11"] }
+egui-ash-renderer = { version = "0.11", features = ["gpu-allocator"] }

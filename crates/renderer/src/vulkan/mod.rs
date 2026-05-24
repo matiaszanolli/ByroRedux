@@ -10,6 +10,7 @@ pub mod dds;
 pub mod debug;
 pub mod descriptors;
 pub mod device;
+pub mod egui_pass;
 pub mod gbuffer;
 pub mod gpu_timers;
 pub mod instance;

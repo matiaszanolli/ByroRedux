@@ -94,7 +94,9 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         if let Some(alloc_res) = world.try_resource::<AllocatorResource>() {
             let alloc = alloc_res.0.lock().unwrap_or_else(|e| e.into_inner());
             let report = alloc.generate_report();
-            (report.total_allocated_bytes, report.total_reserved_bytes)
+            // gpu-allocator 0.28: `total_reserved_bytes` →
+            // `total_capacity_bytes` (same semantics).
+            (report.total_allocated_bytes, report.total_capacity_bytes)
         } else {
             (0, 0)
         };

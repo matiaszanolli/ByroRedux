@@ -563,6 +563,19 @@ impl VulkanContext {
             )?;
         }
 
+        // Phase 4 — recreate the egui overlay's framebuffers
+        // against the fresh swapchain image views. The render pass
+        // itself is preserved (swapchain format doesn't change on
+        // resize); only the framebuffer attachments + extent need
+        // to track the new images.
+        if let Some(ref mut pass) = self.egui_pass {
+            pass.recreate_framebuffers(
+                &self.device,
+                &self.swapchain_state.image_views,
+                self.swapchain_state.extent,
+            )?;
+        }
+
         // Snapshot composite's HDR views (owned Vec) so subsequent &mut
         // borrows for TAA + composite don't conflict.
         let hdr_views_owned: Vec<vk::ImageView> = self

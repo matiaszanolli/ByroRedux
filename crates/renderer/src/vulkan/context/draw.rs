@@ -2810,6 +2810,34 @@ impl VulkanContext {
                 composite.dispatch(&self.device, cmd, frame, img, bindless_set);
             }
 
+            // Debug-UI overlay (Phase 4 of the debug-UI plan).
+            // Composite already wrote the swapchain image and left
+            // it in PRESENT_SRC_KHR; the egui RP keeps that layout
+            // via loadOp=LOAD + matching initial/final layouts, so
+            // the only thing this needs is a fresh begin/end inside
+            // the same command buffer. Skipped unless both
+            // `init_egui` ran AND a frame was submitted via
+            // `submit_egui_frame` this iteration.
+            if let Some(pass) = self.egui_pass.as_mut() {
+                if let Some((egui_ctx, output)) = self.egui_pending_output.take() {
+                    let queue = *self
+                        .graphics_queue
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if let Err(e) = pass.dispatch(
+                        &self.device,
+                        cmd,
+                        queue,
+                        self.command_pool,
+                        img as u32,
+                        &egui_ctx,
+                        output,
+                    ) {
+                        log::error!("egui overlay dispatch failed: {e:#}");
+                    }
+                }
+            }
+
             // Screenshot capture: copy swapchain image to staging buffer
             // if requested. Must happen after composite (image has content)
             // and before end_command_buffer (still recording).

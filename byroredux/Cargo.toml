@@ -15,6 +15,7 @@ tracing-tracy = ["dep:tracing-tracy"]
 
 [dependencies]
 byroredux-debug-server = { workspace = true, optional = true }
+byroredux-debug-ui = { workspace = true }
 byroredux-core = { workspace = true }
 byroredux-renderer = { workspace = true }
 byroredux-platform = { workspace = true }

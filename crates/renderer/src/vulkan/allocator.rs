@@ -258,10 +258,16 @@ pub fn create_allocator(
         instance: instance.clone(),
         device: device.clone(),
         physical_device,
-        debug_settings: gpu_allocator::AllocatorDebugSettings {
-            log_memory_information: cfg!(debug_assertions),
-            log_leaks_on_shutdown: true,
-            ..Default::default()
+        debug_settings: {
+            // gpu-allocator 0.28 made `AllocatorDebugSettings`
+            // `#[non_exhaustive]`, so literal struct construction
+            // is rejected. Start from `Default::default()` and
+            // override only the fields we care about — same end
+            // state as the pre-0.28 literal.
+            let mut d = gpu_allocator::AllocatorDebugSettings::default();
+            d.log_memory_information = cfg!(debug_assertions);
+            d.log_leaks_on_shutdown = true;
+            d
         },
         buffer_device_address,
         allocation_sizes,
@@ -303,7 +309,9 @@ pub fn log_memory_usage(
     let alloc = allocator.lock().expect("allocator lock poisoned");
     let report = alloc.generate_report();
     let allocated_mb = report.total_allocated_bytes as f64 / (1024.0 * 1024.0);
-    let reserved_mb = report.total_reserved_bytes as f64 / (1024.0 * 1024.0);
+    // gpu-allocator 0.28 renamed `total_reserved_bytes` →
+    // `total_capacity_bytes`; same semantics (sum of block sizes).
+    let reserved_mb = report.total_capacity_bytes as f64 / (1024.0 * 1024.0);
     let num_allocs = report.allocations.len();
     let num_blocks = report.blocks.len();
 
@@ -351,7 +359,7 @@ mod tests {
             allocations,
             blocks,
             total_allocated_bytes: total_allocated,
-            total_reserved_bytes: block_size,
+            total_capacity_bytes: block_size,
         }
     }
 

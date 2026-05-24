@@ -17,3 +17,11 @@ log = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 image = { workspace = true }
+# Debug-UI overlay (Phase 4 of the debug-UI plan). egui is the CPU
+# UI side; egui-ash-renderer owns the GPU pipeline + descriptor
+# layout for tessellated `ClippedPrimitive` lists. The
+# `gpu-allocator` feature makes it share our `SharedAllocator` so
+# the overlay's vertex / index / texture allocations land in the
+# same blocks as everything else in the renderer.
+egui = { workspace = true }
+egui-ash-renderer = { workspace = true }
