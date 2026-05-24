@@ -8,7 +8,7 @@ use crate::blocks::shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
     BSShaderPPLightingProperty, BSShaderTextureSet, BSSkyShaderProperty, BSWaterShaderProperty,
     LuminanceParams, ShaderTypeData, SkyShaderProperty, TallGrassShaderProperty,
-    TileShaderProperty,
+    TileShaderProperty, WaterShaderProperty,
 };
 use crate::blocks::texture::NiSourceTexture;
 use crate::blocks::tri_shape::NiTriShape;
@@ -1111,6 +1111,13 @@ mod lighting_shader_mat_tests;
 /// populated `has_material_data`.
 #[cfg(test)]
 mod vertex_color_precedence_tests;
+
+/// Regression tests for #1243 (NIF-DIM4-NEW-02) — FO3/FNV legacy
+/// `WaterShaderProperty` (non-BS variant) must reach `MaterialInfo`.
+/// Sibling to the Skyrim+ `BSWaterShaderProperty` consumer covered by
+/// `sky_water_shader_tests` (#977 closure).
+#[cfg(test)]
+mod water_shader_legacy_tests;
 
 /// Regression tests for #1241 (NIF-DIM4-NEW-01) —
 /// `BSLightingShaderProperty` PBR scalars (`refraction_strength`,

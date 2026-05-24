@@ -821,14 +821,18 @@ pub(crate) fn extract_material_info_from_refs(
         // (#455 / #550 / #474) — the import walker was never updated
         // to consume them, so FO3/FNV HUD tiles, sky domes, and tall
         // grass imported with `texture_path = None` and the renderer
-        // fell back to the magenta placeholder. WaterShaderProperty
-        // has no file_name (the water texture lives elsewhere) so
-        // there's nothing to capture for that variant — its env-map
-        // scale would flow through the base shader path, but our
-        // BSShaderProperty base data isn't yet plumbed into
-        // MaterialInfo here. Last-writer-wins matches the existing
-        // `texture_path.is_none()` policy on the PP / NoLighting
-        // branches.
+        // fell back to the magenta placeholder. Last-writer-wins
+        // matches the existing `texture_path.is_none()` policy on the
+        // PP / NoLighting branches.
+        //
+        // #1243 / NIF-DIM4-NEW-02 — the `WaterShaderProperty` (non-BS,
+        // FO3/FNV legacy) was omitted by the #940 pass on the (stale)
+        // reasoning that "our BSShaderProperty base data isn't yet
+        // plumbed into MaterialInfo." It already was — the Tile / Sky
+        // / TallGrass branches below all reach `shader.shader.env_map_scale`
+        // through the same field. `WaterShaderProperty` has no `file_name`
+        // (the water texture lives outside the property), so only the
+        // env_map_scale rides through.
         if let Some(shader) = scene.get_as::<TileShaderProperty>(idx) {
             if info.texture_path.is_none() {
                 info.texture_path = intern_texture_path(pool, &shader.file_name);
@@ -847,6 +851,9 @@ pub(crate) fn extract_material_info_from_refs(
             if info.texture_path.is_none() {
                 info.texture_path = intern_texture_path(pool, &shader.file_name);
             }
+            info.env_map_scale = shader.shader.env_map_scale;
+        }
+        if let Some(shader) = scene.get_as::<WaterShaderProperty>(idx) {
             info.env_map_scale = shader.shader.env_map_scale;
         }
 
