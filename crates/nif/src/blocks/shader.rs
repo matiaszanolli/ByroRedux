@@ -325,6 +325,24 @@ impl BSShaderPropertyBaseOnly {
             type_name,
         })
     }
+
+    /// Direct constructor for synthetic-scene tests that bypass the
+    /// wire parser. Production code reaches this struct only through
+    /// [`Self::parse`]. The `type_name` field is private to keep
+    /// callers from accidentally constructing a block with a name
+    /// the dispatcher table doesn't recognise.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        net: NiObjectNETData,
+        shader: BSShaderPropertyData,
+        type_name: &'static str,
+    ) -> Self {
+        Self {
+            net,
+            shader,
+            type_name,
+        }
+    }
 }
 
 /// `TallGrassShaderProperty` — FO3/FNV grass shader (nif.xml line 6354).

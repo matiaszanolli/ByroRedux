@@ -1,5 +1,5 @@
-//! Regression tests for #1243 (NIF-DIM4-NEW-02) — FO3/FNV legacy
-//! `WaterShaderProperty` (non-BS variant) must reach `MaterialInfo`.
+//! Regression tests for #1243 (NIF-DIM4-NEW-02) + #1244 (NIF-DIM4-NEW-03)
+//! — FO3/FNV legacy non-BS shader subclasses must reach `MaterialInfo`.
 //!
 //! Pre-fix the parser landed `WaterShaderProperty` cleanly via its
 //! dedicated arm at `blocks/mod.rs` (added in #474 to stop the over-read
@@ -18,7 +18,7 @@
 
 use super::*;
 use crate::blocks::base::{BSShaderPropertyData, NiAVObjectData, NiObjectNETData};
-use crate::blocks::shader::WaterShaderProperty;
+use crate::blocks::shader::{BSShaderPropertyBaseOnly, WaterShaderProperty};
 use crate::blocks::tri_shape::NiTriShape;
 use crate::blocks::NiObject;
 use crate::types::{BlockRef, NiTransform};
@@ -89,6 +89,84 @@ fn water_shader_property_routes_env_map_scale_to_material_info() {
          cleanly but the importer had no consumer — every mesh-driven \
          FO3/FNV water plane lost its authored env reflection contribution"
     );
+}
+
+/// `BSShaderPropertyBaseOnly` covers four legacy non-BS subclasses
+/// (#1244): `HairShaderProperty`, `VolumetricFogShaderProperty`,
+/// `DistantLODShaderProperty`, `BSDistantTreeShaderProperty`. Each
+/// inherits `BSShaderProperty` directly (no
+/// `BSShaderLightingProperty` layer = no `texture_clamp_mode`), so
+/// only `env_map_scale` flows through to MaterialInfo. The shared
+/// consumer is exercised once here through the `HairShaderProperty`
+/// type-name — Oblivion-era hair NIFs are the most visible case.
+#[test]
+fn bs_shader_property_base_only_routes_env_map_scale() {
+    let net = empty_net();
+    let shader_data = BSShaderPropertyData {
+        shade_flags: 0,
+        shader_type: 0,
+        shader_flags_1: 0,
+        shader_flags_2: 0,
+        env_map_scale: 0.42,
+    };
+    let block = BSShaderPropertyBaseOnly::new_for_test(net, shader_data, "HairShaderProperty");
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(block)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = shape_with_property_ref(0);
+
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    assert_eq!(
+        info.env_map_scale, 0.42,
+        "pre-#1244: BSShaderPropertyBaseOnly (Hair/VolumetricFog/DistantLOD/DistantTree) \
+         parsed cleanly through the shared #717 arm but had no consumer — \
+         every Oblivion hair surface's reflective modulator was lost"
+    );
+}
+
+/// All four `BSShaderPropertyBaseOnly` `type_name` variants resolve
+/// through the same downcast site, so the consumer behaves
+/// identically regardless of which subclass the parser saw. Sanity-
+/// check the type-name discriminator doesn't accidentally gate the
+/// consumer (a future maintainer who wants to differentiate behavior
+/// per variant would have to read `block.block_type_name()` explicitly,
+/// which we don't today).
+#[test]
+fn bs_shader_property_base_only_consumer_is_type_name_agnostic() {
+    let net = empty_net();
+    let shader_data = BSShaderPropertyData {
+        shade_flags: 0,
+        shader_type: 0,
+        shader_flags_1: 0,
+        shader_flags_2: 0,
+        env_map_scale: 0.7,
+    };
+    for type_name in &[
+        "HairShaderProperty",
+        "VolumetricFogShaderProperty",
+        "DistantLODShaderProperty",
+        "BSDistantTreeShaderProperty",
+    ] {
+        let block =
+            BSShaderPropertyBaseOnly::new_for_test(net.clone(), shader_data.clone(), type_name);
+        let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(block)];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let shape = shape_with_property_ref(0);
+        let mut pool = StringPool::new();
+        let info = extract_material_info(&scene, &shape, &[], &mut pool);
+        assert_eq!(
+            info.env_map_scale, 0.7,
+            "type_name={type_name}: BSShaderPropertyBaseOnly consumer must fire for every \
+             subclass that routes through the shared #717 parser"
+        );
+    }
 }
 
 /// A FO3/FNV mesh with no shader-property bound must keep the

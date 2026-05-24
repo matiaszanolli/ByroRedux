@@ -857,6 +857,22 @@ pub(crate) fn extract_material_info_from_refs(
             info.env_map_scale = shader.shader.env_map_scale;
         }
 
+        // #1244 / NIF-DIM4-NEW-03 — `HairShaderProperty`,
+        // `VolumetricFogShaderProperty`, `DistantLODShaderProperty`,
+        // and `BSDistantTreeShaderProperty` all share the
+        // `BSShaderPropertyBaseOnly` parser shape (#717): only
+        // `NiObjectNETData` + `BSShaderPropertyData` base, no
+        // `file_name`, no `texture_clamp_mode` (the base struct holds
+        // shader_type / flags / env_map_scale; clamp lives on the
+        // BSShaderLightingProperty layer, which these subclasses do
+        // NOT inherit per nif.xml lines 6346/6350/6359/6363). Only
+        // `env_map_scale` is plumbable here. Oblivion-era hair NIFs
+        // are the most visible case — reflective hair never received
+        // its authored env modulator pre-fix.
+        if let Some(shader) = scene.get_as::<BSShaderPropertyBaseOnly>(idx) {
+            info.env_map_scale = shader.shader.env_map_scale;
+        }
+
         // NiStencilProperty — proper parser replaces NiUnknown heuristic.
         // Two-sided promotion is the 95% case (`draw_mode` 0 / 3); the
         // remaining stencil test/write fields ride on

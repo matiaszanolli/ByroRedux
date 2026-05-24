@@ -6,9 +6,9 @@ use crate::blocks::properties::{
 };
 use crate::blocks::shader::{
     BSEffectShaderProperty, BSLightingShaderProperty, BSShaderNoLightingProperty,
-    BSShaderPPLightingProperty, BSShaderTextureSet, BSSkyShaderProperty, BSWaterShaderProperty,
-    LuminanceParams, ShaderTypeData, SkyShaderProperty, TallGrassShaderProperty,
-    TileShaderProperty, WaterShaderProperty,
+    BSShaderPPLightingProperty, BSShaderPropertyBaseOnly, BSShaderTextureSet, BSSkyShaderProperty,
+    BSWaterShaderProperty, LuminanceParams, ShaderTypeData, SkyShaderProperty,
+    TallGrassShaderProperty, TileShaderProperty, WaterShaderProperty,
 };
 use crate::blocks::texture::NiSourceTexture;
 use crate::blocks::tri_shape::NiTriShape;
@@ -1112,10 +1112,12 @@ mod lighting_shader_mat_tests;
 #[cfg(test)]
 mod vertex_color_precedence_tests;
 
-/// Regression tests for #1243 (NIF-DIM4-NEW-02) — FO3/FNV legacy
-/// `WaterShaderProperty` (non-BS variant) must reach `MaterialInfo`.
-/// Sibling to the Skyrim+ `BSWaterShaderProperty` consumer covered by
-/// `sky_water_shader_tests` (#977 closure).
+/// Regression tests for #1243 (NIF-DIM4-NEW-02) + #1244 (NIF-DIM4-NEW-03)
+/// — FO3/FNV legacy non-BS shader subclasses must reach `MaterialInfo`.
+/// Covers `WaterShaderProperty` (#1243) and the four
+/// `BSShaderPropertyBaseOnly` subclasses (#1244: Hair / VolumetricFog /
+/// DistantLOD / DistantTree). Sibling to the Skyrim+ `BSWaterShaderProperty`
+/// consumer covered by `sky_water_shader_tests` (#977 closure).
 #[cfg(test)]
 mod water_shader_legacy_tests;
 
