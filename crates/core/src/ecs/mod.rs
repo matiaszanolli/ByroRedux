@@ -8,6 +8,7 @@
 pub mod access;
 pub mod components;
 pub mod debug_load;
+pub mod game_profiles;
 mod lock_tracker;
 pub mod metrics;
 pub mod packed;
@@ -32,6 +33,7 @@ pub use components::{
     TextureHandle, Transform, WorldBound, MAX_BONES_PER_MESH,
 };
 pub use debug_load::{PendingDebugLoad, PendingDebugLoadSlot};
+pub use game_profiles::{GameProfileEntry, GameProfileRegistry};
 pub use metrics::MetricsSnapshot;
 pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};

@@ -7,6 +7,7 @@ mod cli_args;
 mod commands;
 mod components;
 mod debug_load;
+mod game_profiles;
 mod helpers;
 mod npc_spawn;
 mod parsed_nif_cache;
@@ -405,6 +406,11 @@ impl App {
         world.insert_resource(
             byroredux_core::ecs::PendingDebugLoadSlot::default(),
         );
+        // Phase 5 — game profile registry. Loads
+        // `assets/debug_profiles.toml` (engine-shipped defaults)
+        // plus `~/.byroredux/profiles.toml` (per-user override).
+        // Both files missing = empty registry, never an error.
+        world.insert_resource(crate::game_profiles::load_default());
         world.insert_resource(SelectedRef::default());
         world.insert_resource(InputState::default());
         world.insert_resource(StringPool::new());

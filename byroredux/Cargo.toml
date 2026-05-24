@@ -41,6 +41,8 @@ tracing-tracy = { workspace = true, optional = true }
 anyhow = { workspace = true }
 winit = { workspace = true }
 sysinfo = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
 # Used by the golden-frame regression tests in `tests/golden_frames.rs`
@@ -48,3 +50,8 @@ sysinfo = { workspace = true }
 # `--screenshot` CLI flag. See README in `tests/golden/` for the
 # regenerate-baseline workflow.
 image = { workspace = true }
+# Phase 5 of the debug-UI plan — the game-profile loader's
+# merge-shipped-with-user test writes two on-disk TOML files and
+# round-trips them through the loader. Keep dev-scoped so release
+# builds don't pull it in.
+tempfile = "3"

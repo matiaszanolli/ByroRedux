@@ -6,12 +6,13 @@
 use byroredux_core::console::CommandRegistry;
 use byroredux_core::ecs::components::{Material, Name, TextureHandle};
 use byroredux_core::ecs::debug_load::{PendingDebugLoad, PendingDebugLoadSlot};
+use byroredux_core::ecs::game_profiles::GameProfileRegistry;
 use byroredux_core::ecs::metrics::MetricsSnapshot;
 use byroredux_core::ecs::resources::DebugStats;
 use byroredux_core::ecs::world::World;
 use byroredux_core::string::StringPool;
 use byroredux_debug_protocol::registry::ComponentRegistry;
-use byroredux_debug_protocol::{DebugRequest, DebugResponse, EntityInfo};
+use byroredux_debug_protocol::{DebugRequest, DebugResponse, EntityInfo, GameProfile};
 use std::collections::HashMap;
 
 use byroredux_papyrus::ast::{CallArg, Expr, Identifier};
@@ -127,18 +128,39 @@ pub fn evaluate(
             },
         ),
 
-        // Phase 5 owns ListGameProfiles + the GameProfileRegistry
-        // resource. Phase 2 doesn't promote the renderer's asset
-        // registries to a server-readable shape — leaving stubs that
-        // hint at the responsible phase keeps the dispatch
-        // exhaustive without silently shipping empty lists.
-        DebugRequest::ListGameProfiles => {
-            DebugResponse::error("ListGameProfiles handler is Phase 5")
-        }
+        DebugRequest::ListGameProfiles => eval_list_game_profiles(world),
+
+        // ListLoadedAssets needs server-visible accessors on
+        // MeshRegistry / TextureRegistry / NifImportRegistry —
+        // those live in the renderer + binary crates today.
+        // Out of scope for this phase; stub stays explicit so the
+        // dispatch is exhaustive.
         DebugRequest::ListLoadedAssets { .. } => {
             DebugResponse::error("ListLoadedAssets handler not yet implemented")
         }
     }
+}
+
+/// Convert the in-engine `GameProfileRegistry` to the wire-format
+/// `GameProfiles` response. Each entry maps 1:1; missing registry
+/// resource (binary didn't insert one) collapses to an empty list.
+fn eval_list_game_profiles(world: &World) -> DebugResponse {
+    let Some(reg) = world.try_resource::<GameProfileRegistry>() else {
+        return DebugResponse::GameProfiles { profiles: vec![] };
+    };
+    let profiles: Vec<GameProfile> = reg
+        .iter()
+        .map(|(key, e)| GameProfile {
+            key: key.to_string(),
+            name: e.name.clone(),
+            root: e.root.clone(),
+            esm: e.esm.clone(),
+            default_bsas: e.default_bsas.clone(),
+            default_textures_bsas: e.default_textures_bsas.clone(),
+            sample_cells: e.sample_cells.clone(),
+        })
+        .collect();
+    DebugResponse::GameProfiles { profiles }
 }
 
 /// Read the engine's `MetricsSnapshot` and convert to the

@@ -1,0 +1,107 @@
+# Debug-UI game profile registry (Phase 5 of the debug-UI plan).
+#
+# Each [profiles.<key>] block describes one game install the debug UI
+# can target. The default file ships zero-rooted entries — every
+# operator's install path is different, so the canonical
+# "ready-to-use" location for filled-in paths is
+# `~/.byroredux/profiles.toml`, which overrides this file when
+# present.
+#
+# Schema:
+#   name                 Display name shown in the Loader dropdown.
+#   root                 Absolute path to the game's data directory
+#                        (the directory holding the ESMs). Use `~` for
+#                        home — the loader resolves it.
+#   esm                  Main ESM filename inside `root`.
+#   default_bsas         Mesh BSA / BA2 archive filenames (relative
+#                        to `root`).
+#   default_textures_bsas
+#                        Texture archive filenames.
+#   sample_cells         Curated cell editor IDs the UI offers as
+#                        one-click loads.
+
+[profiles.fnv]
+name = "Fallout New Vegas"
+root = ""
+esm = "FalloutNV.esm"
+default_bsas = ["Fallout - Meshes.bsa"]
+default_textures_bsas = ["Fallout - Textures.bsa"]
+sample_cells = [
+    "GSDocMitchellHouse",
+    "Goodsprings",
+    "NVDLC04Big01",
+]
+
+[profiles.fo3]
+name = "Fallout 3"
+root = ""
+esm = "Fallout3.esm"
+default_bsas = ["Fallout - Meshes.bsa"]
+default_textures_bsas = ["Fallout - Textures.bsa"]
+sample_cells = [
+    "Megaton01",
+    "Vault101a",
+]
+
+[profiles.oblivion]
+name = "Oblivion"
+root = ""
+esm = "Oblivion.esm"
+default_bsas = ["Oblivion - Meshes.bsa"]
+default_textures_bsas = [
+    "Oblivion - Textures - Compressed.bsa",
+]
+sample_cells = [
+    "ICMarketDistrictTheGildedCarafe",
+    "AnvilHeinrichOakenHallsBasement",
+]
+
+[profiles.skyrim_se]
+name = "Skyrim Special Edition"
+root = ""
+esm = "Skyrim.esm"
+default_bsas = ["Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa"]
+default_textures_bsas = [
+    "Skyrim - Textures0.bsa",
+    "Skyrim - Textures1.bsa",
+    "Skyrim - Textures2.bsa",
+    "Skyrim - Textures3.bsa",
+    "Skyrim - Textures4.bsa",
+    "Skyrim - Textures5.bsa",
+    "Skyrim - Textures6.bsa",
+    "Skyrim - Textures7.bsa",
+    "Skyrim - Textures8.bsa",
+]
+sample_cells = [
+    "WhiterunDragonsreach",
+    "RiverwoodSleepingGiantInn",
+]
+
+[profiles.fo4]
+name = "Fallout 4"
+root = ""
+esm = "Fallout4.esm"
+default_bsas = ["Fallout4 - Meshes.ba2"]
+default_textures_bsas = [
+    "Fallout4 - Textures1.ba2",
+    "Fallout4 - Textures2.ba2",
+    "Fallout4 - Textures3.ba2",
+    "Fallout4 - Textures4.ba2",
+    "Fallout4 - Textures5.ba2",
+    "Fallout4 - Textures6.ba2",
+    "Fallout4 - Textures7.ba2",
+    "Fallout4 - Textures8.ba2",
+    "Fallout4 - Textures9.ba2",
+]
+sample_cells = [
+    "Sanctuary",
+    "DiamondCityMarket",
+]
+
+[profiles.starfield]
+name = "Starfield"
+root = ""
+esm = "Starfield.esm"
+default_bsas = []
+default_textures_bsas = []
+sample_cells = []
