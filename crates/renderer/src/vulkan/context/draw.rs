@@ -1435,69 +1435,86 @@ impl VulkanContext {
 
             let instance_idx = gpu_instances.len() as u32;
             let m = &draw_cmd.model_matrix;
+            let skip_batch = !draw_cmd.in_raster || draw_cmd.is_water;
 
-            // Detect non-uniform scale from the model matrix column lengths.
-            // If the 3 column vectors of the upper-3x3 have different lengths,
-            // the vertex shader must use inverse-transpose for normals.
-            // Otherwise it can skip the expensive inverse (~40 ALU ops).
-            // Three dot products is trivial compared to the per-vertex savings.
-            let col0_sq = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
-            let col1_sq = m[4] * m[4] + m[5] * m[5] + m[6] * m[6];
-            let col2_sq = m[8] * m[8] + m[9] * m[9] + m[10] * m[10];
-            let has_non_uniform_scale = {
-                let tol = 0.001;
-                (col0_sq - col1_sq).abs() > tol || (col0_sq - col2_sq).abs() > tol
-            };
-            // Per-instance flags — see INSTANCE_FLAG_* constants in
-            // scene_buffer.rs. CPU-side assembly must stay in lockstep
-            // with the fragment shader's `flags & N` checks.
-            //   bit 0 = non-uniform scale
-            //   bit 1 = NiAlphaProperty blend bit
-            //   bit 2 = caustic source — real refractive surface
-            //           (#922 / REN-D13-NEW-01). Pre-fix this fired for
-            //           every alpha-blend + low-metalness draw, which
-            //           over-included hair, foliage, particle quads,
-            //           decals and FX cards — none refractive. The
-            //           caustic compute (`caustic_splat.comp`) burns
-            //           `max_lights` TLAS ray queries per flagged pixel,
-            //           so a foliage-heavy exterior wasted significant
-            //           ray budget. Gate now matches the upstream glass
-            //           classification in `render::build_render_data`
-            //           (#515 / #706): engine-classified
-            //           `MATERIAL_KIND_GLASS` (alpha-blend + low metal +
-            //           low roughness + not a decal) OR Skyrim+
-            //           `MultiLayerParallax` (kind 11) with a non-zero
-            //           inner-layer refraction scale.
-            //   bit 3 = terrain splat (set in cell_loader for LAND entities, #470).
-            let mut flags = if has_non_uniform_scale {
-                INSTANCE_FLAG_NON_UNIFORM_SCALE
-            } else {
+            // #1260 / PERF-D3-NEW-05 — flag-bit assembly is rasterizer-
+            // only state. The non-uniform-scale dot products feed the
+            // vertex shader's inverse-transpose path (triangle.vert
+            // line 175); ALPHA_BLEND / FLAT_SHADING / TERRAIN_SPLAT /
+            // RENDER_LAYER are all read only by the rasterized fragment
+            // shader (`inst.flags & ...` at triangle.frag:1011 / 1074 /
+            // 1119 / 1231 / 1728); CAUSTIC_SOURCE is gated by the
+            // meshId G-buffer (caustic_splat.comp:170-172), which only
+            // contains pixels for in-frustum rasterized geometry. The
+            // RT hit paths read `hitInst.vertexOffset / indexOffset /
+            // materialId / avgAlbedo* / textureIndex` (triangle.frag:
+            // 438 / 543 / 2981 / 2147) but NEVER `hitInst.flags`.
+            // Therefore off-frustum + water entries can ship `flags=0`
+            // and skip the entire assembly block — the SSBO slot still
+            // serves the RT contract (#516) via model+mesh refs +
+            // material_id + avg_albedo, which are written
+            // unconditionally below.
+            let flags = if skip_batch {
                 0u32
+            } else {
+                // Detect non-uniform scale from the model matrix column
+                // lengths. If the 3 column vectors of the upper-3x3
+                // have different lengths, the vertex shader must use
+                // inverse-transpose for normals. Otherwise it can skip
+                // the expensive inverse (~40 ALU ops). Three dot
+                // products is trivial compared to the per-vertex savings.
+                let col0_sq = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
+                let col1_sq = m[4] * m[4] + m[5] * m[5] + m[6] * m[6];
+                let col2_sq = m[8] * m[8] + m[9] * m[9] + m[10] * m[10];
+                let has_non_uniform_scale = {
+                    let tol = 0.001;
+                    (col0_sq - col1_sq).abs() > tol || (col0_sq - col2_sq).abs() > tol
+                };
+                // Per-instance flags — see INSTANCE_FLAG_* constants in
+                // scene_buffer.rs. CPU-side assembly must stay in
+                // lockstep with the fragment shader's `flags & N` checks.
+                //   bit 0 = non-uniform scale
+                //   bit 1 = NiAlphaProperty blend bit
+                //   bit 2 = caustic source — real refractive surface
+                //           (#922 / REN-D13-NEW-01). Gate matches the
+                //           upstream glass classification in
+                //           `render::build_render_data` (#515 / #706):
+                //           engine-classified `MATERIAL_KIND_GLASS`
+                //           (alpha-blend + low metal + low roughness +
+                //           not a decal) OR Skyrim+ `MultiLayerParallax`
+                //           (kind 11) with a non-zero inner-layer
+                //           refraction scale.
+                //   bit 3 = terrain splat (set in cell_loader for LAND
+                //           entities, #470).
+                let mut f = if has_non_uniform_scale {
+                    INSTANCE_FLAG_NON_UNIFORM_SCALE
+                } else {
+                    0u32
+                };
+                if draw_cmd.alpha_blend {
+                    f |= INSTANCE_FLAG_ALPHA_BLEND;
+                }
+                if is_caustic_source(draw_cmd) {
+                    f |= INSTANCE_FLAG_CAUSTIC_SOURCE;
+                }
+                if let Some(tile_idx) = draw_cmd.terrain_tile_index {
+                    f |= INSTANCE_FLAG_TERRAIN_SPLAT;
+                    f |= (tile_idx & INSTANCE_TERRAIN_TILE_MASK) << INSTANCE_TERRAIN_TILE_SHIFT;
+                }
+                // #869 — NiShadeProperty.flags==0 flat-shading:
+                // fragment shader replaces interpolated normal with
+                // the per-face derivative when this bit is set.
+                if draw_cmd.flat_shading {
+                    f |= INSTANCE_FLAG_FLAT_SHADING;
+                }
+                // #renderlayer — pack the 2-bit layer discriminant
+                // into bits 4..5 for the fragment shader's debug-viz
+                // branch (BYROREDUX_RENDER_DEBUG=0x40 tints fragments
+                // by layer).
+                f |= (draw_cmd.render_layer as u32 & INSTANCE_RENDER_LAYER_MASK)
+                    << INSTANCE_RENDER_LAYER_SHIFT;
+                f
             };
-            if draw_cmd.alpha_blend {
-                flags |= INSTANCE_FLAG_ALPHA_BLEND;
-            }
-            if is_caustic_source(draw_cmd) {
-                flags |= INSTANCE_FLAG_CAUSTIC_SOURCE;
-            }
-            if let Some(tile_idx) = draw_cmd.terrain_tile_index {
-                flags |= INSTANCE_FLAG_TERRAIN_SPLAT;
-                flags |= (tile_idx & INSTANCE_TERRAIN_TILE_MASK) << INSTANCE_TERRAIN_TILE_SHIFT;
-            }
-            // #869 — NiShadeProperty.flags==0 flat-shading: fragment
-            // shader replaces interpolated normal with the per-face
-            // derivative when this bit is set. Per-instance gate so
-            // unflagged content pays zero extra cost.
-            if draw_cmd.flat_shading {
-                flags |= INSTANCE_FLAG_FLAT_SHADING;
-            }
-            // #renderlayer — pack the 2-bit layer discriminant into
-            // bits 4..5 for the fragment shader's debug-viz branch
-            // (BYROREDUX_RENDER_DEBUG=0x40 tints fragments by layer).
-            // No other code reads this slot today; the field exists
-            // purely for empirical validation of classification.
-            flags |= (draw_cmd.render_layer as u32 & INSTANCE_RENDER_LAYER_MASK)
-                << INSTANCE_RENDER_LAYER_SHIFT;
 
             // R1 Phase 6 — `GpuInstance` carries only per-DRAW data
             // now: model + mesh refs + bone_offset + flags +
@@ -1539,7 +1556,7 @@ impl VulkanContext {
             // but they render through the dedicated water pipeline in
             // a separate pass below — not through the triangle / blend
             // pipeline batches.
-            if !draw_cmd.in_raster || draw_cmd.is_water {
+            if skip_batch {
                 continue;
             }
 
@@ -1724,6 +1741,21 @@ impl VulkanContext {
         // can't reborrow `&mut self` to lazy-create. After this loop
         // every `PipelineKey::Blended` has a corresponding cache entry.
         // See #392 / #930 (two-sided dropped from key).
+        // #1259 / PERF-D3-NEW-04 — pre-fix this loop did
+        // `blend_pipeline_cache.contains_key` per batch (M = blended
+        // batch count, typically 300-500 on a Skyrim exterior). After
+        // the first few cell-load frames every (src, dst, wireframe)
+        // combo is cached and the per-batch lookup always hits —
+        // O(M) wasted work per frame in steady state.
+        //
+        // Two-stage swap: collect distinct keys into the persistent
+        // `blend_seen_scratch` HashSet (O(M) inserts, but on a
+        // typically-tiny set — the same 3-5 distinct combos repeat
+        // across hundreds of batches), then walk the small set once.
+        // The subset check after the walk also lets us skip the
+        // creation pass entirely when every seen key is cached —
+        // the common steady-state path.
+        self.blend_seen_scratch.clear();
         for batch in &batches {
             if let PipelineKey::Blended { src, dst, wireframe } = batch.pipeline_key {
                 // Normalize cache key against the device-cap gate so a
@@ -1731,13 +1763,33 @@ impl VulkanContext {
                 // for a regular opaque blend. Matches the gate in
                 // `get_or_create_blend_pipeline`. #869.
                 let wireframe = wireframe && self.device_caps.fill_mode_non_solid_supported;
-                if !self.blend_pipeline_cache.contains_key(&(src, dst, wireframe)) {
-                    if let Err(e) = self.get_or_create_blend_pipeline(src, dst, wireframe) {
-                        log::error!(
-                            "Failed to create blend pipeline (src={src}, dst={dst}): {e}; \
-                             draws using this combo will fall back to opaque pipeline"
-                        );
-                    }
+                self.blend_seen_scratch.insert((src, dst, wireframe));
+            }
+        }
+        // Skip the creation pass when every seen key is already cached
+        // (the steady-state fast path — after warmup, no new pipeline
+        // creation needed).
+        let all_cached = self
+            .blend_seen_scratch
+            .iter()
+            .all(|key| self.blend_pipeline_cache.contains_key(key));
+        if !all_cached {
+            // Collect missing keys into a local Vec so we can release
+            // the borrow on `blend_seen_scratch` before calling
+            // `get_or_create_blend_pipeline` (which takes `&mut self`
+            // and would re-borrow scratch via the cache field).
+            let missing: Vec<(u8, u8, bool)> = self
+                .blend_seen_scratch
+                .iter()
+                .filter(|key| !self.blend_pipeline_cache.contains_key(key))
+                .copied()
+                .collect();
+            for (src, dst, wireframe) in missing {
+                if let Err(e) = self.get_or_create_blend_pipeline(src, dst, wireframe) {
+                    log::error!(
+                        "Failed to create blend pipeline (src={src}, dst={dst}): {e}; \
+                         draws using this combo will fall back to opaque pipeline"
+                    );
                 }
             }
         }

@@ -1194,6 +1194,13 @@ pub struct VulkanContext {
     /// pipeline. Only reachable when `caps.fill_mode_non_solid_supported`
     /// is true; callers must gate.
     blend_pipeline_cache: HashMap<(u8, u8, bool), vk::Pipeline>,
+    /// Per-frame scratch — the set of distinct blend (src, dst, wireframe)
+    /// triples seen in this frame's batch list. Used by the pre-pop walk
+    /// in `draw_frame` to skip the full per-batch `contains_key` sweep
+    /// when every seen key is already in `blend_pipeline_cache`. Cleared
+    /// at the top of the walk; capacity persists across frames for
+    /// amortized churn-free reuse. #1259 / PERF-D3-NEW-04.
+    blend_seen_scratch: std::collections::HashSet<(u8, u8, bool)>,
     pipeline_ui: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     /// Mesh handle for the fullscreen quad used by UI overlay.
@@ -2075,6 +2082,7 @@ impl VulkanContext {
             pipeline: pipelines.opaque,
             pipeline_wireframe: pipelines.opaque_wireframe,
             blend_pipeline_cache: HashMap::new(),
+            blend_seen_scratch: std::collections::HashSet::new(),
             pipeline_ui,
             pipeline_layout: pipelines.layout,
             ui_quad_handle: None,
