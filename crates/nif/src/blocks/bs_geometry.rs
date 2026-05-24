@@ -406,30 +406,41 @@ impl BSGeometryMeshData {
 
         let weights_per_vert = stream.read_u32_le()?;
 
+        // #1263 / NIF-D5-NEW-03 — bulk-read the raw u16 stream then
+        // unpack in a tight loop. The per-element `unpack_norm_i16` /
+        // `half_to_f32` transform prevents direct `read_pod_vec::<[f32; N]>`
+        // (the on-disk and runtime layouts differ in size), so the
+        // helper API used by #873 doesn't fit directly. The trade is
+        // one extra intermediate `Vec<u16>` allocation for collapsing
+        // N×K stream-read calls into a single bulk read — net win at
+        // typical Starfield mesh sizes (1000+ verts) where the per-read
+        // bounds-check + cursor-advance dominates the alloc cost.
         let n_vertices = stream.read_u32_le()?;
-        let mut vertices = stream.allocate_vec::<[f32; 3]>(n_vertices)?;
-        for _ in 0..n_vertices {
-            let x = unpack_norm_i16(stream.read_u16_le()? as i16, scale, Self::HAVOK_SCALE);
-            let y = unpack_norm_i16(stream.read_u16_le()? as i16, scale, Self::HAVOK_SCALE);
-            let z = unpack_norm_i16(stream.read_u16_le()? as i16, scale, Self::HAVOK_SCALE);
-            vertices.push([x, y, z]);
-        }
+        let vertices: Vec<[f32; 3]> = stream
+            .read_u16_array(n_vertices as usize * 3)?
+            .chunks_exact(3)
+            .map(|c| {
+                [
+                    unpack_norm_i16(c[0] as i16, scale, Self::HAVOK_SCALE),
+                    unpack_norm_i16(c[1] as i16, scale, Self::HAVOK_SCALE),
+                    unpack_norm_i16(c[2] as i16, scale, Self::HAVOK_SCALE),
+                ]
+            })
+            .collect();
 
         let n_uv1 = stream.read_u32_le()?;
-        let mut uvs0 = stream.allocate_vec::<[f32; 2]>(n_uv1)?;
-        for _ in 0..n_uv1 {
-            let u = half_to_f32(stream.read_u16_le()?);
-            let v = half_to_f32(stream.read_u16_le()?);
-            uvs0.push([u, v]);
-        }
+        let uvs0: Vec<[f32; 2]> = stream
+            .read_u16_array(n_uv1 as usize * 2)?
+            .chunks_exact(2)
+            .map(|c| [half_to_f32(c[0]), half_to_f32(c[1])])
+            .collect();
 
         let n_uv2 = stream.read_u32_le()?;
-        let mut uvs1 = stream.allocate_vec::<[f32; 2]>(n_uv2)?;
-        for _ in 0..n_uv2 {
-            let u = half_to_f32(stream.read_u16_le()?);
-            let v = half_to_f32(stream.read_u16_le()?);
-            uvs1.push([u, v]);
-        }
+        let uvs1: Vec<[f32; 2]> = stream
+            .read_u16_array(n_uv2 as usize * 2)?
+            .chunks_exact(2)
+            .map(|c| [half_to_f32(c[0]), half_to_f32(c[1])])
+            .collect();
 
         // Bulk reads — `[u8; 4]` and `u32` are POD; one `read_exact`
         // each replaces the per-element push loops. The `allocate_vec`

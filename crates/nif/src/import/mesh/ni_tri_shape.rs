@@ -62,7 +62,10 @@ pub fn extract_mesh(
     //      load time too). Without this fallback the renderer falls
     //      back to screen-space derivative TBN — which produces the
     //      chrome regression on every mesh boundary.
-    let geom = if let Some(data) = scene.get_as::<NiTriShapeData>(data_idx) {
+    // `mut` for the `mem::take(&mut geom.tangents)` below — `tangents`
+    // is the only owned-Vec field on `GeomData` (the rest are borrowed
+    // slices) and the function doesn't read it after the move. #1265.
+    let mut geom = if let Some(data) = scene.get_as::<NiTriShapeData>(data_idx) {
         let mut tangents = extract_tangents_from_extra_data(
             scene,
             &shape.av.net.extra_data_refs,
@@ -177,7 +180,15 @@ pub fn extract_mesh(
     // `NiBinaryExtraData("Tangent space (binormal & tangent vectors)")`.
     // Empty when the source mesh has no authored tangents; the
     // renderer falls back to screen-space derivative TBN in that case.
-    let tangents_yup = geom.tangents.clone();
+    //
+    // #1265 / NIF-D5-NEW-05 — `mem::take` instead of `.clone()`. `geom`
+    // is the import-local one-shot `GeomData` (NOT the scene-retained
+    // NiTriShapeData) and `tangents` is the only owned-Vec field on it.
+    // After this move the function constructs ImportedMesh and returns;
+    // `geom.tangents` is never read again. Saves a per-vertex `Vec<[f32; 3]>`
+    // memcpy on every FNV/FO3/Oblivion NiTriShape that ships authored
+    // tangents (~16-40 KB per mesh).
+    let tangents_yup = std::mem::take(&mut geom.tangents);
 
     Some(ImportedMesh {
         positions,
