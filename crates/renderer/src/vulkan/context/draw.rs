@@ -202,6 +202,12 @@ impl VulkanContext {
         // coverage_stats` snapshots it after `Scheduler::run`.
         self.last_skin_coverage_frame =
             super::super::skin_compute::SkinCoverageFrame::default();
+        // Reset per-frame draw-call counts. Populated after the batch
+        // merge (`batch_count`) and inside the indirect-grouping draw
+        // loop below (`indirect_call_count`). Read by the app's stats
+        // wiring after `draw_frame` returns to populate `DebugStats`.
+        // #1258 / PERF-D3-NEW-03.
+        self.last_draw_call_stats = super::DrawCallStats::default();
         // #1197 / PERF-DIM7-03 — reset per-frame descriptor-writes
         // counters on both skin compute pipelines. The dispatch
         // bodies bump these only when they actually call
@@ -2093,6 +2099,14 @@ impl VulkanContext {
             // the per-layer ladder makes this a single key slot.
             let batch_state = |b: &DrawBatch| (b.pipeline_key, b.render_layer);
 
+            // #1258 / PERF-D3-NEW-03 — snapshot post-merge batch count.
+            // Surfaced via `DebugStats::batch_count` and the `stats`
+            // command so the next perf audit can distinguish "12k
+            // DrawCommands" (input to the batcher) from "200 batches"
+            // (actual GPU draw upper bound) from "20 indirect calls"
+            // (post-grouping; bumped in the branches below).
+            self.last_draw_call_stats.batch_count = batches.len() as u32;
+
             let mut i = 0;
             while i < batches.len() {
                 let batch = &batches[i];
@@ -2264,6 +2278,8 @@ impl VulkanContext {
                     dispatch_direct(self, &mut last_bound_mesh_handle);
                     set_cull(vk::CullModeFlags::BACK, &mut last_cull_mode);
                     dispatch_direct(self, &mut last_bound_mesh_handle);
+                    // #1258 — two-sided split emits 2 direct draws.
+                    self.last_draw_call_stats.indirect_call_count += 2;
                     i += 1;
                 } else if use_indirect {
                     set_cull(default_cull, &mut last_cull_mode);
@@ -2293,12 +2309,18 @@ impl VulkanContext {
                         group_size,
                         indirect_stride,
                     );
+                    // #1258 — one indirect call dispatches `group_size`
+                    // batches; surfaced grouping ratio = batch_count /
+                    // indirect_call_count.
+                    self.last_draw_call_stats.indirect_call_count += 1;
                     i = end;
                 } else {
                     // Direct-draw fallback: global VB/IB bound or
                     // per-mesh fallback inside `dispatch_direct`.
                     set_cull(default_cull, &mut last_cull_mode);
                     dispatch_direct(self, &mut last_bound_mesh_handle);
+                    // #1258 — direct fallback emits 1 draw per batch.
+                    self.last_draw_call_stats.indirect_call_count += 1;
                     i += 1;
                 }
             }

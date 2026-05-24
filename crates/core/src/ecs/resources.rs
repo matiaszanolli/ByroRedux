@@ -221,8 +221,35 @@ pub struct DebugStats {
     /// ECS entities at the last `stats_system` tick. Same scene-scoped
     /// semantics as [`Self::meshes_in_use`]. See #637 / FNV-D5-02.
     pub textures_in_use: u32,
-    /// Draw calls last frame.
-    pub draw_call_count: u32,
+    /// `DrawCommand` count input to the batch merger last frame
+    /// (== `app.draw_commands.len()`). The pre-batch input — NOT the
+    /// GPU call count. Renamed from `draw_call_count` in #1258 /
+    /// PERF-D3-NEW-03 to fix a longstanding mislabel: the field was
+    /// surfaced as "Draws" by the `stats` command and the bench
+    /// summary, but stored the input-to-batcher count, which led
+    /// every perf audit's "~N µs/draw" arithmetic to use the wrong
+    /// denominator. Paired with `batch_count` + `indirect_call_count`
+    /// below for full pipeline visibility.
+    pub draw_command_count: u32,
+    /// Post-merge `DrawBatch` count from the main raster pass last
+    /// frame (== `VulkanContext::last_draw_call_stats.batch_count`).
+    /// Upper bound on the actual GPU draw call count;
+    /// `cmd_draw_indexed_indirect` further compresses runs of
+    /// compatible batches into a single call (see
+    /// `indirect_call_count`). Dedup ratio = `draw_command_count /
+    /// batch_count` is what tells you whether the batcher is
+    /// collapsing repeated meshes. #1258 / PERF-D3-NEW-03.
+    pub batch_count: u32,
+    /// Actual number of `cmd_draw_indexed` + `cmd_draw_indexed_indirect`
+    /// invocations recorded into last frame's main raster pass
+    /// (== `VulkanContext::last_draw_call_stats.indirect_call_count`).
+    /// Includes the two-sided alpha-blend split (which emits 2 direct
+    /// draws per batch) and excludes the water / sky / UI / composite
+    /// passes (O(1) per frame each). Indirect grouping ratio =
+    /// `batch_count / indirect_call_count`. This is the "Draws" number
+    /// the user actually wants when asking "how expensive is the
+    /// frame?" — the real GPU call count. #1258 / PERF-D3-NEW-03.
+    pub indirect_call_count: u32,
 }
 
 impl Resource for DebugStats {}
@@ -240,7 +267,9 @@ impl Default for DebugStats {
             texture_count: 0,
             meshes_in_use: 0,
             textures_in_use: 0,
-            draw_call_count: 0,
+            draw_command_count: 0,
+            batch_count: 0,
+            indirect_call_count: 0,
         }
     }
 }

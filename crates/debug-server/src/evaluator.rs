@@ -305,7 +305,10 @@ fn eval_stats(world: &World) -> DebugResponse {
             // #637 / FNV-D5-02 — scene-scoped counterparts.
             meshes_in_use: stats.meshes_in_use,
             textures_in_use: stats.textures_in_use,
-            draw_call_count: stats.draw_call_count,
+            // #1258 / PERF-D3-NEW-03 — three-stage draw pipeline view.
+            draw_command_count: stats.draw_command_count,
+            batch_count: stats.batch_count,
+            indirect_call_count: stats.indirect_call_count,
         },
         None => DebugResponse::error("DebugStats resource not available"),
     }

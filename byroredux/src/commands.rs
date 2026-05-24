@@ -69,7 +69,16 @@ impl ConsoleCommand for StatsCommand {
                 "Textures:  {} registry / {} in use",
                 stats.texture_count, stats.textures_in_use
             ),
-            format!("Draws:     {}", stats.draw_call_count),
+            // #1258 / PERF-D3-NEW-03 — three-line view of the draw
+            // pipeline: input to the batcher, post-merge batch count,
+            // and actual GPU draw call count. Pre-fix only the first
+            // number was surfaced under the misleading label "Draws",
+            // which made every perf audit's "µs/draw" arithmetic use
+            // the wrong denominator.
+            format!(
+                "Draws:     {} cmds → {} batches → {} GPU calls",
+                stats.draw_command_count, stats.batch_count, stats.indirect_call_count
+            ),
         ])
     }
 }

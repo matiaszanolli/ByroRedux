@@ -729,6 +729,33 @@ impl Default for SkyParams {
     }
 }
 
+/// Per-frame draw-call counts written unconditionally by `draw_frame`
+/// (i.e. NOT gated on `Some(timings)` the way [`FrameTimings`] is).
+/// Read by the app via `VulkanContext::last_draw_call_stats` after
+/// `draw_frame` returns. See #1258 / PERF-D3-NEW-03: the pre-batch
+/// `DrawCommand` count (what the audit measured at 12,277/frame) is
+/// computed app-side; this struct surfaces the post-batch GPU call
+/// counts that actually drive cost.
+#[derive(Default, Clone, Copy)]
+pub struct DrawCallStats {
+    /// Number of [`DrawBatch`] records after the merge loop at
+    /// `draw.rs::DrawBatch` construction — one entry per
+    /// `(mesh_handle, pipeline_key, two_sided, render_layer,
+    /// depth-state)` group of `DrawCommand`s. Upper bound on the actual
+    /// GPU call count; `cmd_draw_indexed_indirect` further compresses
+    /// runs of same-pipeline same-layer batches into a single call (see
+    /// `indirect_call_count` below).
+    pub batch_count: u32,
+    /// Number of `cmd_draw_indexed` + `cmd_draw_indexed_indirect`
+    /// invocations actually recorded into the frame's command buffer
+    /// for the main raster pass. Indirect grouping at
+    /// `draw.rs::draw_record_loop` collapses runs of compatible
+    /// batches into a single indirect call, so this is `<= batch_count`.
+    /// Excludes the water, sky, UI, and composite passes — those run
+    /// outside the batch loop and contribute O(1) draws each.
+    pub indirect_call_count: u32,
+}
+
 /// Per-frame CPU timing breakdown returned by `draw_frame` when profiling.
 /// All fields are nanoseconds; divide by 1_000_000.0 for milliseconds.
 /// Only populated when `draw_frame` is called with `Some(timings)`.
@@ -1050,6 +1077,16 @@ pub struct VulkanContext {
     /// SkinCoverageStats`] resource by [`Self::fill_skin_coverage_stats`].
     /// Reset at the entry of every skinned section in `draw_frame`.
     pub last_skin_coverage_frame: super::skin_compute::SkinCoverageFrame,
+    /// Per-frame draw-call counts written by `draw_frame` and read by
+    /// the app's per-frame stats wiring to populate `DebugStats`. Distinct
+    /// from the input `DrawCommand` count (which lives on the caller side
+    /// as `draw_commands.len()`) — these are the post-batch GPU call
+    /// counts that actually drive cost. See #1258 / PERF-D3-NEW-03 for
+    /// the misdiagnosis history; pre-fix only the pre-batch input count
+    /// was surfaced as "Draws" via `DebugStats::draw_call_count`.
+    /// Reset at the top of `draw_frame`; populated after the batch
+    /// merge + indirect-grouping passes.
+    pub last_draw_call_stats: DrawCallStats,
     pub ssao: Option<SsaoPipeline>,
     pub composite: Option<CompositePipeline>,
     pub gbuffer: Option<GBuffer>,
@@ -2061,6 +2098,7 @@ impl VulkanContext {
             failed_skin_slots: std::collections::HashSet::new(),
             pending_skin_unload_victims: Vec::new(),
             last_skin_coverage_frame: super::skin_compute::SkinCoverageFrame::default(),
+            last_draw_call_stats: DrawCallStats::default(),
             ssao,
             composite,
             gbuffer,

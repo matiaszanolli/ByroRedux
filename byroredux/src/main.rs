@@ -1584,9 +1584,17 @@ impl ApplicationHandler for App {
                         }
                     }
 
-                    // Record draw call count for diagnostics.
+                    // #1258 / PERF-D3-NEW-03 — record the pre-batch
+                    // input count NOW (before draw_frame). The
+                    // post-batch counts (`batch_count`,
+                    // `indirect_call_count`) are written inside the
+                    // `Ok` arm after `draw_frame` returns, sourced
+                    // from `ctx.last_draw_call_stats`. Split write
+                    // because the input is known here and the output
+                    // counters only become available after the batch
+                    // merger runs.
                     world_resource_set::<DebugStats>(&self.world, |s| {
-                        s.draw_call_count = self.draw_commands.len() as u32;
+                        s.draw_command_count = self.draw_commands.len() as u32;
                     });
 
                     // Tick and render the UI overlay (Ruffle SWF player).
@@ -1719,6 +1727,18 @@ impl ApplicationHandler for App {
                         self.skin_slot_pool.pose_dirty(),
                     ) {
                         Ok(needs_recreate) => {
+                            // #1258 / PERF-D3-NEW-03 — capture
+                            // post-merge GPU draw counts populated by
+                            // `draw_frame`. Paired with
+                            // `draw_command_count` written before the
+                            // call; together they let the `stats`
+                            // command report the full dedup chain
+                            // (input → batch → indirect).
+                            let last_draw_stats = ctx.last_draw_call_stats;
+                            world_resource_set::<DebugStats>(&self.world, |s| {
+                                s.batch_count = last_draw_stats.batch_count;
+                                s.indirect_call_count = last_draw_stats.indirect_call_count;
+                            });
                             if is_benching {
                                 self.bench_render_ns += render_t0.elapsed().as_nanos() as u64;
                                 if let Some(ft) = frame_timings {
@@ -1944,10 +1964,13 @@ impl ApplicationHandler for App {
             let stats = self.world.resource::<DebugStats>();
             if stats.frame_index().is_multiple_of(16) {
                 if let Some(ref win) = self.window {
+                    // #1258 — `{}/{}b/{}c draws` = input DrawCommands /
+                    // post-merge batches / actual GPU calls.
                     win.set_title(&format!(
-                        "ByroRedux | {:.0} FPS | {:.1}ms | {} entities | {} meshes | {} textures | {} draws",
+                        "ByroRedux | {:.0} FPS | {:.1}ms | {} entities | {} meshes | {} textures | {}/{}b/{}c draws",
                         stats.avg_fps(), stats.frame_time_ms,
-                        stats.entity_count, stats.mesh_count, stats.texture_count, stats.draw_call_count,
+                        stats.entity_count, stats.mesh_count, stats.texture_count,
+                        stats.draw_command_count, stats.batch_count, stats.indirect_call_count,
                     ));
                 }
             }
@@ -2017,7 +2040,7 @@ impl ApplicationHandler for App {
                          [fence={:.2} tlas={:.2} ssbo={:.2} cmd={:.2} submit={:.2}] \
                          [gpu_skin_disp={:.3} gpu_blas_refit={:.3} gpu_taa={:.3}] \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
-                         entities={} meshes={} textures={} draws={}",
+                         entities={} meshes={} textures={} draws={}/{}b/{}c",
                         self.bench_frames_count,
                         wall_fps,
                         wall_ms,
@@ -2038,7 +2061,15 @@ impl ApplicationHandler for App {
                         stats.entity_count,
                         stats.mesh_count,
                         stats.texture_count,
-                        stats.draw_call_count,
+                        // #1258 — `draws=N/Mb/Kc` = N input DrawCommands
+                        // / M post-merge batches / K actual GPU calls.
+                        // Pre-fix this was a single `draws=N` that
+                        // looked like a GPU call count but was actually
+                        // the input. Format change preserves the
+                        // existing first number for audit comparability.
+                        stats.draw_command_count,
+                        stats.batch_count,
+                        stats.indirect_call_count,
                     );
                     drop(stats);
 

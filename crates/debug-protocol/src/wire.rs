@@ -78,7 +78,9 @@ mod tests {
             texture_count: 30,
             meshes_in_use: 42,
             textures_in_use: 27,
-            draw_call_count: 200,
+            draw_command_count: 200,
+            batch_count: 80,
+            indirect_call_count: 20,
         };
         let encoded = encode(&resp).unwrap();
         let decoded: DebugResponse = decode(&mut Cursor::new(&encoded)).unwrap();

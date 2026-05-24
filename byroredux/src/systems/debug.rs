@@ -31,11 +31,15 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
 
     if prev < 0.0 || total.floor() != prev.floor() {
         let stats = world.resource::<DebugStats>();
+        // #1258 — `draws=N/Mb/Kc` = N input DrawCommands / M post-merge
+        // batches / K actual GPU calls. Pre-fix this was a single `draws=N`
+        // that read like a GPU call count but stored the batcher input.
         log::info!(
             target: "engine::stats",
-            "fps={:.0} avg={:.0} dt={:.2}ms entities={} meshes={} textures={} draws={}",
+            "fps={:.0} avg={:.0} dt={:.2}ms entities={} meshes={} textures={} draws={}/{}b/{}c",
             stats.fps, stats.avg_fps(), stats.frame_time_ms,
-            stats.entity_count, stats.mesh_count, stats.texture_count, stats.draw_call_count,
+            stats.entity_count, stats.mesh_count, stats.texture_count,
+            stats.draw_command_count, stats.batch_count, stats.indirect_call_count,
         );
     }
 }

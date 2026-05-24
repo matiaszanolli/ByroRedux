@@ -97,7 +97,19 @@ pub enum DebugResponse {
         /// entities. Scene-scoped — pairs with [`texture_count`].
         /// See #637 / FNV-D5-02.
         textures_in_use: u32,
-        draw_call_count: u32,
+        /// Pre-batch `DrawCommand` count input to the batcher. Renamed
+        /// from `draw_call_count` in #1258 / PERF-D3-NEW-03 — the old
+        /// name was misleading because the field stored input-to-batcher
+        /// not actual GPU draw calls. See `batch_count` +
+        /// `indirect_call_count` below for the full pipeline view.
+        draw_command_count: u32,
+        /// Post-merge `DrawBatch` count from the main raster pass.
+        /// Upper bound on GPU draw calls; indirect grouping further
+        /// compresses runs (see `indirect_call_count`). #1258.
+        batch_count: u32,
+        /// Actual `cmd_draw_indexed` + `cmd_draw_indexed_indirect`
+        /// invocations recorded — the real "draws" cost number. #1258.
+        indirect_call_count: u32,
     },
     /// Screenshot captured — PNG bytes (base64-encoded for JSON transport).
     Screenshot {

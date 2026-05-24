@@ -40,15 +40,20 @@ pub fn print_response(response: &DebugResponse) {
             texture_count,
             meshes_in_use,
             textures_in_use,
-            draw_call_count,
+            draw_command_count,
+            batch_count,
+            indirect_call_count,
         } => {
             // #637 / FNV-D5-02 — show registry-wide AND scene-scoped
             // counts for meshes / textures so a leak that holds the
             // last reference past cell unload is visible as
             // `<registry>` larger than `<in_use>`.
+            // #1258 / PERF-D3-NEW-03 — three-stage draw pipeline
+            // (commands → batches → GPU calls) so the real cost
+            // number is visible, not just the input to the batcher.
             println!(
                 "FPS: {:.1} (avg {:.1}) | Frame: {:.2}ms | Entities: {} | \
-                 Meshes: {}/{} | Textures: {}/{} | Draws: {} (registry/in-use)",
+                 Meshes: {}/{} | Textures: {}/{} | Draws: {} cmds → {} batches → {} GPU calls",
                 fps,
                 avg_fps,
                 frame_time_ms,
@@ -57,7 +62,9 @@ pub fn print_response(response: &DebugResponse) {
                 meshes_in_use,
                 texture_count,
                 textures_in_use,
-                draw_call_count
+                draw_command_count,
+                batch_count,
+                indirect_call_count
             );
         }
         DebugResponse::Screenshot {
