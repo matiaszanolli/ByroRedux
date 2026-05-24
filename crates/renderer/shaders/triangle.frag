@@ -2480,8 +2480,25 @@ void main() {
         // 4000–6000 units (~57–86 m at Bethesda's ~70u/m) so interior
         // halls self-shadow end-to-end. 12 GB VRAM budget makes the
         // extra ray cost fine.
-        float shadowFade = 1.0 - smoothstep(4000.0, 6000.0, worldDist);
-        const uint NUM_RESERVOIRS = 8;
+        // Phase 19 — extended shadow visibility distance + doubled
+        // reservoir count. The Phase-12 / 16 perf work freed
+        // ~10 ms of GPU budget at 60 FPS; spend it on better RT
+        // sampling.
+        //   * shadowFade range: 4000-6000 → 8000-12000 BU
+        //     (~57-86 m → ~114-171 m). Skyrim Dragonsreach,
+        //     Whiterun's open halls, and any exterior view-axis
+        //     longer than ~60 m now retain shadow casting instead
+        //     of fading to ambient.
+        //   * NUM_RESERVOIRS 8 → 16. Doubles the WRS shadow-ray
+        //     count per fragment (16 rays per pixel instead of 8),
+        //     halving the variance of the multi-light shadow
+        //     estimate in cluster-dense rooms (candles + lanterns
+        //     in a tavern). Pre-fix, an 8-reservoir set sampling
+        //     12 lights in a cluster missed contribution from
+        //     ~33% of lights per pixel; the 16-reservoir set
+        //     samples every light at 16/12 oversample.
+        float shadowFade = 1.0 - smoothstep(8000.0, 12000.0, worldDist);
+        const uint NUM_RESERVOIRS = 16;
         // Cap per-reservoir unbiasing weight to tame fireflies when a
         // dim light is sampled in a cluster dominated by bright ones.
         // 64× matches the ratio of a dim fill light to a hero light.
