@@ -1,9 +1,12 @@
 //! byro-dbg — standalone CLI debugger for ByroRedux.
 //!
-//! Connects to the engine's debug server over TCP and provides an
-//! interactive REPL for inspecting and modifying ECS state.
+//! Connects to the engine's debug server over TCP. Default mode is
+//! a line-oriented REPL; pass `--tui` for the ratatui live dashboard
+//! (metrics, entities, loader, console) — Phase 3 of the debug-UI
+//! plan.
 
 mod display;
+mod tui;
 
 use byroredux_debug_protocol::{wire, DebugRequest, DebugResponse, DEFAULT_PORT};
 use std::io::{self, BufRead, Write};
@@ -17,9 +20,10 @@ fn main() {
         .unwrap_or(DEFAULT_PORT);
 
     let addr = format!("{}:{}", host, port);
+    let tui_mode = std::env::args().any(|a| a == "--tui");
 
     eprintln!("Connecting to ByroRedux at {}...", addr);
-    let mut stream = match TcpStream::connect(&addr) {
+    let stream = match TcpStream::connect(&addr) {
         Ok(s) => {
             eprintln!("Connected.\n");
             s
@@ -31,6 +35,15 @@ fn main() {
         }
     };
 
+    if tui_mode {
+        if let Err(e) = tui::run(stream) {
+            eprintln!("TUI exited with error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    let mut stream = stream;
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 

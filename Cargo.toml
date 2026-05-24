@@ -136,3 +136,10 @@ dhat = "0.3"
 # user-driven (2 Hz default via `metrics_sample_system`); zero cost
 # when the system is throttled-out.
 sysinfo = { version = "0.30", default-features = false }
+
+# Terminal UI for `byro-dbg --tui` (Phase 3 of the debug-UI plan).
+# ratatui 0.28 pairs with crossterm 0.28; both are pinned at the
+# workspace level so any future TUI tool in the workspace picks up
+# the same versions without per-crate drift.
+ratatui = "0.28"
+crossterm = "0.28"
