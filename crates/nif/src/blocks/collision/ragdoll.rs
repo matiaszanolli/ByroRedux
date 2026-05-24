@@ -53,11 +53,11 @@ pub struct BonePose {
 
 impl BonePose {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let n = stream.read_u32_le()? as usize;
-        // Each BoneTransform is exactly 40 bytes — bound the alloc
-        // against the remaining stream so a junk count can't OOM.
-        stream.check_alloc(n.saturating_mul(40))?;
-        let mut transforms = Vec::with_capacity(n);
+        let n = stream.read_u32_le()?;
+        // `allocate_vec` carries the bound + #[must_use] gate (#408 / #831
+        // architectural pin), replacing the prior `check_alloc + with_capacity`
+        // idiom that hardcoded the BoneTransform 40-byte element size.
+        let mut transforms = stream.allocate_vec::<BoneTransform>(n)?;
         for _ in 0..n {
             transforms.push(BoneTransform::parse(stream)?);
         }
@@ -82,18 +82,18 @@ pub struct BhkPoseArray {
 
 impl BhkPoseArray {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let num_bones = stream.read_u32_le()? as usize;
-        // String-table indices are 4 bytes on disk.
-        stream.check_alloc(num_bones.saturating_mul(4))?;
-        let mut bones = Vec::with_capacity(num_bones);
+        let num_bones = stream.read_u32_le()?;
+        // #408 / #831 — `allocate_vec` replaces the manual
+        // `check_alloc + with_capacity` pair (was hardcoding 4 B/elem).
+        let mut bones = stream.allocate_vec::<Option<Arc<str>>>(num_bones)?;
         for _ in 0..num_bones {
             bones.push(stream.read_string()?);
         }
-        let num_poses = stream.read_u32_le()? as usize;
-        // BonePose carries at least 4 bytes for the inner count. Real
-        // bound enforcement happens inside `BonePose::parse`.
-        stream.check_alloc(num_poses.saturating_mul(4))?;
-        let mut poses = Vec::with_capacity(num_poses);
+        let num_poses = stream.read_u32_le()?;
+        // Outer bound here is the inner-count word per BonePose; the
+        // real per-element bound runs inside `BonePose::parse` via
+        // `allocate_vec::<BoneTransform>`.
+        let mut poses = stream.allocate_vec::<BonePose>(num_poses)?;
         for _ in 0..num_poses {
             poses.push(BonePose::parse(stream)?);
         }
@@ -127,10 +127,10 @@ impl BhkRagdollTemplate {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiExtraData base — `Name` only, gated on stream version.
         let name = stream.read_extra_data_name()?;
-        let num_bones = stream.read_u32_le()? as usize;
-        // BlockRefs are 4 bytes each.
-        stream.check_alloc(num_bones.saturating_mul(4))?;
-        let mut bones = Vec::with_capacity(num_bones);
+        let num_bones = stream.read_u32_le()?;
+        // #408 / #831 — `allocate_vec` replaces the manual
+        // `check_alloc + with_capacity` pair (was hardcoding 4 B/elem).
+        let mut bones = stream.allocate_vec::<BlockRef>(num_bones)?;
         for _ in 0..num_bones {
             bones.push(stream.read_block_ref()?);
         }
