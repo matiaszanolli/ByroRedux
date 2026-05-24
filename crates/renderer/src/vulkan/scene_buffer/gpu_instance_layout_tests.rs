@@ -37,7 +37,8 @@ fn gpu_instance_is_112_bytes_std430_compatible() {
 
 /// Regression for #1028 / R-D6-01. `GpuCamera` must stay 288 B
 /// — three `mat4` (192 B) plus six trailing `vec4` (96 B) for
-/// `position`, `flags`, `screen`, `fog`, `jitter`, `sky_tint`.
+/// `position`, `flags`, `screen`, `fog`, `jitter`, `sky_tint`,
+/// `sun_direction` (added by #1210 Phase A+B scaffold).
 /// Every shader that re-declares `CameraUBO` (`triangle.vert`,
 /// `triangle.frag`, `water.vert`, `water.frag`, `cluster_cull.comp`,
 /// `caustic_splat.comp`) must match this size — pre-#1028 the
@@ -45,12 +46,15 @@ fn gpu_instance_is_112_bytes_std430_compatible() {
 /// not have caught (no Rust-side drift) but the audit did. This
 /// pin at least catches the Rust-side regression so the doc-
 /// comment stays honest.
+///
+/// Function and test name kept as "288" for grep continuity; the
+/// assertion tracks the live size.
 #[test]
 fn gpu_camera_is_288_bytes() {
         assert_eq!(
             size_of::<GpuCamera>(),
-            288,
-            "GpuCamera must stay 288 B to match the CameraUBO declaration in every shader that re-declares it — see #1028 / R-D6-01"
+            304,
+            "GpuCamera must stay 304 B (was 288 B pre-#1210) to match the CameraUBO declaration in every shader that re-declares it — see #1028 / R-D6-01 and #1210 sun_direction addition"
         );
 }
 

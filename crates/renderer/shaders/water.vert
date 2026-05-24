@@ -71,6 +71,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 fog;
     vec4 jitter;
     vec4 skyTint;
+    vec4 sunDirection; // xyz = sun direction, w = intensity. #1210 (struct-sync; not consumed in vert).
 };
 
 layout(location = 0) out vec3 vWorldPos;

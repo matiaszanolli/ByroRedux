@@ -213,6 +213,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     // already wired upstream). Pre-fix the portal site hardcoded
     // `vec3(0.6, 0.75, 1.0)` and every window looked clear-noon.
     vec4 skyTint;     // xyz = TOD/weather zenith colour, w = sun_angular_radius (rad; SkyParams::sun_angular_radius, #1023)
+    vec4 sunDirection; // xyz = sun world-space direction (light-travel direction), w = sun intensity. #1210.
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;

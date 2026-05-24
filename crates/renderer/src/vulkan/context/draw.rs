@@ -602,6 +602,18 @@ impl VulkanContext {
                 sky_params.zenith_color[2],
                 sky_params.sun_angular_radius,
             ],
+            // #1210 — sun direction + intensity, plumbed for water.frag's
+            // caustic synthesis (shadow ray to sun → refract on miss).
+            // SkyParams.sun_direction is already unit-length and in
+            // world space. w carries authored intensity so the caustic
+            // splat scales with TOD / weather (dawn / dusk = dimmer
+            // caustics, noon = peak).
+            sun_direction: [
+                sky_params.sun_direction[0],
+                sky_params.sun_direction[1],
+                sky_params.sun_direction[2],
+                sky_params.sun_intensity,
+            ],
         };
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)

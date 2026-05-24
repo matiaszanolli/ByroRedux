@@ -62,6 +62,7 @@ layout(set = 0, binding = 4) uniform CameraUBO {
     vec4 fog;
     vec4 jitter;        // xy = sub-pixel TAA jitter in NDC, z = bitcast<f32>(render_debug_flags), w = is_exterior. #1125.
     vec4 skyTint;       // xyz = TOD/weather zenith colour, w = reserved. #1028.
+    vec4 sunDirection;  // xyz = sun direction, w = intensity. #1210 (struct-sync; not consumed here).
 };
 
 // R1 Phase 6 — `GpuInstance` collapsed to per-DRAW data only.

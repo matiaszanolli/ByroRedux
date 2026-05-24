@@ -219,6 +219,20 @@ pub struct GpuCamera {
     /// (clear-noon blue), so interior cells with windows looked midday
     /// regardless of TOD / weather. See audit REN-D15-NEW-03.
     pub sky_tint: [f32; 4],
+    /// xyz = sun direction (unit vector, world space, pointing FROM
+    /// the sun TOWARD the scene — i.e. the direction sunlight travels).
+    /// w = sun intensity multiplier (1.0 = full daylight, 0.0 = no sun
+    /// contribution; matches `SkyParams.sun_intensity` magnitude
+    /// authored per-WTHR record).
+    ///
+    /// Plumbed through every shader declaring `CameraUBO` because the
+    /// water-caustic synthesis in `water.frag` (#1210) casts a shadow
+    /// ray toward the sun and refracts when unobstructed. Other shaders
+    /// don't consume the field today, but the shader-struct-sync
+    /// invariant (`feedback_shader_struct_sync.md`) requires the
+    /// declaration shape to match across triangle.frag/.vert +
+    /// cluster_cull.comp + caustic_splat.comp + water.frag.
+    pub sun_direction: [f32; 4],
 }
 
 impl Default for GpuCamera {
@@ -244,6 +258,11 @@ impl Default for GpuCamera {
             // w = sun_angular_radius (rad); default matches the
             // pre-#1023 triangle.frag hardcoded const (0.020 ≈ 1.15°).
             sky_tint: [0.6, 0.75, 1.0, 0.020],
+            // #1210 — default sun pointing roughly downward (-Y) with
+            // intensity zero so unbootstrapped frames produce no
+            // caustic contribution (water.frag's gate is on intensity
+            // > 0, see Phase D below).
+            sun_direction: [0.0, -1.0, 0.0, 0.0],
         }
     }
 }

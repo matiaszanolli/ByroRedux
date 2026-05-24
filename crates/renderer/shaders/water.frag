@@ -99,6 +99,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 fog;
     vec4 jitter;
     vec4 skyTint;
+    vec4 sunDirection; // xyz = sun world-space direction (light travel), w = intensity. #1210.
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
@@ -488,4 +489,68 @@ void main() {
     float alpha = clamp(baseAlpha + grazingBoost + foamMask * 0.1, 0.0, 1.0);
 
     outColor = vec4(surfaceColor, alpha);
+
+    // ── #1210 Phase D landing slot — water-side caustic synthesis ──
+    //
+    // The CameraUBO now carries `sunDirection` (Phase A+B scaffold of
+    // #1210). When the dedicated `water_caustic_accum` storage image is
+    // wired into this pipeline (Phase C follow-up — needs WaterPipeline
+    // descriptor-set growth + per-frame clear in draw.rs + composite
+    // sample binding in composite.frag/.rs), the synthesis lands here:
+    //
+    //   if (sunDirection.w > 0.0) {                                // sun active
+    //       vec3 sunRay = normalize(sunDirection.xyz);              // light-travel direction
+    //       vec3 toSun = -sunRay;                                   // ray from fragment to sun
+    //       // Shadow ray (TLAS already bound at set 1 binding 2)
+    //       rayQueryEXT shadowRq;
+    //       rayQueryInitializeEXT(shadowRq, topLevelAS,
+    //                             gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+    //                             0xFF, vWorldPos + N * 0.05, 0.001, toSun, 10000.0);
+    //       rayQueryProceedEXT(shadowRq);
+    //       bool sunVisible =
+    //           rayQueryGetIntersectionTypeEXT(shadowRq, true) == gl_RayQueryCommittedIntersectionNoneEXT;
+    //       if (sunVisible) {
+    //           // Snell refraction into water (η_air→water = 1/1.33).
+    //           // Single eta per REN-D13-NEW-04 — no chromatic split.
+    //           vec3 refractDir = refract(sunRay, N, 1.0 / 1.33);
+    //           if (length(refractDir) > 1e-4) {
+    //               // Floor hit via second ray (no separate depth bound here).
+    //               rayQueryEXT floorRq;
+    //               rayQueryInitializeEXT(floorRq, topLevelAS,
+    //                                     gl_RayFlagsOpaqueEXT, 0xFF,
+    //                                     vWorldPos, 0.001, refractDir, 5000.0);
+    //               rayQueryProceedEXT(floorRq);
+    //               if (rayQueryGetIntersectionTypeEXT(floorRq, true) !=
+    //                   gl_RayQueryCommittedIntersectionNoneEXT) {
+    //                   float dist = rayQueryGetIntersectionTEXT(floorRq, true);
+    //                   vec3 floorWorld = vWorldPos + refractDir * dist;
+    //                   vec4 floorClip = viewProj * vec4(floorWorld, 1.0);
+    //                   if (floorClip.w > 0.0) {
+    //                       vec2 ndc = floorClip.xy / floorClip.w;
+    //                       vec2 uv01 = ndc * 0.5 + 0.5;
+    //                       if (all(greaterThanEqual(uv01, vec2(0.0)))
+    //                           && all(lessThanEqual(uv01, vec2(1.0)))) {
+    //                           ivec2 pixel = ivec2(uv01 * screen.xy);
+    //                           // Fixed-point luminance with the same scale
+    //                           // caustic_splat.comp uses (CAUSTIC_FIXED_SCALE in
+    //                           // shader_constants.glsl). Constraints per
+    //                           // REN-D13-NEW-04: single eta, single bounce.
+    //                           uint fixed_val = uint(CAUSTIC_FIXED_SCALE * sunDirection.w);
+    //                           imageAtomicAdd(waterCausticAccum, pixel, fixed_val);
+    //                       }
+    //                   }
+    //               }
+    //           }
+    //       }
+    //   }
+    //
+    // Composite reads `water_caustic_accum` alongside the existing
+    // `causticTex` (composite.frag:56) and adds the contribution to
+    // direct light — same shape as the #321 Option A path.
+    //
+    // Until Phase C / D / E land: water-side caustics remain absent
+    // (the M38 architectural-split deferral noted in
+    // `caustic_splat.comp:213-215` still applies). The scaffold above
+    // is here so the eventual implementation has a documented landing
+    // slot + the sun-direction input pre-plumbed.
 }
