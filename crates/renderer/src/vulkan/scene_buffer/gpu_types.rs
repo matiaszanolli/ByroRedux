@@ -195,7 +195,17 @@ pub struct GpuCamera {
     pub fog: [f32; 4],
     /// xy = sub-pixel projection jitter in NDC space (Halton 2,3 sequence),
     /// applied to `gl_Position.xy` AFTER motion-vector clip positions are
-    /// captured so reprojection remains jitter-free. zw = reserved.
+    /// captured so reprojection remains jitter-free.
+    ///
+    /// z = `bitcast<f32>(render_debug_flags)` — fragment-shader debug-
+    /// bypass bitmask, read via `floatBitsToUint(jitter.z)`.
+    ///
+    /// w = `is_exterior` flag (1.0 = exterior cell with TOD-driven
+    /// SkyParamsRes, 0.0 = interior cell or no exterior load yet —
+    /// the `SkyParams::default()` path returns clear-noon-blue zenith
+    /// which would otherwise bleed into interior glass via the half-
+    /// sky reflection / refraction miss blend in `triangle.frag`).
+    /// See #1125 / REN-D9-NEW-01.
     pub jitter: [f32; 4],
     /// xyz = active TOD/weather zenith colour in linear RGB (mirrors
     /// `CompositeParams.sky_zenith.xyz`); w = sun angular radius (rad,

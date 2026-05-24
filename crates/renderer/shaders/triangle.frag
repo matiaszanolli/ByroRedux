@@ -186,7 +186,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 sceneFlags;  // x = RT enabled (1.0), yzw = ambient color (RGB)
     vec4 screen;      // x = width, y = height, z = fog near, w = fog far
     vec4 fog;         // xyz = fog color (RGB), w = fog enabled (1.0)
-    vec4 jitter;      // xy = sub-pixel TAA jitter in NDC, zw = reserved
+    vec4 jitter;      // xy = sub-pixel TAA jitter in NDC, z = bitcast<f32>(render_debug_flags), w = is_exterior flag (1.0 = exterior cell, 0.0 = interior). #1125.
     // #925 / REN-D15-NEW-03 — mirror of composite's `sky_zenith.xyz`
     // (linear RGB). Used by the window-portal escape below so
     // interior windows transmit a sky tint that matches whatever
@@ -485,21 +485,30 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
     rayQueryProceedEXT(rq);
 
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
-        // Miss — return sky tint / ambient mix. Pre-#925 this used
-        // `fog.xyz` directly which was the fog tint colour and gave a
-        // reasonable desaturated fallback. The audited REN-D15-NEW-04
-        // concern (audit 2026-05-09) was that a separate refactor
-        // (#924 / REN-D15-NEW-02) would change `fog.xyz` to mean
-        // "unfogged HDR" and break this fallback as a side effect.
-        // Switching to `skyTint.xyz` (the per-frame zenith from
-        // `compute_sky` — same source mirrored from composite via
-        // #925) sidesteps the dependency: a reflection / refraction
-        // ray that escapes the BVH is escaping into open sky, so the
-        // sky tint is the semantically-correct fallback. The 50/50
-        // ambient blend stays so interior misses (where skyTint reads
-        // as the cell's ceiling colour rather than real sky) still
-        // settle to a room-mood-coherent grey.
-        return vec4(skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5, 0.0);
+        // Miss — return sky tint / ambient mix.
+        //
+        // For exterior cells the ray escaping the BVH IS escaping into
+        // real sky, so the half-sky half-ambient blend mirrors what
+        // the composite paints behind the world (via #925's skyTint
+        // plumbing).
+        //
+        // For interior cells the half-sky term is wrong: when
+        // `SkyParamsRes` is absent (sealed interior, or no exterior
+        // load yet this session), `build_sky_params` returns
+        // `SkyParams::default()` with `zenith_color = [0.15, 0.3, 0.6]`
+        // (clear-noon-blue) — that signal bleeds into glass refractions
+        // / reflections as a daylight tint even in fully sealed cells
+        // (Megaton, Vault 21, Markarth subterranean rooms). Drop to
+        // cell ambient alone (`sceneFlags.yzw`) on the interior path.
+        // The pre-#925 comment claiming "skyTint reads as the cell's
+        // ceiling colour" was stale wisdom — interior cells get the
+        // default zenith, not a per-cell ceiling derivation. See #1125 /
+        // REN-D9-NEW-01.
+        bool isExterior = jitter.w > 0.5;
+        vec3 missColor = isExterior
+            ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
+            : sceneFlags.yzw;
+        return vec4(missColor, 0.0);
     }
 
     // Hit — get SSBO instance index via custom index (encodes the draw
@@ -1931,13 +1940,16 @@ void main() {
                 // chem-glass look reported on #789. Cell ambient
                 // (`sceneFlags.yzw`) is the per-cell room mood; in
                 // exteriors it's already sky-derived from CLMT/WTHR,
-                // so the change is correct in both cases. Match the
-                // `traceReflection` miss fallback above — half-sky
-                // half-ambient — so escaped refraction rays read
-                // consistent with escaped reflection rays. The pre-
-                // #925 form mixed `fog.xyz`; switched to `skyTint.xyz`
-                // alongside the reflection miss in REN-D15-NEW-04.
-                refrColor = skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5;
+                // so half-sky half-ambient is correct there. Match the
+                // `traceReflection` miss fallback above on the same
+                // gate — interior cells (where `SkyParams::default()`
+                // pins `skyTint` at clear-noon-blue) drop to cell
+                // ambient alone to keep daylight tint out of sealed-
+                // interior glass refractions. See #1125 / REN-D9-NEW-01.
+                bool isExterior = jitter.w > 0.5;
+                refrColor = isExterior
+                    ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
+                    : sceneFlags.yzw;
             } else {
                 GpuInstance tInst = instances[tIdx];
                 GpuMaterial tMat = materials[tInst.materialId];

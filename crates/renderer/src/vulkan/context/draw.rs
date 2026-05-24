@@ -569,7 +569,22 @@ impl VulkanContext {
             // fragment shader (see `parse_render_debug_flags_env` and
             // `triangle.frag`'s `floatBitsToUint(jitter.z)` branches).
             // Zero-bits → free no-op; non-zero → debug paths active.
-            jitter: [jx, jy, f32::from_bits(self.render_debug_flags), 0.0],
+            //
+            // jitter[3] carries the per-frame `is_exterior` flag
+            // (#1125 / REN-D9-NEW-01). 1.0 = exterior cell (real TOD-
+            // driven SkyParamsRes loaded), 0.0 = interior cell (or no
+            // exterior load yet — `SkyParamsRes` absent so
+            // `build_sky_params` returned `SkyParams::default()` with
+            // clear-noon-blue zenith). The shader uses this to gate
+            // `skyTint`-blended fallbacks in `traceReflection` /
+            // refraction miss so sealed interiors don't bleed
+            // daylight tint into glass refractions.
+            jitter: [
+                jx,
+                jy,
+                f32::from_bits(self.render_debug_flags),
+                if sky_params.is_exterior { 1.0 } else { 0.0 },
+            ],
             // #925 / REN-D15-NEW-03 — mirror the composite's
             // `sky_zenith.xyz` here so triangle.frag's window-portal
             // escape transmits a sky tint matching whatever

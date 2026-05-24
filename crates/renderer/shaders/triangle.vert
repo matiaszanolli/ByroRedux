@@ -72,7 +72,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 sceneFlags;
     vec4 screen;
     vec4 fog;
-    vec4 jitter;         // xy = sub-pixel TAA jitter in NDC, zw = reserved.
+    vec4 jitter;         // xy = sub-pixel TAA jitter in NDC, z = bitcast<f32>(render_debug_flags), w = is_exterior flag. #1125.
     vec4 skyTint;        // xyz = TOD/weather zenith colour, w = reserved. #1028.
 };
 

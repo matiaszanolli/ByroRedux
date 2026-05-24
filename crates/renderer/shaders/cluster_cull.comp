@@ -61,7 +61,7 @@ layout(set = 0, binding = 1) uniform CameraUBO {
     vec4 sceneFlags;    // x = RT enabled, yzw = ambient color
     vec4 screen;        // x = width, y = height, z = fog near, w = fog far
     vec4 fog;           // xyz = fog color, w = fog enabled
-    vec4 jitter;        // xy = sub-pixel TAA jitter in NDC, zw = reserved
+    vec4 jitter;        // xy = sub-pixel TAA jitter in NDC, z = bitcast<f32>(render_debug_flags), w = is_exterior. #1125.
     vec4 skyTint;       // xyz = TOD/weather zenith colour, w = reserved. #1028.
 };
 
