@@ -502,7 +502,11 @@ impl Drop for Texture {
         log::warn!(
             "Texture dropped without destroy() — running cleanup from Drop (#656 safety net)",
         );
-        debug_assert!(false, "Texture leaked into Drop: call destroy() first");
+        // Skip the assert during unwind. See #1128 / REN-D4-NEW-01 + the
+        // matching guard on GpuBuffer / Attachment / HistorySlot Drop impls.
+        if !std::thread::panicking() {
+            debug_assert!(false, "Texture leaked into Drop: call destroy() first");
+        }
         unsafe {
             self.device.destroy_image_view(self.image_view, None);
             self.device.destroy_image(self.image, None);

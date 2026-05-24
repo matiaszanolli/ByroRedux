@@ -929,7 +929,13 @@ impl Drop for GpuBuffer {
         log::warn!(
             "GpuBuffer dropped without destroy() — running cleanup from Drop (#656 safety net)",
         );
-        debug_assert!(false, "GpuBuffer leaked into Drop: call destroy() first");
+        // Skip the assert during unwind so a panic mid-construction (e.g.
+        // allocator lock poisoned partway through a multi-buffer init) doesn't
+        // compound into N nested debug_assert panics that clobber the original
+        // panic's stack. See #1128 / REN-D4-NEW-01.
+        if !std::thread::panicking() {
+            debug_assert!(false, "GpuBuffer leaked into Drop: call destroy() first");
+        }
         unsafe {
             self.device.destroy_buffer(self.buffer, None);
         }

@@ -184,7 +184,11 @@ impl Drop for HistorySlot {
             self.image,
             self.view,
         );
-        debug_assert!(false, "HistorySlot dropped without destroy()");
+        // Skip the assert during unwind. See #1128 / REN-D4-NEW-01 + the
+        // matching guard on GpuBuffer / Attachment / Texture Drop impls.
+        if !std::thread::panicking() {
+            debug_assert!(false, "HistorySlot dropped without destroy()");
+        }
     }
 }
 

@@ -204,7 +204,16 @@ impl Drop for Attachment {
             self.views.len(),
             self.allocations.len(),
         );
-        debug_assert!(false, "Attachment dropped without destroy()");
+        // Skip the debug_assert during unwind so a panic mid-`GBuffer::new`
+        // (e.g. allocator lock poisoned on the 3rd of 5 attachments) doesn't
+        // turn one panic into six. The locally-built `gb` Drop runs across
+        // every partially-initialised attachment during the unwind; without
+        // this guard each one fires its own debug_assert and clobbers the
+        // original panic's stack. Mirrors the `GpuBuffer::Drop` guard
+        // established by #656. See #1128 / REN-D4-NEW-01.
+        if !std::thread::panicking() {
+            debug_assert!(false, "Attachment dropped without destroy()");
+        }
     }
 }
 
