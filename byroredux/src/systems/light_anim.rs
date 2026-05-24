@@ -72,58 +72,72 @@ pub(crate) fn animate_lights_system(world: &World, _dt: f32) {
             let Some(light) = light_q.get(entity) else {
                 continue;
             };
-            // Phase angle in [0, 1) — wraps per period_secs.
-            let phase_secs = (total_time + flicker.phase_offset_secs).rem_euclid(flicker.period_secs);
-            let phase = phase_secs / flicker.period_secs;
 
-            // Slow variants run at half rate by halving the angular
-            // velocity. Cheaper than reading period at half the
-            // FNAM authored value because some lights set both
-            // bits.
+            // Slow variants run at half rate by halving the
+            // angular velocity. Cheaper than reading period at
+            // half the FNAM authored value because some lights
+            // set both bits.
             let speed_scale =
                 if light.flags & (LIGHT_FLAG_FLICKER_SLOW | LIGHT_FLAG_PULSE_SLOW) != 0 {
                     0.5
                 } else {
                     1.0
                 };
-            let scaled_phase = phase * speed_scale;
 
-            // Intensity modulation: pulse is sinusoidal, flicker
-            // is hashed noise stepped at ~24 Hz so it reads as a
-            // flame's chaotic dance rather than per-frame
-            // whitenoise.
+            // Intensity modulation. Two paths:
+            //   * PULSE/PULSE_SLOW → sine wave at the LIGH's
+            //     period.
+            //   * FLICKER/FLICKER_SLOW → smooth-noise: interpolate
+            //     linearly between two consecutive hash samples
+            //     stepped at 12 Hz. Phase 17 stepped the hash at
+            //     24 Hz with no interpolation; visually that
+            //     produced a jerky strobe rather than a candle's
+            //     gentle dance, surfaced by the user reporting
+            //     "shadows jump all over the place" in Phase 19
+            //     readings.
             let modulation = if light.flags & (LIGHT_FLAG_PULSE | LIGHT_FLAG_PULSE_SLOW) != 0 {
-                (scaled_phase * std::f32::consts::TAU).sin()
+                let phase_secs = (total_time + flicker.phase_offset_secs)
+                    .rem_euclid(flicker.period_secs);
+                let phase = phase_secs / flicker.period_secs;
+                (phase * speed_scale * std::f32::consts::TAU).sin()
             } else if light.flags & (LIGHT_FLAG_FLICKER | LIGHT_FLAG_FLICKER_SLOW) != 0 {
-                let bucket = (total_time * 24.0 * speed_scale) as u32;
-                hash_to_unit(entity.wrapping_mul(0x9E37_79B9) ^ bucket)
+                let raw = (total_time + flicker.phase_offset_secs) * 12.0 * speed_scale;
+                let bucket = raw.floor() as u32;
+                let bucket_t = raw.fract();
+                // Smoothstep on the lerp factor — Hermite curve
+                // hides the still-visible cusps a pure linear
+                // lerp leaves at bucket boundaries.
+                let t = bucket_t * bucket_t * (3.0 - 2.0 * bucket_t);
+                let entity_seed = entity.wrapping_mul(0x9E37_79B9);
+                let n0 = hash_to_unit(entity_seed ^ bucket);
+                let n1 = hash_to_unit(entity_seed ^ bucket.wrapping_add(1));
+                n0 * (1.0 - t) + n1 * t
             } else {
                 0.0
             };
 
             let intensity = 1.0 + modulation * flicker.intensity_amplitude;
 
-            // Position jitter — only when movement_amplitude is
-            // non-zero so pure-pulse lights don't move. Use the
-            // same 24 Hz bucket so brightness + motion stay
-            // synchronised (more visually plausible than
-            // independent noises).
-            let translation = if flicker.movement_amplitude > 0.0 {
-                let bucket = (total_time * 24.0 * speed_scale) as u32;
-                let seed = entity.wrapping_mul(0x9E37_79B9) ^ bucket;
-                let jx = hash_to_unit(seed) * flicker.movement_amplitude;
-                let jy =
-                    hash_to_unit(seed.wrapping_add(0x1234_5678)) * flicker.movement_amplitude;
-                let jz =
-                    hash_to_unit(seed.wrapping_add(0x8765_4321)) * flicker.movement_amplitude;
-                Some([
-                    flicker.base_translation[0] + jx,
-                    flicker.base_translation[1] + jy,
-                    flicker.base_translation[2] + jz,
-                ])
-            } else {
-                None
-            };
+            // Position jitter — DISABLED in Phase 19.5.
+            //
+            // Skyrim authors `movement_amplitude` in BU (typical
+            // 1-3 BU on vanilla candles). With our pure-random
+            // hash noise at any reasonable frequency the light
+            // teleports between uncorrelated positions every
+            // bucket — visible as the "shadows jumping all over
+            // the place" the operator reported on Phase 19. Real
+            // candle flames move smoothly by tiny amounts; faking
+            // that needs continuous noise (perlin/simplex), not
+            // step-sampled hashes.
+            //
+            // Field stays on `LightFlicker` so the wiring can be
+            // re-enabled when proper smooth noise lands. Phase
+            // 17 / 18 / 19 commits documented the original
+            // intent — see the field doc on
+            // `LightFlicker.movement_amplitude`.
+            let translation = None;
+            let _ = flicker.movement_amplitude;
+            let _ = flicker.base_translation;
 
             buf.push(LightUpdate {
                 entity,
