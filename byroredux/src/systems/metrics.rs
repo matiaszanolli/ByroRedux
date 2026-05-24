@@ -108,9 +108,18 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
 
     let mut gpu_pass_ms: BTreeMap<String, f32> = BTreeMap::new();
     if let Some(cov) = world.try_resource::<SkinCoverageStats>() {
+        // Order in the BTreeMap is alphabetical — the UI renders
+        // the rows in that order, which roughly groups related
+        // passes (e.g. `skin*` together). Adding the four
+        // debug-UI-Phase-6 brackets surfaces the main-render
+        // pathology the 540 ms / 1 FPS report flagged.
+        gpu_pass_ms.insert("cluster_cull".to_string(), cov.gpu_cluster_cull_ms);
+        gpu_pass_ms.insert("main_render".to_string(), cov.gpu_main_render_ms);
         gpu_pass_ms.insert("skin".to_string(), cov.gpu_skin_dispatch_ms);
         gpu_pass_ms.insert("skin_blas_refit".to_string(), cov.gpu_skin_blas_refit_ms);
+        gpu_pass_ms.insert("svgf".to_string(), cov.gpu_svgf_ms);
         gpu_pass_ms.insert("taa".to_string(), cov.gpu_taa_ms);
+        gpu_pass_ms.insert("tlas_build".to_string(), cov.gpu_tlas_build_ms);
     }
 
     let sampled_at_secs = SystemTime::now()

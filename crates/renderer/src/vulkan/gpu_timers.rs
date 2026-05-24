@@ -1,9 +1,8 @@
-//! Per-pass GPU timer (#1194 / PERF-DIM7-INSTR).
+//! Per-pass GPU timer (#1194 / PERF-DIM7-INSTR + debug-UI Phase 6).
 //!
-//! Bracketing three skin-chain / TAA hot spots with `vkCmdWriteTimestamp`
-//! so PERF-DIM7-01 / -02 / -03 (#1195 / #1196 / #1197) can be measured
-//! rather than guessed. Owns one `VkQueryPool` per frame-in-flight slot,
-//! 6 TIMESTAMP queries each:
+//! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
+//! cost can be measured rather than guessed. Owns one `VkQueryPool`
+//! per frame-in-flight slot, 14 TIMESTAMP queries each:
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -13,6 +12,20 @@
 //! | 3    | skinned BLAS refit loop — end          |
 //! | 4    | TAA compute dispatch — start           |
 //! | 5    | TAA compute dispatch — end             |
+//! | 6    | main render pass — start               |
+//! | 7    | main render pass — end                 |
+//! | 8    | TLAS build / refit — start             |
+//! | 9    | TLAS build / refit — end               |
+//! | 10   | cluster light culling dispatch — start |
+//! | 11   | cluster light culling dispatch — end   |
+//! | 12   | SVGF temporal dispatch — start         |
+//! | 13   | SVGF temporal dispatch — end           |
+//!
+//! The original three brackets (skin / BLAS refit / TAA) shipped
+//! with the #1194 perf-bisect work. The four added in debug-UI
+//! Phase 6 (main render / TLAS / cluster cull / SVGF) closed the
+//! "540 ms invisible" gap surfaced by the egui overlay's Metrics
+//! panel.
 //!
 //! ## Lifecycle
 //!
@@ -48,8 +61,8 @@ use ash::vk;
 
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 
-/// One TIMESTAMP query per bracket endpoint × three brackets.
-const QUERIES_PER_FRAME: u32 = 6;
+/// One TIMESTAMP query per bracket endpoint × seven brackets.
+const QUERIES_PER_FRAME: u32 = 14;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -57,6 +70,14 @@ const Q_BLAS_REFIT_START: u32 = 2;
 const Q_BLAS_REFIT_END: u32 = 3;
 const Q_TAA_START: u32 = 4;
 const Q_TAA_END: u32 = 5;
+const Q_MAIN_RENDER_START: u32 = 6;
+const Q_MAIN_RENDER_END: u32 = 7;
+const Q_TLAS_BUILD_START: u32 = 8;
+const Q_TLAS_BUILD_END: u32 = 9;
+const Q_CLUSTER_CULL_START: u32 = 10;
+const Q_CLUSTER_CULL_END: u32 = 11;
+const Q_SVGF_START: u32 = 12;
+const Q_SVGF_END: u32 = 13;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -66,6 +87,21 @@ pub struct GpuTimerSnapshot {
     pub skin_dispatch_ms: f32,
     pub skin_blas_refit_ms: f32,
     pub taa_ms: f32,
+    /// Wall-clock time for the main geometry render pass —
+    /// G-buffer fill + per-fragment RT loop (shadow rays + GI ray
+    /// + metal reflection + glass IOR). Expected dominant cost on
+    /// interior cells with cluster-light count near `MAX_LIGHTS_PER_CLUSTER`.
+    pub main_render_ms: f32,
+    /// TLAS build / refit time. First-cell-load frames spike (full
+    /// BUILD); steady-state should report an UPDATE-mode refit
+    /// in the sub-millisecond range.
+    pub tlas_build_ms: f32,
+    /// Cluster light culling compute dispatch — frustum-vs-light
+    /// intersection across the 16×9×24 cluster grid.
+    pub cluster_cull_ms: f32,
+    /// SVGF temporal accumulation compute dispatch — motion-vector
+    /// reprojection of last frame's denoised indirect.
+    pub svgf_ms: f32,
 }
 
 /// Per-frame-in-flight TIMESTAMP query pools.
@@ -75,19 +111,25 @@ pub struct GpuPerFrameTimers {
     /// (`timestamp_period_ns * 1e-6`).
     ticks_to_ms: f32,
     /// Per-frame "was this bracket's pair written?" — set by the
-    /// caller at `mark_bracket_active`, cleared on reset. Slot index
-    /// matches the frame slot the pool reads from. Each u8 packs:
-    /// bit 0 = skin dispatch, bit 1 = blas refit, bit 2 = TAA.
-    active_bits: [u8; MAX_FRAMES_IN_FLIGHT],
+    /// END writer, cleared on reset. Slot index matches the frame
+    /// slot the pool reads from. Each u16 packs `BIT_*` flags
+    /// (one per bracket — currently 7). The bit-gated read in
+    /// `read_and_reset` is required because WAIT-reading an
+    /// unwritten query blocks forever.
+    active_bits: [u16; MAX_FRAMES_IN_FLIGHT],
     /// Stash for the previous frame's snapshot. Console / bench
     /// consumers read this; the writer pipeline updates it at the
     /// top of `draw_frame`.
     last_snapshot: GpuTimerSnapshot,
 }
 
-const BIT_SKIN_DISPATCH: u8 = 0x01;
-const BIT_BLAS_REFIT: u8 = 0x02;
-const BIT_TAA: u8 = 0x04;
+const BIT_SKIN_DISPATCH: u16 = 0x01;
+const BIT_BLAS_REFIT: u16 = 0x02;
+const BIT_TAA: u16 = 0x04;
+const BIT_MAIN_RENDER: u16 = 0x08;
+const BIT_TLAS_BUILD: u16 = 0x10;
+const BIT_CLUSTER_CULL: u16 = 0x20;
+const BIT_SVGF: u16 = 0x40;
 
 impl GpuPerFrameTimers {
     /// Create one TIMESTAMP query pool per frame-in-flight slot.
@@ -161,6 +203,21 @@ impl GpuPerFrameTimers {
         }
         if bits & BIT_TAA != 0 {
             snap.taa_ms = Self::read_bracket(device, pool, Q_TAA_START, self.ticks_to_ms);
+        }
+        if bits & BIT_MAIN_RENDER != 0 {
+            snap.main_render_ms =
+                Self::read_bracket(device, pool, Q_MAIN_RENDER_START, self.ticks_to_ms);
+        }
+        if bits & BIT_TLAS_BUILD != 0 {
+            snap.tlas_build_ms =
+                Self::read_bracket(device, pool, Q_TLAS_BUILD_START, self.ticks_to_ms);
+        }
+        if bits & BIT_CLUSTER_CULL != 0 {
+            snap.cluster_cull_ms =
+                Self::read_bracket(device, pool, Q_CLUSTER_CULL_START, self.ticks_to_ms);
+        }
+        if bits & BIT_SVGF != 0 {
+            snap.svgf_ms = Self::read_bracket(device, pool, Q_SVGF_START, self.ticks_to_ms);
         }
         self.last_snapshot = snap;
 
@@ -285,6 +342,155 @@ impl GpuPerFrameTimers {
             );
         }
         self.active_bits[frame] |= BIT_TAA;
+    }
+
+    /// Write the main-render-pass START timestamp. Caller writes
+    /// this immediately before `cmd_begin_render_pass`; the END
+    /// goes right after `cmd_end_render_pass`. `TOP_OF_PIPE` on
+    /// start so the timestamp captures the moment work for the
+    /// pass is queued, not when prior compute work finishes.
+    pub fn cmd_main_render_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_MAIN_RENDER_START,
+            );
+        }
+    }
+
+    /// Write the main-render-pass END timestamp. `BOTTOM_OF_PIPE`
+    /// on end so the timestamp waits for the last fragment shader
+    /// + color-attachment write to retire (the actual cost the
+    /// bracket is measuring).
+    pub fn cmd_main_render_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.pools[frame],
+                Q_MAIN_RENDER_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_MAIN_RENDER;
+    }
+
+    /// Write the TLAS-build / refit START timestamp.
+    pub fn cmd_tlas_build_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_TLAS_BUILD_START,
+            );
+        }
+    }
+
+    /// Write the TLAS-build / refit END timestamp. End-stage is
+    /// `ACCELERATION_STRUCTURE_BUILD_KHR` so the bracket waits
+    /// for the actual AS-build pipeline stage to retire.
+    pub fn cmd_tlas_build_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                self.pools[frame],
+                Q_TLAS_BUILD_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_TLAS_BUILD;
+    }
+
+    /// Write the cluster-cull-dispatch START timestamp.
+    pub fn cmd_cluster_cull_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_CLUSTER_CULL_START,
+            );
+        }
+    }
+
+    /// Write the cluster-cull-dispatch END timestamp.
+    pub fn cmd_cluster_cull_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_CLUSTER_CULL_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_CLUSTER_CULL;
+    }
+
+    /// Write the SVGF-dispatch START timestamp.
+    pub fn cmd_svgf_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_SVGF_START,
+            );
+        }
+    }
+
+    /// Write the SVGF-dispatch END timestamp.
+    pub fn cmd_svgf_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                self.pools[frame],
+                Q_SVGF_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_SVGF;
     }
 
     /// Destroy every query pool. Caller must wait for queue idle

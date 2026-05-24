@@ -1301,6 +1301,9 @@ impl VulkanContext {
         unsafe {
             if let Some(ref mut accel) = self.accel_manager {
                 if let Some(alloc) = self.allocator.as_ref() {
+                    if let Some(ref mut timers) = self.gpu_timers {
+                        timers.cmd_tlas_build_start(&self.device, cmd, frame);
+                    }
                     if let Err(e) = accel.build_tlas(
                         &self.device,
                         alloc,
@@ -1311,6 +1314,9 @@ impl VulkanContext {
                     ) {
                         log::warn!("TLAS build failed: {e}");
                     } else {
+                        if let Some(ref mut timers) = self.gpu_timers {
+                            timers.cmd_tlas_build_end(&self.device, cmd, frame);
+                        }
                         // Memory barrier: TLAS build → ray-query consumers
                         // (FRAGMENT_SHADER for main render pass +
                         // COMPUTE_SHADER for caustic_splat.comp). See
@@ -1387,7 +1393,13 @@ impl VulkanContext {
                     vk::AccessFlags::SHADER_READ | vk::AccessFlags::UNIFORM_READ,
                 );
 
+                if let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_cluster_cull_start(&self.device, cmd, frame);
+                }
                 cc.dispatch(&self.device, cmd, frame);
+                if let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_cluster_cull_end(&self.device, cmd, frame);
+                }
                 // Barrier: compute writes → fragment reads on cluster SSBOs.
                 // COMPUTE_SHADER → FRAGMENT_SHADER (cluster SSBO outputs)
                 memory_barrier(
@@ -1973,6 +1985,9 @@ impl VulkanContext {
 
         let cmd_t0 = Instant::now();
         unsafe {
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_main_render_start(&self.device, cmd, frame);
+            }
             self.device
                 .cmd_begin_render_pass(cmd, &render_pass_begin, vk::SubpassContents::INLINE);
 
@@ -2534,6 +2549,9 @@ impl VulkanContext {
             }
 
             self.device.cmd_end_render_pass(cmd);
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_main_render_end(&self.device, cmd, frame);
+            }
 
             // #1255 / Phase C of #1210 — sequence water.frag's
             // imageAtomicAdd writes (FRAGMENT_SHADER WRITE during the
@@ -2568,7 +2586,14 @@ impl VulkanContext {
                     // both ran BEFORE the bulk pre-render barrier
                     // above (#961 / REN-D10-NEW-04 fold). This call
                     // only records the SVGF compute dispatch.
-                    if let Err(e) = svgf.dispatch(&self.device, cmd, frame) {
+                    if let Some(ref mut timers) = self.gpu_timers {
+                        timers.cmd_svgf_start(&self.device, cmd, frame);
+                    }
+                    let svgf_result = svgf.dispatch(&self.device, cmd, frame);
+                    if let Some(ref mut timers) = self.gpu_timers {
+                        timers.cmd_svgf_end(&self.device, cmd, frame);
+                    }
+                    if let Err(e) = svgf_result {
                         log::error!(
                             "SVGF dispatch failed — pass disabled for the rest of the session: {e}"
                         );

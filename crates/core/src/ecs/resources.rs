@@ -460,6 +460,16 @@ pub struct SkinCoverageStats {
     pub gpu_skin_dispatch_ms: f32,
     pub gpu_skin_blas_refit_ms: f32,
     pub gpu_taa_ms: f32,
+    /// Main render pass (G-buffer + per-fragment RT loop) wall-clock
+    /// in milliseconds. Added in debug-UI Phase 6 to surface the
+    /// 540 ms / 1 FPS Sleeping-Giant-Inn pathology that hid behind
+    /// the unprofiled main pass. Names stay on `SkinCoverageStats`
+    /// for historical compatibility; the resource is the canonical
+    /// landing pad for every per-pass GPU timer.
+    pub gpu_main_render_ms: f32,
+    pub gpu_tlas_build_ms: f32,
+    pub gpu_cluster_cull_ms: f32,
+    pub gpu_svgf_ms: f32,
 }
 
 impl Resource for SkinCoverageStats {}
