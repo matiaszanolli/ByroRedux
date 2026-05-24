@@ -21,7 +21,7 @@ use anyhow::Result;
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::console::CommandRegistry;
 use byroredux_core::ecs::{
-    Access, ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler,
+    Access, ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, MetricsSnapshot, Scheduler,
     ScratchTelemetry, SelectedRef, SkinCoverageStats, Stage, TotalTime, Transform, World,
 };
 use byroredux_core::string::StringPool;
@@ -50,7 +50,8 @@ use crate::render::build_render_data;
 use crate::systems::{
     animation_system, billboard_system, compute_underwater_params, footstep_system,
     log_stats_system, make_transform_propagation_system, make_world_bound_propagation_system,
-    particle_system, spin_system, toggle_player_mode, weather_system,
+    metrics_sample_system, particle_system, spin_system, toggle_player_mode, weather_system,
+    MetricsState,
 };
 use byroredux_core::ecs::SystemList;
 
@@ -375,6 +376,12 @@ impl App {
         world.insert_resource(DebugStats::default());
         world.insert_resource(ScratchTelemetry::default());
         world.insert_resource(SkinCoverageStats::default());
+        // Debug-UI sampler state + the aggregated snapshot. Snapshot is
+        // empty until `metrics_sample_system` fires its first tick
+        // (~500 ms in), at which point CPU / RAM / VRAM / GPU pass
+        // times are filled and refreshed at 2 Hz.
+        world.insert_resource(MetricsState::default());
+        world.insert_resource(MetricsSnapshot::default());
         world.insert_resource(SelectedRef::default());
         world.insert_resource(InputState::default());
         world.insert_resource(StringPool::new());
@@ -715,6 +722,22 @@ impl App {
                 .reads_resource::<TotalTime>()
                 .reads_resource::<DeltaTime>()
                 .reads_resource::<DebugStats>(),
+        );
+        // Debug-UI metrics sampler — throttles itself to ~2 Hz, so the
+        // per-frame cost is a single resource read + compare. On a
+        // sample tick it walks sysinfo + the gpu-allocator block list
+        // and writes the snapshot read by the protocol / TUI / egui
+        // overlay.
+        scheduler.add_to_with_access(
+            Stage::Late,
+            metrics_sample_system,
+            Access::new()
+                .reads_resource::<TotalTime>()
+                .reads_resource::<SkinCoverageStats>()
+                .reads_resource::<byroredux_renderer::vulkan::allocator::AllocatorResource>()
+                .reads_resource::<byroredux_renderer::vulkan::allocator::GpuMemoryBudget>()
+                .writes_resource::<MetricsState>()
+                .writes_resource::<MetricsSnapshot>(),
         );
         scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);
 
@@ -1217,6 +1240,17 @@ impl ApplicationHandler for App {
                         byroredux_renderer::vulkan::allocator::AllocatorResource(alloc.clone()),
                     );
                 }
+
+                // Cache the VRAM budget once — heap sizes are immutable
+                // after device pick. Read by `metrics_sample_system` to
+                // compute the `used / budget` ratio without a per-frame
+                // `vkGetPhysicalDeviceMemoryProperties` round trip.
+                self.world.insert_resource(
+                    byroredux_renderer::vulkan::allocator::GpuMemoryBudget::sample(
+                        &ctx.instance,
+                        ctx.physical_device,
+                    ),
+                );
 
                 self.renderer = Some(ctx);
                 self.window = Some(win);

@@ -128,3 +128,11 @@ cxx-build = "1"
 # wants to ship its own allocation-bound regression test (renderer hot
 # path / ECS query churn) shares one version.
 dhat = "0.3"
+
+# Host CPU/RAM sampling for the debug UI's `MetricsSnapshot`. Pinned to
+# 0.30 (last-stable pre-0.31 API churn) so the renderer crate doesn't
+# have to track sysinfo's per-release `global_cpu_info` /
+# `refresh_processes_specifics` rename treadmill. Refresh cadence is
+# user-driven (2 Hz default via `metrics_sample_system`); zero cost
+# when the system is throttled-out.
+sysinfo = { version = "0.30", default-features = false }

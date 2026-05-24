@@ -48,6 +48,41 @@ pub struct AllocatorResource(pub SharedAllocator);
 
 impl Resource for AllocatorResource {}
 
+/// Constant-after-init VRAM budget snapshot. Holds both the aggregate
+/// VRAM capacity (sum of `DEVICE_LOCAL` heaps) and the smallest single
+/// `DEVICE_LOCAL` heap — the tighter cap on hybrid laptops that expose
+/// two `DEVICE_LOCAL` heaps through the same Vulkan device.
+///
+/// Inserted as a resource at renderer init so the debug-UI metrics
+/// sampler and any future budgeting heuristic can compute `used /
+/// budget` without round-tripping to `vkGetPhysicalDeviceMemoryProperties`
+/// on each read. Use [`Self::sample`] to construct from a live instance
+/// + physical-device handle. The values never change after device
+/// selection, so refreshing is unnecessary — this is a strict cache.
+pub struct GpuMemoryBudget {
+    /// Sum of `VkMemoryHeap.size` across every `DEVICE_LOCAL` heap.
+    pub total_vram_bytes: u64,
+    /// Smallest `DEVICE_LOCAL` heap size. Zero when no `DEVICE_LOCAL`
+    /// heap is exposed (pure-SoC / software rasteriser).
+    pub smallest_heap_bytes: u64,
+}
+
+impl Resource for GpuMemoryBudget {}
+
+impl GpuMemoryBudget {
+    /// Query the heap properties for `physical_device` and cache them.
+    /// Pure read — no device state is mutated.
+    pub fn sample(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> Self {
+        Self {
+            total_vram_bytes: super::device::total_device_local_bytes(instance, physical_device),
+            smallest_heap_bytes: super::device::smallest_device_local_heap_bytes(
+                instance,
+                physical_device,
+            ),
+        }
+    }
+}
+
 /// Per-block fragmentation snapshot derived from a
 /// [`vulkan::Allocator::generate_report`].
 ///

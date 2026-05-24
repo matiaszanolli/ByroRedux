@@ -92,6 +92,17 @@ pub struct DeviceCapabilities {
     /// any GPU exposing Vulkan 1.3 — RTX 20-series and later on
     /// NVIDIA, RDNA1 and later on AMD, Arc on Intel.
     pub synchronization2_supported: bool,
+    /// `VK_EXT_memory_budget` exposes a live per-heap usage / budget
+    /// pair via `vkGetPhysicalDeviceMemoryProperties2` chained with
+    /// `VkPhysicalDeviceMemoryBudgetPropertiesEXT`. Without it, the
+    /// debug-UI's "VRAM usage" line has to fall back to
+    /// `gpu_allocator::generate_report` (which reports our own
+    /// allocations, not the driver's view including swapchain images
+    /// + descriptor pools + every other Vulkan-internal residency
+    /// cost). Universally supported on shipped desktop drivers since
+    /// 2018; the gate exists so device creation doesn't fail when a
+    /// SoC / software rasteriser doesn't advertise it.
+    pub memory_budget_supported: bool,
 }
 
 /// Sum of `VkMemoryHeap.size` across every `DEVICE_LOCAL` heap exposed
@@ -215,6 +226,12 @@ fn is_device_suitable(
 
     // Check optional RT extensions.
     let ray_query_supported = RT_EXTENSIONS.iter().all(|ext| has_extension(ext));
+
+    // Optional `VK_EXT_memory_budget`. Live per-heap usage / budget
+    // for the debug-UI VRAM panel — without it we fall back to
+    // `gpu_allocator::generate_report` which only sees our own
+    // allocations, not the driver's full residency view.
+    let memory_budget_supported = has_extension(ash::ext::memory_budget::NAME);
 
     // Query features + limits for optional features we care about.
     // `samplerAnisotropy` is the only one right now (issue #136).
@@ -352,6 +369,7 @@ fn is_device_suitable(
                 timestamp_supported: properties.limits.timestamp_compute_and_graphics
                     == vk::TRUE,
                 synchronization2_supported,
+                memory_budget_supported,
             },
         ))),
         _ => Ok(None),
@@ -419,6 +437,10 @@ pub fn create_logical_device(
         log::info!(
             "Enabling RT extensions: acceleration_structure, ray_query, deferred_host_operations"
         );
+    }
+    if caps.memory_budget_supported {
+        extensions.push(ash::ext::memory_budget::NAME.as_ptr());
+        log::info!("Enabling VK_EXT_memory_budget for live VRAM usage queries");
     }
 
     // Feature chain (pNext): Vulkan 1.2 features.

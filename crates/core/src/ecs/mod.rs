@@ -8,6 +8,7 @@
 pub mod access;
 pub mod components;
 mod lock_tracker;
+pub mod metrics;
 pub mod packed;
 pub mod query;
 pub mod resource;
@@ -29,6 +30,7 @@ pub use components::{
     SceneFlags, SkinnedMesh,
     TextureHandle, Transform, WorldBound, MAX_BONES_PER_MESH,
 };
+pub use metrics::MetricsSnapshot;
 pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};
 pub use resource::{Resource, ResourceRead, ResourceWrite};
