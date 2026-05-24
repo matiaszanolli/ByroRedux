@@ -74,6 +74,30 @@ pub fn evaluate(
         DebugRequest::Inspect { entity } => eval_inspect(world, registry, *entity),
 
         DebugRequest::Eval { expr } => eval_request(world, registry, expr),
+
+        // Phase 1 protocol additions — handlers land in Phase 2.
+        // Returning explicit errors (not a wildcard arm) so adding a
+        // future request variant produces the same exhaustiveness
+        // error that flagged these, instead of being silently
+        // swallowed by `_ => ...`.
+        DebugRequest::Metrics => {
+            DebugResponse::error("Metrics request not yet implemented (Phase 2)")
+        }
+        DebugRequest::LoadNif { .. } => {
+            DebugResponse::error("LoadNif request not yet implemented (Phase 2)")
+        }
+        DebugRequest::LoadInteriorCell { .. } => {
+            DebugResponse::error("LoadInteriorCell request not yet implemented (Phase 2)")
+        }
+        DebugRequest::LoadExteriorCell { .. } => {
+            DebugResponse::error("LoadExteriorCell request not yet implemented (Phase 2)")
+        }
+        DebugRequest::ListGameProfiles => {
+            DebugResponse::error("ListGameProfiles request not yet implemented (Phase 5)")
+        }
+        DebugRequest::ListLoadedAssets { .. } => {
+            DebugResponse::error("ListLoadedAssets request not yet implemented (Phase 2)")
+        }
     }
 }
 

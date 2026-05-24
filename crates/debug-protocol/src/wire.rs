@@ -109,4 +109,105 @@ mod tests {
             .to_string()
             .contains("message too large"));
     }
+
+    /// Phase 1 — pin every new request variant's JSON shape so an
+    /// accidental serde rename (or a field-set drift between the wire
+    /// type and the in-engine source-of-truth `MetricsSnapshot`)
+    /// breaks the build instead of silently corrupting the wire. The
+    /// new variants are exercised together because they share the
+    /// same `#[serde(tag = "cmd")]` discriminator and a clash would
+    /// only surface across the full set.
+    #[test]
+    fn round_trip_phase1_request_variants() {
+        use crate::AssetKind;
+
+        let cases = vec![
+            DebugRequest::Metrics,
+            DebugRequest::LoadNif {
+                path: "meshes\\architecture\\foo.nif".to_string(),
+                label: Some("foo".to_string()),
+            },
+            DebugRequest::LoadInteriorCell {
+                esm: "FalloutNV.esm".to_string(),
+                cell: "GSDocMitchellHouse".to_string(),
+                masters: vec![],
+                bsas: vec!["Fallout - Meshes.bsa".to_string()],
+                textures_bsas: vec!["Fallout - Textures.bsa".to_string()],
+            },
+            DebugRequest::LoadExteriorCell {
+                esm: "FalloutNV.esm".to_string(),
+                grid_x: -3,
+                grid_y: 7,
+                radius: 3,
+                worldspace: Some("Wasteland".to_string()),
+                masters: vec![],
+                bsas: vec![],
+                textures_bsas: vec![],
+            },
+            DebugRequest::ListGameProfiles,
+            DebugRequest::ListLoadedAssets {
+                kind: AssetKind::Textures,
+            },
+        ];
+        for req in cases {
+            let encoded = encode(&req).unwrap();
+            let decoded: DebugRequest = decode(&mut Cursor::new(&encoded)).unwrap();
+            // Compare via debug-formatted shape — covers field names
+            // and values without per-variant pattern matches.
+            assert_eq!(format!("{:?}", req), format!("{:?}", decoded));
+        }
+    }
+
+    /// Phase 1 — same lockstep pin for the new response variants.
+    /// Adding a field to `DebugResponse::Metrics` without updating
+    /// this test (and the matching engine-side `MetricsSnapshot`)
+    /// breaks the build at the missing assertion, not at runtime
+    /// against a quiet null field.
+    #[test]
+    fn round_trip_phase1_response_variants() {
+        use crate::{AssetItem, AssetKind, GameProfile};
+
+        let cases = vec![
+            DebugResponse::Metrics {
+                sampled_at_secs: 1_700_000_000,
+                cpu_pct: 42.5,
+                ram_used_mb: 8192,
+                ram_total_mb: 32_768,
+                process_ram_mb: 512,
+                vram_used_mb: 1024,
+                vram_reserved_mb: 1536,
+                vram_budget_mb: 12_288,
+                gpu_pass_ms: vec![
+                    ("skin".to_string(), 0.42),
+                    ("skin_blas_refit".to_string(), 1.18),
+                    ("taa".to_string(), 0.31),
+                ],
+            },
+            DebugResponse::GameProfiles {
+                profiles: vec![GameProfile {
+                    key: "fnv".to_string(),
+                    name: "Fallout New Vegas".to_string(),
+                    root: "/games/fnv".to_string(),
+                    esm: "FalloutNV.esm".to_string(),
+                    default_bsas: vec!["Fallout - Meshes.bsa".to_string()],
+                    default_textures_bsas: vec!["Fallout - Textures.bsa".to_string()],
+                    sample_cells: vec!["GSDocMitchellHouse".to_string()],
+                }],
+            },
+            DebugResponse::AssetList {
+                asset_kind: AssetKind::Meshes,
+                items: vec![AssetItem {
+                    handle: 7,
+                    path: Some("meshes\\foo.nif".to_string()),
+                    bytes: None,
+                    summary: Some("1024 verts / 3072 idx".to_string()),
+                }],
+            },
+        ];
+        for resp in cases {
+            let encoded = encode(&resp).unwrap();
+            let decoded: DebugResponse = decode(&mut Cursor::new(&encoded)).unwrap();
+            assert_eq!(format!("{:?}", resp), format!("{:?}", decoded));
+        }
+    }
 }

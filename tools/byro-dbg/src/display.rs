@@ -220,6 +220,80 @@ pub fn print_response(response: &DebugResponse) {
             }
             println!("({} components)", components.len());
         }
+        DebugResponse::Metrics {
+            sampled_at_secs,
+            cpu_pct,
+            ram_used_mb,
+            ram_total_mb,
+            process_ram_mb,
+            vram_used_mb,
+            vram_reserved_mb,
+            vram_budget_mb,
+            gpu_pass_ms,
+        } => {
+            println!("Metrics (sampled at unix={}):", sampled_at_secs);
+            println!("  CPU: {:.1}% (whole-process)", cpu_pct);
+            println!(
+                "  RAM: {} / {} MB system  |  process RSS: {} MB",
+                ram_used_mb, ram_total_mb, process_ram_mb,
+            );
+            let vram_label = if *vram_budget_mb > 0 {
+                format!("{} MB", vram_budget_mb)
+            } else {
+                "?".to_string()
+            };
+            println!(
+                "  VRAM: {} used / {} reserved / {} budget",
+                vram_used_mb, vram_reserved_mb, vram_label,
+            );
+            if gpu_pass_ms.is_empty() {
+                println!("  GPU passes: (none reported)");
+            } else {
+                println!("  GPU passes:");
+                for (name, ms) in gpu_pass_ms {
+                    println!("    {:<20} {:>6.3} ms", name, ms);
+                }
+            }
+        }
+        DebugResponse::GameProfiles { profiles } => {
+            if profiles.is_empty() {
+                println!("(no game profiles configured)");
+                return;
+            }
+            println!("{} game profile(s):", profiles.len());
+            for p in profiles {
+                println!("  [{}] {}", p.key, p.name);
+                println!("    root: {}", p.root);
+                println!("    esm:  {}", p.esm);
+                if !p.default_bsas.is_empty() {
+                    println!("    bsas: {}", p.default_bsas.join(", "));
+                }
+                if !p.default_textures_bsas.is_empty() {
+                    println!("    txbsas: {}", p.default_textures_bsas.join(", "));
+                }
+                if !p.sample_cells.is_empty() {
+                    println!("    sample cells: {}", p.sample_cells.join(", "));
+                }
+            }
+        }
+        DebugResponse::AssetList { asset_kind, items } => {
+            println!("{:?}: {} item(s)", asset_kind, items.len());
+            for item in items {
+                let mut row = format!("  [{:>5}]", item.handle);
+                if let Some(p) = &item.path {
+                    row.push(' ');
+                    row.push_str(p);
+                }
+                if let Some(b) = item.bytes {
+                    row.push_str(&format!("  ({} bytes)", b));
+                }
+                if let Some(s) = &item.summary {
+                    row.push_str("  — ");
+                    row.push_str(s);
+                }
+                println!("{}", row);
+            }
+        }
         DebugResponse::Error { message } => {
             eprintln!("Error: {}", message);
         }

@@ -61,8 +61,77 @@ pub enum DebugRequest {
     /// `StringPool` when present) plus an ordered list of
     /// `(component_name, JSON value)` pairs.
     Inspect { entity: Option<u32> },
+    /// Sample the live runtime metrics (CPU / RAM / VRAM / GPU
+    /// pass times). The engine refreshes the underlying snapshot at
+    /// ~2 Hz; this request reads it without forcing a refresh, so
+    /// repeated polling between sample ticks returns identical
+    /// values. Drives the debug-UI overlay + the TUI dashboard.
+    Metrics,
+    /// Queue a NIF mesh load. Returns `Ok` immediately; the engine
+    /// drains the load queue between frames where `&mut World` and
+    /// `&mut VulkanContext` are both held (mirrors the existing
+    /// `PendingCellTransition` pattern).
+    LoadNif {
+        /// NIF path — either an absolute filesystem path (loose file)
+        /// or an archive-relative path like `meshes\foo.nif` resolved
+        /// through the active BSA / BA2 set.
+        path: String,
+        /// Optional diagnostic label — surfaces in engine logs and
+        /// becomes the entity's `Name` when no name resolves from
+        /// the NIF. Defaults to the basename of `path` when omitted.
+        label: Option<String>,
+    },
+    /// Queue an interior cell load by editor ID. Same async-via-queue
+    /// semantics as `LoadNif`.
+    LoadInteriorCell {
+        esm: String,
+        cell: String,
+        /// Master ESMs required by `esm`, in dependency order. Empty
+        /// when `esm` is a standalone master.
+        masters: Vec<String>,
+        /// Mesh BSA / BA2 archive paths.
+        bsas: Vec<String>,
+        /// Texture BSA / BA2 archive paths.
+        textures_bsas: Vec<String>,
+    },
+    /// Queue an exterior grid load.
+    LoadExteriorCell {
+        esm: String,
+        grid_x: i32,
+        grid_y: i32,
+        /// Streaming radius (clamped to `1..=7` by the engine to match
+        /// the CLI `--radius` cap).
+        radius: u8,
+        /// Worldspace EDID override — needed for ESMs that ship
+        /// multiple worldspaces (FO3 / FNV both pick wasteland by
+        /// default; Skyrim SE has Tamriel).
+        worldspace: Option<String>,
+        masters: Vec<String>,
+        bsas: Vec<String>,
+        textures_bsas: Vec<String>,
+    },
+    /// Enumerate the configured game profiles. Profiles come from
+    /// `assets/debug_profiles.toml` (engine-shipped defaults) plus
+    /// the per-user override at `~/.byroredux/profiles.toml` if
+    /// present. Phase-5 wiring.
+    ListGameProfiles,
+    /// Enumerate loaded asset handles. `kind` picks between the
+    /// MeshRegistry, TextureRegistry, and NIF import cache views.
+    ListLoadedAssets { kind: AssetKind },
     /// Ping / keep-alive.
     Ping,
+}
+
+/// Which asset registry [`DebugRequest::ListLoadedAssets`] enumerates.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetKind {
+    /// GPU mesh handles in the MeshRegistry.
+    Meshes,
+    /// GPU texture handles in the TextureRegistry.
+    Textures,
+    /// Parsed NIF scenes in the `NifImportRegistry` cache.
+    NifCache,
 }
 
 // ── Response ────────────────────────────────────────────────────────────
@@ -161,6 +230,47 @@ pub enum DebugResponse {
         name: Option<String>,
         components: Vec<(String, serde_json::Value)>,
     },
+    /// Metrics snapshot — wire twin of
+    /// `byroredux_core::ecs::MetricsSnapshot`. The protocol crate
+    /// doesn't depend on core so the fields are inlined here. Stays
+    /// in lockstep with the core type by hand; the
+    /// `metrics_response_mirrors_core_snapshot` test in the server
+    /// pins the field set so a one-sided drift breaks the build.
+    Metrics {
+        /// Unix-epoch seconds at which the engine refreshed the
+        /// underlying snapshot. Zero before the first 2 Hz tick.
+        sampled_at_secs: u64,
+        /// Whole-process CPU usage in percent (0..N*100 across N cores).
+        cpu_pct: f32,
+        /// System-wide RAM used / total in MB.
+        ram_used_mb: u64,
+        ram_total_mb: u64,
+        /// Engine process RSS in MB.
+        process_ram_mb: u64,
+        /// GPU memory allocated / reserved by gpu-allocator in MB.
+        vram_used_mb: u64,
+        vram_reserved_mb: u64,
+        /// Sum of `DEVICE_LOCAL` heap capacities, in MB. Constant
+        /// after device pick.
+        vram_budget_mb: u64,
+        /// Per-pass GPU elapsed time in milliseconds, ordered by
+        /// pass name. Surfaces `SkinCoverageStats::gpu_*_ms` today
+        /// (`"skin"`, `"skin_blas_refit"`, `"taa"`); extensible
+        /// without a wire bump.
+        gpu_pass_ms: Vec<(String, f32)>,
+    },
+    /// Configured game profiles — populated from
+    /// `assets/debug_profiles.toml` (engine defaults) merged with
+    /// `~/.byroredux/profiles.toml` (per-user overrides). Phase 5.
+    GameProfiles { profiles: Vec<GameProfile> },
+    /// Loaded-asset enumeration. `asset_kind` echoes the request so
+    /// a pipelined caller can tell which list it's looking at.
+    /// (Field is `asset_kind` rather than `kind` so it doesn't
+    /// collide with serde's enum-discriminator tag.)
+    AssetList {
+        asset_kind: AssetKind,
+        items: Vec<AssetItem>,
+    },
     /// An error message.
     Error { message: String },
 }
@@ -169,6 +279,51 @@ pub enum DebugResponse {
 pub struct EntityInfo {
     pub id: u32,
     pub name: Option<String>,
+}
+
+/// One configured game profile — describes where a known game's
+/// data lives on disk and the conventional archives + sample cells
+/// the loader picks up by default. Mirrors `assets/debug_profiles.toml`
+/// (Phase 5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameProfile {
+    /// Stable short key — `"fnv"`, `"skyrim_se"`, etc. Used by the
+    /// debug UI to refer back to a profile when issuing a
+    /// `LoadInteriorCell` request.
+    pub key: String,
+    /// Human-readable display name.
+    pub name: String,
+    /// Absolute path to the game's data directory (the dir that
+    /// holds the ESMs).
+    pub root: String,
+    /// Main ESM filename inside `root` — `FalloutNV.esm` for FNV,
+    /// `Skyrim.esm` for Skyrim SE.
+    pub esm: String,
+    /// Default mesh BSA / BA2 archive filenames (relative to
+    /// `root`).
+    pub default_bsas: Vec<String>,
+    /// Default texture archive filenames.
+    pub default_textures_bsas: Vec<String>,
+    /// Curated cell editor IDs the debug UI offers as one-click
+    /// quick-loads.
+    pub sample_cells: Vec<String>,
+}
+
+/// One asset item in a [`DebugResponse::AssetList`]. Fields are
+/// optional because different kinds expose different attributes —
+/// textures carry bytes + path, the NIF cache carries a parse-stat
+/// summary, meshes carry vertex / index totals via `summary`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetItem {
+    pub handle: u32,
+    /// Source path (BSA-relative for archive-resolved assets, loose
+    /// absolute path otherwise). `None` for synthetic placeholders.
+    pub path: Option<String>,
+    /// On-disk / on-GPU size in bytes when meaningful (textures).
+    pub bytes: Option<u64>,
+    /// Human-readable one-line summary — vertex / index counts for
+    /// meshes, "parsed N blocks" for cache entries, etc.
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
