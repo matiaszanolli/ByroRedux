@@ -445,6 +445,13 @@ impl VulkanContext {
         self.scene_buffers
             .upload_lights(&self.device, frame, lights)
             .unwrap_or_else(|e| log::warn!("Failed to upload lights: {e}"));
+        // `tlas_written[frame]` lags one frame per FIF slot — on the
+        // first frame each slot gets a successful TLAS, this still reads
+        // `false` because `write_tlas` runs later in `draw_frame` (see
+        // the `patch_camera_rt_flag` site post-TLAS-build). The first-
+        // frame fallback to `rt_flag = 0.0` is corrected in-place after
+        // `write_tlas` flips the bit, so frame 0 still gets RT-enabled
+        // shading at GPU-submit time. See #1227 / REN-D8-NEW-21.
         let rt_flag =
             if self.device_caps.ray_query_supported && self.scene_buffers.tlas_written[frame] {
                 1.0
@@ -1285,8 +1292,40 @@ impl VulkanContext {
                             vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
                         );
                         if let Some(tlas_handle) = accel.tlas_handle(frame) {
+                            // Capture whether this is the first time the
+                            // TLAS lands for this FIF slot — `write_tlas`
+                            // flips `tlas_written[frame] = true`, but
+                            // we want to know if it WAS false before.
+                            let first_tlas_this_slot =
+                                !self.scene_buffers.tlas_written[frame];
                             self.scene_buffers
                                 .write_tlas(&self.device, frame, tlas_handle);
+                            // #1227 / REN-D8-NEW-21 — earlier in this
+                            // frame `rt_flag` was uploaded as 0.0 because
+                            // `tlas_written[frame]` was still false at
+                            // camera-UBO upload time. Now that the TLAS
+                            // exists and the descriptor is wired, patch
+                            // `flags[0]` to 1.0 in-place so the upcoming
+                            // render pass sees RT enabled on this very
+                            // frame. Without this, frame 0 + frame 1
+                            // (one per FIF slot) render with RT shading
+                            // off and TAA dissolves the flash across
+                            // ~5 frames on every cell-load. Only fires
+                            // on RT-capable hardware AND only on the
+                            // slot's first valid-TLAS frame — steady
+                            // state pays nothing.
+                            if first_tlas_this_slot
+                                && self.device_caps.ray_query_supported
+                            {
+                                if let Err(e) = self
+                                    .scene_buffers
+                                    .patch_camera_rt_flag(&self.device, frame, 1.0)
+                                {
+                                    log::warn!(
+                                        "Failed to patch rt_flag post-TLAS: {e}"
+                                    );
+                                }
+                            }
                         }
                         accel.evict_unused_blas(&self.device, alloc);
                     }

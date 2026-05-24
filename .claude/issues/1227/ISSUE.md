@@ -1,5 +1,6 @@
 # REN-D8-NEW-21: rt_flag warmup — first 1-2 frames render with RT disabled even after TLAS builds successfully
 
+**GitHub**: https://github.com/matiaszanolli/ByroRedux/issues/1227
 ## Summary
 
 The camera UBO's `rt_flag` is computed and uploaded near the top of `draw_frame`, but `tlas_written[frame]` only flips to `true` at the end of `build_tlas` → `write_tlas` much later in the same frame. So on the first frame in each FIF slot, `rt_flag = 0.0` is uploaded even when TLAS builds successfully — the shaders skip ray queries for that frame. Cosmetic warmup only.

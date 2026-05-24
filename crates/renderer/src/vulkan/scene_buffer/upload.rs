@@ -66,6 +66,53 @@ impl super::buffers::SceneBuffers {
         self.camera_buffers[frame_index].write_mapped(device, std::slice::from_ref(camera))
     }
 
+    /// Patch `GpuCamera.flags[0]` (the `rt_flag` slot) in place for the
+    /// current frame-in-flight, without re-uploading the rest of the UBO.
+    ///
+    /// Used by `draw_frame` to flip `rt_flag` from `0.0 -> 1.0` on the
+    /// first frame each FIF slot's TLAS becomes valid (`write_tlas` ran
+    /// successfully this frame). Pre-#1227 the `rt_flag` value was
+    /// computed when `upload_camera` ran near the top of the frame —
+    /// before `build_tlas` / `write_tlas` — so on the first frame in
+    /// each FIF slot, the value was `0.0` even though the TLAS would
+    /// build successfully that same frame. Shaders saw `rt_flag = 0.0`
+    /// and skipped every ray query for frames 0 + 1, producing a brief
+    /// "RT off" flash that TAA had to dissolve across ~5 frames on
+    /// every cell-load.
+    ///
+    /// Safe to call between `vkBeginCommandBuffer` and the
+    /// `vkCmdBeginRenderPass` that consumes the camera UBO:
+    /// `camera_buffers` are HOST_VISIBLE (and typically HOST_COHERENT;
+    /// `write_mapped` flushes if not), so the patched f32 reaches the
+    /// shader at `vkQueueSubmit` time. The only descriptor-set read of
+    /// `GpuCamera.flags` happens inside the main render pass at
+    /// `triangle.frag` / RT consumers, which start after the TLAS
+    /// barrier — so this patch is causally ordered with respect to
+    /// every consumer.
+    ///
+    /// `flags[0]` lives at byte offset 208 within `GpuCamera` (after
+    /// 3 × mat4 + position vec4). See [`GpuCamera`] for the layout —
+    /// any field reorder there must update the offset constant below.
+    pub fn patch_camera_rt_flag(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        rt_flag: f32,
+    ) -> Result<()> {
+        // Compile-time check that the offset hasn't drifted from the
+        // GpuCamera layout. If a future field reorder shifts `flags`,
+        // this will fail to compile and the offset has to be revisited.
+        const FLAGS_OFFSET: usize = std::mem::offset_of!(GpuCamera, flags);
+        const _: () = assert!(FLAGS_OFFSET == 208);
+
+        let buf = &mut self.camera_buffers[frame_index];
+        let mapped = buf.mapped_slice_mut()?;
+        let bytes = rt_flag.to_le_bytes();
+        // `flags[0]` is the first f32 of `[f32; 4]` at FLAGS_OFFSET.
+        mapped[FLAGS_OFFSET..FLAGS_OFFSET + 4].copy_from_slice(&bytes);
+        buf.flush_if_needed(device)
+    }
+
     /// Upload the 6-axis directional ambient cube for the current
     /// frame-in-flight. Consumed by `triangle.frag` at descriptor set 1
     /// binding 14. The cube's `flags.x` field gates the consumer: when
