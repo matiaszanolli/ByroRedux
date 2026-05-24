@@ -163,22 +163,29 @@ egui = "0.33"
 egui-winit = { version = "0.33", default-features = false, features = ["links", "wayland", "x11"] }
 egui-ash-renderer = { version = "0.11", features = ["gpu-allocator"] }
 
-# ── Debug-build optimisation for math-heavy deps (Phase 12) ─────
+# ── Debug-build optimisation (Phases 12 + 16) ─────────────────
 #
-# Diagnosis: on a Skyrim interior (Sleeping Giant Inn, 3211 ECS
-# entities, hundreds of static `bhkRigidBody`-imported colliders),
-# the debug-UI Metrics panel measured `physics_sync_system =
-# 414 ms` per frame — single system dominating the 555 ms wall
-# frame. Root cause: rapier3d / parry3d / nalgebra run with
-# `opt-level = 0` in debug builds, where the per-iteration math
-# (matrix multiplies, BVH descents, narrow-phase contact tests)
-# is ~100× slower than release. The engine code itself benefits
-# from being unoptimised (fast iteration, debuggable stacks), so
-# the right answer is per-package optimisation: keep the engine
-# at the default `opt-level = 0`, lift the math crates to 3.
+# Phase 12 diagnosis: on a Skyrim interior (Sleeping Giant Inn,
+# 3211 ECS entities, hundreds of static `bhkRigidBody`-imported
+# colliders), the debug-UI Metrics panel measured
+# `physics_sync_system = 414 ms` per frame — single system
+# dominating the 555 ms wall frame. Root cause: rapier3d /
+# parry3d / nalgebra run with `opt-level = 0` in debug builds,
+# where the per-iteration math is ~100× slower than release.
 #
-# Pattern lifted from the Bevy / Macroquad playbook. The
-# `--release` build is unaffected (already opt-level=3 globally).
+# Phase 16 diagnosis: after Phase 12, three consecutive readings
+# pinned `render_one_frame`'s pre-draw phase at a deterministic
+# 47.4 ms (±0.15 ms). That's the engine's own
+# `build_render_data` walking 3211 entities, plus other per-
+# frame ECS / draw-list bookkeeping, running unoptimised.
+# Bevy / Macroquad pattern: set the workspace default for debug
+# builds to `opt-level = 1` — keeps full debug symbols, lets the
+# compiler do inlining + simple optimisation. Per-package
+# overrides for math crates stay at 3 so we don't regress
+# physics. The `--release` build is unaffected.
+
+[profile.dev]
+opt-level = 1
 
 [profile.dev.package.rapier3d]
 opt-level = 3
