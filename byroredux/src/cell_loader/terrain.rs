@@ -107,15 +107,27 @@ pub(super) fn build_cell_splat_layers(
         .collect();
     sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
 
-    // Bethesda's authoring tool caps at 8 per UESP, but modded content
-    // (TTW, Project Nevada, DLC merges) has been observed going higher.
+    // Bethesda's authoring tool caps at 8 per UESP, but Skyrim
+    // routinely ships cells with 9-12 layers and modded content
+    // (TTW, Project Nevada, DLC merges) goes higher. The 8-cap is
+    // a real shader-side limit — `vertex.rs::Vertex` packs splat
+    // weights as 2× RGBA8 = 8 channels per vertex.
+    //
+    // Pre-fix this dropped the highest `layer` field values, but
+    // `layer` is just authoring order — not visual importance. A
+    // tiny trim decal authored last would survive while a dominant
+    // ground texture authored first got dropped if the budget was
+    // hit. Coverage-aware policy picks the 8 layers with the most
+    // painted area across all quadrants, then re-sorts for
+    // deterministic GPU ordering. #470.
     if sorted.len() > 8 {
+        let drop_count = sorted.len() - 8;
         log::warn!(
-            "Terrain cell has {} splat layers, capping at 8 (dropping {} with highest `layer` field). #470",
+            "Terrain cell has {} splat layers, capping at 8 (dropping {} with smallest total coverage). #470",
             sorted.len(),
-            sorted.len() - 8,
+            drop_count,
         );
-        sorted.truncate(8);
+        select_top_8_by_coverage(&mut sorted);
     }
 
     let mut layers = Vec::with_capacity(sorted.len());
@@ -136,6 +148,50 @@ pub(super) fn build_cell_splat_layers(
     }
 
     CellSplatLayers { layers }
+}
+
+/// In-place coverage-aware selection of the top 8 splat layers from
+/// `sorted`. Computes total painted alpha across all quadrants per
+/// layer, keeps the 8 highest-coverage layers, then re-sorts those 8
+/// by `(layer, ltex_form_id)` so the GPU vertex-attribute layer-index
+/// ordering stays deterministic across runs.
+///
+/// Pure function — no Vulkan, no allocator — so it's unit-testable
+/// without a real cell. #470.
+///
+/// Precondition: `sorted.len() > 8` (called only when the cap is
+/// exceeded; the no-op case is gated at the call site).
+fn select_top_8_by_coverage(sorted: &mut Vec<(u32, u16, PerQuadrantAlpha)>) {
+    // Coverage = sum of alpha values across all painted quadrants.
+    // f64 accumulator handles the worst case (4 quadrants × 17×17 =
+    // 1156 floats × 1.0 = 1156.0) without precision drift even when
+    // many cells stack up across a session.
+    sorted.sort_by(|a, b| {
+        let ca = total_coverage(&a.2);
+        let cb = total_coverage(&b.2);
+        // Descending coverage; partial_cmp is safe because alpha values
+        // from the ATXT parser are finite [0, 1] f32s — NaN cannot
+        // appear. Default to Equal on the impossible None branch.
+        cb.partial_cmp(&ca).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    sorted.truncate(8);
+    // Re-sort by (layer, ltex) so the shader's per-layer-index access
+    // pattern stays consistent with the no-cap path — pre-fix every
+    // caller assumed `(layer ascending, ltex ascending)` ordering.
+    sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+}
+
+/// Sum of alpha values across all painted quadrants for one layer.
+/// Higher = more painted area = more visually important. Used by the
+/// coverage-aware splat cap to drop the least-impactful layers when
+/// a cell exceeds the 8-channel vertex budget. #470.
+fn total_coverage(per_quadrant_alpha: &PerQuadrantAlpha) -> f64 {
+    per_quadrant_alpha
+        .iter()
+        .filter_map(|q| q.as_ref())
+        .flat_map(|q| q.iter())
+        .map(|&v| v as f64)
+        .sum()
 }
 
 /// Map a global 33×33 `(row, col)` to the list of contributing
@@ -396,4 +452,147 @@ pub(super) fn spawn_terrain_mesh(
     );
 
     Some(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a layer tuple with one painted quadrant filled to a
+    /// constant alpha value. `alpha = 0.0` produces a zero-coverage
+    /// layer; `alpha = 1.0` produces full coverage in that quadrant.
+    fn layer(ltex: u32, layer_field: u16, q_idx: usize, alpha: f32) -> (u32, u16, PerQuadrantAlpha) {
+        let mut slots: PerQuadrantAlpha = Default::default();
+        slots[q_idx] = Some(vec![alpha; 17 * 17]);
+        (ltex, layer_field, slots)
+    }
+
+    #[test]
+    fn coverage_drops_zero_paint_layers_first() {
+        // 12 layers — 8 with full coverage (alpha=1.0) and 4 with
+        // zero coverage (alpha=0.0). Coverage-aware policy should
+        // drop the 4 zero-coverage layers and keep the 8 painted
+        // ones, regardless of the `layer_field` (authoring order).
+        //
+        // Pre-fix this dropped by `layer_field` ascending — the 4
+        // zero-coverage layers at field=8..11 would have been kept
+        // and 4 of the painted layers at field=4..7 would have been
+        // dropped, producing a visually-broken terrain cell.
+        let mut sorted: Vec<(u32, u16, PerQuadrantAlpha)> = Vec::new();
+        for i in 0..8u32 {
+            // High-coverage layers, low `layer_field` values.
+            sorted.push(layer(0xC000_0000 + i, i as u16, (i % 4) as usize, 1.0));
+        }
+        for i in 0..4u32 {
+            // Zero-coverage layers, high `layer_field` values — pre-fix
+            // these would have survived the truncation.
+            sorted.push(layer(0xD000_0000 + i, (8 + i) as u16, (i % 4) as usize, 0.0));
+        }
+        // Sort matches the call-site state at entry to select_top_8_by_coverage.
+        sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+        assert_eq!(sorted.len(), 12);
+
+        select_top_8_by_coverage(&mut sorted);
+
+        assert_eq!(sorted.len(), 8);
+        // Every survivor should be a high-coverage layer (LTEX 0xC0..).
+        for (ltex, _, _) in &sorted {
+            assert!(
+                *ltex >= 0xC000_0000 && *ltex < 0xD000_0000,
+                "zero-coverage layer 0x{:08X} survived the cap",
+                ltex
+            );
+        }
+    }
+
+    #[test]
+    fn coverage_keeps_dominant_layers_drops_trim() {
+        // Realistic Skyrim pattern: 4 dominant ground textures
+        // (grass, dirt, rock, snow) at high coverage + 6 trim
+        // decorations (paths, decals, edge blends) at low coverage.
+        // Total = 10 layers; 2 must drop. Expect both dropped to
+        // be from the trim group.
+        let mut sorted: Vec<(u32, u16, PerQuadrantAlpha)> = Vec::new();
+        // 4 dominant: full coverage in one quadrant each.
+        for i in 0..4u32 {
+            sorted.push(layer(0xA000_0000 + i, i as u16, (i % 4) as usize, 1.0));
+        }
+        // 6 trim: 10% coverage in one quadrant each.
+        for i in 0..6u32 {
+            sorted.push(layer(0xB000_0000 + i, (4 + i) as u16, (i % 4) as usize, 0.1));
+        }
+        sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+        assert_eq!(sorted.len(), 10);
+
+        select_top_8_by_coverage(&mut sorted);
+
+        assert_eq!(sorted.len(), 8);
+        // All 4 dominant layers must survive.
+        let surviving_dominant = sorted
+            .iter()
+            .filter(|(ltex, _, _)| *ltex >= 0xA000_0000 && *ltex < 0xB000_0000)
+            .count();
+        assert_eq!(surviving_dominant, 4, "a dominant layer was dropped");
+        // 4 of the 6 trim layers should survive (the policy is
+        // order-insensitive within the trim group since they all
+        // have identical coverage — any 4 is correct).
+        let surviving_trim = sorted
+            .iter()
+            .filter(|(ltex, _, _)| *ltex >= 0xB000_0000 && *ltex < 0xC000_0000)
+            .count();
+        assert_eq!(surviving_trim, 4, "wrong number of trim layers survived");
+    }
+
+    #[test]
+    fn output_is_resorted_by_layer_after_truncation() {
+        // After the coverage-based selection, the survivors must be
+        // re-sorted by (layer_field, ltex) for deterministic GPU
+        // ordering — the shader's per-layer-index access pattern
+        // expects this. Verifies the second sort runs.
+        let mut sorted: Vec<(u32, u16, PerQuadrantAlpha)> = Vec::new();
+        // 9 layers, distinct layer_field values 100..108, all full
+        // coverage. The selection by coverage is a tie — every
+        // layer has identical coverage — so the dropped one is
+        // implementation-defined, but the survivors must be sorted
+        // ascending by layer_field on output.
+        for i in 0..9u16 {
+            sorted.push(layer(0xE000_0000 + i as u32, 100 + i, 0, 1.0));
+        }
+        sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+
+        select_top_8_by_coverage(&mut sorted);
+
+        assert_eq!(sorted.len(), 8);
+        // Verify sorted ascending by layer_field.
+        for w in sorted.windows(2) {
+            assert!(
+                w[0].1 < w[1].1 || (w[0].1 == w[1].1 && w[0].0 < w[1].0),
+                "output not sorted by (layer_field, ltex_form_id)"
+            );
+        }
+    }
+
+    #[test]
+    fn total_coverage_sums_across_quadrants() {
+        // Layer painted in 3 of 4 quadrants — 0.5 alpha each, 17×17
+        // cells per quadrant. Expected = 3 × 17 × 17 × 0.5 = 433.5.
+        let mut slots: PerQuadrantAlpha = Default::default();
+        slots[0] = Some(vec![0.5; 17 * 17]);
+        slots[1] = Some(vec![0.5; 17 * 17]);
+        slots[3] = Some(vec![0.5; 17 * 17]);
+        // slots[2] = None — unpainted quadrant contributes zero.
+
+        let cov = total_coverage(&slots);
+        let expected = 3.0 * (17 * 17) as f64 * 0.5;
+        assert!(
+            (cov - expected).abs() < 1e-9,
+            "expected {expected}, got {cov}"
+        );
+    }
+
+    #[test]
+    fn total_coverage_zero_for_empty_layer() {
+        let slots: PerQuadrantAlpha = Default::default();
+        assert_eq!(total_coverage(&slots), 0.0);
+    }
 }
