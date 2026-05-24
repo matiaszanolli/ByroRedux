@@ -158,10 +158,17 @@ void main() {
     // for the current frame (see draw.rs:268-273).
     if (sceneFlags.x < 0.5) return;
 
-    // Instance flag gate — only caustic-source pixels splat.
+    // Instance flag gate — only caustic-source pixels splat. The bit
+    // value is generated from `INSTANCE_FLAG_CAUSTIC_SOURCE` in
+    // `shader_constants_data.rs:86` and re-exported by
+    // `include/shader_constants.glsl` (already #include'd above).
+    // Pre-#1234 this read the bare literal `4u`, which would silently
+    // drift if a new flag claimed bit 2 — the Rust ↔ define lockstep
+    // assertion at shader_constants.rs:313-320 catches the rename but
+    // not the literal callsite.
     uint instIdx = meshId - 1u;
     uint flags = instances[instIdx].flags;
-    if ((flags & 4u) == 0u) return;
+    if ((flags & INSTANCE_FLAG_CAUSTIC_SOURCE) == 0u) return;
 
     // Reconstruct the refractive surface point.
     float depth = texelFetch(depthTex, pixel, 0).r;
