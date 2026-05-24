@@ -39,6 +39,13 @@ Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 - Empty scheduler runs without panic
 - system_names() returns correct order
 
+### 5b. M27 — Parallel Scheduler Access Declarations (closed 2026-05-23)
+- **M27 Phase 1+2** (`a9810d40`): every system in `byroredux/src/systems/*.rs` declares its component / resource access surface (read / write per type). The declaration is checked by the scheduler at registration time; any system missing a declaration is a regression (`SystemAccess::default()` would conservatively serialize everything)
+- **M27 Phase 3** (`05fe2bac`): the four remaining access conflicts between parallel-stage systems were resolved, bringing the scheduler to **0 unknown / 0 conflicts**. Audit pattern: any system pair that re-introduces a conflict on the same parallel stage must either be moved to different stages or have one side's access narrowed
+- **#1236 + #1237 R7 scheduler access surface extended to exclusives** (`94e78b9f`): exclusive (Late-stage) systems also declare access surface now — the cell-loader drain, debug-server drain, audio prune, and event-cleanup systems all have explicit declarations. Verify no exclusive system regresses to undeclared access
+- **#1238 Scheduler stage-order chain pinned across all 5 stages** (`54ea11c0`): Early → Update → ParallelUpdate → Late → LateExclusive ordering pinned by a test. Re-ordering or merging stages without updating the test is the regression pattern
+- **Regression guard**: `cargo test -p byroredux` must report **0 unknown** and **0 conflicts** at scheduler init (look for the boot-time log line). Any non-zero count is an audit finding
+
 ### 6. Unsafe Code Review
 - World::get() uses raw pointer to extend lifetime — is the safety argument valid?
 - Any other unsafe blocks: document safety invariants

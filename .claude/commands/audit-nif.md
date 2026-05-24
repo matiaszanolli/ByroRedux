@@ -63,14 +63,23 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 **Checklist**: List all block type names that appear in real game NIFs (from corpus or BSA listing) but are not in the parse_block dispatch table, count NiUnknown fallbacks per game, identify which missing block types cause cascading failures (blocks without block_size in Oblivion format), estimate coverage percentage per game.
 **Output**: `/tmp/audit/nif/dim_5.md`
 
-### Dimension 6: Stream Allocation Hygiene (PERF — 2026-05-04 batch)
-**Entry points**: `crates/nif/src/stream.rs` (allocate_vec, read_pod_vec), all `blocks/*.rs` callers
+### Dimension 6: Stream Allocation Hygiene (PERF — 2026-05-04 batch + 2026-05-23 follow-up)
+**Entry points**: `crates/nif/src/stream.rs` (allocate_vec, read_pod_vec), all `blocks/*.rs` callers, `byroredux/src/streaming.rs::pre_parse_cell`
 **Checklist**:
-- `stream.allocate_vec::<T>(n)?;` carries `#[must_use]`. Bound-check-only call sites that discard the empty Vec are a leak/no-op pattern fixed at 9 sites by #831 NIF-PERF-03; the attribute prevents recurrence — verify it's still on
+- `stream.allocate_vec::<T>(n)?;` carries `#[must_use]`. Bound-check-only call sites that discard the empty Vec are a leak/no-op pattern fixed at 9 sites by #831 NIF-PERF-03; the attribute prevents recurrence — verify it's still on. **#1246 extended the `#[must_use]` discipline** (`a56c9e71`) to the `read_pod_vec` wrappers AND the KFM `allocate_vec` site
 - 6 NIF bulk-array readers go through `read_pod_vec<T>` to collapse double allocation (#833 NIF-PERF-02). Direct allocate-then-loop-and-fill is the regression. The helper has a top-of-module compile-error gate for big-endian hosts; bytemuck is NOT a workspace dep despite some audits claiming it
 - Per-block parse-loop counters use `entry().get_mut() / insert` split, NOT `entry().or_insert(name.to_string())` (#832 NIF-PERF-01) — the to_string path leaks ~150 KB/cell of throwaway short-string allocations on Oblivion
 - #408 blanket `allocate_vec` sweep (60+ sites across 12 NIF files, Session 12): any new bulk-read site MUST use `allocate_vec` or `read_pod_vec`, NOT `Vec::with_capacity` + per-element read in a loop
-- Note the dhat-infra gap (see Performance audit): there's no allocation-counter regression test for these fixes today. Audits proposing further allocation-reduction findings should flag the gap.
+- **#1245 `ragdoll.rs` `allocate_vec` adoption** (`8490d829`): the bone-pose / ragdoll-template parse path now uses `allocate_vec` instead of the `check_alloc` idiom. Verify no other bhk*/ragdoll parser in `crates/nif/src/blocks/collision/` regressed back to the old idiom
+- **BSGeometry bulk-read fast path** (#1263 + #1265, `dd02ad3f`, 2026-05-24): `BSGeometry` (Starfield 155-bsver mesh) extracts vertex/index data via the `read_pod_vec` bulk-read fast path. NiTriShape tangent extraction uses `std::mem::take` on the `Vec<f32>` to avoid a per-mesh clone. Regression pattern: a future BSGeometry change that re-introduces `Vec::with_capacity` + per-vertex loop, OR a clone instead of `mem::take` on tangents. Affects parse perf at Starfield-cell scale
+- **NIF dispatch `Arc<str>` regression + rayon serial fast path** (#1261 + #1262, `6368b077`, 2026-05-24): per-block dispatch routes through `Arc<str>` for block names (interned). The rayon-parallel parse path has a serial fast-path for small models (`pre_parse_cell` in `byroredux/src/streaming.rs`). Verify both paths are wired — serial fast path is the regression target when small cells go through the parallel overhead path
+- **`pre_parse_cell` serial extract → parallel parse split** (#877, `ba646f8b`, 2026-05-23): the cell-streaming `pre_parse_cell` worker is now a two-phase pipeline (serial header extraction → rayon-parallel body parse). The serial extract phase is what the #1262 fast path skips on small models. Verify the phase split is intact — collapsing them back into a monolithic parallel pass is the regression
+- **`#[must_use]` extension on `read_pod_vec` wrappers + KFM `allocate_vec`** (#1246, `a56c9e71`, 2026-05-23): six read_pod_vec helper functions and the KFM allocate_vec call now carry `#[must_use]`. A future helper that doesn't carry the attribute is the regression pattern
+- **dhat-gated allocation-bound regression test landed** (#1247, `88cd8792`, 2026-05-23): NIF parser allocation count is now pinned by a `cfg(feature = "dhat")`-gated test. The infrastructure gap flagged across earlier audits is partially closed — verify the test is in `crates/nif/tests/` and asserts an upper-bound allocation count on a canonical input. Future alloc-reduction findings can NOW be guarded by extending this test (was the open dhat-infra gap noted in 2026-05-04+)
+- **Per-game NiPSysEmitter / NiTextureEffect version gating** (#1239 + #1240, `97524667` + `9cb93b5b`, 2026-05-23):
+  - `NiPSysEmitter` now routes through nif.xml's version gate so Oblivion (`bsver < 26`) parses correctly — was previously assuming Skyrim+ field layout
+  - `NiTextureEffect.NiDynamicEffect`-base parsing is gated on `bsver < FALLOUT4` (the FO4+ split removed the embedded NiDynamicEffect)
+  - Regression pattern: a future block parser that hardcodes a single layout without checking BSVER bands
 **Output**: `/tmp/audit/nif/dim_6.md`
 
 ## Phase 3: Merge
