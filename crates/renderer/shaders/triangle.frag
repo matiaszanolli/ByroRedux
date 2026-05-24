@@ -642,7 +642,14 @@ float distributionGGXAniso(float NdotH, float HdotX, float HdotY, float ax, floa
 // See #1250 / GLSL-PathTracer `pathtrace.glsl:100-102` (MIT).
 void deriveAxAy(float roughness, float anisotropic, out float ax, out float ay) {
     float alpha = roughness * roughness; // shader convention: α = roughness²
-    float aspect = sqrt(1.0 - anisotropic * 0.9);
+    // #1254 — defense-in-depth: clamp anisotropic to [0, 1] before the
+    // sqrt. A future BGSM v9+ / Starfield .mat importer that ships an
+    // unclamped authored value > 1.0 would otherwise give
+    // `sqrt(1 - 0.9·a) < 0` → NaN, propagating through ax/ay into
+    // distributionGGXAniso → black/undefined fragment. < 0 inputs
+    // shrink ax below the intended floor — same single-line guard.
+    float aniso = clamp(anisotropic, 0.0, 1.0);
+    float aspect = sqrt(1.0 - aniso * 0.9);
     ax = max(0.025 * 0.025, alpha / aspect);
     ay = max(0.025 * 0.025, alpha * aspect);
 }
@@ -670,7 +677,13 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 // representable. Reference: knightcrawler25/GLSL-PathTracer
 // (MIT) `src/shaders/common/disney.glsl:56-57`. See #1248.
 float dielectricF0FromIor(float eta) {
-    float r = (1.0 - eta) / (1.0 + eta);
+    // #1253 — defense-in-depth: clamp η > 0 so an importer-side bug
+    // shipping uninitialized `mat.ior = 0` doesn't yield `F0 = 1.0`
+    // (mirror-class) on what should be a dielectric. The 1e-3 floor
+    // is below any physically-meaningful refractive index but above
+    // the divide-by-zero / sign-flip regimes.
+    float e = max(eta, 1e-3);
+    float r = (1.0 - e) / (1.0 + e);
     return r * r;
 }
 
