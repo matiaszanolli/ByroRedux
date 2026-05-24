@@ -235,7 +235,27 @@ pub struct GpuMaterial {
     /// stone 1.54, diamond 2.42 (F0 ≈ 0.172). FO4 BGSM v9+ and
     /// Starfield .mat materials author this explicitly; older NIF
     /// content inherits the default. See #1248.
-    pub ior: f32, // offset 280 → total 284
+    pub ior: f32, // offset 280
+    // ── Disney diffuse lobe (vec4 #21; offsets 284-296) ──────────────
+    /// Disney "subsurface" diffuse-lobe weight (0 = pure Burley
+    /// diffuse, 1 = full Hanrahan-Krueger fake-SSS). Cheap
+    /// approximation for waxy / marble / skin without a full BSSRDF.
+    /// Distinct from `translucency_*` (BGSM v>=8 back-light
+    /// transmission). Reference impl:
+    /// knightcrawler25/GLSL-PathTracer `disney.glsl:67-87` (MIT).
+    /// Default 0.0 keeps the pre-#1249 Lambert behaviour. See #1249.
+    pub subsurface: f32, // offset 284
+    /// Disney "sheen" Fresnel-weighted edge highlight strength
+    /// (0 = no sheen, 1 = full velvet/silk). Layered on top of the
+    /// diffuse lobe so fabric-class materials get their characteristic
+    /// edge brightening. Default 0.0. See #1249.
+    pub sheen: f32, // offset 288
+    /// Disney "sheen tint" — interpolation factor between white sheen
+    /// (0.0) and base-colour-tinted sheen (1.0). Standard Disney shape;
+    /// `mix(vec3(1.0), albedo, sheenTint)` is the per-pixel sheen
+    /// colour the lobe multiplies into. Default 0.0 → white sheen.
+    /// See #1249.
+    pub sheen_tint: f32, // offset 292 → total 296
 }
 
 impl Default for GpuMaterial {
@@ -332,6 +352,13 @@ impl Default for GpuMaterial {
             // shader behaviour so legacy NIF content with no authored
             // IOR renders byte-identical.
             ior: 1.5,
+            // #1249 — Disney diffuse lobe defaults all zero: legacy
+            // content (every NIF without MAT_FLAG_BGSM_PBR) routes
+            // through the Lambert branch and never touches these
+            // fields. Authored BGSM v>=8 materials can override.
+            subsurface: 0.0,
+            sheen: 0.0,
+            sheen_tint: 0.0,
         }
     }
 }
@@ -571,6 +598,11 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
     // the byte-equal-safe contract pinned by
     // `material_hash_matches_gpu_material_field_hash` holds.
     h.write_u32(mat.ior.to_bits());
+    // #1249 — Disney diffuse lobe (offsets 284-292). Same lockstep
+    // requirement as ior above.
+    h.write_u32(mat.subsurface.to_bits());
+    h.write_u32(mat.sheen.to_bits());
+    h.write_u32(mat.sheen_tint.to_bits());
     h.finish()
 }
 
@@ -811,12 +843,13 @@ mod tests {
     /// `translucency_subsurface_r/g/b` + `translucency_transmissive_scale`
     /// + `translucency_turbulence`), then 280 → 284 under #1248 (+4 B
     /// for `ior`, the per-material refractive index that drives
-    /// Schlick F0 derivation). Function and test name kept as "260"
-    /// so a future size shift updates them in lockstep with the
-    /// assertion.
+    /// Schlick F0 derivation), then 284 → 296 under #1249 (+12 B for
+    /// the Disney diffuse lobe — `subsurface` + `sheen` + `sheen_tint`).
+    /// Function and test name kept as "260" so a future size shift
+    /// updates them in lockstep with the assertion.
     #[test]
     fn gpu_material_size_is_260_bytes() {
-        assert_eq!(std::mem::size_of::<GpuMaterial>(), 284);
+        assert_eq!(std::mem::size_of::<GpuMaterial>(), 296);
     }
 
     /// `#[repr(C)]` puts no implicit padding between f32/u32 fields,
@@ -880,6 +913,8 @@ mod tests {
             "translucencyTurbulence;",
             // #1248 — per-material refractive index for Schlick F0
             "ior;",
+            // #1249 — Disney diffuse lobe (subsurface + sheen + sheenTint)
+            "subsurface;", "sheen;", "sheenTint;",
         ] {
             assert!(
                 src.contains(name),
@@ -1027,6 +1062,11 @@ mod tests {
 
         // ── PBR IOR (#1248, offset 280) ──────────────────────────
         assert_eq!(offset_of!(GpuMaterial, ior), 280);
+
+        // ── Disney diffuse lobe (#1249, offsets 284-292) ──────────
+        assert_eq!(offset_of!(GpuMaterial, subsurface), 284);
+        assert_eq!(offset_of!(GpuMaterial, sheen), 288);
+        assert_eq!(offset_of!(GpuMaterial, sheen_tint), 292);
     }
 
     #[test]

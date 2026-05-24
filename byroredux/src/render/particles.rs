@@ -118,6 +118,11 @@ pub(super) fn emit_particles(
                 // Particles don't author IOR; the default reproduces the
                 // pre-#1248 hardcoded vec3(0.04) shader behaviour.
                 ior: 1.5,
+                // #1249 — Disney diffuse off (particles use the legacy
+                // Lambert path; MAT_FLAG_BGSM_PBR never fires here).
+                subsurface: 0.0,
+                sheen: 0.0,
+                sheen_tint: 0.0,
                 // Emissive carries the particle color * alpha so the
                 // existing fragment-shader emissive add lights the quad
                 // with no scene-light dependency. Alpha is folded into

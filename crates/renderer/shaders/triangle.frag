@@ -143,9 +143,17 @@ struct GpuMaterial {
     // #1248 — per-material refractive index. Drives Schlick F0 via
     // `F0 = ((1-η)/(1+η))²` at every dielectric / glass site. Default
     // 1.5 reproduces the pre-#1248 hardcoded `vec3(0.04)` behaviour
-    // for legacy NIF content with no authored IOR. Offset 280 →
-    // closes the 284 B struct (next vec4 slot starts at 288).
+    // for legacy NIF content with no authored IOR. Offset 280.
     float ior;
+    // #1249 — Disney diffuse lobe (offsets 284-292). subsurface
+    // weights the Hanrahan-Krueger fake-SSS approximation against the
+    // Burley diffuse; sheen + sheenTint drive the fabric-class edge
+    // highlight. All zero by default → byte-identical Lambert
+    // behaviour for legacy NIF content. Only consulted when
+    // `MAT_FLAG_BGSM_PBR` is set; closes the 296 B struct.
+    float subsurface;
+    float sheen;
+    float sheenTint;
 };
 
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
@@ -610,6 +618,72 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 float dielectricF0FromIor(float eta) {
     float r = (1.0 - eta) / (1.0 + eta);
     return r * r;
+}
+
+// Disney diffuse lobe — Burley retro-reflection + Hanrahan-Krueger
+// fake-SSS subsurface + sheen. Replaces plain Lambert for materials
+// that author Disney-style fields (gated on `MAT_FLAG_BGSM_PBR` at
+// the call site). Pre-#1249 every direct-light fragment used pure
+// Lambert `albedo / PI` regardless of authored PBR data — cloth
+// looked flat, sand had no edge brighten, skin / wax / marble
+// missed the SSS approximation.
+//
+// Returns the per-fragment diffuse BRDF value (already divided by
+// PI). Multiply by `(1 - metalness)` at the call site to preserve
+// energy conservation against the specular lobe.
+//
+// Reference: knightcrawler25/GLSL-PathTracer (MIT)
+// `src/shaders/common/disney.glsl:67-87` — `EvalDisneyDiffuse`.
+//
+//   albedo:       base colour (linear)
+//   roughness:    perceptual roughness [0, 1]
+//   subsurface:   [0, 1] mix factor between Burley diffuse and
+//                 Hanrahan-Krueger fake-SSS (0 = pure Burley,
+//                 1 = pure fake-SSS).
+//   sheen:        [0, 1] strength of the Fresnel-weighted edge
+//                 highlight (cloth / silk / velvet).
+//   sheenTint:    [0, 1] interpolation between white sheen and
+//                 base-colour-tinted sheen.
+//   NdotL, NdotV, HdotL: precomputed cosines (already clamped).
+vec3 disneyDiffuseTerm(
+    vec3 albedo,
+    float roughness,
+    float subsurface,
+    float sheen,
+    float sheenTint,
+    float NdotL,
+    float NdotV,
+    float HdotL
+) {
+    // SchlickWeight = (1 - c)^5 — Fresnel-shaped grazing falloff.
+    float FL = pow(clamp(1.0 - NdotL, 0.0, 1.0), 5.0);
+    float FV = pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
+    float FH = pow(clamp(1.0 - HdotL, 0.0, 1.0), 5.0);
+
+    // Burley retro-reflection (rough-surface backscatter on
+    // grazing-light angles — edge brightening on cloth / sand /
+    // matte wood).
+    float Rr = 2.0 * roughness * HdotL * HdotL;
+    float Fretro = Rr * (FL + FV + FL * FV * (Rr - 1.0));
+
+    // Pure-Burley diffuse falloff at grazing — energy-conserving.
+    float Fd = (1.0 - 0.5 * FL) * (1.0 - 0.5 * FV);
+
+    // Hanrahan-Krueger fake subsurface. Cheap SSS approximation
+    // without a BSSRDF; visible on wax / marble / skin / leaves.
+    // Guard against divide-by-zero on grazing-on-grazing pairs.
+    float Fss90 = 0.5 * Rr;
+    float Fss = mix(1.0, Fss90, FL) * mix(1.0, Fss90, FV);
+    float ss = 1.25 * (Fss * (1.0 / max(NdotL + NdotV, 1e-4) - 0.5) + 0.5);
+
+    // Sheen — Fresnel-weighted edge highlight, tinted between white
+    // and base colour. Layered on top of the diffuse lobe (NOT
+    // divided by PI per Disney's spec).
+    vec3 sheenColor = mix(vec3(1.0), albedo, sheenTint);
+    vec3 Fsheen = FH * sheen * sheenColor;
+
+    // INV_PI = 1.0 / PI; the diffuse term divides, sheen does not.
+    return albedo * mix(Fd + Fretro, ss, subsurface) * (1.0 / PI) + Fsheen;
 }
 
 // Specular antialiasing — Kaplanyan & Hoffman 2016
@@ -2254,7 +2328,22 @@ void main() {
 
         vec3 kD = (1.0 - F) * (1.0 - metalness);
         vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
-        Lo = (kD * albedo / PI + specular * specStrength * specColor) * vec3(0.8) * NdotL;
+        // #1249 — Disney diffuse for PBR-authored content; plain
+        // Lambert for legacy NIF. Gated on MAT_FLAG_BGSM_PBR so
+        // every NIF without a v>=8 BGSM keeps the pre-fix value.
+        // Multiply by (1 - metalness) only — Disney's Fd already
+        // encodes the Fresnel-grazing energy loss via FL/FV.
+        vec3 diffuseBrdf;
+        if ((mat.materialFlags & MAT_FLAG_BGSM_PBR) != 0u) {
+            float HdotL = max(dot(H, L), 0.0);
+            diffuseBrdf = disneyDiffuseTerm(
+                albedo, roughness, mat.subsurface, mat.sheen, mat.sheenTint,
+                NdotL, NdotV, HdotL
+            ) * (1.0 - metalness);
+        } else {
+            diffuseBrdf = kD * albedo / PI;
+        }
+        Lo = (diffuseBrdf + specular * specStrength * specColor) * vec3(0.8) * NdotL;
     } else {
         // Clustered lighting with streaming RIS shadow sampling.
         //
@@ -2430,7 +2519,27 @@ void main() {
             vec3 kD = (1.0 - F) * (1.0 - metalness);
             vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
             vec3 unshadowedRadiance = lightColor * atten;
-            vec3 brdfResult = (kD * albedo + specular * specStrength * specColor) * NdotL;
+            // #1249 — Disney diffuse for PBR-authored content; plain
+            // Lambert for legacy NIF. Same gate as the fallback-
+            // directional path above. The pre-#1249 form was
+            // `kD * albedo` (no /PI here, intentional — the
+            // pre-#1249 INV_PI was folded into a later scale step
+            // distinct from the fallback path above). Preserve that
+            // scaling: don't divide the Disney term by PI here.
+            // (Disney's lobe value INTERNALLY divides by PI; this
+            // path multiplies by `PI` so the on-disk magnitudes
+            // match the legacy Lambert.)
+            vec3 diffuseBrdf;
+            if ((mat.materialFlags & MAT_FLAG_BGSM_PBR) != 0u) {
+                float HdotL = max(dot(H, L), 0.0);
+                diffuseBrdf = disneyDiffuseTerm(
+                    albedo, roughness, mat.subsurface, mat.sheen, mat.sheenTint,
+                    NdotL, NdotV, HdotL
+                ) * (1.0 - metalness) * PI;
+            } else {
+                diffuseBrdf = kD * albedo;
+            }
+            vec3 brdfResult = (diffuseBrdf + specular * specStrength * specColor) * NdotL;
 
             // Accumulate as if unshadowed.
             Lo += brdfResult * unshadowedRadiance;

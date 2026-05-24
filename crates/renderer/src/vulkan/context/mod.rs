@@ -134,6 +134,18 @@ pub struct DrawCommand {
     /// with no authored IOR; FO4 BGSM v9+ and Starfield .mat
     /// materials override with their authored value.
     pub ior: f32,
+    /// Disney diffuse "subsurface" lobe weight (#1249). 0.0 keeps the
+    /// pre-#1249 Lambert behaviour; 1.0 fully blends in the
+    /// Hanrahan-Krueger fake-SSS approximation. Only consulted when
+    /// `MAT_FLAG_BGSM_PBR` is set (legacy NIF stays on plain Lambert).
+    pub subsurface: f32,
+    /// Disney diffuse "sheen" lobe strength (#1249). 0.0 = no sheen;
+    /// 1.0 = full fabric-class edge highlight. Same `MAT_FLAG_BGSM_PBR`
+    /// gate.
+    pub sheen: f32,
+    /// Disney "sheen tint" (#1249) — `0` = white sheen, `1` = tinted
+    /// by base colour (per Disney's `mix(vec3(1), albedo, sheenTint)`).
+    pub sheen_tint: f32,
     /// Emissive intensity multiplier.
     pub emissive_mult: f32,
     /// Emissive color (RGB).
@@ -424,6 +436,10 @@ impl DrawCommand {
             translucency_turbulence: self.translucency_turbulence,
             // #1248 — per-material refractive index.
             ior: self.ior,
+            // #1249 — Disney diffuse lobe.
+            subsurface: self.subsurface,
+            sheen: self.sheen,
+            sheen_tint: self.sheen_tint,
         }
     }
 
@@ -553,6 +569,11 @@ impl DrawCommand {
         // write mirrors `hash_gpu_material_fields` so the contract pinned
         // by `material_hash_matches_gpu_material_field_hash` holds.
         h.write_u32(self.ior.to_bits());
+        // #1249 — Disney diffuse lobe (offsets 284-292). Same lockstep
+        // requirement as ior above.
+        h.write_u32(self.subsurface.to_bits());
+        h.write_u32(self.sheen.to_bits());
+        h.write_u32(self.sheen_tint.to_bits());
         h.finish()
     }
 }
@@ -2561,6 +2582,11 @@ mod draw_command_tests {
             // field, mirroring the other intentionally-non-default
             // values in this fixture.
             ior: 1.45,
+            // #1249 — distinct non-default Disney lobe values so the
+            // hash walk exercises each independently.
+            subsurface: 0.42,
+            sheen: 0.18,
+            sheen_tint: 0.66,
             emissive_mult: 1.5,
             emissive_color: [0.11, 0.22, 0.33],
             specular_strength: 0.91,

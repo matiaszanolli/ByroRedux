@@ -558,6 +558,14 @@ pub(super) fn collect_static_mesh_draws(
                     // BGSM v9+ / Starfield .mat IOR routes through
                     // Material → here when the importer surfaces it.
                     ior: 1.5,
+                    // #1249 — Disney diffuse defaults zero so the
+                    // shader-side Lambert/Disney branch picks Lambert
+                    // (every NIF without MAT_FLAG_BGSM_PBR). BGSM v9+
+                    // sheen / subsurface fields can be plumbed through
+                    // Material when the importer surfaces them.
+                    subsurface: 0.0,
+                    sheen: 0.0,
+                    sheen_tint: 0.0,
                     emissive_mult,
                     emissive_color,
                     specular_strength,

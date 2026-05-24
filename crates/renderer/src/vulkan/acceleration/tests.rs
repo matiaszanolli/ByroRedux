@@ -41,6 +41,9 @@ fn make_draw_command(in_tlas: bool, is_water: bool) -> DrawCommand {
         roughness: 0.5,
         metalness: 0.0,
         ior: 1.5, // #1248
+        subsurface: 0.0, // #1249
+        sheen: 0.0,
+        sheen_tint: 0.0,
         emissive_mult: 0.0,
         emissive_color: [0.0; 3],
         specular_strength: 0.0,
