@@ -6,6 +6,7 @@ mod cell_loader;
 mod cli_args;
 mod commands;
 mod components;
+mod debug_load;
 mod helpers;
 mod npc_spawn;
 mod parsed_nif_cache;
@@ -382,6 +383,15 @@ impl App {
         // times are filled and refreshed at 2 Hz.
         world.insert_resource(MetricsState::default());
         world.insert_resource(MetricsSnapshot::default());
+        // Debug-UI load queue. Always present so the debug-server's
+        // `LoadNif` / `LoadInteriorCell` / `LoadExteriorCell`
+        // handlers can push into it via `try_resource_mut` without
+        // structurally inserting. Drained by `App::step_debug_loads`
+        // between frames where `&mut World + &mut VulkanContext` are
+        // both held.
+        world.insert_resource(
+            byroredux_core::ecs::PendingDebugLoadSlot::default(),
+        );
         world.insert_resource(SelectedRef::default());
         world.insert_resource(InputState::default());
         world.insert_resource(StringPool::new());
@@ -993,6 +1003,20 @@ impl App {
                 state.pending.remove(&(gx, gy));
             }
         }
+    }
+
+    /// Drain any queued debug-UI load ops and dispatch them to the
+    /// existing loader primitives. Runs once per frame after
+    /// `step_streaming` (so any in-flight streaming work settles
+    /// first) and before `step_cell_transition` (so a queued debug
+    /// cell load can't race with a `door.teleport`-driven transition
+    /// that landed the same frame). No-op when the queue is empty,
+    /// which is the steady-state case.
+    fn step_debug_loads(&mut self) {
+        let Some(ctx) = self.renderer.as_mut() else {
+            return;
+        };
+        debug_load::execute_pending_debug_loads(&mut self.world, ctx, &mut self.streaming);
     }
 
     /// Drain any queued [`cell_loader::PendingCellTransition`] and
@@ -1798,6 +1822,15 @@ impl ApplicationHandler for App {
         // for this frame. No-ops outside `--esm + --grid` exterior
         // mode and when the player hasn't crossed a boundary.
         self.step_streaming();
+
+        // Debug-UI load queue (Phase 2 of the debug-UI plan). Drains
+        // the `PendingDebugLoadSlot` populated by the debug-server's
+        // `LoadNif` / `LoadInteriorCell` / `LoadExteriorCell`
+        // handlers. Sequenced BEFORE `step_cell_transition` so a
+        // debug load that arrives the same frame as a queued
+        // `door.teleport` doesn't trample the transition's mid-load
+        // state.
+        self.step_debug_loads();
 
         // Cell-transition dispatch (M40 Phase 2 Stage 3). Drains the
         // `PendingCellTransitionSlot` posted by `door.teleport`

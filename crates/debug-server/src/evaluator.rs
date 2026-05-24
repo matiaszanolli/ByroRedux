@@ -5,6 +5,8 @@
 
 use byroredux_core::console::CommandRegistry;
 use byroredux_core::ecs::components::{Material, Name, TextureHandle};
+use byroredux_core::ecs::debug_load::{PendingDebugLoad, PendingDebugLoadSlot};
+use byroredux_core::ecs::metrics::MetricsSnapshot;
 use byroredux_core::ecs::resources::DebugStats;
 use byroredux_core::ecs::world::World;
 use byroredux_core::string::StringPool;
@@ -75,30 +77,111 @@ pub fn evaluate(
 
         DebugRequest::Eval { expr } => eval_request(world, registry, expr),
 
-        // Phase 1 protocol additions — handlers land in Phase 2.
-        // Returning explicit errors (not a wildcard arm) so adding a
-        // future request variant produces the same exhaustiveness
-        // error that flagged these, instead of being silently
-        // swallowed by `_ => ...`.
-        DebugRequest::Metrics => {
-            DebugResponse::error("Metrics request not yet implemented (Phase 2)")
-        }
-        DebugRequest::LoadNif { .. } => {
-            DebugResponse::error("LoadNif request not yet implemented (Phase 2)")
-        }
-        DebugRequest::LoadInteriorCell { .. } => {
-            DebugResponse::error("LoadInteriorCell request not yet implemented (Phase 2)")
-        }
-        DebugRequest::LoadExteriorCell { .. } => {
-            DebugResponse::error("LoadExteriorCell request not yet implemented (Phase 2)")
-        }
+        DebugRequest::Metrics => eval_metrics(world),
+
+        DebugRequest::LoadNif { path, label } => eval_queue_load(
+            world,
+            PendingDebugLoad::Nif {
+                path: path.clone(),
+                label: label.clone(),
+            },
+        ),
+
+        DebugRequest::LoadInteriorCell {
+            esm,
+            cell,
+            masters,
+            bsas,
+            textures_bsas,
+        } => eval_queue_load(
+            world,
+            PendingDebugLoad::InteriorCell {
+                esm: esm.clone(),
+                cell: cell.clone(),
+                masters: masters.clone(),
+                bsas: bsas.clone(),
+                textures_bsas: textures_bsas.clone(),
+            },
+        ),
+
+        DebugRequest::LoadExteriorCell {
+            esm,
+            grid_x,
+            grid_y,
+            radius,
+            worldspace,
+            masters,
+            bsas,
+            textures_bsas,
+        } => eval_queue_load(
+            world,
+            PendingDebugLoad::ExteriorCell {
+                esm: esm.clone(),
+                grid_x: *grid_x,
+                grid_y: *grid_y,
+                radius: *radius,
+                worldspace: worldspace.clone(),
+                masters: masters.clone(),
+                bsas: bsas.clone(),
+                textures_bsas: textures_bsas.clone(),
+            },
+        ),
+
+        // Phase 5 owns ListGameProfiles + the GameProfileRegistry
+        // resource. Phase 2 doesn't promote the renderer's asset
+        // registries to a server-readable shape — leaving stubs that
+        // hint at the responsible phase keeps the dispatch
+        // exhaustive without silently shipping empty lists.
         DebugRequest::ListGameProfiles => {
-            DebugResponse::error("ListGameProfiles request not yet implemented (Phase 5)")
+            DebugResponse::error("ListGameProfiles handler is Phase 5")
         }
         DebugRequest::ListLoadedAssets { .. } => {
-            DebugResponse::error("ListLoadedAssets request not yet implemented (Phase 2)")
+            DebugResponse::error("ListLoadedAssets handler not yet implemented")
         }
     }
+}
+
+/// Read the engine's `MetricsSnapshot` and convert to the
+/// wire-format `DebugResponse::Metrics`. Pure read; no World
+/// mutation. Returns an `Error` if the resource hasn't been inserted
+/// (the binary always inserts it at boot, so this only fires in
+/// unit-test harnesses).
+fn eval_metrics(world: &World) -> DebugResponse {
+    let Some(snap) = world.try_resource::<MetricsSnapshot>() else {
+        return DebugResponse::error(
+            "MetricsSnapshot resource not present (was metrics_sample_system registered?)",
+        );
+    };
+    DebugResponse::Metrics {
+        sampled_at_secs: snap.sampled_at_secs,
+        cpu_pct: snap.cpu_pct,
+        ram_used_mb: snap.ram_used_mb,
+        ram_total_mb: snap.ram_total_mb,
+        process_ram_mb: snap.process_ram_mb,
+        vram_used_mb: snap.vram_used_mb,
+        vram_reserved_mb: snap.vram_reserved_mb,
+        vram_budget_mb: snap.vram_budget_mb,
+        // `BTreeMap` already iterates in key order — preserve that
+        // for the wire response so the UI's rendering of pass times
+        // doesn't shuffle frame-to-frame.
+        gpu_pass_ms: snap.gpu_pass_ms.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+    }
+}
+
+/// Push a load request onto the `PendingDebugLoadSlot`. Returns `Ok`
+/// (the binary's `step_debug_loads` drains the slot between frames
+/// and dispatches to the real loaders where `&mut World + &mut
+/// VulkanContext` are both held). Returns an error only when the
+/// slot resource is missing — same condition as `eval_metrics`'s
+/// missing-`MetricsSnapshot` branch.
+fn eval_queue_load(world: &World, load: PendingDebugLoad) -> DebugResponse {
+    let Some(mut slot) = world.try_resource_mut::<PendingDebugLoadSlot>() else {
+        return DebugResponse::error(
+            "PendingDebugLoadSlot resource not present (was the slot inserted at boot?)",
+        );
+    };
+    slot.push(load);
+    DebugResponse::Ok
 }
 
 /// Dump every registered component on an entity. The inspection half

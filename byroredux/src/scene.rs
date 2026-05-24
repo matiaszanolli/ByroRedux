@@ -851,7 +851,7 @@ pub(crate) fn setup_scene(
 
 
 mod nif_loader;
-pub(crate) use nif_loader::load_nif_bytes_with_skeleton;
+pub(crate) use nif_loader::{load_nif_bytes, load_nif_bytes_with_skeleton};
 use nif_loader::load_nif_from_args;
 
 #[cfg(test)]
