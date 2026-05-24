@@ -350,6 +350,13 @@ pub struct ScratchTelemetry {
     /// breaks byte-equality dedup before VRAM pressure shows it.
     /// (#1066 / REN-D14-NEW-06 — corrected from the prior inverted formula)
     pub materials_interned: usize,
+    /// Number of `intern()` calls routed to id 0 (the neutral-default
+    /// fallback) because the table hit `MAX_MATERIALS`. Mirrors
+    /// `MaterialTable::overflow_count()`. Zero in the common case;
+    /// non-zero is the signal that the cap should be raised — see
+    /// `MAX_MATERIALS` in `crates/renderer/src/vulkan/scene_buffer/
+    /// constants.rs`. Surfaced by the `mem` console command.
+    pub materials_overflow: usize,
 }
 
 impl Resource for ScratchTelemetry {}

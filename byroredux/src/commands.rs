@@ -352,10 +352,17 @@ impl ConsoleCommand for CtxScratchCommand {
         // is what catches a dedup regression at scale.
         if tlm.materials_interned > 0 {
             let ratio = tlm.materials_interned as f64 / tlm.materials_unique.max(1) as f64;
-            lines.push(format!(
+            let mut line = format!(
                 "  materials: {} unique / {} interned ({:.1}× dedup)",
                 tlm.materials_unique, tlm.materials_interned, ratio,
-            ));
+            );
+            if tlm.materials_overflow > 0 {
+                line.push_str(&format!(
+                    ", OVERFLOW {} → id 0 (raise MAX_MATERIALS)",
+                    tlm.materials_overflow,
+                ));
+            }
+            lines.push(line);
         }
         CommandOutput::lines(lines)
     }

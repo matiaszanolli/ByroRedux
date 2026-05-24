@@ -115,13 +115,24 @@ pub const MAX_INDIRECT_DRAWS: usize = MAX_INSTANCES;
 pub const MAX_TERRAIN_TILES: usize = 1024;
 
 /// Maximum number of unique materials per frame in the
-/// [`super::super::material::MaterialTable`] SSBO. 4096 × 260 B = 1.04 MB
-/// per frame × 3 frames-in-flight = 3.3 MB total — trivial.
+/// [`super::super::material::MaterialTable`] SSBO. 16384 × 304 B = 4.75 MB
+/// per frame × MAX_FRAMES_IN_FLIGHT (2) = 9.5 MB total — well inside the
+/// 4 GB total VRAM budget (`feedback_vram_baseline.md`).
 ///
-/// Real interior cells dedup to 50–200 unique materials; a 3×3
-/// exterior grid lands around 300–600. The cap is sized 6–10× over
-/// the largest observed scene to absorb future content. See R1.
-pub const MAX_MATERIALS: usize = 4096;
+/// Observed unique-material counts (post-Disney-PBR; #1248-#1251 added
+/// ior / subsurface / sheen / sheen_tint / anisotropic, each a fresh
+/// dedup-distinguishing axis):
+/// * FNV / FO3 interior cell — 50-200
+/// * FNV / FO3 3×3 exterior grid — 300-600
+/// * Skyrim radius-3 (7×7 = 49 cells) Riverwood — 4000+ (exceeded the
+///   prior 4096 cap; SAFE-22 / #797 cap-and-warn fired)
+///
+/// 16384 absorbs Skyrim radius-5 + DLC content + future Starfield/FO76
+/// per-segment SubIndex materials with comfortable headroom. The cap-
+/// and-warn safety net at `material.rs::MaterialTable::intern_by_hash`
+/// still triggers on overflow (over-cap entries share material 0); the
+/// overflow counter on the table surfaces how badly we're over.
+pub const MAX_MATERIALS: usize = 16384;
 
 /// Per-frame stride for the shared ray-budget buffer (#683 / MEM-2-8).
 /// Each frame's slot must start on a `minStorageBufferOffsetAlignment`

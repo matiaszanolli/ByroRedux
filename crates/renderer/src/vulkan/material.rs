@@ -870,6 +870,17 @@ pub struct MaterialTable {
     /// dropping ratio in telemetry rather than silently inflating
     /// VRAM. See #780 / PERF-N1.
     interned_count: usize,
+    /// Per-frame count of `intern_by_hash` calls that hit the
+    /// [`MAX_MATERIALS`] cap and were routed to the neutral default
+    /// (id `0`) instead of getting a fresh slot. Reset at frame
+    /// start by [`Self::clear`]. Surfaced through
+    /// [`Self::overflow_count`] so the `mem` console command can
+    /// report "how badly is the cap blown" — a single `Once`-gated
+    /// warning loses count visibility (which #797 / SAFE-22's
+    /// cap-and-warn intentionally accepted for cheapness; the
+    /// counter restores it without the per-overflow log spam).
+    /// Non-zero means raising [`MAX_MATERIALS`] is appropriate.
+    overflow_count: usize,
 }
 
 impl Default for MaterialTable {
@@ -884,6 +895,7 @@ impl MaterialTable {
             materials: Vec::new(),
             index: HashMap::new(),
             interned_count: 0,
+            overflow_count: 0,
         };
         t.seed_neutral_default();
         t
@@ -897,6 +909,7 @@ impl MaterialTable {
         self.materials.clear();
         self.index.clear();
         self.interned_count = 0;
+        self.overflow_count = 0;
         self.seed_neutral_default();
     }
 
@@ -1008,11 +1021,13 @@ impl MaterialTable {
             return id;
         }
         if self.materials.len() >= MAX_MATERIALS {
+            self.overflow_count += 1;
             INTERN_OVERFLOW_WARNED.call_once(|| {
                 log::warn!(
                     "MaterialTable: unique-material count exceeded MAX_MATERIALS \
                      ({}); over-cap entries share the neutral-default material 0 \
-                     for the rest of the session. See #797 / SAFE-22 + #807.",
+                     for the rest of the session. See #797 / SAFE-22 + #807. \
+                     Per-frame overflow count via `mem` command.",
                     MAX_MATERIALS,
                 );
             });
@@ -1043,6 +1058,15 @@ impl MaterialTable {
     /// Dedup ratio = `len() / interned_count()`. See #780 / PERF-N1.
     pub fn interned_count(&self) -> usize {
         self.interned_count
+    }
+
+    /// Number of intern calls this frame that were routed to id `0`
+    /// (the neutral-default fallback) because the table hit
+    /// [`MAX_MATERIALS`]. `0` in the common case; non-zero means
+    /// raising the cap is appropriate. Surfaced through the `mem`
+    /// console command.
+    pub fn overflow_count(&self) -> usize {
+        self.overflow_count
     }
 
     /// Number of user-interned unique materials this frame, excluding

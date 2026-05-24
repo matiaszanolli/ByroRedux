@@ -1561,6 +1561,7 @@ impl ApplicationHandler for App {
                         let mut tlm = self.world.resource_mut::<ScratchTelemetry>();
                         tlm.materials_unique = self.material_table.unique_user_count();
                         tlm.materials_interned = self.material_table.interned_count();
+                        tlm.materials_overflow = self.material_table.overflow_count();
                     }
 
                     // Rebuild the global geometry SSBO if new meshes were
