@@ -1250,6 +1250,257 @@ impl App {
 /// transition flows can re-use the same teardown sequence — the
 /// shutdown ordering invariants (loaded cells before worker join
 /// before context drop) are identical at door transitions.
+
+// Phase 14 — `render_one_frame` is an inherent method on `App` so it
+// can be called from both the `WindowEvent::RedrawRequested` arm (now
+// a no-op) and the `about_to_wait` tick. Trait impl reopens after the
+// inherent block below.
+impl App {
+    /// Phase 14 — pulled out of the original `WindowEvent::RedrawRequested`
+    /// arm so the game loop can call it directly from `about_to_wait`
+    /// instead of routing through `request_redraw()` → wait for the
+    /// compositor's frame-callback → `RedrawRequested`. On Wayland +
+    /// winit 0.30, that round-trip gates the engine at the
+    /// compositor's pace (~18 FPS in the observed Sleeping Giant Inn
+    /// reading) regardless of `ControlFlow::Poll`. Drawing from
+    /// `about_to_wait` bypasses the gate; combined with MAILBOX
+    /// present mode the compositor still vsyncs presentation but
+    /// the render loop runs uncapped.
+    fn render_one_frame(&mut self, event_loop: &ActiveEventLoop) {
+        // Phase 4 — populate the panel snapshot from the
+        // World, run egui (gets `PanelOutputs` back), apply
+        // those outputs, then stash the FullOutput +
+        // egui::Context for the renderer to consume.
+        let snapshot = build_debug_ui_snapshot(
+            &self.world,
+            self.debug_ui_refresh_entities,
+        );
+        self.debug_ui_refresh_entities = false;
+
+        let (egui_frame, outputs) = if let (Some(ref mut ui), Some(ref win)) =
+            (self.debug_ui.as_mut(), self.window.as_ref())
+        {
+            let outputs = ui.run(win, &snapshot);
+            let frame = ui.take_output().map(|out| (ui.egui_ctx.clone(), out));
+            (frame, outputs)
+        } else {
+            (None, byroredux_debug_ui::PanelOutputs::default())
+        };
+
+        apply_debug_ui_outputs(&mut self.world, outputs, &mut self.debug_ui_refresh_entities);
+
+        if let Some(ref mut ctx) = self.renderer {
+            if let Some((egui_ctx, output)) = egui_frame {
+                ctx.submit_egui_frame(egui_ctx, output);
+            }
+            let is_benching = self.bench_frames_target.is_some();
+
+            let brd_t0 = Instant::now();
+            let frame = build_render_data(
+                &self.world,
+                &mut self.draw_commands,
+                &mut self.water_commands,
+                &mut self.gpu_lights,
+                &mut self.bone_world,
+                &mut self.skin_offsets,
+                &mut self.skin_slot_pool,
+                &mut self.material_table,
+                ctx.particle_quad_handle,
+            );
+            if is_benching {
+                self.bench_build_render_ns += brd_t0.elapsed().as_nanos() as u64;
+            }
+
+            {
+                let mut tlm = self.world.resource_mut::<ScratchTelemetry>();
+                tlm.materials_unique = self.material_table.unique_user_count();
+                tlm.materials_interned = self.material_table.interned_count();
+                tlm.materials_overflow = self.material_table.overflow_count();
+            }
+
+            if ctx.mesh_registry.is_geometry_dirty() {
+                if let Err(e) = ctx.mesh_registry.rebuild_geometry_ssbo(
+                    &ctx.device,
+                    ctx.allocator.as_ref().unwrap(),
+                    &ctx.graphics_queue,
+                    ctx.transfer_pool,
+                ) {
+                    log::warn!("Failed to rebuild geometry SSBO: {e}");
+                }
+            }
+
+            world_resource_set::<DebugStats>(&self.world, |s| {
+                s.draw_command_count = self.draw_commands.len() as u32;
+            });
+
+            // Tick and render the UI overlay (Ruffle SWF player).
+            let ui_t0 = Instant::now();
+            let mut ui_tex = None;
+            if let Some(ref mut ui) = self.ui_manager {
+                let dt = self
+                    .world
+                    .try_resource::<DeltaTime>()
+                    .map(|d| d.0 as f64)
+                    .unwrap_or(1.0 / 60.0);
+                let ui_w = ui.width;
+                let ui_h = ui.height;
+                ui.tick(dt);
+
+                if let Some(pixels) = ui.render() {
+                    if let Some(handle) = self.ui_texture_handle {
+                        let allocator = ctx.allocator.as_ref().unwrap();
+                        if let Err(e) = ctx.texture_registry.update_rgba(
+                            &ctx.device,
+                            allocator,
+                            &ctx.graphics_queue,
+                            ctx.transfer_pool,
+                            handle,
+                            ui_w,
+                            ui_h,
+                            pixels,
+                        ) {
+                            log::error!("UI texture update failed: {e:#}");
+                        }
+                        ui_tex = Some(handle);
+                    }
+                } else if self.ui_texture_handle.is_some() {
+                    ui_tex = self.ui_texture_handle;
+                }
+            }
+            if is_benching {
+                self.bench_ui_ns += ui_t0.elapsed().as_nanos() as u64;
+            }
+
+            let is_interior = self
+                .world
+                .try_resource::<crate::components::CellLightingRes>()
+                .is_some_and(|l| l.is_interior);
+            let clear_color = if is_interior {
+                [0.0, 0.0, 0.0, 1.0]
+            } else {
+                byroredux_core::types::Color::CORNFLOWER_BLUE.as_array()
+            };
+            let render_t0 = Instant::now();
+            let mut frame_timings =
+                Some(byroredux_renderer::FrameTimings::default());
+            let pending = self.skin_slot_pool.drain_pending(
+                byroredux_renderer::vulkan::scene_buffer::MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME,
+            );
+            let pending_with_data: Vec<(u32, Vec<[[f32; 4]; 4]>)> = pending
+                .into_iter()
+                .filter_map(|(slot, entity)| {
+                    self.world
+                        .get::<byroredux_core::ecs::SkinnedMesh>(entity)
+                        .map(|skin| {
+                            let mut padded: Vec<[[f32; 4]; 4]> = skin
+                                .bind_inverses
+                                .iter()
+                                .map(|m| m.to_cols_array_2d())
+                                .collect();
+                            padded.resize(
+                                byroredux_core::ecs::components::MAX_BONES_PER_MESH,
+                                [
+                                    [1.0, 0.0, 0.0, 0.0],
+                                    [0.0, 1.0, 0.0, 0.0],
+                                    [0.0, 0.0, 1.0, 0.0],
+                                    [0.0, 0.0, 0.0, 1.0],
+                                ],
+                            );
+                            (slot, padded)
+                        })
+                })
+                .collect();
+            match ctx.draw_frame(
+                clear_color,
+                &frame.view_proj,
+                &self.draw_commands,
+                &self.gpu_lights,
+                &self.bone_world,
+                &pending_with_data,
+                self.material_table.materials(),
+                frame.camera_pos,
+                frame.ambient,
+                frame.fog_color,
+                frame.fog_near,
+                frame.fog_far,
+                frame.fog_clip,
+                frame.fog_power,
+                ui_tex,
+                &frame.sky,
+                frame_timings.as_mut(),
+                &self.water_commands,
+                compute_underwater_params(&self.world),
+                self.skin_slot_pool.pose_dirty(),
+            ) {
+                Ok(needs_recreate) => {
+                    let last_draw_stats = ctx.last_draw_call_stats;
+                    world_resource_set::<DebugStats>(&self.world, |s| {
+                        s.batch_count = last_draw_stats.batch_count;
+                        s.indirect_call_count = last_draw_stats.indirect_call_count;
+                    });
+                    if let Some(ref ft) = frame_timings {
+                        const NS_TO_MS: f32 = 1.0e-6;
+                        let mut cpu_t = self
+                            .world
+                            .resource_mut::<byroredux_core::ecs::CpuFrameTimings>();
+                        cpu_t.fence_wait_ms = ft.fence_wait_ns as f32 * NS_TO_MS;
+                        cpu_t.tlas_build_ms = ft.tlas_build_ns as f32 * NS_TO_MS;
+                        cpu_t.ssbo_build_ms = ft.ssbo_build_ns as f32 * NS_TO_MS;
+                        cpu_t.cmd_record_ms = ft.cmd_record_ns as f32 * NS_TO_MS;
+                        cpu_t.submit_present_ms =
+                            ft.submit_present_ns as f32 * NS_TO_MS;
+                        cpu_t.acquire_ms = ft.acquire_ns as f32 * NS_TO_MS;
+                        cpu_t.between_frames_ms = self
+                            .last_redraw_end
+                            .map(|t| t.elapsed().as_nanos() as f32 * NS_TO_MS)
+                            .unwrap_or(0.0);
+                    }
+                    if is_benching {
+                        self.bench_render_ns += render_t0.elapsed().as_nanos() as u64;
+                        if let Some(ft) = frame_timings {
+                            let b = &mut self.bench_frame_timings;
+                            b.fence_wait_ns += ft.fence_wait_ns;
+                            b.tlas_build_ns += ft.tlas_build_ns;
+                            b.ssbo_build_ns += ft.ssbo_build_ns;
+                            b.cmd_record_ns += ft.cmd_record_ns;
+                            b.submit_present_ns += ft.submit_present_ns;
+                        }
+                        if self.bench_start.is_none() {
+                            self.bench_start = Some(Instant::now());
+                        }
+                        self.bench_frames_count += 1;
+                    }
+                    if needs_recreate {
+                        if let Some(ref win) = self.window {
+                            let size = win.inner_size();
+                            if size.width > 0 && size.height > 0 {
+                                if let Err(e) =
+                                    ctx.recreate_swapchain([size.width, size.height])
+                                {
+                                    log::error!("Swapchain recreate failed: {e:#}");
+                                    event_loop.exit();
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("Draw failed: {e:#}");
+                    event_loop.exit();
+                }
+            }
+        }
+        // Phase 9 — stamp end-of-frame. Next `render_one_frame`
+        // call computes `now() - last_redraw_end` as
+        // `between_frames_ms` (compositor wait + scheduler.run +
+        // about_to_wait host work). Set unconditionally even if
+        // the inner `if let Some(ref mut ctx)` branch was skipped,
+        // so the metric remains continuous across renderer-down
+        // frames.
+        self.last_redraw_end = Some(Instant::now());
+    }
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -1319,13 +1570,7 @@ impl ApplicationHandler for App {
                 );
 
                 // Phase 4 of the debug-UI plan — initialise the
-                // egui overlay before the first frame. The pass
-                // needs the live VulkanContext (allocator +
-                // swapchain), so this has to land between
-                // `VulkanContext::new` and the first `draw_frame`.
-                // Failure here is non-fatal: log + skip — the
-                // engine still renders, the operator just doesn't
-                // get the overlay.
+                // egui overlay before the first frame.
                 let mut ctx = ctx;
                 if let Err(e) = ctx.init_egui(
                     byroredux_renderer::vulkan::sync::MAX_FRAMES_IN_FLIGHT,
@@ -1340,23 +1585,7 @@ impl ApplicationHandler for App {
                 self.last_frame = Instant::now();
                 self.setup_scene();
                 // M41.0 Phase 1b.x — Prime the scene's transform state
-                // BEFORE the event loop starts. winit fires the initial
-                // `WindowEvent::RedrawRequested` for the first paint
-                // *before* the first `about_to_wait` tick, so without
-                // this prime the renderer's first `build_render_data`
-                // reads every freshly-spawned entity's `GlobalTransform`
-                // at its `IDENTITY` default — for skinned meshes that
-                // means the bone palette is computed as `IDENTITY ×
-                // bind_inverse` and the body's vertices get yanked toward
-                // world-origin, producing a one-frame stretched-cone
-                // artifact that's brief but visible. Running the
-                // scheduler once here drives the propagation system
-                // through every spawned subtree (placement_root → skel /
-                // body / head NIF chains) so frame 0 has the same valid
-                // GTs every subsequent frame will. Sibling fix to the
-                // explicit `GlobalTransform::new(ref_pos, ...)` in
-                // `npc_spawn::spawn_npc_entity` — that pre-seeds the
-                // placement root, this propagates the seed.
+                // BEFORE the event loop starts.
                 self.scheduler.run(&self.world, 0.0);
                 self.renderer.as_ref().unwrap().log_memory_usage();
                 log::info!("Engine ready — entering game loop");
@@ -1481,324 +1710,14 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                // Phase 4 — populate the panel snapshot from the
-                // World, run egui (gets `PanelOutputs` back), apply
-                // those outputs, then stash the FullOutput +
-                // egui::Context for the renderer to consume.
-                let snapshot = build_debug_ui_snapshot(
-                    &self.world,
-                    self.debug_ui_refresh_entities,
-                );
-                self.debug_ui_refresh_entities = false;
-
-                let (egui_frame, outputs) = if let (Some(ref mut ui), Some(ref win)) =
-                    (self.debug_ui.as_mut(), self.window.as_ref())
-                {
-                    let outputs = ui.run(win, &snapshot);
-                    let frame = ui.take_output().map(|out| (ui.egui_ctx.clone(), out));
-                    (frame, outputs)
-                } else {
-                    (None, byroredux_debug_ui::PanelOutputs::default())
-                };
-
-                apply_debug_ui_outputs(&mut self.world, outputs, &mut self.debug_ui_refresh_entities);
-
-                if let Some(ref mut ctx) = self.renderer {
-                    if let Some((egui_ctx, output)) = egui_frame {
-                        ctx.submit_egui_frame(egui_ctx, output);
-                    }
-                    let is_benching = self.bench_frames_target.is_some();
-
-                    let brd_t0 = Instant::now();
-                    let frame = build_render_data(
-                        &self.world,
-                        &mut self.draw_commands,
-                        &mut self.water_commands,
-                        &mut self.gpu_lights,
-                        &mut self.bone_world,
-                        &mut self.skin_offsets,
-                        &mut self.skin_slot_pool,
-                        &mut self.material_table,
-                        ctx.particle_quad_handle,
-                    );
-                    if is_benching {
-                        self.bench_build_render_ns += brd_t0.elapsed().as_nanos() as u64;
-                    }
-
-                    // #780 / PERF-N1 — snapshot R1 dedup metrics for
-                    // the frame we just built so `ctx.scratch` can
-                    // surface them. Cheap (two usize writes) and
-                    // capturing here means the values reflect the
-                    // exact state visible to the SSBO upload below.
-                    //
-                    // #1032 / REN-D14-NEW-01 — `unique_user_count()`
-                    // excludes the seeded neutral slot 0, so the
-                    // `mat.stats` console output reports the actual
-                    // distinct-materials count (Prospector baseline:
-                    // 87 unique, not the 88 the pre-fix `len()`
-                    // emitted).
-                    {
-                        let mut tlm = self.world.resource_mut::<ScratchTelemetry>();
-                        tlm.materials_unique = self.material_table.unique_user_count();
-                        tlm.materials_interned = self.material_table.interned_count();
-                        tlm.materials_overflow = self.material_table.overflow_count();
-                    }
-
-                    // Rebuild the global geometry SSBO if new meshes were
-                    // loaded since the last build (cell transitions, late
-                    // streaming). See #258.
-                    if ctx.mesh_registry.is_geometry_dirty() {
-                        // StagingPool reuse lives on
-                        // `MeshRegistry.geometry_staging_pool` — lazy-init
-                        // on the first `build_geometry_ssbo` call (during
-                        // scene load), reused on every frame-loop rebuild
-                        // thereafter. Closes the #242 consumer-side TODO
-                        // (#1055).
-                        if let Err(e) = ctx.mesh_registry.rebuild_geometry_ssbo(
-                            &ctx.device,
-                            ctx.allocator.as_ref().unwrap(),
-                            &ctx.graphics_queue,
-                            ctx.transfer_pool,
-                        ) {
-                            log::warn!("Failed to rebuild geometry SSBO: {e}");
-                        }
-                    }
-
-                    // #1258 / PERF-D3-NEW-03 — record the pre-batch
-                    // input count NOW (before draw_frame). The
-                    // post-batch counts (`batch_count`,
-                    // `indirect_call_count`) are written inside the
-                    // `Ok` arm after `draw_frame` returns, sourced
-                    // from `ctx.last_draw_call_stats`. Split write
-                    // because the input is known here and the output
-                    // counters only become available after the batch
-                    // merger runs.
-                    world_resource_set::<DebugStats>(&self.world, |s| {
-                        s.draw_command_count = self.draw_commands.len() as u32;
-                    });
-
-                    // Tick and render the UI overlay (Ruffle SWF player).
-                    let ui_t0 = Instant::now();
-                    let mut ui_tex = None;
-                    if let Some(ref mut ui) = self.ui_manager {
-                        let dt = self
-                            .world
-                            .try_resource::<DeltaTime>()
-                            .map(|d| d.0 as f64)
-                            .unwrap_or(1.0 / 60.0);
-                        let ui_w = ui.width;
-                        let ui_h = ui.height;
-                        ui.tick(dt);
-
-                        if let Some(pixels) = ui.render() {
-                            if let Some(handle) = self.ui_texture_handle {
-                                let allocator = ctx.allocator.as_ref().unwrap();
-                                if let Err(e) = ctx.texture_registry.update_rgba(
-                                    &ctx.device,
-                                    allocator,
-                                    &ctx.graphics_queue,
-                                    ctx.transfer_pool,
-                                    handle,
-                                    ui_w,
-                                    ui_h,
-                                    pixels,
-                                ) {
-                                    log::error!("UI texture update failed: {e:#}");
-                                }
-                                ui_tex = Some(handle);
-                            }
-                        } else if self.ui_texture_handle.is_some() {
-                            // Not dirty, but still draw the last frame.
-                            ui_tex = self.ui_texture_handle;
-                        }
-                    }
-                    if is_benching {
-                        self.bench_ui_ns += ui_t0.elapsed().as_nanos() as u64;
-                    }
-
-                    // Clear color — black for interior cells (any gap
-                    // in wall geometry reveals this pixel), cornflower
-                    // blue for no-cell/default mode so a raw engine
-                    // launch still has the test-pattern backdrop.
-                    // Exterior cells ignore this entirely: composite.frag
-                    // replaces depth=far pixels with the sky gradient.
-                    let is_interior = self
-                        .world
-                        .try_resource::<crate::components::CellLightingRes>()
-                        .is_some_and(|l| l.is_interior);
-                    let clear_color = if is_interior {
-                        [0.0, 0.0, 0.0, 1.0]
-                    } else {
-                        byroredux_core::types::Color::CORNFLOWER_BLUE.as_array()
-                    };
-                    let render_t0 = Instant::now();
-                    // Phase 8 — always populate `FrameTimings`, not
-                    // just under `--bench`, so the egui Metrics
-                    // panel can surface CPU-side `fence_wait_ms` /
-                    // `submit_present_ms`. Per-frame overhead is
-                    // four `Instant::now()` calls — negligible.
-                    // Pre-Phase-8 this was gated on `is_benching`
-                    // and the diagnostic that exposed the "311 ms
-                    // gap between GPU timestamps and wall frame"
-                    // had to fall back to `--bench` output to read
-                    // these fields.
-                    let mut frame_timings =
-                        Some(byroredux_renderer::FrameTimings::default());
-                    // M29.6 — drain pending first-sight bind_inverses
-                    // uploads from the slot pool. The renderer writes
-                    // each (slot_id, mesh_bind_inverses) into the
-                    // persistent SSBO at the slot's offset before
-                    // dispatching skin_palette.comp. Empty on the
-                    // steady-state frame (no fresh skinned content).
-                    // M29.6 hotfix (#1192 / SAFE-D7-NEW-02) — pass the
-                    // renderer's staging-buffer cap to drain_pending so
-                    // entries past the cap stay in the pool and surface
-                    // on the next frame's drain. Pre-hotfix `drain_pending`
-                    // took the full queue and the renderer's
-                    // `upload_pending_bind_inverses` silently dropped the
-                    // tail, leaving entities allocated in
-                    // `pool.entity_to_slot` but never written to the
-                    // persistent SSBO.
-                    let pending = self.skin_slot_pool.drain_pending(
-                        byroredux_renderer::vulkan::scene_buffer::MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME,
-                    );
-                    let pending_with_data: Vec<(u32, Vec<[[f32; 4]; 4]>)> = pending
-                        .into_iter()
-                        .filter_map(|(slot, entity)| {
-                            self.world
-                                .get::<byroredux_core::ecs::SkinnedMesh>(entity)
-                                .map(|skin| {
-                                    let mut padded: Vec<[[f32; 4]; 4]> = skin
-                                        .bind_inverses
-                                        .iter()
-                                        .map(|m| m.to_cols_array_2d())
-                                        .collect();
-                                    padded.resize(
-                                        byroredux_core::ecs::components::MAX_BONES_PER_MESH,
-                                        [
-                                            [1.0, 0.0, 0.0, 0.0],
-                                            [0.0, 1.0, 0.0, 0.0],
-                                            [0.0, 0.0, 1.0, 0.0],
-                                            [0.0, 0.0, 0.0, 1.0],
-                                        ],
-                                    );
-                                    (slot, padded)
-                                })
-                        })
-                        .collect();
-                    match ctx.draw_frame(
-                        clear_color,
-                        &frame.view_proj,
-                        &self.draw_commands,
-                        &self.gpu_lights,
-                        &self.bone_world,
-                        &pending_with_data,
-                        self.material_table.materials(),
-                        frame.camera_pos,
-                        frame.ambient,
-                        frame.fog_color,
-                        frame.fog_near,
-                        frame.fog_far,
-                        frame.fog_clip,
-                        frame.fog_power,
-                        ui_tex,
-                        &frame.sky,
-                        frame_timings.as_mut(),
-                        &self.water_commands,
-                        compute_underwater_params(&self.world),
-                        // #1195 / PERF-DIM7-01 — per-frame pose-dirty
-                        // set populated by `build_skinned_palettes` via
-                        // `SkinSlotPool::try_mark_pose_dirty`. Drives
-                        // both the skin compute skip and the paired
-                        // skinned-BLAS refit skip (#1196).
-                        self.skin_slot_pool.pose_dirty(),
-                    ) {
-                        Ok(needs_recreate) => {
-                            // #1258 / PERF-D3-NEW-03 — capture
-                            // post-merge GPU draw counts populated by
-                            // `draw_frame`. Paired with
-                            // `draw_command_count` written before the
-                            // call; together they let the `stats`
-                            // command report the full dedup chain
-                            // (input → batch → indirect).
-                            let last_draw_stats = ctx.last_draw_call_stats;
-                            world_resource_set::<DebugStats>(&self.world, |s| {
-                                s.batch_count = last_draw_stats.batch_count;
-                                s.indirect_call_count = last_draw_stats.indirect_call_count;
-                            });
-                            // Phase 8 — write the freshly-filled
-                            // FrameTimings into `CpuFrameTimings` every
-                            // frame so the egui Metrics panel can
-                            // surface fence_wait_ms / submit_present_ms.
-                            // The bench-mode accumulator below reads
-                            // the same `frame_timings` local — both
-                            // paths see the same data. Phase 9 added
-                            // `acquire_ms` (closes the gap between
-                            // fence_wait and cmd_record) and
-                            // `between_frames_ms` (closes the gap
-                            // between successive RedrawRequested
-                            // events — compositor / scheduler).
-                            if let Some(ref ft) = frame_timings {
-                                const NS_TO_MS: f32 = 1.0e-6;
-                                let mut cpu_t = self
-                                    .world
-                                    .resource_mut::<byroredux_core::ecs::CpuFrameTimings>();
-                                cpu_t.fence_wait_ms = ft.fence_wait_ns as f32 * NS_TO_MS;
-                                cpu_t.tlas_build_ms = ft.tlas_build_ns as f32 * NS_TO_MS;
-                                cpu_t.ssbo_build_ms = ft.ssbo_build_ns as f32 * NS_TO_MS;
-                                cpu_t.cmd_record_ms = ft.cmd_record_ns as f32 * NS_TO_MS;
-                                cpu_t.submit_present_ms =
-                                    ft.submit_present_ns as f32 * NS_TO_MS;
-                                cpu_t.acquire_ms = ft.acquire_ns as f32 * NS_TO_MS;
-                                cpu_t.between_frames_ms = self
-                                    .last_redraw_end
-                                    .map(|t| t.elapsed().as_nanos() as f32 * NS_TO_MS)
-                                    .unwrap_or(0.0);
-                            }
-                            if is_benching {
-                                self.bench_render_ns += render_t0.elapsed().as_nanos() as u64;
-                                if let Some(ft) = frame_timings {
-                                    let b = &mut self.bench_frame_timings;
-                                    b.fence_wait_ns += ft.fence_wait_ns;
-                                    b.tlas_build_ns += ft.tlas_build_ns;
-                                    b.ssbo_build_ns += ft.ssbo_build_ns;
-                                    b.cmd_record_ns += ft.cmd_record_ns;
-                                    b.submit_present_ns += ft.submit_present_ns;
-                                }
-                                if self.bench_start.is_none() {
-                                    self.bench_start = Some(Instant::now());
-                                }
-                                self.bench_frames_count += 1;
-                            }
-                            if needs_recreate {
-                                if let Some(ref win) = self.window {
-                                    let size = win.inner_size();
-                                    if size.width > 0 && size.height > 0 {
-                                        if let Err(e) =
-                                            ctx.recreate_swapchain([size.width, size.height])
-                                        {
-                                            log::error!("Swapchain recreate failed: {e:#}");
-                                            event_loop.exit();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("Draw failed: {e:#}");
-                            event_loop.exit();
-                        }
-                    }
-                }
-                // Phase 9 — stamp end-of-RedrawRequested. The next
-                // RedrawRequested computes
-                // `now() - last_redraw_end` as `between_frames_ms`
-                // (compositor wait + scheduler.run + any
-                // about_to_wait host work). Set unconditionally
-                // here even if the inner `if let Some(ref mut ctx)`
-                // branch was skipped, so the metric remains
-                // continuous across renderer-down frames.
-                self.last_redraw_end = Some(Instant::now());
+                // Phase 14 — render is now driven by `about_to_wait`,
+                // not by the compositor's `RedrawRequested` event.
+                // The OS still fires this on window expose / resize /
+                // first paint, but we don't render here — the next
+                // `about_to_wait` tick will do the work and present
+                // the new frame. Keeping the arm empty (not removed)
+                // so the match stays exhaustive against the existing
+                // dummy match scope; the body is intentionally bare.
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
@@ -2030,8 +1949,16 @@ impl ApplicationHandler for App {
             }
         }
 
-        if let Some(ref win) = self.window {
-            win.request_redraw();
+        // Phase 14 — drive rendering directly from `about_to_wait`
+        // instead of `win.request_redraw()` → wait for
+        // compositor frame callback → `WindowEvent::RedrawRequested`.
+        // On Wayland + winit 0.30 the indirection costs ~54 ms per
+        // frame at the compositor's pace. Drawing here uncaps the
+        // loop; MAILBOX present mode still vsyncs the actual
+        // presentation but `between_frames` drops to the
+        // GPU+CPU-bound minimum.
+        if self.window.is_some() && self.renderer.is_some() {
+            self.render_one_frame(event_loop);
         }
 
         // --bench-frames: once we've rendered the target number of
