@@ -167,10 +167,44 @@ impl NiObject for NiUnknown {
 
 /// Parse a single block given its type name and a stream positioned at the block data.
 /// If the block size is known, `block_size` enables graceful skip of unknown types.
+///
+/// This is the test-friendly entry point — pass `&str` and an `Arc<str>` is
+/// allocated lazily only if the unknown-block-type fallback fires. The hot
+/// path (`lib.rs::parse_nif`) calls [`parse_block_with_name_arc`] instead,
+/// passing the already-built `Arc<str>` from the header table so the
+/// fallback can refcount-clone it rather than allocating fresh. See #1261.
 pub fn parse_block(
     type_name: &str,
     stream: &mut NifStream,
     block_size: Option<u32>,
+) -> io::Result<Box<dyn NiObject>> {
+    parse_block_inner(type_name, stream, block_size, None)
+}
+
+/// Hot-path entry point used by `lib.rs::parse_nif`. The caller already has
+/// an `Arc<str>` for the block type name (built once per block from the
+/// header table, then refcount-shared across every NiUnknown fallback);
+/// this function avoids a fresh `Arc::from(type_name)` in the fallback by
+/// cloning the caller's refcount instead. See #1261 / NIF-D5-NEW-01 — the
+/// `_ =>` fallback was missed by #834's original sweep across `lib.rs`.
+pub fn parse_block_with_name_arc(
+    type_name_arc: &Arc<str>,
+    stream: &mut NifStream,
+    block_size: Option<u32>,
+) -> io::Result<Box<dyn NiObject>> {
+    parse_block_inner(
+        type_name_arc.as_ref(),
+        stream,
+        block_size,
+        Some(type_name_arc),
+    )
+}
+
+fn parse_block_inner(
+    type_name: &str,
+    stream: &mut NifStream,
+    block_size: Option<u32>,
+    type_name_arc_hint: Option<&Arc<str>>,
 ) -> io::Result<Box<dyn NiObject>> {
     // O5-3 / #688 — early-Gamebryo NIFs in the file-version range
     // [10.0.0.0, 10.1.0.114) ship a 4-byte `groupID` field on every
@@ -1127,8 +1161,19 @@ pub fn parse_block(
                     size,
                     start
                 );
+                // #1261 — refcount-clone the caller's existing `Arc<str>`
+                // (built once per block by `parse_nif`) instead of
+                // allocating fresh on every unknown-block fallback. Tests
+                // calling `parse_block` directly pass `None` and fall back
+                // to the original `Arc::from(type_name)` allocation; only
+                // production hot-path callers via `parse_block_with_name_arc`
+                // get the refcount-share win.
+                let arc = match type_name_arc_hint {
+                    Some(a) => Arc::clone(a),
+                    None => Arc::from(type_name),
+                };
                 Ok(Box::new(NiUnknown {
-                    type_name: Arc::from(type_name),
+                    type_name: arc,
                     data: Vec::new(),
                 }))
             } else {

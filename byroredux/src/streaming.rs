@@ -435,6 +435,55 @@ where
 /// cached entries directly, no re-parse needed. See #862.
 ///
 /// Returns a populated [`LoadCellPayload`] (which may have an empty
+/// Parse + import a single (path, Option<bytes>) pair. Shared between
+/// the serial and parallel branches of `pre_parse_cell` so both paths
+/// stay byte-identical — no logic drift between code paths.
+///
+/// Per-NIF panic guard — converts a parser-level panic into the same
+/// `None` failure marker used by the regular `Err` path. Without this,
+/// a panic would propagate through rayon's `collect()` and tear down
+/// the worker thread (#854). Preserved verbatim across the #877
+/// refactor; extracted in #1262 (NIF-D5-NEW-02) to avoid duplicating
+/// the closure between the serial / parallel branches.
+fn parse_one_nif(
+    (path, bytes): (String, Option<Vec<u8>>),
+) -> (String, Option<PartialNifImport>) {
+    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(bytes) = bytes else {
+            log::debug!("[stream-worker] NIF not in BSA: '{}'", path);
+            return None;
+        };
+        let scene = match byroredux_nif::parse_nif(&bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("[stream-worker] NIF parse failed '{}': {}", path, e);
+                return None;
+            }
+        };
+        let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
+        let root_flags = byroredux_nif::import::extract_root_flags(&scene);
+        let lights = byroredux_nif::import::import_nif_lights(&scene);
+        let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
+        let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
+        Some(PartialNifImport {
+            scene,
+            bsx,
+            root_flags,
+            lights,
+            particle_emitters,
+            embedded_clip,
+        })
+    }))
+    .unwrap_or_else(|_| {
+        log::error!(
+            "[stream-worker] panic parsing NIF '{}' — recording None (#854)",
+            path
+        );
+        None
+    });
+    (path, parsed)
+}
+
 /// `parsed` map if the cell doesn't exist, has no references, or
 /// every model path was already cached — the main-thread drain still
 /// applies the empty payload so the pending entry is cleared).
@@ -549,52 +598,27 @@ fn pre_parse_cell(
         })
         .collect();
 
-    // Phase 2: parallel parse + import. No shared mutex on the hot
-    // path; each worker owns its `Vec<u8>` for the whole closure.
-    let results: Vec<(String, Option<PartialNifImport>)> = extracted
-        .into_par_iter()
-        .map(|(path, bytes)| {
-            // Per-NIF panic guard — converts a parser-level panic into
-            // the same `None` failure marker used by the regular Err
-            // path. Without this, a panic would propagate through
-            // rayon's `collect()` and tear down the worker thread
-            // (#854). Preserved verbatim across the #877 refactor.
-            let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let Some(bytes) = bytes else {
-                    log::debug!("[stream-worker] NIF not in BSA: '{}'", path);
-                    return None;
-                };
-                let scene = match byroredux_nif::parse_nif(&bytes) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::warn!("[stream-worker] NIF parse failed '{}': {}", path, e);
-                        return None;
-                    }
-                };
-                let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
-                let root_flags = byroredux_nif::import::extract_root_flags(&scene);
-                let lights = byroredux_nif::import::import_nif_lights(&scene);
-                let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
-                let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
-                Some(PartialNifImport {
-                    scene,
-                    bsx,
-                    root_flags,
-                    lights,
-                    particle_emitters,
-                    embedded_clip,
-                })
-            }))
-            .unwrap_or_else(|_| {
-                log::error!(
-                    "[stream-worker] panic parsing NIF '{}' — recording None (#854)",
-                    path
-                );
-                None
-            });
-            (path, parsed)
-        })
-        .collect();
+    // Phase 2: parse + import. Each worker owns its `Vec<u8>` for the
+    // whole closure — no shared mutex on the hot path.
+    //
+    // #1262 / NIF-D5-NEW-02 — rayon's worker-wake + join overhead
+    // (~50-200 µs typical) dominates at small N. Post-#862 the NIF
+    // import cache absorbs most cell-load work and the typical fresh-
+    // parse count is 0-6 per cell (the Riverwood log confirms "6 new
+    // unique meshes parsed, NIF cache hits/misses 156/6 this cell").
+    // Drop to serial iteration below the threshold; keep rayon for
+    // session-start fresh-cell bursts where N is genuinely large.
+    //
+    // Threshold: 8. Empirically chosen against the steady-state
+    // streaming pattern — at N≤7 the parallel dispatch is net-loss
+    // or break-even; N≥8 the parallel speedup outpaces wake-overhead.
+    const PRE_PARSE_RAYON_MIN: usize = 8;
+    let results: Vec<(String, Option<PartialNifImport>)> = if extracted.len() < PRE_PARSE_RAYON_MIN
+    {
+        extracted.into_iter().map(parse_one_nif).collect()
+    } else {
+        extracted.into_par_iter().map(parse_one_nif).collect()
+    };
     parsed.extend(results);
 
     LoadCellPayload {

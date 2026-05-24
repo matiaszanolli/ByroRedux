@@ -24,7 +24,7 @@ pub mod stream;
 pub mod types;
 pub mod version;
 
-use blocks::{parse_block, NiObject};
+use blocks::{parse_block_with_name_arc, NiObject};
 use header::NifHeader;
 use scene::NifScene;
 use std::collections::HashMap;
@@ -394,7 +394,12 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
             // No block_size (Oblivion) — must parse, can't skip
         }
 
-        match parse_block(type_name, &mut stream, block_size) {
+        // #1261 — pass the already-built `type_name_arc` so the unknown-
+        // block fallback inside `parse_block_inner` refcount-clones it
+        // instead of allocating a fresh `Arc<str>`. The lib.rs sites that
+        // construct NiUnknown directly already use `Arc::clone(&type_name_arc)`;
+        // this completes the sweep at the dispatch site missed by #834.
+        match parse_block_with_name_arc(&type_name_arc, &mut stream, block_size) {
             Ok(block) => {
                 let consumed = stream.position() - start_pos;
                 log::trace!(
