@@ -121,3 +121,10 @@ kira = "0.10"
 # C++ interop
 cxx = "1"
 cxx-build = "1"
+
+# Heap profiling — opt-in regression-test gate for the NIF-PERF-01/02/03
+# + #408 architectural pins (#1247). Off by default; enabled via the
+# per-crate `dhat-heap` feature. Pulled here so any future crate that
+# wants to ship its own allocation-bound regression test (renderer hot
+# path / ECS query churn) shares one version.
+dhat = "0.3"

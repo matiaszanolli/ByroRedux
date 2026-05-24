@@ -8,10 +8,24 @@ byroredux-core = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 nalgebra = { workspace = true }
+# Optional — pulled in only when the `dhat-heap` feature is enabled
+# (see [features] below). The crate has no non-test consumer of dhat,
+# but `[dev-dependencies]` does not allow `optional`, so the dep lives
+# in `[dependencies]` and the feature gate keeps it out of default
+# `cargo build` / `cargo test`. #1247.
+dhat = { workspace = true, optional = true }
 
 [dev-dependencies]
 byroredux-bsa = { workspace = true }
 env_logger = { workspace = true }
+
+[features]
+# #1247 — opt-in allocation-counter regression test for the NIF-PERF-01/02/03
+# + #408 pins. Activates `dhat` as a `#[global_allocator]` on the
+# `heap_allocation_bounds` integration test (gated `cfg(feature = "dhat-heap")`).
+# Default `cargo test -p byroredux-nif` runs without dhat — the gate fires
+# only under `cargo test -p byroredux-nif --features dhat-heap`.
+dhat-heap = ["dep:dhat"]
 
 [[example]]
 name = "nif_stats"
