@@ -224,7 +224,18 @@ pub struct GpuMaterial {
     /// (vegetation, frost-rimmed glass). 0.0 = no turbulence. The
     /// shader consumes it as a multiplier on a `sin(viewDotN * k)`
     /// term to keep cost trivial.
-    pub translucency_turbulence: f32, // offset 276 → total 280
+    pub translucency_turbulence: f32, // offset 276
+    // ── PBR IOR (vec4 #20; offsets 280-292) ──────────────────────────
+    /// Refractive index — per-material η that drives the Schlick F0
+    /// derivation `F0 = ((1-η)/(1+η))²` instead of the legacy hardcoded
+    /// `vec3(0.04)` dielectric default. Default 1.5 (soda-lime glass /
+    /// generic dielectric — `F0 = 0.04` matches the pre-#1248 behaviour
+    /// so legacy NIF content with no authored IOR renders unchanged).
+    /// Other common values: water 1.33 (F0 ≈ 0.020), ice 1.31, polished
+    /// stone 1.54, diamond 2.42 (F0 ≈ 0.172). FO4 BGSM v9+ and
+    /// Starfield .mat materials author this explicitly; older NIF
+    /// content inherits the default. See #1248.
+    pub ior: f32, // offset 280 → total 284
 }
 
 impl Default for GpuMaterial {
@@ -316,6 +327,11 @@ impl Default for GpuMaterial {
             translucency_subsurface_b: 0.0,
             translucency_transmissive_scale: 0.0,
             translucency_turbulence: 0.0,
+            // #1248 — generic dielectric default. F0 = ((1-1.5)/(1+1.5))²
+            // ≈ 0.04 — reproduces the pre-#1248 hardcoded vec3(0.04)
+            // shader behaviour so legacy NIF content with no authored
+            // IOR renders byte-identical.
+            ior: 1.5,
         }
     }
 }
@@ -550,6 +566,11 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
     h.write_u32(mat.translucency_subsurface_b.to_bits());
     h.write_u32(mat.translucency_transmissive_scale.to_bits());
     h.write_u32(mat.translucency_turbulence.to_bits());
+    // #1248 — per-material refractive index (offset 280). Must mirror
+    // the matching trailing write in `DrawCommand::material_hash` so
+    // the byte-equal-safe contract pinned by
+    // `material_hash_matches_gpu_material_field_hash` holds.
+    h.write_u32(mat.ior.to_bits());
     h.finish()
 }
 
@@ -788,12 +809,14 @@ mod tests {
     ///
     /// Grew 260 → 280 under #1147 / FO4-D6-003 Phase 2b (+20 B for
     /// `translucency_subsurface_r/g/b` + `translucency_transmissive_scale`
-    /// + `translucency_turbulence`). Function and test name kept as
-    /// "260" so a future size shift updates them in lockstep with
-    /// the assertion.
+    /// + `translucency_turbulence`), then 280 → 284 under #1248 (+4 B
+    /// for `ior`, the per-material refractive index that drives
+    /// Schlick F0 derivation). Function and test name kept as "260"
+    /// so a future size shift updates them in lockstep with the
+    /// assertion.
     #[test]
     fn gpu_material_size_is_260_bytes() {
-        assert_eq!(std::mem::size_of::<GpuMaterial>(), 280);
+        assert_eq!(std::mem::size_of::<GpuMaterial>(), 284);
     }
 
     /// `#[repr(C)]` puts no implicit padding between f32/u32 fields,
@@ -855,6 +878,8 @@ mod tests {
             "translucencySubsurfaceR,", "translucencySubsurfaceG,", "translucencySubsurfaceB;",
             "translucencyTransmissiveScale;",
             "translucencyTurbulence;",
+            // #1248 — per-material refractive index for Schlick F0
+            "ior;",
         ] {
             assert!(
                 src.contains(name),
@@ -999,6 +1024,9 @@ mod tests {
         assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_b), 268);
         assert_eq!(offset_of!(GpuMaterial, translucency_transmissive_scale), 272);
         assert_eq!(offset_of!(GpuMaterial, translucency_turbulence), 276);
+
+        // ── PBR IOR (#1248, offset 280) ──────────────────────────
+        assert_eq!(offset_of!(GpuMaterial, ior), 280);
     }
 
     #[test]

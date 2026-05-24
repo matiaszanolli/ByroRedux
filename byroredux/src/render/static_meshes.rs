@@ -550,6 +550,14 @@ pub(super) fn collect_static_mesh_draws(
                     alpha_test_func,
                     roughness,
                     metalness,
+                    // #1248 — Material struct has no IOR field today
+                    // (NIF/BGSM v<9 doesn't author one), so every
+                    // static mesh uses the GpuMaterial default 1.5.
+                    // Mirrors the pre-#1248 hardcoded vec3(0.04)
+                    // dielectric F0 byte-for-byte. Plumbing for
+                    // BGSM v9+ / Starfield .mat IOR routes through
+                    // Material → here when the importer surfaces it.
+                    ior: 1.5,
                     emissive_mult,
                     emissive_color,
                     specular_strength,

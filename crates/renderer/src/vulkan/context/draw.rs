@@ -2961,6 +2961,7 @@ mod is_caustic_source_tests {
             alpha_test_func: 0,
             roughness: 0.5,
             metalness: 0.0,
+            ior: 1.5, // #1248
             emissive_mult: 0.0,
             emissive_color: [0.0; 3],
             specular_strength: 0.0,

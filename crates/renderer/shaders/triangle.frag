@@ -139,8 +139,13 @@ struct GpuMaterial {
     // (pinned by `gpu_material_field_offsets_match_shader_contract`).
     float translucencySubsurfaceR, translucencySubsurfaceG, translucencySubsurfaceB;
     float translucencyTransmissiveScale;
-    // Final field — closes the 280 B struct.
     float translucencyTurbulence;
+    // #1248 — per-material refractive index. Drives Schlick F0 via
+    // `F0 = ((1-η)/(1+η))²` at every dielectric / glass site. Default
+    // 1.5 reproduces the pre-#1248 hardcoded `vec3(0.04)` behaviour
+    // for legacy NIF content with no authored IOR. Offset 280 →
+    // closes the 284 B struct (next vec4 slot starts at 288).
+    float ior;
 };
 
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
@@ -592,6 +597,19 @@ float geometrySmith(float NdotV, float NdotL, float roughness) {
 // Fresnel (Schlick approximation).
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Derive Schlick F0 from a per-material refractive index. Pre-#1248
+// every dielectric site hardcoded `vec3(0.04)` — the value F0 takes
+// when η = 1.5 (soda-lime / generic dielectric default). Honouring
+// per-material IOR makes water (η ≈ 1.33 → F0 ≈ 0.02), ice
+// (η ≈ 1.31 → 0.018), polished stone (η ≈ 1.54 → 0.045), and
+// gemstone-class surfaces (diamond η ≈ 2.42 → F0 ≈ 0.172) all
+// representable. Reference: knightcrawler25/GLSL-PathTracer
+// (MIT) `src/shaders/common/disney.glsl:56-57`. See #1248.
+float dielectricF0FromIor(float eta) {
+    float r = (1.0 - eta) / (1.0 + eta);
+    return r * r;
 }
 
 // Specular antialiasing — Kaplanyan & Hoffman 2016
@@ -1466,12 +1484,18 @@ void main() {
     // specular-color F0 (correct PBR metals); legacy / NIF paths keep
     // the `albedo` fallback. Conservative for non-BGSM-PBR content;
     // visible improvement on FO4 metals.
+    // #1248 — dielectric F0 derived from the per-material refractive
+    // index. mat.ior defaults to 1.5 (legacy soda-lime / generic
+    // dielectric → F0 ≈ 0.04, matches the pre-#1248 hardcoded literal
+    // byte-for-byte). Authored values (BGSM v9+, Starfield .mat) take
+    // effect immediately.
+    float f0Dielectric = dielectricF0FromIor(mat.ior);
     vec3 F0;
     if ((mat.materialFlags & MAT_FLAG_BGSM_PBR) != 0u) {
         vec3 specColAuth = vec3(mat.specularR, mat.specularG, mat.specularB);
-        F0 = mix(vec3(0.04), specColAuth, metalness);
+        F0 = mix(vec3(f0Dielectric), specColAuth, metalness);
     } else {
-        F0 = mix(vec3(0.04), albedo, metalness);
+        F0 = mix(vec3(f0Dielectric), albedo, metalness);
     }
 
     // Precompute the emissive term. Per Gamebryo's D3D9 FFP material model
@@ -1666,9 +1690,13 @@ void main() {
 
     float glassFresnel = 0.0;
     if (isGlass) {
-        glassFresnel = fresnelSchlick(NdotV, vec3(0.04)).r;
+        // #1248 — pull dielectric F0 from the per-material IOR.
+        // mat.ior defaults to 1.5 (glass); BGSM-authored glass can
+        // diverge (water 1.33 → 0.02, dense window glass 1.52 → 0.044).
+        vec3 glassF0 = vec3(f0Dielectric);
+        glassFresnel = fresnelSchlick(NdotV, glassF0).r;
         specStrength = max(specStrength, 3.0);
-        F0 = vec3(0.04);
+        F0 = glassF0;
     }
 
     // RT glass Phase 3: IOR refraction + reflection for tier-0 fragments
@@ -1729,8 +1757,12 @@ void main() {
         // F → 1.0 (near-mirror). This is what separates the Phase 3
         // path from Phase 1's "fire `-V` through" — Phase 1 pretended
         // glass had no IOR and transmission was a straight line.
-        const float GLASS_IOR = 1.5;
-        const float ETA_AIR_TO_GLASS = 1.0 / GLASS_IOR;
+        // #1248 — IOR now per-material instead of hardcoded 1.5. The
+        // pre-#1248 constant 1.5 still matches the GpuMaterial::default
+        // so unauthored glass renders identically; authored values
+        // (BGSM v9+, Starfield .mat) take effect.
+        float GLASS_IOR = mat.ior;
+        float ETA_AIR_TO_GLASS = 1.0 / GLASS_IOR;
 
         // Two view-aligned normals — one bump-mapped, one smooth:
         //
@@ -1750,7 +1782,9 @@ void main() {
         vec3 _Ngeom = normalize(fragNormalEffective);
         vec3 N_geom_view = dot(_Ngeom, V) < 0.0 ? -_Ngeom : _Ngeom;
         float NdotV_v = max(dot(N_view, V), 0.05);
-        float fresnelScalar = fresnelSchlick(NdotV_v, vec3(0.04)).r;
+        // #1248 — per-material dielectric F0 (same source as glassF0
+        // above; the IOR block runs inside the isGlass branch).
+        float fresnelScalar = fresnelSchlick(NdotV_v, vec3(f0Dielectric)).r;
 
         // Reflection ray — micro-surface normal is correct here.
         vec3 R = reflect(-V, N_view);

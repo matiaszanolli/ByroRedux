@@ -114,6 +114,10 @@ pub(super) fn emit_particles(
                 alpha_test_func: 0,
                 roughness: 1.0,
                 metalness: 0.0,
+                // #1248 — generic dielectric default (η = 1.5 → F0 ≈ 0.04).
+                // Particles don't author IOR; the default reproduces the
+                // pre-#1248 hardcoded vec3(0.04) shader behaviour.
+                ior: 1.5,
                 // Emissive carries the particle color * alpha so the
                 // existing fragment-shader emissive add lights the quad
                 // with no scene-light dependency. Alpha is folded into

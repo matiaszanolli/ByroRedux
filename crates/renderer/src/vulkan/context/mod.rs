@@ -127,6 +127,13 @@ pub struct DrawCommand {
     pub roughness: f32,
     /// PBR metalness [0..1].
     pub metalness: f32,
+    /// Per-material refractive index (#1248). Drives Schlick F0 via
+    /// `F0 = ((1-η)/(1+η))²` in the fragment shader instead of the
+    /// pre-#1248 hardcoded `vec3(0.04)` dielectric default. Default
+    /// 1.5 reproduces that exact F0 ≈ 0.04 for legacy NIF content
+    /// with no authored IOR; FO4 BGSM v9+ and Starfield .mat
+    /// materials override with their authored value.
+    pub ior: f32,
     /// Emissive intensity multiplier.
     pub emissive_mult: f32,
     /// Emissive color (RGB).
@@ -415,6 +422,8 @@ impl DrawCommand {
             translucency_subsurface_b: self.translucency_subsurface_color[2],
             translucency_transmissive_scale: self.translucency_transmissive_scale,
             translucency_turbulence: self.translucency_turbulence,
+            // #1248 — per-material refractive index.
+            ior: self.ior,
         }
     }
 
@@ -540,6 +549,10 @@ impl DrawCommand {
         h.write_u32(self.translucency_subsurface_color[2].to_bits());
         h.write_u32(self.translucency_transmissive_scale.to_bits());
         h.write_u32(self.translucency_turbulence.to_bits());
+        // #1248 — per-material refractive index (offset 280). Trailing
+        // write mirrors `hash_gpu_material_fields` so the contract pinned
+        // by `material_hash_matches_gpu_material_field_hash` holds.
+        h.write_u32(self.ior.to_bits());
         h.finish()
     }
 }
@@ -2543,6 +2556,11 @@ mod draw_command_tests {
             alpha_test_func: 4,
             roughness: 0.31,
             metalness: 0.79,
+            // #1248 — distinct non-default IOR so the material_hash
+            // walk and to_gpu_material round-trip both surface this
+            // field, mirroring the other intentionally-non-default
+            // values in this fixture.
+            ior: 1.45,
             emissive_mult: 1.5,
             emissive_color: [0.11, 0.22, 0.33],
             specular_strength: 0.91,
