@@ -682,9 +682,16 @@ float dielectricF0FromIor(float eta) {
 // looked flat, sand had no edge brighten, skin / wax / marble
 // missed the SSS approximation.
 //
-// Returns the per-fragment diffuse BRDF value (already divided by
-// PI). Multiply by `(1 - metalness)` at the call site to preserve
-// energy conservation against the specular lobe.
+// **Split return** (#1252 / REN-D6-2026-05-24-01): the diffuse and
+// sheen lobes have DIFFERENT scaling conventions — diffuse is /PI
+// (Lambertian), sheen is NOT /PI (Disney 2012 spec: layered
+// Fresnel-shaped highlight). The two call sites (fallback-directional
+// and per-light loop) need to compose them with different PI scales
+// because the per-light loop carries a `kD * albedo` (no /PI)
+// legacy convention. The pre-#1252 form returned both in a single
+// `vec3` so the per-light's compensating `* PI` over-amplified the
+// sheen lobe by ~3.14×. Returning a struct makes the compositional
+// shape explicit at every call site.
 //
 // Reference: knightcrawler25/GLSL-PathTracer (MIT)
 // `src/shaders/common/disney.glsl:67-87` — `EvalDisneyDiffuse`.
@@ -699,7 +706,16 @@ float dielectricF0FromIor(float eta) {
 //   sheenTint:    [0, 1] interpolation between white sheen and
 //                 base-colour-tinted sheen.
 //   NdotL, NdotV, HdotL: precomputed cosines (already clamped).
-vec3 disneyDiffuseTerm(
+//
+// Output fields:
+//   .diffuse: the Burley + HK diffuse value, already /PI'd.
+//   .sheen:   the Fresnel-weighted sheen value, NOT /PI'd.
+struct DisneyDiffuseSplit {
+    vec3 diffuse;
+    vec3 sheen;
+};
+
+DisneyDiffuseSplit disneyDiffuseSplit(
     vec3 albedo,
     float roughness,
     float subsurface,
@@ -731,13 +747,13 @@ vec3 disneyDiffuseTerm(
     float ss = 1.25 * (Fss * (1.0 / max(NdotL + NdotV, 1e-4) - 0.5) + 0.5);
 
     // Sheen — Fresnel-weighted edge highlight, tinted between white
-    // and base colour. Layered on top of the diffuse lobe (NOT
-    // divided by PI per Disney's spec).
+    // and base colour. Layered on top of the diffuse lobe.
     vec3 sheenColor = mix(vec3(1.0), albedo, sheenTint);
-    vec3 Fsheen = FH * sheen * sheenColor;
 
-    // INV_PI = 1.0 / PI; the diffuse term divides, sheen does not.
-    return albedo * mix(Fd + Fretro, ss, subsurface) * (1.0 / PI) + Fsheen;
+    DisneyDiffuseSplit o;
+    o.diffuse = albedo * mix(Fd + Fretro, ss, subsurface) * (1.0 / PI);
+    o.sheen = FH * sheen * sheenColor;
+    return o;
 }
 
 // Specular antialiasing — Kaplanyan & Hoffman 2016
@@ -2407,13 +2423,20 @@ void main() {
         // every NIF without a v>=8 BGSM keeps the pre-fix value.
         // Multiply by (1 - metalness) only — Disney's Fd already
         // encodes the Fresnel-grazing energy loss via FL/FV.
+        //
+        // #1252 — split helper returns diffuse (/PI) + sheen (no /PI)
+        // separately so each lobe gets the right scaling. This site
+        // expects the diffuse value /PI (matches the Lambert
+        // `kD * albedo / PI` shape below) and sheen NOT /PI (per
+        // Disney spec).
         vec3 diffuseBrdf;
         if ((mat.materialFlags & MAT_FLAG_BGSM_PBR) != 0u) {
             float HdotL = max(dot(H, L), 0.0);
-            diffuseBrdf = disneyDiffuseTerm(
+            DisneyDiffuseSplit dd = disneyDiffuseSplit(
                 albedo, roughness, mat.subsurface, mat.sheen, mat.sheenTint,
                 NdotL, NdotV, HdotL
-            ) * (1.0 - metalness);
+            );
+            diffuseBrdf = (dd.diffuse + dd.sheen) * (1.0 - metalness);
         } else {
             diffuseBrdf = kD * albedo / PI;
         }
@@ -2618,17 +2641,27 @@ void main() {
             // `kD * albedo` (no /PI here, intentional — the
             // pre-#1249 INV_PI was folded into a later scale step
             // distinct from the fallback path above). Preserve that
-            // scaling: don't divide the Disney term by PI here.
-            // (Disney's lobe value INTERNALLY divides by PI; this
-            // path multiplies by `PI` so the on-disk magnitudes
-            // match the legacy Lambert.)
+            // scaling.
+            //
+            // #1252 — pre-#1252 this site applied `* PI` to the
+            // whole `disneyDiffuseTerm` return to bring the diffuse
+            // /PI back to the legacy `kD * albedo` (no /PI) magnitude.
+            // That over-amplified the sheen component by ~3.14×
+            // because sheen is intentionally NOT /PI'd per Disney
+            // spec. The split helper exposes both lobes separately;
+            // apply `* PI` only to the diffuse half so sheen stays
+            // at its natural Fresnel-weighted magnitude.
             vec3 diffuseBrdf;
             if ((mat.materialFlags & MAT_FLAG_BGSM_PBR) != 0u) {
                 float HdotL = max(dot(H, L), 0.0);
-                diffuseBrdf = disneyDiffuseTerm(
+                DisneyDiffuseSplit dd = disneyDiffuseSplit(
                     albedo, roughness, mat.subsurface, mat.sheen, mat.sheenTint,
                     NdotL, NdotV, HdotL
-                ) * (1.0 - metalness) * PI;
+                );
+                // diffuse came out as `albedo*(...)/PI` — multiply by
+                // PI to match this site's no-/PI legacy convention.
+                // sheen came out as `Fsheen` (no /PI) — use as-is.
+                diffuseBrdf = (dd.diffuse * PI + dd.sheen) * (1.0 - metalness);
             } else {
                 diffuseBrdf = kD * albedo;
             }
