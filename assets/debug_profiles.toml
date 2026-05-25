@@ -1,31 +1,38 @@
-# Debug-UI game profile registry (Phase 5 of the debug-UI plan).
+# Debug-UI game profile registry (Phase 5 / 20 of the debug-UI plan).
 #
-# Each [profiles.<key>] block describes one game install the debug UI
-# can target. The default file ships zero-rooted entries — every
-# operator's install path is different, so the canonical
-# "ready-to-use" location for filled-in paths is
-# `~/.byroredux/profiles.toml`, which overrides this file when
-# present.
+# Each [profiles.<key>] block describes one game install the
+# `--game <key>` CLI expander and the debug UI's Loader panel can
+# target. The shipped file uses the `subdir` field to defer the
+# absolute root: at runtime the binary joins
+# `<--games-root | $BYROREDUX_GAMES_ROOT | /mnt/data/SteamLibrary/steamapps/common>`
+# with `subdir` to produce the actual data directory. Override with
+# an explicit `root = "/abs/path"` in `~/.byroredux/profiles.toml`
+# for a non-Steam / non-default-prefix install.
 #
 # Schema:
-#   name                 Display name shown in the Loader dropdown.
-#   root                 Absolute path to the game's data directory
-#                        (the directory holding the ESMs). Use `~` for
-#                        home — the loader resolves it.
-#   esm                  Main ESM filename inside `root`.
-#   default_bsas         Mesh BSA / BA2 archive filenames (relative
-#                        to `root`).
-#   default_textures_bsas
-#                        Texture archive filenames.
-#   sample_cells         Curated cell editor IDs the UI offers as
-#                        one-click loads.
+#   name                  Display name shown in the Loader dropdown.
+#   subdir                Game folder under the shared games root
+#                         (e.g. "Fallout 4/Data"). Empty when
+#                         `root` carries the absolute path instead.
+#   root                  Absolute override; takes priority over
+#                         `subdir`. Default empty so the shared root
+#                         drives every entry.
+#   esm                   Main ESM filename inside the data dir.
+#   default_bsas          Mesh BSA / BA2 archives.
+#   default_textures_bsas Texture archives.
+#   default_materials_bsas
+#                         BGSM/BGEM materials archives (FO4+/FO76/SF
+#                         only; empty for Skyrim and older).
+#   sample_cells          Curated cell editor IDs for one-click loads.
 
 [profiles.fnv]
 name = "Fallout New Vegas"
+subdir = "Fallout New Vegas/Data"
 root = ""
 esm = "FalloutNV.esm"
 default_bsas = ["Fallout - Meshes.bsa"]
 default_textures_bsas = ["Fallout - Textures.bsa"]
+default_materials_bsas = []
 sample_cells = [
     "GSDocMitchellHouse",
     "Goodsprings",
@@ -34,10 +41,12 @@ sample_cells = [
 
 [profiles.fo3]
 name = "Fallout 3"
+subdir = "Fallout 3 goty/Data"
 root = ""
 esm = "Fallout3.esm"
 default_bsas = ["Fallout - Meshes.bsa"]
 default_textures_bsas = ["Fallout - Textures.bsa"]
+default_materials_bsas = []
 sample_cells = [
     "Megaton01",
     "Vault101a",
@@ -45,12 +54,14 @@ sample_cells = [
 
 [profiles.oblivion]
 name = "Oblivion"
+subdir = "Oblivion/Data"
 root = ""
 esm = "Oblivion.esm"
 default_bsas = ["Oblivion - Meshes.bsa"]
 default_textures_bsas = [
     "Oblivion - Textures - Compressed.bsa",
 ]
+default_materials_bsas = []
 sample_cells = [
     "ICMarketDistrictTheGildedCarafe",
     "AnvilHeinrichOakenHallsBasement",
@@ -58,6 +69,7 @@ sample_cells = [
 
 [profiles.skyrim_se]
 name = "Skyrim Special Edition"
+subdir = "Skyrim Special Edition/Data"
 root = ""
 esm = "Skyrim.esm"
 default_bsas = ["Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa"]
@@ -72,6 +84,7 @@ default_textures_bsas = [
     "Skyrim - Textures7.bsa",
     "Skyrim - Textures8.bsa",
 ]
+default_materials_bsas = []
 sample_cells = [
     "WhiterunDragonsreach",
     "RiverwoodSleepingGiantInn",
@@ -79,9 +92,10 @@ sample_cells = [
 
 [profiles.fo4]
 name = "Fallout 4"
+subdir = "Fallout 4/Data"
 root = ""
 esm = "Fallout4.esm"
-default_bsas = ["Fallout4 - Meshes.ba2"]
+default_bsas = ["Fallout4 - Meshes.ba2", "Fallout4 - MeshesExtra.ba2"]
 default_textures_bsas = [
     "Fallout4 - Textures1.ba2",
     "Fallout4 - Textures2.ba2",
@@ -92,16 +106,24 @@ default_textures_bsas = [
     "Fallout4 - Textures7.ba2",
     "Fallout4 - Textures8.ba2",
     "Fallout4 - Textures9.ba2",
+    "Fallout4 - TexturesPatch.ba2",
 ]
+default_materials_bsas = ["Fallout4 - Materials.ba2"]
 sample_cells = [
+    "MedTekResearch01",
     "Sanctuary",
     "DiamondCityMarket",
+    "InstAdvSys01",
+    "InstAtrium01",
+    "InstBioscience01",
 ]
 
 [profiles.starfield]
 name = "Starfield"
+subdir = "Starfield/Data"
 root = ""
 esm = "Starfield.esm"
 default_bsas = []
 default_textures_bsas = []
+default_materials_bsas = []
 sample_cells = []

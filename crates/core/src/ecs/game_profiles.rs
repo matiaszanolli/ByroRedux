@@ -21,10 +21,31 @@ pub struct GameProfileEntry {
     /// Absolute path to the game's data directory. Empty when
     /// shipped-but-unconfigured (loader hasn't filled it from
     /// either the engine-default file or the per-user override).
+    ///
+    /// Resolution priority (computed at load time by the binary):
+    ///   1. Per-user TOML override sets an absolute path → used as-is.
+    ///   2. Shipped TOML carries [`Self::subdir`] (e.g.
+    ///      `"Fallout 4/Data"`); root is joined as
+    ///      `<games-root>/<subdir>` where `<games-root>` comes
+    ///      from `--games-root` CLI / `BYROREDUX_GAMES_ROOT` env
+    ///      / `/mnt/data/SteamLibrary/steamapps/common` default.
+    ///   3. Neither set → empty, profile is "unconfigured" per
+    ///      [`Self::is_usable`].
     pub root: String,
+    /// Game-folder subdirectory under the shared games root, e.g.
+    /// `"Fallout 4/Data"` for the Steam install. Combined with the
+    /// shared `--games-root` at CLI-expansion time to produce
+    /// [`Self::root`]. Empty when the profile ships an explicit
+    /// absolute `root` instead (per-user override path). Phase 20.
+    pub subdir: String,
     pub esm: String,
     pub default_bsas: Vec<String>,
     pub default_textures_bsas: Vec<String>,
+    /// Materials archive (BGSM/BGEM container — FO4 / FO76 / SF
+    /// only). The binary expands this into `--materials-ba2 <name>`
+    /// args when `--game <key>` is used. Empty Vec for Skyrim+ and
+    /// older. Phase 20.
+    pub default_materials_bsas: Vec<String>,
     pub sample_cells: Vec<String>,
 }
 

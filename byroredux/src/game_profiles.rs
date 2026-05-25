@@ -19,6 +19,44 @@ use serde::Deserialize;
 /// same key.
 pub const DEFAULT_PROFILES_PATH: &str = "assets/debug_profiles.toml";
 
+/// Default shared games root when neither `--games-root` CLI nor
+/// `BYROREDUX_GAMES_ROOT` env var is set. Tuned for Linux Steam
+/// installs — the most common dev box layout. Phase 20.
+pub const DEFAULT_GAMES_ROOT: &str = "/mnt/data/SteamLibrary/steamapps/common";
+
+/// Resolve the shared games root, in priority order:
+///   1. `--games-root <path>` CLI argument (caller supplies via `cli_arg`)
+///   2. `BYROREDUX_GAMES_ROOT` environment variable
+///   3. [`DEFAULT_GAMES_ROOT`]
+///
+/// Used by `--game <key>` CLI expansion to turn a profile's
+/// `subdir` into an absolute path. Phase 20.
+pub fn resolve_games_root(cli_arg: Option<&str>) -> PathBuf {
+    if let Some(path) = cli_arg {
+        return PathBuf::from(path);
+    }
+    if let Ok(env) = std::env::var("BYROREDUX_GAMES_ROOT") {
+        if !env.is_empty() {
+            return PathBuf::from(env);
+        }
+    }
+    PathBuf::from(DEFAULT_GAMES_ROOT)
+}
+
+/// Compose a profile's data directory from `games_root` + the
+/// profile's `subdir` field. Used at `--game <key>` expansion
+/// time when the profile's `root` is empty. Returns the explicit
+/// `entry.root` unchanged when set (per-user override path). Phase 20.
+pub fn resolve_profile_root(entry: &GameProfileEntry, games_root: &Path) -> PathBuf {
+    if !entry.root.is_empty() {
+        return PathBuf::from(&entry.root);
+    }
+    if !entry.subdir.is_empty() {
+        return games_root.join(&entry.subdir);
+    }
+    PathBuf::new()
+}
+
 /// Serde landing type for one profile block — same shape as
 /// [`GameProfileEntry`] but with serde derives. The loader maps
 /// this onto the core type so the protocol crate's wire format
@@ -29,11 +67,18 @@ struct ProfileEntryDe {
     name: String,
     #[serde(default)]
     root: String,
+    /// Game folder under the shared games root (e.g. `Fallout 4/Data`).
+    /// Combined with `BYROREDUX_GAMES_ROOT` / `--games-root` at
+    /// load time when `root` is empty. Phase 20.
+    #[serde(default)]
+    subdir: String,
     esm: String,
     #[serde(default)]
     default_bsas: Vec<String>,
     #[serde(default)]
     default_textures_bsas: Vec<String>,
+    #[serde(default)]
+    default_materials_bsas: Vec<String>,
     #[serde(default)]
     sample_cells: Vec<String>,
 }
@@ -43,9 +88,11 @@ impl From<ProfileEntryDe> for GameProfileEntry {
         Self {
             name: de.name,
             root: de.root,
+            subdir: de.subdir,
             esm: de.esm,
             default_bsas: de.default_bsas,
             default_textures_bsas: de.default_textures_bsas,
+            default_materials_bsas: de.default_materials_bsas,
             sample_cells: de.sample_cells,
         }
     }
@@ -157,9 +204,11 @@ sample_cells = ["GSDocMitchellHouse"]
         let entry: GameProfileEntry = ProfileEntryDe {
             name: p.name.clone(),
             root: p.root.clone(),
+            subdir: p.subdir.clone(),
             esm: p.esm.clone(),
             default_bsas: p.default_bsas.clone(),
             default_textures_bsas: p.default_textures_bsas.clone(),
+            default_materials_bsas: p.default_materials_bsas.clone(),
             sample_cells: p.sample_cells.clone(),
         }
         .into();

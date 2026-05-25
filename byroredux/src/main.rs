@@ -95,7 +95,14 @@ fn init_tracing() {
 }
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    // Phase 20 — expand `--game <key>` into the full set of
+    // `--esm` / `--bsa` / `--textures-bsa` / `--materials-ba2`
+    // args BEFORE anything else reads argv. User-supplied flags
+    // appear first in the resulting Vec and win
+    // first-occurrence-wins for unique flags like `--esm`;
+    // additive flags (`--bsa` / `--textures-bsa`) get both the
+    // user's archives AND the profile's defaults.
+    let args: Vec<String> = expand_game_profile_args(std::env::args().collect());
     let debug_mode = args.iter().any(|a| a == "--debug");
 
     // --bench-frames N: run N frames, emit a single `bench:` summary
@@ -2275,4 +2282,121 @@ fn apply_debug_ui_outputs(
             log::info!("debug-ui console: {} → {}", expr, output.lines.join(" | "));
         }
     }
+}
+
+/// Phase 20 — `--game <key>` CLI expansion. Looks up the named
+/// profile in `assets/debug_profiles.toml` (+ per-user override at
+/// `~/.byroredux/profiles.toml`), resolves `<games-root>/<subdir>`,
+/// and appends synthetic `--esm` / `--bsa` / `--textures-bsa` /
+/// `--materials-ba2` args to the input list. The user's own flags
+/// stay at the FRONT — first-occurrence-wins for unique args means
+/// a user `--esm Custom.esm` beats the profile default; additive
+/// args (`--bsa`) take both. No-op when `--game` is absent.
+///
+/// `--games-root <path>` and `BYROREDUX_GAMES_ROOT` env var
+/// override the default `/mnt/data/SteamLibrary/steamapps/common`.
+/// Both stripped from the returned arg list — the rest of the
+/// engine doesn't read them.
+///
+/// Missing profile / non-existent paths → log a warning and
+/// return the input unchanged so the engine still boots (the
+/// user can correct + retry without a re-build cycle).
+fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
+    use crate::cli_args::parse_string_arg;
+
+    let game_key = match parse_string_arg(&args, "--game") {
+        Some(k) => k,
+        None => return args,
+    };
+    let games_root_cli = parse_string_arg(&args, "--games-root");
+
+    // Strip the two new flags + their values from the returned
+    // args; downstream code doesn't recognise them.
+    args = strip_flag_and_value(args, "--game");
+    args = strip_flag_and_value(args, "--games-root");
+
+    // Load profile registry from disk. Same loader the App uses
+    // at world init; safe to call before logging is initialised
+    // (uses eprintln internally on failure).
+    let registry = crate::game_profiles::load_default();
+    let entry = match registry.get(&game_key) {
+        Some(e) => e.clone(),
+        None => {
+            eprintln!(
+                "--game {}: profile not found in `assets/debug_profiles.toml` \
+                 or `~/.byroredux/profiles.toml`. Known keys: {:?}",
+                game_key,
+                registry.iter().map(|(k, _)| k).collect::<Vec<_>>()
+            );
+            return args;
+        }
+    };
+
+    let games_root =
+        crate::game_profiles::resolve_games_root(games_root_cli.as_deref());
+    let data_dir = crate::game_profiles::resolve_profile_root(&entry, &games_root);
+
+    if data_dir.as_os_str().is_empty() {
+        eprintln!(
+            "--game {}: profile carries neither `root` nor `subdir`; cannot resolve data dir",
+            game_key,
+        );
+        return args;
+    }
+    if !data_dir.exists() {
+        eprintln!(
+            "--game {}: resolved data dir does not exist: {} \
+             (set --games-root, BYROREDUX_GAMES_ROOT env var, or override \
+              the profile's `root` in ~/.byroredux/profiles.toml)",
+            game_key,
+            data_dir.display(),
+        );
+        // Fall through anyway — let downstream loaders report
+        // specific missing files for clearer diagnostics.
+    }
+
+    // Append profile-derived args. User's earlier --esm wins on
+    // first-occurrence-wins; additive --bsa flags compose.
+    eprintln!(
+        "--game {} expanding from {} (data dir: {})",
+        game_key,
+        entry.name,
+        data_dir.display(),
+    );
+    let join_arg = |archive: &str| -> String {
+        data_dir.join(archive).to_string_lossy().into_owned()
+    };
+
+    args.push("--esm".to_string());
+    args.push(join_arg(&entry.esm));
+    for bsa in &entry.default_bsas {
+        args.push("--bsa".to_string());
+        args.push(join_arg(bsa));
+    }
+    for bsa in &entry.default_textures_bsas {
+        args.push("--textures-bsa".to_string());
+        args.push(join_arg(bsa));
+    }
+    for bsa in &entry.default_materials_bsas {
+        args.push("--materials-ba2".to_string());
+        args.push(join_arg(bsa));
+    }
+    args
+}
+
+/// Remove every `<flag> <value>` pair from the args list. Used
+/// by `--game` expansion to strip the new flags before downstream
+/// parsers see them.
+fn strip_flag_and_value(args: Vec<String>, flag: &str) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut iter = args.into_iter();
+    while let Some(a) = iter.next() {
+        if a == flag {
+            // Also discard the next arg (the value).
+            let _ = iter.next();
+            continue;
+        }
+        out.push(a);
+    }
+    out
 }
