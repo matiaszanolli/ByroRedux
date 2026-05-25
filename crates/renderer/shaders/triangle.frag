@@ -1631,30 +1631,71 @@ void main() {
     //       that doesn't exist yet; add alongside the FO4 env-reflect
     //       cubemap path.
 
-    // #1147 Phase 2b — PBR vs Gamebryo F0 gate. The standard PBR
-    // `mix(0.04, albedo, metalness)` works correctly for everything
-    // EXCEPT BGSM-authored metals on FO4+, where the author specified
-    // the metal's reflectance via `specularR/G/B` (e.g. raw_metal_diff
-    // BGSMs ship 0.95 / 0.93 / 0.88 for steel). Using `albedo` for
-    // those silently desaturates the metal's tint at grazing angles
-    // because the BC1-compressed albedo is dimmer than the authored
-    // specular RGB. The gate routes the BGSM-PBR path to the
-    // specular-color F0 (correct PBR metals); legacy / NIF paths keep
-    // the `albedo` fallback. Conservative for non-BGSM-PBR content;
-    // visible improvement on FO4 metals.
-    // #1248 — dielectric F0 derived from the per-material refractive
-    // index. mat.ior defaults to 1.5 (legacy soda-lime / generic
-    // dielectric → F0 ≈ 0.04, matches the pre-#1248 hardcoded literal
-    // byte-for-byte). Authored values (BGSM v9+, Starfield .mat) take
-    // effect immediately.
+    // PBR vs Gamebryo F0 gate.
+    //
+    // BGSM PBR (FO4+) uses the **specular-glossiness** workflow, NOT
+    // the metallic-roughness one our `metalness` scalar implies:
+    //   * `specular_color * specular_mult` IS F0 directly.
+    //   * Metals author bright spec RGB (steel ≈ 0.95/0.93/0.88, gold
+    //     ≈ 1.0/0.86/0.57) → high F0 → conductor-like Fresnel + tinted
+    //     reflection that doesn't desaturate at grazing.
+    //   * Dielectrics author near-0.04 spec RGB (plastic, painted
+    //     surfaces) → standard dielectric F0.
+    //   * There is NO scalar metalness field in BGSM (`wetness_control_
+    //     metalness` is a wetness-effect parameter, not material
+    //     metalness — verified against `Material-Editor:BGSM.cs:152`).
+    // So for PBR materials we use the authored spec_color as F0
+    // directly. The standard metallic-roughness `mix(0.04, conductor,
+    // metalness)` mix only applies on the legacy path where
+    // `classify_pbr` keyword-matched a known conductor texture path
+    // and set `metalness ≈ 0.9`.
+    //
+    // Pre-fix this gate mixed `mix(0.04, specColAuth, metalness)` even
+    // on BGSM PBR, but `metalness` was 0 for every FO4 BGSM material
+    // (no metalness signal source plumbed in) so F0 collapsed to 0.04
+    // dielectric and the authored `specularR/G/B` was silently ignored.
+    // Symptom: every FO4 Institute / Med-Tek metal panel rendered as
+    // matte plastic with zero specular reflection — the
+    // "boxes-look-plastic" complaint repeated across multiple sessions.
+    //
+    // Same conservative directive as the Oblivion path: trust the
+    // EXPLICIT authored signal, never infer metalness from indirect
+    // hints (the `env_map_scale > 0` → metalness inference was rejected
+    // pre-fix for Oblivion as the "chrome cushion" bug — same rule
+    // applies here for BGSM, just with a different explicit signal).
+    //
+    // For badly-authored BGSMs that ship default `specular_color =
+    // (1, 1, 1)` × `specular_mult = 1.0` without artist tuning, F0
+    // would render as full white chrome. That's authored data — we
+    // can't second-guess it without an external metalness signal.
+    // Vanilla FO4 BGSMs configure `specular_color` deliberately per
+    // material (sampled across `Fallout4 - Materials.ba2` 2026-05-24)
+    // so the chrome-default failure mode is mod-content only.
+    //
+    // The dielectric F0 derivation from IoR (`mat.ior`) is kept as
+    // the fallback for the legacy / non-PBR branch — that path uses
+    // `albedo` for metals (legacy keyword classification).
+    // Single PBR contract — the shader is FORMAT-AGNOSTIC. Source
+    // formats (BGSM spec-glossiness, NIF metallic-roughness with
+    // keyword classification, Starfield .mat) are translated to the
+    // standard `(albedo, metalness, roughness)` triple in the
+    // translation layer between parser and renderer:
+    //   * BGSM/BGEM merge (`byroredux/src/asset_provider.rs`) writes
+    //     `mesh.metalness_override` / `mesh.roughness_override`
+    //     derived from `luminance(spec_color * spec_mult)` and
+    //     `1 - smoothness` — Bethesda's PBR-Lite spec-glossiness
+    //     authoring translated once, here.
+    //   * Legacy NIF (Oblivion / FO3 / FNV) — `classify_pbr` keyword
+    //     fallback fills the same fields from texture-path tokens.
+    // The shader doesn't (and shouldn't) know which path produced
+    // its inputs. Per-format branches in the shader were a smell
+    // we explicitly factored OUT — see `feedback_format_translation.md`.
+    //
+    // `mat.ior` (BGSM v9+ / Starfield .mat author) overrides the
+    // 0.04 dielectric default; legacy NIF content keeps `ior = 1.5`
+    // (= 0.04 F0) byte-for-byte from `GpuMaterial::default()`.
     float f0Dielectric = dielectricF0FromIor(mat.ior);
-    vec3 F0;
-    if ((mat.materialFlags & MAT_FLAG_BGSM_PBR) != 0u) {
-        vec3 specColAuth = vec3(mat.specularR, mat.specularG, mat.specularB);
-        F0 = mix(vec3(f0Dielectric), specColAuth, metalness);
-    } else {
-        F0 = mix(vec3(f0Dielectric), albedo, metalness);
-    }
+    vec3 F0 = mix(vec3(f0Dielectric), albedo, metalness);
 
     // Precompute the emissive term. Per Gamebryo's D3D9 FFP material model
     // (matching NiMaterialProperty / BSShaderPPLighting), the final color is
@@ -2345,7 +2386,45 @@ void main() {
     // would otherwise apply via `indirect * albedo`. The direct path is
     // not albedo-modulated by composite (Lo already bakes in albedo per
     // dielectric kD), so this addition stays at full intensity.
-    if (rtEnabled && metalness > 0.3 && roughness < 0.6 && rtLOD < RT_LOD_REFLECT) {
+    // Pre-fix gated on `metalness > 0.3 && roughness < 0.6` AND
+    // multiplied the final contribution by `metalness`. That double-
+    // jeopardy locked every dielectric out of RT environment
+    // reflections: glass classified as MATERIAL_KIND_GLASS got the
+    // dedicated refraction path, but every OTHER smooth dielectric
+    // (Institute lab glass partitions where the alpha-blend didn't
+    // fire, polished marble floors, the chrome / control-terminal
+    // pillars whose texture paths don't match `classify_pbr`'s
+    // metal-keyword list) fell through to "ambient-only" shading
+    // and read as flat matte gray. Visible symptom: Bioscience
+    // gorilla-habitat glass + Institute architecture control pillars
+    // showing zero specular response, regardless of viewing angle.
+    //
+    // The Fresnel-Schlick term `F` already encodes the metal-vs-
+    // dielectric energy split via `F0`:
+    //   * Metals: `F0 = mix(0.04, albedo, metalness)` → `F` at normal
+    //     incidence ≈ `albedo`, which colours the reflection by the
+    //     conductor's complex IOR (correctly).
+    //   * Dielectrics: `F0 ≈ 0.04` → `F` at normal ≈ 4% (subtle),
+    //     `F` at grazing → near 1.0 (strong — the "polished floor
+    //     reflects the room at low angle" effect).
+    // So weighting the RT environment reflection by `F` alone is
+    // correct for both classes — the metalness gate / multiplier is
+    // redundant with `F`'s own metalness dependence through `F0`.
+    //
+    // The roughness gate stays at `< 0.6`: above that, the GGX cone
+    // is wide enough that single-sample RT noise dominates the
+    // signal and SVGF can't recover useful detail. Matte plastic,
+    // fabric, raw stone (roughness 0.7+) still fall through to
+    // ambient-only as before — they had no visible RT reflection
+    // anyway.
+    //
+    // Energy-conservation note: the GI path further below already
+    // uses `kD = (1 - F) * (1 - metalness)` so the diffuse term
+    // shrinks as F grows. Adding `envColor * F` here is the
+    // specular complement of that diffuse split — F-weighted
+    // specular + (1-F)-weighted diffuse sums to unit energy on
+    // dielectrics (lost-to-absorption fraction stays zero).
+    if (rtEnabled && roughness < 0.6 && rtLOD < RT_LOD_REFLECT) {
         // Roughness-driven ray jitter: GGX lobe widens with roughness^2.
         // Single sample per pixel, accumulated via temporal noise (IGN seeded
         // by frame counter). SVGF temporal filter smooths the result. #320.
@@ -2383,7 +2462,7 @@ void main() {
         vec3 ambientFallback = sceneFlags.yzw;
         vec3 envColor = mix(ambientFallback, reflResult.rgb, reflClarity);
 
-        Lo += envColor * F * metalness;
+        Lo += envColor * F;
     }
 
     // World-space distance from camera for cluster depth slicing.

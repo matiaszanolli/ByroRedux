@@ -471,6 +471,35 @@ pub mod material_flag {
     /// rather than using the latter raw. Skyrim+ skin shaders set
     /// this; FO4 vegetation typically does not. #1147 Phase 2b.
     pub const BGSM_TRANSLUCENCY_MIX_ALBEDO: u32 = 1 << 9;
+
+    /// "This material came from a BGSM (or BGEM) external file" — set
+    /// on every BGSM-sourced surface regardless of the `BgsmFile.pbr`
+    /// flag. Disambiguates Bethesda's two shading conventions:
+    ///   * BGSM-authored (Skyrim SE / FO4 / FO76) → spec-glossiness:
+    ///     `F0 = specular_color * specular_mult` directly, no metalness
+    ///     mix. Vanilla content uniformly authors per-material spec_color
+    ///     (e.g. steel ≈ 0.95/0.93/0.88) with smoothness driving the
+    ///     visible-lobe width (metal = high smoothness → sharp
+    ///     reflection; cloth = low smoothness → soft sheen).
+    ///   * Legacy NIF (Oblivion / FO3 / FNV) → metallic-roughness with
+    ///     keyword-classified metalness; spec_color is a Phong-era
+    ///     tint scalar applied AFTER the BRDF, not F0 itself.
+    ///
+    /// Set when `merge_bgsm_into_mesh` resolves a `.bgsm` or `.bgem`
+    /// material file successfully (i.e. real authored data merged into
+    /// `ImportedMesh`). NOT set when the mesh has an inline
+    /// `BSLightingShaderProperty` only — Skyrim BSLighting without an
+    /// external BGSM uses the same convention but doesn't currently
+    /// surface a distinguishing signal end-to-end, so it continues
+    /// on the legacy path (matches pre-fix behaviour, no regression).
+    ///
+    /// Distinct from [`BGSM_PBR`] which gates the Disney BSDF /
+    /// translucency suite — `bgsm.pbr=true` is virtually never authored
+    /// in vanilla content (sampled across 793 metal/crate/cargo
+    /// vanilla FO4 BGSMs in `Fallout4 - Materials.ba2`: 0 with
+    /// pbr=true), so `BGSM_PBR` alone is a dead gate. `BGSM_AUTHORED`
+    /// is the load-bearing flag for the spec-glossiness routing.
+    pub const BGSM_AUTHORED: u32 = 1 << 10;
 }
 
 impl GpuMaterial {

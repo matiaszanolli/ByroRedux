@@ -225,6 +225,9 @@ pub fn extract_bs_geometry(
         is_pbr: false,
         has_translucency: false,
         model_space_normals: false,
+        from_bgsm: false,
+        metalness_override: None,
+        roughness_override: None,
         // #1147 Phase 2b — BGSM v>=8 translucency suite.
         translucency_subsurface_color: [0.0; 3],
         translucency_transmissive_scale: 0.0,

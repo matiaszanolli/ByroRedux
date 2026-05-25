@@ -187,6 +187,24 @@ pub struct Material {
     /// and forwarded to `GpuMaterial.greyscale_lut_index` at draw build
     /// time. `None` for every non-BSEffect mesh. See #890 Stage 2c.
     pub greyscale_texture: Option<String>,
+    /// Translation-layer PBR metalness override `[0, 1]`. `None`
+    /// falls through to the legacy keyword-classifier path inside
+    /// [`Self::classify_pbr`] (correct for inline-shader NIF
+    /// content — Oblivion / FO3 / FNV — where no scalar metalness
+    /// signal was authored). `Some` is set by the BGSM / BGEM
+    /// translator in `merge_bgsm_into_mesh` from authored
+    /// `specular_color * specular_mult` luminance: dielectric spec
+    /// (≈ 0.04) maps to `0.0`, conductor spec (≈ 0.95) to near `1.0`.
+    /// The renderer uses this value as `GpuMaterial.metalness`
+    /// directly — no shader-side branching on source format. See
+    /// `feedback_format_translation.md`.
+    pub metalness_override: Option<f32>,
+    /// Translation-layer PBR roughness override `[0, 1]`. Companion
+    /// to [`Self::metalness_override`]; set together by the BGSM
+    /// translator as `1.0 - bgsm.smoothness` so authored smoothness
+    /// drives the GGX lobe width directly without round-tripping
+    /// through `glossiness / 100`. `None` keeps the legacy derivation.
+    pub roughness_override: Option<f32>,
 }
 
 /// View-angle + soft-depth falloff cone captured from
@@ -276,6 +294,8 @@ impl Default for Material {
             translucency_transmissive_scale: 0.0,
             translucency_turbulence: 0.0,
             greyscale_texture: None,
+            metalness_override: None,
+            roughness_override: None,
         }
     }
 }
@@ -323,14 +343,30 @@ impl Material {
 
     /// Infer PBR properties from legacy material data + texture path.
     ///
-    /// The texture path is the primary signal — keywords like "metal",
-    /// "glass", "wood" map to physically-plausible defaults. Fallback
-    /// uses the NIF glossiness value converted to roughness.
+    /// **Translation-layer overrides win**: when `metalness_override`
+    /// / `roughness_override` are set (i.e. the BGSM/BGEM translator
+    /// already produced standardized PBR values from authored
+    /// spec_color × smoothness), use them directly. The keyword
+    /// classifier below is the legacy fallback for inline-shader NIF
+    /// content (Oblivion / FO3 / FNV) where no scalar PBR signal was
+    /// authored. This is the contract that lets the renderer stay
+    /// format-agnostic — see `feedback_format_translation.md`.
+    ///
+    /// The texture path is the primary fallback signal — keywords like
+    /// "metal", "glass", "wood" map to physically-plausible defaults.
+    /// Final fallback uses the NIF glossiness value converted to
+    /// roughness.
     ///
     /// Matching is case-insensitive but **does not allocate** — the
     /// previous `to_ascii_lowercase` copy ran per draw per frame (~39k
     /// allocations/sec on Prospector Saloon at 48 FPS). See #375.
     pub fn classify_pbr(&self, texture_path: Option<&str>) -> PbrMaterial {
+        if let (Some(m), Some(r)) = (self.metalness_override, self.roughness_override) {
+            return PbrMaterial {
+                roughness: r.clamp(0.04, 1.0),
+                metalness: m.clamp(0.0, 1.0),
+            };
+        }
         let path = texture_path.unwrap_or("");
 
         // Keyword-based classification (highest priority).

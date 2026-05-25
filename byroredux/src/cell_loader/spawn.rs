@@ -872,6 +872,14 @@ pub(super) fn spawn_placed_instances(
                 // as a `GreyscaleLutHandle` so the per-frame draw build
                 // can populate `GpuMaterial.greyscale_lut_index`.
                 greyscale_texture: eff_greyscale_texture.clone(),
+                // Translation-layer PBR overrides — set by
+                // `merge_bgsm_into_mesh` for BGSM/BGEM materials so
+                // the renderer sees standardized `(metalness,
+                // roughness)` without per-format branching. None for
+                // inline-shader NIF content (legacy Oblivion / FO3 /
+                // FNV path keeps the classify_pbr keyword fallback).
+                metalness_override: mesh.metalness_override,
+                roughness_override: mesh.roughness_override,
             },
         );
         // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn

@@ -433,6 +433,37 @@ pub struct ImportedMesh {
     /// reliably reconstructable. `false` on every BGEM material and
     /// on NIF-only paths. See #1077 / FO4-D6-003.
     pub model_space_normals: bool,
+    /// Set by `merge_bgsm_into_mesh` when a `.bgsm` or `.bgem`
+    /// material file resolved and merged successfully. Telemetry /
+    /// provenance only — the renderer does NOT branch on this flag.
+    /// Material-translation work (BGSM spec-glossiness → engine
+    /// metalness/roughness) happens in `merge_bgsm_into_mesh`
+    /// itself, populating `metalness_override` / `roughness_override`
+    /// so the renderer sees a single standard PBR input regardless
+    /// of source format. Keeping the bool because debug-server
+    /// inspection wants to know which materials came from BGSM.
+    pub from_bgsm: bool,
+    /// PBR metalness `[0, 1]` computed by the translation layer
+    /// from authored source data. `None` falls through to legacy
+    /// keyword-based classification in `classify_pbr` (Oblivion /
+    /// FO3 / FNV path). `Some` is set by:
+    ///   * `merge_bgsm_into_mesh` for BGSM/BGEM materials — derived
+    ///     from `luminance(spec_color * spec_mult)` mapped through
+    ///     `(L - 0.04) / 0.96` so dielectric spec (≈ 0.04) lands at
+    ///     0 and conductor spec (≈ 0.95) lands near 1.
+    ///   * Future: Starfield .mat translator.
+    /// The renderer reads `Material.metalness_override` (preferred)
+    /// before falling back to keyword classify_pbr, so every
+    /// authored-explicit material wins over the heuristic. Shader
+    /// remains format-agnostic — single `F0 = mix(0.04, albedo,
+    /// metalness)` path.
+    pub metalness_override: Option<f32>,
+    /// PBR roughness `[0, 1]` companion to `metalness_override`.
+    /// Same precedence rule: when `Some`, wins over the legacy
+    /// `1 - glossiness/100` derivation in `classify_pbr`. Set by
+    /// `merge_bgsm_into_mesh` to `1 - bgsm.smoothness` so the
+    /// authored smoothness drives the lobe width directly.
+    pub roughness_override: Option<f32>,
     /// `BgsmFile.translucency_subsurface_color` (v>=8). RGB of the
     /// transmitted/scattered light beneath the surface. Used by the
     /// renderer's SSS approximation when `has_translucency` is also

@@ -79,6 +79,7 @@ mod tests {
             ("MAT_FLAG_EFFECT_PALETTE_COLOR", format!("#define MAT_FLAG_EFFECT_PALETTE_COLOR {MAT_FLAG_EFFECT_PALETTE_COLOR}u")),
             ("MAT_FLAG_EFFECT_PALETTE_ALPHA", format!("#define MAT_FLAG_EFFECT_PALETTE_ALPHA {MAT_FLAG_EFFECT_PALETTE_ALPHA}u")),
             ("MAT_FLAG_EFFECT_LIT", format!("#define MAT_FLAG_EFFECT_LIT {MAT_FLAG_EFFECT_LIT}u")),
+            // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
         ] {
             assert!(
                 header.contains(&expected),
@@ -342,5 +343,6 @@ mod tests {
         assert_eq!(MAT_FLAG_EFFECT_PALETTE_COLOR, material_flag::EFFECT_PALETTE_COLOR);
         assert_eq!(MAT_FLAG_EFFECT_PALETTE_ALPHA, material_flag::EFFECT_PALETTE_ALPHA);
         assert_eq!(MAT_FLAG_EFFECT_LIT, material_flag::EFFECT_LIT);
+        // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
     }
 }

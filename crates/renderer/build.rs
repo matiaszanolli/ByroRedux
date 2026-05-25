@@ -91,6 +91,12 @@ fn main() {
     writeln!(out, "#define MAT_FLAG_EFFECT_PALETTE_COLOR {MAT_FLAG_EFFECT_PALETTE_COLOR}u").unwrap();
     writeln!(out, "#define MAT_FLAG_EFFECT_PALETTE_ALPHA {MAT_FLAG_EFFECT_PALETTE_ALPHA}u").unwrap();
     writeln!(out, "#define MAT_FLAG_EFFECT_LIT {MAT_FLAG_EFFECT_LIT}u").unwrap();
+    // NOTE: `material_flag::BGSM_AUTHORED` is intentionally NOT emitted
+    // here. The shader is format-agnostic — BGSM-specific translation
+    // happens in `merge_bgsm_into_mesh` (writes `metalness_override` /
+    // `roughness_override` on Material), so the shader never branches
+    // on material provenance. Flag still rides on the Rust side for
+    // debug-server inspection. See `feedback_format_translation.md`.
     writeln!(out).unwrap();
 
     writeln!(out, "// Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`).").unwrap();

@@ -176,10 +176,19 @@ pub(crate) fn pack_effect_shader_flags(
 /// [`ImportedMesh::model_space_normals`]: byroredux_nif::import::ImportedMesh::model_space_normals
 pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMesh) -> u32 {
     use byroredux_renderer::vulkan::material::material_flag::{
-        BGSM_MODEL_SPACE_NORMALS, BGSM_PBR, BGSM_TRANSLUCENCY,
+        BGSM_AUTHORED, BGSM_MODEL_SPACE_NORMALS, BGSM_PBR, BGSM_TRANSLUCENCY,
         BGSM_TRANSLUCENCY_MIX_ALBEDO, BGSM_TRANSLUCENCY_THICK_OBJECT,
     };
     let mut flags = 0u32;
+    // `BGSM_AUTHORED` — set when `merge_bgsm_into_mesh` resolved a
+    // BGSM/BGEM file successfully (independent of `bgsm.pbr`, which
+    // vanilla FO4 virtually never authors — sampled: 0 of 793
+    // metal/cargo BGSMs in `Fallout4 - Materials.ba2`). Drives the
+    // spec-glossiness F0 derivation in the fragment shader; see
+    // `material_flag::BGSM_AUTHORED` for the rationale.
+    if mesh.from_bgsm {
+        flags |= BGSM_AUTHORED;
+    }
     if mesh.is_pbr {
         flags |= BGSM_PBR;
     }
@@ -257,6 +266,9 @@ mod pack_bgsm_material_flags_tests {
             is_pbr: false,
             has_translucency: false,
             model_space_normals: false,
+            from_bgsm: false,
+            metalness_override: None,
+            roughness_override: None,
             // #1147 Phase 2b — translucency suite (zero default).
             translucency_subsurface_color: [0.0; 3],
             translucency_transmissive_scale: 0.0,

@@ -232,6 +232,9 @@ pub fn extract_mesh(
         is_pbr: false,
         has_translucency: false,
         model_space_normals: false,
+        from_bgsm: false,
+        metalness_override: None,
+        roughness_override: None,
         // #1147 Phase 2b — BGSM v>=8 translucency suite. Defaulted
         // to zero / false; populated by `apply_bgsm_chain` from
         // `BgsmFile` when the material file is present.

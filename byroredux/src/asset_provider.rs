@@ -781,6 +781,13 @@ pub(crate) fn merge_bgsm_into_mesh(
         None => return false,
     };
 
+    // `touched` flips to `true` on any merged field. Allowed unused
+    // assignment: the success branches (BGSM / BGEM) set `touched`
+    // unconditionally via `mesh.from_bgsm = true`, so the `false`
+    // initializer is overwritten before any read — but the
+    // initializer is load-bearing for the failure / unknown-kind
+    // path that returns it without further assignment.
+    #[allow(unused_assignments)]
     let mut touched = false;
     // `fill` populates an `Option<FixedString>` slot only when it's
     // None and the incoming value is non-empty. Routes through the
@@ -812,6 +819,7 @@ pub(crate) fn merge_bgsm_into_mesh(
     let mut set_glossiness = false;
     let mut set_alpha = false;
     let mut set_uv = false;
+    let mut set_blend = false;
 
     // Determine dispatch kind from magic (authoritative) with extension as
     // fallback. Warn once per path when they disagree — e.g. a mod shipping a
@@ -844,6 +852,62 @@ pub(crate) fn merge_bgsm_into_mesh(
         let Some(resolved) = provider.resolve_bgsm(&path) else {
             return false;
         };
+        // BGSM resolution succeeded — telemetry-only flag (no renderer
+        // branch); the substantive work happens in the spec-glossiness
+        // → metallic-roughness translation below.
+        mesh.from_bgsm = true;
+        touched = true;
+
+        // ── Translation layer (BGSM spec-glossiness → standard PBR) ──
+        //
+        // The renderer consumes a single PBR contract: `albedo`,
+        // `metalness`, `roughness`, `F0 = mix(0.04, albedo, metalness)`.
+        // BGSM authors a DIFFERENT contract: `specular_color * mult`
+        // IS F0 directly (dielectric ≈ 0.04, conductor ≈ albedo-tinted).
+        // Bethesda's runtime translates this internally; we do the same
+        // translation HERE, in the merge layer, so the renderer never
+        // needs to know which game's format a material came from. See
+        // `feedback_format_translation.md`.
+        //
+        // Translation derivation (LEAF BGSM only — template chain
+        // resolution for spec-color is intentionally child-only since
+        // the leaf author's choice is the authoritative one; parents
+        // are background defaults the artist explicitly overrode if
+        // they set a different value):
+        //   * leaf_spec_lum = luminance(spec_color * mult)
+        //   * metalness = saturate((leaf_spec_lum - 0.04) / 0.96)
+        //     — 0 for dielectric (F0 ≈ 0.04), ~1 for conductor (F0 ≈ 0.95)
+        //   * roughness = clamp(1 - smoothness, 0.04, 1.0)
+        //     — direct authoring; no glossiness round-trip.
+        //
+        // For metallic materials, also tint `mesh.diffuse_color` toward
+        // the authored spec_color so the per-pixel `F0 = mix(0.04,
+        // albedo, metalness)` lands on the right conductor tint when
+        // the diffuse texture is BC1-desaturated (a known FO4 issue —
+        // raw_metal_diff DDS textures lose saturation vs the authored
+        // spec RGB). Pure dielectric materials keep `diffuse_color`
+        // untouched so painted-plastic textures aren't shifted.
+        let leaf = &resolved.file;
+        let spec_r = leaf.specular_color[0] * leaf.specular_mult;
+        let spec_g = leaf.specular_color[1] * leaf.specular_mult;
+        let spec_b = leaf.specular_color[2] * leaf.specular_mult;
+        let spec_lum = 0.2126 * spec_r + 0.7152 * spec_g + 0.0722 * spec_b;
+        let metalness = ((spec_lum - 0.04) / 0.96).clamp(0.0, 1.0);
+        let roughness = (1.0 - leaf.smoothness).clamp(0.04, 1.0);
+        mesh.metalness_override = Some(metalness);
+        mesh.roughness_override = Some(roughness);
+        if metalness > 0.5 {
+            // Conductor — bias the diffuse tint toward the authored
+            // spec colour so the shader's `mix(0.04, albedo, metalness)`
+            // lands on the right tint even on desaturated DDS albedos.
+            // Half-weight blend so the diffuse texture's detail (rivets,
+            // wear, edge highlights) still modulates visually.
+            mesh.diffuse_color = [
+                0.5 * mesh.diffuse_color[0] + 0.5 * spec_r,
+                0.5 * mesh.diffuse_color[1] + 0.5 * spec_g,
+                0.5 * mesh.diffuse_color[2] + 0.5 * spec_b,
+            ];
+        }
         for step in resolved.walk() {
             let bgsm = &step.file;
             fill(
@@ -1000,11 +1064,40 @@ pub(crate) fn merge_bgsm_into_mesh(
                 mesh.alpha_threshold = f32::from(bgsm.base.alpha_test_ref) / 255.0;
                 touched = true;
             }
+            // BGSM alpha-blend forwarding. FO4+ moved per-material blend
+            // state out of NiAlphaProperty into BGSM, so a BGSM-only
+            // glass / decal authored with `alpha_blend_mode.function == 1`
+            // (Standard) leaves the NIF-side `has_alpha` at false and
+            // every Institute / lab pane renders fully opaque
+            // (`INSTANCE_FLAG_ALPHA_BLEND` never sets → MATERIAL_KIND_GLASS
+            // never classifies → opaque path).
+            //
+            // Child-first precedence (matches the texture / scalar walks):
+            // first authored function > 0 wins. function == 0 (None)
+            // intentionally does NOT clear an already-set blend — a leaf
+            // that opts out shouldn't erase a parent's blend authoring.
+            //
+            // Blend-factor enums (BGSM `src_blend` / `dst_blend`) align
+            // 1:1 with the Gamebryo `AlphaFunction` byte the renderer
+            // already speaks (0=Zero, 1=One, 6=SrcAlpha, 7=InvSrcAlpha,
+            // ...), so we forward verbatim and cast u32→u8 — vanilla
+            // values fit easily.
+            if !set_blend && bgsm.base.alpha_blend_mode.function > 0 {
+                mesh.has_alpha = true;
+                mesh.src_blend_mode = bgsm.base.alpha_blend_mode.src_blend as u8;
+                mesh.dst_blend_mode = bgsm.base.alpha_blend_mode.dst_blend as u8;
+                set_blend = true;
+                touched = true;
+            }
         }
     } else if dispatch_kind == Some(MaterialKind::Bgem) {
         let Some(bgem) = provider.resolve_bgem(&path) else {
             return false;
         };
+        // BGEM (effect material) also uses the spec-glossiness
+        // convention — set the same flag as the BGSM branch.
+        mesh.from_bgsm = true;
+        touched = true;
         fill(
             &mut mesh.texture_path,
             &bgem.base_texture,
@@ -1062,6 +1155,14 @@ pub(crate) fn merge_bgsm_into_mesh(
         if bgem.base.alpha_test {
             mesh.alpha_test = true;
             mesh.alpha_threshold = f32::from(bgem.base.alpha_test_ref) / 255.0;
+        }
+        // BGEM alpha-blend forwarding — same rationale as the BGSM
+        // branch above, applied to the BSEffectShaderProperty path.
+        // BGEM has no inheritance so no child-first guard needed.
+        if bgem.base.alpha_blend_mode.function > 0 {
+            mesh.has_alpha = true;
+            mesh.src_blend_mode = bgem.base.alpha_blend_mode.src_blend as u8;
+            mesh.dst_blend_mode = bgem.base.alpha_blend_mode.dst_blend as u8;
         }
         touched = true;
     } else {
@@ -1637,6 +1738,76 @@ mod tests {
         }
 
         assert!(is_pbr, "parent's pbr=true must flow down to the merged result");
+    }
+
+    /// Regression for FO4 BGSM glass / alpha-blended decals. FO4
+    /// moved per-material blend state out of `NiAlphaProperty` into
+    /// BGSM's `base.alpha_blend_mode`. Pre-fix the merge dropped
+    /// that tuple, leaving `ImportedMesh.has_alpha = false` on
+    /// every BGSM-only glass pane → no `AlphaBlend` component
+    /// attached → `INSTANCE_FLAG_ALPHA_BLEND` never set → the
+    /// `MATERIAL_KIND_GLASS` classifier in `static_meshes.rs`
+    /// short-circuited and the panel rendered fully opaque
+    /// (visible symptom: Institute Bioscience glass too opaque,
+    /// no refraction, wrong tint). Pins:
+    ///   1. `function > 0` → `has_alpha = true` + blend factors copied
+    ///   2. `function == 0` (None) → no override (NIF-side value wins)
+    #[test]
+    fn bgsm_merge_forwards_alpha_blend_mode() {
+        use byroredux_bgsm::AlphaBlendMode;
+        // Mirror the prod merge's three writes for the alpha-blend block.
+        fn apply(bgsm: &BgsmFile, has_alpha: &mut bool, src: &mut u8, dst: &mut u8) {
+            if bgsm.base.alpha_blend_mode.function > 0 {
+                *has_alpha = true;
+                *src = bgsm.base.alpha_blend_mode.src_blend as u8;
+                *dst = bgsm.base.alpha_blend_mode.dst_blend as u8;
+            }
+        }
+        // Case 1: standard alpha-blend (function=1, src=6 SrcAlpha,
+        // dst=7 InvSrcAlpha) — Institute glass case.
+        let mut has_alpha = false;
+        let mut src = 6u8;
+        let mut dst = 7u8;
+        let mut bgsm = BgsmFile::default();
+        bgsm.base.alpha_blend_mode = AlphaBlendMode {
+            function: 1,
+            src_blend: 6,
+            dst_blend: 7,
+        };
+        apply(&bgsm, &mut has_alpha, &mut src, &mut dst);
+        assert!(has_alpha, "function=1 (Standard) must set has_alpha");
+        assert_eq!(src, 6);
+        assert_eq!(dst, 7);
+
+        // Case 2: additive blend (function=2) with One/One factors —
+        // common on FO4 effect / glow card BGEMs. Still routes to
+        // alpha-blend so the renderer picks the alpha pipeline.
+        let mut has_alpha = false;
+        let mut src = 6u8;
+        let mut dst = 7u8;
+        let mut bgsm = BgsmFile::default();
+        bgsm.base.alpha_blend_mode = AlphaBlendMode {
+            function: 2,
+            src_blend: 1,
+            dst_blend: 1,
+        };
+        apply(&bgsm, &mut has_alpha, &mut src, &mut dst);
+        assert!(has_alpha);
+        assert_eq!(src, 1);
+        assert_eq!(dst, 1);
+
+        // Case 3: function=0 (None) — the BGSM explicitly says "no
+        // blend." Don't flip has_alpha. Caller's `set_blend` guard
+        // then also prevents a subsequent parent from re-triggering.
+        let mut has_alpha = false;
+        let mut src = 6u8;
+        let mut dst = 7u8;
+        let bgsm = BgsmFile::default();
+        assert_eq!(bgsm.base.alpha_blend_mode.function, 0);
+        apply(&bgsm, &mut has_alpha, &mut src, &mut dst);
+        assert!(!has_alpha, "function=0 must NOT set has_alpha");
+        assert_eq!(src, 6, "src untouched when function=0");
+        assert_eq!(dst, 7);
     }
 
     /// Companion regression for the SIBLING half of #1076 — BGEM also

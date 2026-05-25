@@ -878,6 +878,8 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                     .effect_shader
                     .as_ref()
                     .and_then(|es| es.greyscale_texture.clone()),
+                metalness_override: mesh.metalness_override,
+                roughness_override: mesh.roughness_override,
             },
         );
         // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
