@@ -317,6 +317,117 @@ pub struct PbrMaterial {
     pub metalness: f32,
 }
 
+/// Free-form inputs to the keyword-based PBR classifier. Decoupled
+/// from `Material` so the NIF importer can call the classifier at
+/// `MaterialInfo → ImportedMesh` time (Stage 2 of the
+/// `feedback_format_translation.md` rollout) without going through a
+/// fully-constructed `Material`.
+///
+/// All fields are *primary inputs the classifier reads*; adding a
+/// new input here is the single point of change. `texture_path` is
+/// the dominant signal; `glossiness` / `env_map_scale` /
+/// `has_normal_map` drive the no-keyword fallback arms.
+#[derive(Debug, Clone, Copy)]
+pub struct PbrClassifierInputs<'a> {
+    pub texture_path: Option<&'a str>,
+    pub glossiness: f32,
+    pub env_map_scale: f32,
+    pub has_normal_map: bool,
+}
+
+/// Keyword-based PBR classifier shared by `Material::classify_pbr`
+/// (per-frame draw build) and the NIF importer's mesh extractors
+/// (per-`ImportedMesh` translation). Single source of truth for the
+/// rule that texture-path keywords drive metalness / glass / cloth
+/// classification with glossiness + env_map_scale as the no-keyword
+/// fallback. See `feedback_format_translation.md` for the architectural
+/// directive.
+///
+/// Pure function — no `&self`, no allocations (matching uses
+/// `contains_any_ci`'s windowed byte comparison).
+pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
+    let path = inputs.texture_path.unwrap_or("");
+
+    if contains_any_ci(
+        path,
+        &["metal", "iron", "steel", "dwemer", "dwarven", "chainmail"],
+    ) {
+        return PbrMaterial {
+            roughness: 0.3,
+            metalness: 0.9,
+        };
+    }
+    if contains_any_ci(path, &["gold", "silver", "bronze", "copper"]) {
+        return PbrMaterial {
+            roughness: 0.25,
+            metalness: 0.95,
+        };
+    }
+    if contains_any_ci(path, &["glass", "crystal", "ice", "gem"]) {
+        return PbrMaterial {
+            roughness: 0.1,
+            metalness: 0.0,
+        };
+    }
+    if contains_any_ci(path, &["wood", "plank", "barrel", "crate", "log"]) {
+        return PbrMaterial {
+            roughness: 0.7,
+            metalness: 0.0,
+        };
+    }
+    if contains_any_ci(path, &["stone", "rock", "cave", "brick", "ruins", "cobble"]) {
+        return PbrMaterial {
+            roughness: 0.85,
+            metalness: 0.0,
+        };
+    }
+    if contains_any_ci(
+        path,
+        &[
+            "fabric", "cloth", "leather", "fur", "linen", "carpet", "rug", "tapestry", "banner",
+            "curtain", "drape", "bedding", "pillow", "sack", "burlap", "wool",
+        ],
+    ) {
+        return PbrMaterial {
+            roughness: 0.95,
+            metalness: 0.0,
+        };
+    }
+    if contains_any_ci(path, &["skin", "body", "head", "hand", "face"]) {
+        return PbrMaterial {
+            roughness: 0.5,
+            metalness: 0.0,
+        };
+    }
+    if contains_any_ci(path, &["hair"]) {
+        return PbrMaterial {
+            roughness: 0.6,
+            metalness: 0.0,
+        };
+    }
+
+    // env_map_scale fallback — see `Material::classify_pbr_from_path`
+    // comment block for the "chrome cushion" rationale and why
+    // env_map_scale must NEVER drive metalness.
+    if inputs.env_map_scale > 0.3 {
+        return PbrMaterial {
+            roughness: (1.0 - inputs.env_map_scale * 0.3).clamp(0.2, 0.8),
+            metalness: 0.0,
+        };
+    }
+
+    // Glossiness fallback — normal-map presence shifts macro
+    // roughness down slightly to compensate for the added detail.
+    let mut roughness = (1.0 - inputs.glossiness / 100.0).clamp(0.05, 0.95);
+    if inputs.has_normal_map {
+        roughness = (roughness - 0.1).max(0.05);
+    }
+    PbrMaterial {
+        roughness,
+        metalness: 0.0,
+    }
+}
+
 impl Material {
     /// Explicit "this surface is glass / crystal / ice / gem / window"
     /// classifier for use by [`crate::ecs::components::Material`]-less
@@ -393,113 +504,17 @@ impl Material {
     }
 
     /// Internal — keyword classifier body without the override
-    /// fast-path. Split out so [`Self::resolve_classifier_overrides`]
-    /// can use it without short-circuiting on its own previous run.
+    /// fast-path. Thin shim over the free
+    /// [`classify_pbr_keyword`] so the per-frame draw build and the
+    /// NIF importer share one classifier definition (Stage 2 of the
+    /// `feedback_format_translation.md` rollout).
     fn classify_pbr_from_path(&self, texture_path: Option<&str>) -> PbrMaterial {
-        let path = texture_path.unwrap_or("");
-
-        // Keyword-based classification (highest priority).
-        if contains_any_ci(
-            path,
-            &["metal", "iron", "steel", "dwemer", "dwarven", "chainmail"],
-        ) {
-            return PbrMaterial {
-                roughness: 0.3,
-                metalness: 0.9,
-            };
-        }
-        if contains_any_ci(path, &["gold", "silver", "bronze", "copper"]) {
-            return PbrMaterial {
-                roughness: 0.25,
-                metalness: 0.95,
-            };
-        }
-        if contains_any_ci(path, &["glass", "crystal", "ice", "gem"]) {
-            return PbrMaterial {
-                roughness: 0.1,
-                metalness: 0.0,
-            };
-        }
-        if contains_any_ci(path, &["wood", "plank", "barrel", "crate", "log"]) {
-            return PbrMaterial {
-                roughness: 0.7,
-                metalness: 0.0,
-            };
-        }
-        if contains_any_ci(path, &["stone", "rock", "cave", "brick", "ruins", "cobble"]) {
-            return PbrMaterial {
-                roughness: 0.85,
-                metalness: 0.0,
-            };
-        }
-        if contains_any_ci(
-            path,
-            &[
-                "fabric", "cloth", "leather", "fur", "linen", "carpet", "rug", "tapestry",
-                "banner", "curtain", "drape", "bedding", "pillow", "sack", "burlap", "wool",
-            ],
-        ) {
-            return PbrMaterial {
-                roughness: 0.95,
-                metalness: 0.0,
-            };
-        }
-        if contains_any_ci(path, &["skin", "body", "head", "hand", "face"]) {
-            return PbrMaterial {
-                roughness: 0.5,
-                metalness: 0.0,
-            };
-        }
-        if contains_any_ci(path, &["hair"]) {
-            return PbrMaterial {
-                roughness: 0.6,
-                metalness: 0.0,
-            };
-        }
-
-        // Environment-map authored on this material — scales the
-        // legacy cube-map reflection intensity (BSShaderPPLighting
-        // shader_type 1, ENVIRONMENT_MAP). This is NOT a metalness
-        // signal: glass, polished wood, vinyl cushions, plastic
-        // armor, and lacquered ceramics all author env_map_scale > 0
-        // without being conductors. Treating it as metalness routes
-        // every dielectric with a sheen into the metal-reflection
-        // branch (`triangle.frag:metalness > 0.3`), which then picks
-        // up bright surroundings (cell ambient, nearby emissive
-        // sconces) via the env reflection — the "chrome cushion"
-        // look on FNV medical gurneys / hospital beds.
-        //
-        // Real conductors are caught by the texture-path keyword
-        // arms above (metal/iron/steel/dwemer/gold/silver/...).
-        // Power-armor authoring is `metal` in the texture path AND
-        // env_map_scale ≈ 2.5 — the keyword arm fires first and
-        // sets metalness=0.9. So leaving the env-mapped fallback at
-        // metalness=0 here doesn't lose the power-armor case.
-        //
-        // Use env_map_scale to drive a lower roughness instead —
-        // surfaces with an authored cube map are by definition
-        // smoother (the artist authored visible reflections) — so
-        // the dielectric specular lobe sharpens correctly and the
-        // reflection appears via Fresnel without the conductor tint.
-        if self.env_map_scale > 0.3 {
-            return PbrMaterial {
-                roughness: (1.0 - self.env_map_scale * 0.3).clamp(0.2, 0.8),
-                metalness: 0.0,
-            };
-        }
-
-        // Fallback: convert glossiness to roughness.
-        let roughness = (1.0 - self.glossiness / 100.0).clamp(0.05, 0.95);
-        // Adjust if normal map is present (surface detail → slightly smoother macro).
-        let roughness = if self.normal_map.is_some() {
-            (roughness - 0.1).max(0.05)
-        } else {
-            roughness
-        };
-        PbrMaterial {
-            roughness,
-            metalness: 0.0,
-        }
+        classify_pbr_keyword(PbrClassifierInputs {
+            texture_path,
+            glossiness: self.glossiness,
+            env_map_scale: self.env_map_scale,
+            has_normal_map: self.normal_map.is_some(),
+        })
     }
 }
 

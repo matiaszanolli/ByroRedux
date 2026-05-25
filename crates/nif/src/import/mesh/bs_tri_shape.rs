@@ -115,6 +115,12 @@ pub fn extract_bs_tri_shape(
     // #430 — capture ShaderTypeFields before the `mat` move.
     let shader_type_fields = mat.shader_type_fields();
 
+    // Stage 2 (`feedback_format_translation.md`) — derive PBR
+    // (metalness, roughness) at import time. BGSM merge downstream
+    // overwrites both for BGSM-resolved Skyrim+/FO4 meshes; legacy
+    // inline-shader BSLightingShaderProperty meshes keep these.
+    let legacy_pbr = mat.classify_legacy_pbr(pool);
+
     // #795 / SK-D1-03 + #796 / SK-D1-04 — per-vertex tangents.
     //
     // Three paths (precedence order):
@@ -237,8 +243,11 @@ pub fn extract_bs_tri_shape(
         has_translucency: false,
         model_space_normals: false,
         from_bgsm: false,
-        metalness_override: None,
-        roughness_override: None,
+        // Stage 2 — legacy PBR translation. BGSM merge overwrites for
+        // BGSM-resolved Skyrim+/FO4 meshes; non-BGSM BSLightingShader-
+        // Property paths keep these classifier-derived values.
+        metalness_override: Some(legacy_pbr.metalness),
+        roughness_override: Some(legacy_pbr.roughness),
         // #1147 Phase 2b — BGSM v>=8 translucency suite.
         translucency_subsurface_color: [0.0; 3],
         translucency_transmissive_scale: 0.0,

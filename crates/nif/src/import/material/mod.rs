@@ -963,6 +963,37 @@ impl Default for MaterialInfo {
 }
 
 impl MaterialInfo {
+    /// Stage 2 (`feedback_format_translation.md`) — derive PBR
+    /// `(metalness, roughness)` from this MaterialInfo's legacy
+    /// inline-shader data at NIF-import time, so every mesh leaves
+    /// the parser with explicit `metalness_override` /
+    /// `roughness_override` populated. The BGSM merge layer
+    /// downstream (`asset_provider::merge_bgsm_into_mesh`)
+    /// overwrites both unconditionally for BGSM-resolved materials,
+    /// so legacy Oblivion / FO3 / FNV / pre-Skyrim meshes keep the
+    /// values this method writes; BGSM-using FO4 / Skyrim meshes get
+    /// the authored spec-glossiness translation instead.
+    ///
+    /// Single source of truth — delegates to
+    /// `byroredux_core::ecs::components::material::classify_pbr_keyword`
+    /// so the per-frame draw build's
+    /// `Material::classify_pbr` and this importer-side translation
+    /// stay in lockstep.
+    pub(super) fn classify_legacy_pbr(
+        &self,
+        pool: &byroredux_core::string::StringPool,
+    ) -> byroredux_core::ecs::components::material::PbrMaterial {
+        let texture_path_str = self.texture_path.and_then(|s| pool.resolve(s));
+        byroredux_core::ecs::components::material::classify_pbr_keyword(
+            byroredux_core::ecs::components::material::PbrClassifierInputs {
+                texture_path: texture_path_str,
+                glossiness: self.glossiness,
+                env_map_scale: self.env_map_scale,
+                has_normal_map: self.normal_map.is_some(),
+            },
+        )
+    }
+
     /// Project this `MaterialInfo`'s shader-type fields into a
     /// `ShaderTypeFields` bundle for `ImportedMesh`. See #430.
     pub(super) fn shader_type_fields(&self) -> ShaderTypeFields {
@@ -1036,6 +1067,15 @@ pub(super) fn tex_desc_source_path(
 
 #[cfg(test)]
 mod alpha_flag_tests;
+
+/// Stage 2 (`feedback_format_translation.md`) regression — every
+/// legacy NIF mesh must leave the parser with explicit
+/// `metalness_override` / `roughness_override` derived from the
+/// shared `classify_pbr_keyword`. The classifier itself is tested in
+/// `byroredux-core::ecs::components::material::tests`; this sibling
+/// pins the MaterialInfo → classifier adapter.
+#[cfg(test)]
+mod legacy_pbr_translation_tests;
 
 /// Regression tests for issue #345 — `BSEffectShaderProperty` rich
 /// material fields used to be dropped on import. The capture path is

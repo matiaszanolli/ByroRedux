@@ -183,6 +183,12 @@ pub fn extract_bs_geometry(
 
     let shader_type_fields = mat.shader_type_fields();
 
+    // Stage 2 (`feedback_format_translation.md`) — derive PBR
+    // (metalness, roughness) at import time. BGSM merge downstream
+    // overwrites for BGSM-resolved Starfield BSGeometry meshes;
+    // anything else keeps these classifier-derived values.
+    let legacy_pbr = mat.classify_legacy_pbr(pool);
+
     Some(ImportedMesh {
         positions,
         colors,
@@ -226,8 +232,10 @@ pub fn extract_bs_geometry(
         has_translucency: false,
         model_space_normals: false,
         from_bgsm: false,
-        metalness_override: None,
-        roughness_override: None,
+        // Stage 2 — legacy PBR translation; BGSM merge overwrites
+        // when a `.mat` file is present.
+        metalness_override: Some(legacy_pbr.metalness),
+        roughness_override: Some(legacy_pbr.roughness),
         // #1147 Phase 2b — BGSM v>=8 translucency suite.
         translucency_subsurface_color: [0.0; 3],
         translucency_transmissive_scale: 0.0,

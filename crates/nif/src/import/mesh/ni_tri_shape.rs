@@ -176,6 +176,13 @@ pub fn extract_mesh(
     // the `ImportedMesh` literal. See #430.
     let shader_type_fields = mat.shader_type_fields();
 
+    // Stage 2 (`feedback_format_translation.md`) — derive PBR
+    // (metalness, roughness) at import time from this mesh's legacy
+    // inline-shader data. BGSM merge downstream overwrites both for
+    // BGSM-resolved materials, so this fires only for the legacy
+    // Oblivion / FO3 / FNV / pre-Skyrim paths it's intended to serve.
+    let legacy_pbr = mat.classify_legacy_pbr(pool);
+
     // #783 / M-NORMALS — pre-decoded tangents from the NIF's
     // `NiBinaryExtraData("Tangent space (binormal & tangent vectors)")`.
     // Empty when the source mesh has no authored tangents; the
@@ -233,8 +240,10 @@ pub fn extract_mesh(
         has_translucency: false,
         model_space_normals: false,
         from_bgsm: false,
-        metalness_override: None,
-        roughness_override: None,
+        // Stage 2 — legacy PBR translation. BGSM merge overwrites for
+        // FO4/Skyrim BGSM-using meshes; legacy paths keep these.
+        metalness_override: Some(legacy_pbr.metalness),
+        roughness_override: Some(legacy_pbr.roughness),
         // #1147 Phase 2b — BGSM v>=8 translucency suite. Defaulted
         // to zero / false; populated by `apply_bgsm_chain` from
         // `BgsmFile` when the material file is present.
