@@ -25,6 +25,19 @@ use byroredux_core::ecs::{
     LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
 };
 
+/// Damping multiplier applied to the raw `intensity_amplitude`
+/// before composing the final modulation. Skyrim authors candles
+/// at `intensity_amplitude = 0.25` (±25% around the authored
+/// intensity) and the values were tuned against Skyrim's
+/// bake-and-vertex-light renderer; mapping them straight into our
+/// HDR + tone-mapped pipeline reads as too aggressive — visible as
+/// a noticeable brightness pulse rather than a candle's subtle
+/// breathing. Phase 19.6 — halve the amplitude. If a future LIGH
+/// record warrants its full authored swing, override per-light by
+/// scaling `LightFlicker.intensity_amplitude` at spawn time
+/// instead of touching this constant.
+const FLICKER_INTENSITY_DAMPING: f32 = 0.5;
+
 /// Cheap deterministic hash → `[-1.0, 1.0]`. Wang-style integer hash;
 /// flicker is purely cosmetic so a real PRNG would be overkill.
 fn hash_to_unit(seed: u32) -> f32 {
@@ -116,7 +129,8 @@ pub(crate) fn animate_lights_system(world: &World, _dt: f32) {
                 0.0
             };
 
-            let intensity = 1.0 + modulation * flicker.intensity_amplitude;
+            let intensity = 1.0
+                + modulation * flicker.intensity_amplitude * FLICKER_INTENSITY_DAMPING;
 
             // Position jitter — DISABLED in Phase 19.5.
             //
