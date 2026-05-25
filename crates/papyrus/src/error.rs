@@ -21,6 +21,11 @@ pub enum ErrorKind {
         message: String,
     },
     LexError,
+    /// Pratt expression parser hit its recursion-depth cap (#1270 /
+    /// SAFE-DIM3-NEW-02). Carries the cap so diagnostics can quote it.
+    ExpressionTooDeep {
+        max_depth: u32,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -41,6 +46,12 @@ impl fmt::Display for ParseError {
             }
             ErrorKind::LexError => {
                 write!(f, "unexpected character")
+            }
+            ErrorKind::ExpressionTooDeep { max_depth } => {
+                write!(
+                    f,
+                    "expression nesting exceeds parser depth cap ({max_depth})"
+                )
             }
         }
     }
@@ -64,6 +75,13 @@ impl ParseError {
             kind: ErrorKind::UnexpectedEof {
                 expected: expected.into(),
             },
+            span,
+        }
+    }
+
+    pub fn expression_too_deep(max_depth: u32, span: Span) -> Self {
+        Self {
+            kind: ErrorKind::ExpressionTooDeep { max_depth },
             span,
         }
     }

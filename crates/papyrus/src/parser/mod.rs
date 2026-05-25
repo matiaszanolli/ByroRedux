@@ -13,6 +13,11 @@ pub struct Parser {
     tokens: Vec<LexedToken>,
     pos: usize,
     errors: Vec<ParseError>,
+    /// Current `parse_expr_bp` recursion depth, used to bail on
+    /// pathologically nested expressions before they stack-overflow
+    /// (#1270 / SAFE-DIM3-NEW-02). Incremented at entry, decremented at
+    /// exit, capped at `expr::MAX_EXPR_DEPTH`.
+    pub(crate) expr_depth: u32,
 }
 
 impl Parser {
@@ -21,6 +26,7 @@ impl Parser {
             tokens,
             pos: 0,
             errors: Vec::new(),
+            expr_depth: 0,
         }
     }
 

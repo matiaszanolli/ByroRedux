@@ -12,6 +12,12 @@ const PREC_UNARY: u8 = 6;
 const PREC_CAST: u8 = 7;
 const PREC_POSTFIX: u8 = 8; // dot, index, call
 
+/// Maximum `parse_expr_bp` recursion depth. Stops a pathologically
+/// nested `.psc` (e.g. `((((...))))` to arbitrary depth) from
+/// overflowing the parser's stack. Vanilla Skyrim/FO4 scripts nest at
+/// most a few levels; 256 is generous (#1270 / SAFE-DIM3-NEW-02).
+pub(crate) const MAX_EXPR_DEPTH: u32 = 256;
+
 impl Parser {
     /// Parse an expression with minimum precedence.
     pub fn parse_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
@@ -19,7 +25,25 @@ impl Parser {
     }
 
     /// Pratt parser: parse expression with binding power `min_bp`.
-    fn parse_expr_bp(&mut self, min_bp: u8) -> Result<Spanned<Expr>, ParseError> {
+    ///
+    /// Tracks `self.expr_depth` across recursion so a pathologically
+    /// nested expression hits the depth cap and surfaces an error
+    /// rather than stack-overflowing. Increment-on-entry,
+    /// decrement-on-exit happens here; the body is in
+    /// [`Self::parse_expr_bp_inner`] so the bookkeeping sits at a
+    /// single entry/exit regardless of which `?` early-returns inside.
+    pub(crate) fn parse_expr_bp(&mut self, min_bp: u8) -> Result<Spanned<Expr>, ParseError> {
+        if self.expr_depth >= MAX_EXPR_DEPTH {
+            let span = self.current_span();
+            return Err(ParseError::expression_too_deep(MAX_EXPR_DEPTH, span));
+        }
+        self.expr_depth += 1;
+        let result = self.parse_expr_bp_inner(min_bp);
+        self.expr_depth -= 1;
+        result
+    }
+
+    fn parse_expr_bp_inner(&mut self, min_bp: u8) -> Result<Spanned<Expr>, ParseError> {
         let mut lhs = self.parse_prefix()?;
 
         loop {
@@ -826,5 +850,67 @@ mod tests {
             }
             other => panic!("expected Call, got {other:?}"),
         }
+    }
+
+    // ── #1270 / SAFE-DIM3-NEW-02 — recursion-depth guard ──
+
+    #[test]
+    fn depth_cap_rejects_pathological_parens() {
+        // 512 parens > MAX_EXPR_DEPTH = 256. Pre-#1270 this would
+        // stack-overflow the parser.
+        let depth = (MAX_EXPR_DEPTH as usize) * 2;
+        let mut src = String::with_capacity(depth * 2 + 2);
+        for _ in 0..depth {
+            src.push('(');
+        }
+        src.push('1');
+        for _ in 0..depth {
+            src.push(')');
+        }
+        let err = parse_expr_str(&src).expect_err("expected ExpressionTooDeep error");
+        assert!(
+            matches!(err.kind, crate::error::ErrorKind::ExpressionTooDeep { .. }),
+            "expected ExpressionTooDeep, got {:?}",
+            err.kind,
+        );
+    }
+
+    #[test]
+    fn depth_cap_accepts_legitimate_nesting() {
+        // 200 parens < MAX_EXPR_DEPTH (256). A legitimate (if ugly)
+        // expression at the same depth must parse without bailing.
+        // Each paren-pair contributes 2 to expr_depth (the outer
+        // parse_expr_bp + the inner parse_expr re-entry), so we cap
+        // the legitimate test at ~100 paren-pairs to stay under the
+        // cap with margin.
+        let depth: usize = 100;
+        let mut src = String::with_capacity(depth * 2 + 2);
+        for _ in 0..depth {
+            src.push('(');
+        }
+        src.push('1');
+        for _ in 0..depth {
+            src.push(')');
+        }
+        let e = parse_expr_str(&src).expect("legitimate deep nesting must parse");
+        // Unwrap to the innermost IntLit by descending through whatever
+        // the parser produced — paren expressions reuse the inner span.
+        // For correctness we just need the parse to succeed.
+        assert!(matches!(e.node, Expr::IntLit(1)));
+    }
+
+    #[test]
+    fn depth_resets_between_top_level_calls() {
+        // Successful parse must leave expr_depth back at 0, so the
+        // next top-level parse starts with a fresh budget.
+        let (tokens, _) = lex("1 + 2");
+        let mut parser = Parser::new(tokens);
+        let _ = parser.parse_expr().expect("first parse ok");
+        assert_eq!(parser.expr_depth, 0);
+
+        let (tokens, _) = lex("3 + 4");
+        let mut parser = Parser::new(tokens);
+        let _ = parser.parse_expr().expect("second parse ok");
+        assert_eq!(parser.expr_depth, 0);
     }
 }
