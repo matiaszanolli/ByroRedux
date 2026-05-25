@@ -9,6 +9,8 @@
 //! `havok_scale_for` at parse time) so consumers don't have to
 //! re-detect the game variant per call.
 
+use std::collections::HashSet;
+
 use crate::blocks::collision::*;
 use crate::blocks::tri_shape::NiTriStripsData;
 use crate::scene::NifScene;
@@ -31,7 +33,8 @@ pub fn extract_collision(
     let body = scene.get_as::<BhkRigidBody>(body_idx)?;
 
     let scale = scene.havok_scale;
-    let mut shape = resolve_shape(scene, body.shape_ref)?;
+    let mut visited = HashSet::new();
+    let mut shape = resolve_shape(scene, body.shape_ref, &mut visited)?;
 
     // Apply rigid body center-of-mass offset and orientation to the shape.
     // Static architecture typically has zero offset; dynamic objects (crates,
@@ -70,9 +73,41 @@ pub fn extract_collision(
 }
 
 /// Recursively resolve a bhk shape block into a CollisionShape enum.
-fn resolve_shape(scene: &NifScene, shape_ref: BlockRef) -> Option<CollisionShape> {
-    let scale = scene.havok_scale;
+///
+/// `visited` records `BlockRef` indices currently on the resolution
+/// stack so a `BhkListShape` whose `sub_shape_refs` cycle (directly or
+/// transitively) returns `None` instead of overflowing the stack
+/// (#1269 / SAFE-DIM3-NEW-01). Entries are removed on return so a
+/// legitimate DAG (the same shape referenced from two sibling subtrees)
+/// still resolves on both arms. Vanilla content has no such cycles,
+/// but a corrupt or adversarial NIF could otherwise crash the parser.
+fn resolve_shape(
+    scene: &NifScene,
+    shape_ref: BlockRef,
+    visited: &mut HashSet<usize>,
+) -> Option<CollisionShape> {
     let idx = shape_ref.index()?;
+    if !visited.insert(idx) {
+        log::warn!(
+            "resolve_shape: cycle detected at block {} — breaking recursion (#1269)",
+            idx,
+        );
+        return None;
+    }
+    let result = resolve_shape_inner(scene, idx, visited);
+    visited.remove(&idx);
+    result
+}
+
+/// Inner body of `resolve_shape`. Extracted so the outer function can
+/// own the `visited` insert/remove bookkeeping at a single entry/exit
+/// point regardless of which match arm returns.
+fn resolve_shape_inner(
+    scene: &NifScene,
+    idx: usize,
+    visited: &mut HashSet<usize>,
+) -> Option<CollisionShape> {
+    let scale = scene.havok_scale;
     let block = scene.get(idx)?;
 
     // Sphere
@@ -126,18 +161,25 @@ fn resolve_shape(scene: &NifScene, shape_ref: BlockRef) -> Option<CollisionShape
 
     // MOPP BV tree — skip the MOPP data, recurse into the wrapped shape.
     if let Some(s) = block.as_any().downcast_ref::<BhkMoppBvTreeShape>() {
-        return resolve_shape(scene, s.shape_ref);
+        return resolve_shape(scene, s.shape_ref, visited);
     }
 
     // List shape — compound of sub-shapes.
     if let Some(s) = block.as_any().downcast_ref::<BhkListShape>() {
         let mut children = Vec::with_capacity(s.sub_shape_refs.len());
         for sub_ref in &s.sub_shape_refs {
-            if let Some(child) = resolve_shape(scene, *sub_ref) {
+            if let Some(child) = resolve_shape(scene, *sub_ref, visited) {
                 children.push((Vec3::ZERO, Quat::IDENTITY, Box::new(child)));
             }
         }
-        return if children.len() == 1 {
+        return if children.is_empty() {
+            // All sub-shapes failed to resolve (cycle elimination or
+            // unsupported types). Surface as None rather than an empty
+            // Compound (#1269 — pre-fix a cycled BhkListShape would
+            // return Compound { children: [] } after cycle detection
+            // dropped the only sub-shape).
+            None
+        } else if children.len() == 1 {
             // Unwrap single-child compound.
             let (_, _, shape) = children.into_iter().next().unwrap();
             Some(*shape)
@@ -148,7 +190,7 @@ fn resolve_shape(scene: &NifScene, shape_ref: BlockRef) -> Option<CollisionShape
 
     // Transform shape — apply 4x4 transform to child shape.
     if let Some(s) = block.as_any().downcast_ref::<BhkTransformShape>() {
-        let child = resolve_shape(scene, s.shape_ref)?;
+        let child = resolve_shape(scene, s.shape_ref, visited)?;
         let (translation, rotation) = decompose_havok_matrix(&s.transform, scale);
         return Some(CollisionShape::Compound {
             children: vec![(translation, rotation, Box::new(child))],
@@ -176,7 +218,7 @@ fn resolve_shape(scene: &NifScene, shape_ref: BlockRef) -> Option<CollisionShape
 
     // Phantom (trigger volume) — resolve inner shape.
     if let Some(s) = block.as_any().downcast_ref::<BhkSimpleShapePhantom>() {
-        return resolve_shape(scene, s.shape_ref);
+        return resolve_shape(scene, s.shape_ref, visited);
     }
 
     log::debug!(
@@ -391,4 +433,93 @@ fn resolve_compressed_mesh(data: &BhkCompressedMeshShapeData, scale: f32) -> Opt
         vertices: all_verts,
         indices: all_indices,
     })
+}
+
+#[cfg(test)]
+mod cycle_tests {
+    //! Regression for #1269 / SAFE-DIM3-NEW-01: `resolve_shape` must
+    //! detect a `BhkListShape` whose `sub_shape_refs` cycle and return
+    //! `None` rather than overflow the stack. Visited bookkeeping uses
+    //! insert-on-entry / remove-on-exit so legitimate DAG sharing (the
+    //! same leaf shape referenced from two sibling subtrees) still
+    //! resolves on both arms.
+    use super::*;
+    use crate::blocks::collision::{BhkListShape, BhkSphereShape};
+    use crate::blocks::NiObject;
+    use crate::types::BlockRef;
+
+    fn list_shape(refs: Vec<BlockRef>) -> Box<dyn NiObject> {
+        Box::new(BhkListShape {
+            sub_shape_refs: refs,
+            material: 0,
+            filters: Vec::new(),
+        })
+    }
+
+    fn sphere_shape(radius: f32) -> Box<dyn NiObject> {
+        Box::new(BhkSphereShape {
+            material: 0,
+            radius,
+        })
+    }
+
+    #[test]
+    fn list_shape_self_cycle_returns_none() {
+        // Scene:
+        //   [0] BhkListShape { sub_shape_refs = [0] }   // self-reference
+        // Pre-#1269 this would unbounded-recurse and stack-overflow.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(list_shape(vec![BlockRef(0)]));
+        let mut visited = HashSet::new();
+        let result = resolve_shape(&scene, BlockRef(0), &mut visited);
+        assert!(
+            result.is_none(),
+            "self-cycle must produce None, not a populated shape"
+        );
+    }
+
+    #[test]
+    fn list_shape_mutual_cycle_does_not_overflow() {
+        // Scene:
+        //   [0] BhkListShape { sub_shape_refs = [1] }
+        //   [1] BhkListShape { sub_shape_refs = [0] }
+        // Mutual cycle through two BhkListShapes. The cycle blocks the
+        // inner recursion; the outer list ends up with no resolvable
+        // children. Success here is "returned without overflowing the
+        // stack" — the shape returned may be None or an empty
+        // Compound, both are acceptable cycle-broken outcomes.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(list_shape(vec![BlockRef(1)]));
+        scene.blocks.push(list_shape(vec![BlockRef(0)]));
+        let mut visited = HashSet::new();
+        let _ = resolve_shape(&scene, BlockRef(0), &mut visited);
+    }
+
+    #[test]
+    fn visited_resets_between_sibling_subtrees() {
+        // Scene (DAG, not a cycle):
+        //   [0] BhkListShape { sub_shape_refs = [1, 1] }   // shared leaf
+        //   [1] BhkSphereShape { radius = 2.0 }
+        // The same sphere is referenced twice as a child of the outer
+        // list. Visited must remove on exit, so the second occurrence
+        // still resolves rather than being mis-flagged as a cycle.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(list_shape(vec![BlockRef(1), BlockRef(1)]));
+        scene.blocks.push(sphere_shape(2.0));
+        let mut visited = HashSet::new();
+        let result = resolve_shape(&scene, BlockRef(0), &mut visited);
+        match result {
+            Some(CollisionShape::Compound { children }) => {
+                assert_eq!(
+                    children.len(),
+                    2,
+                    "DAG sharing must produce two child entries, not one"
+                );
+            }
+            other => panic!("expected Compound with two children, got {other:?}"),
+        }
+    }
 }

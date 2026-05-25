@@ -155,6 +155,12 @@ fn switch_active_children(block: &dyn NiObject) -> Option<(&NiNode, Vec<usize>)>
     None
 }
 
+/// Maximum recursion depth for `walk_node_hierarchical` and
+/// `walk_node_flat`. Bethesda-shipped NIFs nest at most a few dozen
+/// nodes deep; the cap stops a malformed or adversarial file from
+/// crashing the parser via stack overflow (#1269 / SAFE-DIM3-NEW-01).
+pub(crate) const MAX_NIF_NODE_DEPTH: u32 = 128;
+
 /// Recursively walk the scene graph, preserving hierarchy.
 /// NiNodes become ImportedNode entries; geometry becomes ImportedMesh with parent_node set.
 ///
@@ -170,7 +176,17 @@ pub(super) fn walk_node_hierarchical(
     out: &mut ImportedScene,
     pool: &mut StringPool,
     resolver: Option<&dyn MeshResolver>,
+    depth: u32,
 ) {
+    if depth > MAX_NIF_NODE_DEPTH {
+        log::warn!(
+            "walk_node_hierarchical: depth cap {} hit at block {} — \
+             aborting subtree (#1269)",
+            MAX_NIF_NODE_DEPTH,
+            block_idx,
+        );
+        return;
+    }
     let Some(block) = scene.get(block_idx) else {
         return;
     };
@@ -229,6 +245,7 @@ pub(super) fn walk_node_hierarchical(
                 out,
                 pool,
                 resolver,
+                depth + 1,
             );
         }
         inherited_props.truncate(prev_len);
@@ -333,6 +350,7 @@ pub(super) fn walk_node_hierarchical(
                     out,
                     pool,
                     resolver,
+                    depth + 1,
                 );
             }
         }
@@ -649,7 +667,17 @@ pub(super) fn walk_node_flat(
     mut collisions: Option<&mut Vec<ImportedCollision>>,
     pool: &mut StringPool,
     resolver: Option<&dyn MeshResolver>,
+    depth: u32,
 ) {
+    if depth > MAX_NIF_NODE_DEPTH {
+        log::warn!(
+            "walk_node_flat: depth cap {} hit at block {} — \
+             aborting subtree (#1269)",
+            MAX_NIF_NODE_DEPTH,
+            block_idx,
+        );
+        return;
+    }
     let Some(block) = scene.get(block_idx) else {
         return;
     };
@@ -688,6 +716,7 @@ pub(super) fn walk_node_flat(
                 collisions.as_deref_mut(),
                 pool,
                 resolver,
+                depth + 1,
             );
         }
         inherited_props.truncate(prev_len);
@@ -748,6 +777,7 @@ pub(super) fn walk_node_flat(
                     collisions.as_deref_mut(),
                     pool,
                     resolver,
+                    depth + 1,
                 );
             }
         }

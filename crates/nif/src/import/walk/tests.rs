@@ -524,3 +524,143 @@ mod switch_node_walker_tests {
         assert_eq!(lights.len(), 1, "NiLODNode must expose its LOD-0 light");
     }
 }
+
+#[cfg(test)]
+mod recursion_depth_tests {
+    //! Regression for #1269 / SAFE-DIM3-NEW-01: the hierarchical and
+    //! flat walkers must bail at `MAX_NIF_NODE_DEPTH` rather than
+    //! overflow the stack on a pathologically deep scene graph.
+    //!
+    //! The tests build a chain of `NiNode`s each pointing to a single
+    //! child at the next index. Without the depth cap the recursive
+    //! walkers would unwind the entire chain on the stack; with the cap
+    //! they log a warning and return, importing only the prefix up to
+    //! the cap.
+    use super::super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::node::NiNode;
+    use crate::types::{BlockRef, NiTransform};
+    use byroredux_core::string::StringPool;
+
+    fn chain_node(child_idx: Option<u32>) -> Box<dyn NiObject> {
+        Box::new(NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: None,
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: match child_idx {
+                Some(c) => vec![BlockRef(c)],
+                None => Vec::new(),
+            },
+            effects: Vec::new(),
+        })
+    }
+
+    fn build_chain_scene(depth: u32) -> NifScene {
+        let mut scene = NifScene::default();
+        for i in 0..depth {
+            let next = if i + 1 < depth { Some(i + 1) } else { None };
+            scene.blocks.push(chain_node(next));
+        }
+        scene.root_index = Some(0);
+        scene
+    }
+
+    fn empty_imported_scene() -> ImportedScene {
+        ImportedScene {
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            particle_emitters: Vec::new(),
+            bsx_flags: None,
+            bs_bound: None,
+            attach_points: None,
+            child_attach_connections: None,
+            embedded_clip: None,
+        }
+    }
+
+    #[test]
+    fn hierarchical_walker_caps_at_max_depth() {
+        // Build a chain longer than MAX_NIF_NODE_DEPTH so the walker
+        // must bail. Pre-#1269 this would unbounded-recurse.
+        let chain_len = MAX_NIF_NODE_DEPTH + 64;
+        let scene = build_chain_scene(chain_len);
+        let mut imported = empty_imported_scene();
+        let mut pool = StringPool::new();
+        let mut props_stack: Vec<BlockRef> = Vec::new();
+        walk_node_hierarchical(
+            &scene,
+            0,
+            None,
+            &mut props_stack,
+            &mut imported,
+            &mut pool,
+            None,
+            0,
+        );
+        // We imported some prefix of the chain but not the whole thing —
+        // the cap fires somewhere on the way down.
+        assert!(
+            (imported.nodes.len() as u32) <= MAX_NIF_NODE_DEPTH + 1,
+            "expected ≤ {} nodes (cap + root), got {}",
+            MAX_NIF_NODE_DEPTH + 1,
+            imported.nodes.len(),
+        );
+        assert!(
+            (imported.nodes.len() as u32) < chain_len,
+            "walker should have stopped before exhausting the chain"
+        );
+    }
+
+    #[test]
+    fn flat_walker_caps_at_max_depth() {
+        let chain_len = MAX_NIF_NODE_DEPTH + 64;
+        let scene = build_chain_scene(chain_len);
+        let mut meshes = Vec::new();
+        let mut pool = StringPool::new();
+        let mut props_stack: Vec<BlockRef> = Vec::new();
+        // Pre-#1269 this would stack-overflow on a long-enough chain.
+        walk_node_flat(
+            &scene,
+            0,
+            &NiTransform::default(),
+            &mut props_stack,
+            &mut meshes,
+            None,
+            &mut pool,
+            None,
+            0,
+        );
+        // Nothing to assert on the mesh side (chain has no geometry);
+        // success is "returned without overflowing the stack".
+    }
+
+    #[test]
+    fn hierarchical_walker_accepts_shallow_chain() {
+        // A chain well under the cap must import every node — the cap
+        // does not bail prematurely on legitimate depth.
+        let chain_len: u32 = 32;
+        let scene = build_chain_scene(chain_len);
+        let mut imported = empty_imported_scene();
+        let mut pool = StringPool::new();
+        let mut props_stack: Vec<BlockRef> = Vec::new();
+        walk_node_hierarchical(
+            &scene,
+            0,
+            None,
+            &mut props_stack,
+            &mut imported,
+            &mut pool,
+            None,
+            0,
+        );
+        assert_eq!(imported.nodes.len() as u32, chain_len);
+    }
+}

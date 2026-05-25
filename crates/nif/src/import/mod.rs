@@ -166,6 +166,7 @@ fn import_nif_scene_impl(
         &mut imported,
         pool,
         resolver,
+        0,
     );
 
     // Resolve extra data from the root node (BSXFlags, BSBound,
@@ -292,6 +293,7 @@ fn import_nif_impl(
         None,
         pool,
         resolver,
+        0,
     );
     meshes
 }
@@ -438,6 +440,7 @@ fn import_nif_with_collision_impl(
         Some(&mut collisions),
         pool,
         resolver,
+        0,
     );
     (meshes, collisions)
 }
