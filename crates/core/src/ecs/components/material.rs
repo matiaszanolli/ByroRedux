@@ -406,12 +406,28 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
         };
     }
 
-    // env_map_scale fallback — see `Material::classify_pbr_from_path`
-    // comment block for the "chrome cushion" rationale and why
-    // env_map_scale must NEVER drive metalness.
+    // env_map_scale fallback. The previous curve
+    // `(1 - scale * 0.3).clamp(0.2, 0.8)` produced **mirror-chrome
+    // roughness 0.2** on any surface whose `BSShaderPPLighting`
+    // authored `env_map_scale ≥ 2.5` — common on FNV/FO3 interior
+    // door panels, lockers, and bulkhead trim. Power-armor and other
+    // genuine conductors take the keyword arm above (metal / iron /
+    // steel) and never reach this branch, so the FALL-THROUGH
+    // population is "dielectric surfaces the artist marked
+    // reflective" (vinyl cushions, lacquered wood, painted metal,
+    // wet rust). Real dielectrics top out at polished-plastic
+    // roughness (≈ 0.35) — chrome is not a dielectric look.
+    //
+    // Tightened formula:
+    //   * slope 0.3 → 0.2 (gentler tilt against env_map_scale)
+    //   * floor   0.2 → 0.35 (polished-plastic / vinyl, never mirror)
+    //
+    // Same intent (visible reflections sharpen as authored scale
+    // grows) without the chrome floor. See user-reported chrome on
+    // FNV/FO3 interior wall panels 2026-05-25.
     if inputs.env_map_scale > 0.3 {
         return PbrMaterial {
-            roughness: (1.0 - inputs.env_map_scale * 0.3).clamp(0.2, 0.8),
+            roughness: (1.0 - inputs.env_map_scale * 0.2).clamp(0.35, 0.8),
             metalness: 0.0,
         };
     }
@@ -588,6 +604,36 @@ mod tests {
     /// beds. env_map_scale is a reflection-intensity authoring knob,
     /// not a conductor signal — true metals are caught by the texture-
     /// path keyword arms.
+    /// Regression for the user-reported "chrome wall panel" 2026-05-25.
+    /// `BSShaderPPLighting`-authored `env_map_scale ≈ 2.5` on FNV/FO3
+    /// interior door panels / bulkhead trim used to land at the
+    /// classifier's previous floor `roughness = 0.2` — mirror chrome
+    /// for a dielectric. The floor is now 0.35 (polished plastic /
+    /// vinyl); reflections still sharpen with authored scale but
+    /// never reach mirror tier.
+    #[test]
+    fn classify_pbr_env_map_scale_floor_is_polished_plastic_not_chrome() {
+        let mut m = Material::default();
+        m.glossiness = 50.0;
+        // 2.5 = previously-clamped "power-armor tier" on the non-
+        // keyword arm. Now plateaus at polished-plastic territory.
+        m.env_map_scale = 2.5;
+        let p = m.classify_pbr(Some("textures/interior/wallpanel01.dds"));
+        assert!(
+            p.roughness >= 0.35,
+            "non-keyword env_map_scale must not produce chrome floor; got {}",
+            p.roughness,
+        );
+        assert_eq!(p.metalness, 0.0);
+
+        // Extreme env_map_scale still bottoms at the new floor —
+        // a dielectric never looks like a mirror.
+        m.env_map_scale = 10.0;
+        let p = m.classify_pbr(Some("textures/unknown/shiny.dds"));
+        assert!(p.roughness >= 0.35);
+        assert_eq!(p.metalness, 0.0);
+    }
+
     #[test]
     fn classify_pbr_env_map_scale_does_not_imply_metalness() {
         let mut m = Material::default();
