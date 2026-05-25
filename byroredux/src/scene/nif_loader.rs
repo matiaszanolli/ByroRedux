@@ -42,7 +42,7 @@ use crate::helpers::add_child;
 ///       per the SpeedTree compatibility plan; useful for one-tree
 ///       reverse-engineering iteration without spinning up a whole cell.
 pub(super) fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Option<EntityId>) {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = crate::cli_args::effective_args();
 
     // Collect BSA/BA2 archives (auto-detects format).
     let tex_provider = build_texture_provider(&args);

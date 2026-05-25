@@ -102,7 +102,14 @@ fn main() -> Result<()> {
     // first-occurrence-wins for unique flags like `--esm`;
     // additive flags (`--bsa` / `--textures-bsa`) get both the
     // user's archives AND the profile's defaults.
+    //
+    // Phase 20.1 — seed the expanded args into the process-wide
+    // `effective_args()` singleton so downstream readers
+    // (scene.rs, nif_loader, debug_load, transition rebuilds)
+    // see the post-expansion list instead of re-reading raw
+    // `std::env::args()` and losing the synthesized flags.
     let args: Vec<String> = expand_game_profile_args(std::env::args().collect());
+    crate::cli_args::set_effective_args(args.clone());
     let debug_mode = args.iter().any(|a| a == "--debug");
 
     // --bench-frames N: run N frames, emit a single `bench:` summary
@@ -1104,7 +1111,7 @@ impl App {
         };
 
         let dest_label = cell_loader::log_transition_header(&pending);
-        let args: Vec<String> = std::env::args().collect();
+        let args: Vec<String> = crate::cli_args::effective_args();
 
         // Default exterior-load radius — re-use the CLI default (3 →
         // 7×7 grid). A future enhancement can plumb the boot-time

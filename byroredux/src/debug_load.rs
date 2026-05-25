@@ -114,7 +114,7 @@ fn exec_load_nif(world: &mut World, ctx: &mut VulkanContext, path: &str, label: 
         }
     };
 
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = crate::cli_args::effective_args();
     let tex_provider = build_texture_provider(&args);
     let mut mat_provider = build_material_provider(&args);
 
@@ -146,7 +146,7 @@ fn resolve_nif_bytes(path: &str) -> Option<Vec<u8>> {
     if let Ok(bytes) = std::fs::read(path) {
         return Some(bytes);
     }
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = crate::cli_args::effective_args();
     for window in args.windows(2) {
         if window[0] != "--bsa" {
             continue;

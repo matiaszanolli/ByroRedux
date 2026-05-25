@@ -77,7 +77,7 @@ pub(crate) fn setup_scene(
     streaming_slot: &mut Option<WorldStreamingState>,
 ) {
     // Load content from CLI: cell, loose NIF, or BSA NIF.
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = crate::cli_args::effective_args();
     let mut cam_center = Vec3::ZERO;
     let mut has_nif_content = false;
     let mut nif_root: Option<EntityId> = None;
