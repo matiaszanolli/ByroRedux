@@ -120,19 +120,61 @@ pub fn load_cell_with_masters(
     // 2. Find the cell.
     let cell_key = cell_editor_id.to_ascii_lowercase();
     let cell = index.cells.cells.get(&cell_key).ok_or_else(|| {
-        // List available cells for debugging.
-        let available: Vec<&str> = index
+        // Phase 20.2 — when the requested cell doesn't exist,
+        // filter the suggestion list to cells whose editor ID
+        // contains the requested name as a substring (case-
+        // insensitive). Turns "cell not found" into a
+        // self-diagnostic: a typo or off-by-one suffix shows
+        // every close match in the error message instead of
+        // a random 20-cell sample that's rarely close to what
+        // the user wanted. Falls back to the random sample only
+        // when no substring match exists.
+        let needle = cell_key.as_str();
+        let matches: Vec<&str> = index
             .cells
             .cells
             .values()
+            .filter(|c| c.editor_id.to_ascii_lowercase().contains(needle))
             .take(20)
             .map(|c| c.editor_id.as_str())
             .collect();
+        let (label, examples) = if matches.is_empty() {
+            // Also try a 4-char prefix match — handles cases
+            // where the user got the prefix right but the
+            // suffix wrong (e.g. `InstAdvSys01` when the cell
+            // is `InstSRBLab02`).
+            let prefix_len = needle.len().min(4);
+            let prefix = &needle[..prefix_len];
+            let prefix_matches: Vec<&str> = index
+                .cells
+                .cells
+                .values()
+                .filter(|c| c.editor_id.to_ascii_lowercase().starts_with(prefix))
+                .take(20)
+                .map(|c| c.editor_id.as_str())
+                .collect();
+            if prefix_matches.is_empty() {
+                let any: Vec<&str> = index
+                    .cells
+                    .cells
+                    .values()
+                    .take(20)
+                    .map(|c| c.editor_id.as_str())
+                    .collect();
+                ("first 20 cells", any)
+            } else {
+                ("cells matching prefix", prefix_matches)
+            }
+        } else {
+            ("cells containing substring", matches)
+        };
         anyhow::anyhow!(
-            "Cell '{}' not found. {} interior cells available. Examples: {:?}",
+            "Cell '{}' not found. {} interior cells available. {} ({}): {:?}",
             cell_editor_id,
             index.cells.cells.len(),
-            available,
+            label,
+            examples.len(),
+            examples,
         )
     })?;
 
