@@ -428,49 +428,62 @@ pub mod material_flag {
     /// path. Live in Stage 2a.
     pub const EFFECT_LIT: u32 = 1 << 4;
 
-    // ── BGSM v>2 flags (#1077 / FO4-D6-003 Phase 2a) ─────────────────
+    // ── Material-feature flags (per `feedback_format_translation.md`) ─
     //
-    // Captured CPU-side by the `pack_bgsm_material_flags` packer in
-    // `byroredux/src/cell_loader.rs` (mirror of `pack_effect_shader_flags`).
-    // OR'd into `effect_shader_flags` at the importer boundary and forwarded
-    // unchanged to `GpuMaterial.material_flags` by `DrawCommand::to_gpu_material`.
+    // These bits gate optional material *features*, not source formats.
+    // Originally landed under the `BGSM_*` prefix because the BGSM
+    // translator was the only writer (#1077 / FO4-D6-003 Phase 2a),
+    // but Stage 3 of the format-translation rollout renames them to
+    // `MAT_*` so future translators (.mat / legacy NIF inline shaders /
+    // procedural materials) can populate the same bits without the
+    // shader pretending the underlying file format matters. The
+    // BGSM-specific `MAT_AUTHORED_BY_BGSM` telemetry bit below records
+    // provenance for debug inspection without ever reaching the shader.
     //
-    // **Today** these bits are written but not yet read by any shader —
-    // the shader-side path gating in `triangle.frag` is Phase 2b of
-    // #1147 (gated on RenderDoc A/B captures against FO4 content).
-    // Phase 2a lands the data plumbing so the consumer can pick it up
-    // without re-parsing BGSM.
+    // Captured CPU-side by `pack_bgsm_material_flags` in
+    // `byroredux/src/cell_loader.rs` and OR'd into `effect_shader_flags`
+    // at the importer boundary; forwarded unchanged to
+    // `GpuMaterial.material_flags` by `DrawCommand::to_gpu_material`.
 
-    /// `BgsmFile.pbr` (v>2) — material uses the FO4 PBR shading path.
-    /// When set, the fragment shader's metalness/roughness pipeline
-    /// should branch; when clear, the Gamebryo-legacy specular path
-    /// runs. Phase 2b shader consumer pending.
-    pub const BGSM_PBR: u32 = 1 << 5;
-    /// `BgsmFile.translucency` (v>=8) — material has subsurface
-    /// authoring. Drives SSS on skin / vegetation / glass /
-    /// thin-translucent surfaces. The parameter suite
+    /// Material uses the Disney BSDF path (metalness/roughness with
+    /// Burley diffuse, GGX specular, optional sheen / subsurface /
+    /// clearcoat). When clear, the fragment shader runs the
+    /// legacy Lambert + simple-GGX path. Currently set by the BGSM
+    /// translator on `BgsmFile.pbr == true`; future translators (.mat,
+    /// Disney-authored legacy NIFs) can set it without re-introducing
+    /// a BGSM branch.
+    pub const PBR_BSDF: u32 = 1 << 5;
+    /// Material has subsurface / translucency authoring (skin, foliage,
+    /// thin glass, wax). Drives the SSS path; the parameter suite
     /// (`translucency_subsurface_color`, `translucency_transmissive_scale`,
-    /// `translucency_turbulence`, etc.) lives on `BgsmFile` but isn't
-    /// surfaced on `Material` until the Phase 2b shader consumer
-    /// lands — only the gating bit propagates today.
-    pub const BGSM_TRANSLUCENCY: u32 = 1 << 6;
-    /// `BgsmFile.model_space_normals` — material's normal map is
-    /// authored in object/model space rather than tangent space.
-    /// When set, the fragment shader's normal decode skips the TBN
-    /// transform and uses the sampled normal directly. Phase 2b
-    /// shader consumer pending.
-    pub const BGSM_MODEL_SPACE_NORMALS: u32 = 1 << 7;
-    /// `BgsmFile.translucency_thick_object` (v>=8) — the translucent
-    /// surface is a thick volume (skin / muscle / wax) rather than a
-    /// thin sheet (paper / leaf / cloth). Changes the SSS path's
-    /// view-dependent transmission falloff. #1147 Phase 2b.
-    pub const BGSM_TRANSLUCENCY_THICK_OBJECT: u32 = 1 << 8;
-    /// `BgsmFile.translucency_mix_albedo_with_subsurface_color` (v>=8)
-    /// — the SSS path's transmitted colour mixes the per-fragment
-    /// albedo into the authored `translucency_subsurface_color`
-    /// rather than using the latter raw. Skyrim+ skin shaders set
-    /// this; FO4 vegetation typically does not. #1147 Phase 2b.
-    pub const BGSM_TRANSLUCENCY_MIX_ALBEDO: u32 = 1 << 9;
+    /// `translucency_turbulence`) is plumbed through `Material`.
+    pub const TRANSLUCENCY: u32 = 1 << 6;
+    /// Material's normal map is authored in object/model space rather
+    /// than tangent space. When set, the fragment shader's normal
+    /// decode skips the TBN transform and uses the sampled normal
+    /// directly. Skyrim+ skin shaders set this; legacy meshes don't.
+    pub const MODEL_SPACE_NORMALS: u32 = 1 << 7;
+    /// Translucent surface is a thick volume (skin / muscle / wax)
+    /// rather than a thin sheet (paper / leaf / cloth). Changes the
+    /// SSS path's view-dependent transmission falloff. Only
+    /// meaningful when [`TRANSLUCENCY`] is also set.
+    pub const TRANSLUCENCY_THICK_OBJECT: u32 = 1 << 8;
+    /// SSS transmitted colour mixes the per-fragment albedo into the
+    /// authored `translucency_subsurface_color` rather than using the
+    /// latter raw. Skyrim+ skin shaders set this; FO4 vegetation
+    /// typically does not. Only meaningful when [`TRANSLUCENCY`] is
+    /// also set.
+    pub const TRANSLUCENCY_MIX_ALBEDO: u32 = 1 << 9;
+
+    // ── Pre-Stage-3 aliases — kept so external callers compile
+    // through the rename. New code should reference the un-prefixed
+    // names above. Targeted for removal in a follow-up sweep after
+    // every reader has migrated.
+    pub const BGSM_PBR: u32 = PBR_BSDF;
+    pub const BGSM_TRANSLUCENCY: u32 = TRANSLUCENCY;
+    pub const BGSM_MODEL_SPACE_NORMALS: u32 = MODEL_SPACE_NORMALS;
+    pub const BGSM_TRANSLUCENCY_THICK_OBJECT: u32 = TRANSLUCENCY_THICK_OBJECT;
+    pub const BGSM_TRANSLUCENCY_MIX_ALBEDO: u32 = TRANSLUCENCY_MIX_ALBEDO;
 
     /// "This material came from a BGSM (or BGEM) external file" — set
     /// on every BGSM-sourced surface regardless of the `BgsmFile.pbr`

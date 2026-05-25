@@ -134,7 +134,7 @@ struct GpuMaterial {
     // Offset 256.
     uint greyscaleLutIndex;
     // #1147 Phase 2b — BGSM v>=8 translucency suite. Read only when
-    // `materialFlags & MAT_FLAG_BGSM_TRANSLUCENCY != 0u`. Layout must
+    // `materialFlags & MAT_FLAG_TRANSLUCENCY != 0u`. Layout must
     // match the Rust `GpuMaterial::translucency_*` block byte-for-byte
     // (pinned by `gpu_material_field_offsets_match_shader_contract`).
     float translucencySubsurfaceR, translucencySubsurfaceG, translucencySubsurfaceB;
@@ -150,7 +150,7 @@ struct GpuMaterial {
     // Burley diffuse; sheen + sheenTint drive the fabric-class edge
     // highlight. All zero by default → byte-identical Lambert
     // behaviour for legacy NIF content. Only consulted when
-    // `MAT_FLAG_BGSM_PBR` is set; closes the 296 B struct.
+    // `MAT_FLAG_PBR_BSDF` is set; closes the 296 B struct.
     float subsurface;
     float sheen;
     float sheenTint;
@@ -173,17 +173,18 @@ layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
 // source of truth, mirrored from `material_flag::*` in
 // `crates/renderer/src/vulkan/material.rs`). See #1190.
 
-// #1147 Phase 2b — BGSM v>=2 / v>=8 flags. Bits 5-9 of
-// `materialFlags`. Mirror of `material_flag::BGSM_*` consts on the
-// Rust side; the Phase 2a packer in `byroredux/src/cell_loader.rs`
-// (`pack_bgsm_material_flags`) writes these bits per ImportedMesh's
-// `is_pbr`/`has_translucency`/`model_space_normals` flags. Consumers
-// land below in this file.
-#define MAT_FLAG_BGSM_PBR                       (1u << 5)
-#define MAT_FLAG_BGSM_TRANSLUCENCY              (1u << 6)
-#define MAT_FLAG_BGSM_MODEL_SPACE_NORMALS       (1u << 7)
-#define MAT_FLAG_BGSM_TRANSLUCENCY_THICK_OBJECT (1u << 8)
-#define MAT_FLAG_BGSM_TRANSLUCENCY_MIX_ALBEDO   (1u << 9)
+// Material-feature flags. Bits 5-9 of `materialFlags`. Mirror of
+// `material_flag::*` consts on the Rust side; populated by whichever
+// translator handles the source format (BGSM for FO4/Skyrim+, future
+// .mat for Starfield, future legacy-NIF translation for shipped
+// Disney-authored content). Per `feedback_format_translation.md` the
+// shader gates on material *features*, not source formats — these
+// names dropped the `BGSM_` prefix in the Stage 3 rollout.
+#define MAT_FLAG_PBR_BSDF                  (1u << 5)
+#define MAT_FLAG_TRANSLUCENCY              (1u << 6)
+#define MAT_FLAG_MODEL_SPACE_NORMALS       (1u << 7)
+#define MAT_FLAG_TRANSLUCENCY_THICK_OBJECT (1u << 8)
+#define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO   (1u << 9)
 
 struct GpuLight {
     vec4 position_radius;  // xyz = position, w = radius
@@ -691,7 +692,7 @@ float dielectricF0FromIor(float eta) {
 
 // Disney diffuse lobe — Burley retro-reflection + Hanrahan-Krueger
 // fake-SSS subsurface + sheen. Replaces plain Lambert for materials
-// that author Disney-style fields (gated on `MAT_FLAG_BGSM_PBR` at
+// that author Disney-style fields (gated on `MAT_FLAG_PBR_BSDF` at
 // the call site). Pre-#1249 every direct-light fragment used pure
 // Lambert `albedo / PI` regardless of authored PBR data — cloth
 // looked flat, sand had no edge brighten, skin / wax / marble
@@ -1193,7 +1194,7 @@ void main() {
         // tangent-space TBN multiply would double-rotate them. The
         // same `* 2.0 - 1.0` decode + BC5 Z-reconstruction the
         // tangent-space path uses applies, just without the TBN.
-        if ((mat.materialFlags & MAT_FLAG_BGSM_MODEL_SPACE_NORMALS) != 0u) {
+        if ((mat.materialFlags & MAT_FLAG_MODEL_SPACE_NORMALS) != 0u) {
             vec3 mn = texture(textures[nonuniformEXT(normalMapIdx)], sampleUV).rgb;
             mn = mn * 2.0 - 1.0;
             mn.z = sqrt(max(0.0, 1.0 - dot(mn.xy, mn.xy)));
@@ -2513,7 +2514,7 @@ void main() {
         vec3 kD = (1.0 - F) * (1.0 - metalness);
         vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
         // #1249 — Disney diffuse for PBR-authored content; plain
-        // Lambert for legacy NIF. Gated on MAT_FLAG_BGSM_PBR so
+        // Lambert for legacy NIF. Gated on MAT_FLAG_PBR_BSDF so
         // every NIF without a v>=8 BGSM keeps the pre-fix value.
         // Multiply by (1 - metalness) only — Disney's Fd already
         // encodes the Fresnel-grazing energy loss via FL/FV.
@@ -2524,7 +2525,7 @@ void main() {
         // `kD * albedo / PI` shape below) and sheen NOT /PI (per
         // Disney spec).
         vec3 diffuseBrdf;
-        if ((mat.materialFlags & MAT_FLAG_BGSM_PBR) != 0u) {
+        if ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u) {
             float HdotL = max(dot(H, L), 0.0);
             DisneyDiffuseSplit dd = disneyDiffuseSplit(
                 albedo, roughness, mat.subsurface, mat.sheen, mat.sheenTint,
@@ -2770,7 +2771,7 @@ void main() {
             // apply `* PI` only to the diffuse half so sheen stays
             // at its natural Fresnel-weighted magnitude.
             vec3 diffuseBrdf;
-            if ((mat.materialFlags & MAT_FLAG_BGSM_PBR) != 0u) {
+            if ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u) {
                 float HdotL = max(dot(H, L), 0.0);
                 DisneyDiffuseSplit dd = disneyDiffuseSplit(
                     albedo, roughness, mat.subsurface, mat.sheen, mat.sheenTint,
@@ -2791,14 +2792,14 @@ void main() {
             // #1147 Phase 2b — subsurface translucency. Adds a back-
             // side wraparound term so light leaks through thin
             // translucent surfaces (skin, leaves, paper, frost-rimed
-            // glass). Gated on `MAT_FLAG_BGSM_TRANSLUCENCY` so legacy
+            // glass). Gated on `MAT_FLAG_TRANSLUCENCY` so legacy
             // content (every NIF without a v>=8 BGSM) gets exactly
             // zero contribution. The math is a Bethesda-style "fake
             // SSS" — back-light approximation by inverted N·L, mixed
             // with the authored subsurface colour. Cheap (no extra
             // texture sample, no extra ray), visible on authored
             // materials.
-            if ((mat.materialFlags & MAT_FLAG_BGSM_TRANSLUCENCY) != 0u) {
+            if ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY) != 0u) {
                 // Back-side wraparound: when the surface faces away
                 // from the light (NdotL low), some light "wraps"
                 // through. `clamp(-N·L, 0, 1)` would peak at the
@@ -2818,7 +2819,7 @@ void main() {
                 // sheet — leaf, paper), the transmission spikes near
                 // the silhouette and falls off fast.
                 float thicknessShape =
-                    ((mat.materialFlags & MAT_FLAG_BGSM_TRANSLUCENCY_THICK_OBJECT) != 0u)
+                    ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY_THICK_OBJECT) != 0u)
                         ? backDotL
                         : pow(backDotL, 4.0);
                 // Mix-albedo: the transmitted colour tints the
@@ -2831,7 +2832,7 @@ void main() {
                     mat.translucencySubsurfaceB
                 );
                 vec3 sssTint =
-                    ((mat.materialFlags & MAT_FLAG_BGSM_TRANSLUCENCY_MIX_ALBEDO) != 0u)
+                    ((mat.materialFlags & MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO) != 0u)
                         ? subsurfaceCol * albedo
                         : subsurfaceCol;
                 Lo += sssTint
