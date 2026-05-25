@@ -80,15 +80,45 @@ impl TextureProvider {
         None
     }
 
-    /// Extract a mesh (NIF) from mesh archives.
+    /// Extract a mesh (NIF) from mesh archives. Path is normalised
+    /// via [`normalize_mesh_path`] so authored references that omit
+    /// the `meshes\` root segment (every ARMO `MODL`, every RACE
+    /// `MODL`, every NPC_ `MODL`, etc.) resolve against the BSA's
+    /// fully-prefixed keys. Pre-normalisation only ARMO meshes for
+    /// the small set of records authored *with* the prefix were
+    /// loading — the rest landed at the "not in archives" log path
+    /// and NPCs spawned unclothed.
     pub(crate) fn extract_mesh(&self, path: &str) -> Option<Vec<u8>> {
+        let normalised = normalize_mesh_path(path);
         for archive in &self.mesh_archives {
-            if let Ok(data) = archive.extract(path) {
+            if let Ok(data) = archive.extract(normalised.as_ref()) {
                 return Some(data);
             }
         }
         None
     }
+}
+
+/// Prepend `meshes\` to a NIF path when the input doesn't already
+/// start with that segment (case-insensitive, accepts either
+/// separator). `MODL` sub-records on RACE / NPC_ / ARMO records are
+/// authored relative to the `meshes\` root; the BSA layer stores the
+/// full prefix. Allocation only fires when the prefix is missing —
+/// already-prefixed paths borrow.
+///
+/// Mirror of the static-spawn path's manual prefix-prepend at
+/// [`cell_loader::references`] line ~421 (which predates this
+/// helper; the cell-loader form is now a redundant idempotent
+/// double-normalisation and can be removed in a follow-up sweep).
+pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
+    let bytes = path.as_bytes();
+    if bytes.len() >= 7 {
+        let head = &bytes[..7];
+        if head.eq_ignore_ascii_case(b"meshes\\") || head.eq_ignore_ascii_case(b"meshes/") {
+            return std::borrow::Cow::Borrowed(path);
+        }
+    }
+    std::borrow::Cow::Owned(format!(r"meshes\{}", path))
 }
 
 impl MeshResolver for TextureProvider {
@@ -1191,6 +1221,64 @@ pub(crate) fn merge_bgsm_into_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── `normalize_mesh_path` — regression for unclothed NPCs in
+    //   FNV Prospector Saloon, 2026-05-25. ARMO `MODL` paths are
+    //   authored relative to the `meshes\` root (e.g.
+    //   `armor\powdergang\powdergang03.NIF`); the BSA stores them
+    //   fully prefixed. Pre-fix `extract_mesh` passed the authored
+    //   path through verbatim and every leaf-armor lookup missed.
+
+    #[test]
+    fn normalize_mesh_path_prepends_missing_meshes_prefix() {
+        let out = normalize_mesh_path(r"armor\powdergang\powdergang03.NIF");
+        assert_eq!(out.as_ref(), r"meshes\armor\powdergang\powdergang03.NIF");
+        assert!(matches!(out, std::borrow::Cow::Owned(_)));
+    }
+
+    #[test]
+    fn normalize_mesh_path_passes_already_prefixed_borrowed() {
+        let out = normalize_mesh_path(r"meshes\characters\_male\upperbody.nif");
+        assert_eq!(out.as_ref(), r"meshes\characters\_male\upperbody.nif");
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn normalize_mesh_path_is_case_insensitive_on_prefix() {
+        // Modder-authored or DLC content may ship the prefix with a
+        // different case (`Meshes\…`); the normalizer must accept it.
+        let out = normalize_mesh_path(r"MESHES\armor\foo.nif");
+        assert_eq!(out.as_ref(), r"MESHES\armor\foo.nif");
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn normalize_mesh_path_accepts_forward_slash_prefix() {
+        // Mod-authoring tools sometimes export forward slashes.
+        let out = normalize_mesh_path("meshes/armor/foo.nif");
+        assert_eq!(out.as_ref(), "meshes/armor/foo.nif");
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn normalize_mesh_path_is_idempotent() {
+        // Callers that already pre-normalised must round-trip without
+        // double-prefixing — the cell-loader static-spawn path at
+        // `cell_loader/references.rs:421-426` predates the centralised
+        // normaliser and still pre-prepends `meshes\` itself; the
+        // double-normalise must be a no-op.
+        let once = normalize_mesh_path(r"armor\powdergang\powdergang03.NIF");
+        let twice = normalize_mesh_path(once.as_ref());
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn normalize_mesh_path_handles_short_input() {
+        // Pathological input shorter than the 7-byte prefix — must
+        // not panic and must still get the prefix.
+        let out = normalize_mesh_path("a.nif");
+        assert_eq!(out.as_ref(), r"meshes\a.nif");
+    }
 
     #[test]
     fn strip_build_prefix_handles_skyrim_hd_prefix() {

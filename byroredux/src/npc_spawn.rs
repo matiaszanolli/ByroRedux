@@ -205,25 +205,11 @@ pub fn facegen_sidecar_path(head_nif_path: &str, extension: &str) -> Option<Stri
     Some(out)
 }
 
-/// Prepend `meshes\` to a NIF path if the input doesn't already start
-/// with that segment (case-insensitive, accepting either separator).
-/// `MODL` sub-records on RACE / NPC_ records are authored relative to
-/// the `meshes\` root; the BSA layer stores the full prefix. Mirrors
-/// the static-spawn path's normalization at
-/// `cell_loader.rs:1064-1068`. Allocation only fires when the prefix
-/// is missing — the common case (already-prefixed) is borrowed.
-pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
-    let bytes = path.as_bytes();
-    if bytes.len() >= 7 {
-        let head = &bytes[..7];
-        let already =
-            head.eq_ignore_ascii_case(b"meshes\\") || head.eq_ignore_ascii_case(b"meshes/");
-        if already {
-            return std::borrow::Cow::Borrowed(path);
-        }
-    }
-    std::borrow::Cow::Owned(format!(r"meshes\{}", path))
-}
+// `normalize_mesh_path` moved to `crate::asset_provider` so
+// `TextureProvider::extract_mesh` can apply it internally; every
+// caller benefits without per-site sprinkling. Re-export keeps the
+// existing call sites here compiling.
+pub use crate::asset_provider::normalize_mesh_path;
 
 /// Path inside the meshes archive for the default idle animation
 /// (`.kf` keyframe clip) the NPC plays on loop when no AI package
