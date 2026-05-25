@@ -501,6 +501,22 @@ pub struct LightData {
     /// flicker system offsets the light's local translation by a
     /// noise vector scaled by this value. Phase 17a.
     pub movement_amplitude: f32,
+    /// LIGH DATA bytes 16-19 — Bethesda's per-light attenuation curve
+    /// exponent. The runtime formula is approximately
+    /// `atten = clamp(1 - (d/r)^k, 0, 1)` where `k = falloff_exponent`:
+    ///   * `k ≈ 1.0` (Skyrim default): near-linear, gentle near radius
+    ///   * `k ≈ 2.0` (FO3/FNV common): quadratic, sharper edge
+    ///   * `k → 0`:  almost flat in the middle, very sharp cutoff
+    /// Pre-fix this field was dropped on the floor and the shader
+    /// used a hardcoded `1/(1 + 0.01*d)` linear term that ignored
+    /// the radius entirely — small-radius FO lamps appeared to "pop
+    /// off" over absolute distance while large-radius Skyrim torches
+    /// looked smooth, because the absolute-distance term dominated
+    /// the radius-relative one at small radii. `0.0` is the engine
+    /// sentinel for "use default" (1.0 for Skyrim layout, 2.0 for
+    /// pre-Skyrim) so downstream consumers can pick a sensible fall-
+    /// through without re-reading the LIGH bytes.
+    pub falloff_exponent: f32,
     /// FO4 `XPWR` powered-state FormID — references the circuit node
     /// this light connects to (Sanctuary fuse boxes, Vault 111
     /// breaker-panel switch). `None` on every non-FO4 record and on

@@ -360,6 +360,7 @@ pub(super) fn load_references(
                             radius: light_radius_or_default(ld.radius),
                             color: ld.color,
                             flags: ld.flags,
+                            falloff_exponent: ld.falloff_exponent,
                             ..Default::default()
                         },
                     );
@@ -408,6 +409,7 @@ pub(super) fn load_references(
                             radius: light_radius_or_default(ld.radius),
                             color: ld.color,
                             flags: ld.flags,
+                            falloff_exponent: ld.falloff_exponent,
                             ..Default::default()
                         },
                     );

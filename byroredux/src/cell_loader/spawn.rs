@@ -1031,6 +1031,7 @@ pub(super) fn spawn_placed_instances(
                         radius: light_radius_or_default(ld.radius),
                         color: ld.color,
                         flags: ld.flags,
+                        falloff_exponent: ld.falloff_exponent,
                         ..Default::default()
                     },
                 );

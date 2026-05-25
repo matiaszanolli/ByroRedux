@@ -51,13 +51,17 @@ pub(crate) fn build_static_object_from_subs(
                 } else {
                     0
                 };
-                // Phase 17a — flicker fields land between bytes 28 and 39
-                // of the LIGH DATA subrecord (Skyrim layout per UESP /
-                // xEdit). The earlier parse stopped at byte 15 and
-                // dropped them, so candles + chandeliers never flickered.
-                // bytes 16-19: falloff exponent, 20-23: FOV (spot),
-                // 24-27: near clip — captured for future spot-light
-                // work but not surfaced through LightData yet.
+                // Layout per UESP / xEdit `wbDefinitionsSkyrim`,
+                // identical in the relevant prefix to FO3/FNV/FO4:
+                //   bytes 16-19: falloff exponent (drives shader
+                //     attenuation curve — see `LightData.falloff_exponent`)
+                //   20-23: FOV (spot light)
+                //   24-27: near clip (Skyrim+) / value (pre-Skyrim)
+                //   28-31: flicker period (Skyrim+)
+                //   32-35: intensity amplitude (Skyrim+)
+                //   36-39: movement amplitude (Skyrim+)
+                // The earlier parse stopped at byte 15 and dropped
+                // the falloff + flicker fields entirely.
                 let read_f32 = |off: usize| -> f32 {
                     f32::from_le_bytes([
                         sub.data[off],
@@ -66,6 +70,8 @@ pub(crate) fn build_static_object_from_subs(
                         sub.data[off + 3],
                     ])
                 };
+                let falloff_exponent =
+                    if sub.data.len() >= 20 { read_f32(16) } else { 0.0 };
                 let period_secs = if sub.data.len() >= 32 { read_f32(28) } else { 0.0 };
                 let intensity_amplitude =
                     if sub.data.len() >= 36 { read_f32(32) } else { 0.0 };
@@ -75,6 +81,7 @@ pub(crate) fn build_static_object_from_subs(
                     radius,
                     color: [r, g, b],
                     flags,
+                    falloff_exponent,
                     period_secs,
                     intensity_amplitude,
                     movement_amplitude,

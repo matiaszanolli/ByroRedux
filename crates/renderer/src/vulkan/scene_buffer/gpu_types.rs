@@ -141,7 +141,17 @@ impl Default for GpuInstance {
     }
 }
 
-/// GPU-side light struct (48 bytes, std430 layout).
+/// GPU-side light struct (64 bytes, std430 layout).
+///
+/// Shader Struct Sync: every shader that declares `struct GpuLight`
+/// must mirror this layout (currently `triangle.frag`,
+/// `cluster_cull.comp`, `caustic_splat.comp`). The trailing
+/// `params` vec4 was added in lockstep with the LIGH
+/// `falloff_exponent` plumb-through — pre-fix the shader applied
+/// a hardcoded `1/(1 + 0.01*d)` linear attenuation that ignored
+/// the LIGH-authored curve, producing visibly sharper falloff on
+/// FO3/FNV/FO4 lights (smaller authored radii) than on Skyrim
+/// lights (larger authored radii). See REN-LIGHT-FALLOFF-NEW-01.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct GpuLight {
@@ -151,6 +161,11 @@ pub struct GpuLight {
     pub color_type: [f32; 4],
     /// xyz = direction (spot/directional), w = spot outer angle cosine.
     pub direction_angle: [f32; 4],
+    /// x = falloff_exponent (LIGH DATA bytes 16-19; 0.0 means
+    /// "use default 1.0"). y/z/w reserved for future per-light
+    /// shading parameters (Bethesda authors near-clip, FOV, godray
+    /// bias on the same LIGH record but none drive the BRDF today).
+    pub params: [f32; 4],
 }
 
 /// GPU-side camera data (288 bytes, std140-compatible).

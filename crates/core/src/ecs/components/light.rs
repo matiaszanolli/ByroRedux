@@ -35,6 +35,15 @@ pub struct LightSource {
     /// while the steady `dimmer` stays constant). Renderer
     /// composes `color * dimmer * intensity`.
     pub intensity: f32,
+    /// Bethesda's per-light attenuation curve exponent from the LIGH
+    /// DATA subrecord (bytes 16-19). Shader formula:
+    /// `atten = clamp(1 - (d/r)^k, 0, 1)` where `k = falloff_exponent`.
+    /// Skyrim authors `k ≈ 1.0` (near-linear); FO3/FNV often author
+    /// `k ≈ 2.0` (sharper edge). `0.0` means "use engine default" —
+    /// the shader picks a sensible per-game fall-through (1.0). NIF-
+    /// direct lights and procedural defaults (interior fill, sun
+    /// proxies) leave the field at `0.0`.
+    pub falloff_exponent: f32,
 }
 
 impl Default for LightSource {
@@ -45,6 +54,7 @@ impl Default for LightSource {
             flags: 0,
             dimmer: 1.0,
             intensity: 1.0,
+            falloff_exponent: 0.0,
         }
     }
 }

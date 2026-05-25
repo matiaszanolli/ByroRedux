@@ -39,6 +39,7 @@ struct GpuLight {
     vec4 position_radius;
     vec4 color_type;
     vec4 direction_angle;
+    vec4 params;  // x = falloff_exponent; yzw reserved
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer LightBuffer {
@@ -210,11 +211,27 @@ void main() {
             intersects = true;
         } else {
             // Point/spot light — sphere-vs-AABB test.
-            // The ESM radius is a culling hint, not the attenuation range.
-            // Extend to 4× to match the fragment shader's effective range
-            // (Gamebryo lights have effectively infinite range via 1/d).
+            //
+            // `position_radius.w` is the CPU-translated effective
+            // visible range — `byroredux/src/render/lights.rs` already
+            // applied the `LIGHT_RANGE_EXTENSION` multiplier to the
+            // raw LIGH radius before upload. Sphere-vs-AABB at this
+            // exact radius is mathematically tight: if the test reports
+            // no overlap, no point inside the cluster AABB is within
+            // the light's visible range, so no fragment in that
+            // cluster can receive contribution. No safety margin
+            // needed — the fragment shader's attenuation goes to 0
+            // at this same boundary, so any over-inclusion would just
+            // waste per-pixel work computing zero contributions.
+            //
+            // Pre-translation-cleanup the cluster cull used
+            // `radius * 4.0` (paired with the shader hardcoding a
+            // separate `LIGHT_RANGE_EXTENSION = 2.5`); mixing
+            // engine-policy constants between the two stages was the
+            // smell — both now consume the same standardised
+            // effective range from the CPU-translated GpuLight.
             vec3 lightPos = lights[i].position_radius.xyz;
-            float lightRadius = abs(lights[i].position_radius.w) * 4.0;
+            float lightRadius = abs(lights[i].position_radius.w);
             intersects = sphereIntersectsAABB(lightPos, lightRadius, aabbMin, aabbMax);
         }
 

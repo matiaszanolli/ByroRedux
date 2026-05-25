@@ -38,6 +38,7 @@ struct GpuLight {
     vec4 position_radius;
     vec4 color_type;
     vec4 direction_angle;
+    vec4 params;  // x = falloff_exponent; yzw reserved
 };
 
 layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {

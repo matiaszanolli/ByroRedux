@@ -189,6 +189,7 @@ struct GpuLight {
     vec4 position_radius;  // xyz = position, w = radius
     vec4 color_type;       // rgb = color, w = type (0=point, 1=spot, 2=directional)
     vec4 direction_angle;  // xyz = direction, w = spot angle cosine
+    vec4 params;           // x = falloff_exponent (0.0 = use default 1.0); yzw reserved
 };
 
 layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {
@@ -2598,6 +2599,13 @@ void main() {
         for (uint ci = 0; ci < cluster.count; ci++) {
             uint i = clusterLightIndices[cluster.offset + ci];
             vec3 lightPos = lights[i].position_radius.xyz;
+            // `.w` is the CPU-translated effective visible range (post
+            // `LIGHT_RANGE_EXTENSION`), NOT the raw LIGH radius. The
+            // shader doesn't know about LIGH or its `radius` semantic —
+            // see `byroredux/src/render/lights.rs`. The negative-value
+            // sentinel for interior-fill directional (radius = -1)
+            // still routes to the directional arm below where it's
+            // re-checked via `isInteriorFill`.
             float radius = lights[i].position_radius.w;
             vec3 lightColor = lights[i].color_type.rgb;
             float lightType = lights[i].color_type.w;
@@ -2606,41 +2614,41 @@ void main() {
             float dist;
             float atten;
 
+            // Standard light attenuation — format-agnostic. The CPU
+            // translator in `byroredux/src/render/lights.rs` already
+            // resolved source-format quirks (Bethesda LIGH `radius`
+            // extended by engine-policy `LIGHT_RANGE_EXTENSION`,
+            // `falloff_exponent` defaulted when unset) into renderer-
+            // standard inputs:
+            //   * `position_radius.w` = effective visible range
+            //     (distance at which atten reaches 0)
+            //   * `params.x` = attenuation curve shape (the GGX-style
+            //     exponent driving the lobe steepness)
+            // Curve shape:
+            //   atten = pow(saturate(1 - (d / effRange)^2), shape)
+            // No source-format knobs in here. See
+            // `feedback_format_translation.md`.
+            float falloffShape = lights[i].params.x;
+
             if (lightType < 0.5) {
-                // Point light — Gamebryo-matching 1/d attenuation, with a
-                // Frostbite-style smooth cull window. The previous
-                // `1 - (d/r)²` window dropped to ~0.28 at 85% of range and
-                // produced a visible circular boundary on the floor where
-                // the cull kicked in. The `(1 - (d/r)⁴)²` curve preserves
-                // mid-zone energy and is C¹-continuous at the cull radius.
-                // Reference: Lagarde & de Rousiers, "Moving Frostbite to
-                // Physically Based Rendering" §3.1.2 (smooth distance
-                // attenuation), adapted to inverse-d for Gamebryo content.
+                // Point light.
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
-                float effectiveRange = radius * 4.0;
-                float ratio = dist / max(effectiveRange, 1.0);
-                float r2 = ratio * ratio;
-                float r4 = r2 * r2;
-                float window = clamp(1.0 - r4, 0.0, 1.0);
-                window = window * window;
-                atten = window / (1.0 + dist * 0.01);
+                float ratio = dist / max(radius, 1.0);
+                float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+                atten = pow(window, falloffShape);
             } else if (lightType < 1.5) {
-                // Spot light — same 1/d + Frostbite smooth window as the
-                // point arm above, plus a cone factor.
+                // Spot light — same curve as point arm plus the
+                // inner / outer cone factor.
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
                 vec3 spotDir = normalize(lights[i].direction_angle.xyz);
                 float spotAngle = lights[i].direction_angle.w;
-                float effectiveRange = radius * 4.0;
-                float ratio = dist / max(effectiveRange, 1.0);
-                float r2 = ratio * ratio;
-                float r4 = r2 * r2;
-                float window = clamp(1.0 - r4, 0.0, 1.0);
-                window = window * window;
-                atten = window / (1.0 + dist * 0.01);
+                float ratio = dist / max(radius, 1.0);
+                float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+                atten = pow(window, falloffShape);
                 float spotFactor = dot(-L, spotDir);
                 atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
             } else {

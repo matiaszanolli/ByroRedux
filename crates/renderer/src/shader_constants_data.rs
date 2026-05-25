@@ -13,7 +13,24 @@ pub const CLUSTER_SLICES_Z: u32 = 24;
 pub const CLUSTER_NEAR: f32 = 0.1;
 pub const CLUSTER_FAR_FLOOR: f32 = 10_000.0;
 pub const CLUSTER_FAR_FALLBACK: f32 = 50_000.0;
-pub const MAX_LIGHTS_PER_CLUSTER: u32 = 32;
+// Raised from 32 → 128 after the LIGH `falloff_exponent` plumb-through
+// (which extended the per-light visible range to `radius * 2.5`)
+// exposed densely-lit FO4 interior cells overflowing the cap. The
+// cluster cull's `atomicAdd` gives arbitrary slot ordering when the
+// actual light count exceeds the cap, so adjacent clusters drop
+// DIFFERENT subsets of lights — producing visible tile boundaries on
+// floors / walls (Institute Bioscience cargo room was the canonical
+// regression). Buffer grows from 3456 * 32 * 4 = 442 KB to 3456 * 128
+// * 4 = 1.7 MB — trivial against the multi-GB VRAM budget.
+//
+// 128 is sized for vanilla FO4 / FO76 dense-lighting interiors: live
+// observation on Bioscience saw ~80-100 cluster-overlapping lights on
+// the densest tiles after the range extension; 128 leaves headroom
+// for modded / FO76-scale public-event scenes. Future workgroup-local
+// sort would let us keep the cap lower by ordering by distance —
+// deferred until the cap proves insufficient on Starfield / FO76
+// content.
+pub const MAX_LIGHTS_PER_CLUSTER: u32 = 128;
 
 // Vertex layout (global SSBO)
 pub const VERTEX_STRIDE_FLOATS: u32 = 25;
@@ -100,6 +117,13 @@ pub const MAT_FLAG_EFFECT_SOFT: u32 = 1 << 1;
 pub const MAT_FLAG_EFFECT_PALETTE_COLOR: u32 = 1 << 2;
 pub const MAT_FLAG_EFFECT_PALETTE_ALPHA: u32 = 1 << 3;
 pub const MAT_FLAG_EFFECT_LIT: u32 = 1 << 4;
+// NOTE: `material_flag::BGSM_AUTHORED` (Rust-side bit 10) is
+// NOT mirrored here — the shader is format-agnostic and doesn't
+// branch on material provenance. BGSM → standardized PBR
+// translation happens in `merge_bgsm_into_mesh`, which writes
+// `metalness_override` / `roughness_override` on `Material`. The
+// Rust-side flag rides through for debug-server inspection only.
+// See `feedback_format_translation.md`.
 
 // Water motion-kind enum (WATR-driven, mapped per-WATR record).
 // Lockstep with `water.frag` and `byroredux/src/cell_loader/water.rs`.
