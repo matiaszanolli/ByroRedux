@@ -790,9 +790,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             world.insert(entity, SceneFlags::from_nif(mesh.flags));
         }
         // Attach material data (specular, emissive, glossiness, UV transform, etc.)
-        world.insert(
-            entity,
-            Material {
+        let mut material = Material {
                 emissive_color: mesh.emissive_color,
                 emissive_mult: mesh.emissive_mult,
                 specular_color: mesh.specular_color,
@@ -880,8 +878,13 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                     .and_then(|es| es.greyscale_texture.clone()),
                 metalness_override: mesh.metalness_override,
                 roughness_override: mesh.roughness_override,
-            },
-        );
+            };
+        // Per `feedback_format_translation.md` Stage 1 — populate any
+        // still-`None` overrides from the keyword classifier so the
+        // per-frame draw build hits the override fast-path for every
+        // material regardless of source format.
+        material.resolve_classifier_overrides();
+        world.insert(entity, material);
         // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
         if let Some(ref tp) = owned_texture_path {
             if texture_path_is_fx_mesh(tp) {

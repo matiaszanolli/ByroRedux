@@ -367,6 +367,35 @@ impl Material {
                 metalness: m.clamp(0.0, 1.0),
             };
         }
+        self.classify_pbr_from_path(texture_path)
+    }
+
+    /// Idempotent translation hook — eagerly populate
+    /// `metalness_override` / `roughness_override` from the keyword
+    /// classifier so the per-frame draw build hits the fast-path in
+    /// [`Self::classify_pbr`] instead of re-scanning the texture path
+    /// every frame. Call once at material-insert time
+    /// (`cell_loader::spawn` / `scene::nif_loader`); BGSM-resolved
+    /// overrides already in place are preserved unchanged.
+    ///
+    /// Per `feedback_format_translation.md` this is Stage 1 of pushing
+    /// FO3 / FNV / Oblivion inline-shader content onto the same
+    /// "single PBR contract" path BGSM-using FO4 / Skyrim use — every
+    /// material lands at runtime with explicit `(metalness, roughness)`
+    /// scalars, regardless of source format.
+    pub fn resolve_classifier_overrides(&mut self) {
+        if self.metalness_override.is_some() && self.roughness_override.is_some() {
+            return;
+        }
+        let pbr = self.classify_pbr_from_path(self.texture_path.as_deref());
+        self.metalness_override.get_or_insert(pbr.metalness);
+        self.roughness_override.get_or_insert(pbr.roughness);
+    }
+
+    /// Internal — keyword classifier body without the override
+    /// fast-path. Split out so [`Self::resolve_classifier_overrides`]
+    /// can use it without short-circuiting on its own previous run.
+    fn classify_pbr_from_path(&self, texture_path: Option<&str>) -> PbrMaterial {
         let path = texture_path.unwrap_or("");
 
         // Keyword-based classification (highest priority).
@@ -632,5 +661,72 @@ mod tests {
     fn path_indicates_glass_handles_none_and_empty() {
         assert!(!Material::path_indicates_glass(None));
         assert!(!Material::path_indicates_glass(Some("")));
+    }
+
+    // ── `resolve_classifier_overrides` — Stage 1 of
+    //   feedback_format_translation.md: every material lands at
+    //   runtime with explicit PBR overrides so the per-frame draw
+    //   build hits the override fast-path regardless of source
+    //   format.
+
+    #[test]
+    fn resolve_classifier_overrides_populates_from_keyword_path() {
+        let mut m = Material::default();
+        m.texture_path = Some(r"Textures\Weapons\Iron\IronSword.dds".to_string());
+        assert!(m.metalness_override.is_none());
+        assert!(m.roughness_override.is_none());
+
+        m.resolve_classifier_overrides();
+        let metalness = m.metalness_override.expect("metalness populated");
+        let roughness = m.roughness_override.expect("roughness populated");
+        assert!(metalness > 0.8, "metal keyword routes to conductor");
+        assert!(roughness < 0.4);
+
+        // Subsequent draws hit the override fast-path — no string scan.
+        let pbr = m.classify_pbr(m.texture_path.as_deref());
+        assert!((pbr.metalness - metalness).abs() < 1e-6);
+        assert!((pbr.roughness - roughness).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resolve_classifier_overrides_is_idempotent() {
+        let mut m = Material::default();
+        m.texture_path = Some("textures/clutter/barrel/barrel01.dds".to_string());
+        m.resolve_classifier_overrides();
+        let first_metal = m.metalness_override.unwrap();
+        let first_rough = m.roughness_override.unwrap();
+
+        m.resolve_classifier_overrides();
+        assert_eq!(m.metalness_override.unwrap(), first_metal);
+        assert_eq!(m.roughness_override.unwrap(), first_rough);
+    }
+
+    #[test]
+    fn resolve_classifier_overrides_preserves_upstream_translator_values() {
+        // BGSM merge layer ran first and wrote authoritative scalars;
+        // the keyword classifier must NOT overwrite them.
+        let mut m = Material::default();
+        m.texture_path = Some(r"Textures\Weapons\Iron\IronSword.dds".to_string());
+        m.metalness_override = Some(0.42);
+        m.roughness_override = Some(0.13);
+
+        m.resolve_classifier_overrides();
+        assert_eq!(m.metalness_override, Some(0.42));
+        assert_eq!(m.roughness_override, Some(0.13));
+    }
+
+    #[test]
+    fn resolve_classifier_overrides_fills_only_missing_slot() {
+        // Half-populated: BGSM wrote one but not the other (rare but
+        // representable). The keyword fallback fills the gap without
+        // touching the populated slot.
+        let mut m = Material::default();
+        m.texture_path = Some(r"Textures\Weapons\Iron\IronSword.dds".to_string());
+        m.metalness_override = Some(0.42);
+        m.roughness_override = None;
+
+        m.resolve_classifier_overrides();
+        assert_eq!(m.metalness_override, Some(0.42));
+        assert!(m.roughness_override.is_some());
     }
 }

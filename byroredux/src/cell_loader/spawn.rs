@@ -773,9 +773,7 @@ pub(super) fn spawn_placed_instances(
         }
         world.insert(entity, MeshHandle(mesh_handle));
         world.insert(entity, TextureHandle(tex_handle));
-        world.insert(
-            entity,
-            Material {
+        let mut material = Material {
                 emissive_color: mesh.emissive_color,
                 emissive_mult: mesh.emissive_mult,
                 specular_color: mesh.specular_color,
@@ -875,13 +873,18 @@ pub(super) fn spawn_placed_instances(
                 // Translation-layer PBR overrides — set by
                 // `merge_bgsm_into_mesh` for BGSM/BGEM materials so
                 // the renderer sees standardized `(metalness,
-                // roughness)` without per-format branching. None for
-                // inline-shader NIF content (legacy Oblivion / FO3 /
-                // FNV path keeps the classify_pbr keyword fallback).
+                // roughness)` without per-format branching.
+                // `resolve_classifier_overrides` below fills any
+                // still-`None` slots from the keyword classifier so
+                // legacy Oblivion / FO3 / FNV inline-shader content
+                // also lands at runtime with explicit PBR scalars —
+                // the per-frame draw build hits the override fast-path
+                // for every material regardless of source format.
                 metalness_override: mesh.metalness_override,
                 roughness_override: mesh.roughness_override,
-            },
-        );
+            };
+        material.resolve_classifier_overrides();
+        world.insert(entity, material);
         // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn
         // time so build_render_data can skip them via a component query
         // instead of running 6 substring scans per draw per frame.
