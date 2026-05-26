@@ -2498,6 +2498,11 @@ void main() {
             && dot(fragTangent.xyz, fragTangent.xyz) > 1e-4)
         {
             vec3 T = normalize(fragTangent.xyz);
+            // #1274 — Gram-Schmidt against N. Mirrors `perturbNormal`
+            // Path-1; without this T tilts off-axis at smoothing-group
+            // seams and the anisotropic lobe orientation drifts from
+            // the bump-mapped normal frame.
+            T = normalize(T - dot(T, N) * N);
             vec3 B = normalize(cross(N, T)) * fragTangent.w;
             float HdotX = dot(H, T);
             float HdotY = dot(H, B);
@@ -2738,6 +2743,11 @@ void main() {
                 && dot(fragTangent.xyz, fragTangent.xyz) > 1e-4)
             {
                 vec3 T = normalize(fragTangent.xyz);
+                // #1274 — Gram-Schmidt against N. Mirrors `perturbNormal`
+                // Path-1; without this T tilts off-axis at smoothing-
+                // group seams and the anisotropic lobe orientation
+                // drifts from the bump-mapped normal frame.
+                T = normalize(T - dot(T, N) * N);
                 vec3 B = normalize(cross(N, T)) * fragTangent.w;
                 float HdotX = dot(H, T);
                 float HdotY = dot(H, B);
