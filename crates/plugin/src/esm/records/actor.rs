@@ -204,6 +204,18 @@ pub struct NpcRecord {
     /// Papyrus VM attached-script blob). Presence flag only; full
     /// decoding deferred to scripting-as-ECS work. See #369.
     pub has_script: bool,
+    /// Pre-Skyrim `SCRI` attached-script FormID. References an SCPT
+    /// record carrying compiled Obscript bytecode that runs against
+    /// this actor at runtime (`OnLoad`, `OnHit`, `OnActivate` event
+    /// handlers). `0` = no script attached (the common case for
+    /// generic NPCs). 24 % of FO3 named NPCs (398 of 1,647), 27 % of
+    /// FO3 creatures (148 of 533), and 27 % of FNV named NPCs (1,046
+    /// of 3,816) author SCRI — Three Dog's broadcast triggers, Moira
+    /// Brown's questline gates, the FNV companion wheel, every
+    /// faction-leader reactive dialogue, etc. Skyrim+ NPCs use VMAD
+    /// instead (see `has_script`). The two paths are mutually
+    /// exclusive in vanilla content. See #1273.
+    pub script_form_id: u32,
     /// FO4 face-morph block (FMRI/FMRS/MSDK/MSDV/QNAM/HCLF/BCLF/PNAM).
     /// `None` when the record carries no face-morph sub-records (most
     /// pre-FO4 NPCs and FO4 generic settlers). Driven by audit
@@ -475,6 +487,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
         disposition_base: 50,
         acbs_flags: 0,
         has_script: common.has_script,
+        script_form_id: 0,
         face_morphs: None,
         runtime_facegen: None,
         template_form_id: 0,
@@ -498,6 +511,11 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             }
             b"VTCK" if sub.data.len() >= 4 => {
                 record.voice_form_id = SubReader::new(&sub.data).u32_or_default();
+            }
+            // SCRI — pre-Skyrim attached-script FormID. NPC_ + CREA
+            // share `parse_npc` so this arm covers both. See #1273.
+            b"SCRI" if sub.data.len() >= 4 => {
+                record.script_form_id = SubReader::new(&sub.data).u32_or_default();
             }
             // SNAM (FNV NPC_): faction form ID (u32) + rank (i8) + pad x3
             b"SNAM" if sub.data.len() >= 8 => {
@@ -1066,6 +1084,50 @@ mod tests {
         assert_eq!(n.ai_packages, vec![0xEEEE]);
         assert_eq!(n.acbs_flags, 0x100);
         assert_eq!(n.level, 5);
+    }
+
+    /// Regression for #1273 — `SCRI` attached-script FormID on NPC_
+    /// and CREA records was silently dropped. 24 % of FO3 named NPCs
+    /// + 27 % of FO3 creatures author SCRI; FNV similar. The audit
+    /// fixture mirrors the Three Dog (`MQGalaxyNewsRadio` broadcast
+    /// trigger) shape — a thin NPC record where the only meaningful
+    /// payload is the attached script.
+    #[test]
+    fn npc_extracts_scri_attached_script() {
+        let subs = vec![
+            sub(b"EDID", b"ThreeDog\0"),
+            sub(b"SCRI", &0xDEAD_BEEFu32.to_le_bytes()),
+        ];
+        let n = parse_npc(0x000A_0001, &subs, GameKind::Fallout3NV);
+        assert_eq!(n.script_form_id, 0xDEAD_BEEF);
+        assert_eq!(n.editor_id, "ThreeDog");
+    }
+
+    /// Same arm fires for CREA records: `parse_npc` is shared between
+    /// NPC_ and CREA (see `records/mod.rs:b"CREA"` dispatch). Asserts
+    /// the parser doesn't gate SCRI on a record-type discriminator
+    /// we don't carry.
+    #[test]
+    fn crea_extracts_scri_attached_script() {
+        let subs = vec![
+            sub(b"EDID", b"SuperMutantBrute\0"),
+            sub(b"SCRI", &0xCAFE_0001u32.to_le_bytes()),
+        ];
+        let n = parse_npc(0x000B_0002, &subs, GameKind::Fallout3NV);
+        assert_eq!(n.script_form_id, 0xCAFE_0001);
+    }
+
+    /// Zero-byte SCRI (rare but legal in modded content) must NOT
+    /// fall through to a stale value; the field defaults to 0 and
+    /// the arm is gated on `>= 4`, so a 0-length SCRI no-ops.
+    #[test]
+    fn npc_short_scri_is_ignored() {
+        let subs = vec![
+            sub(b"EDID", b"NoScript\0"),
+            sub(b"SCRI", &[]),
+        ];
+        let n = parse_npc(0x000A_0003, &subs, GameKind::Fallout3NV);
+        assert_eq!(n.script_form_id, 0);
     }
 
     /// Regression for #377 (FNV F2-03): ACBS `disposition_base` is an

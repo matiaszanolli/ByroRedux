@@ -796,6 +796,7 @@ mod tests {
             disposition_base: 50,
             acbs_flags: 0,
             has_script: false,
+            script_form_id: 0,
             face_morphs: None,
             runtime_facegen: None,
             template_form_id: 0,

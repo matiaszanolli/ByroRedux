@@ -503,10 +503,6 @@ impl EsmIndex {
     ///   the static record doesn't carry `script_form_id`. Lifting
     ///   them into typed maps (with the SCRI field) is sibling work
     ///   tracked alongside M47.0.
-    /// - NPC_ / CREA — `NpcRecord` doesn't have a top-level
-    ///   `script_form_id` field today (NPCs CAN have attached scripts
-    ///   via SCRI but the parser drops it). NPC scripts arrive with
-    ///   M47.0 follow-ups when actor AI hooks need them.
     /// - Skyrim+ VMAD-attached scripts — the per-instance script
     ///   override mechanism. Decoded by M47.2, not by this lookup.
     ///
@@ -533,6 +529,17 @@ impl EsmIndex {
         }
         if let Some(r) = self.items.get(&base_form_id) {
             return nonzero(r.common.script_form_id);
+        }
+        // #1273 — NPC_ and CREA share `parse_npc` and `NpcRecord`, so
+        // a single SCRI arm in the parser covers both. The two maps
+        // are disjoint by form_id (vanilla content), so the order
+        // here doesn't matter; we walk NPCs first because they're
+        // the larger group on every shipped master.
+        if let Some(r) = self.npcs.get(&base_form_id) {
+            return nonzero(r.script_form_id);
+        }
+        if let Some(r) = self.creatures.get(&base_form_id) {
+            return nonzero(r.script_form_id);
         }
         None
     }
@@ -654,6 +661,55 @@ mod tests {
             },
         );
         assert_eq!(idx.base_record_script(0xAAAA_0001), Some(0xBBBB_0001));
+    }
+
+    /// #1273 — NPC_ and CREA SCRI script-attachment lookups.
+    /// Inserts via the typed map (which is what `parse_esm` does) and
+    /// asserts `base_record_script` walks both bins. Uses `parse_npc`
+    /// to construct the fixtures so the test doubles as integration
+    /// coverage for the new SCRI arm.
+    #[test]
+    fn base_record_script_finds_npc_and_creature_scripts() {
+        use crate::esm::records::{parse_npc, GameKind};
+        let sub = |t: &[u8; 4], data: &[u8]| crate::esm::reader::SubRecord {
+            sub_type: *t,
+            data: data.to_vec(),
+        };
+
+        let mut idx = EsmIndex::default();
+        // Insert a script-bearing NPC and a script-bearing creature.
+        let npc = parse_npc(
+            0x000A_0001,
+            &[
+                sub(b"EDID", b"ScriptedNpc\0"),
+                sub(b"SCRI", &0xBBBB_0001u32.to_le_bytes()),
+            ],
+            GameKind::Fallout3NV,
+        );
+        idx.npcs.insert(0x000A_0001, npc);
+
+        let crea = parse_npc(
+            0x000B_0002,
+            &[
+                sub(b"EDID", b"ScriptedCreature\0"),
+                sub(b"SCRI", &0xBBBB_0002u32.to_le_bytes()),
+            ],
+            GameKind::Fallout3NV,
+        );
+        idx.creatures.insert(0x000B_0002, crea);
+
+        assert_eq!(idx.base_record_script(0x000A_0001), Some(0xBBBB_0001));
+        assert_eq!(idx.base_record_script(0x000B_0002), Some(0xBBBB_0002));
+
+        // NPC without SCRI must resolve to None (the zero-sentinel
+        // gate applies to NPCs / creatures too).
+        let unscripted = parse_npc(
+            0x000A_0009,
+            &[sub(b"EDID", b"UnscriptedNpc\0")],
+            GameKind::Fallout3NV,
+        );
+        idx.npcs.insert(0x000A_0009, unscripted);
+        assert!(idx.base_record_script(0x000A_0009).is_none());
     }
 
     #[test]
