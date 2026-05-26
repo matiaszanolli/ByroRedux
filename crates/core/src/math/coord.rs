@@ -91,12 +91,15 @@ pub fn zup_to_yup_quat_wxyz(wxyz: [f32; 4]) -> [f32; 4] {
     normalize_quat(q)
 }
 
-/// Convert Bethesda Z-up Euler angles (CW convention, XYZ-product
-/// — Z applied first, X applied last) to a glam Y-up rotation
-/// quaternion.
+/// Convert Bethesda Z-up Euler angles (CW convention, ZYX-product
+/// — X applied first to the vertex, Z applied last) to a glam Y-up
+/// rotation quaternion.
 ///
-/// Bethesda uses Gamebryo's clockwise-positive rotation convention:
-///   `R_zup = Rx_cw(rx) · Ry_cw(ry) · Rz_cw(rz)`
+/// Bethesda uses Gamebryo's clockwise-positive rotation convention
+/// applied as a ZYX matrix product (X applied first in object-local
+/// axes — equivalently, Z applied last when reading the matrix
+/// product left-to-right):
+///   `R_zup = Rz_cw(rz) · Ry_cw(ry) · Rx_cw(rx)`
 ///
 /// Each CW rotation by angle `t` equals a CCW rotation by `-t` under
 /// glam's standard convention. The coord change `C: (x,y,z)_zup →
@@ -105,18 +108,32 @@ pub fn zup_to_yup_quat_wxyz(wxyz: [f32; 4]) -> [f32; 4] {
 ///   `C · Ry(-ry) · Cᵀ = Rz(ry)`      (y → -z, double negate)
 ///   `C · Rz(-rz) · Cᵀ = Ry(-rz)`     (z → y)
 ///
-/// Result: `R_yup = Rx(-rx) · Rz(ry) · Ry(-rz)`.
+/// Composing under the axis swap (composition order preserved):
+///   `R_yup = Ry(-rz) · Rz(ry) · Rx(-rx)`
 ///
-/// 2026-05-07 triage on `GSDocMitchellHouse` pinned CW + XYZ-product
-/// as the correct composition (operator A/B compared all four
-/// candidates against the in-game pose). The diagnostic mode
-/// dispatcher lives in `byroredux::cell_loader::euler` for the REFR
-/// placement path where empirical sign-off was tight; XCLL
-/// directional lighting + this default helper go through here.
-/// See `196dd67` for the `--rotation-mode` triage that pinned this.
+/// **Canonical reference**: OpenMW's static-REFR placement in
+/// `apps/openmw/mwrender/objectpaging.cpp:853-855` (the ESM3+ESM4
+/// shared path covering Oblivion / FO3 / FNV / Skyrim REFRs):
+/// ```text
+/// Quat(rot.z, (0,0,-1)) * Quat(rot.y, (0,-1,0)) * Quat(rot.x, (-1,0,0))
+/// ```
+/// Each negated axis = CW-positive convention (negate the angle).
+/// The Z-Y-X composition matches Bethesda CK / xEdit's documented
+/// "rotate around X first, then Y, then Z in object-local axes".
+///
+/// **History**: pre-2026-05-26 ship was the XYZ-product variant
+/// (`Rx · Rz · Ry` in Y-up). That was empirically picked from a
+/// single-cell sign-off on `GSDocMitchellHouse` (2026-05-07), whose
+/// REFRs are dominated by Z-only rotations — and XYZ-product /
+/// ZYX-product produce **identical** results when only `rz` is
+/// non-zero. The two formulas diverge for multi-axis REFRs (slope-
+/// tilted exterior walls / sloped architecture), producing displaced
+/// / 90°-rotated walls. The ZYX-product / OpenMW formula fixes that.
+/// `--rotation-mode 0` in `byroredux::cell_loader::euler` preserves
+/// the pre-fix formula for A/B triage.
 #[inline]
 pub fn euler_zup_to_quat_yup(rx: f32, ry: f32, rz: f32) -> Quat {
-    Quat::from_rotation_x(-rx) * Quat::from_rotation_z(ry) * Quat::from_rotation_y(-rz)
+    Quat::from_rotation_y(-rz) * Quat::from_rotation_z(ry) * Quat::from_rotation_x(-rx)
 }
 
 /// Normalise a quaternion to unit length. Zero-length input is
@@ -208,6 +225,83 @@ mod tests {
         assert!((q.length() - 1.0).abs() < 1e-6);
         assert!((q.x).abs() < 1e-6 && (q.y).abs() < 1e-6 && (q.z).abs() < 1e-6);
         assert!((q.w - 1.0).abs() < 1e-6);
+    }
+
+    /// Regression pin for the ZYX-product / OpenMW-derived convention.
+    ///
+    /// Multi-axis input (`rx=ry=π/2, rz=0`) is mode-discriminating:
+    /// XYZ-product and ZYX-product produce IDENTICAL results when at
+    /// most one of `rx/ry/rz` is non-zero (the trap that let the
+    /// 2026-05-07 `GSDocMitchellHouse` sign-off pick the wrong default).
+    /// The test below would have caught that.
+    ///
+    /// Ground truth derived geometrically:
+    ///   Input vector (Z-up): `v_zup = (0, 1, 0)` — a unit "north" arrow.
+    ///   In Y-up coords via `(x, z, -y)`: `v_yup = (0, 0, -1)`.
+    ///   Apply OpenMW formula in Z-up:
+    ///     Rx_cw(π/2) = Rx(-π/2): Y → -Z. `(0,1,0) → (0,0,-1)`.
+    ///     Ry_cw(π/2) = Ry(-π/2): Z → -X. `(0,0,-1) → (1,0,0)`.
+    ///     Rz_cw(0)   = identity.        `(1,0,0)` stays.
+    ///   Output (Z-up): `(1, 0, 0)`.
+    ///   In Y-up coords: `(1, 0, 0)`.
+    /// So our Y-up quat applied to `(0, 0, -1)` must yield `(1, 0, 0)`.
+    #[test]
+    fn euler_multi_axis_matches_openmw_objectpaging() {
+        use std::f32::consts::FRAC_PI_2;
+        let q = euler_zup_to_quat_yup(FRAC_PI_2, FRAC_PI_2, 0.0);
+        let v_in_yup = Vec3::new(0.0, 0.0, -1.0);
+        let v_out = q * v_in_yup;
+        assert!(
+            (v_out.x - 1.0).abs() < 1e-5,
+            "x mismatch: got {}, expected 1.0",
+            v_out.x
+        );
+        assert!(
+            v_out.y.abs() < 1e-5,
+            "y mismatch: got {}, expected 0.0",
+            v_out.y
+        );
+        assert!(
+            v_out.z.abs() < 1e-5,
+            "z mismatch: got {}, expected 0.0",
+            v_out.z
+        );
+    }
+
+    /// Second pin — a different multi-axis input to lock the ZYX
+    /// composition order, not just the per-axis sign. Uses `rx=π/2`
+    /// and `rz=π/2` (with `ry=0`); same ground-truth derivation,
+    /// different geometric result.
+    ///
+    /// Ground truth (Z-up):
+    ///   v = (0, 1, 0).
+    ///   Rx_cw(π/2) = Rx(-π/2): (0,1,0) → (0,0,-1).
+    ///   Ry_cw(0)   = identity.
+    ///   Rz_cw(π/2) = Rz(-π/2): X → -Y, Y → X. `(0,0,-1)` stays (Z preserved).
+    ///   Output: (0, 0, -1).
+    /// In Y-up via `(x, z, -y)`: `(0, -1, 0)`.
+    /// So Y-up quat applied to `(0, 0, -1)` must yield `(0, -1, 0)`.
+    #[test]
+    fn euler_zyx_order_pinned_by_rx_then_rz() {
+        use std::f32::consts::FRAC_PI_2;
+        let q = euler_zup_to_quat_yup(FRAC_PI_2, 0.0, FRAC_PI_2);
+        let v_in_yup = Vec3::new(0.0, 0.0, -1.0);
+        let v_out = q * v_in_yup;
+        assert!(
+            v_out.x.abs() < 1e-5,
+            "x mismatch: got {}, expected 0.0",
+            v_out.x
+        );
+        assert!(
+            (v_out.y - (-1.0)).abs() < 1e-5,
+            "y mismatch: got {}, expected -1.0",
+            v_out.y
+        );
+        assert!(
+            v_out.z.abs() < 1e-5,
+            "z mismatch: got {}, expected 0.0",
+            v_out.z
+        );
     }
 
     /// TD3-202 / #1112 — `EXTERIOR_CELL_UNITS` is a Bethesda spec
