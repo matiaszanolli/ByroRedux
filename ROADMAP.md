@@ -692,7 +692,7 @@ Ground-truth as of 2026-05-23, verified by `/session-close`.
 | Skyrim sweetroll single-mesh ~3000-5000 FPS (2026-04-22, RTX 4070 Ti @ 1280×720)        | `cargo run --release -- --bsa "Skyrim Special Edition/Data/Skyrim - Meshes0.bsa" --mesh meshes\\clutter\\ingredients\\sweetroll01.nif --textures-bsa "Skyrim Special Edition/Data/Skyrim - Textures3.bsa"` |
 | Megaton interior parse-side 929 REFRs (2026-04-19)                        | `cargo test -p byroredux-plugin --release --test parse_real_esm parse_real_fo3_megaton_cell_baseline -- --ignored`                                                                             |
 | Per-game full mesh sweep (clean rates above; recoverable 100% gate)       | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`                                                                                                          |
-| Full ESM record counts (FNV 73 054 structured + 5 625 long-tail / FO3 31 101 — FO3 unreverified post-#808/#809/#810; #901 FNV refresh) | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored`                                                                                                                   |
+| Full ESM record counts (FNV 77 825 = 73 054 structured + 4 771 NAVMs post-#1272; FO3 44 657 = 37 459 structured + 7 198 NAVMs post-#1272; both re-verified 2026-05-26 against vanilla masters) | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored`                                                                                                                   |
 
 **Rule**: every "FPS / ms / count" claim in this document must have a
 repro command in this table. `/session-close` refuses edits that add
