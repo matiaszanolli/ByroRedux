@@ -242,6 +242,16 @@ pub struct CellData {
     /// would produce double geometry + z-fighting. Empty for non-FO4
     /// cells. #1188.
     pub absorbed_refs: std::collections::HashSet<u32>,
+    /// Per-cell navmesh records (`NAVM`) collected from the cell's
+    /// `Cell Persistent Children` (group_type 8) and temporary children
+    /// (6) GRUPs. NAVMs never appear at top level in vanilla Bethesda
+    /// masters (`parse_esm`'s top-level dispatch arm exists for non-
+    /// vanilla flatten-out mods only) — every authored NAVM nests
+    /// inside one of these child GRUPs. The records here populate
+    /// `EsmIndex.navmeshes` post-cell-walk via a drain step in
+    /// `parse_esm`. Empty when the cell has no navmesh children, which
+    /// is the common case for tiny interior cells. See #1272.
+    pub navmeshes: Vec<crate::esm::records::NavmRecord>,
 }
 
 /// Ownership tuple from `XOWN` / `XRNK` / `XGLB` sub-records. Lives

@@ -189,9 +189,17 @@ pub(crate) fn parse_wrld_children(
                     if let Some(grid) = current_cell {
                         let mut refs = Vec::new();
                         let mut land = None;
-                        parse_refr_group(reader, sub_end, &mut refs, &mut land)?;
+                        let mut navmeshes = Vec::new();
+                        parse_refr_group(
+                            reader,
+                            sub_end,
+                            &mut refs,
+                            &mut land,
+                            &mut navmeshes,
+                        )?;
                         if let Some(cell) = exterior_cells.get_mut(&grid) {
                             cell.references.extend(refs);
+                            cell.navmeshes.extend(navmeshes);
                             if land.is_some() && cell.landscape.is_none() {
                                 cell.landscape = land;
                             }
@@ -431,6 +439,7 @@ pub(crate) fn parse_wrld_children(
                             // as before).
                             precombined_mesh_hashes,
                             absorbed_refs,
+                            navmeshes: Vec::new(),
                         },
                     );
                     current_cell = Some(g);

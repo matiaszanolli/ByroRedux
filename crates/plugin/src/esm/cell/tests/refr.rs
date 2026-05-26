@@ -70,7 +70,8 @@ fn parse_one_refr(record: &[u8]) -> PlacedRef {
     let end = record.len();
     let mut refs = Vec::new();
     let mut land = None;
-    parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+    let mut navmeshes = Vec::new();
+    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
     assert_eq!(refs.len(), 1, "exactly one REFR expected");
     refs.remove(0)
 }
@@ -123,7 +124,8 @@ fn parse_one_refr_for_ownership(record: &[u8]) -> PlacedRef {
     let end = record.len();
     let mut refs = Vec::new();
     let mut land = None;
-    parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+    let mut navmeshes = Vec::new();
+    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
     assert_eq!(refs.len(), 1, "one REFR per record");
     refs.into_iter().next().unwrap()
 }
@@ -163,7 +165,8 @@ fn parse_refr_extracts_position_and_scale() {
     let end = record.len();
     let mut refs = Vec::new();
     let mut land = None;
-    parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+    let mut navmeshes = Vec::new();
+    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
 
     assert_eq!(refs.len(), 1);
     let r = &refs[0];
@@ -189,7 +192,8 @@ fn parse_refr_extracts_non_inverted_xesp_renders_by_default() {
     let end = record.len();
     let mut refs = Vec::new();
     let mut land = None;
-    parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+    let mut navmeshes = Vec::new();
+    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
 
     assert_eq!(refs.len(), 1);
     let ep = refs[0]
@@ -213,7 +217,8 @@ fn parse_refr_extracts_inverted_xesp_hidden_by_default() {
     let end = record.len();
     let mut refs = Vec::new();
     let mut land = None;
-    parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+    let mut navmeshes = Vec::new();
+    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
 
     assert_eq!(refs.len(), 1);
     let ep = refs[0]
@@ -258,7 +263,8 @@ fn parse_refr_without_xesp_has_no_enable_parent() {
     let end = record.len();
     let mut refs = Vec::new();
     let mut land = None;
-    parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+    let mut navmeshes = Vec::new();
+    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
 
     assert_eq!(refs.len(), 1);
     assert!(refs[0].enable_parent.is_none());
@@ -533,7 +539,8 @@ fn parse_refr_group_recognises_oblivion_acre_placement() {
     let end = record.len();
     let mut refs = Vec::new();
     let mut land = None;
-    parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+    let mut navmeshes = Vec::new();
+    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
 
     assert_eq!(refs.len(), 1, "ACRE placement must be recognised");
     let r = &refs[0];
@@ -554,7 +561,8 @@ fn parse_refr_xesp_with_null_parent_is_not_default_disabled() {
     let end = record.len();
     let mut refs = Vec::new();
     let mut land = None;
-    parse_refr_group(&mut reader, end, &mut refs, &mut land).unwrap();
+    let mut navmeshes = Vec::new();
+    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
 
     let ep = refs[0]
         .enable_parent
@@ -615,6 +623,47 @@ fn refr_with_rank_and_global_but_no_owner_is_dropped() {
         r.ownership.is_none(),
         "XRNK + XGLB without XOWN must NOT synthesize a partial tuple"
     );
+}
+
+/// Regression for #1272 — NAVM records nested in a cell's children
+/// GRUP were silently skipped on every game. The catch-all skip
+/// comment at the end of `parse_refr_group` named NAVM among the
+/// dropped record types. This test feeds a single NAVM record at
+/// the same level the cell walker hands to `parse_refr_group`
+/// (i.e. inside group_type 6/8 children) and asserts the record
+/// ends up in the `navmeshes` out-vec.
+#[test]
+fn parse_refr_group_collects_navm_records() {
+    let mut sub_data = Vec::new();
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(b"WastelandNavmesh\0".len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(b"WastelandNavmesh\0");
+    sub_data.extend_from_slice(b"NVER");
+    sub_data.extend_from_slice(&4u16.to_le_bytes());
+    sub_data.extend_from_slice(&12u32.to_le_bytes());
+
+    let mut record = Vec::new();
+    record.extend_from_slice(b"NAVM");
+    record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    record.extend_from_slice(&0u32.to_le_bytes()); // flags
+    record.extend_from_slice(&0x000ABCDEu32.to_le_bytes()); // form_id
+    record.extend_from_slice(&[0u8; 8]); // version + unknown
+    record.extend_from_slice(&sub_data);
+
+    let mut reader = EsmReader::new(&record);
+    let end = record.len();
+    let mut refs = Vec::new();
+    let mut land = None;
+    let mut navmeshes = Vec::new();
+    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+
+    assert_eq!(refs.len(), 0, "NAVM must not be misclassified as a REFR");
+    assert!(land.is_none(), "NAVM must not be misclassified as LAND");
+    assert_eq!(navmeshes.len(), 1, "NAVM must populate the navmeshes vec");
+    let navm = &navmeshes[0];
+    assert_eq!(navm.form_id, 0x000ABCDE);
+    assert_eq!(navm.editor_id, "WastelandNavmesh");
+    assert_eq!(navm.version, 12);
 }
 
 // ── M46.0 / #561 EsmCellIndex::merge_from regression guards ───────

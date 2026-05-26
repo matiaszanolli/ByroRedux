@@ -59,6 +59,7 @@ fn empty_cell(editor_id: &str, refr_form_ids: &[u32]) -> CellData {
         absorbed_refs: std::collections::HashSet::new(),
         lighting_template_form: None,
         ownership: None,
+        navmeshes: Vec::new(),
     }
 }
 

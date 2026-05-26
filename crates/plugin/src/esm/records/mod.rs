@@ -869,6 +869,25 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         log::info!("  Worldspaces: {:?}", wrld_names);
     }
 
+    // #1272 — drain per-cell navmeshes (collected by the cell walker's
+    // child-GRUP loop) into the global `EsmIndex.navmeshes` map. The
+    // top-level NAVM dispatch at the `b"NAVM"` arm above only ever
+    // fires for non-vanilla mods that flatten NAVMs out of cell
+    // children; vanilla Bethesda masters route every authored NAVM
+    // through the cell tier.
+    for cell in cells.values_mut() {
+        for navm in cell.navmeshes.drain(..) {
+            index.navmeshes.insert(navm.form_id, navm);
+        }
+    }
+    for wrld_cells in exterior_cells.values_mut() {
+        for cell in wrld_cells.values_mut() {
+            for navm in cell.navmeshes.drain(..) {
+                index.navmeshes.insert(navm.form_id, navm);
+            }
+        }
+    }
+
     index.cells = EsmCellIndex {
         cells,
         exterior_cells,

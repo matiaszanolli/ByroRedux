@@ -5,6 +5,7 @@
 use super::helpers::{read_form_id, read_form_id_array, read_zstring};
 use super::*;
 use crate::esm::records::common::read_lstring_or_zstring;
+use crate::esm::records::{parse_navm, NavmRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// Walk the CELL group hierarchy to find interior cells and their placed references.
@@ -32,9 +33,17 @@ pub(crate) fn parse_cell_group(
                         let key = editor_id.to_ascii_lowercase();
                         let mut refs = Vec::new();
                         let mut _land = None; // Interior cells don't have LAND records
-                        parse_refr_group(reader, sub_end, &mut refs, &mut _land)?;
+                        let mut navmeshes = Vec::new();
+                        parse_refr_group(
+                            reader,
+                            sub_end,
+                            &mut refs,
+                            &mut _land,
+                            &mut navmeshes,
+                        )?;
                         if let Some(cell) = cells.get_mut(&key) {
                             cell.references.extend(refs);
+                            cell.navmeshes.extend(navmeshes);
                         }
                     } else {
                         reader.skip_group(&sub_group);
@@ -371,6 +380,7 @@ pub(crate) fn parse_cell_group(
                             regional_color_override,
                             precombined_mesh_hashes,
                             absorbed_refs,
+                            navmeshes: Vec::new(),
                         },
                     );
                     current_cell = Some((header.form_id, editor_id));
@@ -385,19 +395,26 @@ pub(crate) fn parse_cell_group(
     Ok(())
 }
 
-/// Parse REFR and LAND records within a cell children group.
+/// Parse REFR, LAND, and NAVM records within a cell children group.
+///
+/// `navmeshes` collects per-cell `NAVM` records (#1272). NAVMs nest
+/// inside the cell's persistent/temporary children GRUPs and never
+/// appear at top level in vanilla Bethesda masters — pre-fix the
+/// catch-all skipped them on every game (`navmeshes=0` on FO3/FNV/
+/// Skyrim SE/FO4 despite ~30k NAVMs per master).
 pub(crate) fn parse_refr_group(
     reader: &mut EsmReader,
     end: usize,
     refs: &mut Vec<PlacedRef>,
     landscape: &mut Option<LandscapeData>,
+    navmeshes: &mut Vec<NavmRecord>,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             // Nested groups within cell children — recurse.
             let sub = reader.read_group_header()?;
             let sub_end = reader.group_content_end(&sub);
-            parse_refr_group(reader, sub_end, refs, landscape)?;
+            parse_refr_group(reader, sub_end, refs, landscape, navmeshes)?;
             continue;
         }
 
@@ -649,8 +666,15 @@ pub(crate) fn parse_refr_group(
                     header.form_id
                 ),
             }
+        } else if &header.record_type == b"NAVM" {
+            // #1272 — NAVMs nest under cell persistent/temporary
+            // children GRUPs (group_type 6 / 8); the top-level NAVM
+            // dispatch in `parse_esm` is vestigial because no vanilla
+            // master ships top-level NAVMs.
+            let subs = reader.read_sub_records(&header)?;
+            navmeshes.push(parse_navm(header.form_id, &subs));
         } else {
-            // Skip other record types (PGRE, PMIS, NAVM, etc.)
+            // Skip other record types (PGRE, PMIS, etc.)
             reader.skip_record(&header);
         }
     }
