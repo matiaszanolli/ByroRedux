@@ -4,19 +4,128 @@ use super::super::common::{read_lstring_or_zstring, read_zstring};
 use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
 
+/// One body of a `PRKE`/`PRKF` perk entry block. The block opens with
+/// a `PRKE` header (entry type + rank + priority) and the following
+/// `DATA` carries the per-type payload — three mutually exclusive
+/// shapes per [`perk_entry_points.md`](file:./../../../../../../../memory/perk_entry_points.md):
+///
+/// * **Quest** — start `quest` and advance to `stage` when the
+///   condition list (M47.1 follow-up) passes.
+/// * **Ability** — add `spell_form_id` to the actor while the perk is
+///   held. Lifecycle is automatic (added on perk-grant, removed on
+///   perk-revoke).
+/// * **EntryPoint** — modify a hardcoded game calculation hook. The
+///   `entry_point_index` is the raw u8 from the on-disk schema (~120
+///   defined points across the games; the per-game decoder enum lives
+///   in `byroredux_scripting`). `function_type` is the raw EPFT byte
+///   (Add / Multiply / Set / range / AV-mult etc., 0x00..0x09 on
+///   FO3/FNV, extended on Skyrim+/FO4). `function_data` is the raw
+///   EPFD payload — typed decode of `f32` / `(f32, f32)` / FormID /
+///   lstring per-`function_type` is the follow-up commit.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PerkEntryBody {
+    Quest {
+        quest_form_id: u32,
+        /// Stage to advance the quest to when the entry fires. Most
+        /// vanilla content sets a single stage; the value is u8 on
+        /// disk but stored as u16 for forward-compat with future
+        /// schema growth.
+        stage: u16,
+    },
+    Ability {
+        spell_form_id: u32,
+    },
+    EntryPoint {
+        /// Raw entry-point index (0..~120). Per-game enum dispatch
+        /// lives at the consumer side (`byroredux_scripting`).
+        entry_point_index: u8,
+        /// Raw EPFT byte (Add/Multiply/Set/range/AV-mult/...). Per-
+        /// function semantic decode of `function_data` is the
+        /// follow-up commit.
+        function_type: u8,
+        /// Raw EPFD payload bytes. Typed decode (`f32` for single
+        /// value, `(f32, f32)` for range, FormID for spell-ref,
+        /// lstring for activate-prompt) is deferred to the
+        /// consumer-side function dispatcher.
+        function_data: Vec<u8>,
+        /// EPF2 — FO4+ extended function-data formatter string
+        /// (Activate entry-point uses this for the prompt template).
+        /// Empty when absent. Captured-on-disk only; consumer-side.
+        formatter: Vec<u8>,
+        /// EPF3 — FO4+ extended function flags / version byte.
+        /// Captured-on-disk only; consumer-side.
+        extra_flags: Vec<u8>,
+    },
+}
+
+/// One `PRKE`/`PRKF` perk entry — the entry header + body together.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerkEntry {
+    /// Rank within the perk that this entry applies at. Multi-rank
+    /// perks (e.g. Skyrim's One-handed tree) define one entry per
+    /// rank, each with stronger function data.
+    pub rank: u8,
+    /// Priority order — higher value runs first when multiple entries
+    /// on different perks target the same Entry Point. Mod the actor's
+    /// perks by priority, then evaluate in descending order. Per
+    /// `perk_system.md`.
+    pub priority: u8,
+    /// The body — Quest / Ability / EntryPoint variant.
+    pub body: PerkEntryBody,
+}
+
 /// `PERK` perk / trait record. Holds the condition list + entry-point
 /// tree that drives the `perk_system.md` / `perk_entry_points.md`
-/// memos' ~120 catalog. Entry-point decoding (PRKE) is deferred —
-/// lands with the condition pipeline. Stub captures identity + flags
-/// so the perk catalog can be enumerated at load time.
+/// memos' ~120 catalog. Identity + DATA header + PRKE entries are
+/// decoded. Per-entry CTDA conditions (gate whether each entry fires)
+/// and the per-`function_type` EPFD semantic decode are follow-ups —
+/// M47.1's `ConditionList` already covers the consumer side of CTDA;
+/// the per-entry list just needs threading through the block walker.
 #[derive(Debug, Clone, Default)]
 pub struct PerkRecord {
     pub form_id: u32,
     pub editor_id: String,
     pub full_name: String,
     pub description: String,
-    /// Flags byte from DATA (playable / hidden / leveled / trait).
+    /// First byte of DATA. On FO3/FNV this is the `trait` flag (0 or
+    /// 1; trait perks are non-removable). On Skyrim+ the layout is
+    /// the same first byte. Kept for backwards-compat with the prior
+    /// stub; new code should prefer [`Self::is_trait`].
     pub perk_flags: u8,
+    /// True when the DATA `trait` byte is set — perk is a permanent
+    /// trait, can't be removed by the perk pool.
+    pub is_trait: bool,
+    /// DATA num_ranks (count of multi-rank steps). 1 for most perks;
+    /// 3–5 for Skyrim skill-tree perks with progressive ranks. 0 when
+    /// the DATA payload is too short to read this field.
+    pub num_ranks: u8,
+    /// DATA playable flag — true when the perk shows up in the
+    /// level-up perk selection UI.
+    pub playable: bool,
+    /// DATA hidden flag — true for engine-only perks (NPC-only
+    /// abilities, debug perks).
+    pub hidden: bool,
+    /// All `PRKE`/`PRKF` entry blocks in authoring order. Each entry
+    /// has its own rank/priority and Quest/Ability/EntryPoint body.
+    pub entries: Vec<PerkEntry>,
+}
+
+/// Block-state for the PRKE walker — mirrors the QUST INDX/QOBJ
+/// pattern. `Open` carries the partially-decoded entry header until
+/// either the per-type DATA fills the body OR the closing PRKF
+/// flushes whatever's been collected.
+enum PerkBlock {
+    None,
+    Open {
+        entry_type: u8,
+        rank: u8,
+        priority: u8,
+        /// Per-type body, populated by the first DATA inside the
+        /// block. Stays `None` until the body shows up — a malformed
+        /// PRKE/PRKF pair with no DATA in between is dropped silently
+        /// at PRKF rather than panicking.
+        body: Option<PerkEntryBody>,
+    },
 }
 
 pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
@@ -24,17 +133,160 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
         form_id,
         ..Default::default()
     };
+    let mut block = PerkBlock::None;
+
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
-            b"DATA" if !sub.data.is_empty() => {
-                out.perk_flags = sub.data[0];
+            // PERK-level DATA: trait + (level OR num_ranks per-game) +
+            // playable + hidden + level/trailing. The leading byte is
+            // game-shared; trailing bytes are read defensively when
+            // present.
+            b"DATA" if matches!(block, PerkBlock::None) && !sub.data.is_empty() => {
+                let mut r = SubReader::new(&sub.data);
+                out.perk_flags = r.u8_or_default();
+                out.is_trait = out.perk_flags != 0;
+                // FO3/FNV layout: trait + level + num_ranks + playable + hidden.
+                // Skyrim layout:   trait + num_ranks + playable + hidden + level.
+                // The schemas overlap on `trait` and disagree past that.
+                // Without a GameKind dispatch wired through here, capture
+                // num_ranks / playable / hidden positionally per FO3/FNV
+                // (the more common shape across the catalogues sampled);
+                // Skyrim consumers that need the strict layout can rev
+                // this to a per-game arm when the per-game ESM dispatch
+                // lands. The first-byte `trait` reads correctly either
+                // way, which is the load-bearing field.
+                let _level = r.u8_or_default();
+                out.num_ranks = r.u8_or_default();
+                out.playable = r.u8_or_default() != 0;
+                out.hidden = r.u8_or_default() != 0;
+            }
+            // PRKE opens an entry block. Anything still open is
+            // dropped silently — a stray PRKE with no closing PRKF on
+            // the prior block is content-corruption rather than a
+            // parser bug we should panic on.
+            b"PRKE" if sub.data.len() >= 3 => {
+                let mut r = SubReader::new(&sub.data);
+                let entry_type = r.u8_or_default();
+                let rank = r.u8_or_default();
+                let priority = r.u8_or_default();
+                block = PerkBlock::Open {
+                    entry_type,
+                    rank,
+                    priority,
+                    body: None,
+                };
+            }
+            // Per-entry DATA inside an Open block. Shape depends on
+            // entry_type captured at PRKE: 0=Quest, 1=Ability,
+            // 2=EntryPoint.
+            b"DATA" => {
+                if let PerkBlock::Open {
+                    entry_type, body, ..
+                } = &mut block
+                {
+                    let mut r = SubReader::new(&sub.data);
+                    *body = match *entry_type {
+                        0 if sub.data.len() >= 5 => {
+                            let quest_form_id = r.u32_or_default();
+                            let stage = r.u8_or_default() as u16;
+                            Some(PerkEntryBody::Quest {
+                                quest_form_id,
+                                stage,
+                            })
+                        }
+                        1 if sub.data.len() >= 4 => {
+                            let spell_form_id = r.u32_or_default();
+                            Some(PerkEntryBody::Ability { spell_form_id })
+                        }
+                        2 if sub.data.len() >= 2 => {
+                            let entry_point_index = r.u8_or_default();
+                            let function_type = r.u8_or_default();
+                            Some(PerkEntryBody::EntryPoint {
+                                entry_point_index,
+                                function_type,
+                                function_data: Vec::new(),
+                                formatter: Vec::new(),
+                                extra_flags: Vec::new(),
+                            })
+                        }
+                        _ => None,
+                    };
+                }
+            }
+            // EPFT may appear inside an EntryPoint body when the
+            // PRKE-internal DATA carried only the entry-point index
+            // (some versions emit function_type via EPFT instead).
+            // Overwrite the body's function_type when present.
+            b"EPFT" if !sub.data.is_empty() => {
+                if let PerkBlock::Open {
+                    body:
+                        Some(PerkEntryBody::EntryPoint { function_type, .. }),
+                    ..
+                } = &mut block
+                {
+                    *function_type = sub.data[0];
+                }
+            }
+            // EPFD / EPF2 / EPF3 capture the raw function-data bytes
+            // for EntryPoint entries. The per-function-type decode
+            // (f32 / range / FormID / lstring) is the follow-up
+            // commit; today the bytes are preserved verbatim so the
+            // consumer can decode lazily without re-walking the ESM.
+            b"EPFD" => {
+                if let PerkBlock::Open {
+                    body: Some(PerkEntryBody::EntryPoint { function_data, .. }),
+                    ..
+                } = &mut block
+                {
+                    *function_data = sub.data.clone();
+                }
+            }
+            b"EPF2" => {
+                if let PerkBlock::Open {
+                    body: Some(PerkEntryBody::EntryPoint { formatter, .. }),
+                    ..
+                } = &mut block
+                {
+                    *formatter = sub.data.clone();
+                }
+            }
+            b"EPF3" => {
+                if let PerkBlock::Open {
+                    body: Some(PerkEntryBody::EntryPoint { extra_flags, .. }),
+                    ..
+                } = &mut block
+                {
+                    *extra_flags = sub.data.clone();
+                }
+            }
+            // PRKF closes the entry. Push it onto `entries` only if
+            // both PRKE and per-type DATA were captured — incomplete
+            // blocks are dropped silently rather than emitted with
+            // sentinel values.
+            b"PRKF" => {
+                let prev = std::mem::replace(&mut block, PerkBlock::None);
+                if let PerkBlock::Open {
+                    rank,
+                    priority,
+                    body: Some(body),
+                    ..
+                } = prev
+                {
+                    out.entries.push(PerkEntry {
+                        rank,
+                        priority,
+                        body,
+                    });
+                }
             }
             _ => {}
         }
     }
+    // A trailing PRKE with no closing PRKF is content-corruption —
+    // drop silently rather than emit a half-populated entry.
     out
 }
 
@@ -189,6 +441,141 @@ mod tests {
         let p = parse_perk(0xE5E5, &subs);
         assert_eq!(p.editor_id, "IntenseTraining");
         assert_eq!(p.perk_flags, 0x01);
+        assert!(p.is_trait, "byte 0 = 0x01 → trait set");
+    }
+
+    #[test]
+    fn parse_perk_decodes_full_data_header() {
+        // Full 5-byte DATA header (FO3/FNV layout: trait + level +
+        // num_ranks + playable + hidden).
+        let subs = vec![
+            sub(b"EDID", b"Bloody Mess\0"),
+            sub(b"DATA", &[0x00, 6, 1, 0x01, 0x00]),
+        ];
+        let p = parse_perk(0xBADAu32, &subs);
+        assert!(!p.is_trait);
+        assert_eq!(p.num_ranks, 1);
+        assert!(p.playable);
+        assert!(!p.hidden);
+    }
+
+    #[test]
+    fn parse_perk_decodes_quest_entry() {
+        // Quest entry: type=0, rank=1, priority=10, quest_form_id=0x000FED11,
+        // stage=20. Closes with PRKF.
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x000F_ED11u32.to_le_bytes()); // quest_form_id
+        data.extend_from_slice(&[20u8, 0, 0, 0]); // stage + 3 bytes pad
+        let subs = vec![
+            sub(b"EDID", b"PerkQuestEntry\0"),
+            sub(b"DATA", &[0x00, 0, 0, 0x01, 0x00]),
+            sub(b"PRKE", &[0u8, 1, 10]), // type=Quest, rank, priority
+            sub(b"DATA", &data),
+            sub(b"PRKF", &[]),
+        ];
+        let p = parse_perk(0xAAAAu32, &subs);
+        assert_eq!(p.entries.len(), 1);
+        let entry = &p.entries[0];
+        assert_eq!(entry.rank, 1);
+        assert_eq!(entry.priority, 10);
+        match &entry.body {
+            PerkEntryBody::Quest {
+                quest_form_id,
+                stage,
+            } => {
+                assert_eq!(*quest_form_id, 0x000F_ED11);
+                assert_eq!(*stage, 20);
+            }
+            other => panic!("expected Quest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_perk_decodes_ability_entry() {
+        // Ability entry: type=1, single u32 spell ref.
+        let subs = vec![
+            sub(b"EDID", b"PowerAttack\0"),
+            sub(b"PRKE", &[1u8, 0, 5]),
+            sub(b"DATA", &0x000A_BC01u32.to_le_bytes()),
+            sub(b"PRKF", &[]),
+        ];
+        let p = parse_perk(0xBBBBu32, &subs);
+        assert_eq!(p.entries.len(), 1);
+        match &p.entries[0].body {
+            PerkEntryBody::Ability { spell_form_id } => {
+                assert_eq!(*spell_form_id, 0x000A_BC01);
+            }
+            other => panic!("expected Ability, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_perk_decodes_entry_point_with_epft_epfd() {
+        // EntryPoint entry: type=2. PRKE-internal DATA carries the
+        // entry_point_index byte + function_type byte; EPFT can rewrite
+        // function_type (some game versions emit it via EPFT instead);
+        // EPFD captures the raw function-data bytes.
+        let epfd = 1.5f32.to_le_bytes();
+        let subs = vec![
+            sub(b"EDID", b"ModAttackDamage\0"),
+            sub(b"PRKE", &[2u8, 0, 99]),
+            sub(b"DATA", &[0x07, 0x01, 0x00, 0x00]), // entry_point=7 (Mod Attack Dmg), function=1 (Add)
+            sub(b"EPFT", &[0x02]),                    // function overwrite to 2 (Multiply)
+            sub(b"EPFD", &epfd),
+            sub(b"PRKF", &[]),
+        ];
+        let p = parse_perk(0xCCCCu32, &subs);
+        assert_eq!(p.entries.len(), 1);
+        match &p.entries[0].body {
+            PerkEntryBody::EntryPoint {
+                entry_point_index,
+                function_type,
+                function_data,
+                ..
+            } => {
+                assert_eq!(*entry_point_index, 0x07);
+                assert_eq!(*function_type, 0x02, "EPFT overrode DATA's function_type");
+                assert_eq!(function_data.as_slice(), &epfd);
+            }
+            other => panic!("expected EntryPoint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_perk_multi_entry_authoring_order_preserved() {
+        // Three entries — one of each type — emitted in PRKE order.
+        let subs = vec![
+            sub(b"PRKE", &[0u8, 1, 1]),
+            sub(b"DATA", &[1u8, 0, 0, 0, 5, 0, 0, 0]), // Quest: quest=1, stage=5
+            sub(b"PRKF", &[]),
+            sub(b"PRKE", &[1u8, 1, 2]),
+            sub(b"DATA", &0x0000_BEEFu32.to_le_bytes()),
+            sub(b"PRKF", &[]),
+            sub(b"PRKE", &[2u8, 1, 3]),
+            sub(b"DATA", &[0x10, 0x00, 0, 0]),
+            sub(b"PRKF", &[]),
+        ];
+        let p = parse_perk(0xDDDDu32, &subs);
+        assert_eq!(p.entries.len(), 3);
+        assert_eq!(p.entries[0].priority, 1);
+        assert_eq!(p.entries[1].priority, 2);
+        assert_eq!(p.entries[2].priority, 3);
+        assert!(matches!(p.entries[0].body, PerkEntryBody::Quest { .. }));
+        assert!(matches!(p.entries[1].body, PerkEntryBody::Ability { .. }));
+        assert!(matches!(p.entries[2].body, PerkEntryBody::EntryPoint { .. }));
+    }
+
+    #[test]
+    fn parse_perk_unclosed_block_dropped_silently() {
+        // PRKE with no closing PRKF — entry never lands. Defensive
+        // against content corruption.
+        let subs = vec![
+            sub(b"PRKE", &[1u8, 1, 1]),
+            sub(b"DATA", &0x0000_BEEFu32.to_le_bytes()),
+            // No PRKF, no PRKE-after either.
+        ];
+        let p = parse_perk(0xEEEEu32, &subs);
+        assert!(p.entries.is_empty());
     }
 
     #[test]
