@@ -14,6 +14,18 @@
 // not Jimenez's 9-tap tent filter. Upgrade target tracked in
 // ROADMAP.md M58 row.
 //
+// DC-gain note (#1275): unlike the downsample shader, where the 4 taps
+// sum to 1.0 (provably a 4x4 box filter), the additive `upsampled +
+// same` sum here carries DC gain >= 1.0 BY DESIGN — `upsampled` is
+// unit-gain (4 taps x 0.25), `same` is unit-gain (1 tap), and they're
+// summed without renormalisation. Across the 4-step up-chain a
+// DC-constant scene accumulates up to ~8x peak at up[0]. The global
+// scale `BLOOM_INTENSITY = 0.15` (shader_constants_data.rs) is tuned
+// to absorb this gain — Frostbite SIGGRAPH 2015 quotes ~0.04 for a
+// normalised pyramid; 0.15 ~= 4x compensates the un-normalised sum
+// plus Bethesda-content authoring. Do not "fix" the perceived weight
+// imbalance without re-tuning the intensity constant.
+//
 // Reference: Bjørge, "Bandwidth-Efficient Rendering," SIGGRAPH 2015.
 #version 450
 #extension GL_GOOGLE_include_directive : require

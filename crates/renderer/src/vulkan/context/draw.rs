@@ -2837,6 +2837,16 @@ impl VulkanContext {
             // #1166: the previous comment claimed bloom was post-TAA;
             // that was wrong. #1107 / REN-D19-002 is the original
             // rewire-composite-to-TAA work this commit references.
+            //
+            // The `if let Some(...)` guard below is dead at runtime
+            // (#1276): `VulkanContext::new` at `context/mod.rs:1958-1967`
+            // hard-fails with `anyhow::anyhow!(...)` if bloom init
+            // returns `None` (policy from #1081 — no fallback binding
+            // for bloomTex when bloom is absent), so the engine never
+            // reaches `draw_frame` with `self.bloom == None`. The
+            // `Option` wrapper is kept because the resize-recreate
+            // path benefits from it as a temporary, but the runtime
+            // `None` branch is unreachable.
             if let Some(ref mut bloom) = self.bloom {
                 if let Some(ref composite) = self.composite {
                     let hdr_view = composite.hdr_image_views[frame];
