@@ -655,6 +655,103 @@ impl ConsoleCommand for CamWhereCommand {
     }
 }
 
+/// `near [radius]` — list entities with `GlobalTransform` within
+/// `radius` units of the active camera, sorted by distance ascending.
+/// Default radius 300; the cap on the result list is 30 rows.
+///
+/// Use when there's no raycast picker and you need to identify the
+/// REFR you're looking at — walk close to it, run `near 100`, eyeball
+/// the closest hits for matching `texture_path` / `material_path` /
+/// `Name`, then `prid <entity_id>` for the full inspect. The native
+/// REFR rotation chain `(rx, ry, rz)` is NOT directly visible from
+/// this command — for that, follow up with `prid` and then look up
+/// the source REFR in the ESM via `dump_prospector_saloon_refrs`-
+/// style tooling.
+///
+/// Output columns: distance, entity_id, `Name` (or `Material`-derived
+/// label), texture/material path (whichever populated first), pos.
+struct NearCommand;
+impl ConsoleCommand for NearCommand {
+    fn name(&self) -> &str {
+        "near"
+    }
+    fn description(&self) -> &str {
+        "List entities near the camera, sorted by distance (usage: near [radius=300])"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let radius: f32 = args.trim().parse().unwrap_or(300.0);
+        let Some(active) = world.try_resource::<ActiveCamera>() else {
+            return CommandOutput::line("ActiveCamera resource not present");
+        };
+        let cam_entity = active.0;
+        drop(active);
+        let cam_pos = world
+            .query::<Transform>()
+            .and_then(|q| q.get(cam_entity).map(|t| t.translation));
+        let Some(cam_pos) = cam_pos else {
+            return CommandOutput::line(format!(
+                "Camera entity {cam_entity} has no Transform"
+            ));
+        };
+        let Some(gtq) = world.query::<GlobalTransform>() else {
+            return CommandOutput::line("GlobalTransform storage not present");
+        };
+        let r2 = radius * radius;
+        let mut hits: Vec<(f32, EntityId, Vec3)> = Vec::new();
+        for (entity, gt) in gtq.iter() {
+            if entity == cam_entity {
+                continue;
+            }
+            let pos = gt.translation;
+            let d2 = (pos - cam_pos).length_squared();
+            if d2 <= r2 {
+                hits.push((d2.sqrt(), entity, pos));
+            }
+        }
+        drop(gtq);
+        hits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        if hits.is_empty() {
+            return CommandOutput::line(format!(
+                "no entities within {:.1} units of camera ({:.1},{:.1},{:.1})",
+                radius, cam_pos.x, cam_pos.y, cam_pos.z
+            ));
+        }
+        let take_n = 30.min(hits.len());
+        let mut lines = Vec::with_capacity(take_n + 2);
+        lines.push(format!(
+            "camera at ({:.1},{:.1},{:.1}) — {} entities within {:.1} units \
+             (showing nearest {}):",
+            cam_pos.x,
+            cam_pos.y,
+            cam_pos.z,
+            hits.len(),
+            radius,
+            take_n
+        ));
+        lines.push(format!(
+            "{:>7}  {:>6}  {:<28}  {:<48}  {}",
+            "dist", "id", "name", "tex/mat path", "position"
+        ));
+        for (dist, entity, pos) in hits.iter().take(take_n) {
+            let name_str = resolve_entity_name(world, *entity).unwrap_or_else(|| "-".to_string());
+            let path = world
+                .get::<Material>(*entity)
+                .and_then(|m| {
+                    m.texture_path
+                        .as_deref()
+                        .or(m.material_path.as_deref())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_default();
+            lines.push(format!(
+                "{:>7.1}  {:>6}  {:<28.28}  {:<48.48}  ({:>+6.1},{:>+6.1},{:>+6.1})",
+                dist, entity, name_str, path, pos.x, pos.y, pos.z
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
 /// `cam.pos x y z` — teleport the active camera to an absolute world
 /// position (renderer Y-up). Leaves rotation untouched.
 ///
@@ -1604,6 +1701,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(SkinCoverageCommand);
     registry.register(PridCommand);
     registry.register(CamWhereCommand);
+    registry.register(NearCommand);
     registry.register(CamPosCommand);
     registry.register(CamTpCommand);
     registry.register(DoorTeleportCommand);

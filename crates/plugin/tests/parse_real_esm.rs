@@ -1528,3 +1528,105 @@ fn parse_fo4_architecture_fixture_populates_typed_maps() {
         "MSWP form-id 0x00400001 not present in material_swaps map",
     );
 }
+
+/// One-off diagnostic for the misplaced-saloon-wall investigation
+/// (2026-05-26). Walks `GSProspectorSaloonInterior` REFRs against
+/// FalloutNV.esm and emits a TSV-ish dump sorted by spatial
+/// position so we can correlate to the in-game render.
+///
+/// Columns: refr_form, base_form, base_mesh, pos_x, pos_y, pos_z,
+///          rot_x_deg, rot_y_deg, rot_z_deg, scale
+///
+/// Run: `BYROREDUX_FNV_DATA=... cargo test -p byroredux-plugin
+///       --release --test parse_real_esm -- --ignored
+///       dump_prospector_saloon_refrs --nocapture`
+#[test]
+#[ignore]
+fn dump_prospector_saloon_refrs() {
+    let Some(data) = data_dir(
+        "BYROREDUX_FNV_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+    ) else {
+        eprintln!("[dump] skipping: BYROREDUX_FNV_DATA unset and fallback path missing");
+        return;
+    };
+    let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
+    let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
+
+    let key = "gsprospectorsaloonInterior".to_ascii_lowercase();
+    let Some(cell) = index.cells.cells.get(&key) else {
+        eprintln!(
+            "[dump] cell '{key}' not found; got {} interior cells",
+            index.cells.cells.len()
+        );
+        return;
+    };
+
+    let mut rows: Vec<_> = cell
+        .references
+        .iter()
+        .map(|r| {
+            let mesh = index
+                .cells
+                .statics
+                .get(&r.base_form_id)
+                .map(|s| s.model_path.clone())
+                .unwrap_or_else(|| String::from("<no base>"));
+            (r, mesh)
+        })
+        .collect();
+    // Sort by (mesh-name asc, then position-X) so duplicate base meshes group together.
+    rows.sort_by(|a, b| {
+        let m = a.1.to_ascii_lowercase().cmp(&b.1.to_ascii_lowercase());
+        if m == std::cmp::Ordering::Equal {
+            a.0.position[0]
+                .partial_cmp(&b.0.position[0])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            m
+        }
+    });
+
+    eprintln!(
+        "[dump] GSProspectorSaloonInterior REFRs: {}\n\
+         refr_form\tbase_form\tpos_x\tpos_y\tpos_z\trx_deg\try_deg\trz_deg\tscale\tmesh",
+        rows.len()
+    );
+    let rad2deg = 180.0 / std::f32::consts::PI;
+    for (r, mesh) in &rows {
+        eprintln!(
+            "{:08X}\t{:08X}\t{:>8.1}\t{:>8.1}\t{:>8.1}\t{:>+7.1}\t{:>+7.1}\t{:>+7.1}\t{:.2}\t{}",
+            r.form_id,
+            r.base_form_id,
+            r.position[0],
+            r.position[1],
+            r.position[2],
+            r.rotation[0] * rad2deg,
+            r.rotation[1] * rad2deg,
+            r.rotation[2] * rad2deg,
+            r.scale,
+            mesh
+        );
+    }
+
+    // Tally multi-axis REFRs (those whose rotation has TWO or more
+    // non-trivial Euler components — these are the ones that would
+    // expose XYZ vs ZYX product divergence post the 2026-05-26 fix).
+    let mut multi_axis = 0usize;
+    let mut only_z = 0usize;
+    let eps = 0.01_f32.to_radians();
+    for (r, _) in &rows {
+        let nx = r.rotation[0].abs() > eps;
+        let ny = r.rotation[1].abs() > eps;
+        let nz = r.rotation[2].abs() > eps;
+        match (nx, ny, nz) {
+            (false, false, _) => only_z += 1,
+            (true, _, _) | (_, true, _) => multi_axis += 1,
+            _ => {}
+        }
+    }
+    eprintln!(
+        "[dump] rotation profile: {} multi-axis (rx or ry non-zero), {} z-only / identity",
+        multi_axis, only_z
+    );
+}
