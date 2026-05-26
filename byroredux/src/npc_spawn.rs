@@ -486,17 +486,35 @@ pub fn spawn_npc_entity(
     // spawns visibly naked.
     let effective_inventory =
         byroredux_plugin::equip::resolve_inherited_inventory(npc, npc.level, index);
+    // `body_covered` must walk LVLI just like the equip dispatch below
+    // — vanilla FNV settlers / civilians carry their outfit as an LVLI
+    // (e.g. `WastelandSettlerOutfit` resolves to `OutfitRepublican04`
+    // at level 1) rather than a direct ARMO reference. Pre-fix the
+    // pre-scan saw the LVLI form ID in `items.get()`, missed, and
+    // returned false → `upperbody.nif` loaded under the equipped
+    // outfit, producing the visible "T-shirt + briefs through the
+    // outfit" look on every CNTO-via-LVLI NPC.
+    let mut body_covered_buf: Vec<u32> = Vec::new();
     let body_covered = effective_inventory.iter().any(|entry| {
         if entry.count.max(0) == 0 {
             return false;
         }
-        let Some(item) = index.items.get(&entry.item_form_id) else {
-            return false;
-        };
-        let ItemKind::Armor { biped_flags, .. } = item.kind else {
-            return false;
-        };
-        armor_covers_main_body(game, biped_flags)
+        body_covered_buf.clear();
+        byroredux_plugin::equip::expand_leveled_form_id(
+            entry.item_form_id,
+            npc.level,
+            index,
+            &mut body_covered_buf,
+        );
+        body_covered_buf.iter().any(|&fid| {
+            let Some(item) = index.items.get(&fid) else {
+                return false;
+            };
+            let ItemKind::Armor { biped_flags, .. } = item.kind else {
+                return false;
+            };
+            armor_covers_main_body(game, biped_flags)
+        })
     });
 
     // 3. Body. Hardcoded vanilla paths (`upperbody.nif` + per-hand
