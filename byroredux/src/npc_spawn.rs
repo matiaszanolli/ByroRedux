@@ -477,7 +477,16 @@ pub fn spawn_npc_entity(
     // Hands stay loaded regardless — vanilla FNV armors typically
     // include arms but not the finger geometry from `lefthand.nif` /
     // `righthand.nif`, which the gun-grip animation poses against.
-    let body_covered = npc.inventory.iter().any(|entry| {
+    //
+    // FNV `Lvl*` template NPCs (PowderGangers, NCRTroopers, etc.)
+    // author empty CNTO on themselves and inherit via TPLT —
+    // `resolve_inherited_inventory` walks the chain when
+    // `template_flags & 0x100` is set. Without this the body-skip
+    // check below trivially fires "no armor" and every Lvl* NPC
+    // spawns visibly naked.
+    let effective_inventory =
+        byroredux_plugin::equip::resolve_inherited_inventory(npc, npc.level, index);
+    let body_covered = effective_inventory.iter().any(|entry| {
         if entry.count.max(0) == 0 {
             return false;
         }
@@ -764,7 +773,10 @@ pub fn spawn_npc_entity(
     let mut equipped_armor_count = 0u32;
     let actor_level = npc.level;
     let mut resolved_buf: Vec<u32> = Vec::new();
-    for entry in npc.inventory.iter() {
+    // Same TPLT-inherited inventory used for `body_covered` above —
+    // the equip dispatch walks this list, not `npc.inventory`, so
+    // Lvl* template NPCs equip the gear authored on their base.
+    for entry in effective_inventory.iter() {
         // Negative parsed counts are remove-from-inventory deltas, not
         // live state — clamp at runtime per `ItemStack::count` docs.
         let runtime_count = entry.count.max(0) as u32;

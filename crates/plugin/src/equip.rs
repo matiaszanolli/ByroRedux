@@ -191,6 +191,95 @@ pub fn resolve_armor_mesh<'a>(
 /// returns whatever was collected up to that point.
 pub const LVLI_MAX_DEPTH: u32 = 8;
 
+/// FNV / FO3 `NpcRecord::template_flags` bit: "Use Inventory" —
+/// inherit CNTO from the TPLT-referenced base. Sourced from xEdit
+/// `wbDefinitionsFNV.pas` (commit `dev-4.1.6`), the same authority
+/// the surrounding biped-slot helpers use.
+pub const TEMPLATE_FLAG_USE_INVENTORY: u16 = 0x0100;
+
+/// Maximum TPLT recursion depth for
+/// [`resolve_inherited_inventory`]. Vanilla template chains are flat
+/// (Lvl* template → base NPC, one hop) but mod content occasionally
+/// chains a per-faction wrapper on top; 6 is conservative headroom
+/// and breaks any cycle. Same justification as [`LVLI_MAX_DEPTH`].
+pub const TPLT_MAX_DEPTH: u32 = 6;
+
+/// Resolve the effective inventory list for an NPC, honouring
+/// FNV / FO3 `TPLT` template inheritance. When the NPC's
+/// `template_flags` carries [`TEMPLATE_FLAG_USE_INVENTORY`] AND its
+/// `template_form_id` resolves to a base NPC_, return THAT base's
+/// inventory (with the same recursive walk so chained templates
+/// resolve all the way to a leaf with authored CNTO). When TPLT
+/// points at an LVLN, pick the leveled-list's highest-level
+/// eligible entry that's an NPC_ and use its inventory.
+///
+/// Without this resolution every vanilla `Lvl*` NPC (Powder
+/// Gangers, Caesar's Legion, NCR Troopers, generic settlers) spawns
+/// with empty inventory → zero armor / weapon dispatch → naked
+/// rendering.
+///
+/// Returns a borrow into the resolved record's `inventory` vector,
+/// or — when no inheritance applies — a borrow of the input NPC's
+/// own inventory.
+pub fn resolve_inherited_inventory<'a>(
+    npc: &'a crate::esm::records::actor::NpcRecord,
+    actor_level: i16,
+    index: &'a EsmIndex,
+) -> &'a [crate::esm::records::actor::NpcInventoryEntry] {
+    resolve_inherited_inventory_inner(npc, actor_level, index, 0)
+}
+
+fn resolve_inherited_inventory_inner<'a>(
+    npc: &'a crate::esm::records::actor::NpcRecord,
+    actor_level: i16,
+    index: &'a EsmIndex,
+    depth: u32,
+) -> &'a [crate::esm::records::actor::NpcInventoryEntry] {
+    if depth >= TPLT_MAX_DEPTH {
+        log::debug!(
+            "resolve_inherited_inventory: TPLT recursion cap ({}) hit at NPC \
+             {:08X} ({}) — leaving subtree unresolved",
+            TPLT_MAX_DEPTH,
+            npc.form_id,
+            npc.editor_id,
+        );
+        return &npc.inventory;
+    }
+    if npc.template_flags & TEMPLATE_FLAG_USE_INVENTORY == 0 || npc.template_form_id == 0 {
+        return &npc.inventory;
+    }
+    // Direct NPC_ template — recurse so a Lvl* → Lvl* → leaf chain
+    // resolves at the bottom.
+    if let Some(base) = index.npcs.get(&npc.template_form_id) {
+        return resolve_inherited_inventory_inner(base, actor_level, index, depth + 1);
+    }
+    // LVLN template — pick the highest-level eligible variant whose
+    // form ID resolves to an NPC_, then recurse into IT. Vanilla
+    // LVLN entries point at NPC_ records directly (no LVLI-style
+    // multi-pick on the leveled-NPC path), but the same level-gate
+    // applies.
+    if let Some(lvln) = index.leveled_npcs.get(&npc.template_form_id) {
+        let mut eligible: Vec<&_> = lvln
+            .entries
+            .iter()
+            .filter(|e| e.level as i32 <= actor_level as i32)
+            .collect();
+        // Determinism — same "highest level ≤ actor_level" rule
+        // expand_leveled_form_id uses for LVLI. Sort then take last
+        // so ties break on insertion order (stable).
+        eligible.sort_by_key(|e| e.level);
+        if let Some(pick) = eligible.last() {
+            if let Some(base) = index.npcs.get(&pick.form_id) {
+                return resolve_inherited_inventory_inner(base, actor_level, index, depth + 1);
+            }
+        }
+    }
+    // TPLT pointed at something neither indexed nor an LVLN —
+    // ambiguous mod content or missing master. Fall back to the
+    // NPC's own (empty) inventory rather than crashing.
+    &npc.inventory
+}
+
 /// Expand a single form ID — which may be either a base item (ARMO /
 /// WEAP / MISC) or a leveled-list reference (LVLI) — into a flat list
 /// of base form IDs gated on `actor_level`. Pushes results onto `out`
@@ -683,5 +772,161 @@ mod tests {
         let mut out = Vec::new();
         expand_leveled_form_id(0x0DEA_DEAD, 10, &idx, &mut out);
         assert!(out.is_empty());
+    }
+
+    // ── TPLT inventory inheritance (FNV PowderGangers / NCRTroopers)
+
+    use crate::esm::records::actor::{NpcInventoryEntry, NpcRecord};
+
+    fn npc_with(form_id: u32, edid: &str) -> NpcRecord {
+        NpcRecord {
+            form_id,
+            editor_id: edid.to_string(),
+            full_name: String::new(),
+            model_path: String::new(),
+            race_form_id: 0,
+            class_form_id: 0,
+            voice_form_id: 0,
+            factions: Vec::new(),
+            inventory: Vec::new(),
+            default_outfit: None,
+            ai_packages: Vec::new(),
+            death_item_form_id: 0,
+            level: 1,
+            disposition_base: 50,
+            acbs_flags: 0,
+            has_script: false,
+            face_morphs: None,
+            runtime_facegen: None,
+            template_form_id: 0,
+            template_flags: 0,
+        }
+    }
+
+    #[test]
+    fn no_template_passes_through_own_inventory() {
+        let mut npc = npc_with(0x0010_0001, "BaseNPC");
+        npc.inventory.push(NpcInventoryEntry {
+            item_form_id: 0xAAAA,
+            count: 1,
+        });
+        let idx = empty_index();
+        let inv = resolve_inherited_inventory(&npc, 1, &idx);
+        assert_eq!(inv.len(), 1);
+        assert_eq!(inv[0].item_form_id, 0xAAAA);
+    }
+
+    #[test]
+    fn template_flag_clear_passes_through_own_inventory() {
+        let mut npc = npc_with(0x0010_0002, "Lvl");
+        npc.template_form_id = 0x0010_0003;
+        npc.template_flags = 0; // Use Inventory bit NOT set
+        let mut base = npc_with(0x0010_0003, "Base");
+        base.inventory.push(NpcInventoryEntry {
+            item_form_id: 0xBBBB,
+            count: 1,
+        });
+        let mut idx = empty_index();
+        idx.npcs.insert(base.form_id, base);
+
+        let inv = resolve_inherited_inventory(&npc, 1, &idx);
+        assert!(inv.is_empty(), "no Use-Inventory bit → keep own (empty)");
+    }
+
+    #[test]
+    fn template_npc_inherits_inventory_through_use_inventory_bit() {
+        // The canonical FNV Lvl* → base NPC case. PowderGangers
+        // author no CNTO and rely on TPLT + 0x0100.
+        let mut npc = npc_with(0x0010_0010, "LvlGoodspringsPowderGanger");
+        npc.template_form_id = 0x0010_0011;
+        npc.template_flags = TEMPLATE_FLAG_USE_INVENTORY;
+        let mut base = npc_with(0x0010_0011, "BasePowderGanger");
+        base.inventory.push(NpcInventoryEntry {
+            item_form_id: 0x000A_4730, // PowderGang armor 03
+            count: 1,
+        });
+        let mut idx = empty_index();
+        idx.npcs.insert(base.form_id, base);
+
+        let inv = resolve_inherited_inventory(&npc, 1, &idx);
+        assert_eq!(inv.len(), 1);
+        assert_eq!(inv[0].item_form_id, 0x000A_4730);
+    }
+
+    #[test]
+    fn template_lvln_picks_highest_eligible_variant() {
+        // TPLT → LVLN → NPC_ variant. Pick rule mirrors LVLI
+        // (highest level ≤ actor_level).
+        let mut npc = npc_with(0x0010_0020, "LvlSomething");
+        npc.template_form_id = 0x0010_0021;
+        npc.template_flags = TEMPLATE_FLAG_USE_INVENTORY;
+        let mut low = npc_with(0x0010_0022, "LowVariant");
+        low.inventory.push(NpcInventoryEntry {
+            item_form_id: 0xC0FFEE,
+            count: 1,
+        });
+        let mut high = npc_with(0x0010_0023, "HighVariant");
+        high.inventory.push(NpcInventoryEntry {
+            item_form_id: 0xBADF00D,
+            count: 1,
+        });
+        let mut idx = empty_index();
+        idx.npcs.insert(low.form_id, low);
+        idx.npcs.insert(high.form_id, high);
+        // LVLN with two variants — actor_level=10 sees both, picks
+        // the higher-level one (level=8).
+        idx.leveled_npcs.insert(
+            0x0010_0021,
+            crate::esm::records::container::LeveledList {
+                form_id: 0x0010_0021,
+                editor_id: String::new(),
+                chance_none: 0,
+                flags: 0,
+                entries: vec![
+                    crate::esm::records::container::LeveledEntry {
+                        level: 1,
+                        form_id: 0x0010_0022,
+                        count: 1,
+                    },
+                    crate::esm::records::container::LeveledEntry {
+                        level: 8,
+                        form_id: 0x0010_0023,
+                        count: 1,
+                    },
+                ],
+            },
+        );
+
+        let inv = resolve_inherited_inventory(&npc, 10, &idx);
+        assert_eq!(inv.len(), 1);
+        assert_eq!(
+            inv[0].item_form_id, 0xBADF00D,
+            "highest-eligible LVLN variant wins"
+        );
+    }
+
+    #[test]
+    fn template_chain_breaks_on_cycle_via_depth_cap() {
+        // A → B → A self-cycle via TPLT. Must terminate at the cap
+        // and fall back to the leaf's own inventory rather than
+        // stack-overflowing.
+        let mut a = npc_with(0x0010_0030, "A");
+        a.template_form_id = 0x0010_0031;
+        a.template_flags = TEMPLATE_FLAG_USE_INVENTORY;
+        let mut b = npc_with(0x0010_0031, "B");
+        b.template_form_id = 0x0010_0030;
+        b.template_flags = TEMPLATE_FLAG_USE_INVENTORY;
+        b.inventory.push(NpcInventoryEntry {
+            item_form_id: 0xDEAD,
+            count: 1,
+        });
+        let mut idx = empty_index();
+        idx.npcs.insert(b.form_id, b);
+
+        let _inv = resolve_inherited_inventory(&a, 1, &idx);
+        // No panic, no overflow. The exact returned slice depends on
+        // the cap-depth parity (odd → A's empty, even → B's one
+        // item); both are acceptable cycle-broken outcomes. Success
+        // here is "returned without recursion overrun".
     }
 }

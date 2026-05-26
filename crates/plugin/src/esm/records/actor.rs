@@ -224,6 +224,29 @@ pub struct NpcRecord {
     /// arrays against the race's `.egm` sidecar to deform the base
     /// head mesh per NPC.
     pub runtime_facegen: Option<NpcFaceGenRecipe>,
+    /// FNV / FO3 `TPLT` template form ID — points at the NPC_ (or
+    /// LVLN) this record inherits per-field data from. Vanilla
+    /// `Lvl*` template NPCs (LvlGoodspringsPowderGanger,
+    /// LvlNCRTrooper, etc.) author themselves as thin shells with
+    /// every field-bearing subrecord missing and rely on TPLT +
+    /// `template_flags` to pull race / class / inventory / AI / etc.
+    /// from a base record. Sentinel `0` = no template (the common
+    /// case for unique named NPCs).
+    pub template_form_id: u32,
+    /// FNV / FO3 template-inheritance bitmask from `ACBS` (u16 at
+    /// offset 22). Each bit gates whether one category of fields is
+    /// pulled from [`template_form_id`] at runtime:
+    ///
+    ///   * `0x0100` — **Use Inventory** (CNTO list). Empty on the
+    ///     template host; pulled from `TPLT` at spawn time. Without
+    ///     this resolution every Lvl* NPC spawns with no armor /
+    ///     weapon / aid items.
+    ///   * `0x0001` Use Traits, `0x0002` Use Stats, `0x0004` Factions,
+    ///     `0x0008` Actor Effects, `0x0010` AI Data, `0x0020` AI
+    ///     Packages, `0x0040` Model/Animation, `0x0080` Base Data,
+    ///     `0x0200` Script, `0x0400` Def Pack List — parsed and
+    ///     stored for the dispatcher; inventory is the first consumer.
+    pub template_flags: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -413,6 +436,8 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
         has_script: common.has_script,
         face_morphs: None,
         runtime_facegen: None,
+        template_form_id: 0,
+        template_flags: 0,
     };
     // FMRI and FMRS are collected separately and zipped after the walk
     // since they appear alternating on the wire and we don't want to
@@ -466,6 +491,13 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             b"INAM" if sub.data.len() >= 4 => {
                 record.death_item_form_id = SubReader::new(&sub.data).u32_or_default();
             }
+            // TPLT — FNV / FO3 template-inheritance pointer. Vanilla
+            // Lvl* NPCs author this and rely on `template_flags` (in
+            // ACBS) to pull per-field categories from the referenced
+            // base. See `NpcRecord::template_form_id` for the bitmap.
+            b"TPLT" if sub.data.len() >= 4 => {
+                record.template_form_id = SubReader::new(&sub.data).u32_or_default();
+            }
             // ACBS (FNV NPC_): flags(u32), fatigue(u16), barter(u16), level(i16),
             // calc_min(u16), calc_max(u16), speed_mult(u16), karma(f32),
             // disposition_base(i16), template_flags(u16)
@@ -481,6 +513,14 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
                 r.skip_or_eof(10); // calc_min/calc_max/speed_mult (u16 × 3) + karma (f32)
                 if sub.data.len() >= 22 {
                     record.disposition_base = r.i16_or_default();
+                }
+                // template_flags — u16 at offset 22. Drives the
+                // TPLT-inheritance dispatcher at spawn time (see
+                // `NpcRecord::template_flags`). Without this every
+                // FNV `Lvl*` NPC spawns with empty CNTO and no armor
+                // dispatch fires.
+                if sub.data.len() >= 24 {
+                    record.template_flags = r.u16_or_default();
                 }
             }
             // ── M41.0 Phase 1a — Pre-FO4 FaceGen recipe ────────────────
