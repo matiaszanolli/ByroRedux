@@ -32,8 +32,12 @@ pub struct WatrRecord {
     pub form_id: u32,
     pub editor_id: String,
     pub full_name: String,
-    /// Diffuse / noise texture path (`TNAM`). Most FNV water types ship
-    /// a `textures\water\*.dds` here.
+    /// Diffuse / noise texture path. FO3 / FNV ship this in `NNAM`
+    /// (e.g. `Data\Textures\Water\WastelandWaterPotomac.dds` on every
+    /// vanilla FO3 WATR); Skyrim+ ships it in `TNAM`. Both arms write
+    /// here; per Bethesda, NNAM and TNAM are game-mutually-exclusive
+    /// in vanilla content, so last-arm-wins is safe without a
+    /// `GameKind` gate (#1271).
     pub texture_path: String,
     /// Decoded water shader / shading params. Fields are at their
     /// per-spec defaults when the source record omits a sub-record or
@@ -280,6 +284,7 @@ pub fn parse_watr(form_id: u32, subs: &[SubRecord]) -> WatrRecord {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"TNAM" => out.texture_path = read_zstring(&sub.data),
+            b"NNAM" => out.texture_path = read_zstring(&sub.data),
             b"DATA" => {
                 // Oblivion / FO3 / FNV path. The two byte layouts
                 // are compatible on the 60-byte prefix we consume.
@@ -421,6 +426,27 @@ mod tests {
         assert!((w.params.fog_far - 500.0).abs() < 1e-3);
         assert_eq!(w.raw_dnam.len(), 52);
         assert!(w.raw_data.is_empty());
+    }
+
+    #[test]
+    fn parse_watr_picks_nnam_fo3_fnv_path() {
+        // Regression for #1271 — every vanilla FO3 WATR (and every
+        // vanilla FNV WATR) ships its noise/diffuse texture path in
+        // `NNAM`, not `TNAM`. Payload mirrors `PotomacNRShallow` from
+        // Fallout3.esm.
+        let subs = vec![
+            sub(b"EDID", b"PotomacNRShallow\0"),
+            sub(
+                b"NNAM",
+                b"Data\\Textures\\Water\\WastelandWaterPotomac.dds\0",
+            ),
+        ];
+        let w = parse_watr(0x100A8C, &subs);
+        assert_eq!(w.editor_id, "PotomacNRShallow");
+        assert_eq!(
+            w.texture_path,
+            "Data\\Textures\\Water\\WastelandWaterPotomac.dds"
+        );
     }
 
     #[test]
