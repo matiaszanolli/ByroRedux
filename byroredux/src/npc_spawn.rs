@@ -851,6 +851,98 @@ pub fn spawn_npc_entity(
                 }
             }
         }
+        // Eye left + right meshes. FNV's RACE record pairs INDX 7 /
+        // INDX 8 with the eye NIF paths (e.g. `eyelefthuman.nif` /
+        // `eyerighthuman.nif`); the spawner attaches them parented
+        // under `placement_root` like hair / eyebrows. Per-NPC eye
+        // color comes from `EYES.icon_path` (the `ENAM` form ID on
+        // the FaceGen recipe) — applied via a pre-spawn hook that
+        // overrides the eye mesh's diffuse texture_path. The eye
+        // NIF itself binds a default (race-baseline blue) texture
+        // that we replace.
+        if let Some(race) = race {
+            let eye_texture_override: Option<String> = recipe
+                .eyes_form_id
+                .and_then(|eye_form| index.eyes.get(&eye_form))
+                .filter(|eyes| !eyes.icon_path.is_empty())
+                .map(|eyes| eyes.icon_path.clone());
+            // Gender → MNAM/FNAM section tag. Vanilla FNV authors the
+            // shared head + first INDX 7 / 8 pair before the gender
+            // split, then male-specific override variants under MNAM
+            // and female under FNAM. Match the NPC's gender so we
+            // spawn one pair per side, not all gender variants stacked.
+            let want_gender_tag: u8 = match gender {
+                Gender::Male => 0,
+                Gender::Female => 1,
+            };
+            for &(part_idx, ref eye_path, sect) in &race.head_parts {
+                if part_idx != byroredux_plugin::esm::records::actor::head_part::LEFT_EYE
+                    && part_idx != byroredux_plugin::esm::records::actor::head_part::RIGHT_EYE
+                {
+                    continue;
+                }
+                if let Some(tag) = sect {
+                    if tag != want_gender_tag {
+                        continue;
+                    }
+                }
+                if eye_path.is_empty() {
+                    continue;
+                }
+                let eye_data = match tex_provider.extract_mesh(eye_path) {
+                    Some(d) => d,
+                    None => {
+                        log::debug!(
+                            "NPC {:08X} ({}): eye mesh '{}' not in archives — skipping",
+                            npc.form_id,
+                            npc.editor_id,
+                            eye_path,
+                        );
+                        continue;
+                    }
+                };
+                // Pre-spawn hook — swap the eye mesh's diffuse
+                // `texture_path` to the per-NPC EYES.icon_path before
+                // entity construction. The eye NIF has a single
+                // `NiTriShape` for each eyeball, so a flat sweep is
+                // safe — every loaded mesh in the scene is "the eye"
+                // by construction. Pre-intern the texture path
+                // outside the closure so the hook holds a FixedString
+                // (no `world` borrow inside the closure → no
+                // borrow-checker fight against the `world` mutable
+                // borrow `load_nif_bytes_with_skeleton` needs).
+                let interned_eye_tex: Option<byroredux_core::string::FixedString> =
+                    eye_texture_override.as_ref().map(|path| {
+                        let mut pool = world.resource_mut::<StringPool>();
+                        pool.intern(path)
+                    });
+                let mut hook = |scene: &mut byroredux_nif::import::ImportedScene| {
+                    let Some(interned) = interned_eye_tex else {
+                        return;
+                    };
+                    for mesh in scene.meshes.iter_mut() {
+                        mesh.texture_path = Some(interned);
+                    }
+                };
+                let has_hook = interned_eye_tex.is_some();
+                let pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)> =
+                    if has_hook { Some(&mut hook) } else { None };
+                let (_count, eye_root, _map) = load_nif_bytes_with_skeleton(
+                    world,
+                    ctx,
+                    &eye_data,
+                    eye_path,
+                    tex_provider,
+                    mat_provider.as_deref_mut(),
+                    Some(&skel_map),
+                    pre_spawn,
+                );
+                if let Some(er) = eye_root {
+                    world.insert(er, Parent(placement_root));
+                    add_child(world, placement_root, er);
+                }
+            }
+        }
     }
 
     // 4.5. Equipment (M41 Phase 2 / #896 — Phase A.1).

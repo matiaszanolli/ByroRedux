@@ -270,6 +270,30 @@ pub struct RaceRecord {
     pub skill_bonuses: Vec<(u8, i8)>,
     /// Body part model paths (head, body, hand, foot).
     pub body_models: Vec<String>,
+    /// FNV / FO3 `INDX` + `MODL` head-part pairs. Each entry is
+    /// `(head_part_index, mesh_path, gender_section)` where
+    /// `head_part_index` (per UESP RACE_HeadPart):
+    ///
+    ///   * 0 — Head
+    ///   * 1 — Ear (male) — 2 — Ear (female)
+    ///   * 3 — Mouth — 4 — Teeth (lower) — 5 — Teeth (upper) — 6 — Tongue
+    ///   * 7 — Left Eye — 8 — Right Eye
+    ///
+    /// `gender_section` tracks which RACE-record section the part
+    /// was authored in:
+    ///
+    ///   * `None`  — shared across both genders (entries before any
+    ///     MNAM/FNAM marker — every "Head" entry lands here).
+    ///   * `Some(0)` — male-only (after an `MNAM` section marker).
+    ///   * `Some(1)` — female-only (after `FNAM`).
+    ///
+    /// Without this typed pairing the spawner can't tell which
+    /// `body_models` entry is which body part — or which gender it
+    /// applies to. Pre-fix every NPC rendered with just the head
+    /// NIF — no eyes, mouth, teeth, tongue, ears. Empty on
+    /// Oblivion / Skyrim+ (different RACE layouts; this list only
+    /// populates on FO3 / FNV).
+    pub head_parts: Vec<(u32, String, Option<u8>)>,
     /// Default body height per gender, from DATA — `(male, female)`.
     /// Vanilla Oblivion / FO3 / FNV authors values in ~0.9..1.15.
     /// Default `(1.0, 1.0)` when DATA is shorter than 36 bytes
@@ -308,6 +332,23 @@ pub struct RaceRecord {
     /// Drives the Radiant-AI faction-mood calculation for Oblivion
     /// NPCs interacting across racial lines.
     pub race_reactions: Vec<(u32, i32)>,
+}
+
+/// FNV / FO3 `INDX` head-part identifiers. Values verified by dumping
+/// vanilla FNV.esm RACE records (e.g. HispanicOldAged: Head 0, Mouth 2,
+/// Teeth Lower 3, Teeth Upper 4, Tongue 5, Left Eye 6, Right Eye 7).
+/// UESP's `RACE_HeadPart` table claims 7/8 for eyes — vanilla data
+/// disagrees. Used by the NPC spawner to pick the eye mesh paths
+/// out of [`RaceRecord::head_parts`] by semantic role instead of
+/// list-position guessing.
+pub mod head_part {
+    pub const HEAD: u32 = 0;
+    pub const MOUTH: u32 = 2;
+    pub const TEETH_LOWER: u32 = 3;
+    pub const TEETH_UPPER: u32 = 4;
+    pub const TONGUE: u32 = 5;
+    pub const LEFT_EYE: u32 = 6;
+    pub const RIGHT_EYE: u32 = 7;
 }
 
 /// Per-gender attribute block for `RaceRecord.base_attributes`
@@ -683,6 +724,7 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
         description: String::new(),
         skill_bonuses: Vec::new(),
         body_models: Vec::new(),
+        head_parts: Vec::new(),
         base_height: (1.0, 1.0),
         base_weight: (1.0, 1.0),
         race_flags: 0,
@@ -695,6 +737,21 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
     };
 
     let is_oblivion = matches!(game, GameKind::Oblivion);
+
+    // FNV / FO3 head-part pairing — each MODL is preceded by an INDX
+    // that names which body part the model is (0 = Head, 7 = Left Eye,
+    // 8 = Right Eye, …). Track the most-recent INDX so we can attach
+    // an index to the next MODL we see. Reset on consumption so a
+    // stray MODL with no INDX prefix isn't mis-labelled. See
+    // `RaceRecord::head_parts`.
+    //
+    // Vanilla FO3 / FNV RACE records split per-gender body parts via
+    // `MNAM` (Male marker) and `FNAM` (Female marker) sub-records,
+    // after the shared INDX/MODL block. Track which section we're in
+    // so the spawner can pick gender-appropriate models without
+    // double-rendering male+female eyes on the same NPC.
+    let mut pending_indx: Option<u32> = None;
+    let mut gender_section: Option<u8> = None;
 
     for sub in subs {
         match &sub.sub_type {
@@ -734,7 +791,28 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
                 record.race_flags = r.u32_or_default();
             }
             // MODL appears multiple times in RACE for body parts. Collect them all.
-            b"MODL" => record.body_models.push(read_zstring(&sub.data)),
+            //
+            // FNV / FO3: each MODL is preceded by an INDX naming the
+            // body part. Pair them so the spawner can pick out the
+            // eyes (INDX 7 / 8) without guessing by list position.
+            // `gender_section` tracks the MNAM / FNAM split so the
+            // spawner can pick gender-appropriate variants.
+            b"INDX" if sub.data.len() >= 4 => {
+                pending_indx = Some(SubReader::new(&sub.data).u32_or_default());
+            }
+            b"MNAM" => {
+                gender_section = Some(0); // Male
+            }
+            b"FNAM" => {
+                gender_section = Some(1); // Female
+            }
+            b"MODL" => {
+                let path = read_zstring(&sub.data);
+                if let Some(idx) = pending_indx.take() {
+                    record.head_parts.push((idx, path.clone(), gender_section));
+                }
+                record.body_models.push(path);
+            }
             // ── Oblivion-only sub-records (#967 / OBL-D3-NEW-03) ───────
             // Plumbed under `is_oblivion` because TES5+ reuses these
             // FourCCs with different payloads (e.g. TES5 VNAM is a
