@@ -746,6 +746,95 @@ pub fn spawn_npc_entity(
     // shape — every NPC of the same race renders identical until
     // Phase 3 lands.
 
+    // 4.4. Hair + eyebrow head-parts. FNV / FO3 NPC_ records reference
+    //      these via the FaceGen recipe (HNAM = hair, PNAM = eyebrow
+    //      HDPT). Without them every NPC renders bald + browless on
+    //      top of the race base head — the canonical Prospector
+    //      Saloon screenshot from 2026-05-26. Pre-fix the form IDs
+    //      were parsed onto `NpcFaceGenRecipe` but never consumed.
+    //
+    //      Both pieces spawn as standalone skinned meshes parented
+    //      under `placement_root` and skinned against the same
+    //      `skel_map` as the body — same as armor. The head NIF
+    //      already includes the skull / skin / eyes geometry; hair
+    //      and eyebrows are accessory meshes that slot on top.
+    if let (Some(skel), Some(recipe)) = (skel_root, npc.runtime_facegen.as_ref()) {
+        let _ = skel; // skinning routes through `skel_map` below; only the presence gate matters.
+        // Hair mesh — `HAIR.model_path` is authored relative to the
+        // meshes root (same as ARMO MODL), so `extract_mesh`'s
+        // `normalize_mesh_path` handles the prefix. `None` when the
+        // NPC's recipe didn't author HNAM (rare on humanoid actors;
+        // possible on creatures using the recipe shell).
+        if let Some(hair_form) = recipe.hair_form_id {
+            if let Some(hair) = index.hair.get(&hair_form) {
+                if !hair.model_path.is_empty() {
+                    match tex_provider.extract_mesh(&hair.model_path) {
+                        Some(hair_data) => {
+                            let (_count, hair_root, _map) = load_nif_bytes_with_skeleton(
+                                world,
+                                ctx,
+                                &hair_data,
+                                &hair.model_path,
+                                tex_provider,
+                                mat_provider.as_deref_mut(),
+                                Some(&skel_map),
+                                None,
+                            );
+                            if let Some(hr) = hair_root {
+                                world.insert(hr, Parent(placement_root));
+                                add_child(world, placement_root, hr);
+                            }
+                        }
+                        None => {
+                            log::debug!(
+                                "NPC {:08X} ({}): hair '{}' not in archives — skipping",
+                                npc.form_id,
+                                npc.editor_id,
+                                hair.model_path,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Eyebrow HDPT — same pattern. FNV `PNAM` points at a HDPT
+        // record whose MODL is the eyebrow strip mesh. Missing on
+        // generic settler / raider NPCs that fall back to the race
+        // default; present on most named NPCs.
+        if let Some(eyebrow_form) = recipe.eyebrow_form_id {
+            if let Some(hdpt) = index.head_parts.get(&eyebrow_form) {
+                if !hdpt.model_path.is_empty() {
+                    match tex_provider.extract_mesh(&hdpt.model_path) {
+                        Some(brow_data) => {
+                            let (_count, brow_root, _map) = load_nif_bytes_with_skeleton(
+                                world,
+                                ctx,
+                                &brow_data,
+                                &hdpt.model_path,
+                                tex_provider,
+                                mat_provider.as_deref_mut(),
+                                Some(&skel_map),
+                                None,
+                            );
+                            if let Some(br) = brow_root {
+                                world.insert(br, Parent(placement_root));
+                                add_child(world, placement_root, br);
+                            }
+                        }
+                        None => {
+                            log::debug!(
+                                "NPC {:08X} ({}): eyebrow HDPT '{}' not in archives — skipping",
+                                npc.form_id,
+                                npc.editor_id,
+                                hdpt.model_path,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 4.5. Equipment (M41 Phase 2 / #896 — Phase A.1).
     //
     // Walk `npc.inventory`, populate the ECS `Inventory` component on
