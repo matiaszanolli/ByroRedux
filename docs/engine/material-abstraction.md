@@ -119,31 +119,40 @@ parse-time classification, not roughness alone.)
 
 1. **Ground-truth audit** *(in progress)* — `material_dump` example tabulates `material_kind / metO / rghO / glossiness / emisM / alpha / decal / 2side` per mesh. Run on equivalent surfaces (glass / wood / metal / white-wall / emissive) across all 5 games **with the materials BA2 loaded** so BGSM values are visible. Builds the convention-mapping table.
 2. **Canonical PBR at parse** *(env-arm fix landed)* — `resolve_classifier_overrides` already collapses the `Option`s at material-insert time; the remaining correctness gap was the env-arm preemption (above), now fixed so the authored glossiness drives roughness. Pinned by `classify_pbr_neutral_envmap_default_uses_glossiness_gradient`. Metalness for legacy content stays keyword-only (no authored source — documented above).
-3. **Parse-time glass** *(keyword-list unified; Leak A divergence closed)* —
-   the classifier's glass arm and the render-gate predicate
-   `path_indicates_glass` now share ONE keyword list (`is_glass_keyword_path`:
-   glass/crystal/ice/gem/window/bottle/jar/vial). Pre-fix the classifier knew
-   only the first four, so glass *containers* (whiskey bottle, jar, vial,
-   window) matched the render gate but took the generic glossiness roughness
-   (≈ 0.4) and failed both the CPU `< 0.4` and shader `< 0.35` glass roughness
-   gates → "not glassy." Now a glass-keyword surface is smooth (0.1), passes
-   both gates, and renders through IOR refraction with **no render-heuristic or
-   shader change**. Pinned by
-   `glass_container_keywords_get_glass_roughness_and_match_render_gate`.
-   **Still pending**: (a) the FO4 BGSM glass material flag (a glass bottle
-   authored via BGSM with no glass keyword in the texture path won't classify —
-   needs the BGSM transparency/glass signal plumbed); (b) glass meshes whose
-   *texture* path lacks a keyword even on legacy (e.g. FNV `DrinkingGlass`
-   textured `kitchenutensils01.dds`) — needs the mesh-name or NiAlphaProperty
-   transparency signal as a tiebreaker; (c) the eventual move of the render
-   heuristic itself into spawn-time material-insert (it depends on the
-   AlphaBlend marker + RenderLayer, which are entity-level, so "parse time" for
-   glass is really material-insert time).
-   **Side effect accepted**: opaque (non-alpha) surfaces whose texture path
-   contains a glass keyword (e.g. a wooden `windowframe`) now read roughness 0.1
-   (shiny) rather than their glossiness roughness — but they are NOT classified
-   GLASS (no alpha blend), so this is a minor over-shine, and the render gate
-   already treated the same keyword set as glass-eligible.
+3. **Parse-time glass** *(alpha-aware classification at material-insert; legacy
+   path DONE)* — glass is now decided **once, alpha-aware, at spawn**
+   (`helpers::classify_glass_into_material`, called from both `cell_loader::spawn`
+   and `scene::nif_loader` right after `resolve_classifier_overrides`). Rule:
+   `material_kind < 100 && has_alpha && !is_decal && metalness < 0.3 &&
+   (glass_keyword(texture) || glass_keyword(name))` → set
+   `material_kind = MATERIAL_KIND_GLASS` and force `roughness_override = 0.10`
+   (roughness is a *consequence* of glass, not a gate). The render code's
+   existing `material_kind >= 100` branch preserves it, so the surface clears
+   both the CPU `< 0.4` and shader `< 0.35` glass roughness gates and renders
+   through IOR refraction — **no render-heuristic or shader change**.
+
+   **Two-tier keyword contract** (the design subtlety the ground-truth forced):
+   - The alpha-UNAWARE roughness classifier (`classify_pbr_keyword`) keeps only
+     "glass *material*" tokens `glass/crystal/ice/gem` → unconditional smooth
+     0.1 (those textures ARE glass: `glasspitcher`, `brokenglasssheet`).
+   - The wide `is_glass_keyword_path` (+ `window/bottle/jar/vial`) is used ONLY
+     by the alpha-gated sites (spawn classifier + render gate). A container
+     token alone never earns smooth roughness in the alpha-unaware classifier
+     — this **reverts the step-3-initial over-shine** where an opaque
+     `windowframe` / `bottlecap` texture went shiny.
+   - The **mesh-name** source catches texture-less glass: FNV `ShotGlass` /
+     `DrinkingGlass` share the atlas `kitchenutensils01.dds` (no keyword) but
+     their NIF node name has "glass". The **alpha gate** keeps an opaque
+     `PawnShopWindow` (name "window", no blend) OUT (verified by ground-truth).
+
+   Pinned by `glass_material_tokens_are_unconditionally_smooth`,
+   `glass_container_tokens_match_render_gate_but_not_classifier_arm` (core),
+   and the `helpers::glass_classification_tests` suite (byroredux).
+   **Still pending**: (a) the FO4 BGSM glass material flag (a BGSM glass bottle
+   with no keyword in texture/name won't classify — needs the BGSM
+   transparency signal plumbed); (b) deleting the now-subsumed render-side
+   glass heuristic in `static_meshes.rs` (spawn is a superset of it; left as a
+   defensive fallback for now).
 4. **Emissive scale unification** — reconcile `emissive_mult` scale across games (Q2).
 5. **Ambient** *(optional, lower priority)* — consider a synthesized DALC-equivalent for non-Skyrim cells so the ambient model is uniform, or accept the data-driven difference.
 

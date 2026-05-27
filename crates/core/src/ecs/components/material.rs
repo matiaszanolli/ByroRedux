@@ -389,7 +389,18 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
             metalness: 0.95,
         };
     }
-    if is_glass_keyword_path(path) {
+    // Alpha-UNAWARE arm: only "glass *material*" tokens
+    // (glass/crystal/ice/gem) earn unconditional glass-smooth roughness —
+    // a texture named these IS glass regardless of blend state. The
+    // wider "glass *container/object*" tokens (window/bottle/jar/vial in
+    // `is_glass_keyword_path`) are deliberately NOT here: a "window"
+    // texture may be an opaque frame, a "bottle" an opaque cap. Those are
+    // resolved alpha-gated at material-insert time (`classify_glass_*` in
+    // the spawn path), where the blend flag disambiguates pane-from-frame
+    // and roughness is forced as a consequence of the GLASS classification
+    // — never an alpha-unaware roughness guess here (which over-shone
+    // opaque container surfaces, the reverted step-3 side effect).
+    if contains_any_ci(path, &["glass", "crystal", "ice", "gem"]) {
         return PbrMaterial {
             roughness: 0.1,
             metalness: 0.0,
@@ -724,22 +735,23 @@ mod tests {
         assert_eq!(p50.metalness, 0.0);
     }
 
-    /// Canonical-material-pass step 3 (2026-05-27): the classifier's
-    /// glass arm and the render-gate predicate `path_indicates_glass`
-    /// must share ONE keyword list. Pre-fix the classifier knew only
-    /// `glass/crystal/ice/gem`, so a glass *container* (bottle / jar /
-    /// vial / window) matched the render gate but took the generic
-    /// glossiness roughness (≈ 0.4) — failing both the CPU `< 0.4` and
-    /// shader `< 0.35` glass roughness gates. "Whiskey bottles don't
-    /// look glassy." Now a glass-keyword surface is smooth (0.1) and the
-    /// two predicates agree.
+    /// Canonical-material-pass step 3 (2026-05-27). Two-tier glass
+    /// keyword contract:
+    ///   * The alpha-UNAWARE classifier glass arm fires only for "glass
+    ///     *material*" tokens (glass/crystal/ice/gem) → unconditional
+    ///     smooth 0.1 (those textures ARE glass).
+    ///   * The wide `is_glass_keyword_path` (+ window/bottle/jar/vial)
+    ///     drives the alpha-GATED glass classification at material-insert
+    ///     and the render gate. A container token alone does NOT earn
+    ///     smooth roughness from the alpha-unaware classifier (that
+    ///     over-shone opaque window frames / bottle caps).
     #[test]
-    fn glass_container_keywords_get_glass_roughness_and_match_render_gate() {
+    fn glass_material_tokens_are_unconditionally_smooth() {
         for path in [
-            "textures/clutter/liquorbottles/whiskeybottle01.dds",
-            "textures/clutter/cafeteria/winejar01.dds",
-            "textures/dungeons/vials/healthvial01.dds",
-            "textures/architecture/whiterun/whiterunwindow01.dds",
+            "textures/clutter/cafeteria/glasspitcher01.dds",
+            "textures/clutter/brokenglasssheet01.dds",
+            "textures/sky/ice/snowice01.dds",
+            "textures/clutter/gem/ruby01.dds",
         ] {
             let p = classify_pbr_keyword(PbrClassifierInputs {
                 texture_path: Some(path),
@@ -747,19 +759,49 @@ mod tests {
                 env_map_scale: 1.0,
                 has_normal_map: false,
             });
-            // Glass-smooth, well under the CPU (0.4) and shader (0.35) gates.
             assert!(
                 p.roughness <= 0.2,
-                "'{path}' should be glass-smooth, got roughness {}",
+                "'{path}' glass material should be smooth, got {}",
                 p.roughness,
             );
             assert_eq!(p.metalness, 0.0, "glass is dielectric");
-            // The render gate predicate must agree this is glass.
+        }
+    }
+
+    /// Container/object tokens (window/bottle/jar/vial) match the wide
+    /// render-gate predicate but do NOT short-circuit the alpha-unaware
+    /// classifier to 0.1 — their glass-ness is decided alpha-gated at
+    /// insert time. The two predicates intentionally differ in breadth;
+    /// they must NOT have re-diverged on the shared material tokens.
+    #[test]
+    fn glass_container_tokens_match_render_gate_but_not_classifier_arm() {
+        for path in [
+            "textures/clutter/liquorbottles/whiskeybottle01.dds",
+            "textures/architecture/whiterun/whiterunwindow01.dds",
+        ] {
+            // Wide render-gate predicate matches (alpha-gated downstream).
             assert!(
                 Material::path_indicates_glass(Some(path)),
-                "'{path}' classifier-glass but render gate disagrees — lists diverged",
+                "render gate should match container token '{path}'",
+            );
+            // …but the alpha-unaware classifier does not force 0.1; it
+            // takes the glossiness-derived roughness (well above 0.2).
+            let p = classify_pbr_keyword(PbrClassifierInputs {
+                texture_path: Some(path),
+                glossiness: 50.0,
+                env_map_scale: 1.0,
+                has_normal_map: false,
+            });
+            assert!(
+                p.roughness > 0.2,
+                "container token '{path}' must NOT be auto-smooth in the \
+                 alpha-unaware classifier (over-shine guard); got {}",
+                p.roughness,
             );
         }
+        // Material tokens stay shared between the two predicates.
+        assert!(Material::path_indicates_glass(Some("x/glass01.dds")));
+        assert!(is_glass_keyword_path("x/glass01.dds"));
     }
 
     #[test]
