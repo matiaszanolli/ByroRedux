@@ -597,6 +597,15 @@ fn bs_effect_shader_property_sets_material_kind_to_101() {
         "BSEffectShaderProperty implies alpha-blend"
     );
     assert_eq!(info.emissive_color, [1.0, 0.5, 0.1]);
+    // 2026-05-27 — effect-shader surfaces (light shafts, dust planes,
+    // glow rings) are non-occluding and must not write depth, else the
+    // FO4 god-ray cone's stacked additive BSTriShapes hard-edge against
+    // each other. No NiZBufferProperty in this scene, so the
+    // effect-shader default is the only thing setting z_write.
+    assert!(
+        !info.z_write,
+        "BSEffectShaderProperty must default z_write=false (transparent-pass glow)"
+    );
 }
 
 fn skin_tint_lighting_shader() -> BSLightingShaderProperty {

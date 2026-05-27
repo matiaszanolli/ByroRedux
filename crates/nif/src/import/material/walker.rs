@@ -438,6 +438,19 @@ pub(crate) fn extract_material_info_from_refs(
             // renderer in the dep graph; the existing test
             // `effect_shader_sets_material_kind_to_101` pins the value.
             info.material_kind = 101;
+            // Effect-shader surfaces are non-occluding glows / light
+            // shafts / dust planes — they belong in the transparent
+            // pass with depth-WRITE off (depth-test stays on so they
+            // sort against opaque geometry). Default `z_write = true`
+            // made FO4 god-ray cones (`meshes\effects\ambient\
+            // lightbeamthindusty*.nif`, a stack of 3 additive
+            // BSTriShapes) write depth and hard-edge against each
+            // other — visible banding within the shaft. These NIFs
+            // ship no `NiZBufferProperty`, so nothing else sets
+            // z_write. An explicit NiZBufferProperty in the property
+            // chain (processed later for the rare NiTriShape effect
+            // mesh) still overrides this default. 2026-05-27.
+            info.z_write = false;
             // Implicit alpha blend: BSEffectShaderProperty is the
             // Skyrim+ transparency source of truth. Bethesda effect
             // NIFs frequently omit NiAlphaProperty entirely because
