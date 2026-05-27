@@ -604,30 +604,43 @@ impl App {
         // signatures themselves would break ~30 unit-test call sites
         // in papyrus_demo/tests.rs that intentionally call without
         // dt; closures are cheaper.
-        scheduler.add_exclusive(Stage::Update, |world: &World, _dt: f32| {
+        // F7 (2026-05-27) — wrap each `&World`-only papyrus-demo
+        // system as a local `fn` item so it gets a unique
+        // `std::any::type_name`. The previous closures all shared the
+        // auto-generated name `byroredux::App::new::{{closure}}`,
+        // tripping the scheduler's `has_system(name)` duplicate-name
+        // probe and emitting 5+ "duplicate exclusive system" warnings
+        // per launch (cosmetic — the systems still all got added).
+        // Local fn items each have their own unique type and unique
+        // type-name path, so the duplicate check passes naturally.
+        fn rumble_on_activate_dispatch(world: &World, _dt: f32) {
             byroredux_scripting::papyrus_demo::rumble_on_activate_system(world)
-        });
+        }
+        fn quest_advance_on_activate_dispatch(world: &World, _dt: f32) {
+            byroredux_scripting::papyrus_demo::quest_advance::quest_advance_on_activate_system(world)
+        }
+        fn dlc2_ttr4a_on_init_dispatch(world: &World, _dt: f32) {
+            byroredux_scripting::papyrus_demo::dlc2_ttr4a::dlc2_ttr4a_on_init_system(world)
+        }
+        fn dlc2_ttr4a_on_update_dispatch(world: &World, _dt: f32) {
+            byroredux_scripting::papyrus_demo::dlc2_ttr4a::dlc2_ttr4a_on_update_system(world)
+        }
+        fn mg07_on_load_dispatch(world: &World, _dt: f32) {
+            byroredux_scripting::papyrus_demo::mg07_door::mg07_on_load_system(world)
+        }
+        fn mg07_on_activate_dispatch(world: &World, _dt: f32) {
+            byroredux_scripting::papyrus_demo::mg07_door::mg07_on_activate_system(world)
+        }
+        scheduler.add_exclusive(Stage::Update, rumble_on_activate_dispatch);
         scheduler.add_exclusive(
             Stage::Update,
             byroredux_scripting::papyrus_demo::rumble_tick_system,
         );
-        scheduler.add_exclusive(Stage::Update, |world: &World, _dt: f32| {
-            byroredux_scripting::papyrus_demo::quest_advance::quest_advance_on_activate_system(
-                world,
-            )
-        });
-        scheduler.add_exclusive(Stage::Update, |world: &World, _dt: f32| {
-            byroredux_scripting::papyrus_demo::dlc2_ttr4a::dlc2_ttr4a_on_init_system(world)
-        });
-        scheduler.add_exclusive(Stage::Update, |world: &World, _dt: f32| {
-            byroredux_scripting::papyrus_demo::dlc2_ttr4a::dlc2_ttr4a_on_update_system(world)
-        });
-        scheduler.add_exclusive(Stage::Update, |world: &World, _dt: f32| {
-            byroredux_scripting::papyrus_demo::mg07_door::mg07_on_load_system(world)
-        });
-        scheduler.add_exclusive(Stage::Update, |world: &World, _dt: f32| {
-            byroredux_scripting::papyrus_demo::mg07_door::mg07_on_activate_system(world)
-        });
+        scheduler.add_exclusive(Stage::Update, quest_advance_on_activate_dispatch);
+        scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_init_dispatch);
+        scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_update_dispatch);
+        scheduler.add_exclusive(Stage::Update, mg07_on_load_dispatch);
+        scheduler.add_exclusive(Stage::Update, mg07_on_activate_dispatch);
         scheduler.add_exclusive(
             Stage::Update,
             byroredux_scripting::papyrus_demo::mg07_door::mg07_tick_system,
