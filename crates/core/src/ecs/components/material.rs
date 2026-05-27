@@ -345,6 +345,32 @@ pub struct PbrClassifierInputs<'a> {
 ///
 /// Pure function — no `&self`, no allocations (matching uses
 /// `contains_any_ci`'s windowed byte comparison).
+/// The single authoritative glass texture-path keyword list, shared by
+/// the roughness classifier's glass arm ([`classify_pbr_keyword`]) and
+/// the render-gate predicate ([`Material::path_indicates_glass`]).
+///
+/// Before the canonical-material pass (2026-05-27) these two sites kept
+/// *divergent* lists — the classifier had only `glass/crystal/ice/gem`
+/// while the render gate had the fuller `…+window/bottle/jar/vial`
+/// (design-doc Leak A). The consequence: glass containers (whiskey
+/// bottles, drinking-glass jars, windows) matched the render gate but
+/// missed the classifier's glass arm, so they took the *generic*
+/// glossiness-derived roughness (≈ 0.40 for an FNV whiskey bottle)
+/// instead of glass-smooth 0.1 — and then failed both the CPU glass
+/// gate (`roughness < 0.4`) and the shader gate
+/// (`triangle.frag` `roughness < 0.35`). Net effect: "whiskey bottles
+/// don't look glassy." Routing both sites through one list makes a
+/// glass-keyword surface smooth (0.1) AND glass-classified, so it
+/// renders through the IOR refraction path — with no shader change.
+pub fn is_glass_keyword_path(path: &str) -> bool {
+    contains_any_ci(
+        path,
+        &[
+            "glass", "crystal", "ice", "gem", "window", "bottle", "jar", "vial",
+        ],
+    )
+}
+
 pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
     let path = inputs.texture_path.unwrap_or("");
 
@@ -363,7 +389,7 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
             metalness: 0.95,
         };
     }
-    if contains_any_ci(path, &["glass", "crystal", "ice", "gem"]) {
+    if is_glass_keyword_path(path) {
         return PbrMaterial {
             roughness: 0.1,
             metalness: 0.0,
@@ -462,13 +488,7 @@ impl Material {
     /// generic-path materials never trip the glass path. See
     /// Markarth probe 2026-05-13.
     pub fn path_indicates_glass(texture_path: Option<&str>) -> bool {
-        let path = texture_path.unwrap_or("");
-        contains_any_ci(
-            path,
-            &[
-                "glass", "crystal", "ice", "gem", "window", "bottle", "jar", "vial",
-            ],
-        )
+        is_glass_keyword_path(texture_path.unwrap_or(""))
     }
 
     /// Infer PBR properties from legacy material data + texture path.
@@ -670,15 +690,18 @@ mod tests {
     /// (label, gloss 10) instead of both collapsing to 0.8.
     #[test]
     fn classify_pbr_neutral_envmap_default_uses_glossiness_gradient() {
+        // Generic (non-keyword) texture path so the glossiness arm — not
+        // a keyword arm — decides roughness. (A glass-keyword path like
+        // `whiskeybottle01` would short-circuit to the glass arm's 0.1.)
         let p10 = classify_pbr_keyword(PbrClassifierInputs {
-            texture_path: Some("textures/clutter/liquorbottles/whiskeybottle01.dds"),
-            glossiness: 10.0, // matte label / trim
+            texture_path: Some("textures/clutter/misc/genericpanel01.dds"),
+            glossiness: 10.0, // matte surface
             env_map_scale: 1.0, // neutral FNV default — must NOT preempt
             has_normal_map: false,
         });
         let p50 = classify_pbr_keyword(PbrClassifierInputs {
-            texture_path: Some("textures/clutter/liquorbottles/whiskeybottle01.dds"),
-            glossiness: 50.0, // glass body — smoother
+            texture_path: Some("textures/clutter/misc/genericpanel01.dds"),
+            glossiness: 50.0, // smoother surface
             env_map_scale: 1.0,
             has_normal_map: false,
         });
@@ -699,6 +722,44 @@ mod tests {
         );
         assert_eq!(p10.metalness, 0.0);
         assert_eq!(p50.metalness, 0.0);
+    }
+
+    /// Canonical-material-pass step 3 (2026-05-27): the classifier's
+    /// glass arm and the render-gate predicate `path_indicates_glass`
+    /// must share ONE keyword list. Pre-fix the classifier knew only
+    /// `glass/crystal/ice/gem`, so a glass *container* (bottle / jar /
+    /// vial / window) matched the render gate but took the generic
+    /// glossiness roughness (≈ 0.4) — failing both the CPU `< 0.4` and
+    /// shader `< 0.35` glass roughness gates. "Whiskey bottles don't
+    /// look glassy." Now a glass-keyword surface is smooth (0.1) and the
+    /// two predicates agree.
+    #[test]
+    fn glass_container_keywords_get_glass_roughness_and_match_render_gate() {
+        for path in [
+            "textures/clutter/liquorbottles/whiskeybottle01.dds",
+            "textures/clutter/cafeteria/winejar01.dds",
+            "textures/dungeons/vials/healthvial01.dds",
+            "textures/architecture/whiterun/whiterunwindow01.dds",
+        ] {
+            let p = classify_pbr_keyword(PbrClassifierInputs {
+                texture_path: Some(path),
+                glossiness: 50.0,
+                env_map_scale: 1.0,
+                has_normal_map: false,
+            });
+            // Glass-smooth, well under the CPU (0.4) and shader (0.35) gates.
+            assert!(
+                p.roughness <= 0.2,
+                "'{path}' should be glass-smooth, got roughness {}",
+                p.roughness,
+            );
+            assert_eq!(p.metalness, 0.0, "glass is dielectric");
+            // The render gate predicate must agree this is glass.
+            assert!(
+                Material::path_indicates_glass(Some(path)),
+                "'{path}' classifier-glass but render gate disagrees — lists diverged",
+            );
+        }
     }
 
     #[test]
