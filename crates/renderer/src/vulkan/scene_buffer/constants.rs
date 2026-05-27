@@ -231,6 +231,27 @@ pub const MATERIAL_KIND_GLASS: u32 = 100;
 /// (SK-D3-02 follow-up).
 pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
 
+/// `NoLighting` (FO3/FNV `BSShaderNoLightingProperty`): fullbright /
+/// unlit surface — terminal screens, computer text, neon/sign faces,
+/// HUD/scope overlays, blood-splat decals. In the original engine the
+/// "no lighting" shader outputs the texture (× per-vertex color)
+/// **directly**: no scene point/spot/directional lights, no ambient,
+/// no GI bounce, no camera-distance term. The fragment shader branches
+/// on this value to emit `texColor.rgb * vertexColor` and return.
+///
+/// Distinct from [`MATERIAL_KIND_EFFECT_SHADER`]: that path forces
+/// additive transparency (z-write off) for glows/dust planes, whereas
+/// NoLighting **preserves the authored blend / depth state** — most
+/// NoLighting surfaces (terminal screens, signs) are opaque and must
+/// write depth. Pre-fix these surfaces went through the full lit path
+/// (`material_kind = 0`) and so picked up scene lighting plus a
+/// camera-distance-dependent GI term that faded at the rtLOD tier —
+/// the user-reported "self-illumination dims with distance" (2026-05-27).
+///
+/// Set by the NIF importer's `BSShaderNoLightingProperty` branch when
+/// the mesh isn't already an engine-synthesized kind.
+pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
+
 #[cfg(test)]
 mod tests {
     use super::*;

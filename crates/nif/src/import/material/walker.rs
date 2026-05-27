@@ -826,6 +826,28 @@ pub(crate) fn extract_material_info_from_refs(
             // mesh in vanilla content.
             info.texture_clamp_mode = shader.texture_clamp_mode as u8;
             info.env_map_scale = shader.shader.env_map_scale;
+            // FO3/FNV `BSShaderNoLightingProperty` is the original
+            // engine's fullbright / unlit shader — the texture (× vertex
+            // color) IS the final pixel: terminal screens, computer text,
+            // neon/sign faces, HUD/scope overlays, blood-splat decals. Tag
+            // it `MATERIAL_KIND_NO_LIGHTING` (102) so `triangle.frag`
+            // short-circuits the lit path and emits the texture directly —
+            // NO scene lighting, NO GI, NO camera-distance term. Pre-tag
+            // these went through the full lit pipeline (`material_kind = 0`)
+            // and dimmed with distance as their GI contribution faded at
+            // the rtLOD tier — the user-reported "self-illumination dims
+            // with distance" (2026-05-27).
+            //
+            // Inlined literal (nif is upstream of renderer in the dep
+            // graph, same as the effect-shader `= 101` above); pinned by
+            // `nolighting_sets_material_kind_to_102`. Guarded on the
+            // still-default kind so a classification already made this
+            // pass isn't demoted (PP / effect / NoLighting are mutually
+            // exclusive in vanilla, but the guard keeps last-writer-wins
+            // honest).
+            if info.material_kind == 0 {
+                info.material_kind = 102;
+            }
         }
 
         // #940 / NIF-D4-NEW-01 — `TileShaderProperty` /

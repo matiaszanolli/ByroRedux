@@ -1488,6 +1488,39 @@ void main() {
         return;
     }
 
+    // ── FO3/FNV BSShaderNoLightingProperty — fullbright / unlit ──────
+    //
+    // `MATERIAL_KIND_NO_LIGHTING` (102) is the original engine's "no
+    // lighting" shader: the texture (× per-vertex color) IS the final
+    // pixel. Terminal screens, computer text, neon/sign faces, HUD /
+    // scope overlays, blood-splat decals. Output is emitted directly with
+    // NO scene point/spot/directional light, NO ambient, NO GI bounce,
+    // and NO camera-distance term — so a self-illuminated surface holds
+    // constant brightness at any distance. Pre-fix these went through the
+    // full lit path (`material_kind == 0`) and picked up a
+    // camera-distance-dependent GI contribution that faded at the rtLOD
+    // tier — the user-reported "self-illumination dims with distance"
+    // (2026-05-27).
+    //
+    // Unlike the additive EFFECT_SHADER path above, this preserves the
+    // authored blend / depth state: the alpha-test discard already ran
+    // (~line 1100) and the opaque/alpha-blend pipeline is chosen per-draw
+    // from the `INSTANCE_FLAG_ALPHA_BLEND` bit, so opaque screens stay
+    // opaque (depth-write on) and alpha decals stay blended. `texColor.a`
+    // already has the material alpha baked in upstream. Vertex-color
+    // modulation matches the lit path's `texColor.rgb * fragColor`
+    // (skipped under the SOURCE_EMISSIVE vertex mode, which means the
+    // per-vertex value is itself the emit and shouldn't double-multiply).
+    const uint MATERIAL_KIND_NO_LIGHTING = 102u;
+    if (mat.materialKind == MATERIAL_KIND_NO_LIGHTING) {
+        bool vcEmissive = (mat.materialFlags & MAT_FLAG_VERTEX_COLOR_EMISSIVE) != 0u;
+        vec3 emit = vcEmissive ? texColor.rgb : texColor.rgb * fragColor;
+        outColor = vec4(emit, texColor.a);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(emit, 1.0);
+        return;
+    }
+
     // Base reflectance: dielectrics use 0.04, metals use albedo color.
     //
     // #695 / O4-03 — `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`

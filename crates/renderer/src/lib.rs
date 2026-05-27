@@ -12,4 +12,6 @@ pub use vulkan::context::{
     DrawCommand, FrameTimings, ScreenshotHandle, SkyDalcCube, SkyParams, VulkanContext,
 };
 pub use vulkan::material::{GpuMaterial, MaterialTable};
-pub use vulkan::scene_buffer::{GpuLight, MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_GLASS};
+pub use vulkan::scene_buffer::{
+    GpuLight, MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_GLASS, MATERIAL_KIND_NO_LIGHTING,
+};

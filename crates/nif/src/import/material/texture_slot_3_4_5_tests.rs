@@ -608,6 +608,81 @@ fn bs_effect_shader_property_sets_material_kind_to_101() {
     );
 }
 
+// ── BSShaderNoLightingProperty → MATERIAL_KIND_NO_LIGHTING (102) ─────
+//
+// FO3/FNV fullbright/unlit surfaces (terminal screens, computer text,
+// neon/sign faces, HUD/scope overlays, blood decals) must arrive at the
+// renderer with material_kind = 102 so triangle.frag emits the texture
+// directly with no scene lighting / GI / camera-distance term. Pre-fix
+// these went through the full lit path (material_kind = 0) and
+// self-illumination dimmed with distance as GI faded at the rtLOD tier.
+fn fo3_no_lighting(file_name: &str) -> crate::blocks::shader::BSShaderNoLightingProperty {
+    use crate::blocks::base::BSShaderPropertyData;
+    crate::blocks::shader::BSShaderNoLightingProperty {
+        net: empty_net(),
+        shader: BSShaderPropertyData {
+            shade_flags: 0,
+            shader_type: 0,
+            shader_flags_1: 0,
+            shader_flags_2: 0,
+            env_map_scale: 1.0,
+        },
+        texture_clamp_mode: 3,
+        file_name: file_name.to_string(),
+        falloff_start_angle: 1.0,
+        falloff_stop_angle: 1.0,
+        falloff_start_opacity: 1.0,
+        falloff_stop_opacity: 1.0,
+    }
+}
+
+#[test]
+fn nolighting_sets_material_kind_to_102() {
+    // Scene: [0] BSShaderNoLightingProperty (FO3/FNV terminal screen).
+    let blocks: Vec<Box<dyn NiObject>> =
+        vec![Box::new(fo3_no_lighting("textures\\terminals\\terminalscreen01.dds"))];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    // NoLighting binds via the FO3/FNV property LIST (not the Skyrim+
+    // shader_property_ref slot).
+    let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_eq!(
+        info.material_kind, 102,
+        "BSShaderNoLightingProperty must route through MATERIAL_KIND_NO_LIGHTING \
+         (102) so the fragment shader emits fullbright/unlit"
+    );
+    // Texture path still captured from the NoLighting file_name.
+    assert_path(&pool, info.texture_path, "textures\\terminals\\terminalscreen01.dds");
+}
+
+#[test]
+fn nolighting_does_not_demote_an_existing_effect_kind() {
+    // Guard the `material_kind == 0` gate: if a mesh somehow bound BOTH
+    // an effect shader (101) and a NoLighting block, the NoLighting tag
+    // must NOT stomp the engine-synthesized effect kind.
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(empty_effect_shader_with_base_color([1.0, 0.5, 0.1, 1.0])),
+        Box::new(fo3_no_lighting("textures\\fx\\glow.dds")),
+    ];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    // Effect via shader_property_ref (block 0), NoLighting via the
+    // property list (block 1).
+    let mut shape = make_tri_shape_with_props(vec![BlockRef(1)]);
+    shape.shader_property_ref = BlockRef(0);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
+    assert_eq!(
+        info.material_kind, 101,
+        "effect-shader kind must survive a co-bound NoLighting block"
+    );
+}
+
 fn skin_tint_lighting_shader() -> BSLightingShaderProperty {
     BSLightingShaderProperty {
         shader_type: 5, // SkinTint
