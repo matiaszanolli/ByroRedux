@@ -443,29 +443,31 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
         };
     }
 
-    // env_map_scale arm — fires ONLY when the artist cranked the cube-map
-    // intensity meaningfully ABOVE the neutral baseline. Empirical
-    // ground-truth (canonical-material pass, 2026-05-27 `material_dump`
-    // sweep over 9 FNV clutter/architecture meshes): `BSShaderPPLighting`
-    // authors `env_map_scale = 1.0` as the *neutral default* on nearly
-    // every surface — glass bottles, drinking glasses, sandbags, tin
-    // cans, labels all read exactly 1.0. The previous `> 0.3` gate
-    // therefore caught the default and clamped EVERY non-keyword surface
-    // to the 0.8 ceiling (`1 - 1.0*0.2 = 0.8`), discarding the real
-    // per-surface signal: glossiness (the authored Phong specular power,
-    // a 10/30/50/60 gradient on those same meshes). A glass bottle
-    // (gloss 50) and a matte label (gloss 10) both collapsed to roughness
-    // 0.8 — "everything is rough plastic," the root of FNV's degenerate
-    // look (whiskey bottles not glassy, walls flat).
+    // env_map_scale arm — the matte-biased default for non-keyword
+    // surfaces. `BSShaderPPLighting` authors `env_map_scale = 1.0` as the
+    // neutral default on nearly every FNV surface, so this arm fires for
+    // the vast majority of interior content and clamps it to the 0.8
+    // ceiling (`1 - 1.0*0.2`). That is INTENTIONAL: FNV's authored
+    // glossiness (a Phong specular power) sits at 60–90 on ordinary cloth
+    // / weathered metal / painted surfaces, and the linear glossiness arm
+    // below maps gloss 60 → roughness 0.30 — far too shiny. At ≤ 0.6
+    // roughness the RT reflection path engages, so a weathered Chairman
+    // suit (gloss 60) rendered as mirror **chrome** the moment this arm
+    // stopped catching the neutral default. Keeping the matte 0.8 default
+    // is the safe, shipped behaviour.
     //
-    // Gating at `> 1.0` lets the neutral baseline fall through to the
-    // authored-glossiness arm below (deriving roughness from real data
-    // per `feedback_no_guessing`), while genuinely env-mapped surfaces —
-    // the FNV/FO3 interior door panels / bulkhead trim the artist marked
-    // reflective at `env_map_scale ≈ 2.5` — still sharpen here. The 0.35
-    // floor keeps those dielectrics at polished-plastic, never mirror
-    // chrome (user-reported chrome on FNV/FO3 wall panels 2026-05-25).
-    if inputs.env_map_scale > 1.0 {
+    // A 2026-05-27 experiment raised the gate to `> 1.0` to "restore the
+    // glossiness gradient" — that regressed every env=1.0 surface to the
+    // shiny glossiness value (the "chrome thugs" at the Tops). REVERTED.
+    // Glass does NOT need that gradient: its smoothness is now forced at
+    // material-insert time by `classify_glass_into_material` (alpha-gated
+    // glass keyword → roughness 0.10), independent of this arm — so glass
+    // stays glassy while ordinary surfaces stay matte. Genuinely
+    // env-mapped surfaces the artist cranked above the neutral default
+    // (≈ 2.5 door panels / bulkhead trim) still sharpen on the curve; the
+    // 0.35 floor keeps them polished-plastic, never mirror chrome
+    // (user-reported chrome on FNV/FO3 wall panels 2026-05-25).
+    if inputs.env_map_scale > 0.3 {
         return PbrMaterial {
             roughness: (1.0 - inputs.env_map_scale * 0.2).clamp(0.35, 0.8),
             metalness: 0.0,
@@ -690,49 +692,36 @@ mod tests {
         assert_eq!(p.metalness, 0.0);
     }
 
-    /// Canonical-material-pass regression (2026-05-27). Ground-truth
-    /// `material_dump` over real FNV meshes showed `env_map_scale = 1.0`
-    /// is the neutral `BSShaderPPLighting` default on essentially every
-    /// surface — the old `> 0.3` env arm caught it and clamped ALL of
-    /// them to roughness 0.8, throwing away the authored glossiness
-    /// gradient. At the neutral baseline the classifier must instead
-    /// derive roughness from glossiness, so a smoother surface (glass
-    /// bottle, gloss 50) reads distinctly smoother than a matte one
-    /// (label, gloss 10) instead of both collapsing to 0.8.
+    /// Canonical-material-pass guard (2026-05-27, post-"chrome thugs"
+    /// revert). `env_map_scale = 1.0` is the neutral `BSShaderPPLighting`
+    /// default on nearly every FNV surface and MUST clamp to the matte
+    /// 0.8 ceiling — NOT fall through to the glossiness arm. A brief
+    /// experiment gated this at `> 1.0` to "restore the glossiness
+    /// gradient"; that mapped gloss-60 cloth to roughness 0.30, which
+    /// engages the RT reflection path (`< 0.6`) and rendered Chairman
+    /// suits as mirror chrome at the Tops. Glass smoothness does not
+    /// depend on this arm — it is forced at material-insert by the spawn
+    /// glass classifier — so the matte default is correct for non-glass.
     #[test]
-    fn classify_pbr_neutral_envmap_default_uses_glossiness_gradient() {
-        // Generic (non-keyword) texture path so the glossiness arm — not
-        // a keyword arm — decides roughness. (A glass-keyword path like
-        // `whiskeybottle01` would short-circuit to the glass arm's 0.1.)
-        let p10 = classify_pbr_keyword(PbrClassifierInputs {
-            texture_path: Some("textures/clutter/misc/genericpanel01.dds"),
-            glossiness: 10.0, // matte surface
-            env_map_scale: 1.0, // neutral FNV default — must NOT preempt
-            has_normal_map: false,
+    fn classify_pbr_neutral_envmap_default_clamps_matte_not_chrome() {
+        // Generic (non-keyword) surface at the neutral env default, with
+        // the high glossiness FNV authors on cloth / weathered metal.
+        // Must clamp to the matte ceiling — falling through to the
+        // glossiness arm (gloss 60 -> 0.30) engages the RT reflection
+        // path and renders chrome (the "chrome thugs" at the Tops).
+        let p = classify_pbr_keyword(PbrClassifierInputs {
+            texture_path: Some("textures/armor/1950stylesuit/outfitweatheredm.dds"),
+            glossiness: 60.0,
+            env_map_scale: 1.0, // neutral FNV default
+            has_normal_map: true,
         });
-        let p50 = classify_pbr_keyword(PbrClassifierInputs {
-            texture_path: Some("textures/clutter/misc/genericpanel01.dds"),
-            glossiness: 50.0, // smoother surface
-            env_map_scale: 1.0,
-            has_normal_map: false,
-        });
-        // Neither lands on the degenerate 0.8 env-ceiling…
         assert!(
-            (p10.roughness - 0.8).abs() > 0.01 || (p50.roughness - 0.8).abs() > 0.01,
-            "neutral env_map_scale=1.0 collapsed glossiness to the 0.8 ceiling \
-             (p10={}, p50={})",
-            p10.roughness,
-            p50.roughness,
+            p.roughness >= 0.6,
+            "neutral env_map_scale=1.0 must stay matte (>=0.6) so the RT \
+             reflection path (<0.6) does not engage; got {} (chrome regression)",
+            p.roughness,
         );
-        // …and the glossier surface is genuinely smoother.
-        assert!(
-            p50.roughness < p10.roughness,
-            "gloss 50 ({}) must be smoother than gloss 10 ({})",
-            p50.roughness,
-            p10.roughness,
-        );
-        assert_eq!(p10.metalness, 0.0);
-        assert_eq!(p50.metalness, 0.0);
+        assert_eq!(p.metalness, 0.0);
     }
 
     /// Canonical-material-pass step 3 (2026-05-27). Two-tier glass

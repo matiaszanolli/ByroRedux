@@ -107,18 +107,28 @@ default*, not an authored per-surface value — and `specular_color` is black
   on those meshes — the authored Phong specular power). The fix lets it drive
   roughness.
 
-**Step 2 fix shipped**: raise the env arm gate to `> 1.0` so the neutral
-baseline falls through to the authored-glossiness arm. Result on the same
-meshes — whiskey-bottle glass body `0.80 → 0.40`, drinking glass `0.80 → 0.60`,
-matte labels/sandbag/tin-can stay `0.80` (correct). The glossiness *gradient*
-is now preserved instead of a flat 0.8 plateau. (Glass still reads ~0.40, just
-under the render glass gate's `< 0.4` edge — final glass behavior is step 3's
-parse-time classification, not roughness alone.)
+**Step 2 experiment — RAISED then REVERTED.** The first attempt raised the env
+arm gate to `> 1.0` so the neutral baseline fell through to the
+authored-glossiness arm, restoring the gradient (whiskey bottle `0.80 → 0.40`,
+etc.). **That regressed non-glass surfaces into chrome**: FNV authors glossiness
+60–90 on ordinary cloth / weathered metal, and `1 - gloss/100` maps gloss-60 to
+roughness ≈ 0.30. At `< 0.6` roughness the RT reflection path engages, so
+weathered Chairman suits at the Tops rendered as mirror chrome ("chrome thugs").
+The env=1.0 → 0.8 matte clamp was load-bearing for non-glass content.
+
+**Reverted to `> 0.3`** (matte 0.8 default restored). Crucially this does NOT
+re-break glass: glass smoothness is owned by step 3's spawn classifier
+(`classify_glass_into_material` forces `roughness_override = 0.10`), which is
+independent of this arm. So glass stays glassy *and* ordinary surfaces stay
+matte. Lesson: the glossiness *gradient* is not a usable roughness signal for
+non-glass FNV surfaces (it over-shines); only the glass path needs low
+roughness, and it gets it explicitly. Pinned by
+`classify_pbr_neutral_envmap_default_clamps_matte_not_chrome`.
 
 ## 4. Convergence plan (incremental, test-gated)
 
 1. **Ground-truth audit** *(in progress)* — `material_dump` example tabulates `material_kind / metO / rghO / glossiness / emisM / alpha / decal / 2side` per mesh. Run on equivalent surfaces (glass / wood / metal / white-wall / emissive) across all 5 games **with the materials BA2 loaded** so BGSM values are visible. Builds the convention-mapping table.
-2. **Canonical PBR at parse** *(env-arm fix landed)* — `resolve_classifier_overrides` already collapses the `Option`s at material-insert time; the remaining correctness gap was the env-arm preemption (above), now fixed so the authored glossiness drives roughness. Pinned by `classify_pbr_neutral_envmap_default_uses_glossiness_gradient`. Metalness for legacy content stays keyword-only (no authored source — documented above).
+2. **Canonical PBR at parse** *(env-arm experiment reverted)* — `resolve_classifier_overrides` collapses the `Option`s at material-insert time. The env-arm `> 1.0` experiment was REVERTED (chrome regression, above): the matte 0.8 default for neutral-env surfaces is correct because the glossiness gradient over-shines non-glass content. Glass smoothness is owned by step 3, not this arm. Pinned by `classify_pbr_neutral_envmap_default_clamps_matte_not_chrome`. Metalness for legacy content stays keyword-only (no authored source — documented above).
 3. **Parse-time glass** *(alpha-aware classification at material-insert; legacy
    path DONE)* — glass is now decided **once, alpha-aware, at spawn**
    (`helpers::classify_glass_into_material`, called from both `cell_loader::spawn`
