@@ -33,7 +33,7 @@ The path contains a space (`character assets`) and is the canonical FO4 shared N
 - **Likely fix surface**: BSA lookup code at `byroredux/src/asset_provider.rs` or the path-resolve step in `crates/bsa/src/archive/`.
 - **Quick triage step**: grep `Fallout4 - Meshes.ba2` listing for `skeleton.nif`, confirm exact path including separator chars; compare against the lookup-side normalisation.
 
-### F2 — Fallout NIF importer leaves Material empty for ~50 entities per cell (RECLASSIFIED — NOT a simple bug, see investigation 2026-05-26)
+### F2 — Fallout NIF importer leaves Material empty for ~50 entities per cell (FIXED 2026-05-27 via renderer-side neutral fallback)
 
 Per-cell `<no path, no material>` counts: **FNV 54, FO3 44, FO4 19, Oblivion 0, Skyrim 1**.
 
@@ -58,9 +58,26 @@ So the importer is faithful. The artist authored the shape with no texture (it's
 
 **Root-cause class**: renderer-side. The fragment shader / fallback sampler doesn't honour "no texture authored" as a distinct state from "texture missing from archive."
 
-**Proposed renderer-side fix surface** (not in this session):
-1. Detect at spawn-time (or in `build_render_data`): if `TextureHandle == 0` and `Material.texture_path.is_none()` and `Material.material_path.is_none()`, mark the entity as `NoTextureAuthored` (new marker component or a flag in `Material`).
-2. Fragment shader: when `NoTextureAuthored` is set, skip the texture sample entirely; use vertex colour × diffuse × emissive directly as the albedo. The magenta checker is only used when an *authored path* failed to resolve.
+**Renderer-side fix landed 2026-05-27** (commit `7921270e`):
+
+The texture registry's single fallback handle was split into two:
+- `fallback()` = magenta checker (handle 0) — exclusive to "path
+  existed but file not found"
+- `neutral_fallback()` = white 1×1 (handle 1, new) — used when
+  `tex_path.is_none()` (NIF authored no diffuse texture)
+
+`resolve_texture_with_clamp` now routes textureless authored surfaces
+to the neutral handle. The fragment shader's
+`texture × emissive × vertex_color` multiply produces the artist-
+intended look instead of magenta × those terms.
+
+Per-game post-fix `tex.missing` results:
+- FNV  GSDocMitchellHouse:    54 → **0** fallback entries
+- FO3  MegatonPlayerHouse:    44 → **0**
+- FO4  InstituteBioScience:   19 → **1** (lone surviving entry is a
+  genuine missing BGEM — `hightechfloorlight_clean_white.bgem` —
+  separate issue, not in F2's scope)
+- Oblivion / Skyrim:          already 0 / 1, unchanged
 
 **Diagnostic improvements landed in this session** (not the fix, but make future passes faster):
 - `tex.missing entities` lists entity IDs per bucket (5 samples per path), so the next pass can `mesh.info` immediately.
