@@ -39,26 +39,40 @@ pub use byroredux_plugin::equip::Gender;
 /// per-race skeleton lookup (creatures, bestiary) can route through
 /// the same helper without an API break.
 ///
-/// Vanilla path table verified 2026-04-28 by listing every archive
-/// at `byroredux/src/npc_spawn.rs` baseline:
+/// Vanilla path table verified by listing every archive (re-verified
+/// 2026-05-26 against FO4/FO76/Starfield BA2s; the prior 2026-04-28
+/// pass mis-extended the Skyrim path to FO4+ and missed the folder-name
+/// change Bethesda made after Skyrim):
 ///
 /// - **FNV / FO3** ship a single `meshes\characters\_male\skeleton.nif`
 ///   used by both genders. There is no `_female/skeleton.nif`
 ///   sibling in vanilla content (BSA scan: 0 hits).
 /// - **Skyrim** (LE/SE) ships the unified
-///   `meshes\actors\character\character assets\skeleton.nif`. The
-///   `skeletonbeast.nif` sibling is the Argonian/Khajiit variant; not
-///   handled here yet (creature-race spawning is Phase 3+).
-/// - **FO4 / FO76 / Starfield** follow the Skyrim convention.
+///   `meshes\actors\character\character assets\skeleton.nif` — note
+///   the **space** in `character assets`. The `skeletonbeast.nif`
+///   sibling is the Argonian/Khajiit variant; not handled here yet
+///   (creature-race spawning is Phase 3+).
+/// - **FO4 / FO76** ship the same shape but renamed the folder to
+///   `characterassets` (no space). Pre-fix this function returned the
+///   Skyrim-shaped path for FO4/FO76 too, so every NPC in every FO4
+///   interior failed the skeleton lookup and silently rendered as
+///   floating equipment (`F1` of the 2026-05-26 Fallout symptom
+///   sweep). Verified against `Fallout4 - Meshes.ba2`: 0 files match
+///   the space form, 1 file matches the no-space form.
+/// - **Starfield** moved humanoids out of `\character\` entirely —
+///   the skeleton is at `meshes\actors\human\characterassets\skeleton.nif`.
+///   Same no-space convention as FO4/FO76.
 ///
 /// Oblivion is not yet a target for NPC spawning (M41.0 closes on
 /// FNV first); the path is the same as FNV's by convention.
 pub fn humanoid_skeleton_path(game: GameKind) -> Option<&'static str> {
     match game {
         GameKind::Oblivion | GameKind::Fallout3NV => Some(r"meshes\characters\_male\skeleton.nif"),
-        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => {
-            Some(r"meshes\actors\character\character assets\skeleton.nif")
+        GameKind::Skyrim => Some(r"meshes\actors\character\character assets\skeleton.nif"),
+        GameKind::Fallout4 | GameKind::Fallout76 => {
+            Some(r"meshes\actors\character\characterassets\skeleton.nif")
         }
+        GameKind::Starfield => Some(r"meshes\actors\human\characterassets\skeleton.nif"),
     }
 }
 
@@ -269,10 +283,10 @@ struct NpcEquipState<'a> {
 /// collect the armor mesh paths the spawn-side mesh loader will
 /// dispatch. Independent of World / VulkanContext so the caller can
 /// insert the components ahead of any archive I/O — that way a
-/// missing skeleton.nif (e.g. FO4's vanilla data lacks
-/// `character assets\skeleton.nif`; only `_1stperson` + `.hkx`
-/// ship) still leaves the equip data inspectable on the placement
-/// root.
+/// missing skeleton.nif (e.g. a modded path the resolver can't
+/// match, or a future game whose humanoid-skeleton convention isn't
+/// yet in `humanoid_skeleton_path`) still leaves the equip data
+/// inspectable on the placement root.
 fn build_npc_equip_state<'a>(
     npc: &NpcRecord,
     index: &'a EsmIndex,
@@ -1215,29 +1229,34 @@ pub fn spawn_prebaked_npc_entity(
 
     // 2. Equip state — built from the NPC record + ESM index alone
     //    so it lands on the placement root **before** any archive
-    //    I/O. FO4 vanilla data ships only `_1stperson\skeleton.nif`
-    //    plus `.hkx` for the 3rd-person humanoid skeleton; the SSE-
-    //    shaped `character assets\skeleton.nif` our resolver looks
-    //    for is absent (verified by BA2 scan against Meshes /
-    //    MeshesExtra / Animations / Misc / Startup). With the equip
-    //    insert deferred to after skeleton load, every FO4 NPC
-    //    silently short-circuited at line `return Some(placement_root)`
-    //    and the M41 Phase 2 smoke reported 0 Inventory components.
-    //    Hoisting the build here keeps the equip data observable for
-    //    diagnostics + the future save round-trip (M45) even when
+    //    I/O. Hoisting the build here keeps the equip data observable
+    //    for diagnostics + the future save round-trip (M45) even when
     //    the mesh load fails. The armor-mesh dispatch loop further
     //    down still gates on a resolved `skel_map` — meshes don't
     //    materialise without bones, but the components do.
+    //
+    // 2026-05-26 retrospective: the pre-fix version of this comment
+    // claimed FO4 vanilla data shipped *only* `_1stperson\skeleton.nif`
+    // + `.hkx` for the 3rd-person humanoid skeleton. That conclusion
+    // was based on a BA2 scan for the SSE-shaped `character assets\`
+    // path (with space), which doesn't exist in FO4 — but the file
+    // *is* in `Fallout4 - Meshes.ba2`, just under the renamed
+    // `characterassets\` folder (no space). The hoisted equip insert
+    // here was the right defence-in-depth, but the skeleton was never
+    // actually missing — only the resolver was looking up the wrong
+    // path. See `humanoid_skeleton_path` for the corrected table.
     let equip_state = build_npc_equip_state(npc, index, game, gender);
     let armor_to_spawn = equip_state.armor_to_spawn;
     world.insert(placement_root, equip_state.inventory);
     world.insert(placement_root, equip_state.equipment_slots);
 
-    // 3. Skeleton — same shared file as the kf-era path uses
-    //    (Skyrim+ ships `meshes\actors\character\character assets\
-    //    skeleton.nif`). The pre-baked head NIF carries its own
-    //    `BSTriShape`-skinned mesh that resolves bones against
-    //    this skeleton via the shared `external_skeleton` map.
+    // 3. Skeleton — shared NIF resolved through `humanoid_skeleton_path`.
+    //    Path differs per game family: FNV/FO3 use `\characters\_male\`,
+    //    Skyrim uses `\character\character assets\` (with space), FO4/FO76
+    //    use `\character\characterassets\` (no space), Starfield uses
+    //    `\human\characterassets\`. The pre-baked head NIF carries its
+    //    own `BSTriShape`-skinned mesh that resolves bones against this
+    //    skeleton via the shared `external_skeleton` map.
     let skel_path = humanoid_skeleton_path(game)?;
     let skel_data = match tex_provider.extract_mesh(skel_path) {
         Some(d) => d,
@@ -1485,17 +1504,26 @@ mod tests {
             humanoid_skeleton_path(GameKind::Fallout3NV),
             Some(r"meshes\characters\_male\skeleton.nif"),
         );
+        // Skyrim alone uses the space-separated `character assets`
+        // folder. Bethesda compressed it to `characterassets` for
+        // FO4 onward; the function's docstring carries the BA2-scan
+        // evidence (2026-05-26).
         assert_eq!(
             humanoid_skeleton_path(GameKind::Skyrim),
             Some(r"meshes\actors\character\character assets\skeleton.nif"),
         );
         assert_eq!(
             humanoid_skeleton_path(GameKind::Fallout4),
-            Some(r"meshes\actors\character\character assets\skeleton.nif"),
+            Some(r"meshes\actors\character\characterassets\skeleton.nif"),
         );
         assert_eq!(
+            humanoid_skeleton_path(GameKind::Fallout76),
+            Some(r"meshes\actors\character\characterassets\skeleton.nif"),
+        );
+        // Starfield humanoids live under `\human\`, not `\character\`.
+        assert_eq!(
             humanoid_skeleton_path(GameKind::Starfield),
-            Some(r"meshes\actors\character\character assets\skeleton.nif"),
+            Some(r"meshes\actors\human\characterassets\skeleton.nif"),
         );
     }
 

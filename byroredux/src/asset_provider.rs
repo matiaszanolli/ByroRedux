@@ -255,28 +255,58 @@ pub(crate) fn normalize_material_path(path: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Prepend `textures\` to a texture path if the path doesn't already
-/// begin with that segment (case-insensitive). Returns `Cow::Borrowed`
-/// when the input is already fully qualified so we don't allocate on
-/// the hot path (every REFR material resolves a texture).
+/// Normalize a texture path into the archive's canonical
+/// `textures\…` backslashed form. Mirrors the BGSM-side
+/// [`normalize_material_path`] but is texture-specific.
 ///
-/// See #468 — Bethesda WTHR cloud / CLMT sun / LTEX landscape records
-/// all author paths relative to the `textures\` root, but the BSA / BA2
-/// layer stores them with the full prefix.
+/// Two transformations applied in order:
+///
+/// 1. **Leading `data\` strip** (case-insensitive): when the path
+///    begins with `data\` or `data/`, trim that off. FO4 head NIFs'
+///    `BSShaderTextureSet` authors per-NPC FaceGen textures with
+///    this form (live observation 2026-05-26 on InstituteBioScience:
+///    9 / 10 unique missing-texture entries were
+///    `data\textures\actors\character\facecustomization\…\<formid>_d.dds`;
+///    the archive stores them at `textures\…` without the `data\`
+///    prefix). `strip_build_prefix` does not catch this case because
+///    it requires a separator BEFORE `data`.
+/// 2. **Prepend `textures\`**: when the path doesn't already start
+///    with `textures\` (after the strip above), add it. Bethesda
+///    WTHR cloud / CLMT sun / LTEX landscape records all author
+///    paths relative to the `textures\` root.
+///
+/// Returns `Cow::Borrowed` only on the canonical case (starts with
+/// `textures\`, no leading `data\` prefix). Every authored-non-
+/// canonical path returns a single owned allocation.
+///
+/// See #468 (the original `textures\` prefix issue) and F1.1 from
+/// the 2026-05-26 Fallout symptom sweep (the FaceGen leading-data
+/// case).
 pub(crate) fn normalize_texture_path(path: &str) -> std::borrow::Cow<'_, str> {
-    // Fast ASCII-lowercase check on just the first 9 bytes (`textures\`).
-    // Avoids allocating a full lowercase copy of the whole path on every
-    // texture lookup. Matches on either `/` or `\` separators — archive
-    // paths are backslashed on Bethesda systems, but forward slashes can
-    // sneak in via mod authoring tools.
+    use std::borrow::Cow;
+    // Step 1 — leading `data\` strip. Check the first 5 bytes:
+    // `data` + separator. Borrow the trailer to keep allocations on
+    // the rare path.
     let bytes = path.as_bytes();
+    let after_data: Cow<'_, str> = if bytes.len() >= 5
+        && bytes[..4].eq_ignore_ascii_case(b"data")
+        && (bytes[4] == b'\\' || bytes[4] == b'/')
+    {
+        Cow::Borrowed(&path[5..])
+    } else {
+        Cow::Borrowed(path)
+    };
+
+    // Step 2 — prepend `textures\` if missing. Case-insensitive on
+    // the first 8 bytes; matches `/` or `\` as the separator after.
+    let bytes = after_data.as_bytes();
     let has_prefix = bytes.len() >= 9
         && bytes[..8].eq_ignore_ascii_case(b"textures")
         && (bytes[8] == b'\\' || bytes[8] == b'/');
     if has_prefix {
-        std::borrow::Cow::Borrowed(path)
+        after_data
     } else {
-        std::borrow::Cow::Owned(format!("textures\\{}", path))
+        Cow::Owned(format!("textures\\{}", after_data))
     }
 }
 
@@ -1369,6 +1399,50 @@ mod tests {
     fn normalize_material_path_strips_leading_data_segment_forward_slash() {
         let out = normalize_material_path("data/materials/setdressing/foo.bgsm");
         assert_eq!(out.as_ref(), "materials\\setdressing\\foo.bgsm");
+    }
+
+    /// `normalize_texture_path` — canonical form passes through borrowed.
+    #[test]
+    fn normalize_texture_path_passes_canonical_through_borrowed() {
+        let out = normalize_texture_path("textures\\landscape\\plants\\juniper_d.dds");
+        assert_eq!(out.as_ref(), "textures\\landscape\\plants\\juniper_d.dds");
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    /// `normalize_texture_path` — paths without a `textures\` prefix
+    /// get one prepended. Bethesda CLMT / WTHR / LTEX records author
+    /// this shape.
+    #[test]
+    fn normalize_texture_path_prepends_textures_when_missing() {
+        let out = normalize_texture_path("landscape\\plants\\juniper_d.dds");
+        assert_eq!(out.as_ref(), "textures\\landscape\\plants\\juniper_d.dds");
+    }
+
+    /// `normalize_texture_path` — leading `data\textures\…` strip.
+    /// F1.1 from the 2026-05-26 Fallout symptom sweep: FO4 head NIFs'
+    /// `BSShaderTextureSet` authors per-NPC FaceGen textures with the
+    /// `data\` prefix; the archive stores them at `textures\…`. Without
+    /// the strip every NPC head rendered with a checkerboard face.
+    #[test]
+    fn normalize_texture_path_strips_leading_data_facegen() {
+        let out = normalize_texture_path(
+            "data\\textures\\actors\\character\\facecustomization\\fallout4.esm\\001d4387_d.dds",
+        );
+        assert_eq!(
+            out.as_ref(),
+            "textures\\actors\\character\\facecustomization\\fallout4.esm\\001d4387_d.dds",
+        );
+    }
+
+    /// `normalize_texture_path` — `data/` forward-slash variant of F1.1.
+    /// Same path shape, just mixed separators (mod-authoring tools).
+    #[test]
+    fn normalize_texture_path_strips_leading_data_forward_slash() {
+        let out = normalize_texture_path("data/textures/landscape/foo.dds");
+        // After strip we re-check the `textures\` prefix — note we don't
+        // rewrite slashes inside the trailer, since texture lookups use
+        // a case-insensitive separator-tolerant key downstream.
+        assert_eq!(out.as_ref(), "textures/landscape/foo.dds");
     }
 
     /// Rule 3: `/` → `\` separator normalisation. Live case from BGSM
