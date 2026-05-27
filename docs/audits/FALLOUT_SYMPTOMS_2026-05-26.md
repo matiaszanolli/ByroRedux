@@ -188,13 +188,17 @@ Scheduler: duplicate exclusive system name 'byroredux::App::new::{{closure}}' in
 
 5× per launch, in *every* game. Not Fallout-specific, but consistent log-noise. The suggested fix is in the warning itself.
 
-### F8 — Skyrim FaceGen NIFs with zero meshes (LOW)
+### F8 — Skyrim FaceGen NIFs with zero meshes (CLOSED UPSTREAM)
 
 ```
 NIF 'meshes\actors\character\facegendata\facegeom\skyrim.esm\00087b95.nif' imported with zero meshes
 ```
 
-2 NPC FaceGen heads in Whiterun Dragonsreach. Already tracked as **#1225**; logged with the importer-bug hypothesis already.
+2 NPC FaceGen heads in Whiterun Dragonsreach. Tracked at **#1225** —
+**verified CLOSED 2026-05-27** via `gh issue view 1225`. The sweep
+this report is based on (2026-05-26) ran against a build pre-#1225-fix.
+The current `main` HEAD should no longer hit this warning; re-running
+the Skyrim sweep would confirm.
 
 ---
 
