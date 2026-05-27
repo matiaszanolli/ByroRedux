@@ -9,8 +9,8 @@
 use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::{
     BSXFlags, Billboard, GlobalTransform, LightFlicker, LightSource, LocalBound, Material,
-    MeshHandle, ParticleEmitter, SceneFlags, TextureHandle, Transform, World, LIGHT_FLAG_FLICKER,
-    LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
+    MeshHandle, ParticleEmitter, SceneFlags, TextureHandle, Transform, World, WorldBound,
+    LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
 };
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
@@ -165,6 +165,12 @@ pub(super) fn spawn_placed_instances(
         placement_root,
         GlobalTransform::new(ref_pos, ref_rot, ref_scale),
     );
+    // Bounds-propagation system (Pass 2) folds child WorldBounds into
+    // their parent — but only writes to entities that already have a
+    // `WorldBound` row. Without this seed insert, every REFR placement
+    // root would be invisible to ray-cast picking, culling, and any
+    // future RT-budget-by-bounding-sphere consumer. See bounds.rs:161.
+    world.insert(placement_root, WorldBound::ZERO);
     // #994 — SpeedTree placeholders (and any future NiBillboardNode-
     // rooted scene) flag a billboard mode on the cache entry. Attaching
     // the `Billboard` component on the placement root makes
@@ -745,6 +751,14 @@ pub(super) fn spawn_placed_instances(
                 mesh.local_bound_radius,
             ),
         );
+        // Sibling to the LocalBound insert above. `bounds.rs` Pass 1 at
+        // line 61-63 only *updates* a pre-existing `WorldBound` row —
+        // it does not insert one — so a missing seed row means the
+        // entity stays at `WorldBound::default()` (zero sphere) and is
+        // invisible to ray-cast picking, frustum culling, and the
+        // skinned-LRU bounds heuristic. The propagation pass overwrites
+        // this `ZERO` with the real value on the next tick.
+        world.insert(entity, WorldBound::ZERO);
         // #1235 / LC-D1-NEW-01 — attach SceneFlags for parity with the
         // loose-NIF loader (`scene/nif_loader.rs:789-791`). APP_CULLED
         // shapes never reach this point (filtered import-side in

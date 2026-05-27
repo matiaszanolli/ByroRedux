@@ -36,14 +36,26 @@ use std::sync::{Arc, Mutex};
 
 /// Maximum number of skinned-mesh `SkinSlot`s the per-skinned-entity
 /// pre-skin + BLAS refit pool can hold simultaneously. Each slot costs
-/// `3 × MAX_FRAMES_IN_FLIGHT = 6` storage-buffer descriptors. Sized to
-/// cover M41-EQUIP Prospector load (~30 skinned entities) with ~2×
-/// headroom; the architectural ceiling is `MAX_TOTAL_BONES /
-/// MAX_BONES_PER_MESH = 256` (the bone-palette SSBO ceiling), so 64
-/// stays well below and remains a pressure signal rather than a no-op.
-/// Pre-#900 this was 32 and Prospector overflowed by 2 entities every
-/// frame. See #900.
-pub const SKIN_MAX_SLOTS: u32 = 64;
+/// `3 × MAX_FRAMES_IN_FLIGHT = 6` storage-buffer descriptors. The
+/// architectural ceiling is `MAX_TOTAL_BONES / MAX_BONES_PER_MESH =
+/// 32768 / 144 = 227` (the bone-palette SSBO ceiling).
+///
+/// History:
+/// - Pre-#900: 32. Prospector overflowed by 2 entities every frame.
+/// - #900: bumped to 64 for M41-EQUIP Prospector (~30 skinned entities,
+///   ~2× headroom).
+/// - 2026-05-26 (this change): bumped to 192 after the saloon scene
+///   was observed running with 64 allocated + 51 in `failed_skin_slots`
+///   (`TLAS: ... 51 lack BLAS — skinned=51`). LRU eviction only fires
+///   for idle slots, and every slot is in-use every frame in a populated
+///   interior, so `failed_skin_slots` never clears and 51 NPC sub-meshes
+///   permanently lose RT shadows. 192 gives ~67% headroom over the 115
+///   observed simultaneous demand while staying comfortably under the
+///   227-slot architectural ceiling. Output-buffer memory is lazily
+///   allocated per `create_slot`, so unused headroom is free; only the
+///   descriptor pool sizing (192 × 2 × 3 = 1152 storage-buffer descs)
+///   is paid up-front, and that's well below typical Vulkan limits.
+pub const SKIN_MAX_SLOTS: u32 = 192;
 
 /// A single draw command: which mesh to draw, with what texture, and what model matrix.
 pub struct DrawCommand {
