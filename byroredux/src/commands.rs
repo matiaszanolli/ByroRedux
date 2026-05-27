@@ -4,10 +4,11 @@ use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::{
     AccessConflict, ActiveCamera, Camera, ConflictKind, DebugStats, EntityId, GlobalTransform,
     LightSource, Material, MeshHandle, Name, Parent, ParticleEmitter, SchedulerAccessReport,
-    ScratchTelemetry, SelectedRef, SkinCoverageStats, SkinnedMesh, TextureHandle, Transform,
-    World, WorldBound,
+    ScratchTelemetry, SceneFlags, SelectedRef, SkinCoverageStats, SkinnedMesh, TextureHandle,
+    Transform, World, WorldBound,
 };
-use byroredux_core::ecs::components::{CollisionShape, FormIdComponent, RigidBodyData};
+use byroredux_core::ecs::components::{CollisionShape, FormIdComponent, RenderLayer, RigidBodyData};
+use crate::components::{AlphaBlend, DoorTeleport, InputState, IsFxMesh, TwoSided};
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
 use std::collections::HashMap;
@@ -17,7 +18,6 @@ use crate::cell_loader::{
     LoadedCellIndex, LoadedPluginSet, PendingCellTransition, PendingCellTransitionSlot,
     TransitionDestination,
 };
-use crate::components::{DoorTeleport, InputState};
 
 struct HelpCommand;
 impl ConsoleCommand for HelpCommand {
@@ -134,16 +134,20 @@ impl ConsoleCommand for TexMissingCommand {
         "tex.missing"
     }
     fn description(&self) -> &str {
-        "List entities with fallback (checkerboard) texture and their expected paths"
+        "List entities with fallback (checkerboard) texture and their expected paths \
+         (use `tex.missing entities` to sample entity IDs per bucket)"
     }
-    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let want_entities = args.trim().eq_ignore_ascii_case("entities");
         let tex_q = world.query::<TextureHandle>();
         let mat_q = world.query::<Material>();
         let (Some(tex_q), Some(mat_q)) = (tex_q, mat_q) else {
             return CommandOutput::line("No TextureHandle or Material components found");
         };
 
-        let mut missing: HashMap<String, u32> = HashMap::new();
+        // Bucket aggregator: path → (count, first-N entity IDs).
+        let mut missing: HashMap<String, (u32, Vec<EntityId>)> = HashMap::new();
+        const ENTITY_SAMPLE_LIMIT: usize = 5;
         for (entity, tex) in tex_q.iter() {
             if tex.0 != 0 {
                 continue;
@@ -153,7 +157,11 @@ impl ConsoleCommand for TexMissingCommand {
                 .and_then(|m| m.texture_path.as_deref())
                 .or_else(|| mat.and_then(|m| m.material_path.as_deref()))
                 .unwrap_or("<no path, no material>");
-            *missing.entry(path.to_string()).or_insert(0) += 1;
+            let slot = missing.entry(path.to_string()).or_insert((0, Vec::new()));
+            slot.0 += 1;
+            if slot.1.len() < ENTITY_SAMPLE_LIMIT {
+                slot.1.push(entity);
+            }
         }
 
         if missing.is_empty() {
@@ -163,11 +171,20 @@ impl ConsoleCommand for TexMissingCommand {
         }
 
         let mut sorted: Vec<_> = missing.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by(|a, b| b.1.0.cmp(&a.1.0));
 
         let mut lines = vec![format!("{} unique missing textures:", sorted.len())];
-        for (path, count) in sorted.iter().take(50) {
-            lines.push(format!("  {:4}x  {}", count, path));
+        for (path, (count, samples)) in sorted.iter().take(50) {
+            if want_entities {
+                let sample_str = samples
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lines.push(format!("  {:4}x  {}  [ids: {}]", count, path, sample_str));
+            } else {
+                lines.push(format!("  {:4}x  {}", count, path));
+            }
         }
         if sorted.len() > 50 {
             lines.push(format!("  ... and {} more", sorted.len() - 50));
@@ -364,8 +381,66 @@ impl ConsoleCommand for MeshInfoCommand {
                 "  glow_map:          {}",
                 mat.glow_map.as_deref().unwrap_or("(none)")
             ));
+            lines.push(format!(
+                "  detail/gloss/dark: {}/{}/{}",
+                if mat.detail_map.is_some() { "set" } else { "-" },
+                if mat.gloss_map.is_some() { "set" } else { "-" },
+                if mat.dark_map.is_some() { "set" } else { "-" },
+            ));
+            // Material kind / shader-type enum (0 = Default lit, 1 = Envmap,
+            // 2 = Glow, … 20 vanilla; 100+ synthesized for GLASS / FX).
+            // Critical for diagnosing "what shader path did this take?" —
+            // an entity with material_kind=0 + no texture is a different
+            // bug class from an entity with material_kind=20 + no texture.
+            lines.push(format!("  material_kind:     {}", mat.material_kind));
+            lines.push(format!(
+                "  alpha (val/test):  {:.2} / test={} (thr={:.2}, func={})",
+                mat.alpha, mat.alpha_test, mat.alpha_threshold, mat.alpha_test_func
+            ));
+            lines.push(format!(
+                "  emissive (mult/color): {:.2} / [{:.2},{:.2},{:.2}]",
+                mat.emissive_mult,
+                mat.emissive_color[0], mat.emissive_color[1], mat.emissive_color[2],
+            ));
+            // Effect-shader flags + env_map_scale + vertex_color_mode all
+            // tell us what *kind* of material this is even if no texture
+            // path resolved. A non-zero effect_shader_flags or non-default
+            // vertex_color_mode strongly hints at which importer path
+            // populated the (empty-path) Material.
+            lines.push(format!(
+                "  effect_flags / env / vcm: 0x{:08X} / {:.2} / {}",
+                mat.effect_shader_flags, mat.env_map_scale, mat.vertex_color_mode
+            ));
         } else {
             lines.push("  Material:          (none)".to_string());
+        }
+        // Marker components — these tell us what category of render path
+        // the entity routes through. A bare "no Material" entity that
+        // *also* carries AlphaBlend or TwoSided proves an importer arm
+        // populated some of the shape but not the texture/material.
+        let mut markers: Vec<String> = Vec::new();
+        if let Some(ab) = world.get::<AlphaBlend>(id) {
+            markers.push(format!("AlphaBlend(src={}, dst={})", ab.src_blend, ab.dst_blend));
+        }
+        if world.get::<TwoSided>(id).is_some() {
+            markers.push("TwoSided".to_string());
+        }
+        if world.get::<IsFxMesh>(id).is_some() {
+            markers.push("IsFxMesh".to_string());
+        }
+        if let Some(rl) = world.get::<RenderLayer>(id) {
+            markers.push(format!("RenderLayer({:?})", *rl));
+        }
+        if let Some(sf) = world.get::<SceneFlags>(id) {
+            markers.push(format!("SceneFlags(0x{:08X})", sf.0));
+        }
+        if let Some(dt) = world.get::<DoorTeleport>(id) {
+            markers.push(format!("DoorTeleport(→0x{:08X})", dt.destination_form_id));
+        }
+        if markers.is_empty() {
+            lines.push("  Markers:           (none)".to_string());
+        } else {
+            lines.push(format!("  Markers:           {}", markers.join(", ")));
         }
         // Aux-component detection. Entities that have a Transform but no
         // MeshHandle look like "orphans" in the basic dump above — but
@@ -384,6 +459,9 @@ impl ConsoleCommand for MeshInfoCommand {
         }
         if world.get::<ParticleEmitter>(id).is_some() {
             aux.push("ParticleEmitter");
+        }
+        if world.get::<SkinnedMesh>(id).is_some() {
+            aux.push("SkinnedMesh");
         }
         if aux.is_empty() {
             lines.push("  Aux components:    (none)".to_string());

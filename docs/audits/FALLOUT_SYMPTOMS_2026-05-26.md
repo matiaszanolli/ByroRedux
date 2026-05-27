@@ -33,16 +33,39 @@ The path contains a space (`character assets`) and is the canonical FO4 shared N
 - **Likely fix surface**: BSA lookup code at `byroredux/src/asset_provider.rs` or the path-resolve step in `crates/bsa/src/archive/`.
 - **Quick triage step**: grep `Fallout4 - Meshes.ba2` listing for `skeleton.nif`, confirm exact path including separator chars; compare against the lookup-side normalisation.
 
-### F2 — Fallout NIF importer leaves Material empty for ~50 entities per cell (HIGH)
+### F2 — Fallout NIF importer leaves Material empty for ~50 entities per cell (RECLASSIFIED — NOT a simple bug, see investigation 2026-05-26)
 
 Per-cell `<no path, no material>` counts: **FNV 54, FO3 44, FO4 19, Oblivion 0, Skyrim 1**.
 
 For these entities the diagnostic is *worse than missing-texture*: the engine doesn't even know which texture path was supposed to be there. The Material component is fully empty (no `texture_path`, no `material_path`), `TextureHandle == 0` (fallback / checker), and the entity renders as chrome.
 
-Concretely on FNV (`GSDocMitchellHouse`), all 54 fallback entities are in the no-path-no-material bucket — not a single one has an authored texture-path that simply failed to load. That argues against a BSA-lookup miss; this is a NIF-importer code path that takes a shape→Material transition without populating either the path field or the resolved handle.
+**2026-05-26 investigation outcome — this is NIF-authored, not a parser bug.**
 
-- **Likely culprits**: a shader-property class the Fallout-era walker at `crates/nif/src/import/material/walker.rs` doesn't route through `MaterialInfo` (e.g. `BSShaderNoLightingProperty`, `BSSegmentedTriShape` body parts, decal/glow subclasses). Recent `audit-fo3` reports show the walker has been gaining `BSShaderPropertyBaseOnly` / `WaterShaderProperty` consumers — there may still be uncovered subclasses.
-- **Triage**: pick one of the 54 FNV entities via `pick` / `near` + the new `mesh.info`, identify its NIF source block-type, walk the importer code path.
+Walked one fallback entity from FNV `GSDocMitchellHouse` end-to-end:
+
+- Entity 41 (`cabinet:5`, sub-shape of REFR `0x104C13`'s `nv_vitomaticvigortester_cabinet.nif`)
+- Sibling sub-shapes `cabinet:0`, `cabinet:3`, `cabinet:6` all have proper textures (`NV_Vigor-Tester_Cabinet1.dds`)
+- `cabinet:5` alone has `AlphaBlend(src=6, dst=7)`, `material_kind=0`, all texture slots empty
+- Dumped the NIF's 22 `BSShaderNoLightingProperty` blocks: block 166 (the one bound to cabinet:5) has **empty `file_name`** — authored that way by the artist
+- The walker correctly extracted the empty string and `intern_texture_path("")` correctly returned `None`
+
+So the importer is faithful. The artist authored the shape with no texture (it's a glass overlay; alpha-blend without an albedo source). Bethesda's renderer presumably uses vertex colour or the material's emissive/diffuse term as the surface look. **Our renderer falls through to the magenta-checker fallback because `TextureHandle == 0` is treated as "missing file" universally**, with no distinction between "file not in archive" and "file not authored." Same root cause for:
+
+- alpha-blend overlays with no albedo (cabinet:5 / glass panels)
+- emissive-only halos (`nvcraftsmanrmcorinwindowr01b:10` has `emissive_mult=10` but no texture — light-bulb glow)
+- vertex-colour-driven shapes (vcm=2 across all three sampled entities)
+- anim-only NIFs that incorrectly produce a renderable entity (`headanims:0` — possible bug, small surface)
+
+**Root-cause class**: renderer-side. The fragment shader / fallback sampler doesn't honour "no texture authored" as a distinct state from "texture missing from archive."
+
+**Proposed renderer-side fix surface** (not in this session):
+1. Detect at spawn-time (or in `build_render_data`): if `TextureHandle == 0` and `Material.texture_path.is_none()` and `Material.material_path.is_none()`, mark the entity as `NoTextureAuthored` (new marker component or a flag in `Material`).
+2. Fragment shader: when `NoTextureAuthored` is set, skip the texture sample entirely; use vertex colour × diffuse × emissive directly as the albedo. The magenta checker is only used when an *authored path* failed to resolve.
+
+**Diagnostic improvements landed in this session** (not the fix, but make future passes faster):
+- `tex.missing entities` lists entity IDs per bucket (5 samples per path), so the next pass can `mesh.info` immediately.
+- `mesh.info` now dumps full Material shape: `material_kind`, alpha state, `emissive_mult`, `effect_shader_flags`, `env_map_scale`, `vertex_color_mode`, plus marker components (`AlphaBlend`, `TwoSided`, `IsFxMesh`, `RenderLayer`, `SceneFlags`, `DoorTeleport`).
+- `crates/nif/examples/dump_nolighting.rs` lists every `BSShaderNoLightingProperty.file_name` and `BSShaderPPLightingProperty` texture-set linkage — for verifying "is this empty in the NIF itself?"
 
 ### F3 — FO4 static collision absent (HIGH)
 
