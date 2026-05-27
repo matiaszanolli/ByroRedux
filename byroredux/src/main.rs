@@ -1317,7 +1317,12 @@ impl App {
             (None, byroredux_debug_ui::PanelOutputs::default())
         };
 
-        apply_debug_ui_outputs(&mut self.world, outputs, &mut self.debug_ui_refresh_entities);
+        apply_debug_ui_outputs(
+            &mut self.world,
+            outputs,
+            &mut self.debug_ui_refresh_entities,
+            self.debug_ui.as_mut(),
+        );
 
         if let Some(ref mut ctx) = self.renderer {
             if let Some((egui_ctx, output)) = egui_frame {
@@ -2260,11 +2265,15 @@ fn build_debug_ui_snapshot(
 /// `PendingDebugLoadSlot` the debug-server's `Load*` handlers
 /// write, console expressions dispatch through the
 /// `CommandRegistry`. The refresh flag latches for the next frame's
-/// snapshot build.
+/// snapshot build. Each console eval's response lines are appended
+/// to the overlay's scrollback so the operator sees the output
+/// inline in the Console tab (without it the eval was a black hole —
+/// the input echo showed but nothing came back).
 fn apply_debug_ui_outputs(
     world: &mut World,
     outputs: byroredux_debug_ui::PanelOutputs,
     refresh_entities_flag: &mut bool,
+    debug_ui: Option<&mut byroredux_debug_ui::DebugUiState>,
 ) {
     if outputs.refresh_entities {
         *refresh_entities_flag = true;
@@ -2279,14 +2288,24 @@ fn apply_debug_ui_outputs(
             }
         }
     }
+    if outputs.console_evals.is_empty() {
+        return;
+    }
+    // Collect responses first, then push into the overlay's
+    // scrollback. Splitting the two phases keeps the `&World`
+    // borrow CommandRegistry needs cleanly disjoint from the
+    // `&mut DebugUiState` borrow `push_console_line` needs.
+    let mut response_lines: Vec<String> = Vec::new();
     for expr in outputs.console_evals {
-        // Dispatch via the CommandRegistry — same path the
-        // debug-server's Eval request takes. Log the response so
-        // the operator sees it in the engine console even though
-        // the egui panel doesn't show response text directly yet.
         if let Some(reg) = world.try_resource::<CommandRegistry>() {
             let output = reg.execute(world, &expr);
             log::info!("debug-ui console: {} → {}", expr, output.lines.join(" | "));
+            response_lines.extend(output.lines);
+        }
+    }
+    if let Some(ui) = debug_ui {
+        for line in response_lines {
+            ui.push_console_line(line);
         }
     }
 }

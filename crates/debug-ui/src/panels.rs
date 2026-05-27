@@ -318,16 +318,30 @@ fn draw_entities(
 }
 
 fn draw_console(ui: &mut egui::Ui, state: &mut PanelState, outputs: &mut PanelOutputs) {
-    ui.label("Run console commands against the engine.");
+    ui.horizontal(|ui| {
+        ui.label("Run console commands against the engine.");
+        if ui.button("Copy all").clicked() {
+            let joined = state.console_history.join("\n");
+            ui.ctx().copy_text(joined);
+        }
+        if ui.button("Clear").clicked() {
+            state.console_history.clear();
+        }
+    });
     ui.separator();
+    // Selectable monospace block. Rendering the full history as one
+    // multiline label (instead of per-line `ui.monospace`) lets the
+    // operator drag-select across lines and hit Ctrl+C natively;
+    // the "Copy all" button above handles the no-mouse case.
     let avail = ui.available_height() - 60.0;
     egui::ScrollArea::vertical()
         .max_height(avail.max(80.0))
         .stick_to_bottom(true)
+        .auto_shrink([false, false])
         .show(ui, |ui| {
-            for line in &state.console_history {
-                ui.monospace(line);
-            }
+            let joined = state.console_history.join("\n");
+            let text = egui::RichText::new(joined).monospace();
+            ui.add(egui::Label::new(text).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
         });
     ui.separator();
     let input_resp = ui.add(

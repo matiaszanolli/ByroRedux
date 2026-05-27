@@ -3,9 +3,11 @@
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 use byroredux_core::ecs::{
     AccessConflict, ActiveCamera, Camera, ConflictKind, DebugStats, EntityId, GlobalTransform,
-    Material, MeshHandle, Name, SchedulerAccessReport, ScratchTelemetry, SelectedRef,
-    SkinCoverageStats, SkinnedMesh, TextureHandle, Transform, World,
+    LightSource, Material, MeshHandle, Name, Parent, ParticleEmitter, SchedulerAccessReport,
+    ScratchTelemetry, SelectedRef, SkinCoverageStats, SkinnedMesh, TextureHandle, Transform,
+    World, WorldBound,
 };
+use byroredux_core::ecs::components::{CollisionShape, FormIdComponent, RigidBodyData};
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
 use std::collections::HashMap;
@@ -223,47 +225,170 @@ impl ConsoleCommand for MeshInfoCommand {
         "mesh.info"
     }
     fn description(&self) -> &str {
-        "Show mesh/texture/material info for an entity: mesh.info <entity_id>"
+        "Show mesh/texture/material/transform/parent/FormID for an entity: mesh.info <entity_id>"
     }
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         let id: u32 = match args.trim().parse() {
             Ok(v) => v,
             Err(_) => return CommandOutput::line("Usage: mesh.info <entity_id>"),
         };
-        let mut lines = vec![format!("Entity {}:", id)];
-        if let Some(mh) = world.get::<MeshHandle>(id) {
-            lines.push(format!("  MeshHandle: {}", mh.0));
+        let name = resolve_entity_name(world, id);
+        let mut lines = vec![match &name {
+            Some(n) => format!("Entity {} ({}):", id, n),
+            None => format!("Entity {}:", id),
+        }];
+
+        // Local Transform: translation / Euler-from-quat (degrees) / scale.
+        // Euler is for human reading only — the canonical rotation is the
+        // quat; we surface ZYX-extracted Euler so it matches the
+        // FNVEdit / CK convention the user sees in the ESM (REFR DATA
+        // stores RX RY RZ as ZYX-composed Euler in radians).
+        if let Some(t) = world.get::<Transform>(id) {
+            let (z, y, x) = t.rotation.to_euler(byroredux_core::math::EulerRot::ZYX);
+            lines.push(format!(
+                "  Transform.local:   pos ({:>+8.2},{:>+8.2},{:>+8.2})",
+                t.translation.x, t.translation.y, t.translation.z
+            ));
+            lines.push(format!(
+                "                     rot (deg ZYX-extracted) rx={:>+7.2}  ry={:>+7.2}  rz={:>+7.2}",
+                x.to_degrees(),
+                y.to_degrees(),
+                z.to_degrees()
+            ));
+            lines.push(format!(
+                "                     scale {:.3}  (uniform)",
+                t.scale
+            ));
         } else {
-            lines.push("  MeshHandle: (none)".to_string());
+            lines.push("  Transform.local:   (none)".to_string());
+        }
+        if let Some(gt) = world.get::<GlobalTransform>(id) {
+            lines.push(format!(
+                "  Transform.global:  pos ({:>+8.2},{:>+8.2},{:>+8.2})",
+                gt.translation.x, gt.translation.y, gt.translation.z
+            ));
+        } else {
+            lines.push("  Transform.global:  (none)".to_string());
+        }
+
+        // Parent chain walk → first FormIdComponent up the tree. The
+        // FormID is attached only at the REFR placement_root by
+        // spawn.rs:183 (#1212), so a mesh-sub-entity must walk up
+        // through its BSFadeNode / NiNode parents to find it.
+        let mut chain: Vec<EntityId> = vec![id];
+        let mut current = id;
+        let mut found_form: Option<byroredux_core::form_id::FormId> = None;
+        if let Some(fid) = world.get::<FormIdComponent>(current) {
+            found_form = Some(fid.0);
+        }
+        // Cap the walk to guard against a hypothetical cyclic parent
+        // (would indicate a deeper invariant bug we'd want to surface).
+        for _ in 0..32 {
+            let Some(parent) = world.get::<Parent>(current).map(|p| p.0) else {
+                break;
+            };
+            chain.push(parent);
+            if found_form.is_none() {
+                if let Some(fid) = world.get::<FormIdComponent>(parent) {
+                    found_form = Some(fid.0);
+                }
+            }
+            current = parent;
+        }
+        if chain.len() > 1 {
+            let chain_str = chain
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            lines.push(format!("  Parent chain:      {}", chain_str));
+        } else {
+            lines.push("  Parent chain:      (root, no Parent component)".to_string());
+        }
+        match found_form {
+            Some(fid) => {
+                // Resolve runtime FormId → plugin-local FormIdPair via
+                // the FormIdPool resource. The `LocalFormId(u32)` is the
+                // 24-bit FNVEdit / xEdit handle the user can paste into
+                // those tools. PluginId is content-addressed (UUID v5
+                // of the filename), so we surface it as a 32-bit prefix
+                // for at-a-glance disambiguation between masters.
+                if let Some(pool) = world.try_resource::<byroredux_core::form_id::FormIdPool>() {
+                    if let Some(pair) = pool.resolve(fid) {
+                        let plugin_prefix = (pair.plugin.0 >> 96) as u32;
+                        lines.push(format!(
+                            "  REFR FormID:       0x{:06X}  (plugin uuid hi32 = 0x{:08X})",
+                            pair.local.0 & 0x00FF_FFFF,
+                            plugin_prefix
+                        ));
+                    } else {
+                        lines.push(
+                            "  REFR FormID:       <unresolved in FormIdPool>".to_string(),
+                        );
+                    }
+                } else {
+                    lines.push("  REFR FormID:       <FormIdPool resource missing>".to_string());
+                }
+            }
+            None => lines.push("  REFR FormID:       (none found in parent chain)".to_string()),
+        }
+
+        if let Some(mh) = world.get::<MeshHandle>(id) {
+            lines.push(format!("  MeshHandle:        {}", mh.0));
+        } else {
+            lines.push("  MeshHandle:        (none)".to_string());
         }
         if let Some(th) = world.get::<TextureHandle>(id) {
             lines.push(format!(
-                "  TextureHandle: {}{}",
+                "  TextureHandle:     {}{}",
                 th.0,
                 if th.0 == 0 { " (FALLBACK)" } else { "" }
             ));
         } else {
-            lines.push("  TextureHandle: (none)".to_string());
+            lines.push("  TextureHandle:     (none)".to_string());
         }
         if let Some(mat) = world.get::<Material>(id) {
             lines.push(format!(
-                "  texture_path:  {}",
+                "  texture_path:      {}",
                 mat.texture_path.as_deref().unwrap_or("(none)")
             ));
             lines.push(format!(
-                "  material_path: {}",
+                "  material_path:     {}",
                 mat.material_path.as_deref().unwrap_or("(none)")
             ));
             lines.push(format!(
-                "  normal_map:    {}",
+                "  normal_map:        {}",
                 mat.normal_map.as_deref().unwrap_or("(none)")
             ));
             lines.push(format!(
-                "  glow_map:      {}",
+                "  glow_map:          {}",
                 mat.glow_map.as_deref().unwrap_or("(none)")
             ));
         } else {
-            lines.push("  Material: (none)".to_string());
+            lines.push("  Material:          (none)".to_string());
+        }
+        // Aux-component detection. Entities that have a Transform but no
+        // MeshHandle look like "orphans" in the basic dump above — but
+        // many of them are load-bearing collision shapes, light sources,
+        // or particle emitters spawned by the cell loader. Surface their
+        // presence explicitly so they stop looking like ghosts.
+        let mut aux: Vec<&'static str> = Vec::new();
+        if world.get::<CollisionShape>(id).is_some() {
+            aux.push("CollisionShape");
+        }
+        if world.get::<RigidBodyData>(id).is_some() {
+            aux.push("RigidBodyData");
+        }
+        if world.get::<LightSource>(id).is_some() {
+            aux.push("LightSource");
+        }
+        if world.get::<ParticleEmitter>(id).is_some() {
+            aux.push("ParticleEmitter");
+        }
+        if aux.is_empty() {
+            lines.push("  Aux components:    (none)".to_string());
+        } else {
+            lines.push(format!("  Aux components:    {}", aux.join(", ")));
         }
         CommandOutput::lines(lines)
     }
@@ -746,6 +871,160 @@ impl ConsoleCommand for NearCommand {
             lines.push(format!(
                 "{:>7.1}  {:>6}  {:<28.28}  {:<48.48}  ({:>+6.1},{:>+6.1},{:>+6.1})",
                 dist, entity, name_str, path, pos.x, pos.y, pos.z
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+/// `pick [count]` — ray-cast from the active camera along its forward
+/// direction and list entities whose `WorldBound` sphere the ray
+/// intersects, sorted by ray-parameter (closest first). Default count
+/// 10.
+///
+/// Use this to identify "the thing I'm looking at" without the noise
+/// of `near` (which lists everything within a radial sphere). Pair
+/// with `mesh.info <id>` for the full inspect on the top hit.
+///
+/// Caveat: matches against bounding spheres only — a hit at the
+/// nearest sphere's edge can register before a small geometry inside
+/// a bigger sphere. The first 2-3 hits are usually what you want.
+struct PickCommand;
+impl ConsoleCommand for PickCommand {
+    fn name(&self) -> &str {
+        "pick"
+    }
+    fn description(&self) -> &str {
+        "Ray-cast from camera forward; list entities the ray pierces (usage: pick [count=10])"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let count: usize = args.trim().parse().unwrap_or(10);
+        let Some(active) = world.try_resource::<ActiveCamera>() else {
+            return CommandOutput::line("ActiveCamera resource not present");
+        };
+        let cam_entity = active.0;
+        drop(active);
+        let cam_pos = world
+            .query::<Transform>()
+            .and_then(|q| q.get(cam_entity).map(|t| t.translation));
+        let Some(cam_pos) = cam_pos else {
+            return CommandOutput::line(format!(
+                "Camera entity {cam_entity} has no Transform"
+            ));
+        };
+        // Camera forward derived from InputState (yaw, pitch) the way
+        // fly_camera_system computes it: forward = R_y(yaw)·R_x(pitch)·-Z.
+        let (yaw, pitch) = world
+            .try_resource::<InputState>()
+            .map(|i| (i.yaw, i.pitch))
+            .unwrap_or((0.0, 0.0));
+        let cy = yaw.cos();
+        let sy = yaw.sin();
+        let cp = pitch.cos();
+        let sp = pitch.sin();
+        // forward = R_y(yaw) * R_x(pitch) * (0,0,-1)
+        // R_x(pitch) * (0,0,-1) = (0, sin(pitch), -cos(pitch))
+        // R_y(yaw)   * (0, sin(pitch), -cos(pitch)) =
+        //   ( -sin(yaw)·cos(pitch), sin(pitch), -cos(yaw)·cos(pitch) )
+        let forward = Vec3::new(-sy * cp, sp, -cy * cp);
+
+        // Tier 1: proper WorldBound sphere — counts as a real hit.
+        // Tier 2: GlobalTransform-only fallback — many entities ship
+        // with `WorldBound::default()` (zero center, zero radius) when
+        // the NIF importer didn't surface a usable local sphere. We
+        // still want those entities in the pick list, so we synthesise
+        // a 32-unit sphere at the entity's GlobalTransform.translation
+        // (1 m at FNV scale — wide enough to catch a wall the camera
+        // is hugging, tight enough to avoid grabbing the whole room).
+        // Synthetic hits are flagged with `~` in the radius column so
+        // the operator knows they're approximate, not authored.
+        const SYNTH_RADIUS: f32 = 32.0;
+
+        let Some(gtq) = world.query::<GlobalTransform>() else {
+            return CommandOutput::line(
+                "GlobalTransform storage not present (no entities to test against)",
+            );
+        };
+
+        // Ray r(t) = cam_pos + t · forward; sphere center c, radius R.
+        // Intersect when |r(t) - c|² = R². Quadratic in t:
+        //   a = forward·forward = 1
+        //   b = 2 · (cam_pos - c) · forward
+        //   c = |cam_pos - c|² - R²
+        // disc = b² - 4·a·c. disc >= 0 → at least one real root; take
+        // the smaller positive root as the hit distance.
+        let mut hits: Vec<(f32, EntityId, Vec3, f32, bool)> = Vec::new();
+        for (entity, gt) in gtq.iter() {
+            if entity == cam_entity {
+                continue;
+            }
+            // Prefer authored WorldBound when present + non-degenerate.
+            let (center, radius, synthetic) = match world.get::<WorldBound>(entity) {
+                Some(wb) if wb.radius > 0.0 => (wb.center, wb.radius, false),
+                _ => (gt.translation, SYNTH_RADIUS, true),
+            };
+            let oc = cam_pos - center;
+            let b = 2.0 * oc.dot(forward);
+            let cc = oc.length_squared() - radius * radius;
+            let disc = b * b - 4.0 * cc;
+            if disc < 0.0 {
+                continue;
+            }
+            let sqrt_disc = disc.sqrt();
+            let t0 = (-b - sqrt_disc) * 0.5;
+            let t1 = (-b + sqrt_disc) * 0.5;
+            // Pick the closer non-negative root. If both negative, the
+            // sphere is entirely behind the camera — skip.
+            let t = if t0 >= 0.0 {
+                t0
+            } else if t1 >= 0.0 {
+                // Camera inside sphere — still counts as a hit but at
+                // t=0 (we're inside it right now).
+                0.0
+            } else {
+                continue;
+            };
+            hits.push((t, entity, center, radius, synthetic));
+        }
+        drop(gtq);
+        hits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        if hits.is_empty() {
+            return CommandOutput::line(format!(
+                "no WorldBound spheres along ray from ({:.1},{:.1},{:.1}) dir ({:+.3},{:+.3},{:+.3})",
+                cam_pos.x, cam_pos.y, cam_pos.z, forward.x, forward.y, forward.z
+            ));
+        }
+        let take_n = count.min(hits.len()).max(1);
+        let mut lines = Vec::with_capacity(take_n + 2);
+        lines.push(format!(
+            "ray from ({:.1},{:.1},{:.1}) dir ({:+.3},{:+.3},{:+.3}) — \
+             {} hits (top {}):",
+            cam_pos.x, cam_pos.y, cam_pos.z, forward.x, forward.y, forward.z,
+            hits.len(), take_n
+        ));
+        lines.push(format!(
+            "{:>7}  {:>6}  {:<28}  {:<48}  {:>7}  {}",
+            "t", "id", "name", "tex/mat path", "r", "sphere center"
+        ));
+        for (t, entity, center, radius, synthetic) in hits.iter().take(take_n) {
+            let name_str = resolve_entity_name(world, *entity).unwrap_or_else(|| "-".to_string());
+            let path = world
+                .get::<Material>(*entity)
+                .and_then(|m| {
+                    m.texture_path
+                        .as_deref()
+                        .or(m.material_path.as_deref())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_default();
+            let radius_str = if *synthetic {
+                format!("~{:.0}", radius)
+            } else {
+                format!("{:.1}", radius)
+            };
+            lines.push(format!(
+                "{:>7.1}  {:>6}  {:<28.28}  {:<48.48}  {:>7}  ({:>+6.1},{:>+6.1},{:>+6.1})",
+                t, entity, name_str, path, radius_str, center.x, center.y, center.z
             ));
         }
         CommandOutput::lines(lines)
@@ -1702,6 +1981,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(PridCommand);
     registry.register(CamWhereCommand);
     registry.register(NearCommand);
+    registry.register(PickCommand);
     registry.register(CamPosCommand);
     registry.register(CamTpCommand);
     registry.register(DoorTeleportCommand);
