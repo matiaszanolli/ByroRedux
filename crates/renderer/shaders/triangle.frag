@@ -3124,6 +3124,21 @@ void main() {
             // Smooth distance fade: attenuate GI contribution at range
             // to prevent a visible boundary at the cutoff distance.
             indirect *= giFade;
+            // 2026-05-27 — smooth the rtLOD GI gate. The enclosing
+            // `if (… && rtLOD < RT_LOD_GI)` is a HARD on/off: surfaces
+            // just inside the boundary get full RT bounce fill, surfaces
+            // just outside get `indirect = vec3(0)` (the init value).
+            // In a long interior corridor that boundary sits mid-hall
+            // and the bounced fill light (which carries the emissive
+            // light-strips' contribution onto the walls) popped off in a
+            // visible step — reported as "self-illumination dims with
+            // distance but not smoothly." Ramp the contribution to zero
+            // across the last 0.75 of an rtLOD octave so it meets the
+            // far-side zero continuously. No extra rays: the hard gate
+            // still bounds where rays fire; this only shapes the weight
+            // near the cutoff.
+            float giLodFade = 1.0 - smoothstep(RT_LOD_GI - 0.75, RT_LOD_GI, rtLOD);
+            indirect *= giLodFade;
         }
     }
 
