@@ -767,8 +767,20 @@ pub(super) fn load_references(
         } else {
             String::new()
         };
+        // F5 2026-05-27: the message is intentionally STATics-only
+        // because the REFR-spawn path only looks up `index.statics`.
+        // Most of the "missing" hits are ACTI quest-trigger volumes
+        // (FNV `*Trigger` activators), or engine-defined references
+        // like FO3's player-placement FormID `0x00000021`. Once the
+        // cell loader walks `index.activators` / `index.containers` /
+        // `index.doors` / `index.npcs` for non-STAT REFRs (proper
+        // categorised spawn at M30+ script-execution time), this
+        // counter drops naturally. Today the warning reflects
+        // "REFRs we didn't spawn a mesh for," not a parser bug.
         log::warn!(
-            "  {} base forms not found in statics table (sample: {}{}){}",
+            "  {} base forms not in STATics dispatch (often ACTI triggers or \
+             engine-defined refs — see F5 in docs/audits/FALLOUT_SYMPTOMS_*; \
+             sample: {}{}){}",
             stat_miss,
             sample_str,
             truncation_marker,

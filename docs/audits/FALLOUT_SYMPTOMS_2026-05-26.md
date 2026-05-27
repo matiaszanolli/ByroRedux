@@ -139,13 +139,37 @@ in cache." Entity count 7552 → 7758, unique meshes 987 → 1015, textures
 every cached NIF path whose parse returned `None`. Was the decisive
 diagnostic for finding F4's actual failure set.
 
-### F5 — FNV/FO3 base-record dispatch gaps (LOW)
+### F5 — FNV/FO3 base-record dispatch gaps (RECLASSIFIED — mostly benign 2026-05-27)
 
-- **FNV**: `6 base forms not found in statics table (sample: 001055B6, 00105BCC, 00107232, …)` — 6 REFRs in `GSDocMitchellHouse` point to base records that the parser didn't catalogue.
-- **FO3**: 1 missing base (`00000021`).
-- **Oblivion / Skyrim**: 0.
+- **FNV**: `6 base forms not found in statics table`
+- **FO3**: 1 missing base (`00000021`)
+- **Oblivion / Skyrim**: 0
 
-These are REFRs pointing to base record types the ESM walker doesn't dispatch yet for Fallout (possibly DLC-only types or pre-Skyrim record variants). The REFRs silently spawn with no base mesh.
+**2026-05-27 investigation outcome — these are NOT statics; the cell-loader log message is misleading.**
+
+Probing each FormID via the new `probe_form` example
+([`crates/plugin/examples/probe_form.rs`](../../crates/plugin/examples/probe_form.rs))
+which walks all 10 indexed record categories:
+
+| FormID | Game | Category | EditorID | User impact |
+|---|---|---|---|---|
+| `001055B6` | FNV | **ACTI** | `VCG01DocMitchellCouchTrigger` | Invisible quest trigger volume — should NOT render a mesh |
+| `00105BCC` | FNV | **ACTI** | `VCG01DocMitchellChairTrigger` | Same |
+| `00107232` | FNV | **ACTI** | `GSDocMitchellExitTrigger` | Same |
+| `00104C07` | FNV | **ACTI** | `VCG01VigorTesterTrigger` | Same |
+| `001046FB` | FNV | (not in any indexed category) | — | Likely SOUN or other unparsed record type |
+| `001046FC` | FNV | (not in any indexed category) | — | Same |
+| `00000021` | FO3 | (engine-defined) | `Player` | The player-placement marker, NOT an ESM record — expected miss |
+
+**4 of the 6 FNV cases are ACTI quest-trigger volumes** that correctly should not render a mesh. The "missing base" log line is misleading because the cell loader only does a STAT-table lookup, doesn't categorise the REFR as "ACTI → spawn as invisible volume." The mesh-load is correctly skipped; the diagnostic just looks alarming.
+
+**Functional impact**: zero today. The 4 ACTI triggers would fire scripts if the script-execution path (M30+) were online — and at that point we'd want to route the REFR through `ACTI` category lookup to attach an `Activator` ECS component, not a mesh.
+
+**Proposed log-message improvement** (1-line change, not in this session):
+
+Replace the current "base forms not found in statics table" warning with a multi-category probe — "base forms not found in any category (or missing from parser dispatch)" so the message reflects the actual gap. Today's wording implies a parser bug that isn't there.
+
+**Tracked**: when script execution lands, extend cell-loader REFR dispatch to walk `index.activators` / `index.containers` / `index.doors` / `index.npcs` and spawn the appropriate ECS component. Today this would surface 4 of the 6 FNV entries as proper Activator entities.
 
 ### F6 — `assets/debug_profiles.toml` sample_cells are wrong (LOW, tooling)
 
