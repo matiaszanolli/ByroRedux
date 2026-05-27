@@ -867,11 +867,36 @@ fn parse_and_import_nif(
         }
     };
 
-    // BSXFlags bit 5 (0x20) marks the entire NIF as an editor marker —
-    // invisible in-game objects like XMarker, PrisonMarker, etc.
+    // BSXFlags bit 5 — semantics differ across game eras:
+    //   * Oblivion / FO3 / FNV (BSVER < FALLOUT4): bit 5 = `EditorMarker`.
+    //     The NIF is an invisible CK pin (XMarker, PrisonMarker, etc.)
+    //     and must not render.
+    //   * Skyrim / FO4 / FO76 / Starfield (BSVER >= FALLOUT4):
+    //     bit 5 = `MultiBoundNode` (Bethesda re-purposed it). A hint
+    //     that the NIF carries an authored BSMultiBound for culling.
+    //     Filtering on it drops legitimate architecture — F4 in the
+    //     2026-05-26 sweep was caused by `hitfloorsolidfull01.nif`
+    //     (FO4 Institute floor, BSXFlags = 0xA2, bit 5 set) and 14
+    //     siblings being wrongly classified as editor markers.
+    //
+    // For FO4+ we rely on the name-based check in `walk/mod.rs:1430`
+    // (`is_editor_marker`) which catches names matching `EditorMarker*`,
+    // `marker_*`, `MarkerX`, `marker:*`, `MapMarker` — every shipping
+    // FO4 editor-marker NIF authored a name in that family.
     let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
-    if bsx & 0x20 != 0 {
-        log::debug!("Skipping editor marker NIF '{}'", label);
+    // NifScene doesn't retain the header, so re-parse the header
+    // (~60 bytes) to read `bs_version`. Cheap relative to the full
+    // scene parse we already did.
+    let bsver = byroredux_nif::header::NifHeader::parse(nif_data)
+        .map(|(h, _)| h.user_version_2)
+        .unwrap_or(0);
+    let bsx_editor_marker = bsx & 0x20 != 0
+        && bsver < byroredux_nif::version::bsver::FALLOUT4;
+    if bsx_editor_marker {
+        log::debug!(
+            "Skipping editor marker NIF '{}' (BSXFlags 0x{:X}, BSVER {})",
+            label, bsx, bsver,
+        );
         return None;
     }
     // Root-node NiAVObject.flags — surfaced for the placement-root

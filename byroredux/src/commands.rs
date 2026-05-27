@@ -474,6 +474,8 @@ impl ConsoleCommand for MeshInfoCommand {
 
 /// `mesh.cache` — inspect the process-lifetime NIF import cache.
 /// Reports cache size, parsed/failed counts, and lifetime hit rate.
+/// `mesh.cache failed` enumerates every cached path whose parse
+/// returned `None` — the source of "N failed" in the stats line.
 /// See [`crate::cell_loader::NifImportRegistry`] / #381.
 struct MeshCacheCommand;
 impl ConsoleCommand for MeshCacheCommand {
@@ -481,12 +483,34 @@ impl ConsoleCommand for MeshCacheCommand {
         "mesh.cache"
     }
     fn description(&self) -> &str {
-        "Show NIF import cache stats (size, hits, misses, hit rate)"
+        "Show NIF import cache stats. `mesh.cache failed` lists every failed-parse path."
     }
-    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
         let Some(reg) = world.try_resource::<crate::cell_loader::NifImportRegistry>() else {
             return CommandOutput::line("NifImportRegistry resource not present");
         };
+        if args.trim().eq_ignore_ascii_case("failed") {
+            // Enumerate every cache entry whose value is `None` (negative
+            // cache — parse returned None). The cache HashMap iteration
+            // order is unspecified; sort the result so successive runs
+            // produce comparable output.
+            let mut failed: Vec<&str> = reg
+                .core
+                .cache
+                .iter()
+                .filter(|(_, v)| v.is_none())
+                .map(|(k, _)| k.as_str())
+                .collect();
+            failed.sort_unstable();
+            if failed.is_empty() {
+                return CommandOutput::line("No failed NIF parses in cache.");
+            }
+            let mut lines = vec![format!("{} failed-parse paths:", failed.len())];
+            for path in &failed {
+                lines.push(format!("  {}", path));
+            }
+            return CommandOutput::lines(lines);
+        }
         let cap_str = if reg.max_entries() == 0 {
             "unlimited (set BYRO_NIF_CACHE_MAX=N to enable LRU)".to_string()
         } else {
@@ -505,6 +529,7 @@ impl ConsoleCommand for MeshCacheCommand {
             format!("  lifetime miss: {}", reg.core.misses()),
             format!("  evictions:     {}", reg.evictions),
             format!("  hit rate:      {:.1}%", reg.hit_rate_pct()),
+            "  (use `mesh.cache failed` to list failed-parse paths)".to_string(),
         ])
     }
 }

@@ -67,19 +67,34 @@ So the importer is faithful. The artist authored the shape with no texture (it's
 - `mesh.info` now dumps full Material shape: `material_kind`, alpha state, `emissive_mult`, `effect_shader_flags`, `env_map_scale`, `vertex_color_mode`, plus marker components (`AlphaBlend`, `TwoSided`, `IsFxMesh`, `RenderLayer`, `SceneFlags`, `DoorTeleport`).
 - `crates/nif/examples/dump_nolighting.rs` lists every `BSShaderNoLightingProperty.file_name` and `BSShaderPPLightingProperty` texture-set linkage — for verifying "is this empty in the NIF itself?"
 
-### F3 — FO4 static collision absent (HIGH)
+### F3 — FO4 static collision absent (HIGH — scoped 2026-05-26, fix is multi-day work)
 
 ```
 M28.5 NO STATIC COLLIDERS in the Rapier world — every body is Dynamic/Kinematic.
 Cell has no parsed bhk static architecture.
 ```
 
-FO4 cells aren't producing static collision shapes. Either bhk dispatch is mis-routing FO4-era collision blocks, or FO4 stores collision in an external format (`.hkx`?) we don't parse yet. Without static collision, the player can fall through floors / walk through walls in every FO4 interior.
+FO4 cells aren't producing static collision shapes. Without them, the player phases through floors / walks through walls in every FO4 interior.
 
-- **Affected scope**: every FO4 cell.
-- **Fix surface**: `crates/nif/src/blocks/collision/*` dispatch + `crates/plugin/src/esm/cell/` static-collider plumbing.
+**2026-05-26 root-cause investigation:**
 
-### F4 — FO4 NIF parse failure rate 4× the others (MEDIUM)
+- FO4 architecture NIFs (e.g. `meshes\interiors\institute\main\insmainbasefloor01.nif`) reference collision via **`bhkNPCollisionObject`** — the "NP" (new physics) variant Bethesda introduced for FO4 — not the classic `BhkCollisionObject`.
+- The NP collision object points to a **`bhkPhysicsSystem`** block that contains a Havok-serialised binary blob (`ByteArray`) carrying the actual shape tree.
+- Our parser correctly identifies and reads both as raw bytes via [`BhkSystemBinary.data: Vec<u8>`](../../crates/nif/src/blocks/collision/collision_object.rs#L135-L154) — the blob is captured intact.
+- **But `extract_collision()` at [`crates/nif/src/import/collision.rs:26-73`](../../crates/nif/src/import/collision.rs#L26-L73) only handles `BhkCollisionObject → BhkRigidBody → shape tree`** — the classic FNV/FO3/Skyrim chain. It returns `None` immediately for `bhkNPCollisionObject`, so every FO4 architecture REFR produces zero collision data.
+- The precombined `_oc.nif` files would normally bake the architecture collision into a cell-level mesh, but those NIFs' geometry lives in the deferred `Fallout4 - Geometry.csg` companion (#1188) — also not parsed today. So the precombined fallback also yields zero collision.
+
+**Fix surface (NOT in this session — multi-day):**
+
+1. Implement a Havok content-system binary deserialiser that reads `BhkSystemBinary.data` and reconstructs the shape tree. Reference impls: `nifly`'s `bhkPhysicsSystem` handler (C++, ~2k LOC), OpenMW does NOT cover FO4 collision.
+2. Or, partial coverage: detect `bhkNPCollisionObject` → look up its `bhkPhysicsSystem` → match a small set of common shape signatures (Box / Capsule / TriMesh) by byte-pattern probing the Havok blob. Cheap-but-fragile; only useful as a triage step.
+3. Long-term: integrate the CSG companion reader (#1188) so the precombined mesh + collision both materialise.
+
+**Affected scope**: every FO4 interior cell, every FO4 exterior worldspace. FO76 / Starfield use the same NP physics so the same fix unlocks them.
+
+**Workaround**: until then, FO4 cells render correctly but have no playable physics. M28.5 character controller has nothing to ground against → falls indefinitely. Not a regression of recent work — this gap predates the symptom-sweep findings.
+
+### F4 — FO4 NIF parse failure rate 4× the others (FIXED 2026-05-27)
 
 | Game | Failures / Total | Rate |
 |---|---|---|
@@ -87,12 +102,42 @@ FO4 cells aren't producing static collision shapes. Either bhk dispatch is mis-r
 | FNV | 1 / 200 | 0.5% |
 | FO3 | 3 / 270 | 1.1% |
 | Skyrim | 11 / 296 | 3.7% |
-| **FO4** | **15 / 182** | **8.2%** |
+| **FO4 pre-fix** | **15 / 182** | **8.2%** |
+| **FO4 post-fix** | **0 / 182** | **0.0%** |
 
-8.2% is 4× the Skyrim baseline and 8× FO3. FO4-specific NIF block types or BSVER dispatch arms are failing.
+**Root cause**: not a parser failure — a cell-loader **gating** failure. The
+`BSXFlags` bit-5 universal gate in `parse_and_import_nif`
+(`byroredux/src/cell_loader/references.rs:873-876` pre-fix) classified
+every NIF with bit 5 set as an editor marker and returned `None`. But
+**bit-5 semantics changed across game eras**:
 
-- **Already filed**: `audit-fo4` reports from 2026-05-15/18 surface findings around `BSLightingShaderProperty.Backlight Power` gate inversion (FO4-D1-NEW-01) — possibly the cause of part of these failures.
-- **Triage**: enable per-NIF parse-failure logging, group failures by block-type / BSVER.
+- **Oblivion / FO3 / FNV** (BSVER < `FALLOUT4`): bit 5 = `EditorMarker`. Filter is correct.
+- **Skyrim / FO4 / FO76 / Starfield** (BSVER >= `FALLOUT4`): Bethesda re-purposed bit 5 as `MultiBoundNode` (a culling hint, NOT editor-only). Filter was wrongly dropping legitimate architecture.
+
+In `InstituteBioScience`, 15 NIFs had bit 5 set and got filtered. The list:
+
+- 3 floors: `hitfloorsolidfull01`, `hitfloorsolidmid01`, `hitfloorsolidmid01a` (visible architecture, 3 meshes each)
+- 2 doors: `insdoorsm01` (11 meshes), `inssecuritydoor01` (5 meshes)
+- 2 dust light-beams + 1 klaxon glow
+- 7 editor markers (correctly invisible — they have 0 meshes regardless)
+
+**Fix** at [`references.rs:870-906`](../../byroredux/src/cell_loader/references.rs#L870-L906):
+make the bit-5 gate game-aware by re-parsing the NIF header for
+`user_version_2` (BSVER) and only filtering when `bsver < FALLOUT4`. FO4+
+editor markers are still filtered by the name-based check at
+[`walk/mod.rs:1430`](../../crates/nif/src/import/walk/mod.rs#L1430)
+(`is_editor_marker` matches `editormarker*` / `marker_*` / `markerx` /
+`marker:*` / `mapmarker*` — every shipping FO4 editor-marker NIF
+authored a name in that family).
+
+**Verified**: post-fix `mesh.cache failed` reports "No failed NIF parses
+in cache." Entity count 7552 → 7758, unique meshes 987 → 1015, textures
+317 → 326 on InstituteBioScience.
+
+**`mesh.cache failed` console subcommand** added at
+[`commands.rs:486-512`](../../byroredux/src/commands.rs#L486-L512) — lists
+every cached NIF path whose parse returned `None`. Was the decisive
+diagnostic for finding F4's actual failure set.
 
 ### F5 — FNV/FO3 base-record dispatch gaps (LOW)
 
