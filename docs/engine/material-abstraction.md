@@ -86,18 +86,39 @@ same shader fed these two conventions produces the "different dev stages" look.
 
 **Refined root cause** (sharpens Leak B): the legacy `classify_pbr_keyword`
 path is *degenerate*, not just "different" — it has no metalness signal at all
-(always 0.0) and clusters roughness near 0.8. Legacy NIFs DO carry a real
-signal we're ignoring: `NiMaterialProperty.specular_color` /
-`specular_strength` / `glossiness` (the Gamebryo Phong model). A
-high-specular + high-gloss surface is metal-like; that's the principled
-translation source (per `feedback_no_guessing` — derive from authored data,
-not invent). Convergence step 2 must replace the keyword guess with a
-specular/gloss-derived PBR mapping grounded in the Gamebryo 2.3 material model.
+(always 0.0) and clusters roughness near 0.8.
+
+A second `material_dump` sweep (env / specular columns added) over 9 FNV
+clutter + architecture meshes found **why** the roughness collapses: every
+surface reads `env_map_scale = 1.00` — the *neutral `BSShaderPPLighting`
+default*, not an authored per-surface value — and `specular_color` is black
+(`spec_lum = 0.00`), `specular_strength = 1.00` constant. So:
+
+- **`env_map_scale` is noise** in FNV (constant 1.0). The old `> 0.3` env arm
+  caught the default and clamped *every* non-keyword surface to the `0.8`
+  ceiling (`1 - 1.0·0.2`), preempting the one real signal.
+- **`specular_color` is NOT a usable metalness signal** for FNV legacy content
+  (uniformly black) — contrary to the "high-specular ⇒ metal-like" hypothesis
+  above. Metalness for legacy content has no authored source beyond the
+  texture-path keyword arms; that is a documented limitation, not a guess we
+  may invent (`feedback_no_guessing`). Real metal (e.g. `tincan01`) that lacks
+  a metal keyword stays dielectric — accepted degraded mode (Q3-adjacent).
+- **`glossiness` is the only real per-surface signal** (a 10/30/50/60 gradient
+  on those meshes — the authored Phong specular power). The fix lets it drive
+  roughness.
+
+**Step 2 fix shipped**: raise the env arm gate to `> 1.0` so the neutral
+baseline falls through to the authored-glossiness arm. Result on the same
+meshes — whiskey-bottle glass body `0.80 → 0.40`, drinking glass `0.80 → 0.60`,
+matte labels/sandbag/tin-can stay `0.80` (correct). The glossiness *gradient*
+is now preserved instead of a flat 0.8 plateau. (Glass still reads ~0.40, just
+under the render glass gate's `< 0.4` edge — final glass behavior is step 3's
+parse-time classification, not roughness alone.)
 
 ## 4. Convergence plan (incremental, test-gated)
 
 1. **Ground-truth audit** *(in progress)* — `material_dump` example tabulates `material_kind / metO / rghO / glossiness / emisM / alpha / decal / 2side` per mesh. Run on equivalent surfaces (glass / wood / metal / white-wall / emissive) across all 5 games **with the materials BA2 loaded** so BGSM values are visible. Builds the convention-mapping table.
-2. **Canonical PBR at parse** — make `classify_pbr` resolve `metalness`/`roughness` to concrete values for every path; collapse the `Option` overrides into always-populated canonical fields. Pin per-path with tests.
+2. **Canonical PBR at parse** *(env-arm fix landed)* — `resolve_classifier_overrides` already collapses the `Option`s at material-insert time; the remaining correctness gap was the env-arm preemption (above), now fixed so the authored glossiness drives roughness. Pinned by `classify_pbr_neutral_envmap_default_uses_glossiness_gradient`. Metalness for legacy content stays keyword-only (no authored source — documented above).
 3. **Parse-time glass** — move glass classification into the parser; set `material_kind = GLASS` per the per-game authoritative rule. Delete the render-layer heuristic. Regression-pin the two known failures (FNV whiskey bottle, FO4 drinking glass) as "now classified glass."
 4. **Emissive scale unification** — reconcile `emissive_mult` scale across games (Q2).
 5. **Ambient** *(optional, lower priority)* — consider a synthesized DALC-equivalent for non-Skyrim cells so the ambient model is uniform, or accept the data-driven difference.

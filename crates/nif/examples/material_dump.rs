@@ -21,8 +21,9 @@ fn main() {
 
     println!("# {} (BSVER {})  — {} meshes", path, bsver, imported.len());
     println!(
-        "{:<22} {:>5} {:>5} {:>5} {:>5} {:>6} {:>5} {:>5} {:>5}  {}",
-        "mesh", "kind", "metO", "rghO", "gloss", "emisM", "alpha", "decal", "2side", "tex/mat path",
+        "{:<22} {:>5} {:>5} {:>5} {:>5} {:>5} {:>5} {:>6} {:>5} {:>5} {:>5}  {}",
+        "mesh", "kind", "metO", "rghO", "gloss", "env", "specS", "specClum", "emisM", "alpha",
+        "decal", "tex/mat path",
     );
     for m in &imported {
         let name = m
@@ -44,17 +45,23 @@ fn main() {
             .roughness_override
             .map(|v| format!("{:.2}", v))
             .unwrap_or_else(|| "-".to_string());
+        // Specular-color luminance (Rec.709) — a near-1.0 value with high
+        // specular_strength is the legacy metal hint we currently ignore.
+        let sc = m.specular_color;
+        let spec_lum = 0.2126 * sc[0] + 0.7152 * sc[1] + 0.0722 * sc[2];
         println!(
-            "{:<22.22} {:>5} {:>5} {:>5} {:>5.0} {:>6.1} {:>5} {:>5} {:>5}  {}",
+            "{:<22.22} {:>5} {:>5} {:>5} {:>5.0} {:>5.2} {:>5.2} {:>6.2} {:>6.1} {:>5} {:>5}  {}",
             name,
             m.material_kind,
             meto,
             rgho,
             m.glossiness,
+            m.env_map_scale,
+            m.specular_strength,
+            spec_lum,
             m.emissive_mult,
             m.has_alpha as u8,
             m.is_decal as u8,
-            m.two_sided as u8,
             tex,
         );
     }

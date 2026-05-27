@@ -406,26 +406,29 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
         };
     }
 
-    // env_map_scale fallback. The previous curve
-    // `(1 - scale * 0.3).clamp(0.2, 0.8)` produced **mirror-chrome
-    // roughness 0.2** on any surface whose `BSShaderPPLighting`
-    // authored `env_map_scale ≥ 2.5` — common on FNV/FO3 interior
-    // door panels, lockers, and bulkhead trim. Power-armor and other
-    // genuine conductors take the keyword arm above (metal / iron /
-    // steel) and never reach this branch, so the FALL-THROUGH
-    // population is "dielectric surfaces the artist marked
-    // reflective" (vinyl cushions, lacquered wood, painted metal,
-    // wet rust). Real dielectrics top out at polished-plastic
-    // roughness (≈ 0.35) — chrome is not a dielectric look.
+    // env_map_scale arm — fires ONLY when the artist cranked the cube-map
+    // intensity meaningfully ABOVE the neutral baseline. Empirical
+    // ground-truth (canonical-material pass, 2026-05-27 `material_dump`
+    // sweep over 9 FNV clutter/architecture meshes): `BSShaderPPLighting`
+    // authors `env_map_scale = 1.0` as the *neutral default* on nearly
+    // every surface — glass bottles, drinking glasses, sandbags, tin
+    // cans, labels all read exactly 1.0. The previous `> 0.3` gate
+    // therefore caught the default and clamped EVERY non-keyword surface
+    // to the 0.8 ceiling (`1 - 1.0*0.2 = 0.8`), discarding the real
+    // per-surface signal: glossiness (the authored Phong specular power,
+    // a 10/30/50/60 gradient on those same meshes). A glass bottle
+    // (gloss 50) and a matte label (gloss 10) both collapsed to roughness
+    // 0.8 — "everything is rough plastic," the root of FNV's degenerate
+    // look (whiskey bottles not glassy, walls flat).
     //
-    // Tightened formula:
-    //   * slope 0.3 → 0.2 (gentler tilt against env_map_scale)
-    //   * floor   0.2 → 0.35 (polished-plastic / vinyl, never mirror)
-    //
-    // Same intent (visible reflections sharpen as authored scale
-    // grows) without the chrome floor. See user-reported chrome on
-    // FNV/FO3 interior wall panels 2026-05-25.
-    if inputs.env_map_scale > 0.3 {
+    // Gating at `> 1.0` lets the neutral baseline fall through to the
+    // authored-glossiness arm below (deriving roughness from real data
+    // per `feedback_no_guessing`), while genuinely env-mapped surfaces —
+    // the FNV/FO3 interior door panels / bulkhead trim the artist marked
+    // reflective at `env_map_scale ≈ 2.5` — still sharpen here. The 0.35
+    // floor keeps those dielectrics at polished-plastic, never mirror
+    // chrome (user-reported chrome on FNV/FO3 wall panels 2026-05-25).
+    if inputs.env_map_scale > 1.0 {
         return PbrMaterial {
             roughness: (1.0 - inputs.env_map_scale * 0.2).clamp(0.35, 0.8),
             metalness: 0.0,
@@ -654,6 +657,48 @@ mod tests {
         m.env_map_scale = 2.5;
         let p = m.classify_pbr(Some("textures/clutter/unknown/shiny.dds"));
         assert_eq!(p.metalness, 0.0);
+    }
+
+    /// Canonical-material-pass regression (2026-05-27). Ground-truth
+    /// `material_dump` over real FNV meshes showed `env_map_scale = 1.0`
+    /// is the neutral `BSShaderPPLighting` default on essentially every
+    /// surface — the old `> 0.3` env arm caught it and clamped ALL of
+    /// them to roughness 0.8, throwing away the authored glossiness
+    /// gradient. At the neutral baseline the classifier must instead
+    /// derive roughness from glossiness, so a smoother surface (glass
+    /// bottle, gloss 50) reads distinctly smoother than a matte one
+    /// (label, gloss 10) instead of both collapsing to 0.8.
+    #[test]
+    fn classify_pbr_neutral_envmap_default_uses_glossiness_gradient() {
+        let p10 = classify_pbr_keyword(PbrClassifierInputs {
+            texture_path: Some("textures/clutter/liquorbottles/whiskeybottle01.dds"),
+            glossiness: 10.0, // matte label / trim
+            env_map_scale: 1.0, // neutral FNV default — must NOT preempt
+            has_normal_map: false,
+        });
+        let p50 = classify_pbr_keyword(PbrClassifierInputs {
+            texture_path: Some("textures/clutter/liquorbottles/whiskeybottle01.dds"),
+            glossiness: 50.0, // glass body — smoother
+            env_map_scale: 1.0,
+            has_normal_map: false,
+        });
+        // Neither lands on the degenerate 0.8 env-ceiling…
+        assert!(
+            (p10.roughness - 0.8).abs() > 0.01 || (p50.roughness - 0.8).abs() > 0.01,
+            "neutral env_map_scale=1.0 collapsed glossiness to the 0.8 ceiling \
+             (p10={}, p50={})",
+            p10.roughness,
+            p50.roughness,
+        );
+        // …and the glossier surface is genuinely smoother.
+        assert!(
+            p50.roughness < p10.roughness,
+            "gloss 50 ({}) must be smoother than gloss 10 ({})",
+            p50.roughness,
+            p10.roughness,
+        );
+        assert_eq!(p10.metalness, 0.0);
+        assert_eq!(p50.metalness, 0.0);
     }
 
     #[test]
