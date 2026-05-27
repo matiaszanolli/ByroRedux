@@ -84,7 +84,25 @@ Per-game post-fix `tex.missing` results:
 - `mesh.info` now dumps full Material shape: `material_kind`, alpha state, `emissive_mult`, `effect_shader_flags`, `env_map_scale`, `vertex_color_mode`, plus marker components (`AlphaBlend`, `TwoSided`, `IsFxMesh`, `RenderLayer`, `SceneFlags`, `DoorTeleport`).
 - `crates/nif/examples/dump_nolighting.rs` lists every `BSShaderNoLightingProperty.file_name` and `BSShaderPPLightingProperty` texture-set linkage — for verifying "is this empty in the NIF itself?"
 
-### F3 — FO4 static collision absent (HIGH — scoped 2026-05-26, fix is multi-day work)
+### F3 — FO4 static collision absent (FIXED 2026-05-27 via render-geometry trimesh fallback)
+
+**2026-05-27 fix** (commit `15016ee0`): rather than deserialize the Havok
+content-system blob (the multi-day project scoped below), synthesize a
+static `CollisionShape::TriMesh` from the render mesh geometry whenever a
+NIF authored no bhk collision. Gated to `RenderLayer::Architecture`,
+non-skinned, non-decal meshes; baked `final_scale` into verts (physics
+sync ignores GlobalTransform scale). FO4 InstituteBioScience: 0 → 758
+static colliders, player now grounds at Y=312.2 instead of falling
+forever. FNV/FO3/Skyrim untouched (their bhk `collisions` are non-empty
+so the synthesis is skipped). The full Havok deserializer (below) is
+still the eventual "authored collision hull" upgrade, but the
+render-geometry fallback closes the "player falls through the floor"
+symptom today.
+
+---
+
+_Original scoping (superseded by the fix above):_
+
 
 ```
 M28.5 NO STATIC COLLIDERS in the Rapier world — every body is Dynamic/Kinematic.
