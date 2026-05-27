@@ -67,6 +67,33 @@ The canonical `Material` (ECS component) carries, **always populated, one conven
 
 The renderer then reads `material_kind == GLASS` and the canonical `metalness/roughness/albedo/emissive` **identically for every game**. The `static_meshes.rs` glass heuristic is deleted.
 
+## 3a. Ground-truth table (2026-05-27, via `mesh.info` PBR fields, materials BA2 loaded)
+
+Equivalent surfaces, real engine pipeline (BGSM merge active for FO4):
+
+| Surface | Game | source | `metalness_override` | `roughness_override` | glossiness | material_kind |
+|---|---|---|---:|---:|---:|---:|
+| metal (door) | FO4 | `institutemetal01.bgsm` | **0.79** | **0.04** | 100 | 1 |
+| metal (panel) | FO4 | `institutemetal01a.bgsm` | 0.79 | 0.04 | 100 | 1 |
+| floor | FO4 | `institutefloor02d.bgsm` | 0.69 | 0.10 | 90 | 1 |
+| wall | FNV | keyword | **0.00** | **0.80** | 10 | 0 |
+| glass bottle | FNV | keyword | **0.00** | **0.80** | 50 | 0 |
+
+**The smoking gun**: FNV's keyword classifier collapses *every* surface to
+`metalness 0.00 / roughness 0.80` — metal renders as matte plastic, glass as
+rough plastic. FO4's BGSM gives real per-material PBR (metal 0.79/0.04). The
+same shader fed these two conventions produces the "different dev stages" look.
+
+**Refined root cause** (sharpens Leak B): the legacy `classify_pbr_keyword`
+path is *degenerate*, not just "different" — it has no metalness signal at all
+(always 0.0) and clusters roughness near 0.8. Legacy NIFs DO carry a real
+signal we're ignoring: `NiMaterialProperty.specular_color` /
+`specular_strength` / `glossiness` (the Gamebryo Phong model). A
+high-specular + high-gloss surface is metal-like; that's the principled
+translation source (per `feedback_no_guessing` — derive from authored data,
+not invent). Convergence step 2 must replace the keyword guess with a
+specular/gloss-derived PBR mapping grounded in the Gamebryo 2.3 material model.
+
 ## 4. Convergence plan (incremental, test-gated)
 
 1. **Ground-truth audit** *(in progress)* — `material_dump` example tabulates `material_kind / metO / rghO / glossiness / emisM / alpha / decal / 2side` per mesh. Run on equivalent surfaces (glass / wood / metal / white-wall / emissive) across all 5 games **with the materials BA2 loaded** so BGSM values are visible. Builds the convention-mapping table.
