@@ -520,8 +520,19 @@ pub(crate) fn resolve_texture_with_clamp(
     tex_path: Option<&str>,
     clamp_mode: u8,
 ) -> u32 {
+    // F2 (2026-05-26 sweep) — "no path authored" is semantically
+    // different from "path authored but lookup failed." The former is
+    // a Bethesda artist deliberately shipping a surface that the
+    // material's emissive / alpha / vertex-color terms colour
+    // directly (alpha-blend overlays on the vigor-tester glass cover,
+    // emissive light halos in saloon interiors, vertex-color clutter).
+    // Route those to the white 1×1 neutral fallback so the shader's
+    // multiply yields the authored look instead of magenta checker.
+    // The magenta checker stays exclusive to "this path existed but
+    // the file wasn't in the archive," which is the diagnostic we
+    // want to keep visible.
     let Some(tex_path) = tex_path else {
-        return ctx.texture_registry.fallback();
+        return ctx.texture_registry.neutral_fallback();
     };
     // Strip Bethesda build-server prefixes (e.g. `skyrimhd\build\pc\data\`)
     // so cache + BSA lookups both use the canonical `textures\…` path.

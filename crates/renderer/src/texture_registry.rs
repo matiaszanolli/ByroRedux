@@ -99,7 +99,20 @@ struct TextureEntry {
 pub struct TextureRegistry {
     textures: Vec<TextureEntry>,
     path_map: HashMap<String, TextureHandle>,
+    /// Magenta-checker handle — "this entity should have had a
+    /// texture, but the file isn't in the archive / failed to load."
+    /// Diagnostic indicator; visible artefact in-game.
     fallback_handle: TextureHandle,
+    /// White 1×1 handle — "this entity is intentionally textureless
+    /// (artist-authored alpha-blend overlay, emissive halo, vertex-
+    /// color shape with no diffuse texture). Bethesda's renderer would
+    /// sample white × material constants × vertex color here. F2 from
+    /// the 2026-05-26 Fallout symptom sweep — without splitting the
+    /// fallback handle, 117 textureless-by-design surfaces across
+    /// FNV+FO3+FO4 rendered as magenta checker (which we treat as
+    /// "broken"). With this split, those surfaces render as the
+    /// artist intended.
+    neutral_fallback_handle: TextureHandle,
     descriptor_pool: vk::DescriptorPool,
     /// Layout for set 0: binding 0 = sampler2D[max_textures], PARTIALLY_BOUND.
     pub descriptor_set_layout: vk::DescriptorSetLayout,
@@ -393,6 +406,7 @@ impl TextureRegistry {
             textures: Vec::new(),
             path_map: HashMap::new(),
             fallback_handle: 0,
+            neutral_fallback_handle: 0,
             descriptor_pool,
             descriptor_set_layout,
             bindless_sets,
@@ -421,6 +435,34 @@ impl TextureRegistry {
             ref_count: u32::MAX,
         });
         self.fallback_handle = handle;
+        Ok(())
+    }
+
+    /// Register the **neutral** (white) fallback texture. Call once after
+    /// [`Self::set_fallback`]; lands at handle 1. Used for entities whose
+    /// NIF authoring intentionally omitted a diffuse texture (alpha-blend
+    /// overlays, emissive halos, vertex-color-driven shapes). The fragment
+    /// shader samples this slot and the material's emissive / alpha /
+    /// vertex-color terms multiply through to produce the artist-intended
+    /// look. F2 from the 2026-05-26 Fallout symptom sweep — pre-fix these
+    /// surfaces shared the magenta-checker fallback and rendered as
+    /// chrome.
+    pub fn set_neutral_fallback(
+        &mut self,
+        device: &ash::Device,
+        neutral_texture: Texture,
+    ) -> Result<()> {
+        let handle = self.textures.len() as TextureHandle;
+        self.write_texture_to_all_sets(device, handle, &neutral_texture);
+        // Same `u32::MAX` ref-count pattern as the magenta fallback —
+        // `drop_texture` skips both sentinels so the neutral handle's
+        // ref count must not be decrementable into a freed state.
+        self.textures.push(TextureEntry {
+            texture: Some(neutral_texture),
+            pending_destroy: VecDeque::new(),
+            ref_count: u32::MAX,
+        });
+        self.neutral_fallback_handle = handle;
         Ok(())
     }
 
@@ -829,9 +871,18 @@ impl TextureRegistry {
         Some(handle)
     }
 
-    /// Handle for the fallback checkerboard texture (always 0).
+    /// Handle for the fallback checkerboard texture (always 0). Indicates
+    /// "this entity was supposed to have a real texture, but lookup failed."
     pub fn fallback(&self) -> TextureHandle {
         self.fallback_handle
+    }
+
+    /// Handle for the neutral (white 1×1) fallback (always 1). Indicates
+    /// "this entity intentionally has no diffuse texture authored — the
+    /// material's emissive / alpha / vertex-color terms drive the surface
+    /// color." See [`Self::set_neutral_fallback`].
+    pub fn neutral_fallback(&self) -> TextureHandle {
+        self.neutral_fallback_handle
     }
 
     /// Get the bindless descriptor set for a frame-in-flight.

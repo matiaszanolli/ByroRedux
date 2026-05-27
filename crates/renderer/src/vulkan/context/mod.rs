@@ -1442,6 +1442,26 @@ impl VulkanContext {
         )?;
         texture_registry.set_fallback(&device, fallback_texture)?;
 
+        // F2 (2026-05-26 Fallout sweep) — separate neutral fallback for
+        // NIF-authored textureless surfaces (alpha-blend overlays,
+        // emissive halos, vertex-color shapes). 1×1 white RGBA so the
+        // shader's material × vertex-color × emissive multiply
+        // collapses to the artist-intended look instead of magenta
+        // checker × those terms.
+        let white_pixel: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
+        let neutral_texture = Texture::from_rgba(
+            &device,
+            &gpu_allocator,
+            &graphics_queue,
+            transfer_pool,
+            1,
+            1,
+            &white_pixel,
+            texture_registry.shared_sampler,
+            None,
+        )?;
+        texture_registry.set_neutral_fallback(&device, neutral_texture)?;
+
         // 12. Scene buffers (light SSBO + camera UBO + optional TLAS, descriptor set 1)
         let scene_buffers = scene_buffer::SceneBuffers::new(
             &device,
