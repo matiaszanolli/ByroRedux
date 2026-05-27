@@ -33,10 +33,16 @@ esm = "FalloutNV.esm"
 default_bsas = ["Fallout - Meshes.bsa"]
 default_textures_bsas = ["Fallout - Textures.bsa"]
 default_materials_bsas = []
+# F6 (2026-05-26) — all entries verified via
+# `cargo run -p byroredux-plugin --example probe_cells`. Pre-fix
+# the list contained `Goodsprings` (worldspace, not an interior cell)
+# and `NVDLC04Big01` (no match in vanilla; either DLC-only or
+# misspelled). Both caused the cell-load to silently fall through
+# to the empty-default scene with 6 entities.
 sample_cells = [
     "GSDocMitchellHouse",
-    "Goodsprings",
-    "NVDLC04Big01",
+    "GSProspectorSaloonInterior",
+    "SLGoodspringsCaveINT",
 ]
 
 [profiles.fo3]
@@ -47,8 +53,12 @@ esm = "Fallout3.esm"
 default_bsas = ["Fallout - Meshes.bsa"]
 default_textures_bsas = ["Fallout - Textures.bsa"]
 default_materials_bsas = []
+# F6 (2026-05-26) — `Megaton01` was a phantom; vanilla ships
+# `MegatonPlayerHouse` (929 REFRs), `MegatonMoriartysSaloon`
+# (458 REFRs), and ~17 sibling Megaton interiors. Probe-verified.
 sample_cells = [
-    "Megaton01",
+    "MegatonPlayerHouse",
+    "MegatonMoriartysSaloon",
     "Vault101a",
 ]
 
@@ -62,9 +72,13 @@ default_textures_bsas = [
     "Oblivion - Textures - Compressed.bsa",
 ]
 default_materials_bsas = []
+# F6 (2026-05-26) — `AnvilHeinrichOakenHallsBasement` is not a real
+# cell; vanilla ships `AnvilHeinrichOakenHallsHouse` (+ its second-
+# floor sibling). The Basement variant probably came from a
+# misremembered cell name. Probe-verified.
 sample_cells = [
     "ICMarketDistrictTheGildedCarafe",
-    "AnvilHeinrichOakenHallsBasement",
+    "AnvilHeinrichOakenHallsHouse",
 ]
 
 [profiles.skyrim_se]
@@ -109,13 +123,18 @@ default_textures_bsas = [
     "Fallout4 - TexturesPatch.ba2",
 ]
 default_materials_bsas = ["Fallout4 - Materials.ba2"]
+# F6 (2026-05-26) — five of six pre-fix entries were broken:
+#   `Sanctuary` was a worldspace (interior is `SanctuaryRosaHouse` etc.);
+#   `DiamondCityMarket` had no matching interior cell;
+#   `InstAdvSys01` should have been `InstituteAdvSystems`;
+#   `InstAtrium01` had no match (vanilla atrium cell name unknown);
+#   `InstBioscience01` should have been `InstituteBioScience`.
+# Only `MedTekResearch01` (4396 REFRs) was correct as-shipped.
+# All current entries probe-verified.
 sample_cells = [
     "MedTekResearch01",
-    "Sanctuary",
-    "DiamondCityMarket",
-    "InstAdvSys01",
-    "InstAtrium01",
-    "InstBioscience01",
+    "InstituteBioScience",
+    "InstituteAdvSystems",
 ]
 
 [profiles.starfield]
