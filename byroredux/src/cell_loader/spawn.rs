@@ -46,6 +46,57 @@ pub(crate) fn is_spawnable_nif_light(light: &byroredux_nif::import::ImportedLigh
     light.color[0] + light.color[1] + light.color[2] >= 1e-4
 }
 
+/// F3 (2026-05-27) — build a static `CollisionShape::TriMesh` +
+/// `RigidBodyData` from a render mesh's geometry, baking `world_scale`
+/// (the composed `ref_scale × mesh.scale`) into the vertices so the
+/// collider matches the rendered geometry (the physics sync places
+/// bodies by translation+rotation only, ignoring `GlobalTransform`
+/// scale).
+///
+/// Used as a fallback when the source NIF authored no bhk collision —
+/// the FO4+ Havok-content-system case. Returns `None` when the mesh
+/// has no usable triangle data (degenerate index count). Vertices are
+/// in NIF-local Y-up space, matching the entity's local `Transform`,
+/// so the physics body's world placement composes correctly.
+fn synthesize_static_trimesh(
+    positions: &[[f32; 3]],
+    mesh_indices: &[u32],
+    world_scale: f32,
+) -> Option<(
+    byroredux_core::ecs::components::CollisionShape,
+    byroredux_core::ecs::components::RigidBodyData,
+)> {
+    use byroredux_core::ecs::components::{CollisionShape, RigidBodyData};
+
+    let tri_count = mesh_indices.len() / 3;
+    if tri_count == 0 {
+        return None;
+    }
+    let vertices: Vec<Vec3> = positions
+        .iter()
+        .map(|p| Vec3::new(p[0] * world_scale, p[1] * world_scale, p[2] * world_scale))
+        .collect();
+    let vert_count = vertices.len() as u32;
+    let mut indices: Vec<[u32; 3]> = Vec::with_capacity(tri_count);
+    for tri in mesh_indices.chunks_exact(3) {
+        // Defensive: skip any triangle that references a vertex out of
+        // range (corrupt index buffer) so parry3d's trimesh builder
+        // doesn't panic mid-cell-load.
+        if tri[0] < vert_count && tri[1] < vert_count && tri[2] < vert_count {
+            indices.push([tri[0], tri[1], tri[2]]);
+        }
+    }
+    if indices.is_empty() {
+        return None;
+    }
+
+    let shape = CollisionShape::TriMesh { vertices, indices };
+    // Static architecture — `RigidBodyData::STATIC` (zero mass,
+    // friction 0.5, restitution 0.3). Same default the bhk extract
+    // path uses for a `motion_type == Static` body.
+    Some((shape, RigidBodyData::STATIC))
+}
+
 /// Count NIF lights that would survive `is_spawnable_nif_light`. The
 /// ESM-fallback gate uses this instead of `nif_lights.is_empty()` so
 /// a NIF carrying only zero-colour placeholders still receives the
@@ -995,7 +1046,7 @@ pub(super) fn spawn_placed_instances(
         // Pre-#renderlayer this site also inserted a `Decal` marker
         // component when `mesh.is_decal` — that marker is retired now
         // that `RenderLayer::Decal` carries the same signal end-to-end.
-        {
+        let final_layer = {
             use byroredux_core::ecs::components::{
                 escalate_small_static_to_clutter, render_layer_with_decal_escalation,
             };
@@ -1010,6 +1061,49 @@ pub(super) fn spawn_placed_instances(
                 escalate_small_static_to_clutter(base_layer, mesh.local_bound_radius * ref_scale);
             let layer = render_layer_with_decal_escalation(layer, mesh.is_decal, mesh.alpha_test);
             world.insert(entity, layer);
+            layer
+        };
+
+        // F3 (2026-05-27) — synthesize a static TriMesh collider from
+        // the render geometry when the NIF authored NO bhk collision.
+        // This is the FO4+ case: those games moved static architecture
+        // collision into the Havok content-system blob
+        // (`bhkNPCollisionObject` → `bhkPhysicsSystem`), which our
+        // `extract_collision` doesn't deserialize yet (a multi-day
+        // project — see docs/audits/FALLOUT_SYMPTOMS F3). Without any
+        // static collider the M28.5 character controller has nothing
+        // to ground against and the player falls through the floor.
+        //
+        // The render mesh is a coarse but serviceable stand-in for the
+        // authored collision hull on structural architecture (floors,
+        // walls, ramps). Gated tightly so we don't turn clutter, decals,
+        // or skinned actors into expensive trimesh colliders:
+        //   - `collisions.is_empty()` — the NIF gave us no bhk shape, so
+        //     we're not double-covering FNV/FO3/Skyrim (which parse bhk).
+        //   - `RenderLayer::Architecture` — structural only; clutter and
+        //     decals are escalated away from this layer above.
+        //   - `!mesh.skinned` — never synthesize for animated bodies.
+        //   - `!mesh.is_decal && !mesh.alpha_test` — skip overlay planes.
+        //   - ≥ 1 triangle of geometry.
+        // Scale: the physics sync places bodies by GlobalTransform
+        // translation+rotation only (it ignores scale — bhk shapes bake
+        // havok_scale into their verts at extract time). So we bake the
+        // composed `final_scale` into the trimesh verts here to match
+        // the rendered geometry.
+        if collisions.is_empty()
+            && final_layer == byroredux_core::ecs::components::RenderLayer::Architecture
+            && mesh.skin.is_none()
+            && !mesh.is_decal
+            && !mesh.alpha_test
+            && mesh.positions.len() >= 3
+            && mesh.indices.len() >= 3
+        {
+            if let Some((shape, body)) =
+                synthesize_static_trimesh(&mesh.positions, &mesh.indices, final_scale)
+            {
+                world.insert(entity, shape);
+                world.insert(entity, body);
+            }
         }
         // Attach ESM light_data ONLY if the NIF didn't actually spawn
         // any lights (avoids duplicates) and only on the first mesh
@@ -1108,4 +1202,76 @@ pub(super) fn spawn_placed_instances(
     // only the count; callers that don't need the placement_root
     // (precombined.rs bake artifacts) `_`-discard the first element.
     (placement_root, count)
+}
+
+#[cfg(test)]
+mod synthesize_trimesh_tests {
+    use super::synthesize_static_trimesh;
+    use byroredux_core::ecs::components::{CollisionShape, MotionType};
+
+    /// A single unit triangle synthesizes into a 1-triangle TriMesh
+    /// with a Static body. Baseline that the geometry round-trips.
+    #[test]
+    fn single_triangle_round_trips() {
+        let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let indices = [0u32, 1, 2];
+        let (shape, body) =
+            synthesize_static_trimesh(&positions, &indices, 1.0).expect("one triangle");
+        match shape {
+            CollisionShape::TriMesh { vertices, indices } => {
+                assert_eq!(vertices.len(), 3);
+                assert_eq!(indices, vec![[0, 1, 2]]);
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
+        assert_eq!(body.motion_type, MotionType::Static);
+    }
+
+    /// `world_scale` bakes into the vertex positions — the physics sync
+    /// ignores `GlobalTransform` scale, so the collider must carry it.
+    #[test]
+    fn world_scale_bakes_into_vertices() {
+        let positions = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let indices = [0u32, 1, 2];
+        let (shape, _) =
+            synthesize_static_trimesh(&positions, &indices, 2.0).expect("scaled triangle");
+        match shape {
+            CollisionShape::TriMesh { vertices, .. } => {
+                assert_eq!(vertices[0].to_array(), [2.0, 4.0, 6.0]);
+                assert_eq!(vertices[2].to_array(), [14.0, 16.0, 18.0]);
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
+    }
+
+    /// Fewer than 3 indices → no triangle → `None`.
+    #[test]
+    fn degenerate_index_count_returns_none() {
+        let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        assert!(synthesize_static_trimesh(&positions, &[0, 1], 1.0).is_none());
+        assert!(synthesize_static_trimesh(&positions, &[], 1.0).is_none());
+    }
+
+    /// Triangles that reference out-of-range vertices are dropped (a
+    /// corrupt index buffer must not reach parry3d's trimesh builder,
+    /// which would panic). When every triangle is out of range the
+    /// result is `None`.
+    #[test]
+    fn out_of_range_indices_are_dropped() {
+        let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        // Second triangle references vertex 9 (out of range, only 3
+        // verts). First triangle is valid.
+        let indices = [0u32, 1, 2, 0, 1, 9];
+        let (shape, _) =
+            synthesize_static_trimesh(&positions, &indices, 1.0).expect("one valid triangle");
+        match shape {
+            CollisionShape::TriMesh { indices, .. } => {
+                assert_eq!(indices, vec![[0, 1, 2]], "out-of-range triangle dropped");
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
+        // All-out-of-range → None.
+        let all_bad = [9u32, 10, 11];
+        assert!(synthesize_static_trimesh(&positions, &all_bad, 1.0).is_none());
+    }
 }
