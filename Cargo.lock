@@ -411,6 +411,7 @@ dependencies = [
  "byroredux-plugin",
  "byroredux-renderer",
  "byroredux-scripting",
+ "byroredux-sfmaterial",
  "byroredux-spt",
  "byroredux-ui",
  "env_logger",

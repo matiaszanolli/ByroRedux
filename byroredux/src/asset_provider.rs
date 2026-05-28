@@ -4,6 +4,7 @@ use byroredux_bgsm::template::ResolvedMaterial;
 use byroredux_bgsm::{BgemFile, TemplateCache, TemplateResolver};
 use byroredux_nif::import::{ImportedMesh, MeshResolver};
 use byroredux_renderer::VulkanContext;
+use byroredux_sfmaterial::ComponentDatabaseFile;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -478,6 +479,19 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
                 match Archive::open(path) {
                     Ok(a) => {
                         log::info!("Opened materials archive: '{}'", path);
+                        // #1289 / SF-D3-NEW-01 — opportunistically extract
+                        // `materials\materialsbeta.cdb` (Starfield's single
+                        // binary component database holding every vanilla
+                        // material). Non-Starfield archives don't ship this
+                        // file; extraction returns an Err which we silently
+                        // ignore (FO4's `Fallout4 - Materials.ba2` has no
+                        // CDB). The CDB is loaded once per provider so
+                        // subsequent `--materials-ba2` flags re-extract +
+                        // re-parse on a hit; intentional (matches
+                        // `push_archive`'s replacement semantics).
+                        if let Ok(bytes) = a.extract("materials\\materialsbeta.cdb") {
+                            provider.load_starfield_cdb(&bytes);
+                        }
                         provider.push_archive(a);
                     }
                     Err(e) => log::warn!("Failed to open materials archive: {}", e),
@@ -614,6 +628,19 @@ pub(crate) struct MaterialProvider {
     /// Paths we've already warned about so a broken file doesn't spam
     /// the log on every cell load. Bounded by `MAX_FAILED_PATHS`.
     failed_paths: HashSet<String>,
+    /// Starfield `materialsbeta.cdb` — single binary Component Database
+    /// holding every vanilla Starfield material. Populated by
+    /// [`Self::load_starfield_cdb`] when `Starfield - Materials.ba2`
+    /// is opened. `None` for non-Starfield content. #1289 / SF-D3-NEW-01.
+    ///
+    /// Phase 1 (this commit): presence-only — the CDB is parsed and held
+    /// so [`merge_bgsm_into_mesh`]'s `.mat` arm has confirmation that
+    /// Starfield material authoring is loaded before flipping `is_pbr`.
+    /// Phase 2 (future): walk the 1.44M-instance tree to build a
+    /// `material_path → MaterialFields` lookup so per-material metalness
+    /// / roughness / texture paths flow into `ImportedMesh` (mirrors the
+    /// FO4 BGSM `resolve_bgsm` per-field translation already wired below).
+    sf_cdb: Option<Arc<ComponentDatabaseFile>>,
 }
 
 /// #951 / SAFE-26 — bounded-cache caps for `MaterialProvider`. Sized to
@@ -629,11 +656,52 @@ impl MaterialProvider {
             bgsm_cache: TemplateCache::new(256),
             bgem_cache: HashMap::new(),
             failed_paths: HashSet::new(),
+            sf_cdb: None,
         }
     }
 
     fn push_archive(&mut self, archive: Archive) {
         self.archives.push(archive);
+    }
+
+    /// True once the Starfield Component Database has been loaded.
+    /// Drives the `.mat` arm in [`merge_bgsm_into_mesh`] — flipping
+    /// `mesh.is_pbr = true` on `.mat` material paths only when the CDB
+    /// is present means modded `.mat` paths against a non-Starfield
+    /// archive set don't accidentally route to Disney BSDF.
+    /// #1289 / SF-D3-NEW-01.
+    pub(crate) fn has_starfield_cdb(&self) -> bool {
+        self.sf_cdb.is_some()
+    }
+
+    /// Parse the Starfield `materialsbeta.cdb` payload and hold it on
+    /// `self`. Idempotent: a second call replaces the existing CDB
+    /// (matches the archive-replacement semantics of `push_archive`).
+    /// Logs the class + instance count on success; on parse failure
+    /// the CDB stays at `None` and `has_starfield_cdb` keeps reporting
+    /// false. #1289 / SF-D3-NEW-01.
+    pub(crate) fn load_starfield_cdb(&mut self, bytes: &[u8]) {
+        match ComponentDatabaseFile::parse(bytes) {
+            Ok(cdb) => {
+                log::info!(
+                    "Starfield CDB loaded: {} classes / {} instances ({} bytes). \
+                     `.mat` material paths on NIFs will route through Disney BSDF \
+                     (Phase 1 — per-field extraction is the deferred Phase 2 follow-up).",
+                    cdb.classes.len(),
+                    cdb.instances.len(),
+                    bytes.len(),
+                );
+                self.sf_cdb = Some(Arc::new(cdb));
+            }
+            Err(e) => {
+                log::warn!(
+                    "Starfield CDB parse failed ({} bytes): {}. \
+                     Starfield content will fall back to legacy Lambert shading.",
+                    bytes.len(),
+                    e,
+                );
+            }
+        }
     }
 
     fn extract_from_archives(&self, path: &str) -> Option<Vec<u8>> {
@@ -874,6 +942,35 @@ pub(crate) fn merge_bgsm_into_mesh(
             *slot = Some(pool.intern(value));
             *touched = true;
         }
+    }
+
+    // #1289 / SF-D3-NEW-01 — Starfield `.mat` arm. Starfield material
+    // paths captured by the NIF stopcond (`crates/nif/src/blocks/
+    // shader.rs::is_material_path`) end in `.mat`. The actual material
+    // data lives in the binary Component Database at
+    // `materials\materialsbeta.cdb` inside `Starfield - Materials.ba2`,
+    // loaded once at provider init via [`load_starfield_cdb`].
+    //
+    // Phase 1 (this commit): flip `mesh.is_pbr = true` so
+    // `pack_bgsm_material_flags` packs `MAT_FLAG_PBR_BSDF` and
+    // `triangle.frag` routes Starfield content through the Disney BSDF
+    // path instead of the legacy Lambert + simple-GGX path (the audit
+    // FAIL closure). Defaults for metalness / roughness / textures
+    // stay at the NIF-derived values — better than Lambert but still
+    // approximate; Phase 2 will walk the CDB to extract authored values.
+    //
+    // The CDB-presence gate (`has_starfield_cdb`) prevents accidental
+    // PBR routing for modded `.mat` paths against a non-Starfield
+    // archive set (FO4 / FNV cells with a stray mod-authored `.mat`
+    // shouldn't get Disney BSDF).
+    if path.ends_with(".mat") && provider.has_starfield_cdb() {
+        mesh.is_pbr = true;
+        // `from_bgsm` deliberately NOT set — that flag gates BGSM
+        // spec-glossiness translation (FO4-specific format convention).
+        // Starfield .mat authors metalness/roughness directly; the
+        // shader's legacy classify_pbr fallback handles the missing
+        // override gracefully until Phase 2 ships authored values.
+        return true;
     }
 
     // BGSM/BGEM scalar-override state. The `Option<String>` slots use
@@ -2197,6 +2294,215 @@ mod tests {
         assert_ne!(
             ext_kind, magic_kind,
             "extension (.bgsm) and magic (BGEM) must disagree — this is the mismatch case"
+        );
+    }
+
+    // ── #1289 / SF-D3-NEW-01 — Starfield `.mat` arm in
+    //   `merge_bgsm_into_mesh`. Verifies the audit-fail closure: a
+    //   Starfield-shaped mesh (`.mat` material path) flips `is_pbr`
+    //   when (and only when) the Component Database is loaded.
+
+    fn imported_mesh_with_material_path(
+        pool: &mut byroredux_core::string::StringPool,
+        path: &str,
+    ) -> ImportedMesh {
+        // Empty-but-valid `ImportedMesh`; the merge helper only touches
+        // material-flow fields. `ImportedMesh` has no `Default` impl
+        // (every field is concretely meaningful), so we hand-construct
+        // — mirrors the same shape as `empty_mesh()` in
+        // `pack_bgsm_material_flags_tests` (`byroredux/src/cell_loader.rs`).
+        ImportedMesh {
+            positions: Vec::new(),
+            colors: Vec::new(),
+            normals: Vec::new(),
+            tangents: Vec::new(),
+            uvs: Vec::new(),
+            indices: Vec::new(),
+            translation: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+            texture_path: None,
+            material_path: Some(pool.intern(path)),
+            name: None,
+            has_alpha: false,
+            src_blend_mode: 6,
+            dst_blend_mode: 7,
+            alpha_test: false,
+            alpha_threshold: 0.0,
+            alpha_test_func: 6,
+            two_sided: false,
+            is_decal: false,
+            normal_map: None,
+            glow_map: None,
+            detail_map: None,
+            gloss_map: None,
+            dark_map: None,
+            parallax_map: None,
+            env_map: None,
+            env_mask: None,
+            specular_map: None,
+            lighting_map: None,
+            flow_map: None,
+            wrinkle_map: None,
+            is_pbr: false,
+            has_translucency: false,
+            model_space_normals: false,
+            from_bgsm: false,
+            bgem_glass: false,
+            metalness_override: None,
+            roughness_override: None,
+            translucency_subsurface_color: [0.0; 3],
+            translucency_transmissive_scale: 0.0,
+            translucency_turbulence: 0.0,
+            translucency_thick_object: false,
+            translucency_mix_albedo: false,
+            parallax_max_passes: None,
+            parallax_height_scale: None,
+            vertex_color_mode: 2,
+            texture_clamp_mode: 0,
+            emissive_color: [0.0; 3],
+            emissive_mult: 0.0,
+            emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,
+            specular_color: [1.0; 3],
+            diffuse_color: [1.0; 3],
+            ambient_color: [1.0; 3],
+            specular_strength: 1.0,
+            glossiness: 80.0,
+            refraction_strength: 0.0,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            grayscale_to_palette_scale: 1.0,
+            fresnel_power: 5.0,
+            uv_offset: [0.0; 2],
+            uv_scale: [1.0; 2],
+            mat_alpha: 1.0,
+            env_map_scale: 1.0,
+            parent_node: None,
+            skin: None,
+            z_test: true,
+            z_write: true,
+            z_function: 3,
+            local_bound_center: [0.0; 3],
+            local_bound_radius: 0.0,
+            effect_shader: None,
+            material_kind: 0,
+            shader_type_fields: byroredux_nif::import::ShaderTypeFields::default(),
+            no_lighting_falloff: None,
+            wireframe: false,
+            flat_shading: false,
+            flags: 0,
+            bs_lod_cutoffs: None,
+            bs_sub_index: None,
+        }
+    }
+
+    /// Synthetic minimal CDB: BETH magic + header + STRT (empty) + TYPE
+    /// chunk declaring zero types. Sufficient for `load_starfield_cdb`
+    /// to mark `has_starfield_cdb() == true` without needing 105 MB of
+    /// real Starfield data.
+    ///
+    /// `chunkCount` field is "chunks INCLUDING the BETH header" per
+    /// `crates/sfmaterial/src/reader.rs::index_chunks` line 143-147 —
+    /// BETH + STRT + TYPE = 3, so the post-header chunk loop reads 2.
+    fn minimal_cdb_bytes() -> Vec<u8> {
+        let mut buf = Vec::with_capacity(40);
+        // 16-byte header: magic + headerSize + fileVersion + chunkCount=3.
+        buf.extend_from_slice(&0x48544542u32.to_le_bytes()); // BETH
+        buf.extend_from_slice(&8u32.to_le_bytes());          // headerSize
+        buf.extend_from_slice(&4u32.to_le_bytes());          // fileVersion
+        buf.extend_from_slice(&3u32.to_le_bytes());          // chunkCount (incl BETH)
+        // STRT chunk: type + size + empty payload.
+        buf.extend_from_slice(b"STRT");
+        buf.extend_from_slice(&0u32.to_le_bytes());          // size = 0
+        // TYPE chunk: type + size=4 + u32 type_count=0.
+        buf.extend_from_slice(b"TYPE");
+        buf.extend_from_slice(&4u32.to_le_bytes());          // size = 4
+        buf.extend_from_slice(&0u32.to_le_bytes());          // type_count = 0
+        buf
+    }
+
+    /// Audit-fail closure: a `.mat` path on a Starfield mesh with the
+    /// CDB loaded must flip `is_pbr=true` so `pack_bgsm_material_flags`
+    /// packs `MAT_FLAG_PBR_BSDF` and `triangle.frag` routes through
+    /// Disney BSDF instead of legacy Lambert.
+    #[test]
+    fn merge_sets_is_pbr_on_mat_path_when_cdb_loaded() {
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut provider = MaterialProvider::new();
+        provider.load_starfield_cdb(&minimal_cdb_bytes());
+        assert!(
+            provider.has_starfield_cdb(),
+            "minimal CDB payload must mark the provider as Starfield-loaded"
+        );
+
+        let mut mesh = imported_mesh_with_material_path(
+            &mut pool,
+            "materials/setpieces/cargobay.mat",
+        );
+        assert!(!mesh.is_pbr, "fresh ImportedMesh defaults to is_pbr=false");
+
+        let touched = merge_bgsm_into_mesh(&mut mesh, &mut provider, &mut pool);
+
+        assert!(touched, ".mat arm must report touched=true");
+        assert!(
+            mesh.is_pbr,
+            "Starfield .mat path must flip is_pbr=true → MAT_FLAG_PBR_BSDF in shader"
+        );
+        // `from_bgsm` deliberately stays false — that flag gates BGSM
+        // spec-glossiness translation which is wrong for Starfield .mat
+        // (metalness/roughness direct authoring).
+        assert!(!mesh.from_bgsm, "Starfield path must NOT set from_bgsm");
+    }
+
+    /// CDB-presence gate: a `.mat` path against a non-Starfield archive
+    /// set (no CDB loaded) must NOT flip `is_pbr`. Modded `.mat` paths
+    /// on FO4 / FNV / Skyrim cells shouldn't accidentally route to
+    /// Disney BSDF.
+    #[test]
+    fn merge_skips_mat_path_when_cdb_absent() {
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut provider = MaterialProvider::new();
+        // No `load_starfield_cdb` call.
+        assert!(!provider.has_starfield_cdb());
+
+        let mut mesh = imported_mesh_with_material_path(
+            &mut pool,
+            "materials/modded.mat",
+        );
+        let touched = merge_bgsm_into_mesh(&mut mesh, &mut provider, &mut pool);
+
+        // Falls through past the .mat arm; bgsm/bgem dispatch fails
+        // because the path doesn't match either suffix; returns false
+        // (no archive to resolve from anyway).
+        assert!(!touched, "no CDB + no archives → no merge work");
+        assert!(!mesh.is_pbr, ".mat path without CDB must NOT flip is_pbr");
+    }
+
+    /// A `.bgsm` path must NOT enter the Starfield arm even when the
+    /// CDB is loaded — the FO4 BGSM dispatch wins, preserving
+    /// spec-glossiness translation.
+    #[test]
+    fn mat_arm_does_not_steal_bgsm_dispatch() {
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut provider = MaterialProvider::new();
+        provider.load_starfield_cdb(&minimal_cdb_bytes());
+
+        let mut mesh = imported_mesh_with_material_path(
+            &mut pool,
+            "materials/setdressing/metallocker01.bgsm",
+        );
+        let _ = merge_bgsm_into_mesh(&mut mesh, &mut provider, &mut pool);
+
+        // The .bgsm path falls past the .mat arm into BGSM dispatch,
+        // which fails on the missing archive (no .bgsm to extract).
+        // `is_pbr` stays at its default — BGSM dispatch doesn't flip
+        // it without a successful resolve.
+        assert!(
+            !mesh.is_pbr,
+            ".bgsm path must not be hijacked by the Starfield arm"
         );
     }
 }
