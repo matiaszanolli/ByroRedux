@@ -95,16 +95,33 @@ is game-agnostic downstream.
 spot) with a derived effective radius; the renderer never inspects the source block
 type.
 
-### Nodes — **LEAKY (next session candidate)**
+### Nodes — **triaged (2026-05-28)**
 
-`ImportedNode` carries a pile of *captured-but-never-consumed* raw passthroughs:
-`bs_value_node`, `bs_ordered_node`, `tree_bones`, `range_kind`, `billboard_mode`
-(consumed), `no_lighting_falloff` (on meshes), raw `flags`. These are raw-tier
-fields surfaced on the import struct with no canonical translation and, in several
-cases, no consumer at all. The canonical move: translate each to a resolved ECS
-concept (e.g. `RenderOrderHint` from `bs_ordered_node`, LOD/billboard hints from
-`bs_value_node`) **or** formally record it as deferred with a tracking issue —
-not leave it as an ambiguous half-plumbed field.
+The live node data is canonical: `name`, `flags` (→ `SceneFlags`), `collision`
+(→ Havok-transformed `CollisionShape`/`RigidBodyData`), and `billboard_mode`
+(→ `Billboard`) are all consumed at the spawn sites. Unlike materials, the
+`ImportedNode` → ECS step is **not** a duplicated literal to dedupe: the two load
+paths handle nodes structurally differently (the loose-NIF loader spawns the full
+NiNode hierarchy as entities; the cell loader uses a flattened placement-root), so
+there is no single `translate_node` boundary to collapse them into.
+
+Four fields are **raw-tier-parked with translation formally deferred** — verified
+(2026-05-28) to have *zero* engine consumers. They are NOT leaks: they sit on the
+raw `ImportedNode` (which the tier model permits to carry per-game data) and have
+**not** reached any canonical ECS component. Each is blocked on a consumer feature
+that does not exist yet; translating them now would mean inventing ECS components
+nothing reads. Deferred deliberately, not overlooked:
+
+| Field | Source block | Authored data | Blocked on (future consumer) |
+|---|---|---|---|
+| `bs_value_node` | `BSValueNode` | LOD-distance override / billboard-mode hint (FO3/FNV) | M35 LOD selector / billboard hinting |
+| `bs_ordered_node` | `BSOrderedNode` | alpha-sort bound + draw-order hint | `RenderOrderHint` + `build_render_data` sort-key tweak |
+| `tree_bones` | `BSTreeNode` | SpeedTree branch/trunk bone names | SpeedTree wind/bend simulation |
+| `range_kind` | `BSRange/DamageStage/Blast/DebrisNode` | destructible/blast/debris discriminator | destructible-switching / blast / debris systems |
+
+When any of those consumer features lands, its slice translates the parked field into
+the canonical ECS concept (the data is already captured, so no parser/import change is
+needed then). Until then this table is the record that the gap is known and bounded.
 
 ### Particles — **emitter base params converged (2026-05-28)**
 
@@ -238,9 +255,9 @@ Do **not** unify the scale before those two rows have real numbers.
 ## 5. Rollout order (later sessions)
 
 1. ~~Materials~~ — done (this session).
-2. **Nodes / passthroughs** — translate `bs_ordered_node` / `bs_value_node` /
-   `tree_bones` / `range_kind` / `no_lighting_falloff` to resolved ECS concepts or
-   formally defer each with a tracking issue.
+2. ~~Nodes / passthroughs~~ — triaged (2026-05-28): the four unconsumed fields are
+   formally recorded as raw-tier-parked with deferred translation (see the Nodes
+   leak-inventory entry), each blocked on a not-yet-existing consumer feature.
 3. ~~Particles (emitter base)~~ — done (2026-05-28): authored kinematic + lifetime
    params override the preset. Follow-ups: spawn rate, grow/fade size, multi-emitter
    attribution.
