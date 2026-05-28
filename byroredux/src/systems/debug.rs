@@ -34,12 +34,16 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
         // #1258 — `draws=N/Mb/Kc` = N input DrawCommands / M post-merge
         // batches / K actual GPU calls. Pre-fix this was a single `draws=N`
         // that read like a GPU call count but stored the batcher input.
+        // #1284 — `skin=L/M+S` exposes SkinSlotPool live-slot count,
+        // cap, and cumulative overflow demand so cap-sizing decisions
+        // are data-driven. `S=0` is the healthy state.
         log::info!(
             target: "engine::stats",
-            "fps={:.0} avg={:.0} dt={:.2}ms entities={} meshes={} textures={} draws={}/{}b/{}c",
+            "fps={:.0} avg={:.0} dt={:.2}ms entities={} meshes={} textures={} draws={}/{}b/{}c skin={}/{}+{}",
             stats.fps, stats.avg_fps(), stats.frame_time_ms,
             stats.entity_count, stats.mesh_count, stats.texture_count,
             stats.draw_command_count, stats.batch_count, stats.indirect_call_count,
+            stats.skin_pool_live, stats.skin_pool_max, stats.skin_pool_overflow_attempts,
         );
     }
 }

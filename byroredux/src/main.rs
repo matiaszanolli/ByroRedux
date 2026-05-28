@@ -865,12 +865,12 @@ impl App {
             gpu_lights: Vec::new(),
             bone_world: Vec::new(),
             // M29.6 — slot pool capacity. The persistent bind_inverses
-            // SSBO is sized for MAX_TOTAL_BONES bones (32768 with the
-            // current 2 MB target). Each pool slot occupies MBPM
-            // (currently 144) bones, and slot 0 is reserved for the
-            // global identity. So allocatable slot count =
-            // (MAX_TOTAL_BONES / MBPM) - 1 = floor(32768 / 144) - 1 =
-            // 226. Allocating one slot beyond would push the palette
+            // SSBO is sized for MAX_TOTAL_BONES bones (196608 after the
+            // #1284 step-2 bump, 12 MB target). Each pool slot occupies
+            // MBPM (currently 144) bones, and slot 0 is reserved for
+            // the global identity. So allocatable slot count =
+            // (MAX_TOTAL_BONES / MBPM) - 1 = floor(196608 / 144) - 1 =
+            // 1365. Allocating one slot beyond would push the palette
             // past the SSBO boundary.
             skin_slot_pool: byroredux_core::ecs::resources::SkinSlotPool::new(
                 ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
@@ -1943,6 +1943,12 @@ impl ApplicationHandler for App {
                 stats.mesh_count = ctx.mesh_registry.len() as u32;
                 stats.texture_count = ctx.texture_registry.len() as u32;
             }
+            // #1284 — mirror SkinSlotPool telemetry into DebugStats so
+            // `log_stats_system` (ECS, no App access) can surface it.
+            stats.skin_pool_live = self.skin_slot_pool.live_slot_count();
+            stats.skin_pool_max = self.skin_slot_pool.max_slot();
+            stats.skin_pool_overflow_attempts =
+                self.skin_slot_pool.overflow_attempt_count();
         }
 
         // Refresh renderer-side scratch-Vec telemetry (R6). Reuses the

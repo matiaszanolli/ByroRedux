@@ -12,22 +12,46 @@ use ash::vk;
 pub(super) const MAX_LIGHTS: usize = 512;
 
 /// Maximum bones we can upload per frame across all skinned meshes.
-/// 32768 × 64 B = 2 MB/frame × 3 frames-in-flight = 6 MB total. Slot 0
-/// is a reserved identity fallback (used by rigid vertices through
-/// the sum-of-weights escape hatch and by `SkinnedMesh` bones that
-/// failed to resolve). The remaining slots are assigned sequentially
-/// per skinned mesh, with each mesh consuming `MAX_BONES_PER_MESH`
-/// (128) slots for simplicity. That gives ~255 skinned meshes per
-/// frame — covers ~36 NPCs at 7 skinned meshes each (skeleton + body
-/// + 6 sub-meshes) plus rigid scene content. Pre-M41.0 the cap was
-/// 4096 (~31 meshes) which suited the no-NPC-spawn baseline; once
-/// M41.0 Phase 1b started spawning multiple actors per cell the
-/// silent-bind-pose-fallback hid spawned NPCs (FNV Prospector
-/// rendered the first ~4 actors then dropped the rest). The proper
-/// fix is variable-stride packing (M29.5); this constant just buys
+/// 196608 × 64 B = 12 MB/frame × 3 frames-in-flight = 36 MB total.
+/// Slot 0 is a reserved identity fallback (used by rigid vertices
+/// through the sum-of-weights escape hatch and by `SkinnedMesh` bones
+/// that failed to resolve). The remaining slots are assigned
+/// sequentially per skinned mesh, with each mesh consuming
+/// `MAX_BONES_PER_MESH` (144) slots for simplicity. That gives 1365
+/// skinned-mesh slots per frame. The compute shader has an early-out
+/// for unused slots (see `skin_palette.comp:33-34,68-76`) so unused
+/// tail headroom is free at dispatch time; only the SSBO bytes are
+/// paid up-front, and 36 MB is < 1 % of the 6 GB VRAM target.
+///
+/// History of bumps (each driven by a real-content overflow):
+/// - Pre-M41.0: 4096 bones (~31 meshes). Suited the no-NPC-spawn
+///   baseline. FNV Prospector with M41.0 Phase 1b NPC spawn exposed
+///   "rendered the first ~4 actors then dropped the rest".
+/// - M41.0 → #1284-step-1: 32768 bones / 226 slots. Covered ~36 NPCs
+///   at 7 skinned meshes each plus rigid scene content. FNV
+///   `FreesideAtomicWrangler` (Atomic Wrangler casino, densest NPC
+///   interior in FNV — Garret twins + dealers + escorts + patrons)
+///   exposed 260 distinct skinned entities; 34 spilled and rendered
+///   in bind pose with no RT shadows.
+/// - #1284-step-1: 49152 bones / 340 slots. Picked from the static
+///   estimate of ~260 entities × 1.3 headroom. Subsequently
+///   under-shot the actual observed demand once the bone-palette
+///   bottleneck cleared.
+/// - #1284-step-2 (current): 196608 bones / 1365 slots. Sized from
+///   the instrumented `overflow_attempts` counter (added to
+///   `DebugStats` in the same change), which surfaced ~1040 distinct
+///   `SkinnedMesh` entity attempts per frame at Atomic Wrangler peak
+///   — far higher than the static NPC × sub-mesh estimate suggested.
+///   1365 gives ~30 % headroom over observed demand and ~4× headroom
+///   over the static estimate, covering Skyrim Whiterun-Dragonsreach
+///   (5 885 entities) and FO4 Diamond City Market without re-bumping.
+///
+/// The proper structural fix is variable-stride packing (M29.5 —
+/// pack `bind_inverses` by actual bone count rather than reserving
+/// `MAX_BONES_PER_MESH` slack per slot). This constant just buys
 /// headroom until then. See `bone_palette` overflow path in
-/// `byroredux/src/render.rs:216`.
-pub const MAX_TOTAL_BONES: usize = 32768;
+/// `byroredux/src/render/skinned.rs`.
+pub const MAX_TOTAL_BONES: usize = 196608;
 
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
@@ -39,19 +63,27 @@ pub const IDENTITY_BONE_SLOT: u32 = 0;
 /// uploads at this count and defers the excess to the next frame.
 ///
 /// Pre-#1198 this was 16 (matching the typical heavy-cell-load count).
-/// Bumped to 227 (= `MAX_TOTAL_BONES / MAX_BONES_PER_MESH` =
-/// `32768 / 144`) — the actual slot-pool capacity. The pre-fix cap
-/// produced a one-frame bind-pose glitch when more than 16 skinned
-/// NPCs first-sighted in a single frame (FO4 MedTek: 23 SkinnedMesh
+/// Bumped to 227 (= `MAX_TOTAL_BONES (32768) / MAX_BONES_PER_MESH (144)`)
+/// to match the then slot-pool capacity. The pre-fix cap produced a
+/// one-frame bind-pose glitch when more than 16 skinned NPCs
+/// first-sighted in a single frame (FO4 MedTek: 23 SkinnedMesh
 /// entities; FO3 Megaton REFR spill on first entry). Per #1191's
 /// identity-fallback contract the deferred entities rendered in bind
 /// pose for one frame, then snapped to skinned pose on frame N+1.
 ///
+/// #1284 follow-up: re-bumped to 1366 (= `196608 / 144`) so the
+/// per-frame upload cap continues to match the slot-pool capacity
+/// after the `MAX_TOTAL_BONES` bump. FNV `FreesideAtomicWrangler`
+/// is the densest first-sight workload (~1040 distinct skinned entity
+/// allocations per frame at Atomic Wrangler peak per the
+/// `DebugStats::skin_pool_overflow_attempts` counter added in the
+/// same change).
+///
 /// Staging buffer size at this value is
-/// `227 × MAX_BONES_PER_MESH (144) × 64 B ≈ 2 MB` — trivial on the
+/// `1366 × MAX_BONES_PER_MESH (144) × 64 B ≈ 12 MB` — < 1 % of the
 /// 6 GB VRAM target. With the bump the per-frame upload cap matches
 /// the slot pool's actual capacity, eliminating the one-frame glitch.
-pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = 227;
+pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = 1366;
 
 /// Maximum instances per frame — `0x40000` (262144). Sized to
 /// absorb the densest observed Skyrim/FO4 city cells (Solitude,

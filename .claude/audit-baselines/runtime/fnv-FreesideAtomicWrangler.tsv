@@ -1,0 +1,14 @@
+# regenerated: 2026-05-28 (post-#1284 step-2)
+# captured at frame ~240 via byro-dbg telemetry, MAX_TOTAL_BONES=196608
+entities_total              9250
+tex_missing_unique_paths    1
+mesh_cache_failed_count     11
+light_count_directional     1
+skin_pool_live              686
+skin_pool_max               1365
+skin_pool_overflow_attempts 0
+bench_fps_p50               141.4
+bench_fps_avg               147.3
+bench_draws_cmds            2722
+bench_draws_batches         104
+bench_draws_gpu_calls       10

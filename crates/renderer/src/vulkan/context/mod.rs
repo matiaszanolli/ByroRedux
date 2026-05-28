@@ -36,26 +36,46 @@ use std::sync::{Arc, Mutex};
 
 /// Maximum number of skinned-mesh `SkinSlot`s the per-skinned-entity
 /// pre-skin + BLAS refit pool can hold simultaneously. Each slot costs
-/// `3 × MAX_FRAMES_IN_FLIGHT = 6` storage-buffer descriptors. The
-/// architectural ceiling is `MAX_TOTAL_BONES / MAX_BONES_PER_MESH =
-/// 32768 / 144 = 227` (the bone-palette SSBO ceiling).
+/// `3 × MAX_FRAMES_IN_FLIGHT = 6` storage-buffer descriptors. Pinned
+/// to the bone-palette pool's architectural ceiling
+/// (`(MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1 = (196608 / 144) - 1 = 1365`
+/// after #1284 step-2) so the descriptor pool never becomes the
+/// dominant bottleneck — if you only bump one, the other becomes the
+/// invisible cap and a fraction of skinned NPCs silently lose RT
+/// shadows. Variable-stride packing (M29.5) is the proper structural
+/// fix.
 ///
 /// History:
 /// - Pre-#900: 32. Prospector overflowed by 2 entities every frame.
 /// - #900: bumped to 64 for M41-EQUIP Prospector (~30 skinned entities,
 ///   ~2× headroom).
-/// - 2026-05-26 (this change): bumped to 192 after the saloon scene
-///   was observed running with 64 allocated + 51 in `failed_skin_slots`
+/// - 2026-05-26: bumped to 192 after the saloon scene was observed
+///   running with 64 allocated + 51 in `failed_skin_slots`
 ///   (`TLAS: ... 51 lack BLAS — skinned=51`). LRU eviction only fires
 ///   for idle slots, and every slot is in-use every frame in a populated
 ///   interior, so `failed_skin_slots` never clears and 51 NPC sub-meshes
-///   permanently lose RT shadows. 192 gives ~67% headroom over the 115
-///   observed simultaneous demand while staying comfortably under the
-///   227-slot architectural ceiling. Output-buffer memory is lazily
-///   allocated per `create_slot`, so unused headroom is free; only the
-///   descriptor pool sizing (192 × 2 × 3 = 1152 storage-buffer descs)
-///   is paid up-front, and that's well below typical Vulkan limits.
-pub const SKIN_MAX_SLOTS: u32 = 192;
+///   permanently lose RT shadows.
+/// - #1284 step-1: pinned to the bone-palette architectural ceiling
+///   (then 340). Atomic Wrangler casino (FNV `FreesideAtomicWrangler`)
+///   was the first cell observed where the bone-palette bump exposed
+///   the descriptor pool as the new dominant cap: SkinSlotPool grew
+///   226 → 340 but `SKIN_MAX_SLOTS` stayed at 192, so 148 NPCs failed
+///   `create_slot` (descriptor sets) and lost RT shadows. Pinning the
+///   two caps together avoids re-firing this exact bug on the next
+///   bump.
+/// - #1284 step-2: tracks the bone-palette bump to 1365 once
+///   instrumented telemetry surfaced ~1040 distinct `SkinnedMesh`
+///   allocation attempts per frame at Atomic Wrangler peak —
+///   3× higher than the static NPC × sub-mesh estimate suggested.
+///
+/// Output-buffer memory is lazily allocated per `create_slot`, so
+/// unused headroom is free; only the descriptor pool sizing
+/// (1365 × 2 × 3 = 8190 storage-buffer descs) is paid up-front, and
+/// that's still well below typical Vulkan limits (~1 M storage-buffer
+/// descs per pool on modern desktop drivers).
+pub const SKIN_MAX_SLOTS: u32 = ((crate::vulkan::scene_buffer::MAX_TOTAL_BONES
+    / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
+    - 1) as u32;
 
 /// A single draw command: which mesh to draw, with what texture, and what model matrix.
 pub struct DrawCommand {

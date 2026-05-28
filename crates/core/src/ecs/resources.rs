@@ -250,6 +250,25 @@ pub struct DebugStats {
     /// the user actually wants when asking "how expensive is the
     /// frame?" — the real GPU call count. #1258 / PERF-D3-NEW-03.
     pub indirect_call_count: u32,
+    /// `SkinSlotPool` live-slot count last frame (== entities currently
+    /// allocated a bone-palette slot, excluding the reserved slot 0).
+    /// Mirrored from `App::skin_slot_pool` each frame because the pool
+    /// itself lives on the App struct rather than the ECS world.
+    /// #1284.
+    pub skin_pool_live: u32,
+    /// `SkinSlotPool` capacity ceiling
+    /// (`(MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1`). Pinned via
+    /// `SKIN_MAX_SLOTS` to the bone-palette architectural ceiling so
+    /// the descriptor pool never silently becomes the dominant cap.
+    /// #1284.
+    pub skin_pool_max: u32,
+    /// `SkinSlotPool` cumulative spill count — how many `allocate()`
+    /// calls returned `None` since engine start. `0` is the healthy
+    /// state; any non-zero value means at least one entity is rendering
+    /// in bind pose for lack of a slot. Drives the cap-sizing feedback
+    /// loop on #1284: capture this from the `audit-runtime` baseline to
+    /// know how far the next bump needs to go.
+    pub skin_pool_overflow_attempts: u32,
 }
 
 impl Resource for DebugStats {}
@@ -270,6 +289,9 @@ impl Default for DebugStats {
             draw_command_count: 0,
             batch_count: 0,
             indirect_call_count: 0,
+            skin_pool_live: 0,
+            skin_pool_max: 0,
+            skin_pool_overflow_attempts: 0,
         }
     }
 }
@@ -617,11 +639,11 @@ impl Resource for SkinCoverageStats {}
 ///   cleared — overwritten by the next `allocate`'s upload.
 ///
 /// Capacity: `max_skinned` is set at construction (typical value is
-/// `MAX_TOTAL_BONES / MAX_BONES_PER_MESH`, currently 32768 / 144 =
-/// 227); `allocate` returns `None` past it. The caller is expected to
-/// warn-once and fall back to bind-pose rendering for the overflowed
-/// entity. See `BONE_PALETTE_OVERFLOW_WARNED` in
-/// `byroredux::render::skinned`.
+/// `MAX_TOTAL_BONES / MAX_BONES_PER_MESH`, currently 196608 / 144 =
+/// 1366 with slot 0 reserved → 1365 allocatable; see #1284); `allocate`
+/// returns `None` past it. The caller is expected to warn-once and
+/// fall back to bind-pose rendering for the overflowed entity. See
+/// `BONE_PALETTE_OVERFLOW_WARNED` in `byroredux::render::skinned`.
 pub struct SkinSlotPool {
     /// Stable slot ID per entity. Values are in `1..=max_slot`; slot 0
     /// is reserved.
@@ -657,6 +679,12 @@ pub struct SkinSlotPool {
     /// by the renderer to gate skin compute dispatch + skinned-BLAS
     /// refit. #1195 / PERF-DIM7-01, paired with #1196 / PERF-DIM7-02.
     pose_dirty: std::collections::HashSet<super::storage::EntityId>,
+    /// Cumulative count of distinct entities that have ever attempted
+    /// allocation past `max_slot`. Drives the sizing-data feedback loop
+    /// on #1284: the one-shot warning tells you the cap was exceeded,
+    /// but not by how much. This counter lets `audit-runtime` capture
+    /// the actual demand so the next bump is sized to the data.
+    overflow_attempt_count: u32,
 }
 
 impl SkinSlotPool {
@@ -677,6 +705,7 @@ impl SkinSlotPool {
             overflow_warned: false,
             last_pose_hash: std::collections::HashMap::new(),
             pose_dirty: std::collections::HashSet::new(),
+            overflow_attempt_count: 0,
         }
     }
 
@@ -703,12 +732,16 @@ impl SkinSlotPool {
             self.next_slot += 1;
             s
         } else {
+            self.overflow_attempt_count =
+                self.overflow_attempt_count.saturating_add(1);
             if !self.overflow_warned {
                 self.overflow_warned = true;
                 log::warn!(
                     "SkinSlotPool exhausted at capacity {} (slot 0 reserved). \
                      Excess skinned entities silently fall back to bind pose. \
-                     Bump MAX_TOTAL_BONES or implement variable-stride packing.",
+                     Bump MAX_TOTAL_BONES or implement variable-stride packing. \
+                     (Subsequent spills counted silently — query \
+                     `overflow_attempt_count` for total demand.)",
                     self.max_slot,
                 );
             }
@@ -736,6 +769,24 @@ impl SkinSlotPool {
     /// `allocate`; useful for diagnostics.
     pub fn get(&self, entity: super::storage::EntityId) -> Option<u32> {
         self.entity_to_slot.get(&entity).copied()
+    }
+
+    /// Cumulative count of `allocate` calls that returned `None` (pool
+    /// was full). Drives the #1284 cap-sizing feedback loop — capture
+    /// this from `audit-runtime` baselines to know how far the
+    /// next `MAX_TOTAL_BONES` bump needs to go.
+    pub fn overflow_attempt_count(&self) -> u32 {
+        self.overflow_attempt_count
+    }
+
+    /// Number of allocatable slots currently in use (excludes slot 0).
+    pub fn live_slot_count(&self) -> u32 {
+        self.entity_to_slot.len() as u32
+    }
+
+    /// Configured capacity (slots 1..=`max_slot` are allocatable).
+    pub fn max_slot(&self) -> u32 {
+        self.max_slot
     }
 
     /// Drain up to `max` pending uploads, returning the list of slots
