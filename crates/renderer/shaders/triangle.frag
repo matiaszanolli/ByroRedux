@@ -2411,7 +2411,23 @@ void main() {
                              * vec3(mat.ambientR, mat.ambientG, mat.ambientB)
                              * (1.0 - metalness);
     vec3 metallicAmbient = sceneFlags.yzw * albedo * metalness * 0.5;
-    vec3 ambient = dielectricAmbient + metallicAmbient;
+    // Light-count-INDEPENDENT ambient fill (2026-05-27) — the decoupled
+    // replacement for the former per-light `* 0.02` stacking fill that
+    // was removed from the light loop below. The per-light version's
+    // strength scaled with nearby light count, which (a) forced it down
+    // to 0.02 to avoid multi-light overdrive and (b) gave ~0 fill to
+    // floor that ISN'T near a light — the dark, near-black between-pool
+    // areas at the Tops. Tying the fill to the cell's authored ambient
+    // (`sceneFlags.yzw`) instead makes it consistent everywhere and
+    // preserves each cell's mood (a dim casino stays dim; it just isn't
+    // crushed to black against the /PI-removed direct light). Flows the
+    // normal AO-floored, albedo-at-composite ambient path, so it's
+    // AO-modulated and tinted like the rest of the cell ambient. Only
+    // the non-DALC path (FNV/FO3/Oblivion) reads `ambient`; Skyrim DALC
+    // cells sample their authored cube and are unaffected.
+    const float AMBIENT_FILL = 1.5;
+    vec3 ambientFill = sceneFlags.yzw * AMBIENT_FILL;
+    vec3 ambient = dielectricAmbient + metallicAmbient + ambientFill;
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
 
     // ── RT reflection for metallic/glossy surfaces ──────────────────
@@ -2892,21 +2908,20 @@ void main() {
                     * unshadowedRadiance;
             }
 
-            // Per-light ambient fill. Was 0.08; reduced to 0.02 to
-            // resolve the over-saturated low-contrast lighting on
-            // interior cells with multiple cluster lights — the 0.08
-            // value stacked across 4-8 lights pushed every interior
-            // pixel into the ACES saturation band, crushing texture
-            // / normal variance into a posterized "chrome plaster"
-            // look. See user-validated diagnosis after #782.
-            //
-            // Combined with the /PI removal in commit b803b29
-            // (~3× diffuse boost for RT-shadow visibility on legacy
-            // content), the ambient stack was the dominant
-            // overdrive contributor — dropping the multiplier 4×
-            // pulls average HDR output back into ACES's linear
-            // band where soft cell ambient produces soft output.
-            Lo += lightColor * atten * albedo * 0.02;
+            // (Per-light ambient fill REMOVED here — 2026-05-27.)
+            // This used to add `lightColor * atten * albedo * 0.02` per
+            // light, so the fill strength scaled with how many lights a
+            // fragment was near. That coupling forced the multiplier
+            // down to 0.02 (from 0.08) to stop 4-8 light interiors from
+            // ACES-saturating into "chrome plaster" overdrive — which in
+            // turn starved sparse / shadowed floor (the bits NOT near a
+            // light) of any fill at all, crushing them near-black against
+            // the /PI-removed (~3×) direct light → the harsh "bright pool
+            // vs black floor" contrast at the Tops. The fill is now a
+            // single light-count-INDEPENDENT cell-ambient term
+            // (`ambientFill`, see the `ambient` assembly above), so dark
+            // areas get consistent fill regardless of nearby light count
+            // and dense rooms no longer stack into overdrive.
 
             // Stream this light into every reservoir (WRS). Interior
             // fill (`radius < 0`) already `continue`'d before
