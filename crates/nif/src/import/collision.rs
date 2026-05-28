@@ -294,6 +294,32 @@ fn resolve_shape_inner(
         });
     }
 
+    // Multi-sphere — up to 8 offset spheres approximating a volume.
+    // Each becomes a `Ball` child of a `Compound`, positioned at its
+    // (havok→engine, scaled) center. Pre-fix this fell through to the
+    // "unsupported" log and the authored collision was dropped entirely.
+    if let Some(s) = block.as_any().downcast_ref::<BhkMultiSphereShape>() {
+        let mut children = Vec::with_capacity(s.spheres.len());
+        for sph in &s.spheres {
+            let center = havok_to_engine(sph[0], sph[1], sph[2]) * scale;
+            let radius = sph[3] * scale;
+            children.push((
+                center,
+                Quat::IDENTITY,
+                Box::new(CollisionShape::Ball { radius }),
+            ));
+        }
+        return match children.len() {
+            0 => None,
+            // A single centred sphere is just a Ball — no Compound needed.
+            1 if children[0].0 == Vec3::ZERO => {
+                let (_, _, shape) = children.into_iter().next().unwrap();
+                Some(*shape)
+            }
+            _ => Some(CollisionShape::Compound { children }),
+        };
+    }
+
     // Box
     if let Some(s) = block.as_any().downcast_ref::<BhkBoxShape>() {
         let [hx, hy, hz] = s.dimensions;
@@ -358,6 +384,26 @@ fn resolve_shape_inner(
             None
         } else if children.len() == 1 {
             // Unwrap single-child compound.
+            let (_, _, shape) = children.into_iter().next().unwrap();
+            Some(*shape)
+        } else {
+            Some(CollisionShape::Compound { children })
+        };
+    }
+
+    // Convex list — like BhkListShape, a compound of convex sub-shapes
+    // (FO3/FNV/Skyrim destructibles, debris). Pre-fix this fell through
+    // to the "unsupported" log and the authored collision was dropped.
+    if let Some(s) = block.as_any().downcast_ref::<BhkConvexListShape>() {
+        let mut children = Vec::with_capacity(s.sub_shapes.len());
+        for sub_ref in &s.sub_shapes {
+            if let Some(child) = resolve_shape(scene, *sub_ref, visited) {
+                children.push((Vec3::ZERO, Quat::IDENTITY, Box::new(child)));
+            }
+        }
+        return if children.is_empty() {
+            None
+        } else if children.len() == 1 {
             let (_, _, shape) = children.into_iter().next().unwrap();
             Some(*shape)
         } else {
@@ -781,7 +827,9 @@ mod cycle_tests {
     //! same leaf shape referenced from two sibling subtrees) still
     //! resolves on both arms.
     use super::*;
-    use crate::blocks::collision::{BhkListShape, BhkSphereShape};
+    use crate::blocks::collision::{
+        BhkConvexListShape, BhkListShape, BhkMultiSphereShape, BhkSphereShape,
+    };
     use crate::blocks::NiObject;
     use crate::types::BlockRef;
 
@@ -832,6 +880,73 @@ mod cycle_tests {
         scene.blocks.push(list_shape(vec![BlockRef(0u32)]));
         let mut visited = HashSet::new();
         let _ = resolve_shape(&scene, BlockRef(0u32), &mut visited);
+    }
+
+    #[test]
+    fn multi_sphere_shape_resolves_to_compound_of_balls() {
+        // Two offset spheres → Compound with two Ball children at their
+        // (havok→engine, scaled) centers. Pre-fix this dropped entirely.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 2.0;
+        scene.blocks.push(Box::new(BhkMultiSphereShape {
+            material: 0,
+            shape_property: [0; 3],
+            // havok (x,y,z,r); havok_to_engine maps to engine axes.
+            spheres: vec![[1.0, 0.0, 0.0, 0.5], [0.0, 1.0, 0.0, 0.25]],
+        }));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::Compound { children }) => {
+                assert_eq!(children.len(), 2);
+                // radii scaled by havok_scale.
+                for (_, _, shape) in &children {
+                    match **shape {
+                        CollisionShape::Ball { radius } => {
+                            assert!(radius == 1.0 || radius == 0.5, "got {radius}");
+                        }
+                        ref other => panic!("expected Ball child, got {other:?}"),
+                    }
+                }
+            }
+            other => panic!("expected Compound of Balls, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_centred_multi_sphere_unwraps_to_ball() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkMultiSphereShape {
+            material: 0,
+            shape_property: [0; 3],
+            spheres: vec![[0.0, 0.0, 0.0, 3.0]], // centred → plain Ball
+        }));
+        let mut visited = HashSet::new();
+        assert!(matches!(
+            resolve_shape(&scene, BlockRef(0u32), &mut visited),
+            Some(CollisionShape::Ball { radius }) if radius == 3.0
+        ));
+    }
+
+    #[test]
+    fn convex_list_shape_resolves_to_compound() {
+        // ConvexList of two spheres → Compound, like BhkListShape.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkConvexListShape {
+            sub_shapes: vec![BlockRef(1u32), BlockRef(2u32)],
+            material: 0,
+            radius: 0.0,
+            use_cached_aabb: false,
+            closest_point_min_distance: 0.0,
+        }));
+        scene.blocks.push(sphere_shape(1.0));
+        scene.blocks.push(sphere_shape(2.0));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::Compound { children }) => assert_eq!(children.len(), 2),
+            other => panic!("expected Compound, got {other:?}"),
+        }
     }
 
     #[test]

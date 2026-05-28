@@ -167,11 +167,24 @@ a richer canonical size model), and per-emitter (vs scene-first) attribution for
 multi-emitter NIFs. Tooling: `crates/nif/examples/emitter_dump.rs`
 (`rate / radius / bscale / speed / declination / life / initColor`).
 
-### Collision — **audit pending**
+### Collision — **audited (2026-05-28)**
 
-Havok → engine transform is applied (`import/collision.rs`), shapes map to
-`CollisionShape` / `RigidBodyData`. Needs an audit pass to confirm the canonical
-contract holds across all bhk* shape variants (compressed mesh, mopp, list, convex).
+Havok → engine transform + `havok_scale` are applied uniformly in
+`import/collision.rs::resolve_shape`, and the bhk* shapes map to `CollisionShape` /
+`RigidBodyData`. The audit diffed every parsed `bhk*Shape` struct against the
+translated set and found **two leaks** (parsed for byte-correctness, then dropped at
+the "unsupported shape" fallback → the authored collision silently vanished):
+
+- `BhkMultiSphereShape` → now a `Compound` of `Ball` children at each sphere's
+  (scaled) center (single centred sphere unwraps to a plain `Ball`).
+- `BhkConvexListShape` → now a `Compound` of resolved convex sub-shapes (mirrors
+  `BhkListShape`; FO3/FNV/Skyrim destructibles + debris).
+
+All 13 parsed `bhk*Shape` variants now translate. Remaining collision *non*-leaks are
+documented limitations, not gaps: `BhkNPCollisionObject` (FO4+ Havok-serialised
+blob — decoder is a separate project; cell loader falls back to synthesized static
+trimesh) and `BhkPCollisionObject` phantoms (need a `TriggerVolume` ECS path, not a
+rigid body) — see the table at the top of `import/collision.rs`.
 
 ---
 
@@ -261,8 +274,9 @@ Do **not** unify the scale before those two rows have real numbers.
 3. ~~Particles (emitter base)~~ — done (2026-05-28): authored kinematic + lifetime
    params override the preset. Follow-ups: spawn rate, grow/fade size, multi-emitter
    attribution.
-4. **Collision** — audit the bhk* → `CollisionShape` translation for canonical
-   completeness across all shape variants.
+4. ~~Collision~~ — audited (2026-05-28): found + fixed two dropped shapes
+   (BhkMultiSphereShape, BhkConvexListShape); all 13 parsed shape variants now
+   translate. Remaining gaps (FO4+ NP blob, phantoms) are documented limitations.
 5. **Emissive unification** — once Skyrim/FO4 data is available (§4).
 
 Each step ships independently behind `cargo test`; none touches the Vulkan
