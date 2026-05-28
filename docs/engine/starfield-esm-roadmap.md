@@ -1,8 +1,24 @@
 # Starfield ESM Parser Action Plan
 
-**Status**: planning doc — 2026-05-28.
-**Trigger**: user wants to render Cydonia. Cell rendering needs an ESM parser; Starfield ESM is currently unimplemented.
+**Status**: planning doc — 2026-05-28. Phases 0+1 complete; **Phases 2-4 invalidated by measurement** (see `starfield-esm-phase0-baseline.md`).
+**Trigger**: user wants to render Cydonia. Cell rendering needs an ESM parser; Starfield ESM was assumed unimplemented.
 **Audience**: ByroRedux engine devs.
+
+## Plan revision (2026-05-28, post Phase 0+1)
+
+**The original plan was massively over-scoped.** Phase 0+1 measurement revealed that the existing parser already captures Starfield content with **99.9% record-capture parity** vs the raw GRUP walker. The "build a Starfield ESM parser" workstream collapses to "use the existing parser + close per-record gaps as Phase 5 reveals them."
+
+| Original Phase | Original effort | Revised status |
+|----------------|----------------:|----------------|
+| 0 — baseline measurement | 1-2 sessions | ✓ DONE (commit `bbf2abc7`) |
+| 1 — dispatch table + warned-skip | 1-2 sessions | ✓ DONE (commit `eac91535` + follow-up) — dispatch already covers 86-99% of SF bytes |
+| 2 — TES4 + load order | 1 session | ✓ ALREADY WORKS — 5 priority ESMs parse unmodified |
+| 3 — STAT / MSTT / TXST / GBFM | 1-2 sessions | ✓ MOSTLY WORKS — 41 620 STAT-family objects captured from vanilla. TXST count low (21) — diagnose if Cydonia render reveals it as a blocker |
+| 4 — CELL + REFR | 2-3 sessions | ✓ ALREADY WORKS — `citycydoniamainlevel` captures 27 898 REFRs |
+| 5 — render Cydonia interior | 1 session | **NEXT** — attempt now |
+| 6+ — NPCs, planets, etc. | deferred | unchanged |
+
+**The roadmap below is preserved verbatim for historical record + reviewer trail.** Skip to "Phase 5 — RENDER" at the bottom for the only remaining minimum-scope task.
 
 ## The surprise upfront
 
@@ -158,6 +174,36 @@ Two ways to attack this:
 **(B) Build by visible-result slice** — measure (Phase 0), then implement a single thin path through every layer just enough to render ONE Cydonia REFR with ONE STAT base, then expand. ~1 week to first pixel; ~4 weeks to "the cell renders properly."
 
 **Recommendation: (B).** Bethesda has 214 record types but Cydonia only needs ~30. Optimize for the visible moment, not for parser-spec completeness. Phase 0 is non-negotiable either way.
+
+## Phase 5 — RENDER (the only remaining minimum-scope task)
+
+**Status**: ready to attempt 2026-05-28.
+
+**Command** (start here):
+
+```bash
+cargo run --release -- \
+    --esm "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data/Starfield.esm" \
+    --cell citycydoniamainlevel \
+    --bsa "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data/Starfield - Meshes01.ba2" \
+    --textures-ba2 "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data/Starfield - Textures01.ba2" \
+    --materials-ba2 "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data/Starfield - Materials.ba2" \
+    --bench-frames 240 --bench-hold
+```
+
+Expected outcome (Phase 5 success criteria from the original roadmap):
+  * At least 50 REFRs render (the cell has 27 898 — we'll see)
+  * No panic
+  * FPS > 30 (or whatever the loaded-asset CPU bottleneck allows)
+  * `tex.missing` count < 20% of total
+
+Expected failures to investigate (file as issues as they appear):
+  * **NIF parse failures** on SF-only NIF block types not yet dispatched (`audit-starfield 2026-05-28` baseline is 98.6% / 100% recoverable; check for new types)
+  * **Texture archive misses** — Cydonia content may pull from `Starfield - Textures02.ba2` or `Starfield - TexturesPatch.ba2`; `audit-runtime` baseline will reveal
+  * **`tex.missing` magenta on .mat-resolved materials** — Phase 2 follow-up to #1289 (CDB per-field extraction) is the real fix; for now, Disney BSDF reaches the lobe but with NIF defaults
+  * **NPCs failing to spawn** — NPC + ARMA + outfit decode is Phase 6 (deferred); Cydonia interior with no NPCs is still a milestone-worthy render
+
+**This is the cheapest possible test.** If it works at all, even with visual defects, that's the "Cydonia interior renders" milestone.
 
 ## Out of scope explicitly
 
