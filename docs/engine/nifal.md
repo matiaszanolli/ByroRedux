@@ -246,22 +246,29 @@ applied until the per-source scales are measured.
 Instrumentation: `crates/nif/examples/material_dump.rs` now prints an `emSrc` column
 (`mat` / `lit` / `fx` / `-`) beside `emisM`.
 
-### Findings so far
+### Findings — **all three sources measured (2026-05-28), no normalization needed**
 
-Only **FNV** + **Oblivion** game data was mounted this session; both are legacy →
-`EmissiveSource::Material`. Sampled emissive meshes (neon signs, torches, lava, glow
-cards):
+Sampled equivalent emissive meshes (neon/torches/lava/candles/glow cards/muzzle
+flashes) across Oblivion + FNV + Skyrim SE + FO4:
 
-| Source | Games measured | `emisM` observed | Notes |
+| Source | Games measured | `emisM` observed | Exemplars |
 |---|---|---|---|
-| `Material` | Oblivion (BSVER 11), FNV (BSVER 34) | **0.5, 1.0, 1.3, 7.5** | `1.0` is the common default; bright neon sign bulbs reach `7.5`. |
-| `Lighting` | — | **not measured** | Needs Skyrim/FO4 data (not on disk this session). |
-| `Effect` | — | **not measured** | Needs FO4+ data; also confirm it should route to a diffuse-tint path, not emissive. |
+| `Material` | Oblivion (BSVER 11), FNV (BSVER 34) | **0.5, 1.0, 1.3, 7.5** | neon signs, torches, lava |
+| `Lighting` | Skyrim SE, FO4 | **0.9, 1.0, 1.0, 1.0** | imperial candle, ice torch, FO4 lantern |
+| `Effect` | FO4 | **1.0, 1.2, 1.0** | fxglow card, minigun/flamejet muzzle flash |
 
-**Next step (future session, requires Skyrim/FO4/Starfield data mounted)**: run
-`material_dump` over Skyrim + FO4 emissive content, tabulate the `lit` / `fx`
-ranges, then decide a per-source normalization (or confirm `Effect` → diffuse-tint).
-Do **not** unify the scale before those two rows have real numbers.
+**Conclusion: the three sources already share one ~1.0 scale — no per-source
+normalization is required.** Every authoring source clusters its multiplier at 1.0;
+the legacy `Material` 7.5 is an authored bright-neon *outlier*, not a scale-convention
+difference (the same high values would appear in any source for deliberately bright
+content). Applying a normalization constant would be inventing a correction for a
+divergence that the ground truth shows does not exist (a `feedback_no_guessing`
+violation in the other direction). The one genuine non-scale distinction —
+`BSEffectShaderProperty.base_color_scale` is semantically a *diffuse-tint* multiplier,
+not emissive — is already captured by the `EmissiveSource::Effect` discriminator and
+is left for a future BSEffect-proper render path; it does **not** manifest as a scale
+mismatch (Effect emisM 1.0–1.2 matches the others). Open question Q2 in
+`material-abstraction.md` is hereby **resolved as no-op**.
 
 ---
 
@@ -277,7 +284,9 @@ Do **not** unify the scale before those two rows have real numbers.
 4. ~~Collision~~ — audited (2026-05-28): found + fixed two dropped shapes
    (BhkMultiSphereShape, BhkConvexListShape); all 13 parsed shape variants now
    translate. Remaining gaps (FO4+ NP blob, phantoms) are documented limitations.
-5. **Emissive unification** — once Skyrim/FO4 data is available (§4).
+5. ~~Emissive unification~~ — resolved no-op (2026-05-28): all three `EmissiveSource`
+   variants measured across Oblivion/FNV/Skyrim/FO4 already share a ~1.0 scale (§4);
+   no normalization needed.
 
 Each step ships independently behind `cargo test`; none touches the Vulkan
 render-pass / pipeline (the shader already consumes canonical flags).

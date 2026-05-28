@@ -183,7 +183,9 @@ Each step ships independently with `cargo test` coverage; no step touches the Vu
 ## 5. Open questions
 
 - **Q1** — Glass authoritative signal for legacy: is `NiAlphaProperty.blend + low NiMaterialProperty.alpha` sufficient, or do we still need a (parse-time) keyword tiebreaker? Needs the ground-truth table.
-- **Q2** — `emissive_mult` scale: FO4 BSEffect `base_color_scale`, legacy `NiMaterialProperty.emissive_mult`, and Skyrim LSP `emissive_multiple` may not share a scale. Tabulate before unifying.
+- **Q2** — `emissive_mult` scale. **RESOLVED no-op (2026-05-28):** measured across
+  Oblivion/FNV/Skyrim/FO4 — all three sources cluster at ~1.0, so no normalization is
+  needed. See [`nifal.md`](nifal.md) §4 for the table.
 - **Q3** — Does BGSM-less FO4 loading (materials BA2 absent) need an explicit "PBR unavailable" path, or is the keyword fallback acceptable as a documented degraded mode?
 
 ## 6. Tooling added for this work
