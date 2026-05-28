@@ -1060,7 +1060,7 @@ pub(super) fn spawn_placed_instances(
         // Pre-#renderlayer this site also inserted a `Decal` marker
         // component when `mesh.is_decal` — that marker is retired now
         // that `RenderLayer::Decal` carries the same signal end-to-end.
-        let final_layer = {
+        {
             use byroredux_core::ecs::components::{
                 escalate_small_static_to_clutter, render_layer_with_decal_escalation,
             };
@@ -1071,12 +1071,19 @@ pub(super) fn spawn_placed_instances(
             // gets the Clutter bias before the decal gate sees it.
             // Decal escalation still wins for alpha-tested overlays
             // and NIF-flagged decals regardless of size.
+            //
+            // The post-escalation layer is the RENDER-z-bias signal
+            // (`RenderLayer` ECS component). #1294 moved the collision
+            // trimesh-fallback gate below off this post-escalation
+            // layer onto `base_layer` so SF sub-decomposed architecture
+            // (per-LOD per-material sub-meshes < 50 units each, but
+            // composing into a 1000-unit wall) doesn't get its
+            // collider stripped on a render-side optimization.
             let layer =
                 escalate_small_static_to_clutter(base_layer, mesh.local_bound_radius * ref_scale);
             let layer = render_layer_with_decal_escalation(layer, mesh.is_decal, mesh.alpha_test);
             world.insert(entity, layer);
-            layer
-        };
+        }
 
         // F3 (2026-05-27) — synthesize a static TriMesh collider from
         // the render geometry when the NIF authored NO bhk collision.
@@ -1104,8 +1111,36 @@ pub(super) fn spawn_placed_instances(
         // havok_scale into their verts at extract time). So we bake the
         // composed `final_scale` into the trimesh verts here to match
         // the rendered geometry.
+        // #1294 — gate on `base_layer` (pre-escalation REFR record-type
+        // classification), NOT `final_layer` (post-escalation render
+        // layer). The small-STAT-to-Clutter escalation
+        // (`escalate_small_static_to_clutter`) is a RENDER z-bias
+        // optimization that demotes architecturally-classified meshes
+        // with a small bounding-sphere radius (< 50 units) to the
+        // Clutter render layer so decorative STATs (papers / folders
+        // / clipboards) win the coplanar z-fight against desks. It was
+        // never intended to gate collision generation.
+        //
+        // For Starfield content the gate-on-`final_layer` site rejected
+        // every wall / floor / ramp on Cydonia because SF NIFs are
+        // heavily decomposed into per-material per-LOD sub-meshes
+        // (an industrial platform = 6 BSGeometry blocks each with 4
+        // LOD slots = 24 sub-meshes), each individual sub-mesh smaller
+        // than the 50-unit threshold. Even though the COMPOSITE REFR
+        // is a giant wall, the per-mesh radius escalates to Clutter
+        // and the trimesh fallback skips it → zero static colliders →
+        // character free-falls indefinitely from frame 0 (`rapier_bodies=1`
+        // diagnostic warn at `character.rs:290`).
+        //
+        // `base_layer` reflects the REFR's base record type
+        // (STAT/MSTT/FURN/DOOR/… → Architecture; NPC_ → Actor; etc.).
+        // That's the correct "should this be a static collider?" signal
+        // — independent of per-mesh sub-decomposition. NPC actors (Actor
+        // base) and small clutter (record-type-classified Clutter) both
+        // skip the fallback as before; only the misclassified
+        // sub-decomposed architecture changes behaviour.
         if collisions.is_empty()
-            && final_layer == byroredux_core::ecs::components::RenderLayer::Architecture
+            && base_layer == byroredux_core::ecs::components::RenderLayer::Architecture
             && mesh.skin.is_none()
             && !mesh.is_decal
             && !mesh.alpha_test

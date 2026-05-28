@@ -157,6 +157,25 @@ pub const SMALL_STATIC_RADIUS_UNITS: f32 = 50.0;
 /// applied to `ImportedMesh::local_bound_radius`. The call site doing
 /// `mesh.local_bound_radius * ref_scale` is the contract.
 ///
+/// # NOT a collision / physics gate
+///
+/// The output of this helper is **render-side only**: it drives
+/// [`RenderLayer::depth_bias`] for the z-fight ladder. Do NOT branch
+/// collision-generation or physics-actor decisions off the
+/// post-escalation layer — the escalation operates on per-sub-mesh
+/// `local_bound_radius`, which for Starfield content (heavily
+/// decomposed per-LOD per-material sub-meshes per BSGeometry block)
+/// under-counts the REFR's true spatial extent. #1294 (Cydonia
+/// render attempt 2026-05-28) surfaced exactly this trap: the
+/// cell-loader's static-trimesh fallback was keying off the
+/// post-escalation layer and rejected every Cydonia wall / floor /
+/// ramp because each sub-mesh was < 50 units even though the
+/// composite architecture extended thousands of units. Collision
+/// sites must read the **pre-escalation** `base_layer` (the
+/// [`RecordType`]-derived classification) — the trimesh fallback at
+/// `byroredux/src/cell_loader/spawn.rs::spawn_placed_instances` is
+/// the canonical example post-#1294.
+///
 /// [`RecordType`]: crate::ecs::components::RenderLayer
 pub fn escalate_small_static_to_clutter(base: RenderLayer, world_bound_radius: f32) -> RenderLayer {
     if matches!(base, RenderLayer::Architecture)
