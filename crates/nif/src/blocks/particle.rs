@@ -165,6 +165,26 @@ pub struct NiPSysEmitter {
     pub original_type: String,
 }
 
+/// `NiPSysEmitterCtlr` — the time controller that drives an emitter's
+/// birth rate (particles/sec). We capture `interpolator_ref` so the
+/// importer can follow it to the rate source (NiFloatInterpolator's
+/// constant value or its NiFloatData keys) for the canonical
+/// `ParticleEmitter.rate`. NIFAL particles slice — spawn-rate follow-up.
+#[derive(Debug)]
+pub struct NiPSysEmitterCtlr {
+    pub interpolator_ref: BlockRef,
+}
+
+/// `NiPSysEmitterCtlrData` — legacy (pre-interpolator) birth-rate data
+/// block. We capture the first birth-rate key value as the canonical
+/// rate fallback when the modern NiFloatInterpolator path is absent.
+#[derive(Debug)]
+pub struct NiPSysEmitterCtlrData {
+    /// First birth-rate key value (particles/sec at t=0), `None` when
+    /// the block authored no keys.
+    pub birth_rate_first: Option<f32>,
+}
+
 // ── Modifier parsers ────────────────────────────────────────────────
 
 /// Parse a modifier with only the base fields (NiPSysPositionModifier, etc.).
@@ -782,17 +802,15 @@ pub fn parse_modifier_ctlr(stream: &mut NifStream, type_name: &str) -> io::Resul
 }
 
 /// NiPSysEmitterCtlr: modifier_ctlr + visibility_interpolator_ref(ref)
-pub fn parse_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
+pub fn parse_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysEmitterCtlr> {
     let _base = NiTimeControllerBase::parse(stream)?;
-    let _interpolator_ref = stream.read_block_ref()?;
+    let interpolator_ref = stream.read_block_ref()?;
     let _modifier_name = stream.read_string()?;
     // NiPSysEmitterCtlr adds visibility interpolator ref (since v10.2)
     if stream.version() >= NifVersion::V10_2_0_0 {
         let _vis_interpolator_ref = stream.read_block_ref()?;
     }
-    Ok(NiPSysBlock {
-        original_type: "NiPSysEmitterCtlr".to_string(),
-    })
+    Ok(NiPSysEmitterCtlr { interpolator_ref })
 }
 
 /// BSPSysMultiTargetEmitterCtlr (FO3+): emitter_ctlr + max_emitters(u16) + master_ref(ptr)
@@ -1130,9 +1148,10 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
 
 /// NiPSysEmitterCtlrData: KeyGroup<float> (visibility keys) + num(u32) + byte_key array.
 /// Rare/deprecated but needs to parse correctly.
-pub fn parse_emitter_ctlr_data(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
-    // KeyGroup<float> for float keys
+pub fn parse_emitter_ctlr_data(stream: &mut NifStream) -> io::Result<NiPSysEmitterCtlrData> {
+    // KeyGroup<float> of birth-rate keys (particles/sec over time).
     let num_keys = stream.read_u32_le()?;
+    let mut birth_rate_first = None;
     if num_keys > 0 {
         let interpolation = stream.read_u32_le()?;
         let key_size: u64 = match interpolation {
@@ -1149,7 +1168,12 @@ pub fn parse_emitter_ctlr_data(stream: &mut NifStream) -> io::Result<NiPSysBlock
                 ));
             }
         };
-        stream.skip(key_size * num_keys as u64)?;
+        // Capture the first key's birth-rate value (t=0); advance past
+        // the rest of that key + every remaining key. `key_size - 8`
+        // skips the tangent/TBC trailer (0 for LINEAR/CONSTANT).
+        let _time = stream.read_f32_le()?;
+        birth_rate_first = Some(stream.read_f32_le()?);
+        stream.skip((key_size - 8) + key_size * (num_keys as u64 - 1))?;
     }
     // Visibility keys: num(u32) + Key<byte> array
     let num_vis = stream.read_u32_le()? as u64;
@@ -1157,9 +1181,7 @@ pub fn parse_emitter_ctlr_data(stream: &mut NifStream) -> io::Result<NiPSysBlock
         // Each key<byte>: time(f32) + value(u8) = 5 bytes
         stream.skip(num_vis * 5)?;
     }
-    Ok(NiPSysBlock {
-        original_type: "NiPSysEmitterCtlrData".to_string(),
-    })
+    Ok(NiPSysEmitterCtlrData { birth_rate_first })
 }
 
 /// BSMasterParticleSystem: NiNode + max_emitter_count(u16) + num_ptrs(u32) + ptrs[N]
@@ -1189,6 +1211,8 @@ pub fn parse_master_particle_system(stream: &mut NifStream) -> io::Result<NiPSys
 impl_ni_object!(
     NiPSysBlock,
     NiPSysEmitter,
+    NiPSysEmitterCtlr,
+    NiPSysEmitterCtlrData,
     NiPSysColorModifier,
     NiPSysGravityFieldModifier,
     NiPSysVortexFieldModifier,

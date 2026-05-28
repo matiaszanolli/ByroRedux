@@ -540,6 +540,11 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         if let Some(p) = emitter.emitter_params {
             crate::systems::apply_emitter_params(&mut preset, &p);
         }
+        // NIFAL spawn-rate follow-up — authored birth rate
+        // (NiPSysEmitterCtlr) overrides the preset's guessed density.
+        if let Some(rate) = emitter.emitter_rate {
+            preset.rate = rate;
+        }
         // #984 / NIF-D5-ORPHAN-A2 — carry authored
         // `NiPSys{Gravity,Vortex,Drag,Turbulence,Air,Radial}FieldModifier`
         // entries onto the spawned `ParticleEmitter` so the simulator

@@ -418,6 +418,11 @@ pub(super) fn spawn_placed_instances(
         if let Some(p) = em.emitter_params {
             crate::systems::apply_emitter_params(&mut preset, &p);
         }
+        // NIFAL spawn-rate follow-up — authored birth rate overrides the
+        // preset's guessed density (parallel to the scene.rs site).
+        if let Some(rate) = em.emitter_rate {
+            preset.rate = rate;
+        }
         // #984 / NIF-D5-ORPHAN-A2 — carry authored force-field
         // modifiers onto the spawned `ParticleEmitter` so the
         // simulator can integrate gravity / vortex / drag /

@@ -909,6 +909,12 @@ pub struct ImportedParticleEmitter {
     /// name-heuristic preset's spawn fields at translate time. See
     /// [`ImportedEmitterParams`].
     pub emitter_params: Option<ImportedEmitterParams>,
+    /// Authored birth rate (particles/sec) from the emitter's
+    /// `NiPSysEmitterCtlr` chain, when present. Overrides the preset's
+    /// `rate` at translate time. `None` → keep the preset rate (legacy
+    /// `NiParticleSystemController` content, or no controller). See
+    /// `docs/engine/nifal.md` — particles spawn-rate follow-up.
+    pub emitter_rate: Option<f32>,
 }
 
 /// One authored force field, mirrored 1:1 from a
@@ -1020,4 +1026,7 @@ pub struct ImportedParticleEmitterFlat {
     /// Mirror of [`ImportedParticleEmitter::emitter_params`] for the
     /// flat (cell-loader) path. See [`ImportedEmitterParams`].
     pub emitter_params: Option<ImportedEmitterParams>,
+    /// Mirror of [`ImportedParticleEmitter::emitter_rate`] for the flat
+    /// (cell-loader) path. Authored birth rate (particles/sec).
+    pub emitter_rate: Option<f32>,
 }

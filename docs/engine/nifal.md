@@ -128,10 +128,17 @@ params now **override** the preset's guesses where they are genuinely authored:
   not applied** — colour stays owned by the `color_curve` override, size by the
   preset — to avoid washing out tuned presets with defaults.
 
-**Still pending (follow-ups):** spawn *rate* (NiPSysEmitterCtlr birth-rate keys),
-size-over-life (NiPSysGrowFadeModifier decode → `start_size`/`end_size`), and
-per-emitter (vs scene-first) attribution for multi-emitter NIFs. Tooling:
-`crates/nif/examples/emitter_dump.rs`.
+Spawn **rate** (particles/sec) is also authored now: `NiPSysEmitterCtlr` is a typed
+block carrying its `interpolator_ref`; `extract_emitter_rate` follows it to the
+`NiFloatInterpolator` constant value or its `NiFloatData` first key (legacy fallback:
+`NiPSysEmitterCtlrData` first birth-rate key), and the translate sets `preset.rate`
+when present. Verified authored + sane on FNV/Oblivion (oasis torch 15.0, Oblivion
+torch smoke 13.3); legacy `NiParticleSystemController` content has no controller →
+keeps the preset rate.
+
+**Still pending (follow-ups):** size-over-life (NiPSysGrowFadeModifier decode →
+`start_size`/`end_size`), and per-emitter (vs scene-first) attribution for
+multi-emitter NIFs. Tooling: `crates/nif/examples/emitter_dump.rs`.
 
 ### Collision — **audit pending**
 

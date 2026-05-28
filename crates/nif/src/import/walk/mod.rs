@@ -513,6 +513,7 @@ pub(super) fn walk_node_hierarchical(
                 color_curve: extract_first_color_curve(scene),
                 force_fields: collect_force_fields(scene, &ps.modifier_refs),
                 emitter_params: extract_emitter_params(scene),
+                emitter_rate: extract_emitter_rate(scene),
             });
         return;
     }
@@ -536,6 +537,7 @@ pub(super) fn walk_node_hierarchical(
                         // Legacy NiParticleSystemController / *Particles
                         // path has no NiPSysEmitter block either.
                         emitter_params: None,
+                        emitter_rate: extract_emitter_rate(scene),
                     });
             }
             _ => {}
@@ -685,6 +687,57 @@ pub(super) fn extract_emitter_params(
         life_span: p.life_span,
         life_span_variation: p.life_span_variation,
     })
+}
+
+/// Scan for the emitter's authored birth rate (particles/sec) and return
+/// a single representative scalar. Modern path: the first
+/// `NiPSysEmitterCtlr`'s interpolator → `NiFloatData` first key value, or
+/// the `NiFloatInterpolator`'s constant value. Legacy fallback: the first
+/// `NiPSysEmitterCtlrData` birth-rate key. `None` when no controller is
+/// present (→ keep the preset's rate). Non-finite / negative values are
+/// rejected (a `FLT_MAX` sentinel on `NiFloatInterpolator.value` means
+/// "use the keyed data", which we already preferred). Scene-level
+/// first-match, same scope caveat as [`extract_first_color_curve`]. See
+/// `docs/engine/nifal.md` — particles spawn-rate follow-up.
+pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
+    use crate::blocks::interpolator::{NiFloatData, NiFloatInterpolator};
+    use crate::blocks::particle::{NiPSysEmitterCtlr, NiPSysEmitterCtlrData};
+
+    fn sane(r: f32) -> Option<f32> {
+        (r.is_finite() && r >= 0.0).then_some(r)
+    }
+
+    // Modern: controller → NiFloatInterpolator → (keyed data | constant).
+    if let Some(ctlr) = scene
+        .blocks
+        .iter()
+        .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitterCtlr>())
+    {
+        if let Some(interp_idx) = ctlr.interpolator_ref.index() {
+            if let Some(interp) = scene.get_as::<NiFloatInterpolator>(interp_idx) {
+                if let Some(data_idx) = interp.data_ref.index() {
+                    if let Some(first) = scene
+                        .get_as::<NiFloatData>(data_idx)
+                        .and_then(|d| d.keys.keys.first())
+                    {
+                        if let Some(r) = sane(first.value) {
+                            return Some(r);
+                        }
+                    }
+                }
+                if let Some(r) = sane(interp.value) {
+                    return Some(r);
+                }
+            }
+        }
+    }
+    // Legacy: NiPSysEmitterCtlrData first birth-rate key.
+    scene
+        .blocks
+        .iter()
+        .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitterCtlrData>())
+        .and_then(|d| d.birth_rate_first)
+        .and_then(sane)
 }
 
 /// Recursively walk the scene graph, accumulating world-space transforms (flat, no hierarchy).
@@ -1111,6 +1164,7 @@ pub(super) fn walk_node_particle_emitters_flat(
             color_curve: extract_first_color_curve(scene),
             force_fields: collect_force_fields(scene, &ps.modifier_refs),
             emitter_params: extract_emitter_params(scene),
+                emitter_rate: extract_emitter_rate(scene),
         });
         return;
     }
@@ -1131,6 +1185,7 @@ pub(super) fn walk_node_particle_emitters_flat(
                     color_curve: extract_first_color_curve(scene),
                     force_fields: Vec::new(),
                     emitter_params: None,
+                        emitter_rate: extract_emitter_rate(scene),
                 });
             }
             _ => {}

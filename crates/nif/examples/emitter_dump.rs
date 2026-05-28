@@ -26,8 +26,19 @@ fn main() {
     );
     let mut any = false;
     for e in &imported.particle_emitters {
-        let Some(p) = e.emitter_params else { continue };
+        let rate = e
+            .emitter_rate
+            .map(|r| format!("{r:.1}"))
+            .unwrap_or_else(|| "-".to_string());
+        let Some(p) = e.emitter_params else {
+            if e.emitter_rate.is_some() {
+                println!("(rate {rate}, no NiPSysEmitter base)");
+                any = true;
+            }
+            continue;
+        };
         any = true;
+        print!("rate={rate:>6}  ");
         let host = imported
             .nodes
             .get(e.parent_node.unwrap_or(usize::MAX))
