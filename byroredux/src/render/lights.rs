@@ -155,3 +155,223 @@ pub(super) fn collect_lights(world: &World, gpu_lights: &mut Vec<byroredux_rende
         }
     }
 }
+
+#[cfg(test)]
+mod interior_sun_gate_tests {
+    //! Regression guard for #1282 — interior sun-shaft leak.
+    //!
+    //! The architecture has three independent gates that together
+    //! prevent the exterior sun from creating a hard-edged light shaft
+    //! on an interior cell's floor:
+    //!
+    //!   1. `compute_directional_upload(_, is_interior=true, _)` returns
+    //!      0.6× scale of `cell_lit.directional_color` (independent of
+    //!      `sun_intensity` — the XCLL value is the fill source, NOT
+    //!      the weather sun) and the `radius = -1` sentinel.
+    //!   2. The shader (`triangle.frag::isInteriorFill = radius < 0.0`)
+    //!      treats the directional as an ISOTROPIC fill — no Lambert,
+    //!      no N·L term — so the surface receives `directional × 0.24 ×
+    //!      albedo` uniformly with no shadow boundary possible.
+    //!   3. The RT shadow-ray loop skips the directional when
+    //!      `isInteriorFill` is true (no `vkRayQuery` cast for
+    //!      sealed-wall protection).
+    //!
+    //! Plus a fourth gate at the resource level: `weather_system`
+    //! mutations to `cell_lit.directional_color` are themselves gated
+    //! on `!is_interior` (see `systems/weather.rs:561, 213`), so a
+    //! prior exterior load's sun colour can't bleed into the next
+    //! interior's XCLL via `weather_system` re-running on the persisted
+    //! `CellLightingRes`.
+    //!
+    //! This module pins the FIRST gate at the light-list-assembly
+    //! integration level. The unit-level coverage of
+    //! `compute_directional_upload` lives in
+    //! [`super::super::directional_upload_tests`] (interior path:
+    //! `interior_uses_fixed_fill_independent_of_sun_intensity`); this
+    //! file complements it by verifying the full `collect_lights`
+    //! pipeline respects `is_interior` even when a `SkyParamsRes` from
+    //! a prior exterior load persists with a high `sun_intensity` —
+    //! the #1199 scenario the original issue body called out.
+
+    use super::*;
+    use crate::components::{CellLightingRes, SkyParamsRes};
+
+    fn interior_cell_lit(directional_color: [f32; 3]) -> CellLightingRes {
+        CellLightingRes {
+            ambient: [0.1, 0.1, 0.1],
+            directional_color,
+            directional_dir: [0.0, -1.0, 0.0],
+            is_interior: true,
+            fog_color: [0.05, 0.06, 0.08],
+            fog_near: 64.0,
+            fog_far: 4000.0,
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
+        }
+    }
+
+    fn exterior_cell_lit(directional_color: [f32; 3]) -> CellLightingRes {
+        let mut lit = interior_cell_lit(directional_color);
+        lit.is_interior = false;
+        lit
+    }
+
+    fn full_sun_sky_params() -> SkyParamsRes {
+        // Simulates a `SkyParamsRes` left over from a prior exterior
+        // worldspace load: full daytime sun, full intensity. Pre-#1282
+        // the worry was this resource leaking into interior lighting.
+        SkyParamsRes {
+            zenith_color: [0.3, 0.5, 0.9],
+            horizon_color: [0.8, 0.8, 0.9],
+            lower_color: [0.4, 0.4, 0.45],
+            sun_direction: [0.5, -0.8, 0.3],
+            sun_color: [1.0, 0.95, 0.85],
+            sun_size: 0.02,
+            sun_intensity: super::super::SUN_INTENSITY_PEAK, // 4.0 = daytime
+            sun_angular_radius: 0.020,
+            is_exterior: true,
+            cloud_tile_scale: 0.0,
+            cloud_texture_index: 0,
+            sun_texture_index: 0,
+            cloud_tile_scale_1: 0.0,
+            cloud_texture_index_1: 0,
+            cloud_tile_scale_2: 0.0,
+            cloud_texture_index_2: 0,
+            cloud_tile_scale_3: 0.0,
+            cloud_texture_index_3: 0,
+            current_dalc_cube: None,
+        }
+    }
+
+    /// The headline regression guard: an interior cell with
+    /// `SkyParamsRes` present (high sun_intensity, simulating a prior
+    /// exterior load) must produce a SCALED + UNSHADOWED directional —
+    /// not a full-intensity sun. Pre-gate the XCLL directional would
+    /// have been pushed at full strength because the interior arm
+    /// wouldn't fire.
+    #[test]
+    fn interior_with_persistent_sky_params_does_not_emit_full_sun() {
+        let mut world = World::new();
+        world.insert_resource(interior_cell_lit([0.8, 0.7, 0.5]));
+        world.insert_resource(full_sun_sky_params());
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights);
+
+        assert_eq!(
+            lights.len(),
+            1,
+            "interior with no LIGH refs must emit exactly one GpuLight (the directional fill)"
+        );
+        let l = &lights[0];
+        assert!(
+            (l.color_type[3] - 2.0).abs() < 1e-6,
+            "GpuLight type slot must be 2.0 (directional marker), got {}",
+            l.color_type[3]
+        );
+        assert!(
+            (l.position_radius[3] - (-1.0)).abs() < 1e-6,
+            "interior fill must use radius=-1 sentinel so the shader's \
+             `isInteriorFill` branch fires (skipping RT shadow + using \
+             isotropic fill instead of N·L Lambert). got {}",
+            l.position_radius[3]
+        );
+        // Color must be SCALED — 0.6× the authored directional_color,
+        // INDEPENDENT of sun_intensity (the XCLL value is the fill source).
+        // 0.8 * 0.6 = 0.48; 0.7 * 0.6 = 0.42; 0.5 * 0.6 = 0.30.
+        assert!(
+            (l.color_type[0] - 0.48).abs() < 1e-5,
+            "interior R must be 0.6× authored (= 0.48), got {}",
+            l.color_type[0]
+        );
+        assert!(
+            (l.color_type[1] - 0.42).abs() < 1e-5,
+            "interior G must be 0.6× authored (= 0.42), got {}",
+            l.color_type[1]
+        );
+        assert!(
+            (l.color_type[2] - 0.30).abs() < 1e-5,
+            "interior B must be 0.6× authored (= 0.30), got {}",
+            l.color_type[2]
+        );
+    }
+
+    /// Parity: an EXTERIOR cell with the same SkyParamsRes pushes the
+    /// directional at the FULL sun_intensity ramp (no scale-down, no
+    /// sentinel radius). Pins that the gate hasn't slipped to "always
+    /// scaled" — exterior cells must still receive proper sun.
+    #[test]
+    fn exterior_with_full_sun_emits_unshadowed_full_directional() {
+        let mut world = World::new();
+        world.insert_resource(exterior_cell_lit([0.8, 0.7, 0.5]));
+        world.insert_resource(full_sun_sky_params());
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights);
+
+        assert_eq!(lights.len(), 1);
+        let l = &lights[0];
+        assert!(
+            (l.position_radius[3] - 0.0).abs() < 1e-6,
+            "exterior radius must be 0 (standard directional, shader \
+             casts RT shadow), got {}",
+            l.position_radius[3]
+        );
+        // sun_intensity == PEAK → ramp == 1.0 → color = authored as-is.
+        assert!((l.color_type[0] - 0.8).abs() < 1e-5);
+        assert!((l.color_type[1] - 0.7).abs() < 1e-5);
+        assert!((l.color_type[2] - 0.5).abs() < 1e-5);
+    }
+
+    /// Interior without SkyParamsRes (no prior exterior load): same
+    /// behavior as the persistent-SkyParams case — `sun_intensity`
+    /// falls back to `SUN_INTENSITY_PEAK` but the interior arm ignores
+    /// it anyway. Pins that the absent-resource fallback doesn't
+    /// accidentally promote the cell to "exterior" semantics.
+    #[test]
+    fn interior_without_sky_params_still_uses_fixed_fill() {
+        let mut world = World::new();
+        world.insert_resource(interior_cell_lit([1.0, 1.0, 1.0]));
+        // No SkyParamsRes — fresh-boot or interior-only session.
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights);
+
+        assert_eq!(lights.len(), 1);
+        let l = &lights[0];
+        assert!((l.position_radius[3] - (-1.0)).abs() < 1e-6);
+        // 1.0 × 0.6 = 0.6.
+        assert!((l.color_type[0] - 0.6).abs() < 1e-5);
+        assert!((l.color_type[1] - 0.6).abs() < 1e-5);
+        assert!((l.color_type[2] - 0.6).abs() < 1e-5);
+    }
+
+    /// No `CellLightingRes` at all (engine pre-cell-load) — no
+    /// directional emitted. Guards against a future code path that
+    /// would conjure a directional from `SkyParamsRes` alone.
+    #[test]
+    fn no_cell_lighting_emits_no_directional() {
+        let mut world = World::new();
+        world.insert_resource(full_sun_sky_params());
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights);
+
+        assert_eq!(
+            lights.len(),
+            0,
+            "directional must come from CellLightingRes — SkyParamsRes \
+             alone must NOT conjure a sun light. {} lights pushed.",
+            lights.len()
+        );
+    }
+}
