@@ -643,7 +643,10 @@ impl Resource for SkinCoverageStats {}
 /// 1366 with slot 0 reserved → 1365 allocatable; see #1284); `allocate`
 /// returns `None` past it. The caller is expected to warn-once and
 /// fall back to bind-pose rendering for the overflowed entity. See
-/// `BONE_PALETTE_OVERFLOW_WARNED` in `byroredux::render::skinned`.
+/// `Self::overflow_warned` (one-shot log) and `Self::overflow_attempt_count`
+/// (cumulative spill telemetry surfaced via `DebugStats::skin_pool_*` and
+/// the `engine::stats` `skin=L/M+S` line); see #1284 for the cap-sizing
+/// feedback loop.
 pub struct SkinSlotPool {
     /// Stable slot ID per entity. Values are in `1..=max_slot`; slot 0
     /// is reserved.
