@@ -580,6 +580,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "byroredux-core",
+ "env_logger",
  "flate2",
  "log",
  "semver",

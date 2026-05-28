@@ -12,3 +12,6 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 flate2 = { workspace = true }
 log = { workspace = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }

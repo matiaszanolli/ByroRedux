@@ -18,6 +18,12 @@ use byroredux_plugin::esm::parse_esm;
 use std::time::Instant;
 
 fn main() -> anyhow::Result<()> {
+    // Routes `log::warn!` from parse_esm (XCLL size-sanity, etc.) to stderr
+    // when RUST_LOG is set. Without this, the dispatch warns are dropped
+    // because `log` has no default subscriber.
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .try_init();
+
     let esm_path = std::env::args()
         .nth(1)
         .ok_or_else(|| anyhow::anyhow!("usage: sf_parse_check ESM_PATH"))?;
