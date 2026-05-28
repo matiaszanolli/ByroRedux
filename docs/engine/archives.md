@@ -3,7 +3,7 @@
 The `byroredux-bsa` crate exposes two readers covering every Bethesda
 archive format from Oblivion through Starfield:
 
-- [`BsaArchive`](../../crates/bsa/src/archive.rs) — BSA versions
+- [`BsaArchive`](../../crates/bsa/src/archive/mod.rs) — BSA versions
   103, 104, and 105 (Oblivion → Skyrim SE)
 - [`Ba2Archive`](../../crates/bsa/src/ba2.rs) — BA2 (BTDX) versions
   1, 2, 3, 7, and 8 (Fallout 4, Fallout 76, Starfield), with both `GNRL`
@@ -44,7 +44,7 @@ and exercises the unified `MeshArchive` enum from
 
 ## BSA reader
 
-[`crates/bsa/src/archive.rs`](../../crates/bsa/src/archive.rs)
+[`crates/bsa/src/archive/mod.rs`](../../crates/bsa/src/archive/mod.rs)
 
 BSA files are organised as:
 
