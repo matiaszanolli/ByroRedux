@@ -3209,7 +3209,10 @@ void main() {
     // Combine screen-space SSAO with RT AO. SSAO catches fine detail
     // (texture crevices), RT AO catches hall-scale occlusion. Take min
     // so whichever sees the occluder wins.
-    float combinedAO = min(ao, rtAO);
+    // DBG_DISABLE_AO (0x800) — force AO fully open to bisect a hard-edged
+    // dark floor patch as AO over-darkening (vanishes) vs cast shadow
+    // (persists, since shadows live in the `directLight`/Lo term, not AO).
+    float combinedAO = ((dbgFlags & DBG_DISABLE_AO) != 0u) ? 1.0 : min(ao, rtAO);
     // Ambient gets a floor on its AO modulation so deep cavities (e.g.
     // Markarth's narrow rock canyon, Solitude's overhanging arches,
     // any close-walled exterior) don't crush every fragment to pitch-

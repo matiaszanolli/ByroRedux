@@ -118,6 +118,7 @@ fn main() {
     writeln!(out, "#define DBG_DISABLE_SPECULAR_AA {DBG_DISABLE_SPECULAR_AA}u").unwrap();
     writeln!(out, "#define DBG_DISABLE_HALF_LAMBERT_FILL {DBG_DISABLE_HALF_LAMBERT_FILL}u").unwrap();
     writeln!(out, "#define DBG_BYPASS_VERTEX_COLOR {DBG_BYPASS_VERTEX_COLOR}u").unwrap();
+    writeln!(out, "#define DBG_DISABLE_AO {DBG_DISABLE_AO}u").unwrap();
 
     let out_path = Path::new("shaders/include/shader_constants.glsl");
     if let Some(parent) = out_path.parent() {

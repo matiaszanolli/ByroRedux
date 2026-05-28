@@ -235,3 +235,11 @@ pub const DBG_DISABLE_HALF_LAMBERT_FILL: u32 = 0x200;
 /// diagnosis 2026-05-27). Does not affect `SOURCE_EMISSIVE` vertex mode
 /// (that path routes vertex color through the emissive accumulator).
 pub const DBG_BYPASS_VERTEX_COLOR: u32 = 0x400;
+
+/// 0x800 — force ambient occlusion to 1.0 (disable both the screen-space
+/// SSAO sample and the RT-AO term in `combinedAO`). Use to bisect whether
+/// a hard-edged dark floor patch is AO over-darkening (vanishes with this
+/// bit) versus a cast shadow / direct-light occlusion (persists). Paired
+/// with `DBG_BYPASS_VERTEX_COLOR` these isolate the two most common
+/// "lighting only on certain polygons" causes without touching shadows.
+pub const DBG_DISABLE_AO: u32 = 0x800;
