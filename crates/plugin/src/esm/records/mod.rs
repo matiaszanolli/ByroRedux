@@ -173,6 +173,25 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     //     when the inner guard drops.
     let _localized_guard = common::LocalizedPluginGuard::new(file_header.localized);
 
+    // FO4-era record-type gate. SCOL (static collections), PKIN (pack-ins),
+    // MOVS (movable statics), and MSWP (material swaps) were all introduced
+    // in Fallout 4 and don't exist in vanilla Oblivion / FO3 / FNV / Skyrim
+    // masters. Pre-#1277-task3 these GRUPs were parsed unconditionally, so a
+    // cross-game plugin stack that injected SCOL/PKIN/MOVS/MSWP into a
+    // non-FO4 master would silently consume them — REFRs referencing those
+    // form ids would then mis-resolve at cell-load time. The gate skips the
+    // whole GRUP when game isn't FO4+ and warns once per record-type per
+    // parse so a modder gets a single visible signal that their authoring
+    // was dropped (and why) without log spam on every record.
+    let is_fo4_plus = matches!(
+        game,
+        GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield,
+    );
+    let mut warned_scol = false;
+    let mut warned_pkin = false;
+    let mut warned_movs = false;
+    let mut warned_mswp = false;
+
     // Walk top-level groups and dispatch by record-type label.
     while reader.remaining() > 0 {
         if !reader.is_group() {
@@ -206,10 +225,74 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 parse_ltex_group(&mut reader, end, &mut ltex_to_txst, &mut landscape_textures)?
             }
             b"TXST" => parse_txst_group(&mut reader, end, &mut txst_textures, &mut texture_sets)?,
-            b"SCOL" => parse_scol_group(&mut reader, end, &mut statics, &mut scols)?,
-            b"PKIN" => parse_pkin_group(&mut reader, end, &mut statics, &mut packins)?,
-            b"MOVS" => parse_movs_group(&mut reader, end, &mut statics, &mut movables)?,
-            b"MSWP" => parse_mswp_group(&mut reader, end, &mut material_swaps)?,
+            // FO4+ only — see warned_*  / is_fo4_plus rationale above.
+            b"SCOL" if is_fo4_plus => {
+                parse_scol_group(&mut reader, end, &mut statics, &mut scols)?
+            }
+            b"SCOL" => {
+                if !warned_scol {
+                    warned_scol = true;
+                    log::warn!(
+                        "ESM: SCOL GRUP encountered with GameKind::{:?} \
+                         (HEDR {:.2}); SCOL is FO4+ only — skipping. \
+                         Cross-game plugin risk: REFRs referencing the \
+                         dropped form ids won't resolve at cell-load time.",
+                        game,
+                        file_header.hedr_version,
+                    );
+                }
+                reader.skip_group(&group);
+            }
+            b"PKIN" if is_fo4_plus => {
+                parse_pkin_group(&mut reader, end, &mut statics, &mut packins)?
+            }
+            b"PKIN" => {
+                if !warned_pkin {
+                    warned_pkin = true;
+                    log::warn!(
+                        "ESM: PKIN GRUP encountered with GameKind::{:?} \
+                         (HEDR {:.2}); PKIN is FO4+ only — skipping. \
+                         Cross-game plugin risk: pack-in contents won't resolve.",
+                        game,
+                        file_header.hedr_version,
+                    );
+                }
+                reader.skip_group(&group);
+            }
+            b"MOVS" if is_fo4_plus => {
+                parse_movs_group(&mut reader, end, &mut statics, &mut movables)?
+            }
+            b"MOVS" => {
+                if !warned_movs {
+                    warned_movs = true;
+                    log::warn!(
+                        "ESM: MOVS GRUP encountered with GameKind::{:?} \
+                         (HEDR {:.2}); MOVS is FO4+ only — skipping. \
+                         Cross-game plugin risk: movable-static REFRs \
+                         referencing the dropped form ids won't resolve.",
+                        game,
+                        file_header.hedr_version,
+                    );
+                }
+                reader.skip_group(&group);
+            }
+            b"MSWP" if is_fo4_plus => {
+                parse_mswp_group(&mut reader, end, &mut material_swaps)?
+            }
+            b"MSWP" => {
+                if !warned_mswp {
+                    warned_mswp = true;
+                    log::warn!(
+                        "ESM: MSWP GRUP encountered with GameKind::{:?} \
+                         (HEDR {:.2}); MSWP is FO4+ only — skipping. \
+                         Cross-game plugin risk: material-swap references \
+                         won't resolve.",
+                        game,
+                        file_header.hedr_version,
+                    );
+                }
+                reader.skip_group(&group);
+            }
             // MODL-only labels — populate `cells.statics` for visual
             // placement, no typed map. STAT / MSTT / FURN / DOOR /
             // LIGH / FLOR / IDLM / BNDS / ADDN / TACT all carry a MODL
