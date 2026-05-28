@@ -74,9 +74,11 @@ The goal is not a replacement for the original engines. The goal is a reference 
 
 ## State
 
-Interior cells load and render end-to-end across five games — Oblivion
+Interior cells load and render end-to-end across six games — Oblivion
 (Anvil Heinrich Oaken Halls), FO3 (Megaton, 929 REFRs), FNV (Prospector
-Saloon), Skyrim SE (Whiterun Bannered Mare), FO4 (MedTekResearch01).
+Saloon), Skyrim SE (Whiterun Bannered Mare), FO4 (MedTekResearch01),
+and Starfield (Cydonia, 93 547 entities + 91 698 static colliders —
+Session 42 bring-up via #1289 / #1291 / #1292 / #1294).
 Per-cell entity counts and bench numbers live in [ROADMAP Project
 Stats](ROADMAP.md#project-stats), refreshed per `/session-close`.
 Full RT pipeline + sky/atmosphere + exterior sun operational. Skinning
