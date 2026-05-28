@@ -617,10 +617,25 @@ pub(crate) fn setup_scene(
                 door_pos.y + cc.half_height + 4.0,
                 door_pos.z + nudge.z,
             );
+            // Inward-nudge degradation diagnostic. #1295 — when the
+            // cell has no static colliders (broken bhk extraction, or
+            // pre-#1294 SF cells before the trimesh-fallback gate
+            // landed), `static_colliders_aabb()` returns `None` →
+            // inward_xz=None → nudge=ZERO → capsule lands on the
+            // exact door-threshold position. The threshold often sits
+            // on a thin floor reference 1-2 BU thick; without a
+            // surrounding collider the capsule projects beyond it
+            // and free-falls. Without this explicit warn the failure
+            // mode reads as "door teleporter wasn't used" (the spawn
+            // log shows the door position) when actually it WAS used
+            // with degraded input. Cydonia 2026-05-28 first-render
+            // hit exactly this trap; surfaced as filed-and-closed
+            // #1295.
+            let nudge_degraded = inward_xz.is_none();
             log::info!(
                 "M28.5 spawn at door teleporter: door at ({:.1}, {:.1}, {:.1}); \
                  inward nudge ({:.1}, _, {:.1}) BU; placing capsule at \
-                 ({:.1}, {:.1}, {:.1})",
+                 ({:.1}, {:.1}, {:.1}){}",
                 door_pos.x,
                 door_pos.y,
                 door_pos.z,
@@ -629,6 +644,15 @@ pub(crate) fn setup_scene(
                 spawn.x,
                 spawn.y,
                 spawn.z,
+                if nudge_degraded {
+                    " — NUDGE DEGRADED: no static colliders for AABB-centre \
+                     computation; capsule will rest ON the door threshold and \
+                     may project beyond a thin floor (#1295). If the character \
+                     free-falls from this spawn, the root cause is missing \
+                     static colliders, not the spawn position."
+                } else {
+                    ""
+                },
             );
             spawn
         } else {
