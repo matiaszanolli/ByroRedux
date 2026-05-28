@@ -163,12 +163,18 @@ impl MaterialStats {
 /// (those are surfaced separately by parse_real_nifs.rs).
 fn collect_stats(archive: &MeshArchive) -> MaterialStats {
     let mut stats = MaterialStats::default();
-    let files: Vec<String> = archive
+    // Sort before sampling so the 200-NIF window is identical across
+    // runs. `list_files()` returns items in archive-internal order,
+    // which on BA2 happens to be HashMap-iteration order — without the
+    // sort, two consecutive runs sample different 200 NIFs and the
+    // fill-rate comparison becomes useless. Pinned by #1279 verification.
+    let mut files: Vec<String> = archive
         .list_files()
         .into_iter()
         .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
-        .take(SAMPLE_LIMIT)
         .collect();
+    files.sort();
+    files.truncate(SAMPLE_LIMIT);
 
     for path in &files {
         let Ok(bytes) = archive.extract(path) else { continue };

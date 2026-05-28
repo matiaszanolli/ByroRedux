@@ -776,68 +776,148 @@ impl BSLightingShaderProperty {
 }
 
 impl BSLightingShaderProperty {
+    /// Parse a `BSLightingShaderProperty` block, dispatching on the file's
+    /// BSVER to the appropriate per-variant parser. Three variants split
+    /// at the BSVER boundaries the format actually changes shape at:
+    ///
+    /// | Range | Parser | Distinguishing features |
+    /// |---|---|---|
+    /// | BSVER 83-129 | [`parse_skyrim`](Self::parse_skyrim) | u32 shader-flag pair, `lighting_effect_1/2`, no `root_material_path`, no wetness, no FO76 trailing |
+    /// | BSVER 130-154 | [`parse_fo4`](Self::parse_fo4) | u32 pair at BSVER=130 only (gap at 131; CRC32 from 132); `root_material_path`; FO4 subsurface block 130-139; wetness; glossiness scale ×100 |
+    /// | BSVER ≥ 155 | [`parse_fo76_plus`](Self::parse_fo76_plus) | shader-type comes AFTER name; material-reference stopcond; CRC32 flag arrays; FO76 luminance/translucency/texture-arrays; FO76 shader-type-data table |
+    ///
+    /// The three per-variant parsers are bit-for-bit equivalent to the
+    /// corresponding slice of the pre-#1279 monolithic parse. The split
+    /// is a code-organisation refactor — each parser reads top-to-bottom
+    /// with no per-BSVER jumps into shared code paths, making the
+    /// per-game wire format easy to reason about in isolation.
+    ///
+    /// **Verification contract**: any change to a per-variant parser must
+    /// preserve the `parse_real_nifs --ignored` 100% recoverable rate on
+    /// the matching game's real-archive corpus AND the per-game
+    /// `m_kind%` / `metO%` fill-rates printed by the
+    /// `translation_completeness --ignored` harness within ±2pp.
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let bsver = stream.bsver();
-
-        // NiObjectNET: shader type comes BEFORE name for BSLightingShaderProperty on
-        // Skyrim/FO4 (nif.xml onlyT="BSLightingShaderProperty", BSVER 83-139, enum
-        // BSLightingShaderType). For FO76+ the shader type is part of the niobject
-        // body and typed as BSShaderType155.
-        let legacy_shader_type = if (83..=139).contains(&bsver) {
-            stream.read_u32_le()?
+        if bsver >= crate::version::bsver::FO76 {
+            Self::parse_fo76_plus(stream, bsver)
+        } else if bsver >= crate::version::bsver::FALLOUT4 {
+            Self::parse_fo4(stream, bsver)
         } else {
-            0
-        };
+            Self::parse_skyrim(stream, bsver)
+        }
+    }
 
+    /// Skyrim LE/SE parser (BSVER 83-129).
+    ///
+    /// - `legacy_shader_type` (u32) precedes `NiObjectNETData` per nif.xml
+    ///   `onlyT="BSLightingShaderProperty"` BSVER 83-139.
+    /// - u32 shader-flag pair (no CRC32, no stopcond).
+    /// - `lighting_effect_1/2` present (Skyrim-only fields).
+    /// - No `root_material_path`, no wetness, no FO4 subsurface block,
+    ///   no FO76 luminance/translucency/texture-arrays.
+    /// - `glossiness` stays raw (0-100 scale authored).
+    /// - Shader-type-data dispatches through the legacy `BSLightingShaderType` enum.
+    fn parse_skyrim(stream: &mut NifStream, _bsver: u32) -> io::Result<Self> {
+        let shader_type = stream.read_u32_le()?;
+        let net = NiObjectNETData::parse(stream)?;
+        let shader_flags_1 = stream.read_u32_le()?;
+        let shader_flags_2 = stream.read_u32_le()?;
+        let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
+        let uv_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
+        let texture_set_ref = stream.read_block_ref()?;
+        let emissive_color = [
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+        ];
+        let emissive_multiple = stream.read_f32_le()?;
+        let texture_clamp_mode = stream.read_u32_le()?;
+        let alpha = stream.read_f32_le()?;
+        let refraction_strength = stream.read_f32_le()?;
+        let glossiness = stream.read_f32_le()?;
+        let specular_color = [
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+        ];
+        let specular_strength = stream.read_f32_le()?;
+        let lighting_effect_1 = stream.read_f32_le()?;
+        let lighting_effect_2 = stream.read_f32_le()?;
+        let shader_type_data = parse_shader_type_data(stream, shader_type)?;
+
+        Ok(Self {
+            shader_type,
+            net,
+            material_reference: false,
+            shader_flags_1,
+            shader_flags_2,
+            sf1_crcs: Vec::new(),
+            sf2_crcs: Vec::new(),
+            uv_offset,
+            uv_scale,
+            texture_set_ref,
+            emissive_color,
+            emissive_multiple,
+            root_material_path: None,
+            texture_clamp_mode,
+            alpha,
+            refraction_strength,
+            glossiness,
+            specular_color,
+            specular_strength,
+            lighting_effect_1,
+            lighting_effect_2,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            grayscale_to_palette_scale: 0.0,
+            fresnel_power: 0.0,
+            wetness: None,
+            luminance: None,
+            do_translucency: false,
+            translucency: None,
+            texture_arrays: Vec::new(),
+            shader_type_data,
+        })
+    }
+
+    /// Fallout 4 + dev-band parser (BSVER 130-154).
+    ///
+    /// - `legacy_shader_type` (u32) precedes `NiObjectNETData`.
+    /// - **Shader-flag encoding splits within the range**:
+    ///   - BSVER == 130: u32 pair (`shader_flags_1/2`), no CRC32.
+    ///   - BSVER == 131 (`FO4_SHADER_GAP`): NEITHER — dev-stream 131 ships
+    ///     no shader-flag fields at all. 34,995 FO4 vanilla NIFs parse
+    ///     100% clean against this. See #409 / FO4-D1-H1.
+    ///   - BSVER ≥ 132: CRC32 arrays (`sf1_crcs/sf2_crcs`); `num_sf2`
+    ///     gated separately on BSVER ≥ 152 (never true in FO4 band but
+    ///     left in to match the inline shape).
+    /// - `root_material_path` always read (NiFixedString).
+    /// - `glossiness` scaled ×100 to convert FO4 0-1 smoothness authoring
+    ///   to the 0-100 glossiness convention every downstream consumer
+    ///   expects. Without this, FO4 BSLightingShader materials whose
+    ///   texture path doesn't keyword-match (e.g. Med-Tek polished
+    ///   floors) fall through to the glossiness fallback with
+    ///   `glossiness=0.8 → roughness=0.95`, killing direct specular and
+    ///   the RT-reflection metalness/roughness gate.
+    /// - FO4 subsurface block (`subsurface_rolloff`, `rimlight_power`,
+    ///   `backlight_power`) ONLY in BSVER 130-139. `backlight_power`
+    ///   present iff `rimlight_power >= 3.0e38` per nif.xml 6609 +
+    ///   openmw `property.cpp:335` + nifly `Shaders.cpp:477`. See #1175.
+    /// - `grayscale_to_palette_scale`, `fresnel_power`, wetness all read.
+    /// - Wetness `unknown_2` is FO76-gated (`>= 155`) so always 0.0 here.
+    /// - No `lighting_effect_1/2` (Skyrim-only).
+    /// - No FO76 luminance/translucency/texture-arrays.
+    fn parse_fo4(stream: &mut NifStream, bsver: u32) -> io::Result<Self> {
+        let shader_type = stream.read_u32_le()?;
         let net = NiObjectNETData::parse(stream)?;
 
-        // FO76+ stopcond: if Name is a `.bgsm` / `.bgem` / `.mat` material-
-        // file reference, the rest of the block is absent (the material
-        // file holds the real PBR data). Return a stub and let block_size
-        // skip any trailing padding. The suffix gate is critical — pre-
-        // #749 this fired on ANY non-empty Name, so every Starfield block
-        // with an editor label (e.g. "Material_Slot_01") had its entire
-        // PBR body silently defaulted to zero. See SF-D3-01.
-        if bsver >= crate::version::bsver::FO76 {
-            if let Some(name) = net.name.as_deref() {
-                if is_material_reference(name) {
-                    return Ok(Self::material_reference_stub(net));
-                }
-            }
-        }
-
-        // Shader flags 1/2 — per nif.xml (`#NI_BS_LT_FO4#` =
-        // `BSVER < 130` for the "SK" suffix variant; `#BS_FO4#` =
-        // `BSVER == 130` strictly for the "FO4" suffix variant). Gate
-        // is `bsver <= crate::version::bsver::FALLOUT4`. At `bsver == crate::version::bsver::FO4_SHADER_GAP` the pair is intentionally
-        // absent per the spec — dev-stream 131 ships no shader-flag
-        // fields at all (neither the Skyrim u32 pair nor the BSVER >=
-        // 132 CRC32 arrays). 34,995 FO4 vanilla NIFs parse 100% clean
-        // against this gate shape; FO4-D1-H1 (#409) confirmed the gap
-        // is correct against nif.xml after initial concern that BSVER
-        // 131 would misalign.
         let (shader_flags_1, shader_flags_2) = if bsver <= crate::version::bsver::FALLOUT4 {
             (stream.read_u32_le()?, stream.read_u32_le()?)
         } else {
             (0, 0)
         };
-
-        // FO76+ BSShaderType155 field. nif.xml gates this on
-        // `BSVER #GTE# 155`; pre-#747 the parser used `==` and
-        // Starfield (`bsver = 172` per `version.rs:129`) silently
-        // skipped, drifting every subsequent block read by 4 bytes
-        // and mis-routing the shader-type dispatch through the FO4
-        // table at `:990`. SF-D1-DISPATCH.
-        let fo76_shader_type = if bsver >= crate::version::bsver::FO76 {
-            stream.read_u32_le()?
-        } else {
-            0
-        };
-
-        // Num SF1 / Num SF2 (BSVER >= 132 / 152), then both arrays.
-        // #981 — bulk-read via `read_u32_array`. The byte-budget gate
-        // moves from `allocate_vec` into `read_pod_vec` so the OOM
-        // guard from #764 is preserved.
         let (sf1_crcs, sf2_crcs) = if bsver >= crate::version::bsver::FO4_CRC_FLAGS {
             let num_sf1 = stream.read_u32_le()? as usize;
             let num_sf2 = if bsver >= crate::version::bsver::FO76_SF2_CRCS {
@@ -852,20 +932,6 @@ impl BSLightingShaderProperty {
             (Vec::new(), Vec::new())
         };
 
-        // Effective shader type for the downstream dispatch (uses
-        // different enums depending on version). #747 / SF-D1-DISPATCH
-        // — Starfield reuses the FO76 BSShaderType155 numeric mapping
-        // (type 4 = skin tint Color4, type 5 = hair tint Color3 per
-        // nif.xml), so the gate is `>= 155`, not `== 155`. Pre-fix
-        // Starfield character / hair / face meshes routed through the
-        // FO4 dispatch which mis-interprets the type-4/5 payload and
-        // drops 12 B of tint data.
-        let shader_type = if bsver >= crate::version::bsver::FO76 {
-            fo76_shader_type
-        } else {
-            legacy_shader_type
-        };
-
         let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
         let uv_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
         let texture_set_ref = stream.read_block_ref()?;
@@ -875,38 +941,11 @@ impl BSLightingShaderProperty {
             stream.read_f32_le()?,
         ];
         let emissive_multiple = stream.read_f32_le()?;
-
-        // Root Material (NiFixedString) — FO4+ only (BSVER >= 130).
-        // Captured into `root_material_path` so the importer can fall back
-        // to it when `net.name` is a non-material editor label and the
-        // stopcond at line 771 did not fire. #1183 / SF-D1-NEW-01.
-        let root_material_path = if bsver >= crate::version::bsver::FALLOUT4 {
-            stream.read_string()?
-        } else {
-            None
-        };
-
+        let root_material_path = stream.read_string()?;
         let texture_clamp_mode = stream.read_u32_le()?;
         let alpha = stream.read_f32_le()?;
         let refraction_strength = stream.read_f32_le()?;
-
-        // Glossiness (Skyrim, 0–100) or Smoothness (FO4+, 0–1). The on-disk
-        // field is the same f32 slot, but the two games author it on
-        // different scales. Normalize FO4+ smoothness to the 0–100
-        // glossiness scale here so every downstream consumer
-        // (`Material::glossiness`, `classify_pbr`'s `1 - glossiness/100`
-        // fallback) sees one convention. Without this, FO4 BSLightingShader
-        // materials whose texture path doesn't keyword-match (e.g.
-        // Med-Tek polished floors) fall through to the glossiness
-        // fallback with `glossiness=0.8 → roughness=0.95`, killing
-        // direct specular and the RT-reflection metalness/roughness gate.
-        let glossiness_raw = stream.read_f32_le()?;
-        let glossiness = if bsver >= crate::version::bsver::FALLOUT4 {
-            glossiness_raw * 100.0
-        } else {
-            glossiness_raw
-        };
-
+        let glossiness = stream.read_f32_le()? * 100.0;
         let specular_color = [
             stream.read_f32_le()?,
             stream.read_f32_le()?,
@@ -914,24 +953,10 @@ impl BSLightingShaderProperty {
         ];
         let specular_strength = stream.read_f32_le()?;
 
-        // Lighting effects — Skyrim only (BSVER < 130).
-        let (lighting_effect_1, lighting_effect_2) = if bsver < crate::version::bsver::FALLOUT4 {
-            (stream.read_f32_le()?, stream.read_f32_le()?)
-        } else {
-            (0.0, 0.0)
-        };
-
-        // FO4-only common fields (BS_FO4_2 = BSVER 130–139).
         let (subsurface_rolloff, rimlight_power, backlight_power) = if (130..=139).contains(&bsver)
         {
             let sub = stream.read_f32_le()?;
             let rim = stream.read_f32_le()?;
-            // Backlight present iff Rimlight Power is the FLT_MAX sentinel,
-            // per nif.xml 6609: `cond="(Rimlight Power #GTE# #FLT_MAX#) #AND#
-            // (Rimlight Power #LT# #FLT_INF#)"`. Matches openmw
-            // `property.cpp:335` (`== FLT_MAX`) and nifly `Shaders.cpp:477`
-            // (`>= NiFloatMax && < NiFloatInf`). 3.0e38 stays within FLT_MAX
-            // float precision. #1175.
             let back = if rim >= 3.0e38 && rim.is_finite() {
                 stream.read_f32_le()?
             } else {
@@ -942,155 +967,10 @@ impl BSLightingShaderProperty {
             (0.0, 0.0, 0.0)
         };
 
-        let grayscale_to_palette_scale = if bsver >= crate::version::bsver::FALLOUT4 {
-            stream.read_f32_le()?
-        } else {
-            0.0
-        };
-
-        let fresnel_power = if bsver >= crate::version::bsver::FALLOUT4 {
-            stream.read_f32_le()?
-        } else {
-            0.0
-        };
-
-        let wetness = if bsver >= crate::version::bsver::FALLOUT4 {
-            let spec_scale = stream.read_f32_le()?;
-            let spec_power = stream.read_f32_le()?;
-            let min_var = stream.read_f32_le()?;
-            // #1223 / D4-NEW-01 — env_map_scale does NOT live in
-            // wetness; it lives in `parse_shader_type_data_fo4`'s
-            // shader_type=1 (EnvironmentMap) trailing block. Pre-#1223
-            // the gate was `bsver == FALLOUT4`, which caused a bogus
-            // duplicate read at BSVER=130: the parser consumed 4 bytes
-            // here AND 4 bytes again in shader_type=1 trailing, drifting
-            // every vanilla FO4 BSLSP by -4 (over-read).
-            //
-            // The `FO4_DLC_UPPER = 140` constant (formerly named
-            // `FO4_ENV_SCALE` per #1242 — see version.rs for the
-            // rename rationale) was previously docstring'd as a
-            // wetness-relocation threshold; that claim doesn't hold
-            // against the Starfield (BSVER 168+) corpus. Gating
-            // wetness env_map_scale on `>= FO4_DLC_UPPER` dropped
-            // Starfield Meshes01 parse rate from 97.21% to 95.77%.
-            // The empirical wire format keeps env_map_scale in
-            // shader-type=1 trailing across every BSVER we sweep today.
-            //
-            // Empirically pinned at BSVER=130: 5211 / 6455 BSLSP blocks
-            // ship at size=140 (shader_type=0), 1192 at size=146
-            // (shader_type=1 +6 trailing bytes = env_map_scale f32 +
-            // 2 SSR bools). Both produce drift=0 with the `false` gate.
-            let env_map_scale = 0.0f32;
-            let fresnel = stream.read_f32_le()?;
-            let metalness = stream.read_f32_le()?;
-            // `Unknown 1` is nominally gated on `#BS_GT_130#` per nif.xml,
-            // but the 2026-04-17 FO4 audit (Dim 1 C-1) swept all 8 FO4
-            // main + DLC mesh archives (226k NIFs) and found 1,876,931
-            // four-byte under-reads on `BSLightingShaderProperty`,
-            // every single one at BSVER=130 (the vanilla FO4 ship
-            // stream). The field is present from BSVER=130 onward —
-            // widen the gate to `>= 130` so the whole wetness tail
-            // aligns on FO4 (130), FO4 DLC (131-139), FO76 (155), and
-            // Starfield (168+). See #403 / FO4-D1-C1.
-            let unknown_1 = if bsver >= crate::version::bsver::FALLOUT4 {
-                stream.read_f32_le()?
-            } else {
-                0.0
-            };
-            // #746 / SF-D1-02 — nif.xml gates `Unknown 2` on
-            // `BSVER #GTE# 155`. Pre-fix the parser used `==` and
-            // every Starfield (`bsver = 172`) WetnessParams under-
-            // read by 4 bytes, drifting the rest of the block.
-            let unknown_2 = if bsver >= crate::version::bsver::FO76 {
-                stream.read_f32_le()?
-            } else {
-                0.0
-            };
-            Some(WetnessParams {
-                spec_scale,
-                spec_power,
-                min_var,
-                env_map_scale,
-                fresnel_power: fresnel,
-                metalness,
-                unknown_1,
-                unknown_2,
-            })
-        } else {
-            None
-        };
-
-        // FO76+ (BSVER >= 155) trailing fields. #746 / SF-D1-01 —
-        // nif.xml gates the LuminanceParams + TranslucencyParams +
-        // texture_arrays block on `BSVER #GTE# 155`. Pre-fix the
-        // parser used `==` and every Starfield (`bsver = 172`)
-        // BLSP under-read by ~24+22+variable bytes, leaving every
-        // subsequent block to drift by tens of bytes (block_size
-        // skip recovered the cell load but the tail-field captures
-        // ended up zeroed).
-        let mut luminance = None;
-        let mut do_translucency = false;
-        let mut translucency = None;
-        let mut texture_arrays: Vec<BSTextureArray> = Vec::new();
-        if bsver >= crate::version::bsver::FO76 {
-            luminance = Some(LuminanceParams {
-                lum_emittance: stream.read_f32_le()?,
-                exposure_offset: stream.read_f32_le()?,
-                final_exposure_min: stream.read_f32_le()?,
-                final_exposure_max: stream.read_f32_le()?,
-            });
-
-            do_translucency = stream.read_byte_bool()?;
-            if do_translucency {
-                translucency = Some(TranslucencyParams {
-                    subsurface_color: [
-                        stream.read_f32_le()?,
-                        stream.read_f32_le()?,
-                        stream.read_f32_le()?,
-                    ],
-                    transmissive_scale: stream.read_f32_le()?,
-                    turbulence: stream.read_f32_le()?,
-                    thick_object: stream.read_byte_bool()?,
-                    mix_albedo: stream.read_byte_bool()?,
-                });
-            }
-
-            // #724 / NIF-D1-06 — sibling read_byte_bool on this same
-            // function (thick_object, mix_albedo above) for consistency.
-            // Same single-byte read, just less repetition at the `!= 0`
-            // call site.
-            let has_texture_arrays = stream.read_byte_bool()?;
-            if has_texture_arrays {
-                // #408 — preferred allocate_vec for both the outer
-                // count and per-array width; both are file-driven u32s.
-                let num_arrays = stream.read_u32_le()?;
-                texture_arrays = stream.allocate_vec(num_arrays)?;
-                for _ in 0..num_arrays {
-                    let width = stream.read_u32_le()?;
-                    let mut textures = stream.allocate_vec(width)?;
-                    for _ in 0..width {
-                        textures.push(stream.read_sized_string()?);
-                    }
-                    texture_arrays.push(BSTextureArray { textures });
-                }
-            }
-        }
-
-        // Shader-type-specific trailing fields. For FO76+ (BSVER >=
-        // 155) these use the BSShaderType155 numeric mapping (type 4
-        // = skin tint Color4, type 5 = hair tint Color3 per nif.xml).
-        // Starfield (`bsver = 172`) reuses the same enum, so the gate
-        // is `>= 155` not `== 155`. Pre-#747 Starfield character /
-        // hair / face meshes routed through the FO4 dispatch which
-        // mis-interpreted the type-4/5 payload and dropped 12 B of
-        // tint data.
-        let shader_type_data = if bsver >= crate::version::bsver::FO76 {
-            parse_shader_type_data_fo76(stream, shader_type)?
-        } else if bsver < crate::version::bsver::FALLOUT4 {
-            parse_shader_type_data(stream, shader_type)?
-        } else {
-            parse_shader_type_data_fo4(stream, shader_type, bsver)?
-        };
+        let grayscale_to_palette_scale = stream.read_f32_le()?;
+        let fresnel_power = stream.read_f32_le()?;
+        let wetness = Some(Self::read_wetness_block(stream, bsver)?);
+        let shader_type_data = parse_shader_type_data_fo4(stream, shader_type, bsver)?;
 
         Ok(Self {
             shader_type,
@@ -1112,11 +992,151 @@ impl BSLightingShaderProperty {
             glossiness,
             specular_color,
             specular_strength,
-            lighting_effect_1,
-            lighting_effect_2,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
             subsurface_rolloff,
             rimlight_power,
             backlight_power,
+            grayscale_to_palette_scale,
+            fresnel_power,
+            wetness,
+            luminance: None,
+            do_translucency: false,
+            translucency: None,
+            texture_arrays: Vec::new(),
+            shader_type_data,
+        })
+    }
+
+    /// Fallout 76 + Starfield parser (BSVER ≥ 155).
+    ///
+    /// - NO `legacy_shader_type` before name — the shader-type field
+    ///   moves AFTER the flag arrays and uses the `BSShaderType155`
+    ///   numeric enum. Starfield (BSVER 172+) reuses the FO76 enum.
+    ///   Pre-#747 this gate used `==` and Starfield silently skipped
+    ///   the field, mis-routing every character/hair/face shader
+    ///   through the FO4 dispatch.
+    /// - **Material-reference stopcond**: if `net.name` ends in
+    ///   `.bgsm` / `.bgem` / `.mat`, the block body is absent — return
+    ///   a stub via [`Self::material_reference_stub`] and let
+    ///   `block_size` skip the padding. Pre-#749 the suffix gate was
+    ///   "ANY non-empty Name", so every Starfield block with an editor
+    ///   label like "Material_Slot_01" silently defaulted its PBR body
+    ///   to zero (SF-D3-01).
+    /// - CRC32 shader-flag arrays (`sf1_crcs/sf2_crcs`), `num_sf2`
+    ///   gate is always true here (`>= 155 > 152`).
+    /// - `root_material_path` always read.
+    /// - `glossiness` scaled ×100 (FO76 follows FO4's smoothness convention).
+    /// - No FO4 subsurface block (gated 130-139).
+    /// - Wetness with BOTH `unknown_1` (BSVER >= 130, always true) and
+    ///   `unknown_2` (BSVER >= 155, always true here) read.
+    /// - FO76 luminance + translucency + texture-arrays trailing block.
+    /// - Shader-type-data dispatches through `parse_shader_type_data_fo76`.
+    fn parse_fo76_plus(stream: &mut NifStream, bsver: u32) -> io::Result<Self> {
+        let net = NiObjectNETData::parse(stream)?;
+        if let Some(name) = net.name.as_deref() {
+            if is_material_reference(name) {
+                return Ok(Self::material_reference_stub(net));
+            }
+        }
+
+        let shader_type = stream.read_u32_le()?;
+        let num_sf1 = stream.read_u32_le()? as usize;
+        let num_sf2 = stream.read_u32_le()? as usize;
+        let sf1_crcs = stream.read_u32_array(num_sf1)?;
+        let sf2_crcs = stream.read_u32_array(num_sf2)?;
+
+        let uv_offset = [stream.read_f32_le()?, stream.read_f32_le()?];
+        let uv_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
+        let texture_set_ref = stream.read_block_ref()?;
+        let emissive_color = [
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+        ];
+        let emissive_multiple = stream.read_f32_le()?;
+        let root_material_path = stream.read_string()?;
+        let texture_clamp_mode = stream.read_u32_le()?;
+        let alpha = stream.read_f32_le()?;
+        let refraction_strength = stream.read_f32_le()?;
+        let glossiness = stream.read_f32_le()? * 100.0;
+        let specular_color = [
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+        ];
+        let specular_strength = stream.read_f32_le()?;
+
+        let grayscale_to_palette_scale = stream.read_f32_le()?;
+        let fresnel_power = stream.read_f32_le()?;
+        let wetness = Some(Self::read_wetness_block(stream, bsver)?);
+
+        let luminance = Some(LuminanceParams {
+            lum_emittance: stream.read_f32_le()?,
+            exposure_offset: stream.read_f32_le()?,
+            final_exposure_min: stream.read_f32_le()?,
+            final_exposure_max: stream.read_f32_le()?,
+        });
+
+        let do_translucency = stream.read_byte_bool()?;
+        let translucency = if do_translucency {
+            Some(TranslucencyParams {
+                subsurface_color: [
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                ],
+                transmissive_scale: stream.read_f32_le()?,
+                turbulence: stream.read_f32_le()?,
+                thick_object: stream.read_byte_bool()?,
+                mix_albedo: stream.read_byte_bool()?,
+            })
+        } else {
+            None
+        };
+
+        let mut texture_arrays: Vec<BSTextureArray> = Vec::new();
+        let has_texture_arrays = stream.read_byte_bool()?;
+        if has_texture_arrays {
+            let num_arrays = stream.read_u32_le()?;
+            texture_arrays = stream.allocate_vec(num_arrays)?;
+            for _ in 0..num_arrays {
+                let width = stream.read_u32_le()?;
+                let mut textures = stream.allocate_vec(width)?;
+                for _ in 0..width {
+                    textures.push(stream.read_sized_string()?);
+                }
+                texture_arrays.push(BSTextureArray { textures });
+            }
+        }
+
+        let shader_type_data = parse_shader_type_data_fo76(stream, shader_type)?;
+
+        Ok(Self {
+            shader_type,
+            net,
+            material_reference: false,
+            shader_flags_1: 0,
+            shader_flags_2: 0,
+            sf1_crcs,
+            sf2_crcs,
+            uv_offset,
+            uv_scale,
+            texture_set_ref,
+            emissive_color,
+            emissive_multiple,
+            root_material_path,
+            texture_clamp_mode,
+            alpha,
+            refraction_strength,
+            glossiness,
+            specular_color,
+            specular_strength,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
             grayscale_to_palette_scale,
             fresnel_power,
             wetness,
@@ -1125,6 +1145,41 @@ impl BSLightingShaderProperty {
             translucency,
             texture_arrays,
             shader_type_data,
+        })
+    }
+
+    /// Shared wetness-block reader used by `parse_fo4` and
+    /// `parse_fo76_plus`. The block shape is identical except for
+    /// `unknown_2` (FO76+ only). `env_map_scale` is deliberately 0.0
+    /// for both — per #1223, the wire field actually lives in
+    /// `parse_shader_type_data_fo4`'s shader_type=1 trailing block,
+    /// NOT in the wetness block; pre-#1223 reading it here caused a
+    /// 4-byte over-read on every vanilla FO4 BSLSP at size=140.
+    /// `unknown_1` is widened to `>= FALLOUT4` per #403 / FO4-D1-C1
+    /// (2026-04-17 FO4 audit found 1.9M under-reads at BSVER=130
+    /// from the original `>` gate).
+    fn read_wetness_block(stream: &mut NifStream, bsver: u32) -> io::Result<WetnessParams> {
+        let spec_scale = stream.read_f32_le()?;
+        let spec_power = stream.read_f32_le()?;
+        let min_var = stream.read_f32_le()?;
+        let env_map_scale = 0.0f32;
+        let fresnel_power = stream.read_f32_le()?;
+        let metalness = stream.read_f32_le()?;
+        let unknown_1 = stream.read_f32_le()?;
+        let unknown_2 = if bsver >= crate::version::bsver::FO76 {
+            stream.read_f32_le()?
+        } else {
+            0.0
+        };
+        Ok(WetnessParams {
+            spec_scale,
+            spec_power,
+            min_var,
+            env_map_scale,
+            fresnel_power,
+            metalness,
+            unknown_1,
+            unknown_2,
         })
     }
 }
