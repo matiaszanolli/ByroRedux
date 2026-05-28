@@ -38,11 +38,25 @@ pub fn extract_bs_geometry(
     } else {
         // Stage B: external `.mesh` companion file. Try each LOD slot until
         // one resolves. When no resolver is provided, skip external geometry.
+        //
+        // #1292 — the BSGeometry block stores `mesh_name` as a raw
+        // content-addressed hash-tree path (e.g.
+        // `aa2d865fc6bf336b909b\e84b59f1a4b705a40845`). The archive
+        // stores the actual `.mesh` file at the canonical
+        // `geometries\<X>.mesh` path. Pre-#1292 the importer passed
+        // the raw hash to the resolver, which never matched the
+        // archive layout — every external BSGeometry returned `None`,
+        // dropping 1 624 of 27 898 Cydonia REFRs to "zero meshes"
+        // (99.7% spawn-rate failure on the first Cydonia render
+        // attempt, 2026-05-28). Compose the canonical path here in
+        // the importer rather than asking every resolver impl to
+        // know about Starfield's hash-tree convention.
         let resolver = resolver?;
         let mut found = None;
         for m in &shape.meshes {
             if let BSGeometryMeshKind::External { mesh_name } = &m.kind {
-                if let Some(bytes) = resolver.resolve(mesh_name) {
+                let canonical = format!("geometries\\{mesh_name}.mesh");
+                if let Some(bytes) = resolver.resolve(&canonical) {
                     match BSGeometryMeshData::parse_from_bytes(&bytes) {
                         Ok(data) => {
                             found = Some(data);
@@ -50,8 +64,10 @@ pub fn extract_bs_geometry(
                         }
                         Err(e) => {
                             log::debug!(
-                                "BSGeometry external mesh '{}' parse error: {}",
+                                "BSGeometry external mesh '{}' (canonical '{}') \
+                                 parse error: {}",
                                 mesh_name,
+                                canonical,
                                 e
                             );
                         }

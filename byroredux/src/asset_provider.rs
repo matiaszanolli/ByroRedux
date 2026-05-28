@@ -119,6 +119,21 @@ pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
             return std::borrow::Cow::Borrowed(path);
         }
     }
+    // #1292 — Starfield content-addressed BSGeometry external `.mesh`
+    // companion files live at `geometries\<hash>.mesh` (NO `meshes\`
+    // prefix). The importer at `crates/nif/src/import/mesh/bs_geometry.rs`
+    // composes the canonical path before calling the resolver; without
+    // this gate the normaliser silently prepended `meshes\` and turned
+    // every Starfield poster / architecture / set-dressing lookup into
+    // a guaranteed miss → 99.7% spawn-rate failure on Cydonia.
+    if bytes.len() >= 11 {
+        let head = &bytes[..11];
+        if head.eq_ignore_ascii_case(b"geometries\\")
+            || head.eq_ignore_ascii_case(b"geometries/")
+        {
+            return std::borrow::Cow::Borrowed(path);
+        }
+    }
     std::borrow::Cow::Owned(format!(r"meshes\{}", path))
 }
 
@@ -1428,6 +1443,44 @@ mod tests {
         // not panic and must still get the prefix.
         let out = normalize_mesh_path("a.nif");
         assert_eq!(out.as_ref(), r"meshes\a.nif");
+    }
+
+    /// #1292 — Starfield BSGeometry external `.mesh` companion files
+    /// live at `geometries\<hash>.mesh` directly (NO `meshes\` prefix).
+    /// The importer composes this canonical path before calling the
+    /// resolver. Pre-#1292 the normaliser blindly prepended `meshes\`
+    /// turning it into `meshes\geometries\<hash>.mesh` which doesn't
+    /// exist in the archive → 99.7% spawn-rate failure on Cydonia.
+    #[test]
+    fn normalize_mesh_path_passes_geometries_prefix_unchanged() {
+        let out = normalize_mesh_path(
+            r"geometries\aa2d865fc6bf336b909b\e84b59f1a4b705a40845.mesh",
+        );
+        assert_eq!(
+            out.as_ref(),
+            r"geometries\aa2d865fc6bf336b909b\e84b59f1a4b705a40845.mesh",
+            "Starfield `geometries\\X.mesh` must NOT get a `meshes\\` prefix",
+        );
+        assert!(
+            matches!(out, std::borrow::Cow::Borrowed(_)),
+            "already-canonical paths must borrow, not allocate",
+        );
+    }
+
+    /// Case-insensitive + forward-slash variants of the geometries
+    /// prefix gate. Mirrors the case-insensitive / forward-slash
+    /// coverage on the `meshes\` prefix.
+    #[test]
+    fn normalize_mesh_path_geometries_prefix_is_case_and_separator_insensitive() {
+        for variant in [
+            r"GEOMETRIES\abc\def.mesh",
+            r"Geometries\abc\def.mesh",
+            "geometries/abc/def.mesh",
+            "GEOMETRIES/abc/def.mesh",
+        ] {
+            let out = normalize_mesh_path(variant);
+            assert_eq!(out.as_ref(), variant, "{variant:?} must pass through unchanged");
+        }
     }
 
     #[test]

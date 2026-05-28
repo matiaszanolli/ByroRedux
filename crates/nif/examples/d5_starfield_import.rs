@@ -6,7 +6,11 @@
 //!   d5_starfield_import <archive> <nif-path-1> [<nif-path-2> ...]
 use byroredux_bsa::{Ba2Archive, BsaArchive};
 use byroredux_core::string::StringPool;
-use byroredux_nif::{import::import_nif_scene, parse_nif};
+use byroredux_nif::{
+    blocks::bs_geometry::{BSGeometry, BSGeometryMeshKind},
+    import::{import_nif_scene, import_nif_scene_with_resolver, MeshResolver},
+    parse_nif,
+};
 use std::path::PathBuf;
 
 enum Arc {
@@ -92,8 +96,110 @@ fn main() {
         for (name, (parsed, unknown)) in &hist {
             println!("    {} parsed={} unknown={}", name, parsed, unknown);
         }
+        // Dump BSGeometry mesh-kind details — what the importer is
+        // being asked to resolve. The Starfield import-side gap
+        // (#1292) hinges on whether external `.mesh` companion
+        // names resolve out of the supplied archive.
+        let mut external_names: Vec<String> = Vec::new();
+        for b in &scene.blocks {
+            if let Some(g) = b.as_any().downcast_ref::<BSGeometry>() {
+                let internal = g.has_internal_geom_data();
+                println!(
+                    "  BSGeometry flags=0x{:04x} internal-geom-data={} LOD-slots={}",
+                    g.av.flags,
+                    internal,
+                    g.meshes.len(),
+                );
+                for (i, m) in g.meshes.iter().enumerate() {
+                    match &m.kind {
+                        BSGeometryMeshKind::External { mesh_name } => {
+                            println!("    LOD[{i}] external mesh_name='{mesh_name}'");
+                            external_names.push(mesh_name.clone());
+                        }
+                        BSGeometryMeshKind::Internal { mesh_data } => {
+                            println!(
+                                "    LOD[{i}] internal verts={} tris={}",
+                                mesh_data.vertices.len(),
+                                mesh_data.triangles.len(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Try resolving each external `.mesh` name out of the supplied
+        // archive. Reports HIT (with byte count) or MISS — the smoking
+        // gun for #1292 is whether the BA2 actually carries the
+        // companion files, and whether their layout parses.
+        //
+        // The CANONICAL Starfield path layout is `geometries\<X>.mesh`
+        // where `<X>` is the raw hash-tree path the BSGeometry block
+        // stores in its `mesh_name` field. Pre-#1292 the importer
+        // called `resolver.resolve(mesh_name)` with the raw hash,
+        // which never matched the archive's `geometries\X.mesh` form.
+        for mesh_name in &external_names {
+            let candidates = [
+                format!("geometries\\{mesh_name}.mesh"),
+                mesh_name.clone(),
+                format!("meshes\\{mesh_name}"),
+                mesh_name.replace('/', "\\"),
+                format!("meshes\\{}", mesh_name.replace('/', "\\")),
+            ];
+            let mut hit = false;
+            for cand in &candidates {
+                if let Ok(bytes) = arc.extract(cand) {
+                    println!(
+                        "    BA2 HIT  ('{}' as '{}'): {} bytes",
+                        mesh_name,
+                        cand,
+                        bytes.len(),
+                    );
+                    hit = true;
+                    break;
+                }
+            }
+            if !hit {
+                println!(
+                    "    BA2 MISS ('{}'); tried {} normalisations",
+                    mesh_name,
+                    candidates.len(),
+                );
+            }
+        }
+
+        // Provide a real resolver and re-import to see if the supplied
+        // archive successfully unblocks the external-geometry path.
+        struct ArcResolver<'a>(&'a Arc);
+        impl<'a> MeshResolver for ArcResolver<'a> {
+            fn resolve(&self, mesh_name: &str) -> Option<Vec<u8>> {
+                // Canonical Starfield form first — `geometries\X.mesh`.
+                let candidates = [
+                    format!("geometries\\{mesh_name}.mesh"),
+                    mesh_name.to_string(),
+                    format!("meshes\\{mesh_name}"),
+                    mesh_name.replace('/', "\\"),
+                    format!("meshes\\{}", mesh_name.replace('/', "\\")),
+                ];
+                for cand in &candidates {
+                    if let Ok(bytes) = self.0.extract(cand) {
+                        return Some(bytes);
+                    }
+                }
+                None
+            }
+        }
+        let resolver = ArcResolver(&arc);
+        let imp_with_resolver =
+            import_nif_scene_with_resolver(&scene, &mut pool, Some(&resolver));
+        println!(
+            "  with-resolver: nodes={} meshes={}",
+            imp_with_resolver.nodes.len(),
+            imp_with_resolver.meshes.len()
+        );
+
         let imp = import_nif_scene(&scene, &mut pool);
-        println!("  nodes={} meshes={}", imp.nodes.len(), imp.meshes.len());
+        println!("  no-resolver:   nodes={} meshes={}", imp.nodes.len(), imp.meshes.len());
         for (i, m) in imp.meshes.iter().enumerate() {
             let name = m.name.as_deref().unwrap_or("<unnamed>");
             let mat_path = m
