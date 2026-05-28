@@ -213,7 +213,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             // inline keeps the cell-loader's already-trusted parsing
             // path byte-identical while letting the unified walker
             // own the outer loop.
-            b"CELL" => parse_cell_group(&mut reader, end, &mut cells)?,
+            b"CELL" => parse_cell_group(&mut reader, end, &mut cells, game)?,
             b"WRLD" => parse_wrld_group(
                 &mut reader,
                 end,
