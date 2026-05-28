@@ -8,16 +8,24 @@ use byroredux_core::ecs::{GlobalTransform, ParticleEmitter, ParticleForceField, 
 /// override is defined once.
 ///
 /// **Scope (verified against FNV + Oblivion content, no-guessing):**
-/// only the kinematic + lifetime fields are overridden — these are
-/// genuinely authored and distinctive in real content (e.g. oasis-torch
-/// smoke `speed 24 / variation 45.6 / life 1.33±0.67`, Oblivion torch
-/// `speed 20±10 / life 1.5`). `initial_color` (read as the white
-/// `[1,1,1,1]` nif.xml default in shipped content) and `initial_radius`
-/// (default `1.0`) are **intentionally not applied**: overriding a
-/// preset's tuned flame colour/size with those defaults would wash it
-/// out. Colour stays owned by the `color_curve` (NiPSysColorModifier)
-/// override; size stays at the preset until a grow/fade-modifier decode
-/// lands. See `docs/engine/nifal.md`.
+/// the kinematic + lifetime + size fields are overridden — all genuinely
+/// authored and distinctive in real content (oasis-torch smoke
+/// `speed 24 / variation 45.6 / life 1.33±0.67`, Oblivion torch
+/// `speed 20±10 / life 1.5`).
+///
+/// **Size**: the authored magnitude is `initial_radius × base_scale`
+/// (base_scale `None` → 1.0). This is essential — FNV oasis smoke reads
+/// `radius 50 × bscale 0.15 = 7.5` (the preset smoke is 8→22), so the
+/// raw radius alone would be ~7× too big. The grow→steady→fade *shape*
+/// the `NiPSysGrowFadeModifier` encodes is a bell curve that the
+/// canonical linear `start_size→end_size` cannot represent, so we set a
+/// **constant** authored size (start = end) rather than inventing a
+/// grow/shrink ramp. A size-over-life curve is future work.
+///
+/// `initial_color` is **not** applied — shipped content authors it as the
+/// white `[1,1,1,1]` nif.xml default, so it would wash out tuned preset
+/// flame colours; colour stays owned by the `color_curve`
+/// (NiPSysColorModifier) override. See `docs/engine/nifal.md`.
 pub fn apply_emitter_params(
     preset: &mut ParticleEmitter,
     p: &byroredux_nif::import::ImportedEmitterParams,
@@ -28,6 +36,9 @@ pub fn apply_emitter_params(
     preset.declination_variation = p.declination_variation;
     preset.life = p.life_span;
     preset.life_variation = p.life_span_variation;
+    let size = p.initial_radius * p.base_scale.unwrap_or(1.0);
+    preset.start_size = size;
+    preset.end_size = size;
 }
 
 /// Convert a list of imported NIF force fields (Z-up local space) to
@@ -376,20 +387,20 @@ mod tests {
     }
 
     #[test]
-    fn apply_emitter_params_overrides_kinematics_not_color_or_size() {
+    fn apply_emitter_params_overrides_kinematics_and_size_not_color() {
         use byroredux_nif::import::ImportedEmitterParams;
         let mut preset = ParticleEmitter::torch_flame();
         let preset_start_color = preset.start_color;
-        let preset_start_size = preset.start_size;
         let authored = ImportedEmitterParams {
             speed: 24.0,
             speed_variation: 45.6,
             declination: 0.0,
             declination_variation: 0.17,
             initial_color: [1.0, 1.0, 1.0, 1.0], // white default — must NOT win
-            initial_radius: 1.0,                 // default — must NOT win
+            initial_radius: 50.0,                // FNV oasis-smoke radius
             life_span: 1.33,
             life_span_variation: 0.67,
+            base_scale: Some(0.15), // → authored size 7.5 (not raw 50)
         };
         apply_emitter_params(&mut preset, &authored);
         // Kinematic + lifetime fields take the authored values.
@@ -399,9 +410,32 @@ mod tests {
         assert_eq!(preset.declination_variation, 0.17);
         assert_eq!(preset.life, 1.33);
         assert_eq!(preset.life_variation, 0.67);
-        // Colour + size stay at the preset (no white/1.0-default washout).
+        // Size = initial_radius * base_scale, constant (no bell shape).
+        assert!((preset.start_size - 7.5).abs() < 1e-4);
+        assert_eq!(preset.start_size, preset.end_size);
+        // Colour stays at the preset (no white-default washout).
         assert_eq!(preset.start_color, preset_start_color);
-        assert_eq!(preset.start_size, preset_start_size);
+    }
+
+    #[test]
+    fn apply_emitter_params_size_defaults_base_scale_to_one() {
+        // Oblivion has no base_scale field → None → multiplier 1.0,
+        // so the authored radius is used directly.
+        use byroredux_nif::import::ImportedEmitterParams;
+        let mut preset = ParticleEmitter::torch_flame();
+        let authored = ImportedEmitterParams {
+            speed: 20.0,
+            speed_variation: 10.0,
+            declination: 0.0,
+            declination_variation: 0.28,
+            initial_color: [1.0, 1.0, 1.0, 1.0],
+            initial_radius: 10.5, // Oblivion torch
+            life_span: 1.5,
+            life_span_variation: 0.0,
+            base_scale: None,
+        };
+        apply_emitter_params(&mut preset, &authored);
+        assert!((preset.start_size - 10.5).abs() < 1e-4);
     }
 
     #[test]

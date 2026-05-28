@@ -136,9 +136,19 @@ when present. Verified authored + sane on FNV/Oblivion (oasis torch 15.0, Oblivi
 torch smoke 13.3); legacy `NiParticleSystemController` content has no controller →
 keeps the preset rate.
 
-**Still pending (follow-ups):** size-over-life (NiPSysGrowFadeModifier decode →
-`start_size`/`end_size`), and per-emitter (vs scene-first) attribution for
-multi-emitter NIFs. Tooling: `crates/nif/examples/emitter_dump.rs`.
+Particle **size** is authored too: the `NiPSysGrowFadeModifier` is a typed block
+capturing `base_scale`, and the translate sets a **constant** `start_size = end_size
+= initial_radius × base_scale` (base_scale `None` → 1.0). `base_scale` is essential —
+FNV oasis smoke is `radius 50 × 0.15 = 7.5` (preset smoke 8→22), so raw radius alone
+would be ~7× oversized. The grow→steady→fade *bell shape* the modifier encodes cannot
+map to the canonical linear `start_size→end_size`, so only the authored *magnitude*
+is translated (a size-over-life curve is future work). `initial_color` is still not
+applied (white nif.xml default; colour stays with the `color_curve` override).
+
+**Still pending (follow-ups):** size-over-life *curve* (the grow/fade bell shape needs
+a richer canonical size model), and per-emitter (vs scene-first) attribution for
+multi-emitter NIFs. Tooling: `crates/nif/examples/emitter_dump.rs`
+(`rate / radius / bscale / speed / declination / life / initColor`).
 
 ### Collision — **audit pending**
 

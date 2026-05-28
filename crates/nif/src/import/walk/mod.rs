@@ -677,6 +677,16 @@ pub(super) fn extract_emitter_params(
         .iter()
         .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitter>())?;
     let p = &emitter.params;
+    // Pair the emitter base with the first grow/fade modifier's
+    // base_scale (size multiplier), if any.
+    let base_scale = scene
+        .blocks
+        .iter()
+        .find_map(|b| {
+            b.as_any()
+                .downcast_ref::<crate::blocks::particle::NiPSysGrowFadeModifier>()
+        })
+        .and_then(|m| m.base_scale);
     Some(crate::import::ImportedEmitterParams {
         speed: p.speed,
         speed_variation: p.speed_variation,
@@ -686,6 +696,7 @@ pub(super) fn extract_emitter_params(
         initial_radius: p.initial_radius,
         life_span: p.life_span,
         life_span_variation: p.life_span_variation,
+        base_scale,
     })
 }
 

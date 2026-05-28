@@ -185,6 +185,20 @@ pub struct NiPSysEmitterCtlrData {
     pub birth_rate_first: Option<f32>,
 }
 
+/// `NiPSysGrowFadeModifier` — modulates particle size over life (grow in
+/// at spawn, fade out at death). We capture `base_scale`, the FO3+
+/// authored size multiplier on the emitter's `initial_radius`. The
+/// grow/fade *shape* (a bell curve) can't map to the canonical
+/// `ParticleEmitter`'s linear start→end size, so only the magnitude
+/// (`initial_radius × base_scale`) is translated. See
+/// `docs/engine/nifal.md` — particles size follow-up.
+#[derive(Debug)]
+pub struct NiPSysGrowFadeModifier {
+    /// FO3+ base size multiplier; `None` on Oblivion (no field) →
+    /// treated as `1.0` downstream.
+    pub base_scale: Option<f32>,
+}
+
 // ── Modifier parsers ────────────────────────────────────────────────
 
 /// Parse a modifier with only the base fields (NiPSysPositionModifier, etc.).
@@ -315,22 +329,25 @@ pub fn parse_gravity_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock>
 /// NiPSysGrowFadeModifier: base + grow_time(f32) + grow_generation(u16) +
 /// fade_time(f32) + fade_generation(u16) + base_scale(f32) [BS_GTE_FO3 +
 /// version 20.2.0.7]
-pub fn parse_grow_fade_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
+pub fn parse_grow_fade_modifier(stream: &mut NifStream) -> io::Result<NiPSysGrowFadeModifier> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _grow_time = stream.read_f32_le()?;
     let _grow_generation = stream.read_u16_le()?;
     let _fade_time = stream.read_f32_le()?;
     let _fade_generation = stream.read_u16_le()?;
     // Bethesda 20.2.0.7 + BS_GTE_FO3 (BSVER >= 34): adds Base Scale.
-    // Per nif.xml line 4803. FNV/Skyrim/FO4 all match this gate. Pre-#383
-    // these 4 bytes were dropped on every grow-fade modifier (890
-    // occurrences in vanilla `Fallout - Meshes.bsa`).
-    if stream.version() == crate::version::NifVersion::V20_2_0_7 && stream.bsver() >= 34 {
-        let _base_scale = stream.read_f32_le()?;
-    }
-    Ok(NiPSysBlock {
-        original_type: "NiPSysGrowFadeModifier".to_string(),
-    })
+    // Per nif.xml line 4803. FNV/Skyrim/FO4 all match this gate (Oblivion
+    // v20.0.0.4 does NOT → `None`). Pre-#383 these 4 bytes were dropped
+    // on every grow-fade modifier (890 occurrences in vanilla
+    // `Fallout - Meshes.bsa`).
+    let base_scale = if stream.version() == crate::version::NifVersion::V20_2_0_7
+        && stream.bsver() >= 34
+    {
+        Some(stream.read_f32_le()?)
+    } else {
+        None
+    };
+    Ok(NiPSysGrowFadeModifier { base_scale })
 }
 
 /// NiPSysRotationModifier: base + initial_speed(f32) + [since 20.0.0.2]
@@ -1213,6 +1230,7 @@ impl_ni_object!(
     NiPSysEmitter,
     NiPSysEmitterCtlr,
     NiPSysEmitterCtlrData,
+    NiPSysGrowFadeModifier,
     NiPSysColorModifier,
     NiPSysGravityFieldModifier,
     NiPSysVortexFieldModifier,
@@ -1544,7 +1562,8 @@ mod tests {
         let block = parse_grow_fade_modifier(&mut stream)
             .expect("FNV NiPSysGrowFadeModifier should parse cleanly");
         assert_eq!(stream.position() as usize, d.len());
-        assert_eq!(block.original_type, "NiPSysGrowFadeModifier");
+        // base_scale is now captured (FO3+ gate); value 3.0 from above.
+        assert_eq!(block.base_scale, Some(3.0));
     }
 
     /// Oblivion-style header (V20_0_0_4, BSVER 11). The `strings` table

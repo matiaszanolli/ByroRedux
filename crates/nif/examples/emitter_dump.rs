@@ -38,7 +38,14 @@ fn main() {
             continue;
         };
         any = true;
-        print!("rate={rate:>6}  ");
+        let bscale = p
+            .base_scale
+            .map(|b| format!("{b:.2}"))
+            .unwrap_or_else(|| "-".to_string());
+        print!(
+            "rate={rate:>6} radius={:>5.2} bscale={bscale:>5}  ",
+            p.initial_radius
+        );
         let host = imported
             .nodes
             .get(e.parent_node.unwrap_or(usize::MAX))

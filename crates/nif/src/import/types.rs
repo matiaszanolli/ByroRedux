@@ -991,6 +991,13 @@ pub struct ImportedEmitterParams {
     pub initial_radius: f32,
     pub life_span: f32,
     pub life_span_variation: f32,
+    /// FO3+ `NiPSysGrowFadeModifier.base_scale` — multiplier on
+    /// `initial_radius` giving the particle's full size. `None` when no
+    /// grow/fade modifier (or Oblivion, which has no base_scale field)
+    /// → treated as `1.0`. The grow/fade bell-curve *shape* is not
+    /// modelled (canonical size is a linear start→end lerp); only the
+    /// authored magnitude `initial_radius × base_scale` is translated.
+    pub base_scale: Option<f32>,
 }
 
 /// Flat-import variant of [`ImportedParticleEmitter`] used by the cell
