@@ -1,0 +1,7 @@
+# sf_smoke baseline — /mnt/data/SteamLibrary/steamapps/common/Starfield/Data/OldMars.esm (variant=Tes5Plus game=Starfield hedr=0.9600)
+# columns: fourcc	grup_count	bytes_total	immediate_records	handled	byte_error
+AVMD	1	22198	25	0	0
+OMOD	1	674	3	0	0
+KYWD	1	661	6	0	0
+COBJ	1	502	3	0	0
+LVLI	1	215	1	0	0

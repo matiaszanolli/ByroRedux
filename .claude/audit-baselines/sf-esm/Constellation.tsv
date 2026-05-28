@@ -1,0 +1,9 @@
+# sf_smoke baseline — /mnt/data/SteamLibrary/steamapps/common/Starfield/Data/Constellation.esm (variant=Tes5Plus game=Starfield hedr=0.9600)
+# columns: fourcc	grup_count	bytes_total	immediate_records	handled	byte_error
+AVMD	1	34369	35	0	0
+LMSW	1	1735	1	0	0
+KYWD	1	1029	9	0	0
+OMOD	1	908	4	0	0
+COBJ	1	699	4	0	0
+LVLI	1	217	1	0	0
+GLOB	1	145	2	0	0
