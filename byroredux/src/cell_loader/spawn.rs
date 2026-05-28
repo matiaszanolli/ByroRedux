@@ -8,7 +8,7 @@
 
 use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::{
-    BSXFlags, Billboard, GlobalTransform, LightFlicker, LightSource, LocalBound, Material,
+    BSXFlags, Billboard, GlobalTransform, LightFlicker, LightSource, LocalBound,
     MeshHandle, ParticleEmitter, SceneFlags, TextureHandle, Transform, World, WorldBound,
     LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
 };
@@ -27,7 +27,6 @@ use crate::components::{
 };
 
 use super::nif_import_registry::CachedNifImport;
-use super::pack_effect_shader_flags;
 use super::refr::RefrTextureOverlay;
 
 /// `true` when an `ImportedLight` has a non-trivial diffuse colour
@@ -838,130 +837,29 @@ pub(super) fn spawn_placed_instances(
         }
         world.insert(entity, MeshHandle(mesh_handle));
         world.insert(entity, TextureHandle(tex_handle));
-        let mut material = Material {
-                emissive_color: mesh.emissive_color,
-                emissive_mult: mesh.emissive_mult,
-                emissive_source: mesh.emissive_source,
-                specular_color: mesh.specular_color,
-                specular_strength: mesh.specular_strength,
-                diffuse_color: mesh.diffuse_color,
-                ambient_color: mesh.ambient_color,
-                glossiness: mesh.glossiness,
-                uv_offset: mesh.uv_offset,
-                uv_scale: mesh.uv_scale,
-                alpha: mesh.mat_alpha,
-                env_map_scale: mesh.env_map_scale,
-                normal_map: eff_normal_map.clone(),
+        // Canonical material translation — the single boundary that
+        // resolves a raw `ImportedMesh` into the engine `Material`
+        // (PBR resolved, glass classified once, flag union packed).
+        // The cell path contributes the REFR-overlay model-space-normals
+        // bit as `extra_material_flags`; everything else is shared with
+        // the loose-NIF path. See `material_translate.rs`.
+        let extra_material_flags = refr_overlay
+            .filter(|o| o.model_space_normals)
+            .map(|_| byroredux_renderer::vulkan::material::material_flag::BGSM_MODEL_SPACE_NORMALS)
+            .unwrap_or(0);
+        let material = crate::material_translate::translate_material(
+            mesh,
+            crate::material_translate::ResolvedPaths {
                 texture_path: eff_texture_path.clone(),
                 material_path: eff_material_path.clone(),
+                normal_map: eff_normal_map.clone(),
                 glow_map: eff_glow_map.clone(),
                 detail_map: eff_detail_map.clone(),
                 gloss_map: eff_gloss_map.clone(),
                 dark_map: eff_dark_map.clone(),
-                vertex_color_mode: mesh.vertex_color_mode,
-                alpha_test: mesh.alpha_test,
-                alpha_threshold: mesh.alpha_threshold,
-                alpha_test_func: mesh.alpha_test_func,
-                material_kind: mesh.material_kind,
-                // #869
-                wireframe: mesh.wireframe,
-                flat_shading: mesh.flat_shading,
-                z_test: mesh.z_test,
-                z_write: mesh.z_write,
-                z_function: mesh.z_function,
-                shader_type_fields: if mesh.shader_type_fields.is_empty() {
-                    None
-                } else {
-                    Some(Box::new(mesh.shader_type_fields.to_core()))
-                },
-                // #620 — BSEffectShaderProperty falloff cone (Skyrim+)
-                // OR BSShaderNoLightingProperty falloff cone (FO3/FNV
-                // SIBLING per #451). See scene.rs for the full
-                // explanation; this site mirrors the same plumbing.
-                effect_falloff: mesh
-                    .effect_shader
-                    .as_ref()
-                    .map(
-                        |es| byroredux_core::ecs::components::material::EffectFalloff {
-                            start_angle: es.falloff_start_angle,
-                            stop_angle: es.falloff_stop_angle,
-                            start_opacity: es.falloff_start_opacity,
-                            stop_opacity: es.falloff_stop_opacity,
-                            soft_falloff_depth: es.soft_falloff_depth,
-                        },
-                    )
-                    .or_else(|| {
-                        mesh.no_lighting_falloff.as_ref().map(|nl| {
-                            byroredux_core::ecs::components::material::EffectFalloff {
-                                start_angle: nl.start_angle,
-                                stop_angle: nl.stop_angle,
-                                start_opacity: nl.start_opacity,
-                                stop_opacity: nl.stop_opacity,
-                                soft_falloff_depth: 0.0,
-                            }
-                        })
-                    }),
-                // #890 Stage 2 — pack the four BSEffect flag bits into
-                // a GpuMaterial-format u32 so the renderer can OR them
-                // straight into `GpuMaterial.material_flags` without
-                // per-bit re-encoding. Zero on the FO3/FNV
-                // `BSShaderNoLightingProperty` path (which shares the
-                // `effect_falloff` slot but has no SLSF1/SLSF2 bits).
-                //
-                // #1077 / FO4-D6-003 Phase 2a — the same u32 also
-                // carries the BGSM v>2 `pbr` / `translucency` /
-                // `model_space_normals` bits via the sibling
-                // `pack_bgsm_material_flags` packer. Both packers
-                // target the same `material_flag::*` bit layout, so
-                // a single OR-composition produces the union word
-                // the GpuMaterial consumes.
-                effect_shader_flags: pack_effect_shader_flags(mesh.effect_shader.as_ref())
-                    | super::pack_bgsm_material_flags(mesh)
-                    | refr_overlay
-                        .filter(|o| o.model_space_normals)
-                        .map(|_| {
-                            byroredux_renderer::vulkan::material::material_flag::BGSM_MODEL_SPACE_NORMALS
-                        })
-                        .unwrap_or(0),
-                // #1147 Phase 2b — forward BGSM v>=8 translucency suite
-                // from ImportedMesh. Only meaningful when the matching
-                // `MAT_FLAG_BGSM_TRANSLUCENCY` bit is set on
-                // effect_shader_flags above (handled by
-                // pack_bgsm_material_flags); harmless to forward otherwise.
-                translucency_subsurface_color: mesh.translucency_subsurface_color,
-                translucency_transmissive_scale: mesh.translucency_transmissive_scale,
-                translucency_turbulence: mesh.translucency_turbulence,
-                // #890 Stage 2c — BSEffectShaderProperty greyscale LUT
-                // path. Resolved to a bindless handle below + attached
-                // as a `GreyscaleLutHandle` so the per-frame draw build
-                // can populate `GpuMaterial.greyscale_lut_index`.
                 greyscale_texture: eff_greyscale_texture.clone(),
-                // Translation-layer PBR overrides — set by
-                // `merge_bgsm_into_mesh` for BGSM/BGEM materials so
-                // the renderer sees standardized `(metalness,
-                // roughness)` without per-format branching.
-                // `resolve_classifier_overrides` below fills any
-                // still-`None` slots from the keyword classifier so
-                // legacy Oblivion / FO3 / FNV inline-shader content
-                // also lands at runtime with explicit PBR scalars —
-                // the per-frame draw build hits the override fast-path
-                // for every material regardless of source format.
-                metalness_override: mesh.metalness_override,
-                roughness_override: mesh.roughness_override,
-            };
-        material.resolve_classifier_overrides();
-        // Canonical glass classification (step 3) — alpha-aware, runs
-        // after the PBR overrides so the forced glass roughness wins.
-        // `mesh.is_decal || mesh.alpha_test` mirrors the decal escalation
-        // applied to `final_layer` below; glass is alpha-BLEND (test is
-        // mutually exclusive per `apply_alpha_flags`) so this is just the
-        // belt-and-suspenders decal exclusion.
-        crate::helpers::classify_glass_into_material(&mut material,
-            mesh.name.as_deref(),
-            eff_texture_path.as_deref(),
-            mesh.has_alpha,
-            mesh.is_decal || mesh.alpha_test,
-            mesh.bgem_glass,
+            },
+            extra_material_flags,
         );
         world.insert(entity, material);
         // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn

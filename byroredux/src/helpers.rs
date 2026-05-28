@@ -37,10 +37,10 @@ const GLASS_ROUGHNESS: f32 = 0.10;
 /// frame is disambiguated by blend state, never by the keyword alone.
 ///
 /// On a match, `material_kind` becomes `MATERIAL_KIND_GLASS` and
-/// `roughness_override` is forced glass-smooth ([`GLASS_ROUGHNESS`]) as a
+/// `roughness` is forced glass-smooth ([`GLASS_ROUGHNESS`]) as a
 /// consequence. Engine-synthesized kinds (≥ 100, e.g. EFFECT_SHADER) are
-/// never overridden. Call AFTER `Material::resolve_classifier_overrides`
-/// so the override write wins over the keyword-derived roughness.
+/// never overridden. Call AFTER `Material::resolve_pbr` so the glass
+/// write wins over the keyword-derived roughness.
 pub(crate) fn classify_glass_into_material(
     material: &mut Material,
     mesh_name: Option<&str>,
@@ -56,9 +56,9 @@ pub(crate) fn classify_glass_into_material(
     if !has_alpha || is_decal {
         return;
     }
-    // Conductors are never glass; the keyword classifier marks obvious
-    // metal via `metalness_override`. Absent override → treat as dielectric.
-    if material.metalness_override.unwrap_or(0.0) >= 0.3 {
+    // Conductors are never glass; `resolve_pbr` has already marked
+    // obvious metal in `metalness` (BGSM or keyword classifier).
+    if material.metalness >= 0.3 {
         return;
     }
     let keyword_match = texture_path.is_some_and(is_glass_keyword_path)
@@ -67,7 +67,7 @@ pub(crate) fn classify_glass_into_material(
         return;
     }
     material.material_kind = byroredux_renderer::MATERIAL_KIND_GLASS;
-    material.roughness_override = Some(GLASS_ROUGHNESS);
+    material.roughness = GLASS_ROUGHNESS;
 }
 
 /// Add a child entity to a parent's Children component, creating it if needed.
@@ -107,7 +107,7 @@ mod glass_classification_tests {
     fn texture_keyword_glass_with_alpha_is_classified_and_smoothed() {
         // FNV whiskey bottle: texture path carries "bottle", alpha-blend.
         let mut m = mat();
-        m.roughness_override = Some(0.40); // post-step-2 glossiness value
+        m.roughness = 0.40; // post-resolve_pbr glossiness value
         classify_glass_into_material(&mut m,
             Some("WhiskeyBottle01:0"),
             Some("textures/clutter/liquorbottles/whiskeybottle01.dds"),
@@ -116,7 +116,7 @@ mod glass_classification_tests {
             false,
         );
         assert_eq!(m.material_kind, GLASS);
-        assert!(m.roughness_override.unwrap() <= 0.11, "forced glass-smooth");
+        assert!(m.roughness <= 0.11, "forced glass-smooth");
     }
 
     #[test]
@@ -124,7 +124,7 @@ mod glass_classification_tests {
         // FNV ShotGlass / DrinkingGlass: atlas texture has NO keyword,
         // but the NIF node name does. Alpha-blended → glass.
         let mut m = mat();
-        m.roughness_override = Some(0.60);
+        m.roughness = 0.60;
         classify_glass_into_material(&mut m,
             Some("DrinkingGlass:0"),
             Some("textures/clutter/junk/kitchenutensils01.dds"),
@@ -133,7 +133,7 @@ mod glass_classification_tests {
             false,
         );
         assert_eq!(m.material_kind, GLASS);
-        assert!(m.roughness_override.unwrap() <= 0.11);
+        assert!(m.roughness <= 0.11);
     }
 
     #[test]
@@ -142,7 +142,7 @@ mod glass_classification_tests {
         // is baked / separate; this opaque mesh must NOT become glass and
         // its roughness must be left untouched (no over-shine).
         let mut m = mat();
-        m.roughness_override = Some(0.80);
+        m.roughness = 0.80;
         classify_glass_into_material(&mut m,
             Some("PawnShopWindow:0"),
             Some("textures/architecture/westside/pawnshop_d.dds"),
@@ -151,7 +151,7 @@ mod glass_classification_tests {
             false,
         );
         assert_eq!(m.material_kind, 0, "opaque window stays non-glass");
-        assert_eq!(m.roughness_override, Some(0.80), "roughness untouched");
+        assert_eq!(m.roughness, 0.80, "roughness untouched");
     }
 
     #[test]
@@ -159,8 +159,8 @@ mod glass_classification_tests {
         // A metal-classified surface (metalness override ≥ 0.3) is never
         // glass even if a keyword matches.
         let mut m = mat();
-        m.metalness_override = Some(0.90);
-        m.roughness_override = Some(0.30);
+        m.metalness = 0.90;
+        m.roughness = 0.30;
         classify_glass_into_material(&mut m, Some("glasscasing"), Some("metalglass.dds"), true, false,
             false,
         );
@@ -209,7 +209,7 @@ mod glass_classification_tests {
         // `merge_bgsm_into_mesh` forwarded the bit; this assertion
         // pins that we honour it as an authoritative glass signal.
         let mut m = mat();
-        m.roughness_override = Some(0.80); // post-BGSM-merge non-glass roughness
+        m.roughness = 0.80; // post-BGSM-merge non-glass roughness
         classify_glass_into_material(
             &mut m,
             Some("Bottle:0"),
@@ -223,7 +223,7 @@ mod glass_classification_tests {
             "BGEM glass_enabled must classify even without keyword in path/name"
         );
         assert!(
-            m.roughness_override.unwrap() <= 0.11,
+            m.roughness <= 0.11,
             "BGEM glass must still be forced glass-smooth"
         );
     }
@@ -274,7 +274,7 @@ mod glass_classification_tests {
         // dielectric by definition. Mod conflict / mis-authoring stays
         // visible rather than being silently mis-classified.
         let mut m = mat();
-        m.metalness_override = Some(0.85);
+        m.metalness = 0.85;
         classify_glass_into_material(
             &mut m,
             Some("ChromedGlassyTrim"),

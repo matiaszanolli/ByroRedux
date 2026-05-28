@@ -394,22 +394,16 @@ impl ConsoleCommand for MeshInfoCommand {
             // bug class from an entity with material_kind=20 + no texture.
             lines.push(format!("  material_kind:     {}", mat.material_kind));
             // PBR convergence ground-truth (canonical-material pass).
-            // `metalness_override` / `roughness_override` are Some when
-            // authored (BGSM merge ran) and None when the renderer falls
-            // back to the keyword `classify_pbr` heuristic. Showing both
-            // the override state and the legacy `glossiness` input lets
-            // the per-game material-divergence sweep read the actual
+            // `metalness` / `roughness` are now resolved canonical
+            // scalars (BGSM-authored or keyword-classified, fully
+            // resolved once at `translate_material` — no render-time
+            // fallback). Showing them alongside the legacy `glossiness`
+            // input lets the per-game material-divergence sweep read the
             // convention each game produces, with the materials BA2
-            // loaded (so FO4/Skyrim BGSM values appear, not the fallback).
+            // loaded (so FO4/Skyrim BGSM values appear).
             lines.push(format!(
-                "  pbr metO/rghO/gloss: {} / {} / {:.0}",
-                mat.metalness_override
-                    .map(|v| format!("{:.2}", v))
-                    .unwrap_or_else(|| "None(keyword)".to_string()),
-                mat.roughness_override
-                    .map(|v| format!("{:.2}", v))
-                    .unwrap_or_else(|| "None(keyword)".to_string()),
-                mat.glossiness,
+                "  pbr metal/rough/gloss: {:.2} / {:.2} / {:.0}",
+                mat.metalness, mat.roughness, mat.glossiness,
             ));
             lines.push(format!(
                 "  alpha (val/test):  {:.2} / test={} (thr={:.2}, func={})",

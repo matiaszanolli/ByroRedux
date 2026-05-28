@@ -9,6 +9,7 @@ mod components;
 mod debug_load;
 mod game_profiles;
 mod helpers;
+mod material_translate;
 mod npc_spawn;
 mod parsed_nif_cache;
 mod render;

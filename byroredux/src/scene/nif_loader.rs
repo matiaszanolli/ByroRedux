@@ -14,7 +14,7 @@ use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
     BSBound, BSXFlags, Billboard, BillboardMode, GlobalTransform, LocalBound,
-    Material, MeshHandle, Name, Parent, ParticleEmitter, SceneFlags, SkinnedMesh, TextureHandle,
+    MeshHandle, Name, Parent, ParticleEmitter, SceneFlags, SkinnedMesh, TextureHandle,
     Transform, World, WorldBound, MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3};
@@ -789,110 +789,26 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         if mesh.flags != 0 {
             world.insert(entity, SceneFlags::from_nif(mesh.flags));
         }
-        // Attach material data (specular, emissive, glossiness, UV transform, etc.)
-        let mut material = Material {
-                emissive_color: mesh.emissive_color,
-                emissive_mult: mesh.emissive_mult,
-                emissive_source: mesh.emissive_source,
-                specular_color: mesh.specular_color,
-                specular_strength: mesh.specular_strength,
-                diffuse_color: mesh.diffuse_color,
-                ambient_color: mesh.ambient_color,
-                glossiness: mesh.glossiness,
-                uv_offset: mesh.uv_offset,
-                uv_scale: mesh.uv_scale,
-                alpha: mesh.mat_alpha,
-                env_map_scale: mesh.env_map_scale,
-                normal_map: owned_normal_map.clone(),
+        // Canonical material translation — same single boundary the
+        // cell-loader path uses, so loose-NIF materials are resolved
+        // identically. No REFR overlay on the loose path → no extra
+        // material flags. See `material_translate.rs`.
+        let material = crate::material_translate::translate_material(
+            mesh,
+            crate::material_translate::ResolvedPaths {
                 texture_path: owned_texture_path.clone(),
                 material_path: owned_material_path.clone(),
+                normal_map: owned_normal_map.clone(),
                 glow_map: owned_glow_map.clone(),
                 detail_map: owned_detail_map.clone(),
                 gloss_map: owned_gloss_map.clone(),
                 dark_map: owned_dark_map.clone(),
-                vertex_color_mode: mesh.vertex_color_mode,
-                alpha_test: mesh.alpha_test,
-                alpha_threshold: mesh.alpha_threshold,
-                alpha_test_func: mesh.alpha_test_func,
-                material_kind: mesh.material_kind,
-                // #869 — NiWireframeProperty / NiShadeProperty captured
-                // by the NIF importer flow through here so the
-                // draw-time pipeline selector can route batches.
-                wireframe: mesh.wireframe,
-                flat_shading: mesh.flat_shading,
-                z_test: mesh.z_test,
-                z_write: mesh.z_write,
-                z_function: mesh.z_function,
-                shader_type_fields: if mesh.shader_type_fields.is_empty() {
-                    None
-                } else {
-                    Some(Box::new(mesh.shader_type_fields.to_core()))
-                },
-                // #620 — BSEffectShaderProperty falloff cone (Skyrim+)
-                // OR BSShaderNoLightingProperty falloff cone (FO3/FNV
-                // SIBLING per #451). Either yields an `EffectFalloff`;
-                // BSShaderNoLighting fills `soft_falloff_depth = 0.0`
-                // since that block has no soft-depth field.
-                effect_falloff: mesh
-                    .effect_shader
-                    .as_ref()
-                    .map(
-                        |es| byroredux_core::ecs::components::material::EffectFalloff {
-                            start_angle: es.falloff_start_angle,
-                            stop_angle: es.falloff_stop_angle,
-                            start_opacity: es.falloff_start_opacity,
-                            stop_opacity: es.falloff_stop_opacity,
-                            soft_falloff_depth: es.soft_falloff_depth,
-                        },
-                    )
-                    .or_else(|| {
-                        mesh.no_lighting_falloff.as_ref().map(|nl| {
-                            byroredux_core::ecs::components::material::EffectFalloff {
-                                start_angle: nl.start_angle,
-                                stop_angle: nl.stop_angle,
-                                start_opacity: nl.start_opacity,
-                                stop_opacity: nl.stop_opacity,
-                                soft_falloff_depth: 0.0,
-                            }
-                        })
-                    }),
-                // #890 Stage 2 — BSEffectShader bits OR'd with
-                // #1077 / FO4-D6-003 Phase 2a BGSM v>2 bits at the
-                // importer boundary. Both contributors target the
-                // same `material_flag::*` bit layout so a single u32
-                // carries the union through to `GpuMaterial`. See
-                // `cell_loader.rs` for the identical packing pattern
-                // + the rationale for sharing the field.
-                effect_shader_flags: crate::cell_loader::pack_effect_shader_flags(
-                    mesh.effect_shader.as_ref(),
-                ) | crate::cell_loader::pack_bgsm_material_flags(mesh),
-                // #1147 Phase 2b — forward BGSM v>=8 translucency suite.
-                translucency_subsurface_color: mesh.translucency_subsurface_color,
-                translucency_transmissive_scale: mesh.translucency_transmissive_scale,
-                translucency_turbulence: mesh.translucency_turbulence,
-                // #890 Stage 2c — BSEffectShaderProperty greyscale LUT
-                // path captured here; resolved to a bindless handle by
-                // `resolve_material_textures` at draw-build time.
                 greyscale_texture: mesh
                     .effect_shader
                     .as_ref()
                     .and_then(|es| es.greyscale_texture.clone()),
-                metalness_override: mesh.metalness_override,
-                roughness_override: mesh.roughness_override,
-            };
-        // Per `feedback_format_translation.md` Stage 1 — populate any
-        // still-`None` overrides from the keyword classifier so the
-        // per-frame draw build hits the override fast-path for every
-        // material regardless of source format.
-        material.resolve_classifier_overrides();
-        // Canonical glass classification (step 3) — mirror of the
-        // cell_loader::spawn site so loose-NIF glass behaves identically.
-        crate::helpers::classify_glass_into_material(&mut material,
-            mesh.name.as_deref(),
-            owned_texture_path.as_deref(),
-            mesh.has_alpha,
-            mesh.is_decal || mesh.alpha_test,
-            mesh.bgem_glass,
+            },
+            0,
         );
         world.insert(entity, material);
         // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.

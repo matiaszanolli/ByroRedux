@@ -265,7 +265,9 @@ pub(super) fn collect_static_mesh_draws(
                     alpha_threshold,
                     alpha_test_func,
                 ) = if let Some(m) = mat {
-                    let pbr = m.classify_pbr(m.texture_path.as_deref());
+                    // Canonical PBR is resolved once at `translate_material`
+                    // (`material.{metalness,roughness}`) — read it directly,
+                    // no per-draw keyword scan / classify_pbr fallback.
                     let thresh = if m.alpha_test { m.alpha_threshold } else { 0.0 };
                     let func = if m.alpha_test {
                         m.alpha_test_func as u32
@@ -273,8 +275,8 @@ pub(super) fn collect_static_mesh_draws(
                         0
                     };
                     (
-                        pbr.roughness,
-                        pbr.metalness,
+                        m.roughness,
+                        m.metalness,
                         m.emissive_mult,
                         m.emissive_color,
                         m.specular_strength,

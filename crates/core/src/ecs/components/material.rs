@@ -201,24 +201,25 @@ pub struct Material {
     /// and forwarded to `GpuMaterial.greyscale_lut_index` at draw build
     /// time. `None` for every non-BSEffect mesh. See #890 Stage 2c.
     pub greyscale_texture: Option<String>,
-    /// Translation-layer PBR metalness override `[0, 1]`. `None`
-    /// falls through to the legacy keyword-classifier path inside
-    /// [`Self::classify_pbr`] (correct for inline-shader NIF
-    /// content — Oblivion / FO3 / FNV — where no scalar metalness
-    /// signal was authored). `Some` is set by the BGSM / BGEM
-    /// translator in `merge_bgsm_into_mesh` from authored
-    /// `specular_color * specular_mult` luminance: dielectric spec
-    /// (≈ 0.04) maps to `0.0`, conductor spec (≈ 0.95) to near `1.0`.
-    /// The renderer uses this value as `GpuMaterial.metalness`
-    /// directly — no shader-side branching on source format. See
-    /// `feedback_format_translation.md`.
-    pub metalness_override: Option<f32>,
-    /// Translation-layer PBR roughness override `[0, 1]`. Companion
-    /// to [`Self::metalness_override`]; set together by the BGSM
-    /// translator as `1.0 - bgsm.smoothness` so authored smoothness
-    /// drives the GGX lobe width directly without round-tripping
-    /// through `glossiness / 100`. `None` keeps the legacy derivation.
-    pub roughness_override: Option<f32>,
+    /// Canonical PBR metalness `[0, 1]` — **fully resolved, no Option,
+    /// no render-time fallback**. Populated once at the translation
+    /// boundary (`byroredux::material_translate::translate_material`):
+    /// either from the BGSM/BGEM translator (`merge_bgsm_into_mesh`
+    /// maps authored `specular_color * specular_mult` luminance —
+    /// dielectric ≈ 0.04 → `0.0`, conductor ≈ 0.95 → near `1.0`), or
+    /// from the keyword classifier ([`resolve_pbr`](Self::resolve_pbr))
+    /// for inline-shader NIF content (Oblivion / FO3 / FNV). The
+    /// renderer reads this as `GpuMaterial.metalness` directly — no
+    /// shader-side branching on source format. See
+    /// `feedback_format_translation.md` and `docs/engine/nifal.md`
+    /// (NIFAL — the canonical translation tier).
+    pub metalness: f32,
+    /// Canonical PBR roughness `[0, 1]` — companion to
+    /// [`Self::metalness`], same resolve-once contract. The BGSM
+    /// translator sets it as `1.0 - bgsm.smoothness`; the keyword
+    /// classifier supplies it otherwise; glass classification
+    /// (`classify_glass_into_material`) forces it to `GLASS_ROUGHNESS`.
+    pub roughness: f32,
 }
 
 /// View-angle + soft-depth falloff cone captured from
@@ -309,8 +310,10 @@ impl Default for Material {
             translucency_transmissive_scale: 0.0,
             translucency_turbulence: 0.0,
             greyscale_texture: None,
-            metalness_override: None,
-            roughness_override: None,
+            // Canonical PBR defaults — match the renderer's no-Material
+            // fallback (`static_meshes.rs`): dielectric, mid roughness.
+            metalness: 0.0,
+            roughness: 0.5,
         }
     }
 }
@@ -559,69 +562,46 @@ impl Material {
         is_glass_keyword_path(texture_path.unwrap_or(""))
     }
 
-    /// Infer PBR properties from legacy material data + texture path.
+    /// Resolve the canonical [`metalness`](Self::metalness) /
+    /// [`roughness`](Self::roughness) scalars in place, **once**, at the
+    /// translation boundary (`material_translate::translate_material`).
     ///
-    /// **Translation-layer overrides win**: when `metalness_override`
-    /// / `roughness_override` are set (i.e. the BGSM/BGEM translator
-    /// already produced standardized PBR values from authored
-    /// spec_color × smoothness), use them directly. The keyword
-    /// classifier below is the legacy fallback for inline-shader NIF
-    /// content (Oblivion / FO3 / FNV) where no scalar PBR signal was
-    /// authored. This is the contract that lets the renderer stay
-    /// format-agnostic — see `feedback_format_translation.md`.
+    /// Contract: any field left as a `NaN` sentinel (the caller seeds
+    /// `mesh.metalness_override.unwrap_or(NaN)` etc., so BGSM/BGEM
+    /// authored values pass straight through and the legacy
+    /// inline-shader path arrives unresolved) is filled from the keyword
+    /// classifier ([`classify_pbr_keyword`]) using the texture path +
+    /// glossiness + env-map-scale + normal-map presence. Both fields are
+    /// then clamped to the renderer's accepted ranges — `metalness ∈
+    /// [0, 1]`, `roughness ∈ [0.04, 1]`. Keyword-classifier outputs are
+    /// already in-range, so the clamp only constrains authored BGSM
+    /// values (replicating the pre-canonical render-time `classify_pbr`
+    /// clamp).
     ///
-    /// The texture path is the primary fallback signal — keywords like
-    /// "metal", "glass", "wood" map to physically-plausible defaults.
-    /// Final fallback uses the NIF glossiness value converted to
-    /// roughness.
+    /// After this returns, the renderer reads `metalness` / `roughness`
+    /// directly — there is no render-time fallback. Per
+    /// `feedback_format_translation.md`, every material lands with
+    /// explicit PBR scalars regardless of source format.
     ///
-    /// Matching is case-insensitive but **does not allocate** — the
-    /// previous `to_ascii_lowercase` copy ran per draw per frame (~39k
-    /// allocations/sec on Prospector Saloon at 48 FPS). See #375.
-    pub fn classify_pbr(&self, texture_path: Option<&str>) -> PbrMaterial {
-        if let (Some(m), Some(r)) = (self.metalness_override, self.roughness_override) {
-            return PbrMaterial {
-                roughness: r.clamp(0.04, 1.0),
-                metalness: m.clamp(0.0, 1.0),
-            };
+    /// Matching is case-insensitive and **does not allocate**
+    /// ([`classify_pbr_keyword`]'s windowed byte compare). See #375.
+    pub fn resolve_pbr(&mut self) {
+        if self.metalness.is_nan() || self.roughness.is_nan() {
+            let pbr = classify_pbr_keyword(PbrClassifierInputs {
+                texture_path: self.texture_path.as_deref(),
+                glossiness: self.glossiness,
+                env_map_scale: self.env_map_scale,
+                has_normal_map: self.normal_map.is_some(),
+            });
+            if self.metalness.is_nan() {
+                self.metalness = pbr.metalness;
+            }
+            if self.roughness.is_nan() {
+                self.roughness = pbr.roughness;
+            }
         }
-        self.classify_pbr_from_path(texture_path)
-    }
-
-    /// Idempotent translation hook — eagerly populate
-    /// `metalness_override` / `roughness_override` from the keyword
-    /// classifier so the per-frame draw build hits the fast-path in
-    /// [`Self::classify_pbr`] instead of re-scanning the texture path
-    /// every frame. Call once at material-insert time
-    /// (`cell_loader::spawn` / `scene::nif_loader`); BGSM-resolved
-    /// overrides already in place are preserved unchanged.
-    ///
-    /// Per `feedback_format_translation.md` this is Stage 1 of pushing
-    /// FO3 / FNV / Oblivion inline-shader content onto the same
-    /// "single PBR contract" path BGSM-using FO4 / Skyrim use — every
-    /// material lands at runtime with explicit `(metalness, roughness)`
-    /// scalars, regardless of source format.
-    pub fn resolve_classifier_overrides(&mut self) {
-        if self.metalness_override.is_some() && self.roughness_override.is_some() {
-            return;
-        }
-        let pbr = self.classify_pbr_from_path(self.texture_path.as_deref());
-        self.metalness_override.get_or_insert(pbr.metalness);
-        self.roughness_override.get_or_insert(pbr.roughness);
-    }
-
-    /// Internal — keyword classifier body without the override
-    /// fast-path. Thin shim over the free
-    /// [`classify_pbr_keyword`] so the per-frame draw build and the
-    /// NIF importer share one classifier definition (Stage 2 of the
-    /// `feedback_format_translation.md` rollout).
-    fn classify_pbr_from_path(&self, texture_path: Option<&str>) -> PbrMaterial {
-        classify_pbr_keyword(PbrClassifierInputs {
-            texture_path,
-            glossiness: self.glossiness,
-            env_map_scale: self.env_map_scale,
-            has_normal_map: self.normal_map.is_some(),
-        })
+        self.metalness = self.metalness.clamp(0.0, 1.0);
+        self.roughness = self.roughness.clamp(0.04, 1.0);
     }
 }
 
@@ -642,6 +622,19 @@ fn contains_any_ci(haystack: &str, keywords: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test shim — exercise the keyword classifier with a `Material`'s
+    /// fields, the way the deleted `Material::classify_pbr` used to (the
+    /// render path now reads the resolved `metalness`/`roughness`
+    /// directly; these tests still validate the classifier itself).
+    fn classify(m: &Material, texture_path: &str) -> PbrMaterial {
+        classify_pbr_keyword(PbrClassifierInputs {
+            texture_path: Some(texture_path),
+            glossiness: m.glossiness,
+            env_map_scale: m.env_map_scale,
+            has_normal_map: m.normal_map.is_some(),
+        })
+    }
 
     #[test]
     fn default_material() {
@@ -674,15 +667,15 @@ mod tests {
     #[test]
     fn classify_pbr_keyword_dispatch() {
         let m = Material::default();
-        let metal = m.classify_pbr(Some(r"Textures\Weapons\Iron\IronSword.dds"));
+        let metal = classify(&m, r"Textures\Weapons\Iron\IronSword.dds");
         assert!(metal.metalness > 0.8);
         assert!(metal.roughness < 0.4);
 
-        let wood = m.classify_pbr(Some("textures/clutter/barrel/barrel01.dds"));
+        let wood = classify(&m, "textures/clutter/barrel/barrel01.dds");
         assert_eq!(wood.metalness, 0.0);
         assert!(wood.roughness > 0.6);
 
-        let glass = m.classify_pbr(Some("textures/clutter/ICE/IceShard01.dds"));
+        let glass = classify(&m, "textures/clutter/ICE/IceShard01.dds");
         assert!(glass.roughness < 0.2);
     }
 
@@ -709,7 +702,7 @@ mod tests {
         // 2.5 = previously-clamped "power-armor tier" on the non-
         // keyword arm. Now plateaus at polished-plastic territory.
         m.env_map_scale = 2.5;
-        let p = m.classify_pbr(Some("textures/interior/wallpanel01.dds"));
+        let p = classify(&m, "textures/interior/wallpanel01.dds");
         assert!(
             p.roughness >= 0.35,
             "non-keyword env_map_scale must not produce chrome floor; got {}",
@@ -720,7 +713,7 @@ mod tests {
         // Extreme env_map_scale still bottoms at the new floor —
         // a dielectric never looks like a mirror.
         m.env_map_scale = 10.0;
-        let p = m.classify_pbr(Some("textures/unknown/shiny.dds"));
+        let p = classify(&m, "textures/unknown/shiny.dds");
         assert!(p.roughness >= 0.35);
         assert_eq!(p.metalness, 0.0);
     }
@@ -730,7 +723,7 @@ mod tests {
         let mut m = Material::default();
         m.glossiness = 50.0;
         m.env_map_scale = 0.5; // cushion-with-sheen tier
-        let p = m.classify_pbr(Some("textures/clutter/medical/hospitalbed01.dds"));
+        let p = classify(&m, "textures/clutter/medical/hospitalbed01.dds");
         assert_eq!(
             p.metalness, 0.0,
             "env_map_scale must not drive metalness — that's the chrome-cushion bug"
@@ -743,7 +736,7 @@ mod tests {
         // also stays dielectric — the artist needs to put `metal` /
         // `armor` in the texture path to mark conductor authoring.
         m.env_map_scale = 2.5;
-        let p = m.classify_pbr(Some("textures/clutter/unknown/shiny.dds"));
+        let p = classify(&m, "textures/clutter/unknown/shiny.dds");
         assert_eq!(p.metalness, 0.0);
     }
 
@@ -853,7 +846,7 @@ mod tests {
         let mut m = Material::default();
         m.glossiness = 20.0; // matte
         m.env_map_scale = 0.0; // disable env-map branch so glossiness wins
-        let p = m.classify_pbr(Some("textures/unknown/thing.dds"));
+        let p = classify(&m, "textures/unknown/thing.dds");
         assert_eq!(p.metalness, 0.0);
         assert!(p.roughness > 0.5);
     }
@@ -916,70 +909,81 @@ mod tests {
         assert!(!Material::path_indicates_glass(Some("")));
     }
 
-    // ── `resolve_classifier_overrides` — Stage 1 of
-    //   feedback_format_translation.md: every material lands at
-    //   runtime with explicit PBR overrides so the per-frame draw
-    //   build hits the override fast-path regardless of source
-    //   format.
+    // ── `resolve_pbr` — the canonical translation hook
+    //   (feedback_format_translation.md): every material lands with
+    //   explicit `metalness` / `roughness` scalars regardless of
+    //   source format. The caller seeds authored (BGSM) values or a
+    //   `NaN` sentinel for "fill me from the keyword classifier".
 
     #[test]
-    fn resolve_classifier_overrides_populates_from_keyword_path() {
+    fn resolve_pbr_populates_from_keyword_path() {
         let mut m = Material::default();
         m.texture_path = Some(r"Textures\Weapons\Iron\IronSword.dds".to_string());
-        assert!(m.metalness_override.is_none());
-        assert!(m.roughness_override.is_none());
+        // Seed the sentinel exactly as `translate_material` does for
+        // legacy inline-shader content (no BGSM override).
+        m.metalness = f32::NAN;
+        m.roughness = f32::NAN;
 
-        m.resolve_classifier_overrides();
-        let metalness = m.metalness_override.expect("metalness populated");
-        let roughness = m.roughness_override.expect("roughness populated");
-        assert!(metalness > 0.8, "metal keyword routes to conductor");
-        assert!(roughness < 0.4);
-
-        // Subsequent draws hit the override fast-path — no string scan.
-        let pbr = m.classify_pbr(m.texture_path.as_deref());
-        assert!((pbr.metalness - metalness).abs() < 1e-6);
-        assert!((pbr.roughness - roughness).abs() < 1e-6);
+        m.resolve_pbr();
+        assert!(m.metalness > 0.8, "metal keyword routes to conductor");
+        assert!(m.roughness < 0.4);
+        assert!(m.metalness.is_finite() && m.roughness.is_finite());
     }
 
     #[test]
-    fn resolve_classifier_overrides_is_idempotent() {
+    fn resolve_pbr_is_idempotent() {
         let mut m = Material::default();
         m.texture_path = Some("textures/clutter/barrel/barrel01.dds".to_string());
-        m.resolve_classifier_overrides();
-        let first_metal = m.metalness_override.unwrap();
-        let first_rough = m.roughness_override.unwrap();
+        m.metalness = f32::NAN;
+        m.roughness = f32::NAN;
+        m.resolve_pbr();
+        let first_metal = m.metalness;
+        let first_rough = m.roughness;
 
-        m.resolve_classifier_overrides();
-        assert_eq!(m.metalness_override.unwrap(), first_metal);
-        assert_eq!(m.roughness_override.unwrap(), first_rough);
+        // Re-running on already-resolved (finite) values only re-clamps.
+        m.resolve_pbr();
+        assert_eq!(m.metalness, first_metal);
+        assert_eq!(m.roughness, first_rough);
     }
 
     #[test]
-    fn resolve_classifier_overrides_preserves_upstream_translator_values() {
-        // BGSM merge layer ran first and wrote authoritative scalars;
-        // the keyword classifier must NOT overwrite them.
+    fn resolve_pbr_preserves_upstream_translator_values() {
+        // BGSM merge layer ran first and wrote authoritative scalars
+        // (finite, in-range); the keyword classifier must NOT overwrite.
         let mut m = Material::default();
         m.texture_path = Some(r"Textures\Weapons\Iron\IronSword.dds".to_string());
-        m.metalness_override = Some(0.42);
-        m.roughness_override = Some(0.13);
+        m.metalness = 0.42;
+        m.roughness = 0.13;
 
-        m.resolve_classifier_overrides();
-        assert_eq!(m.metalness_override, Some(0.42));
-        assert_eq!(m.roughness_override, Some(0.13));
+        m.resolve_pbr();
+        assert_eq!(m.metalness, 0.42);
+        assert_eq!(m.roughness, 0.13);
     }
 
     #[test]
-    fn resolve_classifier_overrides_fills_only_missing_slot() {
-        // Half-populated: BGSM wrote one but not the other (rare but
-        // representable). The keyword fallback fills the gap without
-        // touching the populated slot.
+    fn resolve_pbr_fills_only_missing_slot() {
+        // Half-populated: one authored, the other a NaN sentinel. The
+        // keyword fallback fills the gap without touching the populated
+        // slot.
         let mut m = Material::default();
         m.texture_path = Some(r"Textures\Weapons\Iron\IronSword.dds".to_string());
-        m.metalness_override = Some(0.42);
-        m.roughness_override = None;
+        m.metalness = 0.42;
+        m.roughness = f32::NAN;
 
-        m.resolve_classifier_overrides();
-        assert_eq!(m.metalness_override, Some(0.42));
-        assert!(m.roughness_override.is_some());
+        m.resolve_pbr();
+        assert_eq!(m.metalness, 0.42);
+        assert!(m.roughness.is_finite());
+    }
+
+    #[test]
+    fn resolve_pbr_clamps_authored_out_of_range() {
+        // Authored BGSM values outside the renderer ranges are clamped
+        // (replicating the pre-canonical render-time `classify_pbr`).
+        let mut m = Material::default();
+        m.metalness = 1.7;
+        m.roughness = 0.0;
+        m.resolve_pbr();
+        assert_eq!(m.metalness, 1.0);
+        assert_eq!(m.roughness, 0.04);
     }
 }
