@@ -315,72 +315,36 @@ pub(super) fn collect_static_mesh_draws(
                 let clip = vp_mat * pos;
                 let sort_depth = f32_sortable_u32(clip.w);
 
-                // Classify the effective material kind for shader
-                // dispatch. BSLightingShaderProperty.shader_type is
-                // forwarded verbatim for Skyrim+ variants (0..=19 —
-                // SkinTint / HairTint / EyeEnvmap / MultiLayerParallax /
-                // etc., see #344). Engine-synthesized kinds live in
-                // the high range (100+):
-                //   - `MATERIAL_KIND_GLASS` when the material is
-                //     alpha-blend + low-metal + not a decal + low-
-                //     roughness. The roughness gate was added after
-                //     Tier C Phase 2 shipped with only the first three
-                //     criteria: FNV wood tables and picture frames
-                //     carry `NiAlphaProperty.flags=0x12ED` (blend=1) for
-                //     edge smoothing, not because the surface is glass.
-                //     Under the three-criterion rule they were tagged
-                //     as glass and rendered through the RT refract /
-                //     Fresnel path as near-white surfaces. Roughness
-                //     classified from the texture path (glass=0.1,
-                //     wood=0.7, fabric=0.95) cleanly separates actual
-                //     transparent-refractive materials from
-                //     alpha-blend-for-edges. See follow-up to #515.
-                let base_material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
-                // Engine-synthesized kinds (>= 100) are pre-classified
-                // upstream and must win over the heuristic Glass branch.
-                // Today: BSEffectShaderProperty meshes arrive with
-                // material_kind=101 (MATERIAL_KIND_EFFECT_SHADER) set at
-                // import; the glass heuristic would otherwise misclassify
-                // a fire plane as glass. See #706.
+                // Material kind for shader dispatch. The full glass /
+                // effect-shader / variant classification happens at
+                // spawn time:
+                //   - BSLightingShaderProperty.shader_type values 0..=19
+                //     are forwarded verbatim by the importer (#344).
+                //   - Engine-synthesized kinds live at >= 100
+                //     (MATERIAL_KIND_GLASS = 100, MATERIAL_KIND_EFFECT_SHADER
+                //     = 101, …) and are set by `helpers::classify_glass_into_material`
+                //     and the importer's BSEffectShader / NoLighting arms.
                 //
-                // Heuristic glass classification requires an EXPLICIT
-                // texture-path glass-keyword signal alongside the
-                // alpha/metal/roughness gates. Pre-fix any alpha-blend
-                // material whose glossiness-derived roughness happened
-                // to land below 0.4 was classified as glass — that
-                // included Skyrim cloth banners (Markarth heraldic
-                // hangings have `BSLightingShaderProperty.glossiness ≈ 80`
-                // → roughness 0.2 via `1 - 80/100` — the cloth-keyword
-                // arm of `classify_pbr` didn't fire because the texture
-                // path was `architecture/markarth/markarthbanner01.dds`,
-                // not `cloth/banner01.dds`). The misclassification
-                // routed the cloth through the IOR refraction +
-                // chromatic-dispersion shader path, producing visible
-                // rainbow banners. Requiring the path-keyword signal
-                // (glass / crystal / ice / gem / window / bottle / jar
-                // / vial) is conservative: meshes without one of those
-                // tokens never reach the glass renderer regardless of
-                // their PBR fallback, eliminating the cloth-as-glass
-                // false-positive without losing actual glass cups /
-                // bottles. See Markarth probe 2026-05-13.
-                let path_indicates_glass = mat
-                    .and_then(|m| m.texture_path.as_deref())
-                    .map(|p| {
-                        byroredux_core::ecs::components::Material::path_indicates_glass(Some(p))
-                    })
-                    .unwrap_or(false);
-                let material_kind = if base_material_kind >= 100 {
-                    base_material_kind
-                } else if alpha_blend
-                    && !is_decal
-                    && metalness < 0.3
-                    && roughness < 0.4
-                    && path_indicates_glass
-                {
-                    byroredux_renderer::MATERIAL_KIND_GLASS
-                } else {
-                    base_material_kind
-                };
+                // #1280 sub-step 3c — the render-side glass-heuristic
+                // chain that used to live here is gone. Audit pre-deletion
+                // confirmed it was provably dead code: spawn-time
+                // `classify_glass_into_material` is a strict superset of
+                // the render-side gate (same `is_glass_keyword_path`
+                // predicate, additional mesh-name + BGEM-glass triggers,
+                // forces roughness to 0.10 so any future render-side
+                // roughness gate would also fire), and a Material-creation-
+                // site audit confirmed both spawn sites
+                // (cell_loader/spawn.rs:841 and scene/nif_loader.rs:793)
+                // route through the classifier before `world.insert`.
+                // Pre-deletion the heuristic also required the texture-
+                // path keyword and the same alpha/metal/!decal gates,
+                // gated by `roughness < 0.4` — every entity that would
+                // have hit those gates was already spawn-classified GLASS
+                // with roughness 0.10, so the heuristic never changed
+                // material_kind on any draw. Verified via the
+                // translation-completeness harness (zero drift in
+                // per-game m_kind% / mat_path% pre/post deletion).
+                let material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
 
                 // Glass single-sided override — Bethesda authors many
                 // glass meshes (drinking glasses, pitchers, bottles)
@@ -433,7 +397,7 @@ pub(super) fn collect_static_mesh_draws(
                 // pack still runs on those kinds so the data is already
                 // plumbed when the shader branches land.
                 let stf = mat.and_then(|m| m.shader_type_fields.as_deref());
-                let skin_tint_rgba = if base_material_kind == 5 {
+                let skin_tint_rgba = if material_kind == 5 {
                     stf.and_then(|f| {
                         f.skin_tint_color
                             .map(|c| [c[0], c[1], c[2], f.skin_tint_alpha.unwrap_or(1.0)])
@@ -442,12 +406,12 @@ pub(super) fn collect_static_mesh_draws(
                 } else {
                     [0.0; 4]
                 };
-                let hair_tint_rgb = if base_material_kind == 6 {
+                let hair_tint_rgb = if material_kind == 6 {
                     stf.and_then(|f| f.hair_tint_color).unwrap_or([0.0; 3])
                 } else {
                     [0.0; 3]
                 };
-                let sparkle_rgba = if base_material_kind == 14 {
+                let sparkle_rgba = if material_kind == 14 {
                     stf.and_then(|f| f.sparkle_parameters).unwrap_or([0.0; 4])
                 } else {
                     [0.0; 4]
@@ -457,7 +421,7 @@ pub(super) fn collect_static_mesh_draws(
                     multi_layer_inner_thickness,
                     multi_layer_refraction_scale,
                     multi_layer_inner_scale,
-                ) = if base_material_kind == 11 {
+                ) = if material_kind == 11 {
                     (
                         stf.and_then(|f| f.multi_layer_envmap_strength)
                             .unwrap_or(0.0),
@@ -472,7 +436,7 @@ pub(super) fn collect_static_mesh_draws(
                     (0.0, 0.0, 0.0, [1.0, 1.0])
                 };
                 let (eye_left_center, eye_cubemap_scale, eye_right_center) =
-                    if base_material_kind == 16 {
+                    if material_kind == 16 {
                         (
                             stf.and_then(|f| f.eye_left_reflection_center)
                                 .unwrap_or([0.0; 3]),
