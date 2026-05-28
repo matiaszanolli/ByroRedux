@@ -1533,7 +1533,14 @@ void main() {
     // hair-tip cards, eyelash strips, and BSEffectShader meshes.
     bool vertexColorEmissive =
         (mat.materialFlags & MAT_FLAG_VERTEX_COLOR_EMISSIVE) != 0u;
-    vec3 albedo = vertexColorEmissive ? texColor.rgb : texColor.rgb * fragColor;
+    // DBG_BYPASS_VERTEX_COLOR (0x400) — drop the baked per-vertex color
+    // modulation to bisect hard-edged per-polygon lighting (FNV bakes
+    // lighting/AO into static vertex colors; coarse floors show it as
+    // triangle-aligned patches). Diagnostic only; default path multiplies.
+    bool bypassVertexColor = (dbgFlags & DBG_BYPASS_VERTEX_COLOR) != 0u;
+    vec3 albedo = (vertexColorEmissive || bypassVertexColor)
+        ? texColor.rgb
+        : texColor.rgb * fragColor;
 
     // #221 — `NiMaterialProperty.diffuse` per-material multiplicative
     // tint. Default `[1.0; 3]` for every BSShader-only Skyrim+/FO4

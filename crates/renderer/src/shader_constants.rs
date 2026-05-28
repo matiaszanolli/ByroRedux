@@ -211,6 +211,7 @@ mod tests {
             "DBG_VIZ_GLASS_PASSTHRU",
             "DBG_DISABLE_SPECULAR_AA",
             "DBG_DISABLE_HALF_LAMBERT_FILL",
+            "DBG_BYPASS_VERTEX_COLOR",
         ] {
             let needle = format!("const uint {name}");
             assert!(

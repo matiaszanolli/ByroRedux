@@ -222,3 +222,16 @@ pub const DBG_DISABLE_SPECULAR_AA: u32 = 0x100;
 /// `NdotL` so back-facing fragments don't get fake highlights.
 /// Set this bit to A/B against the legacy Lambert path.
 pub const DBG_DISABLE_HALF_LAMBERT_FILL: u32 = 0x200;
+
+/// 0x400 — bypass the per-vertex color modulation of albedo
+/// (`albedo *= fragColor`). Bethesda bakes per-vertex lighting / AO into
+/// static-geometry vertex colors; on coarsely-tessellated meshes (e.g.
+/// FNV casino floor tiles — `NV_TOPS_CasLoRmMid01` carries vertex-luma
+/// 0.16–1.00 over only 40 verts) that baked term interpolates across
+/// large triangles into hard-edged bright/dark patches whose boundaries
+/// follow the triangulation. Set this bit to confirm a "lighting error
+/// only on certain polygons, at a fixed position" is the baked
+/// vertex-color term rather than a dynamic / RT-side cause (Tops floor
+/// diagnosis 2026-05-27). Does not affect `SOURCE_EMISSIVE` vertex mode
+/// (that path routes vertex color through the emissive accumulator).
+pub const DBG_BYPASS_VERTEX_COLOR: u32 = 0x400;
