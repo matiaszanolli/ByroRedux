@@ -412,6 +412,12 @@ pub(super) fn spawn_placed_instances(
             preset.start_color = curve.start;
             preset.end_color = curve.end;
         }
+        // NIFAL particles slice — authored NiPSysEmitter kinematic +
+        // lifetime params override the preset's guesses (parallel to the
+        // scene.rs loose-NIF site). Colour/size stay with curve/preset.
+        if let Some(p) = em.emitter_params {
+            crate::systems::apply_emitter_params(&mut preset, &p);
+        }
         // #984 / NIF-D5-ORPHAN-A2 — carry authored force-field
         // modifiers onto the spawned `ParticleEmitter` so the
         // simulator can integrate gravity / vortex / drag /

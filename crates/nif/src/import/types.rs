@@ -904,6 +904,11 @@ pub struct ImportedParticleEmitter {
     /// (most static-FX emitters like torches and ambient embers).
     /// See #984 / NIF-D5-ORPHAN-A2.
     pub force_fields: Vec<ImportedParticleForceField>,
+    /// Authored `NiPSysEmitter` base spawn parameters from the first
+    /// emitter in the modifier chain, when present. Overrides the
+    /// name-heuristic preset's spawn fields at translate time. See
+    /// [`ImportedEmitterParams`].
+    pub emitter_params: Option<ImportedEmitterParams>,
 }
 
 /// One authored force field, mirrored 1:1 from a
@@ -956,6 +961,32 @@ pub struct ParticleColorCurve {
     pub end: [f32; 4],
 }
 
+/// Authored `NiPSysEmitter` base spawn parameters, harvested from the
+/// first emitter block in the particle system's modifier chain. When
+/// present these **override** the name-heuristic preset's spawn fields
+/// (`torch_flame()` / `smoke()` / `magic_sparkles()` / `embers()`) so a
+/// NIF that authored a fast, narrow, long-lived spray reads as one
+/// rather than collapsing to a generic flame. `None` when the NIF has no
+/// `NiPSys*Emitter` (every value comes from the preset). Mirrors the
+/// `color_curve` / `force_fields` override precedent (#707 / #984). See
+/// `docs/engine/nifal.md` — particles slice.
+///
+/// Angles are radians; `initial_color` is linear RGBA; `initial_radius`
+/// / `life_span` are world units / seconds — all directly consumable by
+/// the canonical `ParticleEmitter` (no Z-up→Y-up conversion: these are
+/// scalars / angles / colour, not directions).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImportedEmitterParams {
+    pub speed: f32,
+    pub speed_variation: f32,
+    pub declination: f32,
+    pub declination_variation: f32,
+    pub initial_color: [f32; 4],
+    pub initial_radius: f32,
+    pub life_span: f32,
+    pub life_span_variation: f32,
+}
+
 /// Flat-import variant of [`ImportedParticleEmitter`] used by the cell
 /// loader, which doesn't reconstruct the NIF hierarchy. Carries the
 /// emitter's NIF-local position (composed up to the host node), the
@@ -985,4 +1016,8 @@ pub struct ImportedParticleEmitterFlat {
     /// chain — empty for most non-FX emitters. See
     /// [`ImportedParticleEmitter::force_fields`] / #984.
     pub force_fields: Vec<ImportedParticleForceField>,
+    /// Authored `NiPSysEmitter` base spawn parameters, when present.
+    /// Mirror of [`ImportedParticleEmitter::emitter_params`] for the
+    /// flat (cell-loader) path. See [`ImportedEmitterParams`].
+    pub emitter_params: Option<ImportedEmitterParams>,
 }

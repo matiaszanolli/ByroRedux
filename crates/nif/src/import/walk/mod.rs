@@ -512,6 +512,7 @@ pub(super) fn walk_node_hierarchical(
                 original_type: ps.original_type.clone(),
                 color_curve: extract_first_color_curve(scene),
                 force_fields: collect_force_fields(scene, &ps.modifier_refs),
+                emitter_params: extract_emitter_params(scene),
             });
         return;
     }
@@ -532,6 +533,9 @@ pub(super) fn walk_node_hierarchical(
                         // Legacy controller path — no NiPSysModifier
                         // chain on the wire, so no authored force fields.
                         force_fields: Vec::new(),
+                        // Legacy NiParticleSystemController / *Particles
+                        // path has no NiPSysEmitter block either.
+                        emitter_params: None,
                     });
             }
             _ => {}
@@ -651,6 +655,35 @@ pub(super) fn extract_first_color_curve(
     Some(crate::import::ParticleColorCurve {
         start: keys[0].value,
         end: keys.last().expect("non-empty checked above").value,
+    })
+}
+
+/// Scan the parsed NIF scene for the first `NiPSysEmitter` and return its
+/// decoded base spawn parameters. `None` when the scene has no emitter
+/// block (→ fall back to the heuristic preset). Same scene-level first-
+/// match scope as [`extract_first_color_curve`] — exact for the dominant
+/// single-emitter-per-NIF case; multi-emitter NIFs would need per-system
+/// attribution (deferred until a regression surfaces). See
+/// `docs/engine/nifal.md` — particles slice.
+pub(super) fn extract_emitter_params(
+    scene: &NifScene,
+) -> Option<crate::import::ImportedEmitterParams> {
+    use crate::blocks::particle::NiPSysEmitter;
+
+    let emitter = scene
+        .blocks
+        .iter()
+        .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitter>())?;
+    let p = &emitter.params;
+    Some(crate::import::ImportedEmitterParams {
+        speed: p.speed,
+        speed_variation: p.speed_variation,
+        declination: p.declination,
+        declination_variation: p.declination_variation,
+        initial_color: p.initial_color,
+        initial_radius: p.initial_radius,
+        life_span: p.life_span,
+        life_span_variation: p.life_span_variation,
     })
 }
 
@@ -1077,6 +1110,7 @@ pub(super) fn walk_node_particle_emitters_flat(
             original_type: ps.original_type.clone(),
             color_curve: extract_first_color_curve(scene),
             force_fields: collect_force_fields(scene, &ps.modifier_refs),
+            emitter_params: extract_emitter_params(scene),
         });
         return;
     }
@@ -1096,6 +1130,7 @@ pub(super) fn walk_node_particle_emitters_flat(
                     original_type: ps.original_type.clone(),
                     color_curve: extract_first_color_curve(scene),
                     force_fields: Vec::new(),
+                    emitter_params: None,
                 });
             }
             _ => {}

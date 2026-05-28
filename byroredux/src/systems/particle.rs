@@ -2,6 +2,34 @@
 
 use byroredux_core::ecs::{GlobalTransform, ParticleEmitter, ParticleForceField, TotalTime, World};
 
+/// NIFAL particles slice — apply authored `NiPSysEmitter` base params
+/// over a name-heuristic preset's spawn fields, in place. Called from
+/// both scene-build sites (cell-loader spawn + loose-NIF loader) so the
+/// override is defined once.
+///
+/// **Scope (verified against FNV + Oblivion content, no-guessing):**
+/// only the kinematic + lifetime fields are overridden — these are
+/// genuinely authored and distinctive in real content (e.g. oasis-torch
+/// smoke `speed 24 / variation 45.6 / life 1.33±0.67`, Oblivion torch
+/// `speed 20±10 / life 1.5`). `initial_color` (read as the white
+/// `[1,1,1,1]` nif.xml default in shipped content) and `initial_radius`
+/// (default `1.0`) are **intentionally not applied**: overriding a
+/// preset's tuned flame colour/size with those defaults would wash it
+/// out. Colour stays owned by the `color_curve` (NiPSysColorModifier)
+/// override; size stays at the preset until a grow/fade-modifier decode
+/// lands. See `docs/engine/nifal.md`.
+pub fn apply_emitter_params(
+    preset: &mut ParticleEmitter,
+    p: &byroredux_nif::import::ImportedEmitterParams,
+) {
+    preset.speed = p.speed;
+    preset.speed_variation = p.speed_variation;
+    preset.declination = p.declination;
+    preset.declination_variation = p.declination_variation;
+    preset.life = p.life_span;
+    preset.life_variation = p.life_span_variation;
+}
+
 /// Convert a list of imported NIF force fields (Z-up local space) to
 /// engine Y-up local space. Mirrors the per-axis swap used elsewhere
 /// (translation: `[x, z, -y]`; direction: same). Applied at scene-
@@ -345,6 +373,35 @@ mod tests {
         );
         world.insert(e, em);
         (world, e)
+    }
+
+    #[test]
+    fn apply_emitter_params_overrides_kinematics_not_color_or_size() {
+        use byroredux_nif::import::ImportedEmitterParams;
+        let mut preset = ParticleEmitter::torch_flame();
+        let preset_start_color = preset.start_color;
+        let preset_start_size = preset.start_size;
+        let authored = ImportedEmitterParams {
+            speed: 24.0,
+            speed_variation: 45.6,
+            declination: 0.0,
+            declination_variation: 0.17,
+            initial_color: [1.0, 1.0, 1.0, 1.0], // white default — must NOT win
+            initial_radius: 1.0,                 // default — must NOT win
+            life_span: 1.33,
+            life_span_variation: 0.67,
+        };
+        apply_emitter_params(&mut preset, &authored);
+        // Kinematic + lifetime fields take the authored values.
+        assert_eq!(preset.speed, 24.0);
+        assert_eq!(preset.speed_variation, 45.6);
+        assert_eq!(preset.declination, 0.0);
+        assert_eq!(preset.declination_variation, 0.17);
+        assert_eq!(preset.life, 1.33);
+        assert_eq!(preset.life_variation, 0.67);
+        // Colour + size stay at the preset (no white/1.0-default washout).
+        assert_eq!(preset.start_color, preset_start_color);
+        assert_eq!(preset.start_size, preset_start_size);
     }
 
     #[test]

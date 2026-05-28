@@ -533,6 +533,13 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             preset.start_color = curve.start;
             preset.end_color = curve.end;
         }
+        // NIFAL particles slice — override the preset's guessed
+        // kinematic + lifetime spawn fields with the authored
+        // NiPSysEmitter base params when present. Colour/size stay with
+        // the curve/preset (see `apply_emitter_params`).
+        if let Some(p) = emitter.emitter_params {
+            crate::systems::apply_emitter_params(&mut preset, &p);
+        }
         // #984 / NIF-D5-ORPHAN-A2 — carry authored
         // `NiPSys{Gravity,Vortex,Drag,Turbulence,Air,Radial}FieldModifier`
         // entries onto the spawned `ParticleEmitter` so the simulator

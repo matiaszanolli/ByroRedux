@@ -42,41 +42,89 @@ impl NiPSysModifierBase {
 
 // ── NiPSysEmitter base (extends NiPSysModifier) ────────────────────
 
-/// Base fields for NiPSysEmitter: speed, variation, declination, color, etc.
-fn skip_emitter_base(stream: &mut NifStream) -> io::Result<()> {
-    // NiPSysEmitter (nif.xml line 3579) — base 12 floats are universal:
-    //   speed + speed_variation + declination + declination_variation +
-    //   planar_angle + planar_angle_variation +
-    //   initial_color (Color4 = 4 floats) +
-    //   initial_radius + life_span = 12 floats = 48 bytes.
-    stream.skip(4 * 12)?;
-    // Two trailing floats — `Radius Variation` and `Life Span Variation`
-    // — per nif.xml gate `since="10.4.0.1"` (#1239).
-    //
-    // Pre-#1239 the gate was `bsver() >= 34` (BS_GTE_FO3), which excluded
-    // Oblivion (bsver=11, version 20.0.0.5 — still ≥ 10.4.0.1). The
-    // #383 closure's claim that "Oblivion parsed cleanly with the shorter
-    // layouts" held at the aggregate parse-rate level (most Oblivion
-    // meshes are non-particle) but missed the cell-effect content:
-    // `Oblivion - Meshes.bsa` shipped 219 truncated NIFs (15 182 dropped
-    // blocks, ~2.7 pp of clean rate) because every NiPSys*Emitter
-    // subclass under-read by 8 bytes, cascading into the next block's
-    // header read and tripping `check_alloc`'s hard cap.
-    //
-    // Switching to the nif.xml version gate covers both Oblivion AND
-    // every later Bethesda title (FNV/FO3/Skyrim+ all have
-    // version ≥ 10.4.0.1 = 20.x), so no regression of #383.
-    if stream.version() >= NifVersion::V10_4_0_1 {
-        stream.skip(4 * 2)?;
-    }
-    Ok(())
+/// Decoded `NiPSysEmitter` base fields (nif.xml `NiPSysEmitter`). These
+/// are the per-emitter spawn parameters every `NiPSys*Emitter` subclass
+/// shares; pre-NIFAL they were skipped wholesale (byte-correct stream
+/// advancement only) so the engine fell back to a name-heuristic preset
+/// regardless of what the NIF authored. See
+/// `docs/engine/nifal.md` — particles slice.
+///
+/// Angles are radians; `initial_color` is linear RGBA; `initial_radius`
+/// / `life_span` are world units / seconds.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EmitterBaseParams {
+    pub speed: f32,
+    pub speed_variation: f32,
+    pub declination: f32,
+    pub declination_variation: f32,
+    pub planar_angle: f32,
+    pub planar_angle_variation: f32,
+    pub initial_color: [f32; 4],
+    pub initial_radius: f32,
+    pub radius_variation: f32,
+    pub life_span: f32,
+    pub life_span_variation: f32,
 }
 
-/// NiPSysVolumeEmitter adds: emitter_object_ref (ptr/i32).
-fn skip_volume_emitter_base(stream: &mut NifStream) -> io::Result<()> {
-    skip_emitter_base(stream)?;
+/// Read the `NiPSysEmitter` base. Byte layout (and the version gate) is
+/// identical to the pre-NIFAL `skip_emitter_base` — only now the values
+/// are captured instead of discarded, in nif.xml field order:
+///
+///   speed, speed_variation, declination, declination_variation,
+///   planar_angle, planar_angle_variation, initial_color (Color4),
+///   initial_radius, [radius_variation since 10.4.0.1], life_span,
+///   [life_span_variation since 10.4.0.1].
+///
+/// The trailing-2 gate (`Radius Variation` + `Life Span Variation`) is
+/// `version >= 10.4.0.1` per nif.xml (#1239). Pre-#1239 the gate was
+/// `bsver() >= 34` (BS_GTE_FO3), which excluded Oblivion (bsver=11,
+/// version 20.0.0.5 — still ≥ 10.4.0.1) and under-read every Oblivion
+/// NiPSys*Emitter by 8 bytes, truncating 219 NIFs in
+/// `Oblivion - Meshes.bsa`. The version gate covers Oblivion AND every
+/// later Bethesda title (FNV/FO3/Skyrim+ are 20.x), so no #383
+/// regression. Note `Radius Variation` is interleaved BEFORE `Life
+/// Span` in nif.xml — total bytes are unchanged vs the old 12-then-2
+/// skip, but the value labelling now follows the authoritative order.
+fn read_emitter_base(stream: &mut NifStream) -> io::Result<EmitterBaseParams> {
+    let speed = stream.read_f32_le()?;
+    let speed_variation = stream.read_f32_le()?;
+    let declination = stream.read_f32_le()?;
+    let declination_variation = stream.read_f32_le()?;
+    let planar_angle = stream.read_f32_le()?;
+    let planar_angle_variation = stream.read_f32_le()?;
+    let initial_color = [
+        stream.read_f32_le()?,
+        stream.read_f32_le()?,
+        stream.read_f32_le()?,
+        stream.read_f32_le()?,
+    ];
+    let initial_radius = stream.read_f32_le()?;
+    let modern = stream.version() >= NifVersion::V10_4_0_1;
+    let radius_variation = if modern { stream.read_f32_le()? } else { 0.0 };
+    let life_span = stream.read_f32_le()?;
+    let life_span_variation = if modern { stream.read_f32_le()? } else { 0.0 };
+    Ok(EmitterBaseParams {
+        speed,
+        speed_variation,
+        declination,
+        declination_variation,
+        planar_angle,
+        planar_angle_variation,
+        initial_color,
+        initial_radius,
+        radius_variation,
+        life_span,
+        life_span_variation,
+    })
+}
+
+/// `NiPSysVolumeEmitter` adds a trailing `emitter_object_ref` (ptr/i32)
+/// after the shared emitter base. We don't consume the ref's target;
+/// only the base params flow downstream.
+fn read_volume_emitter_base(stream: &mut NifStream) -> io::Result<EmitterBaseParams> {
+    let params = read_emitter_base(stream)?;
     let _emitter_object_ref = stream.read_block_ref()?;
-    Ok(())
+    Ok(params)
 }
 
 // ── NiPSysCollider base ────────────────────────────────────────────
@@ -102,6 +150,18 @@ fn skip_collider_base(stream: &mut NifStream) -> io::Result<()> {
 #[derive(Debug)]
 pub struct NiPSysBlock {
     /// Original NIF type name (for debug logging).
+    pub original_type: String,
+}
+
+/// Typed `NiPSys*Emitter` block — carries the decoded
+/// [`EmitterBaseParams`] so the importer can downcast it and translate
+/// the authored spawn parameters into the canonical `ParticleEmitter`
+/// (NIFAL particles slice), instead of falling back to a name-heuristic
+/// preset. `original_type` keeps the concrete subclass name (box /
+/// sphere / cylinder / array / mesh) for telemetry.
+#[derive(Debug)]
+pub struct NiPSysEmitter {
+    pub params: EmitterBaseParams,
     pub original_type: String,
 }
 
@@ -402,49 +462,53 @@ pub fn parse_strip_update_modifier(stream: &mut NifStream) -> io::Result<NiPSysB
 // ── Emitter parsers ─────────────────────────────────────────────────
 
 /// NiPSysBoxEmitter: modifier_base + emitter_base + volume_emitter + 3 floats
-pub fn parse_box_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
+pub fn parse_box_emitter(stream: &mut NifStream) -> io::Result<NiPSysEmitter> {
     let _base = NiPSysModifierBase::parse(stream)?;
-    skip_volume_emitter_base(stream)?;
+    let params = read_volume_emitter_base(stream)?;
     stream.skip(4 * 3)?; // width, height, depth
-    Ok(NiPSysBlock {
+    Ok(NiPSysEmitter {
+        params,
         original_type: "NiPSysBoxEmitter".to_string(),
     })
 }
 
 /// NiPSysCylinderEmitter: modifier_base + emitter_base + volume_emitter + 2 floats
-pub fn parse_cylinder_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
+pub fn parse_cylinder_emitter(stream: &mut NifStream) -> io::Result<NiPSysEmitter> {
     let _base = NiPSysModifierBase::parse(stream)?;
-    skip_volume_emitter_base(stream)?;
+    let params = read_volume_emitter_base(stream)?;
     stream.skip(4 * 2)?; // radius, height
-    Ok(NiPSysBlock {
+    Ok(NiPSysEmitter {
+        params,
         original_type: "NiPSysCylinderEmitter".to_string(),
     })
 }
 
 /// NiPSysSphereEmitter: modifier_base + emitter_base + volume_emitter + 1 float
-pub fn parse_sphere_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
+pub fn parse_sphere_emitter(stream: &mut NifStream) -> io::Result<NiPSysEmitter> {
     let _base = NiPSysModifierBase::parse(stream)?;
-    skip_volume_emitter_base(stream)?;
+    let params = read_volume_emitter_base(stream)?;
     let _radius = stream.read_f32_le()?;
-    Ok(NiPSysBlock {
+    Ok(NiPSysEmitter {
+        params,
         original_type: "NiPSysSphereEmitter".to_string(),
     })
 }
 
 /// BSPSysArrayEmitter: modifier_base + emitter_base + volume_emitter (no own fields)
-pub fn parse_array_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
+pub fn parse_array_emitter(stream: &mut NifStream) -> io::Result<NiPSysEmitter> {
     let _base = NiPSysModifierBase::parse(stream)?;
-    skip_volume_emitter_base(stream)?;
-    Ok(NiPSysBlock {
+    let params = read_volume_emitter_base(stream)?;
+    Ok(NiPSysEmitter {
+        params,
         original_type: "BSPSysArrayEmitter".to_string(),
     })
 }
 
 /// NiPSysMeshEmitter: modifier_base + emitter_base + num_meshes(u32) + mesh_ptrs[N] +
 /// initial_velocity_type(u32) + emission_type(u32) + emission_axis(vec3)
-pub fn parse_mesh_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
+pub fn parse_mesh_emitter(stream: &mut NifStream) -> io::Result<NiPSysEmitter> {
     let _base = NiPSysModifierBase::parse(stream)?;
-    skip_emitter_base(stream)?;
+    let params = read_emitter_base(stream)?;
     let num_meshes = stream.read_u32_le()?;
     // Bound the mesh-ref loop against the remaining stream — same
     // defense as #388 / #407's NiParticleSystem path. Pre-#383 a junk
@@ -458,7 +522,8 @@ pub fn parse_mesh_emitter(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _initial_velocity_type = stream.read_u32_le()?;
     let _emission_type = stream.read_u32_le()?;
     stream.skip(12)?; // emission_axis vec3
-    Ok(NiPSysBlock {
+    Ok(NiPSysEmitter {
+        params,
         original_type: "NiPSysMeshEmitter".to_string(),
     })
 }
@@ -1123,6 +1188,7 @@ pub fn parse_master_particle_system(stream: &mut NifStream) -> io::Result<NiPSys
 
 impl_ni_object!(
     NiPSysBlock,
+    NiPSysEmitter,
     NiPSysColorModifier,
     NiPSysGravityFieldModifier,
     NiPSysVortexFieldModifier,
@@ -1332,6 +1398,51 @@ mod tests {
             .expect("FNV NiPSysSphereEmitter should parse cleanly");
         assert_eq!(stream.position() as usize, d.len());
         assert_eq!(block.original_type, "NiPSysSphereEmitter");
+    }
+
+    /// NIFAL particles slice — the emitter base now CAPTURES values
+    /// (not just byte-advances). Build a sphere emitter with distinct
+    /// floats per field and assert each lands in the right
+    /// `EmitterBaseParams` slot, in nif.xml order (Radius Variation
+    /// interleaved before Life Span).
+    #[test]
+    fn emitter_base_captures_values_in_nifxml_order() {
+        let header = make_header_fnv();
+        let mut d = modifier_base_bytes();
+        // Emitter base, 14 floats in nif.xml order:
+        for v in [
+            1.0f32, // speed
+            2.0,    // speed_variation
+            3.0,    // declination
+            4.0,    // declination_variation
+            5.0,    // planar_angle
+            6.0,    // planar_angle_variation
+            0.1, 0.2, 0.3, 0.4, // initial_color RGBA
+            7.0, // initial_radius
+            8.0, // radius_variation (since 10.4.0.1 — interleaved here)
+            9.0, // life_span
+            10.0, // life_span_variation
+        ] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // volume emitter object ref
+        d.extend_from_slice(&1.5f32.to_le_bytes()); // sphere radius
+
+        let mut stream = NifStream::new(&d, &header);
+        let block = parse_sphere_emitter(&mut stream).expect("parse");
+        assert_eq!(stream.position() as usize, d.len(), "full block consumed");
+        let p = block.params;
+        assert_eq!(p.speed, 1.0);
+        assert_eq!(p.speed_variation, 2.0);
+        assert_eq!(p.declination, 3.0);
+        assert_eq!(p.declination_variation, 4.0);
+        assert_eq!(p.planar_angle, 5.0);
+        assert_eq!(p.planar_angle_variation, 6.0);
+        assert_eq!(p.initial_color, [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(p.initial_radius, 7.0);
+        assert_eq!(p.radius_variation, 8.0, "interleaved before life_span");
+        assert_eq!(p.life_span, 9.0);
+        assert_eq!(p.life_span_variation, 10.0);
     }
 
     /// Regression: #1239 — `skip_emitter_base`'s gate on the trailing

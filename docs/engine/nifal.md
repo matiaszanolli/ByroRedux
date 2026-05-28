@@ -106,14 +106,32 @@ concept (e.g. `RenderOrderHint` from `bs_ordered_node`, LOD/billboard hints from
 `bs_value_node`) **or** formally record it as deferred with a tracking issue —
 not leave it as an ambiguous half-plumbed field.
 
-### Particles — **LEAKY (biggest data gap)**
+### Particles — **emitter base params converged (2026-05-28)**
 
-`crates/nif/src/blocks/particle.rs` keeps `NiPSysData` opaque — every numeric field
-is discarded. The importer flags only presence + host node, and the scene builder
-picks a **name-heuristic preset** (torch_flame / smoke / magic_sparkles) by matching
-the host node's name. There is no per-game particle translation: the canonical
-representation is a guess from a string. Closing this means decoding the emitter /
-modifier numeric fields into a canonical `ParticleEmitter` description.
+The scene builder still seeds a **name-heuristic preset** (torch_flame / smoke /
+magic_sparkles / embers) by host-node name, but the authored `NiPSysEmitter` base
+params now **override** the preset's guesses where they are genuinely authored:
+
+- Parser: `NiPSysEmitter` is now a *typed* block carrying decoded `EmitterBaseParams`
+  (the box/sphere/cylinder/array/mesh parsers read the base instead of skipping it;
+  byte advancement unchanged, values captured in nif.xml order — `Radius Variation`
+  interleaved before `Life Span`).
+- Import: `extract_emitter_params` surfaces `ImportedEmitterParams` on
+  `ImportedParticleEmitter(+Flat)` (mirrors the `color_curve` / `force_fields`
+  precedent).
+- Translate: `systems::particle::apply_emitter_params` (one shared helper, both
+  load-path sites) applies the **kinematic + lifetime** fields (speed,
+  speed_variation, declination, declination_variation, life, life_variation).
+  Verified against FNV + Oblivion content (these are authored and distinctive —
+  oasis torch `speed 24 / var 45.6 / life 1.33±0.67`). `initial_color` (shipped as
+  the white nif.xml default) and `initial_radius` (default 1.0) are **intentionally
+  not applied** — colour stays owned by the `color_curve` override, size by the
+  preset — to avoid washing out tuned presets with defaults.
+
+**Still pending (follow-ups):** spawn *rate* (NiPSysEmitterCtlr birth-rate keys),
+size-over-life (NiPSysGrowFadeModifier decode → `start_size`/`end_size`), and
+per-emitter (vs scene-first) attribution for multi-emitter NIFs. Tooling:
+`crates/nif/examples/emitter_dump.rs`.
 
 ### Collision — **audit pending**
 
@@ -206,8 +224,9 @@ Do **not** unify the scale before those two rows have real numbers.
 2. **Nodes / passthroughs** — translate `bs_ordered_node` / `bs_value_node` /
    `tree_bones` / `range_kind` / `no_lighting_falloff` to resolved ECS concepts or
    formally defer each with a tracking issue.
-3. **Particles** — decode `NiPSysData` numeric fields into a canonical emitter
-   description; retire the name-heuristic preset guess.
+3. ~~Particles (emitter base)~~ — done (2026-05-28): authored kinematic + lifetime
+   params override the preset. Follow-ups: spawn rate, grow/fade size, multi-emitter
+   attribution.
 4. **Collision** — audit the bhk* → `CollisionShape` translation for canonical
    completeness across all shape variants.
 5. **Emissive unification** — once Skyrim/FO4 data is available (§4).
