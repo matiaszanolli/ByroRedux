@@ -526,6 +526,13 @@ pub struct ImportedMesh {
     pub emissive_color: [f32; 3],
     /// Emissive intensity multiplier.
     pub emissive_mult: f32,
+    /// Provenance of [`Self::emissive_mult`] — disambiguates the three
+    /// NIF shader-property classes whose "emissive multiplier" fields
+    /// all flow into the same slot but carry different semantics. See
+    /// [`byroredux_core::ecs::components::material::EmissiveSource`].
+    /// Forwarded from `MaterialInfo.emissive_source`. #1280 step 4 /
+    /// canonical material convergence.
+    pub emissive_source: byroredux_core::ecs::components::material::EmissiveSource,
     /// Specular highlight color (RGB, linear).
     pub specular_color: [f32; 3],
     /// Diffuse tint (RGB, linear) from `NiMaterialProperty.diffuse`.

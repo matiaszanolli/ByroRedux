@@ -841,6 +841,7 @@ pub(super) fn spawn_placed_instances(
         let mut material = Material {
                 emissive_color: mesh.emissive_color,
                 emissive_mult: mesh.emissive_mult,
+                emissive_source: mesh.emissive_source,
                 specular_color: mesh.specular_color,
                 specular_strength: mesh.specular_strength,
                 diffuse_color: mesh.diffuse_color,

@@ -496,6 +496,14 @@ pub(super) struct MaterialInfo {
     pub is_decal: bool,
     pub emissive_color: [f32; 3],
     pub emissive_mult: f32,
+    /// Provenance of `emissive_mult` — disambiguates the three NIF
+    /// shader-property classes whose "emissive multiplier" fields all
+    /// flow into the same slot. See
+    /// [`byroredux_core::ecs::components::material::EmissiveSource`].
+    /// Set by the walker at each of the 3 set-sites; defaults to
+    /// `EmissiveSource::None` when no source authored a value.
+    /// #1280 step 4 / canonical material convergence.
+    pub emissive_source: byroredux_core::ecs::components::material::EmissiveSource,
     pub specular_color: [f32; 3],
     pub specular_strength: f32,
     /// Diffuse color from `NiMaterialProperty` (or `[1.0; 3]` default).
@@ -900,6 +908,7 @@ impl Default for MaterialInfo {
             is_decal: false,
             emissive_color: [0.0, 0.0, 0.0],
             emissive_mult: 0.0,
+            emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,
             specular_color: [1.0, 1.0, 1.0],
             specular_strength: 1.0,
             diffuse_color: [1.0, 1.0, 1.0],
@@ -1086,6 +1095,14 @@ mod legacy_pbr_translation_tests;
 /// transform under test — `extract_material_info` just calls it.
 #[cfg(test)]
 mod effect_shader_capture_tests;
+
+/// #1280 step 4 — pin the EmissiveSource discriminator at each of the
+/// three NIF shader-property set-sites (BSLightingShaderProperty →
+/// Lighting, BSEffectShaderProperty → Effect, NiMaterialProperty →
+/// Material). Critical for keeping BSEffect's diffuse-tint-as-emissive
+/// conflation type-visible.
+#[cfg(test)]
+mod emissive_source_tests;
 
 /// Regression tests for issue #343 — exhaustive ShaderTypeData dispatch.
 /// Previously only `EnvironmentMap` reached MaterialInfo; the remaining

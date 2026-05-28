@@ -793,6 +793,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         let mut material = Material {
                 emissive_color: mesh.emissive_color,
                 emissive_mult: mesh.emissive_mult,
+                emissive_source: mesh.emissive_source,
                 specular_color: mesh.specular_color,
                 specular_strength: mesh.specular_strength,
                 diffuse_color: mesh.diffuse_color,

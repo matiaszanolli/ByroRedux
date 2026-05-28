@@ -291,6 +291,8 @@ pub(crate) fn extract_material_info_from_refs(
             // Capture rich material data.
             info.emissive_color = shader.emissive_color;
             info.emissive_mult = shader.emissive_multiple;
+            info.emissive_source =
+                byroredux_core::ecs::components::material::EmissiveSource::Lighting;
             info.specular_color = shader.specular_color;
             info.specular_strength = shader.specular_strength;
             info.glossiness = shader.glossiness;
@@ -343,6 +345,11 @@ pub(crate) fn extract_material_info_from_refs(
                     shader.base_color[2],
                 ];
                 info.emissive_mult = shader.base_color_scale;
+                // #1280 step 4 — tag the BSEffect source. Semantic is
+                // diffuse-tint scale (per #166), not emissive; the
+                // discriminator lets a future render path distinguish.
+                info.emissive_source =
+                    byroredux_core::ecs::components::material::EmissiveSource::Effect;
                 info.uv_offset = shader.uv_offset;
                 info.uv_scale = shader.uv_scale;
                 info.has_uv_transform = true;
@@ -569,6 +576,9 @@ pub(crate) fn extract_material_info_from_refs(
                 info.glossiness = mat.shininess;
                 info.alpha = mat.alpha;
                 info.emissive_mult = mat.emissive_mult;
+                // #1280 step 4 — tag the legacy Oblivion/FO3/FNV source.
+                info.emissive_source =
+                    byroredux_core::ecs::components::material::EmissiveSource::Material;
                 info.has_material_data = true;
             }
         }

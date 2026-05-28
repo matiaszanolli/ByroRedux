@@ -263,6 +263,7 @@ pub fn extract_bs_tri_shape(
         texture_clamp_mode: mat.texture_clamp_mode,
         emissive_color: mat.emissive_color,
         emissive_mult: mat.emissive_mult,
+        emissive_source: mat.emissive_source,
         specular_color: mat.specular_color,
         diffuse_color: mat.diffuse_color,
         ambient_color: mat.ambient_color,

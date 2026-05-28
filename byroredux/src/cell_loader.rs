@@ -282,6 +282,7 @@ mod pack_bgsm_material_flags_tests {
             texture_clamp_mode: 0,
             emissive_color: [0.0; 3],
             emissive_mult: 0.0,
+            emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,
             specular_color: [1.0; 3],
             diffuse_color: [1.0; 3],
             ambient_color: [1.0; 3],

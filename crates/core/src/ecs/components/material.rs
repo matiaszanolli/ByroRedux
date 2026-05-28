@@ -18,6 +18,20 @@ pub struct Material {
     pub emissive_color: [f32; 3],
     /// Emissive intensity multiplier.
     pub emissive_mult: f32,
+    /// Provenance of [`Self::emissive_mult`] — disambiguates the three
+    /// authoring sources whose "emissive multiplier" fields all flow
+    /// into this slot but carry different semantics:
+    /// - [`EmissiveSource::Material`]: legacy genuine emissive scalar.
+    /// - [`EmissiveSource::Lighting`]: Skyrim+ shader-property scalar.
+    /// - [`EmissiveSource::Effect`]: FO4+ effect-shader **diffuse-tint**
+    ///   scale (conflated into this slot — semantically not emissive).
+    ///
+    /// Future renderer paths can pattern-match to drop the conflation;
+    /// `BSEffectShaderProperty` surfaces should treat their "emissive"
+    /// as diffuse modulation. Today the renderer reads `emissive_mult`
+    /// without inspecting the source; this field is data-plumbing only
+    /// (#1280 step 4).
+    pub emissive_source: EmissiveSource,
     /// Specular highlight color (RGB, linear).
     pub specular_color: [f32; 3],
     /// Specular intensity multiplier.
@@ -257,6 +271,7 @@ impl Default for Material {
         Self {
             emissive_color: [0.0, 0.0, 0.0],
             emissive_mult: 1.0,
+            emissive_source: EmissiveSource::None,
             specular_color: [1.0, 1.0, 1.0],
             specular_strength: 1.0,
             diffuse_color: [1.0, 1.0, 1.0],
@@ -315,6 +330,46 @@ impl Component for Material {
 pub struct PbrMaterial {
     pub roughness: f32,
     pub metalness: f32,
+}
+
+/// Provenance of `emissive_mult` — which authoring slot the scalar came
+/// from. Three NIF shader-property classes carry an "emissive multiplier"
+/// in different fields with **different semantics**; pre-#1280 step 4
+/// they all flowed into the same `Material.emissive_mult` slot and the
+/// renderer had no way to tell them apart. The most important case:
+/// `BSEffectShaderProperty.base_color_scale` is semantically a *diffuse
+/// tint multiplier* (the effect shader's "glow" comes from
+/// `base_color * base_color_scale`), NOT an emissive multiplier — but
+/// the current pipeline routes it into `emissive_mult` because the
+/// fragment shader's effect-shader branch consumes it from that slot.
+///
+/// This discriminator makes the conflation type-visible. Downstream
+/// consumers (and the future BSEffect-proper-diffuse-tint render path)
+/// can pattern-match instead of guessing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub enum EmissiveSource {
+    /// No emissive authoring; `emissive_mult` defaulted to 0.0.
+    /// Materials without any of the three shader-property classes (or
+    /// where none of them authored a non-zero emissive) land here.
+    #[default]
+    None,
+    /// `NiMaterialProperty.emissive_mult` (Oblivion / FO3 / FNV legacy
+    /// path). Genuine emissive scalar in the Gamebryo material model.
+    Material,
+    /// `BSLightingShaderProperty.emissive_multiple` (Skyrim LE/SE / FO4 /
+    /// FO76 / Starfield). Genuine emissive scalar on the Bethesda
+    /// shader-property class. Authored in the 0–2+ range typically.
+    Lighting,
+    /// `BSEffectShaderProperty.base_color_scale` (FO4+ effect shader).
+    /// **Semantically a diffuse-tint multiplier, NOT emissive** —
+    /// conflated into this slot because the current fragment-shader
+    /// effect-shader path reads its visible "glow" from
+    /// `base_color * base_color_scale`. A future BSEffect-proper render
+    /// path should branch on this variant to drop the conflation; see
+    /// the walker site (`import/material/walker.rs`) for the
+    /// in-source #166 rename note.
+    Effect,
 }
 
 /// Free-form inputs to the keyword-based PBR classifier. Decoupled
