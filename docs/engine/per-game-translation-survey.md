@@ -447,3 +447,43 @@ Tasks 1, 3, 4 are 1-day each. Tasks 2, 5, 6 are 2–3 days. Task 7 is the
 existing canonical-material workstream (already in progress per
 `material-abstraction.md`). Task 8 is the audit-infrastructure piece
 (workstream E from the epic).
+
+## 9. Progress (2026-05-28)
+
+Six of eight starter tasks landed on `feat/nif-translation-layer-epic`:
+
+| # | Task | Commit | Notes |
+|---|---|---|---|
+| 1 | `extract_collision` per-variant | `8d3a6861` | + `CollisionAuthoring` discriminator; FO4 NP path is a tracked stub; phantoms recognised. 6 dispatch tests. |
+| 3 | `GameKind` gates on SCOL/PKIN/MOVS/MSWP | `dbabd880` | Single-point gate at `parse_esm` dispatcher; 8 tests including FO76/Skyrim positive+negative. |
+| 4 | XCLL game-size sanity gate | `7ffda15d` | Plumbed `GameKind` into `parse_cell_group`; warns on non-canonical (game, size) pairs. 6 tests pin canonical sizes + survey's 88-byte FNV regression class. |
+| 5 | `bsver()` → `NifVariant` helpers | `2bd447d5` | 6 sites migrated, 3 new helpers added. 5 sites kept on raw bsver where Unknown-low-bsver matters (regression-guarded by existing test). |
+| 6 | `ShaderFlags` typed variant view | `525a2262` | Three-variant enum (`LegacyFo3Fnv`/`LegacySkyrimFo4`/`Crc32`) with classify + `is_decal`/`is_two_sided`. Opt-in API; existing 35-call-site surface untouched. |
+| 8 | Cross-game translation-completeness harness | `294e68f1` | `cargo test … --test translation_completeness -- --ignored`. Per-game `MaterialStats` over 200-NIF sample; structural-consistency hard gate. Live output shows the `m_kind%` ramp (0 → 5.6 → 9.6 → 27.4 → 38.3 from Oblivion to FO4) — material-abstraction.md Leak B made visible. |
+
+**Task 2 (split `BSLightingShaderProperty::parse` into variant dispatch)** —
+**deferred to a dedicated session**. The parse method has 12+ BSVER
+comparisons across Skyrim LE/SE, FO4, and FO76/Starfield, and any
+regression would be subtle: a wrong field-order or wrong-arm shipped
+write would still parse 34,995 FO4 vanilla NIFs to "100%" but produce
+wrong material values downstream. Verifying against real-game data
+across Skyrim SE, FO4, FO76, and Starfield (each with their own
+`BYROREDUX_*_DATA` env vars) takes a full session that this batch
+didn't have remaining budget for. Recommended next-session approach:
+
+1. Add a per-variant `BsLightingShaderRaw::parse_skyrim`,
+   `parse_fo4`, `parse_fo76_plus` returning the same `BsLightingShaderRaw`
+   shape.
+2. Top-level `BSLightingShaderProperty::parse` dispatches on
+   `NifVariant` (with the same Unknown-low-bsver caveat as Task 5).
+3. Each per-variant parser is bit-for-bit equivalent to the
+   corresponding slice of the current monolith — no logic change.
+4. Verify against `cargo test -p byroredux-nif --test parse_real_nifs --
+   --ignored` (the per-game parse-rate suite). All four BSLSP-shipping
+   games must still pass 100% recoverable.
+5. Bonus: the new harness from Task 8 will surface any unintended
+   change in `m_kind%` / `metO%` fill-rates at the per-game granularity.
+
+Branch state: 7 commits on `feat/nif-translation-layer-epic` for the
+task work, plus 4 earlier commits for the FogVolume + tooling +
+epic-doc work. Not pushed.
