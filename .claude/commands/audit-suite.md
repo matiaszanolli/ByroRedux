@@ -133,6 +133,14 @@ Test NIF parser against all available game data:
 3. `/audit-nif --game oblivion`
 4. `/audit-nif --game fo4`
 
+### `--preset runtime-regression`
+Drive the engine headless on every supported game's representative cell
+and diff the captured telemetry against the checked-in baseline TSVs.
+Catches what static audits structurally can't see (regressions in
+`tex.missing` / `mesh.cache failed` / fps / draw-call count under a
+real cell load). See [#1283](https://github.com/matiaszanolli/ByroRedux/issues/1283).
+1. `/audit-runtime --game all`
+
 ## Execution
 
 1. Parse the `--preset` argument from `$ARGUMENTS`
