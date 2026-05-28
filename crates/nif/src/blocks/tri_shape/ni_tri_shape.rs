@@ -132,7 +132,7 @@ impl NiTriShape {
             // the field IS authored there. Mirrors the
             // `has_properties_list` site at `base.rs:103`. See
             // NIF-D2-NEW-07 (audit 2026-05-12).
-            if stream.bsver() > 34 {
+            if stream.variant().has_shader_alpha_refs() {
                 shader_property_ref = stream.read_block_ref()?;
                 alpha_property_ref = stream.read_block_ref()?;
             }
@@ -352,7 +352,7 @@ fn parse_geometry_data_base_inner(
         // would return false for the BSVER 35..=82 `Unknown` gap. The
         // material CRC is authored from Skyrim onward per nif.xml's
         // `BSVER > 34` rule. See NIF-D2-NEW-07 (audit 2026-05-12).
-        if stream.bsver() > 34 {
+        if stream.variant().has_material_crc() {
             let _material_crc = stream.read_u32_le()?;
         }
         df

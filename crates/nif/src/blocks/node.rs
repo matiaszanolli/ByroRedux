@@ -254,7 +254,7 @@ impl BsMultiBoundNode {
         let multi_bound_ref = stream.read_block_ref()?;
         // culling_mode is Skyrim+ only (BSVER >= 83). FO3/FNV (bsver=34)
         // stops after the multi_bound_ref.
-        let culling_mode = if stream.bsver() >= crate::version::bsver::SKYRIM_LE {
+        let culling_mode = if stream.variant().has_culling_mode() {
             stream.read_u32_le()?
         } else {
             0

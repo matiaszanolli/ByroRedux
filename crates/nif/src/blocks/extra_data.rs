@@ -1130,7 +1130,7 @@ impl BsFurnitureMarker {
         // NiExtraData base — gated since 10.0.1.0 per nif.xml. See #329.
         let name = stream.read_extra_data_name()?;
         let count = stream.read_u32_le()?;
-        let legacy = stream.bsver() <= 34;
+        let legacy = stream.bsver() <= crate::version::bsver::FO3_FNV;
         let mut positions = stream.allocate_vec(count)?;
         for _ in 0..count {
             let offset = [

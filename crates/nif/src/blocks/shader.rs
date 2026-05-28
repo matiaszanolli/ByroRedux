@@ -163,7 +163,7 @@ impl BSShaderNoLightingProperty {
         let file_name = stream.read_sized_string()?;
 
         let (falloff_start_angle, falloff_stop_angle, falloff_start_opacity, falloff_stop_opacity) =
-            if stream.bsver() > crate::version::bsver::FLAGS_U32_THRESHOLD {
+            if stream.variant().avobject_flags_u32() {
                 (
                     stream.read_f32_le()?,
                     stream.read_f32_le()?,

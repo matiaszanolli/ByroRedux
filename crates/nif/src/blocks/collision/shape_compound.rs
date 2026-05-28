@@ -121,7 +121,7 @@ impl BhkMoppBvTreeShape {
         let data_size = stream.read_u32_le()? as usize;
         let origin = read_vec4(stream)?; // since 10.1.0.0 (always present)
                                          // Build Type: only for BSVER > 34 (Skyrim+; FO3/FNV is 34)
-        if stream.bsver() > 34 {
+        if stream.variant().has_shader_alpha_refs() {
             let _build_type = stream.read_u8()?;
         }
         let mopp_data = stream.read_bytes(data_size)?;
