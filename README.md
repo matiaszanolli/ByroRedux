@@ -24,9 +24,10 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 | **NIF parse rate** | **100% clean** on FO3 / FNV / Skyrim SE; 95–99% clean / 100% recoverable on Oblivion / FO4 / FO76 / Starfield — 184 886 files validated. See [ROADMAP compatibility matrix](ROADMAP.md#compatibility-matrix). |
 | **Archive formats** | BSA v103 / v104 / v105 · BA2 v1 / v2 / v3 / v7 / v8 (GNRL + DX10, zlib + LZ4) |
 | **NIF block types** | See `crates/nif/src/blocks/mod.rs` for the canonical dispatch registry (incl. Havok skip-stubs) |
-| **ESM records (FNV)** | 62 219 structured records — items, NPCs, factions, cells, CREA, LVLC, SCPT, PACK, QUST, DIAL, MESG, PERK, SPEL, MGEF, … |
+| **ESM records (FNV)** | 73 054 structured records (latest sweep) — items, NPCs, factions, cells, CREA, LVLC, SCPT, PACK, QUST, DIAL, MESG, PERK, SPEL, MGEF, … plus a 5 625-record long-tail bucket (sounds / idle / grasses / debris). See [ROADMAP Status](ROADMAP.md#status). |
+| **Cross-game translation** | **NIFAL** (NIF Abstraction Layer) — one explicit `translate()` boundary per data category resolves each game's native NIF into a single canonical, game-agnostic representation; no per-game branches downstream. See [docs/engine/nifal.md](docs/engine/nifal.md). |
 | **Test count, LOC, file count, workspace size** | See [ROADMAP Project Stats](ROADMAP.md#project-stats) — refreshed per `/session-close` so the README doesn't drift behind. |
-| **Renderer** | Vulkan 1.3 + `VK_KHR_ray_query` — multi-light RT shadows, reflections, 1-bounce GI, SVGF temporal denoiser, TAA, streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction |
+| **Renderer** | Vulkan 1.3 + `VK_KHR_ray_query` — multi-light RT shadows, reflections, 1-bounce GI, SVGF temporal denoiser, TAA, streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction, Disney/Burley BSDF lobe for PBR (BGSM/BGEM + Starfield) content |
 | **Physics** | Rapier3D — collision import from NIF `bhk` chain, dynamic bodies, fixed 60 Hz substep |
 | **Scripting** | Papyrus `.psc` lexer + Pratt expression parser + full AST; ECS-native event + timer runtime |
 | **UI** | Scaleform / SWF menus via Ruffle (offscreen wgpu → Vulkan texture overlay) |
@@ -38,7 +39,21 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
   64×), RT reflections with roughness-driven jitter, 1-bounce GI with
   cosine-weighted hemisphere sampling, SVGF temporal denoiser with
   motion-vector reprojection and mesh-id disocclusion, TAA with Halton(2,3)
-  jitter and YCoCg variance clamp, ACES tone mapping.
+  jitter and YCoCg variance clamp, ACES tone mapping. PBR surfaces shade
+  through a Disney/Burley BSDF lobe (anisotropic GGX, Burley retro-reflective
+  diffuse) gated on `MAT_FLAG_PBR_BSDF` for BGSM/BGEM + Starfield material
+  content; classic Gamebryo content keeps the legacy lobe.
+- **NIFAL — one canonical translation tier** — every supported engine version
+  (Oblivion → Starfield) decodes its native NIF into raw per-game `Imported*`
+  structs, then a single explicit `translate()` boundary per data category
+  resolves them into one canonical, fully-resolved representation the ECS /
+  renderer / gameplay consume identically. Materials are the converged
+  reference slice (`metalness`/`roughness` plain `f32`, glass classified once,
+  the two duplicate construction sites collapsed into
+  `byroredux/src/material_translate.rs`); geometry, skinning, lights, and
+  collision are likewise canonical, with particle emitter base params and
+  authored birth-rate / size folded in this session. See
+  [docs/engine/nifal.md](docs/engine/nifal.md).
 - **100% parse coverage** across all seven supported Bethesda titles —
   100% clean on FO3 / FNV / Skyrim SE and 95–99% clean / 100% recoverable
   on Oblivion / FO4 / FO76 / Starfield (184 886 NIFs validated). CI fails
@@ -88,7 +103,7 @@ streaming Phase 1 (single-cell async pre-parse) + Phase 2
 (interior↔exterior cell-swap via `script.activate <door>`) shipped;
 multi-cell grid pending. Kinematic character controller (M28.5)
 replaces fly-cam-only on-foot movement — gravity + collide-and-slide +
-jump, walk/fly toggle on `T`. NPC spawning (M41) shipped Phase 1
+jump, walk/fly toggle on `F`. NPC spawning (M41) shipped Phase 1
 (T-pose humanoid + skeleton + body + hands + head + FaceGen morphs) and
 Phase 2 close-out (`Inventory` / `EquipmentSlots` ECS + ARMO/ARMA/LVLI
 dispatch + worn-mesh resolver). FO4 humanoid armor meshes pending a
@@ -129,7 +144,7 @@ cargo run -p byro-dbg
 
 **Controls**: Escape captures mouse, WASD + mouse moves, Space/Shift
 raise/lower (fly mode) or jump (walk mode), Ctrl for speed boost. Press
-`T` to toggle walk ↔ fly. Walk mode is the M28.5 kinematic capsule
+`F` to toggle walk ↔ fly. Walk mode is the M28.5 kinematic capsule
 (gravity + collide-and-slide + autostep); fly mode keeps the legacy
 no-clip cam.
 
@@ -176,7 +191,9 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
 ## Documentation
 
 - [ROADMAP.md](ROADMAP.md) — current state, active milestones, architecture decisions
-- [HISTORY.md](HISTORY.md) — session narratives (2026-04 audit closeouts, etc.)
+- [HISTORY.md](HISTORY.md) — session narratives (2026-04 audit closeouts, Session 42 Starfield bring-up, etc.)
+- [docs/engine/nifal.md](docs/engine/nifal.md) — NIFAL canonical translation tier (three-tier model, per-category leak inventory)
+- [docs/engine/material-abstraction.md](docs/engine/material-abstraction.md) — the material slice that NIFAL generalises (canonical `Material`, glass/PBR resolved at parse)
 - [docs/engine/](docs/engine/) — architecture, renderer, NIF parser, ECS, physics, debug CLI
 - [docs/legacy/](docs/legacy/) — Gamebryo 2.3 architecture reference, Papyrus API, Creation Engine UI
 
