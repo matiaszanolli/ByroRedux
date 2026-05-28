@@ -1,8 +1,17 @@
 # sf_smoke baseline — /mnt/data/SteamLibrary/steamapps/common/Starfield/Data/BlueprintShips-Starfield.esm (variant=Tes5Plus game=Starfield hedr=0.9600)
-# columns: fourcc	grup_count	bytes_total	immediate_records	handled	byte_error
-CELL	1	261100738	0	1	0
-GBFM	1	22181719	356	0	0
-PERS	1	17763702	1	0	0
-RFGP	1	1412010	22693	0	0
-LCTN	1	1104691	779	0	0
-NAVI	1	93342	1	0	0
+# columns: scope	fourcc	grup_count	bytes_total	immediate_records	handled	byte_error
+top	CELL	1	261100738	0	1	0
+top	GBFM	1	22181719	356	0	0
+top	PERS	1	17763702	1	0	0
+top	RFGP	1	1412010	22693	0	0
+top	LCTN	1	1104691	779	0	0
+top	NAVI	1	93342	1	1	0
+leaf	ACHR	81	0	0	0	0
+leaf	CELL	779	0	0	1	0
+leaf	GBFM	356	0	0	0	0
+leaf	LCTN	779	0	0	0	0
+leaf	NAVI	1	0	0	1	0
+leaf	NAVM	439	0	0	1	0
+leaf	PERS	1	0	0	0	0
+leaf	REFR	1478203	0	0	0	0
+leaf	RFGP	22693	0	0	0	0

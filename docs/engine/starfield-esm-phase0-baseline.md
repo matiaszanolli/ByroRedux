@@ -1,22 +1,91 @@
-# Starfield ESM — Phase 0 Baseline (2026-05-28)
+# Starfield ESM — Phase 0 + 1 Baseline (2026-05-28)
 
-**Purpose**: measurement deliverable for Phase 0 of `docs/engine/starfield-esm-roadmap.md`. Establishes "what works today" before any new code lands, so Phase 1+ work has a quantitative target.
+**Purpose**: measurement deliverable for Phases 0+1 of `docs/engine/starfield-esm-roadmap.md`. Establishes "what works today" before any new code lands, so Phase 2+ work has a quantitative target.
+
+**Status**: Phase 0 + Phase 1 (sub-step 1: refresh dispatch slice; sub-step 2: recursive leaf-record walk) complete. Remaining Phase 1 sub-step: invoke the real `parse_esm()` against Starfield.esm and measure how many leaf records the dispatch actually captures into `EsmIndex` (vs how many the walker SEES, which is what this baseline captures).
 
 **Tool**: `cargo run --release -p byroredux-plugin --example sf_smoke -- <ESM> [--tsv]`
 **Baseline TSVs**: `.claude/audit-baselines/sf-esm/` (one per ESM, checked in)
 **Methodology**: top-level GRUP walk (no recursion into CELL/WRLD cell-block sub-GRUPs — that's a Phase 1 deliverable). Compares per-FourCC counts against the hand-maintained `DISPATCH_HANDLED_FOURCCS` slice in `sf_smoke.rs` (snapshot of every `b"XXXX" =>` arm in `crates/plugin/src/esm/records/mod.rs`).
 
-## The big number
+## The big number (Phase 1 — corrected slice)
 
 | ESM | File size | Walk time | GRUPs | Bytes handled by dispatch | Bytes silently skipped |
 |-----|----------:|----------:|------:|--------------------------:|-----------------------:|
-| Constellation.esm | 39 KB | 0.00 s | 7 | 0 (0%) | 39 KB (100%) |
-| Starfield.esm | **1.36 GB** | **0.85 s** | **176** | **1.13 GB (77.8%)** | **323 MB (22.2%)** |
-| ShatteredSpace.esm | 480 MB | 0.31 s | 125 | 438 MB (91.5%) | 41 MB (8.5%) |
-| OldMars.esm | 25 KB | 0.00 s | 5 | 0 (0%) | 25 KB (100%) |
-| BlueprintShips-Starfield.esm | 290 MB | 0.18 s | 6 | 249 MB (86.0%) | 41 MB (14.0%) |
+| Constellation.esm | 39 KB | 0.00 s | 7 | 1 KB (2.7%) | 38 KB (97.3%) |
+| Starfield.esm | **1.36 GB** | **0.90 s** | **176** | **1.25 GB (86.1%)** | **192 MB (13.9%)** |
+| ShatteredSpace.esm | 480 MB | 0.31 s | 125 | **471 MB (98.6%)** | 6.7 MB (1.4%) |
+| OldMars.esm | 25 KB | 0.00 s | 5 | 717 B (3.0%) | 24 KB (97.0%) |
+| BlueprintShips-Starfield.esm | 290 MB | 0.19 s | 6 | 249 MB (86.0%) | 41 MB (14.0%) |
 
-**Zero panics. Zero byte-level walk errors. Vanilla Starfield.esm parses end-to-end at ~1.6 GB/s.**
+**Zero panics. Zero byte-level walk errors. Vanilla Starfield.esm parses end-to-end at ~1.5 GB/s.**
+
+The Phase 0 numbers reported **77.8%** for vanilla Starfield because the `DISPATCH_HANDLED_FOURCCS` slice in `sf_smoke.rs` was a partial snapshot. Phase 1 sub-step 1 refreshed the slice from a full grep of `records/mod.rs` (110 FourCC arms vs the original snapshot's ~25). The corrected number is **86.1%**.
+
+## Phase 1 recursive leaf-record walk
+
+The Phase 0 walker only counted top-level GRUP byte size — that gives "WRLD = 863 MB handled" without telling us how many CELL / REFR / STAT *records* live inside. Phase 1's `--recurse` mode descends into every nested sub-GRUP and tallies leaf records by FourCC.
+
+**Vanilla Starfield.esm contains 3 829 245 leaf records across 358 distinct FourCCs.** Top 20:
+
+| Leaf FourCC | Count | Where it lives |
+|-------------|------:|----------------|
+| REFR | 3 291 860 | CELL block / sub-block sub-GRUPs (worldspace + interior) |
+| INFO | 126 347 | DIAL topic-children sub-GRUPs |
+| RFGP | 80 584 | top-level RFGP GRUP |
+| DIAL | 68 154 | top-level DIAL GRUP |
+| NAVM | 56 576 | CELL / WRLD sub-GRUPs (nav mesh) |
+| CELL | 30 717 | CELL block sub-GRUPs |
+| STAT | 20 607 | top-level STAT GRUP |
+| LMSW | 12 966 | top-level LMSW GRUP |
+| PKIN | 11 281 | top-level PKIN GRUP |
+| ACHR | 9 530 | CELL persistent-children sub-GRUPs |
+| SCEN | 7 613 | top-level SCEN GRUP |
+| NPC_ | 7 131 | top-level NPC_ GRUP |
+| LAYR | 6 348 | top-level LAYR GRUP |
+| AVMD | 6 154 | top-level AVMD GRUP |
+| LCTN | 6 017 | top-level LCTN GRUP |
+| KYWD | 5 931 | top-level KYWD GRUP |
+| LVLI | 5 556 | top-level LVLI GRUP |
+| PACK | 3 548 | top-level PACK GRUP |
+| **GBFM** | **3 141** | top-level GBFM GRUP |
+| LCRT | 3 053 | top-level LCRT GRUP |
+
+**Per-ESM CELL + REFR counts:**
+
+| ESM | CELLs | REFRs | REFRs/CELL avg |
+|-----|------:|------:|---------------:|
+| Constellation.esm | 0 | 0 | n/a |
+| OldMars.esm | 0 | 0 | n/a |
+| BlueprintShips-Starfield.esm | 779 | 1 478 203 | 1 898 |
+| ShatteredSpace.esm | 4 853 | 918 610 | 189 |
+| Starfield.esm | 30 717 | 3 291 860 | 107 |
+
+BlueprintShips-Starfield's 1 898 REFRs/CELL average reflects its specialized content (ship-blueprint CELLs with every hull part placed). Vanilla Starfield's 107 REFRs/CELL is a reasonable Bethesda-game baseline.
+
+## Top 15 silently-skipped FourCCs (cross-ESM byte sums)
+
+The biggest remaining gaps the dispatch doesn't touch:
+
+| FourCC | Bytes | Class | Cydonia-relevant? |
+|--------|------:|-------|--------------------|
+| SFTR | 91 MB | BGSSurface::Tree (procgen) | No |
+| GBFM | 59 MB | BGSGenericBaseForm (template) | **Possibly** — depends on Cydonia content |
+| PNDT | 26 MB | BGSPlanet::PlanetData | No |
+| PERS | 18 MB | TESDataHandlerPersistentCreatedUtil | Probably no |
+| STDT | 12 MB | BSGalaxy::BGSStar | No |
+| LMSW | 10 MB | BGSLayeredMaterialSwap | Eventually yes (material variants) |
+| RFGP | 7 MB | BGSReferenceGroup | Possibly (cell-level grouping) |
+| EFSQ | 6 MB | BGSEffectSequenceForm | Probably no |
+| BIOM | 5 MB | BGSBiome (procgen) | No |
+| LCTN | 3.6 MB | BGSLocation | Yes — cell→location linking |
+| AVMD | 3.4 MB | BGSAVMData | Probably no |
+| SFBK | 1.3 MB | BGSSurface::Block (procgen) | No |
+| ATMO | 1.1 MB | BGSAtmosphere | Possibly (skybox / exterior) |
+| SFPT | 901 KB | BGSSurface::Pattern (procgen) | No |
+| LAYR | 786 KB | (Creation Kit only?) | No |
+
+Of the Cydonia-relevant gaps, only LCTN and possibly RFGP need pre-Phase-5 work. Everything else can wait.
 
 ## Vanilla Starfield.esm — top 20 FourCCs by byte size
 
@@ -102,9 +171,22 @@ The data supports immediately proceeding to Phase 1. **Key revision** to the roa
 
 ## Next concrete action
 
-**Phase 1, step 1**: re-grep `records/mod.rs` for every dispatch arm, regenerate `DISPATCH_HANDLED_FOURCCS`, re-run sf_smoke, refresh the baselines. This corrects the LCTN false-skip and other under-counts.
+**Phase 1, step 1** ✓ DONE — re-grepped `records/mod.rs` for every dispatch arm, regenerated `DISPATCH_HANDLED_FOURCCS` (110 entries), refreshed the baselines. Corrected coverage is 86.1% / 98.6% / 86.0% for Starfield / ShatteredSpace / BlueprintShips.
 
-**Phase 1, step 2**: extend the walker to recurse into top-level CELL + WRLD GRUPs and count leaf REFR records. Until we know the leaf-REFR count for Cydonia, the "do the existing handlers actually work for SF?" question stays open.
+**Phase 1, step 2** ✓ DONE — extended the walker with `--recurse` mode. Discovered 3.83 M leaf records in vanilla Starfield.esm, including 3.29 M REFRs across 30 717 CELLs. The "does the existing handler decode SF?" question is now refined to: **does `parse_esm()` actually capture those 3.29 M REFRs into `EsmIndex`, or does it silently drop most of them?**
+
+**Phase 1, step 3** (next): write a `cargo test -p byroredux-plugin --test sf_full_parse` that invokes the real `parse_esm()` against every priority ESM and asserts:
+
+  * `EsmIndex.cells.len()` ≈ 30 717 (matches the walker's CELL count for Starfield)
+  * Total REFR count across cells matches the walker's leaf REFR count
+  * Zero `?`-bailout errors
+  * Per-cell `references.len()` distribution sane (mean ≈ 107 for vanilla)
+
+If `parse_esm()` captures 30 K cells with 3.3 M REFRs, the existing handlers ARE Starfield-compatible and Phase 2 / 3 / 4 effort drops further (most work becomes "fix the per-subrecord drift the integration test reveals").
+
+If `parse_esm()` captures ≪ 30 K cells (e.g. silently drops 80% on a subrecord-size mismatch), Phase 1 effort revises UP — we'd need to identify and fix the silent-drop sites in `cell/walkers.rs` before any cell renders.
+
+This third sub-step is the bridge between "the walker sees X records" and "the existing dispatch captures Y records."
 
 ## References
 

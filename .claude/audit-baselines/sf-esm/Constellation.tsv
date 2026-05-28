@@ -1,9 +1,16 @@
 # sf_smoke baseline — /mnt/data/SteamLibrary/steamapps/common/Starfield/Data/Constellation.esm (variant=Tes5Plus game=Starfield hedr=0.9600)
-# columns: fourcc	grup_count	bytes_total	immediate_records	handled	byte_error
-AVMD	1	34369	35	0	0
-LMSW	1	1735	1	0	0
-KYWD	1	1029	9	0	0
-OMOD	1	908	4	0	0
-COBJ	1	699	4	0	0
-LVLI	1	217	1	0	0
-GLOB	1	145	2	0	0
+# columns: scope	fourcc	grup_count	bytes_total	immediate_records	handled	byte_error
+top	AVMD	1	34369	35	0	0
+top	LMSW	1	1735	1	0	0
+top	KYWD	1	1029	9	0	0
+top	OMOD	1	908	4	0	0
+top	COBJ	1	699	4	1	0
+top	LVLI	1	217	1	1	0
+top	GLOB	1	145	2	1	0
+leaf	AVMD	35	0	0	0	0
+leaf	COBJ	4	0	0	1	0
+leaf	GLOB	2	0	0	1	0
+leaf	KYWD	9	0	0	0	0
+leaf	LMSW	1	0	0	0	0
+leaf	LVLI	1	0	0	1	0
+leaf	OMOD	4	0	0	0	0
