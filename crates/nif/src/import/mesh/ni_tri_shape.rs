@@ -240,6 +240,7 @@ pub fn extract_mesh(
         has_translucency: false,
         model_space_normals: false,
         from_bgsm: false,
+        bgem_glass: false,
         // Stage 2 — legacy PBR translation. BGSM merge overwrites for
         // FO4/Skyrim BGSM-using meshes; legacy paths keep these.
         metalness_override: Some(legacy_pbr.metalness),

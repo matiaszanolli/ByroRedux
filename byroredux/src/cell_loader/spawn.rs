@@ -955,12 +955,12 @@ pub(super) fn spawn_placed_instances(
         // applied to `final_layer` below; glass is alpha-BLEND (test is
         // mutually exclusive per `apply_alpha_flags`) so this is just the
         // belt-and-suspenders decal exclusion.
-        crate::helpers::classify_glass_into_material(
-            &mut material,
+        crate::helpers::classify_glass_into_material(&mut material,
             mesh.name.as_deref(),
             eff_texture_path.as_deref(),
             mesh.has_alpha,
             mesh.is_decal || mesh.alpha_test,
+            mesh.bgem_glass,
         );
         world.insert(entity, material);
         // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn

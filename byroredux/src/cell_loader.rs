@@ -267,6 +267,7 @@ mod pack_bgsm_material_flags_tests {
             has_translucency: false,
             model_space_normals: false,
             from_bgsm: false,
+            bgem_glass: false,
             metalness_override: None,
             roughness_override: None,
             // #1147 Phase 2b — translucency suite (zero default).

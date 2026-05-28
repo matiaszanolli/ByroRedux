@@ -1235,6 +1235,18 @@ pub(crate) fn merge_bgsm_into_mesh(
             mesh.src_blend_mode = bgem.base.alpha_blend_mode.src_blend as u8;
             mesh.dst_blend_mode = bgem.base.alpha_blend_mode.dst_blend as u8;
         }
+        // #1280 sub-step 3b — forward BGEM `glass_enabled` so the
+        // spawn-time classifier in `helpers::classify_glass_into_material`
+        // can fire the glass path even when neither the texture path nor
+        // the mesh name carries a glass keyword. FO4 ships BGEM glass
+        // bottles whose atlas texture (e.g. `clutter01.dds`) and node
+        // name (e.g. `Bottle:0`) match nothing in the keyword list; the
+        // BGEM file itself is the only authoritative authoring of "this
+        // material is glass". Pre-fix those bottles rendered as opaque
+        // plastic (`material_kind = 0`, default roughness 0.80).
+        if bgem.glass_enabled {
+            mesh.bgem_glass = true;
+        }
         touched = true;
     } else {
         // Unknown extension — most likely a Starfield .mat JSON path that

@@ -443,6 +443,15 @@ pub struct ImportedMesh {
     /// of source format. Keeping the bool because debug-server
     /// inspection wants to know which materials came from BGSM.
     pub from_bgsm: bool,
+    /// FO4+ BGEM `glass_enabled` flag — set by `merge_bgsm_into_mesh`
+    /// when the referenced effect-material file explicitly authors
+    /// `glass_enabled = true`. Consumed by
+    /// `helpers::classify_glass_into_material` as an authoritative
+    /// transparency signal that fires the glass-classification path
+    /// even when neither texture path nor mesh name carries a glass
+    /// keyword. Closes the FO4-BGEM-glass-bottle-with-no-keyword class
+    /// flagged in #1280 sub-step 3b (canonical material convergence).
+    pub bgem_glass: bool,
     /// PBR metalness `[0, 1]` computed by the translation layer
     /// from authored source data. `None` falls through to legacy
     /// keyword-based classification in `classify_pbr` (Oblivion /

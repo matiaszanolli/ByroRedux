@@ -232,6 +232,7 @@ pub fn extract_bs_geometry(
         has_translucency: false,
         model_space_normals: false,
         from_bgsm: false,
+        bgem_glass: false,
         // Stage 2 — legacy PBR translation; BGSM merge overwrites
         // when a `.mat` file is present.
         metalness_override: Some(legacy_pbr.metalness),

@@ -886,12 +886,12 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         material.resolve_classifier_overrides();
         // Canonical glass classification (step 3) — mirror of the
         // cell_loader::spawn site so loose-NIF glass behaves identically.
-        crate::helpers::classify_glass_into_material(
-            &mut material,
+        crate::helpers::classify_glass_into_material(&mut material,
             mesh.name.as_deref(),
             owned_texture_path.as_deref(),
             mesh.has_alpha,
             mesh.is_decal || mesh.alpha_test,
+            mesh.bgem_glass,
         );
         world.insert(entity, material);
         // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
