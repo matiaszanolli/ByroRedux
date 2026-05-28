@@ -21,9 +21,9 @@ fn main() {
 
     println!("# {} (BSVER {})  — {} meshes", path, bsver, imported.len());
     println!(
-        "{:<22} {:>5} {:>5} {:>5} {:>5} {:>5} {:>5} {:>6} {:>5} {:>5} {:>5}  {}",
-        "mesh", "kind", "metO", "rghO", "gloss", "env", "specS", "specClum", "emisM", "alpha",
-        "decal", "tex/mat path",
+        "{:<22} {:>5} {:>5} {:>5} {:>5} {:>5} {:>5} {:>6} {:>6} {:>5} {:>5} {:>5}  {}",
+        "mesh", "kind", "metO", "rghO", "gloss", "env", "specS", "specClum", "emisM", "emSrc",
+        "alpha", "decal", "tex/mat path",
     );
     for m in &imported {
         let name = m
@@ -49,8 +49,18 @@ fn main() {
         // specular_strength is the legacy metal hint we currently ignore.
         let sc = m.specular_color;
         let spec_lum = 0.2126 * sc[0] + 0.7152 * sc[1] + 0.0722 * sc[2];
+        // Emissive-multiplier provenance (#1280 step 4 / emissive scale
+        // unification ground-truth): which authoring slot fed emisM, so a
+        // per-game sweep can read whether the three sources share a scale.
+        use byroredux_core::ecs::components::material::EmissiveSource;
+        let emis_src = match m.emissive_source {
+            EmissiveSource::None => "-",
+            EmissiveSource::Material => "mat",  // NiMaterialProperty.emissive_mult
+            EmissiveSource::Lighting => "lit",  // BSLightingShaderProperty.emissive_multiple
+            EmissiveSource::Effect => "fx",     // BSEffectShaderProperty.base_color_scale
+        };
         println!(
-            "{:<22.22} {:>5} {:>5} {:>5} {:>5.0} {:>5.2} {:>5.2} {:>6.2} {:>6.1} {:>5} {:>5}  {}",
+            "{:<22.22} {:>5} {:>5} {:>5} {:>5.0} {:>5.2} {:>5.2} {:>6.2} {:>6.1} {:>6} {:>5} {:>5}  {}",
             name,
             m.material_kind,
             meto,
@@ -60,6 +70,7 @@ fn main() {
             m.specular_strength,
             spec_lum,
             m.emissive_mult,
+            emis_src,
             m.has_alpha as u8,
             m.is_decal as u8,
             tex,

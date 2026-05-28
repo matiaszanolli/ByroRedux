@@ -1,6 +1,18 @@
 # Canonical Material Abstraction — Design & Convergence Plan
 
-**Status**: DESIGN / in progress (opened 2026-05-27)
+> **2026-05-28 — material slice CONVERGED.** This document's plan is now executed
+> and superseded as the live spec by [`nifal.md`](nifal.md) (**NIFAL** — the NIF
+> Abstraction Layer, generalising this approach to the whole NIF pipeline). Two
+> notes below are now **stale** and
+> retained only for history:
+> - **§2 Leak A / §4 step-3 (b)** — the render-side glass heuristic in
+>   `static_meshes.rs` was deleted; glass is decided once at the translate boundary.
+> - **§2 Leak B / §4 step-2** — `metalness_override`/`roughness_override` are no
+>   longer `Option` on the ECS `Material`; they are plain resolved `metalness`/
+>   `roughness: f32` populated once in `material_translate::translate_material`
+>   (`resolve_pbr` + clamp). There is no render-time `classify_pbr` fallback.
+
+**Status**: DESIGN / in progress (opened 2026-05-27) — see banner above for current state.
 **Goal**: every supported engine version (Oblivion / FO3 / FNV / Skyrim / FO4 / FO76 / Starfield) translates its native material data into **one canonical `Material`** with **one convention**, classified **at parse time**. The renderer/shader consumes that canonical material **identically** for all games. _All glass behaves the same. All cameras look the same._
 
 This formalises the existing invariants in `feedback_format_translation.md` ("never per-game branches in the shader; translate at the parser→Material boundary") and `format_abstraction.md` (GameVariant trait pattern) — which are documented but **not yet fully realised**.
