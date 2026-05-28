@@ -2,9 +2,14 @@
 
 NIF is the binary mesh format used by every Bethesda Gamebryo and
 Creation engine game. The `byroredux-nif` crate parses every supported
-game's mesh archive at **100% success across the full archive sweep**
-(177,286 NIFs total — see [Game Compatibility](game-compatibility.md)).
-This document explains how that's organised and what each piece does.
+game's mesh archive **recoverably at 100%** (184,886 NIFs across the
+seven-game sweep — every file links end-to-end, counting `NiUnknown`
+placeholders and truncated trailers as recoverable). The stricter
+*clean* rate (no `NiUnknown`, no truncated trailer) is 100% on
+FO3 / FNV / Skyrim SE and in the 96–99% band on FO4 / FO76 / Starfield /
+Oblivion — see [Game Compatibility](game-compatibility.md) for the live
+per-game matrix. This document explains how the parser is organised and
+what each piece does.
 
 Source: [`crates/nif/src/`](../../crates/nif/src/)
 
@@ -12,78 +17,112 @@ Source: [`crates/nif/src/`](../../crates/nif/src/)
 
 | | |
 |---|---|
-| Block types parsed       | ~190 (+30 Havok types skipped via `block_size`) |
-| Distinct type names      | 215+ |
-| Game variants supported  | 8 (Morrowind → Starfield) |
-| Tests (unit)             | 340+ (includes `dispatch_tests`, per-game regressions, Session 12 closeout — BSGeometryDataFlags, TileShaderProperty, FO3 double-sided, decal flag helper, allocate_vec sweep) |
-| Integration sweeps       | 7 games, 100% each |
-| Cumulative NIFs parsed   | 177,286 (full mesh archive sweeps) |
-| BGSM / BGEM references   | Surfaced as `ImportedMesh.material_path` when the NiNet name is a material file (BSVER ≥ 155) |
-| Import cache             | Process-lifetime resource (#381) — each unique NIF parses once per process, not once per cell |
-| OOM hardening            | Every stream-derived `Vec::with_capacity` routed through `stream.allocate_vec(count)?` which bounds `count` against remaining file bytes (#388 + #408) — a corrupt `u32::MAX` count errors cleanly instead of aborting the process |
+| Dispatch table       | 254 match arms covering 310 distinct block-type names ([`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) — the live arm count is the source of truth; this figure drifts) |
+| Game variants supported | 8 (Morrowind → Starfield) via the [`NifVariant`](../../crates/nif/src/version.rs) enum |
+| Tests (unit)         | ~738 in-crate `#[test]`s with synthetic byte streams (per-parser regressions + the 67-test `dispatch_tests` suite + per-category `*_tests.rs` siblings) |
+| Integration sweeps   | 7 games, 100% recoverable each ([`tests/parse_real_nifs.rs`](../../crates/nif/tests/parse_real_nifs.rs) + per-block-baseline / heap-bound / translation-completeness siblings) |
+| Cumulative NIFs swept | 184,886 (full mesh-archive sweeps, per-game counts in [Game Compatibility](game-compatibility.md)) |
+| BGSM / BGEM references | Surfaced as `ImportedMesh.material_path` when the NiNet name is a material file (BSVER ≥ 155); BGSM/BGEM sidecars surfaced on the lighting/effect shader data |
+| Starfield `.mesh`     | `BSGeometry` carries external `.mesh` filenames; resolved via the `geometries\<hash>.mesh` canonical path (#1292), not `meshes\…` |
+| Import cache          | Process-lifetime resource (#381) — each unique NIF parses once per process, not once per cell |
+| OOM hardening         | Every stream-derived `Vec::with_capacity` routed through `stream.allocate_vec(count)?`, which bounds `count` against remaining file bytes (#388 + #408 + #1245/#1246) — a corrupt `u32::MAX` count errors cleanly instead of aborting the process |
+| Canonical translation | Raw `Imported*` decode is fed through the **NIFAL** (NIF Abstraction Layer) `translate()` boundary into game-agnostic ECS types — see [NIFAL](nifal.md) |
 
 ## Module map
 
 ```
 crates/nif/src/
-├── lib.rs            Top-level parse_nif() walker + per-block recovery loop
+├── lib.rs            Top-level parse_nif()/parse_nif_with_options() walker + per-block recovery loop
+├── tests.rs          Lifted lib.rs recovery / walker unit tests (#1118 TD9-002)
 ├── version.rs        NifVersion (packed u32) + NifVariant feature flags
 ├── header.rs         NIF header parser (BSStreamHeader, block type table, strings)
-├── stream.rs         NifStream — version-aware binary reader
+├── stream.rs         NifStream — version-aware binary reader (allocate_vec OOM guard)
 ├── types.rs          NiPoint3, NiMatrix3, NiTransform, NiColor, BlockRef
-├── scene.rs          NifScene container with downcast helpers (get_as<T>)
+├── rotation.rs       Degenerate rotation-matrix detection + SVD repair (#277, lifted here #1044)
+├── shader_flags.rs   Named BSShaderFlags / SkyrimShaderPropertyFlags / Fallout4ShaderPropertyFlags constants
+├── kfm.rs            KFM (KeyFrame Metadata) state-machine file parser (binary, v1.2.0.0–2.2.0.0)
+├── scene.rs          NifScene container with downcast helpers (get_as<T>) + validate_refs()
 ├── anim/             KF animation file import (ImportedClip, channels) — Session 35 split
-│                     into per-phase siblings (coord/controlled_block/transform/
-│                     sequence/keys/channel/bspline/entry)
-├── blocks/           Per-block parsers (one file per category)
-│   ├── mod.rs        parse_block dispatcher (190+ entries) + NiObject trait
+│                     into per-phase siblings (mod / coord / controlled_block / transform /
+│                     sequence / keys / channel / bspline / entry / types / tests)
+├── blocks/           Per-block parsers (one file/dir per category)
+│   ├── mod.rs        parse_block / parse_block_with_name_arc / parse_block_inner dispatcher + NiObject trait
 │   ├── traits.rs     HasObjectNET, HasAVObject, HasShaderRefs upcast traits
-│   ├── base.rs       Shared base-class data structs (NiObjectNETData, ...)
+│   ├── base.rs       Shared base-class data structs (NiObjectNETData, …)
 │   ├── node.rs       NiNode + BS variants (BSFadeNode, BSValueNode, BsRangeNode,
 │   │                 NiBillboardNode, NiSwitchNode, NiLODNode, NiSortAdjustNode,
-│   │                 NiCamera, ...)
-│   ├── tri_shape.rs  NiTriShape, NiTriStrips, BSTriShape (FO4+ packed format),
-│   │                 shared parse_geometry_data_base helper for particle data
-│   ├── shader.rs     BSShaderPP / BSLightingShader / BSEffectShader (8 ST variants, FO76 stopcond)
+│   │                 NiCamera, BsMultiBoundNode, …)
+│   ├── tri_shape/    Session 35 + #1118 (TD9-005) split — indexed triangle geometry:
+│   │                 mod.rs (re-exports + parse_geometry_data_base*), ni_tri_shape.rs
+│   │                 (NiTriShape/Strips/LodTriShape + data), bs_tri_shape.rs (BSTriShape +
+│   │                 its 4 wire-distinct subclasses via BsTriShapeKind), agd.rs
+│   │                 (NiAdditionalGeometryData / BSPackedAdditionalGeometryData, #547)
+│   ├── bs_geometry.rs Starfield BSGeometry / BSGeometryMesh / BSGeometryMeshData (external
+│   │                 .mesh refs + inline UDEC3-packed payload — wire layout from nifly)
+│   ├── shader.rs     BSShaderPP / BSLightingShader (per-variant dispatch, #1279) /
+│   │                 BSEffectShader (8 ST variants, FO76 stopcond, Root Material sidecar)
 │   ├── light.rs      NiLight hierarchy (ambient, directional, point, spot)
-│   ├── properties.rs Material, Alpha, Stencil, Texturing, ZBuffer, VertexColor, ...
+│   ├── properties.rs Material, Alpha, Stencil, Texturing, ZBuffer, VertexColor, …
 │   ├── texture.rs    NiSourceTexture, NiPixelData, NiTextureEffect (projector)
-│   ├── controller.rs NiTimeController + 14 subclasses, NiControllerManager,
-│   │                 NiUVController, NiSequenceStreamHelper
-│   ├── interpolator.rs NiTransform/Float/Point3/Bool interpolators + Blend
-│   │                 variants, NiUVData
+│   ├── controller/   Session 36 split — NiTimeController family: mod.rs, legacy.rs
+│   │                 (NiKeyframe/UV/Vis/Alpha/MaterialColor/Flip), sequence.rs
+│   │                 (NiControllerManager/Sequence/MultiTargetTransform), morph.rs
+│   │                 (NiGeomMorpherController + NiMorphData), shader.rs (BsShaderController
+│   │                 quintet)
+│   ├── interpolator.rs NiTransform/Float/Point3/Bool interpolators + Blend variants, NiUVData
 │   ├── extra_data.rs NiStringExtraData, BSXFlags, BSBound, BSDecalPlacement,
-│   │                 NiStringsExtraData + NiIntegersExtraData (array variants), ...
+│   │                 NiStringsExtraData + NiIntegersExtraData (array variants), …
 │   ├── multibound.rs BSMultiBound + AABB/OBB shapes
 │   ├── palette.rs    NiDefaultAVObjectPalette, NiStringPalette
-│   ├── particle.rs   ~48 modern (NiPSys) particle system types
+│   ├── particle.rs   ~48 modern (NiPSys) particle system types — incl. typed NiPSysEmitter
+│   │                 (EmitterBaseParams), NiPSysEmitterCtlr, NiPSysGrowFadeModifier (NIFAL)
 │   ├── legacy_particle.rs  Pre-NiPSys particle stack (Oblivion / Morrowind):
 │   │                 NiParticleSystemController, NiAutoNormal/Rotating Particles,
 │   │                 NiParticleColorModifier / GrowFade / Rotation / Bomb,
 │   │                 NiGravity, NiPlanarCollider, NiSphericalCollider
 │   ├── skin.rs       NiSkinInstance/Data/Partition, BSSkin, BsDismemberSkinInstance
-│   └── collision/    bhk* collision shapes — Session 35 split into 9 siblings
-│                     (collision_object / rigid_body / ragdoll / shape_primitive /
-│                     shape_compound / shape_mesh / compressed_mesh / constraints /
-│                     phantom_action) with shared low-level readers in mod.rs
-└── import/           NIF→ECS scene import
-    ├── mod.rs        ImportedNode/Mesh/Scene types, import_nif()
-    ├── walk.rs       Hierarchical + flat scene graph traversal
-    ├── mesh/         Session 35 split into 8 production siblings
-    │                 (material_path / decode / ni_tri_shape / bs_tri_shape /
-    │                 bs_geometry / tangent / sse_recon / skin) plus 7 test files
-    ├── material.rs   MaterialInfo, texture/alpha/decal property extraction
-    ├── transform.rs  Transform composition, degenerate rotation SVD repair
+│   └── collision/    bhk* collision shapes — Session 35 split into siblings + sibling
+│                     test files: collision_object / rigid_body / ragdoll /
+│                     shape_primitive / shape_compound / shape_mesh / compressed_mesh /
+│                     constraints / phantom_action, with shared low-level readers in mod.rs
+└── import/           NIF→ECS scene import (raw Imported* tier; NIFAL translate() lives downstream)
+    ├── mod.rs        import_nif / import_nif_scene / import_nif_with_collision /
+    │                 import_nif_lights / import_nif_particle_emitters entry points
+    ├── types.rs      ImportedNode / Mesh / Scene / Light / Collision / Skin / Bone /
+    │                 ParticleEmitter(+Flat) / EmitterParams data structs
+    ├── walk/         Hierarchical + flat scene graph traversal (mod.rs + tests.rs, #1118)
+    ├── mesh/         Session 35 split into production siblings (material_path / decode /
+    │                 ni_tri_shape / bs_tri_shape / bs_geometry / tangent / sse_recon /
+    │                 skin) plus per-topic *_tests.rs siblings
+    ├── material/     Session 36 split — MaterialInfo extraction (mod.rs + walker.rs +
+    │                 shader_data.rs) plus per-topic *_tests.rs siblings (alpha / decal /
+    │                 double-sided / emissive-source / PBR / texture-slot / sky-water / …)
+    ├── collision.rs  Havok→engine transform + bhk*Shape → CollisionShape / RigidBodyData
+    ├── transform.rs  Transform composition
     └── coord.rs      Z-up (Gamebryo) → Y-up (renderer) quaternion conversion
 ```
 
-The split between `blocks/` (binary parsers) and `import/` (scene to ECS-friendly mesh) lets the parser be tested in isolation against bytes
+The split between `blocks/` (binary parsers) and `import/` (scene to
+ECS-friendly mesh) lets the parser be tested in isolation against bytes
 without dragging in `glam` or any renderer types.
+
+> **Session 34/35/36 layout note.** Several files referenced by older
+> audits as single `.rs` files are now submodule directories:
+> `blocks/tri_shape.rs` → `blocks/tri_shape/`, `blocks/collision.rs` →
+> `blocks/collision/`, `blocks/controller.rs` → `blocks/controller/`,
+> `import/mesh.rs` → `import/mesh/`, `import/material.rs` →
+> `import/material/`, `import/walk.rs` → `import/walk/`, `anim.rs` →
+> `anim/`. The `Imported*` structs moved out of `import/mod.rs` into
+> `import/types.rs`, and the SVD rotation repair moved out of
+> `import/transform.rs` to the top-level `rotation.rs`. Translate stale
+> paths through this map.
 
 ## Parse pipeline
 
-`parse_nif(data)` in [`lib.rs`](../../crates/nif/src/lib.rs) is the
-top-level entry point. It runs three phases:
+`parse_nif(data)` (and `parse_nif_with_options(data, &ParseOptions)`,
+which adds the geometry-only `skip_animation` mode) in
+[`lib.rs`](../../crates/nif/src/lib.rs) is the top-level entry point. It
+runs three phases:
 
 1. **Header parse** ([`header.rs`](../../crates/nif/src/header.rs)) — read
    the ASCII header line, the binary version + endianness, the
@@ -92,8 +131,8 @@ top-level entry point. It runs three phases:
    group count.
 2. **Block walk** — for each block index, look up its type in the header's
    block-type table, dispatch to the per-block parser in
-   [`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs), and append the
-   parsed block to the scene.
+   [`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) via
+   `parse_block_with_name_arc`, and append the parsed block to the scene.
 3. **Root identification** — find the first `NiNode` in the result and
    record it as the scene root.
 
@@ -101,6 +140,16 @@ The output is a `NifScene` containing a `Vec<Box<dyn NiObject>>`. Each
 parsed block implements the `NiObject` trait, which exposes a type-name
 string and an `as_any()` downcast for callers that want concrete types
 (via `scene.get_as::<NiTriShape>(idx)`).
+
+### groupID consume (early-Gamebryo)
+
+Before the dispatch match, `parse_block_inner` consumes a 4-byte
+`groupID` field for files in the version range `[10.0.0.0, 10.1.0.114)`
+(O5-3 / #688). nifly's `NiObject::Get` reads this on every `NiObject`
+before the subclass payload; pre-fix it was misread as the first u32 of
+the block (usually the `NiObjectNET.Name` length), truncating ~154 of
+8032 Oblivion-era files at root. The value is read and discarded —
+vanilla content always ships zero.
 
 ## Version handling
 
@@ -115,13 +164,14 @@ to a [`NifVariant`](../../crates/nif/src/version.rs) enum:
 
 ```rust
 pub enum NifVariant {
-    Morrowind,    // NIF ≤ 4.x
-    Oblivion,     // NIF 20.0.0.4 / 20.0.0.5, user_version < 11
-    Fallout3NV,   // NIF 20.2.0.7, uv=11, uv2 ≤ 34
+    Morrowind,    // NIF ≤ 4.x, NetImmerse era
+    Oblivion,     // NIF 20.0.0.5, user_version < 11
+    Fallout3,     // NIF 20.2.0.7, uv=11, uv2 < 34 (pre-retail authoring tools)
+    FalloutNV,    // NIF 20.2.0.7, uv=11, uv2=34 (retail FO3 also detects here — binary-identical)
     SkyrimLE,     // uv=12, uv2=83
     SkyrimSE,     // uv=12, uv2=100
-    Fallout4,     // uv=12, uv2=130–154
-    Fallout76,    // uv=12, uv2=155–169
+    Fallout4,     // uv=12, uv2=130
+    Fallout76,    // uv=12, uv2=155
     Starfield,    // uv=12, uv2 ≥ 170
     Unknown,
 }
@@ -144,7 +194,15 @@ This is the **GameVariant trait pattern** mentioned in the project memory:
 keep all the per-game quirks in one place instead of scattering version
 checks through 150+ block parsers. When a new game variant lands the
 work is "add an enum variant + a few feature flags", not "audit every
-block parser".
+block parser". The #1277 epic migrated the remaining variant-aligned raw
+`bsver` comparisons to `NifVariant` helpers and added a typed
+[`ShaderFlags`](../../crates/nif/src/shader_flags.rs) variant view so a
+single mesh can't pick the wrong flag vocabulary.
+
+> **Detection note (#943 / #1219).** `V20_0_0_4` / `V20_0_0_5` are routed
+> to `Oblivion` ahead of the uv/uv2 match — no other game uses those
+> versions — and the ambiguous `(V20_0_0_4, user_version=11, _)` routing
+> emits a one-shot warning rather than silently picking a variant.
 
 ## Header parser
 
@@ -195,33 +253,14 @@ integration test thresholds meaningful.
 ## Per-block recovery
 
 The block walker in [`lib.rs`](../../crates/nif/src/lib.rs) is the heart
-of the "soft fail and keep going" philosophy:
-
-```rust
-match parse_block(type_name, &mut stream, block_size) {
-    Ok(block) => {
-        // Verify we consumed exactly block_size bytes; adjust if not.
-        if let Some(size) = block_size {
-            if stream.position() - start_pos != size as u64 {
-                stream.set_position(start_pos + size as u64);
-            }
-        }
-        blocks.push(block);
-    }
-    Err(e) => {
-        if let Some(size) = block_size {
-            // Recovery: seek past the broken block, insert a NiUnknown,
-            // continue. A single buggy block parser doesn't kill the file.
-            stream.set_position(start_pos + size as u64);
-            blocks.push(Box::new(NiUnknown { type_name, data: Vec::new() }));
-            continue;
-        }
-        // No block_size (Oblivion v20.0.0.5 NIFs): can't recover, stop here
-        // but keep the blocks parsed so far.
-        break;
-    }
-}
-```
+of the "soft fail and keep going" philosophy. When a block parser errors
+and the format has a per-block size table (FO3+), the walker seeks past
+the broken block, pushes a `NiUnknown` placeholder (refcount-cloning the
+already-built type-name `Arc<str>`, #1261), and continues — a single
+buggy block parser doesn't kill the file. When parse *succeeds* but
+consumes the wrong number of bytes, the walker reconciles the stream
+position against `block_size`, which also absorbs trailing bytes of
+coverage-first stubs like `BSFaceGenNiNode` (Starfield, #727).
 
 This is what bumped the Skyrim SE smoke test from 42% → 100% during
 N23.10: a single Havok block layout quirk was killing every Skyrim NIF
@@ -229,16 +268,37 @@ that contained it, but the bytes per block were structurally fine.
 Recovery is only available when `block_size` is known (FO3+), since
 Oblivion v20.0.0.5 NIFs have no per-block size table — for those, the
 walker stops at the first error but keeps the blocks parsed so far.
+A runtime size cache (#324) plus a stream-drift detector (#395) make
+Oblivion under-reads measurable rather than an unexplained parse-rate
+regression.
 
 ## Block coverage
 
-Block types fall into a handful of families. Coverage summary:
+Block types fall into a handful of families. The dispatch table in
+[`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) currently carries
+254 match arms covering 310 distinct type-name literals (verify the live
+count from source — it grows). Coverage summary:
 
 ### Nodes and geometry
 `NiNode`, `BSFadeNode`, `BSLeafAnimNode`, `BSTreeNode`, `BSMultiBoundNode`,
 `RootCollisionNode`, `BSOrderedNode`, `BSValueNode`, `NiTriShape`,
-`NiTriStrips`, `BSSegmentedTriShape`, `BSTriShape`, `BSMeshLODTriShape`,
-`BSSubIndexTriShape`, `NiTriShapeData`, `NiTriStripsData`.
+`NiTriStrips`, `NiLodTriShape`, `BSSegmentedTriShape`, `BSTriShape`,
+`BSMeshLODTriShape`, `BSSubIndexTriShape`, `NiTriShapeData`,
+`NiTriStripsData`, plus `NiAdditionalGeometryData` /
+`BSPackedAdditionalGeometryData` (#547, in `tri_shape/agd.rs`).
+
+### Starfield geometry (BSGeometry)
+Starfield replaced the FO4-era `BSTriShape` family with a top-level
+`BSGeometry` container that splits the geometry out of the `.nif` into
+companion `.mesh` files. [`blocks/bs_geometry.rs`](../../crates/nif/src/blocks/bs_geometry.rs)
+parses up to 4 `BSGeometryMesh` slots per node — each holds either an
+external `.mesh` filename (the 99% Starfield case, resolved through the
+`geometries\<hash>.mesh` canonical path, #1292) or, when bit `0x200` of
+the parent NiAVObject flags is set, an inline `BSGeometryMeshData`
+payload (UDEC3-packed normals/tangents, half-float UVs, meshlets, cull
+data). The wire layout is taken from the out-of-repo nifly checkout at
+`/mnt/data/src/reference/nifly` (`src/Geometry.cpp::BSGeometry::Sync`),
+since nif.xml has no top-level `BSGeometry` schema.
 
 ### Node subtypes (N26 audit follow-up)
 `NiBillboardNode` (camera-facing children, u16 mode since 10.1.0.0),
@@ -249,7 +309,8 @@ frustum + viewport + lod_adjust for cutscene rigs),
 `BsRangeNode` (BSRangeNode / BSBlastNode / BSDamageStage / BSDebrisNode
 — identical `(min, max, current)` byte triple),
 `AvoidNode` / `NiBSAnimationNode` / `NiBSParticleNode` (legacy NiNode
-pure-aliases with no trailing fields). All gated on the per-version
+pure-aliases with no trailing fields), `BSFaceGenNiNode` (Starfield
+coverage-first NiNode alias, #727). All gated on the per-version
 layouts pulled straight from `nif.xml`.
 
 ### Shaders
@@ -257,48 +318,49 @@ layouts pulled straight from `nif.xml`.
   `BSShaderNoLightingProperty`, `BSShaderTextureSet`
 - **Oblivion specializations** (alias to `BSShaderPPLightingProperty`
   since they share the base texture-set + flags layout — see #145):
-  `SkyShaderProperty`, `WaterShaderProperty`, `TallGrassShaderProperty`,
-  `Lighting30ShaderProperty`, `HairShaderProperty`,
-  `VolumetricFogShaderProperty`, `DistantLODShaderProperty`,
-  `BSDistantTreeShaderProperty`, `BSSkyShaderProperty`, `BSWaterShaderProperty`
-- **`TileShaderProperty`** (#455) — FO3 HUD / UI tile shader. Splits
-  out of the aliased group and gets its own parser matching nif.xml's
-  `BSShaderLightingProperty` + File Name SizedString layout. Pre-fix
-  the aliased PPLighting parser over-read 20-28 bytes and dropped the
-  filename; `stealthindicator.nif` / `airtimer.nif` probes now parse
-  with zero warnings. Other aliased subclasses have the same defect
-  (tracked as a future sweep).
-- **`BsShaderController`** family (#350) — the five Skyrim+ shader
-  property controllers (`BSEffectShaderPropertyFloatController` /
+  `SkyShaderProperty`, `TallGrassShaderProperty`, `Lighting30ShaderProperty`,
+  `HairShaderProperty`, `VolumetricFogShaderProperty`,
+  `DistantLODShaderProperty`, `BSDistantTreeShaderProperty`,
+  `BSSkyShaderProperty`. `WaterShaderProperty` / `BSWaterShaderProperty`
+  split out of the aliased group into the base-only arm (#474/#717) and
+  reach a dedicated consumer at import (#1243).
+- **`TileShaderProperty`** (#455) — FO3 HUD / UI tile shader. Split out
+  of the aliased group with its own parser matching nif.xml's
+  `BSShaderLightingProperty` + File Name SizedString layout. Pre-fix the
+  aliased PPLighting parser over-read 20-28 bytes and dropped the filename.
+- **`BsShaderController`** family (#350, in `controller/shader.rs`) — the
+  five Skyrim+ shader property controllers (`BSEffectShaderPropertyFloatController` /
   `...ColorController`, `BSLightingShaderPropertyFloatController` /
   `...ColorController` / `...UShortController`) each trail
-  `NiSingleInterpController` with a `uint` enum naming the driven
-  slot. Preserved on the block as
+  `NiSingleInterpController` with a `uint` enum naming the driven slot.
+  Preserved on the block as
   `ShaderControllerKind::{EffectFloat, EffectColor, LightingFloat, LightingColor, LightingUShort}(u32)`
-  so the animation importer can route key streams to the correct
-  uniform when the animated-shader pipeline lands.
+  so the animation importer can route key streams to the correct uniform.
 - **Skyrim+/FO4**: `BSLightingShaderProperty` (8 shader-type variants —
   EnvironmentMap, SkinTint, HairTint, ParallaxOcc, MultiLayerParallax,
-  SparkleSnow, EyeEnvmap, None), `BSEffectShaderProperty`
+  SparkleSnow, EyeEnvmap, None — dispatched per-variant since #1279),
+  `BSEffectShaderProperty`. Captures the `.mat`/Root-Material sidecar
+  (#976 / #1183) and the PBR / backlight scalars (#1175 / #1241).
 - **FO76+/Starfield**: CRC32 flag arrays (`Num SF1` / `SF1[]` since BSVER ≥ 132,
   `Num SF2` / `SF2[]` since BSVER ≥ 152), `BSShaderType155` enum dispatch,
   `BSSPLuminanceParams`, `BSSPTranslucencyParams`, `BSTextureArray`, plus
   the **stopcond on `Name`** — when BSVER ≥ 155 and the Name field is a
   non-empty BGSM/BGEM file path, the rest of the block is absent and the
-  parser short-circuits to a material-reference stub
+  parser short-circuits to a material-reference stub.
 
 ### Properties (older games)
 `NiMaterialProperty`, `NiAlphaProperty`, `NiTexturingProperty` (with bump
 map / parallax fields), `NiStencilProperty` (version-aware), `NiZBufferProperty`,
 `NiVertexColorProperty`, `NiSpecularProperty`, `NiWireframeProperty`,
-`NiDitherProperty`, `NiShadeProperty`.
+`NiDitherProperty`, `NiShadeProperty`. `NiFogProperty` is a deliberate
+non-dispatch (the gap is accepted and documented, #1224).
 
 ### Textures
 `NiSourceTexture`, `NiPixelData`, `NiPersistentSrcTextureRendererData`,
 `NiTextureEffect` (projected env-map / gobo / fog projector with full
-NiDynamicEffect base, texture filtering / clamping / type / coord-gen
-enums, clipping plane, and version-gated max anisotropy and PS2 L/K
-fields — see #163).
+NiDynamicEffect base — gated `bsver < FALLOUT4`, #1240 — texture filtering /
+clamping / type / coord-gen enums, clipping plane, and version-gated max
+anisotropy and PS2 L/K fields — see #163).
 
 ### Lights
 Full `NiLight` hierarchy (#156): `NiAmbientLight`, `NiDirectionalLight`,
@@ -319,18 +381,20 @@ them into the existing GpuLight buffer.
 variants — material override lists, bone LOD metadata), `BSBound`,
 `BSDecalPlacementVectorExtraData`, `BSBehaviorGraphExtraData`, `BSInvMarker`,
 `BSClothExtraData`, `BSConnectPoint::Parents`, `BSConnectPoint::Children`.
+The generic `"NiExtraData"` dispatch arm (#1073) closes FO4 FaceGen
+truncation.
 
 ### Controllers and interpolators
-`NiTimeController`, `NiSingleInterpController`, `NiMaterialColorController`,
-`NiMultiTargetTransformController`, `NiControllerManager`,
-`NiControllerSequence`, `NiTextureTransformController`, `NiTransformController`,
-`NiKeyframeController` (pre-Skyrim per-bone driver, aliases to
-`NiSingleInterpController` — see #144), `NiVisController`, `NiAlphaController`,
-`BSEffect/Lighting Shader Property {Float,Color}Controller`,
-`NiGeomMorpherController`, `NiMorphData`, `NiUVController` +
-`NiUVData` (scrolling UV animation for water / fire / banners — see #154),
-`NiFlipController` (texture-flipbook driver — fire / smoke / explosion
-cross-strips — channel emission lands in #545), `NiSequenceStreamHelper`
+After the Session 36 [`controller/`](../../crates/nif/src/blocks/controller/)
+split: `NiTimeController`, `NiSingleInterpController`,
+`NiMaterialColorController`, `NiMultiTargetTransformController`,
+`NiControllerManager`, `NiControllerSequence`, `NiTextureTransformController`,
+`NiTransformController`, `NiKeyframeController` (pre-Skyrim per-bone driver,
+aliases to `NiSingleInterpController` — see #144), `NiVisController`,
+`NiAlphaController`, `BSEffect/Lighting Shader Property {Float,Color}Controller`,
+`NiGeomMorpherController`, `NiMorphData`, `NiUVController` + `NiUVData`
+(scrolling UV animation for water / fire / banners — see #154),
+`NiFlipController` (texture-flipbook driver), `NiSequenceStreamHelper`
 (pre-Skyrim KF animation root), `NiLookAtInterpolator` (replaces the
 deprecated `NiLookAtController` from Oblivion-era cinematics).
 Interpolators: `NiTransformInterpolator`, `BSRotAccumTransfInterpolator`,
@@ -343,16 +407,22 @@ by `NiControllerManager` blending.
 `NiSkinInstance`, `NiSkinData` (per-bone transforms + vertex weights),
 `NiSkinPartition`, `BsDismemberSkinInstance`, `BSSkin::Instance`,
 `BSSkin::BoneData`. M29 GPU skinning Phase 1+2 ships end-to-end through
-the per-skinned-entity BLAS refit; #638 added the SSE
-`BSTriShape` 12-byte VF_SKINNED block decoder so SSE skin payloads
-flow from parser through to compute.
+the per-skinned-entity BLAS refit; #638 added the SSE `BSTriShape`
+12-byte VF_SKINNED block decoder so SSE skin payloads flow from parser
+through to compute, and #1203 resolves the Starfield `BSGeometry`
+skin instance via the `BsSkinInstance` chain.
 
 ### Particle systems (~48 types)
 `NiParticles`, `NiParticleSystem`, `NiMeshParticleSystem`,
 `BSStripParticleSystem`, `BSMasterParticleSystem`, plus
 `NiParticlesData`/`NiPSysData`/`NiMeshPSysData`/`BSStripPSysData`/
 `NiPSysEmitterCtlrData`, 18 modifiers, 5 emitters, 2 colliders, 6 field
-modifiers, 21 controllers via shared base parsers.
+modifiers, 21 controllers via shared base parsers. As of the 2026-05-28
+NIFAL particle slice, `NiPSysEmitter` is a *typed* block carrying decoded
+`EmitterBaseParams` (speed / declination / life + variations), the
+`NiPSysEmitterCtlr` carries its interpolator ref for authored birth
+rate, and `NiPSysGrowFadeModifier` captures `base_scale` for authored
+size — see [NIFAL § Particles](nifal.md).
 
 ### Legacy (pre-NiPSys) particle stack — Oblivion / Morrowind (#143)
 nif.xml marks these `until="V10_0_1_0"` but Bethesda kept them alive
@@ -374,16 +444,20 @@ mesh depends on them. Full parsers live in
   `NiSphericalCollider` — sharing `parse_particle_modifier_base` and
   `parse_particle_collider_base` helpers
 
-### Havok collision (~30 types)
-**Fully parsed** (since N23.6): `bhkCollisionObject`, `bhkRigidBody`,
-`bhkSimpleShapePhantom`, `bhkMoppBvTreeShape`, `bhkBoxShape`,
-`bhkSphereShape`, `bhkCapsuleShape`, `bhkCylinderShape`,
-`bhkConvexVerticesShape`, `bhkListShape`, `bhkTransformShape`,
+### Havok collision
+The [`collision/`](../../crates/nif/src/blocks/collision/) directory
+parses 14 `bhk*Shape` variants for byte-correctness:
+`bhkBoxShape`, `bhkSphereShape`, `bhkCapsuleShape`, `bhkCylinderShape`,
+`bhkMultiSphereShape`, `bhkConvexVerticesShape`, `bhkConvexListShape`,
+`bhkListShape`, `bhkTransformShape`, `bhkMoppBvTreeShape`,
 `bhkNiTriStripsShape`, `bhkPackedNiTriStripsShape`,
-`hkPackedNiTriStripsData`, `bhkCompressedMeshShape`, `bhkCompressedMeshShapeData`.
-**Skip-only** (deferred to M28 physics): the Havok constraint family and
-collision systems — `bhkRagdollConstraint`, `bhkLimitedHingeConstraint`,
-etc.
+`bhkCompressedMeshShape`, `bhkSimpleShape`, plus
+`hkPackedNiTriStripsData` / `bhkCompressedMeshShapeData`,
+`bhkCollisionObject` / `bhkRigidBody`, and the constraint / ragdoll /
+phantom families. The constraint family (`bhkRagdollConstraint`,
+`bhkLimitedHingeConstraint`, `bhkBreakableConstraint`, …) is parsed for
+byte-alignment but its pivot/axis/limit data has no consumer until
+physics wiring lands (#331, closed as deferred).
 
 ### Spatial / palettes
 `BSMultiBound`, `BSMultiBoundAABB`, `BSMultiBoundOBB`,
@@ -392,29 +466,42 @@ etc.
 ## NIF→ECS import
 
 [`crates/nif/src/import/`](../../crates/nif/src/import/) takes a parsed
-`NifScene` and walks it into a flat list of ECS-friendly meshes. Key
+`NifScene` and walks it into a flat list of ECS-friendly meshes (the raw
+`Imported*` tier — see [NIFAL](nifal.md) for how this is then resolved to
+the canonical, game-agnostic types the engine consumes). The
+`Imported*` structs live in
+[`import/types.rs`](../../crates/nif/src/import/types.rs). Key
 transformations:
 
 - **Z-up → Y-up coordinate change** with the documented CW→CCW rotation
   conversion (see [Coordinate System](coordinate-system.md))
 - **SVD-based rotation repair** for degenerate NIF rotation matrices
   (some legacy content has skewed/sheared transforms — `nalgebra`'s SVD
-  finds the closest valid rotation)
+  finds the closest valid rotation). The repair now happens once at parse
+  time in [`rotation.rs`](../../crates/nif/src/rotation.rs) (#277)
 - **Editor marker filtering** by name prefix (`marker_*`, `editor_*`,
-  light effect FX meshes, fog volumes — all the things that should never
-  draw at runtime)
-- **Material property extraction** in one walk: diffuse texture, normal
-  map (BSShaderPPLighting FO3/FNV path), alpha flags, decal flags,
-  emissive/specular/glossiness, UV transform, two-sided flag
+  light effect FX meshes, fog volumes) plus the Skyrim+ `EditorMarker`
+  flag bit and the `MapMarker` NiNode subclass (#165)
+- **Material property extraction** in one walk
+  ([`import/material/`](../../crates/nif/src/import/material/)): diffuse
+  texture, normal map, alpha flags, decal flags, emissive/specular/
+  glossiness, UV transform, two-sided flag, all 8 TXST slots (#357), and
+  the FO4 BGSM/BGEM PBR / translucency / model-space-normals flags
+  (#1076/#1077)
 - **Strip-to-triangle conversion** for `NiTriStripsData`
-- **Collision import** with the Havok→engine transform (via `import_nif_with_collision`)
+- **Tangent synthesis** — empty BSGeometry / SSE-reconstructed tangents
+  route through Mikkelsen Y-up synthesis (#1086 / #1204 / #1232)
+- **Collision import** ([`import/collision.rs`](../../crates/nif/src/import/collision.rs))
+  with the Havok→engine transform (via `import_nif_with_collision`)
+- **Depth + cycle guards** on the import walkers (#1269) so malformed
+  scene graphs can't blow the stack or loop forever
 
-The output is `Vec<ImportedMesh>` plus an optional `Vec<ImportedCollision>`.
-Each `ImportedMesh` has positions / normals / UVs / vertex colors /
-indices / a `glam::Quat` rotation / a `glam::Vec3` translation / a scale,
-plus the texture path (so the consumer can extract DDS bytes from a BSA),
-plus material flags. The cell loader in `byroredux/src/cell_loader.rs`
-consumes this directly.
+The output is `Vec<ImportedMesh>` plus optional `Vec<ImportedCollision>` /
+`Vec<ImportedLight>` / particle emitters. Each `ImportedMesh` has
+positions / normals / UVs / vertex colors / indices / a `glam::Quat`
+rotation / a `glam::Vec3` translation / a scale, plus the texture path
+(so the consumer can extract DDS bytes from a BSA), plus material flags.
+The cell loader in `byroredux/src/cell_loader/` consumes this directly.
 
 ## Stream reader
 
@@ -435,22 +522,41 @@ string table indexed by u32, older files use length-prefixed inline
 strings. Returning `Arc<str>` makes the table-indexed path a cheap atomic
 clone instead of a fresh allocation per read — the per-file allocation
 count for a typical Skyrim NIF dropped by ~40× when this landed (issue
-#55).
+#55). `allocate_vec(count)` is the OOM-hardened vector allocator: every
+stream-derived `Vec::with_capacity` routes through it so a corrupt count
+bounds-checks against the remaining file budget instead of aborting the
+process (#388 / #408 / #1245 / #1246).
 
 ## Test infrastructure
 
-- **128 unit tests** with synthetic byte streams covering every parser,
-  including the 10-test `blocks::dispatch_tests` module that drives
-  every new N26 audit block through `parse_block` on a minimal
-  Oblivion-shaped header and asserts exact stream consumption — so
-  any future byte-width or version-gate drift fails fast on the
-  block-sizes-less Oblivion path
-- **8 integration tests** in [`crates/nif/tests/parse_real_nifs.rs`](../../crates/nif/tests/parse_real_nifs.rs)
-  walking real game archives, asserting ≥95% parse success per game
+- **~738 in-crate unit tests** with synthetic byte streams covering every
+  parser, including the **67-test `blocks::dispatch_tests`** suite (split
+  into per-topic siblings — `nodes` / `shader` / `effects` / `controllers` /
+  `interpolators` / `extra_data` / `havok` / `starfield`) that drive every
+  audit block through `parse_block` on a minimal Oblivion-shaped header and
+  assert exact stream consumption — so any future byte-width or version-gate
+  drift fails fast on the block-sizes-less Oblivion path. Per-category
+  `*_tests.rs` siblings live next to their parsers (tri_shape, collision,
+  extra_data, interpolator, properties, shader, material, mesh).
+- **Integration sweeps** in [`crates/nif/tests/`](../../crates/nif/tests/):
+  [`parse_real_nifs.rs`](../../crates/nif/tests/parse_real_nifs.rs)
+  (per-game parse-rate sweeps),
+  [`per_block_baselines.rs`](../../crates/nif/tests/per_block_baselines.rs)
+  (checked-in per-block histograms, regenerated on coverage changes),
+  [`heap_allocation_bounds.rs`](../../crates/nif/tests/heap_allocation_bounds.rs)
+  (dhat-gated allocation-bound regression, #1247),
+  [`translation_completeness.rs`](../../crates/nif/tests/translation_completeness.rs)
+  (#1277 Task 8 — how much of each parsed scene survives the NIF→ECS
+  translation boundary), and
+  [`mtidle_motion_diagnostic.rs`](../../crates/nif/tests/mtidle_motion_diagnostic.rs).
+  Real-data sweeps skip cleanly when a game's `BYROREDUX_*_DATA` dir is unset.
 - **`nif_stats` example binary** at [`crates/nif/examples/nif_stats.rs`](../../crates/nif/examples/nif_stats.rs)
   for manual sweeps — accepts a single `.nif`, a directory, or a `.bsa` /
   `.ba2` archive, prints total/ok/fail counts, a block-type histogram,
-  and grouped failure messages with example file paths
+  and grouped failure messages with example file paths. Companion examples
+  include `dump_transforms` (NIF rotation-matrix fidelity measurement),
+  `emitter_dump` (particle emitter rate / radius / speed / life), and
+  `material_dump`.
 
 Run a per-game sweep:
 
@@ -471,12 +577,18 @@ parse rate matrix.
 ## Reference materials
 
 - [`docs/legacy/nif.xml`](../legacy/nif.xml) — niftools' authoritative NIF
-  format spec (8563 lines). Almost every parser cross-references this.
+  format spec. Almost every parser cross-references this.
+- nifly — the niftools fork with Starfield read/write support, cloned
+  outside the repo at `/mnt/data/src/reference/nifly`; the authority for
+  the `BSGeometry` wire layout (`src/Geometry.cpp`) and the early-Gamebryo
+  `groupID` field (`include/BasicTypes.hpp`)
 - [`docs/legacy/api-deep-dive.md`](../legacy/api-deep-dive.md) — class
   hierarchy of `NiObject`/`NiAVObject`/`NiStream` and how the legacy
   serializer worked
 - [Gamebryo 2.3 Architecture](../legacy/gamebryo-2.3-architecture.md)
   for the original engine context
+- [NIFAL — NIF Abstraction Layer](nifal.md) — the canonical translation
+  tier the import layer feeds
 
 ## N26 audit — Oblivion coverage sweep
 
@@ -504,53 +616,38 @@ addressing every known critical / high-severity gap:
 
 Every audit fix comes with a `dispatch_tests` regression test that
 asserts exact stream consumption on a minimal Oblivion-shaped payload.
-The dispatch table is now at 154 arms covering ~180 block types.
+At the time of the N26 closeout the dispatch table held 154 arms; it has
+since grown to 254 arms / 310 distinct type names through the FO4 / FO76 /
+Starfield coverage work below.
 
-## Open items
+## Per-game NIF coverage (Oblivion → Starfield)
 
-The N23 series is complete (10/10 milestones) and N26 has addressed
-every known CRITICAL / HIGH audit item. Known follow-ups that
-**don't** affect the 100% per-game parse rate:
+Live numbers in [Game Compatibility](game-compatibility.md); summary as of
+the 2026-04 sweeps:
 
-- `BSSubIndexTriShape` segment data (`BSGeometrySegmentData`,
-  `BSGeometrySegmentSharedData`) — currently skipped via `block_size`,
-  not parsed. Only meaningful when the renderer surfaces per-segment
-  metadata. Tracked under N23.9.
-- ~~Starfield BA2 v3 DX10 textures~~ — resolved in session 7. The issue
-  was a missing compression method field in the v3 header + LZ4 block
-  compression. See [Archives — Resolved gaps](archives.md#resolved-gaps-session-7).
-- ~~**NiUV animation importer** (#154 follow-up)~~ — closed: `anim/channel.rs`
-  emits `FloatTarget::UvOffsetU/V/UvScaleU/V` channels both per-clip
-  (KF) and per-NIF-embedded paths.
-- ~~**NiSequenceStreamHelper animation importer** (#144 follow-up)~~ —
-  closed alongside #402: Oblivion string-palette resolution shipped,
-  `import_kf` now produces clips for every Oblivion KF on disk
-  (`NiTransformData` parse went 3 → 40,623 in #402's measured impact).
-- **NiFlipController GPU sample** (#545 follow-up) — channel data is
-  captured into `AnimationClip::texture_flip_channels` (resolved
-  source-texture filenames + cycle keys); the renderer-side
-  sample-and-bind that drives `GpuInstance.albedo_texture` from the
-  sampled flipbook position is deferred (matches the `MorphWeight`
-  precedent — channel data first, GPU plumbing follows).
-- **NiLight FO4+ inheritance flip** (#156 follow-up) — FO4+ (BSVER
-  ≥ 130) reparents `NiLight` directly onto `NiAVObject`, skipping the
-  `NiDynamicEffect` base. Not implemented until FO4 cell rendering
-  becomes a target.
-- **Per-variant shader specialization** (#145 follow-up) —
-  `WaterShaderProperty`, `SkyShaderProperty`, etc. currently alias to
-  the `BSShaderPPLightingProperty` base so Oblivion doesn't hard-fail,
-  but their per-variant fields (sky scroll, water reflection, etc.)
-  are not yet extracted.
-- **Billboard-mode renderer wiring** (#142 follow-up) — `NiBillboardNode`
-  now parses correctly but the renderer doesn't yet rotate the node
-  to face the camera each frame.
-- **NiLegacyParticlesData parse-rate validation** (#143 follow-up) —
-  the parser is exercised by the real-NIF sweeps, but there's no
-  byte-level unit test because it would require hand-building a full
-  NiGeometryData body. Oblivion integration sweeps will catch any
-  regression.
-- Soft shadows / emissive bypass / RT lighting polish (M22+) — render-side,
-  not parser-side.
+| Game | NIF clean rate | Recoverable | Notes |
+|------|----------------|-------------|-------|
+| Oblivion | 96.24% (7 730 / 8 032) | 99.99% | `block_sizes`-less; remaining ~149 NetImmerse-era files + 1 corrupt-by-design debug marker (#687 / #688 / #698 closed) |
+| Fallout 3 | 100% (10 989) | 100% | shared FNV parser |
+| Fallout NV | 100% (14 881) | 100% | reference title |
+| Skyrim SE | 100% (18 862) | 100% | BSTriShape packed-vertex format |
+| Fallout 4 | 96.46% (33 757 / 34 995) | 100% | FaceGen NIFs dominate the truncation tail (1 235 / 1 238) |
+| Fallout 76 | 97.34% (56 915 / 58 469) | 100% | CRC32 shader flag arrays |
+| Starfield | 98.6% aggregate (5 archives) | 100% | BSGeometry / SkinAttach / BoneTranslations dispatch (#708, #754 BSWeakReferenceNode) |
+
+The two big bring-ups since the N26 era were:
+
+- **FO4 / FO76 / Skyrim SE** — `BSTriShape` and its four wire-distinct
+  subclasses (LOD / MeshLOD / SubIndex / Dynamic), the packed-vertex
+  `vertex_desc` bitfield decode, the 8-variant `BSLightingShaderProperty`
+  split (#1279), `BGSM`/`BGEM` material-path surfacing, and the FO76+
+  CRC32 shader-flag arrays.
+- **Starfield** — went from `no parser` to a walkable Cydonia interior:
+  `BSGeometry` external `.mesh` resolution (#1292), the
+  `geometries\<hash>.mesh` canonical path, `BSWeakReferenceNode` (#754),
+  `BSFaceGenNiNode` coverage stub (#727), and the FO76-shared shader
+  vocabulary. Per-LOD per-material sub-decomposition trips the cell
+  loader's `base_layer` static-trimesh gate (#1294).
 
 ## Session 11 closeout — audit bundle #341–#438
 
@@ -615,8 +712,7 @@ the `/audit-nif` and `/audit-renderer` sweeps.
   budget so a corrupted count field can't OOM the process.
 
 Dispatch table is unchanged; this session was all semantic corrections and
-import-layer follow-through. Per-game parse rates stayed at 100% across all
-177,286 NIFs.
+import-layer follow-through.
 
 ## Session 12 closeout — 2026-04 audit sweep
 
@@ -640,8 +736,7 @@ structured data landed zero-initialised, wrong, or in the wrong field.
   decode, so a FO3 FaceGen head with `data_flags = 0x1003` asked for 3
   UV sets when only 1 was serialised — the 20,912-byte over-read then
   blew past EOF and demoted the `NiTriShapeData` to `NiUnknown`.
-  `headfemalefacegen.nif` now parses clean; `parallaxDisplaceUV` +
-  normal + albedo all sample at the correct UV.
+  `headfemalefacegen.nif` now parses clean.
 - `#402` — Oblivion KF files: `NiControllerSequence` for v ∈
   `[10.1.0.113, 20.1.0.1)` trails a `Ref<NiStringPalette>` after
   `accum_root_name` per Gamebryo 2.3 source. Without it, every
@@ -656,8 +751,7 @@ structured data landed zero-initialised, wrong, or in the wrong field.
   output. The determinant gate `|det - 1.0| < 0.1` admits matrices
   scaled ~3.5%, so Shepperd's formula produced non-unit quats on
   export-tool-drifted rotations; downstream `Quat::from_xyzw` doesn't
-  normalise. Fix is 1 sqrt + 4 muls at the end of the helper; SVD
-  fallback is unit by construction.
+  normalise. Fix is 1 sqrt + 4 muls at the end of the helper.
 
 **Import path correctness:**
 - `#441` — removed the bogus `SF_DOUBLE_SIDED = 0x1000` check on FO3/FNV
@@ -665,51 +759,124 @@ structured data landed zero-initialised, wrong, or in the wrong field.
   against nif.xml: the Fallout3ShaderFlags enum has no Double_Sided bit
   — flags1 bit 12 is `Unknown_3` (crash bit), flags2 bit 4 is
   `Refraction_Tint`. Skyrim+/FO4 `SkyrimShaderPropertyFlags2` is where
-  Double_Sided actually lives (bit 4 on flags2); that path is unchanged.
-  FO3/FNV meshes use `NiStencilProperty` for backface control
-  (Gamebryo-canonical mechanism).
+  Double_Sided actually lives. FO3/FNV meshes use `NiStencilProperty`
+  for backface control (Gamebryo-canonical mechanism).
 - `#454` — factored shared `is_decal_from_shader_flags(flags1, flags2)`
   helper so PP / NoLighting / BSLighting decal detection stays in
-  lockstep. NoLighting branch was missing the `ALPHA_DECAL_F2` (flag2
-  bit 21) check; blood-splat meshes authored as flag2-only-decal
-  fell through to the opaque coplanar path.
+  lockstep.
 - `#452` — `BSShaderTextureSet` slots 3/4/5 (parallax height / env
   cubemap / env mask) now reach `MaterialInfo` on both PPLighting
-  (FO3/FNV) and BSLighting (Skyrim+) paths. Also routes
-  `BSShaderPPLightingProperty.parallax_max_passes` / `parallax_scale`
-  scalars on FO3/FNV so the POM pipeline has consistent inputs
-  across eras.
-- `#400` — `NiTexturingProperty.decal_textures: Vec<TexDesc>` now
-  retained on the parser-side struct instead of read-and-discarded;
-  the importer used to copy them to `MaterialInfo.decal_maps` but
-  no descriptor binding or fragment-shader overlay consumed the
-  field, so #705 / O4-07 dropped the import-side hop. Re-add a
-  one-line `for desc in &tex_prop.decal_textures` push when
-  consumer wiring lands.
+  (FO3/FNV) and BSLighting (Skyrim+) paths.
 - `#350` — Skyrim+ shader controllers preserve the controlled-variable
   enum (see Shaders section above).
-- `#329` — added `read_extra_data_name()` with the `since=10.0.1.0` gate;
-  replaced 9 direct `read_string()` calls across the NiExtraData
-  subclass parsers. Latent for Bethesda content (which is all
-  ≥ 10.0.1.0) but now hardened against fuzzed / non-Bethesda input.
-- `#330` — `NiExtraData::parse` 3-way branch: v ≤ 4.2.2.0
-  (legacy linked-list format), v ∈ (4.2.2.0, 10.0.1.0) (gap window —
-  just subclass body), v ≥ 10.0.1.0 (modern NiObjectNET). Tightened
-  the legacy gate from the overly-wide `< 10.0.1.0`.
+- `#329` / `#330` — `read_extra_data_name()` with the `since=10.0.1.0`
+  gate + a 3-way `NiExtraData::parse` version branch.
 
 **Dispatch additions:**
-- `#443` — `SCPT` pre-Papyrus bytecode records parse. Full sub-record
-  coverage: SCHR / SCDA / SCTX / SLSD+SCVR / SCRV+SCRO. 1257 scripts
-  in Fallout3.esm now reach `EsmIndex.scripts`.
-- `#442` / `#448` — `CREA` + `LVLC` (creature base + leveled creature
-  lists); reused `parse_npc` and `parse_leveled_list` respectively.
-- `#458` — WATR / NAVI / NAVM / REGN / ECZN / LGTM / HDPT / EYES /
-  HAIR stub parsers so downstream refs stop dangling.
+- `#443` — `SCPT` pre-Papyrus bytecode records parse (1257 scripts in
+  Fallout3.esm). `#442` / `#448` — `CREA` + `LVLC`. `#458` — WATR / NAVI /
+  NAVM / REGN / ECZN / LGTM / HDPT / EYES / HAIR stub parsers.
 
-**Deferred:**
-- `#331` — Havok constraint parsers under-read by ~141 bytes per block.
-  `block_sizes` recovery keeps the stream aligned; dropped pivot / axis /
-  limit data has no consumer until physics wiring lands. Closed as
-  deferred per the audit's own recommendation.
+## Session 13 → 42 — coverage, splits, and the canonical translation tier
 
-Per-game parse rates stayed at 100% across all 177,286 NIFs throughout.
+The Session-12 closeout was the last point at which this doc was frozen.
+The work since (Sessions 13–42, 2026-04 → 2026-05-28), reconstructed from
+git history:
+
+**FO4 / FO76 / Starfield coverage.** `BSTriShape` and its four wire-distinct
+subclasses landed (`BsTriShapeKind`, #560 / #404), surfaced on `ImportedMesh`
+(#1206 / #1207); the FO4 generic `"NiExtraData"` arm closed FaceGen truncation
+(#1073); the FO76 `BSEffectShaderProperty` quintet is captured onto
+`BsEffectShaderData` (#1205); Starfield `BSGeometry` parses external `.mesh`
+refs and inline UDEC3 payloads (with the `geometries\<hash>.mesh` canonical
+resolution, #1292), iterating every LOD slot (#1209) and routing empty
+tangents through Y-up synthesis (#1232), with `BSWeakReferenceNode` (#754)
+and the `BSFaceGenNiNode` coverage stub (#727). The `BSLightingShaderProperty`
+parser was split into per-variant dispatch (#1279) and now captures the
+`.mat` / Root-Material sidecar (#976 / #1183) and the PBR / backlight scalars
+(#1175 / #1241).
+
+**Session 35/36 submodule splits.** The >1500-LOC monoliths were broken into
+directories: `blocks/tri_shape.rs` → `tri_shape/` (#1118 TD9-005, agd / bs_tri_shape /
+ni_tri_shape), `blocks/collision.rs` → `collision/` (9 production + test siblings),
+`blocks/controller.rs` → `controller/` (legacy / sequence / morph / shader),
+`import/mesh.rs` → `mesh/`, `import/material.rs` → `material/` (walker + shader_data),
+`import/walk.rs` → `walk/`, and `anim.rs` → `anim/`. The `Imported*` structs moved
+to `import/types.rs`, the SVD rotation repair to the top-level `rotation.rs` (#1044),
+and the lib.rs recovery tests to a sibling `tests.rs` (#1118 TD9-002). New
+top-level files: `shader_flags.rs` (named flag constants + typed variant view,
+#1277 Tasks 5/6), `kfm.rs` (KFM state-machine parser).
+
+**Tech-debt & robustness.** `impl_ni_object!` macro + `read_array_of` combinator
+(#1043), named NIF version / BSVER literals (#1042), depth + cycle guards on the
+import walkers (#1269), `#[must_use]` on the `read_pod_vec` wrappers + KFM
+`allocate_vec` (#1245 / #1246), a dhat-gated allocation-bound regression test
+(#1247), and a NIF-parse perf pass (BSGeometry bulk-read + `mem::take` tangents,
+Arc<str> dispatch regression fix, rayon serial fast path — #1261 / #1262 /
+#1263 / #1265).
+
+**NIFAL — NIF Abstraction Layer (this session, 2026-05-28).** The #1277 epic
+formalised the long-standing "translate at the parser→Material boundary"
+directive into the **NIF Abstraction Layer**: every game's raw `Imported*`
+decode is resolved to one game-agnostic canonical representation through a
+single `translate()` boundary, consumed identically downstream (full design
+in [`docs/engine/nifal.md`](nifal.md)). Slices landed this session:
+
+- **Material slice** (the reference template) — ECS `Material.metalness` /
+  `roughness` resolved to plain clamped `f32` at translate time; the
+  `Option<f32>` "resolve-later" overrides + per-draw `classify_pbr` fallback
+  removed. BGSM spec-glossiness → metallic-roughness translation (#1031 area),
+  BGEM `glass_enabled` as the authoritative glass signal, `EmissiveSource`
+  discriminator (#1280).
+- **Particle slice** — `NiPSysEmitter` promoted to a typed block carrying
+  decoded `EmitterBaseParams`; authored speed / declination / life now
+  override the name-heuristic preset, authored birth rate is read from the
+  `NiPSysEmitterCtlr` interpolator chain, and authored size from the
+  `NiPSysGrowFadeModifier` `base_scale`. (Size-over-life *curve* and
+  per-emitter attribution are noted follow-ups.)
+- **Node-passthrough triage** — node leaks classified.
+- **Collision audit** — `BhkMultiSphereShape` now translates to a `Compound`
+  of `Ball` children (single centred sphere unwraps to a plain `Ball`), and
+  `BhkConvexListShape` to a `Compound` of resolved convex sub-shapes; all 13
+  translatable parsed `bhk*Shape` variants now reach `CollisionShape`. The
+  remaining non-leaks (`BhkNPCollisionObject` Havok blobs, `BhkPCollisionObject`
+  phantoms) are documented limitations, not gaps.
+- **Emissive-scale measurement** — the three candidate emissive sources were
+  ground-truth measured and the proposed normalization resolved as a no-op.
+
+Per-game **recoverable** parse rates stayed at 100% throughout (clean rates
+per the [Game Compatibility](game-compatibility.md) matrix).
+
+## Open items
+
+The N23 series is complete (10/10 milestones) and N26 has addressed
+every known CRITICAL / HIGH audit item. Known follow-ups:
+
+- `BSSubIndexTriShape` segment data (`BSGeometrySegmentData`,
+  `BSGeometrySegmentSharedData`) — surfaced only where the renderer needs
+  per-segment metadata. Tracked under N23.9.
+- **Particle size-over-life curve + per-emitter attribution** (NIFAL
+  particle-slice follow-up) — only the authored *magnitude* of grow/fade
+  size is translated today; the bell-shaped curve needs a richer canonical
+  size model, and multi-emitter NIFs are attributed scene-first rather than
+  per-emitter.
+- **NiFlipController GPU sample** (#545 follow-up) — channel data is
+  captured into `AnimationClip::texture_flip_channels`; the renderer-side
+  sample-and-bind that drives `GpuInstance.albedo_texture` is deferred.
+- **NiLight FO4+ inheritance flip** (#156 follow-up) — FO4+ (BSVER
+  ≥ 130) reparents `NiLight` directly onto `NiAVObject`. Not implemented
+  until FO4 light rendering becomes a target.
+- **Per-variant shader specialization** (#145 follow-up) —
+  `SkyShaderProperty`, etc. still alias the `BSShaderPPLightingProperty`
+  base so Oblivion doesn't hard-fail; their per-variant fields (sky scroll,
+  etc.) are not yet extracted. `WaterShaderProperty` now reaches a
+  consumer (#1243).
+- **Havok constraint data** (#331, deferred) — the constraint family parses
+  for byte-alignment but pivot/axis/limit data has no consumer until physics
+  wiring lands.
+- **`BhkNPCollisionObject` / `BhkPCollisionObject`** — FO4+ Havok-serialised
+  collision blobs need a separate decoder; phantoms need a `TriggerVolume`
+  ECS path. The cell loader falls back to synthesized static trimesh.
+- **`BSFaceGenNiNode` morph data** (#727) — aliased as a coverage-first NiNode
+  stub; FaceGen coefficient bytes are skipped via `block_size`. A dedicated
+  parser is follow-up once a sample face NIF is reverse-engineered.
