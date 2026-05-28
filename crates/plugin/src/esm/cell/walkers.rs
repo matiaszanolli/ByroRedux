@@ -4,15 +4,152 @@
 
 use super::helpers::{read_form_id, read_form_id_array, read_zstring};
 use super::*;
+use crate::esm::reader::GameKind;
 use crate::esm::records::common::read_lstring_or_zstring;
 use crate::esm::records::{parse_navm, NavmRecord};
 use crate::esm::sub_reader::SubReader;
 
+/// Canonical XCLL sub-record sizes per game era. Pinned here so the
+/// `xcll_size_sanity_warn` helper and any future variant-enum gate share
+/// the same source of truth.
+///   - Oblivion: 28-36 bytes (shared 28-byte prefix; some plugins pad
+///     to 32 or 36 with no extended fields).
+///   - FNV / FO3 / FO4 / FO76 / Starfield: 40 bytes (shared + 12-byte
+///     dir_fade / fog_clip / fog_power tail).
+///   - Skyrim LE / SE: 92 bytes (shared + 6-RGBA ambient cube + specular
+///     + extended fog + light-fade range).
+const XCLL_SIZES_OBLIVION: &[usize] = &[28, 32, 36];
+const XCLL_SIZES_FALLOUT_ERA: &[usize] = &[28, 40];
+const XCLL_SIZES_SKYRIM: &[usize] = &[28, 92];
+
+/// Warn (at WARN level) when an XCLL sub-record size doesn't match the
+/// canonical size set for its plugin's game era. Doesn't change parse
+/// behavior — the size-based dispatch below still fires whatever extended
+/// arm fits. Purpose: surface "your cell lighting authoring isn't matching
+/// what the engine reads" so a modder gets a visible signal instead of
+/// silent data loss. See `parse_cell_group` docstring for the failure
+/// class this guards against.
+fn xcll_size_sanity_warn(len: usize, game: GameKind) {
+    let canonical = xcll_canonical_sizes(game);
+    if !canonical.contains(&len) {
+        log::warn!(
+            "ESM XCLL with {len} bytes is non-canonical for {game:?} \
+             (expected one of {canonical:?}); the size-based dispatch \
+             will read whatever extended fields fit but cell lighting \
+             may be mis-computed. Often indicates a malformed authoring \
+             or cross-game plugin injection.",
+        );
+    }
+}
+
+/// Return the canonical XCLL byte-size set for a game era. Extracted from
+/// `xcll_size_sanity_warn` so the (game → expected-sizes) map can be
+/// asserted directly in tests; the const arrays + this helper are the
+/// single source of truth for "what XCLL shape does this game ship?".
+fn xcll_canonical_sizes(game: GameKind) -> &'static [usize] {
+    match game {
+        GameKind::Oblivion => XCLL_SIZES_OBLIVION,
+        GameKind::Fallout3NV
+        | GameKind::Fallout4
+        | GameKind::Fallout76
+        | GameKind::Starfield => XCLL_SIZES_FALLOUT_ERA,
+        GameKind::Skyrim => XCLL_SIZES_SKYRIM,
+    }
+}
+
+#[cfg(test)]
+mod xcll_gate_tests {
+    //! Pin the (game, canonical-XCLL-size) map and the sanity-warn helper.
+    //! The warn itself is invisible to assertions (would need log capture)
+    //! but the canonical-size lookup is the source-of-truth the warn keys
+    //! on, so pinning it catches any drift in either direction.
+    use super::*;
+
+    #[test]
+    fn oblivion_xcll_sizes_pinned() {
+        assert_eq!(xcll_canonical_sizes(GameKind::Oblivion), &[28, 32, 36]);
+    }
+
+    #[test]
+    fn fallout_era_xcll_sizes_pinned() {
+        // FNV / FO3 / FO4 / FO76 / Starfield all share the 40-byte tail.
+        for game in [
+            GameKind::Fallout3NV,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ] {
+            assert_eq!(
+                xcll_canonical_sizes(game),
+                &[28, 40],
+                "{game:?} must use the FNV-era 40-byte XCLL tail",
+            );
+        }
+    }
+
+    #[test]
+    fn skyrim_xcll_sizes_pinned() {
+        assert_eq!(xcll_canonical_sizes(GameKind::Skyrim), &[28, 92]);
+    }
+
+    /// The classic failure class from the survey: a FNV cell with an
+    /// 88-byte XCLL. Pre-#1277-Task4 this silently parsed as
+    /// "Oblivion + partial FNV tail" (length-only dispatch fires the
+    /// ≥40 branch since 88 ≥ 40 but skips the ≥92 branch). The warn
+    /// helper detects this — 88 isn't in {28, 40} for Fallout3NV.
+    #[test]
+    fn fnv_xcll_at_88_bytes_is_non_canonical() {
+        let canonical = xcll_canonical_sizes(GameKind::Fallout3NV);
+        assert!(
+            !canonical.contains(&88),
+            "FNV canonical sizes {canonical:?} must NOT include 88 — \
+             else the survey's 'silently parses as Oblivion + partial FNV' \
+             regression wouldn't surface a warn",
+        );
+    }
+
+    /// Inverse: an Oblivion cell with a 40-byte XCLL (someone using the
+    /// FNV tail by accident). Pre-task this parsed the FNV tail fields
+    /// into Oblivion data. The warn helper detects this — 40 isn't in
+    /// the Oblivion canonical set.
+    #[test]
+    fn oblivion_xcll_at_40_bytes_is_non_canonical() {
+        let canonical = xcll_canonical_sizes(GameKind::Oblivion);
+        assert!(
+            !canonical.contains(&40),
+            "Oblivion canonical sizes {canonical:?} must NOT include 40 — \
+             else an Oblivion plugin with an accidentally-FNV-shaped \
+             XCLL would silently consume the FNV tail",
+        );
+    }
+
+    /// Inverse: a Skyrim cell with a 40-byte XCLL (someone using the FNV
+    /// tail). 40 isn't in Skyrim's set, so warn fires.
+    #[test]
+    fn skyrim_xcll_at_40_bytes_is_non_canonical() {
+        let canonical = xcll_canonical_sizes(GameKind::Skyrim);
+        assert!(
+            !canonical.contains(&40),
+            "Skyrim canonical sizes {canonical:?} must NOT include 40",
+        );
+    }
+}
+
 /// Walk the CELL group hierarchy to find interior cells and their placed references.
+///
+/// `game` is the HEDR-derived [`GameKind`] of the plugin; the XCLL parser
+/// uses it to warn on (game, size) mismatches that would otherwise let a
+/// malformed FNV XCLL silently parse as Oblivion + partial-FNV (the
+/// canonical sizes are Oblivion ≤ 36 / FNV-era 40 / Skyrim 92 bytes —
+/// pre-#1277-Task4 the dispatch was length-only and accepted any
+/// arrangement). The plumbed game also unlocks future per-era CELL
+/// sub-record routing (XCMT vs XCCM today gates on absence/presence;
+/// same pattern applies).
 pub(crate) fn parse_cell_group(
     reader: &mut EsmReader,
     end: usize,
     cells: &mut HashMap<String, CellData>,
+    game: GameKind,
 ) -> Result<()> {
     // Track the last parsed interior cell so we can attach children groups to it.
     let mut current_cell: Option<(u32, String)> = None;
@@ -25,7 +162,7 @@ pub(crate) fn parse_cell_group(
             match sub_group.group_type {
                 // Interior cell block (2) and sub-block (3): recurse.
                 2 | 3 => {
-                    parse_cell_group(reader, sub_end, cells)?;
+                    parse_cell_group(reader, sub_end, cells, game)?;
                 }
                 // Cell children groups (6=temporary, 8=persistent, 9=visible distant).
                 6 | 8 | 9 => {
@@ -265,6 +402,20 @@ pub(crate) fn parse_cell_group(
                             // the 6×RGBA ambient cube + specular + extended
                             // fog + light fade range. Two separate gates
                             // mirror the on-disk shape (#379).
+                            //
+                            // #1277 Task 4: warn on (game, size) mismatch.
+                            // The dispatch below is still purely length-based
+                            // (preserves pre-task behavior for any malformed
+                            // cell already in test fixtures), but the warning
+                            // surfaces "this XCLL doesn't match what this
+                            // game ships" so the modder sees their cell
+                            // lighting is being silently shortened or
+                            // mis-parsed. The classic symptom — a malformed
+                            // FNV cell at 88 bytes silently parsing as
+                            // Oblivion + partial-FNV — would fire two warns
+                            // here: (FNV, 88) isn't 40, and 88 < 92 doesn't
+                            // reach the Skyrim path either.
+                            xcll_size_sanity_warn(sub.data.len(), game);
                             //
                             // Byte order in colour fields is RGB, not
                             // BGR/D3DCOLOR; the 4th byte is unused padding

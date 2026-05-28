@@ -75,7 +75,7 @@ impl NiAVObjectData {
         // Flags: u32 for BSVER > 26 (FO3+), u16 for older (Oblivion and non-Bethesda).
         // Use actual BSVER from header, not the variant's hardcoded value, to handle
         // transitional versions (e.g., Oblivion files with uv=11, bsver=11).
-        let flags = if stream.bsver() > crate::version::bsver::FLAGS_U32_THRESHOLD {
+        let flags = if stream.variant().avobject_flags_u32() {
             stream.read_u32_le()?
         } else {
             stream.read_u16_le()? as u32
@@ -100,7 +100,7 @@ impl NiAVObjectData {
         // Force, etc.) and causing 4-byte stream misalignment on every
         // NiAVObject. Same pattern as the u32/u16 flags check above.
         // See issue #160.
-        let properties = if stream.bsver() <= 34 {
+        let properties = if stream.bsver() <= crate::version::bsver::FO3_FNV {
             stream.read_block_ref_list()?
         } else {
             Vec::new()

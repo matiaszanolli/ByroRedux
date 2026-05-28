@@ -1131,6 +1131,160 @@ fn oblivion_mgef_with_non_4char_edid_skips_by_code_map() {
     );
 }
 
+// ── #1277 Task 3: FO4-only record-type gate ─────────────────────────────
+//
+// SCOL / PKIN / MOVS / MSWP didn't exist before Fallout 4. Pre-gate they
+// were parsed unconditionally so a cross-game plugin stack that injected
+// these GRUPs into a non-FO4 master would silently consume them. The gate
+// at `parse_esm` skips the whole GRUP when `GameKind` isn't FO4-or-later
+// and warns once per record-type per parse. These tests pin the skip
+// behavior so a regression that re-enables the unconditional dispatch
+// produces visible test failures.
+
+/// Build a TES4 file header with an HEDR sub-record carrying a specific
+/// `Version` float. The HEDR sub-record's first 12 bytes are
+/// `(version: f32, record_count: u32, next_form_id: u32)` per
+/// `reader::read_file_header`'s decode. The `Version` float is what
+/// `GameKind::from_header` keys on (FNV = 1.34, FO4 = 1.0, …).
+fn tes4_with_hedr(version: f32) -> Vec<u8> {
+    let mut hedr = Vec::with_capacity(12);
+    hedr.extend_from_slice(&version.to_le_bytes());
+    hedr.extend_from_slice(&0u32.to_le_bytes()); // record_count
+    hedr.extend_from_slice(&0u32.to_le_bytes()); // next_form_id
+    build_record(b"TES4", 0, &[(b"HEDR", hedr)])
+}
+
+/// Build a minimal record of the given type — no sub-records. Sufficient
+/// for the FO4-gate test since we only care whether the GRUP was walked
+/// (record landed in the typed map) or skipped (map stays empty).
+fn minimal_record(typ: &[u8; 4], form_id: u32) -> Vec<u8> {
+    build_record(typ, form_id, &[])
+}
+
+/// Pin: HEDR routes correctly. Sanity check before the gate tests — if
+/// `GameKind::from_header` mis-classified the synthetic HEDR these
+/// fixtures use, the gate tests below would be testing the wrong gate.
+#[test]
+fn synthetic_hedr_routes_to_expected_gamekind() {
+    // FNV (1.34) → Fallout3NV
+    let esm = tes4_with_hedr(1.34);
+    let index = parse_esm(&esm).expect("parse_esm FNV");
+    assert!(
+        matches!(index.game, GameKind::Fallout3NV),
+        "HEDR 1.34 must route to Fallout3NV, got {:?}",
+        index.game,
+    );
+    // FO4 (1.0) → Fallout4
+    let esm = tes4_with_hedr(1.0);
+    let index = parse_esm(&esm).expect("parse_esm FO4");
+    assert!(
+        matches!(index.game, GameKind::Fallout4),
+        "HEDR 1.0 must route to Fallout4, got {:?}",
+        index.game,
+    );
+}
+
+#[test]
+fn scol_grup_skipped_when_game_is_not_fo4_plus() {
+    let mut esm = tes4_with_hedr(1.34); // FNV
+    esm.extend_from_slice(&wrap_group(b"SCOL", &minimal_record(b"SCOL", 0x0001_2345)));
+    let index = parse_esm(&esm).expect("parse_esm");
+    assert!(
+        index.cells.scols.is_empty(),
+        "FNV plugin's SCOL GRUP must be skipped, found {} records",
+        index.cells.scols.len(),
+    );
+}
+
+#[test]
+fn scol_grup_parsed_when_game_is_fo4() {
+    let mut esm = tes4_with_hedr(1.0); // FO4
+    esm.extend_from_slice(&wrap_group(b"SCOL", &minimal_record(b"SCOL", 0x0001_2345)));
+    let index = parse_esm(&esm).expect("parse_esm");
+    assert_eq!(
+        index.cells.scols.len(),
+        1,
+        "FO4 plugin's SCOL GRUP must be parsed, but the gate dropped it",
+    );
+    assert!(
+        index.cells.scols.contains_key(&0x0001_2345),
+        "form id 0x00012345 must appear in scols map",
+    );
+}
+
+#[test]
+fn pkin_grup_skipped_when_game_is_not_fo4_plus() {
+    let mut esm = tes4_with_hedr(1.34); // FNV
+    esm.extend_from_slice(&wrap_group(b"PKIN", &minimal_record(b"PKIN", 0x0055_0001)));
+    let index = parse_esm(&esm).expect("parse_esm");
+    assert!(
+        index.cells.packins.is_empty(),
+        "FNV plugin's PKIN GRUP must be skipped, found {} records",
+        index.cells.packins.len(),
+    );
+}
+
+#[test]
+fn movs_grup_skipped_when_game_is_not_fo4_plus() {
+    let mut esm = tes4_with_hedr(1.34); // FNV
+    esm.extend_from_slice(&wrap_group(b"MOVS", &minimal_record(b"MOVS", 0x0044_0001)));
+    let index = parse_esm(&esm).expect("parse_esm");
+    assert!(
+        index.cells.movables.is_empty(),
+        "FNV plugin's MOVS GRUP must be skipped, found {} records",
+        index.cells.movables.len(),
+    );
+}
+
+#[test]
+fn mswp_grup_skipped_when_game_is_not_fo4_plus() {
+    let mut esm = tes4_with_hedr(1.34); // FNV
+    esm.extend_from_slice(&wrap_group(b"MSWP", &minimal_record(b"MSWP", 0x0024_9A4E)));
+    let index = parse_esm(&esm).expect("parse_esm");
+    assert!(
+        index.cells.material_swaps.is_empty(),
+        "FNV plugin's MSWP GRUP must be skipped, found {} records",
+        index.cells.material_swaps.len(),
+    );
+}
+
+/// Skyrim (HEDR 1.7) also predates FO4; the gate must skip there too.
+/// Separate test from FNV so a regression that only flipped the FNV arm
+/// shows up as a specific Skyrim failure (and vice versa).
+#[test]
+fn scol_grup_skipped_for_skyrim_too() {
+    let mut esm = tes4_with_hedr(1.7); // Skyrim
+    esm.extend_from_slice(&wrap_group(b"SCOL", &minimal_record(b"SCOL", 0x0001_2345)));
+    let index = parse_esm(&esm).expect("parse_esm");
+    assert!(
+        matches!(index.game, GameKind::Skyrim),
+        "sanity: HEDR 1.7 routes to Skyrim",
+    );
+    assert!(
+        index.cells.scols.is_empty(),
+        "Skyrim plugin's SCOL GRUP must be skipped, found {} records",
+        index.cells.scols.len(),
+    );
+}
+
+/// FO76 (HEDR 68.0) is FO4+ — should parse. Pins the upper end of the
+/// `is_fo4_plus` predicate against drift.
+#[test]
+fn scol_grup_parsed_for_fo76() {
+    let mut esm = tes4_with_hedr(68.0); // FO76
+    esm.extend_from_slice(&wrap_group(b"SCOL", &minimal_record(b"SCOL", 0x0001_2345)));
+    let index = parse_esm(&esm).expect("parse_esm");
+    assert!(
+        matches!(index.game, GameKind::Fallout76),
+        "sanity: HEDR 68.0 routes to Fallout76",
+    );
+    assert_eq!(
+        index.cells.scols.len(),
+        1,
+        "FO76 plugin's SCOL GRUP must be parsed, but the gate dropped it",
+    );
+}
+
 /// `merge_from` must carry `magic_effects_by_code` across DLC merges
 /// with last-write-wins semantics, matching the `magic_effects` map
 /// itself. Without this, a multi-plugin Oblivion load (Oblivion.esm +

@@ -1,13 +1,26 @@
 //! Collision data extraction — walks the bhk shape tree and produces ECS components.
 //!
-//! Pipeline: NiNode.collision_ref → bhkCollisionObject → bhkRigidBody → shape tree
-//! → CollisionShape + RigidBodyData (physics-agnostic ECS components).
+//! Pipeline: NiNode.collision_ref → bhk*CollisionObject → … → CollisionShape +
+//! RigidBodyData (physics-agnostic ECS components). The "…" branches by the
+//! concrete bhk*CollisionObject subclass authored on the NIF, which is
+//! effectively the per-game-variant boundary:
 //!
-//! Havok coordinates are scaled per-game (×7.0 for TES4/FO3/FNV, ×69.99
-//! for Skyrim+/FO4) and converted from Z-up to Y-up. The scale lives on
-//! the parsed [`NifScene`] (`havok_scale` field, populated by
-//! `havok_scale_for` at parse time) so consumers don't have to
-//! re-detect the game variant per call.
+//! | Block | Game line | Body kind | Extractable today |
+//! |---|---|---|---|
+//! | `BhkCollisionObject`   | Universal (dominant pre-FO4)             | `BhkRigidBody` → shape tree | **yes** |
+//! | `BhkNPCollisionObject` | FO4 / FO76 / Starfield ("Niagara Physics") | `BhkSystemBinary` (Havok-serialised blob) | **no** — blob decoder is a multi-day project; consumer falls back to `cell_loader/spawn.rs::synthesize_static_trimesh` for Architecture meshes (commit `15016ee0`) |
+//! | `BhkPCollisionObject`  | Skyrim+ trigger volumes / phantoms       | `bhkPhantom` subclass | **no** — phantoms aren't modeled as rigid bodies; need a `TriggerVolume` ECS path |
+//!
+//! Until the NP-blob decoder lands, the NP arm is a tracked stub: it confirms
+//! the FO4+ chain is present (so the symptom is "collision authoring exists but
+//! we can't read it" rather than "no collision authored") and surfaces the blob
+//! size in the debug log. The render-geometry trimesh fallback in
+//! `cell_loader/spawn.rs` is what produces the actual collider today.
+//!
+//! Havok coordinates are scaled per-game (×7.0 for TES4/FO3/FNV, ×69.99 for
+//! Skyrim+/FO4) and converted from Z-up to Y-up. The scale lives on the parsed
+//! [`NifScene`] (`havok_scale` field, populated by `havok_scale_for` at parse
+//! time) so consumers don't have to re-detect the game variant per call.
 
 use std::collections::HashSet;
 
@@ -19,16 +32,97 @@ use crate::types::BlockRef;
 use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
 use byroredux_core::math::{Quat, Vec3};
 
+/// Discriminator surfaced by [`examine_collision_kind`] so callers (telemetry,
+/// the trimesh fallback in `cell_loader/spawn.rs`) can distinguish "no
+/// collision authored" from "FO4+ NP collision authored but our decoder is a
+/// stub". The two cases produce the same `None` from [`extract_collision`]
+/// today; the trimesh fallback fires identically for both, but the bookkeeping
+/// matters for diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionAuthoring {
+    /// No `collision_ref` on the AVObject, or the ref doesn't resolve.
+    None,
+    /// `BhkCollisionObject` → `BhkRigidBody` chain. Extractable.
+    Classic,
+    /// `BhkNPCollisionObject` (FO4 / FO76 / Starfield). Carries a
+    /// Havok-serialised blob in a linked `BhkSystemBinary`. Not yet decodable.
+    NewPhysicsStub,
+    /// `BhkPCollisionObject` wrapping a `bhkPhantom` subclass (Skyrim+
+    /// trigger volume). Phantom semantics need a dedicated ECS path
+    /// rather than a rigid body.
+    Phantom,
+    /// `collision_ref` resolved to a block whose concrete type isn't a
+    /// recognised collision-object subclass.
+    Unrecognised,
+}
+
+/// Inspect what kind of collision authoring is present at `collision_ref`
+/// without attempting to extract it. Cheap; just downcasts the block.
+/// Lets the cell-loader trimesh fallback distinguish "FO4 NP — workaround
+/// is intentional" from "no collision — workaround is silently filling a
+/// gap the authoring intended to leave empty".
+pub fn examine_collision_kind(scene: &NifScene, collision_ref: BlockRef) -> CollisionAuthoring {
+    let Some(idx) = collision_ref.index() else {
+        return CollisionAuthoring::None;
+    };
+    let Some(block) = scene.get(idx) else {
+        return CollisionAuthoring::None;
+    };
+    if block.as_any().is::<BhkCollisionObject>() {
+        CollisionAuthoring::Classic
+    } else if block.as_any().is::<BhkNPCollisionObject>() {
+        CollisionAuthoring::NewPhysicsStub
+    } else if block.as_any().is::<BhkPCollisionObject>() {
+        CollisionAuthoring::Phantom
+    } else {
+        CollisionAuthoring::Unrecognised
+    }
+}
+
 /// Extract collision data from a NiAVObject's collision_ref.
 ///
-/// Returns `(CollisionShape, RigidBodyData)` if the collision chain resolves.
-/// The shape is in engine space (Y-up, Gamebryo units).
+/// Returns `(CollisionShape, RigidBodyData)` if the collision chain resolves
+/// through a fully-decodable subclass. The shape is in engine space (Y-up,
+/// Gamebryo units). For FO4+ NP physics and trigger phantoms, returns `None`
+/// — see [`CollisionAuthoring`] and the module docstring for the dispatch
+/// table.
 pub fn extract_collision(
     scene: &NifScene,
     collision_ref: BlockRef,
 ) -> Option<(CollisionShape, RigidBodyData)> {
     let coll_idx = collision_ref.index()?;
-    let coll_obj = scene.get_as::<BhkCollisionObject>(coll_idx)?;
+    let block = scene.get(coll_idx)?;
+
+    // Dispatch on the concrete bhk*CollisionObject subclass. The three live
+    // arms differ in what they wrap and which game line ships them — see the
+    // module docstring for the table.
+    if let Some(classic) = block.as_any().downcast_ref::<BhkCollisionObject>() {
+        return extract_from_classic(scene, classic);
+    }
+    if let Some(np) = block.as_any().downcast_ref::<BhkNPCollisionObject>() {
+        return extract_from_np(scene, coll_idx, np);
+    }
+    if let Some(phantom) = block.as_any().downcast_ref::<BhkPCollisionObject>() {
+        return extract_from_phantom(scene, coll_idx, phantom);
+    }
+
+    log::debug!(
+        "extract_collision: collision_ref at block {} resolves to '{}' which is not a recognised bhk*CollisionObject subclass",
+        coll_idx,
+        block.block_type_name(),
+    );
+    None
+}
+
+/// Classic `BhkCollisionObject` → `BhkRigidBody` → shape-tree extractor.
+/// This is the dominant path for Oblivion / FO3 / FNV / Skyrim LE / SSE and
+/// still covers most FO4+ rigid bodies that author the legacy chain. Body of
+/// the original `extract_collision` — preserved bit-for-bit so the refactor
+/// is a no-op on every existing classic-bhk fixture.
+fn extract_from_classic(
+    scene: &NifScene,
+    coll_obj: &BhkCollisionObject,
+) -> Option<(CollisionShape, RigidBodyData)> {
     let body_idx = coll_obj.body_ref.index()?;
     let body = scene.get_as::<BhkRigidBody>(body_idx)?;
 
@@ -70,6 +164,89 @@ pub fn extract_collision(
     };
 
     Some((shape, body_data))
+}
+
+/// FO4 / FO76 / Starfield NP-physics extractor. Stub.
+///
+/// `BhkNPCollisionObject.data_ref` points at a [`BhkSystemBinary`] block
+/// (`bhkPhysicsSystem` or `bhkRagdollSystem`) that carries the body + shape
+/// tree as a Havok-serialised binary blob. Decoding it requires a Havok
+/// content-system deserialiser — nifly's C++ implementation is ~2k LOC and
+/// OpenMW doesn't cover FO4 physics, so this is a multi-day project tracked
+/// as a follow-up to the per-variant abstraction work in #1277.
+///
+/// Today this arm returns `None` so the existing render-geometry trimesh
+/// fallback in `cell_loader/spawn.rs::synthesize_static_trimesh` (commit
+/// `15016ee0`) continues to fire for Architecture meshes — the player still
+/// grounds in FO4 cells via the fallback. The debug log surfaces the blob
+/// size + linked-block index so a future blob decoder has a breadcrumb
+/// trail.
+fn extract_from_np(
+    scene: &NifScene,
+    coll_idx: usize,
+    coll_obj: &BhkNPCollisionObject,
+) -> Option<(CollisionShape, RigidBodyData)> {
+    let blob_idx = coll_obj.data_ref.index();
+    let blob = blob_idx.and_then(|i| scene.get_as::<BhkSystemBinary>(i));
+    match blob {
+        Some(b) => log::debug!(
+            "extract_collision: FO4+ NP collision at block {coll_idx} \
+             (body_id {bid}, flags {flags:#06x}) — {kind} blob is \
+             {bytes} bytes; not yet decodable, render-geometry trimesh \
+             fallback will fire for Architecture meshes",
+            bid = coll_obj.body_id,
+            flags = coll_obj.flags,
+            kind = b.type_name,
+            bytes = b.data.len(),
+        ),
+        None => log::debug!(
+            "extract_collision: FO4+ NP collision at block {coll_idx} \
+             has no data_ref or the ref doesn't resolve to a BhkSystemBinary \
+             (body_id {bid}, flags {flags:#06x}); no Havok blob to decode",
+            bid = coll_obj.body_id,
+            flags = coll_obj.flags,
+        ),
+    }
+    None
+}
+
+/// Skyrim+ phantom-collision extractor. Stub.
+///
+/// `BhkPCollisionObject.body_ref` points at a `bhkPhantom` subclass
+/// (`bhkSimpleShapePhantom`, `bhkAabbPhantom`, …) which carries the
+/// collision volume but participates in physics as a *trigger* rather than
+/// a rigid body — solid geometry that detects overlap but doesn't generate
+/// contact response. Modelling them properly needs a `TriggerVolume` ECS
+/// component + a system that routes phantom overlaps into the scripting
+/// event stream, neither of which exist yet.
+///
+/// Returning `None` today keeps phantoms from being mis-promoted into solid
+/// rigid bodies (which would block the player from walking through trigger
+/// regions intended to fire quest scripts). The blob index logged is the
+/// `bhkPhantom`-subclass block id so a future trigger-volume importer has
+/// a breadcrumb trail.
+fn extract_from_phantom(
+    scene: &NifScene,
+    coll_idx: usize,
+    coll_obj: &BhkPCollisionObject,
+) -> Option<(CollisionShape, RigidBodyData)> {
+    let phantom_idx = coll_obj.body_ref.index();
+    match phantom_idx.and_then(|i| scene.get(i)) {
+        Some(p) => log::debug!(
+            "extract_collision: bhkPCollisionObject phantom at block {coll_idx} \
+             (flags {flags:#06x}) wraps '{kind}' at block {phantom_idx:?}; \
+             phantoms are trigger volumes, not yet modeled as TriggerVolume \
+             ECS components",
+            flags = coll_obj.flags,
+            kind = p.block_type_name(),
+        ),
+        None => log::debug!(
+            "extract_collision: bhkPCollisionObject phantom at block {coll_idx} \
+             (flags {flags:#06x}) has no body_ref or the ref doesn't resolve",
+            flags = coll_obj.flags,
+        ),
+    }
+    None
 }
 
 /// Recursively resolve a bhk shape block into a CollisionShape enum.
@@ -436,6 +613,166 @@ fn resolve_compressed_mesh(data: &BhkCompressedMeshShapeData, scale: f32) -> Opt
 }
 
 #[cfg(test)]
+mod dispatch_tests {
+    //! Per-variant dispatch coverage for [`extract_collision`] and
+    //! [`examine_collision_kind`]. The classic-bhk happy path is covered
+    //! transitively by every scene-import test that loads a NIF with
+    //! collision; these tests focus on the FO4+ NP and Skyrim+ phantom
+    //! arms whose return value (`None`) is otherwise indistinguishable
+    //! from "no collision authored" — a regression here would silently
+    //! re-introduce the bug that landed `15016ee0`'s render-geometry
+    //! trimesh fallback.
+    use super::*;
+    use crate::blocks::collision::{
+        BhkCollisionObject, BhkNPCollisionObject, BhkPCollisionObject, BhkSphereShape,
+        BhkSystemBinary,
+    };
+    use crate::blocks::NiObject;
+    use crate::types::BlockRef;
+
+    fn empty_scene() -> NifScene {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene
+    }
+
+    fn np_collision(data_ref: BlockRef) -> Box<dyn NiObject> {
+        Box::new(BhkNPCollisionObject {
+            target_ref: BlockRef::NULL,
+            flags: 0x0029,
+            data_ref,
+            body_id: 0xdead_beef,
+        })
+    }
+
+    fn system_binary(bytes: usize) -> Box<dyn NiObject> {
+        Box::new(BhkSystemBinary {
+            type_name: "bhkPhysicsSystem",
+            data: vec![0u8; bytes],
+        })
+    }
+
+    fn phantom_collision(body_ref: BlockRef) -> Box<dyn NiObject> {
+        Box::new(BhkPCollisionObject {
+            target_ref: BlockRef::NULL,
+            flags: 0x0001,
+            body_ref,
+        })
+    }
+
+    fn classic_collision(body_ref: BlockRef) -> Box<dyn NiObject> {
+        Box::new(BhkCollisionObject {
+            target_ref: BlockRef::NULL,
+            flags: 0x0001,
+            body_ref,
+        })
+    }
+
+    #[test]
+    fn examine_returns_none_for_unresolved_ref() {
+        let scene = empty_scene();
+        assert_eq!(
+            examine_collision_kind(&scene, BlockRef::NULL),
+            CollisionAuthoring::None,
+        );
+        // Out-of-range index also resolves to None.
+        assert_eq!(
+            examine_collision_kind(&scene, BlockRef(42u32)),
+            CollisionAuthoring::None,
+        );
+    }
+
+    #[test]
+    fn examine_classifies_each_collision_subclass() {
+        let mut scene = empty_scene();
+        scene.blocks.push(classic_collision(BlockRef::NULL));   // [0]
+        scene.blocks.push(np_collision(BlockRef::NULL));        // [1]
+        scene.blocks.push(phantom_collision(BlockRef::NULL));   // [2]
+        scene
+            .blocks
+            .push(Box::new(BhkSphereShape { material: 0, radius: 1.0 })); // [3] — non-collision block
+
+        assert_eq!(
+            examine_collision_kind(&scene, BlockRef(0u32)),
+            CollisionAuthoring::Classic,
+        );
+        assert_eq!(
+            examine_collision_kind(&scene, BlockRef(1u32)),
+            CollisionAuthoring::NewPhysicsStub,
+        );
+        assert_eq!(
+            examine_collision_kind(&scene, BlockRef(2u32)),
+            CollisionAuthoring::Phantom,
+        );
+        assert_eq!(
+            examine_collision_kind(&scene, BlockRef(3u32)),
+            CollisionAuthoring::Unrecognised,
+        );
+    }
+
+    #[test]
+    fn np_collision_returns_none_but_dispatcher_reaches_blob() {
+        // The arm logs the blob size; we can't directly assert the log
+        // line here, but the test guarantees the dispatcher routes a
+        // BhkNPCollisionObject to extract_from_np (which always returns
+        // None today) rather than falling through to the unrecognised
+        // branch — a regression that returned None silently from the
+        // top-level dispatcher would be invisible without this gate.
+        let mut scene = empty_scene();
+        scene.blocks.push(system_binary(2048));                  // [0] blob
+        scene.blocks.push(np_collision(BlockRef(0u32)));            // [1] NP coll
+        let result = extract_collision(&scene, BlockRef(1u32));
+        assert!(
+            result.is_none(),
+            "NP collision must return None until the Havok blob decoder lands"
+        );
+        // Sanity: the same blob is still classified as NewPhysicsStub,
+        // confirming the dispatcher routed correctly.
+        assert_eq!(
+            examine_collision_kind(&scene, BlockRef(1u32)),
+            CollisionAuthoring::NewPhysicsStub,
+        );
+    }
+
+    #[test]
+    fn np_collision_with_missing_blob_still_returns_none() {
+        // data_ref points nowhere — the arm logs the "no Havok blob"
+        // variant but the return contract holds.
+        let mut scene = empty_scene();
+        scene.blocks.push(np_collision(BlockRef::NULL));
+        assert!(extract_collision(&scene, BlockRef(0u32)).is_none());
+    }
+
+    #[test]
+    fn phantom_collision_returns_none() {
+        // Phantom wraps a non-rigid-body. We return None so the consumer
+        // doesn't mis-promote a trigger volume into a solid collider.
+        let mut scene = empty_scene();
+        scene
+            .blocks
+            .push(Box::new(BhkSphereShape { material: 0, radius: 1.0 })); // [0]
+        scene.blocks.push(phantom_collision(BlockRef(0u32)));               // [1]
+        assert!(extract_collision(&scene, BlockRef(1u32)).is_none());
+    }
+
+    #[test]
+    fn unrecognised_collision_ref_returns_none() {
+        // A collision_ref that points at e.g. an NiNode (wrong subclass)
+        // takes the unrecognised arm rather than panicking or returning
+        // a malformed shape.
+        let mut scene = empty_scene();
+        scene
+            .blocks
+            .push(Box::new(BhkSphereShape { material: 0, radius: 1.0 }));
+        assert!(extract_collision(&scene, BlockRef(0u32)).is_none());
+        assert_eq!(
+            examine_collision_kind(&scene, BlockRef(0u32)),
+            CollisionAuthoring::Unrecognised,
+        );
+    }
+}
+
+#[cfg(test)]
 mod cycle_tests {
     //! Regression for #1269 / SAFE-DIM3-NEW-01: `resolve_shape` must
     //! detect a `BhkListShape` whose `sub_shape_refs` cycle and return
@@ -470,9 +807,9 @@ mod cycle_tests {
         // Pre-#1269 this would unbounded-recurse and stack-overflow.
         let mut scene = NifScene::default();
         scene.havok_scale = 1.0;
-        scene.blocks.push(list_shape(vec![BlockRef(0)]));
+        scene.blocks.push(list_shape(vec![BlockRef(0u32)]));
         let mut visited = HashSet::new();
-        let result = resolve_shape(&scene, BlockRef(0), &mut visited);
+        let result = resolve_shape(&scene, BlockRef(0u32), &mut visited);
         assert!(
             result.is_none(),
             "self-cycle must produce None, not a populated shape"
@@ -491,10 +828,10 @@ mod cycle_tests {
         // Compound, both are acceptable cycle-broken outcomes.
         let mut scene = NifScene::default();
         scene.havok_scale = 1.0;
-        scene.blocks.push(list_shape(vec![BlockRef(1)]));
-        scene.blocks.push(list_shape(vec![BlockRef(0)]));
+        scene.blocks.push(list_shape(vec![BlockRef(1u32)]));
+        scene.blocks.push(list_shape(vec![BlockRef(0u32)]));
         let mut visited = HashSet::new();
-        let _ = resolve_shape(&scene, BlockRef(0), &mut visited);
+        let _ = resolve_shape(&scene, BlockRef(0u32), &mut visited);
     }
 
     #[test]
@@ -507,10 +844,10 @@ mod cycle_tests {
         // still resolves rather than being mis-flagged as a cycle.
         let mut scene = NifScene::default();
         scene.havok_scale = 1.0;
-        scene.blocks.push(list_shape(vec![BlockRef(1), BlockRef(1)]));
+        scene.blocks.push(list_shape(vec![BlockRef(1u32), BlockRef(1u32)]));
         scene.blocks.push(sphere_shape(2.0));
         let mut visited = HashSet::new();
-        let result = resolve_shape(&scene, BlockRef(0), &mut visited);
+        let result = resolve_shape(&scene, BlockRef(0u32), &mut visited);
         match result {
             Some(CollisionShape::Compound { children }) => {
                 assert_eq!(

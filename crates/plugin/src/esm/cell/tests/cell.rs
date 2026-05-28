@@ -48,7 +48,7 @@ fn parse_cell_xclw_populates_water_height() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
 
     assert_eq!(cells.len(), 1, "interior CELL must be registered");
     let cell = cells.get("floodedruin").expect("lowercase key");
@@ -97,7 +97,7 @@ fn parse_cell_rclr_populates_regional_color_override() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
 
     let cell = cells.get("oblivionfog").expect("lowercase key");
     assert_eq!(
@@ -135,7 +135,7 @@ fn parse_cell_without_rclr_leaves_regional_color_override_none() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
     assert!(cells.get("norclrcell").unwrap().regional_color_override.is_none());
 }
 
@@ -189,7 +189,7 @@ fn parse_cell_skyrim_extended_subrecords() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
 
     let cell = cells.get("skyrimroom").expect("interior CELL present");
     assert_eq!(cell.image_space_form, Some(0x000A1234));
@@ -244,7 +244,7 @@ fn parse_cell_full_inline_zstring_populates_display_name() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
 
     let cell = cells
         .get("whiterunbanneredmare")
@@ -296,7 +296,7 @@ fn parse_cell_full_lstring_index_renders_as_placeholder() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
 
     let cell = cells
         .get("dragonsreachjarl")
@@ -337,7 +337,7 @@ fn parse_cell_without_skyrim_extras_leaves_them_default() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
 
     let cell = cells.get("bareroom").expect("interior CELL present");
     assert_eq!(cell.image_space_form, None);
@@ -389,7 +389,7 @@ fn parse_cell_tes4_xcmt_populates_music_type_enum() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
 
     let cell = cells.get("ayleidruin").expect("interior CELL present");
     assert_eq!(cell.music_type_enum, Some(0x02));
@@ -435,7 +435,7 @@ fn parse_cell_skyrim_xccm_populates_climate_override() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
 
     let cell = cells.get("bossarena").expect("interior CELL present");
     assert_eq!(cell.climate_override, Some(0x0001_A2B3));
@@ -527,7 +527,7 @@ fn parse_cell_skyrim_xcll_extracts_directional_ambient_cube() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
 
     let cell = cells.get("skyrimcave").expect("interior CELL present");
     let lit = cell.lighting.as_ref().expect("XCLL must populate lighting");
@@ -625,7 +625,7 @@ fn parse_cell_fnv_xcll_decodes_colors_as_rgba() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
 
     let cell = cells
         .get("gsprospectorsalooninterior")
@@ -701,7 +701,7 @@ fn parse_cell_fnv_xcll_extracts_40byte_tail_and_skips_skyrim_fields() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
 
     let cell = cells.get("fnvroom").expect("FNV-shaped interior CELL");
     let lit = cell.lighting.as_ref().unwrap();
@@ -754,7 +754,7 @@ fn parse_cell_without_xclw_leaves_water_height_none() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells).unwrap();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
 
     let cell = cells.get("dryroom").expect("interior CELL present");
     assert_eq!(cell.water_height, None);
