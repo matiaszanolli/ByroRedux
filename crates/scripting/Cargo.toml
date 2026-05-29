@@ -12,4 +12,8 @@ byroredux-core = { workspace = true }
 # ECS state (depends on parsed data shapes). Same direction as the
 # already-present byroredux_core <- byroredux_plugin chain.
 byroredux-plugin = { workspace = true }
+# M47.2 — the canonical scripting-translation layer (`translate/`) recognizes
+# behavior archetypes from the parsed Papyrus AST. papyrus is standalone
+# (lexer/parser only), so no cycle. The `.pex` / Obscript front-ends land later.
+byroredux-papyrus = { workspace = true }
 log = { workspace = true }

@@ -17,6 +17,7 @@ pub mod quest_stages;
 pub mod recurring_update;
 pub mod registry;
 pub mod timer;
+pub mod translate;
 
 pub use cleanup::event_cleanup_system;
 pub use condition::{
@@ -30,6 +31,7 @@ pub use events::{
 pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, RecurringUpdate};
 pub use registry::{ScriptRegistry, ScriptSpawnFn};
 pub use timer::{timer_tick_system, ScriptTimer};
+pub use translate::{translate_script, CanonicalEvent, RecognizeCtx, Recognized, ScriptSource};
 
 use byroredux_core::ecs::world::World;
 
