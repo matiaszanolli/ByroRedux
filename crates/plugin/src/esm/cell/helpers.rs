@@ -5,10 +5,12 @@
 //! public `esm::cell` API.
 
 /// Read a null-terminated string from sub-record data.
-pub(super) fn read_zstring(data: &[u8]) -> String {
-    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-    String::from_utf8_lossy(&data[..end]).to_string()
-}
+///
+/// Re-exported from [`crate::esm::records::common`] rather than reimplemented
+/// — the two were byte-identical copies (#1318 / TD3-NEW-A). Callers keep
+/// using `super::helpers::read_zstring`; the single definition now lives in
+/// `records::common` alongside the localized-lstring `read_lstring` variant.
+pub(super) use crate::esm::records::common::read_zstring;
 
 /// Read a 4-byte FormID from a sub-record payload. Returns `None` when
 /// the payload is too short to hold a u32 — defensive against truncated

@@ -1051,11 +1051,10 @@ pub(super) fn find_flame_attach_offset(
         let name_lower = name.to_ascii_lowercase();
         if PATTERNS.iter().any(|p| name_lower.contains(p)) {
             let t = node.transform().translation;
-            // NIF is Z-up; the engine is Y-up. Apply the same axis
-            // conversion the importer uses everywhere: `(x, z, -y)`.
-            // Without this the flame light appears at the wrong
-            // axis (Y swapped with Z).
-            return Some([t.x, t.z, -t.y]);
+            // NIF is Z-up; the engine is Y-up. Route through the canonical
+            // array-form flip so this stays in lockstep with the importer
+            // (was an inline `[t.x, t.z, -t.y]` copy — #1318 / TD3-NEW-B).
+            return Some(byroredux_core::math::coord::zup_to_yup_pos([t.x, t.y, t.z]));
         }
     }
     None

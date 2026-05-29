@@ -37,6 +37,7 @@
 //!    populated (water planes are real instances — they reuse the
 //!    same per-instance model matrix the rest of the scene uses).
 
+use super::descriptors::DescriptorPoolBuilder;
 use super::pipeline::load_shader_module;
 use crate::vertex::Vertex;
 use anyhow::{Context, Result};
@@ -239,20 +240,18 @@ impl WaterPipeline {
                 .context("water-caustic set layout")?
         };
 
-        // Descriptor pool — one STORAGE_IMAGE per FIF slot.
-        let pool_sizes = [vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::STORAGE_IMAGE)
-            .descriptor_count(super::sync::MAX_FRAMES_IN_FLIGHT as u32)];
-        let water_caustic_descriptor_pool = match unsafe {
-            device
-                .create_descriptor_pool(
-                    &vk::DescriptorPoolCreateInfo::default()
-                        .max_sets(super::sync::MAX_FRAMES_IN_FLIGHT as u32)
-                        .pool_sizes(&pool_sizes),
-                    None,
-                )
-                .context("water-caustic descriptor pool")
-        } {
+        // Descriptor pool — one STORAGE_IMAGE per FIF slot. Built through
+        // the shared DescriptorPoolBuilder for consistency with every other
+        // render pass (#1318 / TD3-NEW-C); equivalent to the prior raw
+        // create_descriptor_pool (same sizes / max_sets / empty flags).
+        let water_caustic_descriptor_pool = match DescriptorPoolBuilder::new()
+            .pool(
+                vk::DescriptorType::STORAGE_IMAGE,
+                super::sync::MAX_FRAMES_IN_FLIGHT as u32,
+            )
+            .max_sets(super::sync::MAX_FRAMES_IN_FLIGHT as u32)
+            .build(device, "water-caustic descriptor pool")
+        {
             Ok(p) => p,
             Err(e) => {
                 // SAFETY: layout was just created; no descriptor sets
