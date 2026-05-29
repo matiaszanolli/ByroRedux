@@ -1191,15 +1191,19 @@ fn scratch_barrier_required_between_refits() {
     );
 }
 
-/// **Load-bearing case for #983 / REN-D8-NEW-15.** Vulkan host fence-wait
-/// after `submit_one_time` establishes a *host*-side dependency only;
-/// the next submission's commands still need a device-side
-/// AS_WRITE → AS_WRITE barrier when they reuse the shared scratch.
-/// Validation layers reason per-submission and do NOT flag this case,
-/// so the only safety net is the callee-side self-emit. If a future
-/// refactor moves the barrier to the caller side as an "optimization
-/// noticed via emit-count" (assuming same-submission semantics), this
-/// case silently regresses on cell-load-then-render frames.
+/// **Load-bearing case for #983 / REN-D8-NEW-15 _and_ #1300 / D12B-1.**
+/// Vulkan host fence-wait after `submit_one_time` establishes a
+/// *host*-side dependency only; the next submission's commands still need
+/// a device-side AS_WRITE → AS_WRITE barrier when they reuse the shared
+/// scratch. Validation layers reason per-submission and do NOT flag this
+/// case, so the only safety net is the callee-side self-emit. Two sites
+/// rely on this: `refit_skinned_blas` (#983) and the FIRST (`i == 0`)
+/// build in `build_skinned_blas_batched_on_cmd` (#1300 — previously the
+/// build path only self-emitted between its own builds via `i > 0`,
+/// leaving the cross-submission i==0 case unguarded). If a future
+/// refactor drops either self-emit ("optimization noticed via
+/// emit-count", assuming same-submission semantics), this case silently
+/// regresses on cell-load-then-render frames.
 ///
 /// The predicate result here is the contract that pins the rule.
 #[test]

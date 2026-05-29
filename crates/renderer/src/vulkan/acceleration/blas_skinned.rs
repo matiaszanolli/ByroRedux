@@ -239,6 +239,23 @@ impl AccelerationManager {
         // emit their own scratch-serialise barrier internally
         // (`refit_skinned_blas`) or read AS data after a downstream
         // AS_WRITE→AS_READ barrier (`build_tlas`'s consumer).
+        //
+        // #1300 / D12B-1 — self-emit one scratch-serialise barrier before
+        // the FIRST build as well. The shared `blas_scratch_buffer` may
+        // have been written by a cell-load `build_blas_batched` earlier in
+        // the frame, even in a prior submission — and the host fence-wait
+        // between submissions does NOT establish a device-side memory
+        // dependency (same rationale as `refit_skinned_blas`'s self-emit,
+        // #983 / #1140 `requires_scratch_serialize_barrier_before`, which
+        // returns true for `CrossSubmissionBuildWithFenceWait`). Without
+        // this the `i == 0` build can read/write scratch before the prior
+        // batch's writes are visible → intermittent first-skinned-mesh
+        // BLAS corruption under overlapping driver scheduling. The in-loop
+        // `i > 0` barrier handles serialisation between this batch's builds,
+        // so each build is preceded by exactly one barrier (no redundancy).
+        if !prepared.is_empty() {
+            self.record_scratch_serialize_barrier(device, cmd);
+        }
         for (i, p) in prepared.iter().enumerate() {
             if i > 0 {
                 self.record_scratch_serialize_barrier(device, cmd);
