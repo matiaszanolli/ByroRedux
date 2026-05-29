@@ -522,6 +522,26 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
 
 /// Resolve a texture path to a texture handle, with BSA/BA2 lookup and caching.
 ///
+/// Derive the Bethesda load-time normal-map sibling of a diffuse texture
+/// path: `<base_stem>_n.dds`. Oblivion (and FO3/FNV) ship tangent-space
+/// normal maps via this filename convention rather than an explicit NIF
+/// texture slot, so a `NiTexturingProperty` mesh with a base texture but
+/// no normal/bump slot still has a normal map on disk under this name
+/// (#1303 / OBL-D4-NEW-01).
+///
+/// The extension is preserved (`.dds` → `_n.dds`, `.DDS` → `_n.DDS`) and
+/// the suffix inserted before it. Callers apply this only when the mesh
+/// left `normal_map` empty; the candidate is then resolved like any other
+/// texture, so a non-existent sibling fails soft (resolves to the
+/// fallback handle and is skipped) — modern meshes that already carry an
+/// explicit normal slot never reach this path.
+pub(crate) fn derive_normal_map_path(diffuse: &str) -> String {
+    match diffuse.rfind('.') {
+        Some(dot) => format!("{}_n{}", &diffuse[..dot], &diffuse[dot..]),
+        None => format!("{diffuse}_n.dds"),
+    }
+}
+
 /// Uses Gamebryo's default `WRAP_S_WRAP_T` clamp mode (`3` per
 /// nif.xml's `TexClampMode`). Call [`resolve_texture_with_clamp`] when
 /// the source material's `texture_clamp_mode` is non-default — decals
@@ -1393,6 +1413,22 @@ mod tests {
     //   `armor\powdergang\powdergang03.NIF`); the BSA stores them
     //   fully prefixed. Pre-fix `extract_mesh` passed the authored
     //   path through verbatim and every leaf-armor lookup missed.
+
+    // ── `derive_normal_map_path` — #1303 / OBL-D4-NEW-01. Oblivion ships
+    //   normal maps as `<base>_n.dds` siblings, not explicit NIF slots.
+    #[test]
+    fn derive_normal_map_path_inserts_n_before_extension() {
+        assert_eq!(
+            derive_normal_map_path(r"textures\architecture\imperialcity\icwallbuttress01.dds"),
+            r"textures\architecture\imperialcity\icwallbuttress01_n.dds"
+        );
+        // Extension case is preserved (Bethesda paths are mixed-case).
+        assert_eq!(derive_normal_map_path("Foo.DDS"), "Foo_n.DDS");
+        // No extension → append the conventional `_n.dds`.
+        assert_eq!(derive_normal_map_path("bar"), "bar_n.dds");
+        // Only the final extension is split, not dots earlier in the path.
+        assert_eq!(derive_normal_map_path(r"a.b\c.dds"), r"a.b\c_n.dds");
+    }
 
     #[test]
     fn normalize_mesh_path_prepends_missing_meshes_prefix() {

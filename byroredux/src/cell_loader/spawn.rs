@@ -19,7 +19,7 @@ use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
 
 use crate::asset_provider::{
-    resolve_texture, resolve_texture_with_clamp, TextureProvider,
+    derive_normal_map_path, resolve_texture, resolve_texture_with_clamp, TextureProvider,
 };
 use crate::components::{
     texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, DoorTeleport, ExtraTextureMaps,
@@ -538,8 +538,13 @@ pub(super) fn spawn_placed_instances(
                 // sides means the slot has no texture. See #584.
                 let texture_path =
                     resolve_to_owned(&pool, ov.and_then(|o| o.diffuse).or(mesh.texture_path));
-                let normal_map =
-                    resolve_to_owned(&pool, ov.and_then(|o| o.normal).or(mesh.normal_map));
+                // Oblivion/FO3 ship normal maps via the `<base>_n.dds`
+                // load-time convention, not an explicit NIF slot. When the
+                // mesh left both normal/bump slots empty, derive the sibling
+                // from the (effective) diffuse path; it resolves like any
+                // texture and fails soft if absent (#1303 / OBL-D4-NEW-01).
+                let normal_map = resolve_to_owned(&pool, ov.and_then(|o| o.normal).or(mesh.normal_map))
+                    .or_else(|| texture_path.as_deref().map(derive_normal_map_path));
                 let glow_map = resolve_to_owned(&pool, ov.and_then(|o| o.glow).or(mesh.glow_map));
                 let gloss_map =
                     resolve_to_owned(&pool, ov.and_then(|o| o.specular).or(mesh.gloss_map));

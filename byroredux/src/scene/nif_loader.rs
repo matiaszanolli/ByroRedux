@@ -23,7 +23,7 @@ use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{
     build_material_provider, build_texture_provider, merge_bgsm_into_mesh,
-    resolve_texture, MaterialProvider, TextureProvider,
+    derive_normal_map_path, resolve_texture, MaterialProvider, TextureProvider,
 };
 use crate::components::{
     texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle,
@@ -720,6 +720,14 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 resolve_owned(mesh.material_path),
             )
         };
+
+        // Oblivion/FO3 ship normal maps via the `<base>_n.dds` load-time
+        // convention, not an explicit NIF slot. When the mesh authored no
+        // normal/bump slot, derive the sibling from the diffuse path; it
+        // resolves like any texture below and fails soft if absent
+        // (#1303 / OBL-D4-NEW-01).
+        let owned_normal_map = owned_normal_map
+            .or_else(|| owned_texture_path.as_deref().map(derive_normal_map_path));
 
         let tex_handle = resolve_texture(ctx, tex_provider, owned_texture_path.as_deref());
 
