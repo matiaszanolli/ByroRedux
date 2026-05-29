@@ -1622,11 +1622,27 @@ fn dump_prospector_saloon_refrs() {
         match (nx, ny, nz) {
             (false, false, _) => only_z += 1,
             (true, _, _) | (_, true, _) => multi_axis += 1,
-            _ => {}
         }
     }
     eprintln!(
         "[dump] rotation profile: {} multi-axis (rx or ry non-zero), {} z-only / identity",
         multi_axis, only_z
+    );
+
+    // Regression assertions (#1320 / TH6-NEW-01): this was a print-only
+    // diagnostic that passed vacuously. Pin the invariants that must hold for
+    // any valid FNV parse — a populated interior that resolved by key has
+    // REFRs, and at least one must link to a base mesh (the base-form join is
+    // what the dump's mesh column exercises). Exact counts / rotation-profile
+    // bands are intentionally left as printed diagnostics: they need a
+    // measured baseline, not a guessed literal.
+    assert!(
+        !rows.is_empty(),
+        "GSProspectorSaloonInterior resolved but produced zero REFRs — parse regression"
+    );
+    assert!(
+        rows.iter().any(|(_, mesh)| mesh != "<no base>"),
+        "no REFR in GSProspectorSaloonInterior resolved to a base mesh — \
+         base-form linkage regression"
     );
 }
