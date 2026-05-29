@@ -39,12 +39,15 @@ pub(super) const MAX_LIGHTS: usize = 512;
 ///   bottleneck cleared.
 /// - #1284-step-2 (current): 196608 bones / 1365 slots. Sized from
 ///   the instrumented `overflow_attempts` counter (added to
-///   `DebugStats` in the same change), which surfaced ~1040 distinct
-///   `SkinnedMesh` entity attempts per frame at Atomic Wrangler peak
-///   — far higher than the static NPC × sub-mesh estimate suggested.
-///   1365 gives ~30 % headroom over observed demand and ~4× headroom
-///   over the static estimate, covering Skyrim Whiterun-Dragonsreach
-///   (5 885 entities) and FO4 Diamond City Market without re-bumping.
+///   `DebugStats` in the same change), which surfaced ~1040 over-cap
+///   `allocate()` calls at Atomic Wrangler peak — far higher than the
+///   static NPC × sub-mesh estimate suggested. NB: that counter is a
+///   monotonic per-*call* spill count, not a per-frame distinct-entity
+///   headcount (a stuck over-cap entity re-counts every frame, #1296),
+///   so ~1040 is an upper bound on demand. 1365 sits comfortably above
+///   it and gives ~4× headroom over the static estimate, covering Skyrim
+///   Whiterun-Dragonsreach (5 885 entities) and FO4 Diamond City Market
+///   without re-bumping.
 ///
 /// The proper structural fix is variable-stride packing (M29.5 —
 /// pack `bind_inverses` by actual bone count rather than reserving
@@ -73,11 +76,12 @@ pub const IDENTITY_BONE_SLOT: u32 = 0;
 ///
 /// #1284 follow-up: re-bumped to 1366 (= `196608 / 144`) so the
 /// per-frame upload cap continues to match the slot-pool capacity
-/// after the `MAX_TOTAL_BONES` bump. FNV `FreesideAtomicWrangler`
-/// is the densest first-sight workload (~1040 distinct skinned entity
-/// allocations per frame at Atomic Wrangler peak per the
-/// `DebugStats::skin_pool_overflow_attempts` counter added in the
-/// same change).
+/// after the `MAX_TOTAL_BONES` bump. FNV `FreesideAtomicWrangler` is
+/// the densest first-sight workload (~1040 over-cap `allocate()` calls
+/// at Atomic Wrangler peak per the
+/// `DebugStats::skin_pool_overflow_attempts` counter added in the same
+/// change — a monotonic per-call spill count, an upper bound on demand
+/// rather than a per-frame distinct-entity headcount; see #1296).
 ///
 /// Staging buffer size at this value is
 /// `1366 × MAX_BONES_PER_MESH (144) × 64 B ≈ 12 MB` — < 1 % of the

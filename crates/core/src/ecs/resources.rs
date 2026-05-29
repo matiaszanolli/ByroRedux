@@ -682,11 +682,18 @@ pub struct SkinSlotPool {
     /// by the renderer to gate skin compute dispatch + skinned-BLAS
     /// refit. #1195 / PERF-DIM7-01, paired with #1196 / PERF-DIM7-02.
     pose_dirty: std::collections::HashSet<super::storage::EntityId>,
-    /// Cumulative count of distinct entities that have ever attempted
-    /// allocation past `max_slot`. Drives the sizing-data feedback loop
-    /// on #1284: the one-shot warning tells you the cap was exceeded,
-    /// but not by how much. This counter lets `audit-runtime` capture
-    /// the actual demand so the next bump is sized to the data.
+    /// Monotonic cumulative count of over-cap `allocate()` **calls**
+    /// (i.e. calls that returned `None`) since construction — **not** a
+    /// distinct-entity count. An over-cap entity is never inserted into
+    /// `entity_to_slot`, so it is never resident and re-hits the spill
+    /// branch on every subsequent `allocate()`: one persistently
+    /// over-cap entity re-counts every frame. Treat the value as an
+    /// upper bound on demand, not per-frame distinct-entity demand —
+    /// reading it as the latter overshoots by the frame count (#1296 /
+    /// D12-C1). Drives the #1284 cap-sizing notes: the one-shot warning
+    /// says the cap was exceeded; this says (roughly) by how much. A
+    /// future loop wanting per-frame distinct demand must track a
+    /// separate frame-reset `HashSet<EntityId>` high-water.
     overflow_attempt_count: u32,
 }
 
@@ -954,6 +961,36 @@ mod skin_slot_pool_tests {
         );
         // Subsequent overflow calls still return None and don't panic.
         assert_eq!(pool.allocate(5, 0), None);
+    }
+
+    /// #1296 / D12-C1 — `overflow_attempt_count` is a per-*call* count,
+    /// NOT a distinct-entity count. An over-cap entity is never made
+    /// resident, so it re-hits the spill branch every frame and
+    /// re-increments. This pins that contract so a future refactor can't
+    /// silently turn it into per-entity semantics (which the old field
+    /// doc + #1284 cap-sizing comment wrongly assumed).
+    #[test]
+    fn overflow_attempt_count_is_per_call_not_per_entity() {
+        let mut pool = SkinSlotPool::new(1); // only slot 1 allocatable
+        assert_eq!(pool.allocate(1, 0), Some(1));
+        assert_eq!(pool.overflow_attempt_count(), 0);
+
+        // Same over-cap entity across three frames: it is never resident,
+        // so each call re-counts → 3, not 1 (a distinct-entity count
+        // would stay at 1).
+        assert_eq!(pool.allocate(2, 0), None);
+        assert_eq!(pool.allocate(2, 1), None);
+        assert_eq!(pool.allocate(2, 2), None);
+        assert_eq!(
+            pool.overflow_attempt_count(),
+            3,
+            "one persistently over-cap entity must re-count each call — \
+             the counter is per-call, not per distinct entity"
+        );
+
+        // A different over-cap entity adds one more call.
+        assert_eq!(pool.allocate(3, 2), None);
+        assert_eq!(pool.overflow_attempt_count(), 4);
     }
 
     #[test]
