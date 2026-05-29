@@ -274,6 +274,13 @@ pub struct DialRecord {
     /// Quest form IDs that own this dialogue topic (one per QSTI
     /// sub-record). FO3/FNV topics often list multiple owners.
     pub quest_refs: Vec<u32>,
+    /// `DATA` dialogue-type byte 0 — Topic / Conversation / Combat /
+    /// Persuasion / Detection / Service / Miscellaneous (Oblivion enum).
+    /// Oblivion's DATA is a single byte; FO3+ widen it (type byte +
+    /// flags) but byte 0 is the type in every game, so the byte-0 read is
+    /// cross-game safe. 0 (Topic) when DATA is absent. Captured raw;
+    /// per-game enum mapping is downstream consumer work.
+    pub dial_type: u8,
     /// INFO topic responses parsed from the DIAL's `Topic Children`
     /// sub-GRUP (group_type == 7). Pre-#631 the children were silently
     /// skipped because `extract_records` filters on a single record
@@ -325,6 +332,9 @@ pub fn parse_dial(form_id: u32, subs: &[SubRecord]) -> DialRecord {
                     out.quest_refs.push(q);
                 }
             }
+            // DATA byte 0 = dialogue type, cross-game safe (Oblivion: 1 byte;
+            // FO3+: wider, byte 0 still the type). #1307 / OBL-D3-...-03.
+            b"DATA" if !sub.data.is_empty() => out.dial_type = sub.data[0],
             _ => {}
         }
     }
@@ -603,6 +613,31 @@ mod tests {
         let d = parse_dial(0xC3C3, &subs);
         assert_eq!(d.quest_refs.len(), 3);
         assert_eq!(d.quest_refs[1], 0x0100_0002);
+        // DATA absent → dial_type defaults to 0 (Topic).
+        assert_eq!(d.dial_type, 0);
+    }
+
+    /// #1307 / OBL-D3-...-03 — DIAL DATA byte 0 is the dialogue type.
+    /// Captured for all games (Oblivion single-byte DATA here; FO3+ widen
+    /// it but byte 0 is still the type). Pre-fix this byte was dropped for
+    /// all 3817 Oblivion DIAL records.
+    #[test]
+    fn parse_dial_captures_dialogue_type_byte() {
+        // Oblivion DATA: a single type byte. 3 = Persuasion in the TES4 enum.
+        let subs = vec![
+            sub(b"EDID", b"PersuasionTopic\0"),
+            sub(b"DATA", &[3u8]),
+        ];
+        let d = parse_dial(0xDEAD, &subs);
+        assert_eq!(d.dial_type, 3);
+
+        // FO3+ widen DATA (type byte + flags); byte 0 still the type.
+        let subs_fo3 = vec![sub(b"DATA", &[5u8, 0x01, 0x00, 0x00])];
+        assert_eq!(parse_dial(0xBEEF, &subs_fo3).dial_type, 5);
+
+        // Empty DATA must not panic and leaves the default.
+        let subs_empty = vec![sub(b"DATA", &[])];
+        assert_eq!(parse_dial(0xF00D, &subs_empty).dial_type, 0);
     }
 
     #[test]
