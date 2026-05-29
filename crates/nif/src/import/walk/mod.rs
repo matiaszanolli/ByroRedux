@@ -500,8 +500,11 @@ pub(super) fn walk_node_hierarchical(
     // (`NiParticleSystem` / `NiMeshParticleSystem` / `NiParticles` /
     // `BSStripParticleSystem`) deserialise to a typed
     // `NiParticleSystem` whose `modifier_refs` we walk into the field-
-    // modifier blocks. Legacy emitter / controller types stay on the
-    // opaque `NiPSysBlock` fallback because they have no modifier list.
+    // modifier blocks. (The legacy NiParticleSystemController /
+    // NiAutoNormalParticles / NiRotatingParticles types dispatch to
+    // `legacy_particle::*`, NOT `NiPSysBlock`, so a NiPSysBlock downcast
+    // never matched them — that dead arm was removed in #1327. The target
+    // games all author the modern NiParticleSystem stack.)
     if let Some(ps) = block
         .as_any()
         .downcast_ref::<crate::blocks::particle::NiParticleSystem>()
@@ -515,33 +518,6 @@ pub(super) fn walk_node_hierarchical(
                 emitter_params: extract_emitter_params(scene),
                 emitter_rate: extract_emitter_rate(scene),
             });
-        return;
-    }
-    if let Some(ps) = block
-        .as_any()
-        .downcast_ref::<crate::blocks::particle::NiPSysBlock>()
-    {
-        match ps.original_type.as_str() {
-            "NiParticleSystemController"
-            | "NiBSPArrayController"
-            | "NiAutoNormalParticles"
-            | "NiRotatingParticles" => {
-                out.particle_emitters
-                    .push(crate::import::ImportedParticleEmitter {
-                        parent_node: parent_node_idx,
-                        original_type: ps.original_type.clone(),
-                        color_curve: extract_first_color_curve(scene),
-                        // Legacy controller path — no NiPSysModifier
-                        // chain on the wire, so no authored force fields.
-                        force_fields: Vec::new(),
-                        // Legacy NiParticleSystemController / *Particles
-                        // path has no NiPSysEmitter block either.
-                        emitter_params: None,
-                        emitter_rate: extract_emitter_rate(scene),
-                    });
-            }
-            _ => {}
-        }
     }
 }
 
@@ -1160,9 +1136,11 @@ pub(super) fn walk_node_particle_emitters_flat(
         return;
     }
 
-    // Mirror the hierarchical-walk dispatch (#984): try typed
-    // `NiParticleSystem` first (carries `modifier_refs`); fall through
-    // to opaque `NiPSysBlock` for legacy controller / particle types.
+    // Mirror the hierarchical-walk dispatch (#984): handle the typed
+    // `NiParticleSystem` (carries `modifier_refs`). The legacy controller
+    // / particle types dispatch to `legacy_particle::*`, not `NiPSysBlock`,
+    // so the old `NiPSysBlock` fall-through never matched them — that dead
+    // arm was removed in #1327.
     if let Some(ps) = block
         .as_any()
         .downcast_ref::<crate::blocks::particle::NiParticleSystem>()
@@ -1175,32 +1153,8 @@ pub(super) fn walk_node_particle_emitters_flat(
             color_curve: extract_first_color_curve(scene),
             force_fields: collect_force_fields(scene, &ps.modifier_refs),
             emitter_params: extract_emitter_params(scene),
-                emitter_rate: extract_emitter_rate(scene),
+            emitter_rate: extract_emitter_rate(scene),
         });
-        return;
-    }
-    if let Some(ps) = block
-        .as_any()
-        .downcast_ref::<crate::blocks::particle::NiPSysBlock>()
-    {
-        match ps.original_type.as_str() {
-            "NiParticleSystemController"
-            | "NiBSPArrayController"
-            | "NiAutoNormalParticles"
-            | "NiRotatingParticles" => {
-                let t = &parent_transform.translation;
-                out.push(crate::import::ImportedParticleEmitterFlat {
-                    local_position: zup_point_to_yup(t),
-                    host_name: parent_node_name,
-                    original_type: ps.original_type.clone(),
-                    color_curve: extract_first_color_curve(scene),
-                    force_fields: Vec::new(),
-                    emitter_params: None,
-                        emitter_rate: extract_emitter_rate(scene),
-                });
-            }
-            _ => {}
-        }
     }
 }
 

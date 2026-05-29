@@ -1033,10 +1033,14 @@ fn plain_ni_node_has_no_bs_subclass_payloads() {
 ///
 /// Modern emitter types (`NiParticleSystem` / `NiMeshParticleSystem` /
 /// `NiParticles` / `BSStripParticleSystem`) dispatch to the typed
-/// `NiParticleSystem` struct post-#984 — the synthetic fixture needs
-/// to match. Legacy controller types (`NiParticleSystemController` /
-/// `NiBSPArrayController` / `NiAutoNormalParticles` /
-/// `NiRotatingParticles`) stay on the opaque `NiPSysBlock` fallback.
+/// `NiParticleSystem` struct post-#984 — the synthetic fixture matches.
+/// Any other name builds an opaque `NiPSysBlock` (the modifier fallback),
+/// used to fixture modifier-only blocks for the "skipped, not surfaced as
+/// an emitter" tests. NB: the legacy `NiParticleSystemController` /
+/// `NiAutoNormalParticles` / `NiRotatingParticles` types actually dispatch
+/// to `legacy_particle::*` (not `NiPSysBlock`) and are deliberately not
+/// surfaced as emitters (#1327) — so they are not used as emitter fixtures
+/// here.
 fn synthetic_particle_block(type_name: &str) -> Box<dyn crate::blocks::NiObject> {
     match type_name {
         "NiParticleSystem"
@@ -1088,17 +1092,15 @@ fn flat_import_surfaces_particle_emitter_with_nearest_named_host() {
 }
 
 #[test]
-fn flat_import_recognizes_legacy_particle_block_types() {
-    // Each variant's original_type comes from the NIF dispatcher;
-    // the importer must recognize all of them, not just "NiParticleSystem".
-    for variant in [
-        "NiMeshParticleSystem",
-        "NiParticles",
-        "NiParticleSystemController",
-        "NiBSPArrayController",
-        "NiAutoNormalParticles",
-        "NiRotatingParticles",
-    ] {
+fn flat_import_recognizes_modern_particle_system_aliases() {
+    // The modern NiParticleSystem aliases all dispatch to the typed
+    // `NiParticleSystem` struct (#984); the importer must surface each as
+    // an emitter, not just the bare "NiParticleSystem" name. Legacy
+    // controller / particle types (NiParticleSystemController,
+    // NiAutoNormalParticles, NiRotatingParticles) dispatch to
+    // `legacy_particle::*` and are deliberately not surfaced (#1327), so
+    // they are not exercised here.
+    for variant in ["NiMeshParticleSystem", "NiParticles", "BSStripParticleSystem"] {
         let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
             vec![Box::new(root), synthetic_particle_block(variant)];
