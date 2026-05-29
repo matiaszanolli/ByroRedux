@@ -478,9 +478,13 @@ impl NiTriShapeData {
         let num_triangles = stream.read_u16_le()? as usize;
         let _num_triangle_points = stream.read_u32_le()?; // num_triangles * 3
 
-        // has_triangles bool: only present from v >= 10.0.1.0. In Morrowind-era
-        // NIFs, triangles are always present when num_triangles > 0.
-        let has_triangles = if stream.version() >= NifVersion::V10_0_1_0 {
+        // has_triangles bool: only present from v >= 10.0.1.3 (nif.xml
+        // `Triangles` is unconditional `until="10.0.1.2"`; the cond-gated form is
+        // `since="10.0.1.3"`. OpenMW data.cpp:182 reads the bool only for version >
+        // VER_OB_OLD (= 10.0.1.2), confirming the bool is absent at v10.0.1.0/10.0.1.2.
+        // Using >= V10_0_1_0 consumed a phantom byte at those versions, misaligning the
+        // triangle list with no recovery (Oblivion has no block-size table). (#1301)
+        let has_triangles = if stream.version() >= NifVersion::V10_0_1_3 {
             stream.read_byte_bool()?
         } else {
             num_triangles > 0
@@ -541,8 +545,14 @@ impl NiTriStripsData {
         let num_strips = stream.read_u16_le()? as u32;
         let strip_lengths = stream.read_u16_array(num_strips as usize)?;
 
-        // has_strips: only from v >= 10.0.1.0. In Morrowind NIFs, strips always present.
-        let has_strips = if stream.version() >= NifVersion::V10_0_1_0 {
+        // has_strips: only from v >= 10.0.1.3 (nif.xml `Has Points` since="10.0.1.3";
+        // confirmed by nifly StripsInfo::Sync and OpenMW NiTriStripsData::read).
+        // Pre-10.0.1.3 (Morrowind / early-Gamebryo, incl. Oblivion v10.0.1.0/10.0.1.2)
+        // the bool is absent on disk — using >= V10_0_1_0 consumed a phantom byte, shifting
+        // the stream 1 byte and cascading into tail truncation (Oblivion has no block-size
+        // table, so there is no recovery). The old wrong boundary was V10_0_1_0; nif.xml and
+        // both reference impls agree on V10_0_1_3. (#1310)
+        let has_strips = if stream.version() >= NifVersion::V10_0_1_3 {
             stream.read_byte_bool()?
         } else {
             num_strips > 0

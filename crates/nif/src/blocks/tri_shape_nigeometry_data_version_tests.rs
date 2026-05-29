@@ -261,3 +261,72 @@ fn nigeometry_data_at_10_1_0_114_reads_group_id() {
         "at 10.1.0.114 NiGeometryData MUST consume group_id"
     );
 }
+
+/// Regression: #1301 / OBL-D1-02 — `NiTriShapeData` must NOT read a
+/// `has_triangles` bool at v10.0.1.2 (Oblivion). The bool is absent on
+/// disk at v < 10.0.1.3; consuming it shifts the stream 1 byte and
+/// corrupts the triangle list + num_match_groups. With no Oblivion block
+/// size table there is no recovery.
+///
+/// Wire layout at v10.0.1.2 with 0 triangles (simplest case — no triangle
+/// index data, no match groups):
+///   NiGeometryData base (via nigeometry_data_bytes)
+///   num_triangles:       u16  = 0
+///   num_triangle_points: u32  = 0
+///   [no has_triangles bool]  (absent at v < 10.0.1.3)
+///   [no triangles]           (num_triangles == 0)
+///   num_match_groups:    u16  = 0
+///   [no match group data]
+#[test]
+fn nitrishapedata_at_10_0_1_2_no_has_triangles_bool() {
+    use super::NiTriShapeData;
+    let header = header_at(NifVersion::V10_0_1_2); // Oblivion's sub-10.0.1.3 version
+    let mut bytes = nigeometry_data_bytes(false, false, true);
+    bytes.extend_from_slice(&0u16.to_le_bytes()); // num_triangles = 0
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // num_triangle_points = 0
+    // NO has_triangles bool on the wire at v10.0.1.2
+    bytes.extend_from_slice(&0u16.to_le_bytes()); // num_match_groups = 0
+
+    let mut stream = crate::stream::NifStream::new(&bytes, &header);
+    let result = NiTriShapeData::parse(&mut stream);
+    assert!(result.is_ok(), "NiTriShapeData should parse cleanly at v10.0.1.2");
+    assert_eq!(
+        stream.position() as usize,
+        bytes.len(),
+        "at v10.0.1.2 NiTriShapeData must NOT consume a phantom has_triangles bool"
+    );
+    assert_eq!(result.unwrap().triangles.len(), 0);
+}
+
+/// Regression: #1310 / OBL-D1-01 — `NiTriStripsData` must NOT read a
+/// `has_points` bool at v10.0.1.2 (Oblivion). The nif.xml `Has Points`
+/// field is `since="10.0.1.3"`; both nifly and OpenMW confirm this boundary.
+///
+/// Wire layout at v10.0.1.2 with 0 strips:
+///   NiGeometryData base
+///   num_triangles: u16  = 0
+///   num_strips:    u16  = 0
+///   [strip_lengths: empty]
+///   [no has_strips bool]   (absent at v < 10.0.1.3)
+///   [no strip data]        (num_strips == 0 => has_strips = false)
+#[test]
+fn nitristripsdata_at_10_0_1_2_no_has_points_bool() {
+    use super::NiTriStripsData;
+    let header = header_at(NifVersion::V10_0_1_2);
+    let mut bytes = nigeometry_data_bytes(false, false, true);
+    bytes.extend_from_slice(&0u16.to_le_bytes()); // num_triangles = 0
+    bytes.extend_from_slice(&0u16.to_le_bytes()); // num_strips = 0
+    // strip_lengths: empty (num_strips == 0)
+    // NO has_strips bool on the wire at v10.0.1.2
+    // strips: empty (num_strips == 0 => has_strips = num_strips > 0 = false)
+
+    let mut stream = crate::stream::NifStream::new(&bytes, &header);
+    let result = NiTriStripsData::parse(&mut stream);
+    assert!(result.is_ok(), "NiTriStripsData should parse cleanly at v10.0.1.2");
+    assert_eq!(
+        stream.position() as usize,
+        bytes.len(),
+        "at v10.0.1.2 NiTriStripsData must NOT consume a phantom has_points bool"
+    );
+    assert_eq!(result.unwrap().strips.len(), 0);
+}
