@@ -290,13 +290,11 @@ pub(crate) fn parse_wrld_children(
                             ]);
                             grid = Some((grid_x, grid_y));
                         }
-                        b"XCLW" if sub.data.len() >= 4 => {
-                            water_height = Some(f32::from_le_bytes([
-                                sub.data[0],
-                                sub.data[1],
-                                sub.data[2],
-                                sub.data[3],
-                            ]));
+                        // XCLW water-plane height. `xclw_water_height`
+                        // returns None for the `#INT_MIN#` "no water"
+                        // sentinel (#1305 / OBL-D6-NEW-02).
+                        b"XCLW" => {
+                            water_height = super::helpers::xclw_water_height(&sub.data);
                         }
                         // Skyrim extended sub-records — see the interior
                         // walker above for semantics. Exterior cells use

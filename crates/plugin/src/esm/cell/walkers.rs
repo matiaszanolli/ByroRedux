@@ -339,8 +339,10 @@ pub(crate) fn parse_cell_group(
                             // (Z-up). Same layout across Oblivion / FO3 / FNV
                             // / Skyrim — the cell's water surface sits at
                             // this Z (interior) or Z-in-worldspace (exterior).
-                            // See #397 / #356.
-                            water_height = SubReader::new(&sub.data).f32().ok();
+                            // `xclw_water_height` returns None for the
+                            // `#INT_MIN#` "no water" sentinel. See #397 /
+                            // #356 / #1305.
+                            water_height = super::helpers::xclw_water_height(&sub.data);
                         }
                         // Skyrim extended CELL sub-records (#356). Each is
                         // a 4-byte FormID; the walker previously dropped
