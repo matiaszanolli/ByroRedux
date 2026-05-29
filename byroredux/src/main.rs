@@ -871,7 +871,7 @@ impl App {
             // MBPM (currently 144) bones, and slot 0 is reserved for
             // the global identity. So allocatable slot count =
             // (MAX_TOTAL_BONES / MBPM) - 1 = floor(196608 / 144) - 1 =
-            // 1365. Allocating one slot beyond would push the palette
+            // 1364. Allocating one slot beyond would push the palette
             // past the SSBO boundary.
             skin_slot_pool: byroredux_core::ecs::resources::SkinSlotPool::new(
                 ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES

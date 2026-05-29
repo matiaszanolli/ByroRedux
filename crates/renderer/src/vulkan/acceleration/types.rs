@@ -55,7 +55,7 @@ pub struct BlasEntry {
     pub built_index_count: u32,
     /// Build flags used by the original fresh BUILD. Validated against
     /// the caller-supplied flags in
-    /// [`crate::vulkan::acceleration::predicates::validate_refit_inputs`]
+    /// [`crate::vulkan::acceleration::predicates::validate_refit_flags`]
     /// on each UPDATE to defend the **flag-set half** of
     /// `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03667`
     /// (the geometry-count half is pinned by

@@ -320,7 +320,7 @@ impl SkinComputePipeline {
         // (matches MAX_TOTAL_BONES / MAX_BONES_PER_MESH)` — that math
         // was wrong; the ratio is the SSBO ceiling, not 32. Today's
         // exact value depends on `MAX_BONES_PER_MESH`, currently 144
-        // per #1135, yielding floor(32768 / 144) = 227.)
+        // per #1135, yielding floor(196608 / 144) = 1365.)
         let pool_total = max_slots * (MAX_FRAMES_IN_FLIGHT as u32);
         // Slots are freed on entity destruction (cell unload);
         // FREE_DESCRIPTOR_SET allows `vkFreeDescriptorSets` rather

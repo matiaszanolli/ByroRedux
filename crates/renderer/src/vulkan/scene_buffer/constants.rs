@@ -17,7 +17,7 @@ pub(super) const MAX_LIGHTS: usize = 512;
 /// through the sum-of-weights escape hatch and by `SkinnedMesh` bones
 /// that failed to resolve). The remaining slots are assigned
 /// sequentially per skinned mesh, with each mesh consuming
-/// `MAX_BONES_PER_MESH` (144) slots for simplicity. That gives 1365
+/// `MAX_BONES_PER_MESH` (144) slots for simplicity. That gives 1364
 /// skinned-mesh slots per frame. The compute shader has an early-out
 /// for unused slots (see `skin_palette.comp:33-34,68-76`) so unused
 /// tail headroom is free at dispatch time; only the SSBO bytes are
@@ -37,14 +37,14 @@ pub(super) const MAX_LIGHTS: usize = 512;
 ///   estimate of ~260 entities × 1.3 headroom. Subsequently
 ///   under-shot the actual observed demand once the bone-palette
 ///   bottleneck cleared.
-/// - #1284-step-2 (current): 196608 bones / 1365 slots. Sized from
+/// - #1284-step-2 (current): 196608 bones / 1364 slots. Sized from
 ///   the instrumented `overflow_attempts` counter (added to
 ///   `DebugStats` in the same change), which surfaced ~1040 over-cap
 ///   `allocate()` calls at Atomic Wrangler peak — far higher than the
 ///   static NPC × sub-mesh estimate suggested. NB: that counter is a
 ///   monotonic per-*call* spill count, not a per-frame distinct-entity
 ///   headcount (a stuck over-cap entity re-counts every frame, #1296),
-///   so ~1040 is an upper bound on demand. 1365 sits comfortably above
+///   so ~1040 is an upper bound on demand. 1364 sits comfortably above
 ///   it and gives ~4× headroom over the static estimate, covering Skyrim
 ///   Whiterun-Dragonsreach (5 885 entities) and FO4 Diamond City Market
 ///   without re-bumping.

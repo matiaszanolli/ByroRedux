@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 /// pre-skin + BLAS refit pool can hold simultaneously. Each slot costs
 /// `3 × MAX_FRAMES_IN_FLIGHT = 6` storage-buffer descriptors. Pinned
 /// to the bone-palette pool's architectural ceiling
-/// (`(MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1 = (196608 / 144) - 1 = 1365`
+/// (`(MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1 = (196608 / 144) - 1 = 1364`
 /// after #1284 step-2) so the descriptor pool never becomes the
 /// dominant bottleneck — if you only bump one, the other becomes the
 /// invisible cap and a fraction of skinned NPCs silently lose RT
@@ -63,14 +63,14 @@ use std::sync::{Arc, Mutex};
 ///   `create_slot` (descriptor sets) and lost RT shadows. Pinning the
 ///   two caps together avoids re-firing this exact bug on the next
 ///   bump.
-/// - #1284 step-2: tracks the bone-palette bump to 1365 once
+/// - #1284 step-2: tracks the bone-palette bump to 1364 once
 ///   instrumented telemetry surfaced ~1040 distinct `SkinnedMesh`
 ///   allocation attempts per frame at Atomic Wrangler peak —
 ///   3× higher than the static NPC × sub-mesh estimate suggested.
 ///
 /// Output-buffer memory is lazily allocated per `create_slot`, so
 /// unused headroom is free; only the descriptor pool sizing
-/// (1365 × 2 × 3 = 8190 storage-buffer descs) is paid up-front, and
+/// (1364 × 2 × 3 = 8184 storage-buffer descs) is paid up-front, and
 /// that's still well below typical Vulkan limits (~1 M storage-buffer
 /// descs per pool on modern desktop drivers).
 pub const SKIN_MAX_SLOTS: u32 = ((crate::vulkan::scene_buffer::MAX_TOTAL_BONES

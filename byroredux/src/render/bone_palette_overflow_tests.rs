@@ -73,7 +73,8 @@ fn at_capacity_fills_palette_completely() {
     );
     // M29.6 sparse-slot layout: slot 0 (identity) + slots 1..=
     // max_skinned, each occupying MBPM bones → (max_skinned + 1)
-    // × MBPM total entries. floor(32768/144) × 144 = 32688.
+    // × MBPM total entries. At the full ceiling that is
+    // floor(196608/144) × 144 = 196560.
     let expected_slots = (max_skinned + 1) * MAX_BONES_PER_MESH;
     assert_eq!(palette.len(), expected_slots);
     assert!(
