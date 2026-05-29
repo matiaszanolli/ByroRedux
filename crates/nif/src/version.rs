@@ -196,6 +196,14 @@ pub mod bsver {
     /// Pre-collision v2 content ships `bsver < RIGID_BODY_EXTRA_FLOATS`;
     /// standard Oblivion content ships at exactly 11.
     pub const OBLIVION: u32 = 11;
+    /// Upper bound of the nif.xml `#NI_BS_LTE_16#` verset ("All NI + BS
+    /// until BSVER 16"). Content with `bsver > NI_BS_LTE_16` carries the
+    /// post-Oblivion additions gated on `!#NI_BS_LTE_16#` — e.g.
+    /// `NiPSysGravityModifier.World Aligned` (the byte that over-read on
+    /// Oblivion bsver=11 when this was mis-gated on NIF version, #1306-sib)
+    /// and the `bhkRagdollConstraint` motor fields. Oblivion (bsver 11) is
+    /// `<= 16`; FO3-era and later (bsver 34+) is `> 16`.
+    pub const NI_BS_LTE_16: u32 = 16;
     /// `NiMaterialProperty` carries the `Emissive Mult` float only on
     /// content with `bsver > MATERIAL_EMISSIVE_MULT` (nif.xml
     /// `#BSVER# #GT# 21`). Strict `>`, so FO3-era content at exactly 21

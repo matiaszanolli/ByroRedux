@@ -317,8 +317,14 @@ pub fn parse_gravity_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock>
     let _force_type = stream.read_u32_le()?;
     let _turbulence = stream.read_f32_le()?;
     let _turbulence_scale = stream.read_f32_le()?;
-    // world_aligned: since v20.0.0.4
-    if stream.version() >= NifVersion::V20_0_0_4 {
+    // World Aligned — nif.xml `vercond="!#NI_BS_LTE_16#"`, i.e. `bsver > 16`,
+    // NOT a NIF-version gate. The old `version >= V20_0_0_4` gate read this
+    // byte on Oblivion (v20.0.0.4, bsver 11) where it is absent — a 1-byte
+    // over-read that drifted the stream into the following block and
+    // truncated the FX NIF tail (surfaced after #1306 unblocked the parse
+    // past NiPSysRotationModifier on `meshes\fire\firetorchsmall.nif`).
+    // FO3/FNV (bsver 34) and Skyrim+ are `> 16` and still read it.
+    if stream.bsver() > crate::version::bsver::NI_BS_LTE_16 {
         let _world_aligned = stream.read_byte_bool()?;
     }
     Ok(NiPSysBlock {
@@ -1831,5 +1837,55 @@ mod tests {
              bsver>=34 gate skipped it and under-read by 1 byte"
         );
         assert_eq!(block.original_type, "NiPSysRotationModifier");
+    }
+
+    /// Regression: NiFlipController follow-up to #1306 — `World Aligned` is
+    /// `vercond="!#NI_BS_LTE_16#"` (bsver > 16), NOT a NIF-version gate. The
+    /// old `version >= V20_0_0_4` gate read the byte on Oblivion (bsver 11)
+    /// where it is absent → a 1-byte over-read that drifted into the next
+    /// block (`meshes\fire\firetorchsmall.nif`). Oblivion must NOT read it.
+    #[test]
+    fn parse_gravity_modifier_skips_world_aligned_on_oblivion() {
+        let header = make_header_oblivion();
+        let mut d = modifier_base_bytes_oblivion(); // 13 bytes
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // gravity_object ref
+        d.extend_from_slice(&[0u8; 12]); // gravity_axis vec3
+        d.extend_from_slice(&0.0f32.to_le_bytes()); // decay
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // strength
+        d.extend_from_slice(&0u32.to_le_bytes()); // force_type
+        d.extend_from_slice(&0.0f32.to_le_bytes()); // turbulence
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // turbulence_scale
+        // NO world_aligned byte on Oblivion (bsver 11 <= 16).
+        assert_eq!(d.len(), 13 + 4 + 12 + 4 + 4 + 4 + 4 + 4); // 49
+
+        let mut stream = NifStream::new(&d, &header);
+        parse_gravity_modifier(&mut stream).expect("Oblivion gravity modifier parses");
+        assert_eq!(
+            stream.position() as usize,
+            d.len(),
+            "Oblivion (bsver 11) must NOT read World Aligned; the old version gate \
+             over-read by 1 byte"
+        );
+    }
+
+    /// FNV (bsver 34 > 16) DOES carry `World Aligned` — confirms the bsver
+    /// gate is correct on both sides of the #NI_BS_LTE_16 boundary.
+    #[test]
+    fn parse_gravity_modifier_reads_world_aligned_on_fnv() {
+        let header = make_header_fnv();
+        let mut d = modifier_base_bytes(); // 13 bytes (FNV base)
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // gravity_object
+        d.extend_from_slice(&[0u8; 12]); // gravity_axis
+        d.extend_from_slice(&0.0f32.to_le_bytes()); // decay
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // strength
+        d.extend_from_slice(&0u32.to_le_bytes()); // force_type
+        d.extend_from_slice(&0.0f32.to_le_bytes()); // turbulence
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // turbulence_scale
+        d.push(1u8); // world_aligned — present on FNV
+        assert_eq!(d.len(), 13 + 4 + 12 + 4 + 4 + 4 + 4 + 4 + 1); // 50
+
+        let mut stream = NifStream::new(&d, &header);
+        parse_gravity_modifier(&mut stream).expect("FNV gravity modifier parses");
+        assert_eq!(stream.position() as usize, d.len(), "FNV must read World Aligned");
     }
 }
