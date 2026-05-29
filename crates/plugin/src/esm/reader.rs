@@ -262,11 +262,31 @@ impl FormIdRemap {
             self.plugin_index
         } else if (mod_index as usize) < self.master_indices.len() {
             self.master_indices[mod_index as usize]
+        } else if self.master_indices.is_empty() {
+            // Standalone / single-plugin load (no masters) with a top byte
+            // past index 0 — the known Bethesda authoring artifact: vanilla
+            // Oblivion.esm (and a few FO3/FNV masters) ship a handful of
+            // forms prefixed 0x01 despite having no master at that index.
+            // There is no plugin at that global slot, so the form cannot be
+            // remapped; pass it through unchanged and log at debug. (Prior
+            // code logged this at warn per-form — spam on every verbose
+            // Oblivion load — and its comment wrongly claimed single-plugin
+            // loads never reach here. #1308 / OBL-D6-NEW-04.)
+            //
+            // Clamping to self is deliberately NOT done: whether a 0x01
+            // local-id aliases a real 0x00 form in the file is unverified,
+            // and a wrong clamp would collide two distinct forms onto one
+            // global FormID in EsmIndex — strictly worse than the harmless
+            // (no rendering impact) dangling pass-through.
+            log::debug!(
+                "standalone FormID {raw:08x} (mod_index {mod_index}, no masters) \
+                 passed through — Bethesda index-{mod_index:02x} artifact"
+            );
+            mod_index
         } else {
-            // Out-of-range mod index — either a malformed file or an
-            // in-memory injected form. Log once per plugin and pass
-            // through unchanged so the caller can still see the raw
-            // value for diagnosis. Single-plugin loads never hit this.
+            // Multi-plugin load with an out-of-range index — genuinely
+            // suspicious (malformed file or an in-memory injected form).
+            // Keep this at warn; it is rare and worth surfacing.
             log::warn!(
                 "FormID {raw:08x} has mod_index {mod_index} but plugin has {} masters",
                 self.master_indices.len()
@@ -687,6 +707,29 @@ mod tests {
         // Self-references (top byte = 0 = master_count) pass through.
         assert_eq!(remap.remap(0x0001_2345), 0x0001_2345);
         assert_eq!(remap.remap(0x00CA_FEBA), 0x00CA_FEBA);
+    }
+
+    /// #1308 / OBL-D6-NEW-04 — vanilla `Oblivion.esm` loaded standalone
+    /// (no masters) ships a handful of forms prefixed `0x01`, a Bethesda
+    /// authoring artifact. The remap can't resolve them (no plugin at that
+    /// global slot), so it passes them through unchanged — NOT clamped to
+    /// self, which could collide distinct forms in `EsmIndex` — and logs at
+    /// debug rather than spamming warn per form. This pins the pass-through
+    /// contract so a future "clamp" refactor can't land silently.
+    #[test]
+    fn form_id_remap_standalone_out_of_range_passes_through() {
+        let remap = FormIdRemap {
+            plugin_index: 0,
+            master_indices: Vec::new(),
+        };
+        // mod_index 0x01 with no masters — the Oblivion artifact. Verbatim
+        // pass-through, not clamped to 0x00.
+        assert_eq!(remap.remap(0x0100_0ABC), 0x0100_0ABC);
+        // A higher out-of-range index behaves identically.
+        assert_eq!(remap.remap(0x0512_3456), 0x0512_3456);
+        // The in-range self-reference (mod_index 0 == master count) is
+        // unaffected by the out-of-range arm.
+        assert_eq!(remap.remap(0x0000_0001), 0x0000_0001);
     }
 
     /// Two-plugin load: Anchorage.esm depends on Fallout3.esm.
