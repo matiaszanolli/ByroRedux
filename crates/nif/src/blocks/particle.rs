@@ -360,15 +360,20 @@ pub fn parse_rotation_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock
     if stream.version() >= NifVersion::V20_0_0_2 {
         stream.skip(4 * 3)?; // 3 floats
     }
-    // Random Rot Speed Sign — nif.xml line 4878 says `since 20.0.0.2`,
-    // but empirically Oblivion (BSVER 11, version 20.0.0.5) does NOT
-    // emit this byte (pre-#383 the 42-byte parser ran clean on every
-    // Oblivion mesh). FNV (BSVER 34, version 20.2.0.7) DOES emit it
-    // (the audit measured a 1-byte under-read). Gate on BS_GTE_FO3
-    // (BSVER >= 34) — empirical match instead of nif.xml's overly-broad
-    // version gate. 1,149 occurrences fixed in vanilla
-    // `Fallout - Meshes.bsa`.
-    if stream.bsver() >= 34 {
+    // Random Rot Speed Sign — nif.xml `since="20.0.0.2"`, no game/bsver
+    // condition. The #383 fix narrowed this to `bsver >= 34` on the claim
+    // that Oblivion (bsver 11) omits the byte, but that was wrong:
+    // block-tracing `meshes\fire\firetorchsmall.nif` (v20.0.0.4, bsver 11)
+    // shows NiPSysRotationModifier under-reads by exactly 1 byte without
+    // it — the stream drifts onto a stray 0x00, NiPSysGravityModifier then
+    // reads a garbage length, and the FX emitter (plus every later block)
+    // is discarded, so the torch/fire never renders (#1306 / OBL-D6-NEW-03).
+    // With the byte read the layout aligns (random_axis + a clean unit
+    // Axis) and the parse completes. FNV (v20.2.0.7) and FO3 already
+    // satisfy `>= 20.0.0.2`, so this only *adds* the read for Oblivion /
+    // early-FO3-dev content the old gate wrongly skipped — validated by a
+    // before/after truncation sweep over the Oblivion FX mesh set.
+    if stream.version() >= NifVersion::V20_0_0_2 {
         let _random_rot_speed_sign = stream.read_byte_bool()?;
     }
     let _random_axis = stream.read_byte_bool()?;
@@ -1789,6 +1794,42 @@ mod tests {
         let block = parse_rotation_modifier(&mut stream)
             .expect("FNV NiPSysRotationModifier should parse cleanly");
         assert_eq!(stream.position() as usize, d.len());
+        assert_eq!(block.original_type, "NiPSysRotationModifier");
+    }
+
+    /// Regression: #1306 / OBL-D6-NEW-03 — `Random Rot Speed Sign` is
+    /// `since="20.0.0.2"` per nif.xml with NO bsver/game condition, so
+    /// Oblivion (v20.0.0.4, bsver 11) emits it too. The #383 fix wrongly
+    /// gated it on `bsver >= 34`, so Oblivion under-read by 1 byte and FX
+    /// emitters (fire/torch/smoke) dropped from the render. Block-tracing
+    /// `meshes\fire\firetorchsmall.nif` localized the drift to this exact
+    /// byte. Under the old gate this test consumes only 42 bytes (1 short);
+    /// with the version gate it consumes the full 43.
+    #[test]
+    fn parse_rotation_modifier_reads_random_rot_speed_sign_oblivion() {
+        let header = make_header_oblivion();
+        let mut d = modifier_base_bytes_oblivion();
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // initial_speed
+        d.extend_from_slice(&0.5f32.to_le_bytes()); // speed_variation
+        d.extend_from_slice(&0.0f32.to_le_bytes()); // initial_angle
+        d.extend_from_slice(&0.1f32.to_le_bytes()); // angle_variation
+        d.push(1u8); // random_rot_speed_sign — present on Oblivion (#1306)
+        d.push(1u8); // random_axis
+        d.extend_from_slice(&[0u8; 12]); // axis vec3 (e.g. unit X)
+
+        // 13 base + 16 (speed + 3 vars) + 1 (rot_sign) + 1 (random_axis)
+        // + 12 (vec3) = 43 bytes — identical to the FNV layout.
+        assert_eq!(d.len(), 43);
+
+        let mut stream = NifStream::new(&d, &header);
+        let block = parse_rotation_modifier(&mut stream)
+            .expect("Oblivion NiPSysRotationModifier should parse cleanly");
+        assert_eq!(
+            stream.position() as usize,
+            d.len(),
+            "Oblivion must read random_rot_speed_sign (since 20.0.0.2); the old \
+             bsver>=34 gate skipped it and under-read by 1 byte"
+        );
         assert_eq!(block.original_type, "NiPSysRotationModifier");
     }
 }
