@@ -35,8 +35,11 @@ use std::sync::Once;
 /// (`scene_buffer.rs:978`) with actual default-to-0 behaviour.
 static INTERN_OVERFLOW_WARNED: Once = Once::new();
 
-/// std430 GPU-side material record. 260 bytes per material (was 272 B
-/// before #804 / R1-N4 dropped the unread `avg_albedo_r/g/b` triplet).
+/// std430 GPU-side material record. **300 bytes** per material.
+/// Size history: 272 B → 260 B (#804 R1-N4 dropped `avg_albedo_r/g/b`)
+/// → 296 B (#1249 Disney sheen/subsurface) → 300 B (#1250 `anisotropic`).
+/// Pinned by `gpu_material_size_is_260_bytes` (test name intentionally
+/// kept as "260" for grep continuity; the asserted value is 300).
 ///
 /// (Historical: the per-instance → per-material migration shipped as
 /// R1 Phases 4–6, finishing with #785. The layout below was originally
@@ -76,8 +79,8 @@ pub struct GpuMaterial {
     /// `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`. Pre-#695
     /// this slot was an unused pad; routing the bit through here keeps
     /// the std430 layout pinned by `gpu_material_size_is_260_bytes`
-    /// (260 B post-#804 / R1-N4; was 272 B before that fix dropped the
-    /// unread `avg_albedo_r/g/b` triplet).
+    /// (300 B post-#1250 Disney lobe; was 260 B post-#804 / R1-N4 before
+    /// the sheen/subsurface/anisotropic fields were added).
     pub material_flags: u32, // offset 12
 
     // ── Emissive RGB + specular_strength (vec4 #2) ─────────────────
@@ -763,7 +766,7 @@ pub mod presets {
 /// Canonical material hash — std SipHash 1-3 over the 50 live scalar
 /// fields of [`GpuMaterial`] in declaration order. Used by
 /// [`MaterialTable::intern_by_hash`] to dedup without hashing the full
-/// 260-byte struct.
+/// 300-byte struct.
 ///
 /// **Lockstep contract** (#781 / PERF-N4): [`DrawCommand::material_hash`]
 /// walks the same field sequence, in the same order, against the
@@ -892,7 +895,7 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
 /// distinct materials get fresh ids in insertion order. The reverse map
 /// (`HashMap<u64, u32>` keyed on [`hash_gpu_material_fields`]) keeps
 /// `intern` O(1) amortised. Pre-#781 the index keyed on `GpuMaterial`
-/// itself, requiring a 260-byte byte-hash on every lookup AND forcing
+/// itself, requiring a 300-byte byte-hash on every lookup AND forcing
 /// the caller to construct the full `GpuMaterial` even on dedup hits.
 /// The fast path now goes through [`Self::intern_by_hash`], which takes
 /// a precomputed u64 + a closure that produces the `GpuMaterial` only
@@ -983,7 +986,7 @@ impl MaterialTable {
     // the first frame after construction then re-runs `clear()` →
     // `seed_neutral_default` AND uploads the (identical) neutral
     // entry. That re-upload is one std430-aligned `GpuMaterial`
-    // (260 B) of redundant host→device traffic per first frame
+    // (300 B) of redundant host→device traffic per first frame
     // and is not visible in steady-state telemetry. Documented
     // here rather than skipped because the alternative (suppress
     // first-frame clear) gates the seed on a `dirty` flag, which
@@ -1024,7 +1027,7 @@ impl MaterialTable {
     /// Hot-path intern entry: take a precomputed u64 hash + a closure
     /// that produces the [`GpuMaterial`] only on dedup miss. The
     /// closure is NOT invoked when the hash already maps to a stored
-    /// material — `to_gpu_material` (the dominant 260-byte construction
+    /// material — `to_gpu_material` (the dominant 300-byte construction
     /// cost) is skipped on the ~97% dedup-hit path. See #781 / PERF-N4.
     ///
     /// **Hash quality contract**: callers must produce a u64 that is a
@@ -1180,14 +1183,14 @@ mod tests {
     ///
     /// This test asserts that every documented GLSL field name on
     /// the shader-side `struct GpuMaterial` declaration at
-    /// `triangle.frag:83-126` is present in the file. Renaming the
+    /// `triangle.frag:110-184` is present in the file. Renaming the
     /// Rust field is fine; renaming the GLSL field fails this test
     /// and forces an audit of every reader downstream.
     #[test]
     fn gpu_material_glsl_field_names_pinned() {
         let src = include_str!("../../shaders/triangle.frag");
         // Authoritative list — every named field declared inside
-        // `struct GpuMaterial { ... };` at `triangle.frag:83-126`.
+        // `struct GpuMaterial { ... };` at `triangle.frag:110-184`.
         // Update both sites together when renaming a field on the
         // GLSL side; the Rust-side rename + this list keep the
         // contract bidirectional. The trailing `;` in the needle
@@ -1241,7 +1244,7 @@ mod tests {
     ///
     /// Mirrors the `gpu_instance_field_offsets_match_shader_contract`
     /// pattern at `scene_buffer.rs:1453`. The shader-side
-    /// `struct GpuMaterial` declaration at `triangle.frag:83-126` is the
+    /// `struct GpuMaterial` declaration at `triangle.frag:110-184` is the
     /// source of truth for these offsets — every named field on the
     /// Rust side gets an explicit `offset_of!` assertion against the
     /// vec4 group its shader-side counterpart sits in.

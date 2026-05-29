@@ -393,9 +393,12 @@ pub struct PbrClassifierInputs<'a> {
     pub has_normal_map: bool,
 }
 
-/// Keyword-based PBR classifier shared by `Material::classify_pbr`
-/// (per-frame draw build) and the NIF importer's mesh extractors
-/// (per-`ImportedMesh` translation). Single source of truth for the
+/// Keyword-based PBR classifier formerly shared with the (deleted)
+/// `Material::classify_pbr` (the per-draw fallback that was removed in
+/// the NIFAL canonical-material-translation refactor; see
+/// `byroredux/src/material_translate.rs`). Now used only at the
+/// `translate_material` parse-time boundary for the NIF importer's mesh
+/// extractors (per-`ImportedMesh` translation). Single source of truth for the
 /// rule that texture-path keywords drive metalness / glass / cloth
 /// classification with glossiness + env_map_scale as the no-keyword
 /// fallback. See `feedback_format_translation.md` for the architectural
@@ -548,8 +551,8 @@ impl Material {
     /// Explicit "this surface is glass / crystal / ice / gem / window"
     /// classifier for use by [`crate::ecs::components::Material`]-less
     /// glass-path gating in the renderer. Required because the
-    /// glossiness-fallback in `classify_pbr` undershoots the 0.4
-    /// roughness gate for Skyrim cloth banners (whose
+    /// glossiness-fallback in the (deleted per-draw) `classify_pbr`
+    /// undershot the 0.4 roughness gate for Skyrim cloth banners (whose
     /// `BSLightingShaderProperty.glossiness ≈ 80` lands at
     /// roughness 0.2 via `1 - 80/100`), producing spurious glass
     /// classification that routes the cloth through the IOR
@@ -607,7 +610,8 @@ impl Material {
 
 /// ASCII case-insensitive substring match. Zero allocations. Assumes
 /// every keyword in `keywords` is non-empty and ASCII — both hold for
-/// the hard-coded lists in [`Material::classify_pbr`].
+/// the hard-coded lists in the (deleted) `Material::classify_pbr`
+/// and now in [`classify_pbr_keyword`] (the surviving free function).
 fn contains_any_ci(haystack: &str, keywords: &[&str]) -> bool {
     let hs = haystack.as_bytes();
     keywords.iter().any(|kw| {
