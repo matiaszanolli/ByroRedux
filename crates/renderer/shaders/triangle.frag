@@ -8,6 +8,27 @@
 //   glslangValidator -V -I crates/renderer/shaders triangle.frag -o triangle.frag.spv
 #include "include/shader_constants.glsl"
 
+// ─────────────────────────────────────────────────────────────────────
+// Third-party attribution — PBR / Disney-BSDF lobe
+//
+// The physically-based shading lobe in this file (anisotropic GGX /
+// Trowbridge-Reitz distribution, Burley retro-reflective diffuse +
+// Hanrahan-Krueger fake-SSS split, and the F0-from-IOR derivation) is
+// adapted from the GLSL path tracer below and used under the MIT License.
+// Per-function source citations are inline at each adapted site (search
+// "GLSL-PathTracer"). MIT requires this notice travel with the code:
+//
+//   GLSL-PathTracer — https://github.com/knightcrawler25/GLSL-PathTracer
+//   Copyright (c) 2019 Asif Ali. MIT License.
+//   src/shaders/common/{disney,sampling,pathtrace}.glsl
+//
+// The BRDF *model* these lobes implement is the Disney "principled" BRDF:
+//   Brent Burley, Walt Disney Animation Studios — "Physically Based
+//   Shading at Disney", SIGGRAPH 2012 course "Practical Physically-Based
+//   Shading in Film and Game Production". Implemented from the published
+//   course notes; no Disney code or assets are used here.
+// ─────────────────────────────────────────────────────────────────────
+
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;

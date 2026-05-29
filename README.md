@@ -219,7 +219,31 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
   reference only — no code is copied. See M41.0 Phase 1b.x research
   in [byroredux/tests/skinning_e2e.rs](byroredux/tests/skinning_e2e.rs)
   for the specific findings.
+- [**GLSL-PathTracer**](https://github.com/knightcrawler25/GLSL-PathTracer)
+  — the open-source GLSL path tracer (MIT License, Copyright (c) 2019
+  Asif Ali) whose single-Disney-BSDF shader is ByroRedux's reference
+  implementation for the PBR lighting lobe. The anisotropic GGX
+  (Trowbridge-Reitz) distribution, the Burley retro-reflective diffuse +
+  Hanrahan-Krueger fake-subsurface split, and the F0-from-IOR derivation
+  in [`triangle.frag`](crates/renderer/shaders/triangle.frag) are adapted
+  from its `src/shaders/common/disney.glsl` / `pathtrace.glsl` (cited
+  inline at each adapted function). Used under the MIT License; its
+  copyright notice is reproduced here and in the shader header.
+- The **Disney "principled" BRDF** — the shading *model* those lobes
+  implement — is Brent Burley and Walt Disney Animation Studios,
+  [*"Physically Based Shading at Disney"*](https://disneyanimation.com/publications/physically-based-shading-at-disney/),
+  part of the SIGGRAPH 2012 course *Practical Physically-Based Shading in
+  Film and Game Production*. ByroRedux implements the model from the
+  published course notes; **no Disney code or assets are used.**
 
 ## License
 
-MIT
+MIT.
+
+Third-party code that ByroRedux adapts is credited in
+[Acknowledgements](#acknowledgements). Notably, the Disney-BSDF shading
+lobe in [`triangle.frag`](crates/renderer/shaders/triangle.frag) is
+adapted from knightcrawler25/GLSL-PathTracer (MIT, Copyright (c) 2019 Asif
+Ali); the BRDF model it implements is Brent Burley / Walt Disney Animation
+Studios' published "Physically Based Shading at Disney" (SIGGRAPH 2012) —
+model only, no Disney code or assets.
