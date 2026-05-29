@@ -331,15 +331,20 @@ mod tests {
         }
     }
 
-    /// #869 — the shader hard-codes `(inst.flags & 128u)` for the
-    /// flat-shading test. If the Rust-side constant ever shifts away
-    /// from bit 7, the shader would silently read the wrong bit.
+    /// #869 / #1190 — `triangle.frag` tests the flat-shading bit via the
+    /// generated `#define INSTANCE_FLAG_FLAT_SHADING 128u` (emitted from
+    /// this constant into `shader_constants.glsl`; the bare `& 128u` literal
+    /// the shader used pre-#1190 is now forbidden by
+    /// `triangle_shaders_use_named_instance_flag_constants`). This pin keeps
+    /// the *value* at 128 (bit 7): if the Rust-side constant ever shifts, the
+    /// generated #define — and every shader reading it — would silently move
+    /// to the wrong bit.
     #[test]
     fn flat_shading_bit_pinned_at_128_for_shader_constant() {
         assert_eq!(
             INSTANCE_FLAG_FLAT_SHADING, 128,
-            "triangle.frag tests `(inst.flags & 128u)`; this constant must equal 128 \
-             or the shader-side check needs to be updated in lockstep"
+            "INSTANCE_FLAG_FLAT_SHADING feeds the generated shader #define; \
+             it must equal 128 (bit 7) or every shader reading it moves bits"
         );
     }
 }

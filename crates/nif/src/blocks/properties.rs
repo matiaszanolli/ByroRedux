@@ -70,7 +70,7 @@ impl NiMaterialProperty {
         // nif.xml line 4372: `<field name="Emissive Mult" vercond="#BSVER# #GT# 21" />`.
         // Strict >, so FO3 at BSVER=21 is excluded. Use raw file bsver to
         // honor in-file variation for FO3-era content shipped in FNV. #323.
-        let emissive_mult = if stream.bsver() > 21 {
+        let emissive_mult = if stream.bsver() > crate::version::bsver::MATERIAL_EMISSIVE_MULT {
             stream.read_f32_le()?
         } else {
             1.0

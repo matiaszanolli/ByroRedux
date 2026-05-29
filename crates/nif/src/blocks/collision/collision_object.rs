@@ -64,7 +64,7 @@ impl BhkCollisionObject {
             // (4 bhkRigidBody, the host NiNode, etc.) into NiUnknown
             // — surfaced by the M33 audit as NIF-04 ("6 Oblivion
             // bhkRigidBody fail"), but the bug is here.
-            if stream.bsver() < 9 {
+            if stream.bsver() < crate::version::bsver::RIGID_BODY_EXTRA_FLOATS {
                 let _unknown_float_1 = stream.read_f32_le()?;
                 let _unknown_float_2 = stream.read_f32_le()?;
             }

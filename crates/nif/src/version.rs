@@ -186,10 +186,21 @@ pub mod bsver {
     /// Pre-Bethesda authoring tools (Morrowind era, NifSkope older
     /// builds) — every Bethesda title is `>= FO3_FNV`.
     pub const PRE_BETHESDA: u32 = 0;
+    /// `bhkRigidBody` carries two trailing `Unknown Float 1/2` fields on
+    /// content with `bsver < RIGID_BODY_EXTRA_FLOATS` (nif.xml
+    /// `#BSVER# #LT# 9`). Pre-collision-v2 Oblivion dev builds
+    /// (e.g. boxtest skeleton.nif, bsver=6) hit this; standard Oblivion
+    /// (bsver=11) does not. See #549.
+    pub const RIGID_BODY_EXTRA_FLOATS: u32 = 9;
     /// Oblivion BSVER (v20.0.0.4 / v20.0.0.5 or v20.2.0.7 with uv=11).
-    /// Pre-collision v2 content ships `bsver < 9`; standard Oblivion
-    /// content ships at exactly 11.
+    /// Pre-collision v2 content ships `bsver < RIGID_BODY_EXTRA_FLOATS`;
+    /// standard Oblivion content ships at exactly 11.
     pub const OBLIVION: u32 = 11;
+    /// `NiMaterialProperty` carries the `Emissive Mult` float only on
+    /// content with `bsver > MATERIAL_EMISSIVE_MULT` (nif.xml
+    /// `#BSVER# #GT# 21`). Strict `>`, so FO3-era content at exactly 21
+    /// is excluded and defaults emissive_mult to 1.0. See #323.
+    pub const MATERIAL_EMISSIVE_MULT: u32 = 21;
     /// Pre-retail FO3 dev builds that first added refraction fields
     /// (`refraction_strength`, `refraction_fire_period`) to
     /// BSShaderPPLightingProperty. Content with `bsver > FO3_REFRACTION`

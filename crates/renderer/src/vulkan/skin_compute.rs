@@ -1128,23 +1128,27 @@ mod tests {
         assert_eq!(std::mem::size_of::<SkinPalettePushConstants>(), 4);
     }
 
-    /// `skin_palette.comp` must use the same 64-wide workgroup as
-    /// `skin_vertices.comp` so the dispatch arithmetic and occupancy
-    /// story stay aligned. Pinned by string-scan of the GLSL source —
-    /// `WORKGROUP_SIZE` is the Rust-side const driving dispatch group
-    /// counts; a shader edit that changed `local_size_x` without
-    /// updating this const would silently dispatch too many / too few
-    /// workgroups.
+    /// Both compute shaders must declare the same 64-wide workgroup as the
+    /// Rust-side `WORKGROUP_SIZE`, since the dispatch group-count math
+    /// (`vertex_count.div_ceil(WORKGROUP_SIZE)` at the vertex path,
+    /// `bone_count.div_ceil(WORKGROUP_SIZE)` at the palette path) assumes
+    /// it. A shader edit that changed `local_size_x` without updating the
+    /// const would silently dispatch too many / too few workgroups. Pinned
+    /// by string-scan of BOTH GLSL sources — the vertex shader was
+    /// previously unpinned (#1319 / TD4-NEW-13).
     #[test]
     fn skin_palette_workgroup_size_matches_skin_vertices() {
-        let src = include_str!("../../shaders/skin_palette.comp");
         let expected = format!("local_size_x = {}", WORKGROUP_SIZE);
-        assert!(
-            src.contains(&expected),
-            "skin_palette.comp must declare `layout({})` to match \
-             skin_vertices.comp and the Rust-side WORKGROUP_SIZE",
-            expected,
-        );
+        for (name, src) in [
+            ("skin_palette.comp", include_str!("../../shaders/skin_palette.comp")),
+            ("skin_vertices.comp", include_str!("../../shaders/skin_vertices.comp")),
+        ] {
+            assert!(
+                src.contains(&expected),
+                "{name} must declare `layout({expected})` to match the \
+                 Rust-side WORKGROUP_SIZE that drives its dispatch group count",
+            );
+        }
     }
 
     /// M29.5 numeric pin — the GPU compute shader and the CPU-side
