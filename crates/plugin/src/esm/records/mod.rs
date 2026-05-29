@@ -27,6 +27,7 @@ pub mod outfit;
 pub mod pkin;
 pub mod scol;
 pub mod script;
+pub mod script_instance;
 pub mod tree;
 pub mod weather;
 
