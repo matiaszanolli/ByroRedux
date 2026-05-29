@@ -228,11 +228,19 @@ pub struct CommonNamedFields {
     /// Legacy attached-script reference (`SCRI`, Oblivion / FO3 / FNV).
     pub script_form_id: u32,
     /// True when the record carries a `VMAD` sub-record (Skyrim+ Papyrus VM).
+    /// Presence-only (unchanged semantics); the decoded attachments live in
+    /// [`Self::script_instance`]. Kept so the many presence-only consumers
+    /// don't churn (M47.2).
     pub has_script: bool,
+    /// Decoded `VMAD` script attachments + property bindings (Skyrim+).
+    /// `None` when the record has no `VMAD`. The M47.2 scripting-translation
+    /// layer reads attached-script names + `Quest`/`Object` property refs
+    /// from here. See [`super::script_instance`].
+    pub script_instance: Option<super::script_instance::ScriptInstanceData>,
 }
 
 impl CommonNamedFields {
-    /// Walk `subs` and populate the six universal named fields.
+    /// Walk `subs` and populate the universal named fields.
     /// All other sub-records are silently ignored — the caller handles them
     /// in its own loop.
     pub fn from_subs(subs: &[SubRecord]) -> Self {
@@ -247,7 +255,13 @@ impl CommonNamedFields {
                     out.script_form_id = crate::esm::sub_reader::SubReader::new(&sub.data)
                         .u32_or_default();
                 }
-                b"VMAD" => out.has_script = true,
+                b"VMAD" => {
+                    // Presence flag unchanged; the decoded attachments +
+                    // property bindings are now available alongside it.
+                    out.has_script = true;
+                    out.script_instance =
+                        Some(super::script_instance::ScriptInstanceData::parse(&sub.data));
+                }
                 _ => {}
             }
         }
@@ -313,6 +327,36 @@ mod tests {
             sub_type: *typ,
             data: data.to_vec(),
         }
+    }
+
+    /// M47.2 — `CommonNamedFields` decodes VMAD into `script_instance`
+    /// (attached-script names + property bindings) alongside the
+    /// presence-only `has_script`. The translate layer reads this.
+    #[test]
+    fn common_named_fields_decodes_vmad_script_instance() {
+        // version 5, objectFormat 2, 1 script "DoorScript", 0 props.
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&5i16.to_le_bytes());
+        vmad.extend_from_slice(&2i16.to_le_bytes());
+        vmad.extend_from_slice(&1u16.to_le_bytes());
+        let name = b"DoorScript";
+        vmad.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        vmad.extend_from_slice(name);
+        vmad.push(0); // script status
+        vmad.extend_from_slice(&0u16.to_le_bytes()); // propCount = 0
+        let subs = vec![sub(b"EDID", b"ScriptedActi\0"), sub(b"VMAD", &vmad)];
+        let c = CommonNamedFields::from_subs(&subs);
+        assert!(c.has_script, "presence flag preserved");
+        let inst = c.script_instance.expect("VMAD decoded into script_instance");
+        assert_eq!(inst.scripts.len(), 1);
+        assert_eq!(inst.scripts[0].name, "DoorScript");
+    }
+
+    #[test]
+    fn common_named_fields_without_vmad_has_no_instance() {
+        let c = CommonNamedFields::from_subs(&[sub(b"EDID", b"Plain\0")]);
+        assert!(!c.has_script);
+        assert!(c.script_instance.is_none());
     }
 
     /// Regression: #369 — VMAD presence on item records flips
