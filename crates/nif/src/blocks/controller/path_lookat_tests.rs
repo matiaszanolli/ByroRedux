@@ -183,6 +183,94 @@ fn nigeommorpher_fnv_skips_trailing_unknown_ints() {
     );
 }
 
+/// Regression: #1302 / OBL-D1-03 — `NiGeomMorpherController` at v20.0.0.5
+/// (Oblivion) reads only block refs per interpolator — NO weight float.
+///
+/// nif.xml: `Interpolators` (block refs) `since="10.1.0.106" until="20.0.0.5"`;
+/// `Interpolator Weights` (ref + f32) `since="20.1.0.3"`. Oblivion (v20.0.0.5)
+/// hits the refs-only path. The pre-fix code consumed a phantom 4-byte float
+/// per interpolator, corrupting morph-weight refs and NiMorphData downstream.
+///
+/// Wire layout at v20.0.0.5 / bsver=11 with num_interpolators=2:
+///   NiTimeControllerBase (26 B)
+///   morpher_flags u16 + data_ref i32 + always_update u8 + num_interpolators u32  (11 B)
+///   interpolator_ref[0] i32  (4 B)   ← NO weight float after this
+///   interpolator_ref[1] i32  (4 B)   ← NO weight float after this
+///   trailing num_unknown_ints u32=0  (4 B)  (bsver=11 gate)
+#[test]
+fn nigeommorpher_oblivion_refs_only_no_weight_float() {
+    let header = make_header_oblivion();
+    let mut data = Vec::new();
+    write_time_controller_base(&mut data);
+    data.extend_from_slice(&0u16.to_le_bytes()); // morpher_flags
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // data_ref null
+    data.push(1u8); // always_update
+    data.extend_from_slice(&2u32.to_le_bytes()); // num_interpolators = 2
+    data.extend_from_slice(&5i32.to_le_bytes()); // interpolator_ref[0] = 5
+    // NO weight float between refs (absent at v <= 20.0.0.5)
+    data.extend_from_slice(&6i32.to_le_bytes()); // interpolator_ref[1] = 6
+    // NO weight float
+    data.extend_from_slice(&0u32.to_le_bytes()); // trailing num_unknown_ints=0
+
+    let expected_len = data.len();
+    let mut stream = NifStream::new(&data, &header);
+    let ctrl = NiGeomMorpherController::parse(&mut stream)
+        .expect("Oblivion NiGeomMorpherController with 2 interpolators should parse");
+    assert_eq!(
+        stream.position() as usize,
+        expected_len,
+        "at v20.0.0.5 each interpolator is 4 bytes (ref only); \
+         phantom weight floats must NOT be consumed"
+    );
+    assert_eq!(ctrl.interpolator_weights.len(), 2);
+    assert_eq!(ctrl.interpolator_weights[0].interpolator_ref.index(), Some(5));
+    assert_eq!(ctrl.interpolator_weights[1].interpolator_ref.index(), Some(6));
+    // Weight defaults to 1.0 when absent on disk
+    assert_eq!(ctrl.interpolator_weights[0].weight, 1.0);
+    assert_eq!(ctrl.interpolator_weights[1].weight, 1.0);
+}
+
+/// Regression: #1302 / OBL-D1-03 sibling check — FNV (v20.2.0.7 >= v20.1.0.3)
+/// DOES read MorphWeight (ref + f32 weight). This confirms the fix is
+/// version-gated and doesn't regress FNV/FO3.
+///
+/// Wire layout at v20.2.0.7 / bsver=34 with num_interpolators=2:
+///   NiTimeControllerBase (26 B)
+///   morpher_flags + data_ref + always_update + num_interpolators  (11 B)
+///   MorphWeight[0]: ref i32 + weight f32  (8 B)
+///   MorphWeight[1]: ref i32 + weight f32  (8 B)
+///   (no trailing unknown ints — bsver=34 > 11)
+#[test]
+fn nigeommorpher_fnv_reads_interpolator_weights() {
+    let header = make_header_fnv();
+    let mut data = Vec::new();
+    write_time_controller_base(&mut data);
+    data.extend_from_slice(&0u16.to_le_bytes()); // morpher_flags
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // data_ref
+    data.push(1u8); // always_update
+    data.extend_from_slice(&2u32.to_le_bytes()); // num_interpolators = 2
+    data.extend_from_slice(&7i32.to_le_bytes()); // ref[0] = 7
+    data.extend_from_slice(&0.75f32.to_le_bytes()); // weight[0] = 0.75
+    data.extend_from_slice(&8i32.to_le_bytes()); // ref[1] = 8
+    data.extend_from_slice(&0.25f32.to_le_bytes()); // weight[1] = 0.25
+    // No trailing unknown ints — FNV bsver=34 > 11
+
+    let expected_len = data.len();
+    let mut stream = NifStream::new(&data, &header);
+    let ctrl = NiGeomMorpherController::parse(&mut stream)
+        .expect("FNV NiGeomMorpherController with weights should parse");
+    assert_eq!(
+        stream.position() as usize,
+        expected_len,
+        "FNV MorphWeight is 8 bytes (ref + f32); both fields must be consumed"
+    );
+    assert_eq!(ctrl.interpolator_weights.len(), 2);
+    assert_eq!(ctrl.interpolator_weights[0].interpolator_ref.index(), Some(7));
+    assert!((ctrl.interpolator_weights[0].weight - 0.75).abs() < 1e-6);
+    assert_eq!(ctrl.interpolator_weights[1].interpolator_ref.index(), Some(8));
+    assert!((ctrl.interpolator_weights[1].weight - 0.25).abs() < 1e-6);
+}
+
 #[test]
 fn nicontrollersequence_v10_2_reads_phase() {
     // Pre-Oblivion v=10.2.0.0 content. Layout for the trailing

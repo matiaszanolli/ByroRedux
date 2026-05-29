@@ -34,14 +34,35 @@ impl NiGeomMorpherController {
         let always_update = stream.read_u8()?;
         let num_interpolators = stream.read_u32_le()?;
 
+        // nif.xml NiGeomMorpherController:
+        //   "Interpolators" (block refs only): since="10.1.0.106" until="20.0.0.5"
+        //   "Interpolator Weights" (ref + f32): since="20.1.0.3"
+        //
+        // Oblivion (v20.0.0.5) hits the refs-only path — the per-element
+        // weight float is absent on disk. Reading it consumed a phantom 4 bytes
+        // per morph interpolator, misaligning morph-weight refs and corrupting
+        // NiMorphData downstream (facial morphs, animated gates). (#1302)
         let mut interpolator_weights = stream.allocate_vec(num_interpolators)?;
-        for _ in 0..num_interpolators {
-            let interpolator_ref = stream.read_block_ref()?;
-            let weight = stream.read_f32_le()?;
-            interpolator_weights.push(MorphWeight {
-                interpolator_ref,
-                weight,
-            });
+        if stream.version() >= NifVersion::V20_1_0_3 {
+            // Since 20.1.0.3: MorphWeight = block_ref(4 B) + weight_f32(4 B)
+            for _ in 0..num_interpolators {
+                let interpolator_ref = stream.read_block_ref()?;
+                let weight = stream.read_f32_le()?;
+                interpolator_weights.push(MorphWeight {
+                    interpolator_ref,
+                    weight,
+                });
+            }
+        } else {
+            // Until 20.0.0.5: only block refs on disk; weight defaults to 1.0.
+            // Oblivion (v20.0.0.5, bsver=11) takes this path.
+            for _ in 0..num_interpolators {
+                let interpolator_ref = stream.read_block_ref()?;
+                interpolator_weights.push(MorphWeight {
+                    interpolator_ref,
+                    weight: 1.0,
+                });
+            }
         }
 
         // Trailing Num Unknown Ints + Unknown Ints array. nif.xml:
