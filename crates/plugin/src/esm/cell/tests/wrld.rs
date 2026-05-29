@@ -327,3 +327,50 @@ fn parse_wrld_truncated_payloads_default_safely() {
     assert_eq!(w.flags, 0, "empty DATA stays at default");
     assert!(w.map_texture.is_empty());
 }
+
+/// #1305 follow-up — FO3/FNV/Skyrim+ WRLD carry a DNAM "Land Data"
+/// (`[default_land_height: f32, default_water_height: f32]`, 8 bytes).
+/// The parser must capture the SECOND f32 as `default_water_height` so
+/// no-XCLW exterior cells inherit the worldspace default water plane.
+/// Layout verified against FalloutNV.esm (WastelandNV -2300) and
+/// Skyrim.esm (Tamriel -14000).
+#[test]
+fn wrld_dnam_captures_default_water_height() {
+    let mut dnam = Vec::new();
+    dnam.extend_from_slice(&(-2500.0f32).to_le_bytes()); // default land height
+    dnam.extend_from_slice(&(-2300.0f32).to_le_bytes()); // default water height
+    let wrld = build_wrld_record(
+        0x0000_0099,
+        &[
+            (b"EDID", b"WastelandNV\0".to_vec()),
+            (b"NAM2", 0x0000_BABE_u32.to_le_bytes().to_vec()),
+            (b"DNAM", dnam),
+        ],
+    );
+    let buf = build_wrld_group(&[wrld]);
+    let (worldspaces, _climates, _exterior) = parse_synthetic_wrld(&buf);
+    let w = worldspaces.get("wastelandnv").expect("WastelandNV decoded");
+    assert_eq!(
+        w.default_water_height,
+        Some(-2300.0),
+        "DNAM second f32 is the default water height (not the land height -2500)"
+    );
+    assert_eq!(w.water_form, Some(0x0000_BABE));
+}
+
+/// A short / absent DNAM leaves `default_water_height` at `None` (the
+/// loader then falls back appropriately — Oblivion to Z=0, others to dry).
+#[test]
+fn wrld_short_dnam_leaves_default_water_none() {
+    let wrld = build_wrld_record(
+        0x0000_009A,
+        &[
+            (b"EDID", b"NoDnamWorld\0".to_vec()),
+            (b"DNAM", vec![0u8; 4]), // only 4 bytes — too short for the water f32
+        ],
+    );
+    let buf = build_wrld_group(&[wrld]);
+    let (worldspaces, _c, _e) = parse_synthetic_wrld(&buf);
+    let w = worldspaces.get("nodnamworld").expect("decoded");
+    assert_eq!(w.default_water_height, None);
+}

@@ -745,6 +745,15 @@ pub struct WorldspaceRecord {
     /// Default water FormID (NAM2). `None` when the worldspace has
     /// no authored default water plane.
     pub water_form: Option<u32>,
+    /// Default water height (DNAM "Land Data" second f32, Z-up world
+    /// units) — the water-plane Z for exterior cells with no XCLW.
+    /// `None` on Oblivion (whose WRLD carries no DNAM; the cell loader
+    /// falls back to sea level Z=0 there) and when DNAM is absent or
+    /// truncated. Layout `[default_land_height, default_water_height]`
+    /// (8 bytes) is stable across FO3/FNV (Gamebryo) and Skyrim+/FO4
+    /// (Creation Engine) — verified against FalloutNV.esm and Skyrim.esm.
+    /// See #1305 follow-up.
+    pub default_water_height: Option<f32>,
     /// Worldspace map-texture path (ICON). Empty when not authored.
     pub map_texture: String,
     /// Worldspace flags byte (DATA). See struct docs for bit layout.

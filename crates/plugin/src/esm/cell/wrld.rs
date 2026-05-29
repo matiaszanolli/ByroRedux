@@ -121,6 +121,21 @@ pub(crate) fn parse_wrld_group(
                         b"NAM2" if sub.data.len() >= 4 => {
                             record.water_form = read_form_id(&sub.data);
                         }
+                        // DNAM "Land Data": [default_land_height: f32,
+                        // default_water_height: f32]. The second f32 is the
+                        // worldspace-default water-plane Z for cells with no
+                        // XCLW (FO3/FNV/Skyrim+; Oblivion ships no DNAM and
+                        // defaults to sea level Z=0 in the loader). 8-byte
+                        // layout verified against FalloutNV.esm + Skyrim.esm.
+                        // #1305 follow-up.
+                        b"DNAM" if sub.data.len() >= 8 => {
+                            record.default_water_height = Some(f32::from_le_bytes([
+                                sub.data[4],
+                                sub.data[5],
+                                sub.data[6],
+                                sub.data[7],
+                            ]));
+                        }
                         // ZNAM — default music FormID (MUSC).
                         b"ZNAM" if sub.data.len() >= 4 => {
                             record.default_music = read_form_id(&sub.data);
