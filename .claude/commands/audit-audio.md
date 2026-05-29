@@ -13,7 +13,9 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 
 ## Scope
 
-**Crate**: `crates/audio/src/lib.rs` (M44 — single-file crate today; if it splits into submodules update entry points before launching).
+**Crate**: `crates/audio/src/lib.rs` (M44 — single-file crate today, with `crates/audio/src/tests.rs` split out post-Session-34; if `lib.rs` splits further into submodules update entry points before launching).
+
+**Engine-side consumers** (Dimension 7 — outside the crate): `byroredux/src/systems/audio.rs` (`footstep_system` + `reverb_zone_system`) and `byroredux/src/components.rs` (`FootstepEmitter` / `FootstepConfig` / `FootstepScratch`). These are the only live callers of `play_oneshot` / `set_reverb_send_db`, so the crate API audit is incomplete without them.
 
 **M44 phases shipped (ground truth — read crate docstring before audit)**:
 - Phase 1 — `AudioWorld` resource (graceful-degradation `Option<AudioManager>`), `AudioListener` / `AudioEmitter` / `OneShotSound` components, `audio_system` skeleton
@@ -28,12 +30,12 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,5`). Default: all 6.
+- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,5`). Default: all 7.
 - `--depth shallow|deep`: `shallow` = check API contracts; `deep` = trace per-frame data flow + lifecycle. Default: `deep`.
 
 ## Extra Per-Finding Fields
 
-- **Dimension**: Manager Lifecycle | Listener Pose Sync | Spatial Sub-Track Dispatch | Looping & Streaming | Reverb Send & Routing | ECS Lifecycle & Cell Streaming
+- **Dimension**: Manager Lifecycle | Listener Pose Sync | Spatial Sub-Track Dispatch | Looping & Streaming | Reverb Send & Routing | ECS Lifecycle & Cell Streaming | Gameplay Audio Wiring
 
 ## Phase 1: Setup
 
@@ -88,6 +90,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 **Checklist**:
 - Phase 4 looping: `AudioEmitter.looping = true` causes the prune sweep to issue a tweened `stop()` on the kira handle when the source entity has lost its `AudioEmitter` component (despawn-by-cell-unload, or explicit removal). Verify the tween duration is non-zero (instantaneous stop = audible click) AND that the next prune tick observes `Stopped` and drops the entry. Without the second tick, looping entries leak into the active list forever
 - Single-slot music dispatch (Phase 5): `play_music` overwrites any currently-playing track with a tweened crossfade. Verify there is exactly ONE music slot — multi-slot music is not in scope for M44, but a regression that adds a second slot would not fail any test today
+- **MUSC parse→play gap (re-scope, do NOT audit as a live path)**: cell-music FormIDs ARE parsed — `default_music` (ZNAM, `crates/plugin/src/esm/cell/wrld.rs:125`; field at `crates/plugin/src/esm/cell/mod.rs:744`) and `music_type_form` (XCMO, `wrld.rs:307`; field at `cell/mod.rs:169`) — but NO caller invokes `AudioWorld::play_music` (grep `play_music` across `byroredux/` returns zero hits; it is defined only at `crates/audio/src/lib.rs:416`). Treat cross-cell music continuity below as an explicit future-phase gap (MUSC routing on the FUTURE list), not a reachable path. The audit task is to confirm the parse→play wiring is absent (so the single-slot / main-track invariants are pinned for the eventual caller), NOT to trace a flow that has no producer
 - Music routes through the **main track** (non-spatial), NOT a spatial sub-track. Audit any path that puts music into the spatial scene — it would attenuate with listener distance, which is wrong for non-diegetic music
 - `StreamingSoundData` (kira) does NOT buffer the full decompressed PCM. Verify `load_streaming_sound_from_bytes` uses `StreamingSoundData::from_cursor`, not `StaticSoundData::from_cursor` — the latter buffers everything, OOM risk on multi-minute music tracks
 - File overload (`load_streaming_sound_from_file`): verify it resolves loose `Data/Music/*.mp3` / `*.wav` paths through the same path-resolution discipline as the BSA extractor (case-insensitive on Windows-derived game data, etc.)
@@ -101,7 +104,7 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - One global send track is created at manager init with `SendTrackBuilder` + `ReverbBuilder` effect at full-wet output. `reverb_send: Option<SendTrackHandle>` is `None` if creation failed (e.g. manager itself was inactive) — verify this fallback path does NOT cascade into any later `unwrap()`
 - Default `reverb_send_db = f32::NEG_INFINITY` ("silent / reverb off"). Engine boots with NO audible reverb. Audit any path that initialises to a finite default (would mean every cell sounds wet from frame 1)
 - Per-new-track send level: applied at `with_send` construction time. **Already-playing sounds keep their construction-time level** — this is documented in the crate docstring (lib.rs:101-105). For short SFX (footsteps, gunshots) the level naturally refreshes as new sounds replace old ones; for long sustains (looping ambients) a level change won't apply until the loop is restarted. Audit findings claiming "reverb level changes don't take effect immediately" are stale premise — verify they actually need immediate application, then propose per-track level injection (not in M44 scope)
-- Cell-load → reverb level toggle: an interior detector that runs after `cell_loader` finishes flips `set_reverb_send_db(-12.0)` for interiors, back to `f32::NEG_INFINITY` for exteriors. Verify the detector exists (or is explicitly stubbed) — without it, every cell sounds the same
+- Cell-load → reverb level toggle: the interior detector is `byroredux/src/systems/audio.rs::reverb_zone_system` (#846). It watches `CellLightingRes::is_interior` and flips `set_reverb_send_db(INTERIOR_REVERB_SEND_DB = -12.0)` for interiors, back to `EXTERIOR_REVERB_SEND_DB = f32::NEG_INFINITY` for exteriors (both `const` local to the fn). Confirm: (a) the transition is bit-equality gated (`reverb_send_db().to_bits() == target_db.to_bits()` short-circuits the no-op tick — verify the gate stays bit-equal so `NEG_INFINITY → NEG_INFINITY` never re-touches the field); (b) the system no-ops safely when `CellLightingRes` is absent (engine boot pre-cell-load) AND when `AudioWorld` is absent (headless); (c) it is registered to write `AudioWorld` BEFORE `audio_system` constructs any new spatial track this frame (it runs exclusive at `Stage::Late`, ahead of `audio_system` — see `byroredux/src/main.rs:779` vs `:801`). Without ordering, a sound built this tick picks up last tick's send level. See Dimension 7 for the full detector audit
 - `set_reverb_send_db(f32::NEG_INFINITY)` should disable routing for new tracks (kira's send semantic: -∞ dB = silent). Audit whether kira clamps `-inf` to a finite floor (some send-bus implementations do); if so, the silent default is leaky
 - Reverb-send field-drop ordering: drops between `music` and `listener` (per Dim 1). Verify
 **Output**: `/tmp/audit/audio/dim_5.md`
@@ -109,26 +112,41 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 ### Dimension 6: ECS Lifecycle & Cell Streaming (M40 Interaction)
 **Entry points**: `crates/audio/src/lib.rs` (+ `crates/audio/src/tests.rs` post-Session-34 split) — `audio_system`, `prune_stopped_sounds`, `OneShotSound`, `AudioEmitter`; cross-cut: `byroredux/src/streaming.rs` (cell unload), `byroredux/src/cell_loader/{load,unload}.rs` (cell load/unload — was monolithic cell_loader.rs pre-Session-34)
 **Checklist**:
-- `audio_system` is documented to run at `Stage::Late` (after transform propagation produces final world poses). Verify the Schedule registration matches; running before transform propagation reads stale `GlobalTransform` for the listener and emitters
+- `audio_system` is documented to run at `Stage::Late` (after transform propagation produces final world poses). Verify the Schedule registration matches (`byroredux/src/main.rs:801`, `scheduler.add_exclusive(Stage::Late, byroredux_audio::audio_system)`); running before transform propagation reads stale `GlobalTransform` for the listener and emitters
+- **Cross-stage producer→consumer ordering (footstep → audio)**: `footstep_system` is registered exclusive at `Stage::PostUpdate` (`byroredux/src/main.rs:718`) and ENQUEUES `PendingOneShot` via `AudioWorld::play_oneshot`; `audio_system` DRAINS the queue at `Stage::Late` (`byroredux/src/main.rs:801`), strictly later the SAME frame. Verify `PostUpdate` precedes `Late` in the stage order so a footstep emitted in PostUpdate is heard the same tick — never lags a frame and never silently drops on a stage reorder. `footstep_system` is also exclusive specifically so it sequences AFTER `make_transform_propagation_system` produces the final pose (pre-#848 it ran in `Stage::Update` ahead of propagation → footstep landed at last-frame's pose). Audit any move of either system out of its stage
 - `OneShotSound` marker lifecycle: removed by `dispatch_new_oneshots` after dispatch (single-frame). Audit any path that retains the marker across frames (would re-trigger the sound every frame)
 - `AudioEmitter` lifecycle: stays on the entity for the duration of playback (Phase 3 contract — callers can query "is this entity still playing?"). When the playback handle reports `Stopped`, the prune pass removes `AudioEmitter`. Verify a downstream cleanup system can despawn the now-empty entity without coupling to audio state
 - Cell unload (M40 streaming): when a cell unloads, the entities carrying `AudioEmitter` are despawned. The prune pass MUST observe loops still attached to despawned entities and issue tweened stops, NOT leave orphan kira handles ticking. The `entity: Option<EntityId>` field on `ActiveSound` is the link — verify the prune pass checks entity-still-alive AND component-still-present (despawn drops both, but a partial-despawn — emitter removed but entity alive — is the corner case)
-- Cross-cell-load music continuity: music does NOT despawn on cell transition (single-slot, lives in `AudioWorld` resource). Audit whether `play_music` on cell-load is gated on "is the new cell's music different" — re-loading the same `StreamingSoundHandle` causes a re-decode + re-stream
+- Cross-cell-load music continuity: music does NOT despawn on cell transition (single-slot, lives in `AudioWorld` resource). The "gate `play_music` on is-the-new-cell's-music-different" invariant is a FUTURE-phase contract — no cell-load caller reaches `play_music` today (see Dim 4 MUSC parse→play gap). Audit this as "the eventual MUSC caller MUST gate on FormID equality" — re-loading the same `StreamingSoundHandle` causes a re-decode + re-stream — rather than as a present regression surface
 - Listener entity despawn: if the entity carrying `AudioListener` is despawned (debug fly-cam destroy, world reset), the next `sync_listener_pose` early-returns. Verify the listener handle is cleaned up — it should drop with `AudioWorld` at engine shutdown, but a despawn-then-respawn cycle should not leak listener handles
 - `SoundCache` (Resource): process-lifetime path-keyed cache of decoded `Arc<StaticSoundData>`. Audit growth bound — should NOT grow per cell load (interning by lowercased path is the de-dupe mechanism, mirroring `AnimationClipRegistry` #790). If a cache `clear()` ever lands, verify it does NOT invalidate `Arc`s currently held by `ActiveSound` entries
 - Send-track lifetime: outlives every spatial sub-track that opted into it. Verify `reverb_send` is dropped strictly after `active_sounds` (Dim 1 invariant)
 - Future phase guard: when REGN ambient soundscapes (Phase 4 of the future-phases list) lands, expect a per-region `AudioEmitter` spawn-on-cell-enter / despawn-on-cell-leave pattern — this dimension's lifecycle invariants are the contract that will be tested then
 **Output**: `/tmp/audit/audio/dim_6.md`
 
+### Dimension 7: Gameplay Audio Wiring (Engine-Side Consumers)
+**Entry points**: `byroredux/src/systems/audio.rs` — `footstep_system`, `reverb_zone_system`; `byroredux/src/components.rs` — `FootstepEmitter`, `FootstepConfig`, `FootstepScratch`; `byroredux/src/scene.rs` (camera opt-in), `byroredux/src/asset_provider.rs` (`FootstepConfig.default_sound` population)
+**Why this dimension**: the M44 audio CRATE (Dims 1–6) is the producer of the `play_oneshot` / reverb API; the consumer that actually DRIVES it lives outside the crate, in `byroredux/src/systems/audio.rs`. `footstep_system` is the ONLY live `play_oneshot` caller in the engine, and `reverb_zone_system` is the ONLY caller of `set_reverb_send_db` on cell load. Neither was covered by the crate-scoped dimensions.
+**Checklist**:
+- **Footstep stride accumulation**: `footstep_system` walks every `FootstepEmitter`, accumulates XZ-plane (horizontal only — Y motion is not a step) movement against `FootstepEmitter.stride_threshold`, and fires one `play_oneshot` per threshold crossing. Verify only horizontal distance accumulates and `accumulated_stride` resets to `0.0` on fire (not subtracts — a subtract would carry over fractional stride and double-fire on a single large jump)
+- **First-tick seed (#848)**: on the first tick an emitter is seen (`!fs.initialised`), the system seeds `last_position = pos`, sets `initialised = true`, and `continue`s WITHOUT accumulating — otherwise the cold-start delta from origin to spawn would fire a phantom footstep. Verify the seed path exists and the seeded frame produces zero triggers
+- **`FootstepScratch` Vec reuse (#932)**: the per-tick trigger buffer lives in the `FootstepScratch` Resource (`triggers: Vec<Vec3>`, `Vec::with_capacity(32)` default) and is `clear()`-reused + `std::mem::take`-drained, NOT freshly allocated each frame. Verify the buffer's heap allocation is restored to the resource after dispatch (the `try_resource_mut::<FootstepScratch>()` re-acquire at fn end) on BOTH the success path and the `AudioWorld`-absent bail path — dropping the moved-out `Vec` would strand the capacity and re-allocate next frame
+- **Lock-drop ordering (query_mut → play_oneshot)**: Phase 1 holds `GlobalTransform` (read) + `FootstepEmitter` (write) concurrently, then RELEASES both before Phase 2 touches `AudioWorld`. The `FootstepScratch` mut-lock is also dropped (`drop(scratch)`) BEFORE `AudioWorld` is acquired — holding two resource-mut locks at once would force the TypeId-sorted acquisition contract. Verify no path holds a component query lock across a `play_oneshot` call (would serialise audio dispatch against the propagation read set)
+- **Footstep attenuation**: each footstep `play_oneshot` uses a tight `Attenuation { min_distance: 0.5, max_distance: 12.0 }` (tighter than the engine default — footsteps drop off fast). Audit any change to a wider falloff (would make distant NPC footsteps audible across a whole interior)
+- **Silent no-op contracts**: `footstep_system` returns early and silently when `FootstepConfig` is absent, when `FootstepConfig.default_sound` is `None` (no decoded footstep sound resolved — see `byroredux/src/asset_provider.rs`), when `FootstepScratch` is absent, when the emitter/transform queries fail, or when `AudioWorld` is absent. Verify NONE of these paths panic or log per-frame spam — the engine must boot and run with audio off
+- **Camera opt-in**: the player/fly-cam entity is given `FootstepEmitter` in `byroredux/src/scene.rs` (`world.insert(cam, crate::components::FootstepEmitter::new())`). Verify the opt-in is component-driven (no hardcoded camera-entity assumption inside the system), so NPCs can carry `FootstepEmitter` under future REGN/AI work
+- **`reverb_zone_system` (#846)** — the interior-reverb detector (full pins in Dim 5): re-confirm here as a gameplay-wiring consumer that `INTERIOR_REVERB_SEND_DB = -12.0` / `EXTERIOR_REVERB_SEND_DB = f32::NEG_INFINITY`, the bit-equality transition gate, the `CellLightingRes`-absent and `AudioWorld`-absent safe no-ops, and the `Stage::Late` registration ahead of `audio_system`
+**Output**: `/tmp/audit/audio/dim_7.md`
+
 ## Phase 3: Merge
 
 1. Read all `/tmp/audit/audio/dim_*.md` files
 2. Combine into `docs/audits/AUDIT_AUDIO_<TODAY>.md` with structure:
-   - **Executive Summary** — Phases shipped (1–6) vs phases stubbed (3.5b, REGN, MUSC). Findings count by severity. Headless-mode boot status (must be PASS).
+   - **Executive Summary** — Crate phases shipped (1–6) + engine-side consumers shipped (Phase 3.5 footstep gameplay loop via `footstep_system`, Phase 6 reverb detector via `reverb_zone_system`) vs phases stubbed (3.5b, REGN, MUSC routing). Note the MUSC parse→play gap explicitly (FormIDs parsed, no `play_music` caller). Findings count by severity. Headless-mode boot status (must be PASS).
    - **Lifecycle Invariant Matrix** — Field-drop order × verified / drifted, per-handle owner × renderer/audio crate.
    - **Findings** — Grouped by severity (CRITICAL first), deduplicated.
-   - **Future-Phase Readiness** — What invariants this audit pinned that the next phase (FOOT / REGN / MUSC / occlusion) will rely on.
-3. Remove cross-dimension duplicates (Dim 1's field-drop order shows up in Dims 4 + 5 + 6 — collapse into Dim 1's row)
+   - **Future-Phase Readiness** — What invariants this audit pinned that the next phase (FOOT/3.5b material sounds / REGN / MUSC / occlusion) will rely on.
+3. Remove cross-dimension duplicates (Dim 1's field-drop order shows up in Dims 4 + 5 + 6 — collapse into Dim 1's row; `reverb_zone_system` is pinned in both Dim 5 and Dim 7 — keep the full detector audit in Dim 7, leave Dim 5's pointer to it)
 
 ## Phase 4: Cleanup
 

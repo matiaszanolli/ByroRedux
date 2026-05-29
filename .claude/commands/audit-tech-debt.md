@@ -13,12 +13,12 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,5`). Default: all 10.
+- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,5`). Default: all 11.
 - `--depth shallow|deep`: `shallow` = surface counts and worst offenders; `deep` = file-by-file with concrete fix proposals. Default: `deep`.
 
 ## Extra Per-Finding Fields
 
-- **Dimension**: Stale Markers | Dead Code | Logic Duplication | Magic Numbers | Stub Implementations | Test Hygiene | Stale Documentation | Backwards-Compat Cruft | File / Function Complexity | Audit-Finding Rot
+- **Dimension**: Stale Markers | Dead Code | Logic Duplication | Magic Numbers | Stub Implementations | Test Hygiene | Stale Documentation | Backwards-Compat Cruft | File / Function Complexity | Audit-Finding Rot | NIFAL Translation-Tier Debt
 - **Age** (when applicable): commit hash + date the debt was introduced (use `git log -L` or `git blame`)
 - **Effort**: trivial (≤30 min) | small (≤2 h) | medium (≤1 day) | large (>1 day, decompose first)
 
@@ -67,12 +67,13 @@ Default tech-debt findings to LOW unless one of the above fires.
   - Closed issue + marker still present → "marker outlived its driver" (delete or reopen)
 - Does the marker reference a milestone (M21, M29, etc.) that is now complete (per ROADMAP.md)?
 - Are there `// TODO: implement` markers in code paths that are now reachable from a shipped CLI flag?
+- Sweep the Disney-BSDF lobe in `crates/renderer/shaders/triangle.frag` for new `// TODO` / `// HACK` markers and bare magic literals around the adapted GGX / Burley diffuse code. **The third-party attribution block (~lines 12–29: GLSL-PathTracer MIT notice + Burley 2012 citation) is must-not-delete** — flag any edit that strips or truncates it (MIT requires the notice travel with the code).
 - Skip markers from the last 30 days unless they reference a closed issue
 
 **Output**: `/tmp/audit/tech-debt/dim_1.md`
 
 ### Dimension 2: Dead Code & Unused Surface
-**Entry points**: `crates/`, `byroredux/`
+**Entry points**: `crates/` (19 crates — give the two newest explicit attention: `crates/sfmaterial/src/` Starfield CDB material reader, `crates/debug-ui/src/` egui overlay; both are recent and likely carry first-pass dead surface), `byroredux/`
 **Checklist**:
 - Every `#[allow(dead_code)]` — is the code actually called now, or still dead?
 - Every `pub fn` in a private module that no other module imports (run `cargo +nightly rustc -- -W unused`)
@@ -102,7 +103,8 @@ Default tech-debt findings to LOW unless one of the above fires.
 **Checklist**:
 - Bare numeric literals in `crates/nif/src/blocks/*.rs` that compare against version codes (should be a `NifVersion` constant)
 - Vulkan `MAX_*` / `MIN_*` numbers hardcoded inline (should reference `vk::PhysicalDeviceLimits` queries or named constants)
-- Shader `#define` values duplicated as Rust constants — are they kept in lockstep? Is there a shader-binding-table or generated header? (Lockstep risk is HIGH — see `feedback_shader_struct_sync.md`)
+- Shader `#define` values are now generated from a single Rust source: `crates/renderer/src/shader_constants_data.rs` (e.g. `GLASS_RAY_BUDGET = 8192`) is `include!`d by both `crates/renderer/src/shader_constants.rs` (library) and `crates/renderer/build.rs`, which emits `shaders/include/shader_constants.glsl`. The check is no longer "does generated-header infra exist" (it does) — it's **"verify every shader `#define` is sourced from `shader_constants_data.rs`; flag any literal that bypasses it"**. (Lockstep risk is HIGH — see `feedback_shader_struct_sync.md`.)
+- GPU `#[repr(C)]` struct sizes are a lockstep regression surface: `GpuCamera` is pinned at 304 B (`crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs::gpu_camera_is_288_bytes` asserts 304 — the test NAME is stale, the asserted value is current) and `GpuInstance` is pinned at its std430 size by the layout test. Flag any inline size literal that should reference these tests, and any doc comment quoting an outdated byte size.
 - Frame-budget / ray-budget / cache-size numbers (e.g., `GLASS_RAY_BUDGET = 8192`, `MAX_TOTAL_BONES`, `MAX_MATERIALS = 4096`) — are they all in one tunable module, or scattered?
 - ESM record sub-record sizes hardcoded (e.g., `if data.len() == 24`) — should map to a named constant from the record struct
 - **Don't flag**: protocol-defined magic (4-char FourCC tags, BSA/NIF magic numbers, Vulkan format enums) — these are spec, not arbitrary
@@ -110,7 +112,7 @@ Default tech-debt findings to LOW unless one of the above fires.
 **Output**: `/tmp/audit/tech-debt/dim_4.md`
 
 ### Dimension 5: Stub & Placeholder Implementations
-**Entry points**: `crates/`, `byroredux/`
+**Entry points**: `crates/` (19 crates — the recent `crates/sfmaterial/src/` (Starfield CDB) and `crates/debug-ui/src/` (egui overlay) are the likeliest to carry first-pass stubs), `byroredux/`
 **Checklist**:
 - Every `unimplemented!()` and `todo!()` — is the call site reachable from a shipped CLI flag or smoke test?
 - `panic!("not yet")` / `panic!("not implemented")` — same reachability check
@@ -145,6 +147,8 @@ Default tech-debt findings to LOW unless one of the above fires.
 - HISTORY.md entries that reference issues that were later reverted
 - README.md command examples that no longer work (`cargo run` flag changed, BSA path syntax changed)
 - `docs/legacy/` references to Gamebryo source paths that may have moved
+- Doc comments referencing the **deleted render-time `Material::classify_pbr`**: PBR resolution moved to the parse-time NIFAL boundary (`byroredux/src/material_translate.rs`) + the shared `classify_pbr_keyword` helper. `crates/core/src/ecs/components/material.rs` still carries several doc-comments naming the old `Material::classify_pbr` (e.g. ~lines 396/551/578/587/627/981) — confirm each correctly frames it as *deleted/historical*, not as a live entry point. (Covered in depth by Dimension 11.)
+- `crates/renderer/shaders/triangle.frag` doc comments quoting outdated GPU struct byte sizes (GpuCamera, GpuMaterial) — cross-check against the layout tests rather than trusting the prose.
 
 **Convention** (post-`#1114`): backticked path refs in audit-*.md claim
 "this path exists right now — find it." Forward-looking refs (a file
@@ -173,7 +177,15 @@ backticked path that does not resolve.
   ```bash
   find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1 > 2000 && $2 != "total"' | sort -rn
   ```
-  As of 2026-05-13: acceleration.rs (4200 LOC), dispatch_tests.rs (3667), cell/tests.rs (3329), draw.rs (2554), scene_buffer.rs (2367), context/mod.rs (2348), import/mesh.rs (2212), blocks/collision.rs (2162), nif/anim.rs (2101) — these pre-split paths are listed as a historical baseline; the files have since been split into submodules. As of 2026-05-14 (post-Session-36 split sweep — #29e9f45/bd45caa/9c1f723/1fe5321/fe47706/014adc8/ca81c19): 7 of 9 closed; remaining are `crates/renderer/src/vulkan/context/draw.rs` 2571 and `crates/renderer/src/vulkan/context/mod.rs` 2363 (both Vulkan-recording-adjacent, see `feedback_speculative_vulkan_fixes.md`). For each, propose a split axis (by submodule responsibility, not by line count alone).
+  Historical baseline (do NOT trust as current — re-run the command above each audit): as of 2026-05-13 the oversized set was acceleration.rs (4200 LOC), dispatch_tests.rs (3667), cell/tests.rs (3329), draw.rs (2554), scene_buffer.rs (2367), context/mod.rs (2348), import/mesh.rs (2212), blocks/collision.rs (2162), nif/anim.rs (2101) — these pre-split paths were since split into submodules (Session 34/35/36 sweeps — #29e9f45/bd45caa/9c1f723/1fe5321/fe47706/014adc8/ca81c19), all 9 closed.
+  As of **2026-05-28** the >2000 LOC set is 5 files (membership changed entirely — the two Vulkan files grew rather than shrank, and three new `byroredux/` files crossed the threshold):
+  - `crates/renderer/src/vulkan/context/draw.rs` 3337 LOC — split axis: per-pass recording groups (geometry / RT / denoise / composite / overlay), Vulkan-recording-adjacent (see `feedback_speculative_vulkan_fixes.md`).
+  - `crates/renderer/src/vulkan/context/mod.rs` 3017 LOC — split axis: struct + new() vs Drop teardown vs accessor groups, also Vulkan-recording-adjacent.
+  - `byroredux/src/asset_provider.rs` 2561 LOC — split axis: BSA/BA2 archive resolution vs TextureProvider vs mesh extraction.
+  - `byroredux/src/main.rs` 2448 LOC — split axis: App/ApplicationHandler event loop vs system registration vs boot/config plumbing.
+  - `byroredux/src/commands.rs` 2115 LOC — split axis: console-command groups (stats / entities / systems / tex.* / scene) into a per-group module.
+
+  For each, propose a split axis (by submodule responsibility, not by line count alone).
 - Functions >200 LOC — propose extraction
 - Match arms >50 cases (these usually want a lookup table)
 - Nesting depth >5 (often a state-machine extraction candidate)
@@ -192,6 +204,20 @@ backticked path that does not resolve.
 - Skill files that reference dimension counts (e.g., "all 9 dimensions") that don't match the current dimension list
 
 **Output**: `/tmp/audit/tech-debt/dim_10.md`
+
+### Dimension 11: NIFAL Translation-Tier Debt
+**Entry points**: `byroredux/src/material_translate.rs`, `crates/core/src/ecs/components/material.rs`, `crates/nif/src/import/collision.rs`, `crates/nif/src/import/walk/mod.rs`, `crates/nif/src/blocks/particle.rs`, `byroredux/src/systems/particle.rs`. Spec: `docs/engine/nifal.md`.
+
+NIFAL is the canonical translation tier: the single `ImportedMesh → Material` boundary lives at `byroredux/src/material_translate.rs::translate_material`. PBR resolution moved from a render-time path to parse time, so the old indirection left debt behind. This dimension scopes that tier for **debt only** (dead code, stale doc, leftover fallback breadcrumbs) — translation *correctness* is the domain of `/audit-nifal` (**see also `/audit-nifal`**).
+
+**Checklist**:
+- **Deleted-`classify_pbr` doc rot**: `Material::metalness` / `Material::roughness` are now plain resolved `f32` (no `Option`, no render-time fallback) — `crates/core/src/ecs/components/material.rs:216,222`. The render-time `Material::classify_pbr` is gone; only the shared `classify_pbr_keyword` helper (`material.rs:432`) and `Material::resolve_pbr` (`material.rs:588`) remain. Sweep `material.rs` for doc-comments still naming `Material::classify_pbr` (e.g. ~lines 396/551/578/587/627/981) — each must read as *deleted/historical*, never as a live method. (Overlaps Dim 7; report under Dim 11.)
+- **NaN-sentinel breadcrumbs**: `translate_material` seeds `f32::NAN` into metalness/roughness when there's no authored override (`material_translate.rs:149-150`), relying on `resolve_pbr` to fill them. Confirm no leftover comment or dead branch implies a per-draw classify fallback still exists (`static_meshes.rs` documents "no per-draw keyword scan").
+- **Typed-particle-block cruft**: `NiPSysEmitter` / `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier` are now TYPED structs in `crates/nif/src/blocks/particle.rs` feeding `extract_emitter_params` / `extract_emitter_rate` (`crates/nif/src/import/walk/mod.rs:670,713`) → `byroredux/src/systems/particle.rs::apply_emitter_params:29`. The opaque `NiPSysBlock` fallback (`particle.rs:151`, used at `walk/mod.rs:522,1184`) is still a *legitimate* path for legacy types with no modifier list — confirm it is still reachable, not orphaned dead code superseded by the typed blocks.
+- **Dropped-collision-shape breadcrumbs**: `BhkMultiSphereShape` and `BhkConvexListShape` now translate to `CollisionShape` (`crates/nif/src/import/collision.rs:301,397`) — they were previously dropped. Sweep for stale `// dropped` / `// unsupported` comments around the collision-translate arms that are now wrong.
+- Each finding here must propose a concrete deletion or doc fix; do NOT re-derive translation correctness (that is `/audit-nifal`'s job).
+
+**Output**: `/tmp/audit/tech-debt/dim_11.md`
 
 ## Phase 3: Merge
 

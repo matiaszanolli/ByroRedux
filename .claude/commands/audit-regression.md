@@ -25,6 +25,8 @@ gh issue list --repo matiaszanolli/ByroRedux --state closed --label bug --limit 
 
 If `--issues` is provided, fetch only those specific issues instead.
 
+> **Default-window caveat.** The repo now has 1200+ closed issues (past #1295). The default `--limit 50` window only covers the most-recently-closed bugs, so older high-value fixes — and the recent NIFAL / Disney-BSDF / water-caustics closure wave (e.g. #1210, #1248–#1257) — get **no coverage** unless you raise `--limit` or pass them explicitly via `--issues`. When auditing the translation/shader tier, either bump `--limit` or add those issue numbers to `--issues`. The unconditional **NIFAL canonical-translation fragile-area checks in Step 3** are the safety net for refactor-landed (never-an-issue) regressions.
+
 For each closed issue, extract:
 - **Issue number and title**
 - **File references** from the body (look for backtick-quoted paths like `crates/nif/...`)
@@ -52,11 +54,20 @@ For each closed issue, extract:
 ## Step 3: Special Checks
 
 For ByroRedux-specific fragile areas:
-- **Depth bias** (#16 and decal fixes): Verify bias values still applied for decal meshes
-- **TLAS descriptor** (validation fixes): Verify write_tlas called at init for all frames
-- **NiBoolInterpolator** (parse fix): Verify read_byte_bool not read_bool
-- **Name collision** (#9): Verify root_entity scoping still in AnimationPlayer
-- **XCLL parsing** (cell lighting): Verify byte offsets for directional rotation
+- **Depth bias** (#16 and decal fixes): Verify bias values still applied for decal meshes (`RenderLayer::depth_bias()` in `crates/core/src/ecs/components/render_layer.rs`, consumed in `crates/renderer/src/vulkan/context/draw.rs`)
+- **TLAS descriptor** (validation fixes): Verify `write_tlas` called at init for all frames (`crates/renderer/src/vulkan/scene_buffer/descriptors.rs`)
+- **NiBoolInterpolator** (parse fix): Verify `read_byte_bool` not `read_bool` (`crates/nif/src/stream.rs` + `crates/nif/src/blocks/interpolator.rs`)
+- **Name collision** (#9): Verify `root_entity` scoping still in `AnimationPlayer` (`crates/core/src/animation/player.rs`)
+- **XCLL parsing** (cell lighting): Verify byte offsets for directional rotation (`crates/plugin/src/esm/cell/walkers.rs`; canonical size sets pinned per-game era)
+
+### NIFAL canonical-translation fragile areas
+
+These guard the NIF→canonical translation tier (spec: `docs/engine/nifal.md`). Regressions here are **invisible to GitHub-issue discovery** — most landed as proactive refactors, not closed bugs — so they must be checked unconditionally. **See also `/audit-nifal`** for the dimension-level checklist of this layer.
+
+- **Single material boundary** (NIFAL): Verify `byroredux/src/material_translate.rs::translate_material` is still the *only* `ImportedMesh → Material` site (per-game material classification lives here, never in the shader), and that `Material.metalness` / `Material.roughness` (`crates/core/src/ecs/components/material.rs`) stay plain resolved `f32` — no reintroduced `Option<f32>` or render-time `classify_pbr`. The resolve-once contract is `*_override.unwrap_or(f32::NAN)` at the boundary + `Material::resolve_pbr` (calls `classify_pbr_keyword`) filling only the NaN slots.
+- **Typed particle emitter dispatch** (NIFAL): Verify `NiPSysEmitter` / `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier` still parse as **typed** blocks (`crates/nif/src/blocks/particle.rs`, dispatched in `crates/nif/src/blocks/mod.rs`), feed `extract_emitter_params` / `extract_emitter_rate` (`crates/nif/src/import/walk/mod.rs` → `ImportedEmitterParams` in `crates/nif/src/import/types.rs`), and that `byroredux/src/systems/particle.rs::apply_emitter_params` consumes them — not a silent regression to opaque `NiPSysBlock`. The regression signature is a zero-sized emitter or a clobbered preset color.
+- **Collision shape coverage** (NIFAL): Verify `BhkMultiSphereShape` + `BhkConvexListShape` still translate to a `CollisionShape` in `crates/nif/src/import/collision.rs` (they were previously dropped); a regression silently drops the shape back to `None`.
+- **Disney BSDF + GPU struct contracts** (recent shader wave): Verify `crates/renderer/shaders/triangle.frag` still carries the Disney/Burley lobe + the GLSL-PathTracer MIT attribution block (top-of-file, Burley 2012 SIGGRAPH cite), `NUM_RESERVOIRS = 16` is intact, and the `GpuCamera` size contract holds (304 B — guard test `gpu_camera_is_288_bytes` in `crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs`; note the function name is stale, the asserted value is 304). `GpuInstance` must also stay 112 B (`gpu_instance_is_112_bytes_std430_compatible`).
 
 ## Output
 

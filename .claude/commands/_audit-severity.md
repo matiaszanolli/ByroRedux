@@ -56,6 +56,17 @@ Code quality, maintainability, hardening opportunities.
 | SSBO index mismatch (instance_custom_index vs draw index) | CRITICAL |
 | G-buffer format mismatch (shader output vs attachment) | HIGH |
 | Composite reassembly wrong order (tone map before add) | MEDIUM |
+| Wrong/divergent `Material` out of NIFAL `translate_material` | HIGH |
+| Translatable block silently dropped by NIFAL (collision shape / particle emitter params) | MEDIUM |
+| `#[repr(C)]` GPU struct size/layout drifts from shader struct (`GpuInstance` / `GpuCamera` / `GpuMaterial`) | HIGH |
+
+> **NIFAL rows** (the canonical-translation rows above) gate the single
+> `ImportedMesh → Material` boundary in `byroredux/src/material_translate.rs`
+> (`translate_material`). A wrong translation there is silently wrong across
+> *every* game because `Material::metalness` / `roughness` are plain resolved
+> `f32` (`Material::resolve_pbr`, `crates/core/src/ecs/components/material.rs`)
+> with no per-draw classifier fallback to mask it — hence the HIGH minimum.
+> See also `/audit-nifal` for the dimension-level checklist of this layer.
 
 ## Decision Tree
 
@@ -64,6 +75,12 @@ Is it a Vulkan spec violation?
   → YES: At least HIGH
 Does it corrupt acceleration structures or SSBO indexing?
   → YES: CRITICAL (wrong geometry in AS or wrong SSBO lookup = GPU crash or garbage rendering)
+Does a `#[repr(C)]` GPU struct (GpuInstance/GpuCamera/GpuMaterial) drift from its shader-side layout?
+  → YES: At least HIGH (the size/offset pins in scene_buffer + material.rs are the lockstep guard; silent per-instance/per-material corruption otherwise)
+Does it emit a wrong/divergent Material from NIFAL translate_material?
+  → YES: At least HIGH (one boundary, all-game blast radius, no per-draw fallback)
+Does NIFAL silently drop a translatable block (collision shape / particle emitter params)?
+  → YES: At least MEDIUM (escalate to HIGH if it removes visible game content)
 Does it affect GPU memory or rendering correctness?
   → YES: At least HIGH
 Does it affect ray tracing synchronization (missing AS barriers)?

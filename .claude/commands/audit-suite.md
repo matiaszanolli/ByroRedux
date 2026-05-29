@@ -26,14 +26,14 @@ After NIF parser changes (N23 work):
 
 ### `--preset renderer-deep`
 After significant renderer changes:
-1. `/audit-renderer`              # all 20 dimensions (post-Session-34: dims 17 water, 18 volumetrics, 19 bloom, 20 soft shadows)
+1. `/audit-renderer`              # all 21 dimensions (post-Session-34: dims 17 water, 18 volumetrics, 19 bloom, 20 soft shadows; dim 21 Disney BSDF / PBR Gating, #1248-#1252)
 2. `/audit-performance --focus 1,2,3,7,8`
 3. `/audit-concurrency --focus 2,3,5`
 4. `/audit-safety`
 
 ### `--preset water-deep`
-After M38 water-rendering changes:
-1. `/audit-renderer --focus 8,9,10,17`     # TLAS + rays + composite + water dim
+After M38 water-rendering changes (incl. #1210 water-side caustics, now closed):
+1. `/audit-renderer --focus 8,9,10,13,17`   # TLAS + rays + composite + caustic splat (dim 13) + water dim (dim 17)
 2. `/audit-concurrency --focus 2,3`
 3. `/audit-safety`
 
@@ -79,6 +79,26 @@ After R1 material table changes (GpuMaterial layout, dedup, SSBO):
 2. `/audit-performance --focus 8`
 3. `/audit-safety` (focus on §8 R1 invariants)
 
+### `--preset nifal-deep`
+After NIFAL canonical-translation changes — the single `ImportedMesh` → `Material`
+boundary (`byroredux/src/material_translate.rs::translate_material`), `Material::resolve_pbr`
+(`crates/core/src/ecs/components/material.rs`, metalness/roughness now plain `f32`), typed
+particle emitter blocks (`NiPSysEmitter`/`NiPSysEmitterCtlr`/`NiPSysEmitterCtlrData`/
+`NiPSysGrowFadeModifier` → `extract_emitter_params`/`extract_emitter_rate` →
+`systems::particle::apply_emitter_params`), and the new collision shapes
+(`BhkMultiSphereShape` + `BhkConvexListShape` in `crates/nif/src/import/collision.rs`).
+Spec: `docs/engine/nifal.md`. See also `/audit-nifal` — the dedicated NIFAL audit owns the
+full canonical-translation tier; this preset is the cross-cutting regression sweep.
+1. `/audit-nifal`
+2. `/audit-nif --focus 7`           # NIF-parser-side translation boundary (Dimension 7: NIFAL Canonical Translation)
+3. `/audit-renderer --focus 6,14,21` # shader correctness + material table + Disney BSDF / PBR gating
+4. `/audit-ecs`                      # particle emitter components / apply_emitter_params system
+
+### `--preset pbr-deep`
+After Disney BSDF / PBR-gating changes (audit-renderer Dimension 21, #1248-#1252):
+1. `/audit-renderer --focus 9,10,21` # RT ray queries + composite + Disney BSDF / PBR gating
+2. `/audit-safety`
+
 ### `--preset sky-weather-deep`
 After M33 / M33.1 / M34 sky / weather / exterior lighting changes:
 1. `/audit-renderer --focus 9,15`
@@ -118,13 +138,15 @@ Full audit coverage (longest — run monthly or before major milestones):
 2. `/audit-ecs`
 3. `/audit-safety`
 4. `/audit-nif`
-5. `/audit-performance`
-6. `/audit-concurrency`
-7. `/audit-audio`
-8. `/audit-speedtree`
-9. `/audit-legacy-compat`
-10. `/audit-tech-debt`
-11. `/audit-regression`
+5. `/audit-nifal`              # canonical-translation tier (single ImportedMesh → Material boundary)
+6. `/audit-performance`
+7. `/audit-concurrency`
+8. `/audit-audio`
+9. `/audit-speedtree`
+10. `/audit-legacy-compat`
+11. `/audit-tech-debt`
+12. `/audit-regression`
+13. `/audit-runtime --game all`  # telemetry regression (#1283) — catches what static audits structurally can't see
 
 ### `--preset nif-all-games`
 Test NIF parser against all available game data:
@@ -132,6 +154,16 @@ Test NIF parser against all available game data:
 2. `/audit-nif --game skyrim`
 3. `/audit-nif --game oblivion`
 4. `/audit-nif --game fo4`
+5. `/audit-nif --game starfield`     # Starfield now walkable (Cydonia) — BSGeometry path exercised
+
+### `--preset per-game-all`
+Run every per-game compatibility audit (reference title first, then in compat-tier order):
+1. `/audit-fnv`
+2. `/audit-fo3`
+3. `/audit-skyrim`
+4. `/audit-oblivion`
+5. `/audit-fo4`
+6. `/audit-starfield`
 
 ### `--preset runtime-regression`
 Drive the engine headless on every supported game's representative cell

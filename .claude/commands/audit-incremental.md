@@ -28,6 +28,7 @@ If `--since` provided: `git log --since="<date>" --oneline && git diff $(git log
 | Domain | File Patterns | Risk |
 |--------|--------------|------|
 | **Vulkan/GPU** | `crates/renderer/src/vulkan/**` | HIGH |
+| **NIFAL / Canonical Translation** | `byroredux/src/material_translate.rs` (single `translate_material` boundary), `crates/core/src/ecs/components/material.rs` (`Material.metalness`/`roughness` plain `f32` + `resolve_pbr` / `classify_pbr_keyword`), `crates/nif/src/import/collision.rs` (`Imported*`→`CollisionShape`) | HIGH |
 | **RT / Accel** | `crates/renderer/src/vulkan/acceleration/`, `svgf.rs`, `gbuffer.rs`, `composite.rs` | HIGH |
 | **Volumetrics (M55)** | `crates/renderer/src/vulkan/volumetrics.rs`, `crates/renderer/shaders/volumetric_*.comp` | HIGH |
 | **Bloom (M58)** | `crates/renderer/src/vulkan/bloom.rs`, `crates/renderer/shaders/bloom_*.comp` | HIGH |
@@ -45,6 +46,11 @@ If `--since` provided: `git log --since="<date>" --oneline && git diff $(git log
 | **Main Loop** | `byroredux/src/main.rs`, `byroredux/src/commands.rs` | MEDIUM |
 | **Asset Provider** | `byroredux/src/asset_provider.rs` (sibling-BSA auto-load, AE pipeline-path strip) | MEDIUM |
 | **Audio** | `crates/audio/src/{lib,tests}.rs` | MEDIUM |
+| **SF Material (CDB)** | `crates/sfmaterial/src/**` (Starfield `materialsbeta.cdb` consumer: `chunk`, `reader`, `string_table`, `value`, `types`) | MEDIUM |
+| **Debug UI** | `crates/debug-ui/src/**` (`lib.rs`, `panels.rs` — egui-ash overlay; touches Vulkan, verify `draw_frame` interaction) | MEDIUM |
+| **Physics** | `crates/physics/src/**` (`world`, `convert`, `sync`, `components`, `config`) | MEDIUM |
+| **FaceGen** | `crates/facegen/src/**` (`egm`, `egt`, `tri`, `eval`) | MEDIUM |
+| **BGSM Materials** | `crates/bgsm/src/**` (`bgsm`, `bgem`, `base`, `template`, `reader`) | MEDIUM |
 | **Tests** | `**/tests/**`, `**/*_tests.rs`, `byroredux/tests/golden_frames.rs` | LOW |
 | **Docs** | `*.md`, `docs/**` | LOW |
 
@@ -59,6 +65,8 @@ For each changed file, read the diff and surrounding context. Check:
 - [ ] **NIF correctness**: New block parsers consume correct byte count? Version conditionals right?
 - [ ] **Tests**: Corresponding test updates? New code paths tested?
 - [ ] **Contract breaks**: Public API changed — did ALL callers update?
+- [ ] **NIFAL boundary contract**: Diff touches `byroredux/src/material_translate.rs` or `Material`'s resolved `f32` fields (`metalness`/`roughness`)? Confirm `resolve_pbr` still runs at the boundary and the fields are never left as `f32::NAN` at draw time — the `Option`→`f32` migration removed the per-draw `classify_pbr_keyword` safety net. Both load paths (`cell_loader` `spawn`, `scene` `nif_loader`) must still route through `translate_material`. See also `/audit-nifal` for the full single-boundary / no-fabrication / no-render-time-fallback audit.
+- [ ] **NIFAL particle/collision chain**: A particle diff spans three risk rows — typed blocks (`crates/nif/src/blocks/particle.rs`: `NiPSysEmitter`/`NiPSysEmitterCtlr`/`NiPSysEmitterCtlrData`/`NiPSysGrowFadeModifier`) → extraction (`crates/nif/src/import/walk/mod.rs`: `extract_emitter_params`/`extract_emitter_rate`) → system (`byroredux/src/systems/particle.rs`: `apply_emitter_params`). Check all three together. Likewise a collision diff adding shapes (`BhkMultiSphereShape`/`BhkConvexListShape` → `CollisionShape` in `crates/nif/src/import/collision.rs`) is a translation surface, not just a parser change.
 
 ## Step 4: Rust-Specific Checks
 

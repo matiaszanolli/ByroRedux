@@ -25,16 +25,26 @@ Per-game representative cells (interior-only by default — interiors load
 fast, contain dense per-cell artifacts, and don't require worldspace
 streaming). Override with `--cell <EDID>`.
 
-| Game        | Cell EDID                             | Rationale                                                                 |
-|-------------|---------------------------------------|---------------------------------------------------------------------------|
-| Oblivion    | `ICMarketDistrictTheGildedCarafe`     | The "gorgeous baseline" per `FALLOUT_SYMPTOMS_2026-05-26.md` — zero fallback textures, zero parse fails. Catches regressions on the cleanest path. |
-| FNV         | `GSDocMitchellHouse`                  | Used in `FALLOUT_SYMPTOMS_2026-05-26.md` F2 investigation; well-characterized fallback-texture distribution. |
-| FO3         | `MegatonPlayerHouse`                  | F2 sibling; 929 REFRs, exterior-style architecture in interior shell.    |
-| Skyrim SE   | `WhiterunDragonsreach`                | 5 885 entities — stress-tests the per-entity hot path.                    |
-| FO4         | `InstituteBioScience`                 | FO4 BGSM-heavy + bhkNPCollisionObject test bed (#1277 Task 1).            |
+> **Baseline reality check.** Only ONE baseline is checked in today:
+> `.claude/audit-baselines/runtime/fnv-FreesideAtomicWrangler.tsv`. The
+> rows below are the *candidate* representative cells; a row only becomes
+> a diffable regression guard once its baseline TSV is committed (Phase 4
+> emits "BASELINE CREATED" on first run). Before relying on a row, confirm
+> its baseline exists; otherwise the run only establishes a new baseline.
+
+| Game        | Cell EDID                             | Baseline | Rationale                                                                 |
+|-------------|---------------------------------------|----------|---------------------------------------------------------------------------|
+| FNV         | `FreesideAtomicWrangler`              | ✓        | The one committed baseline today (9 250 entities, post-#1284 schema). Primary regression guard. |
+| FNV (alt)   | `GSDocMitchellHouse`                  | —        | `FALLOUT_SYMPTOMS_2026-05-26.md` F2 investigation; well-characterized fallback-texture distribution. |
+| Oblivion    | `ICMarketDistrictTheGildedCarafe`     | —        | The "gorgeous baseline" per `FALLOUT_SYMPTOMS_2026-05-26.md` — zero fallback textures, zero parse fails. Catches regressions on the cleanest path. |
+| FO3         | `MegatonPlayerHouse`                  | —        | F2 sibling; 929 REFRs, exterior-style architecture in interior shell.    |
+| Skyrim SE   | `WhiterunDragonsreach`                | —        | Stress-tests the per-entity hot path.                                    |
+| FO4         | `InstituteBioScience`                 | —        | FO4 BGSM-heavy + bhkNPCollisionObject test bed (#1277 Task 1).           |
+| Starfield   | `CityCydoniaMainLevel`                | —        | SF ESM Phase 1 (`eac91535`) now loads cells; first walkable SF render in Session 42 (`83e4326d`, see `docs/audits/SF_FIRST_RENDER_2026-05-28.md`). First SF runtime-telemetry candidate (`--materials-ba2` required for BGSM resolution). |
 
 `--game all` runs the suite across every game whose data is available
-(`BYROREDUX_*_DATA` env-var lookup per `crates/nif/tests/common/mod.rs`).
+(`BYROREDUX_*_DATA` env-var lookup per
+`crates/nif/tests/common/mod.rs::game_data_dir`).
 
 ## Parameters (from $ARGUMENTS)
 
@@ -90,10 +100,23 @@ For each `(game, cell)` pair selected by `--game` / `--cell`:
 5. Drive the telemetry capture sequence:
 
    ```bash
-   printf "stats\ntex.missing\nmesh.cache failed\nlight.dump\nbench-stats\nquit\n" \
+   printf "stats\ntex.missing\nmesh.cache failed\nlight.dump\nquit\n" \
      | ./target/release/byro-dbg \
      > "/tmp/audit/runtime/<game>-<cell>.telem.txt" 2>&1
    ```
+
+   > **No `bench-stats` console command exists.** The four live commands
+   > are `stats` / `tex.missing` / `mesh.cache failed` / `light.dump`
+   > (`byroredux/src/commands.rs`); there is no `bench-stats`. Bench
+   > scalars (`wall_fps`, `draws=N/Mb/Kc`) are parsed from the single
+   > `bench:` summary line printed to stdout at `--bench-frames` exit
+   > (`byroredux/src/main.rs:2096`), so they land in the
+   > `<game>-<cell>.engine.log` file, **not** the byro-dbg telemetry
+   > stream. Likewise `skin_pool_*` is NOT in the `stats` command output
+   > (`commands.rs:48`) nor the `bench:` line — it is emitted to the
+   > `engine::stats` log target once per wall-second
+   > (`byroredux/src/systems/debug.rs:46`, `skin=L/M+S`), so grep the
+   > engine log for the last `skin=` line.
 
 6. Tear down: `kill -INT $PID; sleep 2; kill -9 $PID; wait $PID`.
 
@@ -101,18 +124,40 @@ Runs for up to 4 games in parallel (Xvfb auto-display lets them coexist).
 
 ## Phase 3: Extract Comparable Metrics
 
-For each captured `.telem.txt` file, parse out the comparable scalars:
+For each captured `.telem.txt` / `.engine.log` file, parse out the
+comparable scalars. These keys are the LIVE baseline contract — they must
+match the checked-in TSV exactly (see
+`.claude/audit-baselines/runtime/fnv-FreesideAtomicWrangler.tsv`), or the
+skill cannot diff its own baseline:
 
-| Metric                       | Source line                  | Direction       |
-|------------------------------|------------------------------|-----------------|
-| `entities_total`             | `stats` output               | exact match     |
-| `tex_missing_unique_paths`   | `tex.missing` summary line   | ≤ baseline      |
-| `tex_missing_entity_count`   | `tex.missing` summary line   | ≤ baseline      |
-| `mesh_cache_failed_count`    | `mesh.cache failed` summary  | ≤ baseline      |
-| `light_count_directional`    | `light.dump` summary         | exact match     |
-| `light_count_point`          | `light.dump` summary         | exact match     |
-| `bench_fps_p50`              | `bench-stats` summary        | ≥ baseline ×0.9 |
-| `bench_draw_calls_total`     | `bench-stats` summary        | ≤ baseline ×1.1 |
+| Metric                        | Source line                          | Direction       |
+|-------------------------------|--------------------------------------|-----------------|
+| `entities_total`              | `stats` output (`Entities:`)         | exact match     |
+| `tex_missing_unique_paths`    | `tex.missing` summary line           | ≤ baseline      |
+| `mesh_cache_failed_count`     | `mesh.cache failed` summary          | ≤ baseline      |
+| `light_count_directional`     | `light.dump` (`CellLightingRes`)     | exact match     |
+| `skin_pool_live`              | engine-log `skin=L/M+S` (`L`)        | ≤ baseline      |
+| `skin_pool_max`               | engine-log `skin=L/M+S` (`M`)        | exact match     |
+| `skin_pool_overflow_attempts` | engine-log `skin=L/M+S` (`S`)        | `== 0` (exact)  |
+| `bench_fps_p50`               | `bench:` line `wall_fps` (main.rs:2096) | ≥ baseline ×0.9 |
+| `bench_fps_avg`               | `bench:` line `wall_fps` (main.rs:2096) | ≥ baseline ×0.9 |
+| `bench_draws_cmds`            | `bench:` line `draws=N/Mb/Kc` (`N`)  | ≤ baseline ×1.1 |
+| `bench_draws_batches`         | `bench:` line `draws=N/Mb/Kc` (`M`)  | ≤ baseline ×1.1 |
+| `bench_draws_gpu_calls`       | `bench:` line `draws=N/Mb/Kc` (`K`)  | ≤ baseline ×1.1 |
+
+Notes on the bench scalars:
+- The engine emits a single `wall_fps` (`main.rs:2059`), NOT a p50/avg
+  percentile distribution. The baseline's `bench_fps_p50` / `bench_fps_avg`
+  are therefore both mapped from that one `wall_fps` value (capture it
+  twice, or re-run and average across runs if you want a true mean). Do
+  not invent a percentile the engine never computes.
+- `bench_draws_*` is the #1258 three-way split (`30e2360f`): `N` input
+  DrawCommands / `M` post-merge batches / `K` actual GPU calls
+  (`main.rs:2122`). The pre-#1258 single `bench_draw_calls_total` is gone.
+- The `light.dump` command (`commands.rs:1669`) dumps
+  `CellLightingRes` / `SkyParamsRes` / `GameTimeRes` only — it surfaces the
+  one directional sun, NOT a per-point-light count, so there is no
+  `light_count_point` metric.
 
 Write the extracted scalars to a per-run TSV:
 `/tmp/audit/runtime/<game>-<cell>.current.tsv`.
@@ -129,7 +174,10 @@ For each `(game, cell)` pair, compare
   surfaces as "BASELINE UPDATED".
 - **Metric regressed** (against the direction in the Phase 3 table):
   emit a finding per metric with severity per the regression magnitude:
-  - HIGH: `tex_missing_*` or `mesh_cache_failed_count` grew, OR
+  - HIGH: `tex_missing_*` or `mesh_cache_failed_count` grew,
+    `skin_pool_overflow_attempts` moved off `0` (any spill means at least
+    one entity is rendering in bind pose for lack of a slot — pin to #1284
+    `SkinSlotPool` cap + descriptor-pool fix, `a3c2836a`), OR
     `bench_fps_p50` dropped > 20 %.
   - MEDIUM: any other count moved against direction.
   - LOW: count drift within ±5 % on tolerance metrics.
@@ -159,8 +207,18 @@ For each `(game, cell)` pair, compare
    - **Current**: 58 unique missing texture paths (+4)
    - **Top new misses**: …
    - **Suggested Fix**: re-run `tex.missing entities` to identify the
-     responsible REFRs; compare against last commit touching
-     `byroredux/src/asset_provider.rs` or the texture resolution chain.
+     responsible REFRs; compare against the last commit touching
+     `byroredux/src/asset_provider.rs` (resolution chain) OR the NIFAL
+     canonical-translation boundary
+     `byroredux/src/material_translate.rs::translate_material` /
+     `Material::resolve_pbr`
+     (`crates/core/src/ecs/components/material.rs:588`) — a regression
+     that drops a texture slot at the single `ImportedMesh`→`Material`
+     boundary surfaces here as a runtime `tex.missing` bump. Cross-check
+     against the import-side sibling
+     `crates/nif/tests/translation_completeness.rs` (`MaterialStats`
+     per-game slot coverage), and run **`/audit-nifal`** for a static
+     audit of that translation tier.
    ```
 
 2. Inform the user the report is ready.
@@ -205,3 +263,10 @@ For each `(game, cell)` pair, compare
 - Per-game data lookup: [crates/nif/tests/common/mod.rs](../../crates/nif/tests/common/mod.rs)
 - Determinism precedent: [byroredux/tests/golden_frames.rs](../../byroredux/tests/golden_frames.rs)
 - Sibling import-side harness: [crates/nif/tests/translation_completeness.rs](../../crates/nif/tests/translation_completeness.rs)
+- NIFAL canonical-translation static audit (the runtime `tex.missing`
+  proxy's code-side counterpart): **`/audit-nifal`** —
+  [.claude/commands/audit-nifal.md](audit-nifal.md);
+  spec [docs/engine/nifal.md](../../docs/engine/nifal.md);
+  boundary fn [byroredux/src/material_translate.rs](../../byroredux/src/material_translate.rs)
+- SkinSlotPool cap + spill telemetry: [#1284](https://github.com/matiaszanolli/ByroRedux/issues/1284) (`a3c2836a`)
+- DrawCommand vs GPU-call split (`draws=N/Mb/Kc`): [#1258](https://github.com/matiaszanolli/ByroRedux/issues/1258) (`30e2360f`)
