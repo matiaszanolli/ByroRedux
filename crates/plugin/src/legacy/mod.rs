@@ -27,6 +27,13 @@
 //! parsed records into the stable `Record` form will land alongside its
 //! first real consumer.
 
+// Forward-looking scaffolding: these types are exercised only by their own
+// unit tests until the esm→`Record` consumer lands (see module docs above).
+// `pub(crate)` (per #1322) keeps them off the external API surface, which
+// makes the non-test build see them as unused — allow it deliberately rather
+// than re-widen to `pub` or delete tested design scaffolding.
+#![allow(dead_code)]
+
 use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
 
 // ── LegacyFormId ────────────────────────────────────────────────────────
