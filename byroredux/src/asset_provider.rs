@@ -1060,6 +1060,18 @@ pub(crate) fn merge_bgsm_into_mesh(
         // → metallic-roughness translation below.
         mesh.from_bgsm = true;
         touched = true;
+        // #1352 / FO4-D7-03 — route ALL BGSM-authored content through the
+        // Disney diffuse lobe (MAT_FLAG_PBR_BSDF via `pack_bgsm_material_flags`),
+        // not just the rarely-authored `bgsm.pbr == true` case (0 of 793
+        // sampled vanilla FO4 BGSMs set it). The spec-glossiness →
+        // metallic-roughness translation below gives every `from_bgsm` mesh
+        // valid metalness/roughness for the lobe to consume; the per-BGSM
+        // `if bgsm.pbr` set below is now subsumed (kept as a defensive
+        // backstop). NOTE: this changes the diffuse shading of all vanilla
+        // FO4 BGSM content (was Lambert, correct-as-authored for Bethesda's
+        // modified Blinn-Phong pipeline) — pending RenderDoc visual
+        // validation on real FO4 content. Reverting is this single line.
+        mesh.is_pbr = true;
 
         // ── Translation layer (BGSM spec-glossiness → standard PBR) ──
         //
@@ -2058,9 +2070,12 @@ mod tests {
     }
 
     /// Companion: with all three flags `false` on the BGSM, the
-    /// merge must leave the `ImportedMesh` defaults unchanged. Pins
-    /// "first true wins" — a `false` author doesn't override a
-    /// previously-set `true`.
+    /// translucency / model-space-normal mesh fields must stay at their
+    /// defaults (a `false` author doesn't override). `is_pbr` is the
+    /// exception post-#1352: it is now driven by `from_bgsm` (any
+    /// successful BGSM resolve), NOT by `bgsm.pbr`, so it is `true` even
+    /// here — every vanilla FO4 BGSM (which never sets `pbr`) routes
+    /// through the Disney lobe.
     #[test]
     fn bgsm_merge_does_not_set_phase1_flags_from_false() {
         let mut is_pbr = false;
@@ -2074,7 +2089,11 @@ mod tests {
             ..Default::default()
         };
 
-        if !is_pbr && bgsm.pbr {
+        // #1352 — a successful BGSM resolve sets `from_bgsm = true`, which
+        // now unconditionally implies `is_pbr` (the per-BGSM `bgsm.pbr`
+        // gate is a subsumed backstop).
+        let from_bgsm = true;
+        if from_bgsm || bgsm.pbr {
             is_pbr = true;
         }
         if !has_translucency && bgsm.translucency {
@@ -2084,7 +2103,10 @@ mod tests {
             model_space_normals = true;
         }
 
-        assert!(!is_pbr);
+        assert!(
+            is_pbr,
+            "#1352: from_bgsm now implies is_pbr regardless of bgsm.pbr"
+        );
         assert!(!has_translucency);
         assert!(!model_space_normals);
     }
