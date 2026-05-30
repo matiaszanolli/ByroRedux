@@ -18,12 +18,15 @@ use crate::esm::sub_reader::SubReader;
 ///     fog_clip / fog_power tail).
 ///   - Skyrim LE / SE: 92 bytes (shared + 6-RGBA ambient cube + specular
 ///     + extended fog + light-fade range).
-///   - Starfield: 108 bytes (#1291 — Skyrim+ 92-byte body PLUS a
-///     16-byte SF-specific tail; the tail's exact layout is undecoded
-///     today, but everything through 92 bytes (cube ambient + extended
-///     fog) decodes correctly through the existing Skyrim+ arm). The
-///     14 808 vanilla cells across Starfield.esm + ShatteredSpace.esm +
-///     BlueprintShips-Starfield.esm all ship at exactly 108 bytes.
+///   - Starfield: 108 bytes (#1291 / #1293). NOT "Skyrim + 16-byte
+///     tail" — Starfield's XCLL shares only bytes 0-39 with Skyrim and
+///     then diverges into a distinct volumetric height-fog model (no
+///     ambient cube / specular / fresnel): Fog Color Far, Fog Max,
+///     Light Fade, Near/Far Height Mid/Range, Fog Color High Near/Far,
+///     four fog scales, and an Interior Type enum. It gets a dedicated
+///     decode (`game == Starfield && len == 108`) per xEdit SF1
+///     `wbStruct(XCLL,'Lighting')`, byte-verified against Starfield.esm.
+///     The ~11 985 vanilla Starfield.esm cells all ship at exactly 108.
 const XCLL_SIZES_OBLIVION: &[usize] = &[28, 32, 36];
 const XCLL_SIZES_FALLOUT_ERA: &[usize] = &[28, 40];
 const XCLL_SIZES_SKYRIM: &[usize] = &[28, 92];
@@ -109,14 +112,14 @@ mod xcll_gate_tests {
     /// (more importantly) misled future SF cell-layout debugging by
     /// suggesting the SF authoring shape matched FO4.
     ///
-    /// The existing dispatch arm at `walkers.rs::b"XCLL"` already
-    /// decodes through 92 bytes correctly (Skyrim+ 6×RGBA ambient
-    /// cube + specular + extended fog + light-fade range — confirmed
-    /// via byro-dbg `light.dump` on a loaded Cydonia cell). The
-    /// trailing 16 bytes (108 - 92) are SF-specific extension fields
-    /// whose layout isn't yet decoded — tracked separately as a
-    /// follow-up to #1291. Adding 108 to the canonical set stops the
-    /// spurious warn without changing what decodes today.
+    /// #1293 corrected the original assumption here: Starfield's XCLL
+    /// does NOT decode "through 92 bytes" as Skyrim — it shares only
+    /// bytes 0-39 and then diverges into a volumetric height-fog model
+    /// (no ambient cube). The `b"XCLL"` arm now has a dedicated
+    /// `game == Starfield && len == 108` branch decoding the full SF
+    /// layout (xEdit SF1, byte-verified against Starfield.esm); see
+    /// `parse_cell_starfield_xcll_decodes_volumetric_height_fog_tail`.
+    /// Adding 108 to the canonical set keeps the sanity-warn quiet.
     #[test]
     fn starfield_xcll_sizes_pinned() {
         assert_eq!(
@@ -507,6 +510,80 @@ pub(crate) fn parse_cell_group(
                             let rot_x = (r.i32_or_default() as f32).to_radians();
                             let rot_y = (r.i32_or_default() as f32).to_radians();
 
+                            // #1293 — Starfield's 108-byte XCLL diverges from
+                            // the Skyrim layout at offset 40: bytes 40-107 are a
+                            // volumetric height-fog model (xEdit SF1
+                            // `wbStruct(XCLL,'Lighting')`), NOT the Skyrim
+                            // ambient-cube / specular / fresnel. The Skyrim arm
+                            // below would misread ~52 bytes per SF cell, so
+                            // Starfield gets a dedicated decode here. `r` is at
+                            // offset 28 (shared 0-27 prefix read above). Byte 28
+                            // is `Gravity Scale` (Skyrim's `Directional Fade`
+                            // slot); 32/36 fog clip/power are shared; 40-55
+                            // fog-far-colour / max / light-fade map onto the
+                            // base fields; the rest is SF-only height-fog.
+                            if game == GameKind::Starfield && sub.data.len() == 108 {
+                                let gravity_scale = r.f32_or_default(); // 28
+                                let fog_clip = r.f32_or_default(); // 32 Fog Clip Distance
+                                let fog_power = r.f32_or_default(); // 36 Fog Power
+                                let fog_far_color = r.rgb_color().unwrap_or([0.0; 3]); // 40 Fog Color Far
+                                let fog_max = r.f32_or_default(); // 44 Fog Max
+                                let lf_begin = r.f32_or_default(); // 48 Light Fade Begin
+                                let lf_end = r.f32_or_default(); // 52 Light Fade End
+                                let unknown_color = r.rgb_color().unwrap_or([0.0; 3]); // 56 Unknown
+                                let near_height_mid = r.f32_or_default(); // 60 Near Height Mid
+                                let near_height_range = r.f32_or_default(); // 64 Near Height Range
+                                let fog_color_high_near = r.rgb_color().unwrap_or([0.0; 3]); // 68
+                                let fog_color_high_far = r.rgb_color().unwrap_or([0.0; 3]); // 72
+                                let high_density_scale = r.f32_or_default(); // 76 High Density Scale
+                                let fog_near_scale = r.f32_or_default(); // 80 Fog Near Scale
+                                let fog_far_scale = r.f32_or_default(); // 84 Fog Far Scale
+                                let fog_high_near_scale = r.f32_or_default(); // 88 Fog High Near Scale
+                                let fog_high_far_scale = r.f32_or_default(); // 92 Fog High Far Scale
+                                let far_height_mid = r.f32_or_default(); // 96 Far Height Mid
+                                let far_height_range = r.f32_or_default(); // 100 Far Height Range
+                                let interior_type = r.u8_or_default(); // 104 (105-107 unused pad)
+                                lighting = Some(CellLighting {
+                                    ambient,
+                                    directional_color,
+                                    directional_rotation: [rot_x, rot_y],
+                                    fog_color,
+                                    fog_near,
+                                    fog_far,
+                                    // SF reuses byte 28 as gravity_scale, and has
+                                    // no ambient cube / specular / fresnel.
+                                    directional_fade: None,
+                                    fog_clip: Some(fog_clip),
+                                    fog_power: Some(fog_power),
+                                    fog_far_color: Some(fog_far_color),
+                                    fog_max: Some(fog_max),
+                                    light_fade_begin: Some(lf_begin),
+                                    light_fade_end: Some(lf_end),
+                                    directional_ambient: None,
+                                    specular_color: None,
+                                    specular_alpha: None,
+                                    fresnel_power: None,
+                                    starfield: Some(StarfieldLighting {
+                                        gravity_scale,
+                                        unknown_color,
+                                        near_height_mid,
+                                        near_height_range,
+                                        fog_color_high_near,
+                                        fog_color_high_far,
+                                        high_density_scale,
+                                        fog_near_scale,
+                                        fog_far_scale,
+                                        fog_high_near_scale,
+                                        fog_high_far_scale,
+                                        far_height_mid,
+                                        far_height_range,
+                                        interior_type,
+                                    }),
+                                });
+                                // SF XCLL fully decoded — skip the Skyrim path.
+                                continue;
+                            }
+
                             let (dir_fade, fog_clip, fog_power) = if sub.data.len() >= 40 {
                                 (
                                     Some(r.f32_or_default()),
@@ -567,6 +644,8 @@ pub(crate) fn parse_cell_group(
                                 specular_color,
                                 specular_alpha,
                                 fresnel_power,
+                                // Skyrim/FNV/Oblivion path — no SF tail.
+                                starfield: None,
                             });
                         }
                         _ => {}

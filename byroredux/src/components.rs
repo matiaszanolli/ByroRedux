@@ -337,6 +337,7 @@ mod cell_lighting_res_tests {
             specular_color: None,
             specular_alpha: None,
             fresnel_power: None,
+            starfield: None,
         }
     }
 
@@ -366,6 +367,7 @@ mod cell_lighting_res_tests {
             specular_color: Some([0.30, 0.30, 0.32]),
             specular_alpha: Some(1.0),
             fresnel_power: Some(2.5),
+            starfield: None,
         }
     }
 
@@ -445,6 +447,7 @@ mod cell_lighting_res_tests {
             specular_color: None,
             specular_alpha: None,
             fresnel_power: None,
+            starfield: None,
         };
         let res = CellLightingRes::from_cell_lighting(&lit, [0.0, 1.0, 0.0], true);
         assert!(res.directional_fade.is_none());

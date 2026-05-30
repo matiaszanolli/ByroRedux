@@ -72,7 +72,61 @@ pub struct CellLighting {
     /// decide whether the RGBA packing was intentional or padding.
     pub specular_alpha: Option<f32>,
     /// Fresnel power exponent (bytes 68-71). `None` on pre-Skyrim XCLL.
+    /// Skyrim-only — `None` on Starfield (its XCLL has no fresnel field).
     pub fresnel_power: Option<f32>,
+    /// Starfield-specific XCLL fields. `Some` only for Starfield's
+    /// 108-byte XCLL, whose bytes 40-107 are a volumetric height-fog
+    /// model distinct from the Skyrim ambient-cube layout (#1293). When
+    /// `Some`, `directional_ambient` / `specular_*` / `fresnel_power` are
+    /// `None` (Starfield doesn't author them) and `directional_fade` is
+    /// `None` (Starfield reuses byte 28 as [`StarfieldLighting::gravity_scale`]).
+    pub starfield: Option<StarfieldLighting>,
+}
+
+/// Starfield-only XCLL fields (offsets within the 108-byte XCLL). The
+/// shared 0-19 colours/fog and the 32/36 fog-clip/power decode onto the
+/// base [`CellLighting`] fields; the 40-55 fog-far-colour / fog-max /
+/// light-fade map onto `fog_far_color` / `fog_max` / `light_fade_*`.
+/// Everything below is Starfield's distinct volumetric height-fog model
+/// with no Skyrim equivalent. Layout per xEdit SF1 `wbDefinitionsSF1.pas`
+/// (`wbStruct(XCLL, 'Lighting', ...)`), confirmed byte-exact against
+/// vanilla `Starfield.esm` (the `interior_type` enum 0-4 and the 3-byte
+/// trailing `Unused` pad both match the on-disk distribution). #1293.
+#[derive(Debug, Clone)]
+pub struct StarfieldLighting {
+    /// Gravity scale (byte 28). Skyrim stores `Directional Fade` here.
+    pub gravity_scale: f32,
+    /// "Unknown" RGB colour (bytes 56-58; 4th byte unused). xEdit labels
+    /// this field `Unknown`.
+    pub unknown_color: [f32; 3],
+    /// Near-fog height midpoint (bytes 60-63).
+    pub near_height_mid: f32,
+    /// Near-fog height range (bytes 64-67).
+    pub near_height_range: f32,
+    /// High-altitude near-fog colour (bytes 68-70).
+    pub fog_color_high_near: [f32; 3],
+    /// High-altitude far-fog colour (bytes 72-74).
+    pub fog_color_high_far: [f32; 3],
+    /// High-density fog scale (bytes 76-79).
+    pub high_density_scale: f32,
+    /// Fog near scale (bytes 80-83).
+    pub fog_near_scale: f32,
+    /// Fog far scale (bytes 84-87).
+    pub fog_far_scale: f32,
+    /// High-altitude fog near scale (bytes 88-91).
+    pub fog_high_near_scale: f32,
+    /// High-altitude fog far scale (bytes 92-95).
+    pub fog_high_far_scale: f32,
+    /// Far-fog height midpoint (bytes 96-99).
+    pub far_height_mid: f32,
+    /// Far-fog height range (bytes 100-103).
+    pub far_height_range: f32,
+    /// Interior type (byte 104). Raw enum — per xEdit SF1:
+    /// 0=Interior, 1=Ship Cell, 2=Space Cell, 3=PackIn,
+    /// 4=Instanceable Interior. Captured raw; downstream mapping is
+    /// consumer work (mirrors `dial_type` / `response_type`). The 3
+    /// trailing bytes (105-107) are uninitialized CK pad — discarded.
+    pub interior_type: u8,
 }
 
 /// A texture layer within a terrain quadrant.

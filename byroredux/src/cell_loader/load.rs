@@ -364,5 +364,8 @@ pub(crate) fn resolve_cell_lighting(
         specular_color: None,
         specular_alpha: None,
         fresnel_power: None,
+        // SF volumetric height-fog fields ride on the inline 108-byte
+        // XCLL, not the LGTM template stub (#1293).
+        starfield: None,
     })
 }

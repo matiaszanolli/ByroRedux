@@ -574,6 +574,115 @@ fn parse_cell_skyrim_xcll_extracts_directional_ambient_cube() {
 }
 
 #[test]
+fn parse_cell_starfield_xcll_decodes_volumetric_height_fog_tail() {
+    // #1293 — Starfield's 108-byte XCLL diverges from the Skyrim
+    // layout at offset 40: bytes 40-107 are a volumetric height-fog
+    // model (xEdit SF1 `wbStruct(XCLL,'Lighting')`), NOT the Skyrim
+    // ambient-cube / specular / fresnel. Build a synthetic 108-byte
+    // XCLL and assert the SF fields land in `CellLighting.starfield`
+    // (with the 40-55 fog-far/max/light-fade on the base fields), and
+    // that the Skyrim-only ambient cube / specular / fresnel stay None.
+    let mut xcll = Vec::with_capacity(108);
+    xcll.extend_from_slice(&[80, 82, 85, 0]); // 0  ambient
+    xcll.extend_from_slice(&[200, 195, 180, 0]); // 4  directional
+    xcll.extend_from_slice(&[50, 55, 60, 0]); // 8  fog color near
+    xcll.extend_from_slice(&100.0f32.to_le_bytes()); // 12 fog near
+    xcll.extend_from_slice(&5000.0f32.to_le_bytes()); // 16 fog far
+    xcll.extend_from_slice(&(45i32).to_le_bytes()); // 20 rot XY
+    xcll.extend_from_slice(&(30i32).to_le_bytes()); // 24 rot Z
+    xcll.extend_from_slice(&0.7f32.to_le_bytes()); // 28 gravity scale
+    xcll.extend_from_slice(&7500.0f32.to_le_bytes()); // 32 fog clip
+    xcll.extend_from_slice(&1.5f32.to_le_bytes()); // 36 fog power
+    xcll.extend_from_slice(&[120, 130, 140, 0]); // 40 fog color far
+    xcll.extend_from_slice(&0.85f32.to_le_bytes()); // 44 fog max
+    xcll.extend_from_slice(&500.0f32.to_le_bytes()); // 48 light fade begin
+    xcll.extend_from_slice(&800.0f32.to_le_bytes()); // 52 light fade end
+    xcll.extend_from_slice(&[10, 11, 12, 0]); // 56 unknown color
+    xcll.extend_from_slice(&(-20.0f32).to_le_bytes()); // 60 near height mid
+    xcll.extend_from_slice(&24.0f32.to_le_bytes()); // 64 near height range
+    xcll.extend_from_slice(&[30, 31, 32, 0]); // 68 fog color high near
+    xcll.extend_from_slice(&[40, 41, 42, 0]); // 72 fog color high far
+    xcll.extend_from_slice(&0.5f32.to_le_bytes()); // 76 high density scale
+    xcll.extend_from_slice(&1.1f32.to_le_bytes()); // 80 fog near scale
+    xcll.extend_from_slice(&1.2f32.to_le_bytes()); // 84 fog far scale
+    xcll.extend_from_slice(&1.3f32.to_le_bytes()); // 88 fog high near scale
+    xcll.extend_from_slice(&0.8f32.to_le_bytes()); // 92 fog high far scale
+    xcll.extend_from_slice(&20.0f32.to_le_bytes()); // 96 far height mid
+    xcll.extend_from_slice(&10.0f32.to_le_bytes()); // 100 far height range
+    xcll.push(2); // 104 interior type = Space Cell
+    xcll.extend_from_slice(&[0xAB, 0xAB, 0xAB]); // 105 unused (CK garbage)
+    assert_eq!(xcll.len(), 108, "Starfield XCLL must be 108 bytes");
+
+    let mut sub_data = Vec::new();
+    let edid = "CydoniaInt\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01); // interior
+    sub_data.extend_from_slice(b"XCLL");
+    sub_data.extend_from_slice(&(xcll.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(&xcll);
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&0xCAFEu32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+
+    let mut reader = super::super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Starfield).unwrap();
+
+    let cell = cells.get("cydoniaint").expect("interior CELL present");
+    let lit = cell.lighting.as_ref().expect("XCLL must populate lighting");
+
+    // Shared head decodes as on every game.
+    assert_eq!(lit.fog_near, 100.0);
+    assert_eq!(lit.fog_far, 5000.0);
+    // 32/36 fog clip/power are shared offsets.
+    assert_eq!(lit.fog_clip, Some(7500.0));
+    assert_eq!(lit.fog_power, Some(1.5));
+    // 40-55 fog-far-colour / max / light-fade map onto the base fields.
+    assert_eq!(lit.fog_far_color, Some([120.0 / 255.0, 130.0 / 255.0, 140.0 / 255.0]));
+    assert_eq!(lit.fog_max, Some(0.85));
+    assert_eq!(lit.light_fade_begin, Some(500.0));
+    assert_eq!(lit.light_fade_end, Some(800.0));
+
+    // Skyrim-only fields MUST stay None — Starfield has no ambient
+    // cube / specular / fresnel, and byte 28 is gravity_scale not fade.
+    assert!(lit.directional_ambient.is_none(), "SF XCLL has no Skyrim ambient cube");
+    assert!(lit.specular_color.is_none());
+    assert!(lit.specular_alpha.is_none());
+    assert!(lit.fresnel_power.is_none());
+    assert!(lit.directional_fade.is_none(), "SF reuses byte 28 as gravity_scale");
+
+    // SF-specific volumetric height-fog tail.
+    let sf = lit.starfield.as_ref().expect("Starfield XCLL must populate .starfield");
+    assert_eq!(sf.gravity_scale, 0.7);
+    assert_eq!(sf.unknown_color, [10.0 / 255.0, 11.0 / 255.0, 12.0 / 255.0]);
+    assert_eq!(sf.near_height_mid, -20.0);
+    assert_eq!(sf.near_height_range, 24.0);
+    assert_eq!(sf.fog_color_high_near, [30.0 / 255.0, 31.0 / 255.0, 32.0 / 255.0]);
+    assert_eq!(sf.fog_color_high_far, [40.0 / 255.0, 41.0 / 255.0, 42.0 / 255.0]);
+    assert_eq!(sf.high_density_scale, 0.5);
+    assert_eq!(sf.fog_near_scale, 1.1);
+    assert_eq!(sf.fog_far_scale, 1.2);
+    assert_eq!(sf.fog_high_near_scale, 1.3);
+    assert_eq!(sf.fog_high_far_scale, 0.8);
+    assert_eq!(sf.far_height_mid, 20.0);
+    assert_eq!(sf.far_height_range, 10.0);
+    assert_eq!(sf.interior_type, 2, "Space Cell — and the 3 garbage pad bytes are ignored");
+}
+
+#[test]
 fn parse_cell_fnv_xcll_decodes_colors_as_rgba() {
     // Regression guard: XCLL color fields are RGBA byte order — bytes
     // 0=R, 1=G, 2=B, 3=unused — matching the LIGH DATA revert and

@@ -87,6 +87,7 @@ fn explicit_xcll_takes_priority_over_lgtm_template() {
         specular_color: None,
         specular_alpha: None,
         fresnel_power: None,
+        starfield: None,
     });
     cell.lighting_template_form = Some(0x0020_0001);
 
