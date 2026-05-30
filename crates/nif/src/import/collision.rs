@@ -367,6 +367,15 @@ fn resolve_shape_inner(
         return resolve_shape(scene, s.shape_ref, visited);
     }
 
+    // Convex sweep — wraps a child shape swept along a direction. For static
+    // rest-pose collision the sweep direction is a runtime motion hint, not
+    // part of the collider, so we recurse into the wrapped shape (same as the
+    // MOPP wrapper above). Dispatched at blocks/mod.rs but had no resolve arm
+    // pre-#1360 → the authored collision silently dropped.
+    if let Some(s) = block.as_any().downcast_ref::<BhkConvexSweepShape>() {
+        return resolve_shape(scene, s.shape_ref, visited);
+    }
+
     // List shape — compound of sub-shapes.
     if let Some(s) = block.as_any().downcast_ref::<BhkListShape>() {
         let mut children = Vec::with_capacity(s.sub_shape_refs.len());
@@ -425,6 +434,21 @@ fn resolve_shape_inner(
         return resolve_tri_strips_collision(scene, s);
     }
 
+    // Mesh shape (Oblivion 10.0.1.0 only) — references NiTriStripsData just
+    // like BhkNiTriStripsShape, plus a per-axis Scale vector. Dispatched at
+    // blocks/mod.rs but had no resolve arm pre-#1361 → the authored collision
+    // silently dropped. The Scale folds in alongside the uniform havok_scale;
+    // a degenerate/unset scale vector falls back to identity rather than
+    // collapsing the mesh to a point (which would render as empty → None).
+    if let Some(s) = block.as_any().downcast_ref::<BhkMeshShape>() {
+        let extra = if s.scale[..3].iter().all(|c| c.is_finite() && *c != 0.0) {
+            [s.scale[0], s.scale[1], s.scale[2]]
+        } else {
+            [1.0, 1.0, 1.0]
+        };
+        return resolve_tri_strips_data_refs(scene, &s.data_refs, extra);
+    }
+
     // Packed tri strips mesh collision.
     if let Some(s) = block.as_any().downcast_ref::<BhkPackedNiTriStripsShape>() {
         let data_idx = s.data_ref.index()?;
@@ -457,11 +481,23 @@ fn resolve_tri_strips_collision(
     scene: &NifScene,
     shape: &BhkNiTriStripsShape,
 ) -> Option<CollisionShape> {
+    resolve_tri_strips_data_refs(scene, &shape.data_refs, [1.0, 1.0, 1.0])
+}
+
+/// Merge the `NiTriStripsData` referenced by `data_refs` into a single TriMesh.
+/// `extra_scale` is a per-axis multiplier applied in Havok space BEFORE the
+/// uniform `havok_scale`: `bhkNiTriStripsShape` passes identity, while
+/// `bhkMeshShape` passes its authored per-axis Scale vector.
+fn resolve_tri_strips_data_refs(
+    scene: &NifScene,
+    data_refs: &[BlockRef],
+    extra_scale: [f32; 3],
+) -> Option<CollisionShape> {
     let scale = scene.havok_scale;
     let mut all_verts = Vec::new();
     let mut all_indices = Vec::new();
 
-    for data_ref in &shape.data_refs {
+    for data_ref in data_refs {
         let Some(data_idx) = data_ref.index() else {
             continue;
         };
@@ -471,7 +507,13 @@ fn resolve_tri_strips_collision(
 
         let base_idx = all_verts.len() as u32;
         for v in &data.vertices {
-            all_verts.push(havok_to_engine(v.x, v.y, v.z) * scale);
+            all_verts.push(
+                havok_to_engine(
+                    v.x * extra_scale[0],
+                    v.y * extra_scale[1],
+                    v.z * extra_scale[2],
+                ) * scale,
+            );
         }
         // Convert triangle strips to triangles.
         for strip in &data.strips {
@@ -828,10 +870,12 @@ mod cycle_tests {
     //! resolves on both arms.
     use super::*;
     use crate::blocks::collision::{
-        BhkConvexListShape, BhkListShape, BhkMultiSphereShape, BhkSphereShape,
+        BhkConvexListShape, BhkConvexSweepShape, BhkListShape, BhkMeshShape, BhkMultiSphereShape,
+        BhkSphereShape,
     };
+    use crate::blocks::tri_shape::NiTriStripsData;
     use crate::blocks::NiObject;
-    use crate::types::BlockRef;
+    use crate::types::{BlockRef, NiPoint3};
 
     fn list_shape(refs: Vec<BlockRef>) -> Box<dyn NiObject> {
         Box::new(BhkListShape {
@@ -973,5 +1017,231 @@ mod cycle_tests {
             }
             other => panic!("expected Compound with two children, got {other:?}"),
         }
+    }
+
+    fn tri_strips_data(verts: Vec<NiPoint3>, strip: Vec<u16>) -> Box<dyn NiObject> {
+        Box::new(NiTriStripsData {
+            vertices: verts,
+            normals: Vec::new(),
+            center: NiPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            radius: 0.0,
+            vertex_colors: Vec::new(),
+            uv_sets: Vec::new(),
+            num_triangles: 0,
+            strips: vec![strip],
+        })
+    }
+
+    #[test]
+    fn convex_sweep_shape_resolves_to_inner_shape() {
+        // #1360: BhkConvexSweepShape was dispatched at parse but had no
+        // resolve arm — its wrapped shape silently dropped. It must now
+        // recurse into the wrapped shape (like the MOPP wrapper).
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkConvexSweepShape {
+            shape_ref: BlockRef(1u32),
+            material: 0,
+            radius: 0.0,
+        }));
+        scene.blocks.push(sphere_shape(4.0));
+        let mut visited = HashSet::new();
+        assert!(
+            matches!(
+                resolve_shape(&scene, BlockRef(0u32), &mut visited),
+                Some(CollisionShape::Ball { radius }) if radius == 4.0
+            ),
+            "convex-sweep must resolve to its wrapped Ball, not drop"
+        );
+    }
+
+    #[test]
+    fn mesh_shape_resolves_to_trimesh() {
+        // #1361: BhkMeshShape was dispatched at parse but had no resolve
+        // arm — its referenced NiTriStripsData silently dropped. It must
+        // now build a TriMesh, like BhkNiTriStripsShape.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkMeshShape {
+            radius: 0.0,
+            scale: [1.0, 1.0, 1.0, 0.0],
+            data_refs: vec![BlockRef(1u32)],
+        }));
+        scene.blocks.push(tri_strips_data(
+            vec![
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+            ],
+            vec![0, 1, 2],
+        ));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::TriMesh { vertices, indices }) => {
+                assert_eq!(vertices.len(), 3, "all three verts converted");
+                assert_eq!(indices.len(), 1, "one non-degenerate triangle");
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mesh_shape_folds_per_axis_scale() {
+        // BhkMeshShape's authored per-axis Scale vector must fold in
+        // alongside havok_scale (applied in havok space before the swap).
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkMeshShape {
+            radius: 0.0,
+            scale: [2.0, 3.0, 5.0, 0.0],
+            data_refs: vec![BlockRef(1u32)],
+        }));
+        scene.blocks.push(tri_strips_data(
+            vec![
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+                NiPoint3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ],
+            vec![0, 1, 2],
+        ));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::TriMesh { vertices, .. }) => {
+                // Vertex (1,1,1) in havok space → scaled to (2,3,5), then
+                // havok_to_engine maps (x,y,z) → (x, z, -y) = (2, 5, -3).
+                let v = vertices[1];
+                assert!(
+                    (v.x - 2.0).abs() < 1e-5 && (v.y - 5.0).abs() < 1e-5 && (v.z + 3.0).abs() < 1e-5,
+                    "per-axis scale not folded; got {v:?}"
+                );
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
+    }
+}
+
+/// Structural guard: every `bhk*Shape` block the parser dispatches must have a
+/// resolve arm in [`resolve_shape_inner`].
+#[cfg(test)]
+mod dispatch_coverage_tests {
+    //! Regression for #1360 / #1361 (and the #1329 migration that left
+    //! `BhkConvexSweepShape` + `BhkMeshShape` parse-dispatched but unresolved).
+    //!
+    //! A `bhk*Shape` block that is dispatched in `blocks/mod.rs` but has no
+    //! `downcast_ref::<…>` arm in `resolve_shape_inner` parses for byte
+    //! correctness and then silently drops the authored collision at the
+    //! unsupported-shape fallback — the NIFAL "parsed then dropped" leak class.
+    //! This test fails the moment a new shape is dispatched without a resolve
+    //! arm, so the gap can't migrate from the parser tier to the canonical tier
+    //! unnoticed again.
+    use std::collections::HashSet;
+
+    /// The struct identifier constructed by `Box::new(<Ident>::parse` on `line`,
+    /// if it names a `Bhk…Shape`.
+    fn constructed_shape(line: &str) -> Option<String> {
+        let after = line.split("Box::new(").nth(1)?;
+        let ident: String = after
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        (ident.starts_with("Bhk") && ident.ends_with("Shape")).then_some(ident)
+    }
+
+    /// Every `Bhk…Shape` struct produced by a dispatch arm whose match key is a
+    /// quoted `"bhk…Shape"` (excludes `…ShapeData`, `…Phantom`, collision
+    /// objects, constraints). Handles the 2-line `bhkTransformShape |
+    /// bhkConvexTransformShape` alias arm by probing the following lines.
+    fn dispatched_shape_structs() -> HashSet<String> {
+        let src = include_str!("../blocks/mod.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let mut out = HashSet::new();
+        for (i, line) in lines.iter().enumerate() {
+            let is_shape_arm = line.contains("=>")
+                && line
+                    .split('"')
+                    .any(|tok| tok.starts_with("bhk") && tok.ends_with("Shape"));
+            if !is_shape_arm {
+                continue;
+            }
+            for probe in i..=(i + 2).min(lines.len() - 1) {
+                if let Some(ident) = constructed_shape(lines[probe]) {
+                    out.insert(ident);
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// Every `Bhk…Shape` struct that has a `downcast_ref::<…>` resolve arm.
+    fn resolved_shape_structs() -> HashSet<String> {
+        let src = include_str!("collision.rs");
+        src.split("downcast_ref::<")
+            .skip(1)
+            .filter_map(|part| {
+                let ident: String = part
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                (ident.starts_with("Bhk") && ident.ends_with("Shape")).then_some(ident)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_dispatched_bhk_shape_has_resolve_arm() {
+        let dispatched = dispatched_shape_structs();
+        let resolved = resolved_shape_structs();
+
+        // Sanity-check the source extractors so a future reformat that empties
+        // a set can't turn this into a vacuous pass.
+        assert!(
+            dispatched.contains("BhkBoxShape") && dispatched.contains("BhkMeshShape"),
+            "dispatch extractor regressed; found {dispatched:?}"
+        );
+        assert!(
+            dispatched.len() >= 15,
+            "expected >=15 dispatched bhk*Shape structs, found {}: {dispatched:?}",
+            dispatched.len()
+        );
+        assert!(
+            resolved.contains("BhkBoxShape"),
+            "resolve extractor regressed; found {resolved:?}"
+        );
+
+        let missing: Vec<_> = dispatched.difference(&resolved).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "these bhk*Shape blocks are parse-dispatched but have NO resolve arm in \
+             resolve_shape_inner — authored collision silently drops: {missing:?}"
+        );
     }
 }
