@@ -168,11 +168,12 @@ pub(crate) fn pack_effect_shader_flags(
 /// the importer boundary, then ride through to
 /// `GpuMaterial.material_flags` via `DrawCommand::to_gpu_material`.
 ///
-/// The bits are populated today but **not yet read by any shader** —
-/// the shader-side PBR / SSS / model-space-normal gates in
-/// `triangle.frag` are Phase 2b of #1147 (RenderDoc-validated).
-/// Phase 2a (this packer) lands the data plumbing so the consumer can
-/// pick the flags up without re-parsing BGSM. See #1077 / FO4-D6-003.
+/// Phase 2a (this packer) lands the data plumbing; Phase 2b (the shader
+/// consumers) has since shipped — `triangle.frag` reads `MAT_FLAG_PBR_BSDF`
+/// (Disney lobe), `MAT_FLAG_TRANSLUCENCY` (SSS), `MAT_FLAG_MODEL_SPACE_NORMALS`
+/// (normal decode), and the `THICK_OBJECT` / `MIX_ALBEDO` SSS-shape bits. See
+/// #1077 / FO4-D6-003 (Phase 2a) and #1147 (Phase 2b). The same bits are also
+/// set by `pack_effect_shader_flags` for the effect-mesh path.
 ///
 /// [`ImportedMesh::is_pbr`]: byroredux_nif::import::ImportedMesh::is_pbr
 /// [`ImportedMesh::has_translucency`]: byroredux_nif::import::ImportedMesh::has_translucency
