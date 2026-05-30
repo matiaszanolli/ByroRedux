@@ -463,9 +463,23 @@ fn resolve_shape_inner(
         return resolve_compressed_mesh(data, scale);
     }
 
-    // Phantom (trigger volume) — resolve inner shape.
-    if let Some(s) = block.as_any().downcast_ref::<BhkSimpleShapePhantom>() {
-        return resolve_shape(scene, s.shape_ref, visited);
+    // Phantom shapes (bhkSimpleShapePhantom / bhkAabbPhantom) are trigger
+    // volumes, not solid colliders. Drop BOTH to None — consistent with the
+    // collision-object path (`extract_from_phantom`), which returns None so a
+    // trigger isn't mis-promoted into a solid collider that would block the
+    // player from walking through a quest-trigger region. Pre-#1363 only the
+    // simple-shape variant had an arm, and it *resolved* its inner shape
+    // (promoting the trigger) while the AABB variant silently dropped — an
+    // inconsistency between the two phantom paths. When a `TriggerVolume` ECS
+    // path lands, both should translate to that, not to a CollisionShape.
+    if block.as_any().is::<BhkSimpleShapePhantom>() || block.as_any().is::<BhkAabbPhantom>() {
+        log::debug!(
+            "resolve_shape: phantom shape '{}' at block {} is a trigger volume, \
+             not a solid collider — dropping (no TriggerVolume ECS path yet, #1363)",
+            block.block_type_name(),
+            idx,
+        );
+        return None;
     }
 
     log::debug!(
@@ -870,8 +884,8 @@ mod cycle_tests {
     //! resolves on both arms.
     use super::*;
     use crate::blocks::collision::{
-        BhkConvexListShape, BhkConvexSweepShape, BhkListShape, BhkMeshShape, BhkMultiSphereShape,
-        BhkSphereShape,
+        BhkAabbPhantom, BhkConvexListShape, BhkConvexSweepShape, BhkListShape, BhkMeshShape,
+        BhkMultiSphereShape, BhkSimpleShapePhantom, BhkSphereShape,
     };
     use crate::blocks::tri_shape::NiTriStripsData;
     use crate::blocks::NiObject;
@@ -1145,6 +1159,40 @@ mod cycle_tests {
             }
             other => panic!("expected TriMesh, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn phantom_shapes_drop_to_none() {
+        // #1363: both phantom subclasses are trigger volumes, not solid
+        // colliders. Neither may resolve to a CollisionShape even with a
+        // non-null inner shape_ref — consistent with extract_from_phantom on
+        // the collision-object path. Pre-#1363 bhkSimpleShapePhantom resolved
+        // its inner shape (promoting the trigger) while bhkAabbPhantom dropped.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkSimpleShapePhantom {
+            shape_ref: BlockRef(2u32),
+            havok_filter: 0,
+            transform: [[0.0; 4]; 4],
+        })); // [0]
+        scene.blocks.push(Box::new(BhkAabbPhantom {
+            shape_ref: BlockRef(2u32),
+            havok_filter: 0,
+            aabb_min: [0.0; 4],
+            aabb_max: [0.0; 4],
+        })); // [1]
+        scene.blocks.push(sphere_shape(1.0)); // [2] inner shape — must NOT be promoted
+
+        let mut visited = HashSet::new();
+        assert!(
+            resolve_shape(&scene, BlockRef(0u32), &mut visited).is_none(),
+            "bhkSimpleShapePhantom must drop (trigger volume, not a solid collider)"
+        );
+        let mut visited = HashSet::new();
+        assert!(
+            resolve_shape(&scene, BlockRef(1u32), &mut visited).is_none(),
+            "bhkAabbPhantom must drop (trigger volume, not a solid collider)"
+        );
     }
 }
 

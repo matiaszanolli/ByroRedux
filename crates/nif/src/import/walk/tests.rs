@@ -664,3 +664,60 @@ mod recursion_depth_tests {
         assert_eq!(imported.nodes.len() as u32, chain_len);
     }
 }
+
+#[cfg(test)]
+mod emitter_rate_tests {
+    //! Regression for #1364: `extract_emitter_rate`'s `sane()` gate must
+    //! reject the `FLT_MAX` sentinel (`>= 3.0e38`). A
+    //! `NiPSysEmitterCtlr` whose interpolator carries `value == FLT_MAX` with
+    //! a NULL `data_ref` previously fell through the keyed-data branch and
+    //! returned ~3.4e38 from the constant-value branch — a cap-spawn-every-
+    //! frame rate.
+    use super::super::extract_emitter_rate;
+    use crate::blocks::interpolator::NiFloatInterpolator;
+    use crate::blocks::particle::NiPSysEmitterCtlr;
+    use crate::scene::NifScene;
+    use crate::types::BlockRef;
+
+    fn scene_with_constant_rate(value: f32) -> NifScene {
+        let mut scene = NifScene::default();
+        // [0] interpolator with a constant value and no keyed data.
+        scene.blocks.push(Box::new(NiFloatInterpolator {
+            value,
+            data_ref: BlockRef::NULL,
+        }));
+        // [1] controller pointing at it.
+        scene.blocks.push(Box::new(NiPSysEmitterCtlr {
+            interpolator_ref: BlockRef(0u32),
+        }));
+        scene
+    }
+
+    #[test]
+    fn flt_max_sentinel_is_rejected() {
+        // FLT_MAX on the constant value + NULL data_ref → no usable rate.
+        let scene = scene_with_constant_rate(f32::MAX);
+        assert_eq!(
+            extract_emitter_rate(&scene),
+            None,
+            "FLT_MAX sentinel must not leak through as a ~3.4e38 spawn rate (#1364)"
+        );
+    }
+
+    #[test]
+    fn sane_constant_rate_passes() {
+        // A legitimate authored constant still resolves through the same
+        // branch the FLT_MAX guard tightened.
+        let scene = scene_with_constant_rate(5.0);
+        assert_eq!(extract_emitter_rate(&scene), Some(5.0));
+    }
+
+    #[test]
+    fn negative_and_nonfinite_rates_rejected() {
+        assert_eq!(extract_emitter_rate(&scene_with_constant_rate(-1.0)), None);
+        assert_eq!(
+            extract_emitter_rate(&scene_with_constant_rate(f32::INFINITY)),
+            None
+        );
+    }
+}

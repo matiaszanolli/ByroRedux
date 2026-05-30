@@ -703,17 +703,22 @@ pub(super) fn extract_emitter_params(
 /// `NiPSysEmitterCtlr`'s interpolator → `NiFloatData` first key value, or
 /// the `NiFloatInterpolator`'s constant value. Legacy fallback: the first
 /// `NiPSysEmitterCtlrData` birth-rate key. `None` when no controller is
-/// present (→ keep the preset's rate). Non-finite / negative values are
-/// rejected (a `FLT_MAX` sentinel on `NiFloatInterpolator.value` means
-/// "use the keyed data", which we already preferred). Scene-level
-/// first-match, same scope caveat as [`extract_first_color_curve`]. See
-/// `docs/engine/nifal.md` — particles spawn-rate follow-up.
+/// present (→ keep the preset's rate). Non-finite, negative, and
+/// `FLT_MAX`-sentinel (`>= 3.0e38`) values are rejected: the sentinel on
+/// `NiFloatInterpolator.value` is nif.xml's "use the keyed data" marker, so
+/// even when the keyed `data_ref` is NULL it must not leak through the
+/// constant-value branch as a ~3.4e38 spawn rate (cap-spawning every frame,
+/// #1364). Scene-level first-match, same scope caveat as
+/// [`extract_first_color_curve`]. See `docs/engine/nifal.md` — particles
+/// spawn-rate follow-up.
 pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
     use crate::blocks::interpolator::{NiFloatData, NiFloatInterpolator};
     use crate::blocks::particle::{NiPSysEmitterCtlr, NiPSysEmitterCtlrData};
 
     fn sane(r: f32) -> Option<f32> {
-        (r.is_finite() && r >= 0.0).then_some(r)
+        // `>= 3.0e38` matches the FLT_MAX-sentinel threshold used for shader
+        // rimlight/backlight (blocks/shader.rs, nif.xml convention).
+        (r.is_finite() && r >= 0.0 && r < 3.0e38).then_some(r)
     }
 
     // Modern: controller → NiFloatInterpolator → (keyed data | constant).
