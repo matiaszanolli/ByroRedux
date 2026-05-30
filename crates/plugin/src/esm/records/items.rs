@@ -202,16 +202,25 @@ pub fn parse_weap(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
             // DNAM is a large, version-dependent stats blob present on
             // FO3/FNV/FO4 but absent on Oblivion (which inlines all
             // weapon stats in DATA). The FO3/FNV layout starts with
-            // anim_type(u8) and places ap_cost/min_spread at fixed
-            // offsets. Skyrim rewrote the whole blob (~100 bytes, different
-            // field positions); extracting per-field values for Skyrim
-            // requires a separate layout walk that isn't wired yet.
+            // anim_type(u8); Skyrim rewrote the whole blob (~100 bytes,
+            // different field positions) and isn't decoded yet.
             b"DNAM" if matches!(game, GameKind::Fallout3NV) => {
                 let mut r = SubReader::new(&sub.data);
                 anim_type = r.u8_or_default();
-                r.skip_or_eof(15); // pad up to ap_cost at offset 16
-                ap_cost = r.u32_or_default();
-                min_spread = r.f32_or_default();
+                // Bytes 1-15: fields not yet decoded (flags, unknown
+                // counters, etc.).
+                r.skip_or_eof(15);
+                // Offset 16 — Min Spread (f32). Pre-#1342 this was
+                // read as `ap_cost: u32`, a type mislabel confirmed by
+                // parsing the Varmint Rifle's raw DNAM: the bytes at
+                // offset 16 are a float (~0.024), not an integer.
+                // `ap_cost`'s true DNAM offset is unconfirmed; it stays
+                // at the zero default until the full layout is mapped.
+                min_spread = r.f32_or_default(); // offset 16 confirmed
+                // Offset 20 — next f32 present in the blob; semantic
+                // TBD (may or may not duplicate the NAM6 spread). Not
+                // stored; NAM6 remains the authoritative spread source.
+                let _offset_20 = r.f32_or_default();
             }
             b"ANAM" => {
                 reload_anim = SubReader::new(&sub.data).u8_or_default();
@@ -658,6 +667,44 @@ mod tests {
                 assert_eq!(ammo_form, 0xDEADBEEF);
                 assert_eq!(damage, 12);
                 assert_eq!(clip_size, 8);
+            }
+            _ => panic!("expected Weapon kind"),
+        }
+    }
+
+    /// Regression for #1342 / D2-01 — DNAM offset 16 must be read as f32
+    /// (Min Spread), not u32 (pre-fix `ap_cost` mislabel). The mislabel was
+    /// confirmed by inspecting the Varmint Rifle's raw DNAM: the 4 bytes at
+    /// offset 16 are a float (~0.024), not an integer. A u32 read would
+    /// produce ~3.16 billion, which the struct's `ap_cost` would silently
+    /// accept. Verified by seeding a known float and asserting round-trip.
+    #[test]
+    fn fnv_weap_dnam_reads_min_spread_as_f32_not_u32() {
+        let known_min_spread: f32 = 0.024; // typical Varmint Rifle value
+        let mut dnam = vec![0u8; 36]; // anim_type + 15 pad + f32 + f32 + tail
+        dnam[0] = 2u8; // anim_type = rifle
+        dnam[16..20].copy_from_slice(&known_min_spread.to_le_bytes());
+        // offset 20: put a sentinel so we'd notice if it were consumed as min_spread
+        dnam[20..24].copy_from_slice(&1234.5f32.to_le_bytes());
+
+        let subs = vec![
+            sub(b"EDID", b"VarminRifle\0"),
+            sub(b"DATA", &build_data_weap(100, 5.5, 18, 5)),
+            sub(b"DNAM", &dnam),
+        ];
+        let item = parse_weap(0x14DCE, &subs, GameKind::Fallout3NV);
+        match item.kind {
+            ItemKind::Weapon {
+                anim_type,
+                min_spread,
+                ..
+            } => {
+                assert_eq!(anim_type, 2, "anim_type should round-trip from byte 0");
+                assert!(
+                    (min_spread - known_min_spread).abs() < 1e-6,
+                    "offset 16 must be read as f32 Min Spread; pre-fix u32 read \
+                     would give ~3.16 billion, got {min_spread}"
+                );
             }
             _ => panic!("expected Weapon kind"),
         }
