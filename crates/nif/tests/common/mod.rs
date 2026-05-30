@@ -61,6 +61,20 @@ pub enum ArchiveKind {
 }
 
 impl Game {
+    /// Every supported game, in load-order chronology. Tests that must be
+    /// exhaustive over games (e.g. the cross-game translation-completeness
+    /// harness, #1362) iterate this so a newly-added variant can't be
+    /// silently omitted from cross-game coverage.
+    pub const ALL: [Game; 7] = [
+        Game::Oblivion,
+        Game::Fallout3,
+        Game::FalloutNV,
+        Game::SkyrimSE,
+        Game::Fallout4,
+        Game::Fallout76,
+        Game::Starfield,
+    ];
+
     pub fn env_var(self) -> &'static str {
         match self {
             Game::Oblivion => "BYROREDUX_OBLIVION_DATA",

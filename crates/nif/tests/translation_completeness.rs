@@ -43,8 +43,65 @@
 mod common;
 
 use byroredux_core::string::StringPool;
-use byroredux_nif::{import::ImportedMesh, parse_nif};
-use common::{open_mesh_archive, Game, MeshArchive};
+use byroredux_nif::import::{import_nif_with_resolver, ImportedMesh, MeshResolver};
+use byroredux_nif::parse_nif;
+use common::{open_ba2_by_name, open_mesh_archive, Game, MeshArchive};
+
+/// Every game the cross-game completeness signal walks. Kept in lock-step
+/// with [`Game::ALL`] by `harness_enumerates_every_supported_game` so the
+/// two newest/hardest games (FO76, Starfield) can't be silently dropped
+/// from the regression signal again (#1362).
+const HARNESS_GAMES: &[(&str, Game)] = &[
+    ("Oblivion", Game::Oblivion),
+    ("FO3", Game::Fallout3),
+    ("FNV", Game::FalloutNV),
+    ("SkyrimSE", Game::SkyrimSE),
+    ("FO4", Game::Fallout4),
+    ("FO76", Game::Fallout76),
+    ("Starfield", Game::Starfield),
+];
+
+/// A [`MeshResolver`] backed by a chain of BA2 archives. Starfield's
+/// `BSGeometry` blocks reference external `geometries\<hash>.mesh` companion
+/// files (#1292); without a resolver every Starfield mesh imports as zero
+/// geometry and the completeness signal is blind to the entire Starfield
+/// translation path (#1362). The importer composes the canonical
+/// `geometries\<X>.mesh` key itself, so `resolve` only has to extract that key
+/// (trying separator variants) from the first archive in the chain that has it.
+struct ChainResolver {
+    archives: Vec<MeshArchive>,
+}
+
+impl MeshResolver for ChainResolver {
+    fn resolve(&self, mesh_name: &str) -> Option<Vec<u8>> {
+        let candidates = [
+            mesh_name.to_string(),
+            mesh_name.replace('/', "\\"),
+            mesh_name.replace('\\', "/"),
+        ];
+        self.archives
+            .iter()
+            .find_map(|a| candidates.iter().find_map(|c| a.extract(c).ok()))
+    }
+}
+
+/// Build the external-`.mesh` resolver for Starfield from whatever standard
+/// mesh archives are installed. Returns `None` when none are present (the
+/// harness then reports Starfield as 0 meshes with an explicit note rather
+/// than mistaking it for a translation regression).
+fn starfield_resolver() -> Option<ChainResolver> {
+    // The standard (non-LOD, non-Face) geometry archives. Vanilla Starfield
+    // ships Meshes01 + Meshes02; MeshesPatch lands with updates.
+    let archives: Vec<MeshArchive> = [
+        "Starfield - Meshes01.ba2",
+        "Starfield - Meshes02.ba2",
+        "Starfield - MeshesPatch.ba2",
+    ]
+    .iter()
+    .filter_map(|name| open_ba2_by_name(Game::Starfield, name))
+    .collect();
+    (!archives.is_empty()).then_some(ChainResolver { archives })
+}
 
 /// Bounded sample size per game. Each NIF parses + imports in a few
 /// ms on the dev machine; 200 is enough to detect regressions in the
@@ -161,7 +218,10 @@ impl MaterialStats {
 /// Walk the first `SAMPLE_LIMIT` NIFs in `archive`, parse + import each,
 /// aggregate `MaterialStats`. Skips files that fail to extract or parse
 /// (those are surfaced separately by parse_real_nifs.rs).
-fn collect_stats(archive: &MeshArchive) -> MaterialStats {
+///
+/// `resolver` supplies external `.mesh` companion geometry (Starfield
+/// `BSGeometry`); pass `None` for games whose geometry is inline.
+fn collect_stats(archive: &MeshArchive, resolver: Option<&dyn MeshResolver>) -> MaterialStats {
     let mut stats = MaterialStats::default();
     // Sort before sampling so the 200-NIF window is identical across
     // runs. `list_files()` returns items in archive-internal order,
@@ -180,7 +240,7 @@ fn collect_stats(archive: &MeshArchive) -> MaterialStats {
         let Ok(bytes) = archive.extract(path) else { continue };
         let Ok(scene) = parse_nif(&bytes) else { continue };
         let mut pool = StringPool::new();
-        let meshes = byroredux_nif::import::import_nif(&scene, &mut pool);
+        let meshes = import_nif_with_resolver(&scene, &mut pool, resolver);
         for mesh in &meshes {
             stats.record(path, mesh);
         }
@@ -196,14 +256,6 @@ fn collect_stats(archive: &MeshArchive) -> MaterialStats {
 #[test]
 #[ignore]
 fn cross_game_translation_completeness() {
-    let games = [
-        ("Oblivion", Game::Oblivion),
-        ("FO3", Game::Fallout3),
-        ("FNV", Game::FalloutNV),
-        ("SkyrimSE", Game::SkyrimSE),
-        ("FO4", Game::Fallout4),
-    ];
-
     eprintln!("\n=== #1277 Task 8: cross-game translation completeness ===");
     eprintln!(
         "  {:<12} {:>14}  {:>10}  {:>13}  {:>10}  {:>9}  {:>9}  {:>9}  {:>9}  {:>16}",
@@ -221,14 +273,28 @@ fn cross_game_translation_completeness() {
 
     let mut hard_failures: Vec<(String, Vec<String>)> = Vec::new();
     let mut probed = 0usize;
-    for (label, game) in games {
+    for &(label, game) in HARNESS_GAMES {
         let Some(archive) = open_mesh_archive(game) else {
             eprintln!("  {label:<12} SKIP (no data)");
             continue;
         };
         probed += 1;
-        let stats = collect_stats(&archive);
+        // Starfield geometry lives in external `geometries\X.mesh` files
+        // (#1292); supply a chain resolver so the completeness signal can
+        // actually see its translation path (#1362). Inline-geometry games
+        // pass `None`.
+        let sf_resolver = (game == Game::Starfield).then(starfield_resolver).flatten();
+        let stats = collect_stats(&archive, sf_resolver.as_ref().map(|r| r as &dyn MeshResolver));
         stats.print_row(label);
+        // A 0-mesh Starfield row means the external geometry archives are
+        // absent (or the resolver couldn't be built), NOT a translation
+        // regression — call that out so the row isn't misread.
+        if game == Game::Starfield && stats.imported_meshes == 0 {
+            eprintln!(
+                "  (Starfield: 0 meshes — external geometry archive(s) unavailable or \
+                 unresolved; environment gap, not a regression. See #1362.)"
+            );
+        }
         if !stats.structurally_inconsistent.is_empty() {
             hard_failures.push((label.to_string(), stats.structurally_inconsistent.clone()));
         }
@@ -257,6 +323,21 @@ fn cross_game_translation_completeness() {
         panic!(
             "structural-consistency invariant violated in {} game(s); see output above",
             hard_failures.len(),
+        );
+    }
+}
+
+/// Guards #1362: the cross-game completeness signal must enumerate *every*
+/// supported game. A `Game` variant absent from [`HARNESS_GAMES`] would make
+/// the regression signal blind to that game (exactly how FO76 + Starfield
+/// were silently omitted). Runs in CI without game data — pure metadata.
+#[test]
+fn harness_enumerates_every_supported_game() {
+    for game in Game::ALL {
+        assert!(
+            HARNESS_GAMES.iter().any(|&(_, g)| g == game),
+            "Game::{game:?} is supported but missing from HARNESS_GAMES — the \
+             translation-completeness regression signal would be blind to it (#1362)"
         );
     }
 }
