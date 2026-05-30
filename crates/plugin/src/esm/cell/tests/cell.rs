@@ -834,6 +834,82 @@ fn parse_cell_fnv_xcll_extracts_40byte_tail_and_skips_skyrim_fields() {
     assert!(lit.light_fade_end.is_none());
 }
 
+/// Helper: build a CELL buffer wrapping a single interior `XCLL` of the
+/// given bytes, then parse it with `game` and return its `CellLighting`.
+fn parse_oblivion_xcll(edid: &str, xcll: &[u8], game: crate::esm::reader::GameKind) -> CellLighting {
+    let mut sub_data = Vec::new();
+    let edid_z = format!("{edid}\0");
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid_z.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid_z.as_bytes());
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01); // interior
+    sub_data.extend_from_slice(b"XCLL");
+    sub_data.extend_from_slice(&(xcll.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(xcll);
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&0xAB1Eu32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+
+    let mut reader = super::super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, end, &mut cells, game).unwrap();
+    cells
+        .get(&edid.to_ascii_lowercase())
+        .expect("interior CELL present")
+        .lighting
+        .clone()
+        .expect("XCLL must populate lighting")
+}
+
+#[test]
+fn parse_cell_oblivion_36byte_xcll_extracts_dir_fade_and_fog_clip() {
+    // #1312 — the full 36-byte TES4 XCLL is shared(28) +
+    // `Directional Fade`(@28) + `Fog Clip Dist`(@32), with NO Fog Power
+    // (that's the FO3/FNV 40-byte addition). The old `len >= 40` gate
+    // silently dropped both extended fields on every Oblivion cell.
+    // Verified layout vs xEdit TES4 `wbStruct(XCLL)` + OpenMW
+    // `loadcell.cpp` `case 36`.
+    let mut xcll = vec![0u8; 36];
+    xcll[0..4].copy_from_slice(&[80, 82, 85, 0]); // ambient
+    xcll[12..16].copy_from_slice(&100.0f32.to_le_bytes()); // fog_near
+    xcll[16..20].copy_from_slice(&5000.0f32.to_le_bytes()); // fog_far
+    xcll[28..32].copy_from_slice(&0.6f32.to_le_bytes()); // Directional Fade
+    xcll[32..36].copy_from_slice(&7000.0f32.to_le_bytes()); // Fog Clip Dist
+
+    let lit = parse_oblivion_xcll("OblRoom36", &xcll, crate::esm::reader::GameKind::Oblivion);
+    assert_eq!(lit.directional_fade, Some(0.6), "dir_fade(@28) must be read at 36 bytes");
+    assert_eq!(lit.fog_clip, Some(7000.0), "fog_clip(@32) must be read at 36 bytes");
+    assert_eq!(lit.fog_power, None, "TES4 has no Fog Power — absent below 40 bytes");
+    assert!(lit.directional_ambient.is_none());
+    assert!(lit.starfield.is_none());
+}
+
+#[test]
+fn parse_cell_oblivion_32byte_xcll_extracts_dir_fade_only() {
+    // #1312 per-field gating: a 32-byte XCLL (a valid TES4 size) carries
+    // `Directional Fade`(@28) but not `Fog Clip Dist`(@32). The fix gates
+    // each field on its own offset, so dir_fade survives where fog_clip
+    // is correctly absent.
+    let mut xcll = vec![0u8; 32];
+    xcll[12..16].copy_from_slice(&80.0f32.to_le_bytes()); // fog_near
+    xcll[28..32].copy_from_slice(&0.45f32.to_le_bytes()); // Directional Fade
+    let lit = parse_oblivion_xcll("OblRoom32", &xcll, crate::esm::reader::GameKind::Oblivion);
+    assert_eq!(lit.directional_fade, Some(0.45), "dir_fade(@28) must be read at 32 bytes");
+    assert_eq!(lit.fog_clip, None, "fog_clip(@32) absent below 36 bytes");
+    assert_eq!(lit.fog_power, None);
+}
+
 #[test]
 fn parse_cell_without_xclw_leaves_water_height_none() {
     // Sibling check for the XCLW match arm: a CELL with no XCLW

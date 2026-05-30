@@ -12,8 +12,12 @@ use crate::esm::sub_reader::SubReader;
 /// Canonical XCLL sub-record sizes per game era. Pinned here so the
 /// `xcll_size_sanity_warn` helper and any future variant-enum gate share
 /// the same source of truth.
-///   - Oblivion: 28-36 bytes (shared 28-byte prefix; some plugins pad
-///     to 32 or 36 with no extended fields).
+///   - Oblivion (TES4): 28 / 32 / 36 bytes. NOT "padding" — the tail
+///     fields ARE authored (xEdit TES4 `wbStruct(XCLL)` / OpenMW
+///     `loadcell.cpp` `case 36`): 28 = shared prefix only; 32 = shared +
+///     `Directional Fade`(@28); 36 = shared + `Directional Fade`(@28) +
+///     `Fog Clip Dist`(@32) — the FULL TES4 Lighting. TES4 has NO
+///     `Fog Power` field (that is the FO3/FNV 40-byte addition). #1312.
 ///   - FNV / FO3 / FO4 / FO76: 40 bytes (shared + 12-byte dir_fade /
 ///     fog_clip / fog_power tail).
 ///   - Skyrim LE / SE: 92 bytes (shared + 6-RGBA ambient cube + specular
@@ -584,15 +588,20 @@ pub(crate) fn parse_cell_group(
                                 continue;
                             }
 
-                            let (dir_fade, fog_clip, fog_power) = if sub.data.len() >= 40 {
-                                (
-                                    Some(r.f32_or_default()),
-                                    Some(r.f32_or_default()),
-                                    Some(r.f32_or_default()),
-                                )
-                            } else {
-                                (None, None, None)
-                            };
+                            // #1312 — per-field gating, NOT a single `len >= 40`
+                            // gate. The extended fields are independently sized:
+                            // `Directional Fade`(@28) needs len >= 32,
+                            // `Fog Clip Dist`(@32) needs len >= 36, `Fog Power`
+                            // (@36, FO3/FNV-only) needs len >= 40. A 36-byte
+                            // Oblivion XCLL is the FULL TES4 Lighting (dir_fade +
+                            // fog_clip, no fog_power) — the old `>= 40` gate
+                            // silently dropped both. `.then(|| …)` only advances
+                            // the reader when the field is present, so the cursor
+                            // stays aligned at every size. (xEdit TES4 +
+                            // OpenMW `loadcell.cpp` case 36.)
+                            let dir_fade = (sub.data.len() >= 32).then(|| r.f32_or_default());
+                            let fog_clip = (sub.data.len() >= 36).then(|| r.f32_or_default());
+                            let fog_power = (sub.data.len() >= 40).then(|| r.f32_or_default());
 
                             let (
                                 directional_ambient,
