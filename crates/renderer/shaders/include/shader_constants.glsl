@@ -59,6 +59,11 @@
 #define MAT_FLAG_EFFECT_PALETTE_COLOR 4u
 #define MAT_FLAG_EFFECT_PALETTE_ALPHA 8u
 #define MAT_FLAG_EFFECT_LIT 16u
+#define MAT_FLAG_PBR_BSDF 32u
+#define MAT_FLAG_TRANSLUCENCY 64u
+#define MAT_FLAG_MODEL_SPACE_NORMALS 128u
+#define MAT_FLAG_TRANSLUCENCY_THICK_OBJECT 256u
+#define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO 512u
 
 // Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`).
 #define WATER_CALM 0u

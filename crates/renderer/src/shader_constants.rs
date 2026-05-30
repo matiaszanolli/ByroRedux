@@ -79,6 +79,11 @@ mod tests {
             ("MAT_FLAG_EFFECT_PALETTE_COLOR", format!("#define MAT_FLAG_EFFECT_PALETTE_COLOR {MAT_FLAG_EFFECT_PALETTE_COLOR}u")),
             ("MAT_FLAG_EFFECT_PALETTE_ALPHA", format!("#define MAT_FLAG_EFFECT_PALETTE_ALPHA {MAT_FLAG_EFFECT_PALETTE_ALPHA}u")),
             ("MAT_FLAG_EFFECT_LIT", format!("#define MAT_FLAG_EFFECT_LIT {MAT_FLAG_EFFECT_LIT}u")),
+            ("MAT_FLAG_PBR_BSDF", format!("#define MAT_FLAG_PBR_BSDF {MAT_FLAG_PBR_BSDF}u")),
+            ("MAT_FLAG_TRANSLUCENCY", format!("#define MAT_FLAG_TRANSLUCENCY {MAT_FLAG_TRANSLUCENCY}u")),
+            ("MAT_FLAG_MODEL_SPACE_NORMALS", format!("#define MAT_FLAG_MODEL_SPACE_NORMALS {MAT_FLAG_MODEL_SPACE_NORMALS}u")),
+            ("MAT_FLAG_TRANSLUCENCY_THICK_OBJECT", format!("#define MAT_FLAG_TRANSLUCENCY_THICK_OBJECT {MAT_FLAG_TRANSLUCENCY_THICK_OBJECT}u")),
+            ("MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO", format!("#define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO {MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO}u")),
             // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
         ] {
             assert!(
@@ -345,6 +350,13 @@ mod tests {
         assert_eq!(MAT_FLAG_EFFECT_PALETTE_COLOR, material_flag::EFFECT_PALETTE_COLOR);
         assert_eq!(MAT_FLAG_EFFECT_PALETTE_ALPHA, material_flag::EFFECT_PALETTE_ALPHA);
         assert_eq!(MAT_FLAG_EFFECT_LIT, material_flag::EFFECT_LIT);
+        // Bits 5-9 — Disney BSDF / SSS / model-space-normals suite
+        // (#1285, was hand-written in triangle.frag without this pin).
+        assert_eq!(MAT_FLAG_PBR_BSDF, material_flag::PBR_BSDF);
+        assert_eq!(MAT_FLAG_TRANSLUCENCY, material_flag::TRANSLUCENCY);
+        assert_eq!(MAT_FLAG_MODEL_SPACE_NORMALS, material_flag::MODEL_SPACE_NORMALS);
+        assert_eq!(MAT_FLAG_TRANSLUCENCY_THICK_OBJECT, material_flag::TRANSLUCENCY_THICK_OBJECT);
+        assert_eq!(MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO, material_flag::TRANSLUCENCY_MIX_ALBEDO);
         // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
     }
 }

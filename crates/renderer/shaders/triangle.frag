@@ -197,18 +197,15 @@ layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
 // source of truth, mirrored from `material_flag::*` in
 // `crates/renderer/src/vulkan/material.rs`). See #1190.
 
-// Material-feature flags. Bits 5-9 of `materialFlags`. Mirror of
-// `material_flag::*` consts on the Rust side; populated by whichever
-// translator handles the source format (BGSM for FO4/Skyrim+, future
-// .mat for Starfield, future legacy-NIF translation for shipped
-// Disney-authored content). Per `feedback_format_translation.md` the
-// shader gates on material *features*, not source formats — these
-// names dropped the `BGSM_` prefix in the Stage 3 rollout.
-#define MAT_FLAG_PBR_BSDF                  (1u << 5)
-#define MAT_FLAG_TRANSLUCENCY              (1u << 6)
-#define MAT_FLAG_MODEL_SPACE_NORMALS       (1u << 7)
-#define MAT_FLAG_TRANSLUCENCY_THICK_OBJECT (1u << 8)
-#define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO   (1u << 9)
+// Material-feature flags. Bits 5-9 of `materialFlags` (PBR BSDF / SSS /
+// model-space-normals suite) come from the generated
+// `include/shader_constants.glsl` (`#include` at the top of this file),
+// emitted by build.rs from `shader_constants_data.rs` and pinned by
+// `generated_header_contains_all_defines` + `material_flag_bits_match_material_consts`.
+// They were hand-written `#define`s here until #1285 — do NOT re-add
+// them. Per `feedback_format_translation.md` the shader gates on
+// material *features*, not source formats (the `BGSM_` prefix was
+// dropped in the Stage 3 rollout).
 
 struct GpuLight {
     vec4 position_radius;  // xyz = position, w = radius

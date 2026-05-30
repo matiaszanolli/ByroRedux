@@ -107,16 +107,24 @@ pub const INSTANCE_FLAG_FLAT_SHADING: u32 = 1 << 7;
 // Per-material flag bits on `GpuMaterial.materialFlags`. Authoritative
 // Rust-side values live in `crates/renderer/src/vulkan/material.rs`
 // (`material_flag::*`); this shader-side mirror is pinned equal via
-// `material_flag_bits_match_material_consts`. See #1190. Bits
-// 5/6/7 (`BGSM_PBR / _TRANSLUCENCY / _MODEL_SPACE_NORMALS`) are
-// populated host-side by #1147 Phase 2a but not yet read by any
-// shader; add the `#define` here once Phase 2b lands the shader-side
-// branches.
+// `material_flag_bits_match_material_consts`. See #1190. build.rs emits
+// these as `#define`s into `shader_constants.glsl`, so `triangle.frag`
+// MUST get them from the `#include` — never hand-write them.
+//
+// Bits 5-9 (the #1147 Phase 2a / #1248-#1250 Disney BSDF + SSS +
+// model-space-normals suite) were previously hand-written `#define`s in
+// `triangle.frag` with no lockstep test; #1285 brought them into the
+// generated header alongside bits 0-4.
 pub const MAT_FLAG_VERTEX_COLOR_EMISSIVE: u32 = 1 << 0;
 pub const MAT_FLAG_EFFECT_SOFT: u32 = 1 << 1;
 pub const MAT_FLAG_EFFECT_PALETTE_COLOR: u32 = 1 << 2;
 pub const MAT_FLAG_EFFECT_PALETTE_ALPHA: u32 = 1 << 3;
 pub const MAT_FLAG_EFFECT_LIT: u32 = 1 << 4;
+pub const MAT_FLAG_PBR_BSDF: u32 = 1 << 5;
+pub const MAT_FLAG_TRANSLUCENCY: u32 = 1 << 6;
+pub const MAT_FLAG_MODEL_SPACE_NORMALS: u32 = 1 << 7;
+pub const MAT_FLAG_TRANSLUCENCY_THICK_OBJECT: u32 = 1 << 8;
+pub const MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO: u32 = 1 << 9;
 // NOTE: `material_flag::BGSM_AUTHORED` (Rust-side bit 10) is
 // NOT mirrored here — the shader is format-agnostic and doesn't
 // branch on material provenance. BGSM → standardized PBR
