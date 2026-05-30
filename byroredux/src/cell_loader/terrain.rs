@@ -252,6 +252,33 @@ pub(super) fn splat_weight_for_vertex(layer: &CellSplatLayer, row: usize, col: u
 /// reflection / GI rays sample the right vertex data — using
 /// `upload_scene_mesh` (not plain `upload`) is mandatory; see #371.
 #[allow(clippy::too_many_arguments)]
+/// Which splat-layer texture indices [`release_splat_layer_textures`] drops:
+/// skips `0` (LTEX not resolved → never acquired) and the registry
+/// `fallback` slot (shared placeholder, never per-cell refcounted) — the
+/// same skip rule the unload-side `free_terrain_tile` → `push_tex_drop`
+/// sweep uses. Pure so the release set is unit-testable without a
+/// `VulkanContext`. (#1343)
+fn splat_indices_to_release(indices: &[u32], fallback: u32) -> Vec<u32> {
+    indices
+        .iter()
+        .copied()
+        .filter(|&i| i != 0 && i != fallback)
+        .collect()
+}
+
+/// Release the per-layer splat texture refcounts acquired by
+/// [`build_cell_splat_layers`]. Called only on `spawn_terrain_mesh`'s
+/// early-return paths (no allocator / mesh-upload failure) — the success
+/// path hands these handles to a `TerrainTileSlot` whose `free_terrain_tile`
+/// drops them on cell unload, so calling this there would double-release.
+/// (#1343)
+fn release_splat_layer_textures(ctx: &mut VulkanContext, indices: &[u32]) {
+    let fallback = ctx.texture_registry.fallback();
+    for idx in splat_indices_to_release(indices, fallback) {
+        ctx.texture_registry.drop_texture(&ctx.device, idx);
+    }
+}
+
 pub(super) fn spawn_terrain_mesh(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -271,6 +298,14 @@ pub(super) fn spawn_terrain_mesh(
     // Collect cell-global splat layers before the vertex loop — we need
     // all 8 resolved before we can pack per-vertex weights. #470.
     let splat_layers = build_cell_splat_layers(ctx, tex_provider, landscape_textures, land);
+    // #1343 — `build_cell_splat_layers` acquired (refcounted) one texture per
+    // splat layer above, but those handles only reach an unload-droppable
+    // owner at `allocate_terrain_tile` below. If we bail before that (no
+    // allocator / mesh-upload failure), release them here so the refcount +
+    // bindless slot don't leak. Snapshot the indices now so the release
+    // doesn't re-borrow `splat_layers` (still needed by the vertex loop).
+    let splat_tex_indices: Vec<u32> =
+        splat_layers.layers.iter().map(|l| l.texture_index).collect();
 
     // Build vertices (33×33 = 1089).
     let mut vertices = Vec::with_capacity(GRID * GRID);
@@ -347,10 +382,15 @@ pub(super) fn spawn_terrain_mesh(
         }
     }
 
-    let allocator = ctx.allocator.as_ref()?;
+    if ctx.allocator.is_none() {
+        // #1343 — release the splat-layer refcounts before bailing; no
+        // `TerrainTileSlot` will be allocated to carry them to unload.
+        release_splat_layer_textures(ctx, &splat_tex_indices);
+        return None;
+    }
     let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
         &ctx.device,
-        allocator,
+        ctx.allocator.as_ref().unwrap(), // non-None checked just above
         &ctx.graphics_queue,
         ctx.transfer_pool,
         &vertices,
@@ -366,6 +406,8 @@ pub(super) fn spawn_terrain_mesh(
                 grid_y,
                 e
             );
+            // #1343 — release the splat-layer refcounts before bailing.
+            release_splat_layer_textures(ctx, &splat_tex_indices);
             return None;
         }
     };
@@ -457,6 +499,33 @@ pub(super) fn spawn_terrain_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1343 / D3-02 — on a `spawn_terrain_mesh` early return (no allocator /
+    /// mesh-upload failure) the acquired splat-layer textures must be
+    /// released, but `0` (unresolved LTEX, never acquired) and the registry
+    /// `fallback` slot must be skipped so we don't over-release a shared
+    /// slot. Same skip rule as the unload-side `free_terrain_tile` sweep.
+    #[test]
+    fn splat_release_skips_zero_and_fallback() {
+        let fallback = 99u32;
+        // 8 layers: real handles, one unresolved (0), one fallback.
+        let indices = [10u32, 0, 11, fallback, 12, 0, 13, fallback];
+        let mut got = splat_indices_to_release(&indices, fallback);
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec![10, 11, 12, 13],
+            "only real, non-fallback splat handles are released"
+        );
+    }
+
+    /// A BTXT-only cell (no ATXT splat layers) acquired nothing → releases
+    /// nothing on an early return.
+    #[test]
+    fn splat_release_empty_is_empty() {
+        assert!(splat_indices_to_release(&[], 99).is_empty());
+        assert!(splat_indices_to_release(&[0, 0, 0, 0], 99).is_empty());
+    }
 
     /// Build a layer tuple with one painted quadrant filled to a
     /// constant alpha value. `alpha = 0.0` produces a zero-coverage
