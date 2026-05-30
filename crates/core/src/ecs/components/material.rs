@@ -565,29 +565,32 @@ impl Material {
         is_glass_keyword_path(texture_path.unwrap_or(""))
     }
 
-    /// Resolve the canonical [`metalness`](Self::metalness) /
-    /// [`roughness`](Self::roughness) scalars in place, **once**, at the
-    /// translation boundary (`material_translate::translate_material`).
+    /// Clamp and, if still NaN, classify the canonical
+    /// [`metalness`](Self::metalness) / [`roughness`](Self::roughness)
+    /// scalars in place. Called once from the translation boundary
+    /// (`material_translate::translate_material`).
     ///
-    /// Contract: any field left as a `NaN` sentinel (the caller seeds
-    /// `mesh.metalness_override.unwrap_or(NaN)` etc., so BGSM/BGEM
-    /// authored values pass straight through and the legacy
-    /// inline-shader path arrives unresolved) is filled from the keyword
-    /// classifier ([`classify_pbr_keyword`]) using the texture path +
-    /// glossiness + env-map-scale + normal-map presence. Both fields are
-    /// then clamped to the renderer's accepted ranges — `metalness ∈
-    /// [0, 1]`, `roughness ∈ [0.04, 1]`. Keyword-classifier outputs are
-    /// already in-range, so the clamp only constrains authored BGSM
-    /// values (replicating the pre-canonical render-time `classify_pbr`
-    /// clamp).
+    /// # Structure: classify-at-import + clamp-at-translate (#1346 / D7-01)
     ///
-    /// After this returns, the renderer reads `metalness` / `roughness`
-    /// directly — there is no render-time fallback. Per
-    /// `feedback_format_translation.md`, every material lands with
-    /// explicit PBR scalars regardless of source format.
+    /// For **NIF-imported** content the keyword classifier already ran at
+    /// import time (`classify_legacy_pbr` in `crates/nif/src/import/mesh/`)
+    /// and wrote `metalness_override`/`roughness_override` as `Some(…)` on
+    /// the `ImportedMesh`. The caller seeds those values via
+    /// `unwrap_or(NaN)`, so **both fields arrive non-NaN here** — the
+    /// `if is_nan()` guard below is skipped and only the final clamp runs.
     ///
-    /// Matching is case-insensitive and **does not allocate**
-    /// ([`classify_pbr_keyword`]'s windowed byte compare). See #375.
+    /// For **BGSM/BGEM** content the authored scalars also arrive as `Some`.
+    /// The classifier arm is a sentinel-backstop for future non-pre-classified
+    /// sources only.
+    ///
+    /// Either way, after this returns the renderer reads `metalness` /
+    /// `roughness` directly — no render-time fallback. Every material
+    /// lands with explicit PBR scalars (`feedback_format_translation.md`).
+    ///
+    /// Both fields are clamped to `metalness ∈ [0, 1]` and
+    /// `roughness ∈ [0.04, 1]`. Matching is case-insensitive and **does
+    /// not allocate** ([`classify_pbr_keyword`]'s windowed byte compare).
+    /// See #375.
     pub fn resolve_pbr(&mut self) {
         if self.metalness.is_nan() || self.roughness.is_nan() {
             let pbr = classify_pbr_keyword(PbrClassifierInputs {

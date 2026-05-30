@@ -211,9 +211,12 @@ The material slice was executed this session as the template. Mechanics:
   2. packs `effect_shader_flags` as the union of the BSEffect SLSF bits, the BGSM
      v>2 bits, and the caller's extra bits (REFR-overlay model-space-normals on the
      cell path; `0` on the loose-NIF path);
-  3. seeds `metalness`/`roughness` from the BGSM/BGEM authored override (`Some`) or a
-     `NaN` sentinel, then `Material::resolve_pbr()` fills sentinels from the keyword
-     classifier (`classify_pbr_keyword`) and clamps;
+  3. seeds `metalness`/`roughness` from the pre-resolved override (`Some`) or a `NaN`
+     sentinel. For NIF-imported content the keyword classifier already ran at import
+     (`classify_legacy_pbr` in `crates/nif/src/import/mesh/`), so `Some(…)` is always
+     present and `Material::resolve_pbr()` only clamps — its classifier arm (the `NaN`
+     sentinel path) is a backstop for future non-pre-classified sources. The result is
+     the same either way: explicit scalars, no render-time fallback. (#1346 / D7-01)
   4. classifies glass once, alpha-aware (`helpers::classify_glass_into_material`),
      after the PBR resolve so the forced glass roughness wins.
 - **De-duplication**: the two ~110-line `Material` construction sites

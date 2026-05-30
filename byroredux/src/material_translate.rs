@@ -55,10 +55,16 @@ pub(crate) struct ResolvedPaths {
 ///     ([`crate::cell_loader::pack_bgsm_material_flags`]), and any
 ///     `extra_material_flags` the caller supplies (the cell loader's
 ///     REFR-overlay model-space-normals bit; `0` for loose-NIF loads);
-///   - PBR overrides resolved via [`Material::resolve_pbr`] so legacy
-///     inline-shader content lands with explicit `(metalness, roughness)`
-///     scalars just like BGSM content (`feedback_format_translation.md`
-///     Stage 1);
+///   - PBR scalars resolved: for NIF-imported content the keyword
+///     classifier already ran at import time (`classify_legacy_pbr` in the
+///     NIF mesh extractors) and populated `mesh.metalness_override/
+///     roughness_override` as `Some(…)`, so [`Material::resolve_pbr`] here
+///     only clamps — its classifier arm is a sentinel-backstop (only fires
+///     when the override is `NaN`, i.e. for future non-NIF paths). BGSM/BGEM
+///     content also arrives pre-classified as `Some`. Either way every
+///     material exits with explicit `(metalness, roughness)` scalars; no
+///     render-time fallback. `feedback_format_translation.md` Stage 1.
+///     (Structure: classify-at-import + clamp-at-translate. See #1346.)
 ///   - glass classified once, alpha-aware
 ///     ([`crate::helpers::classify_glass_into_material`]), after the PBR
 ///     resolve so the forced glass roughness wins.
