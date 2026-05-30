@@ -78,7 +78,9 @@ Stale notes in `material-abstraction.md` corrected: the render-side glass heuris
 
 Z-up → Y-up conversion (`crates/nif/src/import/coord.rs`), tangent extraction +
 Mikkelsen synthesis (`mesh/tangent.rs`), local-bound derivation, degenerate-rotation
-SVD repair (`transform.rs`). Per-game vertex decode (NiTriShape / BSTriShape packed
+SVD repair (`crates/nif/src/rotation.rs` — `sanitize_rotation` /
+`repair_rotation_svd_or_identity`, fired once at parse; `transform.rs::compose_transforms`
+assumes already-sanitized rotations). Per-game vertex decode (NiTriShape / BSTriShape packed
 half / BSGeometry UDEC3) all converge to a single `Vec<[f32;3]>` + `Vec<u32>` in
 renderer space. This is the cleanest category — it is the model the others should
 match. No `Option` leaks; the consumer (`MeshRegistry::upload`) is format-agnostic.

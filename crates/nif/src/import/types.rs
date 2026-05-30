@@ -452,26 +452,29 @@ pub struct ImportedMesh {
     /// keyword. Closes the FO4-BGEM-glass-bottle-with-no-keyword class
     /// flagged in #1280 sub-step 3b (canonical material convergence).
     pub bgem_glass: bool,
-    /// PBR metalness `[0, 1]` computed by the translation layer
-    /// from authored source data. `None` falls through to legacy
-    /// keyword-based classification in `classify_pbr` (Oblivion /
-    /// FO3 / FNV path). `Some` is set by:
+    /// PBR metalness `[0, 1]` computed by the translation layer from
+    /// authored source data — a **raw-tier** field read only at the
+    /// `translate_material` boundary; the renderer never sees it. `Some`
+    /// is set by:
     ///   * `merge_bgsm_into_mesh` for BGSM/BGEM materials — derived
     ///     from `luminance(spec_color * spec_mult)` mapped through
     ///     `(L - 0.04) / 0.96` so dielectric spec (≈ 0.04) lands at
     ///     0 and conductor spec (≈ 0.95) lands near 1.
     ///   * Future: Starfield .mat translator.
-    /// The renderer reads `Material.metalness_override` (preferred)
-    /// before falling back to keyword classify_pbr, so every
-    /// authored-explicit material wins over the heuristic. Shader
-    /// remains format-agnostic — single `F0 = mix(0.04, albedo,
-    /// metalness)` path.
+    /// `None` seeds a NaN sentinel on the canonical `Material.metalness`,
+    /// which `Material::resolve_pbr` then fills via `classify_pbr_keyword`
+    /// (Oblivion / FO3 / FNV keyword path) — at the boundary, NOT per-draw.
+    /// The renderer reads the resolved `Material.metalness` directly; the
+    /// shader stays format-agnostic — single `F0 = mix(0.04, albedo,
+    /// metalness)` path. (Pre-#1346 this was read render-side with a
+    /// classify_pbr fallback; that leak is closed — doc corrected #1365.)
     pub metalness_override: Option<f32>,
-    /// PBR roughness `[0, 1]` companion to `metalness_override`.
-    /// Same precedence rule: when `Some`, wins over the legacy
-    /// `1 - glossiness/100` derivation in `classify_pbr`. Set by
-    /// `merge_bgsm_into_mesh` to `1 - bgsm.smoothness` so the
-    /// authored smoothness drives the lobe width directly.
+    /// PBR roughness `[0, 1]` companion to `metalness_override`, same
+    /// raw-tier / boundary-only contract. Set by `merge_bgsm_into_mesh`
+    /// to `1 - bgsm.smoothness` so the authored smoothness drives the lobe
+    /// width directly; `None` is resolved on `Material.roughness` by
+    /// `resolve_pbr` (legacy `1 - glossiness/100` keyword derivation) at
+    /// the `translate_material` boundary, never at render time.
     pub roughness_override: Option<f32>,
     /// `BgsmFile.translucency_subsurface_color` (v>=8). RGB of the
     /// transmitted/scattered light beneath the surface. Used by the

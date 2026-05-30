@@ -129,8 +129,10 @@ pub const MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO: u32 = 1 << 9;
 // NOT mirrored here — the shader is format-agnostic and doesn't
 // branch on material provenance. BGSM → standardized PBR
 // translation happens in `merge_bgsm_into_mesh`, which writes
-// `metalness_override` / `roughness_override` on `Material`. The
-// Rust-side flag rides through for debug-server inspection only.
+// `metalness_override` / `roughness_override` on the raw-tier
+// `ImportedMesh`; `translate_material` then resolves those into
+// `Material.{metalness,roughness}`. The Rust-side flag rides
+// through for debug-server inspection only.
 // See `feedback_format_translation.md`.
 
 // Water motion-kind enum (WATR-driven, mapped per-WATR record).
