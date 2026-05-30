@@ -166,6 +166,26 @@ pub fn should_evict_skin_slot(last_used_frame: u64, current_frame: u64, min_idle
     idle >= min_idle
 }
 
+/// #1297 / #1298 (DIM12-A-01) — does an existing [`SkinSlot`]'s
+/// allocated capacity no longer match the live mesh vertex count?
+///
+/// A `SkinSlot`'s output buffer is sized once at [`SkinComputePipeline::create_slot`]
+/// time for `slot_vertex_count` vertices. The compute dispatch is bounded
+/// only by the per-draw `push.vertex_count` (the *current* mesh count),
+/// NOT by the slot's allocated capacity — so if an entity's `mesh_handle`
+/// is remapped to a different-vertex-count mesh and the slot is reused
+/// verbatim, the shader writes `outputVertexData[vid …]` past the
+/// buffer's end (OOB). When this returns `true` the caller must
+/// destroy + recreate the slot (and drop the paired skinned BLAS) so the
+/// buffer re-allocs to the new size. Uses `!=` (any mismatch, not just
+/// growth) to keep the slot exactly matching the mesh — symmetric with
+/// the BLAS-side [`validate_refit_counts`] guard, which also rejects on
+/// `!=`. (`validate_refit_counts` is in `acceleration::predicates`.)
+#[inline]
+pub fn skin_slot_capacity_stale(slot_vertex_count: u32, mesh_vertex_count: u32) -> bool {
+    slot_vertex_count != mesh_vertex_count
+}
+
 /// GPU pre-skinning compute pipeline.
 ///
 /// Owns the pipeline + descriptor-set layout + descriptor pool. Slot
@@ -999,6 +1019,33 @@ mod tests {
         assert!(!should_evict_skin_slot(
             /*last=*/ 105, /*now=*/ 100, /*min=*/ 3
         ));
+    }
+
+    // ── #1297 / #1298 (DIM12-A-01) — slot-capacity reconciliation ───
+
+    /// A slot whose allocated vertex count matches the live mesh is
+    /// reused as-is — no destroy/recreate, no OOB risk.
+    #[test]
+    fn skin_slot_not_stale_when_counts_match() {
+        assert!(!skin_slot_capacity_stale(1024, 1024));
+        assert!(!skin_slot_capacity_stale(0, 0));
+        assert!(!skin_slot_capacity_stale(u32::MAX, u32::MAX));
+    }
+
+    /// The OOB case: the entity was remapped to a LARGER mesh, so the
+    /// slot's output buffer is too small for the dispatch (bounded by
+    /// the new `push.vertex_count`) — must recreate.
+    #[test]
+    fn skin_slot_stale_when_mesh_grew() {
+        assert!(skin_slot_capacity_stale(1024, 2048));
+    }
+
+    /// A SHRINK is also flagged (`!=`, not `>`) so the slot stays
+    /// exactly sized to the mesh — symmetric with `validate_refit_counts`
+    /// (which rejects any vertex/index drift, not only growth).
+    #[test]
+    fn skin_slot_stale_when_mesh_shrank() {
+        assert!(skin_slot_capacity_stale(2048, 1024));
     }
 
     // ── #1197 / PERF-DIM7-03 — descriptor-write compare-and-skip ────

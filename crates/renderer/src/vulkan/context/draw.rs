@@ -911,7 +911,48 @@ impl VulkanContext {
                         std::mem::take(&mut self.skin_first_sight_builds_scratch);
                     first_sight_builds.clear();
                     for &(entity_id, _push, idx_buffer, idx_count, vertex_count) in &dispatches {
-                        let needs_slot = !self.skin_slots.contains_key(&entity_id);
+                        let mut needs_slot = !self.skin_slots.contains_key(&entity_id);
+
+                        // #1297 / #1298 (DIM12-A-01) — reconcile an existing
+                        // slot's allocated capacity against the live mesh
+                        // vertex_count. If the entity's mesh_handle was remapped
+                        // to a different-vertex-count mesh, the slot's output
+                        // buffer (sized at create_slot time) is mis-sized, and
+                        // the compute dispatch — bounded only by
+                        // `push.vertex_count`, not the slot capacity — would
+                        // write past the buffer (OOB). Destroy + recreate the
+                        // slot and drop the now-stale paired skinned BLAS so
+                        // `create_slot` re-allocs to the new size. Immediate
+                        // destroy is safe here: the wait-on-both-in-flight-
+                        // fences at the top of `draw_frame` (line ~234) has
+                        // retired every command buffer referencing this slot's
+                        // buffer. Symmetric with the BLAS-side
+                        // `validate_refit_counts` guard.
+                        if !needs_slot {
+                            let stale_vc = self
+                                .skin_slots
+                                .get(&entity_id)
+                                .map(|s| s.vertex_count())
+                                .filter(|&slot_vc| {
+                                    super::super::skin_compute::skin_slot_capacity_stale(
+                                        slot_vc,
+                                        vertex_count,
+                                    )
+                                });
+                            if let Some(slot_vc) = stale_vc {
+                                log::info!(
+                                    "skin_compute slot for entity {entity_id} sized {slot_vc} verts \
+                                     but mesh now has {vertex_count} (mesh remap) — recreating slot \
+                                     to avoid OOB compute write (#1298)"
+                                );
+                                if let Some(slot) = self.skin_slots.remove(&entity_id) {
+                                    skin_pipeline.destroy_slot(&self.device, alloc, slot);
+                                }
+                                accel.drop_skinned_blas(entity_id);
+                                needs_slot = true;
+                            }
+                        }
+
                         if accel.should_rebuild_skinned_blas(entity_id) {
                             log::info!(
                                 "skin_compute BLAS rebuild for entity {entity_id} — \
