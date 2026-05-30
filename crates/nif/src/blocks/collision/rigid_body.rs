@@ -55,7 +55,7 @@ impl BhkRigidBody {
         // Skyrim / FO4. Gated `version < 10.1.0.0`, so it cannot affect
         // any other shipping title. Layout cross-checked against openmw
         // `bhkRigidBodyCInfo::read`.
-        if stream.version() < crate::version::NifVersion::V10_1_0_0 {
+        if stream.version().uses_old_rigid_body_layout() {
             return Self::parse_oblivion_old(stream);
         }
 

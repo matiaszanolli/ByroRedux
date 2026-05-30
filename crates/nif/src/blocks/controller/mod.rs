@@ -240,6 +240,49 @@ impl NiSingleInterpController {
     }
 }
 
+// ── BSKeyframeController ────────────────────────────────────────────────
+//
+// nif.xml hierarchy: NiTimeController → NiInterpController →
+// NiSingleInterpController → NiKeyframeController → BSKeyframeController.
+// The on-disk tail beyond the NiSingleInterpController base is:
+//   NiKeyframeController.Data  (Ref<NiKeyframeData>, until="10.1.0.103")
+//   BSKeyframeController.Data 2 (Ref<NiKeyframeData>, always)
+//
+// Pre-#1337 BSKeyframeController fell through to the NiTimeController
+// base-only stub, relying on block_size recovery to skip the trailing
+// refs on FO3+. Oblivion v10.0.1.x is sizeless (no recovery), so the
+// missing `Data` + `Data 2` refs cascade-truncated the per-bone
+// controller chain of every old-Oblivion creature (minotaurold.nif).
+
+/// `BSKeyframeController` — Bethesda extended keyframe controller.
+#[derive(Debug)]
+pub struct BsKeyframeController {
+    pub base: NiSingleInterpController,
+    /// `NiKeyframeController.Data` — only present `until="10.1.0.103"`
+    /// (old Oblivion); NULL afterwards, where the interpolator carries it.
+    pub data_ref: BlockRef,
+    /// `BSKeyframeController.Data 2` — always present.
+    pub data2_ref: BlockRef,
+}
+
+impl BsKeyframeController {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // base + (Interpolator since 10.1.0.104, gated inside).
+        let base = NiSingleInterpController::parse(stream)?;
+        let data_ref = if stream.version().has_keyframe_controller_data() {
+            stream.read_block_ref()?
+        } else {
+            BlockRef::NULL
+        };
+        let data2_ref = stream.read_block_ref()?;
+        Ok(Self {
+            base,
+            data_ref,
+            data2_ref,
+        })
+    }
+}
+
 // ── NiFlipController ───────────────────────────────────────────────────
 //
 // Texture-flip animation controller (flipbook / water-ripple / caustic
@@ -647,6 +690,7 @@ impl_ni_object!(
     BsLagBoneController => "BSLagBoneController",
     BsProceduralLightningController => "BSProceduralLightningController",
     NiSingleInterpController,
+    BsKeyframeController => "BSKeyframeController",
     NiFlipController,
     NiBsBoneLodController => "NiBSBoneLODController",
     BhkBlendController => "bhkBlendController",

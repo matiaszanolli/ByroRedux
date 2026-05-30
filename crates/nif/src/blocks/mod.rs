@@ -24,7 +24,6 @@ pub mod traits;
 pub mod tri_shape;
 
 use crate::stream::NifStream;
-use crate::version::NifVersion;
 use collision::{
     BhkAabbPhantom, BhkBoxShape, BhkBreakableConstraint, BhkCapsuleShape, BhkCollisionObject,
     BhkCompressedMeshShape, BhkCompressedMeshShapeData, BhkConstraint, BhkConvexListShape,
@@ -201,6 +200,21 @@ pub fn parse_block_with_name_arc(
     )
 }
 
+/// Is `type_name` a Havok *serializable* (the `bhkRefObject` subtree:
+/// shapes, rigid bodies, constraints, phantoms, ragdoll, `hkPackedNiTriStripsData`)?
+///
+/// These skip the v10.0.x NiObject `groupID` (see the consume site in
+/// [`parse_block_inner`]). The `NiCollisionObject` family
+/// (`bhkCollisionObject` / `bhkNPCollisionObject` / `bhkPCollisionObject`
+/// / `bhkSPCollisionObject` / `bhkBlendCollisionObject`) is deliberately
+/// excluded — those descend from `NiObject` (nifly `bhk.hpp`:
+/// `NiCollisionObject : NiObject`), not `bhkRefObject`, so they DO carry
+/// the groupID. They are the only `bhk*` types ending in `CollisionObject`.
+fn is_havok_serializable(type_name: &str) -> bool {
+    (type_name.starts_with("bhk") || type_name.starts_with("hk"))
+        && !type_name.ends_with("CollisionObject")
+}
+
 fn parse_block_inner(
     type_name: &str,
     stream: &mut NifStream,
@@ -232,18 +246,19 @@ fn parse_block_inner(
     // make it defensible against future format quirks, deferred until
     // content surfaces.
     //
-    // #1329 — Havok serializables (`bhk*` / `hk*`) do NOT carry the
-    // groupID. nifly reads it in `NiObject::Get`, but the bhk Get-chain
-    // (`bhkShape : bhkSerializable : bhkRefObject`, all non-streamable)
-    // never reaches `NiObject::Get`, and openmw's `bhk*::read` bodies
-    // read no groupID. Every bhk*/hk* parser here is written openmw-style
-    // (correct on v20.x where no groupID exists); consuming it on
-    // v10.0.1.0 Oblivion content shifted the whole collision chain by 4
-    // bytes/block and truncated the file (handscythe01 / oar01 /
-    // ungrdltraphingedoor). Verified byte-exact against those meshes.
-    let v = stream.version();
-    let is_havok_serializable = type_name.starts_with("bhk") || type_name.starts_with("hk");
-    if v >= NifVersion::V10_0_0_0 && v < NifVersion::V10_1_0_114 && !is_havok_serializable {
+    // #1329 / #1337 — the v10.0.x `groupID` is a NiObject field, but the
+    // `bhkRefObject` Havok-serializable subtree (shapes / bodies /
+    // constraints / phantoms / `hkPackedNiTriStripsData`) skips it: its
+    // Get-chain never reaches `NiObject::Get` and openmw's `bhk*::read`
+    // bodies read no groupID. The `NiCollisionObject` family
+    // (`*CollisionObject`) is NOT in that subtree — it descends from
+    // `NiObject` directly (nifly `bhk.hpp`: `NiCollisionObject : NiObject`)
+    // — so it DOES carry the groupID. `is_havok_serializable` encodes that
+    // split; the version band is `NifVersion::has_object_group_id`.
+    // Consuming the groupID for the wrong set shifts the whole v10.0.1.0
+    // collision chain by 4 bytes/block and truncates these sizeless files
+    // (handscythe01 / oar01 / ungrdltraphingedoor) — verified byte-exact.
+    if stream.version().has_object_group_id() && !is_havok_serializable(type_name) {
         let _group_id = stream.read_u32_le()?;
     }
 
@@ -784,8 +799,12 @@ fn parse_block_inner(
         "BSProceduralLightningController" => Ok(Box::new(
             controller::BsProceduralLightningController::parse(stream)?,
         )),
-        "BSKeyframeController"                       // NiSingleInterpController + Data2 ref
-        | "NiMorpherController"                      // base + NiMorphData ref
+        // BSKeyframeController has a dedicated parser (#1337): it carries
+        // the NiKeyframeController `Data` ref (until 10.1.0.103) plus its
+        // own `Data 2` ref. The base-only stub relied on block_size
+        // recovery, which sizeless Oblivion v10.0.1.x lacks.
+        "BSKeyframeController" => Ok(Box::new(controller::BsKeyframeController::parse(stream)?)),
+        "NiMorpherController"                        // base + NiMorphData ref
         | "NiMorphController"                        // base (no extra fields in nif.xml)
         | "NiMorphWeightsController" => {            // base + interpolator / target arrays
             Ok(Box::new(NiTimeController::parse(stream)?))
@@ -1206,3 +1225,49 @@ fn parse_block_inner(
 
 #[cfg(test)]
 mod dispatch_tests;
+
+#[cfg(test)]
+mod group_id_tests {
+    use super::is_havok_serializable;
+
+    /// #1337 — the groupID split. The `bhkRefObject` subtree (shapes,
+    /// bodies, constraints, data) skips the v10.0.x NiObject groupID; the
+    /// `NiCollisionObject` family (`*CollisionObject`) and all Ni* blocks
+    /// keep it. Regressing this (e.g. a blanket `starts_with("bhk")`)
+    /// strips bhkCollisionObject's groupID and cascade-truncates
+    /// sizeless v10.0.1.x meshes.
+    #[test]
+    fn havok_serializable_excludes_collision_object_family() {
+        // bhkRefObject subtree → serializable (no groupID).
+        for t in [
+            "bhkRigidBody",
+            "bhkRigidBodyT",
+            "bhkBoxShape",
+            "bhkConvexSweepShape",
+            "bhkMeshShape",
+            "bhkMoppBvTreeShape",
+            "bhkNiTriStripsShape",
+            "bhkListShape",
+            "hkPackedNiTriStripsData",
+        ] {
+            assert!(is_havok_serializable(t), "{t} must be a Havok serializable");
+        }
+        // NiCollisionObject family → NOT serializable (keeps groupID).
+        for t in [
+            "bhkCollisionObject",
+            "bhkNPCollisionObject",
+            "bhkPCollisionObject",
+            "bhkSPCollisionObject",
+            "bhkBlendCollisionObject",
+        ] {
+            assert!(
+                !is_havok_serializable(t),
+                "{t} descends from NiObject and MUST keep the groupID"
+            );
+        }
+        // Ordinary Ni* blocks → NOT serializable.
+        for t in ["NiNode", "NiTriStrips", "NiSkinData", "NiKeyframeData"] {
+            assert!(!is_havok_serializable(t), "{t} is not a Havok serializable");
+        }
+    }
+}

@@ -643,3 +643,44 @@ fn oblivion_old_bhk_rigid_body() {
     assert_eq!(rb.penetration_depth, 0.0);
     assert_eq!(stream.position() as usize, bytes.len());
 }
+
+/// #1337 — `BSKeyframeController` on old Oblivion (v10.0.1.x). It is
+/// NiObject-derived (NOT a Havok serializable), so `parse_block` consumes
+/// the groupID; the body is NiTimeController base + (no interpolator
+/// below 10.1.0.104) + `Data` ref (until 10.1.0.103) + `Data 2` ref.
+/// Pre-#1337 it fell through to the base-only stub and truncated the
+/// per-bone controller chain of old-Oblivion creatures (minotaurold.nif).
+#[test]
+fn oblivion_old_bs_keyframe_controller() {
+    let header = oblivion_old_header();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // groupID (consumed by parse_block)
+    // NiTimeController base (26 B).
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // next_controller
+    bytes.extend_from_slice(&8u16.to_le_bytes()); // flags
+    bytes.extend_from_slice(&1.0f32.to_le_bytes()); // frequency
+    bytes.extend_from_slice(&0.0f32.to_le_bytes()); // phase
+    bytes.extend_from_slice(&0.0f32.to_le_bytes()); // start_time
+    bytes.extend_from_slice(&1.33f32.to_le_bytes()); // stop_time
+    bytes.extend_from_slice(&3i32.to_le_bytes()); // target
+    // No interpolator (< 10.1.0.104).
+    bytes.extend_from_slice(&7i32.to_le_bytes()); // Data ref (until 10.1.0.103)
+    bytes.extend_from_slice(&9i32.to_le_bytes()); // Data 2 ref (always)
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("BSKeyframeController", &mut stream, None)
+        .expect("BSKeyframeController must parse on the v10.0.1.x path");
+    let c = block
+        .as_any()
+        .downcast_ref::<crate::blocks::controller::BsKeyframeController>()
+        .expect("downcast BsKeyframeController");
+    assert_eq!(c.base.base.target_ref.index(), Some(3));
+    assert!(
+        c.base.interpolator_ref.is_null(),
+        "no interpolator ref below 10.1.0.104"
+    );
+    assert_eq!(c.data_ref.index(), Some(7));
+    assert_eq!(c.data2_ref.index(), Some(9));
+    // groupID(4) + base(26) + data(4) + data2(4) = 38.
+    assert_eq!(stream.position() as usize, bytes.len());
+    assert_eq!(bytes.len(), 38);
+}

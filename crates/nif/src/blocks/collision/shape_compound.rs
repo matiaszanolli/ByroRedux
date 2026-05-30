@@ -122,7 +122,7 @@ impl BhkMoppBvTreeShape {
         // hkpMoppCode.Offset — nif.xml `since="10.1.0.0"`. Absent on the
         // rare v10.0.1.0 Oblivion Havok content (#1329); reading it there
         // over-read 16 bytes and cascaded the sizeless stream.
-        let origin = if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
+        let origin = if stream.version().has_mopp_offset() {
             read_vec4(stream)?
         } else {
             [0.0; 4]

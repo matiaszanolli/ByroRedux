@@ -94,6 +94,15 @@ impl NiSkinData {
         let skin_transform = stream.read_ni_transform_struct()?;
         let num_bones = stream.read_u32_le()?;
 
+        // Skin Partition ref — nif.xml `until="10.1.0.0"` (later moved to
+        // NiSkinInstance). Old-Oblivion creature skin data carries it
+        // inline here; without this read the 4-byte ref was misparsed as
+        // `has_vertex_weights` and the bone list over-read off the end
+        // (minotaurold.nif, #1337).
+        if stream.version().has_skin_data_partition_ref() {
+            let _skin_partition_ref = stream.read_block_ref()?;
+        }
+
         // has_vertex_weights (version >= 4.2.1.0, always true for Bethesda games)
         let has_vertex_weights = stream.read_u8()? != 0;
 
@@ -291,19 +300,17 @@ impl NiSkinPartition {
                 }
             }
 
-            // Bone indices (conditional). Same `ver1="10.1.0.0"` gate
-            // as `has_faces` per nif.xml — pre-#174 we read the byte
-            // unconditionally, which on the (purely hypothetical)
-            // pre-10.1.0.0 NiSkinPartition path would have misaligned
-            // the stream by 1 byte. No supported Bethesda game is pre
-            // 10.1.0.0, so the fix is defensive symmetry with
-            // `has_faces` above. See #174.
+            // Bone indices: nif.xml `Has Bone Indices` (line 2163) has NO
+            // version gate — unlike `Has Vertex Map` / `Has Vertex Weights`
+            // / `Has Faces` (all `since="10.1.0.0"`), the presence byte is
+            // read UNCONDITIONALLY (matches openmw `Partition::read`, which
+            // reads `get<uint8_t>()` regardless of `hasPresenceFlags`).
+            // #174's `has_conditionals` gate assumed no pre-10.1.0.0
+            // content existed and skipped the byte on v10.0.1.x — which
+            // under-read minotaurold.nif by 1 byte (#1337). v20+ behaviour
+            // is unchanged (it read the byte via the gate anyway).
             let bone_indices = {
-                let has = if has_conditionals {
-                    stream.read_byte_bool()?
-                } else {
-                    true
-                };
+                let has = stream.read_byte_bool()?;
                 if has {
                     let count = num_vertices as usize * num_weights_per_vertex as usize;
                     stream.read_bytes(count)?

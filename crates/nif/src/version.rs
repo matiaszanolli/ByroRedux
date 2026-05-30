@@ -154,6 +154,64 @@ impl NifVersion {
     pub fn build(self) -> u8 {
         self.0 as u8
     }
+
+    // ── "Old Oblivion" (v10.0.x) layout predicates ──────────────────
+    //
+    // NIF file versions in `[10.0.0.0, 10.1.0.114)` (nifly/openmw
+    // `VER_OB_OLD`) predate several layout additions. These named,
+    // version-aware helpers centralize the per-file-version questions so
+    // block parsers query *intent* instead of scattering raw
+    // `version < V10_1_0_0` literals — the GameVariant doctrine
+    // (`format_abstraction.md` / NIFAL). Because `NifVariant::detect`
+    // routes both v10.0.x and v20.0.0.5 to the same `Oblivion` variant,
+    // these live on `NifVersion` (the per-file version) rather than on
+    // the variant. See #1337.
+
+    /// Every `NiObject` in `[10.0.0.0, 10.1.0.114)` carries a leading
+    /// 4-byte `groupID` (nifly `NiObject::Get`, `BasicTypes.hpp:972`).
+    /// The `bhkRefObject` Havok-serializable subtree is the lone
+    /// exception (its Get-chain never reaches `NiObject::Get`), so the
+    /// dispatcher pairs this version test with the
+    /// `is_havok_serializable` type predicate.
+    pub fn has_object_group_id(self) -> bool {
+        self >= Self::V10_0_0_0 && self < Self::V10_1_0_114
+    }
+
+    /// `hkpMoppCode.Offset` (origin `Vector4`) is `since="10.1.0.0"` —
+    /// absent on old-Oblivion `bhkMoppBvTreeShape` (#1329).
+    pub fn has_mopp_offset(self) -> bool {
+        self >= Self::V10_1_0_0
+    }
+
+    /// `bhkNiTriStripsShape.Scale` (`Vector4`) is `since="10.1.0.0"` —
+    /// absent on old-Oblivion strips collision shapes (#1337).
+    pub fn has_havok_strips_scale(self) -> bool {
+        self >= Self::V10_1_0_0
+    }
+
+    /// `NiSkinData.Skin Partition` is a `Ref` carried inline (between
+    /// `Num Bones` and `Has Vertex Weights`) `until="10.1.0.0"`; later
+    /// versions moved it to `NiSkinInstance`. Old-Oblivion creature skin
+    /// data still has it (#1337).
+    pub fn has_skin_data_partition_ref(self) -> bool {
+        self <= Self::V10_1_0_0
+    }
+
+    /// `NiKeyframeController.Data` ref (a `NiKeyframeData`) is
+    /// `until="10.1.0.103"` — old-Oblivion keyframe controllers store
+    /// the data ref directly; `since="10.1.0.104"` it is replaced by the
+    /// `NiSingleInterpController.Interpolator` ref. (#1337)
+    pub fn has_keyframe_controller_data(self) -> bool {
+        self <= Self::V10_1_0_103
+    }
+
+    /// `bhkRigidBody` below `10.1.0.0` uses a distinct wire layout: it
+    /// predates the `since="10.1.0.0"` CInfo additions (the duplicated
+    /// filter/entity prefix and the max-velocity / penetration triple)
+    /// and carries the `<= VER_OB_OLD` `bhkWorldObject` Unknown. (#1329)
+    pub fn uses_old_rigid_body_layout(self) -> bool {
+        self < Self::V10_1_0_0
+    }
 }
 
 impl fmt::Display for NifVersion {
@@ -618,6 +676,36 @@ mod tests {
         assert_eq!(NifVersion::V20_2_0_7.to_string(), "20.2.0.7");
         assert_eq!(NifVersion::V4_0_0_2.to_string(), "4.0.0.2");
         assert_eq!(NifVersion::V20_0_0_5.to_string(), "20.0.0.5");
+    }
+
+    /// #1337 — the "old Oblivion" (v10.0.x) layout predicates. v10.0.1.0
+    /// / v10.0.1.2 take the old paths; standard Oblivion v20.0.0.5 and
+    /// every later title (FO3/FNV/Skyrim/FO4) take the modern paths.
+    #[test]
+    fn old_oblivion_layout_predicates() {
+        let v10 = NifVersion::V10_0_1_2; // VER_OB_OLD band
+        let v20 = NifVersion::V20_0_0_5; // standard Oblivion / modern band
+
+        // groupID version band [10.0.0.0, 10.1.0.114): v10.0.x in, v20 out.
+        assert!(v10.has_object_group_id());
+        assert!(!v20.has_object_group_id());
+
+        // since 10.1.0.0 fields — present on v20, absent on v10.0.x.
+        assert!(!v10.has_mopp_offset() && v20.has_mopp_offset());
+        assert!(!v10.has_havok_strips_scale() && v20.has_havok_strips_scale());
+
+        // until-boundary fields — present on v10.0.x, absent on v20.
+        assert!(v10.has_skin_data_partition_ref() && !v20.has_skin_data_partition_ref());
+        assert!(v10.has_keyframe_controller_data() && !v20.has_keyframe_controller_data());
+
+        // old rigid-body layout: v10.0.x only.
+        assert!(v10.uses_old_rigid_body_layout() && !v20.uses_old_rigid_body_layout());
+
+        // boundary: exactly 10.1.0.0 is "modern" for the scale/offset
+        // (since=10.1.0.0) but still carries the skin-partition ref
+        // (until=10.1.0.0, inclusive).
+        let b = NifVersion::V10_1_0_0;
+        assert!(b.has_mopp_offset() && b.has_skin_data_partition_ref());
     }
 
     #[test]

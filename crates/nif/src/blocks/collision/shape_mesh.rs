@@ -25,8 +25,12 @@ impl BhkNiTriStripsShape {
         let radius = stream.read_f32_le()?;
         stream.skip(20)?; // unused
         let _grow_by = stream.read_u32_le()?;
-        // Scale: since 10.1.0.0 (always present for Oblivion+)
-        let _scale = read_vec4(stream)?;
+        // Scale: nif.xml `since="10.1.0.0"` — absent on the rare
+        // v10.0.1.x Oblivion strips shapes (#1337); reading it there
+        // over-read 16 bytes and cascaded the sizeless stream.
+        if stream.version().has_havok_strips_scale() {
+            let _scale = read_vec4(stream)?;
+        }
         let num_data = stream.read_u32_le()?;
         let mut data_refs = stream.allocate_vec(num_data)?;
         for _ in 0..num_data {
