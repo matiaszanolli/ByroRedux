@@ -118,6 +118,8 @@ pub(crate) use spawn::{
 };
 #[cfg(test)]
 pub(crate) use unload::release_victim_item_instances;
+#[cfg(test)]
+pub(crate) use unload::collect_victim_gpu_handles;
 
 /// Pack `BSEffectShaderProperty` flag booleans (captured in Stage 1 by
 /// `BsEffectShaderData::effect_{soft,palette_color,palette_alpha,lit}`)
@@ -410,3 +412,5 @@ mod placement_root_subtree_tests;
 mod root_index_tests;
 #[cfg(test)]
 mod inventory_release_tests;
+#[cfg(test)]
+mod unload_greyscale_lut_tests;

@@ -10,7 +10,8 @@ use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
 
 use crate::components::{
-    CellRootIndex, DarkMapHandle, ExtraTextureMaps, NormalMapHandle, TerrainTileSlot,
+    CellRootIndex, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, NormalMapHandle,
+    TerrainTileSlot,
 };
 
 /// Tear down a cell: despawn every entity owned by `cell_root` and
@@ -42,85 +43,15 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         .and_then(|mut idx| idx.map.remove(&cell_root))
         .unwrap_or_default();
 
-    // Gather mesh handles. Pre-#879 this used a `HashSet<u32>` because
-    // every REFR placement uploaded its own `MeshHandle` and one
-    // `drop_mesh` per unique handle was sufficient. Post-#879 the
-    // refcounted dedup means N placements share one handle: each
-    // holder must contribute one decrement so the registry can free
-    // the GPU buffers exactly when the last placement releases.
-    // Mirrors the existing texture-handle pattern (#524) which has
-    // always used a Vec for the same reason.
-    let mut mesh_drops: Vec<u32> = Vec::new();
-    let mut texture_drops: Vec<u32> = Vec::new();
-    let mut terrain_tile_slots: HashSet<u32> = HashSet::new();
+    // Collect every GPU handle the victims hold (mesh / texture /
+    // terrain-tile slot) in one fan-out walk, then release them below.
+    // Extracted into a pure fn over the `World` so its handle-coverage
+    // contract — every texture-handle component type must be swept —
+    // is unit-testable without a `VulkanContext` (#1341). Mirrors the
+    // `release_victim_item_instances` (#896) extraction.
     let fallback_tex = ctx.texture_registry.fallback();
-    let push_tex_drop = |handle: u32, sink: &mut Vec<u32>| {
-        if handle != 0 && handle != fallback_tex {
-            sink.push(handle);
-        }
-    };
-    // #883 / CELL-PERF-06 — single victim walk that fans out to
-    // every per-component lookup. Pre-fix this was six independent
-    // `for &eid in &victims` loops, each re-acquiring a read lock on
-    // a different SparseSet header. The per-victim inner cost is
-    // unchanged (still six hash lookups per entity), but the
-    // SparseSet header walk happens once instead of six times.
-    //
-    // Holding six read locks across the walk is safe — they're
-    // independent SparseSets (different component TypeIds) and
-    // `unload_cell` takes `&mut World`, so no concurrent writer can
-    // exist. The TypeId-sort lock-order invariant (CLAUDE.md #4) is
-    // about combined read+write multi-component queries where a
-    // mixed acquire order could deadlock; six pure reads have no
-    // such risk.
-    let mq = world.query::<MeshHandle>();
-    let tq = world.query::<TextureHandle>();
-    let nq = world.query::<NormalMapHandle>();
-    let dq = world.query::<DarkMapHandle>();
-    let eq = world.query::<ExtraTextureMaps>();
-    let ttq = world.query::<TerrainTileSlot>();
-    for &eid in &victims {
-        if let Some(mq) = &mq {
-            if let Some(mh) = mq.get(eid) {
-                mesh_drops.push(mh.0);
-            }
-        }
-        if let Some(tq) = &tq {
-            if let Some(th) = tq.get(eid) {
-                push_tex_drop(th.0, &mut texture_drops);
-            }
-        }
-        if let Some(nq) = &nq {
-            if let Some(nh) = nq.get(eid) {
-                push_tex_drop(nh.0, &mut texture_drops);
-            }
-        }
-        if let Some(dq) = &dq {
-            if let Some(dh) = dq.get(eid) {
-                push_tex_drop(dh.0, &mut texture_drops);
-            }
-        }
-        if let Some(eq) = &eq {
-            if let Some(extra) = eq.get(eid) {
-                push_tex_drop(extra.glow, &mut texture_drops);
-                push_tex_drop(extra.detail, &mut texture_drops);
-                push_tex_drop(extra.gloss, &mut texture_drops);
-                push_tex_drop(extra.parallax, &mut texture_drops);
-                push_tex_drop(extra.env, &mut texture_drops);
-                push_tex_drop(extra.env_mask, &mut texture_drops);
-            }
-        }
-        if let Some(ttq) = &ttq {
-            if let Some(slot) = ttq.get(eid) {
-                terrain_tile_slots.insert(slot.0);
-            }
-        }
-    }
-    // Drop query guards before the texture/mesh registry mutations
-    // below — those don't touch component SparseSets but releasing
-    // the locks early keeps the lock-hold window scoped to the
-    // walk.
-    drop((mq, tq, nq, dq, eq, ttq));
+    let (mesh_drops, mut texture_drops, terrain_tile_slots) =
+        collect_victim_gpu_handles(world, &victims, fallback_tex);
 
     // `SkyParamsRes` / `CellLightingRes` / `WeatherDataRes` /
     // `WeatherTransitionRes` and the bindless texture handles on
@@ -151,7 +82,12 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     for &slot in &terrain_tile_slots {
         if let Some(layer_indices) = ctx.free_terrain_tile(slot) {
             for idx in layer_indices {
-                push_tex_drop(idx, &mut texture_drops);
+                // Same skip rule as `collect_victim_gpu_handles`'
+                // `push_tex_drop`: never drop the placeholder (0) or the
+                // shared registry fallback slot.
+                if idx != 0 && idx != fallback_tex {
+                    texture_drops.push(idx);
+                }
             }
         }
     }
@@ -255,6 +191,115 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         texture_drops.len(),
         cell_root,
     );
+}
+
+/// Collect every GPU handle the cell's `victims` hold so [`unload_cell`]
+/// can pair each with its release. Pure over the `World` — no
+/// `VulkanContext` — so the handle-coverage contract is unit-testable
+/// (see `unload_greyscale_lut_tests`), mirroring the
+/// [`release_victim_item_instances`] (#896) extraction.
+///
+/// Returns `(mesh_drops, texture_drops, terrain_tile_slots)`:
+/// - `mesh_drops` — one `MeshHandle` per holder (refcounted dedup #879:
+///   each holder contributes one decrement so the registry frees the GPU
+///   buffers exactly when the last placement releases).
+/// - `texture_drops` — every bindless texture handle on the victim's
+///   `TextureHandle` / `NormalMapHandle` / `DarkMapHandle` /
+///   `ExtraTextureMaps` (6 slots) / `GreyscaleLutHandle` (#1341)
+///   components. Handle `0` and `fallback_tex` are skipped — those are
+///   the shared placeholder / neutral-fallback slots that are never
+///   per-cell refcounted.
+/// - `terrain_tile_slots` — `TerrainTileSlot` IDs; the caller frees each
+///   slot's 8 layer refcounts via `free_terrain_tile` (#627).
+///
+/// # Adding a texture-handle component
+/// Every component that carries a `resolve_texture`-acquired bindless
+/// handle MUST be swept here or its refcount leaks on cell unload (the
+/// #1341 / D3-05 bug was exactly such an omission — `GreyscaleLutHandle`
+/// was attached at spawn but never collected). The unit test pins the
+/// coverage for `GreyscaleLutHandle`; extend it when adding a new handle.
+pub(crate) fn collect_victim_gpu_handles(
+    world: &World,
+    victims: &[EntityId],
+    fallback_tex: u32,
+) -> (Vec<u32>, Vec<u32>, HashSet<u32>) {
+    let mut mesh_drops: Vec<u32> = Vec::new();
+    let mut texture_drops: Vec<u32> = Vec::new();
+    let mut terrain_tile_slots: HashSet<u32> = HashSet::new();
+    let push_tex_drop = |handle: u32, sink: &mut Vec<u32>| {
+        if handle != 0 && handle != fallback_tex {
+            sink.push(handle);
+        }
+    };
+    // #883 / CELL-PERF-06 — single victim walk that fans out to every
+    // per-component lookup. Pre-fix this was independent `for &eid in
+    // victims` loops, each re-acquiring a read lock on a different
+    // SparseSet header. The per-victim inner cost is unchanged (one hash
+    // lookup per component), but the SparseSet header walk happens once.
+    //
+    // Holding the read locks across the walk is safe — they're
+    // independent SparseSets (different component TypeIds) and the caller
+    // holds `&mut World`, so no concurrent writer can exist. The
+    // TypeId-sort lock-order invariant (CLAUDE.md #4) is about combined
+    // read+write multi-component queries where a mixed acquire order
+    // could deadlock; pure reads have no such risk.
+    let mq = world.query::<MeshHandle>();
+    let tq = world.query::<TextureHandle>();
+    let nq = world.query::<NormalMapHandle>();
+    let dq = world.query::<DarkMapHandle>();
+    let eq = world.query::<ExtraTextureMaps>();
+    let gq = world.query::<GreyscaleLutHandle>();
+    let ttq = world.query::<TerrainTileSlot>();
+    for &eid in victims {
+        if let Some(mq) = &mq {
+            if let Some(mh) = mq.get(eid) {
+                mesh_drops.push(mh.0);
+            }
+        }
+        if let Some(tq) = &tq {
+            if let Some(th) = tq.get(eid) {
+                push_tex_drop(th.0, &mut texture_drops);
+            }
+        }
+        if let Some(nq) = &nq {
+            if let Some(nh) = nq.get(eid) {
+                push_tex_drop(nh.0, &mut texture_drops);
+            }
+        }
+        if let Some(dq) = &dq {
+            if let Some(dh) = dq.get(eid) {
+                push_tex_drop(dh.0, &mut texture_drops);
+            }
+        }
+        if let Some(eq) = &eq {
+            if let Some(extra) = eq.get(eid) {
+                push_tex_drop(extra.glow, &mut texture_drops);
+                push_tex_drop(extra.detail, &mut texture_drops);
+                push_tex_drop(extra.gloss, &mut texture_drops);
+                push_tex_drop(extra.parallax, &mut texture_drops);
+                push_tex_drop(extra.env, &mut texture_drops);
+                push_tex_drop(extra.env_mask, &mut texture_drops);
+            }
+        }
+        // #1341 / D3-05 — BSEffectShaderProperty greyscale LUT. Attached
+        // at spawn (`spawn.rs`) via `resolve_texture` (refcount bump) but
+        // historically omitted from this walk, leaking the texture +
+        // bindless slot on every unload of a cell with a greyscale-LUT
+        // effect mesh. Mirrors the `DarkMapHandle` sweep above.
+        if let Some(gq) = &gq {
+            if let Some(gh) = gq.get(eid) {
+                push_tex_drop(gh.0, &mut texture_drops);
+            }
+        }
+        if let Some(ttq) = &ttq {
+            if let Some(slot) = ttq.get(eid) {
+                terrain_tile_slots.insert(slot.0);
+            }
+        }
+    }
+    // Query guards drop here at fn return — before the caller's GPU
+    // registry mutations — keeping the lock-hold window scoped to the walk.
+    (mesh_drops, texture_drops, terrain_tile_slots)
 }
 
 /// Walk `victims` for [`Inventory`] components and release every
