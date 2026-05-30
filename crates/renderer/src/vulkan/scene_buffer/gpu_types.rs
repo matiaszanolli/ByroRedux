@@ -170,8 +170,7 @@ pub struct GpuLight {
 
 /// GPU-side camera data (**304 bytes**, std140-compatible).
 ///
-/// Layout pinned by `gpu_camera_is_288_bytes` test (name kept for grep
-/// continuity; asserted value is 304) — three `mat4` (3×64 = 192 B) +
+/// Layout pinned by `gpu_camera_is_304_bytes` test — three `mat4` (3×64 = 192 B) +
 /// seven trailing `vec4` (7×16 = 112 B: position, flags, screen, fog,
 /// jitter, sky_tint, sun_direction — post-#925 / #1028 / #1210) → 304 B.
 /// Every

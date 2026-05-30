@@ -38,8 +38,7 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// std430 GPU-side material record. **300 bytes** per material.
 /// Size history: 272 B → 260 B (#804 R1-N4 dropped `avg_albedo_r/g/b`)
 /// → 296 B (#1249 Disney sheen/subsurface) → 300 B (#1250 `anisotropic`).
-/// Pinned by `gpu_material_size_is_260_bytes` (test name intentionally
-/// kept as "260" for grep continuity; the asserted value is 300).
+/// Pinned by `gpu_material_size_is_300_bytes`.
 ///
 /// (Historical: the per-instance → per-material migration shipped as
 /// R1 Phases 4–6, finishing with #785. The layout below was originally
@@ -62,7 +61,7 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// (`ui_vert_reads_texture_index_from_instance_not_material_table`)
 /// pins this for `ui.vert` after #776 / #785; mirror checks for the
 /// other two stages live in the same module. Layout invariant is pinned
-/// by `gpu_material_size_is_260_bytes` and
+/// by `gpu_material_size_is_300_bytes` and
 /// `gpu_material_field_offsets_match_shader_contract` (added #806 to
 /// catch within-vec4 reorderings the size pin alone would miss).
 #[repr(C)]
@@ -78,9 +77,8 @@ pub struct GpuMaterial {
     /// albedo — set when the source NIF declared
     /// `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`. Pre-#695
     /// this slot was an unused pad; routing the bit through here keeps
-    /// the std430 layout pinned by `gpu_material_size_is_260_bytes`
-    /// (300 B post-#1250 Disney lobe; was 260 B post-#804 / R1-N4 before
-    /// the sheen/subsurface/anisotropic fields were added).
+    /// the std430 layout pinned by `gpu_material_size_is_300_bytes`
+    /// (300 B post-#1250 Disney lobe).
     pub material_flags: u32, // offset 12
 
     // ── Emissive RGB + specular_strength (vec4 #2) ─────────────────
@@ -1156,7 +1154,7 @@ mod tests {
     /// "260" so a future size shift updates them in lockstep with
     /// the assertion.
     #[test]
-    fn gpu_material_size_is_260_bytes() {
+    fn gpu_material_size_is_300_bytes() {
         assert_eq!(std::mem::size_of::<GpuMaterial>(), 300);
     }
 
@@ -1173,7 +1171,7 @@ mod tests {
     /// Regression guard for `GpuMaterial` GLSL field names —
     /// REN-D14-NEW-02 (audit 2026-05-09). The offset pin
     /// (`gpu_material_field_offsets_match_shader_contract`) and the
-    /// size pin (`gpu_material_size_is_260_bytes`) catch byte-level
+    /// size pin (`gpu_material_size_is_300_bytes`) catch byte-level
     /// drift, but neither catches a GLSL-side field rename: the
     /// shader still reads from the same offset, the value still
     /// arrives in the right register, but the field's MEANING in
@@ -1236,7 +1234,7 @@ mod tests {
     }
 
     /// Regression guard for the GpuMaterial Shader Struct Sync (#806).
-    /// The size pin (`gpu_material_size_is_260_bytes`) catches additions
+    /// The size pin (`gpu_material_size_is_300_bytes`) catches additions
     /// or removals; this catches reorderings WITHIN the existing 16
     /// vec4 slots that the size pin alone would miss — e.g. swapping
     /// `texture_index` and `normal_map_index` within vec4 #4 would

@@ -46,11 +46,8 @@ fn gpu_instance_is_112_bytes_std430_compatible() {
 /// not have caught (no Rust-side drift) but the audit did. This
 /// pin at least catches the Rust-side regression so the doc-
 /// comment stays honest.
-///
-/// Function and test name kept as "288" for grep continuity; the
-/// assertion tracks the live size.
 #[test]
-fn gpu_camera_is_288_bytes() {
+fn gpu_camera_is_304_bytes() {
         assert_eq!(
             size_of::<GpuCamera>(),
             304,
