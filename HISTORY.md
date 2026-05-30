@@ -24,6 +24,74 @@ Commits hold that record.
 
 ---
 
+## Session 43 — audit-bundle bug-bash: v10.0.1.0 "old Oblivion" NIF + Oblivion/Starfield ESM-XCLL + tech-debt sweep + M47.2 VMAD  (2026-05-28 → 2026-05-30, 86d32e5f..b2e04548, 38 commits)
+
+A pure audit-driven closeout session, no milestone churn. Three fresh 2026-05-28 audits
+(AUDIT_OBLIVION, AUDIT_TECH_DEBT 11-dim sweep, plus a NIF adversarial-probe report) plus the
+standing renderer/skinning findings fed a ~30-issue bug-bash. The marquee arc was bringing the
+rare **v10.0.1.0 "old Oblivion" NIF format** from "truncates at the first undispatched block" to
+"all 64 vanilla v10.0.x files in Oblivion - Meshes.bsa parse clean." The version-specific layout
+deltas were routed through named `NifVersion` helpers (per the GameVariant doctrine) rather than
+scattered raw `version < N` checks. M47.2 (Papyrus→ECS scripting) advanced with VMAD decode.
+
+- **v10.0.1.0 "old Oblivion" NIF format support (#1329, #1337, #1310/#1301, #1302)** — #1329 fixed
+  the Havok collision chain: `bhkConvexSweepShape` + `bhkMeshShape` parsers, the root-cause
+  groupID over-consumption (the `bhkRefObject` subtree skips the v10.0.x NiObject groupID; the
+  `*CollisionObject` family keeps it), `bhkMoppBvTreeShape` `Offset` version-gate, and a dedicated
+  `bhkRigidBody` v10.0.x CInfo path. #1337 finished the chain (`bhkNiTriStripsShape.Scale` gate,
+  `NiSkinData` inline partition ref, `NiSkinPartition.Has Bone Indices` read unconditionally,
+  dedicated `BSKeyframeController` parser) → 64/64 v10.0.x files clean. #1310/#1301 + #1302 fixed
+  the v10.0.1.x phantom-bool / phantom-weight reads on `NiTriStripsData`/`NiTriShapeData`/
+  `NiGeomMorpherController`. New named version helpers: `has_object_group_id`, `has_mopp_offset`,
+  `has_havok_strips_scale`, `has_skin_data_partition_ref`, `has_keyframe_controller_data`,
+  `uses_old_rigid_body_layout`. All gates `version < 10.1.0.0` → zero impact on any other title.
+
+- **Oblivion ESM / cell-lighting audit (OBL-D3/D6)** — #1312 split the XCLL extended-field gate
+  per-field (`dir_fade`@≥32 / `fog_clip`@≥36 / `fog_power`@≥40) so the full 36-byte TES4 XCLL keeps
+  both authored fields — 0 → 1770 lit cells recovered on real Oblivion.esm. #1304/#1311 corrected
+  INFO TRDT byte 0 (it's `EmotionType`, not a response number; added `response_number`@12). #1307
+  DIAL `DATA` dialogue-type byte; #1308 quieted the index-01 FormID-remap warn spam (Bethesda
+  authoring artifact, passed through, not clamped); #1303 derived Oblivion `<base>_n.dds` normal
+  maps; #1305 + #1328 wired Oblivion worldspace ocean water (XCLW `#INT_MIN#` sentinel + WRLD
+  DNAM default height); #1306 recovered FX emitters dropped on a `NiPSysRotationModifier`
+  under-read; #1326 fixed the `NiPSysGravityModifier` World-Aligned gate; #1327 deleted dead
+  `NiPSysBlock` legacy arms.
+
+- **Starfield XCLL + roadmap (#1293, #1290)** — #1293 proved (xEdit SF1 + 11,985 real cells) that
+  Starfield's 108-byte XCLL is NOT "Skyrim + 16-byte tail": it shares only bytes 0-39 then diverges
+  into a volumetric height-fog model (no ambient cube). Added a dedicated `game == Starfield`
+  decode path + `StarfieldLighting` struct — the old Skyrim arm had been misdecoding ~52 bytes of
+  every SF cell. #1290 refreshed the SF forward-blocker chain (post #762/#1289).
+
+- **Renderer / GPU-struct tech-debt** — #1285 routed `MAT_FLAG_*` bits 5-9 through the generated
+  shader-constants header (was hand-written `#define`s, no lockstep test); #1287 corrected the
+  GpuMaterial-is-260B spec-rot (actual 300B) in the audit skill + shader doc; #1321 refreshed
+  stale GPU-struct sizes + deleted-`classify_pbr` doc refs; #1309/#1315 fixed the `resolve_pbr`
+  doc link + the false "wireframe unimplemented" comment (it's fully wired); #1297/#1298 added a
+  skin-slot capacity-reconcile guard against an OOB compute write on mesh remap (symmetric with
+  the BLAS `validate_refit_counts`); #1299/#1300 fixed skinned-BLAS doc rot + a scratch-serialize
+  barrier before the first skinned build; #1296 relabeled `overflow_attempt_count` as per-call.
+
+- **Tech-debt sweep (AUDIT_TECH_DEBT_2026-05-28, 11-dim)** — #1318 deduped `read_zstring` + routed
+  the flip through the canonical helper; #1319 named the `bsver` thresholds + pinned the
+  `skin_vertices` workgroup; #1320 added assertions to `dump_prospector` (partial); #1322 demoted
+  the legacy FormId bridge to `pub(crate)`.
+
+- **M47.2 — Papyrus→ECS scripting (VMAD decode)** — canonical scripting-translation layer +
+  rumble / quest-gate recognizers; structured `ScriptInstanceData` VMAD decode (Skyrim+ script
+  instances); Phase 5a decodes VMAD script instances onto base records.
+
+- **Audit infrastructure** — added AUDIT_OBLIVION_2026-05-28 + AUDIT_TECH_DEBT_2026-05-28 +
+  a NIF adversarial-probe report; brought audit infra current + added the `audit-nifal` skill;
+  attributed the Disney-BSDF lobe (GLSL-PathTracer MIT + Burley 2012); reconciled the load-bearing
+  renderer/NIF architecture docs.
+
+Net: tests ~2635 → 2683 (+48); LOC total ~222,983 → 226,751 (+3,768); source files 549 → 559
+(528 non-test); workspace members 21 (flat); open issue dirs 1183 → 1224. No bench delta —
+the session touched parser/ESM/audit/scripting + one skinning safety-guard, not the renderer
+hot path; bench-of-record `4e2ebe8c` is now 42 commits stale but the FNV/Skyrim/FO4 steady-state
+numbers remain representative (no re-run warranted). Audit-bundle closeout, no milestone churn.
+
 ## Session 42 — #1277 NIF translation-layer epic close + Starfield walkable-Cydonia bring-up + Disney BSDF + water caustics + R6a-stale-12 closeout  (2026-05-23 → 2026-05-28, 4cbf2e6a..dabf89b2, 162 commits)
 
 Session 41 closed with the M27 / M47.0 / M47.1 / M30.2 Tier-3 push done; Session 42 opened with the per-game NIF/ESM translation-survey #1277 epic in mid-flight and ran five days of mixed work. The session's two largest arcs were the **#1277 epic close-out** (Tasks 1/3/4/5/6/8 land in sequence via PR #1278 plus all five children #1279/1280/1281/1282/1283) and a final-day **Starfield bring-up** that drove vanilla `Starfield.esm` from "no ESM parser at all per audit framing" to "walkable Cydonia interior with 91 698 static colliders / 93 547 entities / 7 253 unique meshes" in one sitting — empirical measurement via `sf_smoke` + `sf_parse_check` showed the existing parser already captured 99.9% of vanilla SF records, collapsing the original 7-11-session Starfield roadmap to 3-4. In between: Disney BSDF lobe shipped end-to-end (#1248-1254), water-side caustic synthesis (#1210 Phases A-E) closed the long-deferred sun-direction → water.frag → composite chain, **R6a-stale-12 closeout (`c9ad33f0`) delivered +33-50% FPS across all three benches**, the 2026-05-26 Fallout-symptom sweep closed F2-F8, and the materially-translation Stages 1-3 + canonical-material convergence + #1284 SkinSlotPool 3-step bump completed the multi-session material/skinning refactor begun in Session 38. Full audit-renderer + audit-starfield + audit-fnv + audit-runtime sweeps over the last 36 hours produced nine new tracked issues (#1285-1287, #1289-1295) and seven of them closed in-session.

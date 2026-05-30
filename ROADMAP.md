@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-05-28 (Session 42 closeout — #1277 NIF translation-layer epic + 5 children closed; Starfield bring-up `no parser` → `walkable Cydonia` in 5 days via #1289 / #1291 / #1292 / #1294 / #1295; Disney BSDF + water caustics #1248-1257 shipped; R6a-stale-12 closeout `c9ad33f0` delivered +33-50% FPS across all three benches (Prospector / Whiterun / MedTek). See [HISTORY.md](HISTORY.md) Session 42 narrative. **R6a-stale-13 bench refresh closed 2026-05-28 at `4e2ebe8c`** — Whiterun +14.6% (control, hot path did not regress); FNV/FO4 grew entity counts ~40% via #1294 synthesized colliders (Prospector −56% FPS), follow-up R6a-stale-13-collider-cost filed; NIFAL particle/collision slices + emissive no-op landed this session).
+**Last verified**: 2026-05-30 (Session 43 closeout — audit-bundle bug-bash, no milestone churn; ~30 issues across the v10.0.1.0 "old Oblivion" NIF chain (#1329 / #1337 / #1310 / #1302 → 64/64 v10.0.x files clean), Oblivion/Starfield ESM-XCLL (#1312 / #1293), renderer + GPU-struct tech-debt (#1285 / #1287 / #1297 / #1321), the 11-dim AUDIT_TECH_DEBT sweep, and M47.2 VMAD script-instance decode. See [HISTORY.md](HISTORY.md) Session 43 narrative. **Bench unchanged** — this session touched parser / ESM / audit / scripting + one skinning safety-guard, not the renderer hot path; bench-of-record `4e2ebe8c` is now 42 commits stale but the steady-state FNV/Skyrim/FO4 numbers remain representative (no re-run warranted).
 **Bench-of-record** (R6a-stale-13 refresh, HEAD `4e2ebe8c`, 2026-05-28,
 wall-clock bench, 300 frames, RTX 4070 Ti, run from each game's `Data/`
 directory — see Repro-command CWD note below):
@@ -732,16 +732,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-05-28, verified by `/session-close`.
+Ground-truth as of 2026-05-30, verified by `/session-close`.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~208 850                     |
-| Rust total lines (all `.rs`, excl. `target/`) | ~222 983               |
-| Source files (`.rs`, excl. `target/`)   | 549 total · 518 outside `tests/` dirs |
+| Rust source lines (`src/` dirs)         | ~214 350                     |
+| Rust total lines (all `.rs`, excl. `target/`) | ~226 750               |
+| Source files (`.rs`, excl. `target/`)   | 559 total · 528 outside `tests/` dirs |
 | Workspace members                       | 21 (19 crates + `byroredux` binary + `tools/byro-dbg`) |
-| Tests (last reported by ROADMAP)        | ~2635 passing (2706 `#[test]`/`#[tokio::test]` attributes in tree; `/session-close` reported 2628 at the Session 42 close). Session 42 added ~171 over Session 41's 2457: Disney BSDF gating + clamp tests (#1248-#1254), water caustic Phases A-E (#1255-#1257), Starfield CDB consumer + .mat-arm regression coverage (#1289), Starfield XCLL canonical-size pinning (#1291), BSGeometry geometries-prefix mesh-path tests (#1292), trimesh-fallback gate-on-base_layer regression (#1294), #1277 NIF translation-layer epic tests (Tasks 1/3/4/5/6/8 + children #1279/#1280/#1281/#1282/#1283), M24.2 QUST stage + objective + PERK Quest/Ability/EntryPoint decoder coverage, F2-F8 Fallout symptom sweep regression pins, R7 scheduler access surface extensions, NIF parser depth + cycle guards (#1269/#1270), SubReader migration R2 Phase B coverage. The post-close NIFAL slices (material / particle / collision) added their own regression coverage on top. |
-| Open issue directories                  | 1183 (`.claude/issues/`)     |
+| Tests (last reported by ROADMAP)        | ~2683 passing (Session 43 added ~48 over Session 42's ~2635). Session 43 was a pure audit-bundle bug-bash: v10.0.1.0 "old Oblivion" NIF group-id / Havok-chain regression pins (#1329 / #1337), Oblivion 36-byte XCLL per-field gating (#1312), Starfield 108-byte volumetric-height-fog XCLL decode (#1293), MAT_FLAG generated-header lockstep (#1285), skin-slot capacity-reconcile guard (#1297), INFO TRDT EmotionType coverage (#1304), and M47.2 VMAD script-instance decode regression coverage. |
+| Open issue directories                  | 1224 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
