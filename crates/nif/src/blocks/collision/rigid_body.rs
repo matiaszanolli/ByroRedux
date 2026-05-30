@@ -43,6 +43,22 @@ pub struct BhkRigidBody {
 
 impl BhkRigidBody {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        // #1329 — v10.0.1.x ("old Oblivion", nifly/openmw `VER_OB_OLD`)
+        // Havok rigid bodies predate the `since="10.1.0.0"` CInfo
+        // additions: the 16-byte duplicated-filter/entity CInfo prefix
+        // and the max-velocity / penetration-depth triple are both
+        // absent, and `bhkWorldObject` carries an extra 4-byte Unknown
+        // after the shape ref. These rare early-Oblivion meshes
+        // (handscythe01 / oar01 / ungrdltraphingedoor) cascade-truncate
+        // without this path. Handled separately so the main path below
+        // stays byte-for-byte as validated for Oblivion v20 / FO3 / FNV /
+        // Skyrim / FO4. Gated `version < 10.1.0.0`, so it cannot affect
+        // any other shipping title. Layout cross-checked against openmw
+        // `bhkRigidBodyCInfo::read`.
+        if stream.version() < crate::version::NifVersion::V10_1_0_0 {
+            return Self::parse_oblivion_old(stream);
+        }
+
         let bsver = stream.bsver();
 
         // bhkWorldObject: shape ref + havok filter + world object CInfo
@@ -196,6 +212,76 @@ impl BhkRigidBody {
             max_linear_velocity,
             max_angular_velocity,
             penetration_depth,
+            motion_type,
+            deactivator_type,
+            solver_deactivation,
+            quality_type,
+            constraint_refs,
+            body_flags,
+        })
+    }
+}
+
+impl BhkRigidBody {
+    /// v10.0.1.x ("old Oblivion") rigid-body layout — see the version
+    /// gate in [`BhkRigidBody::parse`]. Mirrors openmw
+    /// `bhkRigidBodyCInfo::read`'s `version < 10.1.0.0` / `bethVersion < 83`
+    /// branch.
+    fn parse_oblivion_old(stream: &mut NifStream) -> io::Result<Self> {
+        // bhkWorldObject: shape + (VER_OB_OLD Unknown) + filter + WorldObjCInfo
+        let shape_ref = stream.read_block_ref()?;
+        stream.skip(4)?; // Unknown — only present `<= VER_OB_OLD` (10.0.1.x)
+        let havok_filter = stream.read_u32_le()?;
+        stream.skip(20)?; // bhkWorldObjCInfo (4 unused + broadphase(1) + 3 unused + property(12))
+
+        // bhkRigidBodyCInfo: the 16-byte `since=10.1.0.0` duplicated
+        // filter/entity prefix is absent here; only the `bethVer < 83`
+        // 4-byte Unused remains.
+        stream.skip(4)?;
+
+        let translation = read_vec4(stream)?;
+        let rotation = read_vec4(stream)?;
+        let linear_velocity = read_vec4(stream)?;
+        let angular_velocity = read_vec4(stream)?;
+        let inertia_tensor = read_matrix3(stream)?; // 3×(Vector3 + 4-byte pad) = 48 B
+        let center_of_mass = read_vec4(stream)?;
+        let mass = stream.read_f32_le()?;
+        let linear_damping = stream.read_f32_le()?;
+        let angular_damping = stream.read_f32_le()?;
+        let friction = stream.read_f32_le()?;
+        let restitution = stream.read_f32_le()?;
+        // `since=10.1.0.0`: max linear/angular velocity + penetration depth — absent.
+
+        let motion_type = stream.read_u8()?;
+        let deactivator_type = stream.read_u8()?;
+        let solver_deactivation = stream.read_u8()?;
+        let quality_type = stream.read_u8()?;
+        stream.skip(12)?; // Unused (bethVer < 83, non-FO4)
+
+        let num_constraints = stream.read_u32_le()?;
+        let mut constraint_refs: Vec<BlockRef> = stream.allocate_vec(num_constraints)?;
+        for _ in 0..num_constraints {
+            constraint_refs.push(stream.read_block_ref()?);
+        }
+        let body_flags = stream.read_u32_le()?; // u32 pre-Skyrim (bethVer < 76)
+
+        Ok(Self {
+            shape_ref,
+            havok_filter,
+            translation,
+            rotation,
+            linear_velocity,
+            angular_velocity,
+            inertia_tensor,
+            center_of_mass,
+            mass,
+            linear_damping,
+            angular_damping,
+            friction,
+            restitution,
+            max_linear_velocity: 0.0,
+            max_angular_velocity: 0.0,
+            penetration_depth: 0.0,
             motion_type,
             deactivator_type,
             solver_deactivation,

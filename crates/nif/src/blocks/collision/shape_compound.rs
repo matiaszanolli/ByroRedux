@@ -119,8 +119,15 @@ impl BhkMoppBvTreeShape {
         stream.skip(12)?; // unused
         let scale = stream.read_f32_le()?;
         let data_size = stream.read_u32_le()? as usize;
-        let origin = read_vec4(stream)?; // since 10.1.0.0 (always present)
-                                         // Build Type: only for BSVER > 34 (Skyrim+; FO3/FNV is 34)
+        // hkpMoppCode.Offset — nif.xml `since="10.1.0.0"`. Absent on the
+        // rare v10.0.1.0 Oblivion Havok content (#1329); reading it there
+        // over-read 16 bytes and cascaded the sizeless stream.
+        let origin = if stream.version() >= crate::version::NifVersion::V10_1_0_0 {
+            read_vec4(stream)?
+        } else {
+            [0.0; 4]
+        };
+        // Build Type: only for BSVER > 34 (Skyrim+; FO3/FNV is 34)
         if stream.variant().has_shader_alpha_refs() {
             let _build_type = stream.read_u8()?;
         }
@@ -182,10 +189,44 @@ impl BhkConvexListShape {
     }
 }
 
+/// `bhkConvexSweepShape` — early-Havok (NIF 10.0.1.0) convex shape that
+/// sweeps a wrapped convex `Shape` by `Radius`. nif.xml line 3117
+/// (`inherit="bhkConvexShapeBase"`, which carries no on-disk fields).
+/// Read order cross-checked against openmw `physics.cpp`
+/// `bhkConvexSweepShape::read`: `Shape(Ref) + Material(HavokMaterial)
+/// + Radius(f32) + Unknown(Vector3, skipped)`.
+///
+/// Appears in a handful of vanilla Oblivion meshes (handscythe01,
+/// oar01). Oblivion v10.0.1.0 NIFs carry no `block_sizes` table, so an
+/// undispatched block here cannot be skipped and truncates the rest of
+/// the file — discarding all following render geometry (#1329).
+#[derive(Debug)]
+pub struct BhkConvexSweepShape {
+    pub shape_ref: BlockRef,
+    pub material: u32,
+    pub radius: f32,
+}
+
+
+impl BhkConvexSweepShape {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let shape_ref = stream.read_block_ref()?;
+        let material = read_havok_material(stream)?;
+        let radius = stream.read_f32_le()?;
+        stream.skip(12)?; // Unknown Vector3
+        Ok(Self {
+            shape_ref,
+            material,
+            radius,
+        })
+    }
+}
+
 impl_ni_object!(
     BhkConvexVerticesShape => "bhkConvexVerticesShape",
     BhkListShape => "bhkListShape",
     BhkTransformShape => "bhkTransformShape",
     BhkMoppBvTreeShape => "bhkMoppBvTreeShape",
     BhkConvexListShape => "bhkConvexListShape",
+    BhkConvexSweepShape => "bhkConvexSweepShape",
 );

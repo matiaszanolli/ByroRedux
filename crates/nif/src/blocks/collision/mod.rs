@@ -47,11 +47,12 @@ pub use phantom_action::{
 pub use ragdoll::{BhkPoseArray, BhkRagdollTemplate, BhkRagdollTemplateData, BonePose, BoneTransform};
 pub use rigid_body::BhkRigidBody;
 pub use shape_compound::{
-    BhkConvexListShape, BhkConvexVerticesShape, BhkListShape, BhkMoppBvTreeShape, BhkTransformShape,
+    BhkConvexListShape, BhkConvexSweepShape, BhkConvexVerticesShape, BhkListShape,
+    BhkMoppBvTreeShape, BhkTransformShape,
 };
 pub use shape_mesh::{
-    BhkNiTriStripsShape, BhkPackedNiTriStripsShape, HkPackedNiTriStripsData, HkSubPartData,
-    PackedTriangle,
+    BhkMeshShape, BhkNiTriStripsShape, BhkPackedNiTriStripsShape, HkPackedNiTriStripsData,
+    HkSubPartData, PackedTriangle,
 };
 pub use shape_primitive::{
     BhkBoxShape, BhkCapsuleShape, BhkCylinderShape, BhkMultiSphereShape, BhkSphereShape,

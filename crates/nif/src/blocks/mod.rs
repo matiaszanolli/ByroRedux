@@ -28,7 +28,8 @@ use crate::version::NifVersion;
 use collision::{
     BhkAabbPhantom, BhkBoxShape, BhkBreakableConstraint, BhkCapsuleShape, BhkCollisionObject,
     BhkCompressedMeshShape, BhkCompressedMeshShapeData, BhkConstraint, BhkConvexListShape,
-    BhkConvexVerticesShape, BhkCylinderShape, BhkLiquidAction, BhkListShape, BhkMoppBvTreeShape,
+    BhkConvexSweepShape, BhkConvexVerticesShape, BhkCylinderShape, BhkLiquidAction, BhkListShape,
+    BhkMeshShape, BhkMoppBvTreeShape,
     BhkMultiSphereShape, BhkNiTriStripsShape, BhkOrientHingedBodyAction, BhkPCollisionObject,
     BhkPackedNiTriStripsShape, BhkPoseArray, BhkRagdollTemplate, BhkRagdollTemplateData,
     BhkRigidBody, BhkSimpleShapePhantom, BhkSphereShape, BhkTransformShape,
@@ -230,8 +231,19 @@ fn parse_block_inner(
     // consumption into per-subclass `NiObject`-base parsers would
     // make it defensible against future format quirks, deferred until
     // content surfaces.
+    //
+    // #1329 — Havok serializables (`bhk*` / `hk*`) do NOT carry the
+    // groupID. nifly reads it in `NiObject::Get`, but the bhk Get-chain
+    // (`bhkShape : bhkSerializable : bhkRefObject`, all non-streamable)
+    // never reaches `NiObject::Get`, and openmw's `bhk*::read` bodies
+    // read no groupID. Every bhk*/hk* parser here is written openmw-style
+    // (correct on v20.x where no groupID exists); consuming it on
+    // v10.0.1.0 Oblivion content shifted the whole collision chain by 4
+    // bytes/block and truncated the file (handscythe01 / oar01 /
+    // ungrdltraphingedoor). Verified byte-exact against those meshes.
     let v = stream.version();
-    if v >= NifVersion::V10_0_0_0 && v < NifVersion::V10_1_0_114 {
+    let is_havok_serializable = type_name.starts_with("bhk") || type_name.starts_with("hk");
+    if v >= NifVersion::V10_0_0_0 && v < NifVersion::V10_1_0_114 && !is_havok_serializable {
         let _group_id = stream.read_u32_le()?;
     }
 
@@ -1066,6 +1078,8 @@ fn parse_block_inner(
         "bhkCapsuleShape" => Ok(Box::new(BhkCapsuleShape::parse(stream)?)),
         "bhkCylinderShape" => Ok(Box::new(BhkCylinderShape::parse(stream)?)),
         "bhkConvexVerticesShape" => Ok(Box::new(BhkConvexVerticesShape::parse(stream)?)),
+        "bhkConvexSweepShape" => Ok(Box::new(BhkConvexSweepShape::parse(stream)?)),
+        "bhkMeshShape" => Ok(Box::new(BhkMeshShape::parse(stream)?)),
         "bhkListShape" => Ok(Box::new(BhkListShape::parse(stream)?)),
         "bhkTransformShape" | "bhkConvexTransformShape" => {
             Ok(Box::new(BhkTransformShape::parse(stream)?))

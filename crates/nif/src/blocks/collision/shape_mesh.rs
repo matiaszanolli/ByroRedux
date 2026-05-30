@@ -196,8 +196,50 @@ impl HkPackedNiTriStripsData {
     }
 }
 
+/// `bhkMeshShape` — Bethesda extension of `hkpMeshShape` that stores
+/// its geometry as `NiTriStripsData` refs rather than Havok-native
+/// storage. nif.xml line 3179 (`inherit="bhkShape"`, no on-disk base
+/// fields); `versions="V10_0_1_0"` — exists only at NIF 10.0.1.0, so
+/// the `until="10.0.1.0"` strips-data fields are always present.
+/// Read order cross-checked against openmw `physics.cpp`
+/// `bhkMeshShape::read`.
+///
+/// Appears in a single vanilla Oblivion mesh (ungrdltraphingedoor).
+/// Oblivion v10.0.1.0 NIFs carry no `block_sizes` table, so an
+/// undispatched block here cannot be skipped and truncates the rest of
+/// the file — discarding all following render geometry (#1329).
+#[derive(Debug)]
+pub struct BhkMeshShape {
+    pub radius: f32,
+    pub scale: [f32; 4],
+    pub data_refs: Vec<BlockRef>,
+}
+
+
+impl BhkMeshShape {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        stream.skip(8)?; // Unknown 01 (2 × u32)
+        let radius = stream.read_f32_le()?;
+        stream.skip(8)?; // Unknown 02 (2 × u32)
+        let scale = read_vec4(stream)?;
+        // Shape Properties: u32 count + N × bhkWorldObjCInfoProperty (12 B each).
+        let num_shape_props = u64::from(stream.read_u32_le()?);
+        stream.skip(num_shape_props * 12)?;
+        stream.skip(12)?; // Unknown 03 (3 × u32)
+        // Strips Data: u32 count + N × Ref to NiTriStripsData (present at
+        // 10.0.1.0, the only version this block exists at).
+        let data_refs = stream.read_block_ref_list()?;
+        Ok(Self {
+            radius,
+            scale,
+            data_refs,
+        })
+    }
+}
+
 impl_ni_object!(
     BhkNiTriStripsShape => "bhkNiTriStripsShape",
     BhkPackedNiTriStripsShape => "bhkPackedNiTriStripsShape",
     HkPackedNiTriStripsData => "hkPackedNiTriStripsData",
+    BhkMeshShape => "bhkMeshShape",
 );

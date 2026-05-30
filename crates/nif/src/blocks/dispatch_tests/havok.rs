@@ -472,3 +472,174 @@ fn fo4_bhk_ragdoll_system_keeps_byte_array_verbatim() {
 
 // ── #708 / NIF-D5-01 + NIF-D5-02 + NIF-D5-08 — Starfield BSGeometry triple ──
 
+
+// ── #1329 — Oblivion v10.0.1.0 ("old Oblivion") Havok cascade ───────
+//
+// These rare early-Oblivion meshes (handscythe01 / oar01 /
+// ungrdltraphingedoor) are sizeless (no block_sizes) and differ from
+// the v20.0.0.5 Oblivion layout in three ways verified byte-exact
+// against the vanilla files and openmw `physics.cpp`:
+//   1. bhk*/hk* blocks do NOT carry the v10.0.x NiObject `groupID`
+//      (parse_block must not consume it for Havok serializables).
+//   2. bhkConvexSweepShape / bhkMeshShape need dedicated parsers.
+//   3. bhkRigidBody drops the `since=10.1.0.0` duplicated-CInfo prefix
+//      and the max-velocity / penetration triple.
+
+/// v10.0.1.0 header (bsver=0). Distinct from `oblivion_header`
+/// (v20.0.0.5) — the groupID gate and the rigid-body layout both key
+/// off the file version being `< 10.1.0.0`.
+fn oblivion_old_header() -> crate::header::NifHeader {
+    crate::header::NifHeader {
+        version: crate::version::NifVersion::V10_0_1_0,
+        little_endian: true,
+        user_version: 0,
+        user_version_2: 0,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    }
+}
+
+/// #1329 root-cause guard: at v10.0.1.0 a `bhk*` block must NOT have the
+/// 4-byte NiObject `groupID` consumed by `parse_block_inner`. The fixture
+/// places bhkBoxShape data at byte 0 (no groupID prefix); if the gate
+/// regresses and the groupID is consumed, material/radius shift into
+/// garbage instead of the sane 5 / 0.1.
+#[test]
+fn oblivion_old_bhk_box_shape_skips_groupid() {
+    let header = oblivion_old_header();
+    let mut bytes = Vec::new();
+    // HavokMaterial (v10.0.x): Unknown Int (4) + Material (4).
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // unknown int
+    bytes.extend_from_slice(&5u32.to_le_bytes()); // material = 5
+    bytes.extend_from_slice(&0.1f32.to_le_bytes()); // radius
+    bytes.extend_from_slice(&[0u8; 8]); // unused
+    for v in [4.0f32, 8.0, 12.0, 0.0] {
+        bytes.extend_from_slice(&v.to_le_bytes()); // extents x/y/z + pad
+    }
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("bhkBoxShape", &mut stream, None)
+        .expect("bhkBoxShape must parse at v10.0.1.0 without a groupID");
+    let b = block
+        .as_any()
+        .downcast_ref::<collision::BhkBoxShape>()
+        .expect("downcast bhkBoxShape");
+    assert_eq!(b.material, 5, "groupID wrongly consumed → material shifted");
+    assert_eq!(b.radius, 0.1);
+    assert_eq!(b.dimensions, [4.0, 8.0, 12.0]);
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// bhkConvexSweepShape (nif.xml 3117) — Shape ref + HavokMaterial +
+/// Radius + Unknown(Vector3). 28 bytes at v10.0.1.0, no groupID.
+#[test]
+fn oblivion_old_bhk_convex_sweep_shape() {
+    let header = oblivion_old_header();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&2i32.to_le_bytes()); // Shape ref → block 2
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // HavokMaterial unknown int
+    bytes.extend_from_slice(&5u32.to_le_bytes()); // HavokMaterial material
+    bytes.extend_from_slice(&0.1f32.to_le_bytes()); // Radius
+    bytes.extend_from_slice(&[0u8; 12]); // Unknown Vector3
+    assert_eq!(bytes.len(), 28);
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("bhkConvexSweepShape", &mut stream, None)
+        .expect("bhkConvexSweepShape must parse");
+    let s = block
+        .as_any()
+        .downcast_ref::<collision::BhkConvexSweepShape>()
+        .expect("downcast bhkConvexSweepShape");
+    assert_eq!(s.shape_ref.index(), Some(2));
+    assert_eq!(s.material, 5);
+    assert_eq!(s.radius, 0.1);
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// bhkMeshShape (nif.xml 3179) — skip8 + Radius + skip8 + Scale(Vec4) +
+/// ShapeProperties(count + N×12) + skip12 + StripsData(count + N×Ref).
+#[test]
+fn oblivion_old_bhk_mesh_shape() {
+    let header = oblivion_old_header();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[0u8; 8]); // Unknown 01 (2 × u32)
+    bytes.extend_from_slice(&0.25f32.to_le_bytes()); // Radius
+    bytes.extend_from_slice(&[0u8; 8]); // Unknown 02 (2 × u32)
+    for v in [1.0f32, 2.0, 3.0, 4.0] {
+        bytes.extend_from_slice(&v.to_le_bytes()); // Scale Vec4
+    }
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // Num Shape Properties = 1
+    bytes.extend_from_slice(&[0u8; 12]); // one bhkWorldObjCInfoProperty
+    bytes.extend_from_slice(&[0u8; 12]); // Unknown 03 (3 × u32)
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // Num Strips Data = 1
+    bytes.extend_from_slice(&2i32.to_le_bytes()); // Strips Data ref → block 2
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("bhkMeshShape", &mut stream, None)
+        .expect("bhkMeshShape must parse");
+    let m = block
+        .as_any()
+        .downcast_ref::<collision::BhkMeshShape>()
+        .expect("downcast bhkMeshShape");
+    assert_eq!(m.radius, 0.25);
+    assert_eq!(m.scale, [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(m.data_refs.len(), 1);
+    assert_eq!(m.data_refs[0].index(), Some(2));
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// bhkRigidBody v10.0.1.0 dedicated path: no `since=10.1.0.0` duplicated
+/// CInfo prefix, no max-velocity/penetration triple, plus the
+/// bhkWorldObject 4-byte Unknown after the shape ref.
+#[test]
+fn oblivion_old_bhk_rigid_body() {
+    let header = oblivion_old_header();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&3i32.to_le_bytes()); // shape_ref → block 3
+    bytes.extend_from_slice(&[0u8; 4]); // bhkWorldObject Unknown (VER_OB_OLD)
+    bytes.extend_from_slice(&0xABCDu32.to_le_bytes()); // havok_filter
+    bytes.extend_from_slice(&[0u8; 20]); // bhkWorldObjCInfo
+    bytes.extend_from_slice(&[0u8; 4]); // bethVer<83 Unused
+    for _ in 0..(4 + 4 + 4 + 4) {
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // translation/rotation/lin/ang vel (4×Vec4)
+    }
+    for _ in 0..12 {
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // inertia 3×4
+    }
+    for _ in 0..4 {
+        bytes.extend_from_slice(&0.0f32.to_le_bytes()); // center Vec4
+    }
+    bytes.extend_from_slice(&7.5f32.to_le_bytes()); // mass
+    bytes.extend_from_slice(&0.1f32.to_le_bytes()); // linear_damping
+    bytes.extend_from_slice(&0.05f32.to_le_bytes()); // angular_damping
+    bytes.extend_from_slice(&0.3f32.to_le_bytes()); // friction
+    bytes.extend_from_slice(&0.4f32.to_le_bytes()); // restitution
+    // NO max velocities / penetration depth at v10.0.x.
+    bytes.push(1); // motion_type
+    bytes.push(2); // deactivator_type
+    bytes.push(3); // solver_deactivation
+    bytes.push(4); // quality_type
+    bytes.extend_from_slice(&[0u8; 12]); // Unused (bethVer<83)
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // num_constraints = 0
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // body_flags (u32 pre-Skyrim)
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("bhkRigidBody", &mut stream, None)
+        .expect("bhkRigidBody must parse on the v10.0.1.0 path");
+    let rb = block
+        .as_any()
+        .downcast_ref::<collision::BhkRigidBody>()
+        .expect("downcast bhkRigidBody");
+    assert_eq!(rb.shape_ref.index(), Some(3));
+    assert_eq!(rb.havok_filter, 0xABCD);
+    assert_eq!(rb.mass, 7.5);
+    assert_eq!(rb.friction, 0.3);
+    assert_eq!(rb.restitution, 0.4);
+    assert_eq!(rb.motion_type, 1);
+    assert_eq!(rb.quality_type, 4);
+    // v10.0.x marker: max-velocity / penetration fields are absent → 0.
+    assert_eq!(rb.max_linear_velocity, 0.0);
+    assert_eq!(rb.penetration_depth, 0.0);
+    assert_eq!(stream.position() as usize, bytes.len());
+}
