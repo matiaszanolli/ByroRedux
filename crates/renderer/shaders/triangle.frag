@@ -97,7 +97,7 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 
 // ── R1 Phase 4: deduplicated material table ─────────────────────────
 //
-// Mirrors the Rust `GpuMaterial` (260 B std430, 16 vec4 + 4 B trailing) defined
+// Mirrors the Rust `GpuMaterial` (300 B std430) defined
 // in `crates/renderer/src/vulkan/material.rs`. Indexed by
 // `GpuInstance.materialId`. Phase 4 migrates one field (`roughness`)
 // off the per-instance copy onto this path; Phases 5–6 do the rest
@@ -105,8 +105,10 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 //
 // **Shader Struct Sync**: any field added here must be added in
 // lockstep to the Rust `GpuMaterial` struct + the matching
-// `intern`/encoding sites; the size of this struct (260 B post-#804)
-// is pinned by `gpu_material_size_is_260_bytes` on the Rust side.
+// `intern`/encoding sites; the size of this struct (300 B — was 260 B
+// post-#804, grew through the #1248–#1250 Disney BSDF additions) is
+// pinned by `gpu_material_size_is_260_bytes` on the Rust side (the test
+// name is historical / kept for grep continuity; it asserts 300).
 struct GpuMaterial {
     // PBR scalars (vec4 #1)
     float roughness;
@@ -171,7 +173,8 @@ struct GpuMaterial {
     // Burley diffuse; sheen + sheenTint drive the fabric-class edge
     // highlight. All zero by default → byte-identical Lambert
     // behaviour for legacy NIF content. Only consulted when
-    // `MAT_FLAG_PBR_BSDF` is set; closes the 296 B struct.
+    // `MAT_FLAG_PBR_BSDF` is set. These complete the #1249 block at
+    // offset 296; #1250 `anisotropic` then extends the struct to 300 B.
     float subsurface;
     float sheen;
     float sheenTint;
