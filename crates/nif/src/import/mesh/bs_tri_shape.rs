@@ -280,6 +280,9 @@ pub fn extract_bs_tri_shape(
         rimlight_power: mat.rimlight_power,
         backlight_power: mat.backlight_power,
         grayscale_to_palette_scale: mat.grayscale_to_palette_scale,
+        // BGSM greyscale LUT path is resolved later by `merge_bgsm_into_mesh`
+        // (the NIF extractor has no BGSM file in scope here). See #1353.
+        bgsm_greyscale_lut_path: None,
         fresnel_power: mat.fresnel_power,
         uv_offset: mat.uv_offset,
         uv_scale: mat.uv_scale,

@@ -823,10 +823,13 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 detail_map: owned_detail_map.clone(),
                 gloss_map: owned_gloss_map.clone(),
                 dark_map: owned_dark_map.clone(),
+                // #1353 — effect-mesh greyscale LUT first, then the FO4
+                // BGSM lit grayscale-to-palette path as fallback.
                 greyscale_texture: mesh
                     .effect_shader
                     .as_ref()
-                    .and_then(|es| es.greyscale_texture.clone()),
+                    .and_then(|es| es.greyscale_texture.clone())
+                    .or_else(|| mesh.bgsm_greyscale_lut_path.clone()),
             },
             0,
         );

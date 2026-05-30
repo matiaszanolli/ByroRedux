@@ -1552,6 +1552,26 @@ void main() {
     // composes cleanly. Default-mode meshes (most content) keep the
     // original `albedo *= fragColor` modulation that drives baked AO,
     // hair-tip cards, eyelash strips, and BSEffectShader meshes.
+    // #1353 / FO4-D8-07 — FO4 BGSM grayscale-to-palette
+    // (SLSF1::Greyscale_To_PaletteColor) for LIT materials. Distinct from
+    // the effect-shader palette block in the MATERIAL_KIND_EFFECT_SHADER
+    // branch above (which returned already and indexes the LUT by source
+    // ALPHA — the FX-atlas convention): a lit BGSM material's diffuse IS
+    // the greyscale ramp, so index the palette by its luminance. Gated on
+    // the same SLSF1 bit (MAT_FLAG_EFFECT_PALETTE_COLOR, set here only by
+    // `pack_bgsm_material_flags` for BGSM meshes that authored a
+    // greyscale_texture) AND a resolved LUT, so non-palette lit content is
+    // untouched. The grayscale_to_palette_scale modulator is not yet
+    // plumbed to GpuMaterial — direct lookup for now. Tint correctness +
+    // the luminance coordinate await RenderDoc validation on real FO4
+    // content (additive/flag-gated change — cannot regress other content).
+    if ((mat.materialFlags & MAT_FLAG_EFFECT_PALETTE_COLOR) != 0u
+        && mat.greyscaleLutIndex != 0u) {
+        float gsIndex = dot(texColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+        texColor.rgb = texture(
+            textures[nonuniformEXT(mat.greyscaleLutIndex)],
+            vec2(gsIndex, 0.5)).rgb;
+    }
     bool vertexColorEmissive =
         (mat.materialFlags & MAT_FLAG_VERTEX_COLOR_EMISSIVE) != 0u;
     // DBG_BYPASS_VERTEX_COLOR (0x400) — drop the baked per-vertex color

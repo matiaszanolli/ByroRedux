@@ -355,6 +355,7 @@ fn placeholder_billboard_mesh(
         rimlight_power: 0.0,
         backlight_power: 0.0,
         grayscale_to_palette_scale: 1.0,
+        bgsm_greyscale_lut_path: None, // SpeedTree billboards have no BGSM (#1353)
         fresnel_power: 5.0,
         uv_offset: [0.0, 0.0],
         uv_scale: [1.0, 1.0],

@@ -581,6 +581,16 @@ pub struct ImportedMesh {
     /// scale (matches the BSLSP parser stub at `shader.rs:748`).
     /// See #1241.
     pub grayscale_to_palette_scale: f32,
+    /// FO4 BGSM `greyscale_texture` — the colour-palette LUT path for
+    /// `SLSF1::Greyscale_To_PaletteColor` lit materials (NPC / creature
+    /// colour variants). Populated by `merge_bgsm_into_mesh`; routed to
+    /// `ResolvedPaths.greyscale_texture` → a `GreyscaleLutHandle` so the
+    /// lit-path palette remap in `triangle.frag` (gated on
+    /// `MAT_FLAG_EFFECT_PALETTE_COLOR` = `SLSF1::Greyscale_To_PaletteColor`)
+    /// can sample it. Distinct from the `BSEffectShaderProperty.greyscale_texture`
+    /// effect-mesh path which rides on `effect_shader`. `None` for non-BGSM /
+    /// non-palette content. See #1353 / FO4-D8-07.
+    pub bgsm_greyscale_lut_path: Option<String>,
     /// `BSLightingShaderProperty.fresnel_power` (FO4+ BSVER >= 130).
     /// Per-material Schlick exponent for the Fresnel rim term.
     /// Default 5.0 (standard Schlick exponent, matches the BSLSP

@@ -1134,6 +1134,18 @@ pub(crate) fn merge_bgsm_into_mesh(
                 &mut touched,
                 pool,
             );
+            // #1353 / FO4-D8-07 — BGSM greyscale-to-palette LUT path
+            // (`SLSF1::Greyscale_To_PaletteColor`, used by FO4 NPC /
+            // creature colour variants; the palette slot is authored on
+            // v<=2 BGSMs). First non-empty in the template chain wins, to
+            // match the texture fills above. Routed to ResolvedPaths →
+            // GreyscaleLutHandle and flagged via EFFECT_PALETTE_COLOR in
+            // `pack_bgsm_material_flags` so the lit-path remap in
+            // triangle.frag samples it.
+            if mesh.bgsm_greyscale_lut_path.is_none() && !bgsm.greyscale_texture.is_empty() {
+                mesh.bgsm_greyscale_lut_path = Some(bgsm.greyscale_texture.clone());
+                touched = true;
+            }
             // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
             fill(&mut mesh.env_map, &bgsm.envmap_texture, &mut touched, pool);
             fill(
@@ -2464,6 +2476,7 @@ mod tests {
             rimlight_power: 0.0,
             backlight_power: 0.0,
             grayscale_to_palette_scale: 1.0,
+            bgsm_greyscale_lut_path: None,
             fresnel_power: 5.0,
             uv_offset: [0.0; 2],
             uv_scale: [1.0; 2],

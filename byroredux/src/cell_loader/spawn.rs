@@ -567,10 +567,17 @@ pub(super) fn spawn_placed_instances(
                 // importer captures it post-stopcond on the modern
                 // shader-property path, which already owns its
                 // resolved strings).
+                // #1353 — BSEffectShaderProperty greyscale LUT (effect
+                // meshes) takes priority; FO4 BGSM lit grayscale-to-palette
+                // (`bgsm_greyscale_lut_path`, set by `merge_bgsm_into_mesh`)
+                // is the fallback. Both flow to the same GreyscaleLutHandle
+                // resolve below; `pack_bgsm_material_flags` sets
+                // EFFECT_PALETTE_COLOR for the BGSM lit case.
                 let greyscale_texture = mesh
                     .effect_shader
                     .as_ref()
-                    .and_then(|es| es.greyscale_texture.clone());
+                    .and_then(|es| es.greyscale_texture.clone())
+                    .or_else(|| mesh.bgsm_greyscale_lut_path.clone());
                 // Intern the mesh name in the same lock — see #882's
                 // second hotspot. `mesh.name: Option<Arc<str>>`. The
                 // `pool.intern` call must follow the resolves so the

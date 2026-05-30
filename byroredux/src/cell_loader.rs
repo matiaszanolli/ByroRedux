@@ -180,7 +180,7 @@ pub(crate) fn pack_effect_shader_flags(
 pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMesh) -> u32 {
     use byroredux_renderer::vulkan::material::material_flag::{
         BGSM_AUTHORED, BGSM_MODEL_SPACE_NORMALS, BGSM_PBR, BGSM_TRANSLUCENCY,
-        BGSM_TRANSLUCENCY_MIX_ALBEDO, BGSM_TRANSLUCENCY_THICK_OBJECT,
+        BGSM_TRANSLUCENCY_MIX_ALBEDO, BGSM_TRANSLUCENCY_THICK_OBJECT, EFFECT_PALETTE_COLOR,
     };
     let mut flags = 0u32;
     // `BGSM_AUTHORED` — set when `merge_bgsm_into_mesh` resolved a
@@ -200,6 +200,17 @@ pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMes
     }
     if mesh.model_space_normals {
         flags |= BGSM_MODEL_SPACE_NORMALS;
+    }
+    // #1353 / FO4-D8-07 — FO4 BGSM grayscale-to-palette. EFFECT_PALETTE_COLOR
+    // IS `SLSF1::Greyscale_To_PaletteColor`; setting it on a BGSM lit material
+    // (one that authored a `greyscale_texture`, captured as
+    // `bgsm_greyscale_lut_path`) makes the lit-path palette remap in
+    // triangle.frag sample the resolved GreyscaleLutHandle by diffuse
+    // luminance. The effect-mesh path sets the same bit via
+    // `pack_effect_shader_flags`; the two live in different material-kind
+    // shader branches so there is no conflict.
+    if mesh.bgsm_greyscale_lut_path.is_some() {
+        flags |= EFFECT_PALETTE_COLOR;
     }
     // #1147 Phase 2b — translucency parameter-shape bits. Only
     // meaningful when `BGSM_TRANSLUCENCY` is also set, but pack them
@@ -225,7 +236,7 @@ mod pack_bgsm_material_flags_tests {
     use super::pack_bgsm_material_flags;
     use byroredux_nif::import::ImportedMesh;
     use byroredux_renderer::vulkan::material::material_flag::{
-        BGSM_MODEL_SPACE_NORMALS, BGSM_PBR, BGSM_TRANSLUCENCY,
+        BGSM_MODEL_SPACE_NORMALS, BGSM_PBR, BGSM_TRANSLUCENCY, EFFECT_PALETTE_COLOR,
     };
 
     /// Build an empty-but-valid `ImportedMesh` with all 3 BGSM flags
@@ -300,6 +311,7 @@ mod pack_bgsm_material_flags_tests {
             rimlight_power: 0.0,
             backlight_power: 0.0,
             grayscale_to_palette_scale: 1.0,
+            bgsm_greyscale_lut_path: None,
             fresnel_power: 5.0,
             uv_offset: [0.0; 2],
             uv_scale: [1.0; 2],
@@ -360,6 +372,29 @@ mod pack_bgsm_material_flags_tests {
         let mut mesh = empty_mesh();
         mesh.model_space_normals = true;
         assert_eq!(pack_bgsm_material_flags(&mesh), BGSM_MODEL_SPACE_NORMALS);
+    }
+
+    /// #1353 / FO4-D8-07 — a BGSM that authored a greyscale-to-palette LUT
+    /// (`bgsm_greyscale_lut_path`, set by `merge_bgsm_into_mesh`) must pack
+    /// `EFFECT_PALETTE_COLOR` (= SLSF1 Greyscale_To_PaletteColor) so the
+    /// lit-path palette remap in triangle.frag fires. Absent the path, the
+    /// bit must stay clear.
+    #[test]
+    fn bgsm_greyscale_lut_path_sets_effect_palette_color() {
+        let mesh = empty_mesh();
+        assert_eq!(
+            pack_bgsm_material_flags(&mesh) & EFFECT_PALETTE_COLOR,
+            0,
+            "no greyscale LUT path → palette flag must stay clear"
+        );
+
+        let mut mesh = empty_mesh();
+        mesh.bgsm_greyscale_lut_path = Some("textures\\actors\\ghoul_palette.dds".to_string());
+        assert_eq!(
+            pack_bgsm_material_flags(&mesh) & EFFECT_PALETTE_COLOR,
+            EFFECT_PALETTE_COLOR,
+            "BGSM greyscale LUT path must pack EFFECT_PALETTE_COLOR (#1353)"
+        );
     }
 
     /// The new BGSM bits must NOT collide with the existing
