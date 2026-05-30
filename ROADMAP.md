@@ -91,7 +91,7 @@ the `sf_smoke` baseline tool). Single-mesh sweetroll ~3000-5000 FPS
 (2026-04-22, RTX 4070 Ti @ 1280×720).
 
 **RT lighting.** Full pipeline: SSBO multi-light, ray-query shadows
-with streaming weighted reservoir sampling (8 reservoirs/fragment,
+with streaming weighted reservoir sampling (16 reservoirs/fragment, Phase 19;
 unbiased weight clamped at 64×), RT reflections + 1-bounce GI, SVGF
 temporal denoiser with motion-vector reprojection and mesh-id
 disocclusion, composite + ACES tone map, TAA with Halton(2,3) jitter

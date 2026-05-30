@@ -259,7 +259,7 @@ Detailed analysis in `docs/legacy/`.
 See [ROADMAP.md](ROADMAP.md) for the full roadmap with milestones, known issues, and game compatibility.
 Current: 30+ milestones complete (M1–M22, M24 Phase 1, M26, M28 Phase 1, M30 Phase 1, M31,
 M31.5, M32 Phase 1+2, M34 Phase 1, M36, M37.5) + N23 + N26 closeout + #178 skinning.
-RT multi-light with streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction,
+RT multi-light with streaming RIS (16 reservoirs/fragment, Phase 19), BLAS compaction + LRU eviction,
 instanced draw batching, landscape terrain with texture splatting, exterior directional sun,
 TAA (Halton jitter + YCoCg variance clamp), Papyrus language parser, FO4 SCOL/MOVS/PKIN/TXST.
 See [ROADMAP.md](ROADMAP.md#project-stats) for ground truth on test/file/LOC/crate counts (refreshed each /session-close).
