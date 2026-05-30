@@ -214,7 +214,8 @@ impl Ba2Archive {
         // version set so unknown majors (0, 4, 5, 6, 9, ..., u32::MAX)
         // bail with a clear error instead of silently falling through to
         // the v1 record-layout path. Mirrors the BSA reader's allowlist
-        // discipline at `archive.rs:165-173`.
+        // discipline at `archive/open.rs:40-48` (the monolithic
+        // `archive.rs` was split into the `archive/` dir under #1118).
         let compression = match version {
             BA2_V_FO4 | BA2_V_FO4_NEXT_GEN_TEX | BA2_V_FO4_NEXT_GEN_MESH => Ba2Compression::Zlib,
             BA2_V_STARFIELD_V2 => {
