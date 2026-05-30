@@ -188,6 +188,20 @@ pub(crate) fn climate_tod_hours(
 /// worldspaces and bare-DLC parses). Pre-#M40 this was inlined in the
 /// `--grid` CLI arm next to the bulk loader; factoring it out lets
 /// the streaming system bootstrap reuse it.
+/// Which prior-worldspace sky-texture handles [`apply_worldspace_weather`]
+/// must `drop_texture` when it re-acquires a new set (#1339). Takes the
+/// previous `SkyParamsRes::texture_indices()` (the 4 cloud layers + CLMT
+/// sun sprite) or `None` on the first worldspace entry. Skips `0`
+/// (procedural / absent layer) and the registry `fallback` slot — the same
+/// skip rule as the cell-unload texture sweep. Pure so the release set is
+/// unit-testable without a `VulkanContext`.
+fn sky_textures_to_release(prev: Option<[u32; 5]>, fallback: u32) -> Vec<u32> {
+    prev.into_iter()
+        .flatten()
+        .filter(|&h| h != 0 && h != fallback)
+        .collect()
+}
+
 pub(crate) fn apply_worldspace_weather(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -197,6 +211,17 @@ pub(crate) fn apply_worldspace_weather(
     let sun_dir: [f32; 3] = [-0.4, 0.8, -0.45];
     if let Some(ref wthr) = wctx.default_weather {
         use byroredux_plugin::esm::records::weather::*;
+        // #1339 — capture the prior worldspace's sky-texture handles BEFORE
+        // this call re-acquires (the cloud `resolve_texture` / sun `load_dds`
+        // below each bump a refcount). Released after the new `SkyParamsRes`
+        // is inserted, so handles shared with the new worldspace stay
+        // resident (acquire-new-then-release-old, no transient free+reupload).
+        // These are worldspace-scoped and deliberately survive per-cell
+        // unload (#1199), so a worldspace re-acquire like this is the only
+        // place to release them. First (startup) call: `None` → no-op.
+        let prev_sky_textures = world
+            .try_resource::<SkyParamsRes>()
+            .map(|s| s.texture_indices());
         // Day-slot snapshot for the initial CellLightingRes / SkyParamsRes —
         // the per-frame `weather_system` interpolator advances through the
         // stored NAM0 table over the in-game day. Raw monitor-space colors
@@ -333,6 +358,17 @@ pub(crate) fn apply_worldspace_weather(
             // FNV/FO3/Oblivion (different ambient model).
             current_dalc_cube: None,
         });
+        // #1339 — release the prior worldspace's sky textures now that the
+        // new set is acquired + installed. `drop_texture` decrements the
+        // refcount: a handle shared with the new worldspace drops back to
+        // its prior count (stays resident); one unique to the old worldspace
+        // hits 0 and frees its bindless slot + VkImage. Without this, every
+        // interior→exterior / exterior→exterior worldspace transition leaked
+        // up to 5 textures (4 cloud layers + 1 CLMT sun sprite).
+        let sky_fallback = ctx.texture_registry.fallback();
+        for handle in sky_textures_to_release(prev_sky_textures, sky_fallback) {
+            ctx.texture_registry.drop_texture(&ctx.device, handle);
+        }
         // #803 — cloud scroll lives on `CloudSimState`, which survives
         // cell transitions. Insert a default-zero state on first
         // exterior load only; subsequent loads reuse the existing
@@ -684,5 +720,42 @@ pub(crate) fn stream_initial_radius(
         }
     }
     center
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1339 / D3-03 — on a worldspace re-acquire, every real prior sky
+    /// texture (cloud 0-3 + CLMT sun) must be released, but `0` (absent /
+    /// procedural) and the shared `fallback` slot must be skipped so we
+    /// don't over-release a slot the renderer still points at.
+    #[test]
+    fn sky_release_keeps_only_real_handles() {
+        let fallback = 99u32;
+        // [cloud0, cloud1, cloud2, cloud3, sun]; 0 = absent layer.
+        let prev = Some([10, 0, 11, fallback, 12]);
+        let mut got = sky_textures_to_release(prev, fallback);
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec![10, 11, 12],
+            "only real, non-fallback sky handles are released"
+        );
+    }
+
+    /// First worldspace entry (startup) — no prior `SkyParamsRes`, so
+    /// nothing to release. Guards against an over-release / panic on boot.
+    #[test]
+    fn sky_release_none_is_empty() {
+        assert!(sky_textures_to_release(None, 99).is_empty());
+    }
+
+    /// A worldspace whose WTHR authored no cloud/sun textures (all-zero
+    /// indices) releases nothing.
+    #[test]
+    fn sky_release_all_absent_is_empty() {
+        assert!(sky_textures_to_release(Some([0, 0, 0, 0, 0]), 99).is_empty());
+    }
 }
 
