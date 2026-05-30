@@ -17,7 +17,14 @@ use crate::asset_provider::{
     build_material_provider, build_texture_provider, parse_grid_coords,
 };
 use crate::cell_loader;
-use crate::components::{CellLightingRes, InputState, Spinning};
+use crate::components::{InputState, Spinning};
+// Interior cell lighting is now applied via
+// `cell_loader::apply_interior_cell_lighting` (#1340), so production
+// `scene` code no longer names `CellLightingRes` — but the `scene::*`
+// test submodules reach it through `use super::*`, so keep it imported
+// in test builds only.
+#[cfg(test)]
+use crate::components::CellLightingRes;
 use crate::streaming::WorldStreamingState;
 
 // Test child modules (procedural_fallback_tests, climate_tod_hours_tests,
@@ -178,46 +185,13 @@ pub(crate) fn setup_scene(
                 Ok(result) => {
                     cam_center = result.center;
                     has_nif_content = true;
-                    // Store cell lighting for the renderer.
+                    // Store cell lighting for the renderer. Shared with
+                    // the door-walk transition + `cell.load` debug paths
+                    // via `apply_interior_cell_lighting` so a runtime cell
+                    // switch can't leave a sealed interior lit by the
+                    // previous cell's resource (#1340).
                     if let Some(ref lit) = result.lighting {
-                        let (rx, ry) = (lit.directional_rotation[0], lit.directional_rotation[1]);
-                        // Route the authored XCLL Euler angles through
-                        // `euler_zup_to_quat_yup` — the same
-                        // CW-convention helper REFR placements use —
-                        // then apply the resulting Y-up quaternion to
-                        // Gamebryo's NiDirectionalLight model
-                        // direction `(1, 0, 0)` (per the 2.3
-                        // `NiDirectionalLight.h` comment: "The model
-                        // direction of the light is (1,0,0)"). The
-                        // Z-up → Y-up coord swap leaves +X invariant,
-                        // so the Y-up model vector is also `(1, 0, 0)`.
-                        // Pre-#380 an inline spherical formula treated
-                        // ry as elevation-from-horizon and drifted
-                        // from the authored intent as ry grew. See
-                        // audit F3-09.
-                        let quat = cell_loader::euler_zup_to_quat_yup(rx, ry, 0.0);
-                        let dir_v = quat * Vec3::new(1.0, 0.0, 0.0);
-                        let dir = [dir_v.x, dir_v.y, dir_v.z];
-                        // load_cell() only handles interior cells —
-                        // `is_interior: true` skips the directional as
-                        // a scene light to prevent wall light leakage.
-                        // The 9 extended XCLL fields (`fog_clip`,
-                        // `directional_ambient`, etc.) are propagated
-                        // by `from_cell_lighting` even though the
-                        // renderer doesn't yet consume them — #861
-                        // establishes the data plumbing; #865 + a
-                        // future Skyrim ambient-cube uniform are the
-                        // shader-side follow-ups.
-                        world.insert_resource(CellLightingRes::from_cell_lighting(lit, dir, true));
-                        log::info!(
-                            "Cell lighting: ambient={:?} directional={:?} dir={:?} fog={:?} near={:.0} far={:.0}",
-                            lit.ambient,
-                            lit.directional_color,
-                            dir,
-                            lit.fog_color,
-                            lit.fog_near,
-                            lit.fog_far,
-                        );
+                        cell_loader::apply_interior_cell_lighting(world, lit);
                     }
                     log::info!(
                         "Cell '{}' ready: {} entities",

@@ -219,7 +219,7 @@ pub fn load_interior_cell(
     dest_rot_zup: [f32; 3],
 ) -> Result<Vec3, String> {
     unload_current_interior(world, ctx);
-    super::load_cell_with_masters(
+    let result = super::load_cell_with_masters(
         masters,
         esm_path,
         editor_id,
@@ -229,6 +229,15 @@ pub fn load_interior_cell(
         mat_provider,
     )
     .map_err(|e| format!("{e:#}"))?;
+
+    // #1340 — apply the loaded interior's lighting (the startup `--cell`
+    // path does this too, via the same helper). Without it the door-walked
+    // interior keeps the previous cell's `CellLightingRes`: stale
+    // ambient/fog + the exterior directional sun leaking into a sealed
+    // interior (the failure #1282 gated on `is_interior`).
+    if let Some(ref lit) = result.lighting {
+        super::apply_interior_cell_lighting(world, lit);
+    }
 
     let dest_pos = position_zup_to_yup(dest_pos_zup);
     let dest_rot = rotation_zup_to_yup_quat(dest_rot_zup);

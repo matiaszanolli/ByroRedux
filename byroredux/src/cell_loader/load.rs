@@ -14,7 +14,7 @@ use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
 
 use crate::asset_provider::{MaterialProvider, TextureProvider};
-use crate::components::CellRootIndex;
+use crate::components::{CellLightingRes, CellRootIndex};
 
 use super::load_order::parse_record_indexes_in_load_order;
 use super::references::load_references;
@@ -28,6 +28,49 @@ pub struct CellLoadResult {
     pub center: Vec3,
     /// Interior cell lighting (ambient + directional).
     pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
+}
+
+/// Apply a freshly-loaded interior cell's [`CellLighting`](esm::cell::CellLighting)
+/// to the renderer's `CellLightingRes`. Shared by *every* interior-load
+/// entry point — the startup `--cell` path (`scene.rs`), the M40 door-walk
+/// transition ([`super::load_interior_cell`]), and the `cell.load` debug
+/// command (`debug_load.rs`) — so they cannot drift.
+///
+/// Pre-#1340 only the startup path applied it, so an interior reached at
+/// runtime rendered with the *previous* cell's `CellLightingRes`: wrong
+/// ambient/fog, exterior clear color, and the directional sun leaking into
+/// a sealed interior — the exact failure #1282 gated on `is_interior`.
+///
+/// Routes the authored XCLL Euler angles through `euler_zup_to_quat_yup`
+/// (the CW-convention helper REFR placements use), then applies the Y-up
+/// quaternion to Gamebryo's `NiDirectionalLight` model direction `(1,0,0)`
+/// (2.3 `NiDirectionalLight.h`: "The model direction of the light is
+/// (1,0,0)"; the Z-up → Y-up swap leaves +X invariant). `is_interior` is
+/// always `true` — `load_cell_with_masters` only loads interior cells, and
+/// the flag makes `CellLightingRes` skip the directional as a scene light
+/// to prevent wall light leakage. The 9 extended XCLL fields (`fog_clip`,
+/// `directional_ambient`, …) are propagated by `from_cell_lighting` (#861).
+pub(crate) fn apply_interior_cell_lighting(
+    world: &mut World,
+    lighting: &esm::cell::CellLighting,
+) {
+    let (rx, ry) = (
+        lighting.directional_rotation[0],
+        lighting.directional_rotation[1],
+    );
+    let quat = super::euler_zup_to_quat_yup(rx, ry, 0.0);
+    let dir_v = quat * Vec3::new(1.0, 0.0, 0.0);
+    let dir = [dir_v.x, dir_v.y, dir_v.z];
+    world.insert_resource(CellLightingRes::from_cell_lighting(lighting, dir, true));
+    log::info!(
+        "Cell lighting: ambient={:?} directional={:?} dir={:?} fog={:?} near={:.0} far={:.0}",
+        lighting.ambient,
+        lighting.directional_color,
+        dir,
+        lighting.fog_color,
+        lighting.fog_near,
+        lighting.fog_far,
+    );
 }
 
 pub(crate) fn stamp_cell_root(
@@ -368,4 +411,62 @@ pub(crate) fn resolve_cell_lighting(
         // XCLL, not the LGTM template stub (#1293).
         starfield: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal FNV-shape interior lighting (no Skyrim+ / Starfield tail).
+    fn interior_lighting() -> esm::cell::CellLighting {
+        esm::cell::CellLighting {
+            ambient: [0.10, 0.10, 0.12],
+            directional_color: [1.0, 0.95, 0.80],
+            directional_rotation: [0.0, 0.0],
+            fog_color: [0.50, 0.45, 0.30],
+            fog_near: 100.0,
+            fog_far: 8000.0,
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
+            starfield: None,
+        }
+    }
+
+    /// Regression for #1340 / D3-04 — the shared interior-lighting apply
+    /// helper must install a `CellLightingRes` with `is_interior == true`.
+    /// Pre-fix, two of the three interior-load entry points (the door-walk
+    /// transition + the `cell.load` debug command) skipped this entirely,
+    /// so a runtime-loaded interior kept the *previous* cell's resource —
+    /// wrong fog/ambient and the exterior directional sun leaking into a
+    /// sealed interior (the gate #1282 added keys on `is_interior`).
+    /// Routing all three callers through this one helper is the structural
+    /// fix; this pins the helper's `is_interior == true` contract.
+    #[test]
+    fn apply_interior_cell_lighting_inserts_interior_resource() {
+        let mut world = World::new();
+        // Fresh world == "no previous cell lighting present".
+        assert!(world.try_resource::<CellLightingRes>().is_none());
+
+        apply_interior_cell_lighting(&mut world, &interior_lighting());
+
+        let res = world
+            .try_resource::<CellLightingRes>()
+            .expect("apply_interior_cell_lighting must insert CellLightingRes");
+        assert!(
+            res.is_interior,
+            "interior lighting must set is_interior=true so the directional \
+             sun is gated out of the sealed cell (#1282 / #1340)"
+        );
+        assert_eq!(res.ambient, [0.10, 0.10, 0.12], "ambient must propagate");
+        assert_eq!(res.fog_far, 8000.0, "fog_far must propagate");
+    }
 }

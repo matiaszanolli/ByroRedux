@@ -104,6 +104,7 @@ pub use exterior::{
 pub use load::{load_cell_with_masters, CellLoadResult};
 #[allow(unused_imports)]
 pub(crate) use load::resolve_cell_lighting;
+pub(crate) use load::apply_interior_cell_lighting;
 pub use unload::unload_cell;
 pub(crate) use partial::finish_partial_import;
 

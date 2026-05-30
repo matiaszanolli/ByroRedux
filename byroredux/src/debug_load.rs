@@ -213,6 +213,13 @@ fn exec_load_interior(
                 result.center.y,
                 result.center.z,
             );
+            // #1340 — apply the loaded interior's lighting, same as the
+            // startup `--cell` and door-walk transition paths. Without it
+            // the debug-loaded interior keeps the previous cell's
+            // `CellLightingRes` (stale ambient/fog + leaked exterior sun).
+            if let Some(ref lit) = result.lighting {
+                cell_loader::apply_interior_cell_lighting(world, lit);
+            }
             ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
             // Update the LoadedPluginSet so a subsequent
             // `door.teleport` from inside the debug-loaded cell
