@@ -55,10 +55,10 @@ pub(crate) struct ResolvedPaths {
 ///     ([`crate::cell_loader::pack_bgsm_material_flags`]), and any
 ///     `extra_material_flags` the caller supplies (the cell loader's
 ///     REFR-overlay model-space-normals bit; `0` for loose-NIF loads);
-///   - PBR overrides resolved via
-///     [`Material::resolve_classifier_overrides`] so legacy inline-shader
-///     content lands with explicit `(metalness, roughness)` scalars just
-///     like BGSM content (`feedback_format_translation.md` Stage 1);
+///   - PBR overrides resolved via [`Material::resolve_pbr`] so legacy
+///     inline-shader content lands with explicit `(metalness, roughness)`
+///     scalars just like BGSM content (`feedback_format_translation.md`
+///     Stage 1);
 ///   - glass classified once, alpha-aware
 ///     ([`crate::helpers::classify_glass_into_material`]), after the PBR
 ///     resolve so the forced glass roughness wins.

@@ -243,16 +243,17 @@ fn triangle_pipeline_inner(
     // All pipelines enable depth bias (set dynamically per-draw to resolve
     // Z-fighting for coplanar geometry like decals).
     //
-    // `polygon_mode(FILL)` is hard-coded across both rasterizers below —
-    // the importer captures a `wireframe: bool` on `MaterialInfo` /
-    // `ImportedMesh` from `NiWireframeProperty`, but no pipeline variant
-    // routes to `vk::PolygonMode::LINE` yet. Tracked at #869 (O4-D4-NEW-01)
-    // — the deferred fix ships `WireframeOpaque { two_sided }` and matching
-    // `Blended` arms; the pipeline-cache key already includes blend +
-    // two-sided so adding the `wireframe` boolean is mechanical. Requires
-    // the device to expose `features.fillModeNonSolid`. Oblivion vanilla
-    // ships zero wireframe meshes, so this gap is invisible to the
-    // gameplay-content render today.
+    // The base rasterizer below uses `polygon_mode(FILL)`. Wireframe is
+    // LIVE (#869 / O4-D4-NEW-01): the importer captures a `wireframe: bool`
+    // on `MaterialInfo` / `ImportedMesh` from `NiWireframeProperty`, it
+    // rides the `PipelineKey::{Opaque,Blended}.wireframe` axis (LINE and
+    // FILL are static state, so each needs its own pipeline), and a
+    // `polygon_mode(LINE)` variant is built below (the wireframe-variant
+    // clone) gated on the device exposing `features.fillModeNonSolid` —
+    // when absent the variant is `None` and callers fall back to the FILL
+    // pipeline. `context/draw.rs` selects the variant from
+    // `draw_cmd.wireframe`. Oblivion vanilla ships zero wireframe meshes,
+    // so this path is exercised only by authored content.
     // CULL_MODE is dynamic state (see `dynamic_states` below) so the
     // baked value here is ignored at draw time — it just needs to be
     // valid. The pre-#930 design built two pipelines (BACK + NONE) but
