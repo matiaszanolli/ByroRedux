@@ -1127,11 +1127,11 @@ impl App {
         let dest_label = cell_loader::log_transition_header(&pending);
         let args: Vec<String> = crate::cli_args::effective_args();
 
-        // Default exterior-load radius — re-use the CLI default (3 →
-        // 7×7 grid). A future enhancement can plumb the boot-time
+        // Default exterior-load radius — matches the CLI default (5 →
+        // 11×11 grid). A future enhancement can plumb the boot-time
         // `--radius` through `LoadedPluginSet` to honor the operator's
         // chosen value across transitions.
-        const DEFAULT_TRANSITION_RADIUS: i32 = 3;
+        const DEFAULT_TRANSITION_RADIUS: i32 = 5;
 
         match pending.destination {
             cell_loader::TransitionDestination::Interior {

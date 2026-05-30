@@ -63,7 +63,14 @@ impl Default for Camera {
         Self {
             fov_y: std::f32::consts::FRAC_PI_4, // 45°
             near: 0.1,
-            far: 50000.0,
+            // Far plane sized to cover the max exterior cell ring
+            // (radius 12 ⇒ ~72K-unit far-corner diagonal; see
+            // scene::parse_exterior_radius). Raised from 50K so a wider
+            // `--radius` isn't clipped. NOTE: near=0.1 with this far is a
+            // ~1e6:1 depth range — distant z-precision is the limiting
+            // factor; reversed-Z (or a larger near) is the proper follow-up
+            // if distant z-fighting appears.
+            far: 100000.0,
             aspect: 16.0 / 9.0,
         }
     }
@@ -88,7 +95,7 @@ mod tests {
         let cam = Camera::default();
         assert!((cam.fov_y - FRAC_PI_4).abs() < 1e-6);
         assert!((cam.near - 0.1).abs() < 1e-6);
-        assert!((cam.far - 50000.0).abs() < 1e-6);
+        assert!((cam.far - 100000.0).abs() < 1e-6);
     }
 
     #[test]

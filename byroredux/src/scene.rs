@@ -42,16 +42,19 @@ pub(crate) use world_setup::climate_tod_hours;
 /// [`cell_loader::load_exterior_cells`]. Falls back to `3` (7×7 = 49
 /// cells, ~28K terrain units view distance) on any parse failure so
 /// an unparseable value loads the default rather than silently
-/// bailing. Clamped to `1..=7` — below 1 the center cell alone isn't
-/// useful, above 7 the cell count (15×15 = 225) already exceeds the
-/// streaming budget today.
+/// bailing. Clamped to `1..=12` — below 1 the center cell alone isn't
+/// useful, above 12 the cell count (25×25 = 625) approaches the
+/// streaming + RT-BLAS budget ceiling (each static mesh carries a BLAS,
+/// see audit D5-02). The camera far plane (`Camera::default`, 100K units)
+/// covers radius 12's ~72K-unit far-corner diagonal so the loaded ring
+/// isn't clipped.
 ///
 /// Pulled out as a free function so a unit test can pin the bounds
 /// contract without standing up a whole App / World. See #531.
 pub(crate) fn parse_exterior_radius(s: &str) -> i32 {
     match s.trim().parse::<i32>() {
-        Ok(r) => r.clamp(1, 7),
-        Err(_) => 3,
+        Ok(r) => r.clamp(1, 12),
+        Err(_) => 5,
     }
 }
 
@@ -121,8 +124,8 @@ pub(crate) fn setup_scene(
             .and_then(|i| args.get(i + 1))
             .cloned();
         // #531 — optional `--radius N` override for the exterior grid.
-        // Defaults to 3 (7×7 grid, ~28K terrain units view distance)
-        // to preserve pre-fix behaviour. Clamped to 1..=7 by
+        // Defaults to 5 (11×11 grid, ~45K terrain units view distance);
+        // raised from 3 for a longer horizon. Clamped to 1..=12 by
         // [`parse_exterior_radius`] so an accidental 100 doesn't try
         // to load 40 401 cells.
         let radius = args
@@ -130,7 +133,7 @@ pub(crate) fn setup_scene(
             .position(|a| a == "--radius")
             .and_then(|i| args.get(i + 1))
             .map(|s| parse_exterior_radius(s))
-            .unwrap_or(3);
+            .unwrap_or(5);
 
         // #561 — repeatable `--master <path>` arg. Order matters:
         // base masters first, then any required intermediate masters
