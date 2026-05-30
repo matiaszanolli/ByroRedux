@@ -600,40 +600,62 @@ pub(super) fn collect_force_fields(
     out
 }
 
-/// Scan the parsed NIF scene for the first `NiPSysColorModifier` and
-/// resolve its `color_data_ref` to a `NiColorData` keyframe stream.
-/// Returns `Some(curve)` with the t=0 and t=last RGBA keys when both
-/// the modifier and the referenced data block are present and the
-/// keyframe array is non-empty; `None` otherwise (no modifier in
-/// scene → fall back to the heuristic preset).
+/// Scan the parsed NIF scene for the first authored particle colour ramp.
+/// Two sources, in priority order:
+///   1. `NiPSysColorModifier` → `NiColorData` keyframe stream (Oblivion /
+///      Skyrim-era + the modern reference-based modifier). Returns the
+///      t=0 and t=last RGBA keys.
+///   2. `BSPSysSimpleColorModifier` (#1345) — the dominant FO3/FNV-era
+///      modifier, which embeds its 3-key ramp INLINE rather than
+///      referencing a `NiColorData` block. Returns `Colors[0]` (birth) and
+///      `Colors[2]` (death).
+/// `None` when neither is present (→ fall back to the heuristic preset).
 ///
 /// First-pass scope per the issue body — this is a scene-level scan
 /// rather than per-emitter, which is exact for the dominant single-
-/// emitter-per-NIF case (every Bethesda hearth / torch / spell-cast
-/// NIF). Multi-emitter NIFs would need to walk each
+/// emitter-per-NIF case (every Bethesda hearth / torch / spell-cast /
+/// geyser NIF). Multi-emitter NIFs would need to walk each
 /// `NiParticleSystem.modifiers` list to attribute curves to specific
 /// emitters; deferred until a multi-emitter regression surfaces. See
-/// #707 / FX-2.
+/// #707 / FX-2 + #1345.
 pub(super) fn extract_first_color_curve(
     scene: &NifScene,
 ) -> Option<crate::import::ParticleColorCurve> {
     use crate::blocks::interpolator::NiColorData;
-    use crate::blocks::particle::NiPSysColorModifier;
+    use crate::blocks::particle::{BSPSysSimpleColorModifier, NiPSysColorModifier};
 
-    let modifier = scene
+    // 1. Legacy reference-based modifier → NiColorData keyframe stream.
+    if let Some(modifier) = scene
         .blocks
         .iter()
-        .find_map(|b| b.as_any().downcast_ref::<NiPSysColorModifier>())?;
-    let data_idx = modifier.color_data_ref.index()?;
-    let data = scene.get_as::<NiColorData>(data_idx)?;
-    let keys = &data.keys.keys;
-    if keys.is_empty() {
-        return None;
+        .find_map(|b| b.as_any().downcast_ref::<NiPSysColorModifier>())
+    {
+        if let Some(data_idx) = modifier.color_data_ref.index() {
+            if let Some(data) = scene.get_as::<NiColorData>(data_idx) {
+                let keys = &data.keys.keys;
+                if !keys.is_empty() {
+                    return Some(crate::import::ParticleColorCurve {
+                        start: keys[0].value,
+                        end: keys.last().expect("non-empty checked above").value,
+                    });
+                }
+            }
+        }
     }
-    Some(crate::import::ParticleColorCurve {
-        start: keys[0].value,
-        end: keys.last().expect("non-empty checked above").value,
-    })
+
+    // 2. #1345 — fall back to the inline BSPSysSimpleColorModifier ramp.
+    if let Some(scm) = scene
+        .blocks
+        .iter()
+        .find_map(|b| b.as_any().downcast_ref::<BSPSysSimpleColorModifier>())
+    {
+        return Some(crate::import::ParticleColorCurve {
+            start: scm.colors[0],
+            end: scm.colors[2],
+        });
+    }
+
+    None
 }
 
 /// Scan the parsed NIF scene for the first `NiPSysEmitter` and return its

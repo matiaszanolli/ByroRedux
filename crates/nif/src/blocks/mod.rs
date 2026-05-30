@@ -1002,7 +1002,11 @@ fn parse_block_inner(
         "BSPSysSubTexModifier" => Ok(Box::new(particle::parse_sub_tex_modifier(stream)?)),
         "BSPSysLODModifier" => Ok(Box::new(particle::parse_lod_modifier(stream)?)),
         "BSPSysScaleModifier" => Ok(Box::new(particle::parse_scale_modifier(stream)?)),
-        "BSPSysSimpleColorModifier" => Ok(Box::new(particle::parse_simple_color_modifier(stream)?)),
+        // #1345 — typed parse so `extract_first_color_curve` can read the
+        // inline RGBA ramp (the dominant FO3/FNV-era particle colour modifier).
+        "BSPSysSimpleColorModifier" => {
+            Ok(Box::new(particle::BSPSysSimpleColorModifier::parse(stream)?))
+        }
         "BSPSysStripUpdateModifier" => Ok(Box::new(particle::parse_strip_update_modifier(stream)?)),
         // Emitters
         "NiPSysBoxEmitter" => Ok(Box::new(particle::parse_box_emitter(stream)?)),

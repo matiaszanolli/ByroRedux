@@ -489,10 +489,74 @@ pub fn parse_scale_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     })
 }
 
-/// BSPSysSimpleColorModifier (FO3+): base + 6 floats + 3 Color4s
+/// `BSPSysSimpleColorModifier` (FO3+) — the dominant FO3/FNV-era particle
+/// colour modifier. Unlike [`NiPSysColorModifier`] (which references a
+/// separate `NiColorData` keyframe stream), it carries its colour ramp
+/// INLINE: 6 fade/percent floats + a 3-entry `Color4` array
+/// (birth / mid / death) per nif.xml.
+///
+/// Pre-#1345 this dispatched to the opaque `NiPSysBlock` and the colours
+/// were discarded, so FNV/FO3 effects authored this way (geysers, steam,
+/// many weapon/spell FX) fell back to the name-heuristic preset colour
+/// (`torch_flame()` / `smoke()` / `magic_sparkles()`) instead of the
+/// authored ramp — the same class of bug #707 fixed for the legacy
+/// `NiPSysColorModifier`, just not extended to the Bethesda variant.
+///
+/// The trailing FO76-only `Unknown Shorts[26]` (`#BS_F76#` in nif.xml) is
+/// NOT consumed here; on FO76 the dispatcher's block-size recovery skips
+/// it. The leading 72 bytes (base-relative: 6 floats + 3 Color4) are
+/// byte-identical across FO3/FNV/Skyrim/FO4/FO76, so `colors` is captured
+/// correctly on every title.
+#[derive(Debug)]
+pub struct BSPSysSimpleColorModifier {
+    pub base: NiPSysModifierBase,
+    pub fade_in_percent: f32,
+    pub fade_out_percent: f32,
+    pub color_1_end_percent: f32,
+    pub color_1_start_percent: f32,
+    pub color_2_end_percent: f32,
+    pub color_2_start_percent: f32,
+    /// Lifetime colour ramp keys: `[0]` = birth, `[1]` = mid, `[2]` =
+    /// death. RGBA linear floats (nif.xml `Colors type="Color4" length="3"`).
+    pub colors: [[f32; 4]; 3],
+}
+
+impl BSPSysSimpleColorModifier {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let base = NiPSysModifierBase::parse(stream)?;
+        let fade_in_percent = stream.read_f32_le()?;
+        let fade_out_percent = stream.read_f32_le()?;
+        let color_1_end_percent = stream.read_f32_le()?;
+        let color_1_start_percent = stream.read_f32_le()?;
+        let color_2_end_percent = stream.read_f32_le()?;
+        let color_2_start_percent = stream.read_f32_le()?;
+        let mut colors = [[0.0f32; 4]; 3];
+        for c in colors.iter_mut() {
+            *c = [
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+                stream.read_f32_le()?,
+            ];
+        }
+        Ok(Self {
+            base,
+            fade_in_percent,
+            fade_out_percent,
+            color_1_end_percent,
+            color_1_start_percent,
+            color_2_end_percent,
+            color_2_start_percent,
+            colors,
+        })
+    }
+}
+
+/// Back-compat shim — older dispatch returned an opaque `NiPSysBlock`.
+/// Kept for byte-correct stream advancement at call sites that don't need
+/// the colours; new code should call [`BSPSysSimpleColorModifier::parse`].
 pub fn parse_simple_color_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
-    let _base = NiPSysModifierBase::parse(stream)?;
-    stream.skip(4 * 6 + 4 * 4 * 3)?; // 6 floats + 3 Color4
+    let _modifier = BSPSysSimpleColorModifier::parse(stream)?;
     Ok(NiPSysBlock {
         original_type: "BSPSysSimpleColorModifier".to_string(),
     })
@@ -1243,6 +1307,7 @@ impl_ni_object!(
     NiPSysEmitterCtlrData,
     NiPSysGrowFadeModifier,
     NiPSysColorModifier,
+    BSPSysSimpleColorModifier,
     NiPSysGravityFieldModifier,
     NiPSysVortexFieldModifier,
     NiPSysDragFieldModifier,
@@ -1418,6 +1483,44 @@ mod tests {
         d.extend_from_slice(&(-1i32).to_le_bytes()); // target ref
         d.push(1u8); // active
         d
+    }
+
+    /// #1345 / D6-01 — `BSPSysSimpleColorModifier` must capture its inline
+    /// 3-key RGBA ramp (was discarded as an opaque `NiPSysBlock`). Verifies
+    /// byte-exact consumption on FNV (base + 6 floats + 3 Color4 = no FO76
+    /// trailer) and that `colors[0]`/`colors[2]` (birth/death) round-trip —
+    /// these feed `extract_first_color_curve`'s fallback so FNV particle FX
+    /// drive from the authored ramp instead of the heuristic preset.
+    #[test]
+    fn bs_simple_color_modifier_captures_inline_ramp() {
+        let header = make_header_fnv();
+        let mut bytes = modifier_base_bytes();
+        // 6 fade/percent floats (Fade In/Out, Color1/2 End/Start percent).
+        for f in [0.1f32, 0.9, 0.0, 0.0, 0.0, 1.0] {
+            bytes.extend_from_slice(&f.to_le_bytes());
+        }
+        // Colors[3] Color4 ramp: birth / mid / death (RGBA).
+        let birth = [1.0f32, 0.25, 0.0, 1.0];
+        let mid = [0.5f32, 0.1, 0.0, 1.0];
+        let death = [0.0f32, 0.0, 0.0, 0.0];
+        for c in [birth, mid, death] {
+            for v in c {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let m = BSPSysSimpleColorModifier::parse(&mut stream)
+            .expect("BSPSysSimpleColorModifier should parse");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "FNV BSPSysSimpleColorModifier must consume exactly base + 6 floats + 3 Color4 (no FO76 trailer)"
+        );
+        assert_eq!(m.colors[0], birth, "Colors[0] = birth colour");
+        assert_eq!(m.colors[2], death, "Colors[2] = death colour");
+        assert_eq!(m.fade_in_percent, 0.1);
+        assert_eq!(m.color_2_start_percent, 1.0);
     }
 
     /// Regression: #383 — `skip_emitter_base` was reading 12 floats
