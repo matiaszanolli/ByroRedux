@@ -37,6 +37,7 @@ use byroredux_renderer::{Vertex, VulkanContext};
 use std::collections::HashMap;
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
+use crate::components::NormalMapHandle;
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 
 /// Default interior water-plane half-extent in Bethesda units when
@@ -223,6 +224,18 @@ pub(super) fn spawn_water_plane(
     );
     world.insert(entity, MeshHandle(mesh_handle));
     world.insert(entity, WaterPlane { kind, material });
+    // #1338 — pair the normal-map `resolve_texture` refcount bump above
+    // with a handle component the cell-unload victim walk can reach.
+    // The water plane is drawn by the water pipeline from
+    // `WaterPlane.material.normal_map_index` (its static `DrawCommand`
+    // is skipped via the `is_water` flag in `reemit_water_planes`), so
+    // this handle is consumed only by `unload_cell`'s `NormalMapHandle`
+    // sweep — without it the texture refcount + bindless slot leak on
+    // every cell unload. Gated on `!= 0` to mirror the acquire gate
+    // (the procedural-fallback path leaves `resolved_normal_idx == 0`).
+    if resolved_normal_idx != 0 {
+        world.insert(entity, NormalMapHandle(resolved_normal_idx));
+    }
     if let Some(flow) = flow {
         world.insert(entity, flow);
     }
@@ -443,6 +456,57 @@ mod tests {
             mat.reflection_tint,
             [0.65, 0.70, 0.75],
             "default reflection_tint must match the pre-fix shader hard-code"
+        );
+    }
+
+    /// Regression for #1338 / D3-01 — the normal map `spawn_water_plane`
+    /// resolves (bumping a texture refcount) must be reachable by the
+    /// SAME `NormalMapHandle` query `unload_cell`'s victim walk uses, so
+    /// the refcount is released on cell unload. Pre-fix the index lived
+    /// only in `WaterMaterial.normal_map_index`, which the walk can't
+    /// reach → one leaked texture + bindless slot per water cell unload.
+    ///
+    /// The Vulkan half of spawn/unload can't run in a unit test (no
+    /// headless `VulkanContext`), so we assert the reachability invariant
+    /// directly: a water entity built like `spawn_water_plane` (MeshHandle
+    /// + WaterPlane + NormalMapHandle) is found by both the mesh-drop and
+    /// the texture-drop queries the walk fans out to.
+    #[test]
+    fn water_normal_map_handle_reachable_by_unload_walk_query() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        // Mirror the production component set attached by spawn_water_plane.
+        world.insert(entity, MeshHandle(7));
+        world.insert(
+            entity,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+            },
+        );
+        // The fix: a non-zero resolved normal index becomes a handle.
+        let resolved_normal_idx: u32 = 42;
+        if resolved_normal_idx != 0 {
+            world.insert(entity, NormalMapHandle(resolved_normal_idx));
+        }
+
+        // `unload_cell` reaches mesh handles via `query::<MeshHandle>()`
+        // and texture handles via `query::<NormalMapHandle>()`. Both must
+        // find this water entity for cleanup to be complete.
+        let mq = world.query::<MeshHandle>().expect("MeshHandle storage");
+        assert_eq!(
+            mq.get(entity).map(|m| m.0),
+            Some(7),
+            "water entity's mesh handle must be reachable by the unload walk"
+        );
+        let nq = world
+            .query::<NormalMapHandle>()
+            .expect("NormalMapHandle storage");
+        assert_eq!(
+            nq.get(entity).map(|n| n.0),
+            Some(resolved_normal_idx),
+            "water entity's normal-map handle must be reachable by the unload \
+             walk's NormalMapHandle query so the texture refcount is released"
         );
     }
 }
