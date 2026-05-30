@@ -230,17 +230,33 @@ pub(crate) fn extract_material_info_from_refs(
                                 }
                             }
                         }
+                        5 | 6 => {
+                            // SkinTint (5) / HairTint (6) — nif.xml
+                            // BSLightingShaderType: "Enables Skin/Hair
+                            // Tint Color". These drive a tint COLOUR
+                            // (Color4 / Color3 shader fields), NOT a
+                            // texture set slot — they declare no TS slot
+                            // 4 or 5. Pre-#1350 they fell into the
+                            // default arm, which would route a non-empty
+                            // slot 4 → `env_map`; vanilla content leaves
+                            // those slots empty so the empty-filter hid
+                            // the misroute, but a modded / mis-exported
+                            // SkinTint NIF with a stray slot-4 string
+                            // would spuriously bind an env cube. Skip
+                            // slots 4/5 explicitly so that can't happen.
+                            // (The tint colour itself is a separate
+                            // capture path, not a texture set lookup.)
+                        }
                         _ => {
                             // Default arm — EnvironmentMap (1),
                             // EyeEnvmap (16), and every other variant
                             // route slot 4 → env cube, slot 5 →
                             // env mask. Variants whose nif.xml entry
                             // doesn't reference slot 4/5 (Default 0,
-                            // Glow 2, Parallax 3, SkinTint 5, HairTint 6,
-                            // ParallaxOcc 7, Landscape 8-10, etc.)
-                            // either author empty strings or skip the
-                            // slots entirely — the empty-filter
-                            // skips them silently.
+                            // Glow 2, Parallax 3, ParallaxOcc 7,
+                            // Landscape 8-10, etc.) either author empty
+                            // strings or skip the slots entirely — the
+                            // empty-filter skips them silently.
                             if info.env_map.is_none() {
                                 if let Some(env) = tex_set.textures.get(4).filter(|s| !s.is_empty())
                                 {

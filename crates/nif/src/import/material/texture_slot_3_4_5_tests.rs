@@ -1036,6 +1036,46 @@ fn eye_envmap_keeps_default_slot_4_envmap_routing() {
     );
 }
 
+/// Regression for #1350 / FO4-D3-04: SkinTint (5) and HairTint (6)
+/// enable a tint COLOUR per nif.xml `BSLightingShaderType`, not a
+/// texture set slot — they declare no TS slot 4/5. Pre-#1350 these
+/// fell into the default arm, which routes slot 4 → `env_map` and
+/// slot 5 → `env_mask`. A modded / mis-exported SkinTint NIF with a
+/// non-empty slot 4 would therefore spuriously bind an env cubemap.
+/// The explicit `5 | 6 =>` arm must skip slots 4/5 entirely.
+#[test]
+fn skin_tint_and_hair_tint_do_not_bind_slots_4_5_as_envmap() {
+    for shader_type in [5u32, 6u32] {
+        let blocks: Vec<Box<dyn NiObject>> = vec![
+            Box::new(lighting_shader_with_type_and_texset(shader_type, 1)),
+            // Slot 4/5 deliberately NON-empty so the pre-fix default-arm
+            // misroute would bind them; the fix must skip them.
+            Box::new(full_8_slot_tex_set("skin")),
+        ];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let mut shape = make_tri_shape_with_props(Vec::new());
+        shape.shader_property_ref = BlockRef(0);
+        let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
+
+        assert!(
+            info.env_map.is_none(),
+            "shader_type {shader_type} (SkinTint/HairTint) must NOT bind slot 4 as env_map (#1350)"
+        );
+        assert!(
+            info.env_mask.is_none(),
+            "shader_type {shader_type} (SkinTint/HairTint) must NOT bind slot 5 as env_mask (#1350)"
+        );
+        // Base/normal slots (0/1) still flow — the fix only skips 4/5.
+        assert!(
+            info.texture_path.is_some(),
+            "base texture (slot 0) must still bind for SkinTint/HairTint"
+        );
+    }
+}
+
 /// Regression for #725 / NIF-D4-06: when the legacy
 /// `NiTexturingProperty.parallax_texture` slot is bound WITHOUT a
 /// co-bound `BSShaderPPLightingProperty` (rare on FO3/FNV with an
