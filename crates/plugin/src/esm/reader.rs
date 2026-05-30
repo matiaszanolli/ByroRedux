@@ -511,6 +511,49 @@ impl<'a> EsmReader<'a> {
                 u16::from_le_bytes([raw_data[sub_pos + 4], raw_data[sub_pos + 5]]) as usize;
             sub_pos += 6;
 
+            // XXXX extended-size override — used when a sub-record's data
+            // exceeds 0xFFFF bytes (e.g. WRLD OFST in FalloutNV.esm). The
+            // XXXX sub-record itself carries a 4-byte u32 payload whose
+            // value is the TRUE data-byte count for the immediately
+            // following sub-record; that record's own 2-byte size field is
+            // meaningless and ignored.
+            if &sub_type == b"XXXX" {
+                if sub_size != 4 || sub_pos + 4 > raw_data.len() {
+                    break; // malformed — XXXX payload must be exactly 4 bytes
+                }
+                let extended_size = u32::from_le_bytes([
+                    raw_data[sub_pos],
+                    raw_data[sub_pos + 1],
+                    raw_data[sub_pos + 2],
+                    raw_data[sub_pos + 3],
+                ]) as usize;
+                sub_pos += 4; // consume the XXXX payload
+
+                // Read the oversized sub-record header (4-byte type + 2-byte
+                // size field — the size field is ignored; we use extended_size).
+                if sub_pos + 6 > raw_data.len() {
+                    break;
+                }
+                let next_type = [
+                    raw_data[sub_pos],
+                    raw_data[sub_pos + 1],
+                    raw_data[sub_pos + 2],
+                    raw_data[sub_pos + 3],
+                ];
+                sub_pos += 6; // skip type (4 B) + ignored 2-byte size field
+
+                if sub_pos + extended_size > raw_data.len() {
+                    break; // truncated oversized sub-record
+                }
+                let data = raw_data[sub_pos..sub_pos + extended_size].to_vec();
+                sub_pos += extended_size;
+                subs.push(SubRecord {
+                    sub_type: next_type,
+                    data,
+                });
+                continue;
+            }
+
             if sub_pos + sub_size > raw_data.len() {
                 // Tolerate truncated final sub-record.
                 break;
@@ -898,6 +941,67 @@ mod tests {
         assert_eq!(&subs[0].data, b"TestStatic\0");
         assert_eq!(&subs[1].sub_type, b"MODL");
         assert_eq!(&subs[1].data, b"meshes\\test.nif\0");
+    }
+
+    /// Regression for #1347 / D2-02 — the XXXX extended-size override must
+    /// be handled: when a sub-record's data exceeds 0xFFFF bytes (e.g. the
+    /// WRLD OFST in FalloutNV.esm at 177 KB), a preceding `XXXX` sub-record
+    /// carries the true u32 size; the following record's 2-byte size field is
+    /// ignored. The subsequent sub-records after the oversized one must still
+    /// parse correctly (stream position must be exact).
+    #[test]
+    fn read_sub_records_handles_xxxx_extended_size() {
+        // Build the sub-record payload manually so we control the exact bytes.
+        let extended_size: u32 = 70_000; // > 0xFFFF, the interesting case
+        let mut sub_data: Vec<u8> = Vec::new();
+
+        // 1. Normal EDID sub-record before the XXXX.
+        let edid_bytes = b"Test\0";
+        sub_data.extend_from_slice(b"EDID");
+        sub_data.extend_from_slice(&(edid_bytes.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(edid_bytes);
+
+        // 2. XXXX sub-record: type=XXXX, 2-byte size=4, payload=extended_size.
+        sub_data.extend_from_slice(b"XXXX");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&extended_size.to_le_bytes());
+
+        // 3. Oversized OFST sub-record: type=OFST, 2-byte size=ignored,
+        //    data=extended_size bytes (zeros).
+        sub_data.extend_from_slice(b"OFST");
+        sub_data.extend_from_slice(&0u16.to_le_bytes()); // ignored
+        sub_data.extend(std::iter::repeat(0u8).take(extended_size as usize));
+
+        // 4. Normal CNAM sub-record after the oversized one — verifies stream
+        //    position is correct so this can be read cleanly.
+        sub_data.extend_from_slice(b"CNAM");
+        sub_data.extend_from_slice(&4u16.to_le_bytes());
+        sub_data.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDDu8]);
+
+        // Wrap in a record header (Tes5Plus = 24-byte header).
+        let mut record: Vec<u8> = Vec::new();
+        record.extend_from_slice(b"WRLD");
+        record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes()); // data_size
+        record.extend_from_slice(&0u32.to_le_bytes()); // flags
+        record.extend_from_slice(&1u32.to_le_bytes()); // form_id
+        record.extend(std::iter::repeat(0u8).take(8)); // 8-byte Tes5Plus trailer
+        record.extend_from_slice(&sub_data);
+
+        let mut reader = EsmReader::with_variant(&record, EsmVariant::Tes5Plus);
+        let header = reader.read_record_header().unwrap();
+        let subs = reader.read_sub_records(&header).unwrap();
+
+        assert_eq!(subs.len(), 3, "EDID + OFST (via XXXX) + CNAM");
+        assert_eq!(&subs[0].sub_type, b"EDID");
+        assert_eq!(subs[0].data, edid_bytes);
+        assert_eq!(&subs[1].sub_type, b"OFST");
+        assert_eq!(
+            subs[1].data.len(),
+            extended_size as usize,
+            "OFST data must be exactly extended_size bytes"
+        );
+        assert_eq!(&subs[2].sub_type, b"CNAM");
+        assert_eq!(subs[2].data, [0xAA, 0xBB, 0xCC, 0xDD]);
     }
 
     #[test]
