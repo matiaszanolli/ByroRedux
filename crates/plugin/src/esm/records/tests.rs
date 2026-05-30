@@ -84,7 +84,7 @@ fn extract_records_walks_one_group() {
 ///   GRUP type=0 label="DIAL"
 ///     DIAL record (form_id 0xCAFE, EDID="MQGreeting", FULL="Hello")
 ///     GRUP type=7 label=0xCAFE
-///       INFO (0x1001, NAM1="Welcome", TRDT[0]=3, PNAM=0)
+///       INFO (0x1001, NAM1="Welcome", TRDT emotion=3/response#=5, PNAM=0)
 ///       INFO (0x1002, NAM1="Wait outside.", PNAM=0x1001)
 ///
 /// Asserts both INFOs land on the parent DIAL with their
@@ -97,7 +97,14 @@ fn dial_topic_children_walked_into_dialogue_infos() {
         0x1001,
         &[
             (b"NAM1", b"Welcome\0".to_vec()),
-            (b"TRDT", vec![3, 0, 0, 0]),
+            // TES4 TRDT (16 B): EmotionType(u32)=3 (EMO_Fear) +
+            // EmotionValue(i32) + unused[4] + Response number(u8)=5 @12
+            // + unused[3]. Byte 0 is the emotion, NOT a response number
+            // (#1304).
+            (
+                b"TRDT",
+                vec![3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0],
+            ),
             (b"PNAM", 0u32.to_le_bytes().to_vec()),
         ],
     );
@@ -165,7 +172,10 @@ fn dial_topic_children_walked_into_dialogue_infos() {
     );
     assert_eq!(dial.infos[0].form_id, 0x1001);
     assert_eq!(dial.infos[0].response_text, "Welcome");
-    assert_eq!(dial.infos[0].response_type, 3);
+    // TRDT byte 0 is the EmotionType (3 = EMO_Fear), not a response
+    // number; the real response index is at offset 12 (#1304).
+    assert_eq!(dial.infos[0].emotion_type, 3);
+    assert_eq!(dial.infos[0].response_number, 5);
     assert_eq!(dial.infos[0].previous_info, 0);
     assert_eq!(dial.infos[1].form_id, 0x1002);
     assert_eq!(dial.infos[1].response_text, "Wait outside.");

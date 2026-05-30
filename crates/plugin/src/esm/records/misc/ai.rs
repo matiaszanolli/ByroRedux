@@ -304,11 +304,20 @@ pub struct InfoRecord {
     pub response_text: String,
     /// Designer notes — usually direction for the voice actor (NAM2).
     pub designer_notes: String,
-    /// `TRDT` response-data byte 0 — `Response_Type` enum (Custom /
-    /// Force Greet / etc. on FO3/FNV; Combat / Death / Hello etc. on
-    /// Skyrim). Captured raw; mapping to the per-game enum is
-    /// downstream consumer work. 0 when TRDT is absent.
-    pub response_type: u8,
+    /// `TRDT` Emotion Type — the low byte of the `EmotionType` `u32` at
+    /// TRDT offset 0: 0=Neutral, 1=Anger, 2=Disgust, 3=Fear, 4=Sad,
+    /// 5=Happy, 6=Surprise (Oblivion / FO3 / FNV; Skyrim keeps the
+    /// EmotionType-u32 @0 layout). The byte-0 histogram across all
+    /// 23,877 `Oblivion.esm` TRDT subrecords is exactly this 0–6
+    /// distribution — it is the emotion, NOT a response number (the
+    /// real response index is [`Self::response_number`]). 0 when TRDT is
+    /// absent. See #1304 (was mislabeled `response_type`).
+    pub emotion_type: u8,
+    /// `TRDT` Response number — byte 12, after `EmotionType` (u32 @0),
+    /// `Emotion Value` (i32 @4), and 4 unused bytes @8. The actual
+    /// dialogue-response index within the branch. 0 when TRDT is shorter
+    /// than 13 bytes. See #1304.
+    pub response_number: u8,
     /// `TCLT` topic-link ref — IDs of other DIAL topics that this
     /// branch routes the conversation to. Multiple TCLTs are
     /// concatenated.
@@ -351,7 +360,14 @@ pub fn parse_info(form_id: u32, subs: &[SubRecord]) -> InfoRecord {
             b"NAM1" => out.response_text = read_lstring_or_zstring(&sub.data),
             b"NAM2" => out.designer_notes = read_zstring(&sub.data),
             b"TRDT" if !sub.data.is_empty() => {
-                out.response_type = sub.data[0];
+                // TES4 TRDT layout: EmotionType(u32 @0) + EmotionValue
+                // (i32 @4) + unused[4] @8 + Response number(u8 @12) +
+                // unused[3]. Byte 0 is the emotion (0–6), not a response
+                // number; the response index lives at offset 12. #1304.
+                out.emotion_type = sub.data[0];
+                if sub.data.len() >= 13 {
+                    out.response_number = sub.data[12];
+                }
             }
             b"TCLT" if sub.data.len() >= 4 => {
                 if let Ok(t) = SubReader::new(&sub.data).u32() {
