@@ -203,6 +203,72 @@ fn query_write_insert_remove() {
     assert_eq!(world.get::<Health>(b).unwrap().0, 200.0);
 }
 
+// ── #1367: cached storage-pointer regression guards ─────────────────────
+// QueryRead/QueryWrite/ComponentRef resolve the downcast once in `new()` and
+// hand out references derived from a cached raw pointer (was a per-access
+// `downcast_ref`). These pin that the cache stays valid + correct across many
+// accesses, and that QueryWrite's shared `get` and exclusive `get_mut` borrows
+// alternate soundly through the same `*mut`.
+
+#[test]
+fn query_write_cached_storage_interleaved_get_get_mut() {
+    let mut world = World::new();
+    let entities: Vec<_> = (0..64)
+        .map(|i| {
+            let e = world.spawn();
+            world.insert(e, Health(i as f32));
+            e
+        })
+        .collect();
+
+    {
+        let mut q = world.query_mut::<Health>().unwrap();
+        for pass in 1..=100u32 {
+            for (i, &e) in entities.iter().enumerate() {
+                // Mutate through the cached *mut, then read back through it —
+                // must observe our own write immediately. A stale/aliasing
+                // cache would diverge here.
+                q.get_mut(e).unwrap().0 += 1.0;
+                assert_eq!(q.get(e).unwrap().0, i as f32 + pass as f32);
+            }
+        }
+    }
+
+    for (i, &e) in entities.iter().enumerate() {
+        assert_eq!(world.get::<Health>(e).unwrap().0, i as f32 + 100.0);
+    }
+}
+
+#[test]
+fn query_read_cached_storage_repeated_get_stable() {
+    let mut world = World::new();
+    let a = world.spawn();
+    let b = world.spawn();
+    world.insert(a, Health(11.0));
+    world.insert(b, Health(22.0));
+
+    let q = world.query::<Health>().unwrap();
+    for _ in 0..1000 {
+        assert_eq!(q.get(a).unwrap().0, 11.0);
+        assert_eq!(q.get(b).unwrap().0, 22.0);
+        assert!(q.get(999).is_none());
+    }
+    assert_eq!(q.iter().count(), 2);
+}
+
+#[test]
+fn component_ref_cached_deref_stable() {
+    let mut world = World::new();
+    let e = world.spawn();
+    world.insert(e, Health(42.0));
+
+    let r = world.get::<Health>(e).unwrap();
+    // Many derefs through the cached component pointer stay valid + equal.
+    for _ in 0..1000 {
+        assert_eq!(r.0, 42.0);
+    }
+}
+
 #[test]
 fn query_returns_none_for_unregistered() {
     let world = World::new();
