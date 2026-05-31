@@ -747,17 +747,19 @@ pub(crate) fn stream_initial_radius(
     // Distant-terrain LOD ring (#view-dist). With every full-detail cell
     // now loaded, build the coarse LOD blocks that extend view distance
     // ~10× beyond the streamed ring. Cells inside `radius_load` are holed
-    // out so the LOD never overlaps the near terrain. Slice 1 loads the
-    // ring once around the spawn cell; streaming it as the player walks is
-    // the follow-up.
-    cell_loader::spawn_lod_ring(
+    // out so the LOD never overlaps the near terrain. Slice 2 (#1373):
+    // populate `state.lod_blocks` so the ring is tracked and re-centered as
+    // the player walks (the initial call runs against an empty map → spawns
+    // the whole ring around the spawn cell).
+    let lod_tex = state.tex_provider.clone();
+    cell_loader::stream_lod_blocks(
         world,
         ctx,
-        state.tex_provider.as_ref(),
+        lod_tex.as_ref(),
         wctx.as_ref(),
-        cx,
-        cy,
+        (cx, cy),
         state.radius_load,
+        &mut state.lod_blocks,
     );
 
     center

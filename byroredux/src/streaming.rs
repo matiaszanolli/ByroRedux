@@ -52,6 +52,22 @@ pub struct LoadedCell {
     pub cell_root: EntityId,
 }
 
+/// One distant-terrain LOD block tracked by [`WorldStreamingState`]
+/// (#1373), keyed by block-coord. `hole_mask` is the 16-bit per-cell
+/// hole pattern — bit `dy * LOD_BLOCK_CELLS + dx` is set when that cell
+/// is holed (inside the full-detail radius, or missing landscape). When
+/// the player moves and a boundary block's mask changes, the block is
+/// regenerated so its hole-out tracks the streamed near terrain instead
+/// of staying anchored to the spawn cell. Unloading a block calls
+/// `drop_mesh(mesh_handle)` (frees its global-SSBO range on the next
+/// rebuild) + `World::despawn(entity)`.
+#[derive(Debug, Clone, Copy)]
+pub struct LodBlock {
+    pub entity: EntityId,
+    pub mesh_handle: u32,
+    pub hole_mask: u16,
+}
+
 /// Worker request — main thread asks the worker to pre-parse a cell.
 /// Carries everything the worker needs to extract NIF bytes from BSA
 /// and run the pool-free portion of the import pipeline.
@@ -152,6 +168,13 @@ pub struct WorldStreamingState {
     pub mat_provider: MaterialProvider,
     /// Currently-loaded cells.
     pub loaded: HashMap<(i32, i32), LoadedCell>,
+    /// Distant-terrain LOD blocks, keyed by block-coord (#1373). Streamed
+    /// each cell-boundary crossing alongside the full-detail cells: blocks
+    /// entering the LOD radius spawn, blocks leaving unload, and boundary
+    /// blocks whose hole mask changed regenerate. The Slice-1 ring spawned
+    /// these once and never tracked them — re-entry leaked ~600 blocks and
+    /// the hole-out went stale as the player walked.
+    pub lod_blocks: HashMap<(i32, i32), LodBlock>,
     /// Cells whose load request is in flight on the worker. Maps
     /// `(gx, gy)` to the generation of the outstanding request.
     /// Drain compares the payload's generation against this map's
@@ -219,6 +242,7 @@ impl WorldStreamingState {
             tex_provider: Arc::new(tex_provider),
             mat_provider,
             loaded: HashMap::new(),
+            lod_blocks: HashMap::new(),
             pending: HashMap::new(),
             next_generation: 0,
             radius_load,

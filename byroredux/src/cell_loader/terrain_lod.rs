@@ -13,11 +13,14 @@
 //!   * holes out any cell inside the full-detail load radius so the LOD
 //!     never overlaps / z-fights the streamed near terrain.
 //!
-//! Slice 1 (this module) loads the ring **once** around the spawn cell via
-//! [`spawn_lod_ring`]. Streaming the ring as the player walks (load/unload
-//! blocks on cell-boundary crossings) is the follow-up slice.
+//! [`stream_lod_blocks`] streams the ring as the player walks: blocks
+//! entering the LOD radius spawn, blocks leaving unload, and boundary
+//! blocks whose hole mask changed (the full-detail region moved with the
+//! player) regenerate. Blocks are tracked by block-coord on
+//! `WorldStreamingState.lod_blocks`, so a worldspace re-entry / teleport
+//! reclaims the prior ring instead of leaking it (#1373).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{
@@ -30,6 +33,7 @@ use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
 use crate::components::IsLodTerrain;
+use crate::streaming::LodBlock;
 
 use super::exterior::ExteriorWorldContext;
 
@@ -72,62 +76,186 @@ fn chebyshev(a: (i32, i32), b: (i32, i32)) -> i32 {
     (a.0 - b.0).abs().max((a.1 - b.1).abs())
 }
 
-/// Spawn the distant-terrain LOD ring around the player's spawn cell
-/// `(cx, cy)`. Builds one merged mesh per `LOD_BLOCK_CELLS²` block out to
-/// `LOD_RADIUS_BLOCKS`, holing out cells inside `full_radius_load` (those
-/// render at full detail). Returns the number of LOD blocks spawned.
-pub(crate) fn spawn_lod_ring(
+// The hole mask is a `u16`, one bit per cell, so a block holds at most 16
+// cells. LOD_BLOCK_CELLS = 4 → 4×4 = 16. A bigger block would silently
+// truncate the mask (and `all_holed_mask`'s shift).
+const _: () = assert!(
+    (LOD_BLOCK_CELLS * LOD_BLOCK_CELLS) <= 16,
+    "LOD hole mask is u16 — LOD_BLOCK_CELLS squared must be <= 16",
+);
+
+/// OR a hole bit for every cell `(bx0+dx, by0+dy)` in block `(bi, bj)` for
+/// which `holed(gx, gy)` is true. Pure (no `CellData` map) so the
+/// player-tracking regen logic is unit-testable in isolation.
+fn assemble_hole_mask(bi: i32, bj: i32, holed: impl Fn(i32, i32) -> bool) -> u16 {
+    let k = LOD_BLOCK_CELLS;
+    let bx0 = bi * k;
+    let by0 = bj * k;
+    let mut mask: u16 = 0;
+    for dy in 0..k {
+        for dx in 0..k {
+            if holed(bx0 + dx, by0 + dy) {
+                mask |= 1u16 << (dy * k + dx);
+            }
+        }
+    }
+    mask
+}
+
+/// Mask with every cell holed — an empty block (no geometry to draw).
+fn all_holed_mask() -> u16 {
+    (((1u32 << (LOD_BLOCK_CELLS * LOD_BLOCK_CELLS)) - 1)) as u16
+}
+
+/// The 16-bit per-cell hole pattern for block `(bi, bj)` given the player's
+/// grid cell and full-detail radius. A cell is holed when it's inside the
+/// full-detail radius (streamed near terrain renders it) or has no
+/// landscape. Stored on [`LodBlock`] so a boundary block is regenerated
+/// only when its pattern actually changes.
+fn block_hole_mask(
+    cells_map: &HashMap<(i32, i32), CellData>,
+    bi: i32,
+    bj: i32,
+    player_grid: (i32, i32),
+    full_radius_load: i32,
+) -> u16 {
+    assemble_hole_mask(bi, bj, |gx, gy| {
+        chebyshev((gx, gy), player_grid) <= full_radius_load
+            || cells_map
+                .get(&(gx, gy))
+                .and_then(|cell| cell.landscape.as_ref())
+                .is_none()
+    })
+}
+
+/// Stream the distant-terrain LOD ring around the player's grid cell
+/// `player_grid` (#1373). Reconciles the resident `lod_blocks` against the
+/// desired ring (Chebyshev `LOD_RADIUS_BLOCKS` around the player block):
+///   * blocks entering the radius are spawned,
+///   * blocks leaving are unloaded (`drop_mesh` + despawn),
+///   * boundary blocks whose hole mask changed (the full-detail region
+///     moved with the player) are regenerated so the LOD never overlaps or
+///     gaps against the streamed near terrain.
+///
+/// Cells inside `full_radius_load` are holed out. Called once at scene
+/// setup (against an empty map → spawns the whole ring) and again on every
+/// cell-boundary crossing from `App::step_streaming`.
+pub(crate) fn stream_lod_blocks(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     wctx: &ExteriorWorldContext,
-    cx: i32,
-    cy: i32,
+    player_grid: (i32, i32),
     full_radius_load: i32,
-) -> usize {
+    lod_blocks: &mut HashMap<(i32, i32), LodBlock>,
+) {
     let index = &wctx.record_index.cells;
     let Some(cells_map) = index.exterior_cells.get(&wctx.worldspace_key) else {
-        return 0;
+        return;
     };
     let k = LOD_BLOCK_CELLS;
     // Block containing the player. `div_euclid` floors toward negative
     // infinity so blocks tile consistently across the origin.
-    let pbi = cx.div_euclid(k);
-    let pbj = cy.div_euclid(k);
+    let pbi = player_grid.0.div_euclid(k);
+    let pbj = player_grid.1.div_euclid(k);
 
-    let mut spawned = 0;
+    // Desired ring: Chebyshev `LOD_RADIUS_BLOCKS` around the player block.
+    let mut desired: HashSet<(i32, i32)> = HashSet::new();
     for bj in (pbj - LOD_RADIUS_BLOCKS)..=(pbj + LOD_RADIUS_BLOCKS) {
         for bi in (pbi - LOD_RADIUS_BLOCKS)..=(pbi + LOD_RADIUS_BLOCKS) {
-            if spawn_lod_block(
-                world,
-                ctx,
-                tex_provider,
-                &index.landscape_textures,
-                cells_map,
-                bi,
-                bj,
-                cx,
-                cy,
-                full_radius_load,
-            ) {
-                spawned += 1;
-            }
+            desired.insert((bi, bj));
         }
     }
-    log::info!(
-        "LOD terrain ring: {} blocks ({}×{} cells each) out to {} blocks (~{:.0}K BU)",
-        spawned,
-        k,
-        k,
-        LOD_RADIUS_BLOCKS,
-        (LOD_RADIUS_BLOCKS * k) as f32 * EXTERIOR_CELL_UNITS / 1000.0,
-    );
-    spawned
+
+    let mut spawned = 0usize;
+    let mut regenerated = 0usize;
+    let mut unloaded = 0usize;
+
+    // Unload blocks that left the ring.
+    lod_blocks.retain(|coord, block| {
+        if desired.contains(coord) {
+            true
+        } else {
+            unload_lod_block(world, ctx, block);
+            unloaded += 1;
+            false
+        }
+    });
+
+    let all_holed = all_holed_mask();
+
+    // Spawn entering blocks + regenerate boundary blocks whose mask moved.
+    for &(bi, bj) in &desired {
+        let mask = block_hole_mask(cells_map, bi, bj, player_grid, full_radius_load);
+        // Copy the prior mask out before mutating the map (no borrow held).
+        let prev_mask = lod_blocks.get(&(bi, bj)).map(|b| b.hole_mask);
+
+        // Empty block (every cell holed) — ensure no stale entry remains.
+        if mask == all_holed {
+            if let Some(block) = lod_blocks.remove(&(bi, bj)) {
+                unload_lod_block(world, ctx, &block);
+                unloaded += 1;
+            }
+            continue;
+        }
+
+        match prev_mask {
+            Some(m) if m == mask => continue, // unchanged — keep as-is
+            Some(_) => {
+                // Hole pattern moved — drop the stale block, respawn below.
+                if let Some(block) = lod_blocks.remove(&(bi, bj)) {
+                    unload_lod_block(world, ctx, &block);
+                }
+                regenerated += 1;
+            }
+            None => {} // new block
+        }
+
+        if let Some(block) = spawn_lod_block(
+            world,
+            ctx,
+            tex_provider,
+            &index.landscape_textures,
+            cells_map,
+            bi,
+            bj,
+            player_grid,
+            full_radius_load,
+        ) {
+            lod_blocks.insert((bi, bj), block);
+            spawned += 1;
+        }
+    }
+
+    if spawned + regenerated + unloaded > 0 {
+        log::info!(
+            "LOD ring @block ({},{}): +{} spawned, ~{} regenerated, -{} unloaded \
+             ({} resident, ~{:.0}K BU)",
+            pbi,
+            pbj,
+            spawned,
+            regenerated,
+            unloaded,
+            lod_blocks.len(),
+            (LOD_RADIUS_BLOCKS * k) as f32 * EXTERIOR_CELL_UNITS / 1000.0,
+        );
+    }
 }
 
-/// Build + spawn one LOD block at block-coords `(bi, bj)`. Returns `false`
+/// Tear down one streamed LOD block (#1373): free its global-SSBO geometry
+/// — `drop_mesh` marks the SSBO dirty so the next `rebuild_geometry_ssbo`
+/// compacts the dead range out — and despawn its entity. LOD blocks carry
+/// no BLAS (rt-disabled) and no `CellRoot`, so this is their only reclaim
+/// path (mirrors the scene-mesh half of `cell_loader::unload_cell`).
+pub(crate) fn unload_lod_block(world: &mut World, ctx: &mut VulkanContext, block: &LodBlock) {
+    ctx.mesh_registry.drop_mesh(block.mesh_handle);
+    world.despawn(block.entity);
+}
+
+/// Build + spawn one LOD block at block-coords `(bi, bj)`. Returns `None`
 /// (nothing spawned) when the block is entirely holes — every cell either
-/// missing, landscape-less, or inside the full-detail radius.
+/// missing, landscape-less, or inside the full-detail radius — or the
+/// upload fails. On success returns the [`LodBlock`] for streaming tracking.
 #[allow(clippy::too_many_arguments)]
 fn spawn_lod_block(
     world: &mut World,
@@ -137,10 +265,9 @@ fn spawn_lod_block(
     cells_map: &HashMap<(i32, i32), CellData>,
     bi: i32,
     bj: i32,
-    cx: i32,
-    cy: i32,
+    player_grid: (i32, i32),
     full_radius_load: i32,
-) -> bool {
+) -> Option<LodBlock> {
     let k = LOD_BLOCK_CELLS;
     let bx0 = bi * k; // SW cell column of the block
     let by0 = bj * k; // SW cell row of the block
@@ -167,7 +294,7 @@ fn spawn_lod_block(
 
             // Cell inside the full-detail ring → leave a hole for the
             // streamed near terrain (no overlap / z-fight).
-            let full_detail = chebyshev((gx, gy), (cx, cy)) <= full_radius_load;
+            let full_detail = chebyshev((gx, gy), player_grid) <= full_radius_load;
             let land = if full_detail {
                 None
             } else {
@@ -246,11 +373,11 @@ fn spawn_lod_block(
     }
 
     if indices.is_empty() {
-        return false; // entirely holes — nothing to draw
+        return None; // entirely holes — nothing to draw
     }
 
     if ctx.allocator.is_none() {
-        return false;
+        return None;
     }
 
     // World-space bound from the emitted (non-hole) vertices for frustum
@@ -294,7 +421,7 @@ fn spawn_lod_block(
         Ok(h) => h,
         Err(e) => {
             log::warn!("Failed to upload LOD terrain block ({},{}): {}", bi, bj, e);
-            return false;
+            return None;
         }
     };
 
@@ -313,7 +440,12 @@ fn spawn_lod_block(
     // and is skipped by any TLAS-membership logic.
     world.insert(entity, IsLodTerrain);
 
-    true
+    let hole_mask = block_hole_mask(cells_map, bi, bj, player_grid, full_radius_load);
+    Some(LodBlock {
+        entity,
+        mesh_handle,
+        hole_mask,
+    })
 }
 
 /// World-space bounding sphere over the block's non-hole vertices. Falls
@@ -380,5 +512,45 @@ mod tests {
         assert_eq!(chebyshev((0, 0), (0, 0)), 0);
         assert_eq!(chebyshev((3, 1), (0, 0)), 3);
         assert_eq!(chebyshev((-2, 5), (0, 0)), 5);
+    }
+
+    /// #1373 — a boundary block's hole mask shifts as the player crosses
+    /// cells, which is exactly what triggers regeneration. Pure radius
+    /// closure, no `CellData` map needed.
+    #[test]
+    fn hole_mask_shifts_with_player_full_detail_region() {
+        let full = 1;
+        let holed = |p: (i32, i32)| move |gx: i32, gy: i32| chebyshev((gx, gy), p) <= full;
+
+        // Block (0,0) covers cells (0,0)..=(3,3). Player at (0,0) holes its
+        // SW corner; moving the player east to (4,0) (into block (1,0))
+        // clears those holes — the mask must change (→ regenerate).
+        let blk0_at_origin = assemble_hole_mask(0, 0, holed((0, 0)));
+        let blk0_at_east = assemble_hole_mask(0, 0, holed((4, 0)));
+        assert_ne!(
+            blk0_at_origin, blk0_at_east,
+            "boundary block mask must change as the player crosses cells"
+        );
+
+        // The block the player moved INTO gains the full-detail holes.
+        let blk1_at_origin = assemble_hole_mask(1, 0, holed((0, 0)));
+        let blk1_at_east = assemble_hole_mask(1, 0, holed((4, 0)));
+        assert_ne!(blk1_at_origin, blk1_at_east);
+
+        // A far block (outside the full-detail radius from both positions)
+        // keeps mask 0 — never regenerates from player motion (the common
+        // case: most of the ring is stable).
+        assert_eq!(assemble_hole_mask(5, 5, holed((0, 0))), 0);
+        assert_eq!(assemble_hole_mask(5, 5, holed((4, 0))), 0);
+    }
+
+    /// `all_holed_mask` has exactly the low `LOD_BLOCK_CELLS²` bits set —
+    /// the sentinel for an empty (all-hole) block that `stream_lod_blocks`
+    /// skips spawning.
+    #[test]
+    fn all_holed_mask_is_full_block() {
+        let always = |_: i32, _: i32| true;
+        assert_eq!(all_holed_mask(), assemble_hole_mask(0, 0, always));
+        assert_eq!(all_holed_mask(), 0xFFFF); // 4×4 = 16 bits
     }
 }

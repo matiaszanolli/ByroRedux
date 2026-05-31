@@ -102,7 +102,7 @@ pub use exterior::{
     build_exterior_world_context, load_one_exterior_cell, ExteriorWorldContext, OneCellLoadInfo,
 };
 #[allow(unused_imports)]
-pub(crate) use terrain_lod::{spawn_lod_ring, LOD_BLOCK_CELLS, LOD_RADIUS_BLOCKS};
+pub(crate) use terrain_lod::{stream_lod_blocks, LOD_BLOCK_CELLS, LOD_RADIUS_BLOCKS};
 #[allow(unused_imports)]
 pub use load::{load_cell_with_masters, CellLoadResult};
 #[allow(unused_imports)]

@@ -1083,6 +1083,27 @@ impl App {
                 state.pending.remove(&(gx, gy));
             }
         }
+
+        // ── 3. Stream the distant-terrain LOD ring (#1373) ──────────
+        //
+        // The player crossed a cell boundary (guarded by the early
+        // return above), so the full-detail hole-out region moved with
+        // them. Re-center the ring: spawn blocks entering the LOD radius,
+        // unload those leaving, and regenerate boundary blocks whose hole
+        // mask changed against the new full-detail region. Arcs are cloned
+        // so `lod_blocks` can be borrowed mutably alongside `self.world`.
+        let lod_tex = state.tex_provider.clone();
+        let lod_wctx = state.wctx.clone();
+        let lod_full_radius = state.radius_load;
+        cell_loader::stream_lod_blocks(
+            &mut self.world,
+            ctx,
+            lod_tex.as_ref(),
+            lod_wctx.as_ref(),
+            player_grid,
+            lod_full_radius,
+            &mut state.lod_blocks,
+        );
     }
 
     /// Drain any queued debug-UI load ops and dispatch them to the
