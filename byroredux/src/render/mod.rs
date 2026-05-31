@@ -265,10 +265,18 @@ pub(crate) fn build_render_data(
     ];
     bone_world.push(IDENTITY_4X4);
 
+    // `BYRO_PROFILE=1` breaks the per-frame render-data build into its
+    // phases (skinned palettes / static-mesh main loop / particles / draw
+    // sort / lights) so the dominant cost is localized without guessing.
+    let profile = std::env::var_os("BYRO_PROFILE").is_some();
+    let mark = |on: bool| on.then(std::time::Instant::now);
+    let took = |s: Option<std::time::Instant>| s.map_or(0.0, |i| i.elapsed().as_secs_f32() * 1000.0);
+
     // First pass: skinned-mesh palette assembly — see
     // `render::skinned::build_skinned_palettes`. Allocates pool slots,
     // writes per-entity bone_world matrices into sparse slots, and
     // queues first-sight `bind_inverses` uploads on the pool.
+    let t_skin = mark(profile);
     skinned::build_skinned_palettes(
         world,
         frame_count,
@@ -276,6 +284,7 @@ pub(crate) fn build_render_data(
         skin_offsets,
         skin_slot_pool,
     );
+    let ms_skin = took(t_skin);
 
     // Camera view-projection + frustum + cam_pos — see
     // `render::camera::assemble_camera`.
@@ -287,6 +296,7 @@ pub(crate) fn build_render_data(
     } = camera::assemble_camera(world);
 
     // Static mesh main loop — see `render::static_meshes::collect_static_mesh_draws`.
+    let t_static = mark(profile);
     static_meshes::collect_static_mesh_draws(
         world,
         &frustum,
@@ -295,7 +305,10 @@ pub(crate) fn build_render_data(
         draw_commands,
         material_table,
     );
+    let ms_static = took(t_static);
+    let n_draws = draw_commands.len();
     // Particle billboards — see `render::particles::emit_particles`.
+    let t_particles = mark(profile);
     particles::emit_particles(
         world,
         particle_quad_handle,
@@ -336,11 +349,14 @@ pub(crate) fn build_render_data(
     // GSDocMitchell ~263, exterior radius-3 grid ~1200), so serial is
     // the default. The fallback to `par_sort_unstable_by_key` at ≥2K
     // covers exterior radius-5+ grids and Skyrim+ city interiors.
+    let ms_particles = took(t_particles);
+    let t_sort = mark(profile);
     if draw_commands.len() >= 2000 {
         draw_commands.par_sort_unstable_by_key(draw_sort_key);
     } else {
         draw_commands.sort_unstable_by_key(draw_sort_key);
     }
+    let ms_sort = took(t_sort);
     // ⚠ No-resort contract (#1026 / F-WAT-05).
     //
     // The water-plane re-emit below records each WaterDrawCommand's
@@ -362,7 +378,14 @@ pub(crate) fn build_render_data(
 
     // Collect lights from ECS — directional fill + placed point lights.
     // See `render::lights::collect_lights`.
+    let t_lights = mark(profile);
     lights::collect_lights(world, gpu_lights);
+    let ms_lights = took(t_lights);
+    if profile {
+        log::info!(
+            "build_render_data: skinned={ms_skin:.2}ms static_loop={ms_static:.2}ms ({n_draws} draws) particles={ms_particles:.2}ms sort={ms_sort:.2}ms lights={ms_lights:.2}ms"
+        );
+    }
 
     // Camera position.
     let camera_pos = if let Some(active) = world.try_resource::<ActiveCamera>() {
