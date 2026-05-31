@@ -93,6 +93,13 @@ thiserror = "2"
 # String interning
 string-interner = "0.17"
 
+# Hashing — FxHash for the render hot-path material/instance dedup
+# keys (#1368). Non-cryptographic + seedless, so it's deterministic:
+# the material_hash <-> hash_gpu_material_fields lockstep test holds and
+# the dirty-gate hashes stay run-stable. SipHash's DoS resistance is
+# irrelevant for an internal key; the debug collision assert guards quality.
+rustc-hash = "2"
+
 # Identity
 uuid = { version = "1", features = ["v5", "serde"] }
 

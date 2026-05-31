@@ -26,7 +26,7 @@
 //! alongside the closeout.
 
 use super::scene_buffer::MAX_MATERIALS;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::Once;
 
 /// First-frame overflow latch for [`MaterialTable::intern`]. Wired through
@@ -761,7 +761,7 @@ pub mod presets {
     }
 }
 
-/// Canonical material hash — std SipHash 1-3 over the 50 live scalar
+/// Canonical material hash — FxHash (#1368) over the 50 live scalar
 /// fields of [`GpuMaterial`] in declaration order. Used by
 /// [`MaterialTable::intern_by_hash`] to dedup without hashing the full
 /// 300-byte struct.
@@ -779,7 +779,7 @@ pub mod presets {
 /// so palette-colour effect materials don't dedup across LUTs.
 pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
     use std::hash::Hasher;
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut h = rustc_hash::FxHasher::default();
     // PBR scalars + flags
     h.write_u32(mat.roughness.to_bits());
     h.write_u32(mat.metalness.to_bits());
@@ -891,7 +891,7 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
 ///
 /// Identical materials (byte-equal `GpuMaterial`) collapse to the same id;
 /// distinct materials get fresh ids in insertion order. The reverse map
-/// (`HashMap<u64, u32>` keyed on [`hash_gpu_material_fields`]) keeps
+/// (`FxHashMap<u64, u32>` keyed on [`hash_gpu_material_fields`]) keeps
 /// `intern` O(1) amortised. Pre-#781 the index keyed on `GpuMaterial`
 /// itself, requiring a 300-byte byte-hash on every lookup AND forcing
 /// the caller to construct the full `GpuMaterial` even on dedup hits.
@@ -904,7 +904,7 @@ pub struct MaterialTable {
     /// Reverse lookup for dedup, keyed on
     /// [`hash_gpu_material_fields`]'s u64 output. Cleared in lockstep
     /// with `materials`. See #781 / PERF-N4.
-    index: HashMap<u64, u32>,
+    index: FxHashMap<u64, u32>,
     /// R1 telemetry — total `intern()` calls this frame (one per
     /// `DrawCommand`). Read alongside `len()` to compute the dedup
     /// ratio and surfaced via `ctx.scratch`. The counter exists so a
@@ -936,7 +936,7 @@ impl MaterialTable {
     pub fn new() -> Self {
         let mut t = Self {
             materials: Vec::new(),
-            index: HashMap::new(),
+            index: FxHashMap::default(),
             interned_count: 0,
             overflow_count: 0,
         };
@@ -1040,7 +1040,7 @@ impl MaterialTable {
     /// one — a hash collision (or a drift between the producer hash
     /// and `hash_gpu_material_fields`) fires a panic with the colliding
     /// hash in the message. In release we trust the hash; collisions
-    /// (vanishingly unlikely with SipHash 1-3 on 50 scalar fields)
+    /// (rare on FxHash's 64-bit output over 50 scalar fields, #1368)
     /// would silently alias to the first-seen material at that hash.
     pub fn intern_by_hash(
         &mut self,

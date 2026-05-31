@@ -201,15 +201,13 @@ impl super::buffers::SceneBuffers {
 
 /// Content hash of a `GpuMaterial` slice for the dirty-gate in
 /// [`SceneBuffers::upload_materials`] (#878 / DIM8-01). Uses
-/// `std::collections::hash_map::DefaultHasher` (SipHash-1-3) — its
-/// state is documented stable across `new()` calls within one
-/// process, so two identical slices in the same run produce the
-/// same `u64` and the upload skip is byte-content-addressable.
+/// `rustc_hash::FxHasher` (#1368) — seedless + deterministic, so two
+/// identical slices in the same run produce the same `u64` and the
+/// upload skip is byte-content-addressable.
 ///
-/// SipHash on a 200-material slice (~52 KB) takes ~30 µs, well under
-/// the per-frame budget at 60 fps. xxh3 would be ~10× faster but
-/// would require a new dependency; the hash itself is well below
-/// the signal floor either way.
+/// FxHash is ~5-10× faster than the SipHash it replaced, well under
+/// the per-frame budget; collision resistance is irrelevant for a
+/// same-frame content gate.
 ///
 /// Routed through `GpuMaterial::as_bytes`-equivalent slice cast so
 /// the same byte view used by `GpuMaterial`'s `Hash`/`Eq` impls
@@ -217,7 +215,7 @@ impl super::buffers::SceneBuffers {
 /// padding handling stays consistent.
 pub(super) fn hash_material_slice(materials: &[super::super::material::GpuMaterial]) -> u64 {
     use std::hash::Hasher;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = rustc_hash::FxHasher::default();
     let byte_size = std::mem::size_of::<super::super::material::GpuMaterial>() * materials.len();
     // SAFETY: `GpuMaterial` is `#[repr(C)]` with f32/u32 fields and
     // explicit padding fields the producer always initialises (see
@@ -242,7 +240,7 @@ pub(super) fn hash_material_slice(materials: &[super::super::material::GpuMateri
 /// is.
 pub(super) fn hash_instance_slice(instances: &[super::gpu_types::GpuInstance]) -> u64 {
     use std::hash::Hasher;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = rustc_hash::FxHasher::default();
     let byte_size = std::mem::size_of::<super::gpu_types::GpuInstance>() * instances.len();
     // SAFETY: see hash_material_slice — same invariant on the producer
     // side. The layout test pins the byte-size against a known constant

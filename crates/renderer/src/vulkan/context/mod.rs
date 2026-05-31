@@ -502,7 +502,7 @@ impl DrawCommand {
     /// agree; debug builds also assert it inside `intern_by_hash`.
     pub fn material_hash(&self) -> u64 {
         use std::hash::Hasher;
-        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let mut h = rustc_hash::FxHasher::default();
         // PBR scalars + flags
         h.write_u32(self.roughness.to_bits());
         h.write_u32(self.metalness.to_bits());
