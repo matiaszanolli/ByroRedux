@@ -23,6 +23,19 @@ use byroredux_renderer::{Vertex, VulkanContext};
 use crate::asset_provider::{resolve_texture, TextureProvider};
 use crate::components::TerrainTileSlot;
 
+/// Number of times a LAND diffuse/splat texture tiles across one exterior
+/// cell edge. Bethesda's LAND format carries no per-texture tiling field, so
+/// this is a fixed engine constant: the diffuse repeats `2 × quad-textures-
+/// per-side` times per cell. Per openmw's ESM4 (Oblivion+) terrain
+/// (`Storage::getTextureTileCount` → `2 * ESM4::Land::sQuadTexturePerSide`,
+/// with `sQuadTexturePerSide = 6`) that is **12** — 2 quadrants per cell side
+/// × 6 texture tiles per quadrant. Pre-fix the UV ran 0→1 across the whole
+/// 4096-BU cell (≈1 texel / 16 BU), so every exterior surface read as a
+/// blurry gray average regardless of mip level; the texture has to tile so
+/// near terrain shows real detail. `Lod` terrain reuses this same factor
+/// (`terrain_lod`) so the seam at the full-detail boundary tiles identically.
+pub(super) const LAND_TEXTURE_TILES_PER_CELL: f32 = 12.0;
+
 /// Resolved terrain splat layers for one cell — up to 8 cell-global layers,
 /// each with its bindless texture handle and the per-quadrant alpha grids
 /// contributed by every quadrant that painted that LTEX. Produced by
@@ -343,7 +356,15 @@ pub(super) fn spawn_terrain_mesh(
                 [1.0, 1.0, 1.0]
             };
 
-            let uv = [col as f32 / 32.0, 1.0 - row as f32 / 32.0];
+            // Tile the diffuse/splat textures `LAND_TEXTURE_TILES_PER_CELL`
+            // times across the cell (REPEAT sampler) so near terrain shows
+            // real texel detail instead of one stretched texture. The
+            // per-vertex splat WEIGHTS (splat0/splat1 below) are unaffected —
+            // they're interpolated attributes, not UV-sampled.
+            let uv = [
+                col as f32 / 32.0 * LAND_TEXTURE_TILES_PER_CELL,
+                (1.0 - row as f32 / 32.0) * LAND_TEXTURE_TILES_PER_CELL,
+            ];
 
             // Pack up to 8 splat weights into 2× RGBA8 unorm (#470).
             let mut splat0 = [0u8; 4];
