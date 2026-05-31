@@ -12,6 +12,24 @@ use rapier3d::prelude::*;
 pub const PHYSICS_DT: f32 = 1.0 / 60.0;
 /// Cap on substeps per frame to prevent spiral-of-death.
 pub const MAX_SUBSTEPS: u32 = 5;
+/// Bethesda units per metre (1 BU ≈ 1.428 cm). The whole simulation runs in
+/// BU, so Rapier's length-relative thresholds — sleep velocity, contact
+/// prediction distance, allowed penetration — must be told this scale via
+/// `IntegrationParameters::length_unit`, or they stay at their metre-scale
+/// defaults (≈70× too small) and clutter micro-jitters forever instead of
+/// sleeping. Also the scalar behind the ×70 gravity (-9.81 m/s² × 70).
+pub const BU_PER_METER: f32 = 70.0;
+/// Y (Bethesda units, renderer-space) below which a free-falling dynamic
+/// body is considered "lost out of the world" and frozen. The kill-plane
+/// only ever inspects *actively-falling* (awake) bodies — anything resting
+/// or asleep is never touched — so this just has to sit below the lowest
+/// point real clutter could legitimately come to rest. Bethesda exterior
+/// terrain bottoms out a few thousand BU below sea level and the deepest
+/// interiors a bit more; -25 000 BU (~350 m below the lowest world geometry)
+/// clears all of it while still catching a free-faller within a few seconds
+/// of leaving the playable volume. See the kill-plane in
+/// [`PhysicsWorld::step`].
+pub const KILL_PLANE_Y: f32 = -25_000.0;
 
 /// Rapier simulation container + fixed-timestep accumulator.
 ///
@@ -31,6 +49,13 @@ pub struct PhysicsWorld {
     pub gravity: Vector<Real>,
     /// Seconds of unsimulated time left over from the last frame.
     pub accumulator: f32,
+    /// One-shot "something changed, step at least once" flag. Set by any
+    /// mutation that can introduce motion (body spawn, kinematic push,
+    /// velocity set) via [`PhysicsWorld::wake`]. Cleared the next time the
+    /// pipeline actually steps. Lets [`step`](Self::step) skip the (costly)
+    /// pipeline run for a fully-asleep scene without missing the first
+    /// frame of newly-introduced motion. See the static-scene fast path.
+    pending_wake: bool,
 }
 
 impl PhysicsWorld {
@@ -41,6 +66,13 @@ impl PhysicsWorld {
     pub fn new() -> Self {
         let integration_parameters = IntegrationParameters {
             dt: PHYSICS_DT,
+            // Tell Rapier the world is in Bethesda units, not metres, so its
+            // length-relative thresholds (sleep velocity, contact prediction,
+            // allowed penetration) scale correctly. Without this, the sleep
+            // threshold is ~70× too small and resting clutter never sleeps —
+            // which on its own pins the static-scene fast path awake. See
+            // `BU_PER_METER`.
+            length_unit: BU_PER_METER,
             ..Default::default()
         };
 
@@ -58,12 +90,36 @@ impl PhysicsWorld {
             integration_parameters,
             gravity: Vector::new(0.0, -686.7, 0.0),
             accumulator: 0.0,
+            // Step once on the first frame so any bodies present at startup
+            // settle / populate the island state.
+            pending_wake: true,
         }
     }
 
     /// Number of live bodies in the simulation.
     pub fn body_count(&self) -> usize {
         self.bodies.len()
+    }
+
+    /// `(awake dynamic, awake kinematic)` body counts from the last step's
+    /// island state — diagnostic for the static-scene fast path.
+    pub fn awake_counts(&self) -> (usize, usize) {
+        (
+            self.islands.active_dynamic_bodies().len(),
+            self.islands.active_kinematic_bodies().len(),
+        )
+    }
+
+
+    /// Mark the simulation as needing at least one pipeline step on the next
+    /// [`step`](Self::step) call. Must be called by every mutation that can
+    /// introduce motion — spawning a body, pushing a kinematic target,
+    /// setting a velocity — so the static-scene fast path doesn't sleep
+    /// through the first frame of new motion (the island lists only reflect
+    /// the *previous* step, so a just-woken body isn't in them yet).
+    #[inline]
+    pub fn wake(&mut self) {
+        self.pending_wake = true;
     }
 
     /// Advance the simulation by up to `MAX_SUBSTEPS` fixed steps,
@@ -76,6 +132,31 @@ impl PhysicsWorld {
         if self.accumulator > max_acc {
             self.accumulator = max_acc;
         }
+
+        // Static-scene fast path. A `pipeline.step()` pays full broad-phase
+        // + query-pipeline-rebuild cost over *every* collider regardless of
+        // motion — on a radius-12 exterior that's ~8-10 ms/step × up to 5
+        // substeps, ~40 ms/frame for a scene where nothing is actually
+        // moving. Skip it when there's no simulation work:
+        //
+        //   * No awake dynamic body (`active_dynamic_bodies()` reflects the
+        //     previous step; a body can only newly wake via a contact, which
+        //     requires something else to have moved — covered by `wake()`).
+        //   * Nothing was explicitly woken this frame (`pending_wake`): a
+        //     spawned body, a set velocity, or a kinematic push.
+        //
+        // NOTE: we deliberately do NOT gate on `active_kinematic_bodies()`.
+        // Rapier keeps every kinematic body in that set structurally for its
+        // whole life (idle ones are just skipped in the solver via a
+        // zero-velocity check), so it's never empty in a cell with authored-
+        // keyframed clutter — testing it would defeat the fast path entirely.
+        // Real kinematic *motion* is captured by `pending_wake` instead
+        // (`push_kinematic` / `set_kinematic_translation` call `wake()`).
+        if self.islands.active_dynamic_bodies().is_empty() && !self.pending_wake {
+            self.accumulator = 0.0;
+            return 0;
+        }
+        self.pending_wake = false;
 
         let mut steps = 0u32;
         while self.accumulator >= PHYSICS_DT && steps < MAX_SUBSTEPS {
@@ -90,12 +171,56 @@ impl PhysicsWorld {
                 &mut self.impulse_joints,
                 &mut self.multibody_joints,
                 &mut self.ccd_solver,
-                Some(&mut self.query_pipeline),
+                // Do NOT rebuild the query pipeline inside each substep:
+                // `QueryPipeline::update` is O(all colliders) (BVH refit over
+                // the whole set), so passing it here rebuilt it up to 5× per
+                // frame over ~30 k static colliders — the bulk of the per-step
+                // cost. The raycast/overlap accelerator only needs to reflect
+                // the post-step collider poses *once* per frame; we refresh it
+                // after the loop instead. (Explicit `update_query_pipeline`
+                // call sites — e.g. the spawn ground-snap — are unaffected.)
+                None,
                 &(),
                 &(),
             );
             self.accumulator -= PHYSICS_DT;
             steps += 1;
+        }
+        // Kill-plane. Clutter spawned without a floor beneath it (missing or
+        // failed static collision under the placement) free-falls forever: it
+        // never rests, so Rapier never sleeps it, so the static-scene fast
+        // path above never engages and the cell pays the full per-step cost
+        // indefinitely (observed on FNV grid 0,0 — ~12 bodies falling past
+        // y=-120 000). Once a dynamic body has fallen unambiguously below any
+        // real geometry, freeze it: zero its velocity and put it to sleep so
+        // it leaves the active set. It's already invisibly far below the
+        // world; this just stops it from pinning the simulation awake.
+        if steps > 0 {
+            let fallen: Vec<_> = self
+                .islands
+                .active_dynamic_bodies()
+                .iter()
+                .copied()
+                .filter(|h| {
+                    self.bodies
+                        .get(*h)
+                        .is_some_and(|b| b.translation().y < KILL_PLANE_Y)
+                })
+                .collect();
+            for h in fallen {
+                if let Some(b) = self.bodies.get_mut(h) {
+                    b.set_linvel(Vector::zeros(), false);
+                    b.set_angvel(Vector::zeros(), false);
+                    b.sleep();
+                }
+            }
+        }
+
+        // One BVH refit per frame after all substeps, only when something
+        // actually stepped (the fast-path early-return above skips this when
+        // the scene is asleep and colliders haven't moved).
+        if steps > 0 {
+            self.query_pipeline.update(&self.colliders);
         }
         steps
     }
@@ -440,5 +565,107 @@ mod tests {
         // A huge frame_dt shouldn't run more than MAX_SUBSTEPS steps.
         let steps = w.step(100.0);
         assert!(steps <= MAX_SUBSTEPS);
+    }
+
+    /// Static-scene fast path: with nothing awake, `step` must skip the
+    /// pipeline after the initial settle frame. This is the optimization
+    /// that took a radius-12 FNV exterior from ~45 ms → ~0 ms of physics
+    /// per frame (12 → 26 fps). The first step still runs (the constructor
+    /// arms `pending_wake` so any startup bodies settle).
+    #[test]
+    fn static_scene_skips_step_when_nothing_awake() {
+        let mut w = PhysicsWorld::new();
+        let floor = single_shape(&CollisionShape::Cuboid {
+            half_extents: Vec3::new(500.0, 1.0, 500.0),
+        });
+        let fh = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        w.colliders
+            .insert_with_parent(ColliderBuilder::new(floor).build(), fh, &mut w.bodies);
+
+        assert!(w.step(PHYSICS_DT) > 0, "first step settles initial state");
+        assert_eq!(w.step(PHYSICS_DT), 0, "no dynamics awake → step skipped");
+        assert_eq!(w.step(PHYSICS_DT), 0, "stays skipped while idle");
+    }
+
+    /// Once asleep, an explicit `wake()` must re-engage the pipeline for the
+    /// next frame (then it sleeps again). Mirrors what `set_linear_velocity`
+    /// / `set_kinematic_translation` / newcomer registration do on real
+    /// motion.
+    #[test]
+    fn wake_re_engages_stepping() {
+        let mut w = PhysicsWorld::new();
+        w.step(PHYSICS_DT); // settle
+        assert_eq!(w.step(PHYSICS_DT), 0, "asleep");
+
+        w.wake();
+        assert!(w.step(PHYSICS_DT) > 0, "wake() must re-engage the step");
+        assert_eq!(w.step(PHYSICS_DT), 0, "sleeps again once idle");
+    }
+
+    /// A falling dynamic body is awake, so the fast path must NOT skip it —
+    /// guards against the gate freezing legitimate motion.
+    #[test]
+    fn falling_dynamic_keeps_stepping() {
+        let mut w = PhysicsWorld::new();
+        let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
+        let h = w.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .position(iso_from_trs(Vec3::new(0.0, 1000.0, 0.0), Quat::IDENTITY))
+                .build(),
+        );
+        w.colliders
+            .insert_with_parent(ColliderBuilder::new(shape).build(), h, &mut w.bodies);
+
+        w.step(PHYSICS_DT); // frame 1
+        // Still falling on frame 2 → must keep stepping (not gated away).
+        assert!(
+            w.step(PHYSICS_DT) > 0,
+            "a falling (awake) body must keep the simulation stepping"
+        );
+    }
+
+    /// Kill-plane: a dynamic body that has fallen far below any geometry
+    /// (missing-floor clutter) is frozen so it can't pin the simulation
+    /// awake forever. Without this, ~12 such bodies on FNV grid 0,0 free-fell
+    /// past y=-120 000 and the fast path never engaged.
+    #[test]
+    fn kill_plane_freezes_fallen_body() {
+        let mut w = PhysicsWorld::new();
+        let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
+        let h = w.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .position(iso_from_trs(
+                    Vec3::new(0.0, KILL_PLANE_Y - 10_000.0, 0.0),
+                    Quat::IDENTITY,
+                ))
+                .build(),
+        );
+        w.colliders
+            .insert_with_parent(ColliderBuilder::new(shape).build(), h, &mut w.bodies);
+
+        // Fresh dynamic body is awake → the first step runs and the kill-plane
+        // freezes it (it's below KILL_PLANE_Y).
+        w.step(PHYSICS_DT);
+        assert!(
+            w.bodies[h].is_sleeping(),
+            "body below the kill plane must be frozen"
+        );
+
+        // And the scene quiesces: within a couple of frames (one for the
+        // island set to drop the now-sleeping body) the step is skipped.
+        let mut last = w.step(PHYSICS_DT);
+        for _ in 0..4 {
+            last = w.step(PHYSICS_DT);
+        }
+        assert_eq!(last, 0, "a frozen body must not keep the sim awake");
+    }
+
+    /// `length_unit` must be set to the Bethesda-units scale, or Rapier's
+    /// metre-scale sleep / contact thresholds are ~70× too small and clutter
+    /// never sleeps (the root cause behind the perpetually-awake bodies).
+    #[test]
+    fn length_unit_is_bethesda_scale() {
+        let w = PhysicsWorld::new();
+        assert_eq!(w.integration_parameters.length_unit, BU_PER_METER);
     }
 }

@@ -164,6 +164,19 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         .map(|t| t.systems.clone())
         .unwrap_or_default();
 
+    // `BYRO_PROFILE=1` logs the per-system wall-time breakdown at the
+    // metrics cadence (~2 Hz) — the scheduler already collects it for the
+    // egui debug-UI, but the overlay isn't readable from an offline
+    // `--screenshot` capture. Env-gated so it's silent in normal runs.
+    if std::env::var_os("BYRO_PROFILE").is_some() && !top_systems_ms.is_empty() {
+        let top: Vec<String> = top_systems_ms
+            .iter()
+            .take(8)
+            .map(|(name, ms)| format!("{name}={ms:.2}ms"))
+            .collect();
+        log::info!("sched top systems: {}", top.join("  "));
+    }
+
     let mut snap = world.resource_mut::<MetricsSnapshot>();
     snap.sampled_at_secs = sampled_at_secs;
     snap.cpu_pct = cpu_pct;

@@ -37,13 +37,20 @@ pub fn set_linear_velocity(world: &World, entity: EntityId, velocity: glam::Vec3
         Some(h) => h,
         None => return false,
     };
+    let nonzero = velocity.length_squared() > 1e-6;
     let mut pw = world.resource_mut::<PhysicsWorld>();
-    if let Some(body) = pw.bodies.get_mut(handles.body) {
-        body.set_linvel(vec3_to_na(velocity), true);
-        true
-    } else {
-        false
+    let Some(body) = pw.bodies.get_mut(handles.body) else {
+        return false;
+    };
+    body.set_linvel(vec3_to_na(velocity), nonzero);
+    if nonzero {
+        // Re-engage the pipeline step this frame so the velocity integrates
+        // even if the scene was otherwise asleep (the static-scene fast path).
+        // A zero velocity (a stop) must NOT wake — otherwise a stationary
+        // velocity-driven body pins the simulation awake every frame.
+        pw.wake();
     }
+    true
 }
 
 /// M28.5 — queue the next kinematic translation on a body by ECS
@@ -63,12 +70,21 @@ pub fn set_kinematic_translation(world: &World, entity: EntityId, translation: g
         None => return false,
     };
     let mut pw = world.resource_mut::<PhysicsWorld>();
-    if let Some(body) = pw.bodies.get_mut(handles.body) {
-        body.set_next_kinematic_translation(vec3_to_na(translation));
-        true
-    } else {
-        false
+    let Some(body) = pw.bodies.get_mut(handles.body) else {
+        return false;
+    };
+    let target = vec3_to_na(translation);
+    // Only wake on actual movement. The character controller pushes the
+    // player capsule every frame to track the camera — even in fly mode and
+    // even when standing still — so an unconditional wake here pins the
+    // simulation awake forever (the static-scene fast path never engages).
+    // A no-op re-target leaves the body's kinematic velocity at zero anyway.
+    let moved = (target - *body.translation()).norm_squared() > 1e-4;
+    body.set_next_kinematic_translation(target);
+    if moved {
+        pw.wake();
     }
+    true
 }
 
 /// Scheduler-compatible physics tick. Place after transform propagation.
@@ -77,18 +93,31 @@ pub fn physics_sync_system(world: &World, dt: f32) {
         return;
     }
 
+    // `BYRO_PROFILE=1` logs a per-phase breakdown so the dominant phase
+    // can be localized without guessing (Phase 1 collect/register, 2
+    // push-kinematic, 3 Rapier step, 4 pull-dynamic). Silent otherwise.
+    let profile = std::env::var_os("BYRO_PROFILE").is_some();
+    let t = |on: bool| on.then(std::time::Instant::now);
+    let ms = |s: Option<std::time::Instant>| s.map(|i| i.elapsed().as_secs_f32() * 1000.0);
+
     // Build list of newcomers while holding only read locks on the
     // relevant storages. We collect to a Vec so Phase 1 can release the
     // read locks before acquiring write locks on PhysicsWorld + RapierHandles.
+    let s1 = t(profile);
     let newcomers = collect_newcomers(world);
+    let n_new = newcomers.len();
     if !newcomers.is_empty() {
         register_newcomers(world, newcomers);
     }
+    let ms1 = ms(s1);
 
     // Phase 2: push kinematic poses.
+    let s2 = t(profile);
     push_kinematic(world);
+    let ms2 = ms(s2);
 
     // Phase 3: step.
+    let s3 = t(profile);
     let steps = {
         let mut pw = world.resource_mut::<PhysicsWorld>();
         pw.step(dt)
@@ -96,9 +125,27 @@ pub fn physics_sync_system(world: &World, dt: f32) {
     if steps > 1 {
         log::trace!("physics: {steps} substeps consumed");
     }
+    let ms3 = ms(s3);
 
     // Phase 4: pull dynamic transforms back into ECS.
+    let s4 = t(profile);
     pull_dynamic(world);
+    let ms4 = ms(s4);
+
+    if profile {
+        let (awake_dyn, awake_kin) = world.resource::<PhysicsWorld>().awake_counts();
+        log::info!(
+            "physics_sync phases: collect/register={:.2}ms (new={}) push_kin={:.2}ms step={:.2}ms({} substeps) pull_dyn={:.2}ms | awake dyn={} kin={}",
+            ms1.unwrap_or(0.0),
+            n_new,
+            ms2.unwrap_or(0.0),
+            ms3.unwrap_or(0.0),
+            steps,
+            ms4.unwrap_or(0.0),
+            awake_dyn,
+            awake_kin,
+        );
+    }
 }
 
 // ── Phase 1 ─────────────────────────────────────────────────────────────
@@ -253,6 +300,14 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         ));
     }
 
+    // New bodies (and the colliders that change the query pipeline) must be
+    // stepped at least once so dynamic newcomers settle and the query
+    // pipeline rebuilds — otherwise the static-scene fast path could sleep
+    // through their first frame. See `PhysicsWorld::step`.
+    if !registered.is_empty() {
+        pw.wake();
+    }
+
     drop(pw);
 
     // Attach RapierHandles components. The ECS Query API doesn't expose
@@ -292,6 +347,7 @@ fn push_kinematic(world: &World) {
     };
 
     let mut pw = world.resource_mut::<PhysicsWorld>();
+    let mut pushed = false;
     for (entity, handles) in handles_q.iter() {
         let Some(body_data) = body_q.get(entity) else {
             continue;
@@ -309,8 +365,27 @@ fn push_kinematic(world: &World) {
             continue;
         };
         if let Some(body) = pw.bodies.get_mut(handles.body) {
-            body.set_next_kinematic_position(iso_from_trs(g.translation, g.rotation));
+            let target = iso_from_trs(g.translation, g.rotation);
+            let cur = *body.position();
+            // Only re-target a keyframed body whose pose actually changed.
+            // Re-pushing an idle body (a closed door) every frame gives it a
+            // (near-zero but nonzero) kinematic velocity, keeping the solver
+            // busy and the `pending_wake` gate engaged — so it would pin the
+            // whole simulation awake. Skipping the no-op push leaves its
+            // velocity at exactly zero (the solver skips it) and lets the
+            // static-scene fast path engage. See `PhysicsWorld::step`.
+            let dt = (cur.translation.vector - target.translation.vector).norm();
+            let dr = cur.rotation.angle_to(&target.rotation);
+            if dt * dt > 1e-6 || dr > 1e-5 {
+                body.set_next_kinematic_position(target);
+                pushed = true;
+            }
         }
+    }
+    // A keyframed body got a fresh target — re-engage the pipeline step so
+    // it actually moves even if the rest of the scene is asleep.
+    if pushed {
+        pw.wake();
     }
 }
 
