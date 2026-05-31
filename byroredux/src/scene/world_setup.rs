@@ -26,6 +26,30 @@ use crate::streaming::{self, LoadedCell, WorldStreamingState};
 /// WTHR records that ship sharper or coarser cloud layers. See #529.
 const CLOUD_REF_WIDTH: f32 = 512.0;
 
+/// Build the initial [`GameTimeRes`], honoring the `BYRO_HOUR` env var for
+/// offline / cinematic renders. When `BYRO_HOUR` is set to a value in
+/// `[0, 24)`, the starting hour is overridden and `time_scale` is frozen to
+/// `0.0` so the requested time-of-day stays put for a deterministic capture
+/// (e.g. a golden-hour screenshot via `--bench-frames`/`--screenshot`).
+/// Unset or unparseable → the normal advancing default. Env-var convention
+/// matches `BYRO_DEBUG_PORT` / `RUST_LOG`; no extra CLI threading needed.
+fn initial_game_time() -> GameTimeRes {
+    match std::env::var("BYRO_HOUR")
+        .ok()
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .filter(|h| (0.0..24.0).contains(h))
+    {
+        Some(hour) => {
+            log::info!("BYRO_HOUR override: starting hour {hour:.2}, time frozen (time_scale=0)");
+            GameTimeRes {
+                hour,
+                time_scale: 0.0,
+            }
+        }
+        None => GameTimeRes::default(),
+    }
+}
+
 /// Cloud layer tile-scale baselines for a 512² authored sprite. Higher
 /// indices = higher-altitude, finer-grained cloud decks. Pre-#529 these
 /// were inline literals at every WTHR layer site.
@@ -426,7 +450,7 @@ pub(crate) fn apply_worldspace_weather(
             });
         } else {
             world.insert_resource(new_weather);
-            world.insert_resource(GameTimeRes::default());
+            world.insert_resource(initial_game_time());
         }
     } else {
         // Procedural fallback — warm Mojave desert sky. Same defaults
@@ -562,7 +586,7 @@ pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [
         // on the synthetic fallback. #1033.
         wind_speed: 0,
     });
-    world.insert_resource(GameTimeRes::default());
+    world.insert_resource(initial_game_time());
 }
 
 /// Stream the initial radius around the player's spawn cell. Returns
