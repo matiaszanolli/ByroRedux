@@ -859,7 +859,10 @@ impl VulkanContext {
                         dispatches.push((
                             dc.entity_id,
                             push,
-                            mesh.index_buffer.buffer,
+                            mesh.index_buffer
+                                .as_ref()
+                                .expect("skinned mesh requires a per-mesh index buffer")
+                                .buffer,
                             mesh.index_count,
                             mesh.vertex_count,
                         ));
@@ -2355,22 +2358,29 @@ impl VulkanContext {
                             batch.first_instance,
                         );
                     } else {
+                        // Per-mesh fallback (global SSBO not bound this frame).
+                        // A global-only scene mesh (distant terrain LOD, #1370)
+                        // carries no per-mesh buffers — skip it; it draws via
+                        // the global buffer once `rebuild_geometry_ssbo` runs
+                        // (≤1-frame distant pop-in, invisible).
+                        let Some(mesh) = this.mesh_registry.get(batch.mesh_handle) else {
+                            return;
+                        };
+                        let (Some(vb), Some(ib)) =
+                            (mesh.vertex_buffer.as_ref(), mesh.index_buffer.as_ref())
+                        else {
+                            return;
+                        };
                         if batch.mesh_handle != *last_bound {
-                            if let Some(mesh) = this.mesh_registry.get(batch.mesh_handle) {
-                                this.device.cmd_bind_vertex_buffers(
-                                    cmd,
-                                    0,
-                                    &[mesh.vertex_buffer.buffer],
-                                    &[0],
-                                );
-                                this.device.cmd_bind_index_buffer(
-                                    cmd,
-                                    mesh.index_buffer.buffer,
-                                    0,
-                                    vk::IndexType::UINT32,
-                                );
-                                *last_bound = batch.mesh_handle;
-                            }
+                            this.device
+                                .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
+                            this.device.cmd_bind_index_buffer(
+                                cmd,
+                                ib.buffer,
+                                0,
+                                vk::IndexType::UINT32,
+                            );
+                            *last_bound = batch.mesh_handle;
                         }
                         this.device.cmd_draw_indexed(
                             cmd,
@@ -2494,15 +2504,19 @@ impl VulkanContext {
                     self.device.cmd_set_cull_mode(cmd, vk::CullModeFlags::NONE);
                     for wc in water_commands {
                         if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
-                            self.device.cmd_bind_vertex_buffers(
-                                cmd,
-                                0,
-                                &[mesh.vertex_buffer.buffer],
-                                &[0],
-                            );
+                            let vb = mesh
+                                .vertex_buffer
+                                .as_ref()
+                                .expect("water mesh requires a per-mesh vertex buffer");
+                            let ib = mesh
+                                .index_buffer
+                                .as_ref()
+                                .expect("water mesh requires a per-mesh index buffer");
+                            self.device
+                                .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
                             self.device.cmd_bind_index_buffer(
                                 cmd,
-                                mesh.index_buffer.buffer,
+                                ib.buffer,
                                 0,
                                 vk::IndexType::UINT32,
                             );
@@ -2584,11 +2598,19 @@ impl VulkanContext {
                         extent: self.swapchain_state.extent,
                     }];
                     self.device.cmd_set_scissor(cmd, 0, &scissors);
+                    let vb = mesh
+                        .vertex_buffer
+                        .as_ref()
+                        .expect("UI mesh requires a per-mesh vertex buffer");
+                    let ib = mesh
+                        .index_buffer
+                        .as_ref()
+                        .expect("UI mesh requires a per-mesh index buffer");
                     self.device
-                        .cmd_bind_vertex_buffers(cmd, 0, &[mesh.vertex_buffer.buffer], &[0]);
+                        .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
                     self.device.cmd_bind_index_buffer(
                         cmd,
-                        mesh.index_buffer.buffer,
+                        ib.buffer,
                         0,
                         vk::IndexType::UINT32,
                     );

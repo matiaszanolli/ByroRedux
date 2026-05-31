@@ -155,12 +155,22 @@ impl AccelerationManager {
         // The returned u64 address is valid for the buffer's lifetime.
         let vertex_address = unsafe {
             device.get_buffer_device_address(
-                &vk::BufferDeviceAddressInfo::default().buffer(mesh.vertex_buffer.buffer),
+                &vk::BufferDeviceAddressInfo::default().buffer(
+                    mesh.vertex_buffer
+                        .as_ref()
+                        .expect("BLAS build requires a per-mesh vertex buffer; global-only meshes are rt-disabled and must not be BLAS-built")
+                        .buffer,
+                ),
             )
         };
         let index_address = unsafe {
             device.get_buffer_device_address(
-                &vk::BufferDeviceAddressInfo::default().buffer(mesh.index_buffer.buffer),
+                &vk::BufferDeviceAddressInfo::default().buffer(
+                    mesh.index_buffer
+                        .as_ref()
+                        .expect("BLAS build requires a per-mesh index buffer; global-only meshes are rt-disabled and must not be BLAS-built")
+                        .buffer,
+                ),
             )
         };
 
@@ -426,12 +436,22 @@ impl AccelerationManager {
         for &(_mesh_handle, mesh, vertex_count, _index_count) in meshes {
             let vertex_address = unsafe {
                 device.get_buffer_device_address(
-                    &vk::BufferDeviceAddressInfo::default().buffer(mesh.vertex_buffer.buffer),
+                    &vk::BufferDeviceAddressInfo::default().buffer(
+                    mesh.vertex_buffer
+                        .as_ref()
+                        .expect("BLAS build requires a per-mesh vertex buffer; global-only meshes are rt-disabled and must not be BLAS-built")
+                        .buffer,
+                ),
                 )
             };
             let index_address = unsafe {
                 device.get_buffer_device_address(
-                    &vk::BufferDeviceAddressInfo::default().buffer(mesh.index_buffer.buffer),
+                    &vk::BufferDeviceAddressInfo::default().buffer(
+                    mesh.index_buffer
+                        .as_ref()
+                        .expect("BLAS build requires a per-mesh index buffer; global-only meshes are rt-disabled and must not be BLAS-built")
+                        .buffer,
+                ),
                 )
             };
 

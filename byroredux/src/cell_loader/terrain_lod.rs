@@ -280,20 +280,17 @@ fn spawn_lod_block(
         },
     };
 
-    // Upload into the global geometry pool with `rt_enabled = false`: no
-    // per-mesh BLAS-input buffers, no BLAS spec pushed → the mesh rasterizes
-    // from the global vertex/index buffer but never enters the TLAS.
-    let allocator = ctx.allocator.as_ref().unwrap();
-    let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
-        &ctx.device,
-        allocator,
-        &ctx.graphics_queue,
-        ctx.transfer_pool,
-        &vertices,
-        &indices,
-        false,
-        None,
-    ) {
+    // Upload into the global geometry pool only (#1370). LOD blocks
+    // rasterize from the global vertex/index buffer and never enter the
+    // TLAS, so the per-mesh buffers `upload_scene_mesh` would create are
+    // pure boot-time waste — ~2 synchronous fence-waits + 2 tiny
+    // device-local sub-allocations per block, ×hundreds of blocks. The
+    // geometry rides the single `rebuild_geometry_ssbo` the frame loop
+    // already runs for the resident scene.
+    let mesh_handle = match ctx
+        .mesh_registry
+        .upload_scene_mesh_global_only(&vertices, &indices)
+    {
         Ok(h) => h,
         Err(e) => {
             log::warn!("Failed to upload LOD terrain block ({},{}): {}", bi, bj, e);

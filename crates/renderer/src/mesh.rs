@@ -72,8 +72,13 @@ pub type MeshCacheKey = (String, u32);
 
 /// A mesh stored on the GPU: vertex + index buffers and index count.
 pub struct GpuMesh {
-    pub vertex_buffer: GpuBuffer,
-    pub index_buffer: GpuBuffer,
+    /// `None` for global-SSBO-only scene meshes (distant terrain LOD,
+    /// #1370): they rasterize from the global vertex/index buffer and
+    /// carry no per-mesh buffers. Such a mesh must never be BLAS-built
+    /// (it is uploaded `rt_enabled = false`) and is skipped by the
+    /// per-mesh draw fallback. Every other upload path sets `Some`.
+    pub vertex_buffer: Option<GpuBuffer>,
+    pub index_buffer: Option<GpuBuffer>,
     pub index_count: u32,
     /// Offset into the global vertex SSBO (in vertices). Set after build_geometry_ssbo.
     pub global_vertex_offset: u32,
@@ -90,8 +95,12 @@ pub struct GpuMesh {
 
 impl GpuMesh {
     pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        self.vertex_buffer.destroy(device, allocator);
-        self.index_buffer.destroy(device, allocator);
+        if let Some(vb) = self.vertex_buffer.as_mut() {
+            vb.destroy(device, allocator);
+        }
+        if let Some(ib) = self.index_buffer.as_mut() {
+            ib.destroy(device, allocator);
+        }
     }
 }
 
@@ -274,8 +283,8 @@ impl MeshRegistry {
 
         let id = self.meshes.len() as u32;
         self.meshes.push(Some(GpuMesh {
-            vertex_buffer,
-            index_buffer,
+            vertex_buffer: Some(vertex_buffer),
+            index_buffer: Some(index_buffer),
             index_count,
             global_vertex_offset: 0,
             global_index_offset: 0,
@@ -290,17 +299,17 @@ impl MeshRegistry {
 
     /// Upload a scene mesh (Vertex type) and track its geometry for the
     /// global SSBO used by RT reflection ray UV lookups.
-    pub fn upload_scene_mesh(
+    /// Accumulate scene geometry into the global SSBO pools, returning the
+    /// `(vertex, index)` offsets recorded *before* the append and marking the
+    /// SSBO dirty when it has already been built. Shared by
+    /// [`Self::upload_scene_mesh`] (per-mesh buffers + global) and
+    /// [`Self::upload_scene_mesh_global_only`] (global-only, #1370) so the
+    /// growth caps + dirty bookkeeping stay in one place.
+    fn accumulate_global_geometry(
         &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
         vertices: &[Vertex],
         indices: &[u32],
-        rt_enabled: bool,
-        staging_pool: Option<&mut StagingPool>,
-    ) -> Result<u32> {
+    ) -> Result<(u32, u32)> {
         // Record offsets before appending.
         let v_offset = self.pending_vertices.len() as u32;
         let i_offset = self.pending_indices.len() as u32;
@@ -347,11 +356,35 @@ impl MeshRegistry {
             });
         }
 
-        // Accumulate for global SSBO.
         self.pending_vertices.extend_from_slice(vertices);
         self.pending_indices.extend_from_slice(indices);
 
-        // Upload to per-mesh buffers.
+        // If the SSBO has already been built, mark dirty so the frame
+        // loop knows to call rebuild_geometry_ssbo. See #258.
+        if self.global_vertex_buffer.is_some()
+            && self.pending_vertices.len() > self.ssbo_vertex_count
+        {
+            self.geometry_dirty = true;
+        }
+
+        Ok((v_offset, i_offset))
+    }
+
+    pub fn upload_scene_mesh(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+        vertices: &[Vertex],
+        indices: &[u32],
+        rt_enabled: bool,
+        staging_pool: Option<&mut StagingPool>,
+    ) -> Result<u32> {
+        let (v_offset, i_offset) = self.accumulate_global_geometry(vertices, indices)?;
+
+        // Upload to per-mesh buffers (also the BLAS build input when
+        // `rt_enabled`).
         let id = self.upload(
             device,
             allocator,
@@ -371,13 +404,42 @@ impl MeshRegistry {
         mesh.global_index_offset = i_offset;
         mesh.is_scene_mesh = true;
 
-        // If the SSBO has already been built, mark dirty so the frame
-        // loop knows to call rebuild_geometry_ssbo. See #258.
-        if self.global_vertex_buffer.is_some()
-            && self.pending_vertices.len() > self.ssbo_vertex_count
-        {
-            self.geometry_dirty = true;
-        }
+        Ok(id)
+    }
+
+    /// Upload a scene mesh that draws ONLY from the global geometry SSBO —
+    /// no per-mesh vertex/index buffers, no BLAS (#1370). Used by distant
+    /// terrain LOD blocks: they rasterize from the global buffer with
+    /// `rt_enabled = false`, so the per-mesh buffers
+    /// [`Self::upload_scene_mesh`] would create are pure boot-time waste
+    /// (~2 synchronous fence-waits + 2 tiny device-local sub-allocations per
+    /// block × hundreds of blocks = a multi-hundred-ms boot stall).
+    ///
+    /// The returned mesh carries `None` buffers, so it MUST be drawn via the
+    /// global indirect path (`global_bound == true`); the per-mesh draw
+    /// fallback skips it (it renders once `rebuild_geometry_ssbo` runs — a
+    /// ≤1-frame distant pop-in) and it must never be BLAS-built (the BLAS
+    /// path asserts `Some`).
+    pub fn upload_scene_mesh_global_only(
+        &mut self,
+        vertices: &[Vertex],
+        indices: &[u32],
+    ) -> Result<u32> {
+        let (v_offset, i_offset) = self.accumulate_global_geometry(vertices, indices)?;
+
+        let id = self.meshes.len() as u32;
+        self.meshes.push(Some(GpuMesh {
+            vertex_buffer: None,
+            index_buffer: None,
+            index_count: indices.len() as u32,
+            global_vertex_offset: v_offset,
+            global_index_offset: i_offset,
+            vertex_count: vertices.len() as u32,
+            is_scene_mesh: true,
+        }));
+        // Parallel-indexed refcount; lockstep with `meshes` push (mirrors
+        // `upload`).
+        self.mesh_ref_counts.push(1);
 
         Ok(id)
     }
@@ -500,7 +562,7 @@ impl MeshRegistry {
             if let Some(mesh) = slot.take() {
                 was_scene_mesh = mesh.is_scene_mesh;
                 self.deferred_destroy.push(
-                    (Some(mesh.vertex_buffer), Some(mesh.index_buffer)),
+                    (mesh.vertex_buffer, mesh.index_buffer),
                     DEFAULT_COUNTDOWN,
                 );
             }
