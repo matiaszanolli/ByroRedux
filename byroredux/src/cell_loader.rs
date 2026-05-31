@@ -68,6 +68,7 @@ mod references;
 mod refr;
 mod spawn;
 mod terrain;
+mod terrain_lod;
 mod transition;
 mod unload;
 mod water;
@@ -100,6 +101,8 @@ pub(crate) use euler::{euler_zup_to_quat_yup, euler_zup_to_quat_yup_refr};
 pub use exterior::{
     build_exterior_world_context, load_one_exterior_cell, ExteriorWorldContext, OneCellLoadInfo,
 };
+#[allow(unused_imports)]
+pub(crate) use terrain_lod::{spawn_lod_ring, LOD_BLOCK_CELLS, LOD_RADIUS_BLOCKS};
 #[allow(unused_imports)]
 pub use load::{load_cell_with_masters, CellLoadResult};
 #[allow(unused_imports)]

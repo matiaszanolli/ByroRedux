@@ -28,8 +28,8 @@ use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
 
 use crate::components::{
-    AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, IsFxMesh, NormalMapHandle,
-    TerrainTileSlot, TwoSided,
+    AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, IsFxMesh, IsLodTerrain,
+    NormalMapHandle, TerrainTileSlot, TwoSided,
 };
 
 use super::camera::FrustumPlanes;
@@ -125,6 +125,11 @@ pub(super) fn collect_static_mesh_draws(
     // per draw per frame. Entities tagged at spawn by `cell_loader::spawn`
     // + `scene::nif_loader` when the texture path matches an FX needle.
     let fx_q = world.query::<IsFxMesh>();
+    // Distant-terrain LOD blocks (#view-dist) — coarse raster-only meshes
+    // with no BLAS. They flow through this same loop (single-texture, no
+    // material → identity-PBR fallback) but are forced `in_tlas = false`
+    // so they never enter the TLAS / RT budget. See `IsLodTerrain`.
+    let lod_q = world.query::<IsLodTerrain>();
     if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
             // Skip entities hidden by animation.
@@ -175,6 +180,10 @@ pub(super) fn collect_static_mesh_draws(
                     .copied()
                     .unwrap_or_default();
                 let is_decal = render_layer_for_entity == RenderLayer::Decal;
+                // Distant-terrain LOD blocks rasterize but stay out of the
+                // TLAS (no BLAS built). Everything else rides the TLAS.
+                let is_lod = lod_q.as_ref().is_some_and(|q| q.get(entity).is_some());
+                let in_tlas = !is_lod;
                 let bone_offset = skin_offsets.get(&entity).copied().unwrap_or(0);
                 let normal_map_index = nmap_q
                     .as_ref()
@@ -546,7 +555,7 @@ pub(super) fn collect_static_mesh_draws(
                     index_offset: i_off,
                     vertex_count: v_count,
                     sort_depth,
-                    in_tlas: true,
+                    in_tlas,
                     in_raster,
                     entity_id: entity,
                     // #492 — UV transform + material alpha pulled from

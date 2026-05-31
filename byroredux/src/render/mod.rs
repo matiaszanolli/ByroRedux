@@ -45,6 +45,35 @@ fn pack_depth_state(cmd: &DrawCommand) -> u8 {
     (cmd.z_test as u8) | ((cmd.z_write as u8) << 1) | ((cmd.z_function & 0x0F) << 4)
 }
 
+/// Apply the optional `BYRO_FOG_NEAR` / `BYRO_FOG_FAR` distance overrides
+/// (Bethesda units) to the authored fog ramp. See the call site in
+/// `build_render_data` for rationale. Each override is parsed once and
+/// cached (the values can't change within a process), so the per-frame
+/// cost is two atomic loads. `None` (unset / unparseable / negative)
+/// leaves the corresponding authored value untouched.
+fn apply_fog_overrides(near: f32, far: f32) -> (f32, f32) {
+    use std::sync::OnceLock;
+    static OVERRIDES: OnceLock<(Option<f32>, Option<f32>)> = OnceLock::new();
+    let (n_ovr, f_ovr) = OVERRIDES.get_or_init(|| {
+        let env_f32 = |key: &str| {
+            std::env::var(key)
+                .ok()
+                .and_then(|s| s.trim().parse::<f32>().ok())
+                .filter(|v| v.is_finite() && *v >= 0.0)
+        };
+        let o = (env_f32("BYRO_FOG_NEAR"), env_f32("BYRO_FOG_FAR"));
+        if o.0.is_some() || o.1.is_some() {
+            log::info!(
+                "BYRO_FOG override active: fog_near={:?} fog_far={:?} (authored values bypassed)",
+                o.0,
+                o.1
+            );
+        }
+        o
+    });
+    (n_ovr.unwrap_or(near), f_ovr.unwrap_or(far))
+}
+
 /// Daytime peak of `SkyParamsRes::sun_intensity` (per `systems.rs:1446`,
 /// hours 7..=17). Used by [`compute_directional_upload`] to normalise
 /// the 0..4 ramp into a 0..1 contribution multiplier.
@@ -432,6 +461,16 @@ pub(crate) fn build_render_data(
         .map(|l| l.fog_near.max(0.0))
         .unwrap_or(0.0);
     let fog_far = cell_lit.as_ref().map(|l| l.fog_far).unwrap_or(0.0);
+    // `BYRO_FOG_NEAR` / `BYRO_FOG_FAR` overrides (Bethesda units) for
+    // offline / diagnostic renders. The authored weather/XCLL ramp matches
+    // the original game's ~tens-of-K-BU view distance; when inspecting the
+    // distant-terrain LOD ring (`cell_loader::terrain_lod`, ~197K BU) those
+    // values wash the far terrain to the fog colour, so this lever lets a
+    // capture push fog out to match. Applied at this single consumption
+    // point (downstream of `weather_system`'s per-frame fog write) so it is
+    // authoritative every frame. Cached so the hot path doesn't `getenv`
+    // per frame. No-op when unset. Mirrors the `BYRO_HOUR` convention.
+    let (fog_near, fog_far) = apply_fog_overrides(fog_near, fog_far);
     // #865 / FNV-D3-NEW-06 — XCLL cubic-fog curve (FNV+). Both fields
     // default to 0.0 (no curve), in which case composite falls through
     // to the linear `fog_near..fog_far` ramp. Authored values pack into

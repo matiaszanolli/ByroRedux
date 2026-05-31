@@ -45,9 +45,10 @@ pub(crate) use world_setup::climate_tod_hours;
 /// bailing. Clamped to `1..=12` — below 1 the center cell alone isn't
 /// useful, above 12 the cell count (25×25 = 625) approaches the
 /// streaming + RT-BLAS budget ceiling (each static mesh carries a BLAS,
-/// see audit D5-02). The camera far plane (`Camera::default`, 100K units)
-/// covers radius 12's ~72K-unit far-corner diagonal so the loaded ring
-/// isn't clipped.
+/// see audit D5-02). This bounds only the FULL-DETAIL ring; distant view
+/// distance comes from the engine-generated LOD ring
+/// (`cell_loader::terrain_lod`), which the 300K-unit camera far plane
+/// (`Camera::default`) is sized to cover so neither ring is clipped.
 ///
 /// Pulled out as a free function so a unit test can pin the bounds
 /// contract without standing up a whole App / World. See #531.

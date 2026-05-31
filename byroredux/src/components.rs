@@ -87,6 +87,23 @@ impl Component for IsFxMesh {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Marker component for distant-terrain LOD blocks (engine-generated from
+/// the worldspace heightmaps beyond the full-detail streamed ring). These
+/// are coarse multi-cell meshes with a single base texture, no splat
+/// layers, and **no BLAS** — they rasterize for far view distance but stay
+/// out of the TLAS (RT shadows/GI/reflections sample the full-detail
+/// near terrain only), so they cost zero ray-tracing budget.
+///
+/// Set in [`crate::cell_loader::terrain_lod::spawn_lod_block`]; consumed by
+/// [`crate::render::collect_lod_terrain_draws`] (their dedicated lean draw
+/// path) and skipped by the heavy `collect_static_mesh_draws` loop so they
+/// are never emitted twice or charged the ~13-component per-entity walk.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IsLodTerrain;
+impl Component for IsLodTerrain {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Returns `true` if `texture_path` matches any of the 6 "FX decoration"
 /// needles the renderer drops. Pulled out as a shared helper so the
 /// spawn-time tagger in `cell_loader::spawn` + `scene::nif_loader` and
