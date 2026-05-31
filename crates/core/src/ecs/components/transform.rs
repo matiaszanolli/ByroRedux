@@ -67,6 +67,9 @@ impl Default for Transform {
 
 impl Component for Transform {
     type Storage = PackedStorage<Self>;
+    // Track per-entity mutations so transform propagation re-composes only
+    // the subtrees that actually moved this frame (change-detection).
+    const TRACK_CHANGES: bool = true;
 }
 
 #[cfg(test)]

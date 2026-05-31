@@ -47,7 +47,15 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
     // root set hasn't moved since last frame. `next_entity_id` covers
     // the despawn-then-spawn-in-same-frame edge case where the two
     // `len()`s happen to net out unchanged. See #825.
-    let mut last_seen: Option<(usize, usize, EntityId)> = None;
+    let mut last_roots_key: Option<(usize, usize, EntityId)> = None;
+    // Full change-detection state: the roots key plus the `Parent` /
+    // `Children` structural generations. When this is unchanged AND no
+    // `Transform` was mutated this frame, every `GlobalTransform` is
+    // already correct and the whole propagation is skipped — the
+    // change-detection fast path (the render-distance root fix). The
+    // generations catch hierarchy edits (reparent / attach) that move no
+    // Transform and leave entity counts unchanged.
+    let mut last_state: Option<((usize, usize, EntityId), u64, u64)> = None;
 
     move |world: &World, _dt: f32| {
         queue.clear();
@@ -60,13 +68,10 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
         // the whole function collapses that to 4 acquisitions total.
         // See #238.
         //
-        // Lock-order note: the ECS schedules parallel systems with
-        // TypeId-sorted lock acquisition to prevent deadlocks. Acquire
-        // order here doesn't matter for single-system correctness, but
-        // we keep the read queries first and the write query last so
-        // downstream readers that want the same bundle can mirror this
-        // pattern.
-        let Some(tq) = world.query::<Transform>() else {
+        // `Transform` is taken as a WRITE query (vs read pre-change-
+        // detection) so we can drain its per-entity dirty set — the
+        // local transforms are only read, never mutated, by this system.
+        let Some(mut tq) = world.query_mut::<Transform>() else {
             return;
         };
         let parent_q = world.query::<Parent>();
@@ -75,57 +80,137 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
             return;
         };
 
+        // Change-detection drain: which entities' local Transform was
+        // mutated since last frame. Draining every frame keeps the dirty
+        // Vec bounded (it would otherwise grow unbounded). See
+        // `Component::TRACK_CHANGES` + `PackedStorage::take_dirty`.
+        let mut transform_dirty = tq.storage_mut().take_dirty();
+
+        // Hierarchy structural generations — bumped on any Parent/Children
+        // insert/remove (incl. reparent overwrites), 0 when nothing's
+        // changed. Together with the roots key this detects every hierarchy
+        // edit a pure Transform-dirty check would miss.
+        let parent_gen = parent_q
+            .as_ref()
+            .map(|q| q.storage().structural_generation())
+            .unwrap_or(0);
+        let children_gen = children_q
+            .as_ref()
+            .map(|q| q.storage().structural_generation())
+            .unwrap_or(0);
+
+        let roots_key = (
+            tq.len(),
+            parent_q.as_ref().map(|q| q.len()).unwrap_or(0),
+            world.next_entity_id(),
+        );
+        let state = (roots_key, parent_gen, children_gen);
+
+        // FAST PATH: nothing moved and the hierarchy is identical to last
+        // frame → all GlobalTransforms are already correct, skip the walk.
+        // This is the change-detection win: a static cell (camera parked or
+        // moving — the camera's own Transform mutation marks only itself
+        // dirty) skips the full O(entities) BFS entirely.
+        if transform_dirty.is_empty() && last_state == Some(state) {
+            return;
+        }
+        // `structural_changed` = the hierarchy itself moved (spawn / despawn
+        // / reparent / cell load), detected by any change to the roots key
+        // OR the Parent/Children structural generations. When false, only
+        // some local Transforms moved and the cheap incremental path applies.
+        // `topology_changed` (roots-key only) further gates the root rescan.
+        let structural_changed = last_state != Some(state);
+        let topology_changed = last_roots_key != Some(roots_key);
+        last_state = Some(state);
+        last_roots_key = Some(roots_key);
+
         // Phase 1: find root entities (have Transform but no Parent).
         // Steady-state interior cells touch ~6 k Transforms with ~30
         // roots; rescanning every frame burned ~250 µs / frame on
         // Megaton (#825). The generation key matches the `NameIndex`
         // pattern used in `animation_system`.
-        let key = (
-            tq.len(),
-            parent_q.as_ref().map(|q| q.len()).unwrap_or(0),
-            world.next_entity_id(),
-        );
-        if last_seen != Some(key) {
-            roots.clear();
-            for (entity, _) in tq.iter() {
-                let is_root = parent_q
-                    .as_ref()
-                    .map(|pq| pq.get(entity).is_none())
-                    .unwrap_or(true);
-                if is_root {
-                    roots.push(entity);
+        // Seed the BFS queue. Two modes:
+        //
+        // * STRUCTURAL change (spawn / despawn / reparent / cell load):
+        //   rebuild the root set if counts moved, set every root's global
+        //   from its local, and seed the walk with every root's children —
+        //   the original full O(entities) propagation.
+        //
+        // * INCREMENTAL (only some locals moved, hierarchy identical): set
+        //   each moved entity's own global, seed only ITS children. The
+        //   static cell with a moving camera lands here — the camera's
+        //   Transform is the only dirty entry, so the walk touches ~1
+        //   subtree instead of all 110 k entities. This is the win.
+        queue.clear();
+        if structural_changed {
+            if topology_changed {
+                roots.clear();
+                for (entity, _) in tq.iter() {
+                    let is_root = parent_q
+                        .as_ref()
+                        .map(|pq| pq.get(entity).is_none())
+                        .unwrap_or(true);
+                    if is_root {
+                        roots.push(entity);
+                    }
                 }
             }
-            last_seen = Some(key);
-        }
-
-        // Phase 1b: update root GlobalTransforms via the held write query.
-        for &entity in &roots {
-            if let Some(t) = tq.get(entity) {
-                if let Some(g) = gq.get_mut(entity) {
+            // Phase 1b: every root's global = its local.
+            for &entity in &roots {
+                if let (Some(t), Some(g)) = (tq.get(entity), gq.get_mut(entity)) {
                     g.translation = t.translation;
                     g.rotation = t.rotation;
                     g.scale = t.scale;
                 }
             }
-        }
-
-        // Phase 2: propagate to children using BFS. Requires both
-        // Parent (to look up each child's parent) and Children (to
-        // enqueue grandchildren). If either query is absent the scene
-        // graph is flat and phase 1 already produced the final state.
-        let Some(ref pq) = parent_q else {
-            return;
-        };
-        let Some(ref cq) = children_q else {
-            return;
-        };
-
-        for &root in &roots {
-            if let Some(children) = cq.get(root) {
-                queue.extend(children.0.iter().copied());
+            if let Some(ref cq) = children_q {
+                for &root in &roots {
+                    if let Some(children) = cq.get(root) {
+                        queue.extend(children.0.iter().copied());
+                    }
+                }
+            }
+        } else {
+            // Dedup the dirty list (an entity may be marked multiple times
+            // in one frame) so each subtree is seeded once.
+            transform_dirty.sort_unstable();
+            transform_dirty.dedup();
+            for &e in &transform_dirty {
+                let local = tq.get(e).copied().unwrap_or(Transform::IDENTITY);
+                // Recompose e's own global: parent's current global ∘ local
+                // (the parent did not move, so its global is correct), or the
+                // local itself when e is a root. If e and an ancestor are both
+                // dirty, the ancestor's seeded subtree re-fixes e — order
+                // doesn't matter, only that every moved subtree is walked.
+                let e_global = match parent_q.as_ref().and_then(|pq| pq.get(e)) {
+                    Some(parent) => match gq.get_mut(parent.0).map(|g| *g) {
+                        Some(pg) => GlobalTransform::compose(
+                            &pg,
+                            local.translation,
+                            local.rotation,
+                            local.scale,
+                        ),
+                        None => continue,
+                    },
+                    None => GlobalTransform::new(local.translation, local.rotation, local.scale),
+                };
+                if let Some(g) = gq.get_mut(e) {
+                    *g = e_global;
+                }
+                if let Some(ref cq) = children_q {
+                    if let Some(children) = cq.get(e) {
+                        queue.extend(children.0.iter().copied());
+                    }
+                }
             }
         }
+
+        // Shared BFS drain. Requires both Parent (to look up each child's
+        // parent) and Children (to enqueue grandchildren); a flat scene with
+        // neither already reached its final state in the seeding above.
+        let (Some(ref pq), Some(ref cq)) = (parent_q.as_ref(), children_q.as_ref()) else {
+            return;
+        };
 
         while let Some(entity) = queue.pop_front() {
             let Some(parent) = pq.get(entity) else {
@@ -526,5 +611,116 @@ mod tests {
         let gq = world.query::<GlobalTransform>().unwrap();
         assert!((gq.get(root).unwrap().translation.x - 50.0).abs() < 1e-4);
         assert!((gq.get(child).unwrap().translation.x - 51.0).abs() < 1e-4);
+    }
+
+    /// Change-detection fast path: a frame with no `Transform` mutation and
+    /// no hierarchy change must SKIP the propagation walk entirely. Proven
+    /// by corrupting a `GlobalTransform` directly and showing the skip
+    /// leaves the corruption in place — then a real local mutation
+    /// re-propagates and fixes it.
+    #[test]
+    fn change_detection_skips_when_nothing_moved() {
+        let mut world = World::new();
+        let parent =
+            spawn_with_transform(&mut world, Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let child = spawn_with_transform(&mut world, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        world.insert(child, Parent(parent));
+        world.insert(parent, Children(vec![child]));
+
+        let mut sys = make_transform_propagation_system();
+        sys(&world, 0.016); // frame 1 — full propagation
+        assert!(
+            (world
+                .query::<GlobalTransform>()
+                .unwrap()
+                .get(child)
+                .unwrap()
+                .translation
+                .x
+                - 11.0)
+                .abs()
+                < 1e-4
+        );
+
+        // Corrupt the child's GlobalTransform directly. GlobalTransform is
+        // not change-tracked, so this does not arm the dirty set.
+        {
+            let mut gq = world.query_mut::<GlobalTransform>().unwrap();
+            gq.get_mut(child).unwrap().translation.x = -999.0;
+        }
+        // No Transform mutated, hierarchy unchanged → MUST skip, leaving the
+        // corruption untouched (a re-run would overwrite it back to 11).
+        sys(&world, 0.016);
+        assert_eq!(
+            world
+                .query::<GlobalTransform>()
+                .unwrap()
+                .get(child)
+                .unwrap()
+                .translation
+                .x,
+            -999.0,
+            "propagation should have skipped (nothing changed)"
+        );
+
+        // Move the parent → marks Transform dirty → re-propagation fixes the
+        // child (and overwrites the corruption).
+        {
+            let mut tq = world.query_mut::<Transform>().unwrap();
+            tq.get_mut(parent).unwrap().translation.x = 20.0;
+        }
+        sys(&world, 0.016);
+        assert!(
+            (world
+                .query::<GlobalTransform>()
+                .unwrap()
+                .get(child)
+                .unwrap()
+                .translation
+                .x
+                - 21.0)
+                .abs()
+                < 1e-4,
+            "moving the parent must re-propagate the child to 21"
+        );
+    }
+
+    /// A reparent that overwrites an existing `Parent` (no Transform moved,
+    /// entity count unchanged) must NOT be skipped — the `Parent`/`Children`
+    /// structural generation guards against the dirty-set blind spot.
+    #[test]
+    fn change_detection_reacts_to_reparent_overwrite() {
+        let mut world = World::new();
+        let parent =
+            spawn_with_transform(&mut world, Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        let child = spawn_with_transform(&mut world, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        world.insert(child, Parent(parent));
+        world.insert(parent, Children(vec![child]));
+
+        let mut sys = make_transform_propagation_system();
+        sys(&world, 0.016);
+
+        // Corrupt the child global, then re-insert Parent (an overwrite with
+        // the same value — entity count + Transforms all unchanged, but the
+        // Parent storage's structural generation bumps).
+        {
+            let mut gq = world.query_mut::<GlobalTransform>().unwrap();
+            gq.get_mut(child).unwrap().translation.x = -999.0;
+        }
+        world.insert(child, Parent(parent)); // structural insert → gen bump
+        sys(&world, 0.016);
+        assert!(
+            (world
+                .query::<GlobalTransform>()
+                .unwrap()
+                .get(child)
+                .unwrap()
+                .translation
+                .x
+                - 11.0)
+                .abs()
+                < 1e-4,
+            "a Parent overwrite must defeat the skip and re-propagate the child"
+        );
     }
 }

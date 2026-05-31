@@ -16,6 +16,20 @@ pub type EntityId = u32;
 /// `PackedStorage<Self>` for cache-friendly iteration.
 pub trait Component: 'static + Send + Sync + Sized {
     type Storage: ComponentStorage<Self> + DynStorage + Default + Send + Sync + 'static;
+
+    /// Opt into per-entity change tracking. When `true`, the backing
+    /// storage records every entity whose component is inserted, removed,
+    /// or accessed mutably (`get_mut` / `iter_mut`) into a frame-local
+    /// dirty set that consumers drain via `take_dirty()`. Default `false`
+    /// — the check is a compile-time const, so non-tracked components pay
+    /// nothing (the branch folds away and the dirty `Vec` stays empty).
+    ///
+    /// Enabled for `Transform` / `GlobalTransform` so transform propagation
+    /// and render-instance assembly can skip the entities that did not move
+    /// this frame (the change-detection root fix — see
+    /// `make_transform_propagation_system`). Only [`PackedStorage`] honors
+    /// this today; that's where the tracked components live.
+    const TRACK_CHANGES: bool = false;
 }
 
 /// The storage contract. Both sparse-set and packed backends implement this.

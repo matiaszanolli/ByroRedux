@@ -11,6 +11,10 @@ pub struct Parent(pub EntityId);
 
 impl Component for Parent {
     type Storage = SparseSetStorage<Self>;
+    // Track structural mutations so transform propagation can detect
+    // reparents/attaches (which change the hierarchy without moving any
+    // Transform) via the storage's structural generation.
+    const TRACK_CHANGES: bool = true;
 }
 
 /// Lists this entity's children in the scene hierarchy.
@@ -20,4 +24,6 @@ pub struct Children(pub Vec<EntityId>);
 
 impl Component for Children {
     type Storage = SparseSetStorage<Self>;
+    // See `Parent` — child-list edits also signal a hierarchy change.
+    const TRACK_CHANGES: bool = true;
 }

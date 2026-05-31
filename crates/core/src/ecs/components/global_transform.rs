@@ -68,6 +68,11 @@ impl Default for GlobalTransform {
 
 impl Component for GlobalTransform {
     type Storage = PackedStorage<Self>;
+    // NOTE: change-tracking for GlobalTransform is intentionally OFF until
+    // the render-instance cache (the consumer that drains its dirty set)
+    // lands — enabling it without a drainer would leak the dirty Vec. See
+    // `make_transform_propagation_system` (Transform tracking is the Stage-2
+    // consumer; GlobalTransform tracking is Stage 3).
 }
 
 #[cfg(test)]

@@ -25,6 +25,14 @@ pub struct PackedStorage<T> {
     entities: Vec<EntityId>,
     /// Component values, parallel to `entities`.
     data: Vec<T>,
+    /// Per-entity change-tracking accumulator (see
+    /// [`Component::TRACK_CHANGES`]). Only populated when the component
+    /// opts in; stays empty (zero overhead) otherwise. Entities are
+    /// pushed on insert / remove / `get_mut` / `iter_mut` and drained by
+    /// [`take_dirty`](Self::take_dirty). May contain duplicates — the
+    /// transform-propagation consumer treats it as a work list where dups
+    /// are harmless (re-propagating a subtree is idempotent).
+    dirty: Vec<EntityId>,
 }
 
 impl<T> Default for PackedStorage<T> {
@@ -32,12 +40,40 @@ impl<T> Default for PackedStorage<T> {
         Self {
             entities: Vec::new(),
             data: Vec::new(),
+            dirty: Vec::new(),
+        }
+    }
+}
+
+impl<T: Component<Storage = Self>> PackedStorage<T> {
+    /// Drain the change-tracking dirty set, returning the entities mutated
+    /// since the last drain. Empty (and allocation-free after warmup) for
+    /// components that don't opt into [`Component::TRACK_CHANGES`].
+    ///
+    /// The list may contain duplicates and is in mutation order; callers
+    /// that need uniqueness should dedup. Returns an owned `Vec` via
+    /// `std::mem::take` so the backing capacity is reused next frame.
+    pub fn take_dirty(&mut self) -> Vec<EntityId> {
+        std::mem::take(&mut self.dirty)
+    }
+
+    /// Number of entries currently in the dirty set (with duplicates).
+    /// Cheap probe for "did anything change?" without draining.
+    pub fn dirty_len(&self) -> usize {
+        self.dirty.len()
+    }
+
+    #[inline]
+    fn mark_dirty(&mut self, entity: EntityId) {
+        if T::TRACK_CHANGES {
+            self.dirty.push(entity);
         }
     }
 }
 
 impl<T: Component<Storage = Self>> ComponentStorage<T> for PackedStorage<T> {
     fn insert(&mut self, entity: EntityId, component: T) {
+        self.mark_dirty(entity);
         match self.entities.binary_search(&entity) {
             Ok(idx) => {
                 // Already present — overwrite.
@@ -54,6 +90,7 @@ impl<T: Component<Storage = Self>> ComponentStorage<T> for PackedStorage<T> {
     fn remove(&mut self, entity: EntityId) -> Option<T> {
         match self.entities.binary_search(&entity) {
             Ok(idx) => {
+                self.mark_dirty(entity);
                 self.entities.remove(idx);
                 Some(self.data.remove(idx))
             }
@@ -68,6 +105,9 @@ impl<T: Component<Storage = Self>> ComponentStorage<T> for PackedStorage<T> {
 
     fn get_mut(&mut self, entity: EntityId) -> Option<&mut T> {
         let idx = self.entities.binary_search(&entity).ok()?;
+        // Handing out `&mut` is a potential mutation — record it. For a
+        // non-tracked component this is a const-false branch (no-op).
+        self.mark_dirty(entity);
         Some(&mut self.data[idx])
     }
 
@@ -163,6 +203,14 @@ impl<T: Component<Storage = Self>> ComponentStorage<T> for PackedStorage<T> {
 
         self.entities = new_entities;
         self.data = new_data;
+
+        // A bulk insert touched the whole set — mark every entity dirty so
+        // change-tracking consumers (transform propagation) re-process the
+        // freshly-loaded content. Runs at cell-load boundaries, not per
+        // frame, so the conservative all-mark is cheap relative to the load.
+        if T::TRACK_CHANGES {
+            self.dirty.extend_from_slice(&self.entities);
+        }
     }
 
     fn iter(&self) -> Box<dyn Iterator<Item = (EntityId, &T)> + '_> {
@@ -170,6 +218,13 @@ impl<T: Component<Storage = Self>> ComponentStorage<T> for PackedStorage<T> {
     }
 
     fn iter_mut(&mut self) -> Box<dyn Iterator<Item = (EntityId, &mut T)> + '_> {
+        // iter_mut hands out `&mut` to every element, so conservatively mark
+        // all entities dirty. No tracked component is iter_mut'd over the
+        // whole set on the hot path (Transform / GlobalTransform are mutated
+        // via targeted get_mut), so this rarely fires for tracked storages.
+        if T::TRACK_CHANGES {
+            self.dirty.extend_from_slice(&self.entities);
+        }
         Box::new(self.entities.iter().copied().zip(self.data.iter_mut()))
     }
 }
@@ -199,6 +254,14 @@ mod tests {
     }
     impl Component for Transform {
         type Storage = PackedStorage<Self>;
+    }
+
+    /// A change-tracked component for exercising the dirty-set primitive.
+    #[derive(Debug, PartialEq)]
+    struct Tracked(u32);
+    impl Component for Tracked {
+        type Storage = PackedStorage<Self>;
+        const TRACK_CHANGES: bool = true;
     }
 
     #[test]
@@ -539,5 +602,70 @@ mod tests {
 
         assert_eq!(s.get(0).unwrap().x, -1.0);
         assert_eq!(s.get(1).unwrap().x, -4.0);
+    }
+
+    // ── change tracking (TRACK_CHANGES) ─────────────────────────────────
+
+    #[test]
+    fn untracked_component_never_accumulates_dirty() {
+        // `Transform` here leaves TRACK_CHANGES at its default (false).
+        let mut s = PackedStorage::<Transform>::default();
+        s.insert(0, Transform { x: 1.0, y: 0.0, z: 0.0 });
+        let _ = s.get_mut(0);
+        for (_, t) in s.iter_mut() {
+            t.x = 9.0;
+        }
+        s.remove(0);
+        assert_eq!(s.dirty_len(), 0, "non-tracked storage must stay dirty-free");
+        assert!(s.take_dirty().is_empty());
+    }
+
+    #[test]
+    fn tracked_get_mut_and_insert_record_dirty() {
+        let mut s = PackedStorage::<Tracked>::default();
+        s.insert(5, Tracked(5)); // insert → dirty
+        s.insert(2, Tracked(2));
+        let _ = s.get_mut(5); // mutable access → dirty
+        let _ = s.get(2); // immutable read → NOT dirty
+        let _ = s.get_mut(99); // miss → no entry
+
+        let dirty = s.take_dirty();
+        assert!(dirty.contains(&5));
+        assert!(dirty.contains(&2));
+        // get(2) was read-only and get_mut(99) missed, so the only entries
+        // are the two inserts plus the get_mut(5).
+        assert_eq!(dirty.iter().filter(|&&e| e == 5).count(), 2); // insert + get_mut
+        assert_eq!(dirty.iter().filter(|&&e| e == 2).count(), 1); // insert only
+        assert!(!dirty.contains(&99));
+    }
+
+    #[test]
+    fn take_dirty_drains_and_resets() {
+        let mut s = PackedStorage::<Tracked>::default();
+        s.insert(1, Tracked(1));
+        assert_eq!(s.take_dirty(), vec![1]);
+        // Drained — a second take is empty until the next mutation.
+        assert!(s.take_dirty().is_empty());
+        let _ = s.get_mut(1);
+        assert_eq!(s.take_dirty(), vec![1]);
+    }
+
+    #[test]
+    fn tracked_remove_and_iter_mut_record_dirty() {
+        let mut s = PackedStorage::<Tracked>::default();
+        s.insert(1, Tracked(1));
+        s.insert(2, Tracked(2));
+        let _ = s.take_dirty(); // clear the insert marks
+
+        for (_, t) in s.iter_mut() {
+            t.0 += 1;
+        }
+        // iter_mut conservatively marks every live entity.
+        let mut after_iter = s.take_dirty();
+        after_iter.sort_unstable();
+        assert_eq!(after_iter, vec![1, 2]);
+
+        s.remove(2); // remove → dirty
+        assert_eq!(s.take_dirty(), vec![2]);
     }
 }

@@ -15,6 +15,15 @@ pub struct SparseSetStorage<T> {
     dense: Vec<EntityId>,
     /// dense index → component value (parallel to `dense`).
     data: Vec<T>,
+    /// Monotonic counter bumped on every structural mutation (insert —
+    /// including overwrite/reparent — and remove) when the component opts
+    /// into [`Component::TRACK_CHANGES`]. Lets a consumer cheaply answer
+    /// "did this storage change shape since I last looked?" without a per-
+    /// entity dirty set. Used by transform propagation to detect hierarchy
+    /// edits (`Parent` / `Children`) that don't move any `Transform` —
+    /// e.g. a reparent that overwrites an existing `Parent` (entity count
+    /// unchanged). Stays 0 for non-tracked components (zero overhead).
+    structural_gen: u64,
 }
 
 impl<T> Default for SparseSetStorage<T> {
@@ -23,12 +32,29 @@ impl<T> Default for SparseSetStorage<T> {
             sparse: Vec::new(),
             dense: Vec::new(),
             data: Vec::new(),
+            structural_gen: 0,
         }
+    }
+}
+
+impl<T: Component<Storage = Self>> SparseSetStorage<T> {
+    /// Current structural-mutation generation (see [`Self::structural_gen`]).
+    /// Compare against a previously-stored value to detect insert/remove
+    /// activity since then. Always 0 for components that don't opt into
+    /// [`Component::TRACK_CHANGES`].
+    pub fn structural_generation(&self) -> u64 {
+        self.structural_gen
     }
 }
 
 impl<T: Component<Storage = Self>> ComponentStorage<T> for SparseSetStorage<T> {
     fn insert(&mut self, entity: EntityId, component: T) {
+        // Structural change (new entry OR overwrite/reparent) — bump the
+        // generation for change-tracking consumers. const-false → no-op for
+        // non-tracked components.
+        if T::TRACK_CHANGES {
+            self.structural_gen = self.structural_gen.wrapping_add(1);
+        }
         let idx = entity as usize;
 
         // Grow sparse array if needed.
@@ -51,6 +77,12 @@ impl<T: Component<Storage = Self>> ComponentStorage<T> for SparseSetStorage<T> {
     fn remove(&mut self, entity: EntityId) -> Option<T> {
         let idx = entity as usize;
         let dense_idx = *self.sparse.get(idx)?.as_ref()? as usize;
+
+        // Structural change — bump generation (only once we know the entity
+        // is actually present, matching the `?` early-returns above).
+        if T::TRACK_CHANGES {
+            self.structural_gen = self.structural_gen.wrapping_add(1);
+        }
 
         // Clear the sparse slot for the removed entity.
         self.sparse[idx] = None;

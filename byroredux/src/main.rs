@@ -700,7 +700,10 @@ impl App {
             Access::new()
                 .reads::<byroredux_core::ecs::Parent>()
                 .reads::<byroredux_core::ecs::Children>()
-                .reads::<Transform>()
+                // WRITE (was read): the system drains the per-entity
+                // Transform change-tracking dirty set, which needs &mut on
+                // the storage. Local transforms are still only read.
+                .writes::<Transform>()
                 .writes::<byroredux_core::ecs::GlobalTransform>(),
         );
         // M44 Phase 3.5: footstep dispatch. Reads `GlobalTransform`
