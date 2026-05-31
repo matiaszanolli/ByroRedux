@@ -25,89 +25,175 @@ use byroredux_core::ecs::{Children, GlobalTransform, LocalBound, Parent, World, 
 /// (scheduled as an exclusive PostUpdate step) so both leaf transforms
 /// and billboard overrides are final. See issue #217.
 pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) + Send + Sync {
-    let mut roots: Vec<EntityId> = Vec::new();
+    // Roots that actually have children — the only entities pass 2 needs to
+    // fold. Cached across frames; rebuilt only on a structural change. The
+    // flat statics that make up the bulk of an exterior cell are childless
+    // roots whose bound is final after pass 1, so they never enter this list
+    // (pre-#perf the post-order walk covered *every* root every frame).
+    let mut child_roots: Vec<EntityId> = Vec::new();
+    // Scratch: the child-having roots whose subtree actually moved this
+    // frame (reused to avoid a per-frame allocation).
+    let mut dirty_roots: Vec<EntityId> = Vec::new();
     let mut post_order: Vec<EntityId> = Vec::new();
     let mut stack: Vec<(EntityId, bool)> = Vec::new();
-    // (GlobalTransform::len(), Parent::len(), World::next_entity_id()) —
-    // generation key for the cached `roots` set. Mirrors the
-    // `transform_propagation_system` pattern from #825 — same root
-    // discovery anti-pattern, different storage. See #826.
-    let mut last_seen_roots: Option<(usize, usize, EntityId)> = None;
+    // Structural-generation key over the BOUND-RELEVANT structure only:
+    // (LocalBound gen, Parent gen, Children gen). A move changes
+    // GlobalTransform *values* (caught by the dirty set), not these. Keyed on
+    // these — not `next_entity_id` / `GlobalTransform::len` — so that
+    // unbounded per-frame spawns (particles, transient event markers) don't
+    // churn the key and defeat the fast path; only adding/removing a bounded
+    // entity or reparenting forces a full rebuild. Requires
+    // LocalBound/Parent/Children `TRACK_CHANGES`.
+    let mut last_key: Option<(u64, u64, u64)> = None;
 
     move |world: &World, _dt: f32| {
-        // Acquire Children and LocalBound once — used by both passes.
-        // Previously re-acquired for pass 2 (#250).
+        // Drain the GlobalTransform change-tracking dirty set: the entities
+        // whose world transform was (re)written this frame by transform
+        // propagation / billboard_system. Empty in steady state (nothing
+        // moved) → the fast path below skips both passes entirely. Requires
+        // GlobalTransform::TRACK_CHANGES; bounds is its sole drainer.
+        let mut g_dirty = {
+            let Some(mut gq) = world.query_mut::<GlobalTransform>() else {
+                return;
+            };
+            gq.storage_mut().take_dirty()
+        };
+
+        // Acquire Children, LocalBound, Parent, GlobalTransform once — used
+        // by both passes (#250).
         let local_q = world.query::<LocalBound>();
         let children_q = world.query::<Children>();
+        let parent_q = world.query::<Parent>();
+        let Some(g_q) = world.query::<GlobalTransform>() else {
+            return;
+        };
+        let Some(ref lb_q) = local_q else {
+            return;
+        };
 
-        // ── Pass 1: leaf bounds from LocalBound + GlobalTransform ──────
-        {
-            let Some(ref lb_q) = local_q else {
-                return;
-            };
-            let Some(g_q) = world.query::<GlobalTransform>() else {
-                return;
-            };
-            let Some(mut wb_q) = world.query_mut::<WorldBound>() else {
-                return;
-            };
-            for (entity, local) in lb_q.iter() {
-                let Some(global) = g_q.get(entity) else {
-                    continue;
-                };
-                let world_center =
-                    global.translation + global.rotation * (local.center * global.scale);
-                let world_radius = local.radius * global.scale;
-                if let Some(wb) = wb_q.get_mut(entity) {
-                    *wb = WorldBound::new(world_center, world_radius);
-                }
-            }
+        // Structural key + change flag. A structural change (or the first
+        // frame, when `last_key` is None) forces a full rebuild; otherwise
+        // only the dirty entities are touched.
+        let key = (
+            lb_q.storage().structural_generation(),
+            parent_q
+                .as_ref()
+                .map(|q| q.storage().structural_generation())
+                .unwrap_or(0),
+            children_q
+                .as_ref()
+                .map(|q| q.storage().structural_generation())
+                .unwrap_or(0),
+        );
+        let structural_changed = last_key != Some(key);
+        last_key = Some(key);
+
+        // FAST PATH: nothing moved and no structural change → every bound is
+        // already correct from a prior frame. This is the steady state for a
+        // static exterior cell (only the camera moves, and it has no bound).
+        if g_dirty.is_empty() && !structural_changed {
+            return;
         }
 
-        // ── Pass 2: parent bounds as unions of children ────────────────
-        //
-        // Walk the hierarchy from each root entity (one without a Parent)
-        // and record a post-order list. Then iterate that list in order —
-        // by the time we process a parent, every child has already had its
-        // bound assigned. Entities that already have a LocalBound are
-        // leaves in this sense (their bound comes from pass 1) and are
-        // skipped here.
-        post_order.clear();
-        stack.clear();
+        let Some(mut wb_q) = world.query_mut::<WorldBound>() else {
+            return;
+        };
 
-        {
-            let Some(tq) = world.query::<GlobalTransform>() else {
-                return;
-            };
-            let parent_q = world.query::<Parent>();
-            // Cache the root set across frames; re-scan only when the
-            // (GlobalTransform::len, Parent::len, next_entity_id) key
-            // moves. Steady-state interior cells touch ~6 k
-            // GlobalTransforms with ~30 roots — pre-#826 this rescanned
-            // every frame at ~250 µs, on top of the same waste in
-            // transform_propagation_system (#825). Same generation
-            // pattern as `NameIndex` / `transform_propagation`.
-            let key = (
-                tq.len(),
-                parent_q.as_ref().map(|q| q.len()).unwrap_or(0),
-                world.next_entity_id(),
-            );
-            if last_seen_roots != Some(key) {
-                roots.clear();
-                for (entity, _) in tq.iter() {
-                    let is_root = parent_q
-                        .as_ref()
-                        .map(|pq| pq.get(entity).is_none())
-                        .unwrap_or(true);
-                    if is_root {
-                        roots.push(entity);
+        // ── Pass 1: leaf bounds from LocalBound + GlobalTransform ──────────
+        // Recompute only the leaves whose GlobalTransform changed. New
+        // entities arrive dirty (their GlobalTransform insert marks them), so
+        // spawns are covered; on a structural change we fall back to all
+        // leaves as a cheap correctness floor for rare reparent/despawn.
+        if structural_changed {
+            for (entity, local) in lb_q.iter() {
+                if let Some(global) = g_q.get(entity) {
+                    let center =
+                        global.translation + global.rotation * (local.center * global.scale);
+                    if let Some(wb) = wb_q.get_mut(entity) {
+                        *wb = WorldBound::new(center, local.radius * global.scale);
                     }
                 }
-                last_seen_roots = Some(key);
+            }
+        } else {
+            g_dirty.sort_unstable();
+            g_dirty.dedup();
+            for &entity in &g_dirty {
+                let (Some(local), Some(global)) = (lb_q.get(entity), g_q.get(entity)) else {
+                    continue;
+                };
+                let center =
+                    global.translation + global.rotation * (local.center * global.scale);
+                if let Some(wb) = wb_q.get_mut(entity) {
+                    *wb = WorldBound::new(center, local.radius * global.scale);
+                }
             }
         }
 
-        for &root in &roots {
+        // ── Pass 2: fold children into child-having parents ────────────────
+        // Rebuild the child-root cache only on a structural change. Flat
+        // statics (no Children) are skipped — their bound is final after
+        // pass 1 — so this list holds only the few hierarchical roots
+        // (skinned actors, multi-node placements). Pre-#perf the post-order
+        // walk covered every root including the thousands of flat statics.
+        if structural_changed {
+            child_roots.clear();
+            for (entity, _) in g_q.iter() {
+                let is_root = parent_q
+                    .as_ref()
+                    .map(|pq| pq.get(entity).is_none())
+                    .unwrap_or(true);
+                let has_children = children_q
+                    .as_ref()
+                    .and_then(|cq| cq.get(entity))
+                    .map(|c| !c.0.is_empty())
+                    .unwrap_or(false);
+                if is_root && has_children {
+                    child_roots.push(entity);
+                }
+            }
+        }
+
+        // Flat scene (the typical exterior cell) — pass 1 was the whole job.
+        if child_roots.is_empty() {
+            return;
+        }
+        let Some(ref cq) = children_q else {
+            return;
+        };
+
+        // Which child-having roots actually need re-folding this frame? On a
+        // structural change, all of them; otherwise only the roots whose
+        // subtree contains a moved entity — walk each dirty entity up to its
+        // root and keep it if that root has children. Flat dynamics (player
+        // capsule, falling debris) are their own childless roots, so a frame
+        // where only they moved folds nothing — the steady state once actors
+        // stop animating. This is what keeps pass 2 off the per-frame budget.
+        let fold_set: &[EntityId] = if structural_changed {
+            &child_roots
+        } else {
+            dirty_roots.clear();
+            for &e in &g_dirty {
+                let mut cur = e;
+                while let Some(p) = parent_q.as_ref().and_then(|pq| pq.get(cur)).map(|p| p.0) {
+                    cur = p;
+                }
+                if cq.get(cur).map(|c| !c.0.is_empty()).unwrap_or(false) {
+                    dirty_roots.push(cur);
+                }
+            }
+            dirty_roots.sort_unstable();
+            dirty_roots.dedup();
+            &dirty_roots
+        };
+        if fold_set.is_empty() {
+            return;
+        }
+
+        // Post-order over the affected roots' subtrees, then fold children
+        // into parents (children first). The merge is idempotent.
+        post_order.clear();
+        stack.clear();
+        for &root in fold_set {
             stack.push((root, false));
             while let Some((entity, visited)) = stack.pop() {
                 if visited {
@@ -115,45 +201,26 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
                     continue;
                 }
                 stack.push((entity, true));
-                if let Some(ref cq) = children_q {
-                    if let Some(children) = cq.get(entity) {
-                        for &child in &children.0 {
-                            stack.push((child, false));
-                        }
+                if let Some(children) = cq.get(entity) {
+                    for &child in &children.0 {
+                        stack.push((child, false));
                     }
                 }
             }
         }
 
-        // Fold children into parents. Must be post-order — children first.
-        let Some(mut wb_q) = world.query_mut::<WorldBound>() else {
-            return;
-        };
-
         for &entity in &post_order {
-            // Leaves (entities with a LocalBound) already have their bound
-            // from pass 1. We still need parents above them to fold them in,
-            // so skip only the write step here.
-            if local_q
-                .as_ref()
-                .map(|q| q.get(entity).is_some())
-                .unwrap_or(false)
-            {
+            // Leaves keep their pass-1 bound.
+            if lb_q.get(entity).is_some() {
                 continue;
             }
-
-            // Collect child bounds.
-            let Some(ref cq) = children_q else {
-                continue;
-            };
             let Some(children) = cq.get(entity) else {
                 continue;
             };
             let mut merged = WorldBound::ZERO;
             for &child in &children.0 {
-                // Read the child's bound via the mutable query — the
-                // storage allows a copy-out even though we hold `wb_q`
-                // mutably, because we're not aliasing across iterations.
+                // Copy the child's bound out through the mutable query — safe,
+                // we don't alias across iterations.
                 if let Some(child_bound) = wb_q.get_mut(child).map(|b| *b) {
                     merged = merged.merge(&child_bound);
                 }
@@ -395,6 +462,49 @@ mod tests {
             (after.center - Vec3::new(20.0, 0.0, 0.0)).length() < 1e-5,
             "parent bound must re-fold against cached root after leaf moved, got {:?}",
             after.center
+        );
+    }
+
+    /// FAST PATH (incremental rewrite): once bounds are computed, a frame
+    /// with nothing moved and no topology change must leave every bound
+    /// intact — the steady state for a static exterior cell. The second
+    /// call drains an empty GlobalTransform dirty set and early-returns.
+    #[test]
+    fn fast_path_preserves_bounds_when_nothing_moves() {
+        let mut world = World::new();
+        let e = spawn_leaf(&mut world, Vec3::new(7.0, 0.0, 0.0), 1.0, Vec3::ZERO, 3.0);
+        let mut sys = make_world_bound_propagation_system();
+        sys(&world, 0.016); // full rebuild (first frame, last_key None)
+        sys(&world, 0.016); // fast path: nothing dirty, no structural change
+        let wb_q = world.query::<WorldBound>().unwrap();
+        let wb = wb_q.get(e).unwrap();
+        assert!((wb.center - Vec3::new(7.0, 0.0, 0.0)).length() < 1e-5);
+        assert!((wb.radius - 3.0).abs() < 1e-5);
+    }
+
+    /// A flat leaf (no parent/children — the bulk of an exterior cell) that
+    /// moves between frames must have its bound recomputed via the
+    /// GlobalTransform dirty set, even though no topology key changed. This
+    /// is the incremental pass-1 path that depends on
+    /// `GlobalTransform::TRACK_CHANGES`.
+    #[test]
+    fn flat_leaf_move_updates_bound_via_dirty_set() {
+        let mut world = World::new();
+        let e = spawn_leaf(&mut world, Vec3::new(1.0, 0.0, 0.0), 1.0, Vec3::ZERO, 2.0);
+        let mut sys = make_world_bound_propagation_system();
+        sys(&world, 0.016);
+        // Move the leaf — get_mut marks GlobalTransform dirty (TRACK_CHANGES).
+        {
+            let mut gq = world.query_mut::<GlobalTransform>().unwrap();
+            gq.get_mut(e).unwrap().translation = Vec3::new(100.0, 0.0, 0.0);
+        }
+        sys(&world, 0.016);
+        let wb_q = world.query::<WorldBound>().unwrap();
+        let wb = wb_q.get(e).unwrap();
+        assert!(
+            (wb.center - Vec3::new(100.0, 0.0, 0.0)).length() < 1e-5,
+            "flat leaf bound must track its moved GlobalTransform, got {:?}",
+            wb.center
         );
     }
 }

@@ -83,6 +83,12 @@ impl Default for LocalBound {
 
 impl Component for LocalBound {
     type Storage = SparseSetStorage<Self>;
+    // Track structural mutations (insert/remove) so world-bound propagation
+    // can detect when a *bounded* entity is added/removed via the storage's
+    // structural generation — without keying its rebuild on `next_entity_id`
+    // / `GlobalTransform::len`, which churn every frame on unbounded spawns
+    // (particles, transient event markers) and would defeat the fast path.
+    const TRACK_CHANGES: bool = true;
 }
 
 #[cfg(test)]

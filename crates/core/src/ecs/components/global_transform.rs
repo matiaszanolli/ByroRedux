@@ -68,11 +68,15 @@ impl Default for GlobalTransform {
 
 impl Component for GlobalTransform {
     type Storage = PackedStorage<Self>;
-    // NOTE: change-tracking for GlobalTransform is intentionally OFF until
-    // the render-instance cache (the consumer that drains its dirty set)
-    // lands — enabling it without a drainer would leak the dirty Vec. See
-    // `make_transform_propagation_system` (Transform tracking is the Stage-2
-    // consumer; GlobalTransform tracking is Stage 3).
+    // Change-tracking ON: `make_world_bound_propagation_system` drains this
+    // dirty set every frame (the required consumer — see the original note
+    // about not enabling without a drainer). The dirty set = the entities
+    // whose world transform was (re)written this frame by transform
+    // propagation / billboards, which is exactly the set of leaf bounds that
+    // need recomputing. The render-instance cache (a future second consumer,
+    // deferred to the M40 parallel scheduler) will need a fan-out resource
+    // rather than a second `take_dirty`, since draining is destructive.
+    const TRACK_CHANGES: bool = true;
 }
 
 #[cfg(test)]
