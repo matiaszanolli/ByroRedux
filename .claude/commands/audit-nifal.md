@@ -90,7 +90,7 @@ belongs here.
 - `material_kind: u32` is intentionally kept as-is (it is the GPU shader-dispatch contract — the `material_kind == N` ladder in `triangle.frag`). Do NOT flag its `u32`-ness as a leak. **Future-slice invariant**: any `SurfaceClass` enum MUST lower to the exact `triangle.frag` ladder (drift risk vs the shader — a shader-adjacent change).
 - `effect_shader_flags` packs the union of BSEffect SLSF bits + BGSM v>2 bits + the caller's `extra_material_flags` (REFR-overlay model-space-normals on the cell path; `0` on the loose path).
 
-**Regression pins (this session, 2026-05-28)**:
+**Regression pins (this session)**:
 - **material_translate dedup**: the two duplicate `Material` construction literals were collapsed into `translate_material`. A field added in one load path that doesn't go through the boundary can silently diverge the two paths — the regression this dedup prevents.
 - **Emissive scale = no-op** (spec §4): `Material.emissive_mult` is fed by three `EmissiveSource` variants (`Material` legacy / `Lighting` Skyrim+ / `Effect` FO4+). All three were **measured** across Oblivion/FNV/Skyrim/FO4 and already share a ~1.0 scale — **no normalization is applied or wanted**. A future "emissive normalization constant" is a `no-fabrication` violation (inventing a correction for a divergence the ground truth shows does not exist). The one genuine distinction (`BSEffectShaderProperty.base_color_scale` is a diffuse-tint, not emissive) is captured by the `EmissiveSource::Effect` discriminator and left for a future BSEffect render path. Open question Q2 in `material-abstraction.md` is resolved no-op — do not re-open it. Tooling: `crates/nif/examples/material_dump.rs` (the `emisM` + `emSrc` columns).
 **Output**: `/tmp/audit/nifal/dim_1.md`
@@ -168,7 +168,7 @@ belongs here.
 - Every parsed `bhk*Shape` variant resolves to a `CollisionShape`. As of 2026-05-28 there are **13** `downcast_ref::<Bhk*Shape>` arms in `resolve_shape_inner`: `BhkSphereShape`, `BhkMultiSphereShape`, `BhkBoxShape`, `BhkCapsuleShape`, `BhkCylinderShape`, `BhkConvexVerticesShape`, `BhkMoppBvTreeShape`, `BhkListShape`, `BhkConvexListShape`, `BhkTransformShape`, `BhkNiTriStripsShape`, `BhkPackedNiTriStripsShape`, `BhkCompressedMeshShape`. A parsed `*Shape` block type with NO resolve arm (falls through to the unsupported-shape fallback) silently vanishes the authored collision — that is a leak finding.
 - Havok→engine transform + `havok_scale` are applied uniformly inside `collision.rs` (Z-up→Y-up `(x, z, -y)`, quaternion swap). No consumer re-applies the scale.
 
-**Regression pins (this session, 2026-05-28)**:
+**Regression pins (this session)**:
 - **`BhkMultiSphereShape`** → now a `Compound` of `Ball` children at each sphere's scaled center (single centred sphere unwraps to a plain `Ball`). Pre-fix it fell through the unsupported-shape fallback. A revert is a `no-leak` regression.
 - **`BhkConvexListShape`** → now a `Compound` of resolved convex sub-shapes (mirrors `BhkListShape`; FO3/FNV/Skyrim destructibles + debris). Pre-fix dropped silently.
 - **Documented limitations (NOT leaks)** — confirm they stay documented in the table at the top of `import/collision.rs`, and do NOT report them as leaks:

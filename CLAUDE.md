@@ -54,7 +54,7 @@ crates/
     src/ecs/components/      Transform, GlobalTransform, Parent, Children, Camera, MeshHandle, Name,
                              FormIdComponent, LightSource, AnimatedVisibility/Alpha/Color
     src/ecs/resources.rs     DeltaTime, TotalTime, EngineConfig
-    src/animation/           Animation engine (split into submodules)
+    src/animation/           Animation engine
       types.rs               CycleType, KeyType, key structs, channels, AnimationClip
       registry.rs            AnimationClipRegistry (Resource)
       player.rs              AnimationPlayer (Component), advance_time()
@@ -71,17 +71,17 @@ crates/
     src/resolver.rs          DependencyResolver (DAG), ConflictResolution
     src/legacy/              Legacy ESM/ESP/ESL/ESH bridge (LegacyFormId, LegacyLoadOrder). Per-game parser stubs were removed under #390 — see `crates/plugin/src/esm/` for the live ESM path.
     src/esm/cell/            CELL walker + per-feature submodules (helpers / support / walkers / wrld)
-      tests/                 CELL parsing regression tests (Session 35 split — 8 per-topic siblings: light, addn_stat, refr, cell, txst, merge, wrld, integration)
+      tests/                 CELL parsing regression tests (per-topic siblings)
   renderer/                  Vulkan graphics (ash, gpu-allocator, image)
     src/vulkan/              pipeline, device, swapchain, sync, allocator, buffer,
                              scene_buffer/ (SSBO/UBO), acceleration/ (BLAS/TLAS)
-    src/vulkan/context/      VulkanContext (split into submodules)
+    src/vulkan/context/      VulkanContext
       mod.rs                 VulkanContext struct, new(), Drop (reverse-order teardown)
       draw.rs                draw_frame() — per-frame command recording + submission
       resize.rs              recreate_swapchain() — window resize handler
       resources.rs           build_blas_for_mesh, register_ui_quad, swapchain_extent, log_memory_usage
       helpers.rs             find_depth_format, create_render_pass, create_framebuffers, etc.
-    src/vulkan/acceleration/ AccelerationManager, BlasEntry, TlasState (Session 35 split)
+    src/vulkan/acceleration/ AccelerationManager, BlasEntry, TlasState
       mod.rs                 Struct definition + new()/destroy()/debug_assert_scratch_aligned()
       constants.rs           BLAS / TLAS slack margins, reserve floors, eviction thresholds
       types.rs               BlasEntry, TlasState data structs
@@ -90,7 +90,7 @@ crates/
       blas_skinned.rs        Per-entity skinned BLAS lifecycle + refit
       tlas.rs                TLAS build / refit + `tlas_handle` accessor
       memory.rs              `shrink_*_to_fit` + telemetry getters
-    src/vulkan/scene_buffer/ Per-frame scene SSBO/UBO (Session 35 split)
+    src/vulkan/scene_buffer/ Per-frame scene SSBO/UBO
       mod.rs                 Re-exports + module docs
       constants.rs           MAX_INSTANCES, INSTANCE_FLAG_*, MATERIAL_KIND_* (every tunable)
       gpu_types.rs           `#[repr(C)]` shader-contract structs (GpuInstance, GpuLight, …)
@@ -132,7 +132,7 @@ crates/
     src/types.rs             NiPoint3, NiMatrix3, NiTransform, NiColor, BlockRef
     src/stream.rs            NifStream: version-aware binary reader
     src/blocks/              Block parsers: NiNode, NiTriShape/Strips, properties, BSShader, textures, …
-      collision/             bhk* parsers (Session 35 split — 9 siblings)
+      collision/             bhk* parsers
         mod.rs               Re-exports + shared low-level readers (`read_havok_material`, `read_vec4`, `read_matrix3`)
         collision_object.rs  Base + Bhk + BhkNP + BhkP + SystemBinary
         rigid_body.rs        `BhkRigidBody`
@@ -143,11 +143,11 @@ crates/
         compressed_mesh.rs   Skyrim+ `BhkCompressedMeshShape` + data
         constraints.rs       `BhkConstraint`, `BhkBreakableConstraint`
         phantom_action.rs    Phantoms + `LiquidAction` + `OrientHingedBodyAction`
-      dispatch_tests/        Block-dispatch regression tests (Session 35 split — 9 per-topic siblings)
-    src/import/              NIF-to-ECS import (split into submodules)
+      dispatch_tests/        Block-dispatch regression tests
+    src/import/              NIF-to-ECS import
       mod.rs                 ImportedNode/Mesh/Scene types, import_nif_scene(), import_nif()
       walk.rs                Hierarchical + flat scene graph traversal
-      mesh/                  Geometry extraction (Session 35 split — 8 production + 7 test siblings)
+      mesh/                  Geometry extraction (production + test siblings)
         mod.rs               Re-exports + module docs
         material_path.rs     `material_path_from_name` (`.bgsm`/`.bgem` capture)
         decode.rs            half-float / byte-normal / LE readers
@@ -160,7 +160,7 @@ crates/
       material.rs            MaterialInfo, texture/alpha/decal property extraction
       transform.rs           Transform composition, degenerate rotation SVD repair
       coord.rs               Z-up (Gamebryo) → Y-up (renderer) quaternion conversion
-    src/anim/                KF animation import (Session 35 split — 8 per-phase siblings)
+    src/anim/                KF animation import
       mod.rs                 Re-exports + module docs
       coord.rs               Zup → Yup helpers
       controlled_block.rs    `CbString` + string / target resolution
@@ -254,141 +254,42 @@ NIF format: binary, 3-phase loading (parse → link → post-link). Version rang
 
 Detailed analysis in `docs/legacy/`.
 
-## Development Roadmap
+## Current State & Roadmap
 
-See [ROADMAP.md](ROADMAP.md) for the full roadmap with milestones, known issues, and game compatibility.
-Current: 30+ milestones complete (M1–M22, M24 Phase 1, M26, M28 Phase 1, M30 Phase 1, M31,
-M31.5, M32 Phase 1+2, M34 Phase 1, M36, M37.5) + N23 + N26 closeout + #178 skinning.
-RT multi-light with streaming RIS (16 reservoirs/fragment, Phase 19), BLAS compaction + LRU eviction,
-instanced draw batching, landscape terrain with texture splatting, exterior directional sun,
-TAA (Halton jitter + YCoCg variance clamp), Papyrus language parser, FO4 SCOL/MOVS/PKIN/TXST.
-See [ROADMAP.md](ROADMAP.md#project-stats) for ground truth on test/file/LOC/crate counts (refreshed each /session-close).
-Usage:
-  `cargo run -- path/to/mesh.nif` — render a loose NIF file
-  `cargo run -- mesh.nif --kf anim.kf` — play animation on a mesh
-  `cargo run -- --bsa path.bsa --mesh meshes\\foo.nif` — extract from BSA and render
-  `cargo run -- --bsa meshes.bsa --mesh meshes\\foo.nif --textures-bsa textures.bsa` — with textures
-  `cargo run -- --bsa "Fallout - Meshes.bsa" --tree trees\\joshua01.spt --textures-bsa "Fallout - Textures.bsa"` — direct SpeedTree visualiser (FNV/FO3/Oblivion `.spt`); renders a placeholder billboard per SpeedTree Phase 1.6
-  `cargo run -- --esm FalloutNV.esm --cell CellID --bsa Meshes.bsa --textures-bsa Textures.bsa` — cell
-  `cargo run -- --esm Fallout3.esm --cell Megaton01 --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa"` — FO3 interior cell (Megaton, 929 REFRs)
-  `cargo run -- --esm FalloutNV.esm --grid 0,0 --radius 3 --bsa …` — exterior grid (radius 1..=7, default 3)
-  `cargo run -- --master Skyrim.esm --esm Dawnguard.esm --cell ForebearsHoldoutInt01 --bsa …` — DLC interior (M46.0 / #561, repeatable `--master`)
-  `cargo run --release -- … --bench-frames 300 --bench-hold` — run 300-frame bench, print summary, **keep the engine open** so `byro-dbg` can attach (port 9876) and drive console commands against the loaded scene. Without `--bench-hold` the bench exits immediately and the debug server isn't reachable for `tex.missing` / `tex.loaded` / etc.
-Done: N23.1–N23.10 all complete. NIF block dispatcher in `crates/nif/src/blocks/mod.rs` carries the live arm count — see source.
-Key: ~48 particle types, bhkCompressedMeshShape (Skyrim collision), FO4 half-float + shader
-wetness, all 6 skinning blocks, full NiSkinPartition, NiPixelData, NiMorphData legacy keys.
-Collision import with Havok→engine transform. Normal map from BSShaderPPLighting (FO3/FNV).
-FO76/Starfield shader blocks: CRC32 flag arrays, Luminance/Translucency, stopcond on BGSM name.
-Test infra: nif_stats example + per-game integration tests + graceful per-block parse recovery.
-M26: BA2 reader (BTDX v1/v2/v3/v7/v8, GNRL + DX10) + NIF header BSStreamHeader fix for FO4/FO76.
-M26+: Oblivion clean-parse fixes via header user_version threshold (10.0.1.0 → 10.0.1.8),
-      BSStreamHeader for v10.0.1.2 / user_version>=3, and pre-Gamebryo empty-scene fallback.
-Full-archive parse rates — **ROADMAP.md compat matrix is the authoritative
-source** (refreshed each `/session-close`); the snapshot below is informational
-only and is allowed to drift one sweep behind. Latest sweep 2026-04-27:
-clean=100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%,
-FO76 97.34%, Starfield 98.6% aggregate (drift-induced truncation
-tracked at #687 / #688 / #697 / #698; SF jumped from 0.80% after #708
-closeout — BSGeometry / SkinAttach / BoneTranslations now dispatch;
-further Starfield gain post-#754 BSWeakReferenceNode). Recoverable
-rate is 100% on all except Oblivion's single hard-fail on a corrupt-
-by-design debug marker (#698). Per-archive NIF counts in
-[ROADMAP.md](ROADMAP.md) compat matrix.
-M24 (Phase 1): records/ module with WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE,
-      CONT, LVLI/LVLN, NPC_, RACE, CLAS, FACT, GLOB, GMST. Real FNV.esm parses to
-      13,684 structured records on top of cells in 0.19s release.
-Session 6: Closed 26 GitHub issues. Critical fix: reverted #149's
-NiTexturingProperty `Has Shader Textures: bool` gate (nif.xml was wrong;
-Gamebryo 2.3 source reads u32 count directly). The bool-gate regression
-was the root cause of "NiSourceTexture: failed to fill whole buffer"
-spam on every Oblivion cell load — Anvil Heinrich Oaken Halls now
-renders fully populated. Tools: new `crates/nif/examples/trace_block.rs`
-that dumps per-block positions + 64-byte hex peeks for parser debugging.
-Session 7: Starfield BA2 v3 DX10 texture extraction — v3 header has a
-12-byte extension (not 8) with a compression_method field; LZ4 block
-decompression via lz4_flex::block. Verified against the 30 Starfield
-texture archives shipped post-Shattered-Space (was 22 as of Session 7;
-re-checked 2026-05-21, #1185) + 53 vanilla FO4 BA2s (v1/v7/v8), zero
-failures. BA2 support now verified end-to-end for every version/variant.
-Session 8: 35 commits. M30 Phase 1 — Papyrus language parser (logos lexer +
-Pratt expression parser, 45 tests). M31 — RT performance at scale (batched
-BLAS builds, TLAS culling, importance-sorted shadow budget, distance-based
-ray fallback, GI hit simplification, BLAS LRU eviction, deferred SSBO
-rebuild). M32 Phase 1+2 — landscape terrain from LAND heightmap records
-with LTEX/TXST texture splatting. M34 Phase 1 — default exterior sun for
-directional lighting. Fix #251–#284: alpha test function extraction (#263),
-dark texture import (#264), instanced draw batching (#272), shadow ray
-budget (#270), subtree cache persistence (#278), Vulkan sync fixes (#280–
-#284), NIF string read optimization (#254), animation scratch buffers
-(#251–#252), performance bundle (#279). Roadmap reprioritized to renderer-
-first with M32–M48 tiered plan.
-Session 11: 72-commit bug-bash on the #341–#438 audit bundle.
-Parser correctness (Oblivion v20.0.0.5 stability — runtime size cache,
-stream drift detector, v20.2.0.5+ parallax gate). Import path correctness
-(normal-map routing, NiDynamicEffect affected_nodes, material_kind,
-BSDynamicTriShape vertex extraction, all-8 TXST slots, VMAD has_script).
-NIF import cache promoted to process-lifetime resource (#381).
-Sync/cache hardening: VkPipelineCache plumbed through every create site,
-per-(src, dst, two_sided) blend pipeline cache, TLAS build barrier
-widened, TRIANGLE_FACING_CULL_DISABLE gated on two_sided,
-gl_RayFlagsTerminateOnFirstHitEXT on reflection + glass rays.
-Session 12 (2026-04-19/20): AUDIT_FO3 + AUDIT_FNV + AUDIT_ECS sweep.
-Parser correctness:
-  — #408 blanket `allocate_vec` sweep (60+ sites across 12 NIF files);
-  — #440 `BSGeometryDataFlags` vs `NiGeometryDataFlags` split — FO3 FaceGen
-    heads render geometry correctly (was NiUnknown-demoted);
-  — #402 Oblivion KF deprecated `Ref<NiStringPalette>` trailer +
-    palette-backed string resolution — `NiTransformData` parsed: 3 → 40,623;
-  — #455 `TileShaderProperty` dedicated parser (was aliased to PPLighting);
-  — #333 `matrix3_to_quat` fast-path normalisation;
-  — #441 removed bogus SF_DOUBLE_SIDED on FO3/FNV (that bit is `Unknown_3`);
-  — #454 shared decal-flag helper so NoLighting/PPLighting stay in lockstep;
-  — #329 / #330 NiExtraData version gating (pre-10.0.1.0 `Name` absent);
-  — #350 BSShaderController tagged kind — animation importer routes.
-ESM dispatch expansion (10 → 18 record categories):
-  — #442 CREA (533 in FO3), #448 LVLC (60), #443 SCPT pre-Papyrus bytecode
-    (1257, 1184 with SCRV/SCRO cross-refs), #458 WATR/NAVI/NAVM/REGN/
-    ECZN/LGTM/HDPT/EYES/HAIR stubs.
-Renderer plumbing:
-  — #452 / #453 BSShaderTextureSet slots 3/4/5 → GpuInstance with POM
-    fragment branch (struct size pinned by `gpu_instance_is_112_bytes_std430_compatible`
-    test; Shader Struct Sync lockstep across the shaders that declare
-    `struct GpuInstance` — see `feedback_shader_struct_sync.md`);
-  — #421 window portal ray fires along -N with grazing-angle gate;
-  — #464 BFS transform propagation via VecDeque.
-Compat correctness:
-  — #439 HEDR→GameKind bands verified against disk-sampled masters;
-  — #445 `FormIdRemap` + `parse_esm_with_load_order` for multi-plugin
-    collision-free loads (CLI stays single-plugin today);
-  — #444 worldspace auto-pick adds FO3 `wasteland` EDID + `--wrld`
-    override + grid-containing preference;
-  — #463 CLMT TNAM hours → `weather_system` per-worldspace TOD clock.
-Docs hygiene:
-  — #456 date-stamped stale FPS claims across ROADMAP + game-compat;
-  — #457 FO3 Tier-1 row updated to "Interior ✓ · Exterior wired".
-  — Megaton validated parse-side at 929 REFRs (was 1609 post-NIF-expand).
-See [ROADMAP.md](ROADMAP.md#project-stats) for current test count and per-game compat matrix.
-Next: M29.5 GPU palette dispatch, M35 terrain LOD, M37 SVGF spatial filter,
-M37.3 ReSTIR-DI, FO3 exterior GPU re-bench (#457). M33 (sky/atmosphere) and
-M29 (GPU skinning) closed — confirm via ROADMAP before treating as upcoming.
-Session 27 (2026-05-02): "Chrome posterized walls" red herring nailed
-to the wrong cause across multiple sessions. Auto-loaded
-`<stem>N.bsa` siblings in `byroredux/src/asset_provider.rs` —
-`Fallout - Textures.bsa` now drags in `Fallout - Textures2.bsa`
-without a second `--textures-bsa` flag. Diagnosis: `tex.missing`
-reported 39 unique missing textures × 263 entities for
-`GSDocMitchellHouse` (walls + floor + trim); the chrome look was
-the magenta-checker placeholder × the (correctly loaded) tangent-
-space normal map. Added `DBG_BYPASS_NORMAL_MAP = 0x10` as a
-permanent bisect bit alongside `DBG_VIZ_NORMALS` / `DBG_VIZ_TANGENT`.
-With both texture archives loaded `tex.missing` drops to 1
-(`<no path, no material>` placeholder geometry). New feedback memory:
-when an artifact reads as "chrome / posterized," run `tex.missing`
-before suspecting lighting code.
+30+ milestones complete: RT multi-light (streaming RIS), BLAS compaction + LRU
+eviction, instanced draw batching, landscape terrain + splatting, exterior sun,
+TAA, SVGF, Papyrus parser, GPU skinning, water + volumetrics + bloom. NIF parser
+spans Oblivion → Starfield; the live block-dispatcher arm count lives in
+`crates/nif/src/blocks/mod.rs`. Archives: BSA v103–v105 + BA2 v1–v8.
+
+**Authoritative sources — do not duplicate state into this file:**
+- [ROADMAP.md](ROADMAP.md) — milestones, known issues, per-game **compat matrix +
+  parse rates**, project stats (test/file/LOC counts). Refreshed each `/session-close`.
+- [HISTORY.md](HISTORY.md) — session-by-session narratives + audit closeouts.
+- `git log` — fine-grained archaeology.
+
+## Usage
+
+```bash
+cargo run -- path/to/mesh.nif                       # render a loose NIF
+cargo run -- mesh.nif --kf anim.kf                  # mesh + animation
+cargo run -- --esm FalloutNV.esm --cell <id> --bsa Meshes.bsa --textures-bsa Textures.bsa   # interior cell
+cargo run -- --esm FalloutNV.esm --grid 0,0 --radius 3 --bsa …                              # exterior grid (1..=7)
+cargo run -- --master Skyrim.esm --esm Dawnguard.esm --cell <id> --bsa …                    # DLC interior (repeatable --master)
+cargo run --release -- … --bench-frames 300 --bench-hold                                    # bench, then HOLD open for byro-dbg
+```
+Operational gotchas worth knowing up front:
+- `<stem>N.bsa` siblings auto-load (`Textures.bsa` drags in `Textures2.bsa`) — see `asset_provider.rs`.
+- `--bench-hold` keeps the engine alive so `byro-dbg` can attach (port 9876) and run
+  console commands (`tex.missing`, `tex.loaded`, …); without it the bench exits and the
+  debug server is unreachable.
+- "Chrome / posterized" surfaces usually mean **missing textures** (checker placeholder ×
+  normal map), not a lighting bug — run `tex.missing` first.
+
+Full invocation set in [README.md](README.md#run).
 
 ## Git Conventions
 
 - Conventional commit messages (what + why, not how)
-- `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` on AI-assisted commits
-- Branch: `main`
-- Remote: `origin` → `github.com:matiaszanolli/ByroRedux.git`
+- No `Co-Authored-By` / AI co-author trailer — commit body only (per global instruction)
+- Branch: `main` · Remote: `origin` → `github.com:matiaszanolli/ByroRedux.git`
