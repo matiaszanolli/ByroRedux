@@ -829,7 +829,7 @@ fn parse_block_inner(
             Ok(Box::new(NiTransformInterpolator::parse(stream)?))
         }
         "NiTransformData" | "NiKeyframeData" => Ok(Box::new(NiTransformData::parse(stream)?)),
-        // NiBSpline* compressed animation (Skyrim / FO4 actor KF files).
+        // NiBSpline* compressed animation (FO3/FNV onwards, including Skyrim / FO4).
         // See issue #155. Only the CompTransform variant is commonly used;
         // the data+basis blocks are shared across all bspline interpolator
         // subclasses. anim.rs evaluates the spline at 30 Hz into TQS keys.

@@ -13,3 +13,14 @@ pub mod ffi {
         fn native_hello() -> String;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ffi;
+
+    #[test]
+    fn native_hello_returns_greeting() {
+        let msg = ffi::native_hello();
+        assert!(!msg.is_empty(), "native_hello() returned an empty string");
+    }
+}

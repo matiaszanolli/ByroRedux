@@ -44,7 +44,7 @@ pub fn extract_transform_channel(scene: &NifScene, cb: &ControlledBlock) -> Opti
         });
     }
 
-    // Fall back to the Skyrim / FO4 NiBSplineCompTransformInterpolator path.
+    // Fall back to the NiBSplineCompTransformInterpolator path (FO3/FNV onwards).
     // See issue #155. The B-spline is evaluated at BSPLINE_SAMPLE_HZ and
     // emitted as linear-interpolated TQS keys.
     if let Some(interp) = scene.get_as::<NiBSplineCompTransformInterpolator>(interp_idx) {
