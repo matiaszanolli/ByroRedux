@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Standard checks — no GPU required
+  # ──────────────────────────────────────────────────────────────────────────
+  cargo-test:
+    name: Test + Check + Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check
+        run: cargo check --workspace
+      - name: cargo test
+        run: cargo test --workspace
+      - name: cargo clippy
+        run: cargo clippy --workspace -- -D warnings
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Vulkan validation layer headless bench (VKC-006 / #1429)
+  #
+  # Uses Mesa lavapipe (software Vulkan) so no GPU is required.
+  # VK_LAYER_KHRONOS_validation is enabled; the debug messenger callback in
+  # crates/renderer/src/vulkan/debug.rs routes ERROR-severity validation
+  # messages to log::error!("[Vulkan] ..."). Any such message in the output
+  # fails this job.
+  #
+  # RT extensions (VK_KHR_acceleration_structure + VK_KHR_ray_query) are
+  # detected at runtime; the engine runs in non-RT mode when lavapipe does
+  # not expose them. A GPU-enabled self-hosted runner would exercise the full
+  # RT path.
+  # ──────────────────────────────────────────────────────────────────────────
+  vulkan-validation:
+    name: Vulkan validation layers (lavapipe)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Mesa lavapipe + Vulkan validation layers + xvfb
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers \
+            vulkan-validationlayers \
+            xvfb
+
+      - name: Build debug binary
+        run: cargo build -p byroredux
+
+      - name: Run 5-frame bench under VK_LAYER_KHRONOS_validation
+        run: |
+          # Route validation layer to lavapipe (CPU Vulkan — no GPU needed).
+          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
+          # Only capture error-level messages; every [Vulkan] line at this
+          # level is a real validation error from the debug messenger callback.
+          export RUST_LOG=error
+
+          # xvfb-run provides the display winit needs.
+          # --bench-frames exits after N rendered frames (no --bench-hold).
+          # Allow non-zero exit (no suitable device → engine bails cleanly).
+          OUTPUT=$(xvfb-run --auto-servernum \
+            cargo run -p byroredux -- --bench-frames 5 2>&1 || true)
+          echo "$OUTPUT"
+
+          # Fail if the Vulkan debug messenger fired any ERROR-severity callback.
+          if echo "$OUTPUT" | grep -qF '[Vulkan]'; then
+            echo ""
+            echo "Vulkan validation errors detected (see [Vulkan] lines above)."
+            exit 1
+          fi
