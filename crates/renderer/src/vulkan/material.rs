@@ -924,6 +924,16 @@ pub struct MaterialTable {
     /// counter restores it without the per-overflow log spam).
     /// Non-zero means raising [`MAX_MATERIALS`] is appropriate.
     overflow_count: usize,
+    /// Debug-only counter: number of times `intern_by_hash` detected a
+    /// true hash collision (two distinct `GpuMaterial` values producing
+    /// the same FxHash u64). Only reachable in debug builds where the
+    /// byte-equality check fires; the corresponding `debug_assert!` will
+    /// panic first in practice, but the counter is wired so that future
+    /// soft-warning modes can surface the collision count via telemetry
+    /// (e.g. the `mem` console command). Zero overhead in release.
+    /// See #1414.
+    #[cfg(debug_assertions)]
+    collision_count: usize,
 }
 
 impl Default for MaterialTable {
@@ -939,6 +949,8 @@ impl MaterialTable {
             index: FxHashMap::default(),
             interned_count: 0,
             overflow_count: 0,
+            #[cfg(debug_assertions)]
+            collision_count: 0,
         };
         t.seed_neutral_default();
         t
@@ -953,6 +965,10 @@ impl MaterialTable {
         self.index.clear();
         self.interned_count = 0;
         self.overflow_count = 0;
+        #[cfg(debug_assertions)]
+        {
+            self.collision_count = 0;
+        }
         self.seed_neutral_default();
     }
 
@@ -1052,6 +1068,9 @@ impl MaterialTable {
             #[cfg(debug_assertions)]
             {
                 let mat = material_factory();
+                if self.materials[id as usize] != mat {
+                    self.collision_count += 1;
+                }
                 debug_assert!(
                     self.materials[id as usize] == mat,
                     "MaterialTable hash collision: hash {:#018x} maps to two distinct \
@@ -1110,6 +1129,17 @@ impl MaterialTable {
     /// console command.
     pub fn overflow_count(&self) -> usize {
         self.overflow_count
+    }
+
+    /// Number of true FxHash collisions detected this frame (two
+    /// distinct `GpuMaterial` byte strings mapping to the same u64
+    /// hash). Only available in debug builds — zero in release.
+    /// Non-zero triggers a `debug_assert!` panic in the same
+    /// `intern_by_hash` call, so this counter primarily serves future
+    /// soft-warning modes or test introspection. See #1414.
+    #[cfg(debug_assertions)]
+    pub fn collision_count(&self) -> usize {
+        self.collision_count
     }
 
     /// Number of user-interned unique materials this frame, excluding
@@ -1207,10 +1237,10 @@ mod tests {
             "diffuseB,", "ambientR,", "ambientG,", "ambientB;",
             "skinTintA,", "skinTintR,", "skinTintG,", "skinTintB;",
             "hairTintR,", "hairTintG,", "hairTintB,", "multiLayerEnvmapStrength;",
-            "eyeCubemapScale;",
-            "multiLayerInnerThickness;",
-            "multiLayerRefractionScale,",
-            "sparkleIntensity,", "falloffStartAngle;",
+            "eyeLeftCenterX,", "eyeLeftCenterY,", "eyeLeftCenterZ,", "eyeCubemapScale;",
+            "eyeRightCenterX,", "eyeRightCenterY,", "eyeRightCenterZ,", "multiLayerInnerThickness;",
+            "multiLayerRefractionScale,", "multiLayerInnerScaleU,", "multiLayerInnerScaleV,", "sparkleR;",
+            "sparkleG,", "sparkleB,", "sparkleIntensity,", "falloffStartAngle;",
             "falloffStopAngle,", "falloffStartOpacity,", "falloffStopOpacity,", "softFalloffDepth;",
             "greyscaleLutIndex;",
             // #1147 Phase 2b — BGSM translucency suite
