@@ -7,7 +7,8 @@
 
 /// Built-in primitive kinds. The on-disk u32 reads as `0xFFFFFF##`
 /// with the low byte selecting the kind. Cast `TypeReference.id`
-/// to `u32`, then transmute into this enum via `BuiltinType::from_u32`.
+/// to `u32`, then pass it to [`BuiltinType::from_u32`], which performs
+/// a fully checked match and returns `Err` for any unrecognised tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum BuiltinType {

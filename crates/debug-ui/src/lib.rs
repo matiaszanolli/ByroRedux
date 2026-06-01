@@ -32,8 +32,6 @@
 
 pub mod panels;
 
-use std::sync::Arc;
-
 use byroredux_core::ecs::Resource;
 use egui_winit::winit;
 use winit::event::WindowEvent;
@@ -199,16 +197,3 @@ impl DebugUiState {
 pub use egui;
 pub use egui_winit;
 
-/// Builder helper for constructing the renderer-side `EguiPass`
-/// without leaking egui-ash-renderer types into the binary.
-///
-/// The renderer owns the actual pass — this is just a typed
-/// configuration value that crosses the crate boundary. The
-/// `Arc<...>` types match what `egui-ash-renderer` requires.
-pub struct EguiPassConfig {
-    pub allocator: Arc<std::sync::Mutex<gpu_allocator::vulkan::Allocator>>,
-    pub physical_device: ash::vk::PhysicalDevice,
-    pub device: ash::Device,
-    pub render_pass: ash::vk::RenderPass,
-    pub in_flight_frames: usize,
-}
