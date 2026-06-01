@@ -824,6 +824,107 @@ float specularAaRoughness(vec3 N, float roughness) {
     return sqrt(filteredR2);
 }
 
+// Direct Cook-Torrance contribution of cluster light `i` at this
+// fragment — exactly the `brdfResult * unshadowedRadiance` the WRS
+// streaming pass accumulates and the shadow pass subtracts on a hit.
+// Factored out of the pass-1 loop (#1369) so pass 2 recomputes this
+// from the light index instead of caching a vec3 per reservoir. That
+// retires the `resRadiance[NUM_RESERVOIRS]` array (192 B/thread of
+// local storage at 16 reservoirs), the dominant per-thread footprint
+// suppressing WRS occupancy. The body is copied verbatim from the
+// pass-1 attenuation + BRDF so both call sites evaluate the identical
+// expression and the unshadowed accumulation cancels bit-for-bit
+// against the shadowed subtraction. Assumes a non-interior-fill
+// point/spot/directional light that already cleared the contribution
+// gate — callers own the fill early-out and the gate.
+vec3 shadowableLightRadiance(
+    uint i, vec3 N, vec3 V, float NdotV, vec3 F0,
+    vec3 albedo, float roughness, float metalness,
+    float specStrength, vec3 specColor,
+    GpuMaterial mat, vec4 fragTangent, vec3 fragWorldPos, uint dbgFlags)
+{
+    vec3 lightPos = lights[i].position_radius.xyz;
+    float radius = lights[i].position_radius.w;
+    vec3 lightColor = lights[i].color_type.rgb;
+    float lightType = lights[i].color_type.w;
+    float falloffShape = lights[i].params.x;
+
+    vec3 L;
+    float dist;
+    float atten;
+    if (lightType < 0.5) {
+        // Point light.
+        vec3 toLight = lightPos - fragWorldPos;
+        dist = length(toLight);
+        L = toLight / max(dist, 0.001);
+        float ratio = dist / max(radius, 1.0);
+        float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+        atten = pow(window, falloffShape);
+    } else if (lightType < 1.5) {
+        // Spot light.
+        vec3 toLight = lightPos - fragWorldPos;
+        dist = length(toLight);
+        L = toLight / max(dist, 0.001);
+        vec3 spotDir = normalize(lights[i].direction_angle.xyz);
+        float spotAngle = lights[i].direction_angle.w;
+        float ratio = dist / max(radius, 1.0);
+        float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+        atten = pow(window, falloffShape);
+        float spotFactor = dot(-L, spotDir);
+        atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
+    } else {
+        // Directional light.
+        L = normalize(lights[i].direction_angle.xyz);
+        dist = 10000.0;
+        atten = 1.0;
+    }
+
+    float NdotL = max(dot(N, L), 0.0);
+
+    vec3 H = normalize(V + L);
+    float NdotH = max(dot(N, H), 0.0);
+    float HdotV = max(dot(H, V), 0.0);
+
+    float aaRoughness = ((dbgFlags & DBG_DISABLE_SPECULAR_AA) != 0u)
+        ? roughness
+        : specularAaRoughness(N, roughness);
+    float D;
+    if (mat.anisotropic > 0.0
+        && dot(fragTangent.xyz, fragTangent.xyz) > 1e-4)
+    {
+        vec3 T = normalize(fragTangent.xyz);
+        T = normalize(T - dot(T, N) * N);
+        vec3 B = normalize(cross(N, T)) * fragTangent.w;
+        float HdotX = dot(H, T);
+        float HdotY = dot(H, B);
+        float ax;
+        float ay;
+        deriveAxAy(aaRoughness, mat.anisotropic, ax, ay);
+        D = distributionGGXAniso(NdotH, HdotX, HdotY, ax, ay);
+    } else {
+        D = distributionGGX(NdotH, aaRoughness);
+    }
+    float G = geometrySmith(NdotV, NdotL, aaRoughness);
+    vec3 F = fresnelSchlick(HdotV, F0);
+
+    vec3 kD = (1.0 - F) * (1.0 - metalness);
+    vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
+    vec3 unshadowedRadiance = lightColor * atten;
+    vec3 diffuseBrdf;
+    if ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u) {
+        float HdotL = max(dot(H, L), 0.0);
+        DisneyDiffuseSplit dd = disneyDiffuseSplit(
+            albedo, roughness, mat.subsurface, mat.sheen, mat.sheenTint,
+            NdotL, NdotV, HdotL
+        );
+        diffuseBrdf = (dd.diffuse * PI + dd.sheen) * (1.0 - metalness);
+    } else {
+        diffuseBrdf = kD * albedo;
+    }
+    vec3 brdfResult = (diffuseBrdf + specular * specStrength * specColor) * NdotL;
+    return brdfResult * unshadowedRadiance;
+}
+
 // ── Parallax occlusion mapping ──────────────────────────────────────
 //
 // Standard step + linear-interpolate POM using screen-space derivatives
@@ -2043,7 +2144,7 @@ void main() {
         // pre-#1248 constant 1.5 still matches the GpuMaterial::default
         // so unauthored glass renders identically; authored values
         // (BGSM v9+, Starfield .mat) take effect.
-        float GLASS_IOR = mat.ior;
+        float GLASS_IOR = max(mat.ior, 1e-3);
         float ETA_AIR_TO_GLASS = 1.0 / GLASS_IOR;
 
         // Two view-aligned normals — one bump-mapped, one smooth:
@@ -2687,14 +2788,16 @@ void main() {
         // 64× matches the ratio of a dim fill light to a hero light.
         const float RESERVOIR_W_CLAMP = 64.0;
 
+        // #1369 — resRadiance[NUM_RESERVOIRS] retired. Pass 2 recomputes
+        // each selected light's shadowable radiance via
+        // shadowableLightRadiance() instead of caching a vec3 per slot,
+        // dropping per-thread storage from 320 B to 128 B at 16 slots.
         uint  resLight[NUM_RESERVOIRS];
         float resWSel[NUM_RESERVOIRS];
-        vec3  resRadiance[NUM_RESERVOIRS];
         float resWSum = 0.0;
         for (uint s = 0; s < NUM_RESERVOIRS; s++) {
             resLight[s] = 0xFFFFFFFFu;
             resWSel[s] = 0.0;
-            resRadiance[s] = vec3(0.0);
         }
         float resFrameSeed = cameraPos.w;
 
@@ -2817,84 +2920,20 @@ void main() {
                 continue;
             }
 
-            // PBR: Cook-Torrance BRDF (unshadowed).
-            vec3 H = normalize(V + L);
-            float NdotH = max(dot(N, H), 0.0);
-            float HdotV = max(dot(H, V), 0.0);
-
-            // Specular AA — see fallback-directional path above for
-            // the Kaplanyan-Hoffman 2016 derivation. Widening the
-            // roughness fed to D + G is the part that suppresses the
-            // bright/dark stripe aliasing on corrugated walls; F
-            // depends only on `HdotV` so it stays unchanged.
-            float aaRoughness = ((dbgFlags & DBG_DISABLE_SPECULAR_AA) != 0u)
-                ? roughness
-                : specularAaRoughness(N, roughness);
-            // #1250 — anisotropic GGX gate. Mirrors the fallback-
-            // directional path above. Skipped on every legacy NIF
-            // (mat.anisotropic == 0); only fires when authored data
-            // surfaces directional roughness AND a valid tangent
-            // exists at this fragment.
-            float D;
-            if (mat.anisotropic > 0.0
-                && dot(fragTangent.xyz, fragTangent.xyz) > 1e-4)
-            {
-                vec3 T = normalize(fragTangent.xyz);
-                // #1274 — Gram-Schmidt against N. Mirrors `perturbNormal`
-                // Path-1; without this T tilts off-axis at smoothing-
-                // group seams and the anisotropic lobe orientation
-                // drifts from the bump-mapped normal frame.
-                T = normalize(T - dot(T, N) * N);
-                vec3 B = normalize(cross(N, T)) * fragTangent.w;
-                float HdotX = dot(H, T);
-                float HdotY = dot(H, B);
-                float ax;
-                float ay;
-                deriveAxAy(aaRoughness, mat.anisotropic, ax, ay);
-                D = distributionGGXAniso(NdotH, HdotX, HdotY, ax, ay);
-            } else {
-                D = distributionGGX(NdotH, aaRoughness);
-            }
-            float G = geometrySmith(NdotV, NdotL, aaRoughness);
-            vec3 F = fresnelSchlick(HdotV, F0);
-
-            vec3 kD = (1.0 - F) * (1.0 - metalness);
-            vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
+            // PBR: Cook-Torrance direct contribution (unshadowed).
+            // #1369 — the BRDF (specular AA, anisotropic GGX gate,
+            // Disney-vs-Lambert diffuse) now lives in
+            // shadowableLightRadiance() so the shadow pass recomputes
+            // the identical value from the light index rather than
+            // caching it per reservoir. `unshadowedRadiance` is kept
+            // locally for the SSS translucency term below.
             vec3 unshadowedRadiance = lightColor * atten;
-            // #1249 — Disney diffuse for PBR-authored content; plain
-            // Lambert for legacy NIF. Same gate as the fallback-
-            // directional path above. The pre-#1249 form was
-            // `kD * albedo` (no /PI here, intentional — the
-            // pre-#1249 INV_PI was folded into a later scale step
-            // distinct from the fallback path above). Preserve that
-            // scaling.
-            //
-            // #1252 — pre-#1252 this site applied `* PI` to the
-            // whole `disneyDiffuseTerm` return to bring the diffuse
-            // /PI back to the legacy `kD * albedo` (no /PI) magnitude.
-            // That over-amplified the sheen component by ~3.14×
-            // because sheen is intentionally NOT /PI'd per Disney
-            // spec. The split helper exposes both lobes separately;
-            // apply `* PI` only to the diffuse half so sheen stays
-            // at its natural Fresnel-weighted magnitude.
-            vec3 diffuseBrdf;
-            if ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u) {
-                float HdotL = max(dot(H, L), 0.0);
-                DisneyDiffuseSplit dd = disneyDiffuseSplit(
-                    albedo, roughness, mat.subsurface, mat.sheen, mat.sheenTint,
-                    NdotL, NdotV, HdotL
-                );
-                // diffuse came out as `albedo*(...)/PI` — multiply by
-                // PI to match this site's no-/PI legacy convention.
-                // sheen came out as `Fsheen` (no /PI) — use as-is.
-                diffuseBrdf = (dd.diffuse * PI + dd.sheen) * (1.0 - metalness);
-            } else {
-                diffuseBrdf = kD * albedo;
-            }
-            vec3 brdfResult = (diffuseBrdf + specular * specStrength * specColor) * NdotL;
+            vec3 shadowableRadiance = shadowableLightRadiance(
+                i, N, V, NdotV, F0, albedo, roughness, metalness,
+                specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
 
             // Accumulate as if unshadowed.
-            Lo += brdfResult * unshadowedRadiance;
+            Lo += shadowableRadiance;
 
             // #1147 Phase 2b — subsurface translucency. Adds a back-
             // side wraparound term so light leaks through thin
@@ -2972,10 +3011,12 @@ void main() {
             // casting shadow rays for fill lights (the `radius == -1`
             // contract from `compute_directional_upload`).
             if (rtEnabled && !isInteriorFill && shadowFade > 0.01) {
-                vec3 shadowableRadiance = brdfResult * unshadowedRadiance;
-                // Target pdf: luminance of the to-be-subtracted radiance.
-                // Sampling proportional to this approximates the optimal
-                // "importance sample by potential contribution".
+                // Target pdf: luminance of the to-be-subtracted radiance
+                // (`shadowableRadiance` computed above). Sampling
+                // proportional to this approximates the optimal
+                // "importance sample by potential contribution". #1369 —
+                // only the light index + selection weight are stored; the
+                // radiance itself is recomputed in pass 2.
                 float w_i = max(dot(shadowableRadiance, vec3(0.2126, 0.7152, 0.0722)), 1e-6);
                 resWSum += w_i;
                 // Independent reservoir streams via per-slot noise offset.
@@ -2988,7 +3029,6 @@ void main() {
                     if (u * resWSum < w_i) {
                         resLight[s] = i;
                         resWSel[s] = w_i;
-                        resRadiance[s] = shadowableRadiance;
                     }
                 }
             }
@@ -3097,8 +3137,15 @@ void main() {
             if (rayQueryGetIntersectionTypeEXT(rayQuery, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
                 // Unbiased shadow subtraction: W compensates for the
                 // WRS sampling probability. Clamp to prevent negative
-                // radiance from rounding / fill overlap.
-                Lo = max(Lo - resRadiance[s] * W * shadowFade, vec3(0.0));
+                // radiance from rounding / fill overlap. #1369 — the
+                // radiance is recomputed here (only on a shadow hit) via
+                // the same shadowableLightRadiance() the streaming pass
+                // accumulated, so the subtraction cancels bit-for-bit
+                // against pass 1 instead of reading a cached vec3.
+                vec3 shadowable = shadowableLightRadiance(
+                    i, N, V, NdotV, F0, albedo, roughness, metalness,
+                    specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
+                Lo = max(Lo - shadowable * W * shadowFade, vec3(0.0));
             }
         }
     }
