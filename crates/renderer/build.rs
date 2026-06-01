@@ -49,6 +49,13 @@ fn main() {
     writeln!(out, "#define MAX_BONES_PER_MESH {MAX_BONES_PER_MESH}u").unwrap();
     writeln!(out).unwrap();
 
+    writeln!(out, "// Material kind enum (`GpuMaterial.materialKind`).").unwrap();
+    writeln!(out, "// Authoritative values: scene_buffer/constants.rs. #1401.").unwrap();
+    writeln!(out, "#define MATERIAL_KIND_GLASS {MATERIAL_KIND_GLASS}u").unwrap();
+    writeln!(out, "#define MATERIAL_KIND_EFFECT_SHADER {MATERIAL_KIND_EFFECT_SHADER}u").unwrap();
+    writeln!(out, "#define MATERIAL_KIND_NO_LIGHTING {MATERIAL_KIND_NO_LIGHTING}u").unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "// Glass / IOR ray budget").unwrap();
     writeln!(out, "#define GLASS_RAY_BUDGET {GLASS_RAY_BUDGET}u").unwrap();
     writeln!(out, "#define GLASS_RAY_COST {GLASS_RAY_COST}u").unwrap();

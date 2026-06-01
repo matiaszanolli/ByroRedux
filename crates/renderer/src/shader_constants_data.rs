@@ -40,6 +40,12 @@ pub const VERTEX_UV_OFFSET_FLOATS: u32 = 9;
 // for the vanilla-content survey that fixes this ceiling at 144 (FO76 prewardress = 133).
 pub const MAX_BONES_PER_MESH: u32 = 144;
 
+// Material kind enum (GpuMaterial.materialKind).
+// Authoritative Rust-side values live in `scene_buffer/constants.rs`. #1401.
+pub const MATERIAL_KIND_GLASS: u32 = 100;
+pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
+pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
+
 // Glass / IOR ray budget
 pub const GLASS_RAY_BUDGET: u32 = 8192;
 pub const GLASS_RAY_COST: u32 = 4;

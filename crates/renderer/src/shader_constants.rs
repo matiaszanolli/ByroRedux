@@ -53,6 +53,9 @@ mod tests {
             ("MAX_LIGHTS_PER_CLUSTER", format!("#define MAX_LIGHTS_PER_CLUSTER {MAX_LIGHTS_PER_CLUSTER}u")),
             ("VERTEX_STRIDE_FLOATS", format!("#define VERTEX_STRIDE_FLOATS {VERTEX_STRIDE_FLOATS}u")),
             ("MAX_BONES_PER_MESH", format!("#define MAX_BONES_PER_MESH {MAX_BONES_PER_MESH}u")),
+            ("MATERIAL_KIND_GLASS", format!("#define MATERIAL_KIND_GLASS {MATERIAL_KIND_GLASS}u")),
+            ("MATERIAL_KIND_EFFECT_SHADER", format!("#define MATERIAL_KIND_EFFECT_SHADER {MATERIAL_KIND_EFFECT_SHADER}u")),
+            ("MATERIAL_KIND_NO_LIGHTING", format!("#define MATERIAL_KIND_NO_LIGHTING {MATERIAL_KIND_NO_LIGHTING}u")),
             ("GLASS_RAY_BUDGET", format!("#define GLASS_RAY_BUDGET {GLASS_RAY_BUDGET}u")),
             ("GLASS_RAY_COST", format!("#define GLASS_RAY_COST {GLASS_RAY_COST}u")),
             ("WORKGROUP_X", format!("#define WORKGROUP_X {WORKGROUP_X}")),
@@ -268,6 +271,43 @@ mod tests {
                  the #define from shader_constants.glsl is the source of truth (#1190)",
             );
         }
+    }
+
+    /// #1401 — `triangle.frag` must NOT redeclare `MATERIAL_KIND_*`
+    /// as local `const uint`. The `#define`d values from the included
+    /// `shader_constants.glsl` are the single source of truth,
+    /// mirrored from `scene_buffer/constants.rs`. A local
+    /// `const uint MATERIAL_KIND_GLASS = 100u;` after `#include`
+    /// shadows the macro and breaks recompile-from-source.
+    #[test]
+    fn triangle_frag_material_kind_not_redeclared() {
+        let src = include_str!("../shaders/triangle.frag");
+        for name in [
+            "MATERIAL_KIND_GLASS",
+            "MATERIAL_KIND_EFFECT_SHADER",
+            "MATERIAL_KIND_NO_LIGHTING",
+        ] {
+            let needle = format!("const uint {name}");
+            assert!(
+                !src.contains(&needle),
+                "triangle.frag must not redeclare {name} — \
+                 the #define from shader_constants.glsl is the source of truth (#1401)",
+            );
+        }
+    }
+
+    /// #1401 — Pin shader-side `MATERIAL_KIND_*` values against the
+    /// authoritative Rust constants in `scene_buffer/constants.rs`.
+    #[test]
+    fn material_kind_matches_scene_buffer_consts() {
+        use crate::vulkan::scene_buffer::{
+            MATERIAL_KIND_EFFECT_SHADER as SB_EFFECT_SHADER,
+            MATERIAL_KIND_GLASS as SB_GLASS,
+            MATERIAL_KIND_NO_LIGHTING as SB_NO_LIGHTING,
+        };
+        assert_eq!(MATERIAL_KIND_GLASS, SB_GLASS);
+        assert_eq!(MATERIAL_KIND_EFFECT_SHADER, SB_EFFECT_SHADER);
+        assert_eq!(MATERIAL_KIND_NO_LIGHTING, SB_NO_LIGHTING);
     }
 
     /// #1190 (TD4-NEW-01) — `triangle.frag` + `triangle.vert` must

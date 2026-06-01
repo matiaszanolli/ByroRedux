@@ -23,6 +23,12 @@
 // Skinning
 #define MAX_BONES_PER_MESH 144u
 
+// Material kind enum (`GpuMaterial.materialKind`).
+// Authoritative values: scene_buffer/constants.rs. #1401.
+#define MATERIAL_KIND_GLASS 100u
+#define MATERIAL_KIND_EFFECT_SHADER 101u
+#define MATERIAL_KIND_NO_LIGHTING 102u
+
 // Glass / IOR ray budget
 #define GLASS_RAY_BUDGET 8192u
 #define GLASS_RAY_COST 4u

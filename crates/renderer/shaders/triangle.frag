@@ -1482,7 +1482,6 @@ void main() {
     // The G-buffer slots (outNormal, outMotion, outMeshID) were
     // already written above and stay valid — TAA + motion-vector
     // reprojection on flame planes still works correctly across frames.
-    const uint MATERIAL_KIND_EFFECT_SHADER = 101u;
     // #890 Stage 2 — `BSEffectShaderProperty` flag bits packed into
     // `mat.materialFlags`. The four constants below mirror
     // `byroredux_renderer::vulkan::material::material_flag::EFFECT_*`
@@ -1633,7 +1632,6 @@ void main() {
     // modulation matches the lit path's `texColor.rgb * fragColor`
     // (skipped under the SOURCE_EMISSIVE vertex mode, which means the
     // per-vertex value is itself the emit and shouldn't double-multiply).
-    const uint MATERIAL_KIND_NO_LIGHTING = 102u;
     if (mat.materialKind == MATERIAL_KIND_NO_LIGHTING) {
         bool vcEmissive = (mat.materialFlags & MAT_FLAG_VERTEX_COLOR_EMISSIVE) != 0u;
         vec3 emit = vcEmissive ? texColor.rgb : texColor.rgb * fragColor;
@@ -1949,7 +1947,6 @@ void main() {
     // whole mesh. `isWindow` refines to the lower-alpha subset for
     // the portal-escape branch below — still texColor-gated but now
     // nested under a stable parent classification. See Tier C Phase 2.
-    const uint MATERIAL_KIND_GLASS = 100u;
     bool isAlphaBlend = (inst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u;
     bool isGlass = mat.materialKind == MATERIAL_KIND_GLASS && roughness < 0.35;
     bool isWindow = isGlass && texColor.a < 0.5 && texColor.a > 0.02;
