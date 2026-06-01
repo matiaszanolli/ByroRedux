@@ -433,7 +433,7 @@ void main() {
     float reflDist; bool reflHit;
     // Reflection-miss: sky tint is the right backdrop (the reflected
     // ray escaped above the water surface).
-    vec3 reflColor = traceWaterRay(vWorldPos, R, REFLECTION_MAX_DIST, skyTint.xyz, reflDist, reflHit);
+    vec3 reflColor = traceWaterRay(vWorldPos + N * 0.05, R, REFLECTION_MAX_DIST, skyTint.xyz, reflDist, reflHit);
     if (reflHit) {
         reflColor *= exp(-reflDist * DIST_FALLOFF);
     }
@@ -454,7 +454,7 @@ void main() {
             // (the downward ray escaped the BLAS — cliff edge / sparse
             // exterior — but conceptually it should land in the deep
             // water column, NOT in the sky above). #1015.
-            vec3 hitColor = traceWaterRay(vWorldPos, Tdir, REFRACTION_MAX_DIST, push.deep.rgb, refrDist, refrHit);
+            vec3 hitColor = traceWaterRay(vWorldPos + N * 0.05, Tdir, REFRACTION_MAX_DIST, push.deep.rgb, refrDist, refrHit);
             refrColor = absorbWaterColumn(hitColor, refrHit ? refrDist : push.deep.a);
         } else {
             refrColor = push.deep.rgb;

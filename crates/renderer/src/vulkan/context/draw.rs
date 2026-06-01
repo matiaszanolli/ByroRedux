@@ -791,15 +791,15 @@ impl VulkanContext {
         //     Final AS_BUILD_WRITE → AS_BUILD_INPUT_READ barrier hands
         //     fresh BLAS to TLAS below.
         //
-        // #661 / SY-4: the barriers below use the sync1 access flag
-        // `ACCELERATION_STRUCTURE_READ_KHR` (the only AS-read flag the
-        // sync1 API surface exposes). sync2 / `cmd_pipeline_barrier2`
-        // would use the more specific
+        // #661 / SY-4 / #1436 (VKC-007): the COMPUTE→AS_BUILD barriers
+        // below use `ACCELERATION_STRUCTURE_READ_KHR` because that is
+        // what sync1 (`cmd_pipeline_barrier`) exposes. The semantically
+        // correct flag for "read vertex/index data as AS build inputs" is
         // `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR`; on every
-        // shipping driver today the two are aliased so the sync1 form
-        // is equivalent. When the renderer migrates to sync2 (#bench-
-        // gate TBD), the dst_access on every COMPUTE→AS_BUILD barrier
-        // below should switch to the more specific flag.
+        // shipping driver today the two are aliased so the sync1 form is
+        // equivalent. When the renderer migrates to sync2 / `cmd_pipeline_
+        // barrier2` (#bench-gate TBD), every COMPUTE→AS_BUILD dst_access
+        // should switch to the more-specific flag (#1436).
         //
         // Skips entirely when `skin_compute` / `accel_manager` are None
         // (no RT) or no draws are skinned.
