@@ -34,6 +34,12 @@ pub const INDEX_POOL_HARD_CAP: usize = 64_000_000;
 static VERTEX_POOL_SOFT_WARNED: Once = Once::new();
 static INDEX_POOL_SOFT_WARNED: Once = Once::new();
 
+/// Hard cap on the number of mesh handle slots. Slot IDs are cast to
+/// `u32`; this constant keeps that cast safe. A correct streaming
+/// session re-uses freed slots via drop-and-push, so realistic counts
+/// stay well below 100 k.
+pub const MAX_MESH_SLOTS: u32 = 1 << 24; // 16 M
+
 /// Pure-function check — given the current pool length and the new
 /// length after the proposed `extend_from_slice`, decide whether to
 /// allow the growth (`Ok(soft_warn_needed)`), or reject it (`Err`).
@@ -281,6 +287,14 @@ impl MeshRegistry {
         )?;
         let index_count = indices.len() as u32;
 
+        if self.meshes.len() >= MAX_MESH_SLOTS as usize {
+            bail!(
+                "MeshRegistry slot overflow: {} slots used (cap {}). \
+                 Likely a cell-unload leak — meshes are uploaded without matching drop_mesh calls.",
+                self.meshes.len(),
+                MAX_MESH_SLOTS,
+            );
+        }
         let id = self.meshes.len() as u32;
         self.meshes.push(Some(GpuMesh {
             vertex_buffer: Some(vertex_buffer),
@@ -427,6 +441,14 @@ impl MeshRegistry {
     ) -> Result<u32> {
         let (v_offset, i_offset) = self.accumulate_global_geometry(vertices, indices)?;
 
+        if self.meshes.len() >= MAX_MESH_SLOTS as usize {
+            bail!(
+                "MeshRegistry slot overflow: {} slots used (cap {}). \
+                 Likely a cell-unload leak — meshes are uploaded without matching drop_mesh calls.",
+                self.meshes.len(),
+                MAX_MESH_SLOTS,
+            );
+        }
         let id = self.meshes.len() as u32;
         self.meshes.push(Some(GpuMesh {
             vertex_buffer: None,

@@ -104,15 +104,13 @@ pub(crate) struct CachedNifImport {
 /// parse (or had zero useful geometry) so re-parses don't fire on
 /// every placement.
 ///
-/// **Memory bound:** opt-in LRU via `BYRO_NIF_CACHE_MAX` env var (#635
-/// / FNV-D3-05). Default `0` = unlimited, matching pre-#635 behaviour
-/// so short-session loads aren't penalised. Setting
-/// `BYRO_NIF_CACHE_MAX=N` caps the cache at N entries; the LRU victim
-/// is the entry with the smallest access tick (least-recently inserted
-/// *or* hit). Eviction counts surface in the `mesh.cache` debug
-/// command. M40 doorwalking is the first consumer that genuinely needs
-/// the cap — the engine's other registries (texture, mesh) are
-/// similarly unbounded today.
+/// **Memory bound:** LRU cap via `BYRO_NIF_CACHE_MAX` env var (#635 /
+/// FNV-D3-05). Default `2048` entries. Set `BYRO_NIF_CACHE_MAX=N` to
+/// override; set `BYRO_NIF_CACHE_MAX=0` to disable the cap entirely
+/// (unlimited, pre-#635 behaviour — a `warn!` fires at startup to flag
+/// the risk in long streaming sessions). The LRU victim is the entry
+/// with the smallest access tick (least-recently inserted *or* hit).
+/// Eviction counts surface in the `mesh.cache` debug command.
 pub(crate) struct NifImportRegistry {
     /// Shared bookkeeping core — entries, hits, misses, parsed/failed
     /// counts. Counterpart of `SceneImportCache.core`.
@@ -125,8 +123,8 @@ pub(crate) struct NifImportRegistry {
     /// Next access tick value to assign. Wraps at u64::MAX (~10^19
     /// touches — the cache will OOM long before this overflows).
     pub(super) next_tick: u64,
-    /// LRU cap; `0` = unlimited (default). Read once at construction
-    /// from the `BYRO_NIF_CACHE_MAX` env var.
+    /// LRU cap. `0` = unlimited (explicit via `BYRO_NIF_CACHE_MAX=0`).
+    /// Default `2048`. Read once at construction from the env var.
     pub(super) max_entries: usize,
     /// LRU evictions across the process lifetime. Stays at 0 when
     /// `max_entries == 0` (unlimited mode).
@@ -151,14 +149,20 @@ impl Default for NifImportRegistry {
 
 impl NifImportRegistry {
     pub(crate) fn new() -> Self {
-        // `BYRO_NIF_CACHE_MAX=0` and a missing env var both map to
-        // "unlimited" — the eviction loop is gated on `max_entries > 0`
-        // so the unlimited path stays allocation-free aside from the
-        // `access_tick` HashMap inserts.
+        // Default cap is 2048. `BYRO_NIF_CACHE_MAX=N` overrides it;
+        // `BYRO_NIF_CACHE_MAX=0` forces unlimited (pre-#635 behaviour).
+        // The eviction loop is gated on `max_entries > 0` so the
+        // unlimited path stays allocation-free aside from HashMap inserts.
         let max_entries = std::env::var("BYRO_NIF_CACHE_MAX")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(0);
+            .unwrap_or(2048);
+        if max_entries == 0 {
+            log::warn!(
+                "NifImportRegistry: LRU cap disabled (BYRO_NIF_CACHE_MAX=0). \
+                 RAM usage grows without bound during long exterior streaming sessions.",
+            );
+        }
         Self {
             core: ParsedNifCache::new(),
             access_tick: HashMap::new(),

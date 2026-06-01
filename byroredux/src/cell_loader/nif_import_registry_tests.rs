@@ -74,13 +74,12 @@ fn failed_parse_entry_is_remembered_and_reused() {
     assert_eq!(reg.core.parsed_count(), 0);
 }
 
-/// #635 / FNV-D3-05 — opt-in LRU eviction. With `max_entries == 0`
-/// (the default, mirrors pre-#635 behavior) the cache grows without
-/// bound and `evictions` stays at 0.
+/// #635 / FNV-D3-05 — default cap is 2048. Inserting 100 entries
+/// stays well within the cap, so no evictions fire.
 #[test]
-fn unlimited_mode_never_evicts() {
+fn default_cap_does_not_evict_small_sessions() {
     let mut reg = NifImportRegistry::new();
-    assert_eq!(reg.max_entries(), 0, "default cap is unlimited");
+    assert_eq!(reg.max_entries(), 2048, "default cap is 2048");
     for i in 0..100u32 {
         let _ = reg.insert(format!("mesh_{i}.nif"), Some(dummy_cached()));
     }
@@ -330,12 +329,12 @@ fn lru_eviction_drops_clip_handle_for_victim() {
     assert_eq!(reg.clip_handle_for("b.nif"), Some(2));
 }
 
-/// Regression for #863: when no eviction happens (default unlimited
-/// mode or cache below `max_entries`), `insert` returns an empty Vec
-/// — the no-eviction path stays allocation-free.
+/// Regression for #863: when no eviction happens (cache below
+/// `max_entries`), `insert` returns an empty Vec — the no-eviction
+/// path stays allocation-free.
 #[test]
 fn insert_returns_empty_vec_when_no_eviction() {
-    let mut reg = NifImportRegistry::new(); // default max_entries = 0 (unlimited)
+    let mut reg = NifImportRegistry::new(); // default max_entries = 2048
     let freed_a = reg.insert("a.nif".into(), Some(dummy_cached()));
     let freed_b = reg.insert("b.nif".into(), Some(dummy_cached()));
     let freed_c = reg.insert("c.nif".into(), None); // negative cache also returns empty
