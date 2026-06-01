@@ -527,10 +527,10 @@ impl super::buffers::SceneBuffers {
     ) -> Result<()> {
         // intern() in MaterialTable already caps at MAX_MATERIALS before
         // building this slice — materials.len() > MAX_MATERIALS is
-        // unreachable (#1064 / REN-D14-NEW-04). The debug_assert documents
-        // the invariant so a future refactor that breaks the cap surfaces
-        // immediately rather than silently truncating uploads.
-        debug_assert!(
+        // unreachable (#1064 / REN-D14-NEW-04). Hard assert so a future
+        // refactor that breaks the cap surfaces in release builds too,
+        // rather than silently truncating uploads.
+        assert!(
             materials.len() <= MAX_MATERIALS,
             "upload_materials: len {} > MAX_MATERIALS {}; intern() should have capped",
             materials.len(),
