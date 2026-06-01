@@ -558,14 +558,15 @@ impl AccelerationManager {
         );
 
         // VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03708: UPDATE must
-        // use the same primitiveCount as the source BUILD. When instance_count
-        // grows beyond what the last BUILD declared, we must force a full BUILD
-        // before the count increase becomes a VUID violation. This path fires
-        // only while `instance_count ∈ (built_primitive_count, max_instances]`
-        // — the TLAS already has capacity so no resize is needed, but the
-        // count mismatch would corrupt the BVH on NVIDIA / trip validation on
-        // debug builds. See #1083 / REN-D8-001.
-        if use_update && instance_count > tlas.built_primitive_count {
+        // use the same primitiveCount as the source BUILD. Any mismatch —
+        // growth or shrink — is a VUID violation that corrupts the BVH on
+        // NVIDIA and trips validation on debug builds. The grow case fires
+        // while `instance_count ∈ (built_primitive_count, max_instances]`
+        // (no resize needed but count would differ); the shrink case is
+        // normally caught by decide_use_update's length check, but we guard
+        // both directions here so a future refactor can't accidentally bypass
+        // the VUID contract. See #1083 / REN-D8-001 / #1418.
+        if use_update && instance_count != tlas.built_primitive_count {
             use_update = false;
         }
 
