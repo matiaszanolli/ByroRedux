@@ -89,11 +89,15 @@ impl AccelerationManager {
         let mut max_scratch_size: vk::DeviceSize = 0;
 
         for &(entity_id, vertex_buffer, vertex_count, index_buffer, index_count) in entities {
+            // SAFETY: vertex_buffer is a live DEVICE_LOCAL buffer with
+            // SHADER_DEVICE_ADDRESS usage, allocated by the caller.
             let vertex_address = unsafe {
                 device.get_buffer_device_address(
                     &vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer),
                 )
             };
+            // SAFETY: index_buffer is a live DEVICE_LOCAL buffer with
+            // SHADER_DEVICE_ADDRESS usage, allocated by the caller.
             let index_address = unsafe {
                 device.get_buffer_device_address(
                     &vk::BufferDeviceAddressInfo::default().buffer(index_buffer),
@@ -129,6 +133,8 @@ impl AccelerationManager {
                 .geometries(std::slice::from_ref(&geometry));
 
             let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
+            // SAFETY: `size_build_info` and primitive-count slice are correctly
+            // populated; `accel_loader` is valid for AccelerationManager's lifetime.
             unsafe {
                 self.accel_loader.get_acceleration_structure_build_sizes(
                     vk::AccelerationStructureBuildTypeKHR::DEVICE,
@@ -155,6 +161,9 @@ impl AccelerationManager {
                 .buffer(result_buffer.buffer)
                 .size(sizes.acceleration_structure_size)
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
+            // SAFETY: `accel_info` references a live result_buffer with
+            // ACCELERATION_STRUCTURE_STORAGE usage; handle is tracked in
+            // `skinned_blas` and destroyed via `drop_skinned_blas`.
             let accel = match unsafe {
                 self.accel_loader
                     .create_acceleration_structure(&accel_info, None)
@@ -210,6 +219,8 @@ impl AccelerationManager {
                 Err(e) => {
                     let err_msg = e.to_string();
                     for mut p in prepared {
+                        // SAFETY: `p.accel` was created above and not yet registered;
+                        // destroying here on error path prevents a leak.
                         unsafe {
                             self.accel_loader
                                 .destroy_acceleration_structure(p.accel, None);
@@ -224,6 +235,8 @@ impl AccelerationManager {
                 }
             }
         }
+        // SAFETY: `blas_scratch_buffer` was just sized for this batch (or already
+        // sufficient); `unwrap` is guaranteed by the phase-2 sizing logic above.
         let scratch_address = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default()
@@ -273,6 +286,9 @@ impl AccelerationManager {
                 .primitive_count(p.primitive_count)
                 .primitive_offset(0)
                 .first_vertex(0);
+            // SAFETY: `build_info` has valid dst, geometry, and scratch addresses.
+            // Scratch-serialize barrier emitted before each iteration: the pre-loop
+            // emit covers i==0; the per-iteration emit above covers i>0.
             unsafe {
                 self.accel_loader.cmd_build_acceleration_structures(
                     cmd,
@@ -289,6 +305,7 @@ impl AccelerationManager {
         // routes it through `pending_destroy_blas` with the
         // `MAX_FRAMES_IN_FLIGHT` countdown.
         for p in prepared {
+            // SAFETY: `p.accel` was just created and is live; `accel_loader` is valid.
             let device_address = unsafe {
                 self.accel_loader.get_acceleration_structure_device_address(
                     &vk::AccelerationStructureDeviceAddressInfoKHR::default()
@@ -457,11 +474,14 @@ impl AccelerationManager {
         )?;
 
         let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
+        // SAFETY: vertex_buffer is live with SHADER_DEVICE_ADDRESS usage; the
+        // caller-required compute-write → AS-input-read barrier ensures visibility.
         let vertex_address = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer),
             )
         };
+        // SAFETY: index_buffer is live with SHADER_DEVICE_ADDRESS usage.
         let index_address = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default().buffer(index_buffer),
@@ -483,6 +503,8 @@ impl AccelerationManager {
             .flags(vk::GeometryFlagsKHR::OPAQUE)
             .geometry(vk::AccelerationStructureGeometryDataKHR { triangles });
         let primitive_count = index_count / 3;
+        // SAFETY: `scratch_buffer` existence was verified by the `.context()?` call
+        // above; live with SHADER_DEVICE_ADDRESS usage.
         let scratch_address = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default().buffer(scratch_buffer.buffer),
@@ -516,6 +538,9 @@ impl AccelerationManager {
             .primitive_count(primitive_count)
             .primitive_offset(0)
             .first_vertex(0);
+        // SAFETY: `build_info` references the existing BLAS (src == dst == entry.accel);
+        // geometry is correctly populated above; the scratch-serialize barrier was
+        // emitted at function entry via `record_scratch_serialize_barrier`.
         unsafe {
             self.accel_loader.cmd_build_acceleration_structures(
                 cmd,
