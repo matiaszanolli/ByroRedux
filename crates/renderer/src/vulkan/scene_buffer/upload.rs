@@ -36,8 +36,25 @@ impl super::buffers::SceneBuffers {
         let buf = &mut self.light_buffers[frame_index];
         let mapped = buf.mapped_slice_mut()?;
 
+        // In-bounds invariant: light_buffers are allocated as
+        // sizeof::<LightHeader>() + sizeof::<GpuLight>() * MAX_LIGHTS bytes
+        // (see buffers.rs `light_buf_size`), and `count` is clamped to MAX_LIGHTS
+        // above, so `header_size + light_size * count <= mapped.len()`.
+        debug_assert!(
+            header_size + light_size * count <= mapped.len(),
+            "upload_lights: header_size({}) + light_size({}) * count({}) = {} > mapped.len()({}); \
+             buffer must be sized for LightHeader + MAX_LIGHTS * GpuLight",
+            header_size, light_size, count,
+            header_size + light_size * count,
+            mapped.len(),
+        );
+
         // SAFETY: LightHeader and GpuLight are #[repr(C)] with plain f32/u32 fields.
-        // mapped buffer is sized for MAX_LIGHTS. No overlap between header and light regions.
+        // The debug_assert above proves the write range [0 .. header_size + light_size*count]
+        // fits within `mapped`. `.add(header_size)` is valid because `header_size <
+        // mapped.len()` (at minimum the header always fits). The header and light regions
+        // are disjoint: header occupies [0, header_size), lights occupy
+        // [header_size, header_size + light_size * count). No overlap.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 &header as *const LightHeader as *const u8,
