@@ -1390,6 +1390,19 @@ impl App {
                 tlm.materials_interned = self.material_table.interned_count();
                 tlm.materials_overflow = self.material_table.overflow_count();
             }
+            // #1428 — catch any frame where we silently degraded over-cap
+            // materials to slot 0 before the Once-gated warn fires again.
+            // Only fires in debug; the `mem` console command surfaces the
+            // per-frame count in all builds.
+            debug_assert_eq!(
+                self.material_table.overflow_count(), 0,
+                "MaterialTable overflow: {} intern call(s) fell back to the \
+                 neutral-default slot 0 (MAX_MATERIALS={cap}). Run `mem` to \
+                 confirm; consider raising MAX_MATERIALS in \
+                 scene_buffer/constants.rs if this cell genuinely needs it.",
+                self.material_table.overflow_count(),
+                cap = byroredux_renderer::MAX_MATERIALS,
+            );
 
             if ctx.mesh_registry.is_geometry_dirty() {
                 if let Err(e) = ctx.mesh_registry.rebuild_geometry_ssbo(
