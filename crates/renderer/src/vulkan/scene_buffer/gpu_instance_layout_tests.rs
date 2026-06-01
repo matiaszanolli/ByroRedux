@@ -47,11 +47,12 @@ fn gpu_instance_is_112_bytes_std430_compatible() {
 /// pin at least catches the Rust-side regression so the doc-
 /// comment stays honest.
 #[test]
-fn gpu_camera_is_304_bytes() {
+fn gpu_camera_is_320_bytes() {
         assert_eq!(
             size_of::<GpuCamera>(),
-            304,
-            "GpuCamera must stay 304 B (was 288 B pre-#1210) to match the CameraUBO declaration in every shader that re-declares it — see #1028 / R-D6-01 and #1210 sun_direction addition"
+            320,
+            "GpuCamera must be 320 B (304 B pre-DOF + 16 B dof_params vec4) to match the CameraUBO \
+             declaration in every shader that re-declares it — update all 6 shaders when changing this"
         );
 }
 

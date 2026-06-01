@@ -74,6 +74,20 @@ pub(super) struct CameraView {
     /// World-space camera position — captured for particle billboard
     /// face-camera rotation.
     pub cam_pos: Vec3,
+    /// Camera right vector in world space (unit length).
+    pub cam_right: Vec3,
+    /// Camera up vector in world space (unit length).
+    pub cam_up: Vec3,
+    /// Camera forward vector in world space (unit length, points into the scene).
+    pub cam_forward: Vec3,
+    /// Perspective projection matrix (column-major, Vulkan clip space with Y-flip).
+    /// Stored separately so the renderer can apply a DOF-jittered view matrix and
+    /// recompute view_proj without re-running the full camera assembly.
+    pub proj_mat: Mat4,
+    /// Lens aperture half-radius (world units). `0.0` = pinhole / DOF disabled.
+    pub aperture: f32,
+    /// Focal distance (world units). Surfaces at this depth are in sharp focus.
+    pub focus_dist: f32,
 }
 
 /// Assemble the active camera's view-projection matrices + frustum.
@@ -83,6 +97,13 @@ pub(super) struct CameraView {
 /// `Transform` / `Camera` components on the active entity).
 pub(super) fn assemble_camera(world: &World) -> CameraView {
     let mut cam_pos = Vec3::ZERO;
+    let mut cam_right = Vec3::X;
+    let mut cam_up = Vec3::Y;
+    let mut cam_forward = -Vec3::Z;
+    let mut proj_mat = Mat4::IDENTITY;
+    let mut aperture = 0.0f32;
+    let mut focus_dist = 20.0f32;
+
     let (view_proj, frustum, vp_mat) = if let Some(active) = world.try_resource::<ActiveCamera>() {
         let cam_entity = active.0;
         drop(active);
@@ -97,7 +118,16 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
                 match (cam, t) {
                     (Some(c), Some(t)) => {
                         cam_pos = t.translation;
-                        c.projection_matrix() * Camera::view_matrix(t)
+                        // Extract world-space basis from the Transform rotation.
+                        // Camera local axes: X=right, Y=up, -Z=forward (look direction).
+                        let rot = t.rotation;
+                        cam_right = rot * Vec3::X;
+                        cam_up = rot * Vec3::Y;
+                        cam_forward = rot * (-Vec3::Z);
+                        proj_mat = c.projection_matrix();
+                        aperture = c.aperture;
+                        focus_dist = c.focus_dist;
+                        proj_mat * Camera::view_matrix(t)
                     }
                     _ => Mat4::IDENTITY,
                 }
@@ -118,5 +148,11 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
         frustum,
         vp_mat,
         cam_pos,
+        cam_right,
+        cam_up,
+        cam_forward,
+        proj_mat,
+        aperture,
+        focus_dist,
     }
 }

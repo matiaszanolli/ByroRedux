@@ -12,11 +12,32 @@ use super::super::scene_buffer::{
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::water::WaterDrawCommand;
-use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
+use super::{DofView, DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use anyhow::{Context, Result};
 use ash::vk;
 use byroredux_core::ecs::storage::EntityId;
 use std::time::Instant;
+
+/// Shirley concentric disk mapping — maps the unit square [0,1)² uniformly
+/// onto the unit disk. Returns `(u, v)` in `[-1, 1]²` with `u²+v² ≤ 1`.
+///
+/// Used for DOF aperture disk sampling: scaling the result by the lens
+/// aperture radius and adding to the camera position gives a uniform
+/// distribution of ray origins across the aperture disk.
+fn concentric_disk_sample(a: f32, b: f32) -> (f32, f32) {
+    // Map [0,1]² → [-1,1]²
+    let a = a * 2.0 - 1.0;
+    let b = b * 2.0 - 1.0;
+    if a == 0.0 && b == 0.0 {
+        return (0.0, 0.0);
+    }
+    let (r, theta) = if a.abs() > b.abs() {
+        (a, std::f32::consts::FRAC_PI_4 * (b / a))
+    } else {
+        (b, std::f32::consts::FRAC_PI_2 - std::f32::consts::FRAC_PI_4 * (a / b))
+    };
+    (r * theta.cos(), r * theta.sin())
+}
 
 /// Halton low-discrepancy sequence value at `index` (1-indexed) for `base`.
 /// Returns a value in [0, 1).
@@ -149,6 +170,11 @@ impl VulkanContext {
         fog_power: f32,
         ui_texture_handle: Option<u32>,
         sky_params: &SkyParams,
+        // Depth-of-field lens parameters. `dof.aperture == 0.0` = pinhole camera
+        // (no DOF jitter). When non-zero, the camera position is displaced each
+        // frame by a Halton(5,7)-sampled concentric disk of radius `aperture`;
+        // TAA accumulates the samples into a spatially-varying bokeh blur.
+        dof: DofView,
         timings: Option<&mut FrameTimings>,
         // `water_commands`: water-surface draws for this frame. Each
         // entry must match a `DrawCommand` with `is_water=true` that
@@ -495,7 +521,43 @@ impl VulkanContext {
             (0.0, 0.0)
         };
 
-        let vp = view_proj;
+        // DOF aperture disk jitter — applies a Halton(5,7) concentric disk
+        // sample to the camera position each frame. TAA accumulates the
+        // resulting per-frame shifts into a spatially-varying bokeh blur:
+        // surfaces at `focus_dist` project to identical NDC every frame
+        // (zero apparent motion → full temporal weight → sharp); surfaces
+        // at other depths pick up a frame-to-frame parallax proportional to
+        // their defocus amount (non-zero motion → reduced TAA weight → blur).
+        //
+        // Bases 5 and 7 are coprime to the TAA bases (2 and 3) so the
+        // 32-frame DOF period interleaves cleanly with the 16-frame TAA
+        // period without correlated low-discrepancy gaps.
+        let (effective_vp, effective_cam_pos) = if dof.aperture > 0.0 {
+            let idx = (self.frame_counter % 32) as u32 + 1;
+            let (disk_u, disk_v) =
+                concentric_disk_sample(halton(idx, 5), halton(idx, 7));
+            let lens_u = disk_u * dof.aperture;
+            let lens_v = disk_v * dof.aperture;
+
+            let pos = byroredux_core::math::Vec3::from_array(camera_pos);
+            let right = byroredux_core::math::Vec3::from_array(dof.cam_right);
+            let up = byroredux_core::math::Vec3::from_array(dof.cam_up);
+            let fwd = byroredux_core::math::Vec3::from_array(dof.cam_forward);
+
+            // Jitter the camera position on the aperture disk.
+            let jittered_eye = pos + lens_u * right + lens_v * up;
+            // All rays converge at the focal plane.
+            let focal_pt = pos + dof.focus_dist * fwd;
+
+            let jittered_view =
+                byroredux_core::math::Mat4::look_at_rh(jittered_eye, focal_pt, up);
+            let proj = byroredux_core::math::Mat4::from_cols_array(&dof.proj_mat);
+            let jvp = (proj * jittered_view).to_cols_array();
+            (jvp, jittered_eye.to_array())
+        } else {
+            (*view_proj, camera_pos)
+        };
+        let vp = &effective_vp;
         let pvp = &self.prev_view_proj;
         // Precompute inverse(viewProj) once on the CPU so shaders
         // (cluster culling, SSAO) can read it directly from the UBO
@@ -556,9 +618,9 @@ impl VulkanContext {
             // at 60 FPS (acceptable; TAA accumulation absorbs the
             // discontinuity). See #1161 / REN-D9-NEW-08.
             position: [
-                camera_pos[0],
-                camera_pos[1],
-                camera_pos[2],
+                effective_cam_pos[0],
+                effective_cam_pos[1],
+                effective_cam_pos[2],
                 (self.frame_counter & 0xFFFFFF) as f32,
             ],
             flags: [
@@ -628,6 +690,12 @@ impl VulkanContext {
                 sky_params.sun_direction[2],
                 sky_params.sun_intensity,
             ],
+            // x = aperture half-radius, y = focal distance, zw reserved.
+            // When aperture == 0.0, the DOF jitter above was skipped and
+            // the shader ignores these values. Packed here so a future
+            // screen-space DOF or CoC visualiser can read them without
+            // an extra UBO binding.
+            dof_params: [dof.aperture, dof.focus_dist, 0.0, 0.0],
         };
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)

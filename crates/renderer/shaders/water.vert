@@ -71,7 +71,8 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 fog;
     vec4 jitter;
     vec4 skyTint;
-    vec4 sunDirection; // xyz = sun direction, w = intensity. #1210 (struct-sync; not consumed in vert).
+    vec4 sunDirection;
+    vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
 };
 
 layout(location = 0) out vec3 vWorldPos;

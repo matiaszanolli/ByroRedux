@@ -22,6 +22,14 @@ pub struct Camera {
     pub far: f32,
     /// Viewport aspect ratio (width / height). Updated on window resize.
     pub aspect: f32,
+    /// Lens aperture half-radius in world units. `0.0` = pinhole camera (DOF disabled).
+    /// The renderer jitters the camera position within a disk of this radius each frame;
+    /// TAA accumulates the samples to produce a spatially-varying blur — surfaces at
+    /// `focus_dist` are sharp, surfaces at other depths are progressively blurred.
+    pub aperture: f32,
+    /// Distance to the focal plane in world units. Surfaces at this depth are in sharp focus.
+    /// Ignored when `aperture == 0.0`.
+    pub focus_dist: f32,
 }
 
 impl Camera {
@@ -31,6 +39,8 @@ impl Camera {
             near,
             far,
             aspect,
+            aperture: 0.0,
+            focus_dist: 20.0,
         }
     }
 
@@ -74,6 +84,8 @@ impl Default for Camera {
             // z-fighting appears on the LOD ring.
             far: 300000.0,
             aspect: 16.0 / 9.0,
+            aperture: 0.0,
+            focus_dist: 20.0,
         }
     }
 }

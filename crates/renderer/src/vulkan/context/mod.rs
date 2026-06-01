@@ -722,6 +722,44 @@ pub struct SkyParams {
     pub dalc_cube: Option<SkyDalcCube>,
 }
 
+/// Depth-of-field parameters for the current frame.
+///
+/// When `aperture > 0.0` the renderer jitters the camera position each frame
+/// within a disk of radius `aperture` centred on the main camera position.
+/// TAA accumulates the samples so surfaces at `focus_dist` are sharp while
+/// surfaces at other depths are progressively blurred — a physically-based
+/// thin-lens bokeh effect that costs zero extra passes.
+///
+/// Pass `DofView::default()` (aperture = 0.0) to disable DOF entirely.
+#[derive(Debug, Clone, Copy)]
+pub struct DofView {
+    /// Lens aperture half-radius in world units. `0.0` = pinhole / no DOF.
+    pub aperture: f32,
+    /// Focal distance in world units. Surfaces at this depth are in focus.
+    pub focus_dist: f32,
+    /// Camera right vector (world space, unit length).
+    pub cam_right: [f32; 3],
+    /// Camera up vector (world space, unit length).
+    pub cam_up: [f32; 3],
+    /// Camera forward vector (world space, unit length, into the scene).
+    pub cam_forward: [f32; 3],
+    /// Perspective projection matrix (column-major, Vulkan clip space with Y-flip).
+    pub proj_mat: [f32; 16],
+}
+
+impl Default for DofView {
+    fn default() -> Self {
+        Self {
+            aperture: 0.0,
+            focus_dist: 20.0,
+            cam_right: [1.0, 0.0, 0.0],
+            cam_up: [0.0, 1.0, 0.0],
+            cam_forward: [0.0, 0.0, -1.0],
+            proj_mat: byroredux_core::math::Mat4::IDENTITY.to_cols_array(),
+        }
+    }
+}
+
 impl Default for SkyParams {
     fn default() -> Self {
         Self {

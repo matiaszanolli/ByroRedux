@@ -168,11 +168,12 @@ pub struct GpuLight {
     pub params: [f32; 4],
 }
 
-/// GPU-side camera data (**304 bytes**, std140-compatible).
+/// GPU-side camera data (**320 bytes**, std140-compatible).
 ///
-/// Layout pinned by `gpu_camera_is_304_bytes` test — three `mat4` (3×64 = 192 B) +
-/// seven trailing `vec4` (7×16 = 112 B: position, flags, screen, fog,
-/// jitter, sky_tint, sun_direction — post-#925 / #1028 / #1210) → 304 B.
+/// Layout pinned by `gpu_camera_is_320_bytes` test — three `mat4` (3×64 = 192 B) +
+/// eight trailing `vec4` (8×16 = 128 B: position, flags, screen, fog,
+/// jitter, sky_tint, sun_direction, dof_params — extended from 304 B in
+/// the DOF implementation) → 320 B.
 /// Every
 /// shader that re-declares this struct
 /// MUST keep field order and field count in lockstep:
@@ -249,6 +250,11 @@ pub struct GpuCamera {
     /// declaration shape to match across triangle.frag/.vert +
     /// cluster_cull.comp + caustic_splat.comp + water.frag.
     pub sun_direction: [f32; 4],
+    /// x = aperture half-radius (world units), y = focal distance (world units),
+    /// zw = reserved (0). When x == 0.0 the camera is a pinhole (no DOF jitter
+    /// was applied this frame). Available to shaders for future screen-space DOF
+    /// or circle-of-confusion visualisation without an extra UBO binding.
+    pub dof_params: [f32; 4],
 }
 
 impl Default for GpuCamera {
@@ -279,6 +285,7 @@ impl Default for GpuCamera {
             // caustic contribution (water.frag's gate is on intensity
             // > 0, see Phase D below).
             sun_direction: [0.0, -1.0, 0.0, 0.0],
+            dof_params: [0.0; 4],
         }
     }
 }

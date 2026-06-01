@@ -243,6 +243,21 @@ pub(crate) struct RenderFrameView {
     /// `fog_clip` for the activation contract.
     pub fog_power: f32,
     pub sky: SkyParams,
+    /// Camera right vector (world space, unit length). Used by the renderer
+    /// to compute the per-frame aperture disk offset for depth of field.
+    pub cam_right: [f32; 3],
+    /// Camera up vector (world space, unit length).
+    pub cam_up: [f32; 3],
+    /// Camera forward vector (world space, unit length, into the scene).
+    pub cam_forward: [f32; 3],
+    /// Perspective projection matrix (column-major, Vulkan clip space).
+    /// Stored separately so the renderer can apply a DOF-jittered view
+    /// matrix and recompute view_proj without reassembling the camera.
+    pub proj_mat: [f32; 16],
+    /// Lens aperture half-radius (world units). `0.0` = pinhole / no DOF.
+    pub aperture: f32,
+    /// Focal distance (world units). Surfaces at this depth are sharp.
+    pub focus_dist: f32,
 }
 
 /// Build the view-projection matrix and draw command list from ECS queries.
@@ -322,6 +337,12 @@ pub(crate) fn build_render_data(
         frustum,
         vp_mat,
         cam_pos,
+        cam_right,
+        cam_up,
+        cam_forward,
+        proj_mat,
+        aperture,
+        focus_dist,
     } = camera::assemble_camera(world);
 
     // Static mesh main loop — see `render::static_meshes::collect_static_mesh_draws`.
@@ -506,6 +527,12 @@ pub(crate) fn build_render_data(
         fog_clip,
         fog_power,
         sky,
+        cam_right: cam_right.to_array(),
+        cam_up: cam_up.to_array(),
+        cam_forward: cam_forward.to_array(),
+        proj_mat: proj_mat.to_cols_array(),
+        aperture,
+        focus_dist,
     }
 }
 

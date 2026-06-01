@@ -109,6 +109,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 jitter;
     vec4 skyTint;
     vec4 sunDirection; // xyz = sun world-space direction (light travel), w = intensity. #1210.
+    vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;

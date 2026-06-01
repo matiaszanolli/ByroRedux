@@ -1499,6 +1499,14 @@ impl App {
             // Phase 15 — close pre-draw bracket, open draw-call.
             rof_pre_draw_ns = rof_pre_t0.elapsed().as_nanos() as u64;
             let rof_draw_call_t0 = Instant::now();
+            let dof = byroredux_renderer::DofView {
+                aperture: frame.aperture,
+                focus_dist: frame.focus_dist,
+                cam_right: frame.cam_right,
+                cam_up: frame.cam_up,
+                cam_forward: frame.cam_forward,
+                proj_mat: frame.proj_mat,
+            };
             match ctx.draw_frame(
                 clear_color,
                 &frame.view_proj,
@@ -1516,6 +1524,7 @@ impl App {
                 frame.fog_power,
                 ui_tex,
                 &frame.sky,
+                dof,
                 frame_timings.as_mut(),
                 &self.water_commands,
                 compute_underwater_params(&self.world),
