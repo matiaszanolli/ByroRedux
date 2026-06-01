@@ -1722,7 +1722,7 @@ impl VulkanContext {
                 // frame's `clear_pre_render_pass` doesn't trip
                 // VUID-vkCmdDraw-None-09600 (the barrier assumes
                 // `oldLayout = GENERAL`). Mirror of CausticPipeline's
-                // initialize_layouts call at line 1800 above.
+                // initialize_layouts call in the caustic block below.
                 if let Err(e) = unsafe {
                     a.initialize_layouts(&device, &graphics_queue, transfer_pool)
                 } {
@@ -1798,20 +1798,23 @@ impl VulkanContext {
         // ray-march integration. Skipped silently on failure — the
         // dispatch site is gated on `Some` so the rest of the
         // pipeline stays unaffected.
-        let volumetrics = match VolumetricsPipeline::new(&device, &gpu_allocator, pipeline_cache) {
-            Ok(v) => {
-                if let Err(e) =
-                    unsafe { v.initialize_layouts(&device, &graphics_queue, transfer_pool) }
-                {
-                    log::warn!("Volumetrics froxel layout init failed: {e}");
-                }
-                Some(v)
-            }
+        let mut volumetrics = match VolumetricsPipeline::new(&device, &gpu_allocator, pipeline_cache) {
+            Ok(v) => Some(v),
             Err(e) => {
                 log::warn!("Volumetrics pipeline creation failed: {e} — no volumetric lighting");
                 None
             }
         };
+        if let Some(ref v) = volumetrics {
+            if let Err(e) =
+                unsafe { v.initialize_layouts(&device, &graphics_queue, transfer_pool) }
+            {
+                log::warn!("Volumetrics froxel layout init failed: {e} — disabling volumetrics");
+                if let Some(mut pipe) = volumetrics.take() {
+                    unsafe { pipe.destroy(&device, &gpu_allocator) };
+                }
+            }
+        }
 
         // 14. Mesh registry (empty — meshes uploaded by the application)
         let mesh_registry = MeshRegistry::new();
