@@ -68,7 +68,13 @@ fn check_validation_layer_support(entry: &ash::Entry) -> Result<()> {
     for required in VALIDATION_LAYERS {
         let found = available
             .iter()
-            .any(|layer| unsafe { CStr::from_ptr(layer.layer_name.as_ptr()) } == *required);
+            .any(|layer| {
+                // SAFETY: VkLayerProperties::layerName is a null-terminated [c_char; 256]
+                // array per the Vulkan spec. The pointer is valid for the lifetime of
+                // `layer` (borrowed from the `available` Vec for this iteration).
+                let name = unsafe { CStr::from_ptr(layer.layer_name.as_ptr()) };
+                name == *required
+            });
         if !found {
             anyhow::bail!(
                 "Required validation layer {:?} not available. \

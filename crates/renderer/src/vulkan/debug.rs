@@ -47,6 +47,10 @@ unsafe extern "system" fn debug_callback(
         return vk::FALSE;
     }
 
+    // SAFETY: `callback_data` non-null is guaranteed by the check above.
+    // `data.p_message` is null-checked below; when non-null the Vulkan spec
+    // guarantees it is a valid null-terminated C string for the duration of
+    // the callback invocation.
     let msg = unsafe {
         let data = &*callback_data;
         if data.p_message.is_null() {

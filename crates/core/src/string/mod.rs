@@ -230,6 +230,8 @@ mod tests {
         let long_mixed = {
             let mut s = long_upper.clone();
             // Force a couple of lowercase letters so case-fold is observable.
+            // SAFETY: only ASCII single-byte codepoints are written (b'x' = 0x78);
+            // replacing an ASCII 'X' (0x58) with b'x' keeps the string valid UTF-8.
             unsafe {
                 let bytes = s.as_bytes_mut();
                 bytes[0] = b'x';
