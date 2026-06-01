@@ -772,6 +772,8 @@ impl VolumetricsPipeline {
             "VolumetricsPipeline::dispatch called without prior write_tlas() for frame {}",
             frame,
         );
+        // Reset latch so the assert fires if write_tlas() is skipped next frame.
+        self.tlas_written[frame] = false;
         // ── Stage A: write injection-pass UBO ────────────────────────
         // The buffer is HOST_VISIBLE + HOST_COHERENT via
         // `GpuBuffer::create_host_visible`, but the execution

@@ -2970,7 +2970,7 @@ impl VulkanContext {
                         &self.device,
                         cmd,
                         *queue_guard,
-                        self.command_pool,
+                        self.transfer_pool,
                         img as u32,
                         &egui_ctx,
                         output,
