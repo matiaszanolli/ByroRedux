@@ -617,7 +617,7 @@ pub(super) fn collect_force_fields(
 /// geyser NIF). Multi-emitter NIFs would need to walk each
 /// `NiParticleSystem.modifiers` list to attribute curves to specific
 /// emitters; deferred until a multi-emitter regression surfaces. See
-/// #707 / FX-2 + #1345.
+/// #707 / FX-2 + #1345 + #1402.
 pub(super) fn extract_first_color_curve(
     scene: &NifScene,
 ) -> Option<crate::import::ParticleColorCurve> {
@@ -709,8 +709,9 @@ pub(super) fn extract_emitter_params(
 /// even when the keyed `data_ref` is NULL it must not leak through the
 /// constant-value branch as a ~3.4e38 spawn rate (cap-spawning every frame,
 /// #1364). Scene-level first-match, same scope caveat as
-/// [`extract_first_color_curve`]. See `docs/engine/nifal.md` — particles
-/// spawn-rate follow-up.
+/// [`extract_first_color_curve`] — secondary emitters in a multi-emitter NIF
+/// share the first emitter's rate; deferred until a regression surfaces (#1402).
+/// See `docs/engine/nifal.md` — particles spawn-rate follow-up.
 pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
     use crate::blocks::interpolator::{NiFloatData, NiFloatInterpolator};
     use crate::blocks::particle::{NiPSysEmitterCtlr, NiPSysEmitterCtlrData};

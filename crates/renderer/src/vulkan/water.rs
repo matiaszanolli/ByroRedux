@@ -463,6 +463,10 @@ impl WaterPipeline {
             &[],
         );
 
+        // SAFETY: WaterPush is #[repr(C)] + Copy with only [f32; 4] fields —
+        // no padding bytes, no invalid byte patterns, trivially initialised.
+        // `push` is a valid shared reference, so the pointer is aligned and
+        // non-null; the byte slice is bounded exactly by size_of::<WaterPush>().
         let bytes = std::slice::from_raw_parts(
             (push as *const WaterPush) as *const u8,
             std::mem::size_of::<WaterPush>(),
