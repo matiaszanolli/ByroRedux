@@ -1990,23 +1990,38 @@ impl VulkanContext {
             }
         }
 
+        // TAA UBO — fold into the bulk barrier below (#1397 / NCPS-03).
+        // upload_params writes the host-visible param_buffers[frame];
+        // the HOST→COMPUTE dependency is covered by the bulk barrier's
+        // dst_stage = COMPUTE_SHADER, so no per-dispatch barrier is needed.
+        if !self.taa_failed {
+            if let Some(ref mut taa) = self.taa {
+                if let Err(e) = taa.upload_params(&self.device, frame) {
+                    log::warn!("TAA upload_params failed: {e}");
+                }
+            }
+        }
+
+        // Bloom UBOs — same fold (#1397 / NCPS-03). Per-mip extents are
+        // known pre-render-pass; only the input_view descriptor update
+        // (which depends on the render-pass HDR output) stays in dispatch().
+        if let Some(ref mut bloom) = self.bloom {
+            if let Err(e) = bloom.upload_params(&self.device, frame) {
+                log::warn!("bloom upload_params failed: {e}");
+            }
+        }
+
         // Barrier: make the instance SSBO host write (and any remaining
         // light/camera/bone host writes) visible to the vertex + fragment
-        // shaders in the upcoming render pass. Also covers the composite
-        // UBO host write (uploaded just above) — the composite fragment
-        // shader's `UNIFORM_READ` at `FRAGMENT_SHADER` stage is already
-        // in this barrier's destination mask, so the same execution
-        // dependency carries through (#909 / REN-D1-NEW-03 fold). The
-        // COMPUTE_SHADER stage was added to fold the SVGF UBO host
-        // barrier into this same execution dependency (#961 /
-        // REN-D10-NEW-04); the SVGF dispatch reads `param_buffers[frame]`
-        // at COMPUTE_SHADER stage and the host write above completes
-        // before this barrier so the same fold pattern applies. Other
-        // post-render-pass compute consumers (TAA / caustic / volumetrics
-        // / SSAO / bloom) still emit their own per-dispatch HOST→COMPUTE
-        // barriers — bundling them into this barrier is the same fold
-        // and is tracked as the #961 sibling sweep. Required by Vulkan
-        // spec even for HOST_COHERENT memory.
+        // shaders in the upcoming render pass. Also covers all UBO host
+        // writes uploaded above (composite, SVGF, TAA, bloom) — each
+        // write completes before this barrier and the barrier's dst_stage
+        // includes COMPUTE_SHADER, so every post-render-pass compute
+        // consumer that had its UBO folded here needs no per-dispatch
+        // HOST→COMPUTE barrier. Fold history: composite (#909 /
+        // REN-D1-NEW-03), SVGF (#961 / REN-D10-NEW-04), TAA + bloom
+        // (#1397 / NCPS-03). Required by Vulkan spec even for
+        // HOST_COHERENT memory.
         // HOST → VERTEX|FRAGMENT|COMPUTE|DRAW_INDIRECT (instance SSBO + UBOs)
         unsafe {
             memory_barrier(

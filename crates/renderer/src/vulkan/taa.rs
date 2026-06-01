@@ -636,23 +636,13 @@ impl TaaPipeline {
         })
     }
 
-    /// Dispatch TAA. Must run after the main render pass (so HDR / motion /
-    /// mesh_id are in SHADER_READ_ONLY_OPTIMAL) and before composite
-    /// (which samples `output_view(frame)` in GENERAL).
+    /// Write the per-frame TAA UBO into the mapped host-visible buffer.
     ///
-    /// # Safety
-    /// `cmd` must be a recording command buffer. `frame < MAX_FRAMES_IN_FLIGHT`.
-    pub unsafe fn dispatch(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) -> Result<()> {
-        // #648 / RP-2 SIBLING — same first-`MAX_FRAMES_IN_FLIGHT`
-        // history-reset window as SVGF. The TAA path's
-        // `recreate_on_resize` zeroes `frames_since_creation` (line
-        // 702), and the param.y reset flag forces the shader to
-        // skip the temporal tap on the freshly-allocated history.
+    /// Must be called BEFORE the pre-render-pass bulk HOST→{VS|FS|COMPUTE}
+    /// barrier in `draw_frame` so the host write folds into that barrier's
+    /// existing execution dependency rather than emitting a redundant barrier
+    /// inside `dispatch`. Mirrors the SVGF fold from #961 / REN-D10-NEW-04.
+    pub fn upload_params(&mut self, device: &ash::Device, frame: usize) -> Result<()> {
         let first_frame = if should_force_history_reset(self.frames_since_creation) {
             1.0
         } else {
@@ -668,17 +658,25 @@ impl TaaPipeline {
             // 0.1 = 10% current, 90% history — canonical TAA blend.
             params: [0.1, first_frame, 0.0, 0.0],
         };
-        self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))?;
+        self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))
+    }
 
-        // HOST → COMPUTE_SHADER (UBO flush before dispatch).
-        memory_barrier(
-            device, cmd,
-            vk::PipelineStageFlags::HOST,
-            vk::AccessFlags::HOST_WRITE,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::AccessFlags::UNIFORM_READ,
-        );
-
+    /// Dispatch TAA. Must run after the main render pass (so HDR / motion /
+    /// mesh_id are in SHADER_READ_ONLY_OPTIMAL) and before composite
+    /// (which samples `output_view(frame)` in GENERAL).
+    ///
+    /// [`Self::upload_params`] must have been called this frame BEFORE the
+    /// pre-render-pass bulk barrier so the UBO write is covered by that
+    /// barrier's HOST→COMPUTE execution dependency.
+    ///
+    /// # Safety
+    /// `cmd` must be a recording command buffer. `frame < MAX_FRAMES_IN_FLIGHT`.
+    pub unsafe fn dispatch(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) -> Result<()> {
         // Order this frame's write after any lingering sample of the same
         // slot (layout stays GENERAL). The in-flight fence already
         // guarantees the previous GPU work on this slot has completed.
@@ -887,5 +885,55 @@ impl TaaPipeline {
                 allocator.lock().expect("allocator lock").free(a).ok();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// NCPS-05 — CPU-side guard for the first-frame flag. The shader's
+    /// `params.params.y > 0.5` branch skips the temporal tap when history
+    /// is uninitialized; this test pins the host-side computation so a
+    /// refactor can't silently break the flag before it reaches the GPU.
+    #[test]
+    fn first_frame_params_y_is_one_when_frames_since_creation_is_zero() {
+        assert!(
+            should_force_history_reset(0),
+            "frame 0 must trigger history reset"
+        );
+        let first_frame = if should_force_history_reset(0) {
+            1.0f32
+        } else {
+            0.0
+        };
+        let params = TaaParams {
+            screen: [1920.0, 1080.0, 1.0 / 1920.0, 1.0 / 1080.0],
+            params: [0.1, first_frame, 0.0, 0.0],
+        };
+        assert_eq!(
+            params.params[1], 1.0,
+            "params.y must be 1.0 on the first frame so the shader skips the undefined history tap"
+        );
+    }
+
+    /// Steady-state sanity: once history is warm, params.y must be 0.0.
+    #[test]
+    fn params_y_is_zero_once_history_is_warm() {
+        let warm_frame = MAX_FRAMES_IN_FLIGHT as u32; // first frame past the reset window
+        assert!(
+            !should_force_history_reset(warm_frame),
+            "frame {warm_frame} must not force history reset"
+        );
+        let first_frame = if should_force_history_reset(warm_frame) {
+            1.0f32
+        } else {
+            0.0
+        };
+        let params = TaaParams {
+            screen: [1920.0, 1080.0, 1.0 / 1920.0, 1.0 / 1080.0],
+            params: [0.1, first_frame, 0.0, 0.0],
+        };
+        assert_eq!(params.params[1], 0.0, "params.y must be 0.0 in steady state");
     }
 }

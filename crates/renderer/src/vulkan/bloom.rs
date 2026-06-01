@@ -416,30 +416,15 @@ impl BloomPipeline {
     /// The scene HDR view must already be in
     /// `SHADER_READ_ONLY_OPTIMAL`; the post-render-pass `final_layout`
     /// transition handles that for the composite HDR.
-    pub unsafe fn dispatch(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-        input_view: vk::ImageView,
-    ) -> Result<()> {
-        // Rewrite binding 0 of the very first down set to point at
-        // this frame's scene HDR. All other down sets (1..N) point
-        // at our own internally-owned mip views, written once at
-        // construction.
+    /// Write per-mip UBOs into the mapped host-visible param buffers.
+    ///
+    /// Must be called BEFORE the pre-render-pass bulk HOST→{VS|FS|COMPUTE}
+    /// barrier in `draw_frame` so host writes fold into that barrier's
+    /// existing execution dependency. Mirrors the SVGF/TAA fold (#961).
+    /// The descriptor update for `input_view` (HDR scene output) still
+    /// happens inside `dispatch` because it depends on the render pass.
+    pub fn upload_params(&mut self, device: &ash::Device, frame: usize) -> Result<()> {
         let f = &mut self.frames[frame];
-
-        let scene_info = [vk::DescriptorImageInfo::default()
-            .sampler(self.sampler)
-            .image_view(input_view)
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-        let scene_write = write_combined_image_sampler(f.down_descriptor_sets[0], 0, &scene_info);
-        device.update_descriptor_sets(&[scene_write], &[]);
-
-        // Compute and upload the per-mip params for both chains.
-        // dt is constant under linear distribution (matches the
-        // injection / integration shaders' `dt` shape — no per-frame
-        // change), but the resolutions differ per mip.
         for i in 0..BLOOM_MIP_COUNT {
             let src_extent = if i == 0 {
                 self.extent
@@ -458,9 +443,6 @@ impl BloomPipeline {
             f.down_param_buffers[i].write_mapped(device, std::slice::from_ref(&p))?;
         }
         for i in 0..(BLOOM_MIP_COUNT - 1) {
-            // up_mips[i] = upsample(smaller) + same.
-            // smaller = up_mips[i+1] for i < N-2; for i == N-2,
-            // smaller = down_mips[N-1] (the seed of the up chain).
             let smaller_extent = if i + 1 < BLOOM_MIP_COUNT - 1 {
                 f.up_mips[i + 1].extent
             } else {
@@ -477,15 +459,32 @@ impl BloomPipeline {
             };
             f.up_param_buffers[i].write_mapped(device, std::slice::from_ref(&p))?;
         }
+        Ok(())
+    }
 
-        // HOST → COMPUTE_SHADER (UBO flush before dispatch).
-        memory_barrier(
-            device, cmd,
-            vk::PipelineStageFlags::HOST,
-            vk::AccessFlags::HOST_WRITE,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::AccessFlags::UNIFORM_READ,
-        );
+    /// Dispatch bloom. [`Self::upload_params`] must have been called this
+    /// frame BEFORE the pre-render-pass bulk barrier so the UBO writes are
+    /// covered by that barrier's HOST→COMPUTE execution dependency.
+    pub unsafe fn dispatch(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        input_view: vk::ImageView,
+    ) -> Result<()> {
+        // Rewrite binding 0 of the very first down set to point at
+        // this frame's scene HDR. All other down sets (1..N) point
+        // at our own internally-owned mip views, written once at
+        // construction. This descriptor update depends on render-pass
+        // output so it cannot move to the pre-barrier upload phase.
+        let f = &mut self.frames[frame];
+
+        let scene_info = [vk::DescriptorImageInfo::default()
+            .sampler(self.sampler)
+            .image_view(input_view)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let scene_write = write_combined_image_sampler(f.down_descriptor_sets[0], 0, &scene_info);
+        device.update_descriptor_sets(&[scene_write], &[]);
 
         let subresource = super::descriptors::color_subresource_single_mip();
 
