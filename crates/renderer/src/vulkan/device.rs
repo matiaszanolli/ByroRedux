@@ -81,16 +81,13 @@ pub struct DeviceCapabilities {
     /// query pool creation skips cleanly on a hypothetical driver
     /// that lacks it.
     pub timestamp_supported: bool,
-    /// `synchronization2` from `VkPhysicalDeviceVulkan13Features` (or
-    /// the equivalent KHR extension). When enabled,
-    /// `PipelineStageFlags::NONE` (== 0) becomes a legal stage-mask
-    /// value in sync1 APIs like `vkCmdPipelineBarrier`; the renderer
-    /// has used `NONE` since #1160 / #949 / #1100 / #1121 / #1122 as
-    /// the canonical "no further sync required" form. Without this
-    /// feature enabled the validation layer flags every such call
-    /// site (correctly per the sync1 spec). Universally available on
-    /// any GPU exposing Vulkan 1.3 — RTX 20-series and later on
-    /// NVIDIA, RDNA1 and later on AMD, Arc on Intel.
+    /// `synchronization2` from `VkPhysicalDeviceVulkan13Features`.
+    /// Required by the renderer: `PipelineStageFlags::NONE` (== 0) is
+    /// only a legal stage-mask value in sync1 `vkCmdPipelineBarrier`
+    /// calls when this feature is enabled (VUID-vkCmdPipelineBarrier-
+    /// srcStageMask-4957). `is_device_suitable` rejects any GPU that
+    /// doesn't expose it, so this field is always `true` at runtime.
+    /// Kept in `DeviceCapabilities` for diagnostic logging only. #1437.
     pub synchronization2_supported: bool,
     /// `VK_EXT_memory_budget` exposes a live per-heap usage / budget
     /// pair via `vkGetPhysicalDeviceMemoryProperties2` chained with
@@ -103,6 +100,16 @@ pub struct DeviceCapabilities {
     /// 2018; the gate exists so device creation doesn't fail when a
     /// SoC / software rasteriser doesn't advertise it.
     pub memory_budget_supported: bool,
+    /// `textureCompressionBC` from `VkPhysicalDeviceFeatures`. Required
+    /// to create images with BC1/BC2/BC3/BC4/BC5/BC6H/BC7 compressed
+    /// formats. Without this feature enabled the driver rejects every
+    /// BC-compressed `vkCreateImage` call — all DDS textures (which
+    /// Bethesda BSA archives store exclusively as BC-family formats)
+    /// fall back to the checker placeholder. Universally available on
+    /// desktop GPUs (x86/x64 hardware since DX10-era); the gate exists
+    /// for completeness and catches hypothetical SoC / software
+    /// rasteriser configurations.
+    pub texture_compression_bc: bool,
 }
 
 /// Sum of `VkMemoryHeap.size` across every `DEVICE_LOCAL` heap exposed
@@ -193,7 +200,10 @@ pub fn pick_physical_device(
         }
     }
 
-    anyhow::bail!("No suitable GPU found (need graphics + present queues and swapchain support)")
+    anyhow::bail!(
+        "No suitable GPU found (need graphics + present queues, swapchain support, \
+         and Vulkan 1.3 synchronization2 — RTX 20-series / RDNA1 / Arc or newer required)"
+    )
 }
 
 fn is_device_suitable(
@@ -247,21 +257,23 @@ fn is_device_suitable(
     };
     let multi_draw_indirect_supported = features.multi_draw_indirect == vk::TRUE;
     let fill_mode_non_solid_supported = features.fill_mode_non_solid == vk::TRUE;
+    let texture_compression_bc = features.texture_compression_bc == vk::TRUE;
 
-    // Probe Vulkan 1.3 core feature `synchronization2`. Done via
-    // `get_physical_device_features2` with `PhysicalDeviceVulkan13Features`
-    // chained — drivers that don't recognise the struct return it
-    // zero-initialised, so the field reads as `vk::FALSE` and the
-    // capability is reported false. This is the right behaviour on
-    // pre-1.3 hardware (Maxwell, GCN1) — the renderer's NONE
-    // stage-masks remain validation warnings on those devices but the
-    // engine still runs correctly under sync1 compatibility.
+    // Probe Vulkan 1.3 core feature `synchronization2`. Required: the
+    // renderer uses `PipelineStageFlags::NONE` in sync1 barriers
+    // across bloom, SSAO, caustic, texture upload, and volumetrics.
+    // Without this feature those barriers violate VUID-vkCmdPipeline
+    // Barrier-srcStageMask-4957. Available on all RTX-class GPUs
+    // (Vulkan 1.3 core); devices that return FALSE are rejected. #1437.
     let mut vulkan13_features = vk::PhysicalDeviceVulkan13Features::default();
     let mut features2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut vulkan13_features);
     unsafe {
         instance.get_physical_device_features2(device, &mut features2);
     }
     let synchronization2_supported = vulkan13_features.synchronization2 == vk::TRUE;
+    if !synchronization2_supported {
+        return Ok(None);
+    }
 
     // Query descriptor indexing properties for the UPDATE_AFTER_BIND bindless
     // array ceiling. Vulkan 1.2 core exposes this via the pNext chain on
@@ -370,6 +382,7 @@ fn is_device_suitable(
                     == vk::TRUE,
                 synchronization2_supported,
                 memory_budget_supported,
+                texture_compression_bc,
             },
         ))),
         _ => Ok(None),
@@ -408,6 +421,7 @@ pub fn create_logical_device(
     // rejects any pipeline where pAttachments[i] != pAttachments[0].
     let device_features = vk::PhysicalDeviceFeatures::default()
         .sampler_anisotropy(caps.sampler_anisotropy_supported)
+        .texture_compression_bc(caps.texture_compression_bc)
         .independent_blend(true)
         // #309 — `vkCmdDrawIndexedIndirect` with drawCount > 1
         // collapses the per-batch `cmd_draw_indexed` loop into one API
@@ -467,29 +481,23 @@ pub fn create_logical_device(
     let mut ray_query_features =
         vk::PhysicalDeviceRayQueryFeaturesKHR::default().ray_query(caps.ray_query_supported);
 
-    // Vulkan 1.3 core feature chain. Only `synchronization2` matters
-    // for us today — enabling it makes `PipelineStageFlags::NONE` a
-    // legal stage-mask value in sync1 `vkCmdPipelineBarrier` calls and
-    // subpass dependencies, which the renderer has used since #1160 /
-    // #949 / #1100 / #1121 / #1122 as the canonical "no further sync
-    // required" form. Pre-#1160 the form was `BOTTOM_OF_PIPE`; both
-    // continue to work on sync2-enabled devices, so the flip is
-    // additive. Skipped on devices that don't expose Vulkan 1.3 — the
-    // validation warnings remain but the engine still runs under sync1
-    // compatibility.
-    let mut vulkan13_features = vk::PhysicalDeviceVulkan13Features::default()
-        .synchronization2(caps.synchronization2_supported);
+    // Vulkan 1.3 core feature chain. `synchronization2` is required
+    // (#1437) — `is_device_suitable` already rejected any GPU without
+    // it, so this is always `true`. The feature makes
+    // `PipelineStageFlags::NONE` a legal stage-mask in sync1
+    // `vkCmdPipelineBarrier` calls (bloom, SSAO, caustic, texture,
+    // volumetrics all use NONE as the "no prior writes" form since
+    // #1160 / #949 / #1100 / #1121 / #1122).
+    let mut vulkan13_features =
+        vk::PhysicalDeviceVulkan13Features::default().synchronization2(true);
 
-    // Always push Vulkan 1.2 features (descriptor indexing is needed for
-    // bindless textures even without RT). RT features are only pushed when available.
+    // Always push Vulkan 1.2 + 1.3 features. RT features are only pushed when available.
     let mut create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_create_infos)
         .enabled_features(&device_features)
         .enabled_extension_names(&extensions)
-        .push_next(&mut vulkan12_features);
-    if caps.synchronization2_supported {
-        create_info = create_info.push_next(&mut vulkan13_features);
-    }
+        .push_next(&mut vulkan12_features)
+        .push_next(&mut vulkan13_features);
     if caps.ray_query_supported {
         create_info = create_info
             .push_next(&mut accel_features)
