@@ -574,6 +574,11 @@ impl SvgfPipeline {
                 .with_context(|| format!("create {name}"))?
         };
 
+        // The MutexGuard from `.lock()` lives until the end of the `let`
+        // statement; the Err arm only destroys `image` — no allocator
+        // re-lock — so no deadlock. Cf. ssao.rs for the #1163 separate-let
+        // pattern required when an Err arm calls partial.destroy() which
+        // re-locks the allocator.
         let alloc = match allocator
             .lock()
             .expect("allocator lock")

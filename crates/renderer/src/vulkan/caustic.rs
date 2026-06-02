@@ -441,6 +441,11 @@ impl CausticPipeline {
         // STORAGE | SAMPLED | TRANSFER_DST usage). On Err the `?` bubbles
         // up before any subsequent allocation.
         let image = unsafe { device.create_image(&info, None).context("caustic image")? };
+        // The MutexGuard from `.lock()` lives until the end of the `let`
+        // statement; the Err arm only destroys `image` — no allocator
+        // re-lock — so no deadlock. Cf. ssao.rs for the #1163 separate-let
+        // pattern required when an Err arm calls partial.destroy() which
+        // re-locks the allocator.
         let alloc = match allocator
             .lock()
             .expect("allocator lock")
