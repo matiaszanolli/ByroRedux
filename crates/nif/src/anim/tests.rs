@@ -1594,3 +1594,122 @@ fn import_embedded_animations_captures_nilight_controllers() {
     assert_eq!(cch.target, ColorTarget::LightDiffuse);
     assert_eq!(cch.keys.len(), 2);
 }
+
+/// Regression: #1440 (LC-D5-01). An inline transform controller hung
+/// directly off a node — no `NiControllerSequence` — must surface as a
+/// looping embedded `AnimationClip` carrying a transform channel keyed by
+/// the node name. Animated scenery (fans, doors, lifts, swinging signs in
+/// loose Oblivion/FO3/FNV `.nif`s) relies on this. The controller parses
+/// into a bare `NiSingleInterpController` whose `block_type_name()` erases
+/// the `NiTransformController` / `NiKeyframeController` RTTI, so the
+/// embedded dispatch must discriminate on the interpolator type, not the
+/// class string. Pre-fix the controller walked into `_ => debug!("Skipping
+/// unsupported embedded controller type")` and the mesh rendered static.
+#[test]
+fn import_embedded_animations_captures_inline_transform_controller() {
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::controller::{NiSingleInterpController, NiTimeControllerBase};
+    use crate::blocks::interpolator::{
+        KeyGroup, KeyType, NiTransformData, NiTransformInterpolator, Vec3Key,
+    };
+    use crate::blocks::node::NiNode;
+    use crate::types::{BlockRef, NiQuatTransform, NiTransform};
+    use std::sync::Arc;
+
+    // Scene layout:
+    //   [0] NiTransformData (two linear translation keys over 1 s)
+    //   [1] NiTransformInterpolator → data=[0]
+    //   [2] NiSingleInterpController → interp=[1]  (the parsed form of
+    //       NiTransformController / NiKeyframeController — RTTI erased)
+    //   [3] NiNode (name="Fan01") with controller_ref=[2]
+    let data = NiTransformData {
+        rotation_type: None,
+        rotation_keys: Vec::new(),
+        xyz_rotations: None,
+        translations: KeyGroup {
+            key_type: KeyType::Linear,
+            keys: vec![
+                Vec3Key {
+                    time: 0.0,
+                    value: [0.0, 0.0, 0.0],
+                    tangent_forward: [0.0; 3],
+                    tangent_backward: [0.0; 3],
+                    tbc: None,
+                },
+                Vec3Key {
+                    time: 1.0,
+                    value: [0.0, 0.0, 10.0],
+                    tangent_forward: [0.0; 3],
+                    tangent_backward: [0.0; 3],
+                    tbc: None,
+                },
+            ],
+        },
+        scales: KeyGroup {
+            key_type: KeyType::Linear,
+            keys: Vec::new(),
+        },
+    };
+    let interp = NiTransformInterpolator {
+        transform: NiQuatTransform::default(),
+        data_ref: BlockRef(0),
+    };
+    let ctrl = NiSingleInterpController {
+        base: NiTimeControllerBase {
+            next_controller_ref: BlockRef::NULL,
+            flags: 0,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            stop_time: 1.0,
+            target_ref: BlockRef::NULL,
+        },
+        interpolator_ref: BlockRef(1),
+    };
+    let node = NiNode {
+        av: NiAVObjectData {
+            net: NiObjectNETData {
+                name: Some(Arc::from("Fan01")),
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef(2),
+            },
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        children: Vec::new(),
+        effects: Vec::new(),
+    };
+    let scene = NifScene {
+        blocks: vec![
+            Box::new(data),
+            Box::new(interp),
+            Box::new(ctrl),
+            Box::new(node),
+        ],
+        ..NifScene::default()
+    };
+
+    let clip = import_embedded_animations(&scene)
+        .expect("inline transform controller should produce an embedded clip");
+    assert_eq!(clip.cycle_type, CycleType::Loop);
+    assert_eq!(
+        clip.channels.len(),
+        1,
+        "exactly one transform channel expected, keyed by node name"
+    );
+    let channel = clip
+        .channels
+        .get(&Arc::<str>::from("Fan01"))
+        .expect("transform channel must be keyed by the node name 'Fan01'");
+    assert_eq!(
+        channel.translation_keys.len(),
+        2,
+        "both authored translation keys must survive import"
+    );
+    assert!(
+        (clip.duration - 1.0).abs() < 1e-6,
+        "duration follows the last key time"
+    );
+}

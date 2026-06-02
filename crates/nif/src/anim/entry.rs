@@ -108,9 +108,11 @@ pub fn clip_has_data(clip: &AnimationClip) -> bool {
 /// runtime plays it continuously — cell-load-time start, no end.
 ///
 /// Supported controller types match the KF importer's dispatch
-/// (`NiAlphaController`, `NiVisController`, `NiTextureTransformController`,
-/// `NiMaterialColorController`, `BSEffect/BSLightingShaderProperty{Float,Color}Controller`,
-/// `NiUVController`). Unsupported types are skipped with a debug-log.
+/// (`NiTransformController` / `NiKeyframeController`, `NiAlphaController`,
+/// `NiVisController`, `NiTextureTransformController`, `NiMaterialColorController`,
+/// `BSEffect/BSLightingShaderProperty{Float,Color}Controller`, `NiUVController`,
+/// `NiFlipController`, `NiLight*Controller`). Unsupported types are skipped
+/// with a debug-log.
 pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
     use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
     use crate::blocks::controller::{
@@ -305,6 +307,45 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                     if let Some(idx) = interp_idx {
                         if let Some(ch) = extract_bool_channel_at(scene, idx) {
                             clip.bool_channels.push((Arc::clone(&node_name), ch));
+                        }
+                    }
+                }
+                // #1440 (LC-D5-01) — an inline transform controller hung
+                // directly off a node (animated scenery: fans, doors, lifts,
+                // swinging signs in loose Oblivion/FO3/FNV .nifs) carries no
+                // NiControllerSequence, so the KF-sequence dispatch never sees
+                // it and the mesh rendered static. Both `NiTransformController`
+                // and the pre-Skyrim `NiKeyframeController` alias parse into a
+                // bare `NiSingleInterpController` whose `block_type_name()`
+                // erases the original RTTI to "NiSingleInterpController"
+                // (controller/mod.rs:688 implicit-name form), so we cannot
+                // dispatch on the class string here. Instead discriminate on
+                // the interpolator type: `extract_transform_channel_at` only
+                // yields `Some` for a transform/B-spline/look-at/path
+                // interpolator, returning `None` for the float/bool
+                // interpolators behind alpha/vis/float controllers — which
+                // also land here under the same erased name. So attempting
+                // the extraction is safe and self-selecting.
+                "NiSingleInterpController" | "NiTransformController" | "NiKeyframeController" => {
+                    let interp_idx = any
+                        .downcast_ref::<NiSingleInterpController>()
+                        .and_then(|c| c.interpolator_ref.index());
+                    match interp_idx.and_then(|idx| extract_transform_channel_at(scene, idx)) {
+                        Some(channel) => {
+                            clip.channels.insert(Arc::clone(&node_name), channel);
+                        }
+                        None => {
+                            // A non-transform NiSingleInterpController subclass
+                            // (alpha / vis / float) under the erased RTTI name.
+                            // Those embedded arms are a separate gap (the same
+                            // RTTI erasure makes their class-string dispatch
+                            // unreachable too) — log so it stays visible.
+                            log::debug!(
+                                "Embedded NiSingleInterpController on '{}' has no transform \
+                                 interpolator; non-transform embedded controllers under the \
+                                 erased RTTI name are not yet supported",
+                                node_name
+                            );
                         }
                     }
                 }

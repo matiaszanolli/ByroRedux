@@ -12,8 +12,22 @@ use crate::blocks::interpolator::{
 use crate::scene::NifScene;
 
 pub fn extract_transform_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<TransformChannel> {
-    let mut interp_idx = cb.interpolator_ref.index()?;
+    extract_transform_channel_at(scene, cb.interpolator_ref.index()?)
+}
 
+/// `ControlledBlock`-free TRS extraction, keyed directly on an interpolator
+/// block index. The KF-sequence path reaches it via the controlled block's
+/// `interpolator_ref` ([`extract_transform_channel`]); the embedded-animation
+/// path (an inline `NiKeyframeController` / `NiTransformController` hung off a
+/// node, with no `NiControllerSequence`) reaches it via the controller's own
+/// `NiSingleInterpController::interpolator_ref`. Both arrive at the same
+/// interpolator, so the dispatch below — blend-target follow, modern
+/// `NiTransformInterpolator`, B-spline, look-at static pose, path — is shared.
+/// `priority` is left at 0; the sequence path overwrites it with `cb.priority`.
+pub fn extract_transform_channel_at(
+    scene: &NifScene,
+    mut interp_idx: usize,
+) -> Option<TransformChannel> {
     // #334 (AR-08) — NIFs with embedded controller managers commonly
     // bind a `NiBlendTransformInterpolator` between the ControlledBlock
     // and the real NiTransformInterpolator so runtime can weight
