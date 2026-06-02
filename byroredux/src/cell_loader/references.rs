@@ -88,6 +88,12 @@ pub(super) fn load_references(
     let mut stat_miss = 0u32;
     let mut stat_hit = 0u32;
     let mut enable_skipped = 0u32;
+    // Count NIF / SPT files not found in the BSA archives. Logged at
+    // info level (not debug) so missing-mesh failures surface in the
+    // default log without needing RUST_LOG=debug. A large number here
+    // indicates either wrong --bsa paths or a BSA path-lookup mismatch.
+    let mut nif_not_found: u32 = 0;
+    let mut nif_not_found_sample: Vec<String> = Vec::with_capacity(5);
     // #1188 — count REFRs skipped because the CK absorbed them into a
     // precombined `_oc.nif`. Surfaced in the end-of-cell summary so an
     // operator can spot a missing precombined-spawn step (would manifest
@@ -504,6 +510,10 @@ pub(super) fn load_references(
                                     if is_spt { "SPT" } else { "NIF" },
                                     model_path,
                                 );
+                                nif_not_found += 1;
+                                if nif_not_found_sample.len() < 5 {
+                                    nif_not_found_sample.push(model_path.clone());
+                                }
                                 None
                             }
                         };
@@ -798,6 +808,21 @@ pub(super) fn load_references(
             "  {} REFRs skipped via FO4 PreCombined absorption — geometry \
              served by precombined-spawn pass (#1188)",
             absorbed_skipped,
+        );
+    }
+    if nif_not_found > 0 {
+        let sample = nif_not_found_sample.join(", ");
+        let trunc = if nif_not_found > nif_not_found_sample.len() as u32 {
+            format!(", … +{} more", nif_not_found - nif_not_found_sample.len() as u32)
+        } else {
+            String::new()
+        };
+        log::info!(
+            "  {} unique model paths not found in BSA archives \
+             (wrong --bsa? check paths: {}{})",
+            nif_not_found,
+            sample,
+            trunc,
         );
     }
 
