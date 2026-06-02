@@ -314,17 +314,30 @@ pub fn mg07_on_activate_system(world: &World) {
         },
     }
     let mut outcomes: Vec<Outcome> = Vec::new();
-    {
+    // Collect pending activations (target entity + activator) and DROP the
+    // `ActivateEvent` lock before acquiring `MG07LabyrinthianDoor`. The
+    // tick/handler paths touch the same pair, so holding `ActivateEvent`
+    // while taking `MG07LabyrinthianDoor` here is a cross-thread ABBA
+    // deadlock risk under the parallel scheduler (invariant #4, #313,
+    // #1410). Two-phase collect→apply is already the shape every other
+    // system in this module uses.
+    let activations: Vec<(EntityId, EntityId)> = {
         let Some(events) = world.query::<ActivateEvent>() else {
             return;
         };
+        events
+            .iter()
+            .map(|(entity, ev)| (entity, ev.activator))
+            .collect()
+    };
+    {
         let Some(doors) = world.query::<MG07LabyrinthianDoor>() else {
             return;
         };
         let keystone_q = world.query::<KeystoneInventory>();
         let stage_state = world.resource::<QuestStageState>();
 
-        for (entity, ev) in events.iter() {
+        for (entity, activator) in activations {
             let Some(door) = doors.get(entity) else {
                 continue;
             };
@@ -345,7 +358,7 @@ pub fn mg07_on_activate_system(world: &World) {
                 continue;
             }
 
-            let actronaut_is_player = ev.activator == player;
+            let actronaut_is_player = activator == player;
             let stage_10_done = stage_state.get_stage_done(door.mg07_quest, 10);
             let has_keystone = keystone_q
                 .as_ref()

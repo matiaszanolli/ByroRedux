@@ -31,6 +31,30 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
 
   # ──────────────────────────────────────────────────────────────────────────
+  # Global ABBA lock-order detector (TS-02 / #313 / #1410)
+  #
+  # Re-runs the test suite with BYRO_LOCK_ORDER_CHECK=1 so the process-wide
+  # lock-order graph in crates/core/src/ecs/lock_tracker.rs is active. Any two
+  # threads that acquire the same pair of RwLocks in opposite orders (the ABBA
+  # deadlock pattern that invariant #4 forbids) panic the owning test. The
+  # default feature set keeps `parallel-scheduler` on, so the detector observes
+  # real cross-thread acquisitions. Runs as its own job (parallel with
+  # cargo-test) to keep the detector signal isolated from the functional
+  # test signal.
+  # ──────────────────────────────────────────────────────────────────────────
+  lock-order-check:
+    name: ABBA lock-order detector
+    runs-on: ubuntu-latest
+    env:
+      BYRO_LOCK_ORDER_CHECK: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test (lock-order detector enabled)
+        run: cargo test --workspace
+
+  # ──────────────────────────────────────────────────────────────────────────
   # Vulkan validation layer headless bench (VKC-006 / #1429)
   #
   # Uses Mesa lavapipe (software Vulkan) so no GPU is required.

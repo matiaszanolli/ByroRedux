@@ -59,11 +59,17 @@ pub(super) fn collect_lights(world: &World, gpu_lights: &mut Vec<byroredux_rende
     // Cell directional light. For interior cells the XCLL directional
     // acts as a subtle fill light (not a physical sun), so we scale it
     // down to avoid hard shadow leakage through unsealed interior walls.
+    // Snapshot `sun_intensity` BEFORE acquiring `CellLightingRes` so the
+    // two resource locks are never held simultaneously. The weather path
+    // touches the same pair in the opposite (Sky→Cell) order, so nesting
+    // them here (Cell→Sky) is a cross-thread ABBA deadlock risk under the
+    // parallel scheduler. See invariant #4, #313, and #1410 (the global
+    // BYRO_LOCK_ORDER_CHECK detector flags this exact pair).
+    let sun_intensity = world
+        .try_resource::<SkyParamsRes>()
+        .map(|sky| sky.sun_intensity)
+        .unwrap_or(SUN_INTENSITY_PEAK);
     if let Some(cell_lit) = world.try_resource::<CellLightingRes>() {
-        let sun_intensity = world
-            .try_resource::<SkyParamsRes>()
-            .map(|sky| sky.sun_intensity)
-            .unwrap_or(SUN_INTENSITY_PEAK);
         let (dir_color, dir_radius) = compute_directional_upload(
             &cell_lit.directional_color,
             cell_lit.is_interior,

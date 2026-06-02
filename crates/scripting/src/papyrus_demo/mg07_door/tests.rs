@@ -246,8 +246,13 @@ fn success_path_consumes_keystone_and_transitions_to_inserting() {
 
     // Pre-wait state — door has transitioned to Inserting +
     // keystone removed (Papyrus's pre-wait `RemoveItem` call).
-    let door = world.get::<MG07LabyrinthianDoor>(keystone_door).unwrap();
-    match door.state {
+    // Extract `.state` and drop the door guard before the
+    // `ActivateEvent` check below: holding both component locks would
+    // form a cross-thread ABBA pair with the headline test (#1410), which
+    // reads ActivateEvent-then-Door. `world.get` returns a Drop guard held
+    // to end-of-scope, so the value must be copied out explicitly.
+    let door_state = world.get::<MG07LabyrinthianDoor>(keystone_door).unwrap().state;
+    match door_state {
         MG07State::Inserting { wait_remaining_secs } => {
             assert_eq!(wait_remaining_secs, DELAY);
         }
@@ -290,13 +295,19 @@ fn success_path_fires_cross_reference_activate_on_my_door() {
     // `secret_door`.
     mg07_tick_system(&world, DELAY);
 
-    let cross_ref_event = world
+    // Extract `.activator` and drop the ActivateEvent guard before the
+    // door read below: holding both component locks would form a
+    // cross-thread ABBA pair with `success_path_consumes_…` (#1410), which
+    // reads Door-then-ActivateEvent. `world.get` returns a Drop guard held
+    // to end-of-scope, so copy the value out explicitly.
+    let cross_ref_activator = world
         .get::<ActivateEvent>(secret_door)
-        .expect("cross-reference activate must land on `myDoor`");
+        .expect("cross-reference activate must land on `myDoor`")
+        .activator;
     // The activator threaded through the call is the player —
     // matches Papyrus's `myDoor.activate(actronaut, False)` semantic
     // (actronaut == player by the head-of-handler gate).
-    assert_eq!(cross_ref_event.activator, player);
+    assert_eq!(cross_ref_activator, player);
 
     // Door bookkeeping: disabled + Inactive after the wait.
     let door = world.get::<MG07LabyrinthianDoor>(keystone_door).unwrap();

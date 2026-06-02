@@ -311,15 +311,20 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         return;
     }
 
-    // Single shared Name query handle — drives both the SubtreeCache
-    // generation check and the NameIndex rebuild path. Pre-#827 the
-    // prelude took THREE `world.query::<Name>()` acquisitions (two for
-    // .len() and one for the rebuild iter); merging them halves the
-    // RwLock fast-path traffic on the hot path and removes a fragile
-    // "Name spawned between block 1 and block 2" inconsistency window
-    // (today unreachable, but the pattern was brittle).
-    let name_query = world.query::<Name>();
-    let current_name_count = name_query.as_ref().map(|q| q.len()).unwrap_or(0);
+    // Name component count drives both the SubtreeCache generation check
+    // and the NameIndex rebuild trigger. Read it in a scoped acquire so the
+    // `Name` lock is released before we touch `NameIndex`: the subtree
+    // builder (`ensure_subtree_cache` → `build_subtree_name_map`) acquires
+    // `Name` *while `NameIndex` is held* further down, so acquiring
+    // `NameIndex` here while holding `Name` would be the reverse order — a
+    // cross-thread ABBA deadlock under the parallel scheduler. Acquisition
+    // order is fixed at NameIndex-before-Name throughout this system. See
+    // invariant #4, #313, #827, and #1410 (the BYRO_LOCK_ORDER_CHECK
+    // detector flags exactly this pair). The pre-#827 merge that held one
+    // shared `Name` query across the whole prelude traded that brittleness
+    // for the lock-order hazard; the count read is O(1) and rebuilds are
+    // rare, so re-acquiring `Name` is cheap.
+    let current_name_count = world.query::<Name>().map(|q| q.len()).unwrap_or(0);
 
     // Persisted subtree name maps — survives across frames, only cleared when
     // Name component count changes. Eliminates ~1500 HashMap insertions/frame
@@ -347,22 +352,17 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             .map(|idx| idx.generation != current_name_count)
             .unwrap_or(true);
         if needs_rebuild {
-            // Reuse the prelude's shared `name_query` for the iter —
-            // a `None` here means the Name storage has never existed,
-            // which is the same `return` semantics the pre-#827 path
-            // used at line 332.
-            let Some(ref name_query) = name_query else {
+            // ABBA-safe order: take the `NameIndex` write FIRST, then the
+            // `Name` read for the iter — NameIndex-before-Name, matching the
+            // subtree builder below. A `None` Name query means the Name
+            // storage has never existed; same early-return as the pre-#827
+            // path. #824 — refill the existing HashMap in place (`clear()`
+            // keeps the bucket array; `reserve(N)` forces one rehash on the
+            // cold-start path so the refill doesn't growth-double).
+            let mut idx = world.resource_mut::<NameIndex>();
+            let Some(name_query) = world.query::<Name>() else {
                 return;
             };
-            // #824 — refill the existing HashMap in place instead of
-            // allocating a fresh one and dropping the old. `clear()`
-            // keeps the bucket array; `reserve(N)` forces one rehash
-            // to a sufficient size on the cold-start path so the
-            // refill doesn't growth-double through 0→1→2→...→N.
-            // Name (component) and NameIndex (resource) live on
-            // different storages — holding `name_query` read while
-            // taking `idx` write is fine, no TypeId conflict.
-            let mut idx = world.resource_mut::<NameIndex>();
             idx.map.clear();
             idx.map.reserve(current_name_count);
             for (entity, name_comp) in name_query.iter() {
@@ -371,7 +371,6 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
             idx.generation = current_name_count;
         }
     }
-    drop(name_query);
 
     let name_index = world.try_resource::<NameIndex>().unwrap();
 
