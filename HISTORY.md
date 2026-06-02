@@ -24,6 +24,57 @@ Commits hold that record.
 
 ---
 
+## Session 45 — M49 FO4 precombined geometry + NIFAL surface audit complete + EXAL introduced  (2026-06-02, c1951b89..633729f0, 10 commits)
+
+Three parallel arcs closed in a compact 10-commit session. The headline
+was M49: FO4 precombined geometry had been deferred since Session 44 as
+"blocked on `.csg` spec," but the format was cracked from first principles
+and the full pipeline shipped in five commits. In the same push,
+`NiRangeLODData` — the last unhandled block type from the NIFAL surface
+audit — landed, closing that coverage pass. A fresh renderer audit
+(`AUDIT_RENDERER_2026-06-02`) confirmed the renderer is structurally sound
+and surfaced four low-stakes items.
+
+- **M49 — FO4 Precombined Geometry closed** (`b93ad7a9..2900de70`):
+  `BSPackedGeomObject` TLV format cracked without external spec. Pipeline in
+  five commits: `crates/bsa` gains a `.csg` reader; NIF import decodes CSG
+  geometry to Y-up meshes; cell-loader spawns precombined entities; LOD
+  selection fixed to one tier per object (was spawning all three); texturing
+  wired through the owning REFR's shape slot indices. Closes M49 (#1351 /
+  #1188 Stage A). Sub-items remaining: `_precomb.nif` collision, `.uvd`
+  occlusion volumes.
+
+- **NIFAL surface audit complete** (`633729f0`): `NiRangeLODData` parsed;
+  `lod_group` field surfaced on `ImportedNode`. Last unhandled block type
+  from the NIFAL surface sweep — surface coverage is now complete across
+  the Oblivion→Starfield block set.
+
+- **EXAL architecture introduced** (`00e38caa`): Runtime telemetry audit for
+  FNV and FO4 cells. Introduces the EXAL (Exterior Abstraction Layer) design
+  at [`docs/engine/exal.md`](docs/engine/exal.md) — the NIFAL-mirror for
+  outdoors (terrain / sky / sun / weather / water / LOD). Distant object LOD
+  identified as the primary gap.
+
+- **Renderer audit** (`00e38caa`): `AUDIT_RENDERER_2026-06-02.md` filed 4
+  new issues: #1447 HIGH (committed SPIR-V stale vs GLSL after DoF commit),
+  #1448 LOW (screenshot readback stale extent on same-frame resize), #1449
+  LOW (BLAS evict immediate-destroy unsafe during multi-batch cell load),
+  #1450 LOW (submersion state has no hysteresis — design observation).
+
+- **ECS lock-order CI** (`641509f0`): ABBA detector (#313) enabled in CI;
+  two real lock-order cycles found and fixed (#1410).
+
+- **Animation + NIF correctness** (`cd6bd1bb`, `00bfc203`): Inline transform
+  controllers in embedded `.kf` paths now import correctly (#1440);
+  `NiPSysEmitter` spawn scalars guarded against non-finite/non-positive
+  (#1411).
+
+Net: tests **2735 → 2752** (+17), src LOC **~218 000 → ~220 400** (+~2 400),
+10 commits. Bench-of-record `4e2ebe8c` (2026-05-28) now **117 commits stale**;
+this session touched no renderer hot paths — R6a-stale-14 carries forward.
+
+---
+
 ## Session 44 — audit bug-bash (FNV + Safety + FO4/NIFAL) + perf arc + stochastic depth of field  (2026-05-30 → 2026-06-01, 04cd20a1..49ec0e33, 63 commits)
 
 The largest session since the milestone-heavy stretch: two fresh audits
