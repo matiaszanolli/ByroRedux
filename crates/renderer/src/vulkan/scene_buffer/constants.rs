@@ -67,7 +67,9 @@ pub const IDENTITY_BONE_SLOT: u32 = 0;
 ///
 /// Pre-#1198 this was 16 (matching the typical heavy-cell-load count).
 /// Bumped to 227 (= `MAX_TOTAL_BONES (32768) / MAX_BONES_PER_MESH (144)`)
-/// to match the then slot-pool capacity. The pre-fix cap produced a
+/// to match the then slot-pool capacity (#1198). Re-bumped to 1366
+/// (= `MAX_TOTAL_BONES (196608) / MAX_BONES_PER_MESH (144)`) after the
+/// `MAX_TOTAL_BONES` bump (#1284); see the follow-up paragraph below. The pre-fix cap produced a
 /// one-frame bind-pose glitch when more than 16 skinned NPCs
 /// first-sighted in a single frame (FO4 MedTek: 23 SkinnedMesh
 /// entities; FO3 Megaton REFR spill on first entry). Per #1191's
