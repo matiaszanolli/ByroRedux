@@ -721,3 +721,84 @@ mod emitter_rate_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod emitter_param_tests {
+    //! Regression for NIFAL-S3 (#1411): `extract_emitter_params` must reject
+    //! non-finite / non-positive base spawn scalars so a corrupt NIF can't
+    //! poison the particle sim — `apply_emitter_params` copies every scalar
+    //! straight into the `ParticleEmitter` preset.
+    use super::super::extract_emitter_params;
+    use crate::blocks::particle::{EmitterBaseParams, NiPSysEmitter};
+    use crate::scene::NifScene;
+
+    fn scene_with_emitter(params: EmitterBaseParams) -> NifScene {
+        let mut scene = NifScene::default();
+        scene.blocks.push(Box::new(NiPSysEmitter {
+            params,
+            original_type: "NiPSysBoxEmitter".to_string(),
+        }));
+        scene
+    }
+
+    fn sane_params() -> EmitterBaseParams {
+        EmitterBaseParams {
+            speed: 10.0,
+            initial_radius: 2.0,
+            life_span: 3.0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sane_emitter_params_pass() {
+        let got = extract_emitter_params(&scene_with_emitter(sane_params()))
+            .expect("sane emitter params must translate");
+        assert_eq!(got.speed, 10.0);
+        assert_eq!(got.life_span, 3.0);
+        assert_eq!(got.initial_radius, 2.0);
+    }
+
+    #[test]
+    fn non_finite_scalars_rejected() {
+        // Every scalar `apply_emitter_params` consumes — a NaN/Inf in any
+        // one of them must block the whole emitter (→ heuristic preset).
+        let cases = [
+            EmitterBaseParams { speed: f32::NAN, ..sane_params() },
+            EmitterBaseParams { speed: f32::INFINITY, ..sane_params() },
+            EmitterBaseParams { speed_variation: f32::NAN, ..sane_params() },
+            EmitterBaseParams { declination: f32::INFINITY, ..sane_params() },
+            EmitterBaseParams { declination_variation: f32::NAN, ..sane_params() },
+            EmitterBaseParams { initial_radius: f32::INFINITY, ..sane_params() },
+            EmitterBaseParams { life_span: f32::NAN, ..sane_params() },
+            EmitterBaseParams { life_span_variation: f32::INFINITY, ..sane_params() },
+        ];
+        for bad in cases {
+            assert!(
+                extract_emitter_params(&scene_with_emitter(bad)).is_none(),
+                "non-finite emitter scalar must block apply_emitter_params (#1411)"
+            );
+        }
+    }
+
+    #[test]
+    fn non_positive_life_and_negative_radius_rejected() {
+        // life_span == 0 spawns already-dead particles; negative radius is
+        // physically meaningless. Both fall back to the preset.
+        assert!(extract_emitter_params(&scene_with_emitter(EmitterBaseParams {
+            life_span: 0.0,
+            ..sane_params()
+        }))
+        .is_none());
+        assert!(extract_emitter_params(&scene_with_emitter(EmitterBaseParams {
+            life_span: -1.0,
+            ..sane_params()
+        }))
+        .is_none());
+        assert!(extract_emitter_params(&scene_with_emitter(EmitterBaseParams {
+            initial_radius: -1.0,
+            ..sane_params()
+        }))
+        .is_none());
+    }
+}

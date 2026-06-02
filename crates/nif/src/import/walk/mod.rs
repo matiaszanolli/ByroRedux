@@ -685,6 +685,38 @@ pub(super) fn extract_emitter_params(
                 .downcast_ref::<crate::blocks::particle::NiPSysGrowFadeModifier>()
         })
         .and_then(|m| m.base_scale);
+    // NIFAL-S3 (#1411) — reject corrupt emitter scalars before they reach
+    // `apply_emitter_params`, which copies every one straight into the
+    // particle preset. A single non-finite value (NaN/Inf from a malformed
+    // NIF) poisons every spawned particle's per-frame integration, and a
+    // non-positive `life_span` spawns already-dead particles. Fall back to
+    // the heuristic preset (`None`) rather than leak garbage. Sibling of
+    // `extract_emitter_rate`'s `sane()` finite filter; the positivity
+    // checks match the issue's `life_span > 0` / `initial_radius >= 0`.
+    let all_finite = p.speed.is_finite()
+        && p.speed_variation.is_finite()
+        && p.declination.is_finite()
+        && p.declination_variation.is_finite()
+        && p.initial_radius.is_finite()
+        && p.life_span.is_finite()
+        && p.life_span_variation.is_finite()
+        && base_scale.map_or(true, f32::is_finite);
+    if !(all_finite && p.life_span > 0.0 && p.initial_radius >= 0.0) {
+        log::debug!(
+            "Rejecting NiPSysEmitter params (non-finite or non-positive): \
+             speed={} speed_var={} decl={} decl_var={} radius={} life_span={} \
+             life_var={} base_scale={:?} — falling back to heuristic preset",
+            p.speed,
+            p.speed_variation,
+            p.declination,
+            p.declination_variation,
+            p.initial_radius,
+            p.life_span,
+            p.life_span_variation,
+            base_scale,
+        );
+        return None;
+    }
     Some(crate::import::ImportedEmitterParams {
         speed: p.speed,
         speed_variation: p.speed_variation,
