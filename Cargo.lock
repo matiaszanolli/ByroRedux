@@ -507,13 +507,11 @@ name = "byroredux-debug-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ash",
  "byroredux-core",
  "byroredux-renderer",
  "egui",
  "egui-ash-renderer",
  "egui-winit",
- "gpu-allocator 0.28.0",
  "log",
  "winit",
 ]

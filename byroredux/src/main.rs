@@ -7,6 +7,7 @@ mod cli_args;
 mod commands;
 mod components;
 mod debug_load;
+mod env_translate;
 mod game_profiles;
 mod helpers;
 mod material_translate;
@@ -1103,6 +1104,16 @@ impl App {
             player_grid,
             lod_full_radius,
             &mut state.lod_blocks,
+        );
+        // Distant object LOD (Skyrim+/FO4 `.bto`) — no-op on other games.
+        cell_loader::stream_object_lod_blocks(
+            &mut self.world,
+            ctx,
+            lod_tex.as_ref(),
+            lod_wctx.as_ref(),
+            player_grid,
+            lod_full_radius,
+            &mut state.object_lod_blocks,
         );
     }
 

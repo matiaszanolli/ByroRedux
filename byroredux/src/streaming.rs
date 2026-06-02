@@ -175,6 +175,12 @@ pub struct WorldStreamingState {
     /// these once and never tracked them — re-entry leaked ~600 blocks and
     /// the hole-out went stale as the player walked.
     pub lod_blocks: HashMap<(i32, i32), LodBlock>,
+    /// Distant **object** LOD quads, keyed by the quad's SW-corner cell
+    /// (EXAL step 6). Skyrim+/FO4 only — each entry is the baked `.bto`
+    /// macro-mesh's spawned sub-meshes (or an empty sentinel for a quad with
+    /// no baked LOD). Streamed alongside `lod_blocks` each cell-boundary
+    /// crossing; quads load only outside the full-detail ring.
+    pub object_lod_blocks: HashMap<(i32, i32), crate::cell_loader::ObjectLodBlock>,
     /// Cells whose load request is in flight on the worker. Maps
     /// `(gx, gy)` to the generation of the outstanding request.
     /// Drain compares the payload's generation against this map's
@@ -243,6 +249,7 @@ impl WorldStreamingState {
             mat_provider,
             loaded: HashMap::new(),
             lod_blocks: HashMap::new(),
+            object_lod_blocks: HashMap::new(),
             pending: HashMap::new(),
             next_generation: 0,
             radius_load,

@@ -34,8 +34,8 @@ use crate::streaming::WorldStreamingState;
 #[cfg(test)]
 #[allow(unused_imports)]
 use crate::components::{GameTimeRes, SkyParamsRes, WeatherDataRes};
-#[cfg(test)]
-#[allow(unused_imports)]
+// Re-exported for the EXAL boundary (`env_translate::translate_weather`)
+// and the `climate_tod_hours_tests` child module.
 pub(crate) use world_setup::climate_tod_hours;
 
 /// Parse the `--radius` CLI argument into a clamped grid radius for

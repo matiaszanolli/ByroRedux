@@ -62,6 +62,7 @@ mod index;
 mod load;
 mod load_order;
 mod nif_import_registry;
+mod object_lod;
 mod partial;
 mod precombined;
 mod references;
@@ -102,7 +103,8 @@ pub use exterior::{
     build_exterior_world_context, load_one_exterior_cell, ExteriorWorldContext, OneCellLoadInfo,
 };
 #[allow(unused_imports)]
-pub(crate) use terrain_lod::{stream_lod_blocks, LOD_BLOCK_CELLS, LOD_RADIUS_BLOCKS};
+pub(crate) use object_lod::{stream_object_lod_blocks, ObjectLodBlock};
+pub(crate) use terrain_lod::stream_lod_blocks;
 #[allow(unused_imports)]
 pub use load::{load_cell_with_masters, CellLoadResult};
 #[allow(unused_imports)]

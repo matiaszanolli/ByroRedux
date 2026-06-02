@@ -76,19 +76,30 @@ pub(crate) fn build_tod_keys(tod_hours: [f32; 4]) -> [(f32, usize); 7] {
 /// intensity window was `[7, 17]`, which produced a ~40 min "below-
 /// horizon sun under sunrise-tinted sky" window on FO3 Capital
 /// Wasteland (`tod_hours = [5.333, 10.0, 17.0, 22.0]`).
+/// South-tilt of the sun arc (engine +Z = Bethesda −Y = south). The arc is
+/// otherwise a pure east → zenith → west semicircle; this tilts it slightly
+/// south so the sun is not dead-overhead at solar noon (#802 / SUN-N2).
+///
+/// EXAL Q1 (docs/engine/exal.md §9): there is **no authored latitude / sun-angle
+/// field** anywhere in CLMT or WRLD, and the Gamebryo engine lineage has no
+/// astronomical model — the sun-path is engine-defined. So this is a deliberate
+/// engine constant, not a value read from data. #1019 ("per-worldspace latitude
+/// tilt") is therefore "pick a defensible engine value", not "find the field".
+pub(crate) const SUN_SOUTH_TILT: f32 = 0.15;
+
 pub(crate) fn compute_sun_arc(hour: f32, tod_hours: [f32; 4]) -> ([f32; 3], f32) {
     let [sunrise_begin, sunrise_end, sunset_begin, sunset_end] = tod_hours;
     let day_span = (sunset_end - sunrise_begin).max(1e-3);
 
     // Sun direction: semicircular arc east → zenith → west, with a
-    // slight south tilt (engine +Z = Bethesda -Y = south) per #802 /
-    // SUN-N2. Per-worldspace latitude tilt deferred to #1019.
+    // slight south tilt ([`SUN_SOUTH_TILT`]; engine +Z = Bethesda -Y =
+    // south) per #802 / SUN-N2.
     let sun_dir = if hour >= sunrise_begin && hour <= sunset_end {
         let solar_hour = (hour - sunrise_begin).clamp(0.0, day_span);
         let angle = solar_hour / day_span * std::f32::consts::PI;
         let x = angle.cos();
         let y = angle.sin();
-        let z = 0.15_f32;
+        let z = SUN_SOUTH_TILT;
         let len = (x * x + y * y + z * z).sqrt();
         [x / len, y / len, z / len]
     } else {
@@ -204,7 +215,7 @@ const NEUTRAL_FOG_FAR: f32 = 50000.0;
 /// Sunrise/sunset/etc. breakpoints used when no climate record drives
 /// `WeatherDataRes::tod_hours`. Matches the pre-#463 hardcoded
 /// defaults the synthetic-fallback path in `scene::world_setup` ships.
-const DEFAULT_TOD_HOURS: [f32; 4] = [6.0, 10.0, 18.0, 22.0];
+pub(crate) const DEFAULT_TOD_HOURS: [f32; 4] = [6.0, 10.0, 18.0, 22.0];
 
 /// Write the neutral exterior fallback into `cell_lit` when no WTHR
 /// record is loaded. Interior cells are skipped so XCLL/LGTM-authored

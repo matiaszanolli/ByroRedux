@@ -69,45 +69,6 @@ pub struct OneCellLoadInfo {
 /// initial player grid coords plus an estimate of the eventual stream
 /// radius (e.g. 3) so the worldspace lookup picks the worldspace that
 /// actually contains the player.
-/// Resolve the worldspace-default water for exterior cells with no XCLW.
-/// Returns `(default height, default water-type form)`.
-///
-/// Two sources, by game:
-/// - **Oblivion**: WRLD carries no DNAM (verified: 0 across all 84 WRLD in
-///   `Oblivion.esm`), so the default height is the global Tamriel sea level
-///   Z=0 (user-confirmed), gated on the worldspace having a NAM2 water form.
-/// - **FO3/FNV/Skyrim+/FO4**: the default height comes from the WRLD DNAM
-///   "Land Data" second f32 (`WorldspaceRecord::default_water_height`) — it
-///   is game/worldspace-specific and NOT 0 (e.g. WastelandNV -2300, Skyrim
-///   Tamriel -14000), so Z=0 would be wrong. The 8-byte DNAM layout is
-///   stable across Gamebryo (FNV) and Creation (Skyrim) — verified against
-///   both masters. The NAM2 `water_form` supplies the water type/appearance.
-///
-/// Both `None` when the worldspace has no default water (no NAM2 on
-/// Oblivion / no DNAM elsewhere). #1305 / OBL-D6-NEW-02.
-fn default_water_for_worldspace(
-    wrld: Option<&byroredux_plugin::esm::cell::WorldspaceRecord>,
-    game: byroredux_plugin::esm::reader::GameKind,
-) -> (Option<f32>, Option<u32>) {
-    let Some(w) = wrld else {
-        return (None, None);
-    };
-    if game == byroredux_plugin::esm::reader::GameKind::Oblivion {
-        // No DNAM on Oblivion WRLD → sea level Z=0, only where the
-        // worldspace advertises default water via NAM2.
-        return match w.water_form {
-            Some(water_form) => (Some(0.0), Some(water_form)),
-            None => (None, None),
-        };
-    }
-    // FO3/FNV/Skyrim+/FO4: the DNAM default water height is the signal that
-    // the worldspace has default water; pair it with the NAM2 type form.
-    match w.default_water_height {
-        Some(height) => (Some(height), w.water_form),
-        None => (None, None),
-    }
-}
-
 pub fn build_exterior_world_context(
     masters: &[String],
     esm_path: &str,
@@ -239,10 +200,11 @@ pub fn build_exterior_world_context(
     // global Tamriel sea level (Z=0); a worldspace advertises that it has
     // default water via its NAM2 `water_form`. Cells without XCLW inherit
     // this in `load_one_exterior_cell`.
-    let (default_water_height, default_water_type_form) = default_water_for_worldspace(
-        record_index.cells.worldspaces.get(&worldspace_key),
-        record_index.game,
-    );
+    let (default_water_height, default_water_type_form) =
+        crate::env_translate::default_water_for_worldspace(
+            record_index.cells.worldspaces.get(&worldspace_key),
+            record_index.game,
+        );
 
     Ok(ExteriorWorldContext {
         record_index: Arc::new(record_index),
@@ -441,93 +403,7 @@ pub fn load_one_exterior_cell(
     Ok(Some(OneCellLoadInfo { cell_root, center }))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::default_water_for_worldspace;
-    use byroredux_plugin::esm::cell::WorldspaceRecord;
-    use byroredux_plugin::esm::reader::GameKind;
-
-    /// #1305 / OBL-D6-NEW-02 — an Oblivion worldspace with a NAM2 default
-    /// water form makes its no-XCLW cells default to water at the Tamriel
-    /// sea level Z=0 (Oblivion WRLD has no DNAM height field, so the
-    /// constant is load-bearing). Pins both the gate (only when water_form
-    /// present) and the user-confirmed 0.0 height.
-    #[test]
-    fn oblivion_worldspace_with_water_form_defaults_to_sea_level() {
-        let wrld = WorldspaceRecord {
-            water_form: Some(0x0000_1234),
-            ..Default::default()
-        };
-        assert_eq!(
-            default_water_for_worldspace(Some(&wrld), GameKind::Oblivion),
-            (Some(0.0), Some(0x0000_1234)),
-            "Oblivion worldspace advertising default water → no-XCLW cells get Z=0 water"
-        );
-    }
-
-    #[test]
-    fn worldspace_without_water_form_has_no_default_water() {
-        let wrld = WorldspaceRecord {
-            water_form: None,
-            ..Default::default()
-        };
-        assert_eq!(
-            default_water_for_worldspace(Some(&wrld), GameKind::Oblivion),
-            (None, None)
-        );
-        // A missing worldspace record likewise yields no default water.
-        assert_eq!(default_water_for_worldspace(None, GameKind::Oblivion), (None, None));
-    }
-
-    /// Non-Oblivion games must NOT be forced to Z=0: a NAM2 water_form
-    /// alone (no DNAM default height parsed) yields no default water, so
-    /// the loader never invents sea level for FO3/FNV/Skyrim+ where the
-    /// real default lives in DNAM (e.g. WastelandNV -2300, Skyrim Tamriel
-    /// -14000). Pins that the Oblivion Z=0 path does not leak to them.
-    #[test]
-    fn non_oblivion_without_dnam_gets_no_default() {
-        let wrld = WorldspaceRecord {
-            water_form: Some(0x0000_1234),
-            default_water_height: None,
-            ..Default::default()
-        };
-        for game in [
-            GameKind::Fallout3NV,
-            GameKind::Skyrim,
-            GameKind::Fallout4,
-            GameKind::Fallout76,
-            GameKind::Starfield,
-        ] {
-            assert_eq!(
-                default_water_for_worldspace(Some(&wrld), game),
-                (None, None),
-                "{game:?} with no DNAM default height must NOT be forced to Z=0"
-            );
-        }
-    }
-
-    /// Non-Oblivion games use the WRLD DNAM default water height (second
-    /// f32 of "Land Data"), paired with the NAM2 type form — NOT Z=0.
-    /// Pins the #1305 follow-up (FO3/FNV/Skyrim+ default-water inheritance).
-    #[test]
-    fn non_oblivion_uses_dnam_default_water_height() {
-        let wrld = WorldspaceRecord {
-            water_form: Some(0x0000_00AB),
-            default_water_height: Some(-2300.0), // e.g. WastelandNV
-            ..Default::default()
-        };
-        for game in [GameKind::Fallout3NV, GameKind::Skyrim, GameKind::Fallout4] {
-            assert_eq!(
-                default_water_for_worldspace(Some(&wrld), game),
-                (Some(-2300.0), Some(0x0000_00AB)),
-                "{game:?} no-XCLW cells inherit the DNAM default water height + NAM2 type"
-            );
-        }
-        // Oblivion ignores DNAM (it has none) and stays on Z=0.
-        assert_eq!(
-            default_water_for_worldspace(Some(&wrld), GameKind::Oblivion),
-            (Some(0.0), Some(0x0000_00AB))
-        );
-    }
-}
+// `default_water_for_worldspace` (+ its #1305 / OBL-D6-NEW-02 per-game
+// default-water regressions) moved to the EXAL boundary in
+// `crate::env_translate`; the tests moved with it.
 

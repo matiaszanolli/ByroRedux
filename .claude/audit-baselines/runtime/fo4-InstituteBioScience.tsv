@@ -1,0 +1,14 @@
+# regenerated: 2026-06-01 (post-M49 precombine CSG render + LOD fix)
+# captured at frame ~240 via byro-dbg telemetry; 1722 precombine entities (13 _oc.nif hashes)
+entities_total	9167
+tex_missing_unique_paths	1
+mesh_cache_failed_count	0
+light_count_directional	1
+skin_pool_live	100
+skin_pool_max	1364
+skin_pool_overflow_attempts	0
+bench_fps_p50	50.0
+bench_fps_avg	50.0
+bench_draws_cmds	3800
+bench_draws_batches	272
+bench_draws_gpu_calls	7

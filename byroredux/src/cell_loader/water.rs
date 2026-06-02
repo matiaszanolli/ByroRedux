@@ -27,9 +27,7 @@
 //!
 //! Returns the number of water-plane entities spawned (0 or 1 today).
 
-use byroredux_core::ecs::components::water::{
-    SubmersionState, WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
-};
+use byroredux_core::ecs::components::water::{WaterPlane, WaterVolume};
 use byroredux_core::ecs::{GlobalTransform, MeshHandle, Transform, World};
 use byroredux_plugin::esm;
 use byroredux_core::math::{Quat, Vec3};
@@ -86,8 +84,9 @@ pub(super) fn spawn_water_plane(
     half_extent: f32,
     blas_specs: &mut Vec<(u32, u32, u32)>,
 ) -> Option<usize> {
-    // ── Resolve WATR → engine WaterMaterial ──
-    let (material, kind, flow, normal_texture_path) = resolve_water_material(waters, xcwt_form);
+    // ── Resolve WATR → engine WaterMaterial (EXAL boundary) ──
+    let (material, kind, flow, normal_texture_path) =
+        crate::env_translate::resolve_water_material(waters, xcwt_form);
 
     let allocator = ctx.allocator.as_ref()?;
 
@@ -287,103 +286,6 @@ pub(super) fn spawn_water_plane(
     Some(1)
 }
 
-/// Resolve a cell's `XCWT` FormID to an engine [`WaterMaterial`]
-/// plus a [`WaterKind`] (currently always `Calm`) plus an optional
-/// [`WaterFlow`] and an optional normal-texture path the cell loader
-/// should attempt to bind.
-///
-/// `xcwt_form == None` (no WATR reference on the cell) falls back to
-/// engine defaults — same shape Skyrim uses for unmodded cells that
-/// rely on the worldspace water-default cascade.
-fn resolve_water_material(
-    waters: &HashMap<u32, esm::records::misc::WatrRecord>,
-    xcwt_form: Option<u32>,
-) -> (WaterMaterial, WaterKind, Option<WaterFlow>, Option<String>) {
-    let mut mat = WaterMaterial::default();
-    let mut kind = WaterKind::Calm;
-    let mut flow: Option<WaterFlow> = None;
-    let mut normal_path: Option<String> = None;
-
-    if let Some(form) = xcwt_form {
-        if let Some(rec) = waters.get(&form) {
-            mat.shallow_color = rec.params.shallow_color;
-            mat.deep_color = rec.params.deep_color;
-            mat.fog_near = rec.params.fog_near;
-            mat.fog_far = rec.params.fog_far;
-            mat.fresnel_f0 = rec.params.fresnel.clamp(0.001, 0.20);
-            mat.reflectivity = rec.params.reflectivity;
-            mat.reflection_tint = rec.params.reflection_color;
-            mat.source_form = rec.form_id;
-
-            // ── WaterKind heuristic from EDID naming convention ──
-            //
-            // Cell-level water planes are **always horizontal**
-            // (XCLW provides a Y height; the mesh is a flat quad).
-            // The `Waterfall` kind in the shader is for vertical
-            // sheet geometry (cliff-side falling water), which the
-            // cell loader does NOT spawn — those land as standalone
-            // mesh refs through the regular NIF import path. So
-            // any EDID match that would otherwise promote a cell
-            // plane to `Waterfall` is demoted to `River` here: the
-            // horizontal plane below a waterfall is a fast,
-            // turbulent pool, not a falling sheet, and the River
-            // shader path is the correct visual.
-            //
-            // Skyrim has many WATR records whose names contain
-            // "fall"/"waterfall" but are applied to horizontal
-            // bodies of water (e.g. `DLC2WaterFallingStream`,
-            // `WaterFallingPool`, `WaterRiverFallingSlow`). The
-            // pre-fix heuristic mis-classified these and the
-            // shader's Waterfall mode painted heavy fizz foam
-            // across whole exterior cells — see the May 2026
-            // smoke-test screenshot reported alongside this
-            // change.
-            let lowered = rec.editor_id.to_ascii_lowercase();
-            if lowered.contains("rapid") {
-                kind = WaterKind::Rapids;
-                mat.foam_strength = 0.85;
-            } else if lowered.contains("waterfall")
-                || lowered.contains("falls")
-                || lowered.contains("river")
-                || lowered.contains("stream")
-            {
-                kind = WaterKind::River;
-                mat.foam_strength = 0.20;
-            }
-            // Synthesise a flow vector from WATR's wind speed +
-            // direction when the kind implies flow. Bethesda's
-            // wind_direction is in radians from north (UESP).
-            if !matches!(kind, WaterKind::Calm) {
-                let theta = rec.params.wind_direction;
-                // Compute once — cos/sin were duplicated pre-#1068 (F-WAT-06).
-                let (sin_theta, cos_theta) = theta.sin_cos();
-                let speed = rec.params.wind_speed.abs().max(0.5);
-                flow = Some(WaterFlow {
-                    direction: [cos_theta, 0.0, sin_theta],
-                    speed,
-                });
-                // Rebuild scroll vectors to bias along the flow axis.
-                mat.scroll_a = [cos_theta * speed * 0.5, sin_theta * speed * 0.5];
-                // Perpendicular shear at half speed for the second layer.
-                mat.scroll_b = [-sin_theta * speed * 0.25, cos_theta * speed * 0.25];
-            }
-            // TNAM is the diffuse / noise texture — used as the
-            // bindless normal map for the shader. Empty path =
-            // procedural fallback.
-            if !rec.texture_path.is_empty() {
-                normal_path = Some(rec.texture_path.clone());
-            }
-        }
-    }
-
-    // SubmersionState is per-actor, not per-plane — but seed a
-    // sentinel value on the material itself so debug overlays can
-    // see "water without a parsed XCWT" cells.
-    let _ = SubmersionState::default();
-
-    (mat, kind, flow, normal_path)
-}
-
 /// Convenience for the interior path — picks a default half-extent
 /// when the cell-load step doesn't yet know the actual reference
 /// bounds (most interior cells with water are small pools or
@@ -403,61 +305,11 @@ pub(super) fn exterior_half_extent() -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_plugin::esm::records::misc::{WatrRecord, WaterParams};
+    use byroredux_core::ecs::components::water::{WaterKind, WaterMaterial};
 
-    /// Regression for #1069 / F-WAT-09 — `reflection_color` parsed from
-    /// WATR DATA must reach `WaterMaterial.reflection_tint` via
-    /// `resolve_water_material`. Pre-fix the field was silently dropped.
-    #[test]
-    fn resolve_water_material_transfers_reflection_color() {
-        let lava_tint = [0.85_f32, 0.30, 0.10]; // orange-red lava pool
-
-        let rec = WatrRecord {
-            form_id: 0x000A_BCDE,
-            editor_id: "LavaPool01".to_string(),
-            full_name: "Lava Pool".to_string(),
-            texture_path: String::new(),
-            noise_textures: [u32::MAX; 3],
-            params: WaterParams {
-                shallow_color: [1.0, 0.4, 0.1],
-                deep_color: [0.6, 0.1, 0.0],
-                reflection_color: lava_tint,
-                fog_near: 20.0,
-                fog_far: 80.0,
-                reflectivity: 0.40,
-                fresnel: 0.04,
-                wind_speed: 0.0,
-                wind_direction: 0.0,
-                wave_amplitude: 0.0,
-                wave_frequency: 0.0,
-            },
-            raw_dnam: Vec::new(),
-            raw_data: Vec::new(),
-        };
-
-        let mut waters = HashMap::new();
-        waters.insert(rec.form_id, rec);
-
-        let (mat, _kind, _flow, _normal) =
-            resolve_water_material(&waters, Some(0x000A_BCDE));
-
-        assert_eq!(
-            mat.reflection_tint, lava_tint,
-            "reflection_tint must round-trip from WATR DATA reflection_color"
-        );
-    }
-
-    /// Default WaterMaterial (no XCWT / no WATR record) uses the neutral
-    /// grey that matches the pre-#1069 hard-coded shader value.
-    #[test]
-    fn default_water_material_has_neutral_reflection_tint() {
-        let (mat, _, _, _) = resolve_water_material(&HashMap::new(), None);
-        assert_eq!(
-            mat.reflection_tint,
-            [0.65, 0.70, 0.75],
-            "default reflection_tint must match the pre-fix shader hard-code"
-        );
-    }
+    // `resolve_water_material` (+ its WATR reflection-tint / default-tint
+    // regressions for #1069) moved to the EXAL boundary in
+    // `crate::env_translate`; the tests moved with it.
 
     /// Regression for #1338 / D3-01 — the normal map `spawn_water_plane`
     /// resolves (bumping a texture refcount) must be reachable by the

@@ -13,8 +13,7 @@ use byroredux_renderer::VulkanContext;
 use crate::asset_provider::TextureProvider;
 use crate::cell_loader;
 use crate::components::{
-    CellLightingRes, CloudSimState, GameTimeRes, SkyParamsRes, WeatherDataRes,
-    WeatherTransitionRes,
+    CloudSimState, GameTimeRes, SkyParamsRes, WeatherDataRes, WeatherTransitionRes,
 };
 use crate::streaming::{self, LoadedCell, WorldStreamingState};
 
@@ -232,156 +231,86 @@ pub(crate) fn apply_worldspace_weather(
     tex_provider: &TextureProvider,
     wctx: &cell_loader::ExteriorWorldContext,
 ) {
-    let sun_dir: [f32; 3] = [-0.4, 0.8, -0.45];
+    // Bootstrap sun direction from the canonical sun model (EXAL step 4):
+    // `tod_hours` + the engine south-tilt drive `compute_sun_arc` — the same
+    // model `weather_system` runs every frame — so the initial resources seed
+    // consistently instead of with an arbitrary vector. `weather_system`
+    // overwrites this on frame 1 from the live game hour. Q1 settled that the
+    // sun-path is engine-defined (no authored latitude exists); see
+    // docs/engine/exal.md §9.
+    use crate::systems::weather::{compute_sun_arc, DEFAULT_TOD_HOURS};
+    let bootstrap_hour = initial_game_time().hour;
     if let Some(ref wthr) = wctx.default_weather {
-        use byroredux_plugin::esm::records::weather::*;
+        let sun_dir = compute_sun_arc(bootstrap_hour, climate_tod_hours(wctx.climate.as_ref())).0;
         // #1339 — capture the prior worldspace's sky-texture handles BEFORE
-        // this call re-acquires (the cloud `resolve_texture` / sun `load_dds`
-        // below each bump a refcount). Released after the new `SkyParamsRes`
-        // is inserted, so handles shared with the new worldspace stay
-        // resident (acquire-new-then-release-old, no transient free+reupload).
-        // These are worldspace-scoped and deliberately survive per-cell
-        // unload (#1199), so a worldspace re-acquire like this is the only
-        // place to release them. First (startup) call: `None` → no-op.
+        // the cloud/sun resolution below re-acquires (each bumps a refcount).
+        // Released after the new `SkyParamsRes` is installed, so handles
+        // shared with the new worldspace stay resident (acquire-new-then-
+        // release-old). Worldspace-scoped, survive per-cell unload (#1199);
+        // this re-acquire is the only release point. First call: `None`.
         let prev_sky_textures = world
             .try_resource::<SkyParamsRes>()
             .map(|s| s.texture_indices());
-        // Day-slot snapshot for the initial CellLightingRes / SkyParamsRes —
-        // the per-frame `weather_system` interpolator advances through the
-        // stored NAM0 table over the in-game day. Raw monitor-space colors
-        // (commit 0e8efc6) — sRGB decode would darken every warm hue.
-        let ambient = wthr.sky_colors[SKY_AMBIENT][TOD_DAY].to_rgb_f32();
-        let sunlight = wthr.sky_colors[SKY_SUNLIGHT][TOD_DAY].to_rgb_f32();
-        let fog_col = wthr.sky_colors[SKY_FOG][TOD_DAY].to_rgb_f32();
-        let zenith = wthr.sky_colors[SKY_UPPER][TOD_DAY].to_rgb_f32();
-        let horizon = wthr.sky_colors[SKY_HORIZON][TOD_DAY].to_rgb_f32();
-        let sun_col = wthr.sky_colors[SKY_SUN][TOD_DAY].to_rgb_f32();
-        // #541 — `SKY_LOWER` (real `Sky-Lower` per nif.xml NAM0
-        // schema, slot 7 post-#729) drives `composite.frag`'s
-        // below-horizon branch. Pre-fix the shader faked it as
-        // `horizon * 0.3`, dropping the authored colour entirely.
-        let lower = wthr.sky_colors[SKY_LOWER][TOD_DAY].to_rgb_f32();
+        // Canonical day-slot lighting (EXAL boundary). The per-frame
+        // `weather_system` then advances through the stored NAM0 table.
+        let lighting = crate::env_translate::translate_exterior_cell_lighting(wthr, sun_dir);
+        // Resolve the 4 WTHR cloud layers + CLMT sun sprite — the only
+        // VulkanContext-coupled step (#529 derives tile_scale from the
+        // authored DDS width; #478 resolves the FNAM sun sprite). The
+        // translate stays pure (EXAL §3): handles in, canonical out.
+        let cloud_layers = [
+            resolve_cloud_layer(
+                wthr.cloud_textures[0].as_deref(),
+                CLOUD_TILE_SCALE_LAYER_0,
+                "0",
+                tex_provider,
+                ctx,
+            ),
+            resolve_cloud_layer(
+                wthr.cloud_textures[1].as_deref(),
+                CLOUD_TILE_SCALE_LAYER_1,
+                "1",
+                tex_provider,
+                ctx,
+            ),
+            resolve_cloud_layer(
+                wthr.cloud_textures[2].as_deref(),
+                CLOUD_TILE_SCALE_LAYER_2,
+                "2",
+                tex_provider,
+                ctx,
+            ),
+            resolve_cloud_layer(
+                wthr.cloud_textures[3].as_deref(),
+                CLOUD_TILE_SCALE_LAYER_3,
+                "3",
+                tex_provider,
+                ctx,
+            ),
+        ];
+        let sun_sprite = resolve_sun_sprite(wctx.climate.as_ref(), tex_provider, ctx);
+        let sky = crate::env_translate::translate_sky(
+            wthr,
+            sun_dir,
+            crate::env_translate::SkyTextures {
+                cloud_layers,
+                sun_sprite,
+            },
+        );
         log::info!(
             "WTHR '{}': zenith={:?} horizon={:?} sun={:?} ambient={:?} sunlight={:?} fog_color={:?} fog_day={:.0}\u{2013}{:.0}",
             wthr.editor_id,
-            zenith,
-            horizon,
-            sun_col,
-            ambient,
-            sunlight,
-            fog_col,
-            wthr.fog_day_near,
-            wthr.fog_day_far,
+            sky.zenith_color,
+            sky.horizon_color,
+            sky.sun_color,
+            lighting.ambient,
+            lighting.directional_color,
+            lighting.fog_color,
+            lighting.fog_near,
+            lighting.fog_far,
         );
-        world.insert_resource(CellLightingRes {
-            ambient,
-            directional_color: sunlight,
-            directional_dir: sun_dir,
-            is_interior: false,
-            fog_color: fog_col,
-            fog_near: wthr.fog_day_near,
-            fog_far: wthr.fog_day_far,
-            // WTHR-driven exterior lighting; the XCLL extended block
-            // applies only to interior cells (and exterior cells with
-            // overridden lighting templates, not yet wired). See #861.
-            directional_fade: None,
-            fog_clip: None,
-            fog_power: None,
-            fog_far_color: None,
-            fog_max: None,
-            light_fade_begin: None,
-            light_fade_end: None,
-            directional_ambient: None,
-            specular_color: None,
-            specular_alpha: None,
-            fresnel_power: None,
-        });
-        // Resolve all 4 WTHR cloud layers via the shared per-WTHR
-        // helper (#529 — derives tile_scale from authored DDS width).
-        let (cloud_tex_index, cloud_tile_scale) = resolve_cloud_layer(
-            wthr.cloud_textures[0].as_deref(),
-            CLOUD_TILE_SCALE_LAYER_0,
-            "0",
-            tex_provider,
-            ctx,
-        );
-        let (cloud_tex_index_1, cloud_tile_scale_1) = resolve_cloud_layer(
-            wthr.cloud_textures[1].as_deref(),
-            CLOUD_TILE_SCALE_LAYER_1,
-            "1",
-            tex_provider,
-            ctx,
-        );
-        let (cloud_tex_index_2, cloud_tile_scale_2) = resolve_cloud_layer(
-            wthr.cloud_textures[2].as_deref(),
-            CLOUD_TILE_SCALE_LAYER_2,
-            "2",
-            tex_provider,
-            ctx,
-        );
-        let (cloud_tex_index_3, cloud_tile_scale_3) = resolve_cloud_layer(
-            wthr.cloud_textures[3].as_deref(),
-            CLOUD_TILE_SCALE_LAYER_3,
-            "3",
-            tex_provider,
-            ctx,
-        );
-        // CLMT FNAM sun-sprite resolution (#478). 0 = procedural disc fallback.
-        let sun_tex_index: u32 = wctx
-            .climate
-            .as_ref()
-            .and_then(|c| c.sun_texture.as_deref())
-            .filter(|s| !s.is_empty())
-            .and_then(|path| {
-                let dds = tex_provider.extract(path)?;
-                let alloc = ctx.allocator.as_ref().unwrap();
-                match ctx.texture_registry.load_dds(
-                    &ctx.device,
-                    alloc,
-                    &ctx.graphics_queue,
-                    ctx.transfer_pool,
-                    path,
-                    &dds,
-                ) {
-                    Ok(h) => {
-                        log::info!("Sun texture '{}' → handle {}", path, h);
-                        Some(h)
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "Sun DDS load failed '{}': {} — using procedural disc",
-                            path,
-                            e
-                        );
-                        None
-                    }
-                }
-            })
-            .unwrap_or(0);
-        world.insert_resource(SkyParamsRes {
-            zenith_color: zenith,
-            horizon_color: horizon,
-            lower_color: lower,
-            sun_direction: sun_dir,
-            sun_color: sun_col,
-            sun_size: 0.9995,
-            sun_intensity: 4.0,
-            sun_angular_radius: 0.020,
-            is_exterior: true,
-            cloud_tile_scale,
-            cloud_texture_index: cloud_tex_index,
-            sun_texture_index: sun_tex_index,
-            cloud_tile_scale_1,
-            cloud_texture_index_1: cloud_tex_index_1,
-            cloud_tile_scale_2,
-            cloud_texture_index_2: cloud_tex_index_2,
-            cloud_tile_scale_3,
-            cloud_texture_index_3: cloud_tex_index_3,
-            // #993 — populated per-frame by `weather_system` when the
-            // WTHR record carried DALC sub-records. Stays `None` for
-            // FNV/FO3/Oblivion (different ambient model).
-            current_dalc_cube: None,
-        });
+        world.insert_resource(lighting);
+        world.insert_resource(sky);
         // #1339 — release the prior worldspace's sky textures now that the
         // new set is acquired + installed. `drop_texture` decrements the
         // refcount: a handle shared with the new worldspace drops back to
@@ -400,44 +329,9 @@ pub(crate) fn apply_worldspace_weather(
         if world.try_resource::<CloudSimState>().is_none() {
             world.insert_resource(CloudSimState::default());
         }
-        // Full NAM0 color table for per-frame TOD interpolation.
-        let mut sky_colors = [[[0.0f32; 3]; 6]; 10];
-        for (dst_group, src_group) in sky_colors.iter_mut().zip(wthr.sky_colors.iter()) {
-            for (dst, src) in dst_group.iter_mut().zip(src_group.iter()) {
-                *dst = src.to_rgb_f32();
-            }
-        }
-        // #463 — per-climate sunrise/sunset breakpoints.
-        let tod_hours = climate_tod_hours(wctx.climate.as_ref());
-        // #993 — Skyrim WTHR ships a 4-entry DALC cube (sunrise / day
-        // / sunset / night). Convert Bethesda Z-up authoring to engine
-        // Y-up once here so `weather_system` can lerp on raw f32s
-        // without per-frame coord swaps. `None` on FNV / FO3 /
-        // Oblivion / FO4+ (different ambient models).
-        let skyrim_dalc_per_tod = wthr.skyrim_ambient_cube.as_ref().map(|cubes| {
-            [
-                crate::components::DalcCubeYup::from_skyrim_zup(&cubes[0]),
-                crate::components::DalcCubeYup::from_skyrim_zup(&cubes[1]),
-                crate::components::DalcCubeYup::from_skyrim_zup(&cubes[2]),
-                crate::components::DalcCubeYup::from_skyrim_zup(&cubes[3]),
-            ]
-        });
-        let new_weather = WeatherDataRes {
-            sky_colors,
-            fog: [
-                wthr.fog_day_near,
-                wthr.fog_day_far,
-                wthr.fog_night_near,
-                wthr.fog_night_far,
-            ],
-            tod_hours,
-            skyrim_dalc_per_tod,
-            // #1033 — project the WTHR DATA wind_speed byte onto the
-            // runtime resource so `weather_system::cloud_scroll_rate_from_wind`
-            // can drive per-weather cloud animation. Pre-#1033 this
-            // byte was parsed but dropped at the boundary.
-            wind_speed: wthr.wind_speed,
-        };
+        // Full NAM0 table + per-climate TOD breakpoints + Skyrim DALC cube
+        // (Z-up→Y-up once), all resolved at the EXAL boundary.
+        let new_weather = crate::env_translate::translate_weather(wthr, wctx.climate.as_ref());
         // First-time bootstrap: insert directly. A subsequent worldspace
         // change (door-walking interior↔exterior, M40 Phase 2) will
         // trigger the 8-second crossfade via WeatherTransitionRes.
@@ -463,129 +357,69 @@ pub(crate) fn apply_worldspace_weather(
         // lighting on any cell whose worldspace failed to resolve a
         // climate / weather (corrupt ESM, broken plugin, bespoke
         // synthetic test cell).
+        let sun_dir = compute_sun_arc(bootstrap_hour, DEFAULT_TOD_HOURS).0;
         insert_procedural_fallback_resources(world, sun_dir);
     }
 }
 
-/// Procedural Mojave-style sky + lighting + game-time resources for a
-/// worldspace that has no resolved climate / weather record. Mirrors
-/// the per-WTHR insert above but with hardcoded warm-desert defaults.
-///
-/// Crucially also installs `GameTimeRes` (default hour=10 / time_scale
-/// 30×) and a synthetic `WeatherDataRes` whose 6 TOD slots all carry
-/// the same fallback colours, so `weather_system` runs the sun arc
-/// each frame instead of early-returning. The TOD-slot lerp of two
-/// identical endpoints reproduces the procedural colours unchanged
-/// while letting `sun_direction` and `sun_intensity` animate
-/// across the simulated day. Synthetic NAM0 groups outside the six
-/// `weather_system` reads (`SKY_UPPER`, `SKY_FOG`, `SKY_AMBIENT`,
-/// `SKY_SUNLIGHT`, `SKY_SUN`, `SKY_HORIZON`) stay at zero — those
-/// slots aren't sampled in the fallback path.
-pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [f32; 3]) {
-    use byroredux_plugin::esm::records::weather as wthr;
-    const AMBIENT: [f32; 3] = [0.15, 0.14, 0.12];
-    const SUNLIGHT: [f32; 3] = [1.0, 0.95, 0.8];
-    const FOG_COLOR: [f32; 3] = [0.65, 0.7, 0.8];
-    const ZENITH: [f32; 3] = [0.15, 0.3, 0.65];
-    const HORIZON: [f32; 3] = [0.55, 0.5, 0.42];
-    // Pre-#541 the `compute_sky` below-horizon branch faked the
-    // ground tint as `horizon * 0.3`; matching that scaling here
-    // keeps the procedural look unchanged when no WTHR is present.
-    const LOWER: [f32; 3] = [HORIZON[0] * 0.3, HORIZON[1] * 0.3, HORIZON[2] * 0.3];
-    const SUN_COLOR: [f32; 3] = [1.0, 0.95, 0.8];
-    const FOG_NEAR: f32 = 15000.0;
-    const FOG_FAR: f32 = 80000.0;
+/// Resolve the CLMT FNAM sun-sprite path to a bindless handle. `0` = use
+/// the composite shader's procedural disc (no climate / no path / load
+/// failure). The only `VulkanContext`-coupled half of sky setup besides
+/// the cloud layers; kept here so `env_translate::translate_sky` stays
+/// pure. See #478.
+fn resolve_sun_sprite(
+    climate: Option<&byroredux_plugin::esm::records::ClimateRecord>,
+    tex_provider: &TextureProvider,
+    ctx: &mut VulkanContext,
+) -> u32 {
+    climate
+        .and_then(|c| c.sun_texture.as_deref())
+        .filter(|s| !s.is_empty())
+        .and_then(|path| {
+            let dds = tex_provider.extract(path)?;
+            let alloc = ctx.allocator.as_ref().unwrap();
+            match ctx.texture_registry.load_dds(
+                &ctx.device,
+                alloc,
+                &ctx.graphics_queue,
+                ctx.transfer_pool,
+                path,
+                &dds,
+            ) {
+                Ok(h) => {
+                    log::info!("Sun texture '{}' → handle {}", path, h);
+                    Some(h)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Sun DDS load failed '{}': {} — using procedural disc",
+                        path,
+                        e
+                    );
+                    None
+                }
+            }
+        })
+        .unwrap_or(0)
+}
 
-    world.insert_resource(CellLightingRes {
-        ambient: AMBIENT,
-        directional_color: SUNLIGHT,
-        directional_dir: sun_dir,
-        is_interior: false,
-        fog_color: FOG_COLOR,
-        fog_near: FOG_NEAR,
-        fog_far: FOG_FAR,
-        // Engine-default fallback (no plugin data) — extended XCLL
-        // fields stay None. See #861.
-        directional_fade: None,
-        fog_clip: None,
-        fog_power: None,
-        fog_far_color: None,
-        fog_max: None,
-        light_fade_begin: None,
-        light_fade_end: None,
-        directional_ambient: None,
-        specular_color: None,
-        specular_alpha: None,
-        fresnel_power: None,
-    });
-    world.insert_resource(SkyParamsRes {
-        zenith_color: ZENITH,
-        horizon_color: HORIZON,
-        lower_color: LOWER,
-        sun_direction: sun_dir,
-        sun_color: SUN_COLOR,
-        sun_size: 0.9995,
-        sun_intensity: 4.0,
-        sun_angular_radius: 0.020,
-        is_exterior: true,
-        cloud_tile_scale: 0.0,
-        cloud_texture_index: 0,
-        sun_texture_index: 0,
-        cloud_tile_scale_1: 0.0,
-        cloud_texture_index_1: 0,
-        cloud_tile_scale_2: 0.0,
-        cloud_texture_index_2: 0,
-        cloud_tile_scale_3: 0.0,
-        cloud_texture_index_3: 0,
-        // Procedural fallback path has no WTHR record, hence no DALC.
-        current_dalc_cube: None,
-    });
-    // #803 — same survives-transitions pattern as the WTHR-driven
-    // path: the procedural fallback also seeds CloudSimState only on
-    // the first exterior load.
+/// Procedural fallback sky + lighting + game-time resources for a
+/// worldspace with no resolved climate / weather record. The canonical
+/// values live behind the EXAL boundary
+/// ([`crate::env_translate::procedural_fallback_cell_lighting`] /
+/// `_sky` / `_weather`); this function is the orchestration that installs
+/// them plus `GameTimeRes` and the survives-transitions `CloudSimState`,
+/// so `weather_system` runs the sun arc each frame instead of
+/// early-returning. See #542 / M33-10.
+pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [f32; 3]) {
+    world.insert_resource(crate::env_translate::procedural_fallback_cell_lighting(sun_dir));
+    world.insert_resource(crate::env_translate::procedural_fallback_sky(sun_dir));
+    // #803 — same survives-transitions pattern as the WTHR path: seed
+    // CloudSimState only on the first exterior load.
     if world.try_resource::<CloudSimState>().is_none() {
         world.insert_resource(CloudSimState::default());
     }
-
-    // Synthetic NAM0 table — every TOD slot gets the same procedural
-    // colour for the six groups `weather_system` reads. The lerp of
-    // two equal endpoints is a no-op for colour, so the TOD pass
-    // re-writes the same procedural values each frame while still
-    // refreshing `sun_direction` / `sun_intensity` from the advancing
-    // game hour. See #542 / M33-10.
-    let mut sky_colors = [[[0.0f32; 3]; wthr::SKY_TIME_SLOTS]; wthr::SKY_COLOR_GROUPS];
-    let synthetic = [
-        (wthr::SKY_UPPER, ZENITH),
-        (wthr::SKY_FOG, FOG_COLOR),
-        (wthr::SKY_AMBIENT, AMBIENT),
-        (wthr::SKY_SUNLIGHT, SUNLIGHT),
-        (wthr::SKY_SUN, SUN_COLOR),
-        // #541 — `weather_system` now also reads SKY_LOWER for the
-        // below-horizon branch. Synthetic value matches the
-        // procedural `LOWER` constant so the lerp re-writes the same
-        // ground tint each frame.
-        (wthr::SKY_LOWER, LOWER),
-        (wthr::SKY_HORIZON, HORIZON),
-    ];
-    for (group, color) in synthetic {
-        sky_colors[group].fill(color);
-    }
-    world.insert_resource(WeatherDataRes {
-        sky_colors,
-        // Day/night fog distances kept identical — no authored night
-        // distance to interpolate toward.
-        fog: [FOG_NEAR, FOG_FAR, FOG_NEAR, FOG_FAR],
-        // Pre-#463 hardcoded TOD breakpoints — sunrise 6h, day 10h,
-        // sunset 18h, night 22h.
-        tod_hours: [6.0, 10.0, 18.0, 22.0],
-        // Procedural fallback has no WTHR DALC — Skyrim cube stays
-        // `None`, the renderer falls through to the flat ambient + AO
-        // floor path on every fragment.
-        skyrim_dalc_per_tod: None,
-        // No authored WTHR → no wind; the cloud animation stays still
-        // on the synthetic fallback. #1033.
-        wind_speed: 0,
-    });
+    world.insert_resource(crate::env_translate::procedural_fallback_weather());
     world.insert_resource(initial_game_time());
 }
 
@@ -760,6 +594,16 @@ pub(crate) fn stream_initial_radius(
         (cx, cy),
         state.radius_load,
         &mut state.lod_blocks,
+    );
+    // Distant object LOD (Skyrim+/FO4 `.bto`) — no-op on other games.
+    cell_loader::stream_object_lod_blocks(
+        world,
+        ctx,
+        lod_tex.as_ref(),
+        wctx.as_ref(),
+        (cx, cy),
+        state.radius_load,
+        &mut state.object_lod_blocks,
     );
 
     center
