@@ -533,12 +533,12 @@ impl App {
         world.insert_resource(script_registry);
 
         // Build the system schedule — stages run sequentially, systems
-        // within each stage run in parallel via rayon. Three systems
-        // here demonstrate the R7 declared-access pattern via
-        // `add_to_with_access`; the rest stay undeclared (closures and
-        // function items can't impl `System::access`, so they appear
-        // as "Unknown" in the conflict report until migrated). Drive
-        // further migrations off the `sys.accesses` console output.
+        // within each stage run in parallel via rayon. All parallel
+        // systems declare their access via `add_to_with_access`
+        // (M27 migration complete); `undeclared_parallel_count()` is
+        // asserted to be 0 after construction below. Exclusive systems
+        // (add_exclusive) run serially after each stage's parallel
+        // batch and do not participate in the conflict analyzer.
         let mut scheduler = Scheduler::new();
         // M27 Phase 3 — `fly_camera_system` and `character_controller_system`
         // are runtime-mutually-exclusive (each early-returns on the
@@ -829,6 +829,17 @@ impl App {
         );
         scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);
 
+        // #1394 — guard against silently re-introducing undeclared parallel
+        // systems.  All parallel-batch entries must use add_to_with_access;
+        // any future add_to() call will trip this in debug builds before
+        // the Unknown row appears in the sys.accesses conflict report.
+        let report_snapshot = scheduler.access_report();
+        debug_assert_eq!(
+            report_snapshot.undeclared_parallel_count(),
+            0,
+            "undeclared parallel system detected — use add_to_with_access instead of add_to"
+        );
+
         // Store system names + console commands as resources.
         let system_names: Vec<String> = scheduler
             .system_names()
@@ -839,9 +850,7 @@ impl App {
         // R7: snapshot the per-stage access report once after the
         // schedule is built. Read by `sys.accesses` to surface
         // declared-access conflicts to the operator.
-        world.insert_resource(byroredux_core::ecs::SchedulerAccessReport(
-            scheduler.access_report(),
-        ));
+        world.insert_resource(byroredux_core::ecs::SchedulerAccessReport(report_snapshot));
         world.insert_resource(build_command_registry());
 
         // Start debug server (feature-gated, zero cost when disabled).

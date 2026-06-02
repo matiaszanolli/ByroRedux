@@ -290,26 +290,24 @@ impl AccelerationManager {
         if need_new_tlas {
             // Destroy old TLAS for this frame slot.
             //
-            // INVARIANT — load-bearing: `draw_frame` calls
-            // `wait_for_fences` on both this slot's and the previous
-            // slot's `in_flight` fences BEFORE reaching this site
-            // (`context/draw.rs::draw_frame` fence-wait block, ~line
-            // 158). The double-fence wait guarantees no command
-            // buffer still references the resources we're about to
-            // destroy, so `device_wait_idle` here would only
-            // duplicate work. Pre-fix this comment claimed the fence
-            // wait covers it without naming the invariant; if a
-            // future refactor moves the fence wait or splits the
-            // pair, this resize path silently destroys live TLAS
-            // resources. Add a defensive `device.device_wait_idle()`
-            // here if either changes. See REN-D2-NEW-04 (audit
-            // 2026-05-09).
+            // INVARIANT: `draw_frame` calls `wait_for_fences` on both
+            // this slot's and the previous slot's `in_flight` fences
+            // BEFORE reaching this site, guaranteeing no command
+            // buffer still references the resources we are about to
+            // destroy.  The defensive `device_wait_idle` below is
+            // belt-and-suspenders for this site: in the normal
+            // draw_frame path the fence wait already makes it a no-op,
+            // but it prevents a silent use-after-destroy if a future
+            // refactor moves or splits the fence-wait pair.
+            // See REN-D2-NEW-04 (audit 2026-05-09), #1390.
             if let Some(mut old) = self.tlas[frame_index].take() {
                 log::info!(
                     "TLAS[{frame_index}] resize: {} → {} instances",
                     old.max_instances,
                     instance_count,
                 );
+                // Defensive idle — see invariant note above.
+                let _ = device.device_wait_idle();
                 self.accel_loader
                     .destroy_acceleration_structure(old.accel, None);
                 old.buffer.destroy(device, allocator);
