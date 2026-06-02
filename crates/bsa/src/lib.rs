@@ -19,8 +19,10 @@
 
 mod archive;
 mod ba2;
+mod csg;
 mod safety;
 
 pub use archive::BsaArchive;
 pub use ba2::{Ba2Archive, Ba2Variant};
+pub use csg::{CsgArchive, CSG_CHUNK_SIZE};
 pub use safety::{MAX_CHUNK_BYTES, MAX_ENTRY_COUNT};
