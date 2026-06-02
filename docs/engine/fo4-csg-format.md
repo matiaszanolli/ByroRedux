@@ -120,11 +120,26 @@ almost never at offset 12. This is the engine's existing BSTriShape
 `BSVertexData` layout exactly, so the same decoder
 (`decode_bs_vertex_stream`) reads it with positions forced to half.
 
-### Triangles
+### Triangles and LOD selection
 
-`tri_count_lod0 + tri_count_lod1 + tri_count_lod2` triangles, each three
-`u16` indices into this object's vertex array, LOD0 first. Verified:
-indices are 0-based and dense (`max == num_verts − 1`).
+The triangle block holds `tri_count_lod0 + tri_count_lod1 +
+tri_count_lod2` triangles — three `u16` indices each — stored back to
+back as `[LOD0][LOD1][LOD2]`. `tri_offset_lodN` is the start offset **in
+index units** (so the triangle start is `tri_offset / 3`): e.g. e2db's
+object has `lod0 cnt=888 off=0`, `lod1 cnt=0 off=2664`, `lod2 cnt=122
+off=2664` (2664 = 888 × 3).
+
+These are **levels of detail** (nif.xml: "switch a geometry at a
+specified distance") — alternative triangulations of the *same* surface,
+not disjoint segments. Rendering more than one z-fights (overlapping
+coplanar triangulations). The importer therefore selects **exactly one
+LOD** and emits only its triangles.
+
+**LOD index is not a reliable detail order**: some objects ship
+`lod0 ≫ lod2` (e2db: 888 vs 122), others `lod0 ≪ lod2` (another object:
+16 vs 127). So the importer picks the **finest** LOD by *highest triangle
+count*, reading `tri_count` triangles from `tri_offset / 3`. Verified:
+within each LOD, indices are 0-based and dense (`max == num_verts − 1`).
 
 ### Placement
 

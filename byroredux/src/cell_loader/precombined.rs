@@ -320,9 +320,27 @@ pub(super) fn build_precombine_meshes(scene: &NifScene, csg: &CsgArchive) -> Vec
                 continue;
             }
             let stride = psg_vertex_stride(hdr.vertex_desc);
-            let tri_total =
-                (hdr.tri_count_lod0 + hdr.tri_count_lod1 + hdr.tri_count_lod2) as usize;
-            let psg = match csg.read_psg(obj.data_offset as u64, nv * stride + tri_total * 6) {
+            // The 3 LODs are alternative triangulations of the SAME surface
+            // (nif.xml: "switch a geometry at a specified distance"), stored
+            // back-to-back as `[LOD0][LOD1][LOD2]` in one index buffer.
+            // Rendering more than one z-fights — pick the finest (highest
+            // triangle count); LOD index is NOT a reliable detail order
+            // (some objects ship lod0 ≫ lod2, others lod0 ≪ lod2). The
+            // chosen LOD's triangles start at its index-unit offset / 3.
+            let lods = [
+                (hdr.tri_count_lod0, hdr.tri_offset_lod0),
+                (hdr.tri_count_lod1, hdr.tri_offset_lod1),
+                (hdr.tri_count_lod2, hdr.tri_offset_lod2),
+            ];
+            let (lod_count, lod_off_idx) =
+                lods.iter().copied().max_by_key(|&(c, _)| c).unwrap();
+            let lod_count = lod_count as usize;
+            if lod_count == 0 {
+                continue;
+            }
+            let tri_start = (lod_off_idx / 3) as usize;
+            let need = nv * stride + (tri_start + lod_count) * 6;
+            let psg = match csg.read_psg(obj.data_offset as u64, need) {
                 Ok(b) => b,
                 Err(e) => {
                     log::debug!(
@@ -332,13 +350,17 @@ pub(super) fn build_precombine_meshes(scene: &NifScene, csg: &CsgArchive) -> Vec
                     continue;
                 }
             };
-            let geom = match decode_shared_geom_object(&psg, hdr.vertex_desc, nv, tri_total) {
-                Ok(g) => g,
-                Err(e) => {
-                    log::debug!("PreCombined: decode at offset {} failed: {e}", obj.data_offset);
-                    continue;
-                }
-            };
+            let geom =
+                match decode_shared_geom_object(&psg, hdr.vertex_desc, nv, tri_start, lod_count) {
+                    Ok(g) => g,
+                    Err(e) => {
+                        log::debug!(
+                            "PreCombined: decode at offset {} failed: {e}",
+                            obj.data_offset
+                        );
+                        continue;
+                    }
+                };
             // One placed instance per combined transform. Objects with no
             // combined entries carry no placement, so they contribute
             // nothing (matches the bake's intent — an unplaced merge).

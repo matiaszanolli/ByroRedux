@@ -42,8 +42,10 @@ pub struct PrecombineGeometry {
     /// descriptor carries both `VF_NORMALS` and `VF_TANGENTS`.
     pub tangents: Vec<[f32; 4]>,
     pub colors: Vec<[f32; 4]>,
-    /// Flattened triangle indices (3 per triangle), all LODs concatenated
-    /// LOD0-first (the importer renders LOD0; higher LODs are appended).
+    /// Flattened triangle indices (3 per triangle) for the **single**
+    /// LOD the caller selected (the finest — highest triangle count). The
+    /// other LODs are alternative triangulations of the same surface and
+    /// are intentionally not included (rendering them together z-fights).
     pub indices: Vec<u32>,
 }
 
@@ -89,18 +91,23 @@ pub fn psg_vertex_stride(vertex_desc: u64) -> usize {
 }
 
 /// Decode one shared-geometry object from its PSG slice: `num_verts`
-/// packed vertices (stride [`psg_vertex_stride`]) followed by
-/// `num_triangles` `u16`-triples. `vertex_desc` is the descriptor from
-/// the `BSPackedSharedGeomData` header. Returns Y-up geometry.
+/// packed vertices (stride [`psg_vertex_stride`]), then **one LOD's**
+/// triangles — `tri_count` `u16`-triples starting `tri_start` triangles
+/// into the concatenated `[LOD0][LOD1][LOD2]` triangle block.
+/// `vertex_desc` is the descriptor from the `BSPackedSharedGeomData`
+/// header. Returns Y-up geometry.
 ///
-/// `psg` must hold at least `num_verts * stride + num_triangles * 6`
-/// bytes (the caller — typically the cell loader via `CsgArchive::read_psg`
-/// — sizes the read from the same header).
+/// The three LODs are alternative triangulations of the *same* surface
+/// (nif.xml: "switch a geometry at a specified distance"), so rendering
+/// more than one z-fights — the caller picks a single LOD (finest =
+/// highest triangle count) and passes its slice. `psg` must hold at
+/// least `num_verts * stride + (tri_start + tri_count) * 6` bytes.
 pub fn decode_shared_geom_object(
     psg: &[u8],
     vertex_desc: u64,
     num_verts: usize,
-    num_triangles: usize,
+    tri_start: usize,
+    tri_count: usize,
 ) -> io::Result<PrecombineGeometry> {
     let attrs = ((vertex_desc >> 44) & 0xFFF) as u16;
     let stride = psg_vertex_stride(vertex_desc);
@@ -120,9 +127,13 @@ pub fn decode_shared_geom_object(
         /* is_skinned = */ false,
     )?;
 
-    // Triangles follow the packed vertex block.
-    let tris = stream.read_u16_triple_array(num_triangles)?;
-    let mut indices = Vec::with_capacity(num_triangles * 3);
+    // Triangles follow the packed vertex block. Skip to the chosen LOD's
+    // first triangle (`tri_start` × 6 bytes) and read only its `tri_count`.
+    if tri_start > 0 {
+        stream.skip(tri_start as u64 * 6)?;
+    }
+    let tris = stream.read_u16_triple_array(tri_count)?;
+    let mut indices = Vec::with_capacity(tri_count * 3);
     for [a, b, c] in tris {
         indices.push(a as u32);
         indices.push(b as u32);
@@ -205,7 +216,7 @@ mod tests {
         psg.extend_from_slice(&1u16.to_le_bytes());
         psg.extend_from_slice(&0u16.to_le_bytes());
 
-        let g = decode_shared_geom_object(&psg, vertex_desc, 2, 1).unwrap();
+        let g = decode_shared_geom_object(&psg, vertex_desc, 2, 0, 1).unwrap();
         assert_eq!(g.positions.len(), 2);
         assert_eq!(g.indices, vec![0, 1, 0]);
         assert_eq!(g.uvs[0], [0.5, 0.25]);
