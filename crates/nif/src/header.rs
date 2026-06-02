@@ -41,6 +41,30 @@ pub struct NifHeader {
 }
 
 impl NifHeader {
+    /// Build a minimal, header-less version context for decoding a
+    /// **detached** packed buffer that has no NIF header of its own —
+    /// e.g. FO4 precombined geometry pulled from a `<Plugin> -
+    /// Geometry.csg` blob, whose `BSVertexData` stream lives outside any
+    /// `.nif` (M49). Carries only the version triple that drives
+    /// [`crate::stream::NifStream`]'s variant detection / `bsver()`;
+    /// every table is empty (there are no blocks or strings to resolve
+    /// when reading a bare vertex/triangle array).
+    pub fn detached(version: NifVersion, user_version: u32, user_version_2: u32) -> Self {
+        Self {
+            version,
+            little_endian: true,
+            user_version,
+            user_version_2,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
     /// Parse a NIF header from raw file bytes.
     /// Returns the header and the byte offset where block data begins.
     pub fn parse(data: &[u8]) -> io::Result<(Self, usize)> {

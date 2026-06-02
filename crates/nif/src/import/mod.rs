@@ -11,6 +11,7 @@ pub mod collision;
 mod coord;
 mod material;
 pub(crate) mod mesh;
+pub mod precombine;
 mod transform;
 mod walk;
 

@@ -52,6 +52,12 @@ pub use ni_tri_shape::{
 // version test files keep accessing them via the `tri_shape::` path.
 pub(crate) use ni_tri_shape::{parse_geometry_data_base, parse_psys_geometry_data_base};
 
+// Shared packed-`BSVertexData` decoder, reused by the FO4 precombined
+// CSG geometry path (`crate::import::precombine`, M49). The returned
+// `DecodedBsVertices` is consumed by field access (inferred type), so
+// only the function needs naming here.
+pub(crate) use bs_tri_shape::decode_bs_vertex_stream;
+
 // --- Shared low-level helpers ---
 
 /// Renormalize a 4-influence weight tuple to unit sum so half-float
