@@ -24,6 +24,65 @@ Commits hold that record.
 
 ---
 
+## Session 44 — audit bug-bash (FNV + Safety + FO4/NIFAL) + perf arc + stochastic depth of field  (2026-05-30 → 2026-06-01, 04cd20a1..49ec0e33, 63 commits)
+
+The largest session since the milestone-heavy stretch: two fresh audits
+(`AUDIT_FNV_2026-05-30`, `AUDIT_SAFETY_2026-06-01`) plus standing FO4 / NIFAL
+findings drove a ~45-issue bug-bash, interleaved with a deliberate performance
+arc and the first new renderer feature in several sessions. Unlike Session 43
+(parser/ESM only), this one *did* touch the renderer + ECS hot path, so the
+bench-of-record is now genuinely stale and flagged for re-run.
+
+- **FNV cell-loader correctness & texture-refcount leaks** — refcount drops on
+  cell unload for water-plane normal maps (#1338), GreyscaleLUT (#1340), splat
+  layers (#1343); interior-cell lighting on runtime loads (#1340 / #1339); prior
+  worldspace-sky texture release on re-acquire (#1339); ESM `XXXX` extended-size
+  sub-record override (#1347); FNV WEAP `DNAM` Min Spread read as f32 (#1342);
+  inline `BSPSysSimpleColorModifier` particle colors (#1345).
+
+- **FO4 / NIFAL translation** — FO4 BGSM routed through the Disney diffuse lobe
+  (#1352) + grayscale-to-palette LUT forwarded & rendered (#1353); SkinTint /
+  HairTint slots no longer mis-bound as env_map (#1350); NIFAL classify-at-import
+  / clamp-at-translate architecture clarified (#1346) and doc-rot cleared
+  (#1365 / #1366); collision `BhkConvexSweepShape` + `BhkMeshShape` resolved
+  (#1360 / #1361); FO76 + Starfield added to the translation-completeness harness
+  (#1362); phantom-shape + emitter-rate FLT_MAX gates (#1363 / #1364). **M49 filed**
+  — FO4 PreCombined Geometry CSG reader (#1351), blocked on a `.csg` byte-layout
+  spec (no-guessing policy).
+
+- **Renderer safety & RT correctness (AUDIT_SAFETY)** — require `synchronization2`
+  to fix VUID-…-4957 (#1437); destroy volumetrics pipeline on `initialize_layouts`
+  failure (#1389); clamp `GLASS_IOR > 0` to prevent Inf ETA (#1395); `MATERIAL_KIND_*`
+  lockstep framework (#1401); SAFETY comments + `debug_assert` in `upload_lights`,
+  `gpu_timers`, `blas_skinned` (#1425 / #1432); water reflection/refraction `N*0.05`
+  origin bias (VKC-007, `1c0cb585`) and caustic shadow-ray tMin 0.001→0.05
+  (`13b779f5`); **water caustic floor-ray biased into the medium (`-N`) + tMin 0.05
+  (#1388)**; **AS scratch-offset alignment enforced by round-up-at-use across all
+  five build/refit sites (#1386)**; material-overflow debug asserts (`82dc02c7` /
+  `8446c525`); volumetrics TLAS latch reset per frame (`6e851403`); dead
+  `engine_info` FFI export removed + TLAS shrink-guard hardened (`7f4166ff`).
+
+- **Performance arc** — ECS change-detection + incremental world-bound / transform
+  propagation (`ad012f9d`, `99166c84`); query storage-downcast cache (`c6e983de`);
+  FxHash for material/instance hot-path keys (`ac8d257a`); distant-terrain LOD
+  ring streamed with the player for ~10× exterior view distance (`ce4a0cf8`,
+  `bdd6563b`, `601e2969`); simulation-step sleep for static scenes (`6e55b492`);
+  exterior LAND textures tiled 12× per cell (`a25f1da5`).
+
+- **Features & infra** — stochastic **depth of field** via TAA-accumulated aperture-
+  disk jitter (`400fa68f`, opt-in, zero-cost at `aperture==0`); `BYRO_HOUR` env
+  override for deterministic time-of-day renders (`40008a79`); GitHub Actions CI
+  with headless Vulkan-validation bench (`22a1af5e`); `BYRO_PROFILE` per-phase
+  `build_render_data` breakdown (`9bff2b47`); missing NIF/SPT logging when not
+  found in BSA (`49ec0e33`).
+
+Net: tests ~2683 → **2735** (+52), src LOC ~214 350 → **~218 000** (+~3 660),
+63 commits. Bench-of-record `4e2ebe8c` (2026-05-28) now **106 commits stale** and —
+unlike Session 43 — this session touched the renderer/ECS hot path (FxHash keys,
+incremental propagation, terrain LOD); a re-run is warranted (DOF itself is
+opt-in/zero-cost). No bench re-run this session — flagged in ROADMAP Known Issues
+as R6a-stale-14.
+
 ## Session 43 — audit-bundle bug-bash: v10.0.1.0 "old Oblivion" NIF + Oblivion/Starfield ESM-XCLL + tech-debt sweep + M47.2 VMAD  (2026-05-28 → 2026-05-30, 86d32e5f..b2e04548, 38 commits)
 
 A pure audit-driven closeout session, no milestone churn. Three fresh 2026-05-28 audits
