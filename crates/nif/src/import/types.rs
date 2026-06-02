@@ -712,6 +712,125 @@ pub struct ImportedMesh {
     pub bs_sub_index: Option<BsSubIndexTriShapeData>,
 }
 
+impl ImportedMesh {
+    /// Build an opaque, untextured, lit mesh from raw renderer-space
+    /// (Y-up) geometry, with identity transform and the same default
+    /// Gamebryo material parameters the NIF importer applies when a mesh
+    /// has no shader property (`diffuse`/`ambient` = white, `z_function`
+    /// = LESSEQUAL, `fresnel_power` = 5, etc.). The caller sets
+    /// `translation` / `rotation` / `scale` / `name` (and any material
+    /// overrides) on the returned value.
+    ///
+    /// Shared builder for geometry that arrives without a NIF shader
+    /// property — FO4 precombined CSG objects ([`crate::import::precombine`],
+    /// M49) today; the SpeedTree placeholder and the loose-NIF empty-mesh
+    /// fallbacks duplicate this field block and can adopt it next.
+    /// `local_bound_*` is computed from `positions` via
+    /// [`crate::import::mesh::extract_local_bound`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_geometry(
+        positions: Vec<[f32; 3]>,
+        colors: Vec<[f32; 4]>,
+        normals: Vec<[f32; 3]>,
+        tangents: Vec<[f32; 4]>,
+        uvs: Vec<[f32; 2]>,
+        indices: Vec<u32>,
+    ) -> Self {
+        let (local_bound_center, local_bound_radius) = crate::import::mesh::extract_local_bound(
+            crate::types::NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            0.0,
+            &positions,
+        );
+        Self {
+            positions,
+            colors,
+            normals,
+            tangents,
+            uvs,
+            indices,
+            translation: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+            texture_path: None,
+            material_path: None,
+            name: None,
+            has_alpha: false,
+            src_blend_mode: 6,  // SRC_ALPHA (unused when opaque)
+            dst_blend_mode: 7,  // INV_SRC_ALPHA
+            alpha_test: false,
+            alpha_threshold: 0.5,
+            alpha_test_func: 6, // GREATEREQUAL
+            two_sided: false,
+            is_decal: false,
+            normal_map: None,
+            glow_map: None,
+            detail_map: None,
+            gloss_map: None,
+            dark_map: None,
+            parallax_map: None,
+            env_map: None,
+            env_mask: None,
+            specular_map: None,
+            lighting_map: None,
+            flow_map: None,
+            wrinkle_map: None,
+            is_pbr: false,
+            has_translucency: false,
+            model_space_normals: false,
+            from_bgsm: false,
+            bgem_glass: false,
+            metalness_override: None,
+            roughness_override: None,
+            translucency_subsurface_color: [0.0; 3],
+            translucency_transmissive_scale: 0.0,
+            translucency_turbulence: 0.0,
+            translucency_thick_object: false,
+            translucency_mix_albedo: false,
+            parallax_max_passes: None,
+            parallax_height_scale: None,
+            vertex_color_mode: 2, // AmbientDiffuse
+            texture_clamp_mode: 0, // WRAP_S_WRAP_T
+            emissive_color: [0.0; 3],
+            emissive_mult: 0.0,
+            emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,
+            specular_color: [1.0; 3],
+            diffuse_color: [1.0; 3],
+            ambient_color: [1.0; 3],
+            specular_strength: 0.0,
+            glossiness: 0.0,
+            refraction_strength: 0.0,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            grayscale_to_palette_scale: 1.0,
+            bgsm_greyscale_lut_path: None,
+            fresnel_power: 5.0,
+            uv_offset: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            mat_alpha: 1.0,
+            env_map_scale: 0.0,
+            parent_node: None,
+            skin: None,
+            z_test: true,
+            z_write: true,
+            z_function: 3, // LESSEQUAL
+            local_bound_center,
+            local_bound_radius,
+            effect_shader: None,
+            material_kind: 0, // Default lit
+            flags: 0,
+            shader_type_fields: ShaderTypeFields::default(),
+            no_lighting_falloff: None,
+            wireframe: false,
+            flat_shading: false,
+            bs_lod_cutoffs: None,
+            bs_sub_index: None,
+        }
+    }
+}
+
 /// Per-bone binding for a skinned mesh. Bone space is Y-up (converted
 /// from Gamebryo Z-up on import).
 #[derive(Debug, Clone)]

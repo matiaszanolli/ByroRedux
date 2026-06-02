@@ -32,12 +32,17 @@
 //! - Visibility / `.uvd` occlusion data.
 //! - Collision (`_precomb.nif` siblings).
 
+use byroredux_bsa::CsgArchive;
 use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_nif::import::MeshResolver;
+use byroredux_nif::blocks::extra_data::{BsPackedCombinedGeomDataExtra, BsPackedCombinedPayload};
+use byroredux_nif::import::precombine::{decode_shared_geom_object, psg_vertex_stride};
+use byroredux_nif::import::{ImportedMesh, MeshResolver};
+use byroredux_nif::scene::NifScene;
 use byroredux_plugin::esm::cell::CellData;
 use byroredux_renderer::vulkan::context::VulkanContext;
+use std::path::Path;
 use std::sync::Arc;
 
 use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
@@ -67,10 +72,20 @@ pub(super) fn spawn_precombined_meshes(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     mut mat_provider: Option<&mut MaterialProvider>,
+    // Path to the cell's master plugin (e.g. `…/Data/Fallout4.esm`). Used
+    // to locate the companion `<Plugin> - Geometry.csg` blob that holds
+    // the shared-variant vertex/triangle data (M49). When the CSG is
+    // absent (non-FO4, or no shared precombines) the loader falls back to
+    // per-REFR rendering as before.
+    plugin_path: &str,
 ) -> (usize, usize) {
     if cell.precombined_mesh_hashes.is_empty() {
         return (0, 0);
     }
+
+    // Resolve + open the shared-geometry CSG once per cell load. `None`
+    // keeps the pre-M49 behaviour (zero spawns → REFR fallback).
+    let csg = open_geometry_csg(plugin_path);
 
     // Precombined NIFs are baked in cell-local coords; `cell_origin`
     // shifts them into world space (zero for interior, cell-grid-
@@ -145,15 +160,37 @@ pub(super) fn spawn_precombined_meshes(
                     continue;
                 }
             };
-            let parsed = {
-                let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
-                super::references::parse_and_import_nif_pub(
-                    &bytes,
-                    &path,
-                    mat_provider.as_deref_mut(),
-                    &mut pool,
-                    Some(tex_provider as &dyn MeshResolver),
-                )
+            // M49 — shared-variant precombines store their geometry in the
+            // companion `.csg`, which the standard walk-based import skips
+            // (it produces zero meshes). When the CSG resolved, decode the
+            // packed-combined objects directly into spawnable meshes. Falls
+            // through to the standard import path when the CSG is absent or
+            // the `_oc.nif` carries no shared geometry (baked variant /
+            // non-precombine content).
+            let csg_parsed: Option<Arc<CachedNifImport>> = csg.as_ref().and_then(|csg| {
+                match byroredux_nif::parse_nif(&bytes) {
+                    Ok(scene) => {
+                        let meshes = build_precombine_meshes(&scene, csg);
+                        (!meshes.is_empty()).then(|| Arc::new(geometry_only_cached(meshes)))
+                    }
+                    Err(e) => {
+                        log::warn!("PreCombined CSG parse failed: '{path}' (cell {:08X}): {e}", cell.form_id);
+                        None
+                    }
+                }
+            });
+            let parsed = match csg_parsed {
+                Some(c) => Some(c),
+                None => {
+                    let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+                    super::references::parse_and_import_nif_pub(
+                        &bytes,
+                        &path,
+                        mat_provider.as_deref_mut(),
+                        &mut pool,
+                        Some(tex_provider as &dyn MeshResolver),
+                    )
+                }
             };
             // Commit to registry so a re-load of this cell hits the cache.
             {
@@ -223,4 +260,179 @@ pub(super) fn spawn_precombined_meshes(
     }
 
     (spawned, misses)
+}
+
+/// Open the `<Plugin> - Geometry.csg` blob that sits next to `plugin_path`
+/// in the Data directory (M49). Vanilla FO4 precombines reference a single
+/// CSG named for the cell's master plugin (`Fallout4 - Geometry.csg`); the
+/// `BSPackedGeomObject.filename_hash` cross-check (BSCRC32) is a follow-up,
+/// so v1 keys purely off the plugin stem. Returns `None` when the plugin
+/// has no companion CSG (non-FO4 content, or a plugin that authored no
+/// shared precombines) — the caller then falls back to per-REFR rendering.
+pub(super) fn open_geometry_csg(plugin_path: &str) -> Option<CsgArchive> {
+    let p = Path::new(plugin_path);
+    let dir = p.parent()?;
+    let stem = p.file_stem()?.to_str()?;
+    let csg_path = dir.join(format!("{stem} - Geometry.csg"));
+    if !csg_path.is_file() {
+        return None;
+    }
+    match CsgArchive::open(&csg_path) {
+        Ok(a) => {
+            log::info!(
+                "PreCombined: opened CSG '{}' ({} objects, {} chunks)",
+                csg_path.display(),
+                a.num_objects(),
+                a.num_chunks(),
+            );
+            Some(a)
+        }
+        Err(e) => {
+            log::warn!("PreCombined: failed to open CSG '{}': {e}", csg_path.display());
+            None
+        }
+    }
+}
+
+/// Resolve every `BSPackedCombinedSharedGeomDataExtra` object in a
+/// precombined `_oc.nif` scene against `csg`, producing one spawnable
+/// [`ImportedMesh`] per placed instance (M49). Pure (no GPU / ECS) so it
+/// is unit-testable against real data without a Vulkan device.
+///
+/// Each object's geometry is decoded once and cloned per
+/// `BSPackedGeomDataCombined` instance transform. Objects whose CSG slice
+/// is missing or fails to decode are skipped with a debug log rather than
+/// aborting the whole bake. The Baked variant
+/// (`BSPackedCombinedGeomDataExtra`, geometry inline) is not vanilla and
+/// is left for a follow-up.
+pub(super) fn build_precombine_meshes(scene: &NifScene, csg: &CsgArchive) -> Vec<ImportedMesh> {
+    let mut meshes = Vec::new();
+    for block in &scene.blocks {
+        let Some(packed) = block.as_any().downcast_ref::<BsPackedCombinedGeomDataExtra>() else {
+            continue;
+        };
+        let BsPackedCombinedPayload::Shared { objects, data } = &packed.payload else {
+            continue;
+        };
+        for (obj, hdr) in objects.iter().zip(data.iter()) {
+            let nv = hdr.num_verts as usize;
+            if nv == 0 {
+                continue;
+            }
+            let stride = psg_vertex_stride(hdr.vertex_desc);
+            let tri_total =
+                (hdr.tri_count_lod0 + hdr.tri_count_lod1 + hdr.tri_count_lod2) as usize;
+            let psg = match csg.read_psg(obj.data_offset as u64, nv * stride + tri_total * 6) {
+                Ok(b) => b,
+                Err(e) => {
+                    log::debug!(
+                        "PreCombined: CSG read at offset {} failed: {e}",
+                        obj.data_offset
+                    );
+                    continue;
+                }
+            };
+            let geom = match decode_shared_geom_object(&psg, hdr.vertex_desc, nv, tri_total) {
+                Ok(g) => g,
+                Err(e) => {
+                    log::debug!("PreCombined: decode at offset {} failed: {e}", obj.data_offset);
+                    continue;
+                }
+            };
+            // One placed instance per combined transform. Objects with no
+            // combined entries carry no placement, so they contribute
+            // nothing (matches the bake's intent — an unplaced merge).
+            for inst in &hdr.combined {
+                meshes.push(geom.clone().into_imported_mesh(&inst.transform));
+            }
+        }
+    }
+    meshes
+}
+
+/// Wrap precombine-decoded meshes in a geometry-only [`CachedNifImport`]
+/// (no collisions / lights / clips / particles) so the existing
+/// [`spawn_placed_instances`] path uploads + spawns them.
+fn geometry_only_cached(meshes: Vec<ImportedMesh>) -> CachedNifImport {
+    CachedNifImport {
+        meshes,
+        collisions: Vec::new(),
+        lights: Vec::new(),
+        particle_emitters: Vec::new(),
+        embedded_clip: None,
+        placement_root_billboard: None,
+        bsx_flags: 0,
+        root_flags: 0,
+        flame_attach_offset: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_bsa::Ba2Archive;
+    use std::path::PathBuf;
+
+    fn fo4_data_dir() -> Option<PathBuf> {
+        if let Ok(v) = std::env::var("BYROREDUX_FO4_DATA") {
+            let p = PathBuf::from(&v);
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+        let p = PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data");
+        p.is_dir().then_some(p)
+    }
+
+    /// Real-data, Vulkan-free regression for the M49 spawn path's decode
+    /// half: a vanilla FO4 `_oc.nif` + `Fallout4 - Geometry.csg` must
+    /// yield non-empty, index-valid meshes. Gated on `BYROREDUX_FO4_DATA`:
+    /// `cargo test -p byroredux -- --ignored build_precombine_meshes`.
+    #[test]
+    #[ignore]
+    fn build_precombine_meshes_decodes_real_oc_nif() {
+        let Some(data) = fo4_data_dir() else {
+            eprintln!("Skipping: BYROREDUX_FO4_DATA not set and default path missing");
+            return;
+        };
+        let ba2 = match Ba2Archive::open(data.join("Fallout4 - MeshesExtra.ba2")) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("Skipping: open MeshesExtra.ba2: {e}");
+                return;
+            }
+        };
+        let csg = match CsgArchive::open(data.join("Fallout4 - Geometry.csg")) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Skipping: open Geometry.csg: {e}");
+                return;
+            }
+        };
+
+        let bytes = ba2
+            .extract("meshes\\precombined\\0000e2db_02be5e11_oc.nif")
+            .expect("extract _oc.nif");
+        let scene = byroredux_nif::parse_nif(&bytes).expect("parse _oc.nif");
+        let meshes = build_precombine_meshes(&scene, &csg);
+
+        assert!(
+            !meshes.is_empty(),
+            "shared precombine must decode at least one mesh from the CSG"
+        );
+        for m in &meshes {
+            assert!(!m.positions.is_empty(), "mesh has vertices");
+            assert!(!m.indices.is_empty(), "mesh has indices");
+            assert_eq!(m.normals.len(), m.positions.len(), "normal per vertex");
+            let max_idx = m.indices.iter().copied().max().unwrap();
+            assert!(
+                (max_idx as usize) < m.positions.len(),
+                "index {max_idx} in range for {} verts",
+                m.positions.len()
+            );
+            // Untextured v1: precombines spawn with no resolved texture.
+            assert!(m.texture_path.is_none());
+        }
+        eprintln!("build_precombine_meshes: decoded {} mesh(es)", meshes.len());
+    }
 }

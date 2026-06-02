@@ -18,6 +18,11 @@ use super::{terrain, water};
 pub struct ExteriorWorldContext {
     pub record_index: Arc<byroredux_plugin::esm::records::EsmIndex>,
     pub load_order: Arc<Vec<String>>,
+    /// Path to the worldspace's plugin (the `esm_path` this context was
+    /// built from), used to locate the companion `<Plugin> -
+    /// Geometry.csg` for FO4 precombined geometry (M49). The cells'
+    /// `_oc.nif` precombines reference the CSG named for this plugin.
+    pub plugin_path: String,
     /// Lowercase EDID key into `record_index.cells.exterior_cells`.
     pub worldspace_key: String,
     /// Pre-resolved climate (one per worldspace).
@@ -242,6 +247,7 @@ pub fn build_exterior_world_context(
     Ok(ExteriorWorldContext {
         record_index: Arc::new(record_index),
         load_order: Arc::new(load_order),
+        plugin_path: esm_path.to_string(),
         worldspace_key,
         climate,
         default_weather,
@@ -378,6 +384,8 @@ pub fn load_one_exterior_cell(
         ctx,
         tex_provider,
         mat_provider.as_deref_mut(),
+        // M49 — resolve `<Plugin> - Geometry.csg` from the worldspace's plugin.
+        &wctx.plugin_path,
     );
 
     // Spawn placed references. Pre-#M40 every grid load went through a

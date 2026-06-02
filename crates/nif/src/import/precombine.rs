@@ -17,9 +17,12 @@
 
 use crate::blocks::tri_shape::decode_bs_vertex_stream;
 use crate::header::NifHeader;
+use crate::import::ImportedMesh;
 use crate::stream::NifStream;
+use crate::types::NiTransform;
 use crate::version::{bsver, NifVersion};
 use std::io;
+use std::sync::Arc;
 
 /// `VF_FULL_PRECISION` within the 12-bit attribute mask
 /// (`vertex_desc >> 44`). Private mirror of the same const in
@@ -42,6 +45,33 @@ pub struct PrecombineGeometry {
     /// Flattened triangle indices (3 per triangle), all LODs concatenated
     /// LOD0-first (the importer renders LOD0; higher LODs are appended).
     pub indices: Vec<u32>,
+}
+
+impl PrecombineGeometry {
+    /// Place this object as a spawnable [`ImportedMesh`] using one
+    /// `BSPackedGeomDataCombined` instance transform. The geometry is
+    /// already Y-up; the instance transform (raw Z-up from the NIF) is
+    /// converted independently — translation via `zup_point_to_yup`,
+    /// rotation via `zup_matrix_to_yup_quat` (which conjugates by the
+    /// Z→Y axis swap) — matching how the node walk converts every other
+    /// local transform, so composition with the cell origin stays
+    /// correct. The mesh is untextured (v1): precombines bake a
+    /// grayscale-to-palette atlas whose material binding is a follow-up.
+    pub fn into_imported_mesh(self, instance: &NiTransform) -> ImportedMesh {
+        let mut mesh = ImportedMesh::from_geometry(
+            self.positions,
+            self.colors,
+            self.normals,
+            self.tangents,
+            self.uvs,
+            self.indices,
+        );
+        mesh.translation = super::coord::zup_point_to_yup(&instance.translation);
+        mesh.rotation = super::coord::zup_matrix_to_yup_quat(&instance.rotation);
+        mesh.scale = instance.scale;
+        mesh.name = Some(Arc::from("PrecombineObject"));
+        mesh
+    }
 }
 
 /// On-disk PSG per-vertex stride for an object whose runtime descriptor

@@ -246,6 +246,8 @@ pub fn load_cell_with_masters(
         ctx,
         tex_provider,
         mat_provider.as_deref_mut(),
+        // M49 — the cell's plugin sits beside its `<Plugin> - Geometry.csg`.
+        esm_path,
     );
 
     // 3b. Load placed references. Honor `cell.absorbed_refs` only
