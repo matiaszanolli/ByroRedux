@@ -551,11 +551,23 @@ void main() {
             vec3 refractDir = refract(sunRay, N, 1.0 / 1.33);
             if (length(refractDir) > 1e-4) {
                 // 3. Find floor via TLAS ray (single bounce).
+                //
+                // Origin bias steps INTO the water along -N: the refracted
+                // ray transmits to the -N side, so the floor we want lies
+                // below the surface. This matches the transmission
+                // convention used by triangle.frag's pane refraction
+                // (`fragWorldPos - N * 0.15`) and caustic_splat.comp
+                // (`G - ns * 0.1`) — NOT the +N shadow-ray convention. A +N
+                // bias would push the origin above the surface so this
+                // downward refractDir would re-cross the water plane and
+                // self-intersect the surface mesh. tMin 0.05 matches the
+                // shadow-ray sibling above, foamShoreline, caustic_splat,
+                // and triangle.frag's refraction loop (RT-01 / #1388).
                 rayQueryEXT floorRq;
                 rayQueryInitializeEXT(
                     floorRq, topLevelAS,
                     gl_RayFlagsOpaqueEXT, 0xFF,
-                    vWorldPos, 0.001, refractDir, 5000.0
+                    vWorldPos - N * 0.05, 0.05, refractDir, 5000.0
                 );
                 rayQueryProceedEXT(floorRq);
                 if (rayQueryGetIntersectionTypeEXT(floorRq, true)
