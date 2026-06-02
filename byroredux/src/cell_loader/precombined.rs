@@ -36,7 +36,7 @@ use byroredux_bsa::CsgArchive;
 use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::World;
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_nif::blocks::extra_data::{BsPackedCombinedGeomDataExtra, BsPackedCombinedPayload};
+use byroredux_core::string::StringPool;
 use byroredux_nif::import::precombine::{decode_shared_geom_object, psg_vertex_stride};
 use byroredux_nif::import::{ImportedMesh, MeshResolver};
 use byroredux_nif::scene::NifScene;
@@ -170,7 +170,10 @@ pub(super) fn spawn_precombined_meshes(
             let csg_parsed: Option<Arc<CachedNifImport>> = csg.as_ref().and_then(|csg| {
                 match byroredux_nif::parse_nif(&bytes) {
                     Ok(scene) => {
-                        let meshes = build_precombine_meshes(&scene, csg);
+                        let meshes = {
+                            let mut pool = world.resource_mut::<StringPool>();
+                            build_precombine_meshes(&scene, csg, &mut pool)
+                        };
                         (!meshes.is_empty()).then(|| Arc::new(geometry_only_cached(meshes)))
                     }
                     Err(e) => {
@@ -305,68 +308,60 @@ pub(super) fn open_geometry_csg(plugin_path: &str) -> Option<CsgArchive> {
 /// aborting the whole bake. The Baked variant
 /// (`BSPackedCombinedGeomDataExtra`, geometry inline) is not vanilla and
 /// is left for a follow-up.
-pub(super) fn build_precombine_meshes(scene: &NifScene, csg: &CsgArchive) -> Vec<ImportedMesh> {
+pub(super) fn build_precombine_meshes(
+    scene: &NifScene,
+    csg: &CsgArchive,
+    pool: &mut StringPool,
+) -> Vec<ImportedMesh> {
     let mut meshes = Vec::new();
-    for block in &scene.blocks {
-        let Some(packed) = block.as_any().downcast_ref::<BsPackedCombinedGeomDataExtra>() else {
+    // `collect_precombine_geom_refs` pairs each shared-geometry object with
+    // the material the owning shape's shader/alpha properties resolve to
+    // (M49 texturing) — so precombines render with their real diffuse /
+    // normal / alpha-test instead of the untextured placeholder.
+    for geom in byroredux_nif::import::precombine::collect_precombine_geom_refs(scene, pool) {
+        if geom.num_verts == 0 {
             continue;
-        };
-        let BsPackedCombinedPayload::Shared { objects, data } = &packed.payload else {
+        }
+        let stride = psg_vertex_stride(geom.vertex_desc);
+        // The 3 LODs are alternative triangulations of the SAME surface
+        // (nif.xml: "switch a geometry at a specified distance"), stored
+        // back-to-back as `[LOD0][LOD1][LOD2]` in one index buffer.
+        // Rendering more than one z-fights — pick the finest (highest
+        // triangle count); LOD index is NOT a reliable detail order (some
+        // objects ship lod0 ≫ lod2, others lod0 ≪ lod2). The chosen LOD's
+        // triangles start at its index-unit offset / 3.
+        let (lod_count, lod_off_idx) = (0..3)
+            .map(|i| (geom.lod_counts[i], geom.lod_offsets[i]))
+            .max_by_key(|&(c, _)| c)
+            .unwrap();
+        let lod_count = lod_count as usize;
+        if lod_count == 0 {
             continue;
-        };
-        for (obj, hdr) in objects.iter().zip(data.iter()) {
-            let nv = hdr.num_verts as usize;
-            if nv == 0 {
+        }
+        let tri_start = (lod_off_idx / 3) as usize;
+        let need = geom.num_verts * stride + (tri_start + lod_count) * 6;
+        let psg = match csg.read_psg(geom.data_offset as u64, need) {
+            Ok(b) => b,
+            Err(e) => {
+                log::debug!("PreCombined: CSG read at offset {} failed: {e}", geom.data_offset);
                 continue;
             }
-            let stride = psg_vertex_stride(hdr.vertex_desc);
-            // The 3 LODs are alternative triangulations of the SAME surface
-            // (nif.xml: "switch a geometry at a specified distance"), stored
-            // back-to-back as `[LOD0][LOD1][LOD2]` in one index buffer.
-            // Rendering more than one z-fights — pick the finest (highest
-            // triangle count); LOD index is NOT a reliable detail order
-            // (some objects ship lod0 ≫ lod2, others lod0 ≪ lod2). The
-            // chosen LOD's triangles start at its index-unit offset / 3.
-            let lods = [
-                (hdr.tri_count_lod0, hdr.tri_offset_lod0),
-                (hdr.tri_count_lod1, hdr.tri_offset_lod1),
-                (hdr.tri_count_lod2, hdr.tri_offset_lod2),
-            ];
-            let (lod_count, lod_off_idx) =
-                lods.iter().copied().max_by_key(|&(c, _)| c).unwrap();
-            let lod_count = lod_count as usize;
-            if lod_count == 0 {
-                continue;
-            }
-            let tri_start = (lod_off_idx / 3) as usize;
-            let need = nv * stride + (tri_start + lod_count) * 6;
-            let psg = match csg.read_psg(obj.data_offset as u64, need) {
-                Ok(b) => b,
+        };
+        let decoded =
+            match decode_shared_geom_object(&psg, geom.vertex_desc, geom.num_verts, tri_start, lod_count) {
+                Ok(g) => g,
                 Err(e) => {
-                    log::debug!(
-                        "PreCombined: CSG read at offset {} failed: {e}",
-                        obj.data_offset
-                    );
+                    log::debug!("PreCombined: decode at offset {} failed: {e}", geom.data_offset);
                     continue;
                 }
             };
-            let geom =
-                match decode_shared_geom_object(&psg, hdr.vertex_desc, nv, tri_start, lod_count) {
-                    Ok(g) => g,
-                    Err(e) => {
-                        log::debug!(
-                            "PreCombined: decode at offset {} failed: {e}",
-                            obj.data_offset
-                        );
-                        continue;
-                    }
-                };
-            // One placed instance per combined transform. Objects with no
-            // combined entries carry no placement, so they contribute
-            // nothing (matches the bake's intent — an unplaced merge).
-            for inst in &hdr.combined {
-                meshes.push(geom.clone().into_imported_mesh(&inst.transform));
-            }
+        // One placed instance per combined transform, each carrying the
+        // resolved material. Objects with no combined entries carry no
+        // placement (an unplaced merge) and contribute nothing.
+        for inst in &geom.instances {
+            let mut mesh = decoded.clone().into_imported_mesh(inst);
+            geom.material.apply(&mut mesh);
+            meshes.push(mesh);
         }
     }
     meshes
@@ -436,12 +431,14 @@ mod tests {
             .extract("meshes\\precombined\\0000e2db_02be5e11_oc.nif")
             .expect("extract _oc.nif");
         let scene = byroredux_nif::parse_nif(&bytes).expect("parse _oc.nif");
-        let meshes = build_precombine_meshes(&scene, &csg);
+        let mut pool = StringPool::new();
+        let meshes = build_precombine_meshes(&scene, &csg, &mut pool);
 
         assert!(
             !meshes.is_empty(),
             "shared precombine must decode at least one mesh from the CSG"
         );
+        let mut textured = 0usize;
         for m in &meshes {
             assert!(!m.positions.is_empty(), "mesh has vertices");
             assert!(!m.indices.is_empty(), "mesh has indices");
@@ -452,9 +449,19 @@ mod tests {
                 "index {max_idx} in range for {} verts",
                 m.positions.len()
             );
-            // Untextured v1: precombines spawn with no resolved texture.
-            assert!(m.texture_path.is_none());
+            if m.texture_path.is_some() {
+                textured += 1;
+            }
         }
-        eprintln!("build_precombine_meshes: decoded {} mesh(es)", meshes.len());
+        // M49 texturing: this object's shape resolves a real diffuse path
+        // (Landscape/Rocks/CoastCliff01Wet_d.dds), so the mesh must carry it.
+        assert!(
+            textured > 0,
+            "precombine meshes must resolve a diffuse texture from the owning shape"
+        );
+        eprintln!(
+            "build_precombine_meshes: decoded {} mesh(es), {textured} textured",
+            meshes.len()
+        );
     }
 }
