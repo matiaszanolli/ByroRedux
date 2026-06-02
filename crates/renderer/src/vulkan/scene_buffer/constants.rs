@@ -129,6 +129,16 @@ pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = 1366;
 ///    draw, Diamond City — ~50K REFRs) saturated the R16 ceiling
 ///    and silently wrap-collapsed.
 pub const MAX_INSTANCES: usize = 0x40000;
+/// Compile-time guard: `instance_custom_index` in the TLAS instance struct
+/// is a 24-bit field (`Packed24_8`).  If `MAX_INSTANCES` is ever bumped past
+/// 2^24 the TLAS build will silently truncate SSBO indices and corrupt every
+/// RT material/transform lookup.  Fail the build here so the bump author
+/// knows to partition the TLAS first.  See tlas.rs + #957 / #1392.
+const _: () = assert!(
+    MAX_INSTANCES < (1 << 24),
+    "MAX_INSTANCES exceeds the 24-bit instance_custom_index ceiling; \
+     partition the TLAS or widen the encoding before raising this constant"
+);
 
 /// Maximum number of `VkDrawIndexedIndirectCommand` entries held in
 /// the per-frame indirect buffer. Each entry is 20 bytes, so

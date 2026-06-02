@@ -631,6 +631,14 @@ pub(super) fn extract_first_color_curve(
     use crate::blocks::interpolator::NiColorData;
     use crate::blocks::particle::{BSPSysSimpleColorModifier, NiPSysColorModifier};
 
+    // Reject NaN, ±Inf, and the nif.xml FLT_MAX sentinel (≥ 3.0e38) in any
+    // component.  Analogous to `sane()` in `extract_emitter_rate` — authored
+    // RGBA values are always in a normal float range; a sentinel or corrupt
+    // parse would otherwise reach the shader as a wildly out-of-range colour.
+    fn is_valid_color(c: [f32; 4]) -> bool {
+        c.iter().all(|&x| x.is_finite() && x < 3.0e38)
+    }
+
     // 1. Legacy reference-based modifier → NiColorData keyframe stream.
     if let Some(modifier) = scene
         .blocks
@@ -641,10 +649,11 @@ pub(super) fn extract_first_color_curve(
             if let Some(data) = scene.get_as::<NiColorData>(data_idx) {
                 let keys = &data.keys.keys;
                 if !keys.is_empty() {
-                    return Some(crate::import::ParticleColorCurve {
-                        start: keys[0].value,
-                        end: keys.last().expect("non-empty checked above").value,
-                    });
+                    let start = keys[0].value;
+                    let end = keys.last().expect("non-empty checked above").value;
+                    if is_valid_color(start) && is_valid_color(end) {
+                        return Some(crate::import::ParticleColorCurve { start, end });
+                    }
                 }
             }
         }
@@ -656,10 +665,11 @@ pub(super) fn extract_first_color_curve(
         .iter()
         .find_map(|b| b.as_any().downcast_ref::<BSPSysSimpleColorModifier>())
     {
-        return Some(crate::import::ParticleColorCurve {
-            start: scm.colors[0],
-            end: scm.colors[2],
-        });
+        let start = scm.colors[0];
+        let end = scm.colors[2];
+        if is_valid_color(start) && is_valid_color(end) {
+            return Some(crate::import::ParticleColorCurve { start, end });
+        }
     }
 
     None
