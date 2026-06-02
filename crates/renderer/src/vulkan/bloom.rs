@@ -51,8 +51,8 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
-    image_barrier_undef_to_general, memory_barrier, write_combined_image_sampler,
-    write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
+    image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
+    write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
