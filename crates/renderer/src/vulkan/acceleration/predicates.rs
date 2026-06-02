@@ -447,6 +447,56 @@ pub(super) fn is_scratch_aligned(scratch_address: vk::DeviceAddress, align: u32)
     scratch_address % align as vk::DeviceAddress == 0
 }
 
+/// Extra bytes a scratch buffer must reserve, beyond the build-scratch
+/// size, so [`align_scratch_address`] can round the buffer's device
+/// address up to `align` without the rounded `[addr, addr + scratch)`
+/// range overrunning the allocation. At most `align - 1` bytes.
+///
+/// Pairs with [`align_scratch_address`]: every scratch allocation that
+/// later feeds a rounded address into `cmd_build_acceleration_structures`
+/// must add this padding to its requested size. `align <= 1`
+/// (RT-disabled / no alignment requirement) needs no headroom. The
+/// padding is trivial — `align` is typically 128 or 256 — but is
+/// load-bearing for correctness on a misaligning driver. See #1386 / #659.
+#[inline]
+pub(super) fn scratch_alignment_padding(align: u32) -> vk::DeviceSize {
+    align.saturating_sub(1) as vk::DeviceSize
+}
+
+/// Round a raw scratch device address up to the next multiple of
+/// `align`, enforcing
+/// `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03715` at the use
+/// site. The pre-#1386 guard was `debug_assert!` only, which compiles
+/// out in release — so a release build could silently submit a
+/// misaligned scratch address and corrupt the build. Rounding up at the
+/// use site enforces alignment unconditionally, and (unlike a hard
+/// `assert!`) degrades gracefully: a misaligning driver still renders.
+///
+/// The caller MUST have sized the scratch buffer with
+/// [`scratch_alignment_padding`] extra bytes; otherwise the returned
+/// address plus the build-scratch size can run past the allocation.
+///
+/// `align <= 1` is the no-op path (RT-disabled GPUs — the caller in
+/// `device::pick_physical_device` clamps a non-queryable / zero property
+/// to 1). On every desktop driver we support, `gpu-allocator` already
+/// returns >= 256 B-aligned GpuOnly addresses, so the round-up is a
+/// no-op in practice — it only does work on a future misaligning driver
+/// / mobile GPU. Pulled out as a pure function so the unit test can pin
+/// the math without a live Vulkan device. See #1386 / #659.
+#[inline]
+pub(super) fn align_scratch_address(raw: vk::DeviceAddress, align: u32) -> vk::DeviceAddress {
+    if align <= 1 {
+        return raw;
+    }
+    let a = align as vk::DeviceAddress;
+    let aligned = (raw + (a - 1)) & !(a - 1);
+    debug_assert!(
+        is_scratch_aligned(aligned, align) && aligned >= raw && aligned - raw < a,
+        "align_scratch_address: {raw:#x} -> {aligned:#x} (align {align}) is not a valid round-up"
+    );
+    aligned
+}
+
 pub(super) fn compute_blas_budget(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,

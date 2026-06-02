@@ -11,8 +11,8 @@ use super::super::buffer::GpuBuffer;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::constants::SKINNED_BLAS_FLAGS;
 use super::predicates::{
-    is_scratch_aligned, scratch_needs_growth, should_rebuild_skinned_blas_after,
-    validate_refit_counts, validate_refit_flags,
+    align_scratch_address, scratch_alignment_padding, scratch_needs_growth,
+    should_rebuild_skinned_blas_after, validate_refit_counts, validate_refit_flags,
 };
 use super::types::BlasEntry;
 use super::AccelerationManager;
@@ -199,9 +199,15 @@ impl AccelerationManager {
         // `cmd_build_acceleration_structures` is recorded so the
         // `scratch_address` captured below stays valid for every
         // recorded build at submit time.
+        // Pad by `scratch_alignment_padding` so the shared device address
+        // captured below can be rounded up to `scratch_align` without the
+        // build overrunning the buffer (#1386). The same padded buffer is
+        // reused by `refit_skinned_blas` (UPDATE scratch ≤ BUILD scratch),
+        // so its round-up inherits this headroom.
+        let scratch_size = max_scratch_size + scratch_alignment_padding(self.scratch_align);
         let need_new_scratch = scratch_needs_growth(
             self.blas_scratch_buffer.as_ref().map(|b| b.size),
-            max_scratch_size,
+            scratch_size,
         );
         if need_new_scratch {
             if let Some(mut old) = self.blas_scratch_buffer.take() {
@@ -210,7 +216,7 @@ impl AccelerationManager {
             match GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
-                max_scratch_size,
+                scratch_size,
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             ) {
                 Ok(b) => {
@@ -237,13 +243,16 @@ impl AccelerationManager {
         }
         // SAFETY: `blas_scratch_buffer` was just sized for this batch (or already
         // sufficient); `unwrap` is guaranteed by the phase-2 sizing logic above.
-        let scratch_address = unsafe {
+        let raw_scratch = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default()
                     .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
             )
         };
-        self.debug_assert_scratch_aligned(scratch_address, "build_skinned_blas_batched_on_cmd");
+        // Round up to `scratch_align` (no-op on aligned drivers); the
+        // padding above absorbs the shift, enforcing VUID-…-pInfos-03715
+        // in release too. See #1386 / #659.
+        let scratch_address = align_scratch_address(raw_scratch, self.scratch_align);
 
         // Phase 3: record builds with inter-build scratch-serialise
         // barriers. The caller-supplied COMPUTE→AS_BUILD barrier on
@@ -505,17 +514,17 @@ impl AccelerationManager {
         let primitive_count = index_count / 3;
         // SAFETY: `scratch_buffer` existence was verified by the `.context()?` call
         // above; live with SHADER_DEVICE_ADDRESS usage.
-        let scratch_address = unsafe {
+        let raw_scratch = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default().buffer(scratch_buffer.buffer),
             )
         };
-        debug_assert!(
-            is_scratch_aligned(scratch_address, scratch_align),
-            "refit_skinned_blas: scratch device address {scratch_address:#x} is not \
-             aligned to minAccelerationStructureScratchOffsetAlignment \
-             ({scratch_align}); see #659"
-        );
+        // Round up to `scratch_align`. This UPDATE reuses the BUILD's
+        // padded `blas_scratch_buffer` (UPDATE scratch ≤ BUILD scratch),
+        // so the round-up headroom is already present. Enforces
+        // VUID-…-pInfos-03715 in release; no-op on aligned drivers.
+        // See #1386 / #659.
+        let scratch_address = align_scratch_address(raw_scratch, scratch_align);
 
         // mode = UPDATE: src == dst == this entity's BLAS. Vulkan
         // refits in-place against the new vertex data; topology must

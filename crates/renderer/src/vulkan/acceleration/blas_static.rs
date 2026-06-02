@@ -9,7 +9,10 @@ use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::constants::{BATCH_EVICTION_CHECK_INTERVAL, STATIC_BLAS_FLAGS};
-use super::predicates::{scratch_needs_growth, should_evict_mid_batch, submit_one_time};
+use super::predicates::{
+    align_scratch_address, scratch_alignment_padding, scratch_needs_growth, should_evict_mid_batch,
+    submit_one_time,
+};
 use super::types::BlasEntry;
 use super::AccelerationManager;
 use crate::deferred_destroy::DEFAULT_COUNTDOWN;
@@ -239,10 +242,15 @@ impl AccelerationManager {
         let build_result = (|| -> Result<()> {
             // Reuse persisted BLAS scratch buffer; only reallocate if the current
             // one is too small for this build. Grow-only policy via shared
-            // helper — see #60 / #424 SIBLING.
+            // helper — see #60 / #424 SIBLING. The requested size carries
+            // `scratch_alignment_padding` headroom (#1386) so the device
+            // address can be rounded up to `scratch_align` below without
+            // the build's scratch range overrunning the buffer.
+            let scratch_size =
+                sizes.build_scratch_size + scratch_alignment_padding(self.scratch_align);
             let need_new_scratch = scratch_needs_growth(
                 self.blas_scratch_buffer.as_ref().map(|b| b.size),
-                sizes.build_scratch_size,
+                scratch_size,
             );
 
             if need_new_scratch {
@@ -252,28 +260,29 @@ impl AccelerationManager {
                 self.blas_scratch_buffer = Some(GpuBuffer::create_device_local_uninit(
                     device,
                     allocator,
-                    sizes.build_scratch_size,
+                    scratch_size,
                     vk::BufferUsageFlags::STORAGE_BUFFER
                         | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                 )?);
             }
 
             // SAFETY: scratch buffer was just created with SHADER_DEVICE_ADDRESS flag.
-            // The `scratch_address` is required by Vulkan spec to be a
+            // Vulkan spec requires the scratch `device_address` to be a
             // multiple of `minAccelerationStructureScratchOffsetAlignment`
             // (typically 128 or 256). `gpu-allocator` returns GpuOnly
-            // allocations at >= 256 B alignment on every desktop driver
-            // we ship support for, but nothing in the allocator API
-            // guarantees it — the `debug_assert_scratch_aligned` call
-            // catches a future driver / mobile GPU regression at the
-            // earliest possible point. See #659 / #260 R-05.
-            let scratch_address = unsafe {
+            // allocations at >= 256 B alignment on every desktop driver we
+            // ship support for, so `align_scratch_address` is a no-op there;
+            // on a future misaligning driver it rounds the raw address up
+            // into the headroom reserved above, enforcing
+            // VUID-…-pInfos-03715 even in release (where the prior
+            // `debug_assert_scratch_aligned` compiled out). See #1386 / #659.
+            let raw_scratch = unsafe {
                 device.get_buffer_device_address(
                     &vk::BufferDeviceAddressInfo::default()
                         .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
                 )
             };
-            self.debug_assert_scratch_aligned(scratch_address, "build_blas");
+            let scratch_address = align_scratch_address(raw_scratch, self.scratch_align);
 
             // Build the BLAS via one-time command buffer. Flags must
             // match the size-query above per Vulkan spec.
@@ -613,10 +622,13 @@ impl AccelerationManager {
         }
 
         // Phase 2: Ensure scratch buffer is large enough. Grow-only
-        // policy via shared helper — see #60 / #424 SIBLING.
+        // policy via shared helper — see #60 / #424 SIBLING. Pad by
+        // `scratch_alignment_padding` so the shared device address can be
+        // rounded up to `scratch_align` below (#1386).
+        let scratch_size = max_scratch_size + scratch_alignment_padding(self.scratch_align);
         let need_new_scratch = scratch_needs_growth(
             self.blas_scratch_buffer.as_ref().map(|b| b.size),
-            max_scratch_size,
+            scratch_size,
         );
 
         if need_new_scratch {
@@ -626,18 +638,22 @@ impl AccelerationManager {
             self.blas_scratch_buffer = Some(GpuBuffer::create_device_local_uninit(
                 device,
                 allocator,
-                max_scratch_size,
+                scratch_size,
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             )?);
         }
 
-        let scratch_address = unsafe {
+        // Round the raw device address up to `scratch_align` so the
+        // address shared by every recorded build in this batch satisfies
+        // VUID-…-pInfos-03715 in release too (the headroom above absorbs
+        // the shift). No-op on aligned drivers. See #1386 / #659.
+        let raw_scratch = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default()
                     .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
             )
         };
-        self.debug_assert_scratch_aligned(scratch_address, "build_blas_batched");
+        let scratch_address = align_scratch_address(raw_scratch, self.scratch_align);
 
         // Phase 3: Create query pool for compacted size readback.
         let n = prepared.len() as u32;

@@ -48,7 +48,7 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::deferred_destroy::DeferredDestroyQueue;
 use ash::vk;
 use byroredux_core::ecs::storage::EntityId;
-use predicates::{compute_blas_budget, is_scratch_aligned};
+use predicates::compute_blas_budget;
 
 /// Manages BLAS and TLAS for RT ray queries.
 ///
@@ -181,12 +181,14 @@ pub struct AccelerationManager {
     /// `minAccelerationStructureScratchOffsetAlignment` queried at
     /// device init (#659 / #260 R-05). Every `scratch_data.device_address`
     /// passed to `cmd_build_acceleration_structures` must be a multiple
-    /// of this value. Held to drive the
-    /// `debug_assert_scratch_aligned` helper at every scratch-site;
-    /// `gpu-allocator` returns sufficiently-aligned GpuOnly allocations
-    /// on every desktop driver today, but nothing in the allocator API
-    /// guarantees it, so the assert catches a regression before the
-    /// driver does.
+    /// of this value. Drives `predicates::align_scratch_address` at every
+    /// scratch-build site, which rounds the raw device address up into
+    /// the `scratch_alignment_padding` headroom each scratch allocation
+    /// reserves — enforcing `VUID-…-pInfos-03715` unconditionally,
+    /// including release builds (#1386). `gpu-allocator` returns
+    /// sufficiently-aligned GpuOnly allocations on every desktop driver
+    /// today, so the round-up is a no-op there; the headroom + round-up
+    /// only do work on a future misaligning driver / mobile GPU.
     pub(super) scratch_align: u32,
 }
 
@@ -230,25 +232,6 @@ impl AccelerationManager {
             skinned_blas: std::collections::HashMap::new(),
             scratch_align,
         }
-    }
-
-    /// Debug-only assertion that a scratch device address satisfies the
-    /// AS-spec alignment requirement. See #659 / #260 R-05.
-    #[inline]
-    pub(super) fn debug_assert_scratch_aligned(
-        &self,
-        scratch_address: vk::DeviceAddress,
-        site: &str,
-    ) {
-        debug_assert!(
-            is_scratch_aligned(scratch_address, self.scratch_align),
-            "{site}: scratch device address {scratch_address:#x} is not aligned to \
-             minAccelerationStructureScratchOffsetAlignment ({align}); the build will \
-             violate Vulkan spec. gpu-allocator returned a misaligned GpuOnly \
-             allocation — wire round-up-at-use mitigation per #659.",
-            site = site,
-            align = self.scratch_align,
-        );
     }
 
     /// Destroy all acceleration structures and buffers.

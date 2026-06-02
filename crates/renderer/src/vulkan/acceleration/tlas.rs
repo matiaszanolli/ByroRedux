@@ -8,8 +8,9 @@ use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::constants::{MIN_TLAS_INSTANCE_RESERVE, UPDATABLE_AS_FLAGS};
 use super::predicates::{
-    column_major_to_vk_transform, decide_use_update, draw_command_eligible_for_tlas,
-    is_scratch_aligned, scratch_needs_growth, shrink_scratch_if_oversized,
+    align_scratch_address, column_major_to_vk_transform, decide_use_update,
+    draw_command_eligible_for_tlas, scratch_alignment_padding, scratch_needs_growth,
+    shrink_scratch_if_oversized,
 };
 use super::types::TlasState;
 use super::AccelerationManager;
@@ -462,11 +463,18 @@ impl AccelerationManager {
             // the existing allocation when it still fits the new build.
             // DEVICE_LOCAL: GPU-only scratch during TLAS build. The
             // `scratch_data.device_address` alignment requirement is
-            // checked at the call site below via
-            // `debug_assert_scratch_aligned` (#659 / #260 R-05).
+            // enforced at the call site below via `align_scratch_address`
+            // (#1386 / #659 / #260 R-05).
+            // Pad by `scratch_alignment_padding` so the device address can
+            // be rounded up to `scratch_align` at the build site below
+            // without the build overrunning the buffer (#1386). The refit
+            // (UPDATE) path reuses this buffer on the spec guarantee
+            // `BUILD scratch ≥ UPDATE scratch`, inheriting the headroom.
+            let scratch_size =
+                sizes.build_scratch_size + scratch_alignment_padding(self.scratch_align);
             let needs_new_scratch = scratch_needs_growth(
                 self.scratch_buffers[frame_index].as_ref().map(|b| b.size),
-                sizes.build_scratch_size,
+                scratch_size,
             );
             if needs_new_scratch {
                 if let Some(mut old_scratch) = self.scratch_buffers[frame_index].take() {
@@ -475,7 +483,7 @@ impl AccelerationManager {
                 let scratch_result = GpuBuffer::create_device_local_uninit(
                     device,
                     allocator,
-                    sizes.build_scratch_size,
+                    scratch_size,
                     vk::BufferUsageFlags::STORAGE_BUFFER
                         | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                 );
@@ -725,15 +733,16 @@ impl AccelerationManager {
                     }),
             });
 
-        let scratch_address = device.get_buffer_device_address(
+        let raw_scratch = device.get_buffer_device_address(
             &vk::BufferDeviceAddressInfo::default()
                 .buffer(self.scratch_buffers[frame_index].as_ref().unwrap().buffer),
         );
-        debug_assert!(
-            is_scratch_aligned(scratch_address, scratch_align),
-            "build_tlas: scratch device address {scratch_address:#x} is not aligned to \
-             minAccelerationStructureScratchOffsetAlignment ({scratch_align}); see #659"
-        );
+        // Round up to `scratch_align` (no-op on aligned drivers); the
+        // padding reserved at allocation absorbs the shift, enforcing
+        // VUID-…-pInfos-03715 in release where the prior debug_assert
+        // compiled out. Covers both the fresh BUILD and the UPDATE refit
+        // that reuses this address. See #1386 / #659.
+        let scratch_address = align_scratch_address(raw_scratch, scratch_align);
 
         // Mirror the flags used at creation time so Vulkan's validation
         // layer matches source and dst flags. The shared

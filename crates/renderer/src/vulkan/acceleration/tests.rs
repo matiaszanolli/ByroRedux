@@ -890,6 +890,60 @@ fn scratch_alignment_check_matches_modulo() {
     assert!(!is_scratch_aligned(0x0010_0001, 1024));
 }
 
+/// #1386 — `align_scratch_address` rounds a raw scratch device address
+/// up to the alignment so the value handed to
+/// `cmd_build_acceleration_structures` is always a multiple of
+/// `minAccelerationStructureScratchOffsetAlignment`, even in release
+/// builds where the old `debug_assert!` guard compiled out. The
+/// rounded result must (a) be aligned, (b) never move below `raw`, and
+/// (c) move by strictly less than `align` — so `scratch_alignment_padding`
+/// headroom always covers it.
+#[test]
+fn align_scratch_address_rounds_up_to_alignment() {
+    // Trivial-align no-op paths return the address untouched.
+    assert_eq!(align_scratch_address(0xDEAD_BEEF, 0), 0xDEAD_BEEF);
+    assert_eq!(align_scratch_address(0xDEAD_BEEF, 1), 0xDEAD_BEEF);
+
+    // Already-aligned addresses are unchanged (the common case on every
+    // desktop driver — gpu-allocator returns >= 256 B-aligned GpuOnly).
+    assert_eq!(align_scratch_address(0x0000_1000, 256), 0x0000_1000);
+    assert_eq!(align_scratch_address(0x0000_1100, 128), 0x0000_1100);
+
+    // Misaligned addresses round UP to the next multiple, never down.
+    assert_eq!(align_scratch_address(0x0000_1001, 256), 0x0000_1100);
+    assert_eq!(align_scratch_address(0x0000_10FF, 256), 0x0000_1100);
+    assert_eq!(align_scratch_address(0x0000_0081, 128), 0x0000_0100);
+    assert_eq!(align_scratch_address(0x0010_0001, 1024), 0x0010_0400);
+
+    // Invariants over a sweep of (raw, align) pairs: the rounded value
+    // is aligned, >= raw, and within `align - 1` of raw (so the padding
+    // headroom always covers the shift).
+    for &align in &[128u32, 256, 512, 1024] {
+        for raw in (0x4000u64..0x4000 + 4 * align as u64).step_by(7) {
+            let aligned = align_scratch_address(raw, align);
+            assert!(
+                is_scratch_aligned(aligned, align),
+                "not aligned: {raw:#x} align {align}"
+            );
+            assert!(aligned >= raw);
+            assert!(aligned - raw <= scratch_alignment_padding(align));
+        }
+    }
+}
+
+/// #1386 — `scratch_alignment_padding` is exactly `align - 1`: the
+/// worst-case round-up distance, so a scratch buffer padded by this
+/// amount can always satisfy `align_scratch_address` without the build
+/// overrunning the allocation. `align <= 1` needs no padding.
+#[test]
+fn scratch_alignment_padding_is_align_minus_one() {
+    assert_eq!(scratch_alignment_padding(0), 0);
+    assert_eq!(scratch_alignment_padding(1), 0);
+    assert_eq!(scratch_alignment_padding(128), 127);
+    assert_eq!(scratch_alignment_padding(256), 255);
+    assert_eq!(scratch_alignment_padding(1024), 1023);
+}
+
 /// #926 / REN-D8-NEW-11 — `column_major_to_vk_transform` converts
 /// glam's column-major `[f32; 16]` storage into the row-major
 /// 3×4 layout Vulkan expects. Pre-#926 this conversion was
