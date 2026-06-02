@@ -5,7 +5,7 @@ use byroredux_bgsm::{BgemFile, TemplateCache, TemplateResolver};
 use byroredux_nif::import::{ImportedMesh, MeshResolver};
 use byroredux_renderer::VulkanContext;
 use byroredux_sfmaterial::ComponentDatabaseFile;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 /// A game archive that can extract files by path.
@@ -656,13 +656,18 @@ pub(crate) struct MaterialProvider {
     bgsm_cache: TemplateCache,
     /// BGEM has no template inheritance (the format carries no
     /// `root_material_path`), so we cache parsed files directly by path.
-    /// #951 / SAFE-26: bounded at `MAX_BGEM_CACHE_ENTRIES`. On overflow
-    /// the cache is cleared and a one-shot warn fires — working-set
-    /// rebuild is bounded by per-frame BGEM ref count (~100s typically).
+    /// #951 / SAFE-26 / #1430: bounded at `MAX_BGEM_CACHE_ENTRIES`. On
+    /// overflow the oldest N/2 entries are evicted so the recent
+    /// working-set stays resident (half-eviction by insertion order).
     bgem_cache: HashMap<String, Arc<BgemFile>>,
+    /// Insertion-order key tracker for [`bgem_cache`] — drives half-eviction.
+    bgem_cache_order: VecDeque<String>,
     /// Paths we've already warned about so a broken file doesn't spam
     /// the log on every cell load. Bounded by `MAX_FAILED_PATHS`.
+    /// #1430: evicts oldest N/2 entries on overflow (same pattern as bgem_cache).
     failed_paths: HashSet<String>,
+    /// Insertion-order key tracker for [`failed_paths`] — drives half-eviction.
+    failed_paths_order: VecDeque<String>,
     /// Starfield `materialsbeta.cdb` — single binary Component Database
     /// holding every vanilla Starfield material. Populated by
     /// [`Self::load_starfield_cdb`] when `Starfield - Materials.ba2`
@@ -690,7 +695,9 @@ impl MaterialProvider {
             archives: Vec::new(),
             bgsm_cache: TemplateCache::new(256),
             bgem_cache: HashMap::new(),
+            bgem_cache_order: VecDeque::new(),
             failed_paths: HashSet::new(),
+            failed_paths_order: VecDeque::new(),
             sf_cdb: None,
         }
     }
@@ -830,9 +837,15 @@ impl MaterialProvider {
                     Ok(f) => f,
                     Err(parse_err) => {
                         if self.failed_paths.len() >= MAX_FAILED_PATHS {
-                            self.failed_paths.clear();
+                            // #1430 — half-eviction: keep the newer half resident.
+                            for _ in 0..MAX_FAILED_PATHS / 2 {
+                                if let Some(old) = self.failed_paths_order.pop_front() {
+                                    self.failed_paths.remove(&old);
+                                }
+                            }
                         }
                         if self.failed_paths.insert(key.clone()) {
+                            self.failed_paths_order.push_back(key);
                             log::warn!(
                                 "BGSM leaf-only recovery parse failed for '{}': {} \
                                  (self-referential template depth-limit hit)",
@@ -857,11 +870,16 @@ impl MaterialProvider {
                 }))
             }
             Err(e) => {
-                // #951 / SAFE-26 — bound failed_paths here too.
+                // #951 / SAFE-26 / #1430 — half-eviction on overflow.
                 if self.failed_paths.len() >= MAX_FAILED_PATHS {
-                    self.failed_paths.clear();
+                    for _ in 0..MAX_FAILED_PATHS / 2 {
+                        if let Some(old) = self.failed_paths_order.pop_front() {
+                            self.failed_paths.remove(&old);
+                        }
+                    }
                 }
-                if self.failed_paths.insert(key) {
+                if self.failed_paths.insert(key.clone()) {
+                    self.failed_paths_order.push_back(key);
                     log::warn!("BGSM resolve failed for '{}': {}", path, e);
                 }
                 None
@@ -893,23 +911,17 @@ impl MaterialProvider {
         match byroredux_bgsm::parse_bgem(&bytes) {
             Ok(parsed) => {
                 let arc = Arc::new(parsed);
-                // #951 / SAFE-26 — flush the cache on cap to bound
-                // long-streaming-session memory growth. Working set
-                // (typically 100s of unique BGEMs per cell) rebuilds
-                // on next access via parse_bgem.
+                // #951 / SAFE-26 / #1430 — half-eviction on cap: remove the
+                // oldest N/2 entries by insertion order so the recent
+                // working-set stays resident instead of clearing everything.
                 if self.bgem_cache.len() >= MAX_BGEM_CACHE_ENTRIES {
-                    static ONCE: std::sync::Once = std::sync::Once::new();
-                    ONCE.call_once(|| {
-                        log::warn!(
-                            "MaterialProvider.bgem_cache hit cap ({} entries); \
-                             clearing — high-churn streaming session detected. \
-                             Set MAX_BGEM_CACHE_ENTRIES higher if this fires \
-                             frequently. (#951 / SAFE-26)",
-                            MAX_BGEM_CACHE_ENTRIES,
-                        );
-                    });
-                    self.bgem_cache.clear();
+                    for _ in 0..MAX_BGEM_CACHE_ENTRIES / 2 {
+                        if let Some(old) = self.bgem_cache_order.pop_front() {
+                            self.bgem_cache.remove(&old);
+                        }
+                    }
                 }
+                self.bgem_cache_order.push_back(key.clone());
                 self.bgem_cache.insert(key, Arc::clone(&arc));
                 Some(arc)
             }
@@ -917,10 +929,16 @@ impl MaterialProvider {
                 // Bound failed_paths the same way — broken-content
                 // accumulates more slowly than working BGEM count, but
                 // capping both prevents the unbounded-growth class.
+                // #1430 — half-eviction here too.
                 if self.failed_paths.len() >= MAX_FAILED_PATHS {
-                    self.failed_paths.clear();
+                    for _ in 0..MAX_FAILED_PATHS / 2 {
+                        if let Some(old) = self.failed_paths_order.pop_front() {
+                            self.failed_paths.remove(&old);
+                        }
+                    }
                 }
-                if self.failed_paths.insert(key) {
+                if self.failed_paths.insert(key.clone()) {
+                    self.failed_paths_order.push_back(key);
                     log::warn!("BGEM parse failed for '{}': {}", path, e);
                 }
                 None
