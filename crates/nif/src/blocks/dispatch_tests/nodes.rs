@@ -131,7 +131,7 @@ fn build_bs_multi_bound_node_body() -> Vec<u8> {
 #[test]
 fn oblivion_node_subtypes_dispatch_with_correct_payload() {
     use crate::blocks::node::{
-        BsRangeNode, NiBillboardNode, NiLODNode, NiSortAdjustNode, NiSwitchNode,
+        BsRangeNode, NiBillboardNode, NiLODNode, NiRangeLODData, NiSortAdjustNode, NiSwitchNode,
     };
 
     let header = oblivion_header();
@@ -170,6 +170,25 @@ fn oblivion_node_subtypes_dispatch_with_correct_payload() {
     let n = block.as_any().downcast_ref::<NiLODNode>().unwrap();
     assert_eq!(n.lod_level_data.index(), Some(42));
     assert_eq!(stream.position(), lod.len() as u64);
+
+    // NiRangeLODData: lod_center Vec3 + num + N × (near, far) f32. Data block
+    // (NiObject, no AV base) — the target of NiLODNode.lod_level_data.
+    let mut rld = Vec::new();
+    rld.extend_from_slice(&1.0f32.to_le_bytes()); // center.x
+    rld.extend_from_slice(&2.0f32.to_le_bytes()); // center.y
+    rld.extend_from_slice(&3.0f32.to_le_bytes()); // center.z
+    rld.extend_from_slice(&2u32.to_le_bytes()); // num LOD levels
+    rld.extend_from_slice(&0.0f32.to_le_bytes()); // L0 near
+    rld.extend_from_slice(&500.0f32.to_le_bytes()); // L0 far
+    rld.extend_from_slice(&500.0f32.to_le_bytes()); // L1 near
+    rld.extend_from_slice(&5000.0f32.to_le_bytes()); // L1 far
+    let mut stream = NifStream::new(&rld, &header);
+    let block = parse_block("NiRangeLODData", &mut stream, Some(rld.len() as u32))
+        .expect("NiRangeLODData dispatch");
+    let n = block.as_any().downcast_ref::<NiRangeLODData>().unwrap();
+    assert_eq!([n.lod_center.x, n.lod_center.y, n.lod_center.z], [1.0, 2.0, 3.0]);
+    assert_eq!(n.lod_levels, vec![(0.0, 500.0), (500.0, 5000.0)]);
+    assert_eq!(stream.position(), rld.len() as u64);
 
     // NiSortAdjustNode: base + sorting_mode u32 (v20.0.0.5 > 20.0.0.3 → no
     // trailing accumulator ref).

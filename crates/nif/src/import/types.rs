@@ -198,6 +198,31 @@ pub struct ImportedNode {
     /// material to work from. `None` on plain `NiNode` and other
     /// subclasses. See #625 (SK-D4-03).
     pub bs_ordered_node: Option<BsOrderedNodeData>,
+    /// LOD distance ranges when this node is a `NiLODNode` — its
+    /// `NiRangeLODData` (`lod_center` + per-level `(near, far)` extents),
+    /// converted to engine Y-up. The children (the LOD levels) are parallel
+    /// to `lod_levels` (level `i` ↔ child `i`). Pre-foundation the walker
+    /// imported child 0 only and dropped the ranges; this surfaces them so a
+    /// future distance-switch system has the data without re-walking the NIF.
+    /// **Import behaviour is unchanged** — child 0 (highest detail) is still
+    /// the only child imported; nothing consumes `lod_group` at runtime yet.
+    /// `None` on plain `NiNode` / `NiSwitchNode` and other subclasses.
+    pub lod_group: Option<LodGroupData>,
+}
+
+/// LOD distance ranges from a [`NiLODNode`]'s `NiRangeLODData` — surfaced on
+/// the matching [`ImportedNode`]. Parsed + carried for a future in-cell
+/// distance-switch consumer (NIFAL §2 in-cell-LOD foundation); the renderer
+/// does not yet read it.
+#[derive(Debug, Clone)]
+pub struct LodGroupData {
+    /// LOD center in engine Y-up, node-local space (combine with the node's
+    /// world transform at the consumer). Camera distance is measured from here.
+    pub center: [f32; 3],
+    /// `(near, far)` extent per LOD level, parallel to the host node's
+    /// children (level `i` ↔ child `i`). The active level is the one whose
+    /// `[near, far)` contains the camera-to-center distance.
+    pub levels: Vec<(f32, f32)>,
 }
 
 /// `BSValueNode` numeric payload — surfaced on the matching

@@ -7,7 +7,7 @@ use super::base::NiAVObjectData;
 use super::traits::{HasAVObject, HasObjectNET};
 use super::NiObject;
 use crate::stream::NifStream;
-use crate::types::{BlockRef, NiTransform};
+use crate::types::{BlockRef, NiPoint3, NiTransform};
 use std::any::Any;
 use std::io;
 
@@ -464,6 +464,59 @@ impl NiLODNode {
         Ok(Self {
             base,
             lod_level_data,
+        })
+    }
+}
+
+// ── NiRangeLODData ─────────────────────────────────────────────────────
+//
+// The Z-depth LOD ranges referenced by `NiLODNode.lod_level_data` (since
+// 10.1.0.0). One `(near, far)` extent per LOD level, parallel to the
+// NiLODNode's children (child i ↔ level i). Layout per nif.xml
+// `NiRangeLODData` + `LODRange`: LOD Center (Vector3) + Num LOD Levels (u32)
+// + N × { Near Extent: f32, Far Extent: f32 } (the trailing 3×uint in
+// `LODRange` is `until=3.1` — absent in every targeted game). EXAL/NIFAL
+// in-cell-LOD foundation: parsed + surfaced so a future distance-switch
+// system has the ranges; nothing consumes it at runtime yet.
+
+/// LOD distance ranges for a [`NiLODNode`] (its `lod_level_data` ref).
+#[derive(Debug)]
+pub struct NiRangeLODData {
+    /// LOD center in NIF (Z-up) space — the point camera Z-depth is measured
+    /// from when selecting a level.
+    pub lod_center: NiPoint3,
+    /// `(near_extent, far_extent)` per LOD level, parallel to the host
+    /// `NiLODNode`'s children. A level is active when the camera distance is
+    /// in `[near, far)`.
+    pub lod_levels: Vec<(f32, f32)>,
+}
+
+impl NiObject for NiRangeLODData {
+    fn block_type_name(&self) -> &'static str {
+        "NiRangeLODData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl NiRangeLODData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let lod_center = stream.read_ni_point3()?;
+        let num = stream.read_u32_le()? as usize;
+        // Cap the pre-allocation against corrupt counts; the loop still reads
+        // exactly `num` pairs so a genuinely large (but valid) table parses,
+        // while a corrupt huge `num` simply runs the reader to EOF → the
+        // block falls to the recovery path rather than OOM-allocating.
+        let mut lod_levels = Vec::with_capacity(num.min(64));
+        for _ in 0..num {
+            let near = stream.read_f32_le()?;
+            let far = stream.read_f32_le()?;
+            lod_levels.push((near, far));
+        }
+        Ok(Self {
+            lod_center,
+            lod_levels,
         })
     }
 }

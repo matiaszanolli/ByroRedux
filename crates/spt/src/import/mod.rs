@@ -238,6 +238,7 @@ fn placeholder_root_node(billboard: bool) -> ImportedNode {
         flags: 0,
         bs_value_node: None,
         bs_ordered_node: None,
+        lod_group: None,
     }
 }
 

@@ -309,6 +309,9 @@ fn parse_block_inner(
         "NiBillboardNode" => Ok(Box::new(node::NiBillboardNode::parse(stream)?)),
         "NiSwitchNode" => Ok(Box::new(node::NiSwitchNode::parse(stream)?)),
         "NiLODNode" => Ok(Box::new(node::NiLODNode::parse(stream)?)),
+        // NiRangeLODData — the Z-depth LOD ranges NiLODNode.lod_level_data
+        // points to (in-cell-LOD foundation; surfaced, not yet switched).
+        "NiRangeLODData" => Ok(Box::new(node::NiRangeLODData::parse(stream)?)),
         "NiSortAdjustNode" => Ok(Box::new(node::NiSortAdjustNode::parse(stream)?)),
         // BSRangeNode + subclasses — all carry the same (min, max, current)
         // byte triple and are FO3+. BSBlastNode / BSDamageStage / BSDebrisNode

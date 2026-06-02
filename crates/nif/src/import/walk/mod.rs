@@ -4,8 +4,8 @@ use crate::blocks::bs_geometry::BSGeometry;
 use crate::blocks::light::{NiAmbientLight, NiDirectionalLight, NiPointLight, NiSpotLight};
 use crate::blocks::node::{
     BsDistantObjectInstancedNode, BsMultiBoundNode, BsOrderedNode, BsRangeNode, BsTreeNode,
-    BsValueNode, BsWeakReferenceNode, NiBillboardNode, NiLODNode, NiNode, NiSortAdjustNode,
-    NiSwitchNode,
+    BsValueNode, BsWeakReferenceNode, NiBillboardNode, NiLODNode, NiNode, NiRangeLODData,
+    NiSortAdjustNode, NiSwitchNode,
 };
 use crate::blocks::tri_shape::{BsTriShape, NiLodTriShape, NiTriShape};
 use crate::blocks::NiObject;
@@ -21,7 +21,7 @@ use super::mesh::{
 use super::transform::compose_transforms;
 use super::{
     ImportedCollision, ImportedLight, ImportedMesh, ImportedNode, ImportedScene, LightKind,
-    MeshResolver, TreeBones,
+    LodGroupData, MeshResolver, TreeBones,
 };
 use crate::blocks::extra_data::BsPackedCombinedGeomDataExtra;
 use crate::blocks::node::BsRangeKind;
@@ -232,6 +232,10 @@ pub(super) fn walk_node_hierarchical(
             flags: node.av.flags,
             bs_value_node,
             bs_ordered_node,
+            // NiLODNode → its NiRangeLODData ranges (surfaced for a future
+            // distance-switch; import still walks child 0 only). `None` for
+            // NiSwitchNode. In-cell-LOD foundation.
+            lod_group: extract_lod_group(scene, block),
         });
 
         let prev_len = inherited_props.len();
@@ -332,6 +336,9 @@ pub(super) fn walk_node_hierarchical(
             flags: node.av.flags,
             bs_value_node,
             bs_ordered_node,
+            // Plain NiNode / non-LOD subclasses — NiLODNode is handled in the
+            // switch_active_children branch above and never reaches here.
+            lod_group: None,
         });
 
         // Merge this node's properties with the inherited set via stack
@@ -1450,6 +1457,25 @@ pub(super) fn extract_tree_bones(scene: &NifScene, block: &dyn NiObject) -> Opti
 /// for any other block type. See #364.
 pub(super) fn extract_range_kind(block: &dyn NiObject) -> Option<BsRangeKind> {
     block.as_any().downcast_ref::<BsRangeNode>().map(|n| n.kind)
+}
+
+/// Extract the [`LodGroupData`] (LOD center + per-level near/far ranges) when
+/// `block` is a [`NiLODNode`] whose `lod_level_data` resolves to a
+/// [`NiRangeLODData`]. Center is converted NIF-Z-up → engine-Y-up. Returns
+/// `None` for any other node type, a NULL/legacy ref, or empty ranges.
+/// In-cell-LOD foundation: surfaced for a future distance-switch consumer;
+/// the walker still imports only child 0 (highest detail).
+pub(super) fn extract_lod_group(scene: &NifScene, block: &dyn NiObject) -> Option<LodGroupData> {
+    let lod = block.as_any().downcast_ref::<NiLODNode>()?;
+    let data_idx = lod.lod_level_data.index()?;
+    let data = scene.get_as::<NiRangeLODData>(data_idx)?;
+    if data.lod_levels.is_empty() {
+        return None;
+    }
+    Some(LodGroupData {
+        center: zup_point_to_yup(&data.lod_center),
+        levels: data.lod_levels.clone(),
+    })
 }
 
 /// Extract a `BSValueNode`'s `(value, value_flags)` pair. Pre-#625

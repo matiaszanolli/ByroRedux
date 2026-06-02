@@ -188,6 +188,75 @@ blob — decoder is a separate project; cell loader falls back to synthesized st
 trimesh) and `BhkPCollisionObject` phantoms (need a `TriggerVolume` ECS path, not a
 rigid body) — see the table at the top of `import/collision.rs`.
 
+### Animation / controllers — **converged (surveyed 2026-06-02)**
+
+Both entry points — `anim::import_kf` (KF sequences) and `anim::import_embedded_animations`
+(mesh-embedded controllers) — funnel through one set of `extract_*_channel_at`
+cores (the `extract_*` wrappers are ControlledBlock→block-index adapters, not
+duplicated logic), and `anim_convert::convert_nif_clip` is the single NIF→core
+`AnimationClip` boundary. The canonical type is the ECS `AnimationClip`
+(`crates/core/src/animation/`) — no parallel struct. Every per-game variation is
+resolved at import: B-spline compressed interpolators (FO3/FNV + Skyrim+) are
+sampled to linear keys, XYZ-Euler rotation keys are composed to quaternions,
+TBC/Hermite tangents are decoded, and Z-up→Y-up runs once — the player/stack
+consumers see only game-agnostic quaternion keys with no `Option`/era branches.
+Text-key events are wired (`NiControllerSequence.text_keys_ref` →
+`AnimationClip.text_keys` → `AnimationTextKeyEvents` ECS → scripting); embedded
+controllers set `text_keys: Vec::new()` by design (mesh-local controllers carry no
+event keys). Intentionally parked (captured, no renderer consumer yet, *not*
+leaks): per-light **ambient** colour channels and **morph-weight** channels.
+
+### Shader flags / texture sets / effect shaders — **converged (surveyed 2026-06-02)**
+
+The "GameVariant trait" the early docs called aspirational is realised *as the
+correct shape*, not as a trait: per-game flag vocabularies live as namespaced
+constants in one file (`shader_flags.rs` — `fo3nv_f1`, `skyrim_slsf1`, `fo4_slsf1`,
++ FO76/Starfield CRC32 arrays), dispatched by **block type** (the wire format
+already discriminates the game), with the `ShaderFlags<'a>` typed view + compile-time
+equivalence asserts (bits 26/27) guarding the bit-meaning collisions (e.g. bit 21
+flags2 = Alpha_Decal/Cloud_LOD/Anisotropic across three games). Decal / two-sided
+are read once per property type into `MaterialInfo`; the renderer reads
+`material.is_decal` / `two_sided` with no per-game branch (verified: `triangle.frag`
+has zero `if game ==`). Texture-slot→role mapping (`BSShaderTextureSet`) is one
+decision tree keyed on `shader_type` (block structure, not a game check). All 9
+`BSLightingShaderProperty` shader-type variants now forward their trailing data
+(SkinTint/HairTint/Parallax/MultiLayer/Eye/Sparkle — the pre-#343 8-of-9 drop is
+closed). `BSEffectShaderProperty` is captured + routed (`material_kind == 101`,
+EFFECT_* flags); the one *deferred* item is the `base_color_scale`
+diffuse-tint-vs-emissive render path (§4) — tagged via `EmissiveSource::Effect`, not
+dropped.
+
+### Passthroughs — parked / dropped inventory (surveyed 2026-06-02)
+
+The 2026-06-02 coverage sweep traced every `ImportedScene`/`ImportedNode`/`ImportedMesh`
+field to its consumer. Beyond the four §"Nodes" fields, these are **parsed but not
+yet consumed** — each blocked on a feature that does not exist, so translating now
+would invent an ECS component nothing reads (the no-fabrication rule). This table is
+the record that each gap is known and bounded, with its unblocking consumer:
+
+| Data | Source block | State | Blocked on (future consumer) |
+|---|---|---|---|
+| `ImportedTextureEffect` | `NiTextureEffect` | extracted (`import_nif_texture_effects`) but the fn is **never called** — and **content-absent**: 0 occurrences across Oblivion / FNV / Skyrim mesh archives (measured 2026-06-02 via `nif_stats --tsv`). The dead extractor is dead *because there is nothing to consume*, not a leak. A renderer projector pass would render a feature no shipped content drives — **do not build speculatively**; revisit only if real content (modded / later titles) surfaces it | (none — content-absent) |
+| `bs_lod_cutoffs` | `BSLODTriShape` | raw-parked on `ImportedMesh` — **this is the content-bearing in-cell LOD** (Skyrim ~43 meshes; mesh-level LOD0/1/2 triangle-count cutoffs). Foundation already present; only the runtime draw-count switch is deferred | in-cell LOD draw-count consumer (draw fewer indices by camera distance) |
+| `lod_group` | `NiLODNode` → `NiRangeLODData` | **foundation done (2026-06-02):** `NiRangeLODData` now parsed (+ dispatcher + test) and surfaced as `ImportedNode.lod_group` (center + per-level near/far, Y-up). Import still walks child 0 only. BUT `NiLODNode` is **content-absent** in shipped archives (0 across Oblivion/FNV/Skyrim/FO4 — measured) — this is forward-compat (mods / other titles), not a shipped-content gap | per-frame distance-switch system (deferred — load-bearing walker change for perf-only gain, see below) |
+| `bs_sub_index` | `BSSubIndexTriShape` | raw-parked | dismemberment / locational-damage system |
+| furniture / inv markers | `BSFurnitureMarker` / `BSInvMarker` | parsed, not walked into `Imported*` | AI sit/lean/sleep packages; inventory-icon system |
+| `NiSwitchNode` identity | `NiSwitchNode` | walked via **active-index** (furniture states, sheaths, destruction); the type discriminator is not surfaced. Content-present (Skyrim ~165, FO4 ~51) | geometry state-switching driver (gameplay) |
+| `bs_bound` | `BSBound` extra-data | consumed on the **loose-NIF** path only (`nif_loader.rs`), not the cell path | a cell-path bound consumer (low value — the cell path already derives `WorldBound` from geometry) |
+
+**In-cell LOD (2026-06-02, user-directed):** measured prevalence before building. `NiLODNode`
+(node-level Z-depth LOD) is **content-absent** across all target games; the parser +
+`lod_group` surfacing landed as forward-compat foundation + format coverage. The actual
+content-bearing in-cell LOD is **`BSLODTriShape`** (mesh-level), whose foundation
+(`bs_lod_cutoffs`) was **already parked** — so the foundation goal is met on both fronts.
+The runtime switch (either node-child visibility or mesh draw-count) is deferred: it is a
+load-bearing walk/draw change for a **perf-only** gain on modest content while the engine
+runs with frame headroom — poor risk/reward until a perf need surfaces (same measure-first
+verdict as `NiTextureEffect`).
+
+When any consumer feature lands, its slice translates the already-captured field — no
+parser change needed then.
+
 ---
 
 ## 3. Materials — the reference realisation
