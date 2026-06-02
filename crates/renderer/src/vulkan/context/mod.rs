@@ -1039,8 +1039,10 @@ pub struct VulkanContext {
     screenshot_result: Arc<Mutex<Option<Vec<u8>>>>,
     /// Staging buffer for screenshot readback (allocated on first capture).
     screenshot_staging: Option<(vk::Buffer, vk_alloc::Allocation, vk::DeviceSize)>,
-    /// True when the staging buffer contains valid data waiting for fence.
-    screenshot_pending_readback: bool,
+    /// Extent captured at record time; `Some` while the staging buffer holds
+    /// data waiting for the fence.  Stored here (not re-derived from the live
+    /// swapchain) so a same-frame resize cannot corrupt the readback dimensions.
+    screenshot_pending_readback: Option<vk::Extent2D>,
 
     frame_sync: FrameSync,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -2262,7 +2264,7 @@ impl VulkanContext {
             screenshot_requested: Arc::new(AtomicBool::new(false)),
             screenshot_result: Arc::new(Mutex::new(None)),
             screenshot_staging: None,
-            screenshot_pending_readback: false,
+            screenshot_pending_readback: None,
         })
     }
 

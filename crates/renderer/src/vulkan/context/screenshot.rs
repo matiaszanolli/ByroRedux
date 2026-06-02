@@ -14,17 +14,16 @@ impl VulkanContext {
     ///
     /// Called at the top of `draw_frame()` after the fence wait (GPU done).
     pub(super) fn screenshot_finish_readback(&mut self) {
-        if !self.screenshot_pending_readback {
+        let Some(extent) = self.screenshot_pending_readback.take() else {
             return;
-        }
-        self.screenshot_pending_readback = false;
+        };
 
         let Some((_, ref allocation, size)) = self.screenshot_staging else {
             return;
         };
 
-        let width = self.swapchain_state.extent.width;
-        let height = self.swapchain_state.extent.height;
+        let width = extent.width;
+        let height = extent.height;
 
         // Read the staging buffer.
         let data = match allocation.mapped_slice() {
@@ -169,7 +168,7 @@ impl VulkanContext {
             &[barrier_to_present],
         );
 
-        self.screenshot_pending_readback = true;
+        self.screenshot_pending_readback = Some(vk::Extent2D { width, height });
     }
 
     /// Ensure a host-visible staging buffer exists for screenshot readback.
