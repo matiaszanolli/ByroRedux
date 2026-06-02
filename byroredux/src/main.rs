@@ -1813,6 +1813,14 @@ impl ApplicationHandler for App {
                     // `shutdown` already took `worker` and `request_tx`
                     // so it short-circuits — the join is not repeated.
                 }
+                // Release the ECS clone of the GPU allocator before
+                // dropping the renderer.  VulkanContext::Drop calls
+                // Arc::try_unwrap on the allocator; if AllocatorResource
+                // is still in the world it holds an extra strong-count
+                // that makes try_unwrap fail, triggering the
+                // device+surface+instance leak path (#1406 / MEM-03).
+                self.world
+                    .remove_resource::<byroredux_renderer::vulkan::allocator::AllocatorResource>();
                 self.renderer.take();
                 self.window.take();
                 event_loop.exit();
