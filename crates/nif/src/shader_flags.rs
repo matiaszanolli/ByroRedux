@@ -31,6 +31,10 @@
 /// bit 12 which is `Unknown_3` on FO3/FNV and `Model_Space_Normals` on
 /// Skyrim. Do NOT re-use FO3/FNV bit 12 expecting Skyrim behavior.
 pub mod fo3nv_f1 {
+    /// Bit 22 — `Own_Emit`. Surface provides its own emittance; renders
+    /// additively (ONE/ONE blend) rather than alpha-over. Same bit as
+    /// `skyrim_slsf1` and `fo4_slsf1` — cross-game constant.
+    pub const OWN_EMIT: u32 = 0x0040_0000;
     /// Bit 26 — `Decal`. Render on top of coplanar surfaces.
     pub const DECAL: u32 = 0x0400_0000;
     /// Bit 27 — `Dynamic_Decal`. Runtime-spawned decal (blood splat).
@@ -56,6 +60,9 @@ pub mod skyrim_slsf1 {
     /// indexed by the source-texture luminance. nif.xml: "in
     /// EffectShaderProperty". See #890 / SK-D4-NEW-04.
     pub const GREYSCALE_TO_PALETTE_COLOR: u32 = 0x0000_0010;
+    /// Bit 22 — `Own_Emit`. Same position + semantic as `fo3nv_f1::OWN_EMIT`
+    /// and `fo4_slsf1::OWN_EMIT` — self-illuminating surface, additive blend.
+    pub const OWN_EMIT: u32 = 0x0040_0000;
     /// Bit 5 — `Greyscale_To_PaletteAlpha`. Sample the
     /// `BSEffectShaderProperty.greyscale_texture` as an alpha palette LUT.
     /// See #890.
@@ -307,6 +314,16 @@ mod tests {
         // ensures a refactor can't silently drift one side.
         assert_eq!(fo3nv_f1::DECAL, skyrim_slsf1::DECAL);
         assert_eq!(fo3nv_f1::DYNAMIC_DECAL, skyrim_slsf1::DYNAMIC_DECAL);
+    }
+
+    #[test]
+    fn own_emit_bit_is_cross_game_constant() {
+        // OWN_EMIT is bit 22 (0x0040_0000) in ALL game variants per nif.xml.
+        // The additive-blend gate in material/walker.rs uses fo3nv_f1::OWN_EMIT
+        // as the canonical constant; this pin ensures FO4 doesn't drift.
+        assert_eq!(fo3nv_f1::OWN_EMIT, skyrim_slsf1::OWN_EMIT);
+        assert_eq!(fo3nv_f1::OWN_EMIT, fo4_slsf1::OWN_EMIT);
+        assert_eq!(fo3nv_f1::OWN_EMIT, 0x0040_0000);
     }
 
     #[test]

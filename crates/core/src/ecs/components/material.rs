@@ -391,6 +391,11 @@ pub struct PbrClassifierInputs<'a> {
     pub glossiness: f32,
     pub env_map_scale: f32,
     pub has_normal_map: bool,
+    /// `NiMaterialProperty.specular` RGB — white/grey means metallic
+    /// response, coloured/dark means dielectric. Used to lift metalness
+    /// on non-keyword surfaces (desks, doors, panels) that otherwise
+    /// fall to metalness=0. Default `[1.0; 3]` → specular luminance 1.0.
+    pub specular_color: [f32; 3],
 }
 
 /// Keyword-based PBR classifier formerly shared with the (deleted)
@@ -439,8 +444,13 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
         path,
         &["metal", "iron", "steel", "dwemer", "dwarven", "chainmail"],
     ) {
+        // Weathered/industrial metal. Pre-2026-06-03 this was
+        // roughness=0.3 (mirror chrome), which is correct for polished
+        // steel but wrong for the worn post-apocalyptic surfaces in FNV
+        // / FO3. Raised to 0.6 → brushed/oxidised metal. Still clearly
+        // metallic (metalness=0.9) but the GGX highlight is much softer.
         return PbrMaterial {
-            roughness: 0.3,
+            roughness: 0.6,
             metalness: 0.9,
         };
     }
@@ -504,34 +514,39 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
         };
     }
 
-    // env_map_scale arm — the matte-biased default for non-keyword
-    // surfaces. `BSShaderPPLighting` authors `env_map_scale = 1.0` as the
-    // neutral default on nearly every FNV surface, so this arm fires for
-    // the vast majority of interior content and clamps it to the 0.8
-    // ceiling (`1 - 1.0*0.2`). That is INTENTIONAL: FNV's authored
-    // glossiness (a Phong specular power) sits at 60–90 on ordinary cloth
-    // / weathered metal / painted surfaces, and the linear glossiness arm
-    // below maps gloss 60 → roughness 0.30 — far too shiny. At ≤ 0.6
-    // roughness the RT reflection path engages, so a weathered Chairman
-    // suit (gloss 60) rendered as mirror **chrome** the moment this arm
-    // stopped catching the neutral default. Keeping the matte 0.8 default
-    // is the safe, shipped behaviour.
+    // env_map_scale arm — base roughness for non-keyword surfaces.
+    // `BSShaderPPLighting` authors `env_map_scale = 1.0` as the neutral
+    // default on nearly every FNV surface, so this arm catches the vast
+    // majority of interior content.
     //
-    // A 2026-05-27 experiment raised the gate to `> 1.0` to "restore the
-    // glossiness gradient" — that regressed every env=1.0 surface to the
-    // shiny glossiness value (the "chrome thugs" at the Tops). REVERTED.
-    // Glass does NOT need that gradient: its smoothness is now forced at
-    // material-insert time by `classify_glass_into_material` (alpha-gated
-    // glass keyword → roughness 0.10), independent of this arm — so glass
-    // stays glassy while ordinary surfaces stay matte. Genuinely
-    // env-mapped surfaces the artist cranked above the neutral default
-    // (≈ 2.5 door panels / bulkhead trim) still sharpen on the curve; the
-    // 0.35 floor keeps them polished-plastic, never mirror chrome
-    // (user-reported chrome on FNV/FO3 wall panels 2026-05-25).
+    // METALNESS from specular luminance: `NiMaterialProperty.specular`
+    // encodes the surface's Phong specular tint. White/grey (lum > 0.6)
+    // is the Gamebryo convention for metallic surfaces with no explicit
+    // metal texture-path keyword — cabinets, desks, corridor doors, hulls.
+    // Derive metalness as `(spec_lum - 0.5) * 0.8` (lum=1.0 → 0.4;
+    // lum=0.7 → 0.16; lum < 0.5 → 0).
+    //
+    // ROUGHNESS cap from specular: the RT reflection path gates at
+    // `roughness < 0.6` (triangle.frag:2652). Default env_map_scale=1.0
+    // gives roughness=0.8 — metal surfaces with metalness=0.4 but no RT
+    // reflections still look flat. High-specular surfaces (lum > 0.6)
+    // cap at 0.55, pushing them below the RT threshold so they get a
+    // proper metallic sheen. Low-specular surfaces (plastic, concrete,
+    // cloth) keep the full 0.8 ceiling.
+    // The `min()` with the base roughness preserves explicit artist
+    // intent — an env_map_scale-authored surface that already earned
+    // a lower roughness (e.g. scale=3.0 → 0.4) keeps it.
     if inputs.env_map_scale > 0.3 {
+        let [sr, sg, sb] = inputs.specular_color;
+        let spec_lum = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
+        let metalness = ((spec_lum - 0.5) * 0.8).clamp(0.0, 0.4);
+        let base_roughness = (1.0 - inputs.env_map_scale * 0.2).clamp(0.35, 0.8);
+        // spec_lum > 0.6 → metallic tier → roughness ceiling 0.55 (< RT threshold 0.6)
+        // spec_lum ≤ 0.6 → dielectric tier → roughness ceiling 0.8 (no RT reflection)
+        let roughness_ceiling = if spec_lum > 0.6 { 0.55_f32 } else { 0.8_f32 };
         return PbrMaterial {
-            roughness: (1.0 - inputs.env_map_scale * 0.2).clamp(0.35, 0.8),
-            metalness: 0.0,
+            roughness: base_roughness.min(roughness_ceiling),
+            metalness,
         };
     }
 
@@ -598,6 +613,7 @@ impl Material {
                 glossiness: self.glossiness,
                 env_map_scale: self.env_map_scale,
                 has_normal_map: self.normal_map.is_some(),
+                specular_color: self.specular_color,
             });
             if self.metalness.is_nan() {
                 self.metalness = pbr.metalness;
@@ -640,6 +656,17 @@ mod tests {
             glossiness: m.glossiness,
             env_map_scale: m.env_map_scale,
             has_normal_map: m.normal_map.is_some(),
+            specular_color: m.specular_color,
+        })
+    }
+
+    fn classify_with_spec(m: &Material, texture_path: &str, specular: [f32; 3]) -> PbrMaterial {
+        classify_pbr_keyword(PbrClassifierInputs {
+            texture_path: Some(texture_path),
+            glossiness: m.glossiness,
+            env_map_scale: m.env_map_scale,
+            has_normal_map: m.normal_map.is_some(),
+            specular_color: specular,
         })
     }
 
@@ -676,7 +703,8 @@ mod tests {
         let m = Material::default();
         let metal = classify(&m, r"Textures\Weapons\Iron\IronSword.dds");
         assert!(metal.metalness > 0.8);
-        assert!(metal.roughness < 0.4);
+        // Roughness raised from 0.3 → 0.6 (worn/industrial metal, not mirror chrome).
+        assert!(metal.roughness >= 0.5 && metal.roughness < 0.8);
 
         let wood = classify(&m, "textures/clutter/barrel/barrel01.dds");
         assert_eq!(wood.metalness, 0.0);
@@ -706,21 +734,22 @@ mod tests {
     fn classify_pbr_env_map_scale_floor_is_polished_plastic_not_chrome() {
         let mut m = Material::default();
         m.glossiness = 50.0;
+        // Painted plastic wall panel: low specular (dielectric).
         // 2.5 = previously-clamped "power-armor tier" on the non-
         // keyword arm. Now plateaus at polished-plastic territory.
         m.env_map_scale = 2.5;
-        let p = classify(&m, "textures/interior/wallpanel01.dds");
+        let p = classify_with_spec(&m, "textures/interior/wallpanel01.dds", [0.2; 3]);
         assert!(
             p.roughness >= 0.35,
             "non-keyword env_map_scale must not produce chrome floor; got {}",
             p.roughness,
         );
-        assert_eq!(p.metalness, 0.0);
+        assert_eq!(p.metalness, 0.0, "low-specular surface must be dielectric");
 
         // Extreme env_map_scale still bottoms at the new floor —
         // a dielectric never looks like a mirror.
         m.env_map_scale = 10.0;
-        let p = classify(&m, "textures/unknown/shiny.dds");
+        let p = classify_with_spec(&m, "textures/unknown/shiny.dds", [0.2; 3]);
         assert!(p.roughness >= 0.35);
         assert_eq!(p.metalness, 0.0);
     }
@@ -729,21 +758,19 @@ mod tests {
     fn classify_pbr_env_map_scale_does_not_imply_metalness() {
         let mut m = Material::default();
         m.glossiness = 50.0;
-        m.env_map_scale = 0.5; // cushion-with-sheen tier
-        let p = classify(&m, "textures/clutter/medical/hospitalbed01.dds");
+        m.env_map_scale = 0.5; // cushion-with-sheen tier — low specular, dielectric
+        // Vinyl/cloth hospital bed: env_map_scale alone does NOT mean metallic.
+        // Metalness comes from specular_color luminance; cloth/vinyl has grey/dark specular.
+        let p = classify_with_spec(&m, "textures/clutter/medical/hospitalbed01.dds", [0.2; 3]);
         assert_eq!(
             p.metalness, 0.0,
-            "env_map_scale must not drive metalness — that's the chrome-cushion bug"
+            "low specular + env_map_scale must not drive metalness — that's the chrome-cushion bug"
         );
-        // Roughness should drop relative to a no-envmap default (the
-        // sheen IS visible, just as a dielectric lobe).
         assert!(p.roughness < 1.0);
 
-        // Power-armor tier (env_map_scale ≈ 2.5) on a non-keyword path
-        // also stays dielectric — the artist needs to put `metal` /
-        // `armor` in the texture path to mark conductor authoring.
+        // Power-armor tier on a non-keyword path with low specular stays dielectric.
         m.env_map_scale = 2.5;
-        let p = classify(&m, "textures/clutter/unknown/shiny.dds");
+        let p = classify_with_spec(&m, "textures/clutter/unknown/shiny.dds", [0.2; 3]);
         assert_eq!(p.metalness, 0.0);
     }
 
@@ -764,11 +791,14 @@ mod tests {
         // Must clamp to the matte ceiling — falling through to the
         // glossiness arm (gloss 60 -> 0.30) engages the RT reflection
         // path and renders chrome (the "chrome thugs" at the Tops).
+        // Cloth/leather suit — low specular (dielectric). Specular on
+        // worn cloth is ~0.2-0.3 in Gamebryo. Must not go chrome.
         let p = classify_pbr_keyword(PbrClassifierInputs {
             texture_path: Some("textures/armor/1950stylesuit/outfitweatheredm.dds"),
             glossiness: 60.0,
             env_map_scale: 1.0, // neutral FNV default
             has_normal_map: true,
+            specular_color: [0.25; 3], // cloth: dark/grey specular → dielectric
         });
         assert!(
             p.roughness >= 0.6,
@@ -776,7 +806,7 @@ mod tests {
              reflection path (<0.6) does not engage; got {} (chrome regression)",
             p.roughness,
         );
-        assert_eq!(p.metalness, 0.0);
+        assert_eq!(p.metalness, 0.0, "cloth surface must be dielectric");
     }
 
     /// Canonical-material-pass step 3 (2026-05-27). Two-tier glass
@@ -802,6 +832,7 @@ mod tests {
                 glossiness: 50.0,
                 env_map_scale: 1.0,
                 has_normal_map: false,
+                specular_color: [0.9; 3],
             });
             assert!(
                 p.roughness <= 0.2,
@@ -835,6 +866,7 @@ mod tests {
                 glossiness: 50.0,
                 env_map_scale: 1.0,
                 has_normal_map: false,
+                specular_color: [0.9; 3],
             });
             assert!(
                 p.roughness > 0.2,
@@ -933,7 +965,8 @@ mod tests {
 
         m.resolve_pbr();
         assert!(m.metalness > 0.8, "metal keyword routes to conductor");
-        assert!(m.roughness < 0.4);
+        // Roughness raised from 0.3 → 0.6 (worn metal, not mirror chrome).
+        assert!(m.roughness >= 0.5 && m.roughness < 0.8);
         assert!(m.metalness.is_finite() && m.roughness.is_finite());
     }
 

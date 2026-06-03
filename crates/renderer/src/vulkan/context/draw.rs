@@ -432,6 +432,12 @@ impl VulkanContext {
             zero_f, // raw_indirect (background: no light)
             zero_f, // albedo (background: no color)
             vk::ClearValue {
+                // reservoir (attachment 6): clear to invalid-light sentinel
+                color: vk::ClearColorValue {
+                    uint32: [0xFFFF_FFFFu32, 0, 0, 0],
+                },
+            },
+            vk::ClearValue {
                 depth_stencil: vk::ClearDepthStencilValue {
                     depth: 1.0,
                     stencil: 0,

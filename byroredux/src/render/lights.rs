@@ -21,22 +21,30 @@ use super::{compute_directional_upload, SUN_INTENSITY_PEAK};
 /// LIGH `radius` → renderer effective range multiplier.
 ///
 /// Bethesda's LIGH `radius` is a "design value" where the light is
-/// fully effective. The runtime contributes visible light beyond that
-/// (a 1024 BU torch is ~10-30% at d=r, fading to ~0 by d=3-4r). This
-/// constant captures the engine-policy choice for how far past the
-/// authored radius our renderer extends the visible contribution. Set
-/// in this file (the translator) — NOT in the shader, which consumes
-/// only the post-translation `effective_range`. Same separation as the
-/// BGSM → PBR translation: source-format quirks resolved at the
-/// boundary, renderer-side code stays format-agnostic.
+/// fully effective at d=0 and should read 10–30% at d=radius, fading
+/// to 0 shortly beyond. The shader uses `atten = (1 − (d/range)²)^shape`
+/// where `range = radius × LIGHT_RANGE_EXTENSION`.
 ///
-/// `2.5` — tuned against densely-lit FO4 interiors (Institute,
-/// Bioscience) where smaller authored radii need a narrower reach to
-/// preserve directional feel, vs Skyrim's larger radii that work fine
-/// at this multiplier. Pre-2026-05-24 audit: shader hardcoded the
-/// `1/(1 + 0.01d)` linear absolute-distance term plus a `radius * 4.0`
-/// cull; that mixed source data with engine policy in the shader.
-pub const LIGHT_RANGE_EXTENSION: f32 = 2.5;
+/// Math: with `shape = 1.0` (Bethesda's default `falloff_exponent`),
+/// at `d = radius`:
+///   ext=1.2 → window=0.306 → atten=31%  (correct 10–30% target at d=r)
+///   ext=2.0 → window=0.750 → atten=75%  ← current (RT residual light)
+///   ext=2.5 → window=0.840 → atten=84%  (previous; too bright when
+///             combined with AMBIENT_FILL additive — caused REND-#1451)
+///
+/// Set to `2.0` after the AMBIENT_FILL double-counting fix (2026-06-03):
+///   - The pre-fix value of 2.5 was over-bright because `AMBIENT_FILL=1.5`
+///     additively stacked with `dielectricAmbient`, giving 2.5× the correct
+///     ambient on FO3/FNV surfaces (REND-#1452). Now that AMBIENT_FILL is a
+///     max()-floor, the combined brightness is correct and a larger extension
+///     is safe.
+///   - RT GI requires light to actually reach surfaces at and slightly beyond
+///     the authored radius for bounce paths to form. A hard 1.2 cutoff leaves
+///     too many surfaces unlit for GI to work at all — the Divide silo bay
+///     showed as near-pitch-black. Emissive-texture area lights (future work)
+///     will eventually contribute GI fill to compensate; until then the
+///     range extension carries that responsibility.
+pub const LIGHT_RANGE_EXTENSION: f32 = 2.0;
 
 /// LIGH `falloff_exponent` default applied when the source field is
 /// `0.0` (the engine sentinel for "unset" — pre-Skyrim LIGH records

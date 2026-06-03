@@ -25,7 +25,8 @@ fn classifier_routes_metal_path_to_conductor() {
 
     let pbr = info.classify_legacy_pbr(&pool);
     assert!(pbr.metalness > 0.8, "metal keyword routes to conductor");
-    assert!(pbr.roughness < 0.4);
+    // Roughness raised from 0.3 → 0.6 (worn/industrial metal, not mirror chrome).
+    assert!(pbr.roughness >= 0.5 && pbr.roughness < 0.8);
 }
 
 #[test]

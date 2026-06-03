@@ -2574,23 +2574,27 @@ void main() {
                              * vec3(mat.ambientR, mat.ambientG, mat.ambientB)
                              * (1.0 - metalness);
     vec3 metallicAmbient = sceneFlags.yzw * albedo * metalness * 0.5;
-    // Light-count-INDEPENDENT ambient fill (2026-05-27) — the decoupled
-    // replacement for the former per-light `* 0.02` stacking fill that
-    // was removed from the light loop below. The per-light version's
-    // strength scaled with nearby light count, which (a) forced it down
-    // to 0.02 to avoid multi-light overdrive and (b) gave ~0 fill to
-    // floor that ISN'T near a light — the dark, near-black between-pool
-    // areas at the Tops. Tying the fill to the cell's authored ambient
-    // (`sceneFlags.yzw`) instead makes it consistent everywhere and
-    // preserves each cell's mood (a dim casino stays dim; it just isn't
-    // crushed to black against the /PI-removed direct light). Flows the
-    // normal AO-floored, albedo-at-composite ambient path, so it's
-    // AO-modulated and tinted like the rest of the cell ambient. Only
-    // the non-DALC path (FNV/FO3/Oblivion) reads `ambient`; Skyrim DALC
-    // cells sample their authored cube and are unaffected.
-    const float AMBIENT_FILL = 1.5;
+    // Light-count-INDEPENDENT ambient fill — acts as a floor, not an
+    // addition, so it only lifts fragments where dielectricAmbient +
+    // metallicAmbient falls below this level (pure-metal surfaces with
+    // (1-metalness)→0 dielectric contribution, or sub-unity mat_ambient).
+    // Pre-2026-06-03 this was an ADDITION (AMBIENT_FILL = 1.5) that
+    // doubled the effective ambient for default FO3/FNV surfaces (which
+    // have mat_ambient=(1,1,1)) — `dielectricAmbient = cell_ambient × 1.0`
+    // + `ambientFill = cell_ambient × 1.5` = 2.5× the Gamebryo-correct
+    // value. Skyrim DALC cells were unaffected (they bypass `ambient`
+    // entirely), so this created a systematic over-brightness gap between
+    // FO3/FNV and Skyrim interiors (REND-#1452, Ulysses Temple floor).
+    // Changed from additive to max(FILL, sum) so default-ambient surfaces
+    // see no inflation, while truly-dark surfaces (metallic with no
+    // direct RT reflection, or near-zero mat_ambient) still get the floor.
+    // Tops between-pool areas: previously fixed by the additive 1.5 fill;
+    // those areas have `dielectricAmbient = cell_ambient × 1.0` (mat_ambient
+    // authored at 1) which is a correct non-zero fill — max(0.5, 1.0) →
+    // no regression at dim-casino ambient levels.
+    const float AMBIENT_FILL = 0.5;
     vec3 ambientFill = sceneFlags.yzw * AMBIENT_FILL;
-    vec3 ambient = dielectricAmbient + metallicAmbient + ambientFill;
+    vec3 ambient = max(dielectricAmbient + metallicAmbient, ambientFill);
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
 
     // ── RT reflection for metallic/glossy surfaces ──────────────────

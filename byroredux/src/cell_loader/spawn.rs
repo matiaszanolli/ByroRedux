@@ -1071,12 +1071,22 @@ pub(super) fn spawn_placed_instances(
             if let Some((shape, body)) =
                 synthesize_static_trimesh(&mesh.positions, &mesh.indices, final_scale)
             {
-                world.insert(entity, shape);
-                world.insert(entity, body);
-                // Mark as collision-only so the render loop forces in_tlas=false.
-                // Synthesized trimesh colliders are physics proxies — they must
-                // never enter the RT BLAS (R6a-stale-13-collider-cost).
-                world.insert(entity, crate::components::IsCollisionOnly);
+                // Spawn a separate physics-only ghost entity — matches the bhk
+                // collision pattern at the top of this function (lines 479-487).
+                // The render `entity` keeps its MeshHandle and enters BLAS+TLAS
+                // normally (restoring RT shadows/GI on FO4/Starfield architecture).
+                // The ghost has no MeshHandle → no BLAS entry, no TLAS instance,
+                // no render cost. Rapier only needs CollisionShape + RigidBodyData
+                // + GlobalTransform, which the ghost carries.
+                // R6a-stale-14-collider-partial fix.
+                let ghost = world.spawn();
+                world.insert(ghost, Transform::new(final_pos, final_rot, final_scale));
+                world.insert(
+                    ghost,
+                    GlobalTransform::new(final_pos, final_rot, final_scale),
+                );
+                world.insert(ghost, shape);
+                world.insert(ghost, body);
             }
         }
         // Attach ESM light_data ONLY if the NIF didn't actually spawn

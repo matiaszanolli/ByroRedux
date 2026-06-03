@@ -8,7 +8,7 @@ use byroredux_core::ecs::{
     Transform, World, WorldBound,
 };
 use byroredux_core::ecs::components::{CollisionShape, FormIdComponent, RenderLayer, RigidBodyData};
-use crate::components::{AlphaBlend, DoorTeleport, InputState, IsFxMesh, TwoSided};
+use crate::components::{AlphaBlend, DoorTeleport, InputState, IsFxMesh, IsCollisionOnly, TwoSided};
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
 use std::collections::HashMap;
@@ -95,14 +95,37 @@ impl ConsoleCommand for EntitiesCommand {
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         let total = world.next_entity_id();
+        let mesh_count = world.count::<MeshHandle>();
+        let collision_count = world.count::<CollisionShape>();
+        let collision_only_count = world.count::<IsCollisionOnly>();
+
+        // Entities with CollisionShape but no MeshHandle are pure physics
+        // proxies (bhk-authored or synthesized ghost entities). These carry
+        // no GPU footprint — no BLAS, no TLAS instance, no render cost.
+        let physics_only_count = match world.query::<CollisionShape>() {
+            Some(cq) => {
+                let mesh_q = world.query::<MeshHandle>();
+                cq.iter()
+                    .filter(|(e, _)| mesh_q.as_ref().map_or(true, |mq| !mq.contains(*e)))
+                    .count()
+            }
+            None => 0,
+        };
+
         let mut lines = vec![format!("Total entities spawned: {}", total)];
-        lines.push(format!("  Transform:     {}", world.count::<Transform>()));
-        lines.push(format!("  MeshHandle:    {}", world.count::<MeshHandle>()));
+        lines.push(format!("  Transform:           {}", world.count::<Transform>()));
+        lines.push(format!("  MeshHandle (render): {}", mesh_count));
+        lines.push(format!("  TextureHandle:       {}", world.count::<TextureHandle>()));
+        lines.push(format!("  Camera:              {}", world.count::<Camera>()));
+        lines.push(format!("  CollisionShape:      {}", collision_count));
         lines.push(format!(
-            "  TextureHandle: {}",
-            world.count::<TextureHandle>()
+            "    physics-only (no MeshHandle): {}",
+            physics_only_count
         ));
-        lines.push(format!("  Camera:        {}", world.count::<Camera>()));
+        lines.push(format!(
+            "    IsCollisionOnly (render+phys combined, expect 0): {}",
+            collision_only_count
+        ));
         CommandOutput::lines(lines)
     }
 }

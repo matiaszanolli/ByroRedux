@@ -495,13 +495,21 @@ pub(crate) fn extract_material_info_from_refs(
             // reach here.
             if !info.alpha_property_consumed {
                 info.alpha_blend = true;
-                // The src/dst defaults live on `MaterialInfo::default`
-                // as SRC_ALPHA / INV_SRC_ALPHA — correct for the
-                // falloff-cone case which is the common one. Additive
-                // blend (ONE / ONE) for Own_Emit / EnvMap_Light_Fade
-                // flagged effect meshes is the remaining half of this
-                // issue and needs a per-flag check before the src/dst
-                // rewrite; defer to the follow-up.
+                // Own_Emit (SLSF1 bit 22) — the surface self-illuminates
+                // and must additively composite onto the scene (src=ONE,
+                // dst=ONE). Standard alpha-over at the default SRC_ALPHA /
+                // INV_SRC_ALPHA would clip high-emissive values to white
+                // instead of blooming them correctly (see: nuclear warhead
+                // glows in Lonesome Road, power-armor auras).
+                // OWN_EMIT is bit 22 (0x0040_0000) across all game variants
+                // (fo3nv_f1 / skyrim_slsf1 / fo4_slsf1 — same value, confirmed
+                // by nif.xml). Use the fo3nv constant as the canonical name.
+                if shader.shader_flags_1 & crate::shader_flags::fo3nv_f1::OWN_EMIT != 0 {
+                    info.src_blend_mode = 0; // ONE
+                    info.dst_blend_mode = 0; // ONE
+                }
+                // Otherwise keep the default SRC_ALPHA / INV_SRC_ALPHA
+                // (correct for falloff cones, dust planes, smoke cards).
             }
         }
         // Skyrim+ `BSSkyShaderProperty` consumer (#977) — every
