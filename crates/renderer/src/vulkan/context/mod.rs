@@ -9,7 +9,7 @@ use super::compute::ClusterCullPipeline;
 use super::debug;
 use super::device::{self, QueueFamilyIndices};
 use super::gbuffer::{
-    GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT,
+    GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT, RESERVOIR_FORMAT,
 };
 use super::instance;
 use super::material::GpuMaterial;
@@ -1448,8 +1448,8 @@ impl VulkanContext {
             depth_format,
         )?;
 
-        // 10. Main render pass: 6 color attachments (HDR + G-buffer +
-        // raw_indirect + albedo) + depth.
+        // 10. Main render pass: 7 color attachments (HDR + G-buffer +
+        // raw_indirect + albedo + reservoir) + depth.
         let render_pass = create_render_pass(
             &device,
             HDR_FORMAT,
@@ -1458,6 +1458,7 @@ impl VulkanContext {
             MESH_ID_FORMAT,
             RAW_INDIRECT_FORMAT,
             ALBEDO_FORMAT,
+            RESERVOIR_FORMAT,
             depth_format,
         )?;
 
@@ -1898,6 +1899,8 @@ impl VulkanContext {
             (0..n_frames).map(|i| gbuffer_ref.normal_view(i)).collect();
         let albedo_views: Vec<vk::ImageView> =
             (0..n_frames).map(|i| gbuffer_ref.albedo_view(i)).collect();
+        let reservoir_views: Vec<vk::ImageView> =
+            (0..n_frames).map(|i| gbuffer_ref.reservoir_view(i)).collect();
 
         // 14b2. SVGF temporal denoiser — reads raw_indirect + motion +
         // mesh_id from the G-buffer, writes accumulated_indirect images
@@ -2161,6 +2164,7 @@ impl VulkanContext {
             &mesh_id_views,
             &raw_indirect_views,
             &albedo_views,
+            &reservoir_views,
             depth_image_view,
             swapchain_state.extent,
         )?;

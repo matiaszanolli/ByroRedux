@@ -55,6 +55,7 @@ layout(location = 2) out vec2 outMotion;       // screen-space motion vector
 layout(location = 3) out uint outMeshID;       // per-instance ID + 1
 layout(location = 4) out vec4 outRawIndirect;  // demodulated indirect light (for SVGF)
 layout(location = 5) out vec4 outAlbedo;       // surface color (composite re-multiplies)
+layout(location = 6) out uvec4 outReservoir;   // ReSTIR-DI reservoir
 
 // Bindless texture array.
 layout(set = 0, binding = 0) uniform sampler2D textures[];
@@ -1112,7 +1113,22 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx, vec4 verte
 const uint INST_RENDER_LAYER_SHIFT = 4u;
 const uint INST_RENDER_LAYER_MASK  = 0x3u;
 
+// ── ReSTIR DI Reservoir ─────────────────────────────────────────────
+struct Reservoir {
+    uint lightIdx;
+    uint M;
+    float wSum;
+    float W;
+};
+
+uvec4 packReservoir(Reservoir r) {
+    return uvec4(r.lightIdx, r.M, floatBitsToUint(r.wSum), floatBitsToUint(r.W));
+}
+
 void main() {
+    // Initialize ReSTIR-DI reservoir to empty (0xFFFFFFFF = invalid light)
+    outReservoir = packReservoir(Reservoir(0xFFFFFFFFu, 0u, 0.0, 0.0));
+
     // Decode debug-bypass flags (zero on production runs).
     uint dbgFlags = floatBitsToUint(jitter.z);
 
