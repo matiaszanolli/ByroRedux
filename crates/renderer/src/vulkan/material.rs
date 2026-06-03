@@ -486,6 +486,17 @@ pub mod material_flag {
     pub const BGSM_TRANSLUCENCY_THICK_OBJECT: u32 = TRANSLUCENCY_THICK_OBJECT;
     pub const BGSM_TRANSLUCENCY_MIX_ALBEDO: u32 = TRANSLUCENCY_MIX_ALBEDO;
 
+    /// Bit-shift for the 8-bit `BSEffectShaderProperty.lighting_influence`
+    /// byte packed into `material_flags` bits 16–23. Extract in GLSL as
+    /// `float((materialFlags >> MAT_FLAG_EFFECT_LI_SHIFT) & 0xFFu) / 255.0`.
+    /// Bits 11–15 are reserved for future single-bit flags; bits 24–31
+    /// are free. Only meaningful when `EFFECT_LIT` is also set — the byte
+    /// scales the directional + ambient contribution in the
+    /// `MATERIAL_KIND_EFFECT_SHADER` lit branch. `0` (packed value of
+    /// `lighting_influence == 0`) disables scene lighting; `255` is full
+    /// contribution. See #890 Stage 2 and `pack_effect_shader_flags`.
+    pub const EFFECT_LI_SHIFT: u32 = 16;
+
     /// "This material came from a BGSM (or BGEM) external file" — set
     /// on every BGSM-sourced surface regardless of the `BgsmFile.pbr`
     /// flag. Disambiguates Bethesda's two shading conventions:

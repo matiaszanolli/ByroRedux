@@ -87,6 +87,7 @@ mod tests {
             ("MAT_FLAG_MODEL_SPACE_NORMALS", format!("#define MAT_FLAG_MODEL_SPACE_NORMALS {MAT_FLAG_MODEL_SPACE_NORMALS}u")),
             ("MAT_FLAG_TRANSLUCENCY_THICK_OBJECT", format!("#define MAT_FLAG_TRANSLUCENCY_THICK_OBJECT {MAT_FLAG_TRANSLUCENCY_THICK_OBJECT}u")),
             ("MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO", format!("#define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO {MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO}u")),
+            ("MAT_FLAG_EFFECT_LI_SHIFT", format!("#define MAT_FLAG_EFFECT_LI_SHIFT {MAT_FLAG_EFFECT_LI_SHIFT}u")),
             // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
         ] {
             assert!(
@@ -397,6 +398,8 @@ mod tests {
         assert_eq!(MAT_FLAG_MODEL_SPACE_NORMALS, material_flag::MODEL_SPACE_NORMALS);
         assert_eq!(MAT_FLAG_TRANSLUCENCY_THICK_OBJECT, material_flag::TRANSLUCENCY_THICK_OBJECT);
         assert_eq!(MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO, material_flag::TRANSLUCENCY_MIX_ALBEDO);
+        // Lighting-influence shift — a byte-field offset, not a single-bit flag.
+        assert_eq!(MAT_FLAG_EFFECT_LI_SHIFT, material_flag::EFFECT_LI_SHIFT);
         // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
     }
 }

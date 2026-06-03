@@ -70,6 +70,7 @@
 #define MAT_FLAG_MODEL_SPACE_NORMALS 128u
 #define MAT_FLAG_TRANSLUCENCY_THICK_OBJECT 256u
 #define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO 512u
+#define MAT_FLAG_EFFECT_LI_SHIFT 16u
 
 // Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`).
 #define WATER_CALM 0u

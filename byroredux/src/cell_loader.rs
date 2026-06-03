@@ -144,7 +144,7 @@ pub(crate) fn pack_effect_shader_flags(
     eff: Option<&byroredux_nif::import::BsEffectShaderData>,
 ) -> u32 {
     use byroredux_renderer::vulkan::material::material_flag::{
-        EFFECT_LIT, EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR, EFFECT_SOFT,
+        EFFECT_LI_SHIFT, EFFECT_LIT, EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR, EFFECT_SOFT,
     };
     let Some(es) = eff else {
         return 0;
@@ -162,6 +162,11 @@ pub(crate) fn pack_effect_shader_flags(
     if es.effect_lit {
         flags |= EFFECT_LIT;
     }
+    // Pack the 0-255 lighting influence byte into bits 16-23 of material_flags.
+    // The fragment shader's EFFECT_LIT branch reads this as a [0,1] scale via
+    // `float((materialFlags >> MAT_FLAG_EFFECT_LI_SHIFT) & 0xFFu) / 255.0`.
+    // When EFFECT_LIT is unset the byte is present but ignored.
+    flags |= (es.lighting_influence as u32) << EFFECT_LI_SHIFT;
     flags
 }
 

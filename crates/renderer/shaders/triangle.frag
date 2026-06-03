@@ -191,11 +191,12 @@ layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
     GpuMaterial materials[];
 };
 
-// `GpuMaterial::material_flags` bit catalog. The five active bits
-// (`MAT_FLAG_VERTEX_COLOR_EMISSIVE`, `_EFFECT_SOFT`,
-// `_EFFECT_PALETTE_COLOR`, `_EFFECT_PALETTE_ALPHA`, `_EFFECT_LIT`)
-// are now `#define`d in `include/shader_constants.glsl` (the single
-// source of truth, mirrored from `material_flag::*` in
+// `GpuMaterial::material_flags` bit catalog. The active flags and
+// shift constants (`MAT_FLAG_VERTEX_COLOR_EMISSIVE`, `_EFFECT_SOFT`,
+// `_EFFECT_PALETTE_COLOR`, `_EFFECT_PALETTE_ALPHA`, `_EFFECT_LIT`,
+// `MAT_FLAG_EFFECT_LI_SHIFT`) are `#define`d in
+// `include/shader_constants.glsl` (the single source of truth,
+// mirrored from `material_flag::*` in
 // `crates/renderer/src/vulkan/material.rs`). See #1190.
 
 // Material-feature flags. Bits 5-9 of `materialFlags` (PBR BSDF / SSS /
@@ -1573,6 +1574,12 @@ void main() {
         // care about point-light contributions; the additive emit
         // already saturates near torches / lanterns).
         if ((mat.materialFlags & MAT_FLAG_EFFECT_LIT) != 0u) {
+            // `BSEffectShaderProperty.lighting_influence` (0-255) packed into
+            // bits 16-23 of materialFlags via `pack_effect_shader_flags`. Scales
+            // the scene-lit contribution: 0 = dark side of a magic aura reads
+            // pitch-black in scene light; 255 = full scene modulation (default for
+            // most authored content). See #890 Stage 2 / MAT_FLAG_EFFECT_LI_SHIFT.
+            float liScale = float((mat.materialFlags >> MAT_FLAG_EFFECT_LI_SHIFT) & 0xFFu) / 255.0;
             vec3 surf = texColor.rgb;
             // Cell ambient — same payload the main lit path reads.
             vec3 lit = sceneFlags.yzw * surf;
@@ -1580,15 +1587,15 @@ void main() {
             // is the type tag. Bounded scan so the loop has a small
             // upper bound on every divergence.
             uint scanCount = min(lightCount, 32u);
-            for (uint li = 0u; li < scanCount; ++li) {
-                if (uint(lights[li].color_type.w) == 2u) {
-                    vec3 Ldir = normalize(lights[li].direction_angle.xyz);
+            for (uint lIdx = 0u; lIdx < scanCount; ++lIdx) {
+                if (uint(lights[lIdx].color_type.w) == 2u) {
+                    vec3 Ldir = normalize(lights[lIdx].direction_angle.xyz);
                     float NdotL = max(dot(N, -Ldir), 0.0);
-                    lit += lights[li].color_type.rgb * NdotL * surf;
+                    lit += lights[lIdx].color_type.rgb * NdotL * surf;
                     break;
                 }
             }
-            emit += lit;
+            emit += liScale * lit;
         }
         // ── #620 / SK-D4-01: view-angle falloff cone ────────────────
         //

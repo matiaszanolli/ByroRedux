@@ -131,6 +131,14 @@ pub const MAT_FLAG_TRANSLUCENCY: u32 = 1 << 6;
 pub const MAT_FLAG_MODEL_SPACE_NORMALS: u32 = 1 << 7;
 pub const MAT_FLAG_TRANSLUCENCY_THICK_OBJECT: u32 = 1 << 8;
 pub const MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO: u32 = 1 << 9;
+// `MAT_FLAG_EFFECT_LI_SHIFT` — bit offset for the 8-bit
+// `BSEffectShaderProperty.lighting_influence` byte packed into bits
+// 16-23 of `materialFlags`. Extract via
+// `float((mat.materialFlags >> MAT_FLAG_EFFECT_LI_SHIFT) & 0xFFu) / 255.0`.
+// Paired with `material_flag::EFFECT_LI_SHIFT` (Rust) and pinned by
+// `material_flag_bits_match_material_consts`. See #890 Stage 2.
+pub const MAT_FLAG_EFFECT_LI_SHIFT: u32 = 16;
+
 // NOTE: `material_flag::BGSM_AUTHORED` (Rust-side bit 10) is
 // NOT mirrored here — the shader is format-agnostic and doesn't
 // branch on material provenance. BGSM → standardized PBR

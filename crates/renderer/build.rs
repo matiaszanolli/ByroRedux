@@ -104,6 +104,8 @@ fn main() {
     writeln!(out, "#define MAT_FLAG_MODEL_SPACE_NORMALS {MAT_FLAG_MODEL_SPACE_NORMALS}u").unwrap();
     writeln!(out, "#define MAT_FLAG_TRANSLUCENCY_THICK_OBJECT {MAT_FLAG_TRANSLUCENCY_THICK_OBJECT}u").unwrap();
     writeln!(out, "#define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO {MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO}u").unwrap();
+    // Lighting-influence byte-field shift (#890 Stage 2).
+    writeln!(out, "#define MAT_FLAG_EFFECT_LI_SHIFT {MAT_FLAG_EFFECT_LI_SHIFT}u").unwrap();
     // NOTE: `material_flag::BGSM_AUTHORED` is intentionally NOT emitted
     // here. The shader is format-agnostic — BGSM-specific translation
     // happens in `merge_bgsm_into_mesh` (writes `metalness_override` /
