@@ -1180,9 +1180,8 @@ mod tests {
     /// Schlick F0 derivation), then 284 → 296 under #1249 (+12 B for
     /// the Disney diffuse lobe — `subsurface` + `sheen` + `sheen_tint`),
     /// then 296 → 300 under #1250 (+4 B for `anisotropic`, the GGX
-    /// ax/ay aspect ratio driver). Function and test name kept as
-    /// "260" so a future size shift updates them in lockstep with
-    /// the assertion.
+    /// ax/ay aspect ratio driver). Test name includes the size so a future
+    /// size shift updates it in lockstep with the assertion.
     #[test]
     fn gpu_material_size_is_300_bytes() {
         assert_eq!(std::mem::size_of::<GpuMaterial>(), 300);
