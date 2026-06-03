@@ -36,6 +36,7 @@ Inventory` returned nothing.
 
 | Script | Milestone | Verifies |
 |--------|-----------|----------|
+| [`r6a_stale_15_bench.sh`](r6a_stale_15_bench.sh) | R6a-stale-15 bench-of-record refresh | Canonical three-cell benchmark suite: Prospector Saloon (FNV synthesized collision), Whiterun (Skyrim control), MedTek (FO4 precombined). Collects FPS / wall_ms / fence_ms / brd_ms / entities / draws / IsCollisionOnly counts. Formats output for ROADMAP.md copy-paste. Enforces CWD rule (run from each game's `Data/` directory). |
 | [`m41-equip.sh`](m41-equip.sh) | M41 Phase 2 close-out | Skyrim+ / FO4 NPCs spawn with their default outfit (LVLI dispatch via OTFT walks resolves to base ARMO refs; `Inventory` + `EquipmentSlots` are populated; armor meshes load without `tex.missing` overflow). |
 | [`m-trees.sh`](m-trees.sh) | SpeedTree Phase 1.7 close-out | Pre-Skyrim TREE REFRs round-trip through the SpeedTree pipeline: TREE record → `.spt` parser → SPT importer → cell loader extension switch → `Billboard` ECS entity. FNV / FO3 exterior cells must spawn ≥ 1 / ≥ 5 billboard placeholders respectively. |
 | `cargo test -p byroredux --test skinning_e2e -- --ignored` | M29 skinning close-out | FNV `NiSkinInstance` + SSE `BSSkinInstance` full import chain: bones populated, names round-trip `node_by_name`, partition-local → global bone-index remap correct, per-vertex `bone_indices`/`bone_weights` in bounds. Needs `BYROREDUX_FNV_DATA` + `BYROREDUX_SKYRIM_DATA`. |
@@ -73,4 +74,5 @@ falls back to the canonical Steam install paths:
 | `BYROREDUX_SKYRIM_DATA`     | `/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data`                    |
 | `BYROREDUX_FO4_DATA`        | `/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data`                                 |
 | `BYRO_DEBUG_PORT`           | `9876`                                                                                   |
-| `BYROREDUX_SMOKE_FRAMES`    | `30` (bench frames before the hold kicks in)                                             |
+| `BYROREDUX_SMOKE_FRAMES`    | `30` (bench frames before the hold kicks in — used by `m41-equip.sh`)                     |
+| `BYROREDUX_BENCH_FRAMES`    | `300` (bench frames — used by `r6a_stale_15_bench.sh`; override to e.g. `10` for validation) |
