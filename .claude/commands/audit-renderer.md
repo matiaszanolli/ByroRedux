@@ -131,6 +131,8 @@ See `.claude/commands/_audit-common.md` for project layout, methodology, dedupli
 - SSAO cleanup: noise texture, kernel buffer, output image
 - TextureRegistry cleanup: all per-texture descriptor sets and images
 - Reverse-order teardown of all 54+ VulkanContext fields
+- **`AllocatorResource` ECS ordering (#1406, `299e6a84`)**: `AllocatorResource` MUST be removed from the ECS `World` BEFORE `VulkanContext::drop()` executes. The `gpu-allocator` holds a live `Arc<Device>`; if the `World` outlives the `VulkanContext`, the allocator's `Drop` fires against a destroyed logical device → use-after-free. Verify `main.rs` / `app_event_loop.rs` drops the world or removes the resource before the renderer is dropped, and that this ordering is not bypassable by a panic unwind path.
+- **TLAS resize safety (#1390, `a7e1502b`)**: the TLAS resize path (triggered when the instance buffer is too small) calls `device_wait_idle()` before destroying the old allocation. Verify the wait is present in `tlas.rs` before any `allocator.free()` call in the resize branch — its absence opens a use-after-destroy window when resize runs while the prior frame's TLAS build is still in flight (a latent hazard that would materialise under a future resize-under-load refactor).
 **Output**: `/tmp/audit/renderer/dim_7.md`
 
 ### Dimension 8: Acceleration Structures (RT)

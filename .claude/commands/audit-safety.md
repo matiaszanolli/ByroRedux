@@ -27,6 +27,8 @@ Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
 ### 3. Memory Safety
 - GPU memory: all allocations freed before allocator drop
 - GPU memory: allocator dropped before device destroy
+- **`AllocatorResource` ECS drop ordering (#1406, `299e6a84`)**: `AllocatorResource` must be removed from the ECS `World` BEFORE `VulkanContext::drop()` fires. The `gpu-allocator` holds a live `Arc<Device>`; if the `World` outlives the `VulkanContext`, the allocator's `Drop` invokes driver calls against a destroyed logical device (use-after-free). Verify the main loop / app handler removes the resource before dropping the renderer; a panic unwind that skips this removal is an equally valid failure path.
+- **TLAS resize device_wait_idle (#1390, `a7e1502b`)**: the TLAS resize path must call `device.device_wait_idle()` before freeing the old allocation. Without it, the GPU may still be consuming the old TLAS scratch during the free. Latent today but would materialise under a future resize-under-load refactor. Verify the wait is present in `acceleration/tlas.rs` in the resize branch.
 - GPU memory: BLAS scratch buffer, TLAS instance/result buffers, G-buffer images, SVGF history buffers, TAA per-frame-in-flight history images, caustic accumulator images, per-skinned-entity SkinSlot output buffers, MaterialBuffer SSBO (R1) all tracked and freed
 - Cell streaming (`byroredux/src/streaming.rs`): cell-loaded resources (NIF imports, BLAS entries, textures) freed when cell unloads — verify no leak path through the async pre-parse worker thread (M40 milestone closed, but the unload leak path is live since exterior streaming is real)
 - CPU memory: no unbounded growth (Vec without clear, HashMap without remove)

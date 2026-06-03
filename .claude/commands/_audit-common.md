@@ -16,6 +16,7 @@ NIF Import:      crates/nif/src/import/               (mod.rs thin dispatch + ty
 NIF Animation:   crates/nif/src/anim/                 (mod.rs re-exports; coord, controlled_block, transform, sequence, keys, channel, bspline, entry; types.rs + tests.rs)
 BSA Reader:      crates/bsa/src/archive/             (mod.rs, open.rs, extract.rs, hash.rs, tests.rs)
 BA2 Reader:      crates/bsa/src/ba2.rs
+CSG Reader:      crates/bsa/src/csg.rs               (FO4 precombined geometry; BSPackedGeomObject TLV; M49. Spec: docs/engine/fo4-csg-format.md. Consumed by cell_loader/precombined.rs)
 BGSM Materials:  crates/bgsm/src/                     (FO4+ external material parser)
 SF Material:     crates/sfmaterial/src/               (Starfield CDB material consumer: chunk, reader, string_table, types, value)
 FaceGen (M41):   crates/facegen/src/                  (.tri/.egt morph + texture blend)
@@ -50,7 +51,7 @@ Vk Surface:      crates/renderer/src/vulkan/surface.rs
 Mesh:            crates/renderer/src/mesh.rs
 Vertex:          crates/renderer/src/vertex.rs
 Tex Registry:    crates/renderer/src/texture_registry.rs (+ texture_registry_tests.rs)
-Shaders:         crates/renderer/shaders/             (triangle.vert/frag, svgf_temporal.comp, taa.comp, composite.vert/frag, ssao.comp, cluster_cull.comp, skin_vertices.comp, caustic_splat.comp, volumetrics_inject.comp, volumetrics_integrate.comp, bloom_downsample.comp, bloom_upsample.comp, water.vert/frag, ui.vert/frag)
+Shaders:         crates/renderer/shaders/             (triangle.vert/frag, svgf_temporal.comp, taa.comp, composite.vert/frag, ssao.comp, cluster_cull.comp, skin_palette.comp, skin_vertices.comp, caustic_splat.comp, volumetrics_inject.comp, volumetrics_integrate.comp, bloom_downsample.comp, bloom_upsample.comp, water.vert/frag, ui.vert/frag — full per-pass roles and G-buffer layout in docs/engine/shader-pipeline.md)
 Plugin/ESM:      crates/plugin/src/                   (esm/{mod, reader, sub_reader}, esm/cell/, esm/records/{actor, climate, container, global, items, misc/{water, character, world, ai, magic, effects, equipment}, mswp, pkin, scol, script, tree, weather, …}, record.rs generic dispatch; legacy/ holds the LegacyFormId/LoadOrder bridge — per-game stubs were removed under #390)
 Platform:        crates/platform/src/
 UI (Ruffle):     crates/ui/src/
@@ -70,6 +71,20 @@ SF Smoke:        byroredux/src/sf_smoke.rs            (Starfield ESM resolve-rat
 Golden Frames:   byroredux/tests/golden_frames.rs     (cube-demo frame-60 regression PNG; opts into --ignored)
 Legacy Ref:      docs/legacy/
 ```
+
+## Key Reference Docs
+
+These docs are the authoritative, code-verified reference for their domain.
+Prefer them over re-deriving facts from source during an audit.
+
+| Doc | What it documents |
+|-----|------------------|
+| `docs/engine/shader-pipeline.md` | All 19 shaders, G-buffer attachment formats, `GpuCamera`/`GpuInstance`/`GpuMaterial`/`GpuLight` exact byte layouts, descriptor set bindings (Set 0–2), per-frame submission order, pipeline cache |
+| `docs/engine/memory-budget.md` | VRAM/RAM ceilings, SSBO sizes, LRU eviction thresholds (`AccelerationManager`, `TextureRegistry`, BGSM cache, `MeshRegistry`), deferred-destroy countdown depth |
+| `docs/engine/nifal.md` | NIFAL three-tier canonical translation spec (Imported* → translate() → Canonical); single-boundary / no-fabrication / no-render-time-fallback rules |
+| `docs/engine/plugin-loading.md` | `PluginManifest` TOML schema, `DataStore`, `DependencyResolver` algorithm, Form ID three-layer design, ESM parser entry points, conflict resolution |
+| `docs/feature-matrix.md` | What works at runtime per game — cell loading, rendering, NPCs, audio, scripting, physics, UI. Living status document. |
+| `docs/contributing.md` | Prerequisites, build, test tiers (unit/integration/Vulkan/smoke), shader recompile, game data paths, CI jobs |
 
 Crate count: 19 under `crates/` — audio, bgsm, bsa, core, cxx-bridge,
 debug-protocol, debug-server, debug-ui, facegen, nif, papyrus, physics,
