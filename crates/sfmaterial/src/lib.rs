@@ -55,9 +55,6 @@ mod string_table;
 mod types;
 mod value;
 
-pub use chunk::ChunkType;
 pub use error::{Error, Result};
 pub use reader::ComponentDatabaseFile;
-pub use string_table::StringTable;
-pub use types::{BuiltinType, Class, ClassFlags, Field, TypeReference};
-pub use value::{ObjectInstance, Ref, Value};
+pub use value::Value;
