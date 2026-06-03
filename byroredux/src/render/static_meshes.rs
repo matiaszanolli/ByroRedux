@@ -132,6 +132,16 @@ pub(super) fn collect_static_mesh_draws(
     let lod_q = world.query::<IsLodTerrain>();
     if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
+            // #1377: hoist the GlobalTransform presence gate to the top —
+            // entities without a GT (recently spawned, partially loaded,
+            // or missing a Transform component) are rare but previously
+            // paid two SparseSet gets (vis_q + wb_q) before reaching this
+            // check. Probing GT first short-circuits the expensive sibling
+            // lookups for the skip case.
+            if tq.get(entity).is_none() {
+                continue;
+            }
+
             // Skip entities hidden by animation.
             let visible = vis_q
                 .as_ref()

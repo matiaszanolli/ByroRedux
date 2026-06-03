@@ -76,6 +76,36 @@ fn chebyshev(a: (i32, i32), b: (i32, i32)) -> i32 {
     (a.0 - b.0).abs().max((a.1 - b.1).abs())
 }
 
+// Compile-time footprint assertions (#1378): pin the worst-case LOD ring
+// vertex + index count against the renderer's pool soft caps so that a
+// parameter retune (larger RADIUS, smaller STRIDE) fails CI rather than
+// surfacing as a one-shot runtime warn deep in the boot log.
+//
+// Worst-case ring: full Chebyshev square of (2·LOD_RADIUS_BLOCKS+1)²
+// blocks, each with (LOD_BLOCK_CELLS·SAMPLES_PER_CELL+1)² vertices and
+// (LOD_BLOCK_CELLS·SAMPLES_PER_CELL)² × 2 triangles = ×6 indices.
+//
+// Current values: 625 blocks × 289 verts = 180 625 verts (~4.5% soft cap)
+//                 625 blocks × 1536 idx  = 960 000 idx  (~6.0% soft cap)
+const LOD_RING_VERTEX_FOOTPRINT: usize = {
+    let blocks_per_side = 2 * LOD_RADIUS_BLOCKS as usize + 1;
+    let verts_per_edge = LOD_BLOCK_CELLS as usize * SAMPLES_PER_CELL + 1;
+    blocks_per_side * blocks_per_side * verts_per_edge * verts_per_edge
+};
+const LOD_RING_INDEX_FOOTPRINT: usize = {
+    let blocks_per_side = 2 * LOD_RADIUS_BLOCKS as usize + 1;
+    let quads_per_edge = LOD_BLOCK_CELLS as usize * SAMPLES_PER_CELL;
+    blocks_per_side * blocks_per_side * quads_per_edge * quads_per_edge * 6
+};
+const _: () = assert!(
+    LOD_RING_VERTEX_FOOTPRINT < byroredux_renderer::mesh::VERTEX_POOL_SOFT_CAP,
+    "LOD ring vertex footprint >= VERTEX_POOL_SOFT_CAP — shrink LOD_RADIUS_BLOCKS or increase STRIDE"
+);
+const _: () = assert!(
+    LOD_RING_INDEX_FOOTPRINT < byroredux_renderer::mesh::INDEX_POOL_SOFT_CAP,
+    "LOD ring index footprint >= INDEX_POOL_SOFT_CAP — shrink LOD_RADIUS_BLOCKS or increase STRIDE"
+);
+
 // The hole mask is a `u16`, one bit per cell, so a block holds at most 16
 // cells. LOD_BLOCK_CELLS = 4 → 4×4 = 16. A bigger block would silently
 // truncate the mask (and `all_holed_mask`'s shift).

@@ -856,6 +856,28 @@ impl SkinSlotPool {
             self.last_pose_hash.remove(&entity);
             self.pose_dirty.remove(&entity);
         }
+
+        // #1379 — Contract the issued range: if the highest slots are now
+        // free, lower `next_slot` so the bone-world copy + skin-palette
+        // dispatch don't cover dead tail slots. Sort the free_list
+        // ascending so we can pop the contiguous top in O(k·log f) total.
+        // Only runs when something was freed this sweep; no-op when stable.
+        // Never moves live slot mappings — the persistent bind_inverses
+        // SSBO + descriptor_bindings cache stay valid.
+        if !freed.is_empty() {
+            self.free_list.sort_unstable();
+            while self
+                .free_list
+                .last()
+                .is_some_and(|&top| top == self.next_slot.saturating_sub(1))
+            {
+                self.free_list.pop();
+                if self.next_slot > 1 {
+                    self.next_slot -= 1;
+                }
+            }
+        }
+
         freed
     }
 
@@ -1004,6 +1026,69 @@ mod skin_slot_pool_tests {
         let freed = pool.sweep(105, 5);
         assert_eq!(freed, vec![slot]);
         assert_eq!(pool.get(42), None);
+    }
+
+    /// Regression for #1379 — sweep must contract next_slot when the freed
+    /// slots are at the tail of the issued range, so the bone-world copy and
+    /// skin-palette dispatch don't cover dead slots after a high-NPC scene
+    /// unloads to a low-NPC one.
+    #[test]
+    fn sweep_contracts_next_slot_when_tail_is_freed() {
+        // Allocate 5 entities — slots 1..=5, next_slot becomes 6.
+        let mut pool = SkinSlotPool::new(20);
+        for e in 1u32..=5 {
+            let _ = pool.allocate(e, 100).unwrap();
+        }
+        assert_eq!(pool.max_used_slot(), 5);
+
+        // Evict the top-3 entities (slots 3, 4, 5 in issue order; sort is
+        // unstable so actual slot numbers may differ — what matters is that
+        // max_used_slot shrinks).
+        // Evict entity 5 only → slot 5 freed → next_slot contracts 6→5.
+        pool.allocate(1, 101).unwrap();
+        pool.allocate(2, 101).unwrap();
+        pool.allocate(3, 101).unwrap();
+        pool.allocate(4, 101).unwrap();
+        // entity 5 NOT refreshed → idle ≥ 1 at frame 101.
+        let freed = pool.sweep(101, 1);
+        assert!(!freed.is_empty(), "entity 5 must be freed");
+        // next_slot must have contracted: max_used_slot < 5.
+        assert!(
+            pool.max_used_slot() < 5,
+            "max_used_slot must contract when the tail slot is freed; got {}",
+            pool.max_used_slot()
+        );
+
+        // Verify the contracted pool still allocates correctly.
+        let new_slot = pool.allocate(99, 102).unwrap();
+        assert!(new_slot >= 1, "new allocation must get a valid slot");
+    }
+
+    /// Regression: sweep must NOT contract next_slot when the freed slots are
+    /// internal fragments (not the tail). Only the contiguous tail can be
+    /// reclaimed without relocating live slots.
+    #[test]
+    fn sweep_does_not_contract_when_tail_is_live() {
+        let mut pool = SkinSlotPool::new(20);
+        for e in 1u32..=5 {
+            let _ = pool.allocate(e, 100).unwrap();
+        }
+        let high_water = pool.max_used_slot();
+        assert_eq!(high_water, 5);
+
+        // Evict the lowest entity (slot 1) — NOT the tail.
+        for e in 2u32..=5 {
+            pool.allocate(e, 101).unwrap(); // refresh slots 2–5
+        }
+        // entity 1 NOT refreshed → evicted at frame 101.
+        let freed = pool.sweep(101, 1);
+        assert!(!freed.is_empty(), "entity 1 must be freed");
+        // max_used_slot must NOT contract (slot 5 is still live).
+        assert_eq!(
+            pool.max_used_slot(),
+            high_water,
+            "max_used_slot must not change when the tail slot is still live"
+        );
     }
 
     #[test]
