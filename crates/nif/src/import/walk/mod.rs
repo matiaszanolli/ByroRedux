@@ -1249,7 +1249,7 @@ fn imported_light_from_base(
     // Transform that via the world rotation, then convert to Y-up.
     let rot = &world.rotation;
     let dir_zup = [-rot.rows[0][2], -rot.rows[1][2], -rot.rows[2][2]];
-    let direction = [dir_zup[0], dir_zup[2], -dir_zup[1]];
+    let direction = zup_point_to_yup(&dir_zup);
 
     // Dimmer scales the diffuse contribution — the only channel the
     // engine currently consumes. Ambient/specular are stored for later.
