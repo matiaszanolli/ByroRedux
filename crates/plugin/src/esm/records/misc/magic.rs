@@ -1,8 +1,21 @@
 //! Magic / perks records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
+use super::super::condition::{parse_ctda, ConditionList};
 use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
+
+/// Typed representation of EPFD (entry-point function data) bytes.
+/// The shape depends on the `function_type` byte from EPFT.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum PerkFunctionData {
+    #[default]
+    None,
+    Float(f32),
+    Range { min: f32, max: f32 },
+    FormId(u32),
+    LString(u32),
+}
 
 /// One body of a `PRKE`/`PRKF` perk entry block. The block opens with
 /// a `PRKE` header (entry type + rank + priority) and the following
@@ -39,15 +52,12 @@ pub enum PerkEntryBody {
         /// Raw entry-point index (0..~120). Per-game enum dispatch
         /// lives at the consumer side (`byroredux_scripting`).
         entry_point_index: u8,
-        /// Raw EPFT byte (Add/Multiply/Set/range/AV-mult/...). Per-
-        /// function semantic decode of `function_data` is the
-        /// follow-up commit.
+        /// Raw EPFT byte (Add/Multiply/Set/range/AV-mult/...).
         function_type: u8,
-        /// Raw EPFD payload bytes. Typed decode (`f32` for single
-        /// value, `(f32, f32)` for range, FormID for spell-ref,
-        /// lstring for activate-prompt) is deferred to the
-        /// consumer-side function dispatcher.
-        function_data: Vec<u8>,
+        /// Typed EPFD payload: f32 / range / FormID / lstring per
+        /// function_type. Decoded at parse time; consumer reads
+        /// the typed variant directly.
+        function_data: PerkFunctionData,
         /// EPF2 — FO4+ extended function-data formatter string
         /// (Activate entry-point uses this for the prompt template).
         /// Empty when absent. Captured-on-disk only; consumer-side.
@@ -72,6 +82,8 @@ pub struct PerkEntry {
     pub priority: u8,
     /// The body — Quest / Ability / EntryPoint variant.
     pub body: PerkEntryBody,
+    /// Conditions attached to this entry (CTDA sub-records).
+    pub conditions: ConditionList,
 }
 
 /// `PERK` perk / trait record. Holds the condition list + entry-point
@@ -125,6 +137,8 @@ enum PerkBlock {
         /// PRKE/PRKF pair with no DATA in between is dropped silently
         /// at PRKF rather than panicking.
         body: Option<PerkEntryBody>,
+        /// Conditions accumulated for this entry (CTDA sub-records).
+        conditions: ConditionList,
     },
 }
 
@@ -177,6 +191,7 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
                     rank,
                     priority,
                     body: None,
+                    conditions: vec![],
                 };
             }
             // Per-entry DATA inside an Open block. Shape depends on
@@ -207,7 +222,7 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
                             Some(PerkEntryBody::EntryPoint {
                                 entry_point_index,
                                 function_type,
-                                function_data: Vec::new(),
+                                function_data: PerkFunctionData::None,
                                 formatter: Vec::new(),
                                 extra_flags: Vec::new(),
                             })
@@ -230,18 +245,37 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
                     *function_type = sub.data[0];
                 }
             }
-            // EPFD / EPF2 / EPF3 capture the raw function-data bytes
-            // for EntryPoint entries. The per-function-type decode
-            // (f32 / range / FormID / lstring) is the follow-up
-            // commit; today the bytes are preserved verbatim so the
-            // consumer can decode lazily without re-walking the ESM.
+            // EPFD carries the typed function-data bytes. Decode based
+            // on function_type, which was set by either the per-type
+            // DATA (old authoring) or EPFT (new authoring).
             b"EPFD" => {
                 if let PerkBlock::Open {
-                    body: Some(PerkEntryBody::EntryPoint { function_data, .. }),
+                    body: Some(PerkEntryBody::EntryPoint {
+                        function_type,
+                        function_data,
+                        ..
+                    }),
                     ..
                 } = &mut block
                 {
-                    *function_data = sub.data.clone();
+                    let d = &sub.data;
+                    *function_data = match function_type {
+                        1 => PerkFunctionData::None,
+                        2 if d.len() >= 4 => PerkFunctionData::Float(
+                            f32::from_le_bytes([d[0], d[1], d[2], d[3]])
+                        ),
+                        3 if d.len() >= 8 => PerkFunctionData::Range {
+                            min: f32::from_le_bytes([d[0], d[1], d[2], d[3]]),
+                            max: f32::from_le_bytes([d[4], d[5], d[6], d[7]]),
+                        },
+                        4 if d.len() >= 4 => PerkFunctionData::FormId(
+                            u32::from_le_bytes([d[0], d[1], d[2], d[3]])
+                        ),
+                        5 if d.len() >= 4 => PerkFunctionData::LString(
+                            u32::from_le_bytes([d[0], d[1], d[2], d[3]])
+                        ),
+                        _ => PerkFunctionData::None,
+                    };
                 }
             }
             b"EPF2" => {
@@ -262,6 +296,13 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
                     *extra_flags = sub.data.clone();
                 }
             }
+            b"CTDA" => {
+                if let PerkBlock::Open { ref mut conditions, .. } = &mut block {
+                    if let Some(cond) = parse_ctda(sub) {
+                        conditions.push(cond);
+                    }
+                }
+            }
             // PRKF closes the entry. Push it onto `entries` only if
             // both PRKE and per-type DATA were captured — incomplete
             // blocks are dropped silently rather than emitted with
@@ -272,6 +313,7 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
                     rank,
                     priority,
                     body: Some(body),
+                    conditions,
                     ..
                 } = prev
                 {
@@ -279,6 +321,7 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
                         rank,
                         priority,
                         body,
+                        conditions,
                     });
                 }
             }
@@ -290,10 +333,23 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
     out
 }
 
+/// One magic effect in a spell or enchantment chain.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MagicEffectItem {
+    /// Form ID of the MGEF (magic effect) from EFID.
+    pub effect_form_id: u32,
+    /// Magnitude from EFIT offset 0 (f32).
+    pub magnitude: f32,
+    /// Area of effect from EFIT offset 4 (u32).
+    pub area: u32,
+    /// Duration in game seconds from EFIT offset 8 (u32).
+    pub duration: u32,
+}
+
 /// `SPEL` spell / ability / power record. FO3/FNV also covers passive
 /// abilities and radiation-poisoning style auto-cast effects. SPIT
 /// carries cost + level requirement + flags; effect list (EFID/EFIT)
-/// is deferred — lands with MGEF application.
+/// is decoded as MagicEffectItem chains.
 #[derive(Debug, Clone, Default)]
 pub struct SpelRecord {
     pub form_id: u32,
@@ -304,6 +360,8 @@ pub struct SpelRecord {
     pub spell_flags: u32,
     /// Magicka cost from SPIT offset 0.
     pub cost: u32,
+    /// Magic effects applied by this spell. Built from EFID/EFIT pairs.
+    pub effects: Vec<MagicEffectItem>,
 }
 
 pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
@@ -311,6 +369,7 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
         form_id,
         ..Default::default()
     };
+    let mut current_efid: u32 = 0;
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
@@ -321,6 +380,22 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
                 r.skip_or_eof(8); // type (u32) + level (u32) at offsets 4..12
                 out.spell_flags = r.u32_or_default();
             }
+            b"EFID" if sub.data.len() >= 4 => {
+                current_efid = u32::from_le_bytes([
+                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                ]);
+            }
+            b"EFIT" if sub.data.len() >= 12 => {
+                if current_efid != 0 {
+                    out.effects.push(MagicEffectItem {
+                        effect_form_id: current_efid,
+                        magnitude: f32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
+                        area: u32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]),
+                        duration: u32::from_le_bytes([sub.data[8], sub.data[9], sub.data[10], sub.data[11]]),
+                    });
+                    current_efid = 0;
+                }
+            }
             _ => {}
         }
     }
@@ -329,10 +404,9 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
 
 /// `MGEF` magic effect record. Universal bridge for Actor Value
 /// modifications — every perk entry point, spell effect, and
-/// ingredient effect routes through here. Full effect decoding is
-/// deferred; the stub captures identity + flags so references from
-/// SPEL / ALCH / INGR resolve at load time.
-#[derive(Debug, Clone, Default)]
+/// ingredient effect routes through here. Full DATA structure
+/// decoded to enable effect application across games.
+#[derive(Debug, Clone, PartialEq)]
 pub struct MgefRecord {
     pub form_id: u32,
     pub editor_id: String,
@@ -340,6 +414,42 @@ pub struct MgefRecord {
     pub description: String,
     /// Flags from DATA offset 0 (hostile / recover / detrimental / ...).
     pub effect_flags: u32,
+    /// Base magicka cost from DATA offset 4 (f32).
+    pub base_cost: f32,
+    /// Associated item (e.g. ingredient for poisoning) from DATA offset 8 (u32).
+    /// 0xFFFF_FFFF means none.
+    pub associated_item: u32,
+    /// Magic school category from DATA offset 12 (i32).
+    /// -1 means none.
+    pub magic_school: i32,
+    /// Actor Value resistance/counter from DATA offset 16 (i32).
+    /// -1 means none.
+    pub resistance_av: i32,
+    /// Light effect form ID from DATA offset 24 (u32).
+    pub light_form_id: u32,
+    /// Projectile speed from DATA offset 28 (f32).
+    pub projectile_speed: f32,
+    /// Effect shader form ID from DATA offset 32 (u32).
+    pub effect_shader_id: u32,
+}
+
+impl Default for MgefRecord {
+    fn default() -> Self {
+        Self {
+            form_id: 0,
+            editor_id: String::new(),
+            full_name: String::new(),
+            description: String::new(),
+            effect_flags: 0,
+            base_cost: 0.0,
+            associated_item: 0xFFFF_FFFF,
+            magic_school: -1,
+            resistance_av: -1,
+            light_form_id: 0,
+            projectile_speed: 0.0,
+            effect_shader_id: 0,
+        }
+    }
 }
 
 pub fn parse_mgef(form_id: u32, subs: &[SubRecord]) -> MgefRecord {
@@ -352,8 +462,17 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord]) -> MgefRecord {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
-            b"DATA" if sub.data.len() >= 4 => {
-                out.effect_flags = SubReader::new(&sub.data).u32_or_default();
+            b"DATA" => {
+                let d = &sub.data;
+                if d.len() >= 4  { out.effect_flags    = u32::from_le_bytes([d[0],d[1],d[2],d[3]]); }
+                if d.len() >= 8  { out.base_cost       = f32::from_le_bytes([d[4],d[5],d[6],d[7]]); }
+                if d.len() >= 12 { out.associated_item = u32::from_le_bytes([d[8],d[9],d[10],d[11]]); }
+                if d.len() >= 16 { out.magic_school    = i32::from_le_bytes([d[12],d[13],d[14],d[15]]); }
+                if d.len() >= 20 { out.resistance_av   = i32::from_le_bytes([d[16],d[17],d[18],d[19]]); }
+                // bytes 20–23: counter_effect_count u16 + pad u16 — not captured
+                if d.len() >= 28 { out.light_form_id   = u32::from_le_bytes([d[24],d[25],d[26],d[27]]); }
+                if d.len() >= 32 { out.projectile_speed = f32::from_le_bytes([d[28],d[29],d[30],d[31]]); }
+                if d.len() >= 36 { out.effect_shader_id = u32::from_le_bytes([d[32],d[33],d[34],d[35]]); }
             }
             _ => {}
         }
@@ -366,10 +485,8 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord]) -> MgefRecord {
 /// resolves to: Pulse Gun's "Pulse" enchantment, This Machine's charge
 /// effect, Holorifle's energy splash, and the entire vanilla-Skyrim
 /// weapon-enchantment table. ENIT carries type/charge/cost/flags;
-/// EFID/EFIT effect blocks mirror SPEL — full effect decoding is
-/// deferred (lands with MGEF effect application), so the stub captures
-/// identity + ENIT scalars so dangling EITM cross-refs resolve at
-/// lookup time. See #629 / FNV-D2-01.
+/// EFID/EFIT effect blocks carry the effect chain decoded as
+/// MagicEffectItem sequences. See #629 / FNV-D2-01.
 #[derive(Debug, Clone, Default)]
 pub struct EnchRecord {
     pub form_id: u32,
@@ -391,6 +508,8 @@ pub struct EnchRecord {
     /// ENIT offset 12 (u32). Bit 0 = `NoAutoCalculate` (manual
     /// override of `enchant_cost`); other bits unused on FO3/FNV.
     pub enchant_flags: u32,
+    /// Magic effects applied by this enchantment. Built from EFID/EFIT pairs.
+    pub effects: Vec<MagicEffectItem>,
 }
 
 pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
@@ -398,6 +517,7 @@ pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
         form_id,
         ..Default::default()
     };
+    let mut current_efid: u32 = 0;
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
@@ -411,6 +531,22 @@ pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
                 out.charge_amount = r.u32_or_default();
                 out.enchant_cost = r.u32_or_default();
                 out.enchant_flags = r.u32_or_default();
+            }
+            b"EFID" if sub.data.len() >= 4 => {
+                current_efid = u32::from_le_bytes([
+                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                ]);
+            }
+            b"EFIT" if sub.data.len() >= 12 => {
+                if current_efid != 0 {
+                    out.effects.push(MagicEffectItem {
+                        effect_form_id: current_efid,
+                        magnitude: f32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
+                        area: u32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]),
+                        duration: u32::from_le_bytes([sub.data[8], sub.data[9], sub.data[10], sub.data[11]]),
+                    });
+                    current_efid = 0;
+                }
             }
             _ => {}
         }
@@ -514,13 +650,13 @@ mod tests {
         // EntryPoint entry: type=2. PRKE-internal DATA carries the
         // entry_point_index byte + function_type byte; EPFT can rewrite
         // function_type (some game versions emit it via EPFT instead);
-        // EPFD captures the raw function-data bytes.
+        // EPFD carries typed function-data (f32 for function_type=2).
         let epfd = 1.5f32.to_le_bytes();
         let subs = vec![
             sub(b"EDID", b"ModAttackDamage\0"),
             sub(b"PRKE", &[2u8, 0, 99]),
             sub(b"DATA", &[0x07, 0x01, 0x00, 0x00]), // entry_point=7 (Mod Attack Dmg), function=1 (Add)
-            sub(b"EPFT", &[0x02]),                    // function overwrite to 2 (Multiply)
+            sub(b"EPFT", &[0x02]),                    // function overwrite to 2 (Multiply = Float)
             sub(b"EPFD", &epfd),
             sub(b"PRKF", &[]),
         ];
@@ -535,7 +671,7 @@ mod tests {
             } => {
                 assert_eq!(*entry_point_index, 0x07);
                 assert_eq!(*function_type, 0x02, "EPFT overrode DATA's function_type");
-                assert_eq!(function_data.as_slice(), &epfd);
+                assert_eq!(*function_data, PerkFunctionData::Float(1.5));
             }
             other => panic!("expected EntryPoint, got {other:?}"),
         }
@@ -659,5 +795,234 @@ mod tests {
         ];
         let e = parse_mgef(0xA7A7, &subs);
         assert_eq!(e.effect_flags, 0x0000_0009);
+        assert_eq!(e.base_cost, 0.0);
+        assert_eq!(e.magic_school, -1);
+    }
+
+    #[test]
+    fn parse_perk_entry_ctda_stored() {
+        let mut ctda = Vec::new();
+        ctda.push(0x00u8); // type_byte (offset 0)
+        ctda.extend_from_slice(&[0u8; 3]); // pad (offsets 1-3)
+        ctda.extend_from_slice(&1.0f32.to_le_bytes()); // comparand (offsets 4-7)
+        ctda.extend_from_slice(&5u32.to_le_bytes()); // function_index (offsets 8-11, u32)
+        ctda.extend_from_slice(&0u32.to_le_bytes()); // param_1 (offsets 12-15, u32)
+        ctda.extend_from_slice(&0u32.to_le_bytes()); // param_2 (offsets 16-19, u32)
+        ctda.extend_from_slice(&0u32.to_le_bytes()); // run_on (offsets 20-23, u32)
+        ctda.extend_from_slice(&0u32.to_le_bytes()); // ref_fid (offsets 24-27, u32)
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x1234u32.to_le_bytes()); // quest_form_id
+        data.push(0u8); // stage
+        let subs = vec![
+            sub(b"EDID", b"TestPerk\0"),
+            sub(b"DATA", &[0x00, 0, 1, 0, 0]),
+            sub(b"PRKE", &[0u8, 1, 50]), // type=Quest
+            sub(b"DATA", &data), // quest_form_id=0x1234, stage=0
+            sub(b"CTDA", &ctda),
+            sub(b"PRKF", &[]),
+        ];
+        let p = parse_perk(0xFFFF, &subs);
+        assert_eq!(p.entries.len(), 1);
+        assert_eq!(p.entries[0].conditions.len(), 1);
+        assert_eq!(p.entries[0].conditions[0].function_index, 5);
+    }
+
+    #[test]
+    fn parse_perk_epfd_float() {
+        let epfd = 2.5f32.to_le_bytes();
+        let subs = vec![
+            sub(b"PRKE", &[2u8, 0, 1]),
+            sub(b"DATA", &[42u8, 2, 0, 0]), // entry_point=42, function=2 (Float)
+            sub(b"EPFD", &epfd),
+            sub(b"PRKF", &[]),
+        ];
+        let p = parse_perk(0x1111, &subs);
+        assert_eq!(p.entries.len(), 1);
+        match &p.entries[0].body {
+            PerkEntryBody::EntryPoint { function_data, .. } => {
+                assert_eq!(*function_data, PerkFunctionData::Float(2.5));
+            }
+            _ => panic!("expected EntryPoint"),
+        }
+    }
+
+    #[test]
+    fn parse_perk_epfd_range() {
+        let mut epfd = Vec::new();
+        epfd.extend_from_slice(&1.0f32.to_le_bytes());
+        epfd.extend_from_slice(&5.0f32.to_le_bytes());
+        let subs = vec![
+            sub(b"PRKE", &[2u8, 0, 1]),
+            sub(b"DATA", &[43u8, 3, 0, 0]), // entry_point=43, function=3 (Range)
+            sub(b"EPFD", &epfd),
+            sub(b"PRKF", &[]),
+        ];
+        let p = parse_perk(0x2222, &subs);
+        assert_eq!(p.entries.len(), 1);
+        match &p.entries[0].body {
+            PerkEntryBody::EntryPoint { function_data, .. } => {
+                assert_eq!(
+                    *function_data,
+                    PerkFunctionData::Range {
+                        min: 1.0,
+                        max: 5.0
+                    }
+                );
+            }
+            _ => panic!("expected EntryPoint"),
+        }
+    }
+
+    #[test]
+    fn parse_perk_epfd_form_id() {
+        let epfd = 0xBEEF_1234u32.to_le_bytes();
+        let subs = vec![
+            sub(b"PRKE", &[2u8, 0, 1]),
+            sub(b"DATA", &[44u8, 4, 0, 0]), // entry_point=44, function=4 (FormId)
+            sub(b"EPFD", &epfd),
+            sub(b"PRKF", &[]),
+        ];
+        let p = parse_perk(0x3333, &subs);
+        assert_eq!(p.entries.len(), 1);
+        match &p.entries[0].body {
+            PerkEntryBody::EntryPoint { function_data, .. } => {
+                assert_eq!(*function_data, PerkFunctionData::FormId(0xBEEF_1234));
+            }
+            _ => panic!("expected EntryPoint"),
+        }
+    }
+
+    #[test]
+    fn parse_perk_epfd_lstring() {
+        let epfd = 0x0042u32.to_le_bytes();
+        let subs = vec![
+            sub(b"PRKE", &[2u8, 0, 1]),
+            sub(b"DATA", &[45u8, 5, 0, 0]), // entry_point=45, function=5 (LString)
+            sub(b"EPFD", &epfd),
+            sub(b"PRKF", &[]),
+        ];
+        let p = parse_perk(0x4444, &subs);
+        assert_eq!(p.entries.len(), 1);
+        match &p.entries[0].body {
+            PerkEntryBody::EntryPoint { function_data, .. } => {
+                assert_eq!(*function_data, PerkFunctionData::LString(0x0042));
+            }
+            _ => panic!("expected EntryPoint"),
+        }
+    }
+
+    #[test]
+    fn parse_mgef_full_data_fnv_layout() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x0000_0001u32.to_le_bytes()); // effect_flags
+        data.extend_from_slice(&10.0f32.to_le_bytes()); // base_cost
+        data.extend_from_slice(&0x0001_AB_CDu32.to_le_bytes()); // associated_item
+        data.extend_from_slice(&2i32.to_le_bytes()); // magic_school
+        data.extend_from_slice(&5i32.to_le_bytes()); // resistance_av
+        data.extend_from_slice(&0u16.to_le_bytes()); // counter_count
+        data.extend_from_slice(&0u16.to_le_bytes()); // pad
+        data.extend_from_slice(&0x1111u32.to_le_bytes()); // light_form_id
+        data.extend_from_slice(&3000.0f32.to_le_bytes()); // projectile_speed
+        data.extend_from_slice(&0x2222u32.to_le_bytes()); // effect_shader_id
+        assert_eq!(data.len(), 36);
+
+        let subs = vec![
+            sub(b"EDID", b"TestEffect\0"),
+            sub(b"FULL", b"Test\0"),
+            sub(b"DESC", b"Test effect\0"),
+            sub(b"DATA", &data),
+        ];
+        let m = parse_mgef(0x5555, &subs);
+        assert_eq!(m.effect_flags, 0x0000_0001);
+        assert_eq!(m.base_cost, 10.0);
+        assert_eq!(m.associated_item, 0x0001_AB_CD);
+        assert_eq!(m.magic_school, 2);
+        assert_eq!(m.resistance_av, 5);
+        assert_eq!(m.light_form_id, 0x1111);
+        assert_eq!(m.projectile_speed, 3000.0);
+        assert_eq!(m.effect_shader_id, 0x2222);
+    }
+
+    #[test]
+    fn parse_spel_with_two_effects() {
+        let mut spit = Vec::new();
+        spit.extend_from_slice(&100u32.to_le_bytes()); // cost
+        spit.extend_from_slice(&[0u8; 8]); // pad
+        spit.extend_from_slice(&0u32.to_le_bytes()); // flags
+
+        let mut efit1 = Vec::new();
+        efit1.extend_from_slice(&5.0f32.to_le_bytes()); // mag
+        efit1.extend_from_slice(&0u32.to_le_bytes()); // area
+        efit1.extend_from_slice(&3u32.to_le_bytes()); // dur
+
+        let mut efit2 = Vec::new();
+        efit2.extend_from_slice(&10.0f32.to_le_bytes()); // mag
+        efit2.extend_from_slice(&2u32.to_le_bytes()); // area
+        efit2.extend_from_slice(&0u32.to_le_bytes()); // dur
+
+        let subs = vec![
+            sub(b"EDID", b"TestSpell\0"),
+            sub(b"FULL", b"Test Spell\0"),
+            sub(b"SPIT", &spit),
+            sub(b"EFID", &0xAAAAu32.to_le_bytes()),
+            sub(b"EFIT", &efit1),
+            sub(b"EFID", &0xBBBBu32.to_le_bytes()),
+            sub(b"EFIT", &efit2),
+        ];
+        let s = parse_spel(0x6666, &subs);
+        assert_eq!(s.effects.len(), 2);
+        assert_eq!(s.effects[0].effect_form_id, 0xAAAA);
+        assert_eq!(s.effects[0].magnitude, 5.0);
+        assert_eq!(s.effects[1].effect_form_id, 0xBBBB);
+        assert_eq!(s.effects[1].duration, 0);
+    }
+
+    #[test]
+    fn parse_ench_with_one_effect() {
+        let mut enit = Vec::new();
+        enit.extend_from_slice(&2u32.to_le_bytes()); // type
+        enit.extend_from_slice(&25u32.to_le_bytes()); // charge
+        enit.extend_from_slice(&100u32.to_le_bytes()); // cost
+        enit.extend_from_slice(&0u32.to_le_bytes()); // flags
+
+        let mut efit = Vec::new();
+        efit.extend_from_slice(&1.5f32.to_le_bytes()); // mag
+        efit.extend_from_slice(&0u32.to_le_bytes()); // area
+        efit.extend_from_slice(&10u32.to_le_bytes()); // dur
+
+        let subs = vec![
+            sub(b"EDID", b"TestEnch\0"),
+            sub(b"FULL", b"Test\0"),
+            sub(b"ENIT", &enit),
+            sub(b"EFID", &0x1234u32.to_le_bytes()),
+            sub(b"EFIT", &efit),
+        ];
+        let e = parse_ench(0x7777, &subs);
+        assert_eq!(e.effects.len(), 1);
+        assert_eq!(e.effects[0].effect_form_id, 0x1234);
+        assert_eq!(e.effects[0].magnitude, 1.5);
+        assert_eq!(e.effects[0].duration, 10);
+    }
+
+    #[test]
+    fn parse_spel_efit_without_efid_is_skipped() {
+        let mut spit = Vec::new();
+        spit.extend_from_slice(&100u32.to_le_bytes());
+        spit.extend_from_slice(&[0u8; 8]);
+        spit.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut efit = Vec::new();
+        efit.extend_from_slice(&1.0f32.to_le_bytes());
+        efit.extend_from_slice(&0u32.to_le_bytes());
+        efit.extend_from_slice(&0u32.to_le_bytes());
+
+        let subs = vec![
+            sub(b"EDID", b"NoEfidSpell\0"),
+            sub(b"SPIT", &spit),
+            sub(b"EFIT", &efit), // EFIT without prior EFID
+        ];
+        let s = parse_spel(0x8888, &subs);
+        assert!(s.effects.is_empty());
     }
 }

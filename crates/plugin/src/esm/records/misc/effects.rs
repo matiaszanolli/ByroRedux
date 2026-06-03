@@ -36,6 +36,9 @@ pub struct AvifRecord {
     /// `[skill_use_mult, skill_use_offset, skill_improve_mult, skill_improve_offset]`.
     /// `None` for non-skill records (resistances, resources, attributes).
     pub skill_scaling: Option<[f32; 4]>,
+    /// `PNAM` — FormIDs of PERK records that gate on this actor value.
+    /// Skyrim+ perk-tree wiring. Empty on FO3/FNV.
+    pub perks: Vec<u32>,
 }
 
 pub fn parse_avif(form_id: u32, subs: &[SubRecord]) -> AvifRecord {
@@ -56,6 +59,11 @@ pub fn parse_avif(form_id: u32, subs: &[SubRecord]) -> AvifRecord {
                         .f32_array::<4>()
                         .unwrap_or([0.0; 4]),
                 );
+            }
+            b"PNAM" if sub.data.len() >= 4 => {
+                out.perks.push(u32::from_le_bytes([
+                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                ]));
             }
             _ => {}
         }
@@ -513,6 +521,29 @@ mod tests {
         let r = parse_repu(0x0011_E664, &subs);
         assert_eq!(r.editor_id, "PowderGangers");
         assert_eq!(r.base_value, 0.0);
+    }
+
+    #[test]
+    fn parse_avif_perk_list_two_entries() {
+        let subs = vec![
+            sub(b"EDID", b"SmallGuns\0"),
+            sub(b"FULL", b"Small Guns\0"),
+            sub(b"ANAM", b"SG\0"),
+            sub(b"PNAM", &0x0101u32.to_le_bytes()),
+            sub(b"PNAM", &0x0202u32.to_le_bytes()),
+        ];
+        let a = parse_avif(0xDEADBEEF, &subs);
+        assert_eq!(a.perks, vec![0x0101, 0x0202]);
+    }
+
+    #[test]
+    fn parse_avif_no_pnam_keeps_perks_empty() {
+        let subs = vec![
+            sub(b"EDID", b"Strength\0"),
+            sub(b"FULL", b"Strength\0"),
+        ];
+        let a = parse_avif(0xDEAD0001, &subs);
+        assert!(a.perks.is_empty());
     }
 
     // ── #810 / FNV-D2-NEW-03 — minimal-stub regression guards ─────

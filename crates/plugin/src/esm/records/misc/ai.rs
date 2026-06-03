@@ -1,6 +1,7 @@
 //! AI / dialogue / quest / combat-style records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
+use super::super::condition::{parse_ctda, ConditionList};
 use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
 
@@ -75,6 +76,9 @@ pub struct QuestStage {
     /// scripts and is deferred to M47.2 (Papyrus transpiler / script
     /// runtime).
     pub has_script: bool,
+    /// Conditions attached to this stage (CTDA sub-records). Evaluated
+    /// when the stage is displayed or executed.
+    pub conditions: ConditionList,
 }
 
 /// One objective of a quest, defined by a `QOBJ` block. Objectives
@@ -250,6 +254,13 @@ pub fn parse_qust(form_id: u32, subs: &[SubRecord]) -> QustRecord {
                     stage.has_script = true;
                 }
             }
+            b"CTDA" => {
+                if let QustBlock::Stage(stage) = &mut block {
+                    if let Some(cond) = parse_ctda(sub) {
+                        stage.conditions.push(cond);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -325,6 +336,11 @@ pub struct InfoRecord {
     /// `PNAM` previous-info ref — the prior INFO in this branch. 0
     /// means "this is the first response in the chain".
     pub previous_info: u32,
+    /// `ANAM` actor form ID — restricts this response to a specific NPC.
+    /// 0 means the response works for any actor.
+    pub actor_form_id: u32,
+    /// Conditions attached to this response (CTDA sub-records).
+    pub conditions: ConditionList,
 }
 
 pub fn parse_dial(form_id: u32, subs: &[SubRecord]) -> DialRecord {
@@ -376,6 +392,16 @@ pub fn parse_info(form_id: u32, subs: &[SubRecord]) -> InfoRecord {
             }
             b"PNAM" if sub.data.len() >= 4 => {
                 out.previous_info = SubReader::new(&sub.data).u32_or_default();
+            }
+            b"ANAM" if sub.data.len() >= 4 => {
+                out.actor_form_id = u32::from_le_bytes([
+                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
+                ]);
+            }
+            b"CTDA" => {
+                if let Some(cond) = parse_ctda(sub) {
+                    out.conditions.push(cond);
+                }
             }
             _ => {}
         }
@@ -690,5 +716,64 @@ mod tests {
         let i = parse_idle(0x000A_FB31, &subs);
         assert_eq!(i.editor_id, "IdleStandSmokingCigarette");
         assert!(i.animation_path.contains("smoke.kf"));
+    }
+
+    #[test]
+    fn parse_qust_stage_ctda_attaches_to_its_stage() {
+        // Minimal CTDA: type_byte=0x00, pad[3], comparand f32=1.0 LE,
+        // function_index=9 LE (u32), param_1=0 (u32), param_2=0 (u32),
+        // run_on=0 (u32), ref_fid=0 (u32). FO3/FNV layout (28 bytes).
+        let mut ctda = Vec::new();
+        ctda.push(0x00u8); // type_byte (offset 0)
+        ctda.extend_from_slice(&[0u8; 3]); // pad (offsets 1-3)
+        ctda.extend_from_slice(&1.0f32.to_le_bytes()); // comparand (offsets 4-7)
+        ctda.extend_from_slice(&9u32.to_le_bytes()); // function_index (offsets 8-11, u32)
+        ctda.extend_from_slice(&0u32.to_le_bytes()); // param_1 (offsets 12-15, u32)
+        ctda.extend_from_slice(&0u32.to_le_bytes()); // param_2 (offsets 16-19, u32)
+        ctda.extend_from_slice(&0u32.to_le_bytes()); // run_on (offsets 20-23, u32)
+        ctda.extend_from_slice(&0u32.to_le_bytes()); // ref_fid (offsets 24-27, u32)
+
+        let subs = vec![
+            sub(b"EDID", b"TestQuest\0"),
+            sub(b"INDX", &0u16.to_le_bytes()),
+            sub(b"QSDT", &[0x01]),
+            sub(b"CTDA", &ctda),
+        ];
+        let q = parse_qust(0xABCD, &subs);
+        assert_eq!(q.stages.len(), 1);
+        assert_eq!(q.stages[0].conditions.len(), 1);
+        assert_eq!(q.stages[0].conditions[0].function_index, 9);
+    }
+
+    #[test]
+    fn parse_info_picks_anam_actor() {
+        let anam = 0xDEAD_BEEFu32.to_le_bytes();
+        let subs = vec![
+            sub(b"NAM1", b"hello\0"),
+            sub(b"ANAM", &anam),
+        ];
+        let info = parse_info(0x1234, &subs);
+        assert_eq!(info.actor_form_id, 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn parse_info_ctda_conditions_stored() {
+        let mut ctda = Vec::new();
+        ctda.push(0x00u8); // type_byte (offset 0)
+        ctda.extend_from_slice(&[0u8; 3]); // pad (offsets 1-3)
+        ctda.extend_from_slice(&1.0f32.to_le_bytes()); // comparand (offsets 4-7)
+        ctda.extend_from_slice(&36u32.to_le_bytes()); // function_index (offsets 8-11, u32)
+        ctda.extend_from_slice(&0u32.to_le_bytes()); // param_1 (offsets 12-15, u32)
+        ctda.extend_from_slice(&0u32.to_le_bytes()); // param_2 (offsets 16-19, u32)
+        ctda.extend_from_slice(&0u32.to_le_bytes()); // run_on (offsets 20-23, u32)
+        ctda.extend_from_slice(&0u32.to_le_bytes()); // ref_fid (offsets 24-27, u32)
+
+        let subs = vec![
+            sub(b"NAM1", b"hi\0"),
+            sub(b"CTDA", &ctda),
+        ];
+        let info = parse_info(0x5678, &subs);
+        assert_eq!(info.conditions.len(), 1);
+        assert_eq!(info.conditions[0].function_index, 36);
     }
 }
