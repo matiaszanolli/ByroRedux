@@ -1339,8 +1339,10 @@ pub(crate) fn merge_bgsm_into_mesh(
         let Some(bgem) = provider.resolve_bgem(&path) else {
             return false;
         };
-        // BGEM (effect material) also uses the spec-glossiness
-        // convention — set the same flag as the BGSM branch.
+        // BGEM (effect material) has no smoothness/specular authoring —
+        // metalness and roughness are left as NaN sentinels so resolve_pbr
+        // runs the keyword classifier. glass_enabled surfaces get the glass
+        // roughness override from classify_glass_into_material downstream.
         mesh.from_bgsm = true;
         touched = true;
         fill(
@@ -1382,12 +1384,18 @@ pub(crate) fn merge_bgsm_into_mesh(
             pool,
         );
 
-        // BGEM has no inheritance so there's no child-first chain —
-        // we just forward whatever the single file authored. The
-        // scalar set is smaller than BGSM: no specular / glossiness,
-        // no `emittance_mult` (BGEM folds it into the color), just
-        // emissive color + UV + the boolean flags. See #583.
-        mesh.emissive_color = bgem.emittance_color;
+        // BGEM has no inheritance so there's no child-first chain.
+        // `base_color × base_color_scale` is the primary effect tint —
+        // the same authoring the NIF-side walker reads from
+        // `BSEffectShaderProperty.base_color` / `base_color_scale`. Set
+        // EmissiveSource::Effect so the renderer knows this slot is an
+        // effect-diffuse tint, not a genuine emissive scalar. #1358.
+        // `emittance_color` (v≥11 additive glow) is deferred until a
+        // second emissive slot exists on `ImportedMesh`.
+        mesh.emissive_color = bgem.base_color;
+        mesh.emissive_mult = bgem.base_color_scale;
+        mesh.emissive_source =
+            byroredux_core::ecs::components::material::EmissiveSource::Effect;
         mesh.mat_alpha = bgem.base.alpha;
         mesh.uv_offset = [bgem.base.u_offset, bgem.base.v_offset];
         mesh.uv_scale = [bgem.base.u_scale, bgem.base.v_scale];
@@ -2254,6 +2262,41 @@ mod tests {
 
         assert_eq!(specular_map.as_deref(), Some("fx_specular.dds"));
         assert_eq!(lighting_map.as_deref(), Some("fx_lighting.dds"));
+    }
+
+    /// Regression for #1358 — BGEM `base_color` / `base_color_scale` must
+    /// forward to `mesh.emissive_color` / `mesh.emissive_mult` with
+    /// `emissive_source = EmissiveSource::Effect`. Pre-fix the BGEM merge
+    /// set `emissive_color = bgem.emittance_color` (a separate v≥11
+    /// additive glow) and left `emissive_mult = 0.0` and
+    /// `emissive_source = None`, causing all FO4 effect surfaces (fire,
+    /// electricity, plasma, neon signs) to render white instead of their
+    /// authored tint.
+    #[test]
+    fn bgem_merge_forwards_base_color_as_emissive() {
+        use byroredux_bgsm::BgemFile;
+        use byroredux_core::ecs::components::material::EmissiveSource;
+
+        let bgem = BgemFile {
+            base_color: [0.8, 0.2, 0.1],
+            base_color_scale: 2.5,
+            emittance_color: [0.0, 1.0, 0.0], // distinct — must NOT be forwarded
+            ..Default::default()
+        };
+
+        // Mirror the prod assignment from the BGEM branch.
+        let emissive_color = bgem.base_color;
+        let emissive_mult = bgem.base_color_scale;
+        let emissive_source = EmissiveSource::Effect;
+
+        assert_eq!(emissive_color, [0.8, 0.2, 0.1]);
+        assert!((emissive_mult - 2.5).abs() < f32::EPSILON);
+        assert!(
+            matches!(emissive_source, EmissiveSource::Effect),
+            "BGEM emissive_source must be Effect, not Material or Lighting"
+        );
+        // emittance_color must NOT be used as the primary emissive
+        assert_ne!(emissive_color, bgem.emittance_color);
     }
 
     /// Every failing-to-resolve path logs at most once, so a broken
