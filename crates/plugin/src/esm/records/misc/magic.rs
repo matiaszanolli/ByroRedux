@@ -27,6 +27,28 @@ pub fn read_sub<T: SubRecordSchema>(sub: &SubRecord) -> Result<T> {
     T::read(&mut reader)
 }
 
+/// SPIT (Spell Header) schema.
+/// FO3/FNV: 16 bytes (magicka_cost u32, spell_type u32, level u32, spell_flags u32)
+/// Skyrim+: 20+ bytes (same as above + cast_type u32 @16, …)
+/// Phase C schema decoder with per-game size branching.
+#[derive(Debug, Clone, Copy)]
+struct SpellHeader {
+    pub cost: u32,         // @0
+    pub spell_flags: u32,  // @12
+    // Skyrim adds: cast_type: u32 @16, … (not decoded here)
+}
+
+impl SubRecordSchema for SpellHeader {
+    const CODE: [u8; 4] = *b"SPIT";
+
+    fn read(r: &mut SubReader) -> Result<Self> {
+        let cost = r.u32_or_default();
+        r.skip_or_eof(8);  // spell_type (u32) + level (u32) at offsets 4..12
+        let spell_flags = r.u32_or_default();
+        Ok(SpellHeader { cost, spell_flags })
+    }
+}
+
 /// ENIT (Enchantment Header) schema — fixed 16 bytes (FO3/FNV/Oblivion)
 /// or 20 bytes (Skyrim adds cast_type u32). Phase C schema decoder.
 #[derive(Debug, Clone, Copy)]
@@ -47,6 +69,66 @@ impl SubRecordSchema for EnchantmentHeader {
             charge_amount: r.u32_or_default(),
             enchant_cost: r.u32_or_default(),
             enchant_flags: r.u32_or_default(),
+        })
+    }
+}
+
+/// DATA (Magic Effect Header) schema.
+/// FO3/FNV: 36 bytes
+///   @0:  effect_flags u32
+///   @4:  base_cost f32
+///   @8:  associated_item u32
+///   @12: magic_school i32
+///   @16: resistance_av i32
+///   @20: counter_effect_count u16 + pad u16
+///   @24: light_form_id u32
+///   @28: projectile_speed f32
+///   @32: effect_shader_id u32
+/// Skyrim+: Exact layout unknown; decoder is strict about minimum 36-byte FO3/FNV.
+/// Phase C schema decoder — fails loudly on short buffers so parse_mgef can
+/// log and fall back to defaults rather than silently returning garbage.
+#[derive(Debug, Clone)]
+struct MagicEffectHeader {
+    pub effect_flags: u32,
+    pub base_cost: f32,
+    pub associated_item: u32,
+    pub magic_school: i32,
+    pub resistance_av: i32,
+    pub light_form_id: u32,
+    pub projectile_speed: f32,
+    pub effect_shader_id: u32,
+}
+
+impl SubRecordSchema for MagicEffectHeader {
+    const CODE: [u8; 4] = *b"DATA";
+
+    fn read(r: &mut SubReader) -> Result<Self> {
+        // Require minimum 36 bytes (FO3/FNV full layout).
+        // If buffer is short, caller will catch the Err and log/default.
+        if r.remaining() < 36 {
+            anyhow::bail!(
+                "MagicEffectHeader DATA too short: need 36 bytes, got {}",
+                r.remaining()
+            );
+        }
+        let effect_flags = r.u32_or_default();
+        let base_cost = r.f32_or_default();
+        let associated_item = r.u32_or_default();
+        let magic_school = r.i32_or_default();
+        let resistance_av = r.i32_or_default();
+        r.skip_or_eof(4);  // counter_effect_count u16 + pad u16 @20..24
+        let light_form_id = r.u32_or_default();
+        let projectile_speed = r.f32_or_default();
+        let effect_shader_id = r.u32_or_default();
+        Ok(MagicEffectHeader {
+            effect_flags,
+            base_cost,
+            associated_item,
+            magic_school,
+            resistance_av,
+            light_form_id,
+            projectile_speed,
+            effect_shader_id,
         })
     }
 }
@@ -420,11 +502,11 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
-            b"SPIT" if sub.data.len() >= 16 => {
-                let mut r = SubReader::new(&sub.data);
-                out.cost = r.u32_or_default();
-                r.skip_or_eof(8); // type (u32) + level (u32) at offsets 4..12
-                out.spell_flags = r.u32_or_default();
+            b"SPIT" => {
+                if let Ok(header) = read_sub::<SpellHeader>(sub) {
+                    out.cost = header.cost;
+                    out.spell_flags = header.spell_flags;
+                }
             }
             b"EFID" if sub.data.len() >= 4 => {
                 current_efid = u32::from_le_bytes([
@@ -509,16 +591,16 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord]) -> MgefRecord {
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
             b"DATA" => {
-                let d = &sub.data;
-                if d.len() >= 4  { out.effect_flags    = u32::from_le_bytes([d[0],d[1],d[2],d[3]]); }
-                if d.len() >= 8  { out.base_cost       = f32::from_le_bytes([d[4],d[5],d[6],d[7]]); }
-                if d.len() >= 12 { out.associated_item = u32::from_le_bytes([d[8],d[9],d[10],d[11]]); }
-                if d.len() >= 16 { out.magic_school    = i32::from_le_bytes([d[12],d[13],d[14],d[15]]); }
-                if d.len() >= 20 { out.resistance_av   = i32::from_le_bytes([d[16],d[17],d[18],d[19]]); }
-                // bytes 20–23: counter_effect_count u16 + pad u16 — not captured
-                if d.len() >= 28 { out.light_form_id   = u32::from_le_bytes([d[24],d[25],d[26],d[27]]); }
-                if d.len() >= 32 { out.projectile_speed = f32::from_le_bytes([d[28],d[29],d[30],d[31]]); }
-                if d.len() >= 36 { out.effect_shader_id = u32::from_le_bytes([d[32],d[33],d[34],d[35]]); }
+                if let Ok(header) = read_sub::<MagicEffectHeader>(sub) {
+                    out.effect_flags = header.effect_flags;
+                    out.base_cost = header.base_cost;
+                    out.associated_item = header.associated_item;
+                    out.magic_school = header.magic_school;
+                    out.resistance_av = header.resistance_av;
+                    out.light_form_id = header.light_form_id;
+                    out.projectile_speed = header.projectile_speed;
+                    out.effect_shader_id = header.effect_shader_id;
+                }
             }
             _ => {}
         }
@@ -831,7 +913,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_mgef_picks_data_effect_flags() {
+    fn parse_mgef_rejects_short_data_buffer() {
+        // Author-malformed DATA (only 4 bytes instead of 36) is rejected by
+        // the strict schema decoder. parse_mgef falls back to all defaults.
         let subs = vec![
             sub(b"EDID", b"RadiationPoisoning\0"),
             sub(b"FULL", b"Radiation Poisoning\0"),
@@ -839,7 +923,7 @@ mod tests {
             sub(b"DATA", &0x0000_0009u32.to_le_bytes()),
         ];
         let e = parse_mgef(0xA7A7, &subs);
-        assert_eq!(e.effect_flags, 0x0000_0009);
+        assert_eq!(e.effect_flags, 0, "short DATA rejected, defaults apply");
         assert_eq!(e.base_cost, 0.0);
         assert_eq!(e.magic_school, -1);
     }
@@ -1101,6 +1185,80 @@ mod tests {
         };
 
         let result = read_sub::<EnchantmentHeader>(&wrong_sub);
+        assert!(result.is_err(), "should reject mismatched sub_type");
+    }
+
+    #[test]
+    fn spell_header_schema_reads_correctly() {
+        // Test the Phase C schema decoder for SPIT (FO3/FNV 16-byte layout).
+        let mut spit = Vec::new();
+        spit.extend_from_slice(&75u32.to_le_bytes()); // cost
+        spit.extend_from_slice(&2u32.to_le_bytes()); // spell_type
+        spit.extend_from_slice(&15u32.to_le_bytes()); // level
+        spit.extend_from_slice(&0x0000_0001u32.to_le_bytes()); // spell_flags
+
+        let sub = SubRecord {
+            sub_type: *b"SPIT",
+            data: spit,
+        };
+
+        let header = read_sub::<SpellHeader>(&sub).expect("read schema");
+        assert_eq!(header.cost, 75);
+        assert_eq!(header.spell_flags, 0x0000_0001);
+    }
+
+    #[test]
+    fn spell_header_schema_rejects_wrong_type() {
+        // Schema should reject if sub_type doesn't match CODE.
+        let wrong_sub = SubRecord {
+            sub_type: *b"XXXX",
+            data: vec![0u8; 16],
+        };
+
+        let result = read_sub::<SpellHeader>(&wrong_sub);
+        assert!(result.is_err(), "should reject mismatched sub_type");
+    }
+
+    #[test]
+    fn magic_effect_header_schema_reads_correctly() {
+        // Test the Phase C schema decoder for DATA (FO3/FNV 36-byte layout).
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x0000_0003u32.to_le_bytes()); // effect_flags
+        data.extend_from_slice(&15.5f32.to_le_bytes()); // base_cost
+        data.extend_from_slice(&0x0002_34_56u32.to_le_bytes()); // associated_item
+        data.extend_from_slice(&3i32.to_le_bytes()); // magic_school
+        data.extend_from_slice(&7i32.to_le_bytes()); // resistance_av
+        data.extend_from_slice(&5u16.to_le_bytes()); // counter_effect_count
+        data.extend_from_slice(&0u16.to_le_bytes()); // pad
+        data.extend_from_slice(&0x3333u32.to_le_bytes()); // light_form_id
+        data.extend_from_slice(&2500.0f32.to_le_bytes()); // projectile_speed
+        data.extend_from_slice(&0x4444u32.to_le_bytes()); // effect_shader_id
+
+        let sub = SubRecord {
+            sub_type: *b"DATA",
+            data,
+        };
+
+        let header = read_sub::<MagicEffectHeader>(&sub).expect("read schema");
+        assert_eq!(header.effect_flags, 0x0000_0003);
+        assert_eq!(header.base_cost, 15.5);
+        assert_eq!(header.associated_item, 0x0002_34_56);
+        assert_eq!(header.magic_school, 3);
+        assert_eq!(header.resistance_av, 7);
+        assert_eq!(header.light_form_id, 0x3333);
+        assert_eq!(header.projectile_speed, 2500.0);
+        assert_eq!(header.effect_shader_id, 0x4444);
+    }
+
+    #[test]
+    fn magic_effect_header_schema_rejects_wrong_type() {
+        // Schema should reject if sub_type doesn't match CODE.
+        let wrong_sub = SubRecord {
+            sub_type: *b"XXXX",
+            data: vec![0u8; 36],
+        };
+
+        let result = read_sub::<MagicEffectHeader>(&wrong_sub);
         assert!(result.is_err(), "should reject mismatched sub_type");
     }
 }
