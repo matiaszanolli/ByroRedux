@@ -104,6 +104,27 @@ impl Component for IsLodTerrain {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Marker component for synthesized collision-only entities — entities that
+/// carry a [`CollisionShape::TriMesh`] + [`RigidBodyData::STATIC`] derived
+/// from render geometry but have **no visual representation**.
+///
+/// These are spawned when a placed NIF has no authored `bhk*` collision shape
+/// and its base render layer is `Architecture` (the F3 synthesized-trimesh
+/// fallback introduced with commit `15016ee0` / #1294). The entity keeps its
+/// `MeshHandle` so the physics engine has a vertex/index source, but it must
+/// **never enter the RT acceleration structure** — including it in BLAS inflates
+/// the TLAS and drives super-linear RT cost for cells (like FNV Prospector or
+/// FO4 MedTek) whose architecture lacks authored bhk data.
+///
+/// Set in [`crate::cell_loader::spawn`] after `synthesize_static_trimesh`;
+/// consumed by [`crate::render::static_meshes::collect_static_mesh_draws`]
+/// to force `in_tlas = false` regardless of render-layer classification.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IsCollisionOnly;
+impl Component for IsCollisionOnly {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Returns `true` if `texture_path` matches any of the 6 "FX decoration"
 /// needles the renderer drops. Pulled out as a shared helper so the
 /// spawn-time tagger in `cell_loader::spawn` + `scene::nif_loader` and

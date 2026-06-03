@@ -28,8 +28,8 @@ use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
 
 use crate::components::{
-    AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, IsFxMesh, IsLodTerrain,
-    NormalMapHandle, TerrainTileSlot, TwoSided,
+    AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, IsFxMesh, IsCollisionOnly,
+    IsLodTerrain, NormalMapHandle, TerrainTileSlot, TwoSided,
 };
 
 use super::camera::FrustumPlanes;
@@ -130,6 +130,9 @@ pub(super) fn collect_static_mesh_draws(
     // material → identity-PBR fallback) but are forced `in_tlas = false`
     // so they never enter the TLAS / RT budget. See `IsLodTerrain`.
     let lod_q = world.query::<IsLodTerrain>();
+    // Synthesized collision-only entities (FNV/FO4 fallback trimesh colliders,
+    // R6a-stale-13-collider-cost): physics proxies that must never enter BLAS.
+    let collision_only_q = world.query::<IsCollisionOnly>();
     if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
             // #1377: hoist the GlobalTransform presence gate to the top —
@@ -190,10 +193,13 @@ pub(super) fn collect_static_mesh_draws(
                     .copied()
                     .unwrap_or_default();
                 let is_decal = render_layer_for_entity == RenderLayer::Decal;
-                // Distant-terrain LOD blocks rasterize but stay out of the
-                // TLAS (no BLAS built). Everything else rides the TLAS.
+                // Distant-terrain LOD blocks and synthesized collision-only
+                // entities (physics proxies) stay out of the TLAS. Everything
+                // else rides the TLAS. See IsLodTerrain / IsCollisionOnly.
                 let is_lod = lod_q.as_ref().is_some_and(|q| q.get(entity).is_some());
-                let in_tlas = !is_lod;
+                let is_collision_only =
+                    collision_only_q.as_ref().is_some_and(|q| q.get(entity).is_some());
+                let in_tlas = !is_lod && !is_collision_only;
                 let bone_offset = skin_offsets.get(&entity).copied().unwrap_or(0);
                 let normal_map_index = nmap_q
                     .as_ref()

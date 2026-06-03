@@ -1073,6 +1073,10 @@ pub(super) fn spawn_placed_instances(
             {
                 world.insert(entity, shape);
                 world.insert(entity, body);
+                // Mark as collision-only so the render loop forces in_tlas=false.
+                // Synthesized trimesh colliders are physics proxies — they must
+                // never enter the RT BLAS (R6a-stale-13-collider-cost).
+                world.insert(entity, crate::components::IsCollisionOnly);
             }
         }
         // Attach ESM light_data ONLY if the NIF didn't actually spawn
