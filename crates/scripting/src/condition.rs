@@ -153,27 +153,14 @@ impl ConditionContext {
     /// Resolve a [`RunOn`] choice to a concrete EntityId. Returns
     /// `None` when the slot isn't populated or the choice references
     /// data M47.1 doesn't yet plumb (alias / package / event data).
-    fn resolve(&self, run_on: RunOn, condition: &Condition) -> Option<EntityId> {
+    fn resolve(&self, run_on: RunOn, condition: &Condition, world: &World) -> Option<EntityId> {
         match run_on {
             RunOn::Subject => Some(self.subject),
             RunOn::Target => self.target,
             RunOn::CombatTarget => self.combat_target,
             RunOn::LinkedReference => self.linked_reference,
-            // Explicit Reference resolves via the CTDA's
-            // `reference_form_id` field — the consumer is expected to
-            // have already resolved that to an EntityId by some means,
-            // but M47.1 doesn't carry a FormID-to-EntityId lookup yet.
-            // Fall through to None; the function evaluates against a
-            // missing target which produces `false`. M47.1 follow-up
-            // wires the lookup once `World::find_by_form_id` (#1212)
-            // is reachable from here.
             RunOn::Reference => {
-                log::trace!(
-                    "M47.1: RunOn::Reference for form_id {:08X} — \
-                     FormID→EntityId resolver not yet wired",
-                    condition.reference_form_id,
-                );
-                None
+                world.find_by_form_id(condition.reference_form_id)
             }
             RunOn::QuestAlias | RunOn::PackageData | RunOn::EventData => {
                 log::trace!(
@@ -200,7 +187,7 @@ pub fn evaluate_condition(
 ) -> bool {
     // Resolve Run-On to a concrete entity. `None` → condition fails
     // (Bethesda: "missing reference fails the predicate").
-    let Some(entity) = ctx.resolve(condition.run_on, condition) else {
+    let Some(entity) = ctx.resolve(condition.run_on, condition, world) else {
         return false;
     };
 
@@ -209,16 +196,13 @@ pub fn evaluate_condition(
     let function_result = evaluate_function(function, condition, entity, world);
 
     // Resolve comparand — Globals route through EsmIndex.globals.
-    // M47.1 Phase 3 doesn't carry the GLOB lookup yet; Global comparands
-    // fall back to 0.0 (matches Bethesda's "missing GLOB defaults to 0").
     let comparand = match condition.comparand {
         ConditionValue::Literal(v) => v,
         ConditionValue::Global(form_id) => {
-            log::trace!(
-                "M47.1: Global comparand {form_id:08X} — \
-                 GLOB lookup deferred (returns 0.0 fallback)"
-            );
-            0.0
+            world.try_resource::<byroredux_plugin::esm::index::EsmIndex>()
+                .and_then(|idx| idx.globals.get(&form_id))
+                .map(|g| g.value)
+                .unwrap_or(0.0)
         }
     };
 
@@ -236,38 +220,22 @@ pub fn evaluate_function(
 ) -> f32 {
     match function {
         ConditionFunction::GetActorValue => {
-            // Bethesda's GetActorValue takes the actor value's
-            // *name* (e.g., "Variable05", "Health") as a runtime
-            // string. The .psc / CK editor source-side translates
-            // the user-facing names to an AVIF FormID stored in
-            // `param_1`. M47.1 doesn't carry the AVIF→name lookup
-            // yet — Phase 2 stub uses the FormID as a HashMap key
-            // directly in a future actor-stats redesign, but for
-            // now we look up by the prototype's existing string-key
-            // [`crate::papyrus_demo::actor_stats::ActorStats`].
-            //
-            // The R5 prototype keys on lower-cased Papyrus AV names
-            // (`"variable05"` etc.). For M47.1's first iteration we
-            // accept that param_1 is *opaque* and the evaluator
-            // returns 0.0 — actually-useful when a real AVIF→string
-            // resolver lands. Documented limitation; not a parser bug.
-            log::trace!(
-                "M47.1: GetActorValue(param_1={:08X}) — \
-                 AVIF→ActorStats key resolver deferred",
-                condition.param_1,
-            );
+            if let Some(stats) = world.try_get::<crate::papyrus_demo::actor_stats::ActorStats>(entity) {
+                if let Some(val) = stats.get_by_form_id(condition.param_1) {
+                    return val;
+                }
+            }
             0.0
         }
         ConditionFunction::GetDistance => {
-            // GetDistance(target_form_id). `param_1` is the target
-            // REFR's FormID; we'd need to resolve to EntityId then
-            // read GlobalTransform on both. FormID→EntityId is the
-            // same gap as `RunOn::Reference`.
-            log::trace!(
-                "M47.1: GetDistance(target={:08X}) — \
-                 FormID→EntityId resolver deferred",
-                condition.param_1,
-            );
+            if let Some(target) = world.find_by_form_id(condition.param_1) {
+                if let (Some(t1), Some(t2)) = (
+                    world.try_get::<byroredux_core::ecs::GlobalTransform>(entity),
+                    world.try_get::<byroredux_core::ecs::GlobalTransform>(target)
+                ) {
+                    return t1.translation.distance(t2.translation);
+                }
+            }
             0.0
         }
         ConditionFunction::GetStage => {
@@ -298,50 +266,27 @@ pub fn evaluate_function(
             }
         }
         ConditionFunction::GetFactionRank => {
-            // FO3 / FNV / Skyrim: GetFactionRank returns -1 when the
-            // Run-On isn't in the faction. Stub returns -1 always until
-            // a FactionMembership component lands (M47.1 follow-up).
-            log::trace!(
-                "M47.1: GetFactionRank(faction={:08X}) — \
-                 FactionMembership component not yet plumbed",
-                condition.param_1,
-            );
+            if let Some(factions) = world.try_get::<byroredux_core::ecs::components::FactionMembership>(entity) {
+                if let Some(rank) = factions.get_rank(condition.param_1) {
+                    return rank as f32;
+                }
+            }
             -1.0
         }
         ConditionFunction::GetIsID => {
-            // GetIsID(base_form_id). Returns 1.0 when the Run-On's
-            // BASE record FormID matches param_1, 0.0 otherwise.
-            //
-            // Semantic gap M47.1 leaves on the floor: `FormIdComponent`
-            // on an entity holds the *interned* `FormId` runtime handle
-            // (u64 newtype) not the raw u32 ESM FormID. param_1 is the
-            // raw u32. Direct comparison is a type error, AND even
-            // round-tripped through `FormIdPool::resolve`, the result
-            // is the REFR's form_id, not the BASE record's. The base
-            // FormID would need to ride alongside the entity as a
-            // separate component (cell-loader-side wiring) or live
-            // via a FormIdPool reverse-lookup keyed on the base.
-            //
-            // Stub returns 0.0 today; a follow-up wires base-form
-            // tracking. See M47.1 design doc.
-            let _ = entity;
-            log::trace!(
-                "M47.1: GetIsID(base={:08X}) — \
-                 base-FormID tracking on entities not yet plumbed",
-                condition.param_1,
-            );
+            if let Some(base_form) = world.try_get::<byroredux_core::ecs::components::BaseFormId>(entity) {
+                if base_form.0 == condition.param_1 {
+                    return 1.0;
+                }
+            }
             0.0
         }
         ConditionFunction::HasPerk => {
-            // HasPerk(perk_form_id). Returns 1.0 when the Run-On's
-            // perk list contains param_1, 0.0 otherwise. Stubbed
-            // today: always 0.0 (a perk-list component lands with
-            // M47.1 follow-up + the M50 perk system).
-            log::trace!(
-                "M47.1: HasPerk(perk={:08X}) — \
-                 PerkList component not yet plumbed",
-                condition.param_1,
-            );
+            if let Some(perks) = world.try_get::<byroredux_core::ecs::components::PerkList>(entity) {
+                if perks.contains(&condition.param_1) {
+                    return 1.0;
+                }
+            }
             0.0
         }
         ConditionFunction::Unknown(index) => {
