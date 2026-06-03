@@ -26,7 +26,7 @@
 //! gracefully return defaults on short buffers — Skyrim+ re-parsing
 //! lands alongside the consuming system.
 
-mod ai;
+pub mod ai;
 mod character;
 mod effects;
 mod equipment;

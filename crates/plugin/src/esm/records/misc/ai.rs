@@ -301,6 +301,25 @@ pub struct DialRecord {
     pub infos: Vec<InfoRecord>,
 }
 
+/// Resolved conversation tree structure — groups INFOs into PNAM chains
+/// (reading-order sequences), and surfaces TCLT as inter-topic edges.
+/// Built as a pure function over already-parsed DialRecord data.
+#[derive(Debug, Clone)]
+pub struct ConversationTree {
+    /// PNAM chains ordered from head (previous_info==0) to tail.
+    /// Each chain is a Vec of INFO form_ids in reading order.
+    pub chains: Vec<Vec<u32>>,
+    /// Inter-topic edges: source_info_form_id → [destination_topic_form_ids].
+    /// Maps each INFO (by form_id) to the topics it routes to via TCLT.
+    pub topic_links: std::collections::HashMap<u32, Vec<u32>>,
+}
+
+/// Error building a conversation tree (e.g., cycles in PNAM chain).
+#[derive(Debug, Clone)]
+pub enum ConversationTreeError {
+    PnamCycle { info_form_id: u32 },
+}
+
 /// `INFO` dialogue topic response. One per branch of an `NPC says X
 /// when Y` choice tree, owned by the parent `DIAL` topic via the
 /// nested Topic Children GRUP. Stub captures the response text +
@@ -413,6 +432,126 @@ pub fn parse_info(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::r
         }
     }
     out
+}
+
+/// Build a conversation tree from flat INFO list.
+/// Orders INFOs by PNAM chains (head = previous_info == 0).
+/// Detects cycles to ensure chain termination.
+pub fn build_conversation_tree(infos: &[InfoRecord]) -> Result<ConversationTree, ConversationTreeError> {
+    use std::collections::HashMap;
+
+    // Index by form_id for fast lookup and cycle detection.
+    let mut info_map: HashMap<u32, &InfoRecord> = HashMap::new();
+    for info in infos {
+        info_map.insert(info.form_id, info);
+    }
+
+    let mut visited = std::collections::HashSet::new();
+    let mut chains = Vec::new();
+
+    // Find all chain heads (previous_info == 0) and follow each to its tail.
+    for info in infos {
+        if info.previous_info == 0 && !visited.contains(&info.form_id) {
+            let mut chain = Vec::new();
+            let mut current = info.form_id;
+
+            loop {
+                chain.push(current);
+                visited.insert(current);
+
+                // Follow the chain: look up the next INFO by its own form_id
+                // in the infos list (the NEXT INFO points back to this one
+                // via previous_info).
+                let next_info = infos.iter().find(|i| i.previous_info == current);
+                match next_info {
+                    Some(nxt) => {
+                        // Cycle detection: if the next form_id is already in this chain, bail.
+                        if chain.contains(&nxt.form_id) {
+                            return Err(ConversationTreeError::PnamCycle {
+                                info_form_id: nxt.form_id,
+                            });
+                        }
+                        current = nxt.form_id;
+                    }
+                    None => break, // End of chain.
+                }
+            }
+
+            chains.push(chain);
+        }
+    }
+
+    // Orphans: infos not in any chain. Check for cycles in orphaned sub-chains.
+    for info in infos {
+        if !visited.contains(&info.form_id) {
+            // This INFO is not a head and not yet visited.
+            // Start from it and walk backward via previous_info to find the chain head.
+            let mut walk_back = Vec::new();
+            let mut current = info.form_id;
+
+            loop {
+                if walk_back.contains(&current) {
+                    // Cycle detected (no head exists for this chain).
+                    return Err(ConversationTreeError::PnamCycle {
+                        info_form_id: current,
+                    });
+                }
+                walk_back.push(current);
+
+                // If current has previous_info == 0, it's the head.
+                if let Some(curr_info) = info_map.get(&current) {
+                    if curr_info.previous_info == 0 {
+                        break; // Found the head; this chain should already be visited.
+                    }
+                    current = curr_info.previous_info;
+                } else {
+                    // current form_id not in infos — dangling reference.
+                    // The last valid INFO we saw is the actual head.
+                    if !walk_back.is_empty() {
+                        walk_back.pop(); // Remove the invalid form_id
+                    }
+                    break;
+                }
+            }
+
+            // walk_back is now [starting_info, ..., head]. Reverse to get proper order.
+            walk_back.reverse();
+            if let Some(&head_fid) = walk_back.first() {
+                let mut chain = vec![head_fid];
+                visited.insert(head_fid);
+                let mut current = head_fid;
+
+                loop {
+                    let next_info = infos.iter().find(|i| i.previous_info == current);
+                    match next_info {
+                        Some(nxt) => {
+                            if chain.contains(&nxt.form_id) {
+                                return Err(ConversationTreeError::PnamCycle {
+                                    info_form_id: nxt.form_id,
+                                });
+                            }
+                            chain.push(nxt.form_id);
+                            visited.insert(nxt.form_id);
+                            current = nxt.form_id;
+                        }
+                        None => break,
+                    }
+                }
+
+                chains.push(chain);
+            }
+        }
+    }
+
+    // Build topic_links map: info_form_id → destination topics.
+    let mut topic_links = HashMap::new();
+    for info in infos {
+        if !info.topic_links.is_empty() {
+            topic_links.insert(info.form_id, info.topic_links.clone());
+        }
+    }
+
+    Ok(ConversationTree { chains, topic_links })
 }
 
 /// `MESG` message / popup record. Quest-tutorial banners and
@@ -805,5 +944,116 @@ mod tests {
         // Verify that without remap, values are identical (no remap = identity)
         let info_no_remap = parse_info(0x5678, &subs, &None);
         assert_eq!(info_no_remap.previous_info, info.previous_info);
+    }
+
+    #[test]
+    fn build_conversation_tree_orders_pnam_chain() {
+        // Three INFOs: A (head), B, C.
+        // PNAM chain: A (previous_info=0) <- B <- C (C.previous_info=B.form_id)
+        // Insert them in scrambled order to test ordering.
+        let infos = vec![
+            InfoRecord {
+                form_id: 0xBBBB,
+                response_text: "B response".to_string(),
+                previous_info: 0xAAAA, // Points back to A
+                ..Default::default()
+            },
+            InfoRecord {
+                form_id: 0xAAAA,
+                response_text: "A response".to_string(),
+                previous_info: 0, // Head
+                ..Default::default()
+            },
+            InfoRecord {
+                form_id: 0xCCCC,
+                response_text: "C response".to_string(),
+                previous_info: 0xBBBB, // Points back to B
+                ..Default::default()
+            },
+        ];
+
+        let tree = build_conversation_tree(&infos).expect("should build tree");
+        assert_eq!(tree.chains.len(), 1, "should have 1 chain");
+        assert_eq!(tree.chains[0], vec![0xAAAA, 0xBBBB, 0xCCCC], "chain should be ordered A→B→C");
+    }
+
+    #[test]
+    fn build_conversation_tree_detects_pnam_cycle() {
+        // Cycle: A <- B <- C <- A (C.previous_info=A)
+        let infos = vec![
+            InfoRecord {
+                form_id: 0xAAAA,
+                response_text: "A response".to_string(),
+                previous_info: 0xCCCC, // Points back to C (cycle!)
+                ..Default::default()
+            },
+            InfoRecord {
+                form_id: 0xBBBB,
+                response_text: "B response".to_string(),
+                previous_info: 0xAAAA,
+                ..Default::default()
+            },
+            InfoRecord {
+                form_id: 0xCCCC,
+                response_text: "C response".to_string(),
+                previous_info: 0xBBBB,
+                ..Default::default()
+            },
+        ];
+
+        let result = build_conversation_tree(&infos);
+        assert!(result.is_err(), "should detect cycle");
+        match result.unwrap_err() {
+            ConversationTreeError::PnamCycle { info_form_id } => {
+                assert_eq!(info_form_id, 0xAAAA, "cycle detection should report the repeating form_id");
+            }
+        }
+    }
+
+    #[test]
+    fn build_conversation_tree_surfaces_tclt_edges() {
+        // Two separate PNAM chains; first INFO of first chain has TCLT edges.
+        let infos = vec![
+            InfoRecord {
+                form_id: 0xAAAA,
+                response_text: "Chain1 head".to_string(),
+                previous_info: 0,
+                topic_links: vec![0x1111, 0x2222], // Routes to two topics
+                ..Default::default()
+            },
+            InfoRecord {
+                form_id: 0xBBBB,
+                response_text: "Chain2 head".to_string(),
+                previous_info: 0,
+                topic_links: vec![],
+                ..Default::default()
+            },
+        ];
+
+        let tree = build_conversation_tree(&infos).expect("should build tree");
+        assert_eq!(tree.topic_links.len(), 1, "should have 1 INFO with topic_links");
+        assert_eq!(
+            tree.topic_links.get(&0xAAAA),
+            Some(&vec![0x1111, 0x2222]),
+            "should surface TCLT edges for chain1 head"
+        );
+        assert!(!tree.topic_links.contains_key(&0xBBBB), "chain2 head has no TCLT");
+    }
+
+    #[test]
+    fn build_conversation_tree_handles_orphaned_infos() {
+        // An INFO with previous_info pointing to a non-existent INFO becomes a 1-element chain.
+        let infos = vec![
+            InfoRecord {
+                form_id: 0xAAAA,
+                response_text: "Orphan".to_string(),
+                previous_info: 0x9999, // Points to non-existent INFO
+                ..Default::default()
+            },
+        ];
+
+        let tree = build_conversation_tree(&infos).expect("should build tree");
+        assert_eq!(tree.chains.len(), 1, "orphan should become a 1-element chain");
+        assert_eq!(tree.chains[0], vec![0xAAAA]);
     }
 }

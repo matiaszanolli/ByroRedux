@@ -1317,3 +1317,102 @@ fn merge_from_carries_magic_effects_by_code() {
     assert_eq!(a.magic_effects_by_code.get(b"DGFA"), Some(&0x0000_0222));
     assert_eq!(a.magic_effects_by_code.get(b"DGAT"), Some(&0x0000_0BBB));
 }
+
+/// Integration test for DIAL conversation tree resolution (WI-1.3).
+/// Builds a DIAL + multiple INFOs with PNAM chains and TCLT edges;
+/// asserts the tree correctly orders by PNAM and surfaces TCLT links.
+#[test]
+fn dial_conversation_tree_resolves_pnam_chains_and_tclt_edges() {
+    use super::misc::ai::build_conversation_tree;
+
+    // Build INFOs in scrambled order with a PNAM chain: A (head) <- B <- C
+    // and TCLT edges from C to another topic.
+    let info_a = build_record(
+        b"INFO",
+        0x1001,
+        &[
+            (b"NAM1", b"First response\0".to_vec()),
+            (b"PNAM", 0u32.to_le_bytes().to_vec()), // Head: previous_info == 0
+        ],
+    );
+    let info_c = build_record(
+        b"INFO",
+        0x1003,
+        &[
+            (b"NAM1", b"Third response\0".to_vec()),
+            (b"PNAM", 0x1002u32.to_le_bytes().to_vec()), // Points back to B
+            // TCLT to another topic
+            (b"TCLT", 0x5555u32.to_le_bytes().to_vec()),
+        ],
+    );
+    let info_b = build_record(
+        b"INFO",
+        0x1002,
+        &[
+            (b"NAM1", b"Second response\0".to_vec()),
+            (b"PNAM", 0x1001u32.to_le_bytes().to_vec()), // Points back to A
+        ],
+    );
+
+    // Topic Children sub-GRUP with all three INFOs (in C, B, A order to test scrambling).
+    let topic_children = {
+        let mut content = Vec::new();
+        content.extend_from_slice(&info_c);
+        content.extend_from_slice(&info_b);
+        content.extend_from_slice(&info_a);
+        let total = 24 + content.len();
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GRUP");
+        buf.extend_from_slice(&(total as u32).to_le_bytes());
+        buf.extend_from_slice(&0xCAFEu32.to_le_bytes()); // label
+        buf.extend_from_slice(&7u32.to_le_bytes()); // Topic Children
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&content);
+        buf
+    };
+
+    // Parent DIAL.
+    let dial = build_record(
+        b"DIAL",
+        0xCAFE,
+        &[
+            (b"EDID", b"MultiBranch\0".to_vec()),
+            (b"FULL", b"Complex Topic\0".to_vec()),
+        ],
+    );
+    let mut top_content = Vec::new();
+    top_content.extend_from_slice(&dial);
+    top_content.extend_from_slice(&topic_children);
+
+    let top_total = 24 + top_content.len();
+    let mut top_grup = Vec::new();
+    top_grup.extend_from_slice(b"GRUP");
+    top_grup.extend_from_slice(&(top_total as u32).to_le_bytes());
+    top_grup.extend_from_slice(b"DIAL");
+    top_grup.extend_from_slice(&0u32.to_le_bytes());
+    top_grup.extend_from_slice(&[0u8; 8]);
+    top_grup.extend_from_slice(&top_content);
+
+    // TES4 header + DIAL group.
+    let mut buf = build_record(b"TES4", 0, &[]);
+    buf.extend_from_slice(&top_grup);
+    let index = parse_esm(&buf).expect("parse_esm");
+
+    let dial = index.dialogues.get(&0xCAFE).expect("DIAL indexed");
+    assert_eq!(dial.infos.len(), 3, "should have all 3 INFOs");
+
+    // Build conversation tree from the parsed INFOs.
+    let tree = build_conversation_tree(&dial.infos).expect("build_conversation_tree");
+
+    // Should have one chain: [0x1001 (A), 0x1002 (B), 0x1003 (C)]
+    assert_eq!(tree.chains.len(), 1, "should have 1 PNAM chain");
+    assert_eq!(tree.chains[0], vec![0x1001, 0x1002, 0x1003], "PNAM chain should be ordered A→B→C");
+
+    // INFO C (0x1003) should have TCLT edge to 0x5555.
+    assert_eq!(tree.topic_links.len(), 1, "should have 1 INFO with TCLT edges");
+    assert_eq!(
+        tree.topic_links.get(&0x1003),
+        Some(&vec![0x5555]),
+        "INFO C should link to topic 0x5555"
+    );
+}
