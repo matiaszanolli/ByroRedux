@@ -372,6 +372,12 @@ impl<'a> EsmReader<'a> {
         self.form_id_remap = Some(remap);
     }
 
+    /// Get a clone of the installed FormID remap (if any).
+    /// Used by parsers to remap cross-record FormID references.
+    pub fn get_form_id_remap(&self) -> Option<FormIdRemap> {
+        self.form_id_remap.clone()
+    }
+
     /// Apply the installed FormID remap (if any) to a raw plugin-local
     /// u32. Callsite-agnostic: use this anywhere a sub-record field
     /// carries a cross-record FormID reference (REFR.NAME, XOWN, XLOC,

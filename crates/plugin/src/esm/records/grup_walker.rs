@@ -111,6 +111,7 @@ pub(super) fn extract_dial_with_info(
     /// FNV / Skyrim / FO4 all share the value).
     const GROUP_TYPE_TOPIC_CHILDREN: u32 = 7;
 
+    let remap = reader.get_form_id_remap();
     let mut last_dial_form_id: Option<u32> = None;
 
     while reader.position() < end && reader.remaining() > 0 {
@@ -137,7 +138,7 @@ pub(super) fn extract_dial_with_info(
                         last_dial_form_id,
                     );
                 }
-                walk_info_records(reader, sub_end, target, dialogues)?;
+                walk_info_records(reader, sub_end, target, dialogues, &remap)?;
                 continue;
             }
 
@@ -152,7 +153,7 @@ pub(super) fn extract_dial_with_info(
         let header = reader.read_record_header()?;
         if &header.record_type == b"DIAL" {
             let subs = reader.read_sub_records(&header)?;
-            let dial = parse_dial(header.form_id, &subs);
+            let dial = parse_dial(header.form_id, &subs, &remap);
             dialogues.insert(header.form_id, dial);
             last_dial_form_id = Some(header.form_id);
         } else {
@@ -172,6 +173,7 @@ fn walk_info_records(
     end: usize,
     parent_dial_form_id: u32,
     dialogues: &mut HashMap<u32, DialRecord>,
+    remap: &Option<crate::esm::reader::FormIdRemap>,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
@@ -186,7 +188,7 @@ fn walk_info_records(
         let header = reader.read_record_header()?;
         if &header.record_type == b"INFO" {
             let subs = reader.read_sub_records(&header)?;
-            let info = parse_info(header.form_id, &subs);
+            let info = parse_info(header.form_id, &subs, remap);
             if let Some(dial) = dialogues.get_mut(&parent_dial_form_id) {
                 dial.infos.push(info);
             }

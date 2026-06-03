@@ -343,7 +343,7 @@ pub struct InfoRecord {
     pub conditions: ConditionList,
 }
 
-pub fn parse_dial(form_id: u32, subs: &[SubRecord]) -> DialRecord {
+pub fn parse_dial(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::reader::FormIdRemap>) -> DialRecord {
     let mut out = DialRecord {
         form_id,
         ..Default::default()
@@ -354,7 +354,8 @@ pub fn parse_dial(form_id: u32, subs: &[SubRecord]) -> DialRecord {
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"QSTI" if sub.data.len() >= 4 => {
                 if let Ok(q) = SubReader::new(&sub.data).u32() {
-                    out.quest_refs.push(q);
+                    let remapped = remap.as_ref().map_or(q, |r| r.remap(q));
+                    out.quest_refs.push(remapped);
                 }
             }
             // DATA byte 0 = dialogue type, cross-game safe (Oblivion: 1 byte;
@@ -366,7 +367,7 @@ pub fn parse_dial(form_id: u32, subs: &[SubRecord]) -> DialRecord {
     out
 }
 
-pub fn parse_info(form_id: u32, subs: &[SubRecord]) -> InfoRecord {
+pub fn parse_info(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::reader::FormIdRemap>) -> InfoRecord {
     let mut out = InfoRecord {
         form_id,
         ..Default::default()
@@ -387,16 +388,21 @@ pub fn parse_info(form_id: u32, subs: &[SubRecord]) -> InfoRecord {
             }
             b"TCLT" if sub.data.len() >= 4 => {
                 if let Ok(t) = SubReader::new(&sub.data).u32() {
-                    out.topic_links.push(t);
+                    let remapped = remap.as_ref().map_or(t, |r| r.remap(t));
+                    out.topic_links.push(remapped);
                 }
             }
             b"PNAM" if sub.data.len() >= 4 => {
-                out.previous_info = SubReader::new(&sub.data).u32_or_default();
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
+                out.previous_info = remapped;
             }
             b"ANAM" if sub.data.len() >= 4 => {
-                out.actor_form_id = u32::from_le_bytes([
+                let raw = u32::from_le_bytes([
                     sub.data[0], sub.data[1], sub.data[2], sub.data[3],
                 ]);
+                let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
+                out.actor_form_id = remapped;
             }
             b"CTDA" => {
                 if let Some(cond) = parse_ctda(sub) {
@@ -652,7 +658,7 @@ mod tests {
             sub(b"QSTI", &0x0100_0002u32.to_le_bytes()),
             sub(b"QSTI", &0x0100_0003u32.to_le_bytes()),
         ];
-        let d = parse_dial(0xC3C3, &subs);
+        let d = parse_dial(0xC3C3, &subs, &None);
         assert_eq!(d.quest_refs.len(), 3);
         assert_eq!(d.quest_refs[1], 0x0100_0002);
         // DATA absent → dial_type defaults to 0 (Topic).
@@ -670,16 +676,16 @@ mod tests {
             sub(b"EDID", b"PersuasionTopic\0"),
             sub(b"DATA", &[3u8]),
         ];
-        let d = parse_dial(0xDEAD, &subs);
+        let d = parse_dial(0xDEAD, &subs, &None);
         assert_eq!(d.dial_type, 3);
 
         // FO3+ widen DATA (type byte + flags); byte 0 still the type.
         let subs_fo3 = vec![sub(b"DATA", &[5u8, 0x01, 0x00, 0x00])];
-        assert_eq!(parse_dial(0xBEEF, &subs_fo3).dial_type, 5);
+        assert_eq!(parse_dial(0xBEEF, &subs_fo3, &None).dial_type, 5);
 
         // Empty DATA must not panic and leaves the default.
         let subs_empty = vec![sub(b"DATA", &[])];
-        assert_eq!(parse_dial(0xF00D, &subs_empty).dial_type, 0);
+        assert_eq!(parse_dial(0xF00D, &subs_empty, &None).dial_type, 0);
     }
 
     #[test]
@@ -752,7 +758,7 @@ mod tests {
             sub(b"NAM1", b"hello\0"),
             sub(b"ANAM", &anam),
         ];
-        let info = parse_info(0x1234, &subs);
+        let info = parse_info(0x1234, &subs, &None);
         assert_eq!(info.actor_form_id, 0xDEAD_BEEF);
     }
 
@@ -772,8 +778,32 @@ mod tests {
             sub(b"NAM1", b"hi\0"),
             sub(b"CTDA", &ctda),
         ];
-        let info = parse_info(0x5678, &subs);
+        let info = parse_info(0x5678, &subs, &None);
         assert_eq!(info.conditions.len(), 1);
         assert_eq!(info.conditions[0].function_index, 36);
+    }
+
+    #[test]
+    fn parse_info_remaps_formids_with_remap() {
+        use crate::esm::reader::FormIdRemap;
+        // PNAM (previous_info) and TCLT (topic_links) and ANAM (actor)
+        // should be remapped when a remap is provided.
+        let remap = FormIdRemap {
+            plugin_index: 1, // This plugin is at index 1
+            master_indices: vec![0], // Master is at index 0
+        };
+        let subs = vec![
+            sub(b"PNAM", &0x00_050000u32.to_le_bytes()), // plugin 0 (master), form 0x050000
+            sub(b"TCLT", &0x01_030000u32.to_le_bytes()), // plugin 1 (this), form 0x030000
+            sub(b"ANAM", &0x00_020000u32.to_le_bytes()), // plugin 0 (master), form 0x020000
+        ];
+        // With remap: plugin 0 stays 0 (master), plugin 1 stays 1 (this)
+        let info = parse_info(0x5678, &subs, &Some(remap));
+        assert_eq!(info.previous_info, 0x00_050000);
+        assert_eq!(info.topic_links[0], 0x01_030000);
+        assert_eq!(info.actor_form_id, 0x00_020000);
+        // Verify that without remap, values are identical (no remap = identity)
+        let info_no_remap = parse_info(0x5678, &subs, &None);
+        assert_eq!(info_no_remap.previous_info, info.previous_info);
     }
 }

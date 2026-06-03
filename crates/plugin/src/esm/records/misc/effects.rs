@@ -41,7 +41,7 @@ pub struct AvifRecord {
     pub perks: Vec<u32>,
 }
 
-pub fn parse_avif(form_id: u32, subs: &[SubRecord]) -> AvifRecord {
+pub fn parse_avif(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::reader::FormIdRemap>) -> AvifRecord {
     let mut out = AvifRecord {
         form_id,
         ..Default::default()
@@ -61,9 +61,11 @@ pub fn parse_avif(form_id: u32, subs: &[SubRecord]) -> AvifRecord {
                 );
             }
             b"PNAM" if sub.data.len() >= 4 => {
-                out.perks.push(u32::from_le_bytes([
+                let raw = u32::from_le_bytes([
                     sub.data[0], sub.data[1], sub.data[2], sub.data[3],
-                ]));
+                ]);
+                let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
+                out.perks.push(remapped);
             }
             _ => {}
         }
@@ -362,7 +364,7 @@ mod tests {
             sub(b"CNAM", &1u32.to_le_bytes()), // Combat
             sub(b"AVSK", &avsk),
         ];
-        let a = parse_avif(0x0000_002B, &subs);
+        let a = parse_avif(0x0000_002B, &subs, &None);
         assert_eq!(a.editor_id, "SmallGuns");
         assert_eq!(a.full_name, "Small Guns");
         assert_eq!(a.abbreviation, "SG");
@@ -379,7 +381,7 @@ mod tests {
             sub(b"FULL", b"Strength\0"),
             sub(b"DESC", b"Raw physical power.\0"),
         ];
-        let a = parse_avif(0x0000_0000, &subs);
+        let a = parse_avif(0x0000_0000, &subs, &None);
         assert_eq!(a.editor_id, "Strength");
         assert_eq!(a.category, 0);
         assert!(a.skill_scaling.is_none());
@@ -532,7 +534,7 @@ mod tests {
             sub(b"PNAM", &0x0101u32.to_le_bytes()),
             sub(b"PNAM", &0x0202u32.to_le_bytes()),
         ];
-        let a = parse_avif(0xDEADBEEF, &subs);
+        let a = parse_avif(0xDEADBEEF, &subs, &None);
         assert_eq!(a.perks, vec![0x0101, 0x0202]);
     }
 
@@ -542,7 +544,7 @@ mod tests {
             sub(b"EDID", b"Strength\0"),
             sub(b"FULL", b"Strength\0"),
         ];
-        let a = parse_avif(0xDEAD0001, &subs);
+        let a = parse_avif(0xDEAD0001, &subs, &None);
         assert!(a.perks.is_empty());
     }
 

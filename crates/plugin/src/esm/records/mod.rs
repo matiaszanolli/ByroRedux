@@ -601,9 +601,12 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             // skill-bonus, BOOK skill-book teach ref, and AVIF-keyed
             // condition predicate dangled because the top-level group
             // hit the catch-all skip.
-            b"AVIF" => extract_records(&mut reader, end, b"AVIF", &mut |fid, subs| {
-                index.actor_values.insert(fid, parse_avif(fid, subs));
-            })?,
+            b"AVIF" => {
+                let avif_remap = reader.get_form_id_remap();
+                extract_records(&mut reader, end, b"AVIF", &mut |fid, subs| {
+                    index.actor_values.insert(fid, parse_avif(fid, subs, &avif_remap));
+                })?;
+            },
             // ACTI / TERM #521 — dual-target: typed map for SCRI /
             // menu-tree cross-refs AND `cells.statics` for visual
             // placement. Pre-#527 the cell first-pass walked them via
