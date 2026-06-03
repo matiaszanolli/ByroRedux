@@ -3,55 +3,78 @@
 use byroredux_core::ecs::{ActiveCamera, Billboard, BillboardMode, GlobalTransform, World};
 use byroredux_core::math::{Quat, Vec3};
 
-/// Orients `Billboard` entities so their forward axis faces the active camera.
+/// Billboard system factory — returns a closure with a cached camera pose.
 ///
-/// Runs after `transform_propagation_system`: it reads each billboard's
-/// `GlobalTransform` translation, computes a fresh rotation toward the camera
-/// position, and writes that rotation back into `GlobalTransform`. The local
-/// `Transform` is left alone — child geometry of a billboard inherits the
-/// updated world orientation via the composed parent chain next frame, and
-/// the renderer reads `GlobalTransform` directly for its model matrix.
+/// Each frame the closure checks whether the camera position or forward
+/// direction changed since last frame. When neither moved (static scene,
+/// camera parked) the entire billboard loop is skipped, preventing
+/// `get_mut` from arming `GlobalTransform`'s TRACK_CHANGES dirty set for
+/// every billboard entity. Without this gate, `world_bound_propagation`'s
+/// incremental-bounds fast path was defeated every frame in billboard-heavy
+/// cells (vegetation impostors, sprite quads) — see #1374.
 ///
-/// Mirrors Gamebryo's `NiBillboardNode::UpdateWorldBound`: the node's local
-/// rotation is discarded and the world matrix is rebuilt with a camera-facing
-/// basis. See issue #225.
-pub(crate) fn billboard_system(world: &World, _dt: f32) {
-    // Active camera lookup (position + forward).
-    let Some(active) = world.try_resource::<ActiveCamera>() else {
-        return;
-    };
-    let cam_entity = active.0;
-    drop(active);
+/// Behavior is identical to a per-frame plain function when the camera does
+/// move: all billboard rotations are recomputed and written exactly as
+/// before.
+///
+/// Mirrors Gamebryo's `NiBillboardNode::UpdateWorldBound`. See #225.
+pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
+    // Sentinel: `None` on first frame so the loop always runs once.
+    let mut last_cam: Option<(Vec3, Vec3)> = None;
 
-    // Single GlobalTransform write query — `get` reads the camera GT
-    // through the same handle that drives the billboard writes below.
-    // Pre-#829 the system cycled a read lock + write lock on the same
-    // storage every frame; the read-then-write pair burned ~50–100 ns
-    // and a Vec allocation in release (compounding with #823) plus
-    // opened a window for a future deadlock if the prelude grew
-    // another acquisition between the two.
-    let Some(mut gq) = world.query_mut::<GlobalTransform>() else {
-        return;
-    };
-    let Some(cam_global) = gq.get(cam_entity).copied() else {
-        return;
-    };
-    let cam_pos = cam_global.translation;
-    // Camera forward = rotation * -Z (see Camera::view_matrix).
-    let cam_forward = cam_global.rotation * -Vec3::Z;
+    move |world: &World, _dt: f32| {
+        // Active camera lookup (position + forward).
+        let Some(active) = world.try_resource::<ActiveCamera>() else {
+            return;
+        };
+        let cam_entity = active.0;
+        drop(active);
 
-    let Some(bq) = world.query::<Billboard>() else {
-        return;
-    };
+        // Single GlobalTransform write query — `get` reads the camera GT
+        // through the same handle that drives the billboard writes below.
+        // Pre-#829 the system cycled a read lock + write lock on the same
+        // storage every frame; the read-then-write pair burned ~50–100 ns
+        // and a Vec allocation in release (compounding with #823) plus
+        // opened a window for a future deadlock if the prelude grew
+        // another acquisition between the two.
+        let Some(mut gq) = world.query_mut::<GlobalTransform>() else {
+            return;
+        };
+        let Some(cam_global) = gq.get(cam_entity).copied() else {
+            return;
+        };
+        let cam_pos = cam_global.translation;
+        // Camera forward = rotation * -Z (see Camera::view_matrix).
+        let cam_forward = cam_global.rotation * -Vec3::Z;
 
-    for (entity, billboard) in bq.iter() {
-        let Some(global) = gq.get_mut(entity) else {
-            continue;
+        // Camera-motion gate (#1374): when neither camera position nor
+        // forward direction changed since last frame, every billboard
+        // rotation is still correct from the prior frame — skip the loop.
+        // Exact equality is appropriate here: the camera transform is
+        // written by camera_follow_system / fly_camera_system with no
+        // floating-point accumulation.
+        if last_cam == Some((cam_pos, cam_forward)) {
+            return;
+        }
+        last_cam = Some((cam_pos, cam_forward));
+
+        let Some(bq) = world.query::<Billboard>() else {
+            return;
         };
 
-        let new_rot =
-            compute_billboard_rotation(billboard.mode, global.translation, cam_pos, cam_forward);
-        global.rotation = new_rot;
+        for (entity, billboard) in bq.iter() {
+            let Some(global) = gq.get_mut(entity) else {
+                continue;
+            };
+
+            let new_rot = compute_billboard_rotation(
+                billboard.mode,
+                global.translation,
+                cam_pos,
+                cam_forward,
+            );
+            global.rotation = new_rot;
+        }
     }
 }
 

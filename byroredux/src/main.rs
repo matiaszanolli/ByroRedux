@@ -52,8 +52,8 @@ use crate::components::{
 use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
-    animate_lights_system, billboard_system, compute_underwater_params, footstep_system,
-    log_stats_system, make_animation_system, make_transform_propagation_system,
+    animate_lights_system, compute_underwater_params, footstep_system, log_stats_system,
+    make_animation_system, make_billboard_system, make_transform_propagation_system,
     make_world_bound_propagation_system, metrics_sample_system, particle_system, spin_system,
     toggle_player_mode, weather_system, MetricsState,
 };
@@ -723,11 +723,23 @@ impl App {
         // Particle simulation runs after transform propagation so emitter
         // entities have their final world-space spawn origin (#401).
         scheduler.add_exclusive(Stage::PostUpdate, particle_system);
-        // Billboards must run AFTER transform propagation so they can
-        // overwrite the computed world rotation. Registered as exclusive
-        // so the scheduler sequences it after the PostUpdate parallel
-        // batch. See issue #225.
-        scheduler.add_exclusive(Stage::PostUpdate, billboard_system);
+        // PostUpdate ordering contract (#1375 invariant pin):
+        //   1. transform_propagation — BFS GlobalTransform composition
+        //   2. make_billboard_system  — overwrites billboard GT rotations
+        //                              (camera-motion gated; see #1374)
+        //   3. make_world_bound_propagation_system — drains GT dirty set,
+        //      folds WorldBounds from the final per-frame transforms
+        //
+        // INVARIANT: no Stage::Late system may write GlobalTransform on
+        // a LocalBound-bearing entity. If it does, that entity's
+        // WorldBound will silently lag one frame because bound
+        // propagation's GT drain fires before the Late write. Today
+        // camera_follow_system + audio emitters write GT in Late but
+        // carry no LocalBound — the lag is benign. Any future Late
+        // system that writes GT on a bounded entity must either be
+        // promoted to PostUpdate (before bounds) or accept one-frame
+        // stale WorldBounds for that entity.
+        scheduler.add_exclusive(Stage::PostUpdate, make_billboard_system());
         // Bound propagation runs last in PostUpdate so it sees final
         // world transforms (including billboard rotations). See #217.
         scheduler.add_exclusive(Stage::PostUpdate, make_world_bound_propagation_system());
@@ -1359,10 +1371,21 @@ impl App {
         // World, run egui (gets `PanelOutputs` back), apply
         // those outputs, then stash the FullOutput +
         // egui::Context for the renderer to consume.
-        let snapshot = build_debug_ui_snapshot(
-            &self.world,
-            self.debug_ui_refresh_entities,
-        );
+        //
+        // #1376: build_debug_ui_snapshot deep-clones two BTreeMaps +
+        // a Vec of Strings every frame. Gate on `visible` so the clone
+        // is skipped when the overlay is hidden (boot default). The
+        // `ui.run` path below already early-returns on `!visible` and
+        // ignores the snapshot; returning a default here is safe.
+        let snapshot = if self
+            .debug_ui
+            .as_ref()
+            .is_some_and(|ui| ui.visible)
+        {
+            build_debug_ui_snapshot(&self.world, self.debug_ui_refresh_entities)
+        } else {
+            byroredux_debug_ui::PanelSnapshot::default()
+        };
         self.debug_ui_refresh_entities = false;
 
         let (egui_frame, outputs) = if let (Some(ref mut ui), Some(ref win)) =
