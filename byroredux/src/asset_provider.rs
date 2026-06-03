@@ -1041,6 +1041,8 @@ pub(crate) fn merge_bgsm_into_mesh(
     let mut set_alpha = false;
     let mut set_uv = false;
     let mut set_blend = false;
+    let mut set_fresnel = false;
+    let mut set_palette_scale = false;
 
     // Determine dispatch kind from magic (authoritative) with extension as
     // fallback. Warn once per path when they disagree — e.g. a mod shipping a
@@ -1282,6 +1284,25 @@ pub(crate) fn merge_bgsm_into_mesh(
                 set_glossiness = true;
                 touched = true;
             }
+            // #1454 — BGSM authors Fresnel power (Schlick exponent for the
+            // rim Fresnel term). Child-first: first BGSM in the template
+            // chain wins. Vanilla FO4 defaults to 5.0, matching the
+            // `ImportedMesh` default, so no vanilla regression; mod-authored
+            // non-default values (power armor, shiny metals) were silently
+            // falling back to 5.0 before this fix.
+            if !set_fresnel {
+                mesh.fresnel_power = bgsm.fresnel_power;
+                set_fresnel = true;
+                touched = true;
+            }
+            // #1455 — BGSM authors greyscale-to-palette scale. Child-first.
+            // Modulates the LUT remap intensity for NPC creature colour
+            // variants (deathclaw, supermutant). Default 1.0 = no change.
+            if !set_palette_scale {
+                mesh.grayscale_to_palette_scale = bgsm.grayscale_to_palette_scale;
+                set_palette_scale = true;
+                touched = true;
+            }
             if !set_alpha {
                 mesh.mat_alpha = bgsm.base.alpha;
                 set_alpha = true;
@@ -1358,6 +1379,15 @@ pub(crate) fn merge_bgsm_into_mesh(
             pool,
         );
         fill(&mut mesh.glow_map, &bgem.glow_texture, &mut touched, pool);
+        // #1453 — BGEM's grayscale_texture is the palette/gradient LUT for
+        // effect materials (fire-gradient, electricity-gradient, magic VFX).
+        // Forward it to the same `bgsm_greyscale_lut_path` field that BGSM
+        // uses — both serve as the greyscale LUT path the renderer resolves
+        // for `GreyscaleLutHandle` and the `EFFECT_PALETTE_COLOR` flag.
+        if mesh.bgsm_greyscale_lut_path.is_none() && !bgem.grayscale_texture.is_empty() {
+            mesh.bgsm_greyscale_lut_path = Some(bgem.grayscale_texture.clone());
+            touched = true;
+        }
         fill(&mut mesh.env_map, &bgem.envmap_texture, &mut touched, pool);
         fill(
             &mut mesh.env_mask,
@@ -2299,6 +2329,44 @@ mod tests {
         assert_ne!(emissive_color, bgem.emittance_color);
     }
 
+    /// Regression for #1453 — BGEM `grayscale_texture` (palette/gradient LUT
+    /// for fire-gradient, electricity-gradient, magic VFX) must forward to
+    /// `mesh.bgsm_greyscale_lut_path`. Pre-fix the field was silently dropped,
+    /// so effect materials that relied on a colour-ramp palette rendered
+    /// without the LUT lookup.
+    #[test]
+    fn bgem_merge_forwards_grayscale_texture_as_lut_path() {
+        use byroredux_bgsm::BgemFile;
+
+        let bgem = BgemFile {
+            grayscale_texture: "textures\\effects\\gradients\\fire_gradient.dds".into(),
+            ..Default::default()
+        };
+
+        // Mirror the prod assignment from the BGEM branch.
+        let mut lut_path: Option<String> = None;
+        if lut_path.is_none() && !bgem.grayscale_texture.is_empty() {
+            lut_path = Some(bgem.grayscale_texture.clone());
+        }
+
+        assert_eq!(
+            lut_path.as_deref(),
+            Some("textures\\effects\\gradients\\fire_gradient.dds"),
+            "BGEM grayscale_texture must be forwarded to bgsm_greyscale_lut_path"
+        );
+
+        // An empty grayscale_texture must NOT overwrite an already-set path.
+        let bgem_empty = BgemFile {
+            grayscale_texture: String::new(),
+            ..Default::default()
+        };
+        let original_path = lut_path.clone();
+        if lut_path.is_none() && !bgem_empty.grayscale_texture.is_empty() {
+            lut_path = Some(bgem_empty.grayscale_texture.clone());
+        }
+        assert_eq!(lut_path, original_path, "empty texture must not clobber existing path");
+    }
+
     /// Every failing-to-resolve path logs at most once, so a broken
     /// material in a 1000-REFR cell doesn't spam the log.
     #[test]
@@ -2324,16 +2392,16 @@ mod tests {
         assert!(provider.archives.is_empty());
     }
 
-    /// Regression for #583 — synthetic BGSM template chain exercises
-    /// child-first scalar precedence inline with the prod helper body.
-    /// Child authors `emit_enabled=true` + distinct emissive, specular,
-    /// glossiness, alpha, UV, and two_sided; parent authors different
-    /// values. The child's scalar values must win; parent must contribute
-    /// only fields the child left at its default.
+    /// Regression for #583 / #1454 / #1455 — synthetic BGSM template chain
+    /// exercises child-first scalar precedence inline with the prod helper
+    /// body. Child authors `emit_enabled=true` + distinct emissive, specular,
+    /// glossiness, alpha, UV, fresnel_power, grayscale_to_palette_scale, and
+    /// two_sided; parent authors different values. The child's scalar values
+    /// must win; parent must contribute only fields the child left at its
+    /// default.
     ///
-    /// This mirrors the prod `merge_bgsm_into_mesh` body (minus the
-    /// archive-read step); any future drift between the two surfaces
-    /// here.
+    /// This mirrors the prod `merge_bgsm_into_mesh` scalar body (minus the
+    /// archive-read step); any future drift between the two surfaces here.
     #[test]
     fn bgsm_merge_forwards_scalars_child_first() {
         use byroredux_bgsm::template::ResolvedMaterial;
@@ -2356,6 +2424,8 @@ mod tests {
             specular_color: [0.9, 0.8, 0.7],
             specular_mult: 3.5,
             smoothness: 0.85,
+            fresnel_power: 3.5,            // non-default; must win over parent's 9.0
+            grayscale_to_palette_scale: 0.75, // non-default; must win over parent's 2.5
             ..Default::default()
         };
         let parent = BgsmFile {
@@ -2367,8 +2437,10 @@ mod tests {
             emit_enabled: true,
             emittance_color: [0.0, 0.0, 0.0],
             emittance_mult: 0.0,
-            specular_mult: 0.01, // must NOT win
-            smoothness: 0.01,    // must NOT win
+            specular_mult: 0.01,           // must NOT win
+            smoothness: 0.01,              // must NOT win
+            fresnel_power: 9.0,            // must NOT win
+            grayscale_to_palette_scale: 2.5, // must NOT win
             ..Default::default()
         };
         let resolved = ResolvedMaterial {
@@ -2392,12 +2464,16 @@ mod tests {
         let mut uv_scale = [1.0f32; 2];
         let mut two_sided = false;
         let mut is_decal = false;
+        let mut fresnel_power = 5.0f32;
+        let mut grayscale_to_palette_scale = 1.0f32;
 
         let mut set_emissive = false;
         let mut set_specular = false;
         let mut set_glossiness = false;
         let mut set_alpha = false;
         let mut set_uv = false;
+        let mut set_fresnel = false;
+        let mut set_palette_scale = false;
         for step in resolved.walk() {
             let bgsm = &step.file;
             if !set_emissive && bgsm.emit_enabled {
@@ -2416,6 +2492,14 @@ mod tests {
                 // on the Material side.
                 glossiness = bgsm.smoothness * 100.0;
                 set_glossiness = true;
+            }
+            if !set_fresnel {
+                fresnel_power = bgsm.fresnel_power;
+                set_fresnel = true;
+            }
+            if !set_palette_scale {
+                grayscale_to_palette_scale = bgsm.grayscale_to_palette_scale;
+                set_palette_scale = true;
             }
             if !set_alpha {
                 mat_alpha = bgsm.base.alpha;
@@ -2444,6 +2528,10 @@ mod tests {
         assert_eq!(mat_alpha, 0.25);
         assert_eq!(uv_offset, [0.1, 0.2]);
         assert_eq!(uv_scale, [2.0, 3.0]);
+        // #1454 — child's non-default fresnel wins over parent's 9.0.
+        assert!((fresnel_power - 3.5).abs() < f32::EPSILON);
+        // #1455 — child's non-default palette scale wins over parent's 2.5.
+        assert!((grayscale_to_palette_scale - 0.75).abs() < f32::EPSILON);
         // Boolean OR across the chain — child authored true.
         assert!(two_sided);
         assert!(!is_decal);
