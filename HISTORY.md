@@ -24,6 +24,30 @@ Commits hold that record.
 
 ---
 
+## Session 46 — R6a-stale-14 + renderer stability + M24.2 Phase 2 + ReSTIR-DI Phase 1  (2026-06-03, 017996bc..04b8d4d9, 30 commits)
+
+Session 46 opened on the heels of Session 45's CSG precombined geometry + NIFAL surface-audit dual landing, which left three build-breaking crates (sfmaterial, scripting, renderer) and a pending R6a-stale-14 bench cycle. The first half of the session burned through the stability and material backlog; the second half pushed two new capability threads: M24.2 Phase 2 semantic ESM decoding and a ReSTIR-DI Phase 1 reservoir landing.
+
+- **Renderer stability (7 commits)** — BUILD-SFMATERIAL/SCRIPTING/RENDERER-TEST/NIF-type-mismatch all resolved (`a7083568`); REND-#1447 (SPIR-V recompile after DoF CameraUBO) and #1448 (screenshot extent captured at record time, not resize time) closed (`e6df0f5b`/`f8e5daad`); TLAS resize defensive `queue_wait_idle` + scheduler undeclared-parallel guard (#1390, #1394) landed (`a7e1502b`); compile-time 24-bit TLAS guard + color-curve sentinel filter (#1392, #1393) (`c7ef15ca`); AllocatorResource drop-before-renderer-destroy ordering (#1406) (`299e6a84`); BGEM failed-paths flush-on-overflow replaced with half-eviction (#1430) (`797424e4`).
+
+- **Performance wins (3 commits, 6 issues, #1371–#1379)** — per-frame dirty-Vec + animation-entity collect allocs eliminated (#1371, #1372) (`22b5f558`); billboard gated on camera motion + visibility snapshot + ordering pin (#1374–#1376) (`b3ce77f2`); GT gate hoisted + LOD cap assertion + bone pool contracted after sweep (#1377–#1379) (`ea412594`). Combined effect: Whiterun control bench +10.0% FPS (329.8 → 362.8) confirmed at R6a-stale-14.
+
+- **BLAS/RT correctness + bench (2 commits)** — IsCollisionOnly synthesized-collider gate (`1c26bc25`): FO4/Starfield synthesized trimesh colliders no longer enter BLAS (ghost-entity approach mirrors the bhk authored-collision path); R6a-stale-14 bench confirmed at HEAD `1c26bc25` (Prospector +6.7% FPS / fence −4.6%, Whiterun +10.0%, MedTek baseline now 65.2 FPS / 21 414 ent from M49 CSG load) (`17073409`). R6a-stale-15 filed for full fence-recovery confirmation.
+
+- **ReSTIR-DI Phase 1 (1 commit)** — Reservoir structs + initial candidate-sampling path wired into `triangle.frag` + `VulkanContext`; `RESERVOIR_FORMAT = R32G32B32A32_UINT` + `reservoir_view` added to GBuffer (`9abbe510`). Temporal accumulation + spatial resampling passes remain Phase 2.
+
+- **Material improvements (5 commits)** — BGEM base_color/base_color_scale forwarded as effect emissive (#1358) (`a2a36d2d`); BGEM fresnel_power + grayscale_to_palette_scale + grayscale_texture forwarded (#1453–#1455) (`87ec0268`); BSEffectShaderProperty.lighting_influence packed into GpuMaterial bits 16–23 via `pack_effect_shader_flags`, EFFECT_LIT branch wired + auto-gen constant propagated (#890, EFFECT-LIT closed) (`ea044b68`); FO3/FNV PBR classification overhaul + light direction zup_point_to_yup fix (`83d6a155`/`b4c453c7`).
+
+- **M24.2 Phase 2 ESM semantic decoding (1 commit)** — QUST per-stage CTDA, SPEL/ENCH EFID/EFIT chain, MGEF full effect struct + flags, AVIF PERK list lookup, and INFO records all semantically decoded (`45509f4f`). DIAL full conversation tree and per-function-type EPFD depth remain open; Phase C (typed `read_sub::<T>` schema layer) deferred.
+
+- **Physics extension (1 commit)** — Autostep on stairs and doorsteps + smooth camera step-up attached to the M28.5 kinematic character controller (`99af1f79`); closes the most friction-prone navigation edge case in vanilla Bethesda interiors.
+
+- **Infrastructure (2 commits)** — Tech-debt audit command scaffolded with detailed dimensions and sub-processes (`04b8d4d9`); comprehensive docs for plugin loading, shader pipeline, and feature matrix added (`78540d8e`).
+
+Net: +15 tests (2758 → 2773), +1 304 non-test LOC (~220 400 → ~221 700). Bench-of-record at `1c26bc25` (R6a-stale-14, 2026-06-03): Prospector 76.2 FPS / fence=11.12 ms / 3516 ent (+6.7%); Whiterun 362.8 FPS / fence=0.98 ms (+10.0%); MedTek 65.2 FPS / 21 414 ent (new baseline, M49 CSG). R6a-stale-15 pending for fence recovery confirmation.
+
+---
+
 ## Session 45 — M49 FO4 precombined geometry + NIFAL surface audit complete + EXAL introduced  (2026-06-02, c1951b89..633729f0, 10 commits)
 
 Three parallel arcs closed in a compact 10-commit session. The headline
