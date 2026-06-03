@@ -295,7 +295,11 @@ slots are filled from the resolved material:
 `merge_bgsm_into_mesh` returns `true` when any field was filled and is a
 no-op (returns `false`) when the path can't resolve in any opened
 materials archive. Failed paths are cached so a missing BGSM is only
-warned about once.
+warned about once. The `bgem_cache` and `failed_paths` maps both have a
+capacity ceiling; when it is reached the oldest 50 % of entries are evicted
+(half-eviction, `797424e4`) rather than flushing the entire map — the
+prior full-flush strategy caused a cold-restart thundering-herd on the
+next cell load.
 
 ### 10. Spawn collision entities
 

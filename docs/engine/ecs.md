@@ -491,7 +491,9 @@ do; it makes contention diagnosable. Three states per system:
 - **Declared (empty)** — `Access::new()`: "I touch no ECS state." Conflict-free.
 - **Declared (with claims)** — conflict analysis trusts the shape.
 - **Undeclared** — `None` (closures and not-yet-migrated systems): every
-  pairing is classified `Unknown`, the pessimistic fallback (*not* "no conflict").
+  pairing is classified `Parallel` (#1394 — formerly `Unknown`, changed so
+  the ABBA detector can still analyse these pairs rather than blocking).
+  `Parallel` is the pessimistic fallback (*not* "no conflict").
 
 `Scheduler::access_report()` returns an `AccessReport` (per-stage
 `StageReport` / `StageConflictRow` / `SystemAccessRow`) with helpers like

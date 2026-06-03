@@ -392,8 +392,10 @@ already inside a .nif, no separate .kf), `import_kf` follows the
 manager's `sequence_refs`, and `import_embedded_animations` walks every
 `NiObjectNET`-bearing block's `controller_ref → next_controller_ref`
 chain to capture the *ambient* loops (UV scroll, alpha fade, vis flicker,
-material-color pulse, texture flipbook, light flicker). See the M21 entry
-in the [ROADMAP](../../ROADMAP.md) for the original acceptance details.
+material-color pulse, texture flipbook, light flicker). Inline `NiTransform`
+controllers that appear on the node's own chain (rather than inside a
+`NiControllerManager`) are also imported via this path (#1440, `cd6bd1bb`).
+See the M21 entry in the [ROADMAP](../../ROADMAP.md) for the original acceptance details.
 
 ## Status
 

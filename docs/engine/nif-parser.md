@@ -303,7 +303,11 @@ since nif.xml has no top-level `BSGeometry` schema.
 ### Node subtypes (N26 audit follow-up)
 `NiBillboardNode` (camera-facing children, u16 mode since 10.1.0.0),
 `NiSwitchNode` (u16 flags + u32 active index), `NiLODNode`
-(inherits NiSwitchNode + NiLODData ref), `NiSortAdjustNode`
+(inherits NiSwitchNode + NiLODData ref — `NiRangeLODData` is the typed
+subclass, now a parsed block carrying per-level near/far distances and a
+Y-up LOD center; `lod_group` is surfaced on `ImportedNode` as forward-compat
+coverage — 0 occurrences in shipped vanilla archives but present in mods and
+future titles; see `633729f0`), `NiSortAdjustNode`
 (transparency sorter override), `NiCamera` (embedded cinematic
 frustum + viewport + lod_adjust for cutscene rigs),
 `BsRangeNode` (BSRangeNode / BSBlastNode / BSDamageStage / BSDebrisNode

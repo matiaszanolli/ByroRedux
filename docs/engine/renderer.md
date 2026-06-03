@@ -232,7 +232,11 @@ per-pass pipelines (SVGF, TAA, caustic, water, bloom, volumetrics, SSAO,
 composite, egui). [`Drop`](../../crates/renderer/src/vulkan/context/mod.rs)
 tears everything down in reverse order under `device_wait_idle()`, with a
 panic-unwind guard (#1128) so the teardown `debug_assert`s don't fire
-during a panic.
+during a panic. **Important ordering constraint (#1406):** `AllocatorResource`
+must be removed from the ECS `World` *before* `VulkanContext::drop()` is
+reached — the allocator's own `Drop` holds a live `Arc<Device>` and will
+call into the Vulkan driver; if the `World` outlives the `VulkanContext`
+the allocator fires after the logical device has already been destroyed.
 
 ## Per-frame draw
 

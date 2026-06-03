@@ -394,6 +394,49 @@ post-Shattered-Space (~128K+ DX10 textures; was 22 as of Session 7,
 re-checked 2026-05-21 per #1185) and 53 vanilla Fallout 4 BA2 archives
 (v1/v7/v8 GNRL + DX10), zero extraction failures.
 
+## FO4 `.csg` precombined-geometry reader
+
+[`crates/bsa/src/csg.rs`](../../crates/bsa/src/csg.rs) — added M49 (`b93ad7a9`).
+
+Fallout 4 ships a second archive format alongside BA2: `<Plugin> - Geometry.csg`
+files that store the vertex / triangle data for *precombined* mesh objects.
+Precombines are statically merged renderable clusters stored in `_oc.nif` files;
+each cluster carries `BSPackedCombinedSharedGeomDataExtra` blocks holding only a
+`(filename_hash, data_offset)` pointer into the companion `.csg` blob, not inline
+geometry. Without this reader every precombine spawned a zero-vertex entity.
+
+### Container layout
+
+```
+0x00  4 bytes  magic "bcsg"
+0x04  4 bytes  num_objects
+0x08  4 bytes  num_chunks
+0x0C  ChunkEntry[num_chunks]   { u32 compressed_size, u32 file_offset }
+…    ObjectEntry[num_objects]  (20 bytes each — CK construction-kit index)
+…    zlib chunks               each inflates to 65 536 B (last may be partial)
+```
+
+The uncompressed **PSG space** is the concatenation of all inflated chunks.
+A `data_offset` from a NIF block indexes straight into this flat space;
+`CsgArchive::read_psg(data_offset, len)` decompresses (and caches) only the
+chunks it touches.
+
+### Mesh decoding
+
+Per-object geometry is decoded from PSG space as a `BSPackedGeomObject` TLV:
+
+- Positions: u16 half-floats decoded to f32, Z-up → Y-up converted.
+- Normals: packed byte normals expanded to `[f32; 3]`.
+- UVs: half-float u, v.
+- Indices: u16 triangle list.
+- LOD tiers: each object carries 3 levels; cell-loader selects tier 0 only
+  (nearest LOD), fixing the earlier bug that spawned all three (`a30c088a`).
+- Texturing: resolved from the owning REFR's `BSPackedCombinedDataEntry`
+  shape-slot index into the cell's texture-set list (`2900de70`).
+
+Full byte-layout spec with validation notes at
+[`docs/engine/fo4-csg-format.md`](fo4-csg-format.md).
+
 ## Tests
 
 - **11 unit tests** between BSA and BA2 — `normalize_path`, header rejection

@@ -11,23 +11,33 @@ built, where the code lives, and what guarantees it makes.
 | [Architecture Overview](architecture.md) | all | Design principles, workspace layout, crate dependency graph |
 | [ECS](ecs.md) | core | Components, storage backends, queries, scheduler, resources |
 | [Vulkan Renderer](renderer.md) | renderer | Init chain, RT pipeline, multi-light, BLAS/TLAS, swapchain |
+| [Shader Pipeline](shader-pipeline.md) | renderer | All shader files, G-buffer layout, GPU data types (`GpuCamera`/`GpuInstance`/`GpuMaterial`/`GpuLight`), descriptor sets, pass order, pipeline cache |
 | [Shadow Pipeline Trade-offs](shadow-pipeline-tradeoffs.md) | renderer | Alpha-era constants (`W_CLAMP`, TAA γ, M=8, 24-bit seed) with invalidation conditions |
-| [NIF Parser](nif-parser.md) | nif | Block-type dispatch (~190 entries), version handling, robustness; per-game parse-rate matrix in [Game Compatibility](game-compatibility.md) |
-| [Archives (BSA + BA2)](archives.md) | bsa | BSA v103/104/105, BA2 v1/2/3/7/8, GNRL + DX10 |
+| [NIF Parser](nif-parser.md) | nif | Block-type dispatch (~254 arms, source of truth: `blocks/mod.rs`), version handling, robustness |
+| [NIFAL — NIF Abstraction Layer](nifal.md) | nif, byroredux | `Imported*` → canonical ECS translation boundary; material, particle, collision, LOD slices |
+| [EXAL — Exterior Abstraction Layer](exal.md) | byroredux, renderer | NIFAL mirror for outdoor rendering: terrain, sky, sun, weather, water, LOD |
+| [Archives (BSA + BA2 + CSG)](archives.md) | bsa | BSA v103/104/105, BA2 v1/2/3/7/8 GNRL + DX10, FO4 `.csg` precombined geometry |
+| [Plugin Loading](plugin-loading.md) | plugin, core | `PluginManifest`, `DataStore`, `DependencyResolver`, Form ID system, ESM parser, conflict resolution |
 | [ESM Records](esm-records.md) | plugin | Cell loading, items, NPCs, factions, leveled lists |
-| [Asset Pipeline](asset-pipeline.md) | byroredux, nif, bsa | TextureProvider, mesh cache, NIF→ECS import |
-| [Animation](animation.md) | core, nif | Keyframe pipeline, controllers, blending stack |
+| [Asset Pipeline](asset-pipeline.md) | byroredux, nif, bsa | TextureProvider, mesh cache, NIF→ECS import, BGSM/BGEM material merge |
+| [Animation](animation.md) | core, nif | Keyframe pipeline, controllers, blending stack, GPU skinning |
 | [Physics](physics.md) | physics | Rapier3D integration, NIF collision → ECS → stepper, player body |
 | [Cell Lighting](lighting-from-cells.md) | byroredux | XCLL extraction, RT integration |
+| [Material Abstraction](material-abstraction.md) | byroredux, nif | Per-game material translation to canonical `Material`; glass/PBR classify |
+| [Per-game Translation Survey](per-game-translation-survey.md) | nif, byroredux | Game-specific quirks, shader variant coverage, known gaps per title |
 | [UI System](ui.md) | ui | Scaleform/SWF via Ruffle, deferred texture upload |
+| [Scripting](scripting.md) | scripting | ECS-native scripting (events, timers, condition evaluator, M47 arc) |
+| [Papyrus Parser](papyrus-parser.md) | papyrus | `.psc` → AST parser (M30.2), language grammar |
 | [Game Loop](game-loop.md) | byroredux | winit integration, frame loop, cell loading |
 | [Coordinate System](coordinate-system.md) | nif, byroredux | Z-up→Y-up, CW rotations, transform composition |
 | [String Interning](string-interning.md) | core | `FixedString`, `StringPool`, `Name` component |
 | [C++ Interop](cxx-interop.md) | cxx-bridge | `cxx` crate bridge, FFI boundary |
 | [Platform](platform.md) | platform | winit windowing, raw handles |
-| [Scripting](scripting.md) | scripting | ECS-native scripting (events, timers); contrast with Papyrus |
 | [Game Compatibility](game-compatibility.md) | all | Per-game parse rate matrix and known gaps |
+| [FO4 CSG Format](fo4-csg-format.md) | bsa | `BSPackedGeomObject` TLV spec for FO4 precombined geometry |
+| [Geometry Defect Triage](geometry-defect-triage-workflow.md) | nif, byroredux | Workflow for diagnosing and fixing mesh import artefacts |
 | [Debug CLI](debug-cli.md) | debug-protocol, debug-server, byro-dbg | Live ECS inspection, Papyrus expression queries, screenshots |
+| [Memory Budget](memory-budget.md) | renderer, bsa, byroredux | VRAM/RAM ceilings, SSBO sizes, LRU eviction thresholds, deferred-destroy queue |
 | [Testing](testing.md) | all | Unit + integration test inventory, how to run |
 | [Dependencies](dependencies.md) | all | Workspace crates and per-crate deps |
 
