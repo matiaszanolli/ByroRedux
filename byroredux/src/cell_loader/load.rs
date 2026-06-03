@@ -230,13 +230,12 @@ pub fn load_cell_with_masters(
 
     // 3a. FO4+ PreCombined Mesh spawn (#1188). Run BEFORE REFR
     // loading so the spawn count decides whether `cell.absorbed_refs`
-    // is honored. The shared-variant `_oc.nif` files defer their
-    // BSTriShape vertex/triangle data to a companion
-    // `Fallout4 - Geometry.csg` blob we don't yet parse, so spawning
-    // currently yields zero entities for vanilla FO4 cells; in that
-    // case we MUST render the original architecture REFRs (otherwise
-    // the cell renders as "props floating in a void"). Empty on
-    // non-FO4 cells — early-return inside the helper.
+    // is honored. The shared-variant `_oc.nif` files are resolved via
+    // `Fallout4 - Geometry.csg` (M49 complete). If spawn succeeds,
+    // the absorption gate suppresses per-REFR rendering of the original
+    // architecture (which is flagged XPRI). Empty on non-FO4 cells
+    // or when CSG resolution fails — fallback via the conditional
+    // gate in load_cell_with_masters.
     let (pc_spawned, _pc_misses) = super::precombined::spawn_precombined_meshes(
         cell,
         // Interior cells: cell origin IS the world origin, so the

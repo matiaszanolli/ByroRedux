@@ -327,11 +327,9 @@ pub fn load_one_exterior_cell(
     // FO4+ PreCombined Mesh spawn (#1221 / D3-NEW-02). Mirrors the
     // interior loader's Phase-3a. `cell.precombined_mesh_hashes` and
     // `cell.absorbed_refs` are populated post-#1220 by the exterior
-    // walker in `wrld.rs`; today (no CSG reader) the precombined
-    // import always returns zero meshes, so the conditional-absorption
-    // gate below ignores the XPRI list and renders REFRs as before.
-    // When the CSG reader lands, `pc_spawned > 0` becomes the common
-    // case for Commonwealth tiles and the absorption gate engages.
+    // walker in `wrld.rs`. M49 complete: CSG geometry is resolved and
+    // spawned; the absorption gate honors the XPRI list, suppressing
+    // per-REFR rendering of baked architecture on Commonwealth tiles.
     //
     // `cell_grid_to_world_yup(gx, gy)` is the per-tile world-space
     // origin (Y-up); the bake's cell-local coords are translated by

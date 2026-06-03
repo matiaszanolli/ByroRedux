@@ -8,29 +8,23 @@
 //! flagging them as precombined. The runtime spawns the combined NIF
 //! instead.
 //!
-//! **Current state**: this loader walks the `_oc.nif` files but each
-//! BSTriShape ships with `num_vertices = 0` and an empty inline buffer
-//! — vanilla FO4 stores the actual vertex / triangle bytes in a
-//! companion `Fallout4 - Geometry.csg` blob (one big binary keyed by
-//! filename hash + offset, per `BSPackedGeomObject`). Until a CSG
-//! reader lands, **this pass spawns zero entities and the conditional
-//! gate in [`super::load::load_cell_with_masters`] falls back to
-//! per-REFR rendering** (matches Bethesda's `bUseCombinedObjects=0`
-//! behaviour). Without that fallback Dugout Inn rendered as "props
-//! floating in a void" (2026-05-19).
+//! **Current state** (M49 — complete): this loader reads each `_oc.nif`
+//! from the asset BSA chain (typically `Fallout4 - MeshesExtra.ba2`), then
+//! resolves the vertex / triangle data from the companion `Fallout4 - Geometry.csg`
+//! blob via `CsgArchive` (one big zlib-compressed PSG keyed by filename hash
+//! + offset per `BSPackedGeomObject`). Meshes are decoded to Y-up, spawned
+//! at cell-local identity, and tagged as `RenderLayer::Architecture`. LOD is
+//! selected by triangle count (finest LOD only, per `fo4-csg-format.md:138-142`).
+//! Absorption gate in [`super::load::load_cell_with_masters`] (conditional on
+//! spawn count) honors the cell's `absorbed_refs` list, suppressing per-REFR
+//! rendering of baked REFRs.
 //!
-//! Stage A scope (extraction works, no geometry):
-//! - Read each `_oc.nif` from the asset BSA chain (typically
-//!   `Fallout4 - MeshesExtra.ba2`).
-//! - Parse it through the standard NIF pipeline.
-//! - Spawn entities at cell-local identity if any mesh survives import.
-//! - Tag as `RenderLayer::Architecture`.
-//!
-//! Deferred (future PreCombined-Geometry milestone):
-//! - CSG / PSG companion reader (the actual data we're missing today).
-//! - LOD-mip selection (load level-0 only).
-//! - Visibility / `.uvd` occlusion data.
-//! - Collision (`_precomb.nif` siblings).
+//! Deferred sub-items (M49 Stage B):
+//! - Collision (`_precomb.nif` siblings) — authored convex hulls for baked
+//!   surfaces. FO4 architecture today gets synthesized trimesh colliders via
+//!   fallback at `spawn.rs:1063` (see `IsCollisionOnly` marker component).
+//! - Visibility / `.uvd` occlusion data — previs PVS keyed to visibility groups.
+//!   Currently no occlusion-volume or CPU coarse-cull system exists.
 
 use byroredux_bsa::CsgArchive;
 use byroredux_core::ecs::components::RenderLayer;
