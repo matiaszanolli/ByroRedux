@@ -1248,8 +1248,10 @@ fn imported_light_from_base(
     // Gamebryo lights point down the local -Z axis in their own space.
     // Transform that via the world rotation, then convert to Y-up.
     let rot = &world.rotation;
-    let dir_zup = [-rot.rows[0][2], -rot.rows[1][2], -rot.rows[2][2]];
-    let direction = zup_point_to_yup(&dir_zup);
+    // Extract local -Z column (light points along -Z in Gamebryo), then
+    // convert Z-up to Y-up via the same [x, z, -y] swap that zup_point_to_yup uses.
+    let [dx, dy, dz] = [-rot.rows[0][2], -rot.rows[1][2], -rot.rows[2][2]];
+    let direction = byroredux_core::math::coord::zup_to_yup_pos([dx, dy, dz]);
 
     // Dimmer scales the diffuse contribution — the only channel the
     // engine currently consumes. Ambient/specular are stored for later.

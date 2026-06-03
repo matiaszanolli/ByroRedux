@@ -3,6 +3,7 @@
 use super::super::composite::HDR_FORMAT;
 use super::super::gbuffer::{
     ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT,
+    RESERVOIR_FORMAT,
 };
 use super::super::ssao::SsaoPipeline;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -187,8 +188,8 @@ impl VulkanContext {
         // every attachment format the render pass binds is constant
         // across resizes. See PIPE-2 / #576.
         if format_changed {
-            // Main render pass: 6 color (HDR + G-buffer + raw_indirect
-            // + albedo) + depth.
+            // Main render pass: 7 color (HDR + G-buffer + raw_indirect
+            // + albedo + reservoir) + depth.
             self.render_pass = create_render_pass(
                 &self.device,
                 HDR_FORMAT,
@@ -197,6 +198,7 @@ impl VulkanContext {
                 MESH_ID_FORMAT,
                 RAW_INDIRECT_FORMAT,
                 ALBEDO_FORMAT,
+                RESERVOIR_FORMAT,
                 self.depth_format,
             )?;
 
@@ -628,6 +630,8 @@ impl VulkanContext {
         let motion_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.motion_view(i)).collect();
         let mesh_id_views: Vec<vk::ImageView> =
             (0..n).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
+        let reservoir_views: Vec<vk::ImageView> =
+            (0..n).map(|i| gbuffer_ref.reservoir_view(i)).collect();
         self.framebuffers = create_main_framebuffers(
             &self.device,
             self.render_pass,
@@ -637,6 +641,7 @@ impl VulkanContext {
             &mesh_id_views,
             &raw_indirect_views,
             &albedo_views,
+            &reservoir_views,
             self.depth_image_view,
             self.swapchain_state.extent,
         )?;

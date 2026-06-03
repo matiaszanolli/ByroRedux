@@ -1,3 +1,4 @@
+use crate::chunk::ChunkType;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -26,8 +27,8 @@ pub enum Error {
 
     #[error("expected {wanted:?} chunk, got {got:?}")]
     WrongChunkType {
-        wanted: crate::ChunkType,
-        got: crate::ChunkType,
+        wanted: ChunkType,
+        got: ChunkType,
     },
 
     #[error("unknown chunk type {raw:#010x} at chunk index {index}")]
@@ -36,7 +37,7 @@ pub enum Error {
     #[error("chunk #{index} ({chunk_type:?}) declares size {size} but only {remaining} bytes remain in stream")]
     ChunkOverflow {
         index: usize,
-        chunk_type: crate::ChunkType,
+        chunk_type: ChunkType,
         size: u32,
         remaining: usize,
     },

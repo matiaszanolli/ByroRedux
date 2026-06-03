@@ -55,6 +55,7 @@ mod string_table;
 mod types;
 mod value;
 
+pub use chunk::ChunkType;
 pub use error::{Error, Result};
 pub use reader::ComponentDatabaseFile;
 pub use value::Value;

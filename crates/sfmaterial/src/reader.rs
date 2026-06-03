@@ -1,7 +1,8 @@
 use crate::chunk::{Chunk, ChunkType};
 use crate::types::{BuiltinType, Class, ClassFlags, Field, TypeReference};
 use crate::value::{ObjectInstance, Ref, Value};
-use crate::{Error, Result, StringTable};
+use crate::string_table::StringTable;
+use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 const SIGNATURE_BETH: u32 = 0x48544542;

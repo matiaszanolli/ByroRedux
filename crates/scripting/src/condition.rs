@@ -160,7 +160,15 @@ impl ConditionContext {
             RunOn::CombatTarget => self.combat_target,
             RunOn::LinkedReference => self.linked_reference,
             RunOn::Reference => {
-                world.find_by_form_id(condition.reference_form_id)
+                // FormID→EntityId resolver not yet wired: condition.reference_form_id
+                // is a raw u32 ESM form ID; find_by_form_id requires an interned FormId.
+                // Returns None until a u32→FormId pool lookup is plumbed here.
+                log::trace!(
+                    "M47.1: RunOn::Reference for form_id {:08X} — \
+                     FormID→EntityId resolver not yet wired",
+                    condition.reference_form_id,
+                );
+                None
             }
             RunOn::QuestAlias | RunOn::PackageData | RunOn::EventData => {
                 log::trace!(
@@ -199,10 +207,13 @@ pub fn evaluate_condition(
     let comparand = match condition.comparand {
         ConditionValue::Literal(v) => v,
         ConditionValue::Global(form_id) => {
-            world.try_resource::<byroredux_plugin::esm::index::EsmIndex>()
-                .and_then(|idx| idx.globals.get(&form_id))
-                .map(|g| g.value)
-                .unwrap_or(0.0)
+            // EsmIndex doesn't implement Resource and isn't stored in World yet.
+            // GLOB lookup deferred — returns 0.0 (Bethesda's "missing GLOB defaults to 0").
+            log::trace!(
+                "M47.1: Global comparand {form_id:08X} — \
+                 GLOB lookup deferred (returns 0.0 fallback)"
+            );
+            0.0
         }
     };
 
@@ -220,22 +231,25 @@ pub fn evaluate_function(
 ) -> f32 {
     match function {
         ConditionFunction::GetActorValue => {
-            if let Some(stats) = world.try_get::<crate::papyrus_demo::actor_stats::ActorStats>(entity) {
-                if let Some(val) = stats.get_by_form_id(condition.param_1) {
-                    return val;
-                }
-            }
+            // param_1 is an AVIF FormID; ActorStats is keyed by string name.
+            // AVIF→name resolver deferred to M47.1 follow-up.
+            log::trace!(
+                "M47.1: GetActorValue(param_1={:08X}) — \
+                 AVIF→ActorStats key resolver deferred",
+                condition.param_1,
+            );
+            let _ = entity;
             0.0
         }
         ConditionFunction::GetDistance => {
-            if let Some(target) = world.find_by_form_id(condition.param_1) {
-                if let (Some(t1), Some(t2)) = (
-                    world.try_get::<byroredux_core::ecs::GlobalTransform>(entity),
-                    world.try_get::<byroredux_core::ecs::GlobalTransform>(target)
-                ) {
-                    return t1.translation.distance(t2.translation);
-                }
-            }
+            // param_1 is a raw u32 ESM FormID; find_by_form_id needs an interned FormId.
+            // FormID→EntityId resolver deferred.
+            log::trace!(
+                "M47.1: GetDistance(target={:08X}) — \
+                 FormID→EntityId resolver deferred",
+                condition.param_1,
+            );
+            let _ = entity;
             0.0
         }
         ConditionFunction::GetStage => {
@@ -266,27 +280,36 @@ pub fn evaluate_function(
             }
         }
         ConditionFunction::GetFactionRank => {
-            if let Some(factions) = world.try_get::<byroredux_core::ecs::components::FactionMembership>(entity) {
-                if let Some(rank) = factions.get_rank(condition.param_1) {
-                    return rank as f32;
-                }
-            }
+            // FactionMembership ECS component not yet defined.
+            // Returns -1 (Bethesda's "not in faction" sentinel).
+            log::trace!(
+                "M47.1: GetFactionRank(faction={:08X}) — \
+                 FactionMembership component not yet plumbed",
+                condition.param_1,
+            );
+            let _ = entity;
             -1.0
         }
         ConditionFunction::GetIsID => {
-            if let Some(base_form) = world.try_get::<byroredux_core::ecs::components::BaseFormId>(entity) {
-                if base_form.0 == condition.param_1 {
-                    return 1.0;
-                }
-            }
+            // BaseFormId ECS component not yet defined. FormIdComponent holds
+            // an interned FormId, not the raw u32 needed for direct comparison
+            // with param_1. Base-form tracking deferred.
+            log::trace!(
+                "M47.1: GetIsID(base={:08X}) — \
+                 base-FormID tracking on entities not yet plumbed",
+                condition.param_1,
+            );
+            let _ = entity;
             0.0
         }
         ConditionFunction::HasPerk => {
-            if let Some(perks) = world.try_get::<byroredux_core::ecs::components::PerkList>(entity) {
-                if perks.contains(&condition.param_1) {
-                    return 1.0;
-                }
-            }
+            // PerkList ECS component not yet defined.
+            log::trace!(
+                "M47.1: HasPerk(perk={:08X}) — \
+                 PerkList component not yet plumbed",
+                condition.param_1,
+            );
+            let _ = entity;
             0.0
         }
         ConditionFunction::Unknown(index) => {
