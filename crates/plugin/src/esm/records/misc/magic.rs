@@ -4,6 +4,52 @@ use super::super::common::{read_lstring_or_zstring, read_zstring};
 use super::super::condition::{parse_ctda, ConditionList};
 use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
+use anyhow::Result;
+
+/// Trait for typed sub-record schema decoding.
+/// Implementers declare the sub-record code and define how to read
+/// their data from a SubReader cursor.
+pub trait SubRecordSchema: Sized {
+    const CODE: [u8; 4];
+    fn read(r: &mut SubReader) -> Result<Self>;
+}
+
+/// Read a SubRecord using a schema implementer.
+pub fn read_sub<T: SubRecordSchema>(sub: &SubRecord) -> Result<T> {
+    if &sub.sub_type != &T::CODE {
+        anyhow::bail!(
+            "SubRecord type mismatch: expected {:?}, got {:?}",
+            std::str::from_utf8(&T::CODE).unwrap_or("invalid UTF-8"),
+            std::str::from_utf8(&sub.sub_type).unwrap_or("invalid UTF-8")
+        );
+    }
+    let mut reader = SubReader::new(&sub.data);
+    T::read(&mut reader)
+}
+
+/// ENIT (Enchantment Header) schema — fixed 16 bytes (FO3/FNV/Oblivion)
+/// or 20 bytes (Skyrim adds cast_type u32). Phase C schema decoder.
+#[derive(Debug, Clone, Copy)]
+struct EnchantmentHeader {
+    pub enchantment_type: u32,    // @0
+    pub charge_amount: u32,       // @4
+    pub enchant_cost: u32,        // @8
+    pub enchant_flags: u32,       // @12
+    // Skyrim adds: cast_type: u32 @16 (not decoded here)
+}
+
+impl SubRecordSchema for EnchantmentHeader {
+    const CODE: [u8; 4] = *b"ENIT";
+
+    fn read(r: &mut SubReader) -> Result<Self> {
+        Ok(EnchantmentHeader {
+            enchantment_type: r.u32_or_default(),
+            charge_amount: r.u32_or_default(),
+            enchant_cost: r.u32_or_default(),
+            enchant_flags: r.u32_or_default(),
+        })
+    }
+}
 
 /// Typed representation of EPFD (entry-point function data) bytes.
 /// The shape depends on the `function_type` byte from EPFT.
@@ -522,15 +568,14 @@ pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
-            // ENIT is fixed 16 bytes on FO3 / FNV / Oblivion; Skyrim
-            // appended a `cast_type` u32 making it 20 — guard `>= 16`
-            // so both layouts decode the shared prefix safely.
+            // ENIT decoded via schema decoder (Phase C).
             b"ENIT" if sub.data.len() >= 16 => {
-                let mut r = SubReader::new(&sub.data);
-                out.enchantment_type = r.u32_or_default();
-                out.charge_amount = r.u32_or_default();
-                out.enchant_cost = r.u32_or_default();
-                out.enchant_flags = r.u32_or_default();
+                if let Ok(header) = read_sub::<EnchantmentHeader>(sub) {
+                    out.enchantment_type = header.enchantment_type;
+                    out.charge_amount = header.charge_amount;
+                    out.enchant_cost = header.enchant_cost;
+                    out.enchant_flags = header.enchant_flags;
+                }
             }
             b"EFID" if sub.data.len() >= 4 => {
                 current_efid = u32::from_le_bytes([
@@ -1024,5 +1069,38 @@ mod tests {
         ];
         let s = parse_spel(0x8888, &subs);
         assert!(s.effects.is_empty());
+    }
+
+    #[test]
+    fn enchantment_header_schema_reads_correctly() {
+        // Test the Phase C schema decoder for ENIT.
+        let mut enit = Vec::new();
+        enit.extend_from_slice(&3u32.to_le_bytes()); // enchantment_type
+        enit.extend_from_slice(&50u32.to_le_bytes()); // charge_amount
+        enit.extend_from_slice(&200u32.to_le_bytes()); // enchant_cost
+        enit.extend_from_slice(&0x0000_0005u32.to_le_bytes()); // enchant_flags
+
+        let sub = SubRecord {
+            sub_type: *b"ENIT",
+            data: enit,
+        };
+
+        let header = read_sub::<EnchantmentHeader>(&sub).expect("read schema");
+        assert_eq!(header.enchantment_type, 3);
+        assert_eq!(header.charge_amount, 50);
+        assert_eq!(header.enchant_cost, 200);
+        assert_eq!(header.enchant_flags, 0x0000_0005);
+    }
+
+    #[test]
+    fn enchantment_header_schema_rejects_wrong_type() {
+        // Schema should reject if sub_type doesn't match CODE.
+        let wrong_sub = SubRecord {
+            sub_type: *b"XXXX",
+            data: vec![0u8; 16],
+        };
+
+        let result = read_sub::<EnchantmentHeader>(&wrong_sub);
+        assert!(result.is_err(), "should reject mismatched sub_type");
     }
 }
