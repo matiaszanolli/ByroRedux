@@ -154,6 +154,111 @@ pub fn reflect_bindings(spirv_bytes: &[u8]) -> Result<Vec<ReflectedBinding>> {
     Ok(out)
 }
 
+/// Compute the std140 byte size of a named uniform block from a SPIR-V module.
+///
+/// Returns `Ok(None)` if the module declares no `OpTypeStruct` named `name`.
+/// The size is `last_member_offset + last_member_size`, rounded up to 16 (the
+/// std140 base alignment of a UBO block). It is read directly from the
+/// committed SPIR-V — no recompile, no `glslangValidator` — so unlike a
+/// byte-for-byte `.spv` diff it is **independent of the GLSL compiler version**.
+///
+/// This is the guard for the #1447 / DoF-`CameraUBO` hazard: a `#[repr(C)]`
+/// Rust UBO struct (e.g. `GpuCamera`) growing while the shaders that read it
+/// are not recompiled leaves the `.spv` block at the old size — silent
+/// per-frame corruption with no validation-layer coverage. Asserting the
+/// block size against `size_of::<GpuStruct>()` catches exactly that drift.
+pub fn uniform_block_size_by_name(spirv_bytes: &[u8], name: &str) -> Result<Option<u32>> {
+    if spirv_bytes.len() % 4 != 0 {
+        bail!(
+            "SPIR-V byte length {} is not a multiple of 4",
+            spirv_bytes.len()
+        );
+    }
+    let mut loader = Loader::new();
+    binary::parse_bytes(spirv_bytes, &mut loader)
+        .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
+    let module = loader.module();
+
+    // OpName carries the GLSL block-type name on its `OpTypeStruct` id.
+    let mut struct_id = None;
+    for inst in &module.debug_names {
+        if inst.class.opcode != Op::Name {
+            continue;
+        }
+        if inst.operands[1].unwrap_literal_string() == name {
+            struct_id = Some(inst.operands[0].unwrap_id_ref());
+            break;
+        }
+    }
+    let Some(struct_id) = struct_id else {
+        return Ok(None);
+    };
+
+    let mut types: HashMap<u32, Instruction> = HashMap::new();
+    for inst in &module.types_global_values {
+        if let Some(id) = inst.result_id {
+            types.insert(id, inst.clone());
+        }
+    }
+
+    let struct_inst = types
+        .get(&struct_id)
+        .ok_or_else(|| anyhow!("struct id={struct_id} ({name}) not in type table"))?;
+    if struct_inst.class.opcode != Op::TypeStruct {
+        bail!("id={struct_id} named {name} is not an OpTypeStruct");
+    }
+    let member_count = struct_inst.operands.len();
+    if member_count == 0 {
+        return Ok(Some(0));
+    }
+    let last_member_type = struct_inst.operands[member_count - 1].unwrap_id_ref();
+
+    // Offset decoration of the final member.
+    let mut last_offset = None;
+    for inst in &module.annotations {
+        if inst.class.opcode != Op::MemberDecorate {
+            continue;
+        }
+        if inst.operands[0].unwrap_id_ref() != struct_id {
+            continue;
+        }
+        if inst.operands[1].unwrap_literal_bit32() as usize != member_count - 1 {
+            continue;
+        }
+        if inst.operands[2].unwrap_decoration() == Decoration::Offset {
+            last_offset = Some(inst.operands[3].unwrap_literal_bit32());
+        }
+    }
+    let last_offset =
+        last_offset.ok_or_else(|| anyhow!("{name}: final member has no Offset decoration"))?;
+
+    let last_size = std140_type_size(last_member_type, &types)?;
+    Ok(Some((last_offset + last_size).div_ceil(16) * 16))
+}
+
+/// std140 size in bytes of a scalar / vector / square-matrix type — the only
+/// shapes the engine's UBO blocks use. Bails on anything else so an unhandled
+/// member type can never silently under-report a block size.
+fn std140_type_size(type_id: u32, types: &HashMap<u32, Instruction>) -> Result<u32> {
+    let inst = types
+        .get(&type_id)
+        .ok_or_else(|| anyhow!("type id={type_id} not in type table"))?;
+    match inst.class.opcode {
+        // OpTypeFloat / OpTypeInt: [width].
+        Op::TypeFloat | Op::TypeInt => Ok(inst.operands[0].unwrap_literal_bit32() / 8),
+        // OpTypeVector: [component_type <id>, component_count].
+        Op::TypeVector => {
+            let comp = inst.operands[0].unwrap_id_ref();
+            let count = inst.operands[1].unwrap_literal_bit32();
+            Ok(count * std140_type_size(comp, types)?)
+        }
+        // OpTypeMatrix: [column_type <id>, column_count]. std140 column stride
+        // is 16 for the float matrices the engine uses (mat4 → 4×16 = 64).
+        Op::TypeMatrix => Ok(inst.operands[1].unwrap_literal_bit32() * 16),
+        other => bail!("unsupported UBO member type {other:?} (id={type_id})"),
+    }
+}
+
 fn resolve_descriptor_type(
     type_id: u32,
     storage_class: StorageClass,
@@ -315,6 +420,41 @@ mod tests {
     // crates/renderer/shaders/*.spv loaded at test time. See the validation
     // test below.
     const SSAO_SPV: &[u8] = include_bytes!("../../shaders/ssao.comp.spv");
+
+    /// Regression: #1447. Every committed `.spv` that reads `CameraUBO` must
+    /// agree on its byte size with the Rust `GpuCamera` it is uploaded from.
+    /// The DoF commit (`400fa68f`) grew `GpuCamera` 304→320 B and edited the
+    /// GLSL but shipped stale `.spv`; the fix (`e6df0f5b`) recompiled them.
+    /// This guard catches the next such drift directly from the binary — no
+    /// `glslangValidator` and no byte-diff, so it is compiler-version-stable.
+    /// (A naïve "recompile and `cmp`" test false-positives across glslang
+    /// versions on complex shaders; the semantic block-size check does not.)
+    #[test]
+    fn camera_ubo_size_matches_gpu_camera_in_every_shader() {
+        use crate::vulkan::scene_buffer::GpuCamera;
+        let expected = std::mem::size_of::<GpuCamera>() as u32;
+        // Every shader that declares the `CameraUBO` block. Add new readers
+        // here so they are pinned too.
+        let shaders: &[(&str, &[u8])] = &[
+            ("triangle.vert", include_bytes!("../../shaders/triangle.vert.spv")),
+            ("triangle.frag", include_bytes!("../../shaders/triangle.frag.spv")),
+            ("cluster_cull.comp", include_bytes!("../../shaders/cluster_cull.comp.spv")),
+            ("water.vert", include_bytes!("../../shaders/water.vert.spv")),
+            ("water.frag", include_bytes!("../../shaders/water.frag.spv")),
+            ("caustic_splat.comp", include_bytes!("../../shaders/caustic_splat.comp.spv")),
+        ];
+        for (name, spv) in shaders {
+            let size = uniform_block_size_by_name(spv, "CameraUBO")
+                .unwrap_or_else(|e| panic!("{name}: reflect CameraUBO failed: {e}"))
+                .unwrap_or_else(|| panic!("{name}: declares no CameraUBO block"));
+            assert_eq!(
+                size, expected,
+                "{name}.spv CameraUBO is {size} B but GpuCamera is {expected} B — \
+                 the shader's committed .spv is stale; recompile it \
+                 (glslangValidator -V {name} -o {name}.spv from crates/renderer/shaders). See #1447."
+            );
+        }
+    }
 
     #[test]
     fn reflect_ssao_bindings() {

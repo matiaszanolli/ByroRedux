@@ -3148,7 +3148,9 @@ void main() {
                 max(rayDist, 0.01)
             );
             rayQueryProceedEXT(rayQuery);
-            if (rayQueryGetIntersectionTypeEXT(rayQuery, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+            
+            bool occluded = rayQueryGetIntersectionTypeEXT(rayQuery, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+            if (occluded) {
                 // Unbiased shadow subtraction: W compensates for the
                 // WRS sampling probability. Clamp to prevent negative
                 // radiance from rounding / fill overlap. #1369 — the
@@ -3160,6 +3162,14 @@ void main() {
                     i, N, V, NdotV, F0, albedo, roughness, metalness,
                     specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
                 Lo = max(Lo - shadowable * W * shadowFade, vec3(0.0));
+            }
+
+            // Export the first reservoir to the G-buffer for ReSTIR-DI temporal/spatial reuse.
+            // We apply visibility reuse immediately: if occluded, set W = 0 so this sample
+            // isn't propagated to neighbors in the spatial reuse pass.
+            if (s == 0) {
+                float singleW = resWSum / max(resWSel[s], 1e-6);
+                outReservoir = packReservoir(Reservoir(i, cluster.count, resWSum, occluded ? 0.0 : singleW));
             }
         }
     }

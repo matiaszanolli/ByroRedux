@@ -934,6 +934,9 @@ mod tests {
             screen: [1920.0, 1080.0, 1.0 / 1920.0, 1.0 / 1080.0],
             params: [0.1, first_frame, 0.0, 0.0],
         };
-        assert_eq!(params.params[1], 0.0, "params.y must be 0.0 in steady state");
+        assert_eq!(
+            params.params[1], 0.0,
+            "params.y must be 0.0 in steady state"
+        );
     }
 }

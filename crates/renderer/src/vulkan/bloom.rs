@@ -338,14 +338,13 @@ impl BloomPipeline {
         let down_sets = MAX_FRAMES_IN_FLIGHT * BLOOM_MIP_COUNT;
         let up_sets = MAX_FRAMES_IN_FLIGHT * (BLOOM_MIP_COUNT - 1);
         let total_sets = down_sets + up_sets;
-        partial.descriptor_pool =
-            try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
-                &down_bindings,
-                down_sets as u32,
-            )
-            .add_layout_bindings(&up_bindings, up_sets as u32)
-            .max_sets(total_sets as u32)
-            .build(device, "bloom descriptor pool"));
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
+            &down_bindings,
+            down_sets as u32,
+        )
+        .add_layout_bindings(&up_bindings, up_sets as u32)
+        .max_sets(total_sets as u32)
+        .build(device, "bloom descriptor pool"));
 
         // ── 6. Per-frame mip pyramids + descriptor sets ───────────────
         for frame_idx in 0..MAX_FRAMES_IN_FLIGHT {
