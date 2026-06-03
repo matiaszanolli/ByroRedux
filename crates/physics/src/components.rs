@@ -77,6 +77,12 @@ pub struct CharacterController {
     /// 16-24 BU per step; 32 BU covers all canonical interior
     /// architecture.
     pub step_height: f32,
+    /// Auto-step minimum platform width (tread depth in the direction
+    /// of movement). BU. Rapier only steps up when the surface above
+    /// the obstacle extends at least this far. FNV doorstep treads are
+    /// typically 8-16 BU; using capsule_radius (18 BU) here blocks
+    /// autostep on narrow thresholds.
+    pub step_min_width: f32,
     /// Max slope angle the character can walk up. Above this, slides
     /// down. 50° matches Bethesda's NavMesh slope limit.
     pub max_slope_climb_deg: f32,
@@ -124,6 +130,7 @@ impl CharacterController {
         gravity: -1373.4, // 2× PhysicsWorld earth gravity for snappier feel
         terminal_velocity: -2000.0,
         step_height: 32.0,
+        step_min_width: 8.0,
         max_slope_climb_deg: 50.0,
         snap_to_ground: 32.0,
         vertical_velocity: 0.0,
@@ -153,6 +160,7 @@ mod tests {
         assert!(c.terminal_velocity < 0.0);
         assert!(c.terminal_velocity < c.gravity, "terminal velocity must be more negative than 1-frame gravity");
         assert!(c.step_height > 0.0);
+        assert!(c.step_min_width > 0.0);
         assert!(c.max_slope_climb_deg > 0.0 && c.max_slope_climb_deg < 90.0);
     }
 

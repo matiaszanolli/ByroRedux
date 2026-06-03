@@ -275,6 +275,12 @@ pub struct CharacterMoveParams {
     /// Auto-step max height, BU. KCC default 32 BU (~46 cm — covers
     /// canonical Bethesda stairs).
     pub step_height: f32,
+    /// Auto-step minimum platform width (tread depth). BU. Rapier only
+    /// steps up when the surface above the obstacle is at least this
+    /// wide. Smaller = more permissive. 8 BU handles FNV doorsteps
+    /// whose treads are often 8-16 BU deep; using capsule_radius here
+    /// blocks autostep on narrow thresholds.
+    pub step_min_width: f32,
     /// Ground-snap distance, BU. Holds the character on terrain
     /// rolls without per-step bouncing.
     pub snap_to_ground: f32,
@@ -416,7 +422,7 @@ impl PhysicsWorld {
         controller.slide = true;
         controller.autostep = Some(CharacterAutostep {
             max_height: CharacterLength::Absolute(params.step_height.max(0.0)),
-            min_width: CharacterLength::Absolute(params.capsule_radius.max(0.1)),
+            min_width: CharacterLength::Absolute(params.step_min_width.max(0.1)),
             include_dynamic_bodies: false,
         });
         controller.max_slope_climb_angle = params.max_slope_climb_deg.to_radians();

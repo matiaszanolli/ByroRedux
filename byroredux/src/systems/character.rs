@@ -239,6 +239,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         dt,
         max_slope_climb_deg: controller.max_slope_climb_deg,
         step_height: controller.step_height,
+        step_min_width: controller.step_min_width,
         snap_to_ground: controller.snap_to_ground,
         exclude_collider: collider_handle,
         kcc_offset_bu: kcc_offset,
@@ -356,7 +357,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
 /// Runs late (after `physics_sync_system` finalises any reaction
 /// kinematics) so the camera lands on the *post-step* body position
 /// — no one-frame lag, no smearing through walls.
-pub(crate) fn camera_follow_system(world: &World, _dt: f32) {
+pub(crate) fn camera_follow_system(world: &World, dt: f32) {
     let mode = world
         .try_resource::<PlayerMode>()
         .map(|r| *r)
@@ -372,8 +373,16 @@ pub(crate) fn camera_follow_system(world: &World, _dt: f32) {
     };
     drop(player_res);
 
-    // Read body position + controller params + camera yaw/pitch.
-    let (body_pos, eye_height) = {
+    // cam_entity needed early so we can read its previous Y for smoothing.
+    let Some(active) = world.try_resource::<ActiveCamera>() else {
+        return;
+    };
+    let cam_entity = active.0;
+    drop(active);
+
+    // Read body position + controller params, and also the camera's
+    // previous-frame Y for step-up smoothing.
+    let (body_pos, eye_height, prev_cam_y) = {
         let Some(gq) = world.query::<GlobalTransform>() else {
             return;
         };
@@ -386,7 +395,14 @@ pub(crate) fn camera_follow_system(world: &World, _dt: f32) {
         let Some(c) = cq.get(player_entity) else {
             return;
         };
-        (g.translation, c.eye_height)
+        let body_y = g.translation.y;
+        let eye_h = c.eye_height;
+        // Fall back to target Y on the very first frame (camera not yet placed).
+        let prev_y = gq
+            .get(cam_entity)
+            .map(|cg| cg.translation.y)
+            .unwrap_or(body_y + eye_h);
+        (g.translation, eye_h, prev_y)
     };
 
     let Some(input) = world.try_resource::<InputState>() else {
@@ -396,13 +412,19 @@ pub(crate) fn camera_follow_system(world: &World, _dt: f32) {
     let pitch = input.pitch;
     drop(input);
 
-    let Some(active) = world.try_resource::<ActiveCamera>() else {
-        return;
+    // Smooth camera Y upward (step-up QoL: ease onto stairs/doorsteps
+    // rather than snapping), but follow downward immediately so the
+    // camera doesn't lag during falls or descents.
+    let target_cam_y = body_pos.y + eye_height;
+    let smooth_cam_y = if target_cam_y > prev_cam_y + 0.5 {
+        // Exponential ease-up: settles within ~0.15 s at k=20.
+        let alpha = 1.0 - (-20.0_f32 * dt).exp();
+        prev_cam_y + (target_cam_y - prev_cam_y) * alpha
+    } else {
+        target_cam_y
     };
-    let cam_entity = active.0;
-    drop(active);
 
-    let cam_pos = body_pos + Vec3::Y * eye_height;
+    let cam_pos = Vec3::new(body_pos.x, smooth_cam_y, body_pos.z);
     let cam_rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
 
     // Write both Transform and GlobalTransform. The camera is a root
