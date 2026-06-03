@@ -56,6 +56,10 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
     // generations catch hierarchy edits (reparent / attach) that move no
     // Transform and leave entity counts unchanged.
     let mut last_state: Option<((usize, usize, EntityId), u64, u64)> = None;
+    // Persistent scratch for the dirty-entity list (#1371). Reusing the
+    // same Vec across frames keeps the backing allocation alive so the
+    // next `mark_dirty` call does not re-grow from zero capacity.
+    let mut transform_dirty: Vec<EntityId> = Vec::new();
 
     move |world: &World, _dt: f32| {
         queue.clear();
@@ -83,8 +87,10 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
         // Change-detection drain: which entities' local Transform was
         // mutated since last frame. Draining every frame keeps the dirty
         // Vec bounded (it would otherwise grow unbounded). See
-        // `Component::TRACK_CHANGES` + `PackedStorage::take_dirty`.
-        let mut transform_dirty = tq.storage_mut().take_dirty();
+        // `Component::TRACK_CHANGES` + `PackedStorage::drain_dirty_into`.
+        // Using `drain_dirty_into` rather than `take_dirty` preserves the
+        // storage's capacity across frames (#1371).
+        tq.storage_mut().drain_dirty_into(&mut transform_dirty);
 
         // Hierarchy structural generations — bumped on any Parent/Children
         // insert/remove (incl. reparent overwrites), 0 when nothing's

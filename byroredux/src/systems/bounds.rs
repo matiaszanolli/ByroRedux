@@ -45,6 +45,9 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
     // entity or reparenting forces a full rebuild. Requires
     // LocalBound/Parent/Children `TRACK_CHANGES`.
     let mut last_key: Option<(u64, u64, u64)> = None;
+    // Persistent scratch for the GlobalTransform dirty-entity list (#1371).
+    // Reusing across frames avoids the 0→N re-growth that take_dirty causes.
+    let mut g_dirty: Vec<EntityId> = Vec::new();
 
     move |world: &World, _dt: f32| {
         // Drain the GlobalTransform change-tracking dirty set: the entities
@@ -52,12 +55,12 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
         // propagation / billboard_system. Empty in steady state (nothing
         // moved) → the fast path below skips both passes entirely. Requires
         // GlobalTransform::TRACK_CHANGES; bounds is its sole drainer.
-        let mut g_dirty = {
+        {
             let Some(mut gq) = world.query_mut::<GlobalTransform>() else {
                 return;
             };
-            gq.storage_mut().take_dirty()
-        };
+            gq.storage_mut().drain_dirty_into(&mut g_dirty);
+        }
 
         // Acquire Children, LocalBound, Parent, GlobalTransform once — used
         // by both passes (#250).

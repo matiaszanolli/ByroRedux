@@ -300,9 +300,30 @@ pub(crate) fn apply_float_channels(
     }
 }
 
-/// Animation system: advances AnimationPlayer time and applies interpolated
-/// transforms to named entities that match the clip's channel names.
-pub(crate) fn animation_system(world: &World, dt: f32) {
+/// Per-entity playback state collected during the player advance pass.
+/// Defined at module level so `animation_system_inner` and
+/// `make_animation_system` can share the type for the scratch buffer.
+struct PlaybackState {
+    entity: EntityId,
+    clip_handle: u32,
+    root_entity: Option<EntityId>,
+    current_time: f32,
+    prev_time: f32,
+}
+
+/// Inner implementation of the animation system, parameterised on two
+/// scratch buffers that callers can either provide fresh (test path) or
+/// persist across frames (production closure path, #1372).
+///
+/// * `entities_scratch` — reused for both the player-entity list and the
+///   stack-entity list (the two usages are sequential, not concurrent).
+/// * `playback_scratch` — reused for the per-frame playback-state table.
+fn animation_system_inner(
+    world: &World,
+    dt: f32,
+    entities_scratch: &mut Vec<EntityId>,
+    playback_scratch: &mut Vec<PlaybackState>,
+) {
     // Read the clip registry (immutable).
     let Some(registry) = world.try_resource::<AnimationClipRegistry>() else {
         return;
@@ -378,22 +399,20 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
     let Some(player_query) = world.query_mut::<AnimationPlayer>() else {
         return;
     };
-    let entities_with_players: Vec<_> = player_query.iter().map(|(e, _)| e).collect();
+    // Collect into the caller-supplied scratch buffer rather than a fresh
+    // Vec. `clear()` + `extend()` reuses the backing allocation; on the
+    // warm path (make_animation_system closure) this avoids the 0→N
+    // re-growth that `collect()` / `Vec::new()` would cause (#1372).
+    entities_scratch.clear();
+    entities_scratch.extend(player_query.iter().map(|(e, _)| e));
     drop(player_query);
 
     // Phase 1: Advance all players and collect playback state.
     // Single lock acquisition for AnimationPlayer, held for the entire batch.
-    struct PlaybackState {
-        entity: EntityId,
-        clip_handle: u32,
-        root_entity: Option<EntityId>,
-        current_time: f32,
-        prev_time: f32,
-    }
-    let mut playback_states = Vec::with_capacity(entities_with_players.len());
+    playback_scratch.clear();
     {
         let mut player_query = world.query_mut::<AnimationPlayer>().unwrap();
-        for &entity in &entities_with_players {
+        for &entity in entities_scratch.iter() {
             let player = player_query.get_mut(entity).unwrap();
             let clip_handle = player.clip_handle;
             let root_entity_opt = player.root_entity;
@@ -401,7 +420,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
                 continue;
             };
             advance_time(player, clip, dt);
-            playback_states.push(PlaybackState {
+            playback_scratch.push(PlaybackState {
                 entity,
                 clip_handle,
                 root_entity: root_entity_opt,
@@ -416,7 +435,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
         use byroredux_scripting::events::{AnimationTextKeyEvent, AnimationTextKeyEvents};
         let mut eq = world.query_mut::<AnimationTextKeyEvents>().unwrap();
         let mut events: Vec<AnimationTextKeyEvent> = Vec::new();
-        for ps in &playback_states {
+        for ps in playback_scratch.iter() {
             let Some(clip) = registry.get(ps.clip_handle) else {
                 continue;
             };
@@ -435,7 +454,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
     }
 
     // Phase 2: Apply channels using pre-computed playback state.
-    for ps in &playback_states {
+    for ps in playback_scratch.iter() {
         let entity = ps.entity;
         let Some(clip) = registry.get(ps.clip_handle) else {
             continue;
@@ -523,7 +542,10 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
     let Some(stack_query) = world.query_mut::<AnimationStack>() else {
         return;
     };
-    let stack_entities: Vec<_> = stack_query.iter().map(|(e, _)| e).collect();
+    // Reuse entities_scratch (now free — player list is no longer needed)
+    // for the stack entity list. Same clear+extend pattern (#1372).
+    entities_scratch.clear();
+    entities_scratch.extend(stack_query.iter().map(|(e, _)| e));
     drop(stack_query);
 
     // Scratch buffers reused across entities to avoid per-tick heap
@@ -536,7 +558,7 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
     let mut events: Vec<AnimationTextKeyEvent> = Vec::new();
     let mut seen_labels: Vec<FixedString> = Vec::new();
 
-    for entity in stack_entities {
+    for entity in entities_scratch.iter().copied() {
         // Phase 1: advance all layers (write lock).
         {
             let mut sq = world.query_mut::<AnimationStack>().unwrap();
@@ -714,6 +736,31 @@ pub(crate) fn animation_system(world: &World, dt: f32) {
                 }
             }
         }
+    }
+}
+
+/// Animation system (plain function, allocates fresh scratch each call).
+///
+/// Kept for test ergonomics — tests call this directly and don't need
+/// persistent scratch. Production code uses [`make_animation_system`],
+/// which captures reusable buffers in the closure state.
+#[cfg(test)]
+pub(crate) fn animation_system(world: &World, dt: f32) {
+    animation_system_inner(world, dt, &mut Vec::new(), &mut Vec::new());
+}
+
+/// Animation system factory — returns a closure that captures two scratch
+/// buffers and reuses their backing allocation across frames (#1372).
+///
+/// Equivalent behavior to [`animation_system`]; use this when wiring the
+/// system into the scheduler so that the three per-frame `Vec` allocations
+/// (`entities_with_players`, `playback_states`, `stack_entities`) are
+/// eliminated after the first warm-up frame.
+pub(crate) fn make_animation_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut entities_scratch: Vec<EntityId> = Vec::new();
+    let mut playback_scratch: Vec<PlaybackState> = Vec::new();
+    move |world: &World, dt: f32| {
+        animation_system_inner(world, dt, &mut entities_scratch, &mut playback_scratch);
     }
 }
 

@@ -52,8 +52,8 @@ use crate::components::{
 use crate::helpers::world_resource_set;
 use crate::render::build_render_data;
 use crate::systems::{
-    animate_lights_system, animation_system, billboard_system, compute_underwater_params,
-    footstep_system, log_stats_system, make_transform_propagation_system,
+    animate_lights_system, billboard_system, compute_underwater_params, footstep_system,
+    log_stats_system, make_animation_system, make_transform_propagation_system,
     make_world_bound_propagation_system, metrics_sample_system, particle_system, spin_system,
     toggle_player_mode, weather_system, MetricsState,
 };
@@ -649,7 +649,7 @@ impl App {
         );
         scheduler.add_to_with_access(
             Stage::Update,
-            animation_system,
+            make_animation_system(),
             // M27 — animation_system writes the full set of animated-
             // channel storages (every channel a clip may target). The
             // declaration is the UNION across all paths; individual

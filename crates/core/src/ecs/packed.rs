@@ -51,10 +51,29 @@ impl<T: Component<Storage = Self>> PackedStorage<T> {
     /// components that don't opt into [`Component::TRACK_CHANGES`].
     ///
     /// The list may contain duplicates and is in mutation order; callers
-    /// that need uniqueness should dedup. Returns an owned `Vec` via
-    /// `std::mem::take` so the backing capacity is reused next frame.
+    /// that need uniqueness should dedup.
+    ///
+    /// **Allocation note**: uses `std::mem::take`, which transfers the Vec's
+    /// backing allocation to the caller and leaves `self.dirty` with zero
+    /// capacity. The next `mark_dirty` call therefore re-grows from scratch.
+    /// Prefer [`drain_dirty_into`] when the caller can supply a persistent
+    /// scratch buffer; that keeps the capacity on `self.dirty` across frames.
     pub fn take_dirty(&mut self) -> Vec<EntityId> {
         std::mem::take(&mut self.dirty)
+    }
+
+    /// Drain the change-tracking dirty set into `out`, preserving
+    /// `self.dirty`'s backing capacity for the next frame.
+    ///
+    /// `out` is cleared before filling. After this call `self.dirty` is
+    /// empty but retains its high-water-mark capacity, so the next
+    /// `mark_dirty` call never re-grows. Use this when the caller owns a
+    /// persistent scratch `Vec` (e.g. a closure-captured buffer) — it
+    /// eliminates the 0→N growth every frame that `take_dirty` causes.
+    pub fn drain_dirty_into(&mut self, out: &mut Vec<EntityId>) {
+        out.clear();
+        out.append(&mut self.dirty);
+        // self.dirty is now empty and retains its allocated capacity.
     }
 
     /// Number of entries currently in the dirty set (with duplicates).
@@ -648,6 +667,36 @@ mod tests {
         assert!(s.take_dirty().is_empty());
         let _ = s.get_mut(1);
         assert_eq!(s.take_dirty(), vec![1]);
+    }
+
+    /// Regression for #1371 — `drain_dirty_into` must preserve `self.dirty`'s
+    /// backing capacity (so the next `mark_dirty` doesn't re-grow from zero)
+    /// while emptying it into the caller's buffer.
+    #[test]
+    fn drain_dirty_into_preserves_storage_capacity() {
+        let mut s = PackedStorage::<Tracked>::default();
+        // Insert enough entities to guarantee an allocation.
+        for i in 1u32..=8 {
+            s.insert(i, Tracked(i));
+        }
+
+        // First drain: warms the dirty vec capacity.
+        let mut out: Vec<EntityId> = Vec::new();
+        s.drain_dirty_into(&mut out);
+        assert_eq!(out.len(), 8, "all 8 inserts should be in the dirty list");
+        // self.dirty is now empty but must have retained capacity.
+        assert!(s.dirty_len() == 0);
+
+        // Mark 4 entities dirty again.
+        for i in 1u32..=4 {
+            let _ = s.get_mut(i);
+        }
+        // Second drain into a pre-populated `out` — must clear first.
+        out.push(99); // sentinel to verify clear() runs
+        s.drain_dirty_into(&mut out);
+        assert!(!out.contains(&99), "drain_dirty_into must clear `out` first");
+        assert_eq!(out.len(), 4);
+        assert!(s.dirty_len() == 0);
     }
 
     #[test]
