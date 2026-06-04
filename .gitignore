@@ -3,7 +3,8 @@
 *.pdb
 .env
 
-# Third-party dev tools (cloned locally, not tracked)
-/tools/
+# Third-party dev tools (cloned locally, not tracked) — but byro-dbg is ours
+/tools/*
+!/tools/byro-dbg/
 pipeline_cache.bin
 GEMINI.md
