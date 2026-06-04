@@ -329,39 +329,54 @@ pub(crate) fn particle_system(world: &World, dt: f32) {
         // 3. Spawn new particles at the configured rate. Fractional
         //    spawns accumulate across frames so a 30 Hz emitter under a
         //    60 fps frame still averages exactly 30 spawns/sec.
-        em.spawn_accumulator += em.rate * dt;
-        let spawn_count = em.spawn_accumulator.floor() as i32;
-        em.spawn_accumulator -= spawn_count as f32;
+        //
+        // Guard `rate` and `start_size` against NaN / ±Inf / non-positive
+        // from corrupt authored emitter params (NIFAL-S7 / #1382): a NaN
+        // `rate` permanently poisons `spawn_accumulator` (NaN − 0 = NaN, so
+        // the emitter silently dies), and a NaN `start_size` would push
+        // NaN-sized particles into the billboard path. `life` is already
+        // clamped via `.max(0.05)` below. The guard wraps ONLY the spawn
+        // step — existing particles still integrate + expire above, so a
+        // corrupt rate doesn't freeze the live particles on screen.
+        if em.rate.is_finite()
+            && em.rate > 0.0
+            && em.start_size.is_finite()
+            && em.start_size > 0.0
+        {
+            em.spawn_accumulator += em.rate * dt;
+            let spawn_count = em.spawn_accumulator.floor() as i32;
+            em.spawn_accumulator -= spawn_count as f32;
 
-        let cap = em.max_particles as usize;
-        for _ in 0..spawn_count.max(0) {
-            if em.particles.len() >= cap {
-                break;
+            let cap = em.max_particles as usize;
+            for _ in 0..spawn_count.max(0) {
+                if em.particles.len() >= cap {
+                    break;
+                }
+                let local_offset = em.shape.sample(&mut rng);
+                let world_pos = [
+                    host_translation.x + local_offset[0],
+                    host_translation.y + local_offset[1],
+                    host_translation.z + local_offset[2],
+                ];
+
+                // Build a velocity vector inside the declination cone around
+                // local +Z, then jitter speed.
+                let phi = rng() * std::f32::consts::TAU;
+                let dec = em.declination + (rng() - 0.5) * em.declination_variation;
+                let sin_dec = dec.sin();
+                let cos_dec = dec.cos();
+                let dir = [sin_dec * phi.cos(), sin_dec * phi.sin(), cos_dec];
+                let speed = em.speed + (rng() - 0.5) * em.speed_variation;
+                let vel = [dir[0] * speed, dir[1] * speed, dir[2] * speed];
+
+                let life = em.life + (rng() - 0.5) * em.life_variation;
+                // Guard against zero/negative life so the expire pass can
+                // handle the particle correctly on the very next tick.
+                let life = life.max(0.05);
+
+                em.particles
+                    .push(world_pos, vel, life, em.start_color, em.start_size);
             }
-            let local_offset = em.shape.sample(&mut rng);
-            let world_pos = [
-                host_translation.x + local_offset[0],
-                host_translation.y + local_offset[1],
-                host_translation.z + local_offset[2],
-            ];
-
-            // Build a velocity vector inside the declination cone around
-            // local +Z, then jitter speed.
-            let phi = rng() * std::f32::consts::TAU;
-            let dec = em.declination + (rng() - 0.5) * em.declination_variation;
-            let sin_dec = dec.sin();
-            let cos_dec = dec.cos();
-            let dir = [sin_dec * phi.cos(), sin_dec * phi.sin(), cos_dec];
-            let speed = em.speed + (rng() - 0.5) * em.speed_variation;
-            let vel = [dir[0] * speed, dir[1] * speed, dir[2] * speed];
-
-            let life = em.life + (rng() - 0.5) * em.life_variation;
-            // Guard against zero/negative life so the expire pass can
-            // handle the particle correctly on the very next tick.
-            let life = life.max(0.05);
-
-            em.particles
-                .push(world_pos, vel, life, em.start_color, em.start_size);
         }
     }
 }
@@ -436,6 +451,41 @@ mod tests {
         };
         apply_emitter_params(&mut preset, &authored);
         assert!((preset.start_size - 10.5).abs() < 1e-4);
+    }
+
+    /// NIFAL-S7 / #1382: a non-finite `rate` must not spawn or poison the
+    /// accumulator, and existing particles must still simulate. Covers the
+    /// `rate` and `start_size` guards across NaN / ±Inf.
+    #[test]
+    fn non_finite_rate_or_size_spawns_nothing_and_keeps_accumulator_finite() {
+        for bad_rate in [f32::NAN, f32::INFINITY] {
+            let mut em = ParticleEmitter::default();
+            em.rate = bad_rate;
+            em.life = 100.0;
+            em.max_particles = 1024;
+            let (world, e) = world_with_emitter(em, Vec3::ZERO);
+            particle_system(&world, 0.5);
+            let q = world.query::<ParticleEmitter>().unwrap();
+            let em = q.get(e).unwrap();
+            assert_eq!(em.particles.len(), 0, "bad rate {bad_rate} must not spawn");
+            assert!(
+                em.spawn_accumulator.is_finite(),
+                "accumulator must stay finite (not poisoned by {bad_rate})"
+            );
+        }
+
+        // Non-finite start_size: valid rate, but the size guard blocks the
+        // spawn so no NaN-sized particle reaches the billboard path.
+        let mut em = ParticleEmitter::default();
+        em.rate = 30.0;
+        em.start_size = f32::NAN;
+        em.life = 100.0;
+        em.max_particles = 1024;
+        let (world, e) = world_with_emitter(em, Vec3::ZERO);
+        particle_system(&world, 0.5);
+        let q = world.query::<ParticleEmitter>().unwrap();
+        let em = q.get(e).unwrap();
+        assert_eq!(em.particles.len(), 0, "NaN start_size must not spawn");
     }
 
     #[test]
