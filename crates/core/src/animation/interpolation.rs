@@ -108,6 +108,8 @@ pub fn sample_translation(channel: &TransformChannel, time: f32) -> Option<Vec3>
     let k1 = &keys[i1];
 
     match channel.translation_type {
+        // Stepped hold: the segment keeps k0's value until the next key.
+        KeyType::Const => Some(k0.value),
         KeyType::Linear => Some(k0.value.lerp(k1.value, t)),
         KeyType::Quadratic => {
             let (h00, h10, h01, h11) = hermite(t);
@@ -231,6 +233,8 @@ pub fn sample_rotation(channel: &TransformChannel, time: f32) -> Option<Quat> {
     let q1 = shortest_path(q0, k1.value);
 
     match channel.rotation_type {
+        // Stepped hold: the segment keeps q0 until the next key.
+        KeyType::Const => Some(q0),
         KeyType::Linear | KeyType::Quadratic => {
             // Linear and Quadratic rotation both SLERP between the two
             // bracketing keys. Per authoritative `nif.xml` (`<struct
@@ -329,6 +333,8 @@ pub fn sample_scale(channel: &TransformChannel, time: f32) -> Option<f32> {
     let k1 = &keys[i1];
 
     match channel.scale_type {
+        // Stepped hold: the segment keeps k0's value until the next key.
+        KeyType::Const => Some(k0.value),
         KeyType::Linear => Some(k0.value + (k1.value - k0.value) * t),
         KeyType::Quadratic => {
             let (h00, h10, h01, h11) = hermite(t);

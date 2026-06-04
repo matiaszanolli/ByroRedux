@@ -104,6 +104,81 @@ mod tests {
         assert!((v.x - 10.0).abs() < 1e-5);
     }
 
+    /// Regression for LC-D5-02 / #1441: a `KeyType::Const` (stepped)
+    /// channel must HOLD the start key's value across the whole segment,
+    /// not LERP toward the next key. Covers all three TRS samplers.
+    #[test]
+    fn const_keytype_holds_start_value_across_segment() {
+        // Translation: held at k0 (ZERO) for the whole [0,1) segment,
+        // snapping to k1 only at the next key time.
+        let mut ch = make_linear_translation_channel();
+        ch.translation_type = KeyType::Const;
+        // Mid-segment must equal k0, NOT the 5.0 a Linear LERP would give.
+        let v = sample_translation(&ch, 0.5).unwrap();
+        assert!(v.x.abs() < 1e-6, "const must hold k0, got {}", v.x);
+        // Just before the next key, still k0.
+        let v = sample_translation(&ch, 0.999).unwrap();
+        assert!(v.x.abs() < 1e-6, "const must hold k0 up to next key");
+        // At the next key time, value is k1.
+        let v = sample_translation(&ch, 1.0).unwrap();
+        assert!((v.x - 10.0).abs() < 1e-6);
+
+        // Rotation: held at q0 (IDENTITY) mid-segment.
+        let rot = TransformChannel {
+            translation_keys: Vec::new(),
+            translation_type: KeyType::Linear,
+            rotation_keys: vec![
+                RotationKey {
+                    time: 0.0,
+                    value: Quat::IDENTITY,
+                    tbc: None,
+                },
+                RotationKey {
+                    time: 1.0,
+                    value: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                    tbc: None,
+                },
+            ],
+            rotation_type: KeyType::Const,
+            scale_keys: Vec::new(),
+            scale_type: KeyType::Linear,
+            priority: 0,
+        };
+        let q = sample_rotation(&rot, 0.5).unwrap();
+        assert!(
+            q.dot(Quat::IDENTITY).abs() > 0.9999,
+            "const rotation must hold q0 (identity) mid-segment"
+        );
+
+        // Scale: held at k0 (1.0) mid-segment.
+        let scl = TransformChannel {
+            translation_keys: Vec::new(),
+            translation_type: KeyType::Linear,
+            rotation_keys: Vec::new(),
+            rotation_type: KeyType::Linear,
+            scale_keys: vec![
+                ScaleKey {
+                    time: 0.0,
+                    value: 1.0,
+                    forward: 0.0,
+                    backward: 0.0,
+                    tbc: None,
+                },
+                ScaleKey {
+                    time: 1.0,
+                    value: 4.0,
+                    forward: 0.0,
+                    backward: 0.0,
+                    tbc: None,
+                },
+            ],
+            scale_type: KeyType::Const,
+            priority: 0,
+        };
+        let s = sample_scale(&scl, 0.5).unwrap();
+        assert!((s - 1.0).abs() < 1e-6, "const scale must hold k0, got {s}");
+    }
+
     #[test]
     fn slerp_rotation_midpoint() {
         let ch = TransformChannel {

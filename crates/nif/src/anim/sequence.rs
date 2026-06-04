@@ -37,7 +37,13 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
         let controller_type = resolved_ctrl_type.as_deref().unwrap_or("");
 
         match controller_type {
-            "NiTransformController" => {
+            // NiKeyframeController is the pre-Skyrim per-bone transform
+            // driver (Oblivion / FO3 / FNV KF files); it parses identically
+            // to NiTransformController (blocks/mod.rs alias, #144) and the
+            // embedded-animation path already aliases both (entry.rs). Mirror
+            // that here so a controlled block whose type string resolves to
+            // the classic name isn't silently dropped (LC-D5-03 / #1442).
+            "NiTransformController" | "NiKeyframeController" => {
                 if let Some(mut channel) = extract_transform_channel(scene, cb) {
                     channel.priority = cb.priority;
                     channels.insert(Arc::clone(&node_name), channel);

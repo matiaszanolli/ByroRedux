@@ -73,7 +73,11 @@ pub(crate) fn convert_nif_clip(
                 byroredux_nif::blocks::interpolator::KeyType::Quadratic => KeyType::Quadratic,
                 byroredux_nif::blocks::interpolator::KeyType::Tbc => KeyType::Tbc,
                 byroredux_nif::blocks::interpolator::KeyType::XyzRotation => KeyType::Linear,
-                byroredux_nif::blocks::interpolator::KeyType::Constant => KeyType::Linear,
+                // KEY_CONST = stepped hold (no interpolation). Previously
+                // collapsed to Linear, which wrongly LERPed step keys
+                // (LC-D5-02 / #1441). The NIF XYZ-Euler scalar sampler bakes
+                // its own Constant handling; this maps the runtime TRS path.
+                byroredux_nif::blocks::interpolator::KeyType::Constant => KeyType::Const,
             };
 
             let translation_keys = ch

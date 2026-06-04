@@ -1,7 +1,3 @@
-# #1442 — LC-D5-03: KF-sequence dispatch matches only NiTransformController not aliased NiKeyframeController
-
-_Snapshot as filed (2026-06-02) from AUDIT_LEGACY_COMPAT_2026-06-02.md. GitHub is authoritative for live state._
-
 - **Severity**: LOW
 - **Dimension**: D5 (Animation Readiness)
 - **Location**: `crates/nif/src/anim/sequence.rs:40`
@@ -25,3 +21,4 @@ LC-D5-01 (#TBD).
 - [ ] **TESTS**: Regression test added for this specific fix
 
 _Filed from [docs/audits/AUDIT_LEGACY_COMPAT_2026-06-02.md](../blob/main/docs/audits/AUDIT_LEGACY_COMPAT_2026-06-02.md)_
+

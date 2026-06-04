@@ -660,6 +660,80 @@ fn resolve_cb_string_prefers_inline_when_present() {
     assert_eq!(&*node, "Bip01 Head");
 }
 
+/// Regression: LC-D5-03 / #1442. The KF-sequence dispatch must route a
+/// controlled block whose controller type resolves to the classic
+/// "NiKeyframeController" alias through transform extraction, exactly
+/// like "NiTransformController" — not drop it to the `_ =>` arm. The
+/// block parser (blocks/mod.rs) and the embedded-animation path
+/// (entry.rs) already alias both names; this pins the sequence path to
+/// the same behavior.
+#[test]
+fn import_sequence_dispatches_keyframe_controller_alias() {
+    use crate::blocks::controller::NiControllerSequence;
+    use crate::types::{BlockRef, NiPoint3, NiQuatTransform};
+
+    // A NiLookAtInterpolator yields a constant-pose transform channel,
+    // so any block that reaches extract_transform_channel produces a
+    // channel — letting us detect dispatch purely by channel presence.
+    let pose = NiQuatTransform {
+        translation: NiPoint3 {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        },
+        rotation: [1.0, 0.0, 0.0, 0.0],
+        scale: 1.0,
+    };
+    let lookat = NiLookAtInterpolator {
+        flags: 0,
+        look_at: BlockRef::NULL,
+        look_at_name: None,
+        transform: pose,
+        interp_translation: BlockRef::NULL,
+        interp_roll: BlockRef::NULL,
+        interp_scale: BlockRef::NULL,
+    };
+    let scene = NifScene {
+        blocks: vec![Box::new(lookat)],
+        ..NifScene::default()
+    };
+
+    let make_seq = |ctrl_type: &str| {
+        let mut cb = dummy_controlled_block();
+        cb.interpolator_ref = BlockRef(0);
+        cb.node_name = Some(Arc::from("Bip01"));
+        cb.controller_type = Some(Arc::from(ctrl_type));
+        NiControllerSequence {
+            name: Some(Arc::from("seq")),
+            controlled_blocks: vec![cb],
+            array_grow_by: 0,
+            weight: 1.0,
+            text_keys_ref: BlockRef::NULL,
+            cycle_type: 0,
+            frequency: 1.0,
+            phase: 0.0,
+            start_time: 0.0,
+            stop_time: 1.0,
+            manager_ref: BlockRef::NULL,
+            accum_root_name: None,
+            anim_note_refs: Vec::new(),
+        }
+    };
+
+    // Baseline: the modern controller name resolves to a channel.
+    let modern = import_sequence(&scene, &make_seq("NiTransformController"));
+    assert!(
+        modern.channels.contains_key("Bip01"),
+        "NiTransformController must produce a transform channel"
+    );
+    // Fix under test: the classic alias must ALSO dispatch, not drop.
+    let classic = import_sequence(&scene, &make_seq("NiKeyframeController"));
+    assert!(
+        classic.channels.contains_key("Bip01"),
+        "NiKeyframeController alias must dispatch to transform extraction (#1442)"
+    );
+}
+
 #[test]
 fn cycle_type_from_u32() {
     assert_eq!(CycleType::from_u32(0), CycleType::Clamp);
