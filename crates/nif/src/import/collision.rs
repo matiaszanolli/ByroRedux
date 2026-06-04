@@ -251,13 +251,28 @@ fn extract_from_phantom(
 
 /// Recursively resolve a bhk shape block into a CollisionShape enum.
 ///
+/// Maximum collision-shape resolution depth. Real Havok shape trees are
+/// shallow (MoppBvTree → List → primitives is ~3 levels; the deepest
+/// vanilla nesting observed is well under 10). 64 is a generous ceiling
+/// that no legitimate content reaches, while bounding the recursion so a
+/// corrupt or adversarial NIF declaring a long acyclic chain of
+/// `BhkListShape`/transform shapes cannot overflow the stack
+/// (MEM-06 / #1385). Cycle detection (#1269) already handles *repeated*
+/// blocks; this additionally caps *distinct* deep chains.
+const MAX_COLLISION_SHAPE_DEPTH: usize = 64;
+
 /// `visited` records `BlockRef` indices currently on the resolution
 /// stack so a `BhkListShape` whose `sub_shape_refs` cycle (directly or
 /// transitively) returns `None` instead of overflowing the stack
 /// (#1269 / SAFE-DIM3-NEW-01). Entries are removed on return so a
 /// legitimate DAG (the same shape referenced from two sibling subtrees)
-/// still resolves on both arms. Vanilla content has no such cycles,
-/// but a corrupt or adversarial NIF could otherwise crash the parser.
+/// still resolves on both arms. Because each on-stack block is held in
+/// `visited` for exactly the span of its recursive call, `visited.len()`
+/// is the current resolution depth — capped at
+/// [`MAX_COLLISION_SHAPE_DEPTH`] so a deep *acyclic* chain (which cycle
+/// detection alone does not catch) cannot crash the parser (MEM-06 /
+/// #1385). Vanilla content has no such cycles or deep chains, but a
+/// corrupt or adversarial NIF could otherwise crash the parser.
 fn resolve_shape(
     scene: &NifScene,
     shape_ref: BlockRef,
@@ -269,6 +284,21 @@ fn resolve_shape(
             "resolve_shape: cycle detected at block {} — breaking recursion (#1269)",
             idx,
         );
+        return None;
+    }
+    // `visited` now holds the full chain from the root to `idx`, so its
+    // length is this node's depth. Bail on pathologically deep acyclic
+    // chains before they overflow the native stack. Remove the entry we
+    // just inserted so the ancestor's bookkeeping stays balanced.
+    if visited.len() > MAX_COLLISION_SHAPE_DEPTH {
+        log::warn!(
+            "resolve_shape: depth {} exceeds limit {} at block {} — \
+             breaking recursion (MEM-06 / #1385)",
+            visited.len(),
+            MAX_COLLISION_SHAPE_DEPTH,
+            idx,
+        );
+        visited.remove(&idx);
         return None;
     }
     let result = resolve_shape_inner(scene, idx, visited);
@@ -938,6 +968,59 @@ mod cycle_tests {
         scene.blocks.push(list_shape(vec![BlockRef(0u32)]));
         let mut visited = HashSet::new();
         let _ = resolve_shape(&scene, BlockRef(0u32), &mut visited);
+    }
+
+    #[test]
+    fn deep_acyclic_list_chain_bails_without_overflow() {
+        // MEM-06 / #1385: a long *acyclic* chain of single-child
+        // BhkListShapes is not caught by cycle detection (every block is
+        // distinct), but recursing it would overflow the native stack.
+        // Scene: [0]→[1]→…→[N-1]→[sphere]. With N well past
+        // MAX_COLLISION_SHAPE_DEPTH, resolution must bail (None) and,
+        // critically, return without overflowing — reaching this assert
+        // at all proves no overflow.
+        let n = MAX_COLLISION_SHAPE_DEPTH + 200;
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        for i in 0..n {
+            scene.blocks.push(list_shape(vec![BlockRef((i + 1) as u32)]));
+        }
+        scene.blocks.push(sphere_shape(0.5)); // terminal, never reached
+        let mut visited = HashSet::new();
+        let result = resolve_shape(&scene, BlockRef(0u32), &mut visited);
+        assert!(
+            result.is_none(),
+            "over-deep chain must bail to None, not a populated shape"
+        );
+        // Bookkeeping must be balanced after a depth bail (no leaked
+        // on-stack entries), or a sibling subtree would falsely see a
+        // cycle.
+        assert!(
+            visited.is_empty(),
+            "visited must be empty after resolution returns"
+        );
+    }
+
+    #[test]
+    fn list_chain_within_depth_limit_resolves() {
+        // Guard the other side: a chain shallower than the cap must STILL
+        // resolve, so the depth bound doesn't regress legitimate nesting.
+        // 10 single-child lists → terminal sphere; single-child lists
+        // unwrap, so the whole chain collapses to the Ball.
+        let depth = 10usize;
+        assert!(depth < MAX_COLLISION_SHAPE_DEPTH);
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        for i in 0..depth {
+            scene.blocks.push(list_shape(vec![BlockRef((i + 1) as u32)]));
+        }
+        scene.blocks.push(sphere_shape(0.5));
+        let mut visited = HashSet::new();
+        let result = resolve_shape(&scene, BlockRef(0u32), &mut visited);
+        assert!(
+            matches!(result, Some(CollisionShape::Ball { .. })),
+            "a within-limit chain must resolve to the terminal sphere, got {result:?}"
+        );
     }
 
     #[test]
