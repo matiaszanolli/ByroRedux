@@ -108,7 +108,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 fog;
     vec4 jitter;
     vec4 skyTint;
-    vec4 sunDirection; // xyz = sun world-space direction (light travel), w = intensity. #1210.
+    vec4 sunDirection; // xyz = world-space direction TO the sun (light-incoming, matches GpuLight.direction_angle), w = intensity. #1210.
     vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
 };
 
@@ -531,24 +531,30 @@ void main() {
     // mirrors the #1099 anchor — prevents wraparound when a hot
     // sun + perpendicular surface fragment dumps a large value.
     if (sunDirection.w > 0.0) {
-        vec3 sunRay = normalize(sunDirection.xyz);       // light-travel direction
-        // 1. Shadow ray toward sun (terminate-on-first-hit).
+        // `sunDirection.xyz` points TO the sun (light-incoming), matching
+        // GpuLight.direction_angle / triangle.frag's directional `L`. The
+        // light-*travel* direction (sun → surface) is therefore `-sunDir`.
+        vec3 sunDir = normalize(sunDirection.xyz);       // direction TO the sun
+        // 1. Shadow ray toward sun (terminate-on-first-hit). Fire along
+        //    +sunDir (toward the sun) so an occluder between the surface and
+        //    the sky blocks the caustic — matches triangle.frag:3083+.
         rayQueryEXT shadowRq;
         rayQueryInitializeEXT(
             shadowRq, topLevelAS,
             gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-            0xFF, vWorldPos + N * 0.05, 0.05, -sunRay, 10000.0
+            0xFF, vWorldPos + N * 0.05, 0.05, sunDir, 10000.0
         );
         rayQueryProceedEXT(shadowRq);
         bool sunVisible =
             rayQueryGetIntersectionTypeEXT(shadowRq, true)
             == gl_RayQueryCommittedIntersectionNoneEXT;
         if (sunVisible) {
-            // 2. Snell refraction. refract() returns vec3(0) on
-            // total-internal-reflection, which can't happen for
-            // light entering the denser medium from above — but
-            // length-gate anyway in case `sunRay` is grazing.
-            vec3 refractDir = refract(sunRay, N, 1.0 / 1.33);
+            // 2. Snell refraction. refract() takes the incident *propagation*
+            // direction (light travel = sun → surface = `-sunDir`), NOT the
+            // to-sun direction. refract() returns vec3(0) on total-internal-
+            // reflection, which can't happen for light entering the denser
+            // medium from above — but length-gate anyway in case grazing.
+            vec3 refractDir = refract(-sunDir, N, 1.0 / 1.33);
             if (length(refractDir) > 1e-4) {
                 // 3. Find floor via TLAS ray (single bounce).
                 //
@@ -591,7 +597,7 @@ void main() {
                             // Travel falloff matches caustic_splat
                             // (1 / (1 + t²·k)) — caustics fade with
                             // depth as the refracted column spreads.
-                            float NdotSun = max(dot(N, -sunRay), 0.0);
+                            float NdotSun = max(dot(N, sunDir), 0.0);
                             float travelFall = 1.0 / (1.0 + floorT * floorT * 1e-4);
                             float contrib = sunDirection.w * NdotSun * travelFall;
                             float scale = CAUSTIC_FIXED_SCALE;
