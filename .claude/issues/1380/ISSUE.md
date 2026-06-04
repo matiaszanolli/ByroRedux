@@ -1,5 +1,3 @@
-# PERF-D4-NEW-04: animate_lights_system per-frame Vec alloc + 3-pass lock cycling
-
 **Severity**: LOW · **Dimension**: ECS Query Patterns (PERF-D4-NEW-04)
 **Location**: `byroredux/src/systems/light_anim.rs:76-188`
 **Status**: NEW
