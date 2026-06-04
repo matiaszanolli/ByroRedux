@@ -88,18 +88,33 @@ impl Default for RenderLayer {
     }
 }
 
-/// Apply the spawn-site Decal escalation: any mesh that's NIF-flagged
-/// as a decal OR carries an active alpha test (NiAlphaProperty
-/// `alpha_test` bit set on the source record) is meant to lie flat
-/// against another surface. Bias it as [`RenderLayer::Decal`]
-/// regardless of the base record's classification. Otherwise pass
-/// `base` through unchanged.
+/// Apply the spawn-site decal / cutout bias escalation. Two distinct
+/// signals, two distinct outcomes (they used to be conflated — see below):
 ///
-/// This is the single rule used at every cell-loader / scene spawn
-/// site, so the FNV-rug fix from commit `ee3cb13` (alpha-test → strong
-/// bias) is preserved end-to-end while the per-base-record classification
-/// from [`RenderLayer::Architecture`] / [`RenderLayer::Clutter`] /
-/// [`RenderLayer::Actor`] takes over for everything else.
+/// 1. **`mesh_is_decal`** — the authoritative NIF `SF1_DECAL` shader flag.
+///    These meshes genuinely lie flat against another surface (posters,
+///    blood splatter, painted signs). They get the strong
+///    [`RenderLayer::Decal`] bias `(-64, -2)` so they always win the
+///    coplanar z-fight, regardless of base classification.
+///
+/// 2. **`mesh_alpha_test_enabled`** — a *cutout* signal, NOT a decal
+///    signal. Alpha-test is used by flat decals (rugs) AND by large
+///    standalone architecture with cutout detail (vault doors with window
+///    holes + stencil text, grates, fences, holed steel beams). Promote
+///    these only to the **gentle** [`RenderLayer::Clutter`] bias
+///    `(-16, -1)` — enough for a coplanar rug to win its floor z-fight,
+///    but NOT the aggressive Decal `(-64, -2)` bias whose `-2.0` slope
+///    term scales with polygon depth-gradient and **inverts the depth
+///    ordering on large cutout meshes at grazing view angles** — the
+///    "broken polygons that change with motion" z-fighting bug (the
+///    `0x40` render-layer viz showed the entire FNV vault door wrongly
+///    tinted Decal-yellow). Only Architecture is promoted; Clutter /
+///    Actor / Decal pass through (they already carry adequate bias).
+///
+/// Single rule used at every cell-loader / scene spawn site. The FNV-rug
+/// fix intent from commit `ee3cb13` (alpha-test rug wins floor z-fight)
+/// is preserved via the gentler Clutter bias; what's removed is the
+/// over-escalation of cutout architecture to the depth-inverting Decal bias.
 ///
 /// Important — this gate uses the `alpha_test: bool` from
 /// [`crate::ecs::components::Material`] (or `ImportedMesh::alpha_test`
@@ -114,8 +129,12 @@ pub const fn render_layer_with_decal_escalation(
     mesh_is_decal: bool,
     mesh_alpha_test_enabled: bool,
 ) -> RenderLayer {
-    if mesh_is_decal || mesh_alpha_test_enabled {
+    if mesh_is_decal {
         RenderLayer::Decal
+    } else if mesh_alpha_test_enabled && matches!(base, RenderLayer::Architecture) {
+        // Cutout architecture → gentle Clutter bias, never the
+        // depth-inverting Decal bias. See doc above.
+        RenderLayer::Clutter
     } else {
         base
     }
@@ -269,13 +288,36 @@ mod tests {
     }
 
     #[test]
-    fn alpha_test_escalates_architecture_to_decal() {
-        // FNV `rugsmall01.nif` is a STAT (Architecture base) with
-        // `NiAlphaProperty.alpha_test = true`. The escalation must
-        // fire even when the base is Architecture so the rug wins its
-        // z-fight against the floor.
+    fn alpha_test_escalates_architecture_to_clutter_not_decal() {
+        // Alpha-test is a CUTOUT signal, not a decal signal. An
+        // Architecture-base alpha-test mesh (FNV `rugsmall01.nif` rug,
+        // but ALSO the Ulysses' Temple vault door with its cutout window
+        // holes + stencil text) gets the gentle Clutter bias so the
+        // coplanar rug still wins its floor z-fight — but NOT the
+        // aggressive Decal `(-64,-2)` bias, whose slope term inverts the
+        // depth ordering on large cutout architecture at grazing angles
+        // (the "broken polygons that change with motion" bug). See the
+        // function doc + the `0x40` render-layer viz diagnosis.
         let r = render_layer_with_decal_escalation(RenderLayer::Architecture, false, true);
-        assert_eq!(r, RenderLayer::Decal);
+        assert_eq!(r, RenderLayer::Clutter);
+    }
+
+    #[test]
+    fn alpha_test_does_not_demote_higher_layers() {
+        // Already-Clutter / Actor / Decal alpha-test meshes keep their
+        // band (the cutout promotion only lifts Architecture).
+        assert_eq!(
+            render_layer_with_decal_escalation(RenderLayer::Clutter, false, true),
+            RenderLayer::Clutter
+        );
+        assert_eq!(
+            render_layer_with_decal_escalation(RenderLayer::Actor, false, true),
+            RenderLayer::Actor
+        );
+        assert_eq!(
+            render_layer_with_decal_escalation(RenderLayer::Decal, false, true),
+            RenderLayer::Decal
+        );
     }
 
     #[test]
@@ -374,22 +416,25 @@ mod tests {
     }
 
     /// Composition order at the spawn site: small-STAT escalation runs
-    /// first, decal escalation second. Verify the two orderings produce
-    /// the right final layer:
-    ///   small + alpha-test STAT → Architecture → Clutter (size) → Decal
-    ///   large + alpha-test STAT (rug) → Architecture → Architecture → Decal
+    /// first, decal/cutout escalation second. Alpha-test (cutout) now
+    /// lands on Clutter, not Decal — both orderings converge on the
+    /// gentle Clutter bias:
+    ///   small + alpha-test STAT → Architecture → Clutter (size) → Clutter
+    ///   large + alpha-test STAT (rug / vault door) → Architecture → Clutter (cutout)
     #[test]
-    fn size_then_decal_composition_order() {
-        // Small alpha-tested STAT → Decal wins over Clutter.
+    fn size_then_cutout_composition_order() {
+        // Small alpha-tested STAT → Clutter (size), stays Clutter (cutout
+        // doesn't demote an already-Clutter base).
         let l = escalate_small_static_to_clutter(RenderLayer::Architecture, 10.0);
         let l = render_layer_with_decal_escalation(l, false, true);
-        assert_eq!(l, RenderLayer::Decal);
+        assert_eq!(l, RenderLayer::Clutter);
 
-        // Large alpha-tested STAT (the rug case from `ee3cb13`) →
-        // skips Clutter, lands on Decal anyway.
+        // Large alpha-tested STAT (rug / vault door) → size leaves it
+        // Architecture, cutout promotes it to the gentle Clutter bias
+        // (NOT the depth-inverting Decal bias).
         let l = escalate_small_static_to_clutter(RenderLayer::Architecture, 200.0);
         let l = render_layer_with_decal_escalation(l, false, true);
-        assert_eq!(l, RenderLayer::Decal);
+        assert_eq!(l, RenderLayer::Clutter);
     }
 
     #[test]
