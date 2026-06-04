@@ -306,6 +306,23 @@ fn resolve_shape(
     result
 }
 
+/// Reject a non-finite scalar (NaN / ±Inf) read from a corrupt or
+/// adversarial NIF before it reaches a `CollisionShape` field. A
+/// non-finite radius / half-extent flows into the parry3d/Rapier
+/// collider builder where it panics or poisons the broadphase. Returning
+/// `None` from the construction site drops the authored primitive to the
+/// synthesized-trimesh fallback (`spawn.rs`) instead (NIFAL-S4 / #1409).
+#[inline]
+fn finite(x: f32) -> Option<f32> {
+    x.is_finite().then_some(x)
+}
+
+/// `Vec3` sibling of [`finite`] — all three lanes must be finite.
+#[inline]
+fn finite_vec(v: Vec3) -> Option<Vec3> {
+    v.is_finite().then_some(v)
+}
+
 /// Inner body of `resolve_shape`. Extracted so the outer function can
 /// own the `visited` insert/remove bookkeeping at a single entry/exit
 /// point regardless of which match arm returns.
@@ -320,7 +337,7 @@ fn resolve_shape_inner(
     // Sphere
     if let Some(s) = block.as_any().downcast_ref::<BhkSphereShape>() {
         return Some(CollisionShape::Ball {
-            radius: s.radius * scale,
+            radius: finite(s.radius * scale)?,
         });
     }
 
@@ -333,6 +350,12 @@ fn resolve_shape_inner(
         for sph in &s.spheres {
             let center = havok_to_engine(sph[0], sph[1], sph[2]) * scale;
             let radius = sph[3] * scale;
+            // Drop only the corrupt sphere (NIFAL-S4 / #1409) — the rest
+            // of the multi-sphere stays a valid approximation; an empty
+            // residue falls through to `None` below → trimesh fallback.
+            if !center.is_finite() || !radius.is_finite() {
+                continue;
+            }
             children.push((
                 center,
                 Quat::IDENTITY,
@@ -354,16 +377,17 @@ fn resolve_shape_inner(
     if let Some(s) = block.as_any().downcast_ref::<BhkBoxShape>() {
         let [hx, hy, hz] = s.dimensions;
         return Some(CollisionShape::Cuboid {
-            half_extents: havok_to_engine(hx, hy, hz) * scale,
+            half_extents: finite_vec(havok_to_engine(hx, hy, hz) * scale)?,
         });
     }
 
     // Capsule
     if let Some(s) = block.as_any().downcast_ref::<BhkCapsuleShape>() {
-        let p1 = havok_to_engine(s.point1[0], s.point1[1], s.point1[2]) * scale;
-        let p2 = havok_to_engine(s.point2[0], s.point2[1], s.point2[2]) * scale;
+        let p1 = finite_vec(havok_to_engine(s.point1[0], s.point1[1], s.point1[2]) * scale)?;
+        let p2 = finite_vec(havok_to_engine(s.point2[0], s.point2[1], s.point2[2]) * scale)?;
+        // p1/p2 are finite, so the derived half_height is finite too.
         let half_height = (p2 - p1).length() * 0.5;
-        let radius = s.radius1.max(s.radius2) * scale;
+        let radius = finite(s.radius1.max(s.radius2) * scale)?;
         return Some(CollisionShape::Capsule {
             half_height,
             radius,
@@ -372,10 +396,10 @@ fn resolve_shape_inner(
 
     // Cylinder
     if let Some(s) = block.as_any().downcast_ref::<BhkCylinderShape>() {
-        let p1 = havok_to_engine(s.point1[0], s.point1[1], s.point1[2]) * scale;
-        let p2 = havok_to_engine(s.point2[0], s.point2[1], s.point2[2]) * scale;
+        let p1 = finite_vec(havok_to_engine(s.point1[0], s.point1[1], s.point1[2]) * scale)?;
+        let p2 = finite_vec(havok_to_engine(s.point2[0], s.point2[1], s.point2[2]) * scale)?;
         let half_height = (p2 - p1).length() * 0.5;
-        let radius = s.cylinder_radius * scale;
+        let radius = finite(s.cylinder_radius * scale)?;
         return Some(CollisionShape::Cylinder {
             half_height,
             radius,
@@ -389,6 +413,12 @@ fn resolve_shape_inner(
             .iter()
             .map(|v| havok_to_engine(v[0], v[1], v[2]) * scale)
             .collect();
+        // A single non-finite vertex makes the whole hull unbuildable in
+        // parry3d — drop to trimesh fallback rather than feed it a NaN
+        // point (NIFAL-S4 / #1409).
+        if verts.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
         return Some(CollisionShape::ConvexHull { vertices: verts });
     }
 
@@ -1021,6 +1051,52 @@ mod cycle_tests {
             matches!(result, Some(CollisionShape::Ball { .. })),
             "a within-limit chain must resolve to the terminal sphere, got {result:?}"
         );
+    }
+
+    #[test]
+    fn non_finite_sphere_radius_drops_to_none() {
+        // NIFAL-S4 / #1409: a NaN / ±Inf radius from a corrupt NIF must
+        // not reach the parry3d collider builder — resolve_shape returns
+        // None so the synthesized-trimesh fallback fires instead.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut scene = NifScene::default();
+            scene.havok_scale = 1.0;
+            scene.blocks.push(sphere_shape(bad));
+            let mut visited = HashSet::new();
+            assert!(
+                resolve_shape(&scene, BlockRef(0u32), &mut visited).is_none(),
+                "radius {bad} must produce None"
+            );
+        }
+    }
+
+    #[test]
+    fn finite_sphere_radius_resolves_to_scaled_ball() {
+        // Control: the guard must not reject legitimate finite radii.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 2.0;
+        scene.blocks.push(sphere_shape(1.5));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::Ball { radius }) => assert!((radius - 3.0).abs() < 1e-6),
+            other => panic!("expected scaled Ball, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_finite_box_dimension_drops_to_none() {
+        // SIBLING of the sphere guard: a single non-finite half-extent
+        // poisons the whole cuboid → None → trimesh fallback (#1409).
+        use crate::blocks::collision::BhkBoxShape;
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkBoxShape {
+            material: 0,
+            radius: 0.0,
+            dimensions: [1.0, f32::INFINITY, 2.0],
+        }));
+        let mut visited = HashSet::new();
+        assert!(resolve_shape(&scene, BlockRef(0u32), &mut visited).is_none());
     }
 
     #[test]
