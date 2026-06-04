@@ -121,6 +121,21 @@ pub const DEFAULT_VOLUME_FAR: f32 = crate::shader_constants::VOLUME_FAR;
 /// `composite.frag` shader can't `#include` Rust, so the lockstep is
 /// documented via cross-comments rather than enforced by the compiler.
 /// See #928.
+///
+/// **FLIP CHECKLIST — before setting this to `true` (M-LIGHT v2),
+/// address the two latent items that are dead while the read is gated
+/// off but become live the instant it flips:**
+/// 1. **#1462** — reconcile the froxel depth conventions: inject samples
+///    each slice at its *center* (`(z+0.5)/size.z`), integrate uses a
+///    *front-of-slab* Riemann sum (inscatter weighted before the
+///    transmittance step), and composite samples by *texel edge*
+///    (`worldDist/VOLUME_FAR`). Under the linear model that is a
+///    ~half-slab (~0.78 m) fog-depth bias. Reconcile, or accept it
+///    explicitly.
+/// 2. **#1463** — `integration_param_buffer` is single-buffered (sound
+///    only because `dt` is immutable). If Phase 5 makes `dt` per-frame,
+///    convert it to per-FIF first (mirror `param_buffers`) or frame
+///    N+1's host write races frame N's in-flight integrate read.
 pub const VOLUMETRIC_OUTPUT_CONSUMED: bool = false;
 
 /// Integration shader uniform — slab thickness `dt` shared across all
@@ -401,6 +416,14 @@ impl VolumetricsPipeline {
         }
 
         // ── 7. Integration pass UBO (single-shot, dt is constant) ─────
+        // #1463: single-buffered (NOT per-FIF) because `dt` is immutable —
+        // written once here and read-only thereafter, so all FIF integrate
+        // descriptor sets may safely alias it. Phase 5 wants a per-slice /
+        // per-frame exponential `dt`; if you start writing this buffer per
+        // frame, FIRST convert it to a per-FIF `Vec<GpuBuffer>` (mirror the
+        // `param_buffers` pattern) or frame N+1's host write will race frame
+        // N's in-flight integrate read (WAR hazard). See the FLIP CHECKLIST
+        // on `VOLUMETRIC_OUTPUT_CONSUMED`.
         let int_param_size = std::mem::size_of::<IntegrationParams>() as vk::DeviceSize;
         let mut int_param_buffer = try_or_cleanup!(GpuBuffer::create_host_visible(
             device,

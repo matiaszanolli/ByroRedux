@@ -61,6 +61,11 @@ void main() {
         vec3 inscatter = inj.rgb;
         float extinction = inj.a;
 
+        // #1462: FRONT-of-slab Riemann sum — inscatter is weighted by the
+        // transmittance accumulated through slices 0..i-1 (before this
+        // slab attenuates), while inject evaluated inscatter/extinction at
+        // the slice CENTER. ~half-slab bias; reconcile with inject +
+        // composite when VOLUMETRIC_OUTPUT_CONSUMED flips (FLIP CHECKLIST).
         inscatter_total += inscatter * trans_cumulative * dt;
         trans_cumulative *= exp(-extinction * dt);
 
