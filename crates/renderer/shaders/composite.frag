@@ -393,6 +393,14 @@ void main() {
             // the volume rather than the CLAMP_TO_EDGE neighbour, which
             // would over-extrapolate transmittance for fragments past
             // the volume far plane.
+            //
+            // #1462: this is a texel-EDGE mapping, while inject samples at
+            // the slice CENTER ((z+0.5)/size.z) and integrate uses a
+            // FRONT-of-slab Riemann sum — a ~half-slab (~0.78 m) fog-depth
+            // bias under the linear model. Dead while the read is gated off
+            // (depth_params.z); reconcile the three conventions when
+            // VOLUMETRIC_OUTPUT_CONSUMED flips. See the FLIP CHECKLIST in
+            // volumetrics.rs.
             float slice = clamp(worldDist / VOLUME_FAR, 0.0, 0.9999);
             vec4 vol = texture(volumetricFroxel, vec3(fragUV, slice));
             // vol.rgb = ∫inscatter accumulated 0..slice (HDR-linear)

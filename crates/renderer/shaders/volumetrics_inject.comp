@@ -101,6 +101,9 @@ void main() {
 
     // Slice → along-ray distance (linear for Phase 2; exponential
     // distribution lands with Phase 5 temporal reprojection).
+    // #1462: this samples the slice CENTER (uvw.z = (coord.z+0.5)/size.z);
+    // integrate weights with FRONT-of-slab transmittance and composite
+    // samples by texel EDGE — reconcile the three when the read is enabled.
     float t = uvw.z * params.volume_extent.x;
 
     vec3 world_pos = froxel_to_world(uvw.xy, t);
