@@ -207,3 +207,22 @@ opt-level = 3
 # path; lifting it makes the whole ECS faster in debug too.
 [profile.dev.package.glam]
 opt-level = 3
+
+# FFI-03 / #1383 — DO NOT set `panic = "abort"` here.
+#
+# The `byroredux-cxx-bridge` crate uses the `cxx` crate, which bridges
+# C++ exceptions across the FFI boundary as Rust `Result`s by relying on
+# the platform unwinder being intact (cxx-generated shims catch and
+# translate exceptions while a Rust panic must be able to unwind back
+# through them). `panic = "abort"` would turn any such cross-language
+# unwind into an immediate `abort()` instead of the orderly error path,
+# breaking cxx's documented exception-safety contract.
+#
+# `panic = "unwind"` is the Cargo default for `release`; it is set
+# explicitly below so the requirement is visible and a future "shrink the
+# binary / strip the landing pads" change can't silently flip it. If
+# `panic = "abort"` is ever genuinely wanted (smaller binary, no unwind
+# tables), every C++ function reachable through the bridge must first be
+# made `noexcept`.
+[profile.release]
+panic = "unwind"
