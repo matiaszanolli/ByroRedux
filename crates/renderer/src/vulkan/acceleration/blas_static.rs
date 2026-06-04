@@ -988,6 +988,20 @@ impl AccelerationManager {
     /// anyone raises `MAX_FRAMES_IN_FLIGHT` without bumping `min_idle`,
     /// the workspace fails to compile instead of silently introducing a
     /// use-after-free window (REN-D8-NEW-16 / #960).
+    ///
+    /// INVARIANT (MEM-01 / #1449): the immediate-destroy path additionally
+    /// assumes `frame_counter` advances at most once per *retired* frame.
+    /// [`build_blas_batched`](Self::build_blas_batched) bumps `frame_counter`
+    /// once per batch (`:397`) with no `draw_frame`/`build_tlas` in between, so
+    /// during a multi-batch cell load the counter can outrun the GPU's retired
+    /// frames. That is sound today only because cell-load bursts are NOT
+    /// interleaved with in-flight draw frames (they run inside the gated load
+    /// flow). If a future streaming-during-render refactor ever runs
+    /// `build_blas_batched` while frames are genuinely in flight, a BLAS still
+    /// referenced by the in-flight previous TLAS could read as
+    /// `idle >= min_idle` and be destroyed under the GPU — at that point route
+    /// eviction through `pending_destroy_blas` (as `drop_blas` already does),
+    /// or gate the per-batch bump so it cannot outrun retired frames.
     pub unsafe fn evict_unused_blas(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         if self.static_blas_bytes <= self.blas_budget_bytes {
             return;
