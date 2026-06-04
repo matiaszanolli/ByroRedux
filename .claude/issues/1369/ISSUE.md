@@ -1,5 +1,3 @@
-# PERF-D1-NEW-01: WRS streaming reservoir loop O(cluster.count x 16) + 320B/fragment cuts occupancy
-
 **Severity**: MEDIUM · **Dimension**: GPU Pipeline (PERF-D1-NEW-01)
 **Location**: `crates/renderer/shaders/triangle.frag:2684` (NUM_RESERVOIRS=16), `:2690-2698` (arrays), `:2702-2995` (streaming pass), `:3004-3103` (shadow-ray pass)
 **Status**: NEW
