@@ -19,6 +19,10 @@ pub enum KeyType {
     Linear,
     Quadratic,
     Tbc,
+    /// Stepped / constant hold (Gamebryo `KEY_CONST`): the segment holds
+    /// the start key's value until the next key, with no interpolation.
+    /// Used by hard-cut keyframed scenery and IK poses (LC-D5-02 / #1441).
+    Const,
 }
 
 /// Translation keyframe.
