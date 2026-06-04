@@ -247,15 +247,17 @@ void main() {
         vec3 LtoG;
         float lightReach;
         if (Ltype == 2u) {
-            // Directional light: `direction_angle.xyz` is the light
-            // direction of travel (i.e. light flows along it). Apply
-            // a Lambert cosine against the surface normal so light
-            // hitting the front face of the refractor splats and
-            // light hitting the back doesn't. The refraction normal
-            // flip below still handles the back-side case, but the
-            // cosine here saves the dispatch when the light can't
-            // physically reach the surface.
-            LtoG = normalize(L.direction_angle.xyz);
+            // Directional light: `direction_angle.xyz` points TO the light
+            // (light-incoming, matching GpuLight convention / triangle.frag's
+            // `L`), so the light *travel* direction is its negation. `LtoG`
+            // must hold the travel direction to stay consistent with the
+            // point/spot branch (`G - Lp`) and the downstream refract/normal-
+            // flip below. Apply a Lambert cosine against the surface normal so
+            // light hitting the front face of the refractor splats and light
+            // hitting the back doesn't. The refraction normal flip below still
+            // handles the back-side case, but the cosine here saves the
+            // dispatch when the light can't physically reach the surface.
+            LtoG = -normalize(L.direction_angle.xyz);
             lightReach = clamp(dot(N, -LtoG), 0.0, 1.0);
             if (lightReach < 0.001) continue;
         } else {
