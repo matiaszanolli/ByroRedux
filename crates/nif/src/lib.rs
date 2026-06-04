@@ -109,6 +109,9 @@ fn is_animation_block(type_name: &str) -> bool {
             | "NiControllerSequence"
             | "NiMultiTargetTransformController"
             | "NiTransformController"
+            // pre-Skyrim alias of NiTransformController (#144 / #1442);
+            // listed alongside its NiKeyframeData below for parity
+            | "NiKeyframeController"
             | "NiVisController"
             | "bhkBlendController"
             | "NiAlphaController"
