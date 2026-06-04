@@ -1,5 +1,3 @@
-# PERF-D2-NEW-03: dhat / alloc-counter regression coverage unwired (recurring) — wire dhat-heap feature + cell-load alloc assertion
-
 **Severity**: LOW (process/infra gap, not a runtime defect) · **Dimension**: GPU Memory / CPU Allocations (PERF-D2-NEW-03)
 **Location**: workspace-wide; relevant hot paths `crates/renderer/src/vulkan/scene_buffer/upload.rs`, `crates/renderer/src/vulkan/buffer.rs` (StagingPool), `crates/renderer/src/mesh.rs` (pool growth), `crates/core/src/ecs/packed.rs` (dirty sets)
 **Status**: NEW (recurring — flagged in 2026-05-04/-06/-10/-16/-19 reports, never wired as a tracked issue)
