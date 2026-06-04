@@ -146,7 +146,7 @@ pub fn parse_weap(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
     let mut damage = 0u32;
     let mut clip_size = 0u8;
     let mut anim_type = 0u8;
-    let mut ap_cost = 0u32;
+    let ap_cost = 0u32;
     let mut skill_form = 0u32;
     let mut min_spread = 0.0f32;
     let mut spread = 0.0f32;

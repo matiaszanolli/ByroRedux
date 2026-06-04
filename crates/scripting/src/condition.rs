@@ -153,7 +153,7 @@ impl ConditionContext {
     /// Resolve a [`RunOn`] choice to a concrete EntityId. Returns
     /// `None` when the slot isn't populated or the choice references
     /// data M47.1 doesn't yet plumb (alias / package / event data).
-    fn resolve(&self, run_on: RunOn, condition: &Condition, world: &World) -> Option<EntityId> {
+    fn resolve(&self, run_on: RunOn, condition: &Condition, _world: &World) -> Option<EntityId> {
         match run_on {
             RunOn::Subject => Some(self.subject),
             RunOn::Target => self.target,
