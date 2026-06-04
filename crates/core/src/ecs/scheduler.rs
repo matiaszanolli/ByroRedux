@@ -404,6 +404,35 @@ impl Scheduler {
     /// recovered frame will see partial state from the failed stage
     /// (some parallel systems ran, some didn't; mid-stage exclusive
     /// systems are guaranteed to have not run). See #867.
+    ///
+    /// ## Policy: fail-fast is intentional (TS-08 / #1412)
+    ///
+    /// Terminate-on-panic is a **deliberate** choice, not a missing
+    /// feature. A panicking system is a bug, and continuing the frame
+    /// with half-mutated ECS state risks silent corruption that is far
+    /// harder to diagnose than a clean crash at the panic site. The
+    /// engine therefore lets the panic abort the process.
+    ///
+    /// ## Lock poisoning
+    ///
+    /// Component storages are `std::sync::RwLock` (`World::storages`),
+    /// which **poisons** when a thread panics while holding the write
+    /// guard. This is already handled defensively: every acquisition
+    /// site in [`World`] resolves a `PoisonError` through
+    /// `storage_lock_poisoned::<T>()`, which re-panics with a diagnostic
+    /// naming the poisoned storage and pointing at the system that
+    /// panicked first — so a post-panic access fails loud, never silently
+    /// reads torn state.
+    ///
+    /// Poisoning is also a concrete argument *against* a naive per-frame
+    /// `catch_unwind`: the recovered frame would hit
+    /// `storage_lock_poisoned` on every storage the failed system was
+    /// writing, so "recovery" is not clean. A real recovery scheme would
+    /// have to wrap each rayon task body in `catch_unwind`, serialize the
+    /// first error to a shared slot, AND clear the poison
+    /// (`RwLock::clear_poison`) on the affected storages while accepting
+    /// the partial-write — a deliberate, non-trivial design, not a drop-in
+    /// guard. Deferred as a medium-term quality item.
     pub fn run(&mut self, world: &World, dt: f32) {
         // Phase 11 — per-system wall-time tracker. Each system
         // pushes `(name, ns)` here as it completes; final list is
