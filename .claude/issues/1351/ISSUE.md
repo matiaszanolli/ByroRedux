@@ -1,7 +1,3 @@
-# #1351 — D6-04: FO4 PreCombined CSG companion reader absent, no ROADMAP milestone
-
-_Snapshot from AUDIT_FO4_2026-05-30. GitHub is authoritative for live state._
-
 **Severity**: MEDIUM · **Source**: AUDIT_FO4_2026-05-30 (D6-04) · **Domain**: performance / legacy-compat
 
 **Location**: `byroredux/src/cell_loader/precombined.rs` (module doc, lines 10–33); `ROADMAP.md` (no CSG entry)
@@ -22,3 +18,4 @@ The `precombined.rs` module doc already has a detailed stub plan at lines 14–3
 ## Completeness Checks
 - [ ] **SIBLING**: The companion `_precomb.nif` collision geometry (Havok) is also unread — should be part of the same milestone
 - [ ] **TESTS**: Add a golden-frame or entity-count assertion for a known FO4 cell that verifies `pc_spawned > 0` once the CSG reader lands
+
