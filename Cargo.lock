@@ -414,6 +414,7 @@ dependencies = [
  "byroredux-sfmaterial",
  "byroredux-spt",
  "byroredux-ui",
+ "dhat",
  "env_logger",
  "image 0.24.9",
  "log",

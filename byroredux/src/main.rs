@@ -1,5 +1,14 @@
 //! ByroRedux — ECS-driven game loop with Vulkan rendering.
 
+// Heap-allocation profiler (PERF-D2-NEW-03 / #1381). Behind the
+// `dhat-heap` feature so default builds keep the system allocator and
+// pay no override cost. When enabled, `dhat` becomes the global
+// allocator and `main` starts a whole-run profiler that writes
+// `dhat-heap.json` on exit.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static DHAT_ALLOC: dhat::Alloc = dhat::Alloc;
+
 mod anim_convert;
 mod asset_provider;
 mod cell_loader;
@@ -97,6 +106,13 @@ fn init_tracing() {
 }
 
 fn main() -> Result<()> {
+    // Whole-run heap profiler (PERF-D2-NEW-03 / #1381). Held for the
+    // lifetime of `main`; on drop (process exit) `dhat` writes
+    // `dhat-heap.json` to the CWD. No-op unless built with
+    // `--features dhat-heap`.
+    #[cfg(feature = "dhat-heap")]
+    let _dhat_profiler = dhat::Profiler::new_heap();
+
     // Phase 20 — expand `--game <key>` into the full set of
     // `--esm` / `--bsa` / `--textures-bsa` / `--materials-ba2`
     // args BEFORE anything else reads argv. User-supplied flags
