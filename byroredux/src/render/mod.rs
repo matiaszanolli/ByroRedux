@@ -541,7 +541,10 @@ pub(crate) fn build_render_data(
 // orchestrator above acquires the World queries once and threads
 // references through.
 mod camera;
-mod lights;
+// `pub(crate)` so the `light.atten` console command (REND-#1451) can
+// read `LIGHT_RANGE_EXTENSION` to report the effective brightness at
+// the authored radius.
+pub(crate) mod lights;
 mod particles;
 mod skinned;
 mod sky;

@@ -664,7 +664,18 @@ impl VulkanContext {
             jitter: [
                 jx,
                 jy,
-                f32::from_bits(self.render_debug_flags),
+                // REND-#1451 — OR the runtime legacy-attenuation toggle
+                // (console-driven via LightTuning) onto the env-set
+                // debug bitmask so both paths reach the shader's
+                // `DBG_LEGACY_LIGHT_ATTEN` branch.
+                f32::from_bits(
+                    self.render_debug_flags
+                        | if self.light_atten_legacy {
+                            crate::shader_constants::DBG_LEGACY_LIGHT_ATTEN
+                        } else {
+                            0
+                        },
+                ),
                 if sky_params.is_exterior { 1.0 } else { 0.0 },
             ],
             // #925 / REN-D15-NEW-03 — mirror the composite's
@@ -696,12 +707,14 @@ impl VulkanContext {
                 sky_params.sun_direction[2],
                 sky_params.sun_intensity,
             ],
-            // x = aperture half-radius, y = focal distance, zw reserved.
+            // x = aperture half-radius, y = focal distance, w reserved.
             // When aperture == 0.0, the DOF jitter above was skipped and
-            // the shader ignores these values. Packed here so a future
-            // screen-space DOF or CoC visualiser can read them without
-            // an extra UBO binding.
-            dof_params: [dof.aperture, dof.focus_dist, 0.0, 0.0],
+            // the shader ignores x/y.
+            // z = REND-#1451 point/spot attenuation knee fraction,
+            // consumed by `pointSpotAtten` in triangle.frag (0 → shader
+            // default 0.5). Live-tunable via the `light.atten` console
+            // command for the controlled bench.
+            dof_params: [dof.aperture, dof.focus_dist, self.light_atten_knee, 0.0],
         };
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)

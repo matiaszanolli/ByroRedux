@@ -979,6 +979,23 @@ pub struct VulkanContext {
     /// bisection of texture / lighting artifacts. See engineering
     /// notes around the Dragonsreach "ghost carving" diagnosis.
     pub render_debug_flags: u32,
+    /// REND-#1451 — live-tunable point/spot attenuation knee fraction,
+    /// uploaded into `GpuCamera.dof_params.z`. `knee = kneeFrac × cull
+    /// radius` is the authored radius where the physical near-zone
+    /// falloff sits (`pointSpotAtten` in triangle.frag). Default `0.5`
+    /// (authored radius at half the cull radius — the
+    /// `LIGHT_RANGE_EXTENSION = 2.0` geometry); lower ⇒ dimmer at the
+    /// authored radius. Settable live via the `light.atten knee <f>`
+    /// console command (routed through the `LightTuning` resource) so
+    /// the controlled bench can sweep it with no rebuild.
+    pub light_atten_knee: f32,
+    /// REND-#1451 — when true, OR `DBG_LEGACY_LIGHT_ATTEN` into the
+    /// per-frame debug bitmask so the shader reverts to the pre-fix
+    /// window-only attenuation (75% at the authored radius). Lets the
+    /// new vs legacy model be A/B'd live. Settable via `light.atten
+    /// legacy on|off`; `BYROREDUX_RENDER_DEBUG=0x1000` does the same at
+    /// launch.
+    pub light_atten_legacy: bool,
     /// Previous frame's view-projection matrix (column-major [f32; 16]).
     /// Used to compute screen-space motion vectors in the vertex shader.
     /// On the very first frame, equals the current frame's viewProj (no motion).
@@ -2254,6 +2271,12 @@ impl VulkanContext {
             current_frame: 0,
             frame_counter: 0,
             render_debug_flags: parse_render_debug_flags_env(),
+            // REND-#1451 — default knee = 0.5 (authored radius at half
+            // the cull radius). `light_atten_legacy` starts false; the
+            // env path (`BYROREDUX_RENDER_DEBUG=0x1000`) can still force
+            // the legacy formula at launch via `render_debug_flags`.
+            light_atten_knee: 0.5,
+            light_atten_legacy: false,
             // Initialize to identity; first frame will overwrite with current
             // viewProj so motion vector is zero on the first frame.
             prev_view_proj: [

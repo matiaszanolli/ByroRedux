@@ -267,3 +267,18 @@ pub const DBG_BYPASS_VERTEX_COLOR: u32 = 0x400;
 /// with `DBG_BYPASS_VERTEX_COLOR` these isolate the two most common
 /// "lighting only on certain polygons" causes without touching shadows.
 pub const DBG_DISABLE_AO: u32 = 0x800;
+
+/// 0x1000 — revert point/spot lights to the pre-REND-#1451 attenuation:
+/// the anti-pop-in cull window doing the ENTIRE attenuation job
+/// (`atten = pow(clamp(1 − (d/R)², 0, 1), shape)`, `R = .w`). That
+/// formula reads 75% at the authored radius (`d = R/2`) — the bright
+/// near-zone ring (Lonesome Road / Ulysses Temple). Default-off path
+/// now uses the OpenMW-style two-term model: a physical near-zone
+/// falloff keyed to the AUTHORED radius (`knee = dofParams.z × .w`)
+/// MULTIPLIED by a soft cull window that fades full→zero from the
+/// authored radius out to `.w`. Set this bit to A/B the new model
+/// against the legacy one in the same live session (no rebuild) while
+/// running the REND-#1451 controlled bench. Also settable via the
+/// `light.atten legacy on|off` console command (routes through the
+/// `LightTuning` resource → `VulkanContext::light_atten_legacy`).
+pub const DBG_LEGACY_LIGHT_ATTEN: u32 = 0x1000;

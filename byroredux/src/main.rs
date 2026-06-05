@@ -430,6 +430,9 @@ impl App {
         world.insert_resource(DebugStats::default());
         world.insert_resource(ScratchTelemetry::default());
         world.insert_resource(SkinCoverageStats::default());
+        // REND-#1451 — live attenuation tuning, read into the renderer
+        // each frame and mutated by the `light.atten` console command.
+        world.insert_resource(crate::components::LightTuning::default());
         // CPU-side per-frame timings — fence_wait / submit_present /
         // etc. Filled by the binary's RedrawRequested handler after
         // each `draw_frame` from the renderer's `FrameTimings`
@@ -1566,6 +1569,15 @@ impl App {
                 cam_forward: frame.cam_forward,
                 proj_mat: frame.proj_mat,
             };
+            // REND-#1451 — push live point/spot attenuation tuning
+            // (LightTuning resource, mutated by the `light.atten`
+            // console command) into the renderer so the controlled
+            // bench can sweep the knee / A/B the legacy model without a
+            // rebuild. Absent resource → renderer keeps its defaults.
+            if let Some(lt) = self.world.try_resource::<crate::components::LightTuning>() {
+                ctx.light_atten_knee = lt.knee_frac;
+                ctx.light_atten_legacy = lt.legacy;
+            }
             match ctx.draw_frame(
                 clear_color,
                 &frame.view_proj,
