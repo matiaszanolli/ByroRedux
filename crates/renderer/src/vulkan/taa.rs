@@ -134,6 +134,13 @@ pub struct TaaPipeline {
     /// this to `[u32; MAX_FRAMES_IN_FLIGHT]` mirroring SVGF's #964 layout.
     /// REN-D12-NEW-01 (#1124).
     frames_since_creation: u32,
+    /// Consecutive frames the camera has been static, for progressive
+    /// (1/N) history accumulation. Incremented while the camera is parked
+    /// and reset to 0 the moment it moves; drives the temporal blend α down
+    /// to converge jittered direct-channel content (rough-metal / glass
+    /// reflections that SVGF — indirect-only — never sees) toward ground
+    /// truth. Capped so the EMA floor still adapts to scene changes.
+    static_frames: u32,
     /// Set in [`Self::dispatch`] once the compute dispatch has been
     /// recorded; consumed + cleared by [`Self::mark_frame_completed`]
     /// after `queue_submit` returns success. Gates the
@@ -204,6 +211,7 @@ impl TaaPipeline {
             width,
             height,
             frames_since_creation: 0,
+            static_frames: 0,
             dispatched_this_frame: false,
         };
 
@@ -649,11 +657,34 @@ impl TaaPipeline {
     /// barrier in `draw_frame` so the host write folds into that barrier's
     /// existing execution dependency rather than emitting a redundant barrier
     /// inside `dispatch`. Mirrors the SVGF fold from #961 / REN-D10-NEW-04.
-    pub fn upload_params(&mut self, device: &ash::Device, frame: usize) -> Result<()> {
+    pub fn upload_params(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+        camera_static: bool,
+    ) -> Result<()> {
         let first_frame = if should_force_history_reset(self.frames_since_creation) {
             1.0
         } else {
             0.0
+        };
+        // Progressive history accumulation while the camera is parked.
+        // static_frames counts parked frames (reset on motion); α = 1/(N+1)
+        // is the Monte-Carlo running average that converges the jittered
+        // direct channel. Capped at 255 so α floors at ~1/256 — enough
+        // adaptivity for a scene change under a held camera. A hard
+        // history reset (resize / first frame) also resets the counter.
+        if camera_static && first_frame < 0.5 {
+            self.static_frames = self.static_frames.saturating_add(1).min(255);
+        } else {
+            self.static_frames = 0;
+        }
+        // 0.1 = canonical TAA blend (10% current). While parked, drop to
+        // 1/(N+1) for true convergence.
+        let alpha = if self.static_frames > 0 {
+            1.0 / (self.static_frames as f32 + 1.0)
+        } else {
+            0.1
         };
         let params = TaaParams {
             screen: [
@@ -662,8 +693,17 @@ impl TaaPipeline {
                 1.0 / self.width as f32,
                 1.0 / self.height as f32,
             ],
-            // 0.1 = 10% current, 90% history — canonical TAA blend.
-            params: [0.1, first_frame, 0.0, 0.0],
+            // params.z = camera-static flag. While parked, the alpha-blend
+            // TAA bypass (which exists to stop transparency ghosting under
+            // MOTION) is lifted so glass refraction/reflection accumulates
+            // and converges too — there is no reprojection error when the
+            // camera doesn't move.
+            params: [
+                alpha,
+                first_frame,
+                if self.static_frames > 0 { 1.0 } else { 0.0 },
+                0.0,
+            ],
         };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))
     }

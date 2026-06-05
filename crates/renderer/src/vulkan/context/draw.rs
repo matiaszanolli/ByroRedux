@@ -2136,7 +2136,7 @@ impl VulkanContext {
         // dst_stage = COMPUTE_SHADER, so no per-dispatch barrier is needed.
         if !self.taa_failed {
             if let Some(ref mut taa) = self.taa {
-                if let Err(e) = taa.upload_params(&self.device, frame) {
+                if let Err(e) = taa.upload_params(&self.device, frame, camera_static) {
                     log::warn!("TAA upload_params failed: {e}");
                 }
             }
