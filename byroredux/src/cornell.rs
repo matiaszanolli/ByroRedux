@@ -124,21 +124,31 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
         emissive([1.0, 0.97, 0.9], 8.0),
         "ceiling_light_panel",
     );
-    {
-        let light = world.spawn();
-        let pos = Vec3::new(0.0, HEIGHT - 0.3, 0.0);
-        world.insert(light, Transform::new(pos, Quat::IDENTITY, 1.0));
-        world.insert(light, GlobalTransform::new(pos, Quat::IDENTITY, 1.0));
-        world.insert(
-            light,
-            LightSource {
-                radius: 30.0,
-                color: [1.6, 1.55, 1.45],
-                ..Default::default()
-            },
-        );
-        name_entity(world, light, "ceiling_light");
-    }
+    spawn_point_light(
+        world,
+        Vec3::new(0.0, HEIGHT - 0.3, 0.0),
+        30.0,
+        [1.6, 1.55, 1.45],
+        "ceiling_light",
+    );
+
+    // ── Camera-side key/fill light ──────────────────────────────────
+    // The ceiling light alone sits *behind* the front probe rows, so
+    // their camera-facing hemispheres fall into near-shadow and no
+    // material differences are visible. This second light, placed high
+    // and off to one side near the camera, rakes the camera-facing
+    // sides — giving each probe a GGX highlight whose shape/size reveals
+    // roughness, and an albedo-tinted (vs white) specular that reveals
+    // metalness. Dimmer than the key so the Cornell colour-bleed look
+    // survives. (Whether GI *alone* should fill these faces is a
+    // separate question tracked for a later pass.)
+    spawn_point_light(
+        world,
+        Vec3::new(2.0, HEIGHT * 0.8, HALF_W + 1.0),
+        40.0,
+        [1.1, 1.1, 1.15],
+        "camera_fill_light",
+    );
 
     // ── Classic probes: tall matte block + matte sphere ─────────────
     let tall = builder.box_mesh([0.7, 1.5, 0.7]);
@@ -165,7 +175,16 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
     // ── Material sweeps ─────────────────────────────────────────────
     // Two front rows of small spheres. Row near z=+1.5 sweeps roughness
     // at metalness=1.0 (GGX lobe + RT reflection across the gate); row at
-    // z=+2.9 sweeps metalness at low roughness.
+    // z=+2.9 sweeps metalness at a fixed *moderate* roughness.
+    //
+    // The metalness row's roughness is deliberately 0.35, not mirror-
+    // smooth: at low roughness both ends of a metalness sweep are
+    // dominated by a sharp environment reflection, so dielectric (m=0)
+    // and metal (m=1) look near-identical in a dim room — verified live
+    // via `mat.set`. At 0.35 the dielectric end shows its diffuse albedo
+    // while the metal end shows an albedo-tinted glossy reflection, so
+    // the transition actually reads. Sweep either row at runtime with
+    // `mat.set <id> roughness <v>` to probe other points.
     let probe = builder.sphere(0.45);
     let xs = [-3.0_f32, -1.5, 0.0, 1.5, 3.0];
     for (i, &x) in xs.iter().enumerate() {
@@ -188,7 +207,7 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
             neutral,
             Vec3::new(x, 0.45, 2.9),
             Quat::IDENTITY,
-            pbr([0.9, 0.85, 0.55], m, 0.15),
+            pbr([0.9, 0.85, 0.55], m, 0.35),
             &format!("metalness_{i}"),
         );
     }
@@ -309,6 +328,24 @@ fn spawn_object(
     world.insert(e, tex);
     world.insert(e, material);
     name_entity(world, e, name);
+}
+
+/// Spawn a named point [`LightSource`] at `pos`. `radius` is the
+/// influence falloff distance; `color` is the (un-tonemapped, linear)
+/// radiance.
+fn spawn_point_light(world: &mut World, pos: Vec3, radius: f32, color: [f32; 3], name: &str) {
+    let light = world.spawn();
+    world.insert(light, Transform::new(pos, Quat::IDENTITY, 1.0));
+    world.insert(light, GlobalTransform::new(pos, Quat::IDENTITY, 1.0));
+    world.insert(
+        light,
+        LightSource {
+            radius,
+            color,
+            ..Default::default()
+        },
+    );
+    name_entity(world, light, name);
 }
 
 fn name_entity(world: &mut World, entity: byroredux_core::ecs::EntityId, name: &str) {
