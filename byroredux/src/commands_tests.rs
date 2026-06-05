@@ -388,3 +388,71 @@ fn look_at_degenerate_zero_distance_returns_zero() {
     assert_eq!(yaw, 0.0);
     assert_eq!(pitch, 0.0);
 }
+
+/// `mat.set` mutates a scalar field and a vec3 field in place — the core
+/// of the Cornell-box live material-sweep workflow. The render path reads
+/// `Material` fresh each frame, so an in-place edit is all that's needed.
+#[test]
+fn mat_set_mutates_scalar_and_vec3() {
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    let e = world.spawn();
+    world.insert(e, Material::default());
+
+    let cmd = MatSetCommand;
+    let out = cmd.execute(&world, &format!("{e} roughness 0.25")).lines.join("\n");
+    assert!(out.contains("roughness = 0.2500"), "got: {out}");
+    assert_eq!(world.get::<Material>(e).unwrap().roughness, 0.25);
+
+    // `color` is the alias for diffuse_color, 3 values.
+    cmd.execute(&world, &format!("{e} color 0.1 0.2 0.3"));
+    assert_eq!(world.get::<Material>(e).unwrap().diffuse_color, [0.1, 0.2, 0.3]);
+
+    // material_kind takes an integer arm.
+    cmd.execute(&world, &format!("{e} material_kind 100"));
+    assert_eq!(world.get::<Material>(e).unwrap().material_kind, 100);
+}
+
+/// `mat.set` rejects unknown fields, wrong value arity, and missing
+/// entities without mutating anything.
+#[test]
+fn mat_set_validates_input() {
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    let e = world.spawn();
+    world.insert(e, Material::default());
+    let cmd = MatSetCommand;
+
+    let unknown = cmd.execute(&world, &format!("{e} bogus 1.0")).lines.join("\n");
+    assert!(unknown.contains("unknown field"), "got: {unknown}");
+
+    let arity = cmd.execute(&world, &format!("{e} color 0.5")).lines.join("\n");
+    assert!(arity.contains("expected 3"), "got: {arity}");
+
+    let missing = cmd.execute(&world, "999999 roughness 0.5").lines.join("\n");
+    assert!(missing.contains("no Material"), "got: {missing}");
+
+    // None of the bad inputs touched the component.
+    let m = world.get::<Material>(e).unwrap();
+    assert_eq!(m.roughness, Material::default().roughness);
+    assert_eq!(m.diffuse_color, Material::default().diffuse_color);
+}
+
+/// `mat.list` tabulates every entity carrying a Material, sorted by id,
+/// with the resolved name.
+#[test]
+fn mat_list_tabulates_materials() {
+    let mut world = World::new();
+    let mut pool = StringPool::new();
+    let probe = pool.intern("probe_a");
+    world.insert_resource(pool);
+
+    let e = world.spawn();
+    world.insert(e, Material::default());
+    world.insert(e, Name(probe));
+
+    let out = MatListCommand.execute(&world, "").lines.join("\n");
+    assert!(out.contains(&e.to_string()), "row for entity missing: {out}");
+    assert!(out.contains("probe_a"), "name missing: {out}");
+    assert!(out.contains("kind"), "header missing: {out}");
+}

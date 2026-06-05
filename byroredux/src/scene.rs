@@ -102,8 +102,22 @@ pub(crate) fn setup_scene(
     // `None`. See cell_loader::transition.
     world.insert_resource(cell_loader::PendingCellTransitionSlot::default());
 
+    // Cornell-box test harness (`--cornell`) — a self-contained RT
+    // validation scene needing no on-disk game data. Takes precedence
+    // over the ESM / NIF / demo paths. Returns the camera pose to use
+    // (overridable by the usual `--camera-pos` / `--camera-forward`).
+    let cornell = args.iter().any(|a| a == "--cornell");
+    let mut cornell_cam: Option<(Vec3, Vec3)> = None;
+
     // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
-    if let Some(esm_idx) = args.iter().position(|a| a == "--esm") {
+    if cornell {
+        let (pos, target) = crate::cornell::setup_cornell_scene(world, ctx);
+        cornell_cam = Some((pos, target));
+        cam_center = target;
+        // Skip the demo-primitive spawn + flag the scene as populated so
+        // the player rig defaults sensibly (see FlyCam gate below).
+        has_nif_content = true;
+    } else if let Some(esm_idx) = args.iter().position(|a| a == "--esm") {
         let esm_path = args.get(esm_idx + 1).cloned();
         let cell_id = args
             .iter()
@@ -392,10 +406,13 @@ pub(crate) fn setup_scene(
     // in which case the requested pose wins. Useful for offline
     // diagnostic renders without needing interactive WASD.
     let cam = world.spawn();
-    let cam_pos = match camera_pos_override {
-        Some((x, y, z)) => Vec3::new(x, y, z),
-        None if has_nif_content => cam_center + Vec3::new(0.0, 100.0, 200.0),
-        None => Vec3::new(0.0, 1.5, 4.0),
+    let cam_pos = match (camera_pos_override, cornell_cam) {
+        (Some((x, y, z)), _) => Vec3::new(x, y, z),
+        // Cornell box uses small world-unit scale (room ~8 units), so the
+        // NIF camera offset (100, 200) would put the camera far outside.
+        (None, Some((pos, _))) => pos,
+        (None, None) if has_nif_content => cam_center + Vec3::new(0.0, 100.0, 200.0),
+        (None, None) => Vec3::new(0.0, 1.5, 4.0),
     };
     let cam_target = cam_center;
     let forward = match camera_forward_override {
@@ -450,7 +467,13 @@ pub(crate) fn setup_scene(
     let want_player = args.iter().any(|a| a == "--player");
     let player_mode = if want_fly {
         crate::systems::PlayerMode::FlyCam
-    } else if want_player || has_nif_content {
+    } else if want_player {
+        crate::systems::PlayerMode::Character
+    } else if cornell {
+        // The Cornell box has no colliders; a character capsule would
+        // fall through the floor. Fly-cam unless explicitly overridden.
+        crate::systems::PlayerMode::FlyCam
+    } else if has_nif_content {
         crate::systems::PlayerMode::Character
     } else {
         crate::systems::PlayerMode::FlyCam

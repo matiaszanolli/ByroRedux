@@ -15,6 +15,7 @@ mod cell_loader;
 mod cli_args;
 mod commands;
 mod components;
+mod cornell;
 mod debug_load;
 mod env_translate;
 mod game_profiles;
