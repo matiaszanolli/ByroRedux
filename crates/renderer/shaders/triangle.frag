@@ -975,6 +975,68 @@ vec3 shadowableLightRadiance(
     return brdfResult * unshadowedRadiance;
 }
 
+// ── One-bounce GI helper (REND — true light-transport bounce) ───────
+
+// Direct irradiance arriving at a one-bounce GI hit point `p` (surface
+// normal `n`), summed over the scene lights with a shadow ray per
+// contributing light. This is the term that turns the GI bounce into
+// real light transport (and colour bleeding) instead of the legacy
+// `cell_ambient × albedo` approximation. Lights are range-culled and the
+// count is capped (`GI_HIT_LIGHT_CAP`) so dense cells can't explode the
+// per-hit cost. Returns radiance in the same units the primary direct
+// path uses, so the bounce energy matches.
+vec3 giHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
+    vec3 e = vec3(0.0);
+    uint count = min(lightCount, GI_HIT_LIGHT_CAP);
+    for (uint i = 0u; i < count; ++i) {
+        float lightType = lights[i].color_type.w;
+        vec3 lightColor = lights[i].color_type.rgb;
+        float radius = lights[i].position_radius.w;
+        float falloffShape = lights[i].params.x;
+
+        vec3 L;
+        float dist;
+        float atten;
+        if (lightType < 1.5) {
+            // Point (type 0) or spot (type 1).
+            vec3 toLight = lights[i].position_radius.xyz - p;
+            dist = length(toLight);
+            if (dist > radius) continue; // out of influence range
+            L = toLight / max(dist, 1e-3);
+            atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
+            if (lightType >= 0.5) {
+                vec3 spotDir = normalize(lights[i].direction_angle.xyz);
+                float spotAngle = lights[i].direction_angle.w;
+                float spotFactor = dot(-L, spotDir);
+                atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
+            }
+        } else {
+            // Directional (type 2): exterior sun / interior fill.
+            L = normalize(lights[i].direction_angle.xyz);
+            dist = 1.0e4;
+            atten = 1.0;
+        }
+
+        float NdotL = max(dot(n, L), 0.0);
+        float contrib = atten * NdotL;
+        if (contrib < 1.0e-4) continue;
+
+        // Shadow ray toward the light — skip the contribution if occluded.
+        rayQueryEXT sRQ;
+        rayQueryInitializeEXT(
+            sRQ, topLevelAS,
+            gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF,
+            p + n * 0.1, 0.05, L, max(dist - 0.2, 0.05));
+        rayQueryProceedEXT(sRQ);
+        if (rayQueryGetIntersectionTypeEXT(sRQ, true)
+            != gl_RayQueryCommittedIntersectionNoneEXT) {
+            continue;
+        }
+        e += lightColor * contrib;
+    }
+    return e;
+}
+
 // ── Parallax occlusion mapping ──────────────────────────────────────
 //
 // Standard step + linear-interpolate POM using screen-space derivatives
@@ -3241,7 +3303,16 @@ void main() {
     // (which can't see the hall-scale geometry off-screen). 1.0 = fully
     // open, 0.0 = hard against adjacent geometry.
     float rtAO = 1.0;
-    if (rtEnabled && !isWindow && !isGlass && emissiveMult < 0.01 && rtLOD < RT_LOD_GI) {
+    // Gate GI on the surface's actual EMISSION (luminance), not the bare
+    // `emissiveMult`: `Material::default()` ships `emissive_mult = 1.0`
+    // with a zero emissive colour, so a plain `emissiveMult < 0.01` test
+    // wrongly classified every ordinary matte surface as a light source
+    // and skipped its GI entirely (no colour bleed anywhere). Only true
+    // emitters (light panels, glowing signs) should opt out of receiving
+    // bounce.
+    float giEmissiveLum =
+        emissiveMult * max(emissiveColor.r, max(emissiveColor.g, emissiveColor.b));
+    if (rtEnabled && !isWindow && !isGlass && giEmissiveLum < 0.01 && rtLOD < RT_LOD_GI) {
         float giDist = length(fragWorldPos - cameraPos.xyz);
         float giFade = 1.0 - smoothstep(4000.0, 6000.0, giDist);
         if (giFade > 0.01) {
@@ -3306,25 +3377,43 @@ void main() {
                 rtAO = smoothstep(60.0, 500.0, hitDist);
                 rtAO = mix(0.3, 1.0, rtAO);
 
-                // Use pre-computed average albedo from the hit instance's
-                // SSBO entry instead of the full UV lookup + texture sample.
-                // This reduces 11 divergent memory ops (3 index reads +
-                // 6 vertex reads + 1 instance read + 1 texture sample) to
-                // a single SSBO read. At 1-SPP with temporal filtering,
-                // the texture detail was already noise — the color bleeding
-                // effect comes from the average hue, not fine detail.
                 GpuInstance hitInst = instances[hitIdx];
                 vec3 hitAlbedo = vec3(hitInst.avgAlbedoR, hitInst.avgAlbedoG, hitInst.avgAlbedoB);
 
-                // Ambient bounce: modulates hue from nearby surfaces.
-                float hitFade = 1.0 / (1.0 + hitDist * 0.005);
-                // Use raw XCLL ambient — no floor. The 0.15 clamp added in
-                // commit 14f2e63 was compensation for the since-removed 2.5x
-                // XCLL boost. RT bounce from hitAlbedo provides the fill
-                // that the floor was artificially preserving. See #268.
-                indirect = sceneFlags.yzw * hitAlbedo * hitFade * 0.3;
-                // Soft clamp to tame outliers without killing the effect.
-                indirect = min(indirect, vec3(0.4));
+                // ── True one-bounce GI (engine-wide) ──────────────────
+                // Evaluate the DIRECT light actually reaching the bounce
+                // surface and carry its albedo-tinted reflection back to
+                // the primary fragment. Replaces the legacy
+                // `cell_ambient × hitAlbedo` approximation, which
+                // transported no real light and produced no colour
+                // bleeding in low-ambient scenes (Cornell box, night
+                // exteriors). `indirect` is the incoming radiance; the
+                // composite pass multiplies it by the PRIMARY fragment
+                // albedo (`final = direct + indirect * albedo`).
+                vec3 hitPos = giOrigin + giDir * hitDist;
+                // Receiver normal for the bounce surface. We approximate it
+                // with `-giDir` (the surface as seen facing the incoming GI
+                // ray) rather than the interpolated geometry normal: it is
+                // robust, self-shadow-bias-free, and the standard cheap
+                // choice for a 1-spp diffuse bounce. Exact per-hit normals
+                // would sharpen directional colour-bleed but need a correct
+                // hit-normal fetch (TODO — the SSBO normal/position fetch
+                // mis-resolved here).
+                vec3 hitN = -giDir;
+
+                GpuMaterial hitMat = materials[hitInst.materialId];
+                vec3 hitEmissive = vec3(hitMat.emissiveR, hitMat.emissiveG, hitMat.emissiveB)
+                                 * hitMat.emissiveMult;
+
+                vec3 hitIrradiance = giHitIrradiance(hitPos, hitN, dbgFlags);
+                // Lambertian bounce: outgoing = albedo/PI · irradiance.
+                // Emissive surfaces (light panels) act as area lights and
+                // add their radiance directly. The cosine-weighted GI
+                // sample's pdf already cancelled the wrap cosine upstream.
+                indirect = hitAlbedo * hitIrradiance * (1.0 / PI) + hitEmissive;
+                // Soft clamp tames the occasional near-light firefly
+                // without flattening bright bleed.
+                indirect = min(indirect, vec3(8.0));
             } else {
                 // Ray escaped (no geometry within 3000u) — fall back to
                 // the per-cell ambient color, NOT a hardcoded sky blue.
