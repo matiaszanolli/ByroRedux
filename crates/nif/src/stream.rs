@@ -847,9 +847,9 @@ mod tests {
         let data = vec![0u8; 100];
         let mut stream = NifStream::new(&data, &header);
 
-        stream.skip(50);
+        stream.skip(50).unwrap();
         assert_eq!(stream.position(), 50);
-        stream.skip(25);
+        stream.skip(25).unwrap();
         assert_eq!(stream.position(), 75);
     }
 

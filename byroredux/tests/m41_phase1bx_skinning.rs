@@ -37,7 +37,7 @@
 //! single shared bind), they should pass and stay green.
 
 use byroredux_bsa::BsaArchive;
-use byroredux_core::math::{Mat4, Vec3, Vec4};
+use byroredux_core::math::{Mat4, Vec3};
 use byroredux_nif::import::{import_nif_scene, ImportedNode};
 use byroredux_nif::parse_nif;
 use std::collections::HashMap;

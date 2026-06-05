@@ -24,14 +24,6 @@ fn empty_net_with_name(name: &str) -> NiObjectNETData {
     }
 }
 
-fn empty_net() -> NiObjectNETData {
-    NiObjectNETData {
-        name: None,
-        extra_data_refs: Vec::new(),
-        controller_ref: BlockRef::NULL,
-    }
-}
-
 /// Minimal `BSLightingShaderProperty` whose `net.name` is set to `name`.
 /// All numeric fields are defaults; `texture_set_ref` is NULL so only
 /// the `material_path` code-path is exercised.

@@ -695,7 +695,7 @@ fn build_v105_archive(
     let file_lc = file_name.to_ascii_lowercase();
     // Folder name block: u8 length-prefix + name + NUL terminator.
     // The length byte counts the NUL.
-    let folder_name_block_len = 1 + folder_lc.len() + 1;
+    let _folder_name_block_len = 1 + folder_lc.len() + 1;
     // File name table: each name is NUL-terminated (no length prefix).
     let file_name_table_len = file_lc.len() + 1;
     let total_file_name_length = file_name_table_len as u32;

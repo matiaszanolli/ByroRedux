@@ -1763,7 +1763,6 @@ fn bs_bound_lifts_to_imported_scene_in_y_up() {
 #[test]
 fn bs_lod_tri_shape_imports_geometry_not_dropped() {
     use crate::blocks::tri_shape::NiLodTriShape;
-    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
 
     // Root NiNode → BSLODTriShape (NiLodTriShape) → NiTriShapeData
     let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);

@@ -16,7 +16,7 @@
 //! `AnimationPlayer` had been wired the subtree walk would have
 //! found zero named entities under any root and silently no-op'd.
 
-use byroredux_core::ecs::{Children, Name, Parent, Transform, World};
+use byroredux_core::ecs::{Name, Parent, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
 

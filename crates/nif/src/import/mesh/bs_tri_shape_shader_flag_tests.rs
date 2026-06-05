@@ -15,7 +15,7 @@ use crate::blocks::tri_shape::BsTriShape;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3};
 
-use super::super::{ImportedMesh, MeshResolver};
+use super::super::ImportedMesh;
 use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
 use crate::blocks::shader::BSEffectShaderProperty;
 // (BlockRef + NiPoint3 already in canonical block above)

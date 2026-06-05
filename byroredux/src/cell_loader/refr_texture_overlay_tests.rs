@@ -384,15 +384,9 @@ fn build_overlay_first_txst_owns_model_space_normals_flag() {
     // first-wins gate. (build_refr_texture_overlay layers XATO + per-base TXST
     // dispatch — covered separately; this test pins the helper's contract.)
     let mut pool = StringPool::new();
-    let mut ov = RefrTextureOverlay::default();
     let first = TextureSet {
         normal: Some(r"textures\first_n.dds".to_string()),
         flags: 0, // tangent-space
-        ..TextureSet::default()
-    };
-    let second = TextureSet {
-        normal: Some(r"textures\second_n.dds".to_string()),
-        flags: 0x04, // model-space — but normal slot already filled
         ..TextureSet::default()
     };
     // Drive the merge helper directly via the public build path — both
@@ -401,7 +395,7 @@ fn build_overlay_first_txst_owns_model_space_normals_flag() {
     index.texture_sets.insert(0x0020_0020, first);
     let mut placed = empty_placed_ref(0x0100_0001);
     placed.alt_texture_ref = Some(0x0020_0020);
-    ov = build_refr_texture_overlay(&placed, &index, None, &mut pool)
+    let ov = build_refr_texture_overlay(&placed, &index, None, &mut pool)
         .expect("first XATO produces overlay");
     // First TXST has flags=0 so model_space_normals stays false.
     assert!(!ov.model_space_normals);
