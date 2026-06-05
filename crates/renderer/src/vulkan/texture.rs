@@ -2,6 +2,7 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::{StagingGuard, StagingPool};
+use super::GpuUploadCtx;
 use super::descriptors::{
     color_subresource_mips, image_barrier_transfer_dst_to_shader_read,
     image_barrier_undef_to_transfer_dst,
@@ -50,10 +51,7 @@ impl Texture {
     /// authored mip chain because `from_rgba` hard-coded `mip_levels(1)`
     /// where `from_dds_with_mip_chain` would have respected the chain).
     pub fn from_rgba(
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        ctx: GpuUploadCtx,
         width: u32,
         height: u32,
         pixels: &[u8],
@@ -74,16 +72,7 @@ impl Texture {
             compressed: false,
             data_offset: 0, // unused: caller passes the pixel slice directly
         };
-        let texture = Self::from_dds_with_mip_chain(
-            device,
-            allocator,
-            queue,
-            command_pool,
-            &meta,
-            pixels,
-            sampler,
-            staging_pool,
-        )?;
+        let texture = Self::from_dds_with_mip_chain(ctx, &meta, pixels, sampler, staging_pool)?;
         log::debug!("Texture uploaded: {}x{} RGBA", width, height);
         Ok(texture)
     }
@@ -102,15 +91,18 @@ impl Texture {
     /// then aliased visibly under minification because the sampler
     /// could only ever read mip 0.
     pub fn from_dds_with_mip_chain(
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        ctx: GpuUploadCtx,
         meta: &super::dds::DdsMetadata,
         pixel_data: &[u8],
         sampler: vk::Sampler,
         mut staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
+        let GpuUploadCtx {
+            device,
+            allocator,
+            queue,
+            command_pool,
+        } = ctx;
         // Self-contained wrapper around [`Self::record_dds_upload`].
         // Records the upload into a one-time command buffer, submits +
         // fence-waits ONCE, then releases the staging buffer. Used by
@@ -189,7 +181,7 @@ impl Texture {
         meta: &super::dds::DdsMetadata,
         pixel_data: &[u8],
         sampler: vk::Sampler,
-        mut staging_pool: Option<&mut StagingPool>,
+        staging_pool: Option<&mut StagingPool>,
     ) -> Result<(Self, StagingGuard, vk::DeviceSize)> {
         use super::dds;
 
@@ -208,7 +200,7 @@ impl Texture {
         let image_size = total_size as vk::DeviceSize;
 
         // 1. Staging buffer — from pool (reuse) or fresh. See #239.
-        let (staging_buffer, mut staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
+        let (staging_buffer, mut staging_alloc) = if let Some(pool) = staging_pool {
             pool.acquire(image_size)?
         } else {
             let staging_buffer_info = vk::BufferCreateInfo::default()
@@ -433,10 +425,12 @@ impl Texture {
         let pixel_data = &dds_bytes[meta.data_offset..];
 
         Self::from_dds_with_mip_chain(
-            device,
-            allocator,
-            queue,
-            command_pool,
+            GpuUploadCtx {
+                device,
+                allocator,
+                queue,
+                command_pool,
+            },
             &meta,
             pixel_data,
             sampler,
@@ -685,7 +679,7 @@ pub fn generate_checkerboard(width: u32, height: u32, cell_size: u32) -> Vec<u8>
     let mut pixels = Vec::with_capacity((width * height * 4) as usize);
     for y in 0..height {
         for x in 0..width {
-            let checker = ((x / cell_size) + (y / cell_size)) % 2 == 0;
+            let checker = ((x / cell_size) + (y / cell_size)).is_multiple_of(2);
             let (r, g, b) = if checker {
                 (220u8, 220, 220)
             } else {

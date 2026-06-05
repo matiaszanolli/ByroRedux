@@ -32,10 +32,10 @@ impl Component for RapierHandles {
 ///     capsule collider with `RapierHandles`.
 ///   - Each frame `character_controller_system` integrates gravity
 ///     + jump, asks Rapier's `KinematicCharacterController.move_shape`
-///     for the collide-and-slide-corrected motion, and writes the
-///     resulting translation onto the kinematic body via
-///     `set_next_kinematic_translation`. Runtime state
-///     (`vertical_velocity`, `is_grounded`) is updated in-place.
+///       for the collide-and-slide-corrected motion, and writes the
+///       resulting translation onto the kinematic body via
+///       `set_next_kinematic_translation`. Runtime state
+///       (`vertical_velocity`, `is_grounded`) is updated in-place.
 ///   - `camera_follow_system` reads body position + `eye_height` to
 ///     place the active camera each frame after `physics_sync_system`
 ///     applies the kinematic step.

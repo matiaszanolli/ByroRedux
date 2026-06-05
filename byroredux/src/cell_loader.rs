@@ -78,6 +78,7 @@ mod exterior;
 pub use index::LoadedCellIndex;
 pub use transition::{
     load_interior_cell, log_transition_header, position_zup_to_yup, reposition_camera,
+    InteriorCellRequest,
     rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior, CurrentCellRoot,
     LoadedPluginSet, PendingCellTransition, PendingCellTransitionSlot, TransitionDestination,
 };

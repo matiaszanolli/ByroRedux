@@ -149,6 +149,13 @@ impl super::buffers::SceneBuffers {
     /// `.clear()` calls drop each `GpuBuffer` immediately so the
     /// allocator unwrap sees a smaller strong count by the time it
     /// runs.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` and `allocator` are valid and live, the
+    /// device is not lost, and that none of the scene buffers are still in
+    /// use by an in-flight command buffer. The buffers must not be used
+    /// after this call.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for buf in &mut self.light_buffers {
             buf.destroy(device, allocator);
@@ -216,7 +223,7 @@ impl super::buffers::SceneBuffers {
 pub(super) fn hash_material_slice(materials: &[super::super::material::GpuMaterial]) -> u64 {
     use std::hash::Hasher;
     let mut hasher = rustc_hash::FxHasher::default();
-    let byte_size = std::mem::size_of::<super::super::material::GpuMaterial>() * materials.len();
+    let byte_size = std::mem::size_of_val(materials);
     // SAFETY: `GpuMaterial` is `#[repr(C)]` with f32/u32 fields and
     // explicit padding fields the producer always initialises (see
     // `GpuMaterial::as_bytes` doc at vulkan/material.rs:281-294).
@@ -241,7 +248,7 @@ pub(super) fn hash_material_slice(materials: &[super::super::material::GpuMateri
 pub(super) fn hash_instance_slice(instances: &[super::gpu_types::GpuInstance]) -> u64 {
     use std::hash::Hasher;
     let mut hasher = rustc_hash::FxHasher::default();
-    let byte_size = std::mem::size_of::<super::gpu_types::GpuInstance>() * instances.len();
+    let byte_size = std::mem::size_of_val(instances);
     // SAFETY: see hash_material_slice — same invariant on the producer
     // side. The layout test pins the byte-size against a known constant
     // so an unintended padding insert would surface there first.

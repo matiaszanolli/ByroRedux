@@ -26,11 +26,9 @@ pub(super) fn compose_transforms(parent: &NiTransform, child: &NiTransform) -> N
 
 pub(super) fn mul_matrix3(a: &NiMatrix3, b: &NiMatrix3) -> NiMatrix3 {
     let mut result = [[0.0f32; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            result[i][j] = a.rows[i][0] * b.rows[0][j]
-                + a.rows[i][1] * b.rows[1][j]
-                + a.rows[i][2] * b.rows[2][j];
+    for (result_row, a_row) in result.iter_mut().zip(a.rows.iter()) {
+        for (j, cell) in result_row.iter_mut().enumerate() {
+            *cell = a_row[0] * b.rows[0][j] + a_row[1] * b.rows[1][j] + a_row[2] * b.rows[2][j];
         }
     }
     NiMatrix3 { rows: result }

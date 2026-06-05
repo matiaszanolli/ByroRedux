@@ -70,7 +70,7 @@ pub fn extract_tangents_from_extra_data(
         // shader's standard-convention `mat3(T, B, N)` and producing
         // the chrome-walls regression on FNV (R-N2 / #786).
         let bethesda_bitangent_offset = num_verts * 12;
-        for i in 0..num_verts {
+        for (i, n_zup) in normals_zup.iter().enumerate().take(num_verts) {
             let bethesda_t_off = i * 12;
             let bethesda_b_off = bethesda_bitangent_offset + i * 12;
             // Read Vector3 (3 × f32 LE).
@@ -92,7 +92,6 @@ pub fn extract_tangents_from_extra_data(
             let b_yup = [bethesda_tx, bethesda_tz, -bethesda_ty];
 
             // Normal in Y-up — use the matching vertex normal.
-            let n_zup = normals_zup[i];
             let n_yup = [n_zup.x, n_zup.z, -n_zup.y];
 
             // Bitangent sign: sign(dot(B, cross(N, T))). With T = ∂P/∂U
@@ -352,7 +351,7 @@ pub fn bs_tangents_zup_to_yup(zup: &[[f32; 4]]) -> Vec<[f32; 4]> {
 
 /// Y-up sibling of [`synthesize_tangents`] for inputs already in the
 /// renderer's coordinate space — namely Starfield `BSGeometry` (positions
-/// + normals decoded Y-up by the BSGeometryMeshData parser) and SSE
+/// and normals decoded Y-up by the BSGeometryMeshData parser) and SSE
 /// skin-reconstructed `BSTriShape` (positions / normals / uvs filled
 /// from `try_reconstruct_sse_geometry` which writes Y-up). The Z-up
 /// flavour applies a `(x, y, z) → (x, z, -y)` swap at both the

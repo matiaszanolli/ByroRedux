@@ -150,7 +150,7 @@ impl BhkRagdollTemplate {
 ///
 /// First-pass stub per #980 / NIF-D5-NEW-04: parse the leading
 /// scalars (Name / Mass / Restitution / Friction / Radius / Material)
-/// + the constraint count, then skip the constraint array via
+/// plus the constraint count, then skip the constraint array via
 /// `block_size` so the stream stays aligned. The fixed-layout head
 /// covers what we'd actually consume today (ragdoll mass tuning);
 /// the polymorphic tail is left for a follow-up.

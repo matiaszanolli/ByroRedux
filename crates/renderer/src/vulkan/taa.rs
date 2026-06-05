@@ -30,6 +30,7 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::GpuUploadCtx;
 use super::descriptors::{
     image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
     write_uniform_buffer, DescriptorPoolBuilder,
@@ -142,31 +143,34 @@ pub struct TaaPipeline {
     dispatched_this_frame: bool,
 }
 
+/// The three per-frame G-buffer view slices TAA samples — HDR color,
+/// motion, and mesh-ID (each of length `MAX_FRAMES_IN_FLIGHT`). Groups the
+/// view arguments that travel together into the TAA constructor and resize
+/// path.
+#[derive(Clone, Copy)]
+pub struct TaaInputViews<'a> {
+    /// HDR color views (the TAA resolve input).
+    pub hdr_views: &'a [vk::ImageView],
+    /// Motion-vector views (reprojection).
+    pub motion_views: &'a [vk::ImageView],
+    /// Mesh-ID views (disocclusion test).
+    pub mesh_id_views: &'a [vk::ImageView],
+}
+
 impl TaaPipeline {
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        hdr_views: &[vk::ImageView],
-        motion_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
+        views: TaaInputViews,
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        debug_assert_eq!(hdr_views.len(), MAX_FRAMES_IN_FLIGHT);
-        debug_assert_eq!(motion_views.len(), MAX_FRAMES_IN_FLIGHT);
-        debug_assert_eq!(mesh_id_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(views.hdr_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(views.motion_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(views.mesh_id_views.len(), MAX_FRAMES_IN_FLIGHT);
 
-        let result = Self::new_inner(
-            device,
-            allocator,
-            pipeline_cache,
-            hdr_views,
-            motion_views,
-            mesh_id_views,
-            width,
-            height,
-        );
+        let result = Self::new_inner(device, allocator, pipeline_cache, views, width, height);
         if let Err(ref e) = result {
             log::debug!("TAA pipeline creation failed at: {e}");
         }
@@ -177,12 +181,15 @@ impl TaaPipeline {
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        hdr_views: &[vk::ImageView],
-        motion_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
+        views: TaaInputViews,
         width: u32,
         height: u32,
     ) -> Result<Self> {
+        let TaaInputViews {
+            hdr_views,
+            motion_views,
+            mesh_id_views,
+        } = views;
         let mut partial = Self {
             pipeline: vk::Pipeline::null(),
             pipeline_layout: vk::PipelineLayout::null(),
@@ -721,8 +728,8 @@ impl TaaPipeline {
             &[],
         );
 
-        let gx = (self.width + 7) / 8;
-        let gy = (self.height + 7) / 8;
+        let gx = self.width.div_ceil(8);
+        let gy = self.height.div_ceil(8);
         device.cmd_dispatch(cmd, gx, gy, 1);
 
         // Expose the result to composite's fragment shader read.
@@ -778,16 +785,22 @@ impl TaaPipeline {
     /// (VUID-vkCmdDispatch-None-04115).
     pub fn recreate_on_resize(
         &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
-        hdr_views: &[vk::ImageView],
-        motion_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
+        ctx: GpuUploadCtx,
+        views: TaaInputViews,
         width: u32,
         height: u32,
     ) -> Result<()> {
+        let GpuUploadCtx {
+            device,
+            allocator,
+            queue,
+            command_pool,
+        } = ctx;
+        let TaaInputViews {
+            hdr_views,
+            motion_views,
+            mesh_id_views,
+        } = views;
         for slot in self.history.drain(..) {
             // SAFETY: `recreate_on_resize` is called from the swapchain-
             // resize path which fences both frames-in-flight first

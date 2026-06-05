@@ -224,7 +224,7 @@ fn method_call<'a>(
     let Expr::MemberAccess { object, member } = &callee.node else {
         return None;
     };
-    member.node.eq_ignore_case(method).then(|| (&object.node, args.as_slice()))
+    member.node.eq_ignore_case(method).then_some((&object.node, args.as_slice()))
 }
 
 /// The integer value of positional argument `idx`.

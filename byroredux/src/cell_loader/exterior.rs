@@ -279,13 +279,15 @@ pub fn load_one_exterior_cell(
     if let Some(ref land) = cell.landscape {
         let _ = terrain::spawn_terrain_mesh(
             world,
-            ctx,
-            tex_provider,
-            &index.landscape_textures,
+            terrain::TerrainSpawnCtx {
+                ctx: &mut *ctx,
+                tex_provider,
+                landscape_textures: &index.landscape_textures,
+                blas_specs: &mut *blas_sink,
+            },
             gx,
             gy,
             land,
-            blas_sink,
         );
     }
     // Water plane. A cell's explicit XCLW height wins; cells without one

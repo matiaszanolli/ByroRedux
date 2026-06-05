@@ -16,6 +16,7 @@ use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
+use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::VulkanContext;
 
 use crate::asset_provider::{
@@ -667,24 +668,23 @@ pub(super) fn spawn_placed_instances(
                 .collect();
 
             let alloc = ctx.allocator.as_ref().unwrap();
+            let upload_ctx = GpuUploadCtx {
+                device: &ctx.device,
+                allocator: alloc,
+                queue: &ctx.graphics_queue,
+                command_pool: ctx.transfer_pool,
+            };
             let upload_result = match mesh_cache_key {
                 Some(key) => ctx.mesh_registry.register_scene_mesh_keyed(
-                    &ctx.device,
-                    alloc,
-                    &ctx.graphics_queue,
-                    ctx.transfer_pool,
+                    upload_ctx,
                     &vertices,
                     &mesh.indices,
                     ctx.device_caps.ray_query_supported,
                     None,
-                    key,
-                    sub_mesh_index_u32,
+                    (key, sub_mesh_index_u32),
                 ),
                 None => ctx.mesh_registry.upload_scene_mesh(
-                    &ctx.device,
-                    alloc,
-                    &ctx.graphics_queue,
-                    ctx.transfer_pool,
+                    upload_ctx,
                     &vertices,
                     &mesh.indices,
                     ctx.device_caps.ray_query_supported,

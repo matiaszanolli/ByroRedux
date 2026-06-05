@@ -200,9 +200,7 @@ fn spawn_object_lod_quad(
         return None;
     }
 
-    if ctx.allocator.is_none() {
-        return None;
-    }
+    ctx.allocator.as_ref()?;
 
     // Shared object atlas for the worldspace (`<world>.objects.dds`). `0` /
     // fallback → the LOD draws untextured-grey, still better than no distant

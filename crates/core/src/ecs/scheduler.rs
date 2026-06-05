@@ -98,6 +98,7 @@ pub struct Scheduler {
 /// to N — that's the parallelism gain. A single system reading
 /// far above the stage wall time means it dominates and the
 /// others run "for free" alongside it.
+#[derive(Default)]
 pub struct SchedulerSystemTimings {
     /// `(system_name, ms)` pairs sorted descending. Re-populated
     /// at the end of every `Scheduler::run`.
@@ -106,13 +107,6 @@ pub struct SchedulerSystemTimings {
 
 impl Resource for SchedulerSystemTimings {}
 
-impl Default for SchedulerSystemTimings {
-    fn default() -> Self {
-        Self {
-            systems: Vec::new(),
-        }
-    }
-}
 
 impl Scheduler {
     pub fn new() -> Self {
@@ -443,7 +437,7 @@ impl Scheduler {
         // rayon worker count (≤ 1 lock per worker per stage), so
         // a ~20-system schedule pays ~20 µs at most.
         let timings: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
-        for (_stage, data) in &mut self.stages {
+        for data in self.stages.values_mut() {
             // Phase 1: run parallel systems concurrently.
             #[cfg(feature = "parallel-scheduler")]
             {
@@ -491,7 +485,7 @@ impl Scheduler {
         // not an error — older callers that never insert it just
         // pay the Mutex-build cost and discard the result.
         let mut all = timings.into_inner().unwrap_or_else(|e| e.into_inner());
-        all.sort_by(|a, b| b.1.cmp(&a.1));
+        all.sort_by_key(|e| std::cmp::Reverse(e.1));
         if let Some(mut out) = world.try_resource_mut::<SchedulerSystemTimings>() {
             out.systems.clear();
             const NS_TO_MS: f32 = 1.0e-6;

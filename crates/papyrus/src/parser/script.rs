@@ -36,6 +36,11 @@ use crate::token::Token;
 
 use super::Parser;
 
+/// Parsed `ScriptName <ident> [Extends <ident>] [flags…]` header:
+/// `(script name, optional parent, flags)`. Aliased to satisfy
+/// `clippy::type_complexity` on `parse_script_header`'s return.
+type ScriptHeader = (Spanned<Identifier>, Option<Spanned<Identifier>>, ScriptFlags);
+
 impl Parser {
     /// Parse a complete `.psc` source into a [`Script`]. The
     /// canonical M30.2 entry point.
@@ -86,9 +91,7 @@ impl Parser {
 
     /// Parse the `ScriptName <ident> [Extends <ident>] [flags…]`
     /// header line. Caller has already skipped leading newlines.
-    fn parse_script_header(
-        &mut self,
-    ) -> Result<(Spanned<Identifier>, Option<Spanned<Identifier>>, ScriptFlags), ParseError> {
+    fn parse_script_header(&mut self) -> Result<ScriptHeader, ParseError> {
         self.expect(&Token::KwScriptName, "ScriptName")?;
         let name = self.expect_ident("script name")?;
         let parent = if matches!(self.peek(), Some(Token::KwExtends)) {
@@ -202,7 +205,7 @@ impl Parser {
             Some(Token::KwProperty) => {
                 let prop = self.parse_property(ty)?;
                 let span = prop.name.span;
-                Ok(Spanned::new(ScriptItem::Property(prop), span))
+                Ok(Spanned::new(ScriptItem::Property(Box::new(prop)), span))
             }
             Some(Token::Ident(_)) => {
                 // Top-level variable declaration.

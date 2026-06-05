@@ -111,8 +111,8 @@ pub struct GpuTimerSnapshot {
     pub skin_blas_refit_ms: f32,
     pub taa_ms: f32,
     /// Wall-clock time for the main geometry render pass —
-    /// G-buffer fill + per-fragment RT loop (shadow rays + GI ray
-    /// + metal reflection + glass IOR). Expected dominant cost on
+    /// G-buffer fill + per-fragment RT loop (shadow rays, GI ray,
+    /// metal reflection, glass IOR). Expected dominant cost on
     /// interior cells with cluster-light count near `MAX_LIGHTS_PER_CLUSTER`.
     pub main_render_ms: f32,
     /// TLAS build / refit time. First-cell-load frames spike (full
@@ -443,7 +443,7 @@ impl GpuPerFrameTimers {
 
     /// Write the main-render-pass END timestamp. `BOTTOM_OF_PIPE`
     /// on end so the timestamp waits for the last fragment shader
-    /// + color-attachment write to retire (the actual cost the
+    /// and color-attachment write to retire (the actual cost the
     /// bracket is measuring).
     pub fn cmd_main_render_end(
         &mut self,

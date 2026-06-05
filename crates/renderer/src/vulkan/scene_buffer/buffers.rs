@@ -622,7 +622,7 @@ fn create_scene_descriptors(
     };
 
     // ── Write descriptors ─────────────────────────────────────────────────
-    for i in 0..MAX_FRAMES_IN_FLIGHT {
+    for (i, &set) in descriptor_sets.iter().enumerate() {
         let light_buf_info = [vk::DescriptorBufferInfo {
             buffer: bufs.light_buffers[i].buffer,
             offset: 0,
@@ -673,7 +673,6 @@ fn create_scene_descriptors(
             offset: 0,
             range: bufs.dalc_buf_size,
         }];
-        let set = descriptor_sets[i];
         let writes = [
             write_storage_buffer(set, 0, &light_buf_info),
             write_uniform_buffer(set, 1, &camera_buf_info),

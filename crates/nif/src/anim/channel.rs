@@ -246,7 +246,7 @@ pub fn sample_color_keys_bspline_point3(
 
     let duration = (interp.stop_time - interp.start_time).max(0.0);
     let n_samples_f = (duration * BSPLINE_SAMPLE_HZ).ceil();
-    let n_samples = (n_samples_f as usize).max(2).min(1_000_000);
+    let n_samples = (n_samples_f as usize).clamp(2, 1_000_000);
     let u_max = (n_cp - BSPLINE_DEGREE) as f32;
 
     let mut keys = Vec::with_capacity(n_samples);

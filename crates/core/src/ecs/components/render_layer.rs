@@ -34,11 +34,13 @@ use crate::ecs::storage::Component;
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
+#[derive(Default)]
 pub enum RenderLayer {
     /// Walls, floors, fireplaces, doors, plants rooted in ground,
     /// terrain, vending machines, wall-mounted lamps, terminals,
     /// containers/footlockers built into the level. The base layer that
     /// owns the depth buffer; zero bias.
+    #[default]
     Architecture = 0,
     /// Player-pickup-able items: weapons, armor, ammo, misc clutter,
     /// keys, alchemy, ingredients, books, notes. Small things that
@@ -82,11 +84,6 @@ impl RenderLayer {
     }
 }
 
-impl Default for RenderLayer {
-    fn default() -> Self {
-        Self::Architecture
-    }
-}
 
 /// Apply the spawn-site decal / cutout bias escalation. Two distinct
 /// signals, two distinct outcomes (they used to be conflated — see below):

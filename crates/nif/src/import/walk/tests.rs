@@ -595,16 +595,14 @@ mod recursion_depth_tests {
         let mut imported = empty_imported_scene();
         let mut pool = StringPool::new();
         let mut props_stack: Vec<BlockRef> = Vec::new();
-        walk_node_hierarchical(
-            &scene,
-            0,
-            None,
-            &mut props_stack,
-            &mut imported,
-            &mut pool,
-            None,
-            0,
-        );
+        let mut ctx = HierWalkCtx {
+            scene: &scene,
+            inherited_props: &mut props_stack,
+            out: &mut imported,
+            pool: &mut pool,
+            resolver: None,
+        };
+        walk_node_hierarchical(&mut ctx, 0, None, 0);
         // We imported some prefix of the chain but not the whole thing —
         // the cap fires somewhere on the way down.
         assert!(
@@ -627,17 +625,15 @@ mod recursion_depth_tests {
         let mut pool = StringPool::new();
         let mut props_stack: Vec<BlockRef> = Vec::new();
         // Pre-#1269 this would stack-overflow on a long-enough chain.
-        walk_node_flat(
-            &scene,
-            0,
-            &NiTransform::default(),
-            &mut props_stack,
-            &mut meshes,
-            None,
-            &mut pool,
-            None,
-            0,
-        );
+        let mut ctx = FlatWalkCtx {
+            scene: &scene,
+            inherited_props: &mut props_stack,
+            out: &mut meshes,
+            collisions: None,
+            pool: &mut pool,
+            resolver: None,
+        };
+        walk_node_flat(&mut ctx, 0, &NiTransform::default(), 0);
         // Nothing to assert on the mesh side (chain has no geometry);
         // success is "returned without overflowing the stack".
     }
@@ -651,16 +647,14 @@ mod recursion_depth_tests {
         let mut imported = empty_imported_scene();
         let mut pool = StringPool::new();
         let mut props_stack: Vec<BlockRef> = Vec::new();
-        walk_node_hierarchical(
-            &scene,
-            0,
-            None,
-            &mut props_stack,
-            &mut imported,
-            &mut pool,
-            None,
-            0,
-        );
+        let mut ctx = HierWalkCtx {
+            scene: &scene,
+            inherited_props: &mut props_stack,
+            out: &mut imported,
+            pool: &mut pool,
+            resolver: None,
+        };
+        walk_node_hierarchical(&mut ctx, 0, None, 0);
         assert_eq!(imported.nodes.len() as u32, chain_len);
     }
 }

@@ -16,7 +16,7 @@ pub trait SubRecordSchema: Sized {
 
 /// Read a SubRecord using a schema implementer.
 pub fn read_sub<T: SubRecordSchema>(sub: &SubRecord) -> Result<T> {
-    if &sub.sub_type != &T::CODE {
+    if sub.sub_type != T::CODE {
         anyhow::bail!(
             "SubRecord type mismatch: expected {:?}, got {:?}",
             std::str::from_utf8(&T::CODE).unwrap_or("invalid UTF-8"),
@@ -513,8 +513,8 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
                     sub.data[0], sub.data[1], sub.data[2], sub.data[3],
                 ]);
             }
-            b"EFIT" if sub.data.len() >= 12 => {
-                if current_efid != 0 {
+            b"EFIT" if sub.data.len() >= 12
+                && current_efid != 0 => {
                     out.effects.push(MagicEffectItem {
                         effect_form_id: current_efid,
                         magnitude: f32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
@@ -523,7 +523,6 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
                     });
                     current_efid = 0;
                 }
-            }
             _ => {}
         }
     }
@@ -664,8 +663,8 @@ pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
                     sub.data[0], sub.data[1], sub.data[2], sub.data[3],
                 ]);
             }
-            b"EFIT" if sub.data.len() >= 12 => {
-                if current_efid != 0 {
+            b"EFIT" if sub.data.len() >= 12
+                && current_efid != 0 => {
                     out.effects.push(MagicEffectItem {
                         effect_form_id: current_efid,
                         magnitude: f32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
@@ -674,7 +673,6 @@ pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
                     });
                     current_efid = 0;
                 }
-            }
             _ => {}
         }
     }

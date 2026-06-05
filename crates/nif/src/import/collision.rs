@@ -149,7 +149,7 @@ fn extract_from_classic(
     }
 
     let motion_type = match body.motion_type {
-        1 | 2 | 3 => MotionType::Dynamic,
+        1..=3 => MotionType::Dynamic,
         4 => MotionType::Keyframed,
         _ => MotionType::Static,
     };

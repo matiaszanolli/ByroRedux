@@ -84,7 +84,7 @@ pub struct CompositeParams {
     /// - `y` = scroll V
     /// - `z` = tile scale (0.0 disables clouds — shader skips the sample)
     /// - `w` = bindless texture index for cloud_textures[0], stored via
-    ///         `f32::from_bits(idx as u32)`; reinterpreted as uint in the shader.
+    ///   `f32::from_bits(idx as u32)`; reinterpreted as uint in the shader.
     pub cloud_params: [f32; 4],
     /// Cloud layer 1 parameters (WTHR CNAM). Same packing as cloud_params.
     /// Drifts in the opposite U direction at 1.35× speed for parallax.
@@ -807,8 +807,12 @@ impl CompositePipeline {
     /// Begin composite render pass + draw fullscreen triangle + end.
     /// Call after the main render pass ends and before submit.
     ///
-    /// Safety: `cmd` must be a valid recording command buffer. Frame index
-    /// must be < MAX_FRAMES_IN_FLIGHT. Swapchain image index must be valid.
+    /// # Safety
+    ///
+    /// `cmd` must be a valid recording command buffer. Frame index must be
+    /// < `MAX_FRAMES_IN_FLIGHT`. Swapchain image index must be valid. The
+    /// device must not be lost and the touched images must not be in use by
+    /// another in-flight command buffer.
     pub unsafe fn dispatch(
         &self,
         device: &ash::Device,
@@ -930,10 +934,8 @@ impl CompositePipeline {
             unsafe { device.destroy_image(img, None) };
         }
         self.hdr_images.clear();
-        for alloc in self.hdr_allocations.drain(..) {
-            if let Some(a) = alloc {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+        for a in self.hdr_allocations.drain(..).flatten() {
+            allocator.lock().expect("allocator lock").free(a).ok();
         }
 
         self.width = width;
@@ -1104,10 +1106,8 @@ impl CompositePipeline {
                 unsafe { device.destroy_image(img, None) };
             }
             self.hdr_images.clear();
-            for alloc in self.hdr_allocations.drain(..) {
-                if let Some(a) = alloc {
-                    allocator.lock().expect("allocator lock").free(a).ok();
-                }
+            for a in self.hdr_allocations.drain(..).flatten() {
+                allocator.lock().expect("allocator lock").free(a).ok();
             }
         }
         result
@@ -1151,10 +1151,10 @@ impl CompositePipeline {
         hdr_layout: vk::ImageLayout,
     ) {
         debug_assert_eq!(hdr_views.len(), MAX_FRAMES_IN_FLIGHT);
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
+        for (i, &hdr_view) in hdr_views.iter().enumerate() {
             let info = [vk::DescriptorImageInfo::default()
                 .sampler(self.hdr_sampler)
-                .image_view(hdr_views[i])
+                .image_view(hdr_view)
                 .image_layout(hdr_layout)];
             let write = write_combined_image_sampler(self.descriptor_sets[i], 0, &info);
             // SAFETY: descriptor set `i` owned by `self`; `info` references
@@ -1177,6 +1177,12 @@ impl CompositePipeline {
 
     /// Destroy all Vulkan objects. Must be called before the device/allocator
     /// are dropped. Safe to call on partially-initialized state.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` and `allocator` are valid and live, the
+    /// device is not lost, and that no object owned by `self` is still in use
+    /// by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         // SAFETY (whole function): caller of `destroy` (unsafe fn)
         // guarantees no in-flight command buffer references any object
@@ -1226,10 +1232,8 @@ impl CompositePipeline {
             unsafe { device.destroy_image(img, None) };
         }
         self.hdr_images.clear();
-        for alloc in self.hdr_allocations.drain(..) {
-            if let Some(a) = alloc {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+        for a in self.hdr_allocations.drain(..).flatten() {
+            allocator.lock().expect("allocator lock").free(a).ok();
         }
     }
 }

@@ -336,8 +336,8 @@ pub struct NiParticleSystemController {
     pub num_particles: u16,
     pub num_valid: u16,
     /// Raw particle records. Each is 32 bytes (velocity:vec3 +
-    /// unknown_vector:vec3 + lifetime:f32 + lifespan:f32 + timestamp:f32
-    /// + unknown_short:u16 + vertex_id:u16). We keep them opaque — the
+    /// unknown_vector:vec3 + lifetime:f32 + lifespan:f32 + timestamp:f32,
+    /// then unknown_short:u16 + vertex_id:u16). We keep them opaque — the
     /// renderer doesn't consume authored particles yet.
     pub particles: Vec<[u8; 32]>,
 

@@ -134,7 +134,7 @@ fn assemble_hole_mask(bi: i32, bj: i32, holed: impl Fn(i32, i32) -> bool) -> u16
 
 /// Mask with every cell holed — an empty block (no geometry to draw).
 fn all_holed_mask() -> u16 {
-    (((1u32 << (LOD_BLOCK_CELLS * LOD_BLOCK_CELLS)) - 1)) as u16
+    ((1u32 << (LOD_BLOCK_CELLS * LOD_BLOCK_CELLS)) - 1) as u16
 }
 
 /// The 16-bit per-cell hole pattern for block `(bi, bj)` given the player's
@@ -406,9 +406,7 @@ fn spawn_lod_block(
         return None; // entirely holes — nothing to draw
     }
 
-    if ctx.allocator.is_none() {
-        return None;
-    }
+    ctx.allocator.as_ref()?;
 
     // World-space bound from the emitted (non-hole) vertices for frustum
     // culling. Computed over all pushed vertices; hole placeholders sit at

@@ -6,10 +6,7 @@ use raw_window_handle::RawDisplayHandle;
 use std::ffi::{CStr, CString};
 
 /// Required validation layers (debug builds only).
-const VALIDATION_LAYERS: &[&CStr] = &[
-    // SAFETY: null-terminated literal
-    unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0") },
-];
+const VALIDATION_LAYERS: &[&CStr] = &[c"VK_LAYER_KHRONOS_validation"];
 
 /// Creates a Vulkan instance with the appropriate extensions for the given
 /// display handle, and validation layers in debug builds.

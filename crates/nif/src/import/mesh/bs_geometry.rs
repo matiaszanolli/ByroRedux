@@ -32,7 +32,7 @@ pub fn extract_bs_geometry(
         // returned `None` when LOD 0 was `External` despite later LODs
         // being `Internal` (#1209). Matches the Stage-B iteration.
         shape.meshes.iter().find_map(|m| match &m.kind {
-            BSGeometryMeshKind::Internal { mesh_data } => Some(mesh_data),
+            BSGeometryMeshKind::Internal { mesh_data } => Some(mesh_data.as_ref()),
             BSGeometryMeshKind::External { .. } => None,
         })?
     } else {

@@ -10,7 +10,7 @@ use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::{pipeline, swapchain};
 use super::helpers::{
     create_depth_resources, create_main_framebuffers, create_render_pass, destroy_depth_resources,
-    destroy_main_framebuffers, destroy_render_pass_pipelines,
+    destroy_main_framebuffers, destroy_render_pass_pipelines, GBufferFormats, GBufferViews,
 };
 use super::VulkanContext;
 use anyhow::{Context, Result};
@@ -102,11 +102,13 @@ impl VulkanContext {
         let old_swapchain = self.swapchain_state.swapchain;
 
         self.swapchain_state = swapchain::create_swapchain(
-            &self.instance,
-            &self.device,
-            self.physical_device,
-            &self.surface_loader,
-            self.surface,
+            swapchain::SwapchainSurfaceCtx {
+                instance: &self.instance,
+                device: &self.device,
+                physical_device: self.physical_device,
+                surface_loader: &self.surface_loader,
+                surface: self.surface,
+            },
             self.queue_indices,
             window_size,
             old_swapchain, // atomic handoff — avoids flicker during resize
@@ -192,14 +194,16 @@ impl VulkanContext {
             // + albedo + reservoir) + depth.
             self.render_pass = create_render_pass(
                 &self.device,
-                HDR_FORMAT,
-                NORMAL_FORMAT,
-                MOTION_FORMAT,
-                MESH_ID_FORMAT,
-                RAW_INDIRECT_FORMAT,
-                ALBEDO_FORMAT,
-                RESERVOIR_FORMAT,
-                self.depth_format,
+                GBufferFormats {
+                    color_format: HDR_FORMAT,
+                    normal_format: NORMAL_FORMAT,
+                    motion_format: MOTION_FORMAT,
+                    mesh_id_format: MESH_ID_FORMAT,
+                    raw_indirect_format: RAW_INDIRECT_FORMAT,
+                    albedo_format: ALBEDO_FORMAT,
+                    reservoir_format: RESERVOIR_FORMAT,
+                    depth_format: self.depth_format,
+                },
             )?;
 
             // Recreate pipelines against the new render pass, reusing
@@ -357,16 +361,21 @@ impl VulkanContext {
         // images to GENERAL.
         if let Some(ref mut svgf) = self.svgf {
             svgf.recreate_on_resize(
-                &self.device,
-                self.allocator
-                    .as_ref()
-                    .expect("allocator missing during resize"),
-                &self.graphics_queue,
-                self.transfer_pool,
-                &raw_indirect_views,
-                &motion_views_in,
-                &mesh_id_views_in,
-                &normal_views_in,
+                crate::vulkan::GpuUploadCtx {
+                    device: &self.device,
+                    allocator: self
+                        .allocator
+                        .as_ref()
+                        .expect("allocator missing during resize"),
+                    queue: &self.graphics_queue,
+                    command_pool: self.transfer_pool,
+                },
+                crate::vulkan::svgf::SvgfInputViews {
+                    raw_indirect_views: &raw_indirect_views,
+                    motion_views: &motion_views_in,
+                    mesh_id_views: &mesh_id_views_in,
+                    normal_views: &normal_views_in,
+                },
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;
@@ -454,7 +463,7 @@ impl VulkanContext {
         // Rebind WaterPipeline's set 2 to the new accumulator views
         // (the recreate above produced fresh `vk::ImageView` handles
         // per FIF slot). Skipped when either side dropped out above.
-        if let (Some(ref w), Some(ref accum)) =
+        if let (Some(w), Some(accum)) =
             (self.water.as_ref(), self.water_caustic_accum.as_ref())
         {
             let views: Vec<vk::ImageView> = (0..MAX_FRAMES_IN_FLIGHT)
@@ -592,15 +601,20 @@ impl VulkanContext {
         // `recreate_on_resize` (#1031).
         if let Some(ref mut taa) = self.taa {
             taa.recreate_on_resize(
-                &self.device,
-                self.allocator
-                    .as_ref()
-                    .expect("allocator missing during resize"),
-                &self.graphics_queue,
-                self.transfer_pool,
-                &hdr_views_owned,
-                &motion_views_in,
-                &mesh_id_views_in,
+                crate::vulkan::GpuUploadCtx {
+                    device: &self.device,
+                    allocator: self
+                        .allocator
+                        .as_ref()
+                        .expect("allocator missing during resize"),
+                    queue: &self.graphics_queue,
+                    command_pool: self.transfer_pool,
+                },
+                crate::vulkan::taa::TaaInputViews {
+                    hdr_views: &hdr_views_owned,
+                    motion_views: &motion_views_in,
+                    mesh_id_views: &mesh_id_views_in,
+                },
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,
             )?;
@@ -635,13 +649,15 @@ impl VulkanContext {
         self.framebuffers = create_main_framebuffers(
             &self.device,
             self.render_pass,
-            hdr_views,
-            &normal_views,
-            &motion_views,
-            &mesh_id_views,
-            &raw_indirect_views,
-            &albedo_views,
-            &reservoir_views,
+            GBufferViews {
+                hdr_views,
+                normal_views: &normal_views,
+                motion_views: &motion_views,
+                mesh_id_views: &mesh_id_views,
+                raw_indirect_views: &raw_indirect_views,
+                albedo_views: &albedo_views,
+                reservoir_views: &reservoir_views,
+            },
             self.depth_image_view,
             self.swapchain_state.extent,
         )?;

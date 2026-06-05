@@ -21,6 +21,10 @@ use super::{
 };
 use std::collections::HashMap;
 
+/// One entry in the [`EsmIndex::categories`] table: a display label paired
+/// with a closure that returns the live count for that category.
+pub type CategoryEntry = (&'static str, fn(&EsmIndex) -> usize);
+
 /// Aggregated index of every record category we currently parse.
 ///
 /// `cells` retains the existing structure used by the cell loader and
@@ -148,8 +152,8 @@ pub struct EsmIndex {
     /// container/door/NPC. SCRI cross-references resolve here instead
     /// of dangling.
     pub activators: HashMap<u32, ActiRecord>,
-    /// `TERM` terminal records — vault/military consoles. Menu items
-    /// + password + body text captured so a future terminal-interaction
+    /// `TERM` terminal records — vault/military consoles. Menu items,
+    /// password, and body text captured so a future terminal-interaction
     /// system doesn't have to re-parse them.
     pub terminals: HashMap<u32, TermRecord>,
     /// `FLST` FormID list records — flat arrays of form IDs referenced
@@ -360,7 +364,7 @@ impl EsmIndex {
     ///
     /// [`total`]: Self::total
     /// [`category_breakdown`]: Self::category_breakdown
-    pub fn categories() -> &'static [(&'static str, fn(&EsmIndex) -> usize)] {
+    pub fn categories() -> &'static [CategoryEntry] {
         // The closures below capture nothing and coerce to `fn(&EsmIndex)
         // -> usize` — no boxing, zero runtime overhead vs the inline sum.
         &[

@@ -39,7 +39,8 @@ use byroredux_core::ecs::{
 };
 use byroredux_core::string::StringPool;
 use byroredux_platform::window::{self, WindowConfig};
-use byroredux_renderer::vulkan::context::DrawCommand;
+use byroredux_renderer::vulkan::context::{DrawCommand, FrameInputs};
+use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::VulkanContext;
 use byroredux_ui::UiManager;
 use std::collections::HashMap;
@@ -1191,8 +1192,8 @@ impl App {
     ///   (drain `state.loaded`, shutdown the worker thread), then
     ///   call `cell_loader::load_interior_cell` for the destination.
     /// * `Exterior` — tear down current interior (if any), tear down
-    ///   existing streaming state, build a fresh `ExteriorWorldContext`
-    ///   + `WorldStreamingState` for the destination worldspace,
+    ///   existing streaming state, build a fresh `ExteriorWorldContext` +
+    ///   `WorldStreamingState` for the destination worldspace,
     ///   stream initial radius, reposition camera.
     ///
     /// Provider construction is per-transition: rebuilding from CLI
@@ -1241,11 +1242,13 @@ impl App {
                     ctx,
                     &tex_provider,
                     Some(&mut mat_provider),
-                    &editor_id,
-                    &masters,
-                    &esm_path,
-                    pending.destination_position_zup,
-                    pending.destination_rotation_zup,
+                    cell_loader::InteriorCellRequest {
+                        editor_id: &editor_id,
+                        masters: &masters,
+                        esm_path: &esm_path,
+                        dest_pos_zup: pending.destination_position_zup,
+                        dest_rot_zup: pending.destination_rotation_zup,
+                    },
                 ) {
                     Ok(cam_pos) => {
                         log::info!(
@@ -1356,20 +1359,20 @@ impl App {
 
 }
 
-/// Tear down the active exterior streaming state: drain every loaded
-/// cell via `unload_cell`, flush the renderer's deferred-destroy
-/// queues, then shutdown the worker thread with a bounded timeout.
-/// Leaves `*streaming_slot = None` on return.
-///
-/// Free function (not an `App` method) so the caller can split-borrow
-/// `&mut self.world` / `&mut self.streaming` / `&mut self.renderer`
-/// without aliasing — the `App` method form fights the borrow checker
-/// when `ctx` was already extracted from `self.renderer.as_mut()`.
-///
-/// Pulled out of the `WindowEvent::CloseRequested` handler so
-/// transition flows can re-use the same teardown sequence — the
-/// shutdown ordering invariants (loaded cells before worker join
-/// before context drop) are identical at door transitions.
+// Tear down the active exterior streaming state: drain every loaded
+// cell via `unload_cell`, flush the renderer's deferred-destroy
+// queues, then shutdown the worker thread with a bounded timeout.
+// Leaves `*streaming_slot = None` on return.
+//
+// Free function (not an `App` method) so the caller can split-borrow
+// `&mut self.world` / `&mut self.streaming` / `&mut self.renderer`
+// without aliasing — the `App` method form fights the borrow checker
+// when `ctx` was already extracted from `self.renderer.as_mut()`.
+//
+// Pulled out of the `WindowEvent::CloseRequested` handler so
+// transition flows can re-use the same teardown sequence — the
+// shutdown ordering invariants (loaded cells before worker join
+// before context drop) are identical at door transitions.
 
 // Phase 14 — `render_one_frame` is an inherent method on `App` so it
 // can be called from both the `WindowEvent::RedrawRequested` arm (now
@@ -1417,7 +1420,7 @@ impl App {
         };
         self.debug_ui_refresh_entities = false;
 
-        let (egui_frame, outputs) = if let (Some(ref mut ui), Some(ref win)) =
+        let (egui_frame, outputs) = if let (Some(ref mut ui), Some(win)) =
             (self.debug_ui.as_mut(), self.window.as_ref())
         {
             let outputs = ui.run(win, &snapshot);
@@ -1507,15 +1510,14 @@ impl App {
                 if let Some(pixels) = ui.render() {
                     if let Some(handle) = self.ui_texture_handle {
                         let allocator = ctx.allocator.as_ref().unwrap();
-                        if let Err(e) = ctx.texture_registry.update_rgba(
-                            &ctx.device,
+                        let upload_ctx = GpuUploadCtx {
+                            device: &ctx.device,
                             allocator,
-                            &ctx.graphics_queue,
-                            ctx.transfer_pool,
-                            handle,
-                            ui_w,
-                            ui_h,
-                            pixels,
+                            queue: &ctx.graphics_queue,
+                            command_pool: ctx.transfer_pool,
+                        };
+                        if let Err(e) = ctx.texture_registry.update_rgba(
+                            upload_ctx, handle, ui_w, ui_h, pixels,
                         ) {
                             log::error!("UI texture update failed: {e:#}");
                         }
@@ -1588,29 +1590,29 @@ impl App {
                 ctx.light_atten_knee = lt.knee_frac;
                 ctx.light_atten_legacy = lt.legacy;
             }
-            match ctx.draw_frame(
+            match ctx.draw_frame(FrameInputs {
                 clear_color,
-                &frame.view_proj,
-                &self.draw_commands,
-                &self.gpu_lights,
-                &self.bone_world,
-                &pending_with_data,
-                self.material_table.materials(),
-                frame.camera_pos,
-                frame.ambient,
-                frame.fog_color,
-                frame.fog_near,
-                frame.fog_far,
-                frame.fog_clip,
-                frame.fog_power,
-                ui_tex,
-                &frame.sky,
+                view_proj: &frame.view_proj,
+                draw_commands: &self.draw_commands,
+                lights: &self.gpu_lights,
+                bone_world: &self.bone_world,
+                bind_inverse_pending_uploads: &pending_with_data,
+                materials: self.material_table.materials(),
+                camera_pos: frame.camera_pos,
+                ambient_color: frame.ambient,
+                fog_color: frame.fog_color,
+                fog_near: frame.fog_near,
+                fog_far: frame.fog_far,
+                fog_clip: frame.fog_clip,
+                fog_power: frame.fog_power,
+                ui_texture_handle: ui_tex,
+                sky_params: &frame.sky,
                 dof,
-                frame_timings.as_mut(),
-                &self.water_commands,
-                compute_underwater_params(&self.world),
-                self.skin_slot_pool.pose_dirty(),
-            ) {
+                timings: frame_timings.as_mut(),
+                water_commands: &self.water_commands,
+                underwater: compute_underwater_params(&self.world),
+                pose_dirty: self.skin_slot_pool.pose_dirty(),
+            }) {
                 Ok(needs_recreate) => {
                     let last_draw_stats = ctx.last_draw_call_stats;
                     world_resource_set::<DebugStats>(&self.world, |s| {
@@ -1810,7 +1812,7 @@ impl ApplicationHandler for App {
         // dragging an egui slider. CloseRequested + Resized always
         // run their normal handlers — egui doesn't care about
         // those.
-        let egui_consumed = if let (Some(ref mut state), Some(ref win)) =
+        let egui_consumed = if let (Some(ref mut state), Some(win)) =
             (self.debug_ui.as_mut(), self.window.as_ref())
         {
             state.on_window_event(win, &event).consumed

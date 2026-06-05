@@ -14,7 +14,7 @@ use super::predicates::{
     align_scratch_address, scratch_alignment_padding, scratch_needs_growth,
     should_rebuild_skinned_blas_after, validate_refit_counts, validate_refit_flags,
 };
-use super::types::BlasEntry;
+use super::types::{BlasEntry, SkinnedBlasGeometry};
 use super::AccelerationManager;
 use crate::vertex::Vertex;
 use anyhow::{Context, Result};
@@ -386,11 +386,14 @@ impl AccelerationManager {
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         entity_id: EntityId,
-        vertex_buffer: vk::Buffer,
-        vertex_count: u32,
-        index_buffer: vk::Buffer,
-        index_count: u32,
+        geometry: SkinnedBlasGeometry,
     ) -> Result<()> {
+        let SkinnedBlasGeometry {
+            vertex_buffer,
+            vertex_count,
+            index_buffer,
+            index_count,
+        } = geometry;
         // #983 / REN-D8-NEW-15 — Self-emitted scratch-serialize
         // barrier. The shared `blas_scratch_buffer` may have been
         // written by a cell-load `build_blas_batched` earlier this

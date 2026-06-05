@@ -962,20 +962,11 @@ impl BsPackedCombinedGeomDataExtra {
     }
 }
 
-fn parse_common_geom_header(
-    stream: &mut NifStream,
-) -> io::Result<(
-    u32,
-    u32,
-    u32,
-    u32,
-    u32,
-    u32,
-    u32,
-    u32,
-    Vec<BsPackedGeomDataCombined>,
-    u64,
-)> {
+/// Decoded fields of the shared `BSPackedCombined*` geometry header,
+/// returned by [`parse_common_geom_header`].
+type CommonGeomHeader = (u32, u32, u32, u32, u32, u32, u32, u32, Vec<BsPackedGeomDataCombined>, u64);
+
+fn parse_common_geom_header(stream: &mut NifStream) -> io::Result<CommonGeomHeader> {
     let num_verts = stream.read_u32_le()?;
     let lod_levels = stream.read_u32_le()?;
     let tri_count_lod0 = stream.read_u32_le()?;

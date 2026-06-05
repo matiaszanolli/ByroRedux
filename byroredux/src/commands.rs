@@ -107,7 +107,7 @@ impl ConsoleCommand for EntitiesCommand {
             Some(cq) => {
                 let mesh_q = world.query::<MeshHandle>();
                 cq.iter()
-                    .filter(|(e, _)| mesh_q.as_ref().map_or(true, |mq| !mq.contains(*e)))
+                    .filter(|(e, _)| mesh_q.as_ref().is_none_or(|mq| !mq.contains(*e)))
                     .count()
             }
             None => 0,
@@ -195,7 +195,7 @@ impl ConsoleCommand for TexMissingCommand {
         }
 
         let mut sorted: Vec<_> = missing.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        sorted.sort_by_key(|e| std::cmp::Reverse(e.1.0));
 
         let mut lines = vec![format!("{} unique missing textures:", sorted.len())];
         for (path, (count, samples)) in sorted.iter().take(50) {
@@ -252,7 +252,7 @@ impl ConsoleCommand for TexLoadedCommand {
             fallback_count
         )];
         let mut sorted: Vec<_> = loaded.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|e| std::cmp::Reverse(e.1));
         for (path, count) in sorted.iter().take(30) {
             lines.push(format!("  {:4}x  {}", count, path));
         }

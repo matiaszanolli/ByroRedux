@@ -270,11 +270,9 @@ pub struct NiTriShapeData {
     pub triangles: Vec<[u16; 3]>,
 }
 
-/// Parse the NiGeometryData base class fields shared by NiTriShapeData and NiTriStripsData.
-/// Returns (vertices, data_flags, normals, center, radius, vertex_colors, uv_sets).
-pub(crate) fn parse_geometry_data_base(
-    stream: &mut NifStream,
-) -> io::Result<(
+/// Decoded NiGeometryData base-class fields:
+/// `(vertices, data_flags, normals, center, radius, vertex_colors, uv_sets)`.
+pub(crate) type GeometryDataBase = (
     Vec<NiPoint3>,      // vertices
     u16,                // data_flags
     Vec<NiPoint3>,      // normals
@@ -282,7 +280,11 @@ pub(crate) fn parse_geometry_data_base(
     f32,                // radius
     Vec<[f32; 4]>,      // vertex_colors
     Vec<Vec<[f32; 2]>>, // uv_sets
-)> {
+);
+
+/// Parse the NiGeometryData base class fields shared by NiTriShapeData and NiTriStripsData.
+/// Returns (vertices, data_flags, normals, center, radius, vertex_colors, uv_sets).
+pub(crate) fn parse_geometry_data_base(stream: &mut NifStream) -> io::Result<GeometryDataBase> {
     parse_geometry_data_base_inner(stream, false)
 }
 
@@ -291,32 +293,11 @@ pub(crate) fn parse_geometry_data_base(
 /// NiPSysData on BS_GTE_FO3 streams where nif.xml (line 3880) says:
 /// "Vertices, Normals, Tangents, Colors, and UV arrays do not have length
 /// for NiPSysData regardless of 'Num' or booleans." See #322.
-pub(crate) fn parse_psys_geometry_data_base(
-    stream: &mut NifStream,
-) -> io::Result<(
-    Vec<NiPoint3>,
-    u16,
-    Vec<NiPoint3>,
-    NiPoint3,
-    f32,
-    Vec<[f32; 4]>,
-    Vec<Vec<[f32; 2]>>,
-)> {
+pub(crate) fn parse_psys_geometry_data_base(stream: &mut NifStream) -> io::Result<GeometryDataBase> {
     parse_geometry_data_base_inner(stream, true)
 }
 
-fn parse_geometry_data_base_inner(
-    stream: &mut NifStream,
-    zero_arrays: bool,
-) -> io::Result<(
-    Vec<NiPoint3>,
-    u16,
-    Vec<NiPoint3>,
-    NiPoint3,
-    f32,
-    Vec<[f32; 4]>,
-    Vec<Vec<[f32; 2]>>,
-)> {
+fn parse_geometry_data_base_inner(stream: &mut NifStream, zero_arrays: bool) -> io::Result<GeometryDataBase> {
     // Group ID: nif.xml says `since="10.1.0.114"` (0x0A010072), not
     // 10.0.1.0. Files in the [10.0.1.0, 10.1.0.114) range (non-Bethesda
     // Gamebryo, pre-Civ IV era) read 4 phantom bytes, misaligning every

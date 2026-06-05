@@ -33,7 +33,7 @@ mod types;
 
 pub use constants::SKINNED_BLAS_REFIT_THRESHOLD;
 pub use predicates::build_instance_map;
-pub use types::{BlasEntry, TlasState};
+pub use types::{BlasEntry, SkinnedBlasGeometry, TlasState};
 
 // Surfaces a CPU-side scratch-shrink helper to sibling modules (notably
 // `vulkan::context::draw`, which calls it on the per-frame `Vec` it
@@ -235,6 +235,12 @@ impl AccelerationManager {
     }
 
     /// Destroy all acceleration structures and buffers.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` and `allocator` are valid and live, the
+    /// device is not lost, and that no acceleration structure or buffer owned
+    /// by this manager is still in use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         // #639 / LIFE-H1: drain `pending_destroy_blas` first.
         // `drop_blas` queues entries with a 2-frame countdown that only
@@ -253,12 +259,10 @@ impl AccelerationManager {
         // into `drain_pending_destroys` so the App-level shutdown
         // sweep can call the same drain explicitly before `Drop`.
         self.drain_pending_destroys(device, allocator);
-        for entry in self.blas_entries.drain(..) {
-            if let Some(mut e) = entry {
-                self.accel_loader
-                    .destroy_acceleration_structure(e.accel, None);
-                e.buffer.destroy(device, allocator);
-            }
+        for mut e in self.blas_entries.drain(..).flatten() {
+            self.accel_loader
+                .destroy_acceleration_structure(e.accel, None);
+            e.buffer.destroy(device, allocator);
         }
         for slot in &mut self.tlas {
             if let Some(mut tlas) = slot.take() {

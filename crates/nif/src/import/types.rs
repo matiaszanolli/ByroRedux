@@ -486,6 +486,7 @@ pub struct ImportedMesh {
     ///     `(L - 0.04) / 0.96` so dielectric spec (≈ 0.04) lands at
     ///     0 and conductor spec (≈ 0.95) lands near 1.
     ///   * Future: Starfield .mat translator.
+    ///
     /// `None` seeds a NaN sentinel on the canonical `Material.metalness`,
     /// which `Material::resolve_pbr` then fills via `classify_pbr_keyword`
     /// (Oblivion / FO3 / FNV keyword path) — at the boundary, NOT per-draw.

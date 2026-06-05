@@ -62,7 +62,7 @@ pub(super) fn genhash_folder(name: &[u8]) -> u64 {
 pub(super) fn genhash_file(name: &[u8]) -> u64 {
     let (stem_bytes, ext_bytes) = match name.iter().rposition(|&c| c == b'.') {
         Some(i) => (&name[..i], &name[i..]),
-        None => (&name[..], &name[..0]),
+        None => (name, &name[..0]),
     };
 
     // Base hash over the stem.

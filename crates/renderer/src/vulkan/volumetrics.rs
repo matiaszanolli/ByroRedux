@@ -681,6 +681,13 @@ impl VolumetricsPipeline {
     /// makes the composite formula `final = scene * vol.a + vol.rgb`
     /// collapse the scene to black on the first frame volumetrics is
     /// enabled (#1082). Call once after `new()`.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure all passed Vulkan handles (`device`, `cmd`) are
+    /// valid and live, `cmd` is in the recording state, the device is not
+    /// lost, and the froxel images are not concurrently accessed by another
+    /// command buffer.
     pub unsafe fn initialize_layouts(
         &self,
         device: &ash::Device,
@@ -777,6 +784,13 @@ impl VolumetricsPipeline {
     /// SVGF have already scheduled their reads against the G-buffer)
     /// and BEFORE composite (so the integrated volume is ready to
     /// sample). Natural slot: between caustic and TAA in `draw.rs`.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure all passed Vulkan handles (`device`, `cmd`) are
+    /// valid and live, `cmd` is in the recording state, the device is not
+    /// lost, and the froxel images and bound buffers are not in use by
+    /// another in-flight command buffer.
     pub unsafe fn dispatch(
         &mut self,
         device: &ash::Device,
@@ -847,9 +861,9 @@ impl VolumetricsPipeline {
             &[self.descriptor_sets[frame]],
             &[],
         );
-        let inj_groups_x = (FROXEL_WIDTH + WORKGROUP_X - 1) / WORKGROUP_X;
-        let inj_groups_y = (FROXEL_HEIGHT + WORKGROUP_Y - 1) / WORKGROUP_Y;
-        let inj_groups_z = (FROXEL_DEPTH + WORKGROUP_Z - 1) / WORKGROUP_Z;
+        let inj_groups_x = FROXEL_WIDTH.div_ceil(WORKGROUP_X);
+        let inj_groups_y = FROXEL_HEIGHT.div_ceil(WORKGROUP_Y);
+        let inj_groups_z = FROXEL_DEPTH.div_ceil(WORKGROUP_Z);
         device.cmd_dispatch(cmd, inj_groups_x, inj_groups_y, inj_groups_z);
 
         // ── Stage D: barrier between injection and integration ──────
@@ -901,8 +915,8 @@ impl VolumetricsPipeline {
         );
         // 2D dispatch: one thread per (x, y) column; each thread Z-marches
         // all FROXEL_DEPTH slices internally.
-        let int_groups_x = (FROXEL_WIDTH + WORKGROUP_X - 1) / WORKGROUP_X;
-        let int_groups_y = (FROXEL_HEIGHT + WORKGROUP_Y - 1) / WORKGROUP_Y;
+        let int_groups_x = FROXEL_WIDTH.div_ceil(WORKGROUP_X);
+        let int_groups_y = FROXEL_HEIGHT.div_ceil(WORKGROUP_Y);
         device.cmd_dispatch(cmd, int_groups_x, int_groups_y, 1);
 
         // ── Stage F: post-integration barrier ────────────────────────
@@ -965,6 +979,13 @@ impl VolumetricsPipeline {
         self.tlas_written[frame] = true;
     }
 
+    /// Destroy all froxel images, views, buffers, and pipeline objects.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` and `allocator` are valid and live, the
+    /// device is not lost, and that no object owned by `self` is still in use
+    /// by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for slot in self
             .lighting_volumes

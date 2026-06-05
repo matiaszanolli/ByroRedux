@@ -30,6 +30,21 @@ use egui::{Context as EguiContext, FullOutput, TextureId};
 use egui_ash_renderer::{Options, Renderer};
 use gpu_allocator::vulkan::Allocator;
 
+/// The Vulkan handles [`EguiPass::dispatch`] records and uploads against.
+/// Groups `device`, the frame's command buffer, the graphics queue, and
+/// the one-shot upload command pool that travel together into dispatch.
+#[derive(Clone, Copy)]
+pub struct EguiDispatchCtx<'a> {
+    /// Logical device the overlay records against.
+    pub device: &'a ash::Device,
+    /// The current frame's command buffer (already recording).
+    pub cmd: vk::CommandBuffer,
+    /// Graphics queue used for the synchronous egui texture upload.
+    pub queue: vk::Queue,
+    /// Command pool the egui texture-upload one-shot buffer comes from.
+    pub upload_command_pool: vk::CommandPool,
+}
+
 /// Owns the egui-ash-renderer instance plus the render-pass +
 /// framebuffer chain that targets the swapchain.
 pub struct EguiPass {
@@ -126,14 +141,17 @@ impl EguiPass {
     /// no shapes when the overlay is hidden or contains no widgets.
     pub fn dispatch(
         &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        queue: vk::Queue,
-        upload_command_pool: vk::CommandPool,
+        ctx: EguiDispatchCtx,
         swapchain_image_index: u32,
         egui_ctx: &EguiContext,
         output: FullOutput,
     ) -> Result<()> {
+        let EguiDispatchCtx {
+            device,
+            cmd,
+            queue,
+            upload_command_pool,
+        } = ctx;
         // 1. Process previous frame's deferred frees first — by now
         // the fence at the top of `draw_frame` has waited on the
         // previous frame's command buffer, so the textures aren't

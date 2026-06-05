@@ -60,11 +60,13 @@ pub fn execute_pending_debug_loads(
                     world,
                     ctx,
                     streaming,
-                    &esm,
+                    DebugLoadSource {
+                        esm: &esm,
+                        masters: &masters,
+                        bsas: &bsas,
+                        textures_bsas: &textures_bsas,
+                    },
                     &cell,
-                    &masters,
-                    &bsas,
-                    &textures_bsas,
                 );
             }
             PendingDebugLoad::ExteriorCell {
@@ -81,14 +83,18 @@ pub fn execute_pending_debug_loads(
                     world,
                     ctx,
                     streaming,
-                    &esm,
-                    grid_x,
-                    grid_y,
-                    radius,
-                    worldspace.as_deref(),
-                    &masters,
-                    &bsas,
-                    &textures_bsas,
+                    DebugLoadSource {
+                        esm: &esm,
+                        masters: &masters,
+                        bsas: &bsas,
+                        textures_bsas: &textures_bsas,
+                    },
+                    DebugExteriorTarget {
+                        grid_x,
+                        grid_y,
+                        radius,
+                        worldspace: worldspace.as_deref(),
+                    },
                 );
             }
         }
@@ -177,16 +183,39 @@ fn resolve_nif_bytes(path: &str) -> Option<Vec<u8>> {
     None
 }
 
+/// Shared plugin + archive source for a debug cell load: the ESM, its master
+/// chain, and the mesh / texture BSA lists used to synthesize a provider.
+/// Grouped so both [`exec_load_interior`] and [`exec_load_exterior`] stay
+/// under the argument-count limit.
+struct DebugLoadSource<'a> {
+    esm: &'a str,
+    masters: &'a [String],
+    bsas: &'a [String],
+    textures_bsas: &'a [String],
+}
+
+/// Exterior grid target for a debug load: the center cell, stream radius, and
+/// optional worldspace editor-id override.
+struct DebugExteriorTarget<'a> {
+    grid_x: i32,
+    grid_y: i32,
+    radius: u8,
+    worldspace: Option<&'a str>,
+}
+
 fn exec_load_interior(
     world: &mut World,
     ctx: &mut VulkanContext,
     streaming: &mut Option<streaming::WorldStreamingState>,
-    esm: &str,
+    source: DebugLoadSource,
     cell: &str,
-    masters: &[String],
-    bsas: &[String],
-    textures_bsas: &[String],
 ) {
+    let DebugLoadSource {
+        esm,
+        masters,
+        bsas,
+        textures_bsas,
+    } = source;
     if streaming.is_some() {
         drain_streaming_state(world, ctx, streaming);
     }
@@ -239,15 +268,21 @@ fn exec_load_exterior(
     world: &mut World,
     ctx: &mut VulkanContext,
     streaming: &mut Option<streaming::WorldStreamingState>,
-    esm: &str,
-    grid_x: i32,
-    grid_y: i32,
-    radius: u8,
-    worldspace: Option<&str>,
-    masters: &[String],
-    bsas: &[String],
-    textures_bsas: &[String],
+    source: DebugLoadSource,
+    target: DebugExteriorTarget,
 ) {
+    let DebugLoadSource {
+        esm,
+        masters,
+        bsas,
+        textures_bsas,
+    } = source;
+    let DebugExteriorTarget {
+        grid_x,
+        grid_y,
+        radius,
+        worldspace,
+    } = target;
     // CLI radius cap is 1..=7 — clamp the wire value here so a
     // bogus `0` doesn't trip the assertion in
     // `build_exterior_world_context` and a runaway `200` doesn't try

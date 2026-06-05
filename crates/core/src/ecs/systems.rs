@@ -214,7 +214,7 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
         // Shared BFS drain. Requires both Parent (to look up each child's
         // parent) and Children (to enqueue grandchildren); a flat scene with
         // neither already reached its final state in the seeding above.
-        let (Some(ref pq), Some(ref cq)) = (parent_q.as_ref(), children_q.as_ref()) else {
+        let (Some(pq), Some(cq)) = (parent_q.as_ref(), children_q.as_ref()) else {
             return;
         };
 

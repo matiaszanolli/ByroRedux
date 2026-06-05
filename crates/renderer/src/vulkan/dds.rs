@@ -10,7 +10,6 @@ const DX10_EXT_SIZE: usize = 20;
 // DDS_PIXELFORMAT flags
 const DDPF_FOURCC: u32 = 0x4;
 const DDPF_RGB: u32 = 0x40;
-const DDPF_ALPHAPIXELS: u32 = 0x1;
 
 // FourCC values
 const FOURCC_DXT1: u32 = u32::from_le_bytes(*b"DXT1");
@@ -123,11 +122,7 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
             "Unsupported uncompressed DDS: {} bpp (only 32-bit RGBA supported)",
             bpp
         );
-        let format = if pf_flags & DDPF_ALPHAPIXELS != 0 {
-            vk::Format::R8G8B8A8_SRGB
-        } else {
-            vk::Format::R8G8B8A8_SRGB
-        };
+        let format = vk::Format::R8G8B8A8_SRGB;
         Ok(DdsMetadata {
             width,
             height,
@@ -150,8 +145,8 @@ pub fn mip_size(width: u32, height: u32, mip_level: u32, block_size: u32, compre
     let w = (width >> mip_level).max(1);
     let h = (height >> mip_level).max(1);
     if compressed {
-        let blocks_x = (w + 3) / 4;
-        let blocks_y = (h + 3) / 4;
+        let blocks_x = w.div_ceil(4);
+        let blocks_y = h.div_ceil(4);
         blocks_x * blocks_y * block_size
     } else {
         w * h * block_size
@@ -242,6 +237,9 @@ fn read_u32(data: &[u8], offset: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DDS_PIXELFORMAT alpha-pixels flag (test header construction only).
+    const DDPF_ALPHAPIXELS: u32 = 0x1;
 
     /// Build a minimal valid DDS header for testing.
     fn make_dds_header(width: u32, height: u32, mip_count: u32, fourcc: &[u8; 4]) -> Vec<u8> {

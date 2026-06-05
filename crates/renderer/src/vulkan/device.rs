@@ -95,7 +95,7 @@ pub struct DeviceCapabilities {
     /// debug-UI's "VRAM usage" line has to fall back to
     /// `gpu_allocator::generate_report` (which reports our own
     /// allocations, not the driver's view including swapchain images
-    /// + descriptor pools + every other Vulkan-internal residency
+    /// plus descriptor pools plus every other Vulkan-internal residency
     /// cost). Universally supported on shipped desktop drivers since
     /// 2018; the gate exists so device creation doesn't fail when a
     /// SoC / software rasteriser doesn't advertise it.

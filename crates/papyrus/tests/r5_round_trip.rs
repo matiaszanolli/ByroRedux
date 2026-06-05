@@ -49,7 +49,7 @@ fn parse_default_rumble_on_activate() {
         .body
         .iter()
         .filter_map(|i| match &i.node {
-            ScriptItem::Property(p) => Some(p),
+            ScriptItem::Property(p) => Some(p.as_ref()),
             _ => None,
         })
         .collect();

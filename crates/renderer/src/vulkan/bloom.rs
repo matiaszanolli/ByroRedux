@@ -375,6 +375,13 @@ impl BloomPipeline {
     /// One-time UNDEFINED → GENERAL layout transition for every mip
     /// in every frame slot. Call once after `new()`. Same shape as
     /// `SvgfPipeline::initialize_layouts`.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure all passed Vulkan handles (`device`, `cmd`) are
+    /// valid and live, `cmd` is in the recording state, the device is not
+    /// lost, and the bloom images are not concurrently accessed by another
+    /// command buffer.
     pub unsafe fn initialize_layouts(
         &self,
         device: &ash::Device,
@@ -464,6 +471,13 @@ impl BloomPipeline {
     /// Dispatch bloom. [`Self::upload_params`] must have been called this
     /// frame BEFORE the pre-render-pass bulk barrier so the UBO writes are
     /// covered by that barrier's HOST→COMPUTE execution dependency.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure all passed Vulkan handles (`device`, `cmd`) are
+    /// valid and live, `cmd` is in the recording state, the device is not
+    /// lost, and the bloom images/buffers are not concurrently accessed by
+    /// another in-flight command buffer.
     pub unsafe fn dispatch(
         &mut self,
         device: &ash::Device,
@@ -520,8 +534,8 @@ impl BloomPipeline {
                 &[],
             );
             let extent = f.down_mips[i].extent;
-            let groups_x = (extent.width + WORKGROUP_X - 1) / WORKGROUP_X;
-            let groups_y = (extent.height + WORKGROUP_Y - 1) / WORKGROUP_Y;
+            let groups_x = extent.width.div_ceil(WORKGROUP_X);
+            let groups_y = extent.height.div_ceil(WORKGROUP_Y);
             device.cmd_dispatch(cmd, groups_x, groups_y, 1);
 
             // Make this mip's WRITE visible to the next iteration's
@@ -564,8 +578,8 @@ impl BloomPipeline {
                 &[],
             );
             let extent = f.up_mips[i].extent;
-            let groups_x = (extent.width + WORKGROUP_X - 1) / WORKGROUP_X;
-            let groups_y = (extent.height + WORKGROUP_Y - 1) / WORKGROUP_Y;
+            let groups_x = extent.width.div_ceil(WORKGROUP_X);
+            let groups_y = extent.height.div_ceil(WORKGROUP_Y);
             device.cmd_dispatch(cmd, groups_x, groups_y, 1);
 
             let post = vk::ImageMemoryBarrier::default()
@@ -607,6 +621,13 @@ impl BloomPipeline {
         self.frames.iter().map(|f| f.up_mips[0].view).collect()
     }
 
+    /// Destroy all bloom images, views, and allocations.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` and `allocator` are valid and live, the
+    /// device is not lost, and that none of the bloom resources are still in
+    /// use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for mut frame in self.frames.drain(..) {
             for mip in frame.down_mips.drain(..).chain(frame.up_mips.drain(..)) {
@@ -700,11 +721,11 @@ impl BloomFrame {
         // Up mips share extents with down_mips[0..N-1] (no top mip
         // since we seed the up chain from down_mips[N-1] directly).
         let mut up_mips: Vec<BloomMip> = Vec::with_capacity(BLOOM_MIP_COUNT - 1);
-        for i in 0..(BLOOM_MIP_COUNT - 1) {
+        for (i, down) in down_mips.iter().take(BLOOM_MIP_COUNT - 1).enumerate() {
             let mip = create_mip(
                 device,
                 allocator,
-                down_mips[i].extent,
+                down.extent,
                 &format!("bloom_up_f{frame_idx}_mip{i}"),
             )?;
             up_mips.push(mip);

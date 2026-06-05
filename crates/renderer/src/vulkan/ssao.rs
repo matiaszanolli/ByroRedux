@@ -429,6 +429,13 @@ impl SsaoPipeline {
     /// SHADER_READ_ONLY_OPTIMAL and clear them to white (1.0 = no occlusion).
     /// Must be called once after creation so the fragment shader sees a valid
     /// image on the first frame (before the first SSAO dispatch has run).
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure all passed Vulkan handles (`device`, `cmd`) are
+    /// valid and live, `cmd` is in the recording state, the device is not
+    /// lost, and the AO images are not concurrently accessed by another
+    /// command buffer.
     pub unsafe fn initialize_ao_images(
         &self,
         device: &ash::Device,
@@ -502,6 +509,13 @@ impl SsaoPipeline {
     /// must be written and transitioned to READ_ONLY). The AO output image
     /// is written in GENERAL layout, transitioned to SHADER_READ_ONLY, and
     /// sampled by this frame's fragment shader.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure all passed Vulkan handles (`device`, `cmd`) are
+    /// valid and live, `cmd` is in the recording state, the device is not
+    /// lost, and the depth/AO images and bound buffers are not in use by
+    /// another in-flight command buffer.
     pub unsafe fn dispatch(
         &mut self,
         device: &ash::Device,
@@ -575,8 +589,8 @@ impl SsaoPipeline {
             &[],
         );
 
-        let groups_x = (self.width + 7) / 8;
-        let groups_y = (self.height + 7) / 8;
+        let groups_x = self.width.div_ceil(8);
+        let groups_y = self.height.div_ceil(8);
         device.cmd_dispatch(cmd, groups_x, groups_y, 1);
 
         // Transition AO image to SHADER_READ_ONLY for fragment shader sampling.
@@ -600,6 +614,13 @@ impl SsaoPipeline {
         Ok(())
     }
 
+    /// Destroy all SSAO images, views, and allocations.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` and `allocator` are valid and live, the
+    /// device is not lost, and that none of the SSAO resources are still in
+    /// use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for &view in &self.ao_image_views {
             device.destroy_image_view(view, None);
@@ -609,10 +630,8 @@ impl SsaoPipeline {
             device.destroy_image(img, None);
         }
         self.ao_images.clear();
-        for alloc in self.ao_allocations.drain(..) {
-            if let Some(a) = alloc {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+        for a in self.ao_allocations.drain(..).flatten() {
+            allocator.lock().expect("allocator lock").free(a).ok();
         }
         for buf in &mut self.param_buffers {
             buf.destroy(device, allocator);

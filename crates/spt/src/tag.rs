@@ -37,6 +37,7 @@ pub enum SptTagKind {
     /// (per `spt_transitions` histogram analysis):
     /// - `10002` ships an `(u32 N + N bytes)` blob (stride 1).
     /// - `10003` ships an `(u32 N + N × 8 bytes)` blob (stride 8).
+    ///
     /// Stride is per-tag, encoded in the dispatch.
     ArrayBytes { stride: u8 },
     /// Tag is recognised but its layout is non-uniform or under

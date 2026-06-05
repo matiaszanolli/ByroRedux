@@ -31,6 +31,7 @@ use byroredux_core::ecs::components::water::{WaterPlane, WaterVolume};
 use byroredux_core::ecs::{GlobalTransform, MeshHandle, Transform, World};
 use byroredux_plugin::esm;
 use byroredux_core::math::{Quat, Vec3};
+use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 use std::collections::HashMap;
 
@@ -156,11 +157,14 @@ pub(super) fn spawn_water_plane(
     // Y-up local), so emit CCW directly.
     let indices = vec![0u32, 2, 1, 1, 2, 3];
 
-    let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
-        &ctx.device,
+    let upload_ctx = GpuUploadCtx {
+        device: &ctx.device,
         allocator,
-        &ctx.graphics_queue,
-        ctx.transfer_pool,
+        queue: &ctx.graphics_queue,
+        command_pool: ctx.transfer_pool,
+    };
+    let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
+        upload_ctx,
         &vertices,
         &indices,
         // Water meshes do NOT need BLAS — they're skipped from TLAS

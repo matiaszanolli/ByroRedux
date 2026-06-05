@@ -36,6 +36,13 @@ impl AccelerationManager {
     /// every RT hit downstream.
     ///
     /// Records commands into `cmd` — caller must ensure a memory barrier after.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure all passed Vulkan handles (`device`, `cmd`, the
+    /// referenced BLAS) are valid and live, `cmd` is in the recording state,
+    /// the device is not lost, and external synchronization rules for the
+    /// touched objects are upheld per the Vulkan spec.
     pub unsafe fn build_tlas(
         &mut self,
         device: &ash::Device,

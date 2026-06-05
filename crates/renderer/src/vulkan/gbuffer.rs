@@ -174,10 +174,8 @@ impl Attachment {
             unsafe { device.destroy_image(img, None) };
         }
         self.images.clear();
-        for alloc in self.allocations.drain(..) {
-            if let Some(a) = alloc {
-                allocator.lock().expect("allocator lock").free(a).ok();
-            }
+        for a in self.allocations.drain(..).flatten() {
+            allocator.lock().expect("allocator lock").free(a).ok();
         }
     }
 }
@@ -463,6 +461,12 @@ impl GBuffer {
     }
 
     /// Destroy all images, views, and allocations. Safe to call multiple times.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` and `allocator` are valid and live, the
+    /// device is not lost, and that none of the G-buffer images are still in
+    /// use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         // SAFETY: forwarding the unsafe-fn contract — the caller of
         // `GBuffer::destroy` is responsible for ensuring no in-flight

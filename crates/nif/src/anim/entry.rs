@@ -128,7 +128,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
     // every block type the import pipeline cares about — adding a new
     // block kind with its own embedded-controller chain is a one-line
     // downcast addition here.
-    fn net_of<'a>(block: &'a dyn crate::NiObject) -> Option<&'a NiObjectNETData> {
+    fn net_of(block: &dyn crate::NiObject) -> Option<&NiObjectNETData> {
         let any = block.as_any();
         if let Some(n) = any.downcast_ref::<NiNode>() {
             return Some(&n.av.net);

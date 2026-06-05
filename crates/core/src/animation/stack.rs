@@ -86,6 +86,12 @@ pub struct AnimationStack {
     pub root_entity: Option<EntityId>,
 }
 
+impl Default for AnimationStack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AnimationStack {
     pub fn new() -> Self {
         Self {

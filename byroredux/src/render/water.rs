@@ -37,7 +37,7 @@ use byroredux_renderer::vulkan::water::{WaterDrawCommand, WaterPush};
 /// scale.
 pub(super) fn reemit_water_planes(
     world: &World,
-    draw_commands: &mut Vec<DrawCommand>,
+    draw_commands: &mut [DrawCommand],
     water_commands: &mut Vec<WaterDrawCommand>,
 ) {
     let time_secs = world

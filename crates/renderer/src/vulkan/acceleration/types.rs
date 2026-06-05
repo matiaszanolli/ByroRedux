@@ -7,6 +7,21 @@
 use super::super::buffer::GpuBuffer;
 use ash::vk;
 
+/// Vertex/index buffer + count pair describing the skinned geometry a
+/// per-entity BLAS refit reads from. Groups the four GPU-geometry
+/// arguments that travel together into [`super::AccelerationManager::refit_skinned_blas`].
+#[derive(Clone, Copy)]
+pub struct SkinnedBlasGeometry {
+    /// Post-skinning vertex buffer (the skin-compute output).
+    pub vertex_buffer: vk::Buffer,
+    /// Number of vertices in `vertex_buffer`.
+    pub vertex_count: u32,
+    /// Index buffer for the skinned mesh.
+    pub index_buffer: vk::Buffer,
+    /// Number of indices in `index_buffer`.
+    pub index_count: u32,
+}
+
 /// A bottom-level acceleration structure for one mesh.
 pub struct BlasEntry {
     pub accel: vk::AccelerationStructureKHR,

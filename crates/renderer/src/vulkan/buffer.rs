@@ -2,6 +2,7 @@
 
 use super::allocator::SharedAllocator;
 use super::texture::with_one_time_commands;
+use super::GpuUploadCtx;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan;
@@ -435,17 +436,19 @@ impl GpuBuffer {
         rt_enabled: bool,
         staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
-        let size = (std::mem::size_of::<T>() * data.len()) as vk::DeviceSize;
+        let size = std::mem::size_of_val(data) as vk::DeviceSize;
         let mut usage = vk::BufferUsageFlags::VERTEX_BUFFER;
         if rt_enabled {
             usage |= vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
         }
         Self::create_device_local_buffer(
-            device,
-            allocator,
-            queue,
-            command_pool,
+            GpuUploadCtx {
+                device,
+                allocator,
+                queue,
+                command_pool,
+            },
             size,
             usage,
             data,
@@ -464,17 +467,19 @@ impl GpuBuffer {
         rt_enabled: bool,
         staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
-        let size = (std::mem::size_of::<u32>() * data.len()) as vk::DeviceSize;
+        let size = std::mem::size_of_val(data) as vk::DeviceSize;
         let mut usage = vk::BufferUsageFlags::INDEX_BUFFER;
         if rt_enabled {
             usage |= vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
         }
         Self::create_device_local_buffer(
-            device,
-            allocator,
-            queue,
-            command_pool,
+            GpuUploadCtx {
+                device,
+                allocator,
+                queue,
+                command_pool,
+            },
             size,
             usage,
             data,
@@ -773,15 +778,18 @@ impl GpuBuffer {
 
     /// Create a DEVICE_LOCAL buffer and upload data via a CpuToGpu staging buffer.
     pub fn create_device_local_buffer<T: Copy>(
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        ctx: GpuUploadCtx,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         data: &[T],
         mut staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
+        let GpuUploadCtx {
+            device,
+            allocator,
+            queue,
+            command_pool,
+        } = ctx;
         // 1. Acquire staging buffer — from pool (reuse) or create fresh.
         let (staging_buffer, mut staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
             pool.acquire(size)?

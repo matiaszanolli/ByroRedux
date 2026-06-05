@@ -382,10 +382,11 @@ pub fn remap_bs_tri_shape_bone_indices(
 /// `remap_bs_tri_shape_bone_indices` for the partition-local → global
 /// remap. The weights are pass-through — they're already partition-
 /// agnostic. See #638.
-pub fn decode_sse_skin_payload(
-    scene: &NifScene,
-    shape: &BsTriShape,
-) -> Option<(Vec<[f32; 4]>, Vec<[u8; 4]>)> {
+/// Decoded SSE skin payload: per-vertex `(weights, partition-local bone
+/// indices)`, returned by [`decode_sse_skin_payload`].
+pub type SseSkinPayload = (Vec<[f32; 4]>, Vec<[u8; 4]>);
+
+pub fn decode_sse_skin_payload(scene: &NifScene, shape: &BsTriShape) -> Option<SseSkinPayload> {
     let skin_idx = shape.skin_ref.index()?;
     let partition_ref = if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {
         inst.skin_partition_ref

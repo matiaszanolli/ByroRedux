@@ -117,7 +117,7 @@ impl Record {
 /// ```
 /// # use byroredux_plugin::RecordType;
 /// assert_eq!(RecordType::WEAP.as_str(), "WEAP");
-/// assert_eq!(RecordType::from_str("NPC_"), RecordType::NPC_);
+/// assert_eq!(RecordType::from_4cc("NPC_"), RecordType::NPC_);
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RecordType(pub [u8; 4]);
@@ -323,7 +323,7 @@ impl RecordType {
     ///
     /// # Panics
     /// Panics if `s` is not exactly 4 bytes.
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_4cc(s: &str) -> Self {
         let bytes = s.as_bytes();
         assert_eq!(bytes.len(), 4, "RecordType must be exactly 4 ASCII bytes");
         Self([bytes[0], bytes[1], bytes[2], bytes[3]])
@@ -453,14 +453,14 @@ mod tests {
 
     #[test]
     fn record_type_from_str() {
-        assert_eq!(RecordType::from_str("WEAP"), RecordType::WEAP);
-        assert_eq!(RecordType::from_str("STAT"), RecordType::STAT);
-        assert_eq!(RecordType::from_str("CELL"), RecordType::CELL);
+        assert_eq!(RecordType::from_4cc("WEAP"), RecordType::WEAP);
+        assert_eq!(RecordType::from_4cc("STAT"), RecordType::STAT);
+        assert_eq!(RecordType::from_4cc("CELL"), RecordType::CELL);
     }
 
     #[test]
     fn record_type_unknown_type_works() {
-        let custom = RecordType::from_str("XYZW");
+        let custom = RecordType::from_4cc("XYZW");
         assert_eq!(custom.as_str(), "XYZW");
         assert_ne!(custom, RecordType::WEAP);
     }
@@ -491,7 +491,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "exactly 4")]
     fn record_type_from_str_wrong_length_panics() {
-        RecordType::from_str("AB");
+        RecordType::from_4cc("AB");
     }
 
     // ── #renderlayer — RecordType::render_layer() classification table ──
@@ -573,7 +573,7 @@ mod tests {
         // Unknown FourCC — defensive default. Zero-bias means "no
         // visual change vs. pre-#renderlayer" for any caller that
         // accidentally passes a non-renderable record type.
-        assert_layer(RecordType::from_str("XYZW"), RenderLayer::Architecture);
+        assert_layer(RecordType::from_4cc("XYZW"), RenderLayer::Architecture);
         // Records that exist in the constants table but aren't in the
         // classifier match arms (e.g. ENCH, GLOB) also default to
         // Architecture — safe inert.

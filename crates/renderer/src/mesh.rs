@@ -4,6 +4,7 @@ use crate::deferred_destroy::{DeferredDestroyQueue, DEFAULT_COUNTDOWN};
 use crate::vertex::{UiVertex, Vertex};
 use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::{GpuBuffer, StagingPool};
+use crate::vulkan::GpuUploadCtx;
 use anyhow::{bail, Result};
 use ash::vk;
 use std::collections::HashMap;
@@ -183,6 +184,12 @@ pub struct MeshRegistry {
     geometry_staging_pool: Option<StagingPool>,
 }
 
+impl Default for MeshRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MeshRegistry {
     pub fn new() -> Self {
         Self {
@@ -258,29 +265,26 @@ impl MeshRegistry {
     /// reintroduce ray self-hits.
     pub fn upload<V: Copy>(
         &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        ctx: GpuUploadCtx,
         vertices: &[V],
         indices: &[u32],
         rt_enabled: bool,
         mut staging_pool: Option<&mut StagingPool>,
     ) -> Result<u32> {
         let vertex_buffer = GpuBuffer::create_vertex_buffer(
-            device,
-            allocator,
-            queue,
-            command_pool,
+            ctx.device,
+            ctx.allocator,
+            ctx.queue,
+            ctx.command_pool,
             vertices,
             rt_enabled,
             staging_pool.as_deref_mut(),
         )?;
         let index_buffer = GpuBuffer::create_index_buffer(
-            device,
-            allocator,
-            queue,
-            command_pool,
+            ctx.device,
+            ctx.allocator,
+            ctx.queue,
+            ctx.command_pool,
             indices,
             rt_enabled,
             staging_pool,
@@ -386,10 +390,7 @@ impl MeshRegistry {
 
     pub fn upload_scene_mesh(
         &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        ctx: GpuUploadCtx,
         vertices: &[Vertex],
         indices: &[u32],
         rt_enabled: bool,
@@ -399,16 +400,7 @@ impl MeshRegistry {
 
         // Upload to per-mesh buffers (also the BLAS build input when
         // `rt_enabled`).
-        let id = self.upload(
-            device,
-            allocator,
-            queue,
-            command_pool,
-            vertices,
-            indices,
-            rt_enabled,
-            staging_pool,
-        )?;
+        let id = self.upload(ctx, vertices, indices, rt_enabled, staging_pool)?;
 
         // Store offsets.
         let mesh = self.meshes[id as usize]
@@ -497,27 +489,15 @@ impl MeshRegistry {
     /// since acquired it. See #879 / CELL-PERF-01.
     pub fn register_scene_mesh_keyed(
         &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        ctx: GpuUploadCtx,
         vertices: &[Vertex],
         indices: &[u32],
         rt_enabled: bool,
         staging_pool: Option<&mut StagingPool>,
-        model_path: &str,
-        sub_mesh_index: u32,
+        cache_key: (&str, u32),
     ) -> Result<u32> {
-        let handle = self.upload_scene_mesh(
-            device,
-            allocator,
-            queue,
-            command_pool,
-            vertices,
-            indices,
-            rt_enabled,
-            staging_pool,
-        )?;
+        let (model_path, sub_mesh_index) = cache_key;
+        let handle = self.upload_scene_mesh(ctx, vertices, indices, rt_enabled, staging_pool)?;
         self.mesh_cache
             .insert((model_path.to_string(), sub_mesh_index), handle);
         Ok(handle)
@@ -678,21 +658,21 @@ impl MeshRegistry {
         // Create with STORAGE_BUFFER (RT reflection UV lookups) plus
         // VERTEX_BUFFER / INDEX_BUFFER so the draw loop can bind this
         // single global buffer instead of per-mesh rebinding. See #294.
-        self.global_vertex_buffer = Some(GpuBuffer::create_device_local_buffer(
+        let ctx = GpuUploadCtx {
             device,
             allocator,
             queue,
             command_pool,
+        };
+        self.global_vertex_buffer = Some(GpuBuffer::create_device_local_buffer(
+            ctx,
             vertex_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER,
             &self.pending_vertices,
             self.geometry_staging_pool.as_mut(),
         )?);
         self.global_index_buffer = Some(GpuBuffer::create_device_local_buffer(
-            device,
-            allocator,
-            queue,
-            command_pool,
+            ctx,
             index_size,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER,
             &self.pending_indices,
@@ -770,6 +750,10 @@ impl MeshRegistry {
 
     pub fn len(&self) -> usize {
         self.meshes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.meshes.is_empty()
     }
 
     pub fn destroy_all(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
