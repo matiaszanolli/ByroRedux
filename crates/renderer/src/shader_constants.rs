@@ -199,6 +199,7 @@ mod tests {
             "DBG_DISABLE_HALF_LAMBERT_FILL",
             "DBG_BYPASS_VERTEX_COLOR",
             "DBG_DISABLE_AO",
+            "DBG_LEGACY_LIGHT_ATTEN",
         ] {
             let needle = format!("const uint {name}");
             assert!(

@@ -827,6 +827,57 @@ float specularAaRoughness(vec3 N, float roughness) {
     return sqrt(filteredR2);
 }
 
+// ── Point / spot distance attenuation (REND-#1451) ──────────────────
+//
+// Two-term model mirroring the OpenMW / Bethesda light lineage
+// (`1/(c + l·d + q·d²) × (1 − quickstep(d/r − 1))`, see
+// reference/openmw/files/shaders/lib/light/lighting_util.glsl): a
+// PHYSICAL near-zone falloff keyed to the AUTHORED radius, MULTIPLIED
+// by a soft CULL window that fades the residual tail full→zero from
+// the authored radius out to the cull radius `R`.
+//
+// `R` is `lights[i].position_radius.w` — the cull radius the CPU
+// uploads as `authored × LIGHT_RANGE_EXTENSION` (cluster culling in
+// cluster_cull.comp depends on `.w` carrying that, so it stays the
+// cull radius and the authored radius is recovered here as
+// `knee = kneeFrac × R`).
+//
+//   kneeFrac = dofParams.z, runtime-tunable for the REND-#1451
+//   controlled bench (0 → default 0.5 ⇒ authored radius at half the
+//   cull radius, the LIGHT_RANGE_EXTENSION = 2.0 geometry). Lower
+//   kneeFrac ⇒ light is dimmer at the authored radius.
+//
+// The pre-fix formula used ONLY the cull window as the entire
+// attenuation, stretched to `R`, so it read 75% at the authored
+// radius (`d = R/2`) — the bright near-zone ring (Lonesome Road /
+// Ulysses Temple). DBG_LEGACY_LIGHT_ATTEN restores it so both models
+// can be A/B'd live in one session.
+//
+// MUST be called from BOTH the pass-1 reservoir loop in main() AND
+// shadowableLightRadiance() so the WRS unshadowed accumulation cancels
+// bit-for-bit against the shadowed subtraction (#1369). Spot lights
+// call this for the distance term, then multiply the cone factor.
+float pointSpotAtten(float dist, float R, float shape, uint dbgFlags) {
+    if ((dbgFlags & DBG_LEGACY_LIGHT_ATTEN) != 0u) {
+        float ratio = dist / max(R, 1.0);
+        float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+        return pow(window, shape);
+    }
+    float kneeFrac = (dofParams.z > 0.0001) ? dofParams.z : 0.5;
+    float knee = max(R * kneeFrac, 1.0);
+    float dn = dist / knee;
+    // Smooth, bounded near-zone falloff: 1.0 at the source, decaying
+    // with the per-light `shape` (falloff_exponent). shape 1 → 50% at
+    // the authored radius, ~2.3 → ~30%. Never reaches 0 by itself —
+    // the cull window below does the zeroing.
+    float phys = 1.0 / (1.0 + shape * dn * dn);
+    // Anti-pop-in cull: full at the authored radius, zero at R, C¹ at
+    // both ends (smoothstep) so there is no visible circular shoulder
+    // on floors (the pre-window-era regression, commit 78632a6).
+    float wcull = 1.0 - smoothstep(knee, max(R, knee + 1.0), dist);
+    return phys * wcull;
+}
+
 // Direct Cook-Torrance contribution of cluster light `i` at this
 // fragment — exactly the `brdfResult * unshadowedRadiance` the WRS
 // streaming pass accumulates and the shadow pass subtracts on a hit.
@@ -860,9 +911,7 @@ vec3 shadowableLightRadiance(
         vec3 toLight = lightPos - fragWorldPos;
         dist = length(toLight);
         L = toLight / max(dist, 0.001);
-        float ratio = dist / max(radius, 1.0);
-        float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
-        atten = pow(window, falloffShape);
+        atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
     } else if (lightType < 1.5) {
         // Spot light.
         vec3 toLight = lightPos - fragWorldPos;
@@ -870,9 +919,7 @@ vec3 shadowableLightRadiance(
         L = toLight / max(dist, 0.001);
         vec3 spotDir = normalize(lights[i].direction_angle.xyz);
         float spotAngle = lights[i].direction_angle.w;
-        float ratio = dist / max(radius, 1.0);
-        float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
-        atten = pow(window, falloffShape);
+        atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
         float spotFactor = dot(-L, spotDir);
         atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
     } else {
@@ -2851,14 +2898,14 @@ void main() {
             // extended by engine-policy `LIGHT_RANGE_EXTENSION`,
             // `falloff_exponent` defaulted when unset) into renderer-
             // standard inputs:
-            //   * `position_radius.w` = effective visible range
-            //     (distance at which atten reaches 0)
-            //   * `params.x` = attenuation curve shape (the GGX-style
-            //     exponent driving the lobe steepness)
-            // Curve shape:
-            //   atten = pow(saturate(1 - (d / effRange)^2), shape)
-            // No source-format knobs in here. See
-            // `feedback_format_translation.md`.
+            //   * `position_radius.w` = cull radius (authored radius ×
+            //     LIGHT_RANGE_EXTENSION; the distance at which atten
+            //     reaches exactly 0)
+            //   * `params.x` = falloff shape (the per-light
+            //     `falloff_exponent`)
+            // Curve: physical near-zone falloff × soft cull window — see
+            // `pointSpotAtten` (REND-#1451). No source-format knobs in
+            // here. See `feedback_format_translation.md`.
             float falloffShape = lights[i].params.x;
 
             if (lightType < 0.5) {
@@ -2866,9 +2913,7 @@ void main() {
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
-                float ratio = dist / max(radius, 1.0);
-                float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
-                atten = pow(window, falloffShape);
+                atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
             } else if (lightType < 1.5) {
                 // Spot light — same curve as point arm plus the
                 // inner / outer cone factor.
@@ -2877,9 +2922,7 @@ void main() {
                 L = toLight / max(dist, 0.001);
                 vec3 spotDir = normalize(lights[i].direction_angle.xyz);
                 float spotAngle = lights[i].direction_angle.w;
-                float ratio = dist / max(radius, 1.0);
-                float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
-                atten = pow(window, falloffShape);
+                atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
                 float spotFactor = dot(-L, spotDir);
                 atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
             } else {

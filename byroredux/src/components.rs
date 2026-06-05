@@ -1104,6 +1104,35 @@ impl Default for FootstepScratch {
     }
 }
 
+/// REND-#1451 — live tuning knobs for the point/spot light attenuation
+/// model, pushed into the renderer (`VulkanContext::light_atten_knee` /
+/// `light_atten_legacy`) each frame so the REND-#1451 controlled bench
+/// can sweep the attenuation without a rebuild. Mutated by the
+/// `light.atten` console command; read in the draw path just before
+/// `draw_frame`.
+///
+/// `knee_frac` is the authored radius as a fraction of the cull radius
+/// (`= 1 / LIGHT_RANGE_EXTENSION` geometry → default `0.5` for the
+/// current `2.0` extension). Lower ⇒ light is dimmer at the authored
+/// radius. `legacy` reverts the shader to the pre-fix window-only
+/// formula (75% at the authored radius — the bright near-zone ring) for
+/// A/B comparison.
+pub(crate) struct LightTuning {
+    pub(crate) knee_frac: f32,
+    pub(crate) legacy: bool,
+}
+
+impl Resource for LightTuning {}
+
+impl Default for LightTuning {
+    fn default() -> Self {
+        Self {
+            knee_frac: 0.5,
+            legacy: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod fx_mesh_classification_tests {
     //! PERF-D3-NEW-02 / #1136 — pin the 6-needle FX-decoration set so a

@@ -18,32 +18,39 @@ use crate::components::{CellLightingRes, SkyParamsRes};
 
 use super::{compute_directional_upload, SUN_INTENSITY_PEAK};
 
-/// LIGH `radius` → renderer effective range multiplier.
+/// LIGH `radius` → renderer **cull radius** multiplier.
 ///
-/// Bethesda's LIGH `radius` is a "design value" where the light is
-/// fully effective at d=0 and should read 10–30% at d=radius, fading
-/// to 0 shortly beyond. The shader uses `atten = (1 − (d/range)²)^shape`
-/// where `range = radius × LIGHT_RANGE_EXTENSION`.
+/// Bethesda's LIGH `radius` is a "design value": the light is fully
+/// effective at `d=0`, reads ~10–30% at `d=radius`, and fades to 0
+/// shortly beyond. `effective_range = radius × LIGHT_RANGE_EXTENSION`
+/// is the **cull radius** the shader receives in `position_radius.w` —
+/// the distance at which attenuation reaches exactly 0, NOT the
+/// authored radius.
 ///
-/// Math: with `shape = 1.0` (Bethesda's default `falloff_exponent`),
-/// at `d = radius`:
-///   ext=1.2 → window=0.306 → atten=31%  (correct 10–30% target at d=r)
-///   ext=2.0 → window=0.750 → atten=75%  ← current (RT residual light)
-///   ext=2.5 → window=0.840 → atten=84%  (previous; too bright when
-///             combined with AMBIENT_FILL additive — caused REND-#1451)
+/// **Why 2.0** (REND-#1451): this mirrors OpenMW's Gamebryo-lineage
+/// light model, which fades a light to zero at exactly `2 × radius`
+/// "to diminish pop-in" (an anti-pop-in cull window on top of the
+/// physical falloff — see
+/// `reference/openmw/files/shaders/lib/light/lighting_util.glsl`
+/// `lcalcIllumination`). So `2.0` is correct as the **cull boundary**.
 ///
-/// Set to `2.0` after the AMBIENT_FILL double-counting fix (2026-06-03):
-///   - The pre-fix value of 2.5 was over-bright because `AMBIENT_FILL=1.5`
-///     additively stacked with `dielectricAmbient`, giving 2.5× the correct
-///     ambient on FO3/FNV surfaces (REND-#1452). Now that AMBIENT_FILL is a
-///     max()-floor, the combined brightness is correct and a larger extension
-///     is safe.
-///   - RT GI requires light to actually reach surfaces at and slightly beyond
-///     the authored radius for bounce paths to form. A hard 1.2 cutoff leaves
-///     too many surfaces unlit for GI to work at all — the Divide silo bay
-///     showed as near-pitch-black. Emissive-texture area lights (future work)
-///     will eventually contribute GI fill to compensate; until then the
-///     range extension carries that responsibility.
+/// The brightness AT the authored radius is governed by the shader's
+/// `pointSpotAtten` (triangle.frag), NOT by this multiplier: a physical
+/// near-zone falloff keyed to the authored radius (`knee = kneeFrac ×
+/// effective_range`, default `kneeFrac = 0.5 = 1/2.0`) multiplied by a
+/// soft cull window from the authored radius out to `effective_range`.
+/// This replaced the pre-fix model that used ONLY the cull window as
+/// the entire attenuation — which read 75% at the authored radius
+/// (`ratio=0.5, window=0.75`), the bright near-zone ring in Lonesome
+/// Road's Ulysses Temple. The `kneeFrac` is runtime-tunable via the
+/// `light.atten` console command for the controlled bench; once a value
+/// is settled it can be baked as the shader default.
+///
+/// History: was `2.5` (tuned for FO4 dense interiors); dropped to `2.0`
+/// alongside the AMBIENT_FILL additive→max() fix on 2026-06-03
+/// (REND-#1452). Keeping `2.0` also preserves RT-GI reach — bounce
+/// paths need light to survive to ~2× the authored radius, which the
+/// cull window now provides smoothly instead of a hard cutoff.
 pub const LIGHT_RANGE_EXTENSION: f32 = 2.0;
 
 /// LIGH `falloff_exponent` default applied when the source field is

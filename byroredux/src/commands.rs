@@ -9,6 +9,7 @@ use byroredux_core::ecs::{
 };
 use byroredux_core::ecs::components::{CollisionShape, FormIdComponent, RenderLayer, RigidBodyData};
 use crate::components::{AlphaBlend, DoorTeleport, InputState, IsFxMesh, IsCollisionOnly, TwoSided};
+use crate::helpers::world_resource_set;
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
 use std::collections::HashMap;
@@ -1853,6 +1854,125 @@ impl ConsoleCommand for LightDumpCommand {
     }
 }
 
+/// `light.atten [knee <f>] [legacy on|off]` — live tuning of the
+/// point/spot light attenuation model for the REND-#1451 controlled
+/// bench. With no args, prints the current state plus the effective
+/// brightness at the authored LIGH radius so the bench can be read
+/// numerically as well as visually.
+///
+/// Mutates the `LightTuning` resource; the draw loop pushes it into the
+/// renderer (`VulkanContext::light_atten_knee` / `light_atten_legacy`)
+/// before the next `draw_frame`, so changes take effect within a frame
+/// with no rebuild. Pair with `--bench-hold` + `byro-dbg`.
+struct LightAttenCommand;
+impl ConsoleCommand for LightAttenCommand {
+    fn name(&self) -> &str {
+        "light.atten"
+    }
+    fn description(&self) -> &str {
+        "Tune point/spot attenuation live (REND-#1451): light.atten [knee <0..1>] [legacy on|off]"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use crate::components::LightTuning;
+
+        if world.try_resource::<LightTuning>().is_none() {
+            return CommandOutput::lines(vec![
+                "light.atten: LightTuning resource not present (only available in a live render \
+                 session, not the offline --cmd path)."
+                    .to_string(),
+            ]);
+        }
+
+        // Parse "knee <f>" / "legacy on|off" tokens. Unknown tokens are
+        // reported rather than silently ignored.
+        let mut errors: Vec<String> = Vec::new();
+        let tokens: Vec<&str> = args.split_whitespace().collect();
+        let mut i = 0;
+        while i < tokens.len() {
+            match tokens[i].to_ascii_lowercase().as_str() {
+                "knee" => match tokens.get(i + 1).and_then(|s| s.parse::<f32>().ok()) {
+                    Some(v) if (0.05..=1.0).contains(&v) => {
+                        world_resource_set::<LightTuning>(world, |lt| lt.knee_frac = v);
+                        i += 2;
+                    }
+                    _ => {
+                        errors.push("knee expects a value in [0.05, 1.0]".to_string());
+                        i += 2;
+                    }
+                },
+                "legacy" => match tokens.get(i + 1).map(|s| s.to_ascii_lowercase()) {
+                    Some(ref s) if s == "on" || s == "true" || s == "1" => {
+                        world_resource_set::<LightTuning>(world, |lt| lt.legacy = true);
+                        i += 2;
+                    }
+                    Some(ref s) if s == "off" || s == "false" || s == "0" => {
+                        world_resource_set::<LightTuning>(world, |lt| lt.legacy = false);
+                        i += 2;
+                    }
+                    _ => {
+                        errors.push("legacy expects on|off".to_string());
+                        i += 2;
+                    }
+                },
+                other => {
+                    errors.push(format!("unknown token `{other}`"));
+                    i += 1;
+                }
+            }
+        }
+
+        // Read back the current (possibly updated) state and report.
+        let (knee, legacy) = {
+            let lt = world.try_resource::<LightTuning>().unwrap();
+            (lt.knee_frac, lt.legacy)
+        };
+
+        let mut lines = Vec::new();
+        for e in &errors {
+            lines.push(format!("  ! {e}"));
+        }
+        lines.push("LightTuning (REND-#1451):".to_string());
+        lines.push(format!("  knee_frac = {knee:.3}  (authored radius = knee × cull radius)"));
+        lines.push(format!(
+            "  legacy    = {}  ({})",
+            legacy,
+            if legacy {
+                "pre-fix window-only — 75% at authored radius (the ring)"
+            } else {
+                "physical falloff × cull window"
+            }
+        ));
+
+        // Effective brightness at the authored radius for the default
+        // falloff shape — the headline number for the bench. Mirrors
+        // `pointSpotAtten` in triangle.frag exactly.
+        let ext = crate::render::lights::LIGHT_RANGE_EXTENSION;
+        let shape = crate::render::lights::FALLOFF_EXPONENT_DEFAULT;
+        let f_a = 1.0 / ext; // authored radius as a fraction of the cull radius
+        let pct = if legacy {
+            let w = (1.0 - f_a * f_a).clamp(0.0, 1.0);
+            w.powf(shape)
+        } else {
+            let dn = f_a / knee;
+            let phys = 1.0 / (1.0 + shape * dn * dn);
+            // smoothstep(knee, 1.0, f_a)
+            let t = ((f_a - knee) / (1.0 - knee)).clamp(0.0, 1.0);
+            let cull = 1.0 - t * t * (3.0 - 2.0 * t);
+            phys * cull
+        };
+        lines.push(format!(
+            "  → atten at authored radius (shape {shape:.1}, ext {ext:.1}) = {:.0}%",
+            pct * 100.0
+        ));
+        lines.push(
+            "  usage: light.atten knee 0.4  |  light.atten legacy on  |  light.atten legacy off"
+                .to_string(),
+        );
+
+        CommandOutput::lines(lines)
+    }
+}
+
 fn fmt_opt_f32(v: Option<f32>) -> String {
     match v {
         Some(x) => format!("{:.3}", x),
@@ -2128,6 +2248,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(SkinDumpCommand);
     registry.register(MemFragCommand);
     registry.register(LightDumpCommand);
+    registry.register(LightAttenCommand);
     registry.register(ScriptActivateCommand);
     registry
 }
