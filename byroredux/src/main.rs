@@ -432,7 +432,17 @@ impl App {
         world.insert_resource(SkinCoverageStats::default());
         // REND-#1451 — live attenuation tuning, read into the renderer
         // each frame and mutated by the `light.atten` console command.
-        world.insert_resource(crate::components::LightTuning::default());
+        // Seed from the config `[defaults]` so a benched knee persists
+        // across runs.
+        let light_defaults = crate::game_profiles::load_launch_defaults();
+        let mut light_tuning = crate::components::LightTuning::default();
+        if let Some(knee) = light_defaults.light_atten_knee {
+            light_tuning.knee_frac = knee.clamp(0.05, 1.0);
+        }
+        if let Some(legacy) = light_defaults.light_atten_legacy {
+            light_tuning.legacy = legacy;
+        }
+        world.insert_resource(light_tuning);
         // CPU-side per-frame timings — fence_wait / submit_present /
         // etc. Filled by the binary's RedrawRequested handler after
         // each `draw_frame` from the renderer's `FrameTimings`
@@ -2475,11 +2485,28 @@ fn apply_debug_ui_outputs(
 fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     use crate::cli_args::parse_string_arg;
 
+    // Launch defaults from the `[defaults]` table (profiles.toml,
+    // shipped + per-user override). Let an explicit `--game` win; fall
+    // back to `[defaults].game` ONLY when no other content-loading flag
+    // is present, so `--mesh foo.nif`, `--cmd`, an explicit `--esm`, or
+    // a master-only run aren't hijacked into loading the default cell.
+    let defaults = crate::game_profiles::load_launch_defaults();
+    let has_other_load_flags = ["--esm", "--mesh", "--tree", "--kf", "--cmd", "--master"]
+        .iter()
+        .any(|f| args.iter().any(|a| a == f));
     let game_key = match parse_string_arg(&args, "--game") {
         Some(k) => k,
-        None => return args,
+        None => match defaults.game.clone() {
+            Some(k) if !has_other_load_flags => {
+                eprintln!("[defaults] game = {k:?} (no --game / load flag given)");
+                k
+            }
+            _ => return args,
+        },
     };
-    let games_root_cli = parse_string_arg(&args, "--games-root");
+    // `--games-root` CLI wins; else the config `[defaults].games_root`.
+    let games_root_cli =
+        parse_string_arg(&args, "--games-root").or_else(|| defaults.games_root.clone());
 
     // Strip the two new flags + their values from the returned
     // args; downstream code doesn't recognise them.
@@ -2551,6 +2578,21 @@ fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     for bsa in &entry.default_materials_bsas {
         args.push("--materials-ba2".to_string());
         args.push(join_arg(bsa));
+    }
+
+    // Default cell: inject `[defaults].cell` only when the profile was
+    // resolved and no explicit location flag is present. A bare
+    // `--game fnv` (or a no-arg default-game launch) then boots
+    // straight into the configured cell.
+    if let Some(cell) = &defaults.cell {
+        let has_location = ["--cell", "--grid", "--wrld"]
+            .iter()
+            .any(|f| args.iter().any(|a| a == f));
+        if !has_location {
+            eprintln!("[defaults] cell = {cell:?} (no --cell / --grid / --wrld given)");
+            args.push("--cell".to_string());
+            args.push(cell.clone());
+        }
     }
     args
 }

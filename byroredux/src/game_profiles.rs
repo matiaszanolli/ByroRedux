@@ -98,10 +98,77 @@ impl From<ProfileEntryDe> for GameProfileEntry {
     }
 }
 
+/// Serde landing type for the optional `[defaults]` table — the
+/// launch defaults that let `cargo run` (and `--bench-hold`) boot
+/// straight into a game/cell with no CLI flags. Every field is
+/// optional; an absent table or field falls back to the engine's
+/// built-in behaviour (the spinning-cube demo when no game is set).
+#[derive(Debug, Default, Deserialize)]
+struct DefaultsDe {
+    /// Profile key (a `[profiles.<key>]` block) loaded when no
+    /// `--game` / `--esm` / `--mesh` / `--cmd` flag is given.
+    #[serde(default)]
+    game: Option<String>,
+    /// Cell editor ID loaded when a profile is resolved and no
+    /// `--cell` / `--grid` / `--wrld` flag is given.
+    #[serde(default)]
+    cell: Option<String>,
+    /// Shared games root override (same role as `--games-root` /
+    /// `BYROREDUX_GAMES_ROOT`). Lets a non-Steam install point the
+    /// whole registry at one folder from the config file.
+    #[serde(default)]
+    games_root: Option<String>,
+    /// REND-#1451 — initial point/spot attenuation knee fraction for
+    /// the `LightTuning` resource, so a benched value persists across
+    /// runs without a `light.atten` command each session.
+    #[serde(default)]
+    light_atten_knee: Option<f32>,
+    /// REND-#1451 — start with the legacy window-only attenuation.
+    #[serde(default)]
+    light_atten_legacy: Option<bool>,
+}
+
+/// Resolved launch defaults (the `[defaults]` table), merged across
+/// the shipped file and the per-user override (user fields win when
+/// present). All fields optional — callers apply only what is set.
+#[derive(Debug, Default, Clone)]
+pub struct LaunchDefaults {
+    pub game: Option<String>,
+    pub cell: Option<String>,
+    pub games_root: Option<String>,
+    pub light_atten_knee: Option<f32>,
+    pub light_atten_legacy: Option<bool>,
+}
+
+impl LaunchDefaults {
+    /// Overlay `other` onto `self`: every `Some` field in `other`
+    /// replaces `self`'s value. Used to let the per-user override's
+    /// `[defaults]` win over the shipped file's, field by field.
+    fn overlay(&mut self, other: DefaultsDe) {
+        if other.game.is_some() {
+            self.game = other.game;
+        }
+        if other.cell.is_some() {
+            self.cell = other.cell;
+        }
+        if other.games_root.is_some() {
+            self.games_root = other.games_root;
+        }
+        if other.light_atten_knee.is_some() {
+            self.light_atten_knee = other.light_atten_knee;
+        }
+        if other.light_atten_legacy.is_some() {
+            self.light_atten_legacy = other.light_atten_legacy;
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ProfilesFile {
     #[serde(default)]
     profiles: BTreeMap<String, ProfileEntryDe>,
+    #[serde(default)]
+    defaults: DefaultsDe,
 }
 
 /// Load profiles using the engine-default + user-override merge
@@ -172,6 +239,66 @@ fn merge_from(path: &Path, out: &mut BTreeMap<String, GameProfileEntry>) {
     );
 }
 
+/// The ordered config files to read, shipped-first then per-user
+/// override: `[assets/debug_profiles.toml (CWD or exe-parent),
+/// ~/.byroredux/profiles.toml]`, filtered to those that exist. Both
+/// `load_default` (profiles) and [`load_launch_defaults`] consume this
+/// so the two stay in lockstep on which files contribute.
+fn ordered_config_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for shipped in [
+        PathBuf::from(DEFAULT_PROFILES_PATH),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(DEFAULT_PROFILES_PATH)))
+            .unwrap_or_default(),
+    ] {
+        if shipped.exists() {
+            paths.push(shipped);
+            break;
+        }
+    }
+    if let Some(home) = home_dir() {
+        let user_path = home.join(".byroredux").join("profiles.toml");
+        if user_path.exists() {
+            paths.push(user_path);
+        }
+    }
+    paths
+}
+
+/// Load the merged `[defaults]` launch table from the shipped file +
+/// per-user override (user fields win, field by field). Missing files
+/// / missing table → all-`None` defaults (engine keeps its built-in
+/// behaviour). Parse failures log a warning and are skipped — never an
+/// error, so a typo in the config can't brick the launch.
+pub fn load_launch_defaults() -> LaunchDefaults {
+    let mut out = LaunchDefaults::default();
+    for path in ordered_config_paths() {
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("launch defaults: failed to read {}: {}", path.display(), e);
+                continue;
+            }
+        };
+        match toml::from_str::<ProfilesFile>(&contents) {
+            Ok(parsed) => out.overlay(parsed.defaults),
+            Err(e) => {
+                log::warn!("launch defaults: failed to parse {}: {}", path.display(), e);
+            }
+        }
+    }
+    // Expand a leading `~/` on games_root so callers get an absolute
+    // path (mirrors the profile-root expansion in `load_default`).
+    if let Some(root) = out.games_root.as_ref().and_then(|r| r.strip_prefix("~/")) {
+        if let Some(home) = home_dir() {
+            out.games_root = Some(home.join(root).to_string_lossy().into_owned());
+        }
+    }
+    out
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -213,6 +340,50 @@ sample_cells = ["GSDocMitchellHouse"]
         }
         .into();
         assert!(!entry.is_usable());
+    }
+
+    #[test]
+    fn parses_defaults_table() {
+        let toml = r#"
+[defaults]
+game = "fnv"
+cell = "GSProspectorSaloonInterior"
+light_atten_knee = 0.4
+
+[profiles.fnv]
+name = "FNV"
+esm = "FalloutNV.esm"
+        "#;
+        let parsed: ProfilesFile = toml::from_str(toml).expect("parse");
+        assert_eq!(parsed.defaults.game.as_deref(), Some("fnv"));
+        assert_eq!(parsed.defaults.cell.as_deref(), Some("GSProspectorSaloonInterior"));
+        assert_eq!(parsed.defaults.light_atten_knee, Some(0.4));
+        assert_eq!(parsed.defaults.games_root, None);
+    }
+
+    #[test]
+    fn missing_defaults_table_is_all_none() {
+        let toml = "[profiles.fnv]\nname = \"FNV\"\nesm = \"FalloutNV.esm\"\n";
+        let parsed: ProfilesFile = toml::from_str(toml).expect("parse");
+        assert!(parsed.defaults.game.is_none());
+        assert!(parsed.defaults.cell.is_none());
+        assert!(parsed.defaults.light_atten_knee.is_none());
+    }
+
+    #[test]
+    fn launch_defaults_overlay_user_wins_field_by_field() {
+        // Shipped sets game+cell; user overrides only cell + adds knee.
+        let mut acc = LaunchDefaults::default();
+        let shipped: ProfilesFile =
+            toml::from_str("[defaults]\ngame = \"fnv\"\ncell = \"ShippedCell\"\n").unwrap();
+        acc.overlay(shipped.defaults);
+        let user: ProfilesFile =
+            toml::from_str("[defaults]\ncell = \"UserCell\"\nlight_atten_knee = 0.35\n").unwrap();
+        acc.overlay(user.defaults);
+
+        assert_eq!(acc.game.as_deref(), Some("fnv"), "shipped game survives (user didn't set it)");
+        assert_eq!(acc.cell.as_deref(), Some("UserCell"), "user cell wins");
+        assert_eq!(acc.light_atten_knee, Some(0.35), "user-only field applies");
     }
 
     #[test]
