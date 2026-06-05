@@ -24,6 +24,18 @@
 #                         BGSM/BGEM materials archives (FO4+/FO76/SF
 #                         only; empty for Skyrim and older).
 #   sample_cells          Curated cell editor IDs for one-click loads.
+#
+# Optional [defaults] table — launch defaults applied when the engine
+# is run with no CLI load flags. Left unset in the shipped file so a
+# bare `cargo run` keeps the spinning-cube demo; set it in your
+# `~/.byroredux/profiles.toml` to boot straight into a game/cell:
+#
+#   [defaults]
+#   game             = "fnv"                       # profile key; used when no --game/--esm/--mesh/--cmd
+#   cell             = "GSProspectorSaloonInterior" # used when no --cell/--grid/--wrld
+#   games_root       = "/path/to/games"            # like --games-root / BYROREDUX_GAMES_ROOT
+#   light_atten_knee = 0.5                          # REND-#1451 attenuation knee (see `light.atten`)
+#   light_atten_legacy = false
 
 [profiles.fnv]
 name = "Fallout New Vegas"
