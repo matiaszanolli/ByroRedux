@@ -305,9 +305,15 @@ mod footstep_tests {
         // Tick 2: stride accumulates 1.5 units, hits threshold, fires.
         footstep_system(&world, 0.016);
 
-        let aw = world.resource::<byroredux_audio::AudioWorld>();
+        // Count the footsteps the system *triggered* this tick, not the
+        // one-shots that reached the kira queue. `play_oneshot` drops on
+        // an inactive manager (headless CI / no audio device), so
+        // `pending_oneshot_count()` is device-dependent; `triggers` is
+        // populated regardless and is the true measure of the stride
+        // logic under test.
+        let scratch = world.resource::<crate::components::FootstepScratch>();
         assert_eq!(
-            aw.pending_oneshot_count(),
+            scratch.triggers.len(),
             1,
             "1.5-unit horizontal stride must fire exactly one footstep"
         );
@@ -341,9 +347,12 @@ mod footstep_tests {
 
         footstep_system(&world, 0.016);
 
-        let aw = world.resource::<byroredux_audio::AudioWorld>();
+        // See `stride_threshold_fires_exactly_one_footstep` — assert on
+        // triggered footsteps (device-independent) rather than queued
+        // one-shots (dropped when the audio manager is inactive).
+        let scratch = world.resource::<crate::components::FootstepScratch>();
         assert_eq!(
-            aw.pending_oneshot_count(),
+            scratch.triggers.len(),
             1,
             "single-tick teleport must fire exactly one footstep, not multiple"
         );

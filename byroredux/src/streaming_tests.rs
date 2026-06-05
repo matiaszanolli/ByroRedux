@@ -343,10 +343,15 @@ fn join_with_timeout_passes_through_a_panicking_thread_as_ok() {
     let handle = std::thread::Builder::new()
         .name("byro-test-panic".into())
         .spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(10));
             panic!("synthetic panic for join_with_timeout test");
         })
         .expect("spawn panicking test thread");
-    let res = join_with_timeout(handle, std::time::Duration::from_millis(500));
+    // The thread panics near-instantly, so `join_with_timeout` returns
+    // `Ok` on its first or second poll regardless of this bound — the
+    // timeout only matters on the failure path. Keep it generous (not
+    // the production 500 ms) so a saturated CI runner that starves the
+    // spawned thread past a tight deadline can't flake this into a
+    // spurious `JoinTimeout`. See #1169 for the helper's contract.
+    let res = join_with_timeout(handle, std::time::Duration::from_secs(30));
     assert_eq!(res, Ok(()));
 }
