@@ -778,6 +778,16 @@ impl VulkanContext {
         self.scene_buffers
             .upload_dalc(&self.device, frame, &dalc_gpu)
             .unwrap_or_else(|e| log::warn!("Failed to upload DALC cube: {e}"));
+        // Camera-static detection for SVGF progressive accumulation
+        // (params.w). The view-proj here is jitter-free — TAA sub-pixel
+        // jitter is applied later in the vertex shader — so a matrix that
+        // is unchanged frame-to-frame means a parked camera, which lets
+        // the temporal pass converge GI via a pure 1/N running average.
+        // Computed BEFORE prev_view_proj is overwritten just below.
+        let camera_static = vp
+            .iter()
+            .zip(self.prev_view_proj.iter())
+            .all(|(a, b)| (a - b).abs() < 1.0e-6);
         // Store this frame's viewProj as next frame's "previous" for motion vectors.
         self.prev_view_proj = *vp;
 
@@ -2107,7 +2117,13 @@ impl VulkanContext {
                     crate::vulkan::svgf::next_svgf_temporal_alpha(self.svgf_recovery_frames);
                 self.svgf_recovery_frames = next_frames;
                 if let Err(e) = unsafe {
-                    svgf.upload_params(&self.device, frame, alpha_color, alpha_moments)
+                    svgf.upload_params(
+                        &self.device,
+                        frame,
+                        alpha_color,
+                        alpha_moments,
+                        camera_static,
+                    )
                 } {
                     log::warn!("svgf upload_params failed: {e}");
                 }

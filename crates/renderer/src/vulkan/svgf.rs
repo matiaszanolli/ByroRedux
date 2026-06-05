@@ -144,7 +144,8 @@ pub struct SvgfTemporalParams {
     /// xy = screen size (pixels), zw = 1/screen size.
     pub screen: [f32; 4],
     /// x = α color blend, y = α moments blend, z = first_frame flag
-    /// (1.0 = reset history), w = unused.
+    /// (1.0 = reset history), w = camera_static flag (1.0 = drop the alpha
+    /// floor and converge via the 1/N running average).
     pub params: [f32; 4],
 }
 
@@ -804,6 +805,7 @@ impl SvgfPipeline {
         frame: usize,
         alpha_color: f32,
         alpha_moments: f32,
+        camera_static: bool,
     ) -> Result<()> {
         // #648 / RP-2 — force a full history reset for the first
         // `MAX_FRAMES_IN_FLIGHT` frames after creation or
@@ -832,7 +834,19 @@ impl SvgfPipeline {
             // discontinuity (cell load, weather flip, fast camera
             // turn) gives a coarse-grained recovery the per-pixel
             // weights complement. See #674 / DEN-4.
-            params: [alpha_color, alpha_moments, first_frame, 0.0],
+            //
+            // params.w = progressive-accumulation flag. When the camera is
+            // static (view-proj unchanged frame-to-frame) the temporal pass
+            // drops the alpha floor and converges via the pure 1/N running
+            // average (Monte-Carlo accumulation) for a clean ground-truth
+            // parked-camera image; it reverts to the floored EMA the moment
+            // the camera moves.
+            params: [
+                alpha_color,
+                alpha_moments,
+                first_frame,
+                if camera_static { 1.0 } else { 0.0 },
+            ],
         };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))
     }
