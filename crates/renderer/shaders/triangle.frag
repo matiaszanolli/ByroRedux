@@ -2368,7 +2368,6 @@ void main() {
             // which reads as "frosted glass behind glass" — visually
             // acceptable and bounded in cost.
             const int REFRACT_PASSTHRU_BUDGET = 2;
-            uint selfTexture = inst.textureIndex;
             vec3 rayOrigin = fragWorldPos - N_geom_view * 0.1;
             float rayTMin = 0.05;
             float accumulatedDist = 0.0;
@@ -2400,7 +2399,18 @@ void main() {
                 int hIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(refrRQ, true);
                 float hDist = rayQueryGetIntersectionTEXT(refrRQ, true);
                 GpuInstance hInst = instances[hIdx];
-                bool sameTexture = (hInst.textureIndex == selfTexture);
+                // Pass the refraction ray through OTHER glass (self back-
+                // face, sibling glass parts, stacked panes) and commit on
+                // the first OPAQUE hit. Keyed on the hit's canonical
+                // materialKind, NOT texture-index equality: the latter
+                // mis-fires whenever glass shares a texture with opaque
+                // geometry (most visibly when untextured content routes
+                // walls + glass to the neutral fallback handle), making the
+                // ray skip straight THROUGH solid walls and read as a
+                // see-through-everything blob. materialKind==GLASS always
+                // terminates on walls (kind 0) and passes through glass.
+                bool hitIsGlass =
+                    (materials[hInst.materialId].materialKind == MATERIAL_KIND_GLASS);
                 // Fallback-texture detection — bindless slot 0 is the
                 // unresolved-texture placeholder (`TextureRegistry::fallback`).
                 // Markarth probe 2026-05-10: when the lantern flame
@@ -2423,7 +2433,7 @@ void main() {
                 // post-loop branch below maps a fallback-texture
                 // terminus to the !hit escape path so the magenta
                 // texture is never SAMPLED.
-                if ((sameTexture || fallbackTexture) && passthru < REFRACT_PASSTHRU_BUDGET) {
+                if ((hitIsGlass || fallbackTexture) && passthru < REFRACT_PASSTHRU_BUDGET) {
                     rayOrigin = rayOrigin + refractDir * (hDist + 0.05);
                     rayTMin = 0.0;
                     accumulatedDist += hDist;
@@ -2436,7 +2446,7 @@ void main() {
                 accumulatedDist += hDist;
                 hit = true;
                 diagPassthru = passthru;
-                diagSelfTerminus = sameTexture;
+                diagSelfTerminus = hitIsGlass;
                 break;
             }
 
