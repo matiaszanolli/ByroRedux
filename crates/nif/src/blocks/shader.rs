@@ -162,8 +162,14 @@ impl BSShaderNoLightingProperty {
         let (shader, texture_clamp_mode) = BSShaderPropertyData::parse_fo3(stream)?;
         let file_name = stream.read_sized_string()?;
 
+        // nif.xml gates the four falloff fields on `#BSVER# #GT# 26` (nif.xml
+        // line 6236) — the same strict per-file BSVER gate as NiAVObject.Flags.
+        // Use the header BSVER, not `variant().avobject_flags_u32()`: a
+        // transitional v20.2.0.7/bsver≤26 export detects as the `Fallout3`
+        // variant (helper → true) and would read 16 phantom bytes of falloff
+        // that aren't on disk. Sibling of the NiAVObject flag-width fix. See #1331.
         let (falloff_start_angle, falloff_stop_angle, falloff_start_opacity, falloff_stop_opacity) =
-            if stream.variant().avobject_flags_u32() {
+            if stream.bsver() > crate::version::bsver::FLAGS_U32_THRESHOLD {
                 (
                     stream.read_f32_le()?,
                     stream.read_f32_le()?,
@@ -1277,7 +1283,7 @@ fn parse_shader_type_data_fo4(
         1 => {
             let env_map_scale = stream.read_f32_le()?;
             // FO4-specific: SSR bools (BSVER 130–139).
-            if bsver >= crate::version::bsver::FALLOUT4 && bsver < crate::version::bsver::FO4_DLC_UPPER {
+            if (crate::version::bsver::FALLOUT4..crate::version::bsver::FO4_DLC_UPPER).contains(&bsver) {
                 let _use_ssr = stream.read_byte_bool()?;
                 let _wetness_use_ssr = stream.read_byte_bool()?;
             }
@@ -1290,7 +1296,7 @@ fn parse_shader_type_data_fo4(
                 stream.read_f32_le()?,
             ];
             // FO4-specific: skin tint alpha (BSVER 130–139).
-            if bsver >= crate::version::bsver::FALLOUT4 && bsver < crate::version::bsver::FO4_DLC_UPPER {
+            if (crate::version::bsver::FALLOUT4..crate::version::bsver::FO4_DLC_UPPER).contains(&bsver) {
                 let _skin_tint_alpha = stream.read_f32_le()?;
             }
             Ok(ShaderTypeData::SkinTint { skin_tint_color })

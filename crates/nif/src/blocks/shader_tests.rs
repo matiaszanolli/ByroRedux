@@ -1740,3 +1740,77 @@ fn bsshader_pplighting_fnv_has_no_emissive_color() {
     // Default emissive when absent: [0,0,0,1]
     assert_eq!(prop.emissive_color, [0.0, 0.0, 0.0, 1.0]);
 }
+
+// ── #1331 sibling: BSShaderNoLightingProperty falloff width per-file BSVER ──
+
+/// Build a `BSShaderNoLightingProperty` block: NiObjectNET (name idx 0) +
+/// FO3 shader base + texture_clamp_mode + sized `file_name`, optionally
+/// followed by the four falloff floats.
+fn build_no_lighting_bytes(file_name: &str, falloff: Option<[f32; 4]>) -> Vec<u8> {
+    let mut d = Vec::new();
+    // NiObjectNET
+    d.extend_from_slice(&0i32.to_le_bytes()); // name string index 0
+    d.extend_from_slice(&0u32.to_le_bytes()); // extra_data list count = 0
+    d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = -1
+    // BSShaderPropertyData::parse_base
+    d.extend_from_slice(&0u16.to_le_bytes()); // shade_flags
+    d.extend_from_slice(&1u32.to_le_bytes()); // shader_type
+    d.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_1
+    d.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_2
+    d.extend_from_slice(&1.0f32.to_le_bytes()); // env_map_scale
+    // BSShaderLightingProperty texture_clamp_mode
+    d.extend_from_slice(&3u32.to_le_bytes());
+    // file_name (sized string)
+    d.extend_from_slice(&(file_name.len() as u32).to_le_bytes());
+    d.extend_from_slice(file_name.as_bytes());
+    if let Some(f) = falloff {
+        for v in f {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    d
+}
+
+/// #1331 sibling — nif.xml (line 6236) gates the four falloff fields on
+/// `#BSVER# #GT# 26`. A transitional v20.2.0.7/bsver=11 export detects as
+/// the `Fallout3` variant, so the old `variant().avobject_flags_u32()` gate
+/// read 16 phantom falloff bytes past end-of-block (EOF / misalign). With
+/// the per-file BSVER ≤ 26 gate the absent-field default branch is taken.
+/// Red before the fix (over-read → parse error), green after.
+#[test]
+fn no_lighting_falloff_absent_when_bsver_le_26() {
+    let header = make_header(11, 11);
+    let data = build_no_lighting_bytes("ui\\elem.dds", None);
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSShaderNoLightingProperty::parse(&mut stream)
+        .expect("v20.2.0.7 / bsver=11 BSShaderNoLightingProperty should parse");
+    assert_eq!(prop.file_name, "ui\\elem.dds");
+    // Absent-field defaults.
+    assert_eq!(prop.falloff_start_angle, 0.0);
+    assert_eq!(prop.falloff_start_opacity, 1.0);
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "bsver ≤ 26 must NOT read the four falloff floats"
+    );
+}
+
+/// #1331 sibling — retail FO3/FNV (bsver=34 > 26) reads all four falloff
+/// floats. Pins the upper branch so the fix doesn't regress sized games.
+#[test]
+fn no_lighting_falloff_present_when_bsver_gt_26() {
+    let header = make_header(11, 34);
+    let data = build_no_lighting_bytes("ui\\elem.dds", Some([0.1, 0.2, 0.3, 0.4]));
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSShaderNoLightingProperty::parse(&mut stream)
+        .expect("v20.2.0.7 / bsver=34 BSShaderNoLightingProperty should parse");
+    assert!((prop.falloff_start_angle - 0.1).abs() < 1e-6);
+    assert!((prop.falloff_stop_angle - 0.2).abs() < 1e-6);
+    assert!((prop.falloff_start_opacity - 0.3).abs() < 1e-6);
+    assert!((prop.falloff_stop_opacity - 0.4).abs() < 1e-6);
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "bsver > 26 must read all four falloff floats"
+    );
+}

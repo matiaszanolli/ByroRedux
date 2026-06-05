@@ -73,9 +73,13 @@ impl NiAVObjectData {
         let net = NiObjectNETData::parse(stream)?;
 
         // Flags: u32 for BSVER > 26 (FO3+), u16 for older (Oblivion and non-Bethesda).
-        // Use actual BSVER from header, not the variant's hardcoded value, to handle
-        // transitional versions (e.g., Oblivion files with uv=11, bsver=11).
-        let flags = if stream.variant().avobject_flags_u32() {
+        // nif.xml gates NiAVObject.Flags on `#BSVER# #GT# 26` (uint) vs `#LTE# 26`
+        // (ushort) — a strict *per-file* gate. Use the actual header BSVER, not
+        // `variant().avobject_flags_u32()`: a transitional v20.2.0.7 export with
+        // uv=11/bsver≤26 (NifSkope/newer-tool Oblivion + non-Bethesda content)
+        // detects as the `Fallout3` variant, whose helper says u32 — reading 4
+        // bytes where 2 are on disk and slipping the stream +2. See #1331.
+        let flags = if stream.bsver() > crate::version::bsver::FLAGS_U32_THRESHOLD {
             stream.read_u32_le()?
         } else {
             stream.read_u16_le()? as u32
@@ -367,5 +371,98 @@ mod niavobject_version_gate_tests {
             "pre-Gamebryo NiAVObject must consume the velocity + has_bv bool"
         );
         assert!(data.collision_ref.is_null());
+    }
+
+    // ── #1331: NiAVObject.Flags width follows per-file BSVER, not variant ──
+
+    /// v20.2.0.7 header with explicit user_version + BSVER (user_version_2).
+    fn header_v20_2_bsver(bsver: u32) -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 11,
+            user_version_2: bsver,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// NiObjectNET prologue for v20.2.0.7 (>= 20.1.0.1 string-table layout):
+    /// name string-index = -1 (None), counted extra_data list = 0,
+    /// controller_ref = -1.
+    fn modern_objectnet_prologue() -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // name index -1 → None
+        d.extend_from_slice(&0u32.to_le_bytes()); // extra_data list count = 0
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = -1
+        d
+    }
+
+    /// NiAVObject tail after `flags`: identity transform (52 B) + empty
+    /// properties list (bsver ≤ 34) + null collision_ref (version ≥ 10.0.1.0).
+    fn modern_avobject_tail() -> Vec<u8> {
+        let mut d = Vec::new();
+        for _ in 0..3 {
+            d.extend_from_slice(&0.0f32.to_le_bytes()); // translation
+        }
+        for row in 0..3 {
+            for col in 0..3 {
+                let v: f32 = if row == col { 1.0 } else { 0.0 };
+                d.extend_from_slice(&v.to_le_bytes()); // identity rotation
+            }
+        }
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+        d.extend_from_slice(&0u32.to_le_bytes()); // properties list count = 0
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref = -1
+        d
+    }
+
+    /// #1331 — a transitional v20.2.0.7 export with bsver=11 (NifSkope /
+    /// newer-tool Oblivion + non-Bethesda content) detects as the `Fallout3`
+    /// variant, but nif.xml gates `NiAVObject.Flags` as `ushort` for
+    /// BSVER ≤ 26. The width must follow the per-file BSVER, not the variant
+    /// helper — otherwise a u32 read slips the stream +2 from `flags` on.
+    /// Red before the fix (variant helper → u32), green after.
+    #[test]
+    fn flags_read_as_u16_when_bsver_le_26() {
+        let header = header_v20_2_bsver(11);
+        let mut bytes = modern_objectnet_prologue();
+        bytes.extend_from_slice(&0xABCDu16.to_le_bytes()); // flags as u16
+        bytes.extend(modern_avobject_tail());
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let data = NiAVObjectData::parse(&mut stream)
+            .expect("v20.2.0.7 / bsver=11 NiAVObject should parse");
+        assert_eq!(data.flags, 0xABCD, "bsver ≤ 26 must read flags as u16");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "u16 flags must consume exactly 2 bytes — a u32 read slips the stream +2"
+        );
+    }
+
+    /// #1331 — retail FO3/FNV (bsver=34 > 26) reads `NiAVObject.Flags` as
+    /// `uint`. Pins the upper branch so the fix doesn't regress sized games.
+    #[test]
+    fn flags_read_as_u32_when_bsver_gt_26() {
+        let header = header_v20_2_bsver(34);
+        let mut bytes = modern_objectnet_prologue();
+        bytes.extend_from_slice(&0x0001_ABCDu32.to_le_bytes()); // flags as u32
+        bytes.extend(modern_avobject_tail());
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let data = NiAVObjectData::parse(&mut stream)
+            .expect("v20.2.0.7 / bsver=34 NiAVObject should parse");
+        assert_eq!(data.flags, 0x0001_ABCD, "bsver > 26 must read flags as u32");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "u32 flags must consume exactly 4 bytes"
+        );
     }
 }
