@@ -112,18 +112,15 @@ pub fn draw(
 /// Tab selector enum — `PartialEq` because `selectable_value` needs
 /// it to highlight the active choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PanelTab {
+    #[default]
     Metrics,
     Loader,
     Entities,
     Console,
 }
 
-impl Default for PanelTab {
-    fn default() -> Self {
-        PanelTab::Metrics
-    }
-}
 
 fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
     let Some(m) = snap else {
@@ -299,7 +296,7 @@ fn draw_entities(
         None => {
             ui.label("Click 'Refresh' to load the entity list.");
         }
-        Some(list) if list.is_empty() => {
+        Some([]) => {
             ui.label("(no named entities)");
         }
         Some(list) => {

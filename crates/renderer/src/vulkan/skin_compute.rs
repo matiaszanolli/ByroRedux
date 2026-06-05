@@ -198,13 +198,29 @@ pub fn skin_slot_capacity_stale(slot_vertex_count: u32, mesh_vertex_count: u32) 
 /// cached per-FIF on each [`SkinSlot`] via
 /// `SkinSlot::descriptor_bindings`. `dispatch` compares the live
 /// `(input, palette)` pair against the cached key for `frame_index`;
-/// on match it skips `vkUpdateDescriptorSets` entirely — bind + push
-/// + dispatch is the entire critical path in steady state. On
+/// on match it skips `vkUpdateDescriptorSets` entirely — bind, push,
+/// and dispatch are the entire critical path in steady state. On
 /// mismatch (cold first-dispatch per FIF or cell-transition global
 /// vertex SSBO rebuild) we emit all three writes and record the new
 /// key. See #1197 / PERF-DIM7-03; pre-fix the dispatch unconditionally
 /// emitted three writes per slot per frame, costing ~1-3 µs per
 /// invocation on NVIDIA regardless of writes-per-call.
+///
+/// The input-vertex SSBO and bone-palette buffer (plus their sizes) bound by
+/// [`SkinComputePipeline::dispatch`]. Groups the buffer/size pairs that travel
+/// together into the dispatch call.
+#[derive(Clone, Copy)]
+pub struct SkinDispatchBuffers {
+    /// Pre-skinning input vertex SSBO.
+    pub input_buffer: vk::Buffer,
+    /// Byte size of `input_buffer`.
+    pub input_buffer_size: vk::DeviceSize,
+    /// Per-frame bone palette buffer.
+    pub bone_buffer: vk::Buffer,
+    /// Byte size of `bone_buffer`.
+    pub bone_buffer_size: vk::DeviceSize,
+}
+
 pub struct SkinComputePipeline {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
@@ -506,12 +522,15 @@ impl SkinComputePipeline {
         cmd: vk::CommandBuffer,
         slot: &mut SkinSlot,
         frame_index: usize,
-        input_buffer: vk::Buffer,
-        input_buffer_size: vk::DeviceSize,
-        bone_buffer: vk::Buffer,
-        bone_buffer_size: vk::DeviceSize,
+        buffers: SkinDispatchBuffers,
         push: SkinPushConstants,
     ) {
+        let SkinDispatchBuffers {
+            input_buffer,
+            input_buffer_size,
+            bone_buffer,
+            bone_buffer_size,
+        } = buffers;
         let descriptor_set = slot.descriptor_sets[frame_index];
         // #1197 — only the (input, palette) pair varies across the
         // slot's lifetime. `output` is a function of the slot itself
@@ -601,6 +620,12 @@ impl SkinComputePipeline {
     /// sets from the pool; destroying the pool while sets are
     /// outstanding triggers a Vulkan validation error). The renderer
     /// pairs this with `device_wait_idle` in the Drop chain.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` is valid and live, the device is not lost,
+    /// and that no object owned by `self` (pipeline, layouts, descriptor pool,
+    /// or outstanding slots) is still in use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
         device.destroy_pipeline(self.pipeline, None);
         device.destroy_pipeline_layout(self.pipeline_layout, None);
@@ -642,6 +667,26 @@ const SKIN_PALETTE_PUSH_CONSTANTS_SIZE: u32 =
 /// warm-up. The per-frame fence at `draw_frame`'s top guarantees
 /// previous-frame use of `descriptor_sets[frame]` is complete before
 /// we rewrite, so no external sync is needed.
+///
+/// The three buffer/size pairs ([bone-world], [bind-inverse], [palette]) bound
+/// by [`SkinPaletteComputePipeline::dispatch`]. Groups the buffer arguments
+/// that travel together into the dispatch call.
+#[derive(Clone, Copy)]
+pub struct PaletteDispatchBuffers {
+    /// Per-frame bone world-transform buffer.
+    pub bone_world_buffer: vk::Buffer,
+    /// Byte size of `bone_world_buffer`.
+    pub bone_world_buffer_size: vk::DeviceSize,
+    /// Bind-pose inverse-bind-matrix buffer.
+    pub bind_inverse_buffer: vk::Buffer,
+    /// Byte size of `bind_inverse_buffer`.
+    pub bind_inverse_buffer_size: vk::DeviceSize,
+    /// Output bone-palette buffer.
+    pub palette_buffer: vk::Buffer,
+    /// Byte size of `palette_buffer`.
+    pub palette_buffer_size: vk::DeviceSize,
+}
+
 pub struct SkinPaletteComputePipeline {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
@@ -825,14 +870,17 @@ impl SkinPaletteComputePipeline {
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame_index: usize,
-        bone_world_buffer: vk::Buffer,
-        bone_world_buffer_size: vk::DeviceSize,
-        bind_inverse_buffer: vk::Buffer,
-        bind_inverse_buffer_size: vk::DeviceSize,
-        palette_buffer: vk::Buffer,
-        palette_buffer_size: vk::DeviceSize,
+        buffers: PaletteDispatchBuffers,
         push: SkinPalettePushConstants,
     ) {
+        let PaletteDispatchBuffers {
+            bone_world_buffer,
+            bone_world_buffer_size,
+            bind_inverse_buffer,
+            bind_inverse_buffer_size,
+            palette_buffer,
+            palette_buffer_size,
+        } = buffers;
         let descriptor_set = self.descriptor_sets[frame_index];
         // #1197 — compare against cached binding triple. Steady-state
         // hits this cache every frame post-warm-up because all three
@@ -916,6 +964,12 @@ impl SkinPaletteComputePipeline {
     /// descriptor sets themselves are freed implicitly by destroying
     /// the pool (no FREE_DESCRIPTOR_SET flag here — there are no
     /// per-slot allocations to free individually).
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` is valid and live, the device is not lost,
+    /// and that no object owned by `self` is still in use by an in-flight
+    /// command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
         device.destroy_pipeline(self.pipeline, None);
         device.destroy_pipeline_layout(self.pipeline_layout, None);

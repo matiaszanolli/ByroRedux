@@ -331,7 +331,7 @@ impl BsTriShape {
             if (data_size as usize) != expected_data_size {
                 let derived_stride = if num_vertices > 0 {
                     let payload = (data_size as usize).saturating_sub(num_triangles as usize * 6);
-                    if payload % num_vertices as usize == 0 {
+                    if payload.is_multiple_of(num_vertices as usize) {
                         Some(payload / num_vertices as usize)
                     } else {
                         None
@@ -653,7 +653,7 @@ impl BsTriShape {
                 } else {
                     stream.set_position(segmentation_start);
                 }
-                shape.kind = BsTriShapeKind::SubIndex(Box::new(BsSubIndexTriShapeData::default()));
+                shape.kind = BsTriShapeKind::SubIndex(Box::default());
             }
         }
         Ok(shape)

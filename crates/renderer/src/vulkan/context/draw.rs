@@ -130,75 +130,106 @@ pub(super) struct DrawBatch {
     pub z_function: u8,
 }
 
+/// All per-frame inputs consumed by [`VulkanContext::draw_frame`].
+///
+/// Groups the (formerly 22) loose `draw_frame` arguments into one struct so
+/// the call stays under the argument-count lint. Construction is mechanical:
+/// every field is exactly the argument it replaces, in the same order.
+pub struct FrameInputs<'a> {
+    /// Clear color (RGBA) for the main render pass.
+    pub clear_color: [f32; 4],
+    /// Combined view-projection matrix as column-major `[f32; 16]`.
+    pub view_proj: &'a [f32; 16],
+    /// Per-object draw commands (mesh handle + model matrix + flags).
+    pub draw_commands: &'a [DrawCommand],
+    /// Scene lights for this frame.
+    pub lights: &'a [scene_buffer::GpuLight],
+    /// M29.5/M29.6 — per-frame bone-world matrices for the GPU palette
+    /// compute pass (`skin_palette.comp`). `bone_world[i]` is the per-slot
+    /// raw world transform sourced from `GlobalTransform`; indexed by
+    /// `skin_slot_id × MAX_BONES_PER_MESH` via the `SkinSlotPool`. The
+    /// matching `bind_inverses` for each slot live in the persistent SSBO
+    /// and are uploaded first-sight via `bind_inverse_pending_uploads`.
+    pub bone_world: &'a [[[f32; 4]; 4]],
+    /// M29.6 — first-sight `bind_inverses` uploads to schedule this frame.
+    /// Each entry is `(slot_id, per-mesh bind_inverses)`; the renderer writes
+    /// them into the persistent SSBO at the slot's offset before dispatching
+    /// `skin_palette.comp`. Empty on frames with no fresh skinned-mesh
+    /// first-sight (the steady-state case).
+    pub bind_inverse_pending_uploads: &'a [(u32, Vec<[[f32; 4]; 4]>)],
+    /// Per-frame materials.
+    pub materials: &'a [GpuMaterial],
+    /// Camera world position.
+    pub camera_pos: [f32; 3],
+    /// Ambient light color.
+    pub ambient_color: [f32; 3],
+    /// Linear fog color.
+    pub fog_color: [f32; 3],
+    /// Fog near distance.
+    pub fog_near: f32,
+    /// Fog far distance.
+    pub fog_far: f32,
+    /// XCLL FNV+ cubic-fog clip distance. `0.0` (with `fog_power == 0.0`)
+    /// falls back to the linear `fog_near..fog_far` ramp. See #865 /
+    /// FNV-D3-NEW-06.
+    pub fog_clip: f32,
+    /// XCLL FNV+ cubic-fog falloff exponent. `0.0` disables the curve.
+    pub fog_power: f32,
+    /// Optional UI overlay texture handle.
+    pub ui_texture_handle: Option<u32>,
+    /// Sky / weather parameters.
+    pub sky_params: &'a SkyParams,
+    /// Depth-of-field lens parameters. `dof.aperture == 0.0` = pinhole camera
+    /// (no DOF jitter). When non-zero, the camera position is displaced each
+    /// frame by a Halton(5,7)-sampled concentric disk of radius `aperture`;
+    /// TAA accumulates the samples into a spatially-varying bokeh blur.
+    pub dof: DofView,
+    /// Optional per-frame GPU timing sink.
+    pub timings: Option<&'a mut FrameTimings>,
+    /// Water-surface draws for this frame. Each entry must match a
+    /// `DrawCommand` with `is_water=true` that supplies the corresponding
+    /// `GpuInstance` SSBO slot. Empty slice = no water rendering this frame.
+    pub water_commands: &'a [WaterDrawCommand],
+    /// `xyz` = deep_color tint to blend the scene toward; `w` = camera depth
+    /// below the water surface in world units. `[0, 0, 0, 0]` disables
+    /// underwater FX.
+    pub underwater: [f32; 4],
+    /// #1195 / PERF-DIM7-01 — per-frame dirty set for the skin compute
+    /// dispatch + skinned-BLAS refit gate. Entities NOT in this set whose
+    /// slots already have `has_populated_output = true` AND a live BLAS skip
+    /// both compute dispatch and refit. First-sight (no populated output yet)
+    /// ignores the set and always dispatches. Paired with #1196.
+    pub pose_dirty: &'a std::collections::HashSet<EntityId>,
+}
+
 impl VulkanContext {
     /// Record and submit a frame.
     ///
-    /// `view_proj`: combined view-projection matrix as column-major [f32; 16].
-    /// `draw_commands`: per-object (mesh_handle, model_matrix) pairs.
-    pub fn draw_frame(
-        &mut self,
-        clear_color: [f32; 4],
-        view_proj: &[f32; 16],
-        draw_commands: &[DrawCommand],
-        lights: &[scene_buffer::GpuLight],
-        // M29.5/M29.6 — per-frame bone-world matrices for the GPU
-        // palette compute pass (`skin_palette.comp`). `bone_world[i]`
-        // is the per-slot raw world transform sourced from
-        // `GlobalTransform`; indexed by `skin_slot_id × MAX_BONES_PER_MESH`
-        // via the [`SkinSlotPool`]. The matching `bind_inverses` for
-        // each slot live in the persistent SSBO and are uploaded
-        // first-sight via `bind_inverse_pending_uploads` below.
-        bone_world: &[[[f32; 4]; 4]],
-        // M29.6 — first-sight `bind_inverses` uploads to schedule
-        // this frame. Each entry is `(slot_id, per-mesh bind_inverses)`;
-        // the renderer writes them into the persistent SSBO at the
-        // slot's offset before dispatching `skin_palette.comp`. Empty
-        // on frames with no fresh skinned-mesh first-sight (the
-        // steady-state case).
-        bind_inverse_pending_uploads: &[(u32, Vec<[[f32; 4]; 4]>)],
-        materials: &[GpuMaterial],
-        camera_pos: [f32; 3],
-        ambient_color: [f32; 3],
-        fog_color: [f32; 3],
-        fog_near: f32,
-        fog_far: f32,
-        // `fog_clip`/`fog_power` carry the XCLL FNV+ cubic-fog curve
-        // through to `CompositeParams.fog_params.z/w`. `0.0` on either
-        // = no curve; composite falls back to the linear
-        // `fog_near..fog_far` ramp. See #865 / FNV-D3-NEW-06.
-        fog_clip: f32,
-        fog_power: f32,
-        ui_texture_handle: Option<u32>,
-        sky_params: &SkyParams,
-        // Depth-of-field lens parameters. `dof.aperture == 0.0` = pinhole camera
-        // (no DOF jitter). When non-zero, the camera position is displaced each
-        // frame by a Halton(5,7)-sampled concentric disk of radius `aperture`;
-        // TAA accumulates the samples into a spatially-varying bokeh blur.
-        dof: DofView,
-        timings: Option<&mut FrameTimings>,
-        // `water_commands`: water-surface draws for this frame. Each
-        // entry must match a `DrawCommand` with `is_water=true` that
-        // supplies the corresponding `GpuInstance` SSBO slot. Built
-        // by the app's per-frame render code from `WaterPlane` ECS
-        // entities. Empty slice = no water rendering this frame.
-        water_commands: &[WaterDrawCommand],
-        // `underwater`: xyz = deep_color tint to blend the scene
-        // toward; w = camera depth below the water surface in world
-        // units. `[0, 0, 0, 0]` disables underwater FX. Computed by
-        // the app from the camera's `SubmersionState` component.
-        underwater: [f32; 4],
-        // #1195 / PERF-DIM7-01 — per-frame dirty set for the skin
-        // compute dispatch + skinned-BLAS refit gate. Entities NOT in
-        // this set whose slots already have `has_populated_output = true`
-        // AND a live BLAS skip both compute dispatch and refit. The
-        // set is populated by `build_skinned_palettes` via
-        // `SkinSlotPool::try_mark_pose_dirty`; an empty set on a frame
-        // with N skinned entities means every NPC is idle (no bones
-        // moved frame-to-frame) and N dispatches + N refits are
-        // suppressed. First-sight (no populated output yet) ignores
-        // the set and always dispatches. Paired with #1196.
-        pose_dirty: &std::collections::HashSet<EntityId>,
-    ) -> Result<bool> {
+    /// All per-frame inputs are bundled in [`FrameInputs`].
+    pub fn draw_frame(&mut self, inputs: FrameInputs) -> Result<bool> {
+        let FrameInputs {
+            clear_color,
+            view_proj,
+            draw_commands,
+            lights,
+            bone_world,
+            bind_inverse_pending_uploads,
+            materials,
+            camera_pos,
+            ambient_color,
+            fog_color,
+            fog_near,
+            fog_far,
+            fog_clip,
+            fog_power,
+            ui_texture_handle,
+            sky_params,
+            dof,
+            timings,
+            water_commands,
+            underwater,
+            pose_dirty,
+        } = inputs;
         // #1211 / REN-SAFETY — skip the frame when the main framebuffers
         // Vec is empty. `recreate_swapchain` destroys framebuffers up
         // front and only rebuilds them at the end (`resize.rs:564`);
@@ -516,7 +547,7 @@ impl VulkanContext {
         // of-2 ≥ 6) avoids the asymmetric Y-coverage gap that % 8 caused
         // (the 9th Halton(3) sample ≈ 0.889 was never reached with % 8).
         let (jx, jy) = if self.taa.is_some() {
-            let idx = (self.frame_counter % 16) as u32 + 1; // 1-indexed
+            let idx = (self.frame_counter % 16) + 1; // 1-indexed
             let hx = halton(idx, 2);
             let hy = halton(idx, 3);
             // Map [0,1] → [-0.5, 0.5] pixels, then to NDC.
@@ -539,7 +570,7 @@ impl VulkanContext {
         // 32-frame DOF period interleaves cleanly with the 16-frame TAA
         // period without correlated low-discrepancy gaps.
         let (effective_vp, effective_cam_pos) = if dof.aperture > 0.0 {
-            let idx = (self.frame_counter % 32) as u32 + 1;
+            let idx = (self.frame_counter % 32) + 1;
             let (disk_u, disk_v) =
                 concentric_disk_sample(halton(idx, 5), halton(idx, 7));
             let lens_u = disk_u * dof.aperture;
@@ -826,12 +857,14 @@ impl VulkanContext {
                         &self.device,
                         cmd,
                         frame,
-                        bone_world_buf,
-                        bone_byte_size,
-                        bind_inverse_buf,
-                        bind_inverse_size,
-                        palette_buf,
-                        palette_size,
+                        super::super::skin_compute::PaletteDispatchBuffers {
+                            bone_world_buffer: bone_world_buf,
+                            bone_world_buffer_size: bone_byte_size,
+                            bind_inverse_buffer: bind_inverse_buf,
+                            bind_inverse_buffer_size: bind_inverse_size,
+                            palette_buffer: palette_buf,
+                            palette_buffer_size: palette_size,
+                        },
                         super::super::skin_compute::SkinPalettePushConstants {
                             bone_count,
                         },
@@ -891,7 +924,7 @@ impl VulkanContext {
         // Skips entirely when `skin_compute` / `accel_manager` are None
         // (no RT) or no draws are skinned.
         let skin_t0 = Instant::now();
-        if let (Some(ref skin_pipeline), Some(ref mut accel)) =
+        if let (Some(skin_pipeline), Some(ref mut accel)) =
             (self.skin_compute.as_ref(), self.accel_manager.as_mut())
         {
             if let Some(ref alloc) = self.allocator {
@@ -1171,10 +1204,12 @@ impl VulkanContext {
                                     cmd,
                                     slot,
                                     frame,
-                                    input_buffer,
-                                    input_size,
-                                    bone_buf,
-                                    bone_buffer_size,
+                                    super::super::skin_compute::SkinDispatchBuffers {
+                                        input_buffer,
+                                        input_buffer_size: input_size,
+                                        bone_buffer: bone_buf,
+                                        bone_buffer_size,
+                                    },
                                     push,
                                 );
                                 // Flip the "populated" bit on the
@@ -1325,10 +1360,12 @@ impl VulkanContext {
                                     &self.device,
                                     cmd,
                                     entity_id,
-                                    slot.output_buffer.buffer,
-                                    vertex_count,
-                                    idx_buffer,
-                                    idx_count,
+                                    crate::vulkan::acceleration::SkinnedBlasGeometry {
+                                        vertex_buffer: slot.output_buffer.buffer,
+                                        vertex_count,
+                                        index_buffer: idx_buffer,
+                                        index_count: idx_count,
+                                    },
                                 ) {
                                     Ok(()) => {
                                         self.last_skin_coverage_frame.refits_succeeded += 1;
@@ -3069,10 +3106,12 @@ impl VulkanContext {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
                     if let Err(e) = pass.dispatch(
-                        &self.device,
-                        cmd,
-                        *queue_guard,
-                        self.transfer_pool,
+                        crate::vulkan::egui_pass::EguiDispatchCtx {
+                            device: &self.device,
+                            cmd,
+                            queue: *queue_guard,
+                            upload_command_pool: self.transfer_pool,
+                        },
                         img as u32,
                         &egui_ctx,
                         output,

@@ -571,6 +571,7 @@ pub struct LightData {
     ///   * `k ≈ 1.0` (Skyrim default): near-linear, gentle near radius
     ///   * `k ≈ 2.0` (FO3/FNV common): quadratic, sharper edge
     ///   * `k → 0`:  almost flat in the middle, very sharp cutoff
+    ///
     /// Pre-fix this field was dropped on the floor and the shader
     /// used a hardcoded `1/(1 + 0.01*d)` linear term that ignored
     /// the radius entirely — small-radius FO lamps appeared to "pop

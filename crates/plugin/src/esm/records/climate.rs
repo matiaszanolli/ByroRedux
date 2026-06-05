@@ -23,6 +23,7 @@ pub struct ClimateWeather {
 
 /// Parsed CLMT record.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct ClimateRecord {
     pub form_id: u32,
     pub editor_id: String,
@@ -38,20 +39,6 @@ pub struct ClimateRecord {
     pub sunset_end: u8,
 }
 
-impl Default for ClimateRecord {
-    fn default() -> Self {
-        Self {
-            form_id: 0,
-            editor_id: String::new(),
-            weathers: Vec::new(),
-            sun_texture: None,
-            sunrise_begin: 0,
-            sunrise_end: 0,
-            sunset_begin: 0,
-            sunset_end: 0,
-        }
-    }
-}
 
 /// Parse a CLMT record from its sub-records.
 ///

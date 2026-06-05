@@ -62,7 +62,7 @@ struct DecoInfo {
 /// declares. Non-descriptor `OpVariable`s (inputs, outputs, push constants,
 /// private workgroup data) are skipped.
 pub fn reflect_bindings(spirv_bytes: &[u8]) -> Result<Vec<ReflectedBinding>> {
-    if spirv_bytes.len() % 4 != 0 {
+    if !spirv_bytes.len().is_multiple_of(4) {
         bail!(
             "SPIR-V byte length {} is not a multiple of 4",
             spirv_bytes.len()
@@ -168,7 +168,7 @@ pub fn reflect_bindings(spirv_bytes: &[u8]) -> Result<Vec<ReflectedBinding>> {
 /// per-frame corruption with no validation-layer coverage. Asserting the
 /// block size against `size_of::<GpuStruct>()` catches exactly that drift.
 pub fn uniform_block_size_by_name(spirv_bytes: &[u8], name: &str) -> Result<Option<u32>> {
-    if spirv_bytes.len() % 4 != 0 {
+    if !spirv_bytes.len().is_multiple_of(4) {
         bail!(
             "SPIR-V byte length {} is not a multiple of 4",
             spirv_bytes.len()

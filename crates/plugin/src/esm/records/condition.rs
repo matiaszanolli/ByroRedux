@@ -171,6 +171,7 @@ impl Default for ConditionValue {
 /// Multiple `Condition`s on the same record form a [`ConditionList`]
 /// evaluated with the OR-precedence rule. See [`evaluate`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
 pub struct Condition {
     /// Function index (Bethesda's `~300` catalog; see `ConditionFunction`
     /// enum in `byroredux_scripting::condition`). Raw u32 here keeps
@@ -204,21 +205,6 @@ pub struct Condition {
     pub or_next: bool,
 }
 
-impl Default for Condition {
-    fn default() -> Self {
-        Self {
-            function_index: 0,
-            comparator: ComparisonOp::default(),
-            comparand: ConditionValue::default(),
-            param_1: 0,
-            param_2: 0,
-            run_on: RunOn::default(),
-            reference_form_id: 0,
-            extra_data_id: 0,
-            or_next: false,
-        }
-    }
-}
 
 /// A list of conditions, evaluated with OR-precedence (see [`evaluate`]).
 ///

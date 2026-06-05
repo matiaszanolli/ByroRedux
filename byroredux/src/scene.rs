@@ -9,6 +9,7 @@ use byroredux_core::ecs::{
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
+use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{cube_vertices, quad_vertices, triangle_vertices, VulkanContext};
 use byroredux_ui::UiManager;
 
@@ -314,54 +315,33 @@ pub(crate) fn setup_scene(
         let queue = &ctx.graphics_queue;
         let pool = ctx.transfer_pool;
         let rt = ctx.device_caps.ray_query_supported;
+        let upload_ctx = GpuUploadCtx {
+            device: &ctx.device,
+            allocator: alloc,
+            queue,
+            command_pool: pool,
+        };
         let cube_handle = ctx
             .mesh_registry
-            .upload(&ctx.device, alloc, queue, pool, &verts, &idxs, rt, None)
+            .upload(upload_ctx, &verts, &idxs, rt, None)
             .expect("Failed to upload cube mesh");
 
         let (quad_verts, quad_idxs) = quad_vertices();
         let quad_handle = ctx
             .mesh_registry
-            .upload(
-                &ctx.device,
-                alloc,
-                queue,
-                pool,
-                &quad_verts,
-                &quad_idxs,
-                rt,
-                None,
-            )
+            .upload(upload_ctx, &quad_verts, &quad_idxs, rt, None)
             .expect("Failed to upload quad mesh");
 
         let (red_verts, red_idxs) = triangle_vertices([1.0, 0.2, 0.2]);
         let red_handle = ctx
             .mesh_registry
-            .upload(
-                &ctx.device,
-                alloc,
-                queue,
-                pool,
-                &red_verts,
-                &red_idxs,
-                rt,
-                None,
-            )
+            .upload(upload_ctx, &red_verts, &red_idxs, rt, None)
             .expect("Failed to upload red triangle mesh");
 
         let (blue_verts, blue_idxs) = triangle_vertices([0.2, 0.2, 1.0]);
         let blue_handle = ctx
             .mesh_registry
-            .upload(
-                &ctx.device,
-                alloc,
-                queue,
-                pool,
-                &blue_verts,
-                &blue_idxs,
-                rt,
-                None,
-            )
+            .upload(upload_ctx, &blue_verts, &blue_idxs, rt, None)
             .expect("Failed to upload blue triangle mesh");
 
         // Batched BLAS build for RT shadows on demo meshes.
@@ -823,15 +803,16 @@ pub(crate) fn setup_scene(
                             // Create the initial UI texture (transparent black).
                             let pixels = vec![0u8; (w * h * 4) as usize];
                             let allocator = ctx.allocator.as_ref().unwrap();
-                            match ctx.texture_registry.register_rgba(
-                                &ctx.device,
+                            let upload_ctx = GpuUploadCtx {
+                                device: &ctx.device,
                                 allocator,
-                                &ctx.graphics_queue,
-                                ctx.transfer_pool,
-                                w,
-                                h,
-                                &pixels,
-                            ) {
+                                queue: &ctx.graphics_queue,
+                                command_pool: ctx.transfer_pool,
+                            };
+                            match ctx
+                                .texture_registry
+                                .register_rgba(upload_ctx, w, h, &pixels)
+                            {
                                 Ok(handle) => {
                                     *ui_texture_handle = Some(handle);
                                     log::info!("UI texture registered (handle {})", handle);

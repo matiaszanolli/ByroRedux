@@ -178,7 +178,7 @@ impl NifHeader {
             let num_block_types = read_u16_le(&mut cursor)? as usize;
             if num_block_types
                 .checked_mul(4)
-                .map_or(true, |n| n > remaining)
+                .is_none_or(|n| n > remaining)
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -198,7 +198,7 @@ impl NifHeader {
             // must fit in what's left of the file.
             if (num_blocks as usize)
                 .checked_mul(2)
-                .map_or(true, |n| n > remaining)
+                .is_none_or(|n| n > remaining)
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -227,7 +227,7 @@ impl NifHeader {
             let remaining = total_bytes.saturating_sub(pos);
             if (num_blocks as usize)
                 .checked_mul(4)
-                .map_or(true, |n| n > remaining)
+                .is_none_or(|n| n > remaining)
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -256,7 +256,7 @@ impl NifHeader {
             // before the first read fails.
             let pos = cursor.position() as usize;
             let remaining = total_bytes.saturating_sub(pos);
-            if num_strings.checked_mul(4).map_or(true, |n| n > remaining) {
+            if num_strings.checked_mul(4).is_none_or(|n| n > remaining) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(

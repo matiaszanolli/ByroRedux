@@ -57,7 +57,7 @@ impl Resource for AllocatorResource {}
 /// sampler and any future budgeting heuristic can compute `used /
 /// budget` without round-tripping to `vkGetPhysicalDeviceMemoryProperties`
 /// on each read. Use [`Self::sample`] to construct from a live instance
-/// + physical-device handle. The values never change after device
+/// and physical-device handle. The values never change after device
 /// selection, so refreshing is unnecessary — this is a strict cache.
 pub struct GpuMemoryBudget {
     /// Sum of `VkMemoryHeap.size` across every `DEVICE_LOCAL` heap.

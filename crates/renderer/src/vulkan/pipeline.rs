@@ -15,7 +15,7 @@ pub const UI_FRAG_SPV: &[u8] = include_bytes!("../../shaders/ui.frag.spv");
 pub fn load_shader_module(device: &ash::Device, spv: &[u8]) -> Result<vk::ShaderModule> {
     // ash requires the data as &[u32]. SPIR-V is always 4-byte aligned.
     assert!(
-        spv.len() % 4 == 0,
+        spv.len().is_multiple_of(4),
         "SPIR-V binary size must be a multiple of 4"
     );
 
@@ -432,16 +432,36 @@ fn triangle_pipeline_inner(
 /// attachment (0) blends — G-buffer attachments (normal/motion/mesh_id/
 /// raw_indirect/albedo) overwrite, matching the behaviour the old
 /// `Alpha` / `Additive` static pipelines had.
+/// The shared Vulkan state a blend-pipeline build reuses from the opaque
+/// pipelines: device, render pass, extent, pipeline cache, and layout.
+/// Groups the handles that travel together into [`create_blend_pipeline`].
+#[derive(Clone, Copy)]
+pub struct BlendPipelineCtx<'a> {
+    /// Logical device the pipeline is created on.
+    pub device: &'a ash::Device,
+    /// Render pass the pipeline is compatible with.
+    pub render_pass: vk::RenderPass,
+    /// Viewport/scissor extent baked into the pipeline state.
+    pub extent: vk::Extent2D,
+    /// Pipeline cache the build draws from / writes to.
+    pub pipeline_cache: vk::PipelineCache,
+    /// Pipeline layout shared with the opaque pipelines.
+    pub pipeline_layout: vk::PipelineLayout,
+}
+
 pub fn create_blend_pipeline(
-    device: &ash::Device,
-    render_pass: vk::RenderPass,
-    extent: vk::Extent2D,
-    pipeline_cache: vk::PipelineCache,
-    pipeline_layout: vk::PipelineLayout,
+    ctx: BlendPipelineCtx,
     src: u8,
     dst: u8,
     wireframe: bool,
 ) -> Result<vk::Pipeline> {
+    let BlendPipelineCtx {
+        device,
+        render_pass,
+        extent,
+        pipeline_cache,
+        pipeline_layout,
+    } = ctx;
     let vert_module = load_shader_module(device, TRIANGLE_VERT_SPV)?;
     let frag_module = load_shader_module(device, TRIANGLE_FRAG_SPV)?;
 

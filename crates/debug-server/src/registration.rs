@@ -73,7 +73,7 @@ fn register_component<T>(
 
                 let mut q = world
                     .query_mut::<T>()
-                    .ok_or_else(|| format!("no storage for component"))?;
+                    .ok_or_else(|| "no storage for component".to_string())?;
 
                 let comp = q
                     .get_mut(entity)
@@ -94,7 +94,7 @@ fn register_component<T>(
                     // Tuple struct — replace the whole value
                     json = value;
                 } else {
-                    return Err(format!("component is not a struct with named fields"));
+                    return Err("component is not a struct with named fields".to_string());
                 }
 
                 // Deserialize back and overwrite

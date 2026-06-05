@@ -15,7 +15,7 @@
 //! - `ONAM` + `DATA` pairs (repeated):
 //!     - `ONAM` = 4 B base form ID of the child (STAT, MSTT, …)
 //!     - `DATA` = repeated 28 B placement records:
-//!         `pos[3 × f32] + rot[3 × f32] + scale[f32]`
+//!       `pos[3 × f32] + rot[3 × f32] + scale[f32]`
 //! - `FLTR` — filter form IDs (unused by the parser, kept optional)
 //!
 //! Every `DATA` block always follows an `ONAM`; a vanilla Fallout4.esm

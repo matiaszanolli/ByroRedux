@@ -281,6 +281,13 @@ impl ClusterCullPipeline {
     /// fans the per-cluster light scan out across one warp / wavefront
     /// (#652). Total threads = `CLUSTER_TILES_X × CLUSTER_TILES_Y × CLUSTER_SLICES_Z × 32 =
     /// 3456 × 32 = 110_592` per dispatch.
+    ///
+    /// # Safety
+    ///
+    /// `device` and `cmd` must be valid and live, `cmd` must be in the
+    /// recording state, `frame` must be < `MAX_FRAMES_IN_FLIGHT`, the device
+    /// must not be lost, and the bound buffers must not be in use by another
+    /// in-flight command buffer.
     pub unsafe fn dispatch(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
         device.cmd_bind_descriptor_sets(
@@ -316,6 +323,13 @@ impl ClusterCullPipeline {
             as vk::DeviceSize
     }
 
+    /// Destroy all pipeline objects and buffers.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` and `allocator` are valid and live, the
+    /// device is not lost, and that no object owned by `self` is still in use
+    /// by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         for buf in &mut self.cluster_grid_buffers {
             buf.destroy(device, allocator);

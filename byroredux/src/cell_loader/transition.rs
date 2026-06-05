@@ -207,17 +207,32 @@ pub fn reposition_camera(
 ///
 /// Returns the engine-Y-up camera position on success so the App can
 /// log + signal the SVGF/TAA temporal-discontinuity recovery window.
+/// Source + destination descriptor for an interior transition: which cell to
+/// load (`editor_id` resolved against `masters` / `esm_path`) and where to
+/// drop the camera afterwards (Z-up position + rotation, converted to Y-up
+/// inside [`load_interior_cell`]). Grouped to keep the argument count down.
+pub struct InteriorCellRequest<'a> {
+    pub editor_id: &'a str,
+    pub masters: &'a [String],
+    pub esm_path: &'a str,
+    pub dest_pos_zup: [f32; 3],
+    pub dest_rot_zup: [f32; 3],
+}
+
 pub fn load_interior_cell(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
     tex_provider: &crate::asset_provider::TextureProvider,
     mat_provider: Option<&mut crate::asset_provider::MaterialProvider>,
-    editor_id: &str,
-    masters: &[String],
-    esm_path: &str,
-    dest_pos_zup: [f32; 3],
-    dest_rot_zup: [f32; 3],
+    request: InteriorCellRequest,
 ) -> Result<Vec3, String> {
+    let InteriorCellRequest {
+        editor_id,
+        masters,
+        esm_path,
+        dest_pos_zup,
+        dest_rot_zup,
+    } = request;
     unload_current_interior(world, ctx);
     let result = super::load_cell_with_masters(
         masters,

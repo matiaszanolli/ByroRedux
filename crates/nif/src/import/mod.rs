@@ -159,16 +159,14 @@ fn import_nif_scene_impl(
     };
 
     let mut props_stack: Vec<crate::types::BlockRef> = Vec::new();
-    walk::walk_node_hierarchical(
+    let mut hier_ctx = walk::HierWalkCtx {
         scene,
-        root_idx,
-        None,
-        &mut props_stack,
-        &mut imported,
+        inherited_props: &mut props_stack,
+        out: &mut imported,
         pool,
         resolver,
-        0,
-    );
+    };
+    walk::walk_node_hierarchical(&mut hier_ctx, root_idx, None, 0);
 
     // Resolve extra data from the root node (BSXFlags, BSBound,
     // BSConnectPoint::Parents / Children).
@@ -285,17 +283,15 @@ fn import_nif_impl(
     };
 
     let mut props_stack: Vec<crate::types::BlockRef> = Vec::new();
-    walk::walk_node_flat(
+    let mut flat_ctx = walk::FlatWalkCtx {
         scene,
-        root_idx,
-        &NiTransform::default(),
-        &mut props_stack,
-        &mut meshes,
-        None,
+        inherited_props: &mut props_stack,
+        out: &mut meshes,
+        collisions: None,
         pool,
         resolver,
-        0,
-    );
+    };
+    walk::walk_node_flat(&mut flat_ctx, root_idx, &NiTransform::default(), 0);
     meshes
 }
 
@@ -432,17 +428,15 @@ fn import_nif_with_collision_impl(
     };
 
     let mut props_stack: Vec<crate::types::BlockRef> = Vec::new();
-    walk::walk_node_flat(
+    let mut flat_ctx = walk::FlatWalkCtx {
         scene,
-        root_idx,
-        &NiTransform::default(),
-        &mut props_stack,
-        &mut meshes,
-        Some(&mut collisions),
+        inherited_props: &mut props_stack,
+        out: &mut meshes,
+        collisions: Some(&mut collisions),
         pool,
         resolver,
-        0,
-    );
+    };
+    walk::walk_node_flat(&mut flat_ctx, root_idx, &NiTransform::default(), 0);
     (meshes, collisions)
 }
 

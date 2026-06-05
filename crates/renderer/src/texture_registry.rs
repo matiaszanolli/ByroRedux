@@ -16,6 +16,7 @@
 
 use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::StagingPool;
+use crate::vulkan::GpuUploadCtx;
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::vulkan::texture::Texture;
 use anyhow::{Context, Result};
@@ -487,7 +488,13 @@ impl TextureRegistry {
         dds_bytes: &[u8],
     ) -> Result<TextureHandle> {
         // 3 = WRAP_S_WRAP_T per nif.xml — the legacy REPEAT/REPEAT.
-        self.load_dds_with_clamp(device, allocator, queue, command_pool, path, dds_bytes, 3)
+        let ctx = GpuUploadCtx {
+            device,
+            allocator,
+            queue,
+            command_pool,
+        };
+        self.load_dds_with_clamp(ctx, path, dds_bytes, 3)
     }
 
     /// Load a DDS texture with an explicit Gamebryo `TexClampMode`
@@ -505,10 +512,7 @@ impl TextureRegistry {
     /// almost-universal authoring pattern). See #610 / D4-NEW-02.
     pub fn load_dds_with_clamp(
         &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        ctx: GpuUploadCtx,
         path: &str,
         dds_bytes: &[u8],
         clamp_mode: u8,
@@ -527,10 +531,10 @@ impl TextureRegistry {
         self.check_slot_available()?;
 
         let texture = Texture::from_dds(
-            device,
-            allocator,
-            queue,
-            command_pool,
+            ctx.device,
+            ctx.allocator,
+            ctx.queue,
+            ctx.command_pool,
             dds_bytes,
             self.samplers[clamp_mode as usize],
             self.staging_pool.as_mut(),
@@ -538,7 +542,7 @@ impl TextureRegistry {
         .with_context(|| format!("Failed to load DDS texture '{}'", path))?;
 
         let handle = self.textures.len() as TextureHandle;
-        self.write_texture_to_all_sets(device, handle, &texture);
+        self.write_texture_to_all_sets(ctx.device, handle, &texture);
         self.textures.push(TextureEntry {
             texture: Some(texture),
             pending_destroy: VecDeque::new(),
@@ -897,10 +901,7 @@ impl TextureRegistry {
     /// Register an RGBA texture directly (for dynamic UI textures).
     pub fn register_rgba(
         &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        ctx: GpuUploadCtx,
         width: u32,
         height: u32,
         pixels: &[u8],
@@ -908,10 +909,7 @@ impl TextureRegistry {
         self.check_slot_available()?;
 
         let texture = Texture::from_rgba(
-            device,
-            allocator,
-            queue,
-            command_pool,
+            ctx,
             width,
             height,
             pixels,
@@ -921,7 +919,7 @@ impl TextureRegistry {
         .context("Failed to create dynamic RGBA texture")?;
 
         let handle = self.textures.len() as TextureHandle;
-        self.write_texture_to_all_sets(device, handle, &texture);
+        self.write_texture_to_all_sets(ctx.device, handle, &texture);
         self.textures.push(TextureEntry {
             texture: Some(texture),
             pending_destroy: VecDeque::new(),
@@ -1154,10 +1152,7 @@ impl TextureRegistry {
     /// `MAX_FRAMES_IN_FLIGHT` frames have elapsed. See issue #134.
     pub fn update_rgba(
         &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        ctx: GpuUploadCtx,
         handle: TextureHandle,
         width: u32,
         height: u32,
@@ -1172,7 +1167,7 @@ impl TextureRegistry {
                 break;
             }
             if let Some((_, mut old)) = entry.pending_destroy.pop_front() {
-                old.destroy(device, allocator);
+                old.destroy(ctx.device, ctx.allocator);
             }
         }
 
@@ -1180,10 +1175,7 @@ impl TextureRegistry {
         // quietly revives it (bindless slot reactivates on the descriptor
         // write below).
         let new_texture = Texture::from_rgba(
-            device,
-            allocator,
-            queue,
-            command_pool,
+            ctx,
             width,
             height,
             pixels,
@@ -1204,7 +1196,7 @@ impl TextureRegistry {
             .expect("entry was just populated above");
         let image_view = live.image_view;
         let sampler = live.sampler;
-        self.apply_descriptor_write(device, handle, image_view, sampler);
+        self.apply_descriptor_write(ctx.device, handle, image_view, sampler);
 
         Ok(())
     }
@@ -1212,6 +1204,11 @@ impl TextureRegistry {
     /// Number of loaded textures (including fallback).
     pub fn len(&self) -> usize {
         self.textures.len()
+    }
+
+    /// Whether no textures are loaded.
+    pub fn is_empty(&self) -> bool {
+        self.textures.is_empty()
     }
 
     /// Recreate descriptor sets for a new swapchain.

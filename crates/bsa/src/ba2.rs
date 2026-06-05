@@ -296,7 +296,7 @@ impl Ba2Archive {
         }
 
         let mut map = HashMap::with_capacity(file_count);
-        for (name, entry) in names.into_iter().zip(files.into_iter()) {
+        for (name, entry) in names.into_iter().zip(files) {
             map.insert(name, entry);
         }
 
@@ -412,11 +412,13 @@ impl Ba2Archive {
                 chunks,
             } => extract_dx10(
                 &mut *file,
-                *dxgi_format,
-                *width,
-                *height,
-                *num_mips,
-                *is_cubemap,
+                Dx10TexInfo {
+                    dxgi_format: *dxgi_format,
+                    width: *width,
+                    height: *height,
+                    num_mips: *num_mips,
+                    is_cubemap: *is_cubemap,
+                },
                 chunks,
                 self.compression,
             ),
@@ -721,13 +723,21 @@ fn extract_general<R: Read + Seek>(
     }
 }
 
-fn extract_dx10<R: Read + Seek>(
-    reader: &mut R,
+/// The DX10 texture-header fields needed to synthesize a DDS header for
+/// a BA2 DX10 entry. Bundled so `extract_dx10` stays within the argument
+/// budget (`clippy::too_many_arguments`); mirrors the `Ba2Entry::Dx10`
+/// header fields one-to-one.
+struct Dx10TexInfo {
     dxgi_format: u8,
     width: u16,
     height: u16,
     num_mips: u8,
     is_cubemap: bool,
+}
+
+fn extract_dx10<R: Read + Seek>(
+    reader: &mut R,
+    info: Dx10TexInfo,
     chunks: &[Dx10Chunk],
     compression: Ba2Compression,
 ) -> io::Result<Vec<u8>> {
@@ -749,11 +759,11 @@ fn extract_dx10<R: Read + Seek>(
 
     // Reconstruct a DDS header in front of the pixel data.
     let mut dds = build_dds_header(
-        dxgi_format,
-        width,
-        height,
-        num_mips,
-        is_cubemap,
+        info.dxgi_format,
+        info.width,
+        info.height,
+        info.num_mips,
+        info.is_cubemap,
         &pixel_data,
     );
     dds.extend_from_slice(&pixel_data);

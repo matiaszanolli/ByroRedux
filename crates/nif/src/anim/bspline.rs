@@ -91,11 +91,11 @@ pub fn deboor_cubic(control_points: &[f32], n: usize, stride: usize, u: f32) -> 
         vec![0.0; stride],
         vec![0.0; stride],
     ];
-    for j in 0..=BSPLINE_DEGREE {
+    for (j, dj) in d.iter_mut().enumerate() {
         let cp_idx = k + j - BSPLINE_DEGREE;
         let cp_idx = cp_idx.min(n - 1);
         let start = cp_idx * stride;
-        d[j].copy_from_slice(&control_points[start..start + stride]);
+        dj.copy_from_slice(&control_points[start..start + stride]);
     }
 
     // Open uniform clamped knot vector for `n` control points and
@@ -126,8 +126,9 @@ pub fn deboor_cubic(control_points: &[f32], n: usize, stride: usize, u: f32) -> 
             } else {
                 0.0
             };
-            for c in 0..stride {
-                d[j][c] = (1.0 - alpha) * d[j - 1][c] + alpha * d[j][c];
+            let (prev, curr) = d.split_at_mut(j);
+            for (dst, &src) in curr[0].iter_mut().zip(prev[j - 1].iter()) {
+                *dst = (1.0 - alpha) * src + alpha * *dst;
             }
         }
     }
@@ -221,7 +222,7 @@ pub fn extract_float_channel_bspline(
 
     let duration = (interp.stop_time - interp.start_time).max(0.0);
     let n_samples_f = (duration * BSPLINE_SAMPLE_HZ).ceil();
-    let n_samples = (n_samples_f as usize).max(2).min(1_000_000);
+    let n_samples = (n_samples_f as usize).clamp(2, 1_000_000);
     let u_max = (n_cp - BSPLINE_DEGREE) as f32;
 
     let mut keys = Vec::with_capacity(n_samples);
@@ -273,7 +274,7 @@ pub fn extract_transform_channel_bspline(
     // out at a few thousand samples even for the longest cinematics.
     let duration = (interp.stop_time - interp.start_time).max(0.0);
     let n_samples_f = (duration * BSPLINE_SAMPLE_HZ).ceil();
-    let n_samples = (n_samples_f as usize).max(2).min(1_000_000);
+    let n_samples = (n_samples_f as usize).clamp(2, 1_000_000);
 
     // Per-channel setup. Each handle is an offset in i16 units into
     // `data.compact_control_points` where that channel's run of
@@ -493,7 +494,7 @@ pub fn channel_slice(
     let needed = n_cp * stride;
     if start
         .checked_add(needed)
-        .map_or(true, |end| end > raw.len())
+        .is_none_or(|end| end > raw.len())
     {
         log::debug!(
             "NiBSplineCompTransformInterpolator: handle {} + {} > data len {}",

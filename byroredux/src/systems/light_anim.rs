@@ -1,7 +1,7 @@
 //! Procedural per-frame light animation — Phase 17.
 //!
-//! Walks every entity with a `LightFlicker` companion + `LightSource`
-//! + `Transform`, modulates the light's intensity + position from the
+//! Walks every entity with a `LightFlicker` companion + `LightSource` +
+//! `Transform`, modulates the light's intensity + position from the
 //! FNAM flicker / pulse parameters parsed off the LIGH record.
 //! Skyrim's vanilla flicker bits map to four animation shapes:
 //!

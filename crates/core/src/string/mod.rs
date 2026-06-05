@@ -53,7 +53,7 @@ impl StringPool {
         let mut buf = [0u8; LOWERCASE_STACK_BUF];
         match ascii_lowercase_into_buf(s, &mut buf) {
             Some(lower) => self.0.get_or_intern(lower),
-            None => self.0.get_or_intern(&s.to_ascii_lowercase()),
+            None => self.0.get_or_intern(s.to_ascii_lowercase()),
         }
     }
 
@@ -83,7 +83,7 @@ impl StringPool {
         let mut buf = [0u8; LOWERCASE_STACK_BUF];
         match ascii_lowercase_into_buf(s, &mut buf) {
             Some(lower) => self.0.get(lower),
-            None => self.0.get(&s.to_ascii_lowercase()),
+            None => self.0.get(s.to_ascii_lowercase()),
         }
     }
 }

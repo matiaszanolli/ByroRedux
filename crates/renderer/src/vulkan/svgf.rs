@@ -53,6 +53,7 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
+use super::GpuUploadCtx;
 use super::descriptors::{
     image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
     write_uniform_buffer, DescriptorPoolBuilder,
@@ -240,34 +241,37 @@ pub struct SvgfPipeline {
     dispatched_this_frame: [bool; MAX_FRAMES_IN_FLIGHT],
 }
 
+/// The four per-frame G-buffer view slices SVGF samples — raw indirect,
+/// motion, mesh-ID, and normal (each of length `MAX_FRAMES_IN_FLIGHT`).
+/// Groups the view arguments that travel together into the SVGF
+/// constructor and resize path.
+#[derive(Clone, Copy)]
+pub struct SvgfInputViews<'a> {
+    /// Raw indirect-lighting views (the denoiser input).
+    pub raw_indirect_views: &'a [vk::ImageView],
+    /// Motion-vector views (reprojection).
+    pub motion_views: &'a [vk::ImageView],
+    /// Mesh-ID views (disocclusion test).
+    pub mesh_id_views: &'a [vk::ImageView],
+    /// Normal views (edge-stopping weight).
+    pub normal_views: &'a [vk::ImageView],
+}
+
 impl SvgfPipeline {
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        raw_indirect_views: &[vk::ImageView],
-        motion_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
-        normal_views: &[vk::ImageView],
+        views: SvgfInputViews,
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        debug_assert_eq!(raw_indirect_views.len(), MAX_FRAMES_IN_FLIGHT);
-        debug_assert_eq!(motion_views.len(), MAX_FRAMES_IN_FLIGHT);
-        debug_assert_eq!(mesh_id_views.len(), MAX_FRAMES_IN_FLIGHT);
-        debug_assert_eq!(normal_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(views.raw_indirect_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(views.motion_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(views.mesh_id_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(views.normal_views.len(), MAX_FRAMES_IN_FLIGHT);
 
-        let result = Self::new_inner(
-            device,
-            allocator,
-            pipeline_cache,
-            raw_indirect_views,
-            motion_views,
-            mesh_id_views,
-            normal_views,
-            width,
-            height,
-        );
+        let result = Self::new_inner(device, allocator, pipeline_cache, views, width, height);
         if let Err(ref e) = result {
             log::debug!("SVGF pipeline creation failed at: {e}");
         }
@@ -278,13 +282,16 @@ impl SvgfPipeline {
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        raw_indirect_views: &[vk::ImageView],
-        motion_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
-        normal_views: &[vk::ImageView],
+        views: SvgfInputViews,
         width: u32,
         height: u32,
     ) -> Result<Self> {
+        let SvgfInputViews {
+            raw_indirect_views,
+            motion_views,
+            mesh_id_views,
+            normal_views,
+        } = views;
         let mut partial = Self {
             pipeline: vk::Pipeline::null(),
             pipeline_layout: vk::PipelineLayout::null(),
@@ -734,6 +741,13 @@ impl SvgfPipeline {
     /// One-time layout transition UNDEFINED → GENERAL for every history
     /// image, so the first dispatch and first descriptor sampling see a
     /// valid layout. Call once after `new()`.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure all passed Vulkan handles (`device`, `cmd`) are
+    /// valid and live, `cmd` is in the recording state, the device is not
+    /// lost, and the history images are not concurrently accessed by another
+    /// command buffer.
     pub unsafe fn initialize_layouts(
         &self,
         device: &ash::Device,
@@ -778,6 +792,12 @@ impl SvgfPipeline {
     /// uniform-read execution dependency for this UBO so [`Self::dispatch`]
     /// no longer needs to emit its own. Mirrors the composite-UBO fold
     /// landed in #909 / REN-D1-NEW-03. See #961 / REN-D10-NEW-04.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` is valid and live, the device is not lost,
+    /// the target frame's params UBO is not in use by an in-flight command
+    /// buffer, and `frame` is < `MAX_FRAMES_IN_FLIGHT`.
     pub unsafe fn upload_params(
         &mut self,
         device: &ash::Device,
@@ -827,6 +847,13 @@ impl SvgfPipeline {
     /// that barrier covers the UBO host-write → uniform-read execution
     /// dependency so this method no longer emits its own (#961 /
     /// REN-D10-NEW-04, mirror of #909 / REN-D1-NEW-03).
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure all passed Vulkan handles (`device`, `cmd`) are
+    /// valid and live, `cmd` is in the recording state, the device is not
+    /// lost, and the history images and bound buffers are not in use by
+    /// another in-flight command buffer.
     pub unsafe fn dispatch(
         &mut self,
         device: &ash::Device,
@@ -887,8 +914,8 @@ impl SvgfPipeline {
             &[],
         );
 
-        let gx = (self.width + 7) / 8;
-        let gy = (self.height + 7) / 8;
+        let gx = self.width.div_ceil(8);
+        let gy = self.height.div_ceil(8);
         device.cmd_dispatch(cmd, gx, gy, 1);
 
         // Barrier: compute write → composite's fragment shader sampling.
@@ -964,17 +991,23 @@ impl SvgfPipeline {
     /// error on the first post-resize frame.
     pub fn recreate_on_resize(
         &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
-        raw_indirect_views: &[vk::ImageView],
-        motion_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
-        normal_views: &[vk::ImageView],
+        ctx: GpuUploadCtx,
+        views: SvgfInputViews,
         width: u32,
         height: u32,
     ) -> Result<()> {
+        let GpuUploadCtx {
+            device,
+            allocator,
+            queue,
+            command_pool,
+        } = ctx;
+        let SvgfInputViews {
+            raw_indirect_views,
+            motion_views,
+            mesh_id_views,
+            normal_views,
+        } = views;
         for mut slot in self.indirect_history.drain(..) {
             // SAFETY: `recreate_on_resize` runs from the fenced
             // swapchain-resize path (`VulkanContext::recreate_swapchain`
@@ -1060,6 +1093,13 @@ impl SvgfPipeline {
         Ok(())
     }
 
+    /// Destroy all SVGF images, views, buffers, and pipeline objects.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` and `allocator` are valid and live, the
+    /// device is not lost, and that no object owned by `self` is still in use
+    /// by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         // SAFETY (whole function): caller of `destroy` (unsafe fn)
         // guarantees no in-flight command buffer references any object

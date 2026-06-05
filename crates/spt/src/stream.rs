@@ -33,6 +33,11 @@ impl<'a> SptStream<'a> {
         self.bytes.len()
     }
 
+    /// Whether the underlying byte buffer is empty.
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
     /// Number of bytes left to read.
     pub fn remaining(&self) -> usize {
         self.bytes.len().saturating_sub(self.pos)

@@ -116,8 +116,8 @@ pub(super) const SKINNED_BLAS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
     );
 
 /// Build flags for the static-BLAS BUILD call sites in `blas_static.rs`
-/// (`build_blas` single-shot + `build_blas_batched` per-mesh size-query
-/// + per-mesh record). Vulkan spec
+/// (`build_blas` single-shot plus `build_blas_batched` per-mesh size-query
+/// and per-mesh record). Vulkan spec
 /// `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03801` requires the
 /// size-query and the record `BuildGeometryInfoKHR.flags` to match
 /// exactly; sharing the constant turns that VUID from convention into

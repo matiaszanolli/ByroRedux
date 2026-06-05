@@ -112,10 +112,12 @@ impl VulkanContext {
         };
         let allocator = self.allocator.as_ref().expect("allocator missing");
         if let Err(e) = accel.build_blas(
-            &self.device,
-            allocator,
-            &self.graphics_queue,
-            self.transfer_pool,
+            crate::vulkan::GpuUploadCtx {
+                device: &self.device,
+                allocator,
+                queue: &self.graphics_queue,
+                command_pool: self.transfer_pool,
+            },
             Some(&self.transfer_fence),
             mesh_handle,
             mesh,
@@ -167,10 +169,12 @@ impl VulkanContext {
         let (vertices, indices) = crate::mesh::fullscreen_quad_ui_vertices();
         let allocator = self.allocator.as_ref().expect("allocator missing");
         let handle = self.mesh_registry.upload(
-            &self.device,
-            allocator,
-            &self.graphics_queue,
-            self.transfer_pool,
+            crate::vulkan::GpuUploadCtx {
+                device: &self.device,
+                allocator,
+                queue: &self.graphics_queue,
+                command_pool: self.transfer_pool,
+            },
             &vertices,
             &indices,
             false, // UI quad doesn't need RT
@@ -190,10 +194,12 @@ impl VulkanContext {
         let (vertices, indices) = crate::mesh::quad_vertices();
         let allocator = self.allocator.as_ref().expect("allocator missing");
         let handle = self.mesh_registry.upload(
-            &self.device,
-            allocator,
-            &self.graphics_queue,
-            self.transfer_pool,
+            crate::vulkan::GpuUploadCtx {
+                device: &self.device,
+                allocator,
+                queue: &self.graphics_queue,
+                command_pool: self.transfer_pool,
+            },
             &vertices,
             &indices,
             false, // particles skip TLAS

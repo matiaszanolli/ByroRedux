@@ -513,8 +513,8 @@ pub struct SkinCoverageStats {
 /// **Why this resource exists**: the GPU TIMESTAMP brackets in
 /// `SkinCoverageStats` measure only work bracketed inside the main
 /// command buffer. Operations that happen OUTSIDE that bracket —
-/// the fence wait at the top of `draw_frame`, the `vkQueueSubmit`
-/// + `vkQueuePresentKHR` block at the end, the egui set_textures
+/// the fence wait at the top of `draw_frame`, the
+/// `vkQueueSubmit` + `vkQueuePresentKHR` block at the end, the egui set_textures
 /// transfer-queue submit-and-wait — are invisible to those
 /// brackets. A pathology surfaced by Phase 7 instrumentation
 /// (sum of 12 GPU brackets = 78 ms vs 389 ms wall frame time = 311 ms

@@ -407,8 +407,6 @@ impl PhysicsWorld {
         };
         use rapier3d::prelude::*;
 
-        let mut controller = KinematicCharacterController::default();
-        controller.up = Vector::y_axis();
         // M28.5 KCC offset — at Skyrim's 70 BU/m scale, 0.5 BU
         // was only 7 mm of skin between the capsule and any surface,
         // letting the KCC's swept cast graze TriMesh edges and tunnel
@@ -418,23 +416,28 @@ impl PhysicsWorld {
         // `ContactConfig::kcc_offset_bu` (default 4 BU ≈ 5.7 cm) and
         // is plumbed through `CharacterMoveParams` so a single resource
         // edit can re-tune every character.
-        controller.offset = CharacterLength::Absolute(params.kcc_offset_bu.max(0.0));
-        controller.slide = true;
-        controller.autostep = Some(CharacterAutostep {
-            max_height: CharacterLength::Absolute(params.step_height.max(0.0)),
-            min_width: CharacterLength::Absolute(params.step_min_width.max(0.1)),
-            include_dynamic_bodies: false,
-        });
-        controller.max_slope_climb_angle = params.max_slope_climb_deg.to_radians();
+        //
         // Min slide angle: half-way between climb limit and 90° — once
         // the slope is steeper than this, the controller starts
         // sliding the character down instead of trying to hold pose.
-        controller.min_slope_slide_angle =
-            ((params.max_slope_climb_deg + 90.0) * 0.5).to_radians();
-        controller.snap_to_ground = if params.snap_to_ground > 0.0 {
-            Some(CharacterLength::Absolute(params.snap_to_ground))
-        } else {
-            None
+        let controller = KinematicCharacterController {
+            up: Vector::y_axis(),
+            offset: CharacterLength::Absolute(params.kcc_offset_bu.max(0.0)),
+            slide: true,
+            autostep: Some(CharacterAutostep {
+                max_height: CharacterLength::Absolute(params.step_height.max(0.0)),
+                min_width: CharacterLength::Absolute(params.step_min_width.max(0.1)),
+                include_dynamic_bodies: false,
+            }),
+            max_slope_climb_angle: params.max_slope_climb_deg.to_radians(),
+            min_slope_slide_angle: ((params.max_slope_climb_deg + 90.0) * 0.5)
+                .to_radians(),
+            snap_to_ground: if params.snap_to_ground > 0.0 {
+                Some(CharacterLength::Absolute(params.snap_to_ground))
+            } else {
+                None
+            },
+            ..Default::default()
         };
 
         let shape = SharedShape::capsule_y(

@@ -11,8 +11,8 @@
 //! **Current state** (M49 — complete): this loader reads each `_oc.nif`
 //! from the asset BSA chain (typically `Fallout4 - MeshesExtra.ba2`), then
 //! resolves the vertex / triangle data from the companion `Fallout4 - Geometry.csg`
-//! blob via `CsgArchive` (one big zlib-compressed PSG keyed by filename hash
-//! + offset per `BSPackedGeomObject`). Meshes are decoded to Y-up, spawned
+//! blob via `CsgArchive` (one big zlib-compressed PSG keyed by filename
+//! hash + offset per `BSPackedGeomObject`). Meshes are decoded to Y-up, spawned
 //! at cell-local identity, and tagged as `RenderLayer::Architecture`. LOD is
 //! selected by triangle count (finest LOD only, per `fo4-csg-format.md:138-142`).
 //! Absorption gate in [`super::load::load_cell_with_masters`] (conditional on

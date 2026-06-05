@@ -94,6 +94,7 @@ pub struct Material {
     ///   * `0` = Ignore (vertex colors disabled)
     ///   * `1` = Emissive (colors drive self-illumination)
     ///   * `2` = AmbientDiffuse (default, colors drive diffuse)
+    ///
     /// The NIF importer already honors `Ignore` by not populating the
     /// mesh's vertex color vec. `Emissive` is forwarded here so the
     /// material system can route the data later. See #214.

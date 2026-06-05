@@ -49,6 +49,12 @@ pub struct CommandRegistry {
 
 impl Resource for CommandRegistry {}
 
+impl Default for CommandRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandRegistry {
     pub fn new() -> Self {
         Self {

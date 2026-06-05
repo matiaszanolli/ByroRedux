@@ -19,6 +19,7 @@ use byroredux_core::ecs::{
 };
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
+use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{
@@ -658,14 +659,17 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             .collect();
 
         let alloc = ctx.allocator.as_ref().unwrap();
+        let upload_ctx = GpuUploadCtx {
+            device: &ctx.device,
+            allocator: alloc,
+            queue: &ctx.graphics_queue,
+            command_pool: ctx.transfer_pool,
+        };
         // upload_scene_mesh registers the vertices/indices into the global
         // geometry SSBO that RT ray queries sample for reflection UVs.
         // See #371.
         let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
-            &ctx.device,
-            alloc,
-            &ctx.graphics_queue,
-            ctx.transfer_pool,
+            upload_ctx,
             &vertices,
             &mesh.indices,
             ctx.device_caps.ray_query_supported,
@@ -857,7 +861,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         }
         // #890 Stage 2c — BSEffectShaderProperty greyscale LUT. Mirrors
         // the cell_loader::spawn site.
-        if let Some(ref lut_path) =
+        if let Some(lut_path) =
             mesh.effect_shader.as_ref().and_then(|es| es.greyscale_texture.as_ref())
         {
             let h = resolve_texture(ctx, tex_provider, Some(lut_path.as_str()));

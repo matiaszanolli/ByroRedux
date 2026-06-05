@@ -340,7 +340,7 @@ pub(crate) fn parse_cell_group(
                         // 4-byte STRINGS-table case for localized
                         // plugins.
                         b"FULL" => display_name = Some(read_lstring_or_zstring(&sub.data)),
-                        b"DATA" if sub.data.len() >= 1 => is_interior = sub.data[0] & 1 != 0,
+                        b"DATA" if !sub.data.is_empty() => is_interior = sub.data[0] & 1 != 0,
                         b"XCLW" => {
                             // XCLW: f32 water plane height in world units
                             // (Z-up). Same layout across Oblivion / FO3 / FNV

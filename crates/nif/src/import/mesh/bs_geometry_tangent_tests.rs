@@ -134,7 +134,7 @@ fn make_internal(version: u32) -> BSGeometryMesh {
         num_verts: 0,
         flags: 0,
         kind: BSGeometryMeshKind::Internal {
-            mesh_data: BSGeometryMeshData {
+            mesh_data: Box::new(BSGeometryMeshData {
                 version,
                 triangles: Vec::new(),
                 scale: 0.0,
@@ -149,7 +149,7 @@ fn make_internal(version: u32) -> BSGeometryMesh {
                 lods: Vec::new(),
                 meshlets: Vec::new(),
                 cull_data: Vec::new(),
-            },
+            }),
         },
     }
 }
@@ -169,7 +169,7 @@ fn make_external(name: &str) -> BSGeometryMesh {
 /// LOD slot regardless of position.
 fn select_internal(meshes: &[BSGeometryMesh]) -> Option<&BSGeometryMeshData> {
     meshes.iter().find_map(|m| match &m.kind {
-        BSGeometryMeshKind::Internal { mesh_data } => Some(mesh_data),
+        BSGeometryMeshKind::Internal { mesh_data } => Some(mesh_data.as_ref()),
         BSGeometryMeshKind::External { .. } => None,
     })
 }

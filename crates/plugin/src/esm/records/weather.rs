@@ -509,7 +509,7 @@ const SKYRIM_DATA_SIZE: usize = 19;
 /// shared array's slot 9 for "Effects Lighting" but the remaining 7
 /// groups are discarded for v1 because the renderer / weather_system
 /// has no consumer for them yet. Follow-up work covers the Sky Glare
-/// + Cloud LOD wiring when the renderer's M-glare / cloud-cover work
+/// and Cloud LOD wiring when the renderer's M-glare / cloud-cover work
 /// surfaces. See M33-04..07.
 ///
 /// **TOD synth**: Skyrim ships 4 TOD slots per group (sunrise / day /
@@ -608,13 +608,12 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
             // Captured into `skyrim_ambient_cube`. Out-of-order or
             // extra entries clamp at 4 — Bethesda content always ships
             // exactly 4 in sunrise/day/sunset/night order per UESP.
-            b"DALC" if sub.data.len() >= SKYRIM_DALC_SIZE => {
-                if dalc_idx < dalc_buf.len() {
+            b"DALC" if sub.data.len() >= SKYRIM_DALC_SIZE
+                && dalc_idx < dalc_buf.len() => {
                     let cube = parse_skyrim_dalc(&sub.data);
                     dalc_buf[dalc_idx] = Some(cube);
                     dalc_idx += 1;
                 }
-            }
 
             // Other sub-records (LNAM, MNAM, NNAM, RNAM, QNAM, PNAM,
             // JNAM, NAM1, TNAM ×many, IMSP, 00TX..L0TX) carry data

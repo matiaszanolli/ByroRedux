@@ -189,6 +189,12 @@ impl FrameSync {
     /// them, and it sidesteps the missing `vkSignalFence` API. Cost
     /// is two `vkDestroyFence` + two `vkCreateFence` per resize —
     /// negligible.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` is valid and live, the device is not lost,
+    /// and that the existing semaphores/fences being recreated are not in use
+    /// by any in-flight command buffer or pending present.
     pub unsafe fn recreate_for_swapchain(
         &mut self,
         device: &ash::Device,
@@ -322,6 +328,13 @@ impl FrameSync {
         Ok(())
     }
 
+    /// Destroy all semaphores and fences.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` is valid and live, the device is not lost,
+    /// and that none of the semaphores or fences are still in use by an
+    /// in-flight command buffer or pending present.
     pub unsafe fn destroy(&self, device: &ash::Device) {
         for &sem in &self.image_available {
             device.destroy_semaphore(sem, None);

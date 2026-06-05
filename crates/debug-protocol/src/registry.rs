@@ -6,6 +6,21 @@
 
 use std::collections::BTreeMap;
 
+// Boxed type-erased accessor closures. The concrete `Component` type is
+// captured inside each closure; callers pass the erased store (`&dyn Any`)
+// + an entity id. Aliased to keep [`ComponentDescriptor`] readable and to
+// satisfy `clippy::type_complexity`.
+type GetJsonFn =
+    Box<dyn Fn(&dyn std::any::Any, u32) -> Option<serde_json::Value> + Send + Sync>;
+type SetJsonFn =
+    Box<dyn Fn(&dyn std::any::Any, u32, serde_json::Value) -> Result<(), String> + Send + Sync>;
+type ListEntitiesFn = Box<dyn Fn(&dyn std::any::Any) -> Vec<u32> + Send + Sync>;
+type GetFieldFn =
+    Box<dyn Fn(&dyn std::any::Any, u32, &str) -> Option<serde_json::Value> + Send + Sync>;
+type SetFieldFn = Box<
+    dyn Fn(&dyn std::any::Any, u32, &str, serde_json::Value) -> Result<(), String> + Send + Sync,
+>;
+
 /// Type-erased accessors for a single component type.
 ///
 /// The closures capture the concrete `Component` type and call through to
@@ -18,21 +33,15 @@ pub struct ComponentDescriptor {
     pub field_names: Vec<&'static str>,
     /// Serialize the entire component on an entity to JSON.
     /// Returns None if the entity doesn't have this component.
-    pub get_json: Box<dyn Fn(&dyn std::any::Any, u32) -> Option<serde_json::Value> + Send + Sync>,
+    pub get_json: GetJsonFn,
     /// Deserialize a JSON value and overwrite the entire component on an entity.
-    pub set_json:
-        Box<dyn Fn(&dyn std::any::Any, u32, serde_json::Value) -> Result<(), String> + Send + Sync>,
+    pub set_json: SetJsonFn,
     /// List all entity IDs that have this component.
-    pub list_entities: Box<dyn Fn(&dyn std::any::Any) -> Vec<u32> + Send + Sync>,
+    pub list_entities: ListEntitiesFn,
     /// Serialize a single field of the component to JSON.
-    pub get_field:
-        Box<dyn Fn(&dyn std::any::Any, u32, &str) -> Option<serde_json::Value> + Send + Sync>,
+    pub get_field: GetFieldFn,
     /// Deserialize and set a single field of the component.
-    pub set_field: Box<
-        dyn Fn(&dyn std::any::Any, u32, &str, serde_json::Value) -> Result<(), String>
-            + Send
-            + Sync,
-    >,
+    pub set_field: SetFieldFn,
 }
 
 /// Registry of all inspectable components, keyed by name.
@@ -41,6 +50,12 @@ pub struct ComponentDescriptor {
 /// the component name strings that appear in debug expressions.
 pub struct ComponentRegistry {
     descriptors: BTreeMap<String, ComponentDescriptor>,
+}
+
+impl Default for ComponentRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ComponentRegistry {

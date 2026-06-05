@@ -44,17 +44,43 @@ pub(super) fn find_depth_format(
     anyhow::bail!("No supported depth format found (tried D32, D32S8, D24S8, D16)")
 }
 
+/// The eight attachment formats the main render pass writes — the seven
+/// G-buffer color targets plus depth. Groups the formats that travel
+/// together into [`create_render_pass`].
+#[derive(Clone, Copy)]
+pub(super) struct GBufferFormats {
+    /// HDR color (attachment 0).
+    pub color_format: vk::Format,
+    /// Octahedral world-space normal (attachment 1).
+    pub normal_format: vk::Format,
+    /// Screen-space motion vector (attachment 2).
+    pub motion_format: vk::Format,
+    /// Per-instance mesh ID (attachment 3).
+    pub mesh_id_format: vk::Format,
+    /// Raw indirect lighting (attachment 4).
+    pub raw_indirect_format: vk::Format,
+    /// Albedo (attachment 5).
+    pub albedo_format: vk::Format,
+    /// Reservoir (attachment 6).
+    pub reservoir_format: vk::Format,
+    /// Depth attachment.
+    pub depth_format: vk::Format,
+}
+
 pub(super) fn create_render_pass(
     device: &ash::Device,
-    color_format: vk::Format,
-    normal_format: vk::Format,
-    motion_format: vk::Format,
-    mesh_id_format: vk::Format,
-    raw_indirect_format: vk::Format,
-    albedo_format: vk::Format,
-    reservoir_format: vk::Format,
-    depth_format: vk::Format,
+    formats: GBufferFormats,
 ) -> Result<vk::RenderPass> {
+    let GBufferFormats {
+        color_format,
+        normal_format,
+        motion_format,
+        mesh_id_format,
+        raw_indirect_format,
+        albedo_format,
+        reservoir_format,
+        depth_format,
+    } = formats;
     // Main render pass writes to 7 color attachments + depth.
     // Formats are the authoritative constants in `vulkan/gbuffer.rs`; the
     // list below names them for orientation.
@@ -235,19 +261,42 @@ pub(super) fn create_render_pass(
 /// albedo + reservoir views, plus the shared depth view.
 ///
 /// All the color view slices must have the same length (MAX_FRAMES_IN_FLIGHT).
+/// The per-frame G-buffer color views (parallel slices, each of length
+/// `MAX_FRAMES_IN_FLIGHT`) bound by [`create_main_framebuffers`].
+#[derive(Clone, Copy)]
+pub(super) struct GBufferViews<'a> {
+    /// HDR color views (attachment 0).
+    pub hdr_views: &'a [vk::ImageView],
+    /// Normal views (attachment 1).
+    pub normal_views: &'a [vk::ImageView],
+    /// Motion-vector views (attachment 2).
+    pub motion_views: &'a [vk::ImageView],
+    /// Mesh-ID views (attachment 3).
+    pub mesh_id_views: &'a [vk::ImageView],
+    /// Raw-indirect views (attachment 4).
+    pub raw_indirect_views: &'a [vk::ImageView],
+    /// Albedo views (attachment 5).
+    pub albedo_views: &'a [vk::ImageView],
+    /// Reservoir views (attachment 6).
+    pub reservoir_views: &'a [vk::ImageView],
+}
+
 pub(super) fn create_main_framebuffers(
     device: &ash::Device,
     render_pass: vk::RenderPass,
-    hdr_views: &[vk::ImageView],
-    normal_views: &[vk::ImageView],
-    motion_views: &[vk::ImageView],
-    mesh_id_views: &[vk::ImageView],
-    raw_indirect_views: &[vk::ImageView],
-    albedo_views: &[vk::ImageView],
-    reservoir_views: &[vk::ImageView],
+    views: GBufferViews,
     depth_view: vk::ImageView,
     extent: vk::Extent2D,
 ) -> Result<Vec<vk::Framebuffer>> {
+    let GBufferViews {
+        hdr_views,
+        normal_views,
+        motion_views,
+        mesh_id_views,
+        raw_indirect_views,
+        albedo_views,
+        reservoir_views,
+    } = views;
     debug_assert_eq!(hdr_views.len(), normal_views.len());
     debug_assert_eq!(hdr_views.len(), motion_views.len());
     debug_assert_eq!(hdr_views.len(), mesh_id_views.len());

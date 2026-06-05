@@ -47,16 +47,21 @@ pub struct RecognizeCtx<'a> {
     pub owning_quest: Option<u32>,
 }
 
+/// Boxed component-insertion closure captured by a recognizer. Boxed
+/// (not a bare `fn` like [`crate::ScriptSpawnFn`]) because recognizers
+/// capture the constants they extracted. Aliased to satisfy
+/// `clippy::type_complexity`.
+pub type SpawnFn = Box<dyn Fn(&mut World, EntityId) + Send + Sync>;
+
 /// The output of a successful recognition: a name (for diagnostics) and a
 /// closure that inserts the canonical component(s) onto the script-bearing
-/// entity. A boxed closure (not a bare `fn` like [`crate::ScriptSpawnFn`])
-/// because recognizers capture the constants they extracted.
+/// entity.
 pub struct Recognized {
     /// `archetype@editor_id`, surfaced in logs + the `script.*` console.
     pub archetype: String,
     /// Inserts the canonical components onto `entity`. Called once at
     /// REFR spawn / script attach.
-    pub spawn: Box<dyn Fn(&mut World, EntityId) + Send + Sync>,
+    pub spawn: SpawnFn,
 }
 
 impl Recognized {

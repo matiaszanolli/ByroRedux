@@ -310,7 +310,7 @@ impl KfmCatalog {
 /// returns an empty string when the input is empty or all-separator.
 fn filename_stem_lower(path: &str) -> String {
     // Split on the LAST `\` or `/` — whichever comes later.
-    let last_sep = path.rfind(|c| c == '\\' || c == '/');
+    let last_sep = path.rfind(['\\', '/']);
     let leaf = match last_sep {
         Some(i) => &path[i + 1..],
         None => path,

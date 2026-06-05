@@ -273,7 +273,7 @@ pub fn load_cell_with_masters(
         world,
         ctx,
         tex_provider,
-        mat_provider.as_deref_mut(),
+        mat_provider,
         &cell.editor_id,
         &load_order,
         absorbed,

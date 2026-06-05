@@ -58,7 +58,10 @@ bitflags::bitflags! {
 pub enum ScriptItem {
     Import(Identifier),
     Variable(Variable),
-    Property(Property),
+    // Boxed — `Property` is by far the largest variant (~504 B vs the
+    // ~160 B runner-up), so inlining it bloated every `ScriptItem`.
+    // `clippy::large_enum_variant`.
+    Property(Box<Property>),
     Function(Function),
     Event(Event),
     State(State),

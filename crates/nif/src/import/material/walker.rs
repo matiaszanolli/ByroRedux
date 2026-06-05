@@ -992,7 +992,7 @@ pub(crate) fn extract_material_info_from_refs(
                 }
                 // NiDitherProperty: flags=1 enables 16-bit color dithering,
                 // a legacy hint with no Vulkan analogue. Safe to ignore.
-                "NiDitherProperty" | _ => {}
+                _ => {}
             }
         }
 

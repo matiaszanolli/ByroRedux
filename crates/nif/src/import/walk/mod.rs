@@ -161,23 +161,32 @@ fn switch_active_children(block: &dyn NiObject) -> Option<(&NiNode, Vec<usize>)>
 /// crashing the parser via stack overflow (#1269 / SAFE-DIM3-NEW-01).
 pub(crate) const MAX_NIF_NODE_DEPTH: u32 = 128;
 
+/// Long-lived context threaded through [`walk_node_hierarchical`]'s
+/// recursion: the read-only scene + resolver and the mutable output /
+/// string-pool / inherited-property accumulators. Bundling these keeps
+/// the per-call recursion signature small (block index / parent / depth).
+pub(super) struct HierWalkCtx<'a> {
+    pub scene: &'a NifScene,
+    /// Accumulates property BlockRefs from ancestor NiNodes via
+    /// push/truncate stack discipline — no per-node Vec clone. Gamebryo
+    /// propagates properties down the scene graph; children inherit
+    /// parent properties unless they override with their own (#208/#276).
+    pub inherited_props: &'a mut Vec<BlockRef>,
+    pub out: &'a mut ImportedScene,
+    pub pool: &'a mut StringPool,
+    pub resolver: Option<&'a dyn MeshResolver>,
+}
+
 /// Recursively walk the scene graph, preserving hierarchy.
 /// NiNodes become ImportedNode entries; geometry becomes ImportedMesh with parent_node set.
-///
-/// `inherited_props` accumulates property BlockRefs from ancestor NiNodes via
-/// push/truncate stack discipline — no per-node Vec clone. Gamebryo propagates
-/// properties down the scene graph; children inherit parent properties unless
-/// they override with their own. See #208, #276.
 pub(super) fn walk_node_hierarchical(
-    scene: &NifScene,
+    ctx: &mut HierWalkCtx,
     block_idx: usize,
     parent_node_idx: Option<usize>,
-    inherited_props: &mut Vec<BlockRef>,
-    out: &mut ImportedScene,
-    pool: &mut StringPool,
-    resolver: Option<&dyn MeshResolver>,
     depth: u32,
 ) {
+    let scene = ctx.scene;
+    let resolver = ctx.resolver;
     if depth > MAX_NIF_NODE_DEPTH {
         log::warn!(
             "walk_node_hierarchical: depth cap {} hit at block {} — \
@@ -218,8 +227,9 @@ pub(super) fn walk_node_hierarchical(
         let bs_value_node = extract_bs_value_node(block);
         let bs_ordered_node = extract_bs_ordered_node(block);
 
-        let this_node_idx = out.nodes.len();
-        out.nodes.push(ImportedNode {
+        let this_node_idx = ctx.out.nodes.len();
+        let lod_group = extract_lod_group(scene, block);
+        ctx.out.nodes.push(ImportedNode {
             name: node.av.net.name.clone(),
             translation: zup_point_to_yup(t),
             rotation: quat,
@@ -235,24 +245,15 @@ pub(super) fn walk_node_hierarchical(
             // NiLODNode → its NiRangeLODData ranges (surfaced for a future
             // distance-switch; import still walks child 0 only). `None` for
             // NiSwitchNode. In-cell-LOD foundation.
-            lod_group: extract_lod_group(scene, block),
+            lod_group,
         });
 
-        let prev_len = inherited_props.len();
-        inherited_props.extend_from_slice(&node.av.properties);
+        let prev_len = ctx.inherited_props.len();
+        ctx.inherited_props.extend_from_slice(&node.av.properties);
         for idx in active_children {
-            walk_node_hierarchical(
-                scene,
-                idx,
-                Some(this_node_idx),
-                inherited_props,
-                out,
-                pool,
-                resolver,
-                depth + 1,
-            );
+            walk_node_hierarchical(ctx, idx, Some(this_node_idx), depth + 1);
         }
-        inherited_props.truncate(prev_len);
+        ctx.inherited_props.truncate(prev_len);
         return;
     }
 
@@ -322,8 +323,8 @@ pub(super) fn walk_node_hierarchical(
         let bs_value_node = extract_bs_value_node(block);
         let bs_ordered_node = extract_bs_ordered_node(block);
 
-        let this_node_idx = out.nodes.len();
-        out.nodes.push(ImportedNode {
+        let this_node_idx = ctx.out.nodes.len();
+        ctx.out.nodes.push(ImportedNode {
             name: node.av.net.name.clone(),
             translation: zup_point_to_yup(t),
             rotation: quat,
@@ -345,23 +346,14 @@ pub(super) fn walk_node_hierarchical(
         // discipline. Child shapes see the union; their own properties
         // take priority inside extract_material_info because shape props
         // are iterated before inherited props.
-        let prev_len = inherited_props.len();
-        inherited_props.extend_from_slice(&node.av.properties);
+        let prev_len = ctx.inherited_props.len();
+        ctx.inherited_props.extend_from_slice(&node.av.properties);
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node_hierarchical(
-                    scene,
-                    idx,
-                    Some(this_node_idx),
-                    inherited_props,
-                    out,
-                    pool,
-                    resolver,
-                    depth + 1,
-                );
+                walk_node_hierarchical(ctx, idx, Some(this_node_idx), depth + 1);
             }
         }
-        inherited_props.truncate(prev_len);
+        ctx.inherited_props.truncate(prev_len);
         return;
     }
 
@@ -394,18 +386,18 @@ pub(super) fn walk_node_hierarchical(
         // (audit 2026-05-12). Oblivion + some FO3 modded content
         // attaches collision to the shape directly.
         if let Some(parent_idx) = parent_node_idx {
-            if let Some(parent) = out.nodes.get(parent_idx) {
+            if let Some(parent) = ctx.out.nodes.get(parent_idx) {
                 if parent.collision.is_none() {
                     if let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
-                        out.nodes[parent_idx].collision = Some(collision);
+                        ctx.out.nodes[parent_idx].collision = Some(collision);
                     }
                 }
             }
         }
-        if let Some(mesh) = extract_mesh_local(scene, shape, inherited_props, pool) {
+        if let Some(mesh) = extract_mesh_local(scene, shape, ctx.inherited_props, ctx.pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
-            out.meshes.push(mesh);
+            ctx.out.meshes.push(mesh);
         }
     }
 
@@ -431,18 +423,18 @@ pub(super) fn walk_node_hierarchical(
 
         // Mirror of the NiTriShape branch above — see NIF-D4-NEW-04.
         if let Some(parent_idx) = parent_node_idx {
-            if let Some(parent) = out.nodes.get(parent_idx) {
+            if let Some(parent) = ctx.out.nodes.get(parent_idx) {
                 if parent.collision.is_none() {
                     if let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
-                        out.nodes[parent_idx].collision = Some(collision);
+                        ctx.out.nodes[parent_idx].collision = Some(collision);
                     }
                 }
             }
         }
-        if let Some(mesh) = extract_bs_tri_shape_local(scene, shape, pool) {
+        if let Some(mesh) = extract_bs_tri_shape_local(scene, shape, ctx.pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
-            out.meshes.push(mesh);
+            ctx.out.meshes.push(mesh);
         }
     }
 
@@ -463,18 +455,18 @@ pub(super) fn walk_node_hierarchical(
         }
         // Mirror of the NiTriShape branch above — see NIF-D4-NEW-04.
         if let Some(parent_idx) = parent_node_idx {
-            if let Some(parent) = out.nodes.get(parent_idx) {
+            if let Some(parent) = ctx.out.nodes.get(parent_idx) {
                 if parent.collision.is_none() {
                     if let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
-                        out.nodes[parent_idx].collision = Some(collision);
+                        ctx.out.nodes[parent_idx].collision = Some(collision);
                     }
                 }
             }
         }
-        if let Some(mesh) = extract_mesh_local(scene, shape, inherited_props, pool) {
+        if let Some(mesh) = extract_mesh_local(scene, shape, ctx.inherited_props, ctx.pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
-            out.meshes.push(mesh);
+            ctx.out.meshes.push(mesh);
         }
     }
 
@@ -487,18 +479,18 @@ pub(super) fn walk_node_hierarchical(
         }
         // Mirror of the NiTriShape branch above — see NIF-D4-NEW-04.
         if let Some(parent_idx) = parent_node_idx {
-            if let Some(parent) = out.nodes.get(parent_idx) {
+            if let Some(parent) = ctx.out.nodes.get(parent_idx) {
                 if parent.collision.is_none() {
                     if let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
-                        out.nodes[parent_idx].collision = Some(collision);
+                        ctx.out.nodes[parent_idx].collision = Some(collision);
                     }
                 }
             }
         }
-        if let Some(mesh) = extract_bs_geometry_local(scene, shape, pool, resolver) {
+        if let Some(mesh) = extract_bs_geometry_local(scene, shape, ctx.pool, resolver) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
-            out.meshes.push(mesh);
+            ctx.out.meshes.push(mesh);
         }
     }
 
@@ -516,7 +508,8 @@ pub(super) fn walk_node_hierarchical(
         .as_any()
         .downcast_ref::<crate::blocks::particle::NiParticleSystem>()
     {
-        out.particle_emitters
+        ctx.out
+            .particle_emitters
             .push(crate::import::ImportedParticleEmitter {
                 parent_node: parent_node_idx,
                 original_type: ps.original_type.clone(),
@@ -616,6 +609,7 @@ pub(super) fn collect_force_fields(
 ///      modifier, which embeds its 3-key ramp INLINE rather than
 ///      referencing a `NiColorData` block. Returns `Colors[0]` (birth) and
 ///      `Colors[2]` (death).
+///
 /// `None` when neither is present (→ fall back to the heuristic preset).
 ///
 /// First-pass scope per the issue body — this is a scene-level scan
@@ -717,7 +711,7 @@ pub(super) fn extract_emitter_params(
         && p.initial_radius.is_finite()
         && p.life_span.is_finite()
         && p.life_span_variation.is_finite()
-        && base_scale.map_or(true, f32::is_finite);
+        && base_scale.is_none_or(f32::is_finite);
     if !(all_finite && p.life_span > 0.0 && p.initial_radius >= 0.0) {
         log::debug!(
             "Rejecting NiPSysEmitter params (non-finite or non-positive): \
@@ -768,7 +762,7 @@ pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
     fn sane(r: f32) -> Option<f32> {
         // `>= 3.0e38` matches the FLT_MAX-sentinel threshold used for shader
         // rimlight/backlight (blocks/shader.rs, nif.xml convention).
-        (r.is_finite() && r >= 0.0 && r < 3.0e38).then_some(r)
+        (r.is_finite() && (0.0..3.0e38).contains(&r)).then_some(r)
     }
 
     // Modern: controller → NiFloatInterpolator → (keyed data | constant).
@@ -804,21 +798,32 @@ pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
         .and_then(sane)
 }
 
-/// Recursively walk the scene graph, accumulating world-space transforms (flat, no hierarchy).
+/// Long-lived context threaded through [`walk_node_flat`]'s recursion:
+/// the read-only scene + resolver, the mutable mesh/collision out-lists,
+/// the inherited-property accumulator, and the string pool. Bundling
+/// these keeps the per-call recursion signature focused on what varies
+/// between nodes (block index / parent transform / depth).
 ///
-/// When `collisions` is `Some`, also extracts collision data from NiNodes
-/// and stores them in world space.
+/// When `collisions` is `Some`, the walker also extracts collision data
+/// from NiNodes and stores it in world space.
+pub(super) struct FlatWalkCtx<'a> {
+    pub scene: &'a NifScene,
+    pub inherited_props: &'a mut Vec<BlockRef>,
+    pub out: &'a mut Vec<ImportedMesh>,
+    pub collisions: Option<&'a mut Vec<ImportedCollision>>,
+    pub pool: &'a mut StringPool,
+    pub resolver: Option<&'a dyn MeshResolver>,
+}
+
+/// Recursively walk the scene graph, accumulating world-space transforms (flat, no hierarchy).
 pub(super) fn walk_node_flat(
-    scene: &NifScene,
+    ctx: &mut FlatWalkCtx,
     block_idx: usize,
     parent_transform: &NiTransform,
-    inherited_props: &mut Vec<BlockRef>,
-    out: &mut Vec<ImportedMesh>,
-    mut collisions: Option<&mut Vec<ImportedCollision>>,
-    pool: &mut StringPool,
-    resolver: Option<&dyn MeshResolver>,
     depth: u32,
 ) {
+    let scene = ctx.scene;
+    let resolver = ctx.resolver;
     if depth > MAX_NIF_NODE_DEPTH {
         log::warn!(
             "walk_node_flat: depth cap {} hit at block {} — \
@@ -841,7 +846,7 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &node.av.transform);
-        if let Some(ref mut coll_out) = collisions {
+        if let Some(ref mut coll_out) = ctx.collisions {
             if let Some((shape, body)) = extract_collision(scene, node.av.collision_ref) {
                 let t = &world_transform.translation;
                 let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
@@ -854,22 +859,12 @@ pub(super) fn walk_node_flat(
                 });
             }
         }
-        let prev_len = inherited_props.len();
-        inherited_props.extend_from_slice(&node.av.properties);
+        let prev_len = ctx.inherited_props.len();
+        ctx.inherited_props.extend_from_slice(&node.av.properties);
         for idx in active_children {
-            walk_node_flat(
-                scene,
-                idx,
-                &world_transform,
-                inherited_props,
-                out,
-                collisions.as_deref_mut(),
-                pool,
-                resolver,
-                depth + 1,
-            );
+            walk_node_flat(ctx, idx, &world_transform, depth + 1);
         }
-        inherited_props.truncate(prev_len);
+        ctx.inherited_props.truncate(prev_len);
         return;
     }
 
@@ -900,7 +895,7 @@ pub(super) fn walk_node_flat(
         let world_transform = compose_transforms(parent_transform, &node.av.transform);
 
         // Extract collision data if requested and this node has a collision_ref.
-        if let Some(ref mut coll_out) = collisions {
+        if let Some(ref mut coll_out) = ctx.collisions {
             if let Some((shape, body)) = extract_collision(scene, node.av.collision_ref) {
                 let t = &world_transform.translation;
                 let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
@@ -914,24 +909,14 @@ pub(super) fn walk_node_flat(
             }
         }
 
-        let prev_len = inherited_props.len();
-        inherited_props.extend_from_slice(&node.av.properties);
+        let prev_len = ctx.inherited_props.len();
+        ctx.inherited_props.extend_from_slice(&node.av.properties);
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
-                walk_node_flat(
-                    scene,
-                    idx,
-                    &world_transform,
-                    inherited_props,
-                    out,
-                    collisions.as_deref_mut(),
-                    pool,
-                    resolver,
-                    depth + 1,
-                );
+                walk_node_flat(ctx, idx, &world_transform, depth + 1);
             }
         }
-        inherited_props.truncate(prev_len);
+        ctx.inherited_props.truncate(prev_len);
         return;
     }
 
@@ -985,9 +970,9 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
-        push_shape_collision(scene, &mut collisions, shape.av.collision_ref, &world_transform);
-        if let Some(mesh) = extract_mesh(scene, shape, &world_transform, inherited_props, pool) {
-            out.push(mesh);
+        push_shape_collision(scene, &mut ctx.collisions, shape.av.collision_ref, &world_transform);
+        if let Some(mesh) = extract_mesh(scene, shape, &world_transform, ctx.inherited_props, ctx.pool) {
+            ctx.out.push(mesh);
         }
     }
 
@@ -1011,9 +996,9 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
-        push_shape_collision(scene, &mut collisions, shape.av.collision_ref, &world_transform);
-        if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform, pool) {
-            out.push(mesh);
+        push_shape_collision(scene, &mut ctx.collisions, shape.av.collision_ref, &world_transform);
+        if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform, ctx.pool) {
+            ctx.out.push(mesh);
         }
     }
 
@@ -1028,9 +1013,9 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
-        push_shape_collision(scene, &mut collisions, shape.av.collision_ref, &world_transform);
-        if let Some(mesh) = extract_mesh(scene, shape, &world_transform, inherited_props, pool) {
-            out.push(mesh);
+        push_shape_collision(scene, &mut ctx.collisions, shape.av.collision_ref, &world_transform);
+        if let Some(mesh) = extract_mesh(scene, shape, &world_transform, ctx.inherited_props, ctx.pool) {
+            ctx.out.push(mesh);
         }
     }
 
@@ -1042,9 +1027,9 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
-        push_shape_collision(scene, &mut collisions, shape.av.collision_ref, &world_transform);
-        if let Some(mesh) = extract_bs_geometry(scene, shape, &world_transform, pool, resolver) {
-            out.push(mesh);
+        push_shape_collision(scene, &mut ctx.collisions, shape.av.collision_ref, &world_transform);
+        if let Some(mesh) = extract_bs_geometry(scene, shape, &world_transform, ctx.pool, resolver) {
+            ctx.out.push(mesh);
         }
     }
 }

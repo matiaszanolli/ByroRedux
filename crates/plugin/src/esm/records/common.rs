@@ -26,7 +26,7 @@ thread_local! {
     /// correctly stacked. Consulted by [`read_lstring_or_zstring`]
     /// when resolving a 4-byte lstring index. See #989.
     static CURRENT_STRINGS_TABLE: RefCell<Option<Rc<StringTableSet>>> =
-        RefCell::new(None);
+        const { RefCell::new(None) };
 }
 
 /// Set the thread-local "this plugin uses lstring indirection" flag.

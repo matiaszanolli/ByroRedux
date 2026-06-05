@@ -862,6 +862,12 @@ pub struct ScreenshotHandle {
     pub result: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
+impl Default for ScreenshotHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScreenshotHandle {
     pub fn new() -> Self {
         Self {
@@ -1447,11 +1453,13 @@ impl VulkanContext {
 
         // 8. Swapchain
         let swapchain_state = swapchain::create_swapchain(
-            &vk_instance,
-            &device,
-            physical_device,
-            &surface_loader,
-            vk_surface,
+            swapchain::SwapchainSurfaceCtx {
+                instance: &vk_instance,
+                device: &device,
+                physical_device,
+                surface_loader: &surface_loader,
+                surface: vk_surface,
+            },
             queue_indices,
             window_size,
             vk::SwapchainKHR::null(), // no old swapchain on initial creation
@@ -1469,14 +1477,16 @@ impl VulkanContext {
         // raw_indirect + albedo + reservoir) + depth.
         let render_pass = create_render_pass(
             &device,
-            HDR_FORMAT,
-            NORMAL_FORMAT,
-            MOTION_FORMAT,
-            MESH_ID_FORMAT,
-            RAW_INDIRECT_FORMAT,
-            ALBEDO_FORMAT,
-            RESERVOIR_FORMAT,
-            depth_format,
+            helpers::GBufferFormats {
+                color_format: HDR_FORMAT,
+                normal_format: NORMAL_FORMAT,
+                motion_format: MOTION_FORMAT,
+                mesh_id_format: MESH_ID_FORMAT,
+                raw_indirect_format: RAW_INDIRECT_FORMAT,
+                albedo_format: ALBEDO_FORMAT,
+                reservoir_format: RESERVOIR_FORMAT,
+                depth_format,
+            },
         )?;
 
         // 10. Command pools: one for per-frame draw commands (RESET_COMMAND_BUFFER),
@@ -1508,10 +1518,12 @@ impl VulkanContext {
         // the first pool entry that would otherwise linger for the rest
         // of the session.
         let fallback_texture = Texture::from_rgba(
-            &device,
-            &gpu_allocator,
-            &graphics_queue,
-            transfer_pool,
+            super::GpuUploadCtx {
+                device: &device,
+                allocator: &gpu_allocator,
+                queue: &graphics_queue,
+                command_pool: transfer_pool,
+            },
             256,
             256,
             &checkerboard,
@@ -1528,10 +1540,12 @@ impl VulkanContext {
         // checker × those terms.
         let white_pixel: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
         let neutral_texture = Texture::from_rgba(
-            &device,
-            &gpu_allocator,
-            &graphics_queue,
-            transfer_pool,
+            super::GpuUploadCtx {
+                device: &device,
+                allocator: &gpu_allocator,
+                queue: &graphics_queue,
+                command_pool: transfer_pool,
+            },
             1,
             1,
             &white_pixel,
@@ -1812,7 +1826,7 @@ impl VulkanContext {
         // uninitialised; safe because Phase D's shader-side read is
         // gated on `sunDirection.w > 0` and won't fire during the
         // scaffold-only window.
-        if let (Some(ref w), Some(ref accum)) = (water.as_ref(), water_caustic_accum.as_ref()) {
+        if let (Some(w), Some(accum)) = (water.as_ref(), water_caustic_accum.as_ref()) {
             let views: Vec<vk::ImageView> = (0..super::sync::MAX_FRAMES_IN_FLIGHT)
                 .map(|i| accum.storage_view(i))
                 .collect();
@@ -1928,10 +1942,12 @@ impl VulkanContext {
             &device,
             &gpu_allocator,
             pipeline_cache,
-            &raw_indirect_views,
-            &motion_views_seed,
-            &mesh_id_views_seed,
-            &normal_views_for_svgf,
+            super::svgf::SvgfInputViews {
+                raw_indirect_views: &raw_indirect_views,
+                motion_views: &motion_views_seed,
+                mesh_id_views: &mesh_id_views_seed,
+                normal_views: &normal_views_for_svgf,
+            },
             swapchain_state.extent.width,
             swapchain_state.extent.height,
         ) {
@@ -2133,9 +2149,11 @@ impl VulkanContext {
             &device,
             &gpu_allocator,
             pipeline_cache,
-            &hdr_views_owned,
-            &motion_views_seed,
-            &mesh_id_views_seed,
+            super::taa::TaaInputViews {
+                hdr_views: &hdr_views_owned,
+                motion_views: &motion_views_seed,
+                mesh_id_views: &mesh_id_views_seed,
+            },
             swapchain_state.extent.width,
             swapchain_state.extent.height,
         ) {
@@ -2157,7 +2175,7 @@ impl VulkanContext {
         // Swap composite's HDR binding to TAA output so tone-map samples
         // the anti-aliased image. When TAA is disabled composite keeps its
         // original raw-HDR descriptors.
-        if let (Some(ref t), Some(ref mut c)) = (taa.as_ref(), composite.as_mut()) {
+        if let (Some(t), Some(ref mut c)) = (taa.as_ref(), composite.as_mut()) {
             let taa_views: Vec<vk::ImageView> = (0..n_frames).map(|i| t.output_view(i)).collect();
             c.rebind_hdr_views(&device, &taa_views, vk::ImageLayout::GENERAL);
         }
@@ -2175,13 +2193,15 @@ impl VulkanContext {
         let framebuffers = create_main_framebuffers(
             &device,
             render_pass,
-            hdr_views,
-            &normal_views,
-            &motion_views,
-            &mesh_id_views,
-            &raw_indirect_views,
-            &albedo_views,
-            &reservoir_views,
+            helpers::GBufferViews {
+                hdr_views,
+                normal_views: &normal_views,
+                motion_views: &motion_views,
+                mesh_id_views: &mesh_id_views,
+                raw_indirect_views: &raw_indirect_views,
+                albedo_views: &albedo_views,
+                reservoir_views: &reservoir_views,
+            },
             depth_image_view,
             swapchain_state.extent,
         )?;
@@ -2384,11 +2404,13 @@ impl VulkanContext {
             return Ok(pipe);
         }
         let pipe = pipeline::create_blend_pipeline(
-            &self.device,
-            self.render_pass,
-            self.swapchain_state.extent,
-            self.pipeline_cache,
-            self.pipeline_layout,
+            pipeline::BlendPipelineCtx {
+                device: &self.device,
+                render_pass: self.render_pass,
+                extent: self.swapchain_state.extent,
+                pipeline_cache: self.pipeline_cache,
+                pipeline_layout: self.pipeline_layout,
+            },
             src,
             dst,
             wireframe,
@@ -2626,6 +2648,7 @@ impl VulkanContext {
 
 // Method implementations split across submodules:
 mod draw;
+pub use draw::FrameInputs;
 mod helpers;
 mod resize;
 mod resources;

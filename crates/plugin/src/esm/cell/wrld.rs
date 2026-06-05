@@ -32,7 +32,7 @@ pub(crate) fn parse_wrld_group(
                     if let Some(ref name) = current_wrld_name {
                         let cells = all_exterior_cells
                             .entry(name.to_ascii_lowercase())
-                            .or_insert_with(HashMap::new);
+                            .or_default();
                         parse_wrld_children(reader, sub_end, cells)?;
                     } else {
                         reader.skip_group(&sub_group);

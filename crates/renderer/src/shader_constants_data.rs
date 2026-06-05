@@ -176,6 +176,7 @@ pub const DBG_VIZ_NORMALS: u32 = 0x4;
 ///   * green = tangent present (vertex shader fed authored or synthesized
 ///     data → Path 1 in `perturbNormal` fires).
 ///   * red = zero tangent → screen-space derivative fallback (Path 2).
+///
 /// Added under #783 follow-up.
 pub const DBG_VIZ_TANGENT: u32 = 0x8;
 
@@ -205,6 +206,7 @@ pub const DBG_RESERVED_20: u32 = 0x20;
 ///   * Clutter (1)      → cyan
 ///   * Actor (2)        → magenta
 ///   * Decal (3)        → yellow
+///
 /// The 2-bit layer is packed into `gpuInstance.flags` bits 4..5
 /// (`INSTANCE_RENDER_LAYER_SHIFT` / `_MASK` on the Rust side).
 pub const DBG_VIZ_RENDER_LAYER: u32 = 0x40;

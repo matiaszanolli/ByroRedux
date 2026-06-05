@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use byroredux_core::ecs::{GlobalTransform, MeshHandle, TextureHandle, Transform, World};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_plugin::esm;
+use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
@@ -292,16 +293,30 @@ fn release_splat_layer_textures(ctx: &mut VulkanContext, indices: &[u32]) {
     }
 }
 
+/// Renderer-side borrows shared by terrain spawning: the Vulkan context,
+/// texture provider, the cell's landscape-texture lookup, and the BLAS spec
+/// sink the caller batches builds through. Grouped to keep
+/// [`spawn_terrain_mesh`]'s argument count in check.
+pub(super) struct TerrainSpawnCtx<'a> {
+    pub ctx: &'a mut VulkanContext,
+    pub tex_provider: &'a TextureProvider,
+    pub landscape_textures: &'a HashMap<u32, String>,
+    pub blas_specs: &'a mut Vec<(u32, u32, u32)>,
+}
+
 pub(super) fn spawn_terrain_mesh(
     world: &mut World,
-    ctx: &mut VulkanContext,
-    tex_provider: &TextureProvider,
-    landscape_textures: &HashMap<u32, String>,
+    spawn: TerrainSpawnCtx,
     grid_x: i32,
     grid_y: i32,
     land: &esm::cell::LandscapeData,
-    blas_specs: &mut Vec<(u32, u32, u32)>,
 ) -> Option<usize> {
+    let TerrainSpawnCtx {
+        ctx,
+        tex_provider,
+        landscape_textures,
+        blas_specs,
+    } = spawn;
     const GRID: usize = 33;
     const SPACING: f32 = EXTERIOR_CELL_UNITS / 32.0; // 128.0
 
@@ -409,11 +424,14 @@ pub(super) fn spawn_terrain_mesh(
         release_splat_layer_textures(ctx, &splat_tex_indices);
         return None;
     }
+    let upload_ctx = GpuUploadCtx {
+        device: &ctx.device,
+        allocator: ctx.allocator.as_ref().unwrap(), // non-None checked just above
+        queue: &ctx.graphics_queue,
+        command_pool: ctx.transfer_pool,
+    };
     let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
-        &ctx.device,
-        ctx.allocator.as_ref().unwrap(), // non-None checked just above
-        &ctx.graphics_queue,
-        ctx.transfer_pool,
+        upload_ctx,
         &vertices,
         &indices,
         ctx.device_caps.ray_query_supported,

@@ -349,7 +349,7 @@ fn eval_walk_entity(world: &World, root: u32, max_depth: u32) -> DebugResponse {
         let kids: Vec<u32> = children_q
             .as_ref()
             .and_then(|q| q.get(entity))
-            .map(|c| c.0.iter().copied().collect())
+            .map(|c| c.0.to_vec())
             .unwrap_or_default();
         let gt_t = gt_q
             .as_ref()
@@ -408,7 +408,7 @@ fn eval_walk_entity(world: &World, root: u32, max_depth: u32) -> DebugResponse {
 /// through the in-engine command, a miss falls back to Papyrus
 /// evaluation (so `42.Transform.translation.x` still works).
 fn eval_request(world: &World, registry: &ComponentRegistry, expr: &str) -> DebugResponse {
-    let first_word = expr.trim().split_whitespace().next().unwrap_or("");
+    let first_word = expr.split_whitespace().next().unwrap_or("");
     if !first_word.is_empty() {
         if let Some(reg) = world.try_resource::<CommandRegistry>() {
             if reg.list().iter().any(|(name, _)| *name == first_word) {
@@ -806,7 +806,7 @@ fn eval_tex_missing(world: &World) -> DebugResponse {
         *missing.entry(path.to_string()).or_insert(0) += 1;
     }
     let mut sorted: Vec<_> = missing.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
     let lines: Vec<String> =
         std::iter::once(format!("{} unique missing texture paths:", sorted.len()))
             .chain(
@@ -838,7 +838,7 @@ fn eval_tex_loaded(world: &World) -> DebugResponse {
         *loaded.entry(path.to_string()).or_insert(0) += 1;
     }
     let mut sorted: Vec<_> = loaded.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
     let lines: Vec<String> = std::iter::once(format!(
         "{} unique loaded, {} fallback entities",
         sorted.len(),

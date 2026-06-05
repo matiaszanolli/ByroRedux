@@ -15,7 +15,7 @@ use std::io;
 /// Opaque stub for a Havok constraint block.
 ///
 /// Holds just the shared `bhkConstraintCInfo` base (two entity refs
-/// + priority); everything else is skipped. The concrete constraint
+/// plus priority); everything else is skipped. The concrete constraint
 /// type is preserved in `type_name` so downstream consumers and
 /// telemetry can identify it. See #117.
 #[derive(Debug)]

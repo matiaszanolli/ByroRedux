@@ -46,10 +46,8 @@ impl Parser {
     fn parse_expr_bp_inner(&mut self, min_bp: u8) -> Result<Spanned<Expr>, ParseError> {
         let mut lhs = self.parse_prefix()?;
 
-        loop {
-            // Check for postfix / infix operators
-            let Some(tok) = self.peek() else { break };
-
+        // Check for postfix / infix operators each iteration.
+        while let Some(tok) = self.peek() {
             // Postfix: dot, index, call
             match tok {
                 Token::Dot if PREC_POSTFIX > min_bp => {

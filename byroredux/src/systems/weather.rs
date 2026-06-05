@@ -256,6 +256,10 @@ pub(crate) fn cloud_scroll_rate_from_wind(wind_speed: u8) -> f32 {
     wind_speed as f32 * WIND_TO_SCROLL_RATE
 }
 
+/// Seven blended WTHR sky fields, in order:
+/// zenith, horizon, lower, sun_col, ambient, sunlight, fog_col.
+type WthrColors = ([f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3]);
+
 /// Sample a `WeatherDataRes`-shaped snapshot at the given `(slot_a, slot_b, t)`
 /// tuple. Returns the seven blended fields the WTHR cross-fade composer
 /// needs: zenith, horizon, lower, sun_col, ambient, sunlight, fog_col.
@@ -269,7 +273,7 @@ fn sample_wthr_colors(
     slot_a: usize,
     slot_b: usize,
     t: f32,
-) -> ([f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3]) {
+) -> WthrColors {
     use byroredux_plugin::esm::records::weather::*;
     (
         lerp3(sky_colors[SKY_UPPER][slot_a], sky_colors[SKY_UPPER][slot_b], t),

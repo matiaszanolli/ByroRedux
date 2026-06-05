@@ -327,7 +327,7 @@ pub fn shrink_scratch_if_oversized<T>(vec: &mut Vec<T>, working_set: usize, floo
 /// configured budget, so the batched-build Phase 1 should pause and
 /// evict previous-cell BLAS before creating more result buffers. The
 /// 90% threshold leaves headroom for the batch's final few allocations
-/// + the scratch buffer; the budget itself is VRAM/3 so a breach
+/// and the scratch buffer; the budget itself is VRAM/3 so a breach
 /// represents genuine residency pressure, not just a hot spike.
 ///
 /// Pulled out as a pure function so the unit test can pin the
@@ -444,7 +444,7 @@ pub(super) fn is_scratch_aligned(scratch_address: vk::DeviceAddress, align: u32)
     if align <= 1 {
         return true;
     }
-    scratch_address % align as vk::DeviceAddress == 0
+    scratch_address.is_multiple_of(align as vk::DeviceAddress)
 }
 
 /// Extra bytes a scratch buffer must reserve, beyond the build-scratch

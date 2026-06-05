@@ -18,16 +18,36 @@ pub struct SwapchainState {
 /// `old_swapchain`: pass the previous swapchain handle for atomic handoff
 /// during recreation (avoids flicker on some platforms). Pass `null()` for
 /// initial creation.
+/// The instance/device/surface handles a swapchain build queries against.
+/// Groups the five Vulkan handles that travel together into
+/// [`create_swapchain`].
+#[derive(Clone, Copy)]
+pub struct SwapchainSurfaceCtx<'a> {
+    /// Vulkan instance.
+    pub instance: &'a ash::Instance,
+    /// Logical device the swapchain is created on.
+    pub device: &'a ash::Device,
+    /// Physical device the surface capabilities are queried from.
+    pub physical_device: vk::PhysicalDevice,
+    /// Surface extension loader.
+    pub surface_loader: &'a ash::khr::surface::Instance,
+    /// The window surface the swapchain presents to.
+    pub surface: vk::SurfaceKHR,
+}
+
 pub fn create_swapchain(
-    instance: &ash::Instance,
-    device: &ash::Device,
-    physical_device: vk::PhysicalDevice,
-    surface_loader: &ash::khr::surface::Instance,
-    surface: vk::SurfaceKHR,
+    ctx: SwapchainSurfaceCtx,
     indices: QueueFamilyIndices,
     window_size: [u32; 2],
     old_swapchain: vk::SwapchainKHR,
 ) -> Result<SwapchainState> {
+    let SwapchainSurfaceCtx {
+        instance,
+        device,
+        physical_device,
+        surface_loader,
+        surface,
+    } = ctx;
     let capabilities = unsafe {
         surface_loader
             .get_physical_device_surface_capabilities(physical_device, surface)
@@ -231,6 +251,12 @@ impl SwapchainState {
     /// destroy calls so a hypothetical second `destroy` (e.g. a future
     /// panic-cleanup path) is a no-op against `VK_NULL_HANDLE` rather
     /// than a double-free of every view + the swapchain itself.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` is valid and live, the device is not lost,
+    /// and that none of the swapchain images or views are still in use by an
+    /// in-flight command buffer or pending present.
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
         for &view in &self.image_views {
             device.destroy_image_view(view, None);

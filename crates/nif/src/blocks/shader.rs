@@ -400,9 +400,11 @@ impl TallGrassShaderProperty {
 /// bytes (`texture_clamp_mode + texture_set_ref + refraction +
 /// parallax`) — the per-block tail (sky filename / sky type / water
 /// flags) never reached the importer.
-fn parse_skyrim_shader_base(
-    stream: &mut NifStream,
-) -> io::Result<(u32, u32, Vec<u32>, Vec<u32>, [f32; 2], [f32; 2])> {
+/// Shared Skyrim+ shader-property head: `(shader_flags_1, shader_flags_2,
+/// sf1_crcs, sf2_crcs, uv_offset, uv_scale)`.
+type SkyrimShaderBase = (u32, u32, Vec<u32>, Vec<u32>, [f32; 2], [f32; 2]);
+
+fn parse_skyrim_shader_base(stream: &mut NifStream) -> io::Result<SkyrimShaderBase> {
     let bsver = stream.bsver();
 
     let (shader_flags_1, shader_flags_2) = if bsver < crate::version::bsver::FO4_CRC_FLAGS {

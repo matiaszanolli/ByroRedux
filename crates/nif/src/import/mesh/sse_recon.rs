@@ -197,11 +197,12 @@ pub struct DecodedPackedBuffer {
 ///    on `(ARG & 0x401) == 0x401`); or
 /// 2. keeping the upstream `try_reconstruct_sse_geometry` gate
 ///    locked to the SSE band so this decoder never sees FO4 input.
+///
 /// Without either, FO4 meshes that ship without `VF_FULL_PRECISION`
 /// (the common case) would silently mis-decode every vertex.
 pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPackedBuffer> {
     let vertex_size = buffer.vertex_size as usize;
-    if vertex_size == 0 || buffer.raw_bytes.len() % vertex_size != 0 {
+    if vertex_size == 0 || !buffer.raw_bytes.len().is_multiple_of(vertex_size) {
         return None;
     }
     let num_vertices = buffer.raw_bytes.len() / vertex_size;

@@ -209,7 +209,7 @@ pub enum BSGeometryMeshKind {
     /// `0x200` is set. Vanilla Starfield does **not** ship inline
     /// data — every mesh references an external `.mesh` file — but
     /// the format permits it and authoring tools / ports may emit it.
-    Internal { mesh_data: BSGeometryMeshData },
+    Internal { mesh_data: Box<BSGeometryMeshData> },
 }
 
 impl BSGeometryMesh {
@@ -222,7 +222,7 @@ impl BSGeometryMesh {
 
         let kind = if internal {
             BSGeometryMeshKind::Internal {
-                mesh_data: BSGeometryMeshData::parse(stream)?,
+                mesh_data: Box::new(BSGeometryMeshData::parse(stream)?),
             }
         } else {
             // `meshName.Sync(stream, 4)` in nifly — a u32 length-prefixed
@@ -460,14 +460,12 @@ impl BSGeometryMeshData {
         // Per nifly: weight count is interpreted as a *flat* count of
         // BoneWeight entries; the per-vertex grouping is `weights_per_vert`.
         // When `weights_per_vert == 0` we skip the resize (no skin weights).
-        let mut skin_weights: Vec<Vec<BoneWeight>> = if weights_per_vert > 0 {
-            let outer_len = n_total_weights / weights_per_vert;
-            stream.allocate_vec::<Vec<BoneWeight>>(outer_len)?
-        } else {
-            Vec::new()
+        let mut skin_weights: Vec<Vec<BoneWeight>> = match n_total_weights.checked_div(weights_per_vert) {
+            Some(outer_len) => stream.allocate_vec::<Vec<BoneWeight>>(outer_len)?,
+            None => Vec::new(),
         };
-        if weights_per_vert > 0 {
-            let outer_len = (n_total_weights / weights_per_vert) as usize;
+        if let Some(outer_len) = n_total_weights.checked_div(weights_per_vert) {
+            let outer_len = outer_len as usize;
             for _ in 0..outer_len {
                 // #768: route the inner allocation through `allocate_vec`
                 // so a hostile `weights_per_vert = 0xFFFFFFFF` cannot

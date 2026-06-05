@@ -331,7 +331,7 @@ fn expand_leveled_inner(
     }
     // Direct base record — push and stop. Most outfit entries land
     // here on the first call.
-    if index.items.get(&form_id).is_some() {
+    if index.items.contains_key(&form_id) {
         out.push(form_id);
         return;
     }

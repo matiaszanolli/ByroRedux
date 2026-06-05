@@ -25,6 +25,7 @@
 //!   and `image_barrier_transfer_dst_to_shader_read`) explicitly set
 //!   `VK_QUEUE_FAMILY_IGNORED` to match the long-standing
 //!   `texture::from_rgba` / `record_dds_upload` convention.
+//!
 //! Tightening barrier helpers to all-IGNORED is a separate change that
 //! needs RenderDoc validation; mixing styles here preserves byte-
 //! equivalence with the pre-#1046 inline code.

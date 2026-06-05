@@ -21,6 +21,18 @@ use crate::vertex::Vertex;
 use anyhow::{Context, Result};
 use ash::vk;
 
+/// One compacted static-BLAS entry produced by the compact pass:
+/// `(mesh_handle, compacted accel struct, compacted buffer, compacted size,
+/// vertex count, index count)`.
+type CompactedBlas = (
+    u32,
+    vk::AccelerationStructureKHR,
+    GpuBuffer,
+    vk::DeviceSize,
+    u32,
+    u32,
+);
+
 impl AccelerationManager {
     /// Queue a BLAS for deferred destruction.
     ///
@@ -29,7 +41,7 @@ impl AccelerationManager {
     /// destroy immediately — `drop_blas` is called by the cell loader on
     /// unload and the entry may still be in-flight. The entry moves to
     /// `pending_destroy_blas` and the actual `VkAccelerationStructureKHR`
-    /// + buffer destruction is delayed until the countdown expires in
+    /// and buffer destruction is delayed until the countdown expires in
     /// [`tick_deferred_destroy`](Self::tick_deferred_destroy).
     ///
     /// Also forces a full TLAS rebuild on both frame slots so no
@@ -49,10 +61,8 @@ impl AccelerationManager {
         // BLAS map mutated — bump generation so the next build_tlas
         // can short-circuit the per-instance zip-compare. #300.
         self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
-        for tlas_slot in &mut self.tlas {
-            if let Some(ref mut t) = tlas_slot {
-                t.needs_full_rebuild = true;
-            }
+        for ref mut t in self.tlas.iter_mut().flatten() {
+            t.needs_full_rebuild = true;
         }
     }
 
@@ -126,16 +136,19 @@ impl AccelerationManager {
     /// avoid per-mesh GPU stalls. See #284 (C2-04).
     pub fn build_blas(
         &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        ctx: crate::vulkan::GpuUploadCtx,
         transfer_fence: Option<&std::sync::Mutex<vk::Fence>>,
         mesh_handle: u32,
         mesh: &GpuMesh,
         vertex_count: u32,
         index_count: u32,
     ) -> Result<()> {
+        let crate::vulkan::GpuUploadCtx {
+            device,
+            allocator,
+            queue,
+            command_pool,
+        } = ctx;
         // #915 / REN-D8-NEW-05 — sibling of the `build_blas_batched`
         // pre-batch eviction at line ~1354. The batched path is the
         // M40 cell-loader hot path, so eviction lives there; the
@@ -504,8 +517,8 @@ impl AccelerationManager {
             // Mid-batch eviction check. Trigger only every N iterations
             // so the cost is amortized; the predicate itself is pure
             // arithmetic. #510.
-            if idx > 0 && idx % BATCH_EVICTION_CHECK_INTERVAL == 0 {
-                if should_evict_mid_batch(
+            if idx > 0 && idx % BATCH_EVICTION_CHECK_INTERVAL == 0
+                && should_evict_mid_batch(
                     self.static_blas_bytes,
                     pending_bytes,
                     self.blas_budget_bytes,
@@ -519,7 +532,6 @@ impl AccelerationManager {
                         self.evict_unused_blas(device, allocator);
                     }
                 }
-            }
 
             let primitive_count = index_count / 3;
 
@@ -752,18 +764,7 @@ impl AccelerationManager {
         // every Vulkan handle whose Drop relies on the explicit `destroy`
         // calls in phase 7. Mirrors the build/copy-phase cleanup pattern
         // at lines 733-745 / 815-832.
-        let alloc_compact = || -> Result<(
-            Vec<(
-                u32,
-                vk::AccelerationStructureKHR,
-                GpuBuffer,
-                vk::DeviceSize,
-                u32,
-                u32,
-            )>,
-            u64,
-            u64,
-        )> {
+        let alloc_compact = || -> Result<(Vec<CompactedBlas>, u64, u64)> {
             let mut compacted_sizes = vec![0u64; prepared.len()];
             unsafe {
                 device
@@ -1002,6 +1003,12 @@ impl AccelerationManager {
     /// `idle >= min_idle` and be destroyed under the GPU — at that point route
     /// eviction through `pending_destroy_blas` (as `drop_blas` already does),
     /// or gate the per-batch bump so it cannot outrun retired frames.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `device` and `allocator` are valid and live, the
+    /// device is not lost, and that the evicted BLAS are no longer referenced
+    /// by any in-flight command buffer or TLAS build.
     pub unsafe fn evict_unused_blas(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         if self.static_blas_bytes <= self.blas_budget_bytes {
             return;
@@ -1078,10 +1085,8 @@ impl AccelerationManager {
             // BLAS map mutated — see #300.
             self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
             // Force full TLAS rebuild next frame since BLAS addresses changed.
-            for slot in &mut self.tlas {
-                if let Some(ref mut t) = slot {
-                    t.needs_full_rebuild = true;
-                }
+            for ref mut t in self.tlas.iter_mut().flatten() {
+                t.needs_full_rebuild = true;
             }
         }
     }
