@@ -1148,11 +1148,6 @@ impl TextureRegistry {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn current_frame_id(&self) -> u64 {
-        self.current_frame_id
-    }
-
     /// Replace the texture data for an existing handle with new RGBA pixels.
     ///
     /// Uses deferred destruction: the replaced texture is kept alive until

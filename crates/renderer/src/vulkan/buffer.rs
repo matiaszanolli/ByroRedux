@@ -988,21 +988,20 @@ mod tests {
     fn option_arc_dropped_when_set_to_none() {
         let shared: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
         let mut held: Option<Arc<Mutex<()>>> = Some(Arc::clone(&shared));
+        assert!(held.is_some(), "fixture: Option holds the cloned Arc");
         assert_eq!(
             Arc::strong_count(&shared),
             2,
             "test fixture: original + Option's clone"
         );
         held = None;
+        assert!(held.is_none(), "destroy() sets the Option to None");
         assert_eq!(
             Arc::strong_count(&shared),
             1,
             "setting Option<Arc<_>> to None must drop the wrapped Arc immediately — \
              the contract `GpuBuffer::destroy()` and `Texture::destroy()` rely on"
         );
-        // `held` is consumed by the next line; silence the unused
-        // binding lint without changing the assertion above.
-        drop(held);
     }
 
     #[test]

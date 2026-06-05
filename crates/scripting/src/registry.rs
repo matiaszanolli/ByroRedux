@@ -132,7 +132,7 @@ mod tests {
         r.register("foo", dummy_spawn);
         let f = r.lookup("foo").expect("registered spawner missing");
         // Function-pointer equality is observable via fn-pointer-to-usize cast.
-        assert_eq!(f as usize, dummy_spawn as usize);
+        assert_eq!(f as usize, dummy_spawn as *const () as usize);
     }
 
     #[test]
@@ -153,7 +153,7 @@ mod tests {
         r.register("foo", dummy_spawn);
         r.register("foo", other_spawn);
         let f = r.lookup("foo").expect("re-registered spawner missing");
-        assert_eq!(f as usize, other_spawn as usize);
+        assert_eq!(f as usize, other_spawn as *const () as usize);
         // Count stays at one — re-registration overwrites, doesn't append.
         assert_eq!(r.len(), 1);
     }

@@ -118,29 +118,6 @@ mod tests {
         }
     }
 
-    /// Helper: assert that the line declaring `name` in `src` (under a
-    /// `const <type> <name>` prefix) contains `value_token`.
-    /// Tolerates GLSL alignment padding (`const uint NAME     = 0u;`).
-    fn assert_shader_const_value(
-        src: &str,
-        decl_prefix: &str,
-        name: &str,
-        value_token: &str,
-        rust_origin: &str,
-    ) {
-        let needle = format!("{decl_prefix} {name}");
-        let pos = src
-            .find(&needle)
-            .unwrap_or_else(|| panic!("shader missing `{needle}` declaration"));
-        let line_end = src[pos..].find('\n').map(|n| pos + n).unwrap_or(src.len());
-        let line = src[pos..line_end].trim();
-        assert!(
-            line.contains(value_token),
-            "shader declaration `{line}` does not contain expected value token `{value_token}` \
-             (Rust side: {rust_origin})",
-        );
-    }
-
     /// TD4-203 / #1126 — `composite.frag` must NOT redeclare
     /// `BLOOM_INTENSITY` as a `const float`. The `#define`d value
     /// from the included `shader_constants.glsl` is the single source
