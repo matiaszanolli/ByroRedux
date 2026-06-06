@@ -259,6 +259,47 @@ void main() {
         // dynamic *lighting* on a static surface converges slowly (~N
         // frames) while parked — acceptable for the quality win, and
         // self-limited by the 255 cap.
+        // ── Firefly outlier rejection (Issue A) ──────────────────────
+        // A rare high-energy GI sample — a cosine bounce that randomly
+        // hits the small bright emissive light panel — lands many σ above
+        // the temporal mean. Averaged blindly via 1/N it needs far more
+        // than the histAge cap to settle, which is the "diffuse dither
+        // that won't resolve" on GI-dominated surfaces (the dark Cornell
+        // floor). Clamp the INCOMING sample's luminance to the reprojected
+        // temporal mean + k·σ. This is outlier rejection, not a hard
+        // radiance cap: the threshold tracks the local mean, so legitimate
+        // bright bleed (which raises the mean over time) is preserved and
+        // only the per-frame variance spike is removed. Gated on histAge
+        // so the mean/variance estimate is trustworthy first. Caustics
+        // ride a SEPARATE buffer (composite-time) and are untouched here.
+        // Use a SPATIAL (current-frame 3×3) mean+σ for the threshold, not
+        // the temporal moments: a persistent firefly source self-inflates
+        // the temporal variance, so a temporal mean+kσ clamp barely fires.
+        // A single-pixel firefly cannot inflate its 8 neighbours, so the
+        // neighbourhood statistic is a robust local-expected-value.
+        {
+            float sumL = currLum;
+            float sumL2 = currLum2;
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    if (dx == 0 && dy == 0) continue;
+                    ivec2 q = clamp(p + ivec2(dx, dy), ivec2(0),
+                                    ivec2(screen.xy) - ivec2(1));
+                    float sl = luminance(texelFetch(currIndirectTex, q, 0).rgb);
+                    sumL += sl;
+                    sumL2 += sl * sl;
+                }
+            }
+            float nMean = sumL / 9.0;
+            float nVar = max(sumL2 / 9.0 - nMean * nMean, 0.0);
+            float maxL = nMean + 3.0 * sqrt(nVar) + 0.02;
+            if (currLum > maxL) {
+                currInd *= maxL / max(currLum, 1.0e-4);
+                currLum = maxL;
+                currLum2 = maxL * maxL;
+            }
+        }
+
         float invN = 1.0 / (histAge + 1.0);
         float floorC = params.w > 0.5 ? 0.0 : params.x;
         float floorM = params.w > 0.5 ? 0.0 : params.y;
