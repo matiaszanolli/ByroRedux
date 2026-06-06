@@ -390,7 +390,7 @@ impl<'a> MeshBuilder<'a> {
     }
 
     fn sphere(&mut self, radius: f32) -> MeshHandle {
-        let (v, i) = uv_sphere(radius, [1.0, 1.0, 1.0], 24, 32);
+        let (v, i) = uv_sphere(radius, [1.0, 1.0, 1.0], 96, 128);
         self.upload(&v, &i)
     }
 

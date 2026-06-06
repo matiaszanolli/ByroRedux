@@ -529,8 +529,15 @@ vec3 getHitTriNormal(uint instanceIdx, uint primitiveIdx) {
 // (the first one becomes the reflection surface). Without the flag the
 // driver pays "find closest hit" cost across the full maxDist=5000 unit
 // reach. Fix #420.
-vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias) {
+vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
+                     int selfInstance) {
     rayQueryEXT rq;
+    // Miss / self-hit fallback colour — sky-tinted ambient (exterior) or
+    // cell ambient (interior). Hoisted so a self-intersection hit (below)
+    // can reuse it.
+    bool _isExt = jitter.w > 0.5;
+    vec3 missCol = _isExt ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
+                          : sceneFlags.yzw;
     // tMin = 0.05 matches the N_bias offset every caller already
     // applies to `origin`. Live callers (grep for `traceReflection(`):
     //   * glass IOR reflection — bias 0.05, maxDist 3000
@@ -574,17 +581,23 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias) 
         // ceiling colour" was stale wisdom — interior cells get the
         // default zenith, not a per-cell ceiling derivation. See #1125 /
         // REN-D9-NEW-01.
-        bool isExterior = jitter.w > 0.5;
-        vec3 missColor = isExterior
-            ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
-            : sceneFlags.yzw;
-        return vec4(missColor, 0.0);
+        return vec4(missCol, 0.0);
     }
 
     // Hit — get SSBO instance index via custom index (encodes the draw
     // command position, which matches the SSBO layout). InstanceId would
     // give the TLAS-internal index, which diverges when some meshes lack BLAS.
     int hitInstanceIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+    // Self-intersection rejection (Issue C). At grazing incidence the
+    // reflected ray goes nearly tangent to a curved glass surface and
+    // re-hits the originating instance's own mesh — a convex surface can't
+    // legitimately reflect itself, so this hit is the self-intersection
+    // that paints the tessellation moire on the glass rim. Treat it as a
+    // miss (ambient) instead of sampling the glass's own surface. Scale-
+    // independent (no epsilon to tune): keyed on instance identity.
+    if (selfInstance >= 0 && hitInstanceIdx == selfInstance) {
+        return vec4(missCol, 0.0);
+    }
     int hitPrimitiveIdx = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
     vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
 
@@ -2338,7 +2351,8 @@ void main() {
         // smooth, so a sharp mirror reflection (mipBias scaled by its low
         // roughness) — no jitter, no noise.
         vec3 R = reflect(-V, N_view);
-        vec4 reflRay = traceReflection(fragWorldPos + N_bias * 0.05, R, 3000.0, roughness * 8.0);
+        vec4 reflRay = traceReflection(fragWorldPos + N_bias * 0.05, R, 3000.0,
+                                       roughness * 8.0, fragInstanceIndex);
         vec3 reflColor = reflRay.rgb;
 
         // Refraction ray using the smooth geometric normal.
@@ -2547,7 +2561,13 @@ void main() {
             // ray escaped: cell ambient + fog, identical to the !hit
             // path. Markarth lantern probe 2026-05-10.
             bool terminusOnFallback = hit && (instances[tIdx].textureIndex == 0u);
-            if (!hit || terminusOnFallback) {
+            // Self-intersection terminus (Issue C): the passthru budget can
+            // be exhausted by a grazing ray skimming its own glass mesh,
+            // then it commits a hit on that same instance. Sampling it
+            // paints the tessellation moire. Treat a self-instance terminus
+            // as an escape (ambient), like the fallback-texture case.
+            bool terminusOnSelf = hit && (tIdx == fragInstanceIndex);
+            if (!hit || terminusOnFallback || terminusOnSelf) {
                 // Escaped scene — fall back to cell ambient. The
                 // diagnostic capture from #789-followup showed this
                 // branch is the *dominant* path for upright glass
@@ -2871,7 +2891,8 @@ void main() {
         // pyramid; on untextured (1×1) surfaces it's a no-op and the
         // reflection is mirror-sharp, which is fine — flat colour.
         vec4 reflResult =
-            traceReflection(fragWorldPos + N_bias * 0.1, R, 5000.0, roughness * 8.0);
+            traceReflection(fragWorldPos + N_bias * 0.1, R, 5000.0,
+                            roughness * 8.0, fragInstanceIndex);
 
         // Fresnel-weighted reflection: stronger at grazing angles.
         vec3 F = fresnelSchlick(NdotV, F0);
