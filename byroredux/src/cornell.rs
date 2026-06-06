@@ -31,8 +31,7 @@ use byroredux_core::string::StringPool;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{box_vertices_colored, uv_sphere, VulkanContext, MATERIAL_KIND_GLASS};
 
-use crate::components::{AlphaBlend, CellLightingRes};
-use byroredux_core::ecs::EntityId;
+use crate::components::CellLightingRes;
 
 /// Classic Cornell wall albedos (linear). Gamebryo colors are raw
 /// monitor-space floats and must NOT be sRGB-decoded (see the
@@ -87,29 +86,6 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
     // would render as a tinted checkerboard. (See `asset_provider`'s F2
     // path: the NIF / cell loaders route textureless materials here too.)
     let neutral = TextureHandle(ctx.texture_registry.neutral_fallback());
-
-    // Glass probes need a *semi-transparent* base so the shader's glass
-    // path (`finalAlpha = mix(texColor.a, 1.0, fresnel)`) actually blends.
-    // The white neutral fallback is opaque (alpha 1.0), which would render
-    // glass as a fully-opaque surface and show the raw, un-denoised IGN
-    // refraction jitter at full strength (the "dot-stipple"). Real
-    // Bethesda glass samples a texture whose alpha channel drives
-    // transparency; mirror that with a 1×1 white texel so the jittered
-    // refraction is partly diluted against the scene behind, as on real
-    // alpha-blended glass. Tint still comes from `Material::diffuse_color`.
-    //
-    // Alpha is 0.6 (153/255), deliberately above 0.5: the shader routes
-    // `texColor.a ∈ (0.02, 0.5)` glass onto the flat-pane *window-portal*
-    // path, which is wrong for these solid sphere/cube volumes. ≥ 0.5
-    // keeps them on the IOR refraction path while still blending ~40 %.
-    //
-    // NOTE: this does NOT remove the refraction "dot-stipple" — that is
-    // the renderer's un-denoised IGN refraction jitter (spread =
-    // roughness × 0.15), inherent to the glass IOR path and most visible
-    // on large, close-up glass like these probes. Exposing that quirk is
-    // exactly what the harness is for; the fix belongs on the renderer
-    // side (denoise / resolve the jitter), tracked separately.
-    let glass_tex = TextureHandle(upload_solid_rgba(ctx, [255, 255, 255, 153]));
 
     let mut builder = MeshBuilder::new(ctx);
 
@@ -237,31 +213,34 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
     }
 
     // ── Glass probes ────────────────────────────────────────────────
-    // Glass uses the semi-transparent base + an `AlphaBlend` component so
-    // it renders in the transparent pass like real Bethesda glass —
-    // standard SRC_ALPHA / INV_SRC_ALPHA blending.
+    // Glass is OPAQUE (no AlphaBlend, opaque neutral texture → finalAlpha
+    // 1.0): the IOR refraction ray IS the transmission — it samples the
+    // scene behind and writes it in place of the background, so the bent /
+    // refracted world is what you see THROUGH the glass. An alpha-blend
+    // window would instead composite the *undistorted* background over the
+    // glass and dilute the refraction to invisibility. The old budget /
+    // jitter stipple that motivated alpha-blend is fixed (IOR budget,
+    // smooth-glass deterministic refraction, deterministic metal refl).
     let glass_sphere = builder.sphere(0.8);
-    let e = spawn_object(
+    spawn_object(
         world,
         glass_sphere,
-        glass_tex,
+        neutral,
         Vec3::new(2.5, 0.8, 0.6),
         Quat::IDENTITY,
         glass([0.9, 0.95, 1.0]),
         "glass_sphere",
     );
-    world.insert(e, AlphaBlend { src_blend: 6, dst_blend: 7 });
     let glass_cube = builder.box_mesh([0.6, 0.6, 0.6]);
-    let e = spawn_object(
+    spawn_object(
         world,
         glass_cube,
-        glass_tex,
+        neutral,
         Vec3::new(-2.6, 0.6, 0.6),
         Quat::from_rotation_y(0.4),
         glass([1.0, 0.95, 0.9]),
         "glass_cube",
     );
-    world.insert(e, AlphaBlend { src_blend: 6, dst_blend: 7 });
 
     // ── Emissive probe ──────────────────────────────────────────────
     let emit_cube = builder.box_mesh([0.35, 0.35, 0.35]);
@@ -349,7 +328,7 @@ fn spawn_object(
     rot: Quat,
     material: Material,
     name: &str,
-) -> EntityId {
+) {
     let e = world.spawn();
     world.insert(e, Transform::new(pos, rot, 1.0));
     world.insert(e, GlobalTransform::new(pos, rot, 1.0));
@@ -357,22 +336,6 @@ fn spawn_object(
     world.insert(e, tex);
     world.insert(e, material);
     name_entity(world, e, name);
-    e
-}
-
-/// Upload a 1×1 RGBA texel and return its bindless handle. Used for the
-/// glass probes' semi-transparent base (see `setup_cornell_scene`).
-fn upload_solid_rgba(ctx: &mut VulkanContext, rgba: [u8; 4]) -> u32 {
-    let alloc = ctx.allocator.as_ref().unwrap();
-    let upload_ctx = GpuUploadCtx {
-        device: &ctx.device,
-        allocator: alloc,
-        queue: &ctx.graphics_queue,
-        command_pool: ctx.transfer_pool,
-    };
-    ctx.texture_registry
-        .register_rgba(upload_ctx, 1, 1, &rgba)
-        .expect("Cornell glass texture upload failed")
 }
 
 /// Spawn a named point [`LightSource`] at `pos`. `radius` is the
