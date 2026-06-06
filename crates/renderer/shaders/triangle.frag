@@ -576,8 +576,14 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
     hitUV = hitUV * vec2(hitMat.uvScaleU, hitMat.uvScaleV)
           + vec2(hitMat.uvOffsetU, hitMat.uvOffsetV);
 
-    // Sample the hit surface's texture.
-    vec3 hitColor = texture(textures[nonuniformEXT(hitTexIdx)], hitUV).rgb;
+    // Sample the hit surface's texture × its canonical avgAlbedo (material
+    // diffuse_color). The texture alone is the neutral white fallback for
+    // untextured / vertex-coloured surfaces, so without the avgAlbedo
+    // factor a metal/glass reflection of the Cornell red/green walls reads
+    // as flat white. avgAlbedo is the white tint for textured content, so
+    // detail is preserved there. Mirrors the refraction-colour fix.
+    vec3 hitColor = texture(textures[nonuniformEXT(hitTexIdx)], hitUV).rgb
+        * vec3(hitInst.avgAlbedoR, hitInst.avgAlbedoG, hitInst.avgAlbedoB);
 
     // Exponential distance attenuation: distant reflections gracefully fade
     // into ambient rather than persisting at near-full strength. The old
@@ -2316,7 +2322,15 @@ void main() {
                                                  frameCount + 37.0);
             float rn2 = interleavedGradientNoise(
                 gl_FragCoord.xy + vec2(79.3, 193.7), frameCount + 53.0);
-            float spread = roughness * 0.15;
+            // Roughness-gated scatter: smooth glass (the common case —
+            // window panes, clear spheres) refracts DETERMINISTICALLY so
+            // its transmitted image is sharp and noise-free. Only visibly
+            // rough/etched glass (roughness > 0.2) scatters; the jitter
+            // there is masked by the roughness-scaled mip blur below + TAA.
+            // Pre-fix `roughness * 0.15` jittered even clear glass, which
+            // — with the mip blur added to hide it — produced a flat,
+            // grainy "frosted" look on glass that should be crystal clear.
+            float spread = max(roughness - 0.2, 0.0) * 0.3;
             if (spread > 0.001 && dot(refractDir, refractDir) > 0.0001) {
                 // #820: at normal incidence `refractDir` is parallel to
                 // `-N_geom_view`, so `cross(refractDir, N_geom_view)` is
@@ -2528,21 +2542,34 @@ void main() {
                 // `1.5 + r*4` showed raw checker grain on clear (low-
                 // roughness) glass once the budget allowed IOR to fire
                 // at scale.
-                float refrMip = 3.0 + roughness * 4.0;
+                // Mip floor scales with roughness only: clear glass
+                // (roughness≈0.1) now refracts a SHARP image (mip≈0.4)
+                // because the per-frame jitter that the old 3.0 floor was
+                // hiding is gone for smooth glass. Etched glass still
+                // softens. This is what makes refraction read as "bending
+                // the scene behind" rather than a flat translucent wash.
+                float refrMip = 0.4 + roughness * 5.0;
                 vec3 tAlbedo = textureLod(
                     textures[nonuniformEXT(tInst.textureIndex)], tUV, refrMip).rgb;
 
-                // Apply a lighting estimate to the hit albedo. The raw
-                // texture without lighting reads as "raw diffuse" which
-                // in dim interiors looks pitch-black through the glass
-                // (since a brown wood wall is texColor≈0.2 regardless
-                // of actual illumination). We multiply by the cell's
-                // ambient floor + a small base so the refracted scene
-                // matches the LIT look of the world, not its raw albedo.
-                // Same cheap pattern the 1-bounce GI ray uses at :1179
-                // — ambient × albedo instead of full shading.
-                vec3 ambientLitFloor = sceneFlags.yzw + vec3(0.25);
-                refrColor = tAlbedo * ambientLitFloor;
+                // CRITICAL — multiply by the hit's canonical avgAlbedo
+                // (the material diffuse_color). The texture alone is the
+                // neutral white fallback for untextured/vertex-coloured
+                // surfaces (Cornell walls), so without this the refracted
+                // red/green walls read as flat white and the bending is
+                // invisible. For textured content avgAlbedo is the white
+                // tint, so detail is preserved. Same fix shape as the GI
+                // bounce colour (#avg_albedo).
+                vec3 tColor = tAlbedo
+                    * vec3(tInst.avgAlbedoR, tInst.avgAlbedoG, tInst.avgAlbedoB);
+
+                // Apply a lighting estimate so the refracted scene matches
+                // the LIT world, not raw albedo. Cheap ambient-floor model
+                // (full per-hit shading is too costly inside the refraction
+                // loop); the floor is generous so brightly-lit walls seen
+                // through glass don't read as dim.
+                vec3 ambientLitFloor = sceneFlags.yzw + vec3(0.6);
+                refrColor = tColor * ambientLitFloor;
 
                 // Distance attenuation — faraway refracted content
                 // falls off gently so thick glass stacks don't become
