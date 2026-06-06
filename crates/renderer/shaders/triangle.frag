@@ -505,7 +505,7 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
 // (the first one becomes the reflection surface). Without the flag the
 // driver pays "find closest hit" cost across the full maxDist=5000 unit
 // reach. Fix #420.
-vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
+vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias) {
     rayQueryEXT rq;
     // tMin = 0.05 matches the N_bias offset every caller already
     // applies to `origin`. Live callers (grep for `traceReflection(`):
@@ -582,7 +582,12 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
     // factor a metal/glass reflection of the Cornell red/green walls reads
     // as flat white. avgAlbedo is the white tint for textured content, so
     // detail is preserved there. Mirrors the refraction-colour fix.
-    vec3 hitColor = texture(textures[nonuniformEXT(hitTexIdx)], hitUV).rgb
+    // `mipBias` softens the reflected image for rough surfaces — a
+    // DETERMINISTIC pre-filtered-radiance blur in place of a stochastic
+    // GGX-cone jitter, so rough-metal reflections carry no per-frame
+    // sampling noise (the caller passes roughness-scaled mip and a sharp
+    // reflection ray). Smooth surfaces pass mipBias 0 → razor-sharp.
+    vec3 hitColor = textureLod(textures[nonuniformEXT(hitTexIdx)], hitUV, mipBias).rgb
         * vec3(hitInst.avgAlbedoR, hitInst.avgAlbedoG, hitInst.avgAlbedoB);
 
     // Exponential distance attenuation: distant reflections gracefully fade
@@ -2305,9 +2310,11 @@ void main() {
         // above; the IOR block runs inside the isGlass branch).
         float fresnelScalar = fresnelSchlick(NdotV_v, vec3(f0Dielectric)).r;
 
-        // Reflection ray — micro-surface normal is correct here.
+        // Reflection ray — micro-surface normal is correct here. Glass is
+        // smooth, so a sharp mirror reflection (mipBias scaled by its low
+        // roughness) — no jitter, no noise.
         vec3 R = reflect(-V, N_view);
-        vec4 reflRay = traceReflection(fragWorldPos + N_bias * 0.05, R, 3000.0);
+        vec4 reflRay = traceReflection(fragWorldPos + N_bias * 0.05, R, 3000.0, roughness * 8.0);
         vec3 reflColor = reflRay.rgb;
 
         // Refraction ray using the smooth geometric normal.
@@ -2808,14 +2815,19 @@ void main() {
         // glossy reflection into lockstep so both paths share one bias rule.
         vec3 N_view = dot(N, V) < 0.0 ? -N : N;
         vec3 R = reflect(-V, N_view);
-        float frameCount = cameraPos.w;
-        float n1 = interleavedGradientNoise(gl_FragCoord.xy, frameCount + 89.0);
-        float n2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(53.7, 191.3), frameCount + 113.0);
-        vec3 T2, B2;
-        buildOrthoBasis(R, T2, B2);
-        vec2 cone = concentricDiskSample(n1, n2) * (roughness * roughness);
-        vec3 jitteredR = normalize(R + T2 * cone.x + B2 * cone.y);
-        vec4 reflResult = traceReflection(fragWorldPos + N_bias * 0.1, jitteredR, 5000.0);
+        // Deterministic rough reflection: a single SHARP ray, with the
+        // GGX-lobe blur applied as a roughness-scaled mip on the hit
+        // sample (`traceReflection`'s mipBias). Pre-fix this jittered the
+        // ray direction by a `roughness²` cone seeded per-frame by IGN —
+        // a 1-spp stochastic estimate that left visible reflection grain
+        // on every rough metal (the dominant remaining Monte-Carlo noise),
+        // since the direct channel isn't SVGF-denoised and TAA only
+        // partly converges a wide lobe. Pre-filtered blur is the standard
+        // noise-free alternative. mip ~ roughness·8 spans the texture
+        // pyramid; on untextured (1×1) surfaces it's a no-op and the
+        // reflection is mirror-sharp, which is fine — flat colour.
+        vec4 reflResult =
+            traceReflection(fragWorldPos + N_bias * 0.1, R, 5000.0, roughness * 8.0);
 
         // Fresnel-weighted reflection: stronger at grazing angles.
         vec3 F = fresnelSchlick(NdotV, F0);
