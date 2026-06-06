@@ -221,12 +221,17 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
     // glass and dilute the refraction to invisibility. The old budget /
     // jitter stipple that motivated alpha-blend is fixed (IOR budget,
     // smooth-glass deterministic refraction, deterministic metal refl).
-    let glass_sphere = builder.sphere(0.8);
+    // Front-centre hero so its wide IOR refraction captures the colourful
+    // room behind it (red/green walls, ceiling light, floor) and shows the
+    // inverted/magnified scene — the classic glass-ball refraction demo.
+    // Against the flat white back wall (where it sat before) the bend is
+    // invisible; here the two-surface refraction reads clearly.
+    let glass_sphere = builder.sphere(0.95);
     spawn_object(
         world,
         glass_sphere,
         neutral,
-        Vec3::new(2.5, 0.8, 0.6),
+        Vec3::new(0.0, 1.05, 2.4),
         Quat::IDENTITY,
         glass([0.9, 0.95, 1.0]),
         "glass_sphere",
