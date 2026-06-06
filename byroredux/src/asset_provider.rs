@@ -1097,23 +1097,43 @@ pub(crate) fn merge_bgsm_into_mesh(
         //
         // The renderer consumes a single PBR contract: `albedo`,
         // `metalness`, `roughness`, `F0 = mix(0.04, albedo, metalness)`.
-        // BGSM authors a DIFFERENT contract: `specular_color * mult`
-        // IS F0 directly (dielectric ≈ 0.04, conductor ≈ albedo-tinted).
-        // Bethesda's runtime translates this internally; we do the same
-        // translation HERE, in the merge layer, so the renderer never
-        // needs to know which game's format a material came from. See
-        // `feedback_format_translation.md`.
+        // BGSM authors a DIFFERENT contract; how `specular_color * mult`
+        // relates to metalness depends on the BGSM's `pbr` flag:
         //
-        // Translation derivation (LEAF BGSM only — template chain
-        // resolution for spec-color is intentionally child-only since
-        // the leaf author's choice is the authoritative one; parents
-        // are background defaults the artist explicitly overrode if
-        // they set a different value):
-        //   * leaf_spec_lum = luminance(spec_color * mult)
-        //   * metalness = saturate((leaf_spec_lum - 0.04) / 0.96)
-        //     — 0 for dielectric (F0 ≈ 0.04), ~1 for conductor (F0 ≈ 0.95)
-        //   * roughness = clamp(1 - smoothness, 0.04, 1.0)
-        //     — direct authoring; no glossiness round-trip.
+        // * `pbr == true` (rare — 0 of 793 sampled vanilla FO4 BGSMs set
+        //   it; almost exclusively modded content): the material was
+        //   authored in a metallic-roughness workflow and `spec_color *
+        //   mult` IS F0 directly (dielectric ≈ 0.04, conductor ≈ tinted).
+        //   Luminance → metalness is correct here.
+        //
+        // * `pbr == false` (legacy spec-glossiness — essentially all
+        //   vanilla FO4 architecture/clutter): `spec_color` is the Blinn
+        //   highlight TINT, not F0. It is ~white `[1,1,1]` for every
+        //   dielectric (concrete, wood, plaster, painted metal) and the
+        //   `mult` only scales highlight strength. Keying metalness off
+        //   luminance is not just wrong but BACKWARDS: vanilla
+        //   `paintpeelingconcrete` authors `spec=[1,1,1] mult=1.0`
+        //   (lum 1.0 → metalness 1.0, mirror-chrome concrete) while real
+        //   metals author LOWER, often TINTED spec — `metalrubberductpipe`
+        //   `[1,1,1] mult=0.73`, `metallocker` `[1,0.85,0.70] mult=0.45`.
+        //   The only legacy signal that actually distinguishes a conductor
+        //   is spec CHROMATICITY (conductor F0 is tinted; dielectric F0 is
+        //   achromatic grey), so we derive metalness from spec-color
+        //   saturation, which is invariant to `mult`. White spec → 0
+        //   (concrete is dielectric); tinted spec → metallic (brass/gold/
+        //   copper keep their look). Pure-white-spec steel reads dielectric
+        //   — a minor under-read, but never the pervasive chrome the old
+        //   luminance path produced. (Per-texel metalness from the spec
+        //   map would recover white-spec steel; deferred — needs a
+        //   metalness-map shader binding. See `feedback_format_translation`.)
+        //
+        // Roughness is `1 - smoothness` either way (the per-texel
+        // `gloss_map` then modulates it in-shader: `mix(1, roughness,
+        // glossSample)`), so the scalar is only the smooth-end of the lobe.
+        //
+        // Derivation is LEAF-only — the leaf author's choice is
+        // authoritative; template parents are background defaults the
+        // artist explicitly overrode if they set a different value.
         //
         // For metallic materials, also tint `mesh.diffuse_color` toward
         // the authored spec_color so the per-pixel `F0 = mix(0.04,
@@ -1126,8 +1146,27 @@ pub(crate) fn merge_bgsm_into_mesh(
         let spec_r = leaf.specular_color[0] * leaf.specular_mult;
         let spec_g = leaf.specular_color[1] * leaf.specular_mult;
         let spec_b = leaf.specular_color[2] * leaf.specular_mult;
-        let spec_lum = 0.2126 * spec_r + 0.7152 * spec_g + 0.0722 * spec_b;
-        let metalness = ((spec_lum - 0.04) / 0.96).clamp(0.0, 1.0);
+        let metalness = if leaf.pbr {
+            // True metallic-roughness authoring: spec*mult is F0.
+            let spec_lum = 0.2126 * spec_r + 0.7152 * spec_g + 0.0722 * spec_b;
+            ((spec_lum - 0.04) / 0.96).clamp(0.0, 1.0)
+        } else {
+            // Legacy spec-glossiness: only chromatic specular is a
+            // conductor. Saturation = (max-min)/max of spec_color is
+            // mult-invariant, so highlight strength doesn't leak into
+            // metalness — achromatic `[1,1,1]` concrete → 0.
+            let mx = leaf.specular_color[0]
+                .max(leaf.specular_color[1])
+                .max(leaf.specular_color[2]);
+            let mn = leaf.specular_color[0]
+                .min(leaf.specular_color[1])
+                .min(leaf.specular_color[2]);
+            if mx > 1.0e-4 {
+                ((mx - mn) / mx).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
         let roughness = (1.0 - leaf.smoothness).clamp(0.04, 1.0);
         mesh.metalness_override = Some(metalness);
         mesh.roughness_override = Some(roughness);
