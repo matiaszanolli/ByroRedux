@@ -5,7 +5,10 @@ pub mod texture_registry;
 pub mod vertex;
 pub mod vulkan;
 
-pub use mesh::{cube_vertices, quad_vertices, triangle_vertices, MeshRegistry};
+pub use mesh::{
+    box_vertices_colored, cube_vertices, oriented_quad, quad_vertices, triangle_vertices, uv_sphere,
+    MeshRegistry,
+};
 pub use texture_registry::TextureRegistry;
 pub use vertex::Vertex;
 pub use vulkan::context::{

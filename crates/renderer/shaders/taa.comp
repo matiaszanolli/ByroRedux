@@ -27,7 +27,7 @@ layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D uOutput;
 
 layout(set = 0, binding = 6) uniform TaaParams {
     vec4 screen;   // xy = size, zw = 1/size
-    vec4 params;   // x = history blend α, y = first_frame, z/w = unused
+    vec4 params;   // x = history blend α, y = first_frame, z = camera_static (lift alpha-blend bypass), w = unused
 } params;
 
 // YCoCg helps variance clamping reject chroma outliers without killing
@@ -155,7 +155,14 @@ void main() {
     // depth winner.
     bool alphaBlend = (currMid & 0x80000000u) != 0u;
 
-    if (offscreen || disocclusion || alphaBlend) {
+    // Alpha-blend pixels normally bypass TAA history to avoid transparency
+    // ghosting under camera/object motion. With a parked camera
+    // (params.z = camera_static) there is no reprojection error, so the
+    // bypass is lifted and glass refraction/reflection accumulates toward
+    // a converged, noise-free result like the opaque channel. Offscreen
+    // and disocclusion still bypass unconditionally.
+    bool cameraStatic = params.params.z > 0.5;
+    if (offscreen || disocclusion || (alphaBlend && !cameraStatic)) {
         imageStore(uOutput, pix, vec4(currRgb, currA));
         return;
     }
@@ -205,9 +212,21 @@ void main() {
     if (any(isnan(histRgb)) || any(isinf(histRgb))) {
         histRgb = currRgb;
     }
-    vec3 histYc  = rgb_to_ycocg(histRgb);
-    histYc = clamp(histYc, yMin, yMax);
-    vec3 clampedHist = ycocg_to_rgb(histYc);
+    // Neighborhood variance clamp — the anti-ghosting mechanism for
+    // camera/object MOTION. With a parked camera it is actively harmful to
+    // convergence: it re-clamps the converging history to each frame's
+    // noisy 3×3 mean, dragging it around so high-variance content (glass
+    // refraction, rough-metal reflection) never settles. Skip it while
+    // static and let the pure 1/N running average converge to ground
+    // truth; reinstate it the instant the camera moves.
+    vec3 clampedHist;
+    if (cameraStatic) {
+        clampedHist = histRgb;
+    } else {
+        vec3 histYc = rgb_to_ycocg(histRgb);
+        histYc = clamp(histYc, yMin, yMax);
+        clampedHist = ycocg_to_rgb(histYc);
+    }
 
     // Luma-weighted blend reduces flicker on bright highlights.
     float alpha = params.params.x;

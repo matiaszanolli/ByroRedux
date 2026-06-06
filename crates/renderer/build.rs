@@ -42,6 +42,7 @@ fn main() {
 
     writeln!(out, "// Vertex layout (global SSBO)").unwrap();
     writeln!(out, "#define VERTEX_STRIDE_FLOATS {VERTEX_STRIDE_FLOATS}u").unwrap();
+    writeln!(out, "#define VERTEX_NORMAL_OFFSET_FLOATS {VERTEX_NORMAL_OFFSET_FLOATS}u").unwrap();
     writeln!(out, "#define VERTEX_UV_OFFSET_FLOATS {VERTEX_UV_OFFSET_FLOATS}u").unwrap();
     writeln!(out).unwrap();
 
@@ -59,6 +60,10 @@ fn main() {
     writeln!(out, "// Glass / IOR ray budget").unwrap();
     writeln!(out, "#define GLASS_RAY_BUDGET {GLASS_RAY_BUDGET}u").unwrap();
     writeln!(out, "#define GLASS_RAY_COST {GLASS_RAY_COST}u").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// One-bounce GI light cap (shadow ray per light at a bounce hit)").unwrap();
+    writeln!(out, "#define GI_HIT_LIGHT_CAP {GI_HIT_LIGHT_CAP}u").unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "// Caustic accumulation").unwrap();

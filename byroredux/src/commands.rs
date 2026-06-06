@@ -2224,6 +2224,152 @@ impl ConsoleCommand for ScriptActivateCommand {
     }
 }
 
+/// `mat.list` — tabulate every entity carrying a [`Material`], with the
+/// RT-relevant scalars at a glance. The companion to `mat.set`: it gives
+/// you the entity ids to sweep. Built for the Cornell-box harness
+/// (`--cornell`, see [`crate::cornell`]) but works on any loaded scene.
+struct MatListCommand;
+impl ConsoleCommand for MatListCommand {
+    fn name(&self) -> &str {
+        "mat.list"
+    }
+    fn description(&self) -> &str {
+        "List entities with a Material + their PBR scalars (companion to mat.set)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(q) = world.query::<Material>() else {
+            return CommandOutput::line("No Material components in the world.");
+        };
+        let mut rows: Vec<(EntityId, &Material)> = q.iter().collect();
+        rows.sort_by_key(|(e, _)| *e);
+        if rows.is_empty() {
+            return CommandOutput::line("No Material components in the world.");
+        }
+        let mut lines = vec![format!(
+            "{:>5}  {:<20} {:>5} {:>5} {:>5} {:>5} {:>4}  {:<14}",
+            "id", "name", "metal", "rough", "alpha", "emul", "kind", "diffuse(rgb)"
+        )];
+        for (e, m) in rows {
+            let name = resolve_entity_name(world, e).unwrap_or_else(|| "-".to_string());
+            let name: String = name.chars().take(20).collect();
+            lines.push(format!(
+                "{:>5}  {:<20} {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>4}  {:.2},{:.2},{:.2}",
+                e,
+                name,
+                m.metalness,
+                m.roughness,
+                m.alpha,
+                m.emissive_mult,
+                m.material_kind,
+                m.diffuse_color[0],
+                m.diffuse_color[1],
+                m.diffuse_color[2],
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+/// `mat.set <entity_id> <field> <value...>` — live-mutate one field of an
+/// entity's [`Material`]. Because [`crate::render::static_meshes`] reads
+/// `Material` fresh every frame, the change shows up on the next rendered
+/// frame — the core of the Cornell-box material-sweep workflow.
+///
+/// Scalar fields take one value; `*_color` fields take three (r g b).
+/// `material_kind` takes an integer (see `MATERIAL_KIND_*` in the
+/// renderer). `color` is an alias for `diffuse_color`.
+struct MatSetCommand;
+impl MatSetCommand {
+    /// Parse `n` whitespace-separated floats from `parts`, erroring if the
+    /// count or any parse is wrong.
+    fn floats(parts: &[&str], n: usize) -> Result<Vec<f32>, String> {
+        if parts.len() != n {
+            return Err(format!("expected {n} value(s), got {}", parts.len()));
+        }
+        parts
+            .iter()
+            .map(|s| s.parse::<f32>().map_err(|_| format!("`{s}` is not a number")))
+            .collect()
+    }
+}
+impl ConsoleCommand for MatSetCommand {
+    fn name(&self) -> &str {
+        "mat.set"
+    }
+    fn description(&self) -> &str {
+        "Live-edit a Material field: mat.set <entity_id> <field> <value...>"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        const USAGE: &str = "usage: mat.set <entity_id> <field> <value...>\n  \
+            fields: metalness|roughness|alpha|glossiness|emissive_mult|specular_strength|\
+            env_map_scale (1 value), color|diffuse_color|emissive_color|specular_color \
+            (3 values), material_kind (1 int)";
+        let mut parts = args.split_whitespace();
+        let Some(id_str) = parts.next() else {
+            return CommandOutput::line(USAGE);
+        };
+        let Some(field) = parts.next() else {
+            return CommandOutput::line(USAGE);
+        };
+        let Ok(id) = id_str.parse::<u32>() else {
+            return CommandOutput::line(format!("mat.set: bad entity id `{id_str}`\n{USAGE}"));
+        };
+        let vals: Vec<&str> = parts.collect();
+
+        let Some(mut q) = world.query_mut::<Material>() else {
+            return CommandOutput::line("mat.set: no Material storage in the world.");
+        };
+        let Some(m) = q.get_mut(id) else {
+            return CommandOutput::line(format!("mat.set: entity {id} has no Material."));
+        };
+
+        // Each arm validates value arity via `floats`, mutates, and reports
+        // the new value. Aliases: `color` -> diffuse_color, `*` short forms.
+        let set_scalar = |slot: &mut f32, vals: &[&str]| -> Result<String, String> {
+            let v = MatSetCommand::floats(vals, 1)?;
+            *slot = v[0];
+            Ok(format!("{:.4}", v[0]))
+        };
+        let set_vec3 = |slot: &mut [f32; 3], vals: &[&str]| -> Result<String, String> {
+            let v = MatSetCommand::floats(vals, 3)?;
+            *slot = [v[0], v[1], v[2]];
+            Ok(format!("{:.3},{:.3},{:.3}", v[0], v[1], v[2]))
+        };
+
+        let result = match field.to_ascii_lowercase().as_str() {
+            "metalness" | "metal" => set_scalar(&mut m.metalness, &vals),
+            "roughness" | "rough" => set_scalar(&mut m.roughness, &vals),
+            "alpha" => set_scalar(&mut m.alpha, &vals),
+            "glossiness" | "gloss" => set_scalar(&mut m.glossiness, &vals),
+            "emissive_mult" | "emult" => set_scalar(&mut m.emissive_mult, &vals),
+            "specular_strength" | "spec" => set_scalar(&mut m.specular_strength, &vals),
+            "env_map_scale" | "env" => set_scalar(&mut m.env_map_scale, &vals),
+            "color" | "diffuse_color" | "diffuse" => set_vec3(&mut m.diffuse_color, &vals),
+            "emissive_color" => set_vec3(&mut m.emissive_color, &vals),
+            "specular_color" => set_vec3(&mut m.specular_color, &vals),
+            "material_kind" | "kind" => {
+                if vals.len() != 1 {
+                    Err(format!("expected 1 value, got {}", vals.len()))
+                } else {
+                    match vals[0].parse::<u32>() {
+                        Ok(k) => {
+                            m.material_kind = k;
+                            Ok(k.to_string())
+                        }
+                        Err(_) => Err(format!("`{}` is not an integer", vals[0])),
+                    }
+                }
+            }
+            other => Err(format!("unknown field `{other}`")),
+        };
+
+        match result {
+            Ok(shown) => CommandOutput::line(format!("mat.set: entity {id} {field} = {shown}")),
+            Err(e) => CommandOutput::line(format!("mat.set: {e}\n{USAGE}")),
+        }
+    }
+}
+
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(HelpCommand);
@@ -2250,6 +2396,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(LightDumpCommand);
     registry.register(LightAttenCommand);
     registry.register(ScriptActivateCommand);
+    registry.register(MatListCommand);
+    registry.register(MatSetCommand);
     registry
 }
 

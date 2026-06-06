@@ -1006,6 +1006,138 @@ pub fn quad_vertices() -> (Vec<Vertex>, Vec<u32>) {
     (vertices, indices)
 }
 
+/// Parametric axis-aligned box with arbitrary half-extents and a single
+/// flat vertex color. Outward-facing normals, per-face UVs. Unlike the
+/// uniform-scale `Transform`, the half-extents let a single mesh model a
+/// non-cubic shape (thin slabs for walls, tall blocks). Used by the
+/// Cornell-box test harness (`byroredux::cornell`) and available to any
+/// caller needing a quick colored box primitive.
+pub fn box_vertices_colored(half: [f32; 3], color: [f32; 3]) -> (Vec<Vertex>, Vec<u32>) {
+    let [hx, hy, hz] = half;
+    let v = |p: [f32; 3], n: [f32; 3], uv: [f32; 2]| Vertex::new(p, color, n, uv);
+    let vertices = vec![
+        // +Z front
+        v([-hx, -hy, hz], [0.0, 0.0, 1.0], [0.0, 1.0]),
+        v([hx, -hy, hz], [0.0, 0.0, 1.0], [1.0, 1.0]),
+        v([hx, hy, hz], [0.0, 0.0, 1.0], [1.0, 0.0]),
+        v([-hx, hy, hz], [0.0, 0.0, 1.0], [0.0, 0.0]),
+        // -Z back
+        v([-hx, -hy, -hz], [0.0, 0.0, -1.0], [1.0, 1.0]),
+        v([hx, -hy, -hz], [0.0, 0.0, -1.0], [0.0, 1.0]),
+        v([hx, hy, -hz], [0.0, 0.0, -1.0], [0.0, 0.0]),
+        v([-hx, hy, -hz], [0.0, 0.0, -1.0], [1.0, 0.0]),
+        // +Y top
+        v([-hx, hy, -hz], [0.0, 1.0, 0.0], [0.0, 1.0]),
+        v([hx, hy, -hz], [0.0, 1.0, 0.0], [1.0, 1.0]),
+        v([hx, hy, hz], [0.0, 1.0, 0.0], [1.0, 0.0]),
+        v([-hx, hy, hz], [0.0, 1.0, 0.0], [0.0, 0.0]),
+        // -Y bottom
+        v([-hx, -hy, -hz], [0.0, -1.0, 0.0], [0.0, 0.0]),
+        v([hx, -hy, -hz], [0.0, -1.0, 0.0], [1.0, 0.0]),
+        v([hx, -hy, hz], [0.0, -1.0, 0.0], [1.0, 1.0]),
+        v([-hx, -hy, hz], [0.0, -1.0, 0.0], [0.0, 1.0]),
+        // +X right
+        v([hx, -hy, -hz], [1.0, 0.0, 0.0], [0.0, 1.0]),
+        v([hx, hy, -hz], [1.0, 0.0, 0.0], [0.0, 0.0]),
+        v([hx, hy, hz], [1.0, 0.0, 0.0], [1.0, 0.0]),
+        v([hx, -hy, hz], [1.0, 0.0, 0.0], [1.0, 1.0]),
+        // -X left
+        v([-hx, -hy, -hz], [-1.0, 0.0, 0.0], [1.0, 1.0]),
+        v([-hx, hy, -hz], [-1.0, 0.0, 0.0], [1.0, 0.0]),
+        v([-hx, hy, hz], [-1.0, 0.0, 0.0], [0.0, 0.0]),
+        v([-hx, -hy, hz], [-1.0, 0.0, 0.0], [0.0, 1.0]),
+    ];
+    let indices = vec![
+        0, 1, 2, 2, 3, 0, // front
+        4, 6, 5, 6, 4, 7, // back
+        8, 9, 10, 10, 11, 8, // top
+        12, 14, 13, 14, 12, 15, // bottom
+        16, 17, 18, 18, 19, 16, // right
+        20, 22, 21, 22, 20, 23, // left
+    ];
+    (vertices, indices)
+}
+
+/// A flat-colored UV sphere centered at the origin. `rings` is the number
+/// of latitude bands, `segments` the longitude divisions. Smooth (radial)
+/// normals, equirectangular UVs. Outward winding matches the engine's
+/// front-face convention. Used by the Cornell-box test harness to probe
+/// curved-surface RT behaviour (GGX highlight shape, reflection/refraction
+/// across the full normal range) that flat primitives can't.
+pub fn uv_sphere(radius: f32, color: [f32; 3], rings: u32, segments: u32) -> (Vec<Vertex>, Vec<u32>) {
+    let rings = rings.max(2);
+    let segments = segments.max(3);
+    let mut vertices = Vec::with_capacity(((rings + 1) * (segments + 1)) as usize);
+    for r in 0..=rings {
+        // theta: 0 (north pole, +Y) .. PI (south pole, -Y)
+        let theta = std::f32::consts::PI * r as f32 / rings as f32;
+        let (st, ct) = theta.sin_cos();
+        for s in 0..=segments {
+            let phi = std::f32::consts::TAU * s as f32 / segments as f32;
+            let (sp, cp) = phi.sin_cos();
+            let n = [st * cp, ct, st * sp];
+            let pos = [n[0] * radius, n[1] * radius, n[2] * radius];
+            let uv = [s as f32 / segments as f32, r as f32 / rings as f32];
+            vertices.push(Vertex::new(pos, color, n, uv));
+        }
+    }
+    let stride = segments + 1;
+    let mut indices = Vec::with_capacity((rings * segments * 6) as usize);
+    for r in 0..rings {
+        for s in 0..segments {
+            let a = r * stride + s;
+            let b = a + stride;
+            // Wind so the front face points outward (+normal).
+            indices.extend_from_slice(&[a, a + 1, b, b, a + 1, b + 1]);
+        }
+    }
+    (vertices, indices)
+}
+
+/// A single planar quad spanning `center ± u ± v`, flat-colored, with the
+/// normal pointing along `cross(u, v)` (front-face/outward). Pick `u`/`v`
+/// orientation so the normal points toward the viewer — for the inward
+/// faces of a Cornell box that means the room interior. Avoids the
+/// double-sided overhead of modeling each wall as a thin box.
+pub fn oriented_quad(
+    center: [f32; 3],
+    u: [f32; 3],
+    v: [f32; 3],
+    color: [f32; 3],
+) -> (Vec<Vertex>, Vec<u32>) {
+    let cross = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let len = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+    let n = if len > 1e-6 {
+        [cross[0] / len, cross[1] / len, cross[2] / len]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let corner = |su: f32, sv: f32, uv: [f32; 2]| {
+        Vertex::new(
+            [
+                center[0] + su * u[0] + sv * v[0],
+                center[1] + su * u[1] + sv * v[1],
+                center[2] + su * u[2] + sv * v[2],
+            ],
+            color,
+            n,
+            uv,
+        )
+    };
+    let vertices = vec![
+        corner(-1.0, -1.0, [0.0, 1.0]),
+        corner(1.0, -1.0, [1.0, 1.0]),
+        corner(1.0, 1.0, [1.0, 0.0]),
+        corner(-1.0, 1.0, [0.0, 0.0]),
+    ];
+    let indices = vec![0, 1, 2, 2, 3, 0];
+    (vertices, indices)
+}
+
 /// Fullscreen quad in NDC (clip space [-1,1]), for UI overlay compositing.
 /// No transforms needed — vertices pass through directly to clip space.
 pub fn fullscreen_quad_vertices() -> (Vec<Vertex>, Vec<u32>) {

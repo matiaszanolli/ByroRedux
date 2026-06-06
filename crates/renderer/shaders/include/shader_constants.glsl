@@ -18,6 +18,7 @@
 
 // Vertex layout (global SSBO)
 #define VERTEX_STRIDE_FLOATS 25u
+#define VERTEX_NORMAL_OFFSET_FLOATS 6u
 #define VERTEX_UV_OFFSET_FLOATS 9u
 
 // Skinning
@@ -30,8 +31,11 @@
 #define MATERIAL_KIND_NO_LIGHTING 102u
 
 // Glass / IOR ray budget
-#define GLASS_RAY_BUDGET 8192u
+#define GLASS_RAY_BUDGET 1048576u
 #define GLASS_RAY_COST 4u
+
+// One-bounce GI light cap (shadow ray per light at a bounce hit)
+#define GI_HIT_LIGHT_CAP 8u
 
 // Caustic accumulation
 #define CAUSTIC_FIXED_SCALE 65536.0

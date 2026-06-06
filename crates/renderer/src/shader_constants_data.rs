@@ -34,6 +34,8 @@ pub const MAX_LIGHTS_PER_CLUSTER: u32 = 128;
 
 // Vertex layout (global SSBO)
 pub const VERTEX_STRIDE_FLOATS: u32 = 25;
+// position(0..3) color(3..6) normal(6..9) uv(9..11) — see crates/renderer/src/vertex.rs.
+pub const VERTEX_NORMAL_OFFSET_FLOATS: u32 = 6;
 pub const VERTEX_UV_OFFSET_FLOATS: u32 = 9;
 
 // Skinning — see `byroredux_core::ecs::components::skinned_mesh::MAX_BONES_PER_MESH`
@@ -46,9 +48,22 @@ pub const MATERIAL_KIND_GLASS: u32 = 100;
 pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
 pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
 
-// Glass / IOR ray budget
-pub const GLASS_RAY_BUDGET: u32 = 8192;
+// Glass / IOR ray budget. The per-frame atomic ray pool for the glass
+// IOR refraction path; when exhausted, glass fragments drop to the
+// cheaper Fresnel-only fallback. The old 8192 (≈2048 IOR fragments)
+// starved on any large/close glass — a full-screen pane or a hand-held
+// sphere blew it in a 16×16 px patch, and the binary IOR/fallback split
+// painted a per-fragment stipple. Raised to cover a screenful of glass on
+// the dev-class GPU (RTX 4070 Ti, 12 GB) so refraction actually engages;
+// still bounded so a pathological all-glass cell can't run unbounded.
+pub const GLASS_RAY_BUDGET: u32 = 1048576;
 pub const GLASS_RAY_COST: u32 = 4;
+
+// One-bounce GI: max lights evaluated (with a shadow ray each) at a GI
+// bounce hit. Caps the per-GI-hit cost in dense cells; the bounce only
+// needs the dominant nearby lights, so a small cap keeps colour bleed
+// correct without scanning hundreds of lights per hit.
+pub const GI_HIT_LIGHT_CAP: u32 = 8;
 
 // Caustic accumulation
 pub const CAUSTIC_FIXED_SCALE: f32 = 65536.0;

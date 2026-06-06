@@ -110,6 +110,19 @@ layout(set = 0, binding = 8) uniform CausticParams {
     vec4 causticTune;     // x = fixed-point scale, y = IOR, z = max_lights, w = strength
 };
 
+// Per-dispatch mode. The host runs the splat pipeline twice with a parked
+// camera: once with decayOnly=1 (every pixel multiplies its accumulator by
+// decayFactor — the temporal EMA decay that replaces the per-frame clear),
+// then once with decayOnly=0 (the normal forward splat adds on top). The
+// result is an exponential running average of the per-frame caustic, so
+// the TAA-jitter-driven flicker of the post-TAA caustic converges to a
+// stable pool. On camera motion the host clears (decayOnly never set) so a
+// stale, mis-registered pool can't smear.
+layout(push_constant) uniform CausticPush {
+    uint decayOnly;
+    float decayFactor;
+} pc;
+
 // Octahedral decode (mirror triangle.frag's implementation).
 vec3 octDecode(vec2 e) {
     vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
@@ -131,6 +144,16 @@ void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = ivec2(causticScreen.xy);
     if (any(greaterThanEqual(pixel, size))) return;
+
+    // Temporal-EMA decay pass (parked camera). Every pixel scales its own
+    // accumulator slot; runs as a separate dispatch before the splat so
+    // there is no decay/atomic-add race. No mesh/glass gate — the whole
+    // accumulator must decay, not just caustic-source pixels.
+    if (pc.decayOnly == 1u) {
+        uint v = imageLoad(causticAccum, pixel).r;
+        imageStore(causticAccum, pixel, uvec4(uint(float(v) * pc.decayFactor), 0u, 0u, 0u));
+        return;
+    }
 
     // Reject background (meshId = 0 means "empty").
     // Mask off the ALPHA_BLEND_NO_HISTORY flag (bit 31) that
@@ -332,15 +355,44 @@ void main() {
         // smoothstep shoulder for point/spot + Lambert cosine for
         // directional. Folds into the existing `lightFall` × `travelFall`
         // attenuation chain. See REN-D13-NEW-07.
-        float contrib = lum * lightFall * lightReach * travelFall * tintLum * strength;
+        // `1 - decayFactor` is the EMA new-sample weight: when the host runs
+        // the decay pass (parked camera) the accumulator already holds
+        // decayFactor × the running pool, so each frame must deposit only
+        // (1 - decayFactor) of its energy for the running average to converge
+        // to the true per-frame caustic instead of summing to decayFactor⁻¹×
+        // brighter. On camera motion the host clears and passes decayFactor=0,
+        // so the deposit is full-energy (single-frame, no EMA).
+        float emaWeight = 1.0 - pc.decayFactor;
+        float contrib = lum * lightFall * lightReach * travelFall * tintLum * strength * emaWeight;
 
         // Clamp anchored to the u32 atomic range: max representable
         // post-scale is `0xFFFFFFFFu / scale`. The 4.0e7 magic constant
         // was unanchored from CAUSTIC_FIXED_SCALE — a scale change would
         // silently misalign. (#1099 / REN-D13-002)
         float clamp_max = float(0xFFFFFFFFu) / scale;
-        uint fixed_val = uint(clamp(contrib * scale, 0.0, clamp_max));
-        if (fixed_val == 0u) continue;
-        imageAtomicAdd(causticAccum, hitPixel, fixed_val);
+        // Spread the deposit over a 5×5 Gaussian footprint (weights sum to
+        // 1, so total energy is unchanged) instead of a single pixel. Each
+        // glass pixel refracts to ONE landing point; thousands of those
+        // single-pixel deposits scatter into a sparse, grainy pool. A
+        // footprint overlaps neighbouring deposits into a smooth caustic
+        // AND — because the footprint (±2 px) is much wider than the
+        // per-frame TAA-jitter shift of the landing point — adjacent
+        // frames' deposits overlap ~85 %, so the pool is temporally stable
+        // too. The caustic is composited after TAA, so this footprint is
+        // its only smoothing. σ=1; normalised over the 5×5 support so the
+        // truncated tail doesn't dim the pool.
+        float wsum = 0.0;
+        for (int ky = -2; ky <= 2; ++ky)
+            for (int kx = -2; kx <= 2; ++kx)
+                wsum += exp(-float(kx * kx + ky * ky) * 0.5);
+        for (int ky = -2; ky <= 2; ++ky) {
+            for (int kx = -2; kx <= 2; ++kx) {
+                ivec2 q = hitPixel + ivec2(kx, ky);
+                if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, size))) continue;
+                float w = exp(-float(kx * kx + ky * ky) * 0.5) / wsum;
+                uint fv = uint(clamp(contrib * w * scale, 0.0, clamp_max));
+                if (fv != 0u) imageAtomicAdd(causticAccum, q, fv);
+            }
+        }
     }
 }

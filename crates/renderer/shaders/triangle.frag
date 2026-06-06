@@ -484,6 +484,30 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
     return w * uv0 + barycentrics.x * uv1 + barycentrics.y * uv2;
 }
 
+// World-space geometric (face) normal of a ray-query hit triangle, from
+// its vertex POSITIONS (stride offset 0) transformed by the instance
+// model matrix. Same fetch shape as getHitUV (validated in the reflection
+// / refraction ray context). Used by two-surface glass refraction to
+// refract the ray a second time as it exits the glass back face.
+vec3 getHitTriNormal(uint instanceIdx, uint primitiveIdx) {
+    GpuInstance hi = instances[instanceIdx];
+    uint vOff = hi.vertexOffset;
+    uint iOff = hi.indexOffset;
+    uint i0 = indexData[iOff + primitiveIdx * 3 + 0];
+    uint i1 = indexData[iOff + primitiveIdx * 3 + 1];
+    uint i2 = indexData[iOff + primitiveIdx * 3 + 2];
+    uint p0 = (vOff + i0) * VERTEX_STRIDE_FLOATS;
+    uint p1 = (vOff + i1) * VERTEX_STRIDE_FLOATS;
+    uint p2 = (vOff + i2) * VERTEX_STRIDE_FLOATS;
+    vec3 v0 = vec3(vertexData[p0], vertexData[p0 + 1], vertexData[p0 + 2]);
+    vec3 v1 = vec3(vertexData[p1], vertexData[p1 + 1], vertexData[p1 + 2]);
+    vec3 v2 = vec3(vertexData[p2], vertexData[p2 + 1], vertexData[p2 + 2]);
+    vec3 w0 = (hi.model * vec4(v0, 1.0)).xyz;
+    vec3 w1 = (hi.model * vec4(v1, 1.0)).xyz;
+    vec3 w2 = (hi.model * vec4(v2, 1.0)).xyz;
+    return normalize(cross(w1 - w0, w2 - w0));
+}
+
 // Cast a reflection ray and return the reflected color.
 //
 // Return contract (#1029 / REN-D9-NEW-06):
@@ -505,8 +529,15 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
 // (the first one becomes the reflection surface). Without the flag the
 // driver pays "find closest hit" cost across the full maxDist=5000 unit
 // reach. Fix #420.
-vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
+vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
+                     int selfInstance) {
     rayQueryEXT rq;
+    // Miss / self-hit fallback colour — sky-tinted ambient (exterior) or
+    // cell ambient (interior). Hoisted so a self-intersection hit (below)
+    // can reuse it.
+    bool _isExt = jitter.w > 0.5;
+    vec3 missCol = _isExt ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
+                          : sceneFlags.yzw;
     // tMin = 0.05 matches the N_bias offset every caller already
     // applies to `origin`. Live callers (grep for `traceReflection(`):
     //   * glass IOR reflection — bias 0.05, maxDist 3000
@@ -550,17 +581,23 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
         // ceiling colour" was stale wisdom — interior cells get the
         // default zenith, not a per-cell ceiling derivation. See #1125 /
         // REN-D9-NEW-01.
-        bool isExterior = jitter.w > 0.5;
-        vec3 missColor = isExterior
-            ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
-            : sceneFlags.yzw;
-        return vec4(missColor, 0.0);
+        return vec4(missCol, 0.0);
     }
 
     // Hit — get SSBO instance index via custom index (encodes the draw
     // command position, which matches the SSBO layout). InstanceId would
     // give the TLAS-internal index, which diverges when some meshes lack BLAS.
     int hitInstanceIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+    // Self-intersection rejection (Issue C). At grazing incidence the
+    // reflected ray goes nearly tangent to a curved glass surface and
+    // re-hits the originating instance's own mesh — a convex surface can't
+    // legitimately reflect itself, so this hit is the self-intersection
+    // that paints the tessellation moire on the glass rim. Treat it as a
+    // miss (ambient) instead of sampling the glass's own surface. Scale-
+    // independent (no epsilon to tune): keyed on instance identity.
+    if (selfInstance >= 0 && hitInstanceIdx == selfInstance) {
+        return vec4(missCol, 0.0);
+    }
     int hitPrimitiveIdx = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
     vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
 
@@ -576,8 +613,19 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist) {
     hitUV = hitUV * vec2(hitMat.uvScaleU, hitMat.uvScaleV)
           + vec2(hitMat.uvOffsetU, hitMat.uvOffsetV);
 
-    // Sample the hit surface's texture.
-    vec3 hitColor = texture(textures[nonuniformEXT(hitTexIdx)], hitUV).rgb;
+    // Sample the hit surface's texture × its canonical avgAlbedo (material
+    // diffuse_color). The texture alone is the neutral white fallback for
+    // untextured / vertex-coloured surfaces, so without the avgAlbedo
+    // factor a metal/glass reflection of the Cornell red/green walls reads
+    // as flat white. avgAlbedo is the white tint for textured content, so
+    // detail is preserved there. Mirrors the refraction-colour fix.
+    // `mipBias` softens the reflected image for rough surfaces — a
+    // DETERMINISTIC pre-filtered-radiance blur in place of a stochastic
+    // GGX-cone jitter, so rough-metal reflections carry no per-frame
+    // sampling noise (the caller passes roughness-scaled mip and a sharp
+    // reflection ray). Smooth surfaces pass mipBias 0 → razor-sharp.
+    vec3 hitColor = textureLod(textures[nonuniformEXT(hitTexIdx)], hitUV, mipBias).rgb
+        * vec3(hitInst.avgAlbedoR, hitInst.avgAlbedoG, hitInst.avgAlbedoB);
 
     // Exponential distance attenuation: distant reflections gracefully fade
     // into ambient rather than persisting at near-full strength. The old
@@ -973,6 +1021,68 @@ vec3 shadowableLightRadiance(
     }
     vec3 brdfResult = (diffuseBrdf + specular * specStrength * specColor) * NdotL;
     return brdfResult * unshadowedRadiance;
+}
+
+// ── One-bounce GI helper (REND — true light-transport bounce) ───────
+
+// Direct irradiance arriving at a one-bounce GI hit point `p` (surface
+// normal `n`), summed over the scene lights with a shadow ray per
+// contributing light. This is the term that turns the GI bounce into
+// real light transport (and colour bleeding) instead of the legacy
+// `cell_ambient × albedo` approximation. Lights are range-culled and the
+// count is capped (`GI_HIT_LIGHT_CAP`) so dense cells can't explode the
+// per-hit cost. Returns radiance in the same units the primary direct
+// path uses, so the bounce energy matches.
+vec3 giHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
+    vec3 e = vec3(0.0);
+    uint count = min(lightCount, GI_HIT_LIGHT_CAP);
+    for (uint i = 0u; i < count; ++i) {
+        float lightType = lights[i].color_type.w;
+        vec3 lightColor = lights[i].color_type.rgb;
+        float radius = lights[i].position_radius.w;
+        float falloffShape = lights[i].params.x;
+
+        vec3 L;
+        float dist;
+        float atten;
+        if (lightType < 1.5) {
+            // Point (type 0) or spot (type 1).
+            vec3 toLight = lights[i].position_radius.xyz - p;
+            dist = length(toLight);
+            if (dist > radius) continue; // out of influence range
+            L = toLight / max(dist, 1e-3);
+            atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
+            if (lightType >= 0.5) {
+                vec3 spotDir = normalize(lights[i].direction_angle.xyz);
+                float spotAngle = lights[i].direction_angle.w;
+                float spotFactor = dot(-L, spotDir);
+                atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
+            }
+        } else {
+            // Directional (type 2): exterior sun / interior fill.
+            L = normalize(lights[i].direction_angle.xyz);
+            dist = 1.0e4;
+            atten = 1.0;
+        }
+
+        float NdotL = max(dot(n, L), 0.0);
+        float contrib = atten * NdotL;
+        if (contrib < 1.0e-4) continue;
+
+        // Shadow ray toward the light — skip the contribution if occluded.
+        rayQueryEXT sRQ;
+        rayQueryInitializeEXT(
+            sRQ, topLevelAS,
+            gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF,
+            p + n * 0.1, 0.05, L, max(dist - 0.2, 0.05));
+        rayQueryProceedEXT(sRQ);
+        if (rayQueryGetIntersectionTypeEXT(sRQ, true)
+            != gl_RayQueryCommittedIntersectionNoneEXT) {
+            continue;
+        }
+        e += lightColor * contrib;
+    }
+    return e;
 }
 
 // ── Parallax occlusion mapping ──────────────────────────────────────
@@ -2237,9 +2347,12 @@ void main() {
         // above; the IOR block runs inside the isGlass branch).
         float fresnelScalar = fresnelSchlick(NdotV_v, vec3(f0Dielectric)).r;
 
-        // Reflection ray — micro-surface normal is correct here.
+        // Reflection ray — micro-surface normal is correct here. Glass is
+        // smooth, so a sharp mirror reflection (mipBias scaled by its low
+        // roughness) — no jitter, no noise.
         vec3 R = reflect(-V, N_view);
-        vec4 reflRay = traceReflection(fragWorldPos + N_bias * 0.05, R, 3000.0);
+        vec4 reflRay = traceReflection(fragWorldPos + N_bias * 0.05, R, 3000.0,
+                                       roughness * 8.0, fragInstanceIndex);
         vec3 reflColor = reflRay.rgb;
 
         // Refraction ray using the smooth geometric normal.
@@ -2254,7 +2367,15 @@ void main() {
                                                  frameCount + 37.0);
             float rn2 = interleavedGradientNoise(
                 gl_FragCoord.xy + vec2(79.3, 193.7), frameCount + 53.0);
-            float spread = roughness * 0.15;
+            // Roughness-gated scatter: smooth glass (the common case —
+            // window panes, clear spheres) refracts DETERMINISTICALLY so
+            // its transmitted image is sharp and noise-free. Only visibly
+            // rough/etched glass (roughness > 0.2) scatters; the jitter
+            // there is masked by the roughness-scaled mip blur below + TAA.
+            // Pre-fix `roughness * 0.15` jittered even clear glass, which
+            // — with the mip blur added to hide it — produced a flat,
+            // grainy "frosted" look on glass that should be crystal clear.
+            float spread = max(roughness - 0.2, 0.0) * 0.3;
             if (spread > 0.001 && dot(refractDir, refractDir) > 0.0001) {
                 // #820: at normal incidence `refractDir` is parallel to
                 // `-N_geom_view`, so `cross(refractDir, N_geom_view)` is
@@ -2306,7 +2427,6 @@ void main() {
             // which reads as "frosted glass behind glass" — visually
             // acceptable and bounded in cost.
             const int REFRACT_PASSTHRU_BUDGET = 2;
-            uint selfTexture = inst.textureIndex;
             vec3 rayOrigin = fragWorldPos - N_geom_view * 0.1;
             float rayTMin = 0.05;
             float accumulatedDist = 0.0;
@@ -2338,7 +2458,18 @@ void main() {
                 int hIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(refrRQ, true);
                 float hDist = rayQueryGetIntersectionTEXT(refrRQ, true);
                 GpuInstance hInst = instances[hIdx];
-                bool sameTexture = (hInst.textureIndex == selfTexture);
+                // Pass the refraction ray through OTHER glass (self back-
+                // face, sibling glass parts, stacked panes) and commit on
+                // the first OPAQUE hit. Keyed on the hit's canonical
+                // materialKind, NOT texture-index equality: the latter
+                // mis-fires whenever glass shares a texture with opaque
+                // geometry (most visibly when untextured content routes
+                // walls + glass to the neutral fallback handle), making the
+                // ray skip straight THROUGH solid walls and read as a
+                // see-through-everything blob. materialKind==GLASS always
+                // terminates on walls (kind 0) and passes through glass.
+                bool hitIsGlass =
+                    (materials[hInst.materialId].materialKind == MATERIAL_KIND_GLASS);
                 // Fallback-texture detection — bindless slot 0 is the
                 // unresolved-texture placeholder (`TextureRegistry::fallback`).
                 // Markarth probe 2026-05-10: when the lantern flame
@@ -2361,8 +2492,28 @@ void main() {
                 // post-loop branch below maps a fallback-texture
                 // terminus to the !hit escape path so the magenta
                 // texture is never SAMPLED.
-                if ((sameTexture || fallbackTexture) && passthru < REFRACT_PASSTHRU_BUDGET) {
-                    rayOrigin = rayOrigin + refractDir * (hDist + 0.05);
+                if ((hitIsGlass || fallbackTexture) && passthru < REFRACT_PASSTHRU_BUDGET) {
+                    vec3 exitPoint = rayOrigin + refractDir * hDist;
+                    // Two-surface refraction: bend the ray AGAIN as it
+                    // leaves the glass (glass→air) instead of passing
+                    // straight through. A single front-surface refraction
+                    // only nudges the image; the exit refraction is what
+                    // inverts/magnifies it, so a solid glass sphere/cube
+                    // actually reads as a lens that bends the scene behind
+                    // it. The geometric face normal is oriented to point
+                    // back into the glass (against the outgoing ray) for
+                    // refract(); eta = n_glass/n_air = GLASS_IOR. On total
+                    // internal reflection (refract → 0, grazing exit) keep
+                    // the straight passthru — a bounded approximation.
+                    if (hitIsGlass) {
+                        uint hPrim =
+                            uint(rayQueryGetIntersectionPrimitiveIndexEXT(refrRQ, true));
+                        vec3 exitN = getHitTriNormal(uint(hIdx), hPrim);
+                        if (dot(exitN, refractDir) < 0.0) exitN = -exitN; // outward
+                        vec3 exitDir = refract(refractDir, -exitN, GLASS_IOR);
+                        if (dot(exitDir, exitDir) > 1e-4) refractDir = normalize(exitDir);
+                    }
+                    rayOrigin = exitPoint + refractDir * 0.05;
                     rayTMin = 0.0;
                     accumulatedDist += hDist;
                     continue;
@@ -2374,7 +2525,7 @@ void main() {
                 accumulatedDist += hDist;
                 hit = true;
                 diagPassthru = passthru;
-                diagSelfTerminus = sameTexture;
+                diagSelfTerminus = hitIsGlass;
                 break;
             }
 
@@ -2410,7 +2561,13 @@ void main() {
             // ray escaped: cell ambient + fog, identical to the !hit
             // path. Markarth lantern probe 2026-05-10.
             bool terminusOnFallback = hit && (instances[tIdx].textureIndex == 0u);
-            if (!hit || terminusOnFallback) {
+            // Self-intersection terminus (Issue C): the passthru budget can
+            // be exhausted by a grazing ray skimming its own glass mesh,
+            // then it commits a hit on that same instance. Sampling it
+            // paints the tessellation moire. Treat a self-instance terminus
+            // as an escape (ambient), like the fallback-texture case.
+            bool terminusOnSelf = hit && (tIdx == fragInstanceIndex);
+            if (!hit || terminusOnFallback || terminusOnSelf) {
                 // Escaped scene — fall back to cell ambient. The
                 // diagnostic capture from #789-followup showed this
                 // branch is the *dominant* path for upright glass
@@ -2456,21 +2613,34 @@ void main() {
                 // `1.5 + r*4` showed raw checker grain on clear (low-
                 // roughness) glass once the budget allowed IOR to fire
                 // at scale.
-                float refrMip = 3.0 + roughness * 4.0;
+                // Mip floor scales with roughness only: clear glass
+                // (roughness≈0.1) now refracts a SHARP image (mip≈0.4)
+                // because the per-frame jitter that the old 3.0 floor was
+                // hiding is gone for smooth glass. Etched glass still
+                // softens. This is what makes refraction read as "bending
+                // the scene behind" rather than a flat translucent wash.
+                float refrMip = 0.4 + roughness * 5.0;
                 vec3 tAlbedo = textureLod(
                     textures[nonuniformEXT(tInst.textureIndex)], tUV, refrMip).rgb;
 
-                // Apply a lighting estimate to the hit albedo. The raw
-                // texture without lighting reads as "raw diffuse" which
-                // in dim interiors looks pitch-black through the glass
-                // (since a brown wood wall is texColor≈0.2 regardless
-                // of actual illumination). We multiply by the cell's
-                // ambient floor + a small base so the refracted scene
-                // matches the LIT look of the world, not its raw albedo.
-                // Same cheap pattern the 1-bounce GI ray uses at :1179
-                // — ambient × albedo instead of full shading.
-                vec3 ambientLitFloor = sceneFlags.yzw + vec3(0.25);
-                refrColor = tAlbedo * ambientLitFloor;
+                // CRITICAL — multiply by the hit's canonical avgAlbedo
+                // (the material diffuse_color). The texture alone is the
+                // neutral white fallback for untextured/vertex-coloured
+                // surfaces (Cornell walls), so without this the refracted
+                // red/green walls read as flat white and the bending is
+                // invisible. For textured content avgAlbedo is the white
+                // tint, so detail is preserved. Same fix shape as the GI
+                // bounce colour (#avg_albedo).
+                vec3 tColor = tAlbedo
+                    * vec3(tInst.avgAlbedoR, tInst.avgAlbedoG, tInst.avgAlbedoB);
+
+                // Apply a lighting estimate so the refracted scene matches
+                // the LIT world, not raw albedo. Cheap ambient-floor model
+                // (full per-hit shading is too costly inside the refraction
+                // loop); the floor is generous so brightly-lit walls seen
+                // through glass don't read as dim.
+                vec3 ambientLitFloor = sceneFlags.yzw + vec3(0.6);
+                refrColor = tColor * ambientLitFloor;
 
                 // Distance attenuation — faraway refracted content
                 // falls off gently so thick glass stacks don't become
@@ -2709,14 +2879,20 @@ void main() {
         // glossy reflection into lockstep so both paths share one bias rule.
         vec3 N_view = dot(N, V) < 0.0 ? -N : N;
         vec3 R = reflect(-V, N_view);
-        float frameCount = cameraPos.w;
-        float n1 = interleavedGradientNoise(gl_FragCoord.xy, frameCount + 89.0);
-        float n2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(53.7, 191.3), frameCount + 113.0);
-        vec3 T2, B2;
-        buildOrthoBasis(R, T2, B2);
-        vec2 cone = concentricDiskSample(n1, n2) * (roughness * roughness);
-        vec3 jitteredR = normalize(R + T2 * cone.x + B2 * cone.y);
-        vec4 reflResult = traceReflection(fragWorldPos + N_bias * 0.1, jitteredR, 5000.0);
+        // Deterministic rough reflection: a single SHARP ray, with the
+        // GGX-lobe blur applied as a roughness-scaled mip on the hit
+        // sample (`traceReflection`'s mipBias). Pre-fix this jittered the
+        // ray direction by a `roughness²` cone seeded per-frame by IGN —
+        // a 1-spp stochastic estimate that left visible reflection grain
+        // on every rough metal (the dominant remaining Monte-Carlo noise),
+        // since the direct channel isn't SVGF-denoised and TAA only
+        // partly converges a wide lobe. Pre-filtered blur is the standard
+        // noise-free alternative. mip ~ roughness·8 spans the texture
+        // pyramid; on untextured (1×1) surfaces it's a no-op and the
+        // reflection is mirror-sharp, which is fine — flat colour.
+        vec4 reflResult =
+            traceReflection(fragWorldPos + N_bias * 0.1, R, 5000.0,
+                            roughness * 8.0, fragInstanceIndex);
 
         // Fresnel-weighted reflection: stronger at grazing angles.
         vec3 F = fresnelSchlick(NdotV, F0);
@@ -3241,7 +3417,16 @@ void main() {
     // (which can't see the hall-scale geometry off-screen). 1.0 = fully
     // open, 0.0 = hard against adjacent geometry.
     float rtAO = 1.0;
-    if (rtEnabled && !isWindow && !isGlass && emissiveMult < 0.01 && rtLOD < RT_LOD_GI) {
+    // Gate GI on the surface's actual EMISSION (luminance), not the bare
+    // `emissiveMult`: `Material::default()` ships `emissive_mult = 1.0`
+    // with a zero emissive colour, so a plain `emissiveMult < 0.01` test
+    // wrongly classified every ordinary matte surface as a light source
+    // and skipped its GI entirely (no colour bleed anywhere). Only true
+    // emitters (light panels, glowing signs) should opt out of receiving
+    // bounce.
+    float giEmissiveLum =
+        emissiveMult * max(emissiveColor.r, max(emissiveColor.g, emissiveColor.b));
+    if (rtEnabled && !isWindow && !isGlass && giEmissiveLum < 0.01 && rtLOD < RT_LOD_GI) {
         float giDist = length(fragWorldPos - cameraPos.xyz);
         float giFade = 1.0 - smoothstep(4000.0, 6000.0, giDist);
         if (giFade > 0.01) {
@@ -3306,25 +3491,43 @@ void main() {
                 rtAO = smoothstep(60.0, 500.0, hitDist);
                 rtAO = mix(0.3, 1.0, rtAO);
 
-                // Use pre-computed average albedo from the hit instance's
-                // SSBO entry instead of the full UV lookup + texture sample.
-                // This reduces 11 divergent memory ops (3 index reads +
-                // 6 vertex reads + 1 instance read + 1 texture sample) to
-                // a single SSBO read. At 1-SPP with temporal filtering,
-                // the texture detail was already noise — the color bleeding
-                // effect comes from the average hue, not fine detail.
                 GpuInstance hitInst = instances[hitIdx];
                 vec3 hitAlbedo = vec3(hitInst.avgAlbedoR, hitInst.avgAlbedoG, hitInst.avgAlbedoB);
 
-                // Ambient bounce: modulates hue from nearby surfaces.
-                float hitFade = 1.0 / (1.0 + hitDist * 0.005);
-                // Use raw XCLL ambient — no floor. The 0.15 clamp added in
-                // commit 14f2e63 was compensation for the since-removed 2.5x
-                // XCLL boost. RT bounce from hitAlbedo provides the fill
-                // that the floor was artificially preserving. See #268.
-                indirect = sceneFlags.yzw * hitAlbedo * hitFade * 0.3;
-                // Soft clamp to tame outliers without killing the effect.
-                indirect = min(indirect, vec3(0.4));
+                // ── True one-bounce GI (engine-wide) ──────────────────
+                // Evaluate the DIRECT light actually reaching the bounce
+                // surface and carry its albedo-tinted reflection back to
+                // the primary fragment. Replaces the legacy
+                // `cell_ambient × hitAlbedo` approximation, which
+                // transported no real light and produced no colour
+                // bleeding in low-ambient scenes (Cornell box, night
+                // exteriors). `indirect` is the incoming radiance; the
+                // composite pass multiplies it by the PRIMARY fragment
+                // albedo (`final = direct + indirect * albedo`).
+                vec3 hitPos = giOrigin + giDir * hitDist;
+                // Receiver normal for the bounce surface. We approximate it
+                // with `-giDir` (the surface as seen facing the incoming GI
+                // ray) rather than the interpolated geometry normal: it is
+                // robust, self-shadow-bias-free, and the standard cheap
+                // choice for a 1-spp diffuse bounce. Exact per-hit normals
+                // would sharpen directional colour-bleed but need a correct
+                // hit-normal fetch (TODO — the SSBO normal/position fetch
+                // mis-resolved here).
+                vec3 hitN = -giDir;
+
+                GpuMaterial hitMat = materials[hitInst.materialId];
+                vec3 hitEmissive = vec3(hitMat.emissiveR, hitMat.emissiveG, hitMat.emissiveB)
+                                 * hitMat.emissiveMult;
+
+                vec3 hitIrradiance = giHitIrradiance(hitPos, hitN, dbgFlags);
+                // Lambertian bounce: outgoing = albedo/PI · irradiance.
+                // Emissive surfaces (light panels) act as area lights and
+                // add their radiance directly. The cosine-weighted GI
+                // sample's pdf already cancelled the wrap cosine upstream.
+                indirect = hitAlbedo * hitIrradiance * (1.0 / PI) + hitEmissive;
+                // Soft clamp tames the occasional near-light firefly
+                // without flattening bright bleed.
+                indirect = min(indirect, vec3(8.0));
             } else {
                 // Ray escaped (no geometry within 3000u) — fall back to
                 // the per-cell ambient color, NOT a hardcoded sky blue.
