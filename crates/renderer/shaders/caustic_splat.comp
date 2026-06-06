@@ -339,8 +339,25 @@ void main() {
         // was unanchored from CAUSTIC_FIXED_SCALE — a scale change would
         // silently misalign. (#1099 / REN-D13-002)
         float clamp_max = float(0xFFFFFFFFu) / scale;
-        uint fixed_val = uint(clamp(contrib * scale, 0.0, clamp_max));
-        if (fixed_val == 0u) continue;
-        imageAtomicAdd(causticAccum, hitPixel, fixed_val);
+        // Spread the deposit over a 3×3 tent (weights sum to 1, so total
+        // energy is unchanged) instead of a single pixel. Each glass pixel
+        // refracts to ONE landing point; thousands of those single-pixel
+        // deposits scatter into a sparse, grainy pool. A small footprint
+        // overlaps neighbouring deposits into a smooth caustic and — since
+        // adjacent frames' jittered landing points now overlap — also damps
+        // the per-frame flicker, all without dimming or shrinking the pool.
+        const float wt[9] = float[9](
+            0.0625, 0.125, 0.0625,
+            0.125,  0.25,  0.125,
+            0.0625, 0.125, 0.0625);
+        for (int ky = -1; ky <= 1; ++ky) {
+            for (int kx = -1; kx <= 1; ++kx) {
+                ivec2 q = hitPixel + ivec2(kx, ky);
+                if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, size))) continue;
+                uint fv = uint(clamp(contrib * wt[(ky + 1) * 3 + (kx + 1)] * scale,
+                                     0.0, clamp_max));
+                if (fv != 0u) imageAtomicAdd(causticAccum, q, fv);
+            }
+        }
     }
 }
