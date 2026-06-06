@@ -484,6 +484,30 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
     return w * uv0 + barycentrics.x * uv1 + barycentrics.y * uv2;
 }
 
+// World-space geometric (face) normal of a ray-query hit triangle, from
+// its vertex POSITIONS (stride offset 0) transformed by the instance
+// model matrix. Same fetch shape as getHitUV (validated in the reflection
+// / refraction ray context). Used by two-surface glass refraction to
+// refract the ray a second time as it exits the glass back face.
+vec3 getHitTriNormal(uint instanceIdx, uint primitiveIdx) {
+    GpuInstance hi = instances[instanceIdx];
+    uint vOff = hi.vertexOffset;
+    uint iOff = hi.indexOffset;
+    uint i0 = indexData[iOff + primitiveIdx * 3 + 0];
+    uint i1 = indexData[iOff + primitiveIdx * 3 + 1];
+    uint i2 = indexData[iOff + primitiveIdx * 3 + 2];
+    uint p0 = (vOff + i0) * VERTEX_STRIDE_FLOATS;
+    uint p1 = (vOff + i1) * VERTEX_STRIDE_FLOATS;
+    uint p2 = (vOff + i2) * VERTEX_STRIDE_FLOATS;
+    vec3 v0 = vec3(vertexData[p0], vertexData[p0 + 1], vertexData[p0 + 2]);
+    vec3 v1 = vec3(vertexData[p1], vertexData[p1 + 1], vertexData[p1 + 2]);
+    vec3 v2 = vec3(vertexData[p2], vertexData[p2 + 1], vertexData[p2 + 2]);
+    vec3 w0 = (hi.model * vec4(v0, 1.0)).xyz;
+    vec3 w1 = (hi.model * vec4(v1, 1.0)).xyz;
+    vec3 w2 = (hi.model * vec4(v2, 1.0)).xyz;
+    return normalize(cross(w1 - w0, w2 - w0));
+}
+
 // Cast a reflection ray and return the reflected color.
 //
 // Return contract (#1029 / REN-D9-NEW-06):
@@ -2455,7 +2479,27 @@ void main() {
                 // terminus to the !hit escape path so the magenta
                 // texture is never SAMPLED.
                 if ((hitIsGlass || fallbackTexture) && passthru < REFRACT_PASSTHRU_BUDGET) {
-                    rayOrigin = rayOrigin + refractDir * (hDist + 0.05);
+                    vec3 exitPoint = rayOrigin + refractDir * hDist;
+                    // Two-surface refraction: bend the ray AGAIN as it
+                    // leaves the glass (glass→air) instead of passing
+                    // straight through. A single front-surface refraction
+                    // only nudges the image; the exit refraction is what
+                    // inverts/magnifies it, so a solid glass sphere/cube
+                    // actually reads as a lens that bends the scene behind
+                    // it. The geometric face normal is oriented to point
+                    // back into the glass (against the outgoing ray) for
+                    // refract(); eta = n_glass/n_air = GLASS_IOR. On total
+                    // internal reflection (refract → 0, grazing exit) keep
+                    // the straight passthru — a bounded approximation.
+                    if (hitIsGlass) {
+                        uint hPrim =
+                            uint(rayQueryGetIntersectionPrimitiveIndexEXT(refrRQ, true));
+                        vec3 exitN = getHitTriNormal(uint(hIdx), hPrim);
+                        if (dot(exitN, refractDir) < 0.0) exitN = -exitN; // outward
+                        vec3 exitDir = refract(refractDir, -exitN, GLASS_IOR);
+                        if (dot(exitDir, exitDir) > 1e-4) refractDir = normalize(exitDir);
+                    }
+                    rayOrigin = exitPoint + refractDir * 0.05;
                     rayTMin = 0.0;
                     accumulatedDist += hDist;
                     continue;
