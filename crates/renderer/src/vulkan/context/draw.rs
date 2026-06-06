@@ -2857,7 +2857,8 @@ impl VulkanContext {
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_caustic_splat_start(&self.device, cmd, frame);
                         }
-                        let caustic_result = caustic.dispatch(&self.device, cmd, frame);
+                        let caustic_result =
+                            caustic.dispatch(&self.device, cmd, frame, camera_static);
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_caustic_splat_end(&self.device, cmd, frame);
                         }
