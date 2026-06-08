@@ -24,7 +24,7 @@ struct SsaoParams {
     view_proj: [[f32; 4]; 4],
     /// Precomputed `inverse(viewProj)` for world-space reconstruction from depth.
     inv_view_proj: [[f32; 4]; 4],
-    /// x = radius (pixels), y = depth bias, z = intensity, w = unused.
+    /// x = radius (pixels), y = normal bias (cosine), z = intensity, w = unused.
     params: [f32; 4],
     /// x = width, y = height, z = 1/width, w = 1/height.
     screen_size: [f32; 4],
@@ -528,7 +528,13 @@ impl SsaoPipeline {
         let params = SsaoParams {
             view_proj: *view_proj,
             inv_view_proj: *inv_view_proj,
-            params: [16.0, 0.0002, 2.0, 0.0], // radius=16px, bias=0.0002, intensity=2.0
+            // radius=16px, normal-bias=0.1 (cosine), intensity=1.5.
+            // bias/intensity re-tuned for the world-space hemisphere AO test
+            // (ssao.comp): bias now rejects coplanar self-occlusion by normal
+            // cosine (was a raw non-linear-depth delta), intensity dropped
+            // 2.0→1.5 since the hemisphere estimate no longer double-counts
+            // flat-surface depth slope. Starting values — tune visually.
+            params: [16.0, 0.1, 1.5, 0.0],
             screen_size: [
                 self.width as f32,
                 self.height as f32,

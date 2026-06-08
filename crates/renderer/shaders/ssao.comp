@@ -6,9 +6,13 @@
 
 // Screen-space ambient occlusion (SSAO) compute shader.
 //
-// Samples the depth buffer around each pixel and compares depths to
-// estimate occlusion. Simple and robust: no view-space reconstruction,
-// just screen-space depth comparison with distance falloff.
+// Hemisphere AO in WORLD space: reconstruct each pixel's world position +
+// surface normal from depth, then for each neighbour sample measure how far
+// it rises above the tangent plane (dot(toSample, N)) within a world-space
+// radius. A flat surface has dot≈0 → no self-occlusion, so grazing floors no
+// longer band into concentric moiré rings. (Replaces the prior raw
+// non-linear-depth compare, whose fixed [bias, 0.05] window fired at
+// iso-distance contours on flat surfaces — the floor moiré.)
 
 layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y, local_size_z = 1) in;
 
@@ -18,7 +22,7 @@ layout(set = 0, binding = 1, r8) uniform writeonly image2D aoOutput;
 layout(set = 0, binding = 2) uniform SSAOParams {
     mat4 viewProj;      // view-projection matrix (column-major)
     mat4 invViewProj;   // precomputed inverse(viewProj) for world reconstruction
-    vec4 params;        // x = radius (pixels), y = bias, z = intensity, w = unused
+    vec4 params;        // x = radius (pixels), y = normal bias (cosine), z = intensity, w = unused
     vec4 screenSize;    // x = width, y = height, z = 1/width, w = 1/height
     vec4 cameraPos;     // xyz = camera world position
 };
@@ -60,45 +64,65 @@ void main() {
     vec3 worldPos = worldFromDepth(uv, depth, invVP);
     float distFromCam = length(worldPos - cameraPos.xyz);
 
-    // AO radius in screen pixels, shrinking with distance.
+    // Reconstruct the surface normal from depth — compute shaders have no
+    // fragment derivatives, so fetch the 4 cardinal neighbours and take the
+    // CLOSER neighbour on each axis (smaller depth delta) for the basis, so
+    // it doesn't bleed across silhouettes (#299 sibling rationale).
+    ivec2 lo = ivec2(0);
+    ivec2 hi = ivec2(int(screenSize.x) - 1, int(screenSize.y) - 1);
+    float dL = texelFetch(depthTex, clamp(px - ivec2(1, 0), lo, hi), 0).r;
+    float dR = texelFetch(depthTex, clamp(px + ivec2(1, 0), lo, hi), 0).r;
+    float dD = texelFetch(depthTex, clamp(px - ivec2(0, 1), lo, hi), 0).r;
+    float dU = texelFetch(depthTex, clamp(px + ivec2(0, 1), lo, hi), 0).r;
+    vec3 pL = worldFromDepth(uv - vec2(screenSize.z, 0.0), dL, invVP);
+    vec3 pR = worldFromDepth(uv + vec2(screenSize.z, 0.0), dR, invVP);
+    vec3 pD = worldFromDepth(uv - vec2(0.0, screenSize.w), dD, invVP);
+    vec3 pU = worldFromDepth(uv + vec2(0.0, screenSize.w), dU, invVP);
+    vec3 ddx = (abs(dR - depth) < abs(depth - dL)) ? (pR - worldPos) : (worldPos - pL);
+    vec3 ddy = (abs(dU - depth) < abs(depth - dD)) ? (pU - worldPos) : (worldPos - pD);
+    vec3 N = normalize(cross(ddx, ddy));
+    // Depth-reconstructed normal sign is ambiguous — orient toward camera.
+    vec3 V = normalize(cameraPos.xyz - worldPos);
+    if (dot(N, V) < 0.0) N = -N;
+
+    // AO radius in screen pixels, shrinking with distance (unchanged), then
+    // its WORLD-space footprint at this depth so the occlusion shell scales
+    // with distance — the test is distance-invariant, killing the banding.
     float radiusPx = params.x / max(distFromCam * 0.01, 0.5);
     radiusPx = clamp(radiusPx, 1.0, 32.0);
+    vec3 edgeWorld = worldFromDepth(uv + vec2(radiusPx * screenSize.z, 0.0), depth, invVP);
+    float worldRadius = max(length(edgeWorld - worldPos), 1.0e-4);
 
-    float bias = params.y;
+    float bias = params.y;        // normal/coplanar rejection (cosine offset)
     float intensity = params.z;
 
-    // Per-pixel noise for sample rotation.
+    // Per-pixel rotation of the spiral so the 16-sample undersampling reads
+    // as high-frequency grain (cheap to add a bilateral blur later) rather
+    // than a fixed spiral. Deterministic (seed 0) — it is NOT the moiré.
     float angle0 = ign(vec2(px), 0.0) * 2.0 * PI;
 
     float occlusion = 0.0;
-
     for (int i = 0; i < NUM_SAMPLES; i++) {
-        // Poisson-like sample pattern: radial distance + angle.
         float fi = float(i);
-        float r = (fi + 0.5) / float(NUM_SAMPLES); // [0..1] radial
-        float angle = angle0 + fi * 2.39996323; // golden angle rotation
-
+        float r = (fi + 0.5) / float(NUM_SAMPLES);    // [0..1] radial
+        float angle = angle0 + fi * 2.39996323;       // golden-angle rotation
         vec2 offset = vec2(cos(angle), sin(angle)) * r * radiusPx;
-        ivec2 samplePx = clamp(
-            px + ivec2(offset),
-            ivec2(0),
-            ivec2(int(screenSize.x) - 1, int(screenSize.y) - 1)
-        );
-        // Point-sample the depth buffer to avoid bilinear-filtered depth
-        // artifacts at silhouettes (#299).
+        ivec2 samplePx = clamp(px + ivec2(offset), lo, hi);
         float sampleDepth = texelFetch(depthTex, samplePx, 0).r;
+        if (sampleDepth >= 0.999) continue;           // sky doesn't occlude
 
-        // Compare depths: if the sample is closer to the camera (smaller
-        // depth in Vulkan [0=near, 1=far]), it occludes this pixel.
-        float depthDiff = depth - sampleDepth; // positive = sample is closer
+        vec2 sampleUV = (vec2(samplePx) + 0.5) * screenSize.zw;
+        vec3 sampleWorld = worldFromDepth(sampleUV, sampleDepth, invVP);
+        vec3 toSample = sampleWorld - worldPos;
+        float d = length(toSample);
+        if (d < 1.0e-4) continue;
 
-        // Only count occlusion within a reasonable range.
-        // Too small = self-occlusion noise, too large = distant geometry leaking.
-        if (depthDiff > bias && depthDiff < 0.05) {
-            // Weight by proximity: closer samples contribute more.
-            float weight = 1.0 - smoothstep(0.0, 0.05, depthDiff);
-            occlusion += weight;
-        }
+        // Hemisphere occlusion: how far the sample rises above the tangent
+        // plane, minus a coplanar-rejection bias. Flat surfaces → dot≈0 → no
+        // AO. Distance falloff is in world units (distance-invariant).
+        float ndl = dot(toSample / d, N);
+        float rangeFalloff = 1.0 - smoothstep(0.0, worldRadius, d);
+        occlusion += max(ndl - bias, 0.0) * rangeFalloff;
     }
 
     occlusion /= float(NUM_SAMPLES);
