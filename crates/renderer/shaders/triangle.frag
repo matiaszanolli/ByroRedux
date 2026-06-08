@@ -2433,6 +2433,7 @@ void main() {
             int tIdx = -1;
             int tPrim = 0;
             vec2 tBary = vec2(0.0);
+            vec3 tHitPos = vec3(0.0); // world-space terminus hit (for real per-hit lighting)
             bool hit = false;
             // Diagnostic state for `DBG_VIZ_GLASS_PASSTHRU` — tracked
             // unconditionally; cheap, and the override below skips the
@@ -2522,6 +2523,7 @@ void main() {
                 tIdx  = hIdx;
                 tPrim = rayQueryGetIntersectionPrimitiveIndexEXT(refrRQ, true);
                 tBary = rayQueryGetIntersectionBarycentricsEXT(refrRQ, true);
+                tHitPos = rayOrigin + refractDir * hDist;
                 accumulatedDist += hDist;
                 hit = true;
                 diagPassthru = passthru;
@@ -2634,13 +2636,29 @@ void main() {
                 vec3 tColor = tAlbedo
                     * vec3(tInst.avgAlbedoR, tInst.avgAlbedoG, tInst.avgAlbedoB);
 
-                // Apply a lighting estimate so the refracted scene matches
-                // the LIT world, not raw albedo. Cheap ambient-floor model
-                // (full per-hit shading is too costly inside the refraction
-                // loop); the floor is generous so brightly-lit walls seen
-                // through glass don't read as dim.
-                vec3 ambientLitFloor = sceneFlags.yzw + vec3(0.6);
-                refrColor = tColor * ambientLitFloor;
+                // Light the refracted surface with the SAME real one-bounce
+                // direct-light evaluation the GI bounce uses (giHitIrradiance:
+                // per-light N·L + shadow ray), instead of a flat ambient
+                // floor. The old `tColor * (cell_ambient + 0.6)` model washed
+                // every refracted surface to ~0.6×albedo with no contrast or
+                // shadowing, so the scene behind glass read as a flat,
+                // desaturated "milky" blob rather than a lit, inverted image
+                // of the room. With real lighting a brightly-lit white wall
+                // transmits bright, a shadowed corner transmits dark, and the
+                // red/green walls keep their lit saturation — the crisp
+                // glass-lens look. Emissive hits (light panels, the Cornell
+                // emissive cube) add their radiance directly so they GLOW
+                // through the glass; the old model never read emission at all.
+                // Same units as the primary direct path (·1/π) so a wall seen
+                // through glass matches the same wall seen directly, modulo
+                // the gentle distance falloff below. The face normal is
+                // oriented to face back along the refraction ray.
+                vec3 tHitN = getHitTriNormal(uint(tIdx), uint(tPrim));
+                if (dot(tHitN, refractDir) > 0.0) tHitN = -tHitN;
+                vec3 tIrr = giHitIrradiance(tHitPos, tHitN, dbgFlags);
+                vec3 tEmissive = vec3(tMat.emissiveR, tMat.emissiveG, tMat.emissiveB)
+                               * tMat.emissiveMult;
+                refrColor = tColor * (tIrr * (1.0 / PI) + sceneFlags.yzw) + tEmissive;
 
                 // Distance attenuation — faraway refracted content
                 // falls off gently so thick glass stacks don't become
