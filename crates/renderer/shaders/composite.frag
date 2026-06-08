@@ -367,6 +367,16 @@ void main() {
         uint causticRaw = texelFetch(causticTex, ivec2(gl_FragCoord.xy), 0).r;
         uint waterCausticRaw = texelFetch(waterCausticTex, ivec2(gl_FragCoord.xy), 0).r;
         float causticLum = float(causticRaw + waterCausticRaw) / CAUSTIC_FIXED_SCALE;
+        // Firefly cap on the COMBINED caustic luminance (TARGET 2). The focal
+        // cusp under glass spheres / water sums thousands of forward-splat
+        // deposits (imageAtomicAdd) into a few pixels; under camera motion the
+        // caustic accumulator is cleared per-frame (no EMA smoothing), so the
+        // un-averaged cusp peak flickers as bright splotches. Bound the peak
+        // before it enters `combined`. Indirect-only: `direct` is added
+        // separately below, so the light source is untouched. Pre-ACES linear
+        // ceiling — start conservative and tune down per the TARGET 2 bench.
+        const float CAUSTIC_FIREFLY_MAX = 16.0;
+        causticLum = min(causticLum, CAUSTIC_FIREFLY_MAX);
         vec3 caustic = albedo * causticLum;
 
         vec3 combined = direct + indirect * albedo + caustic;

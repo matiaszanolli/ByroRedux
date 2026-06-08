@@ -220,11 +220,20 @@ void main() {
     // static and let the pure 1/N running average converge to ground
     // truth; reinstate it the instant the camera moves.
     vec3 clampedHist;
-    if (cameraStatic) {
-        clampedHist = histRgb;
-    } else {
+    {
         vec3 histYc = rgb_to_ycocg(histRgb);
-        histYc = clamp(histYc, yMin, yMax);
+        if (cameraStatic) {
+            // Parked: let LUMA (Y) converge via the pure 1/N running average —
+            // a neighborhood luma clamp drags high-variance content (glass
+            // refraction, rough-metal reflection) and stops it settling. But
+            // keep CHROMA (Co/Cg) bounded to the local window: a sub-pixel-
+            // jittered high-contrast COLOUR edge (white tall box against the
+            // red / green Cornell walls) would otherwise accumulate a stable
+            // red/cyan rim in the unbounded chroma average. TARGET 3 fringing.
+            histYc.yz = clamp(histYc.yz, yMin.yz, yMax.yz);
+        } else {
+            histYc = clamp(histYc, yMin, yMax);
+        }
         clampedHist = ycocg_to_rgb(histYc);
     }
 

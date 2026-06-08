@@ -239,7 +239,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     // `vec3(0.6, 0.75, 1.0)` and every window looked clear-noon.
     vec4 skyTint;     // xyz = TOD/weather zenith colour, w = sun_angular_radius (rad; SkyParams::sun_angular_radius, #1023)
     vec4 sunDirection;
-    vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
+    vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = camera_static (1.0 = parked).
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
@@ -3458,11 +3458,17 @@ void main() {
         float giDist = length(fragWorldPos - cameraPos.xyz);
         float giFade = 1.0 - smoothstep(4000.0, 6000.0, giDist);
         if (giFade > 0.01) {
-            // Use a slowly-varying noise seed: floor(frameCount/4) makes
-            // each noise pattern persist for 4 frames, reducing flicker
-            // while still converging over time.
+            // GI noise seed. Hold it for 4 frames while the camera MOVES to
+            // suppress flicker (SVGF history is short under motion). When the
+            // camera is PARKED (dofParams.w = camera_static), advance the seed
+            // every frame instead: SVGF's 1/N progressive accumulation absorbs
+            // the per-frame change, and the now-decorrelated hemisphere
+            // directions converge the dark indirect-lit floor ~4× faster. The
+            // 4-frame hold otherwise feeds SVGF the SAME bounce direction 4×
+            // in a row, capping effective SPP at ~64 of the 255-frame histAge
+            // budget — the dominant cause of residual floor speckle (TARGET 1).
             float frameCount = cameraPos.w;
-            float giSeed = floor(frameCount * 0.25);
+            float giSeed = dofParams.w > 0.5 ? frameCount : floor(frameCount * 0.25);
             float n1 = interleavedGradientNoise(gl_FragCoord.xy, giSeed);
             float n2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(73.7, 191.3), giSeed + 37.0);
 

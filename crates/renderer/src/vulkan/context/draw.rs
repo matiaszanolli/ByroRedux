@@ -628,6 +628,16 @@ impl VulkanContext {
                 inv_vp_cols[15],
             ],
         ];
+        // Camera-static detection for progressive temporal accumulation.
+        // The view-proj here is jitter-free (TAA sub-pixel jitter is applied
+        // later in the vertex shader), so a matrix unchanged frame-to-frame
+        // means a parked camera. Computed BEFORE the camera UBO is built so
+        // the flag can ride `dof_params.w` into triangle.frag's GI-seed
+        // decorrelation, and BEFORE `prev_view_proj` is overwritten below.
+        let camera_static = vp
+            .iter()
+            .zip(self.prev_view_proj.iter())
+            .all(|(a, b)| (a - b).abs() < 1.0e-6);
         let camera = scene_buffer::GpuCamera {
             view_proj: [
                 [vp[0], vp[1], vp[2], vp[3]],
@@ -738,14 +748,21 @@ impl VulkanContext {
                 sky_params.sun_direction[2],
                 sky_params.sun_intensity,
             ],
-            // x = aperture half-radius, y = focal distance, w reserved.
-            // When aperture == 0.0, the DOF jitter above was skipped and
-            // the shader ignores x/y.
+            // x = aperture half-radius (0.0 → pinhole, DOF jitter skipped),
+            // y = focal distance.
             // z = REND-#1451 point/spot attenuation knee fraction,
             // consumed by `pointSpotAtten` in triangle.frag (0 → shader
             // default 0.5). Live-tunable via the `light.atten` console
             // command for the controlled bench.
-            dof_params: [dof.aperture, dof.focus_dist, self.light_atten_knee, 0.0],
+            // w = camera_static flag (1.0 = parked). triangle.frag reads it
+            // to advance the GI noise seed every frame when parked, so the
+            // dark indirect-lit floor converges ~4× faster (TARGET 1).
+            dof_params: [
+                dof.aperture,
+                dof.focus_dist,
+                self.light_atten_knee,
+                if camera_static { 1.0 } else { 0.0 },
+            ],
         };
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)
@@ -778,17 +795,11 @@ impl VulkanContext {
         self.scene_buffers
             .upload_dalc(&self.device, frame, &dalc_gpu)
             .unwrap_or_else(|e| log::warn!("Failed to upload DALC cube: {e}"));
-        // Camera-static detection for SVGF progressive accumulation
-        // (params.w). The view-proj here is jitter-free — TAA sub-pixel
-        // jitter is applied later in the vertex shader — so a matrix that
-        // is unchanged frame-to-frame means a parked camera, which lets
-        // the temporal pass converge GI via a pure 1/N running average.
-        // Computed BEFORE prev_view_proj is overwritten just below.
-        let camera_static = vp
-            .iter()
-            .zip(self.prev_view_proj.iter())
-            .all(|(a, b)| (a - b).abs() < 1.0e-6);
-        // Store this frame's viewProj as next frame's "previous" for motion vectors.
+        // `camera_static` was computed above (before the camera UBO was
+        // built) so the flag could ride `dof_params.w` into triangle.frag's
+        // GI-seed decorrelation; it is reused here for the SVGF / TAA /
+        // caustic param uploads. Store this frame's viewProj as next frame's
+        // "previous" for motion vectors.
         self.prev_view_proj = *vp;
 
         // M29.5/M29.6 — upload bone_world (per-frame) and any pending
