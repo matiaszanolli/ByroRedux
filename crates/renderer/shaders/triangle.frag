@@ -2678,7 +2678,17 @@ void main() {
         // drinkingglass01.dds that was overlaying every refracted pixel
         // at ~29 FPS — visible as a wire-mesh shimmer on transparent
         // cups.
-        float decalWeight = smoothstep(0.3, 0.7, texColor.a);
+        // Decal split only applies to ALPHA-BLENDED glass panes (real
+        // Bethesda windows/etched glass, where the texture's bimodal alpha
+        // separates painted-on decal texels from clear regions). OPAQUE
+        // solid glass — a drinking glass, a bottle, the Cornell hero sphere
+        // — has no decal layer: its texture is opaque (the neutral white
+        // fallback for untextured probes → texColor.a = 1.0), which would
+        // otherwise smoothstep to decalWeight = 1.0 and replace the entire
+        // refracted view with the raw white texel — the "milky opaque glass"
+        // bug. Gate on the stable CPU-classified alpha-blend flag so opaque
+        // glass shows pure refraction.
+        float decalWeight = isAlphaBlend ? smoothstep(0.3, 0.7, texColor.a) : 0.0;
         vec3 glassTint = textureLod(
             textures[nonuniformEXT(mat.textureIndex)],
             sampleUV,
