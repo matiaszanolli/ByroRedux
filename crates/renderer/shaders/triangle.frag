@@ -3344,7 +3344,7 @@ void main() {
 
             if (lightType < 1.5) {
                 // Point / spot: jittered ray toward the light's physical disk.
-                float lightDiskRadius = max(radius * 0.025, 1.5);
+                float lightDiskRadius = 0.1; // DIAG: near-hard shadow to test penumbra noise
                 vec3 jitteredTarget = lightPos + (T * diskSample.x + B * diskSample.y) * lightDiskRadius;
                 rayDir = normalize(jitteredTarget - rayOrigin);
                 rayDist = length(jitteredTarget - rayOrigin) - 0.1;
