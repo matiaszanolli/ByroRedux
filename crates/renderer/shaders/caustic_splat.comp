@@ -337,7 +337,24 @@ void main() {
         if (clip.w <= 0.0) continue;
         vec3 ndc = clip.xyz / clip.w;
         if (any(greaterThan(abs(ndc.xy), vec2(1.0))) || ndc.z < 0.0 || ndc.z > 1.0) continue;
-        ivec2 hitPixel = ivec2((ndc.xy * 0.5 + 0.5) * causticScreen.xy);
+        // Temporal supersampling jitter — fixes the foreground caustic moiré.
+        // One ray per source pixel under-covers the floor where the refraction
+        // map expands, leaving discrete 5×5 deposits visible as a dotted moiré
+        // (worst in the foreground, where a fixed screen footprint spans less
+        // world area). When the camera is PARKED the host runs the EMA decay
+        // pass (pc.decayFactor > 0), so offsetting each frame's landing by a
+        // footprint-scale, frame-varying R2 (low-discrepancy) amount lets the
+        // running average fill the inter-deposit gaps — shape preserved on
+        // average, no static-footprint enlargement. Skipped under motion
+        // (decayFactor == 0, no EMA) so the single-frame caustic doesn't wobble.
+        const float CAUSTIC_TEMPORAL_JITTER_PX = 8.0;
+        vec2 landPx = (ndc.xy * 0.5 + 0.5) * causticScreen.xy;
+        if (pc.decayFactor > 0.0) {
+            float fc = cameraPos.w;
+            landPx += (fract(vec2(fc * 0.7548776662, fc * 0.5698402909)) - 0.5)
+                      * CAUSTIC_TEMPORAL_JITTER_PX;
+        }
+        ivec2 hitPixel = ivec2(landPx);
         if (any(lessThan(hitPixel, ivec2(0))) || any(greaterThanEqual(hitPixel, size))) continue;
 
         // Caustic brightness falls off with light distance² and refracted
