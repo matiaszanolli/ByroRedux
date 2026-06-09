@@ -1630,7 +1630,13 @@ void main() {
     // The LOD_SCALE constant controls the transition distances; raise to
     // favour quality (more pixels at tier 0), lower to favour performance.
     const float RT_LOD_SCALE   = 6.0;
-    const float RT_LOD_REFLECT = 2.0;  // metal reflection ray ceiling
+    // Reflection-ray reach. Raised 2.0→3.0 (the full rtLOD range) so the
+    // environment reflection isn't cut at ~2m on grazing surfaces — the
+    // env-specular is now continuous across distance (faded to a cheap
+    // ambient-colour specular at the boundary instead of popping off). Cheap
+    // post-#material-matte-default: far fewer surfaces are glossy enough
+    // (roughness < 0.6) to fire the ray at all.
+    const float RT_LOD_REFLECT = 3.0;
     const float RT_LOD_GI      = 2.0;  // GI ray ceiling
     const float RT_LOD_IOR     = 1.0;  // Phase-3 glass IOR ceiling (budget-gated)
     float rtFootprint = max(length(dFdx(fragWorldPos)), length(dFdy(fragWorldPos)));
@@ -2894,11 +2900,16 @@ void main() {
     // specular complement of that diffuse split — F-weighted
     // specular + (1-F)-weighted diffuse sums to unit energy on
     // dielectrics (lost-to-absorption fraction stays zero).
-    if (rtEnabled && roughness < 0.6 && rtLOD < RT_LOD_REFLECT) {
-        // Roughness-driven ray jitter: GGX lobe widens with roughness^2.
-        // Single sample per pixel, accumulated via temporal noise (IGN seeded
-        // by frame counter). SVGF temporal filter smooths the result. #320.
-        //
+    // Environment-reflection specular for glossy surfaces (roughness < 0.6).
+    // Present at ALL distances — the Fresnel-weighted env-specular is a real
+    // BRDF term, so cutting it by distance left far glossy surfaces flat-matte
+    // and made close ones pop "wet" at the hard rtLOD boundary (~2m on grazing
+    // floors). Now CONTINUOUS: the RT reflection ray fires within the (larger)
+    // RT_LOD_REFLECT reach and fades to a cheap ambient-colour specular across
+    // the last octave, so ray result and fallback meet without a seam.
+    // Mirrors the GI gate's giLodFade. (Most surfaces are matte post-material-
+    // default and never enter this block, so the wider reach stays cheap.)
+    if (rtEnabled && roughness < 0.6) {
         // V-aligned normal flip (#668). The bump map at line 638 can perturb
         // `N` such that dot(N, V) < 0 on grazing views or noisy normal maps;
         // raw `N * 0.1` would then bias the ray origin BEHIND the macro
@@ -2907,36 +2918,32 @@ void main() {
         // glossy reflection into lockstep so both paths share one bias rule.
         vec3 N_view = dot(N, V) < 0.0 ? -N : N;
         vec3 R = reflect(-V, N_view);
-        // Deterministic rough reflection: a single SHARP ray, with the
-        // GGX-lobe blur applied as a roughness-scaled mip on the hit
-        // sample (`traceReflection`'s mipBias). Pre-fix this jittered the
-        // ray direction by a `roughness²` cone seeded per-frame by IGN —
-        // a 1-spp stochastic estimate that left visible reflection grain
-        // on every rough metal (the dominant remaining Monte-Carlo noise),
-        // since the direct channel isn't SVGF-denoised and TAA only
-        // partly converges a wide lobe. Pre-filtered blur is the standard
-        // noise-free alternative. mip ~ roughness·8 spans the texture
-        // pyramid; on untextured (1×1) surfaces it's a no-op and the
-        // reflection is mirror-sharp, which is fine — flat colour.
-        vec4 reflResult =
-            traceReflection(fragWorldPos + N_bias * 0.1, R, 5000.0,
-                            roughness * 8.0, fragInstanceIndex);
-
         // Fresnel-weighted reflection: stronger at grazing angles.
         vec3 F = fresnelSchlick(NdotV, F0);
-
-        // Roughness blurs the reflection toward raw ambient. Pre-#1029
-        // the mix weight was `reflClarity * reflResult.a`, which
-        // collapsed to pure ambient on a BVH miss — discarding the
-        // sky-tinted blend `traceReflection` returned in `.rgb` on
-        // miss. Under the unified contract (see `traceReflection`
-        // header), `.rgb` is already the right reflection colour
-        // regardless of hit/miss, so the mix weighs only on
-        // roughness here: smooth metals see sky-tint on miss, rough
-        // metals fade to cell ambient as before.
-        float reflClarity = 1.0 - roughness;
         vec3 ambientFallback = sceneFlags.yzw;
-        vec3 envColor = mix(ambientFallback, reflResult.rgb, reflClarity);
+        float reflClarity = 1.0 - roughness;
+
+        vec3 envColor;
+        if (rtLOD < RT_LOD_REFLECT) {
+            // Deterministic rough reflection: a single SHARP ray, GGX-lobe
+            // blur applied as a roughness-scaled mip on the hit sample
+            // (`traceReflection`'s mipBias). mip ~ roughness·8 spans the
+            // texture pyramid; on untextured (1×1) surfaces it's a no-op and
+            // the reflection is mirror-sharp (flat colour). The `.rgb` is the
+            // right reflection colour on hit AND miss (sky-tint), per the
+            // unified traceReflection contract (#1029).
+            vec4 reflResult =
+                traceReflection(fragWorldPos + N_bias * 0.1, R, 5000.0,
+                                roughness * 8.0, fragInstanceIndex);
+            // Fade the RT-ray contribution to the ambient approximation across
+            // the last octave of the reach so ray and fallback are continuous.
+            float rayFade = 1.0 - smoothstep(RT_LOD_REFLECT - 1.0, RT_LOD_REFLECT, rtLOD);
+            envColor = mix(ambientFallback, reflResult.rgb, reflClarity * rayFade);
+        } else {
+            // Past the ray reach (far/grazing): cheap ambient-colour specular,
+            // no ray — keeps the env-specular continuous, never zero.
+            envColor = ambientFallback;
+        }
 
         Lo += envColor * F;
     }
