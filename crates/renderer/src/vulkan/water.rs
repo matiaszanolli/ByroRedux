@@ -18,8 +18,8 @@
 //! - a 128-byte push-constant block ([`WaterPush`]) carrying
 //!   time + flow + per-plane material params;
 //! - SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend on HDR attachment 0;
-//!   attachments 1..5 (normal, motion, mesh_id, raw_indirect, albedo)
-//!   are masked off (`color_write_mask = 0`) so water never pollutes
+//!   attachments 1..6 (normal, motion, mesh_id, raw_indirect, albedo,
+//!   reservoir) are masked off (`color_write_mask = 0`) so water never pollutes
 //!   the G-buffer feeding SVGF / motion-vector reprojection;
 //! - depth test on, depth write **off** (transparent surface);
 //! - cull NONE (water seen from both above + below).
@@ -585,10 +585,10 @@ fn build_pipeline(
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
     // SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend on HDR (attachment 0).
-    // Attachments 1..5 are write-masked off: water never updates
+    // Attachments 1..6 are write-masked off: water never updates
     // the G-buffer (normal / motion / mesh_id / raw_indirect /
-    // albedo) so SVGF and motion-vector reprojection see only
-    // the opaque pass behind the water.
+    // albedo / reservoir) so SVGF and motion-vector reprojection see
+    // only the opaque pass behind the water.
     let hdr_blend = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(true)
@@ -601,8 +601,15 @@ fn build_pipeline(
     let masked_off = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::empty())
         .blend_enable(false);
+    // Seven entries to match the main render pass's seven color
+    // attachments (0 HDR + 1..5 G-buffer + 6 reservoir). The array
+    // length sets `attachmentCount`; if it falls short of the subpass
+    // color-attachment count the driver reads the missing entries out
+    // of bounds — attachment 6 (the R32G32B32A32_UINT ReSTIR reservoir)
+    // then reads back blendEnable=TRUE, an illegal blend on an integer
+    // format (VUID-vkCmdDrawIndexed-blendEnable-04727). See #647 / RP-1.
     let attachments = [
-        hdr_blend, masked_off, masked_off, masked_off, masked_off, masked_off,
+        hdr_blend, masked_off, masked_off, masked_off, masked_off, masked_off, masked_off,
     ];
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
