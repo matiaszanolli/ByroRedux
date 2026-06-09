@@ -1000,6 +1000,7 @@ impl MaterialInfo {
                 env_map_scale: self.env_map_scale,
                 has_normal_map: self.normal_map.is_some(),
                 specular_color: self.specular_color,
+                has_gloss_map: self.gloss_map.is_some(),
             },
         )
     }

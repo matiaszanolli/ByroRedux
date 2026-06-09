@@ -397,6 +397,14 @@ pub struct PbrClassifierInputs<'a> {
     /// on non-keyword surfaces (desks, doors, panels) that otherwise
     /// fall to metalness=0. Default `[1.0; 3]` → specular luminance 1.0.
     pub specular_color: [f32; 3],
+    /// Whether the surface ships a dedicated specular/gloss MAP (Oblivion
+    /// `NiTexturingProperty` slot 3 / FO4 BGSM smooth-spec). Its presence is
+    /// the authored signal that the surface has real per-pixel shine; absent,
+    /// the no-keyword fallback stays MATTE instead of inventing glossiness
+    /// from the bare specular-power scalar (which made matte Skyrim
+    /// architecture read mirror-glossy — Skyrim's spec mask lives in the
+    /// normal-map alpha, wired separately).
+    pub has_gloss_map: bool,
 }
 
 /// Keyword-based PBR classifier formerly shared with the (deleted)
@@ -551,14 +559,34 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
         };
     }
 
-    // Glossiness fallback — normal-map presence shifts macro
-    // roughness down slightly to compensate for the added detail.
-    let mut roughness = (1.0 - inputs.glossiness / 100.0).clamp(0.05, 0.95);
-    if inputs.has_normal_map {
-        roughness = (roughness - 0.1).max(0.05);
+    // No keyword match and no env_map_scale authoring — the bulk of Skyrim
+    // architecture (plaster, trims, generic walls/floors). DEFAULT MATTE.
+    //
+    // A surface's real specular response is authored in its MAP SET, not in
+    // the bare glossiness (specular-power) scalar. Converting that scalar to
+    // roughness (`1 - gloss/100`) made matte stone/plaster read mirror-glossy
+    // (Skyrim glossiness 80 → roughness 0.10), so it passed the RT reflection
+    // gate (< 0.6) and reflected the room — the close-range "wet floor".
+    //
+    // Only deviate from matte when a dedicated gloss/spec MAP says the surface
+    // has authored shine (Oblivion `NiTexturingProperty` slot 3 / FO4 BGSM
+    // smooth-spec). There the scalar sets the smooth-end base that the
+    // in-shader gloss-map modulation (`mix(1, roughness, glossSample)`) then
+    // roughens per-pixel. Skyrim ships no separate gloss map — its spec mask
+    // lives in the normal-map ALPHA (wired in a separate step); until then it
+    // stays correctly matte here rather than mirror-glossy.
+    if inputs.has_gloss_map {
+        let mut roughness = (1.0 - inputs.glossiness / 100.0).clamp(0.05, 0.95);
+        if inputs.has_normal_map {
+            roughness = (roughness - 0.1).max(0.05);
+        }
+        return PbrMaterial {
+            roughness,
+            metalness: 0.0,
+        };
     }
     PbrMaterial {
-        roughness,
+        roughness: 0.85,
         metalness: 0.0,
     }
 }
@@ -615,6 +643,7 @@ impl Material {
                 env_map_scale: self.env_map_scale,
                 has_normal_map: self.normal_map.is_some(),
                 specular_color: self.specular_color,
+                has_gloss_map: self.gloss_map.is_some(),
             });
             if self.metalness.is_nan() {
                 self.metalness = pbr.metalness;
@@ -658,6 +687,7 @@ mod tests {
             env_map_scale: m.env_map_scale,
             has_normal_map: m.normal_map.is_some(),
             specular_color: m.specular_color,
+            has_gloss_map: m.gloss_map.is_some(),
         })
     }
 
@@ -668,6 +698,7 @@ mod tests {
             env_map_scale: m.env_map_scale,
             has_normal_map: m.normal_map.is_some(),
             specular_color: specular,
+            has_gloss_map: m.gloss_map.is_some(),
         })
     }
 
@@ -800,6 +831,7 @@ mod tests {
             env_map_scale: 1.0, // neutral FNV default
             has_normal_map: true,
             specular_color: [0.25; 3], // cloth: dark/grey specular → dielectric
+            has_gloss_map: false,
         });
         assert!(
             p.roughness >= 0.6,
@@ -834,6 +866,7 @@ mod tests {
                 env_map_scale: 1.0,
                 has_normal_map: false,
                 specular_color: [0.9; 3],
+                has_gloss_map: false,
             });
             assert!(
                 p.roughness <= 0.2,
@@ -868,6 +901,7 @@ mod tests {
                 env_map_scale: 1.0,
                 has_normal_map: false,
                 specular_color: [0.9; 3],
+                has_gloss_map: false,
             });
             assert!(
                 p.roughness > 0.2,
