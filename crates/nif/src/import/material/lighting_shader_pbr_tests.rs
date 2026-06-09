@@ -144,7 +144,7 @@ fn skyrim_subsurface_and_backlight_scalars_land_in_material_info() {
 fn fo4_subsurface_rolloff_rim_and_back_scalars_land_in_material_info() {
     let shader = bslsp_with_pbr_scalars(
         0.10, // refraction
-        0.0, 0.0, // Skyrim-band defaults
+        0.0, 0.0,  // Skyrim-band defaults
         0.35, // subsurface_rolloff
         2.50, // rimlight_power
         1.75, // backlight_power

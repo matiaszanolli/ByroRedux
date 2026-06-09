@@ -81,7 +81,11 @@ fn parse_default_rumble_on_activate() {
             _ => None,
         })
         .collect();
-    assert_eq!(states.len(), 3, "expected 3 states: active / busy / inactive");
+    assert_eq!(
+        states.len(),
+        3,
+        "expected 3 states: active / busy / inactive"
+    );
     let state_names: Vec<&str> = states.iter().map(|s| s.name.node.0.as_str()).collect();
     assert!(state_names.contains(&"active"));
     assert!(state_names.contains(&"busy"));
@@ -194,7 +198,10 @@ fn parse_mg07_labyrinthian_door_script() {
     assert!(
         events.iter().any(|e| e.name.node.0 == "onLoad"),
         "top-level onLoad event missing; got {:?}",
-        events.iter().map(|e| e.name.node.0.as_str()).collect::<Vec<_>>()
+        events
+            .iter()
+            .map(|e| e.name.node.0.as_str())
+            .collect::<Vec<_>>()
     );
 }
 

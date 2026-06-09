@@ -563,10 +563,8 @@ impl MeshRegistry {
         if let Some(slot) = self.meshes.get_mut(idx) {
             if let Some(mesh) = slot.take() {
                 was_scene_mesh = mesh.is_scene_mesh;
-                self.deferred_destroy.push(
-                    (mesh.vertex_buffer, mesh.index_buffer),
-                    DEFAULT_COUNTDOWN,
-                );
+                self.deferred_destroy
+                    .push((mesh.vertex_buffer, mesh.index_buffer), DEFAULT_COUNTDOWN);
             }
         }
         if was_scene_mesh {
@@ -651,8 +649,7 @@ impl MeshRegistry {
             (std::mem::size_of::<u32>() * self.pending_indices.len()) as vk::DeviceSize;
 
         if self.geometry_staging_pool.is_none() {
-            self.geometry_staging_pool =
-                Some(StagingPool::new(device.clone(), allocator.clone()));
+            self.geometry_staging_pool = Some(StagingPool::new(device.clone(), allocator.clone()));
         }
 
         // Create with STORAGE_BUFFER (RT reflection UV lookups) plus
@@ -1064,7 +1061,12 @@ pub fn box_vertices_colored(half: [f32; 3], color: [f32; 3]) -> (Vec<Vertex>, Ve
 /// front-face convention. Used by the Cornell-box test harness to probe
 /// curved-surface RT behaviour (GGX highlight shape, reflection/refraction
 /// across the full normal range) that flat primitives can't.
-pub fn uv_sphere(radius: f32, color: [f32; 3], rings: u32, segments: u32) -> (Vec<Vertex>, Vec<u32>) {
+pub fn uv_sphere(
+    radius: f32,
+    color: [f32; 3],
+    rings: u32,
+    segments: u32,
+) -> (Vec<Vertex>, Vec<u32>) {
     let rings = rings.max(2);
     let segments = segments.max(3);
     let mut vertices = Vec::with_capacity(((rings + 1) * (segments + 1)) as usize);

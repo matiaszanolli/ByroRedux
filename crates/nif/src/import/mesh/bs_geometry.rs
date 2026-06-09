@@ -3,8 +3,6 @@
 //! External-mesh + internal-geom branches, decoded into the engine's
 //! universal mesh shape.
 
-
-
 use crate::blocks::bs_geometry::unpack_udec3_xyzw;
 use crate::blocks::bs_geometry::BSGeometry;
 use crate::scene::NifScene;

@@ -35,7 +35,7 @@ fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
         alpha_test_func: 0,
         roughness: 0.5,
         metalness: 0.0,
-        ior: 1.5, // #1248
+        ior: 1.5,        // #1248
         subsurface: 0.0, // #1249
         sheen: 0.0,
         sheen_tint: 0.0,

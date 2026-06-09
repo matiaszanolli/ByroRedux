@@ -371,20 +371,16 @@ fn allocate_scene_render_buffers(
 ) -> Result<SceneRenderBuffers> {
     // ── Buffer sizes ──────────────────────────────────────────────────────
     let light_buf_size = (std::mem::size_of::<LightHeader>()
-        + std::mem::size_of::<GpuLight>() * MAX_LIGHTS)
-        as vk::DeviceSize;
+        + std::mem::size_of::<GpuLight>() * MAX_LIGHTS) as vk::DeviceSize;
     let camera_buf_size = std::mem::size_of::<GpuCamera>() as vk::DeviceSize;
     let dalc_buf_size = std::mem::size_of::<GpuDalcCube>() as vk::DeviceSize;
     // Bone palette: 4 × vec4 (mat4) per slot, std430 layout.
-    let bone_buf_size =
-        (std::mem::size_of::<[[f32; 4]; 4]>() * MAX_TOTAL_BONES) as vk::DeviceSize;
+    let bone_buf_size = (std::mem::size_of::<[[f32; 4]; 4]>() * MAX_TOTAL_BONES) as vk::DeviceSize;
     // Instance SSBO: per-instance model matrix + texture index + bone offset.
-    let instance_buf_size =
-        (std::mem::size_of::<GpuInstance>() * MAX_INSTANCES) as vk::DeviceSize;
+    let instance_buf_size = (std::mem::size_of::<GpuInstance>() * MAX_INSTANCES) as vk::DeviceSize;
     // Material SSBO: deduplicated `GpuMaterial` table (R1 Phase 4).
-    let material_buf_size =
-        (std::mem::size_of::<super::super::material::GpuMaterial>() * MAX_MATERIALS)
-            as vk::DeviceSize;
+    let material_buf_size = (std::mem::size_of::<super::super::material::GpuMaterial>()
+        * MAX_MATERIALS) as vk::DeviceSize;
     // Indirect buffer: one VkDrawIndexedIndirectCommand (20 B) per batch. #309.
     let indirect_buf_size = (std::mem::size_of::<vk::DrawIndexedIndirectCommand>()
         * MAX_INDIRECT_DRAWS) as vk::DeviceSize;
@@ -509,7 +505,8 @@ fn allocate_scene_render_buffers(
     // mat4 bytes of pending first-sight uploads. 16 × 144 × 64 ≈ 144 KB.
     let bind_inverse_staging_size = (MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME
         * MAX_BONES_PER_MESH
-        * std::mem::size_of::<[[f32; 4]; 4]>()) as vk::DeviceSize;
+        * std::mem::size_of::<[[f32; 4]; 4]>())
+        as vk::DeviceSize;
     let bind_inverse_upload_staging = GpuBuffer::create_host_visible(
         device,
         allocator,
@@ -558,7 +555,11 @@ fn create_scene_descriptors(
     device: &ash::Device,
     rt_enabled: bool,
     bufs: &SceneRenderBuffers,
-) -> Result<(vk::DescriptorSetLayout, vk::DescriptorPool, Vec<vk::DescriptorSet>)> {
+) -> Result<(
+    vk::DescriptorSetLayout,
+    vk::DescriptorPool,
+    Vec<vk::DescriptorSet>,
+)> {
     // ── Descriptor set layout ─────────────────────────────────────────────
     let bindings = build_scene_descriptor_bindings(rt_enabled);
     // Mark bindings 5+6 (cluster data) as PARTIALLY_BOUND so they are

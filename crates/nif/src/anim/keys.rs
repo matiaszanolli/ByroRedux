@@ -4,10 +4,7 @@
 //! math, `OrderedF32` for time-key deduplication.
 
 use super::*;
-use crate::blocks::interpolator::{
-    FloatKey, KeyGroup, KeyType, NiTransformData,
-    Vec3Key,
-};
+use crate::blocks::interpolator::{FloatKey, KeyGroup, KeyType, NiTransformData, Vec3Key};
 use std::collections::BTreeSet;
 
 pub fn is_flt_max(v: f32) -> bool {

@@ -30,7 +30,6 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
-use super::GpuUploadCtx;
 use super::descriptors::{
     image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
     write_uniform_buffer, DescriptorPoolBuilder,
@@ -38,6 +37,7 @@ use super::descriptors::{
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::svgf::should_force_history_reset;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use super::GpuUploadCtx;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;

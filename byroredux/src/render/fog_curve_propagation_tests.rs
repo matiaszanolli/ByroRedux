@@ -13,8 +13,7 @@ fn run_view(world: &World) -> RenderFrameView {
     let max_skinned = ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
         / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
         - 1) as u32;
-    let mut skin_slot_pool =
-        byroredux_core::ecs::resources::SkinSlotPool::new(max_skinned);
+    let mut skin_slot_pool = byroredux_core::ecs::resources::SkinSlotPool::new(max_skinned);
     let mut material_table = byroredux_renderer::MaterialTable::new();
     let mut water_commands = Vec::new();
     build_render_data(
@@ -93,7 +92,10 @@ fn missing_curve_yields_zero_so_shader_falls_back_to_linear() {
         fresnel_power: None,
     });
     let view = run_view(&world);
-    assert_eq!(view.fog_clip, 0.0, "no curve authored → shader pickup must be 0");
+    assert_eq!(
+        view.fog_clip, 0.0,
+        "no curve authored → shader pickup must be 0"
+    );
     assert_eq!(view.fog_power, 0.0);
 }
 

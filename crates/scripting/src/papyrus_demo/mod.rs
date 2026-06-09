@@ -405,7 +405,10 @@ pub fn rumble_tick_system(world: &World, dt: f32) {
         return;
     };
     for (_entity, rumble) in rumbles.iter_mut() {
-        let RumbleState::Busy { wait_remaining_secs } = &mut rumble.state else {
+        let RumbleState::Busy {
+            wait_remaining_secs,
+        } = &mut rumble.state
+        else {
             continue;
         };
         *wait_remaining_secs -= dt;

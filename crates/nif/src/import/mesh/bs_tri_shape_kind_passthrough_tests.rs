@@ -171,8 +171,7 @@ fn sample_subindex_data() -> BsSubIndexTriShapeData {
 #[test]
 fn subindex_kind_surfaces_payload_verbatim() {
     let payload = sample_subindex_data();
-    let shape =
-        renderable_shape_with_kind(BsTriShapeKind::SubIndex(Box::new(payload.clone())));
+    let shape = renderable_shape_with_kind(BsTriShapeKind::SubIndex(Box::new(payload.clone())));
     let mesh = import(&shape);
     let surfaced = mesh
         .bs_sub_index

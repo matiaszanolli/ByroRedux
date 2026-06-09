@@ -40,7 +40,6 @@ pub struct BhkRigidBody {
     pub body_flags: u32,
 }
 
-
 impl BhkRigidBody {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // #1329 — v10.0.1.x ("old Oblivion", nifly/openmw `VER_OB_OLD`)
@@ -132,20 +131,21 @@ impl BhkRigidBody {
 
         let restitution = stream.read_f32_le()?;
 
-        let (max_linear_velocity, max_angular_velocity, penetration_depth) = if bsver <= crate::version::bsver::FO3_FNV {
-            // Oblivion/FO3: max velocities + penetration depth (since 10.1.0.0)
-            (
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-            )
-        } else {
-            // Skyrim+: max velocities + penetration depth in different order
-            let mlv = stream.read_f32_le()?;
-            let mav = stream.read_f32_le()?;
-            let pd = stream.read_f32_le()?;
-            (mlv, mav, pd)
-        };
+        let (max_linear_velocity, max_angular_velocity, penetration_depth) =
+            if bsver <= crate::version::bsver::FO3_FNV {
+                // Oblivion/FO3: max velocities + penetration depth (since 10.1.0.0)
+                (
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                    stream.read_f32_le()?,
+                )
+            } else {
+                // Skyrim+: max velocities + penetration depth in different order
+                let mlv = stream.read_f32_le()?;
+                let mav = stream.read_f32_le()?;
+                let pd = stream.read_f32_le()?;
+                (mlv, mav, pd)
+            };
 
         let motion_type = stream.read_u8()?;
         // Deactivator Type is present on *every* CInfo per nif.xml — the

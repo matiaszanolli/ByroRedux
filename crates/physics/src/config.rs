@@ -38,8 +38,7 @@ impl TriMeshFlagBits {
     pub const MERGE_DUPLICATE_VERTICES: u16 = 1 << 4;
     /// Mirrors `rapier3d::parry::shape::TriMeshFlags::FIX_INTERNAL_EDGES`,
     /// which transitively ORs in `ORIENTED | MERGE_DUPLICATE_VERTICES`.
-    pub const FIX_INTERNAL_EDGES: u16 =
-        (1 << 7) | Self::ORIENTED | Self::MERGE_DUPLICATE_VERTICES;
+    pub const FIX_INTERNAL_EDGES: u16 = (1 << 7) | Self::ORIENTED | Self::MERGE_DUPLICATE_VERTICES;
 
     pub const DEFAULT: Self = Self(Self::FIX_INTERNAL_EDGES);
 }
@@ -100,10 +99,7 @@ mod tests {
         // upgrade that reorders the flags doesn't silently change what
         // we apply at collider creation.
         use rapier3d::parry::shape::TriMeshFlags;
-        assert_eq!(
-            TriMeshFlagBits::ORIENTED,
-            TriMeshFlags::ORIENTED.bits()
-        );
+        assert_eq!(TriMeshFlagBits::ORIENTED, TriMeshFlags::ORIENTED.bits());
         assert_eq!(
             TriMeshFlagBits::MERGE_DUPLICATE_VERTICES,
             TriMeshFlags::MERGE_DUPLICATE_VERTICES.bits()

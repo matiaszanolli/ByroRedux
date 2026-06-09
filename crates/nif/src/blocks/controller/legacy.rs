@@ -2,8 +2,8 @@
 //!
 //! Lead types: NiSequenceStreamHelper, NiUVController, NiLookAtController, NiPathController.
 
-use crate::impl_ni_object;
 use super::*;
+use crate::impl_ni_object;
 
 #[derive(Debug)]
 pub struct NiSequenceStreamHelper {

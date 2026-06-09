@@ -91,7 +91,13 @@ fn fallout4_geometry_csg_header_and_object_decode() {
 
     // First triangle of LOD0 is (0,1,2) for this object.
     let t0: Vec<u16> = (0..3)
-        .map(|k| u16::from_le_bytes(buf[vert_bytes + k * 2..vert_bytes + k * 2 + 2].try_into().unwrap()))
+        .map(|k| {
+            u16::from_le_bytes(
+                buf[vert_bytes + k * 2..vert_bytes + k * 2 + 2]
+                    .try_into()
+                    .unwrap(),
+            )
+        })
         .collect();
     assert_eq!(t0, vec![0, 1, 2], "first triangle");
 }

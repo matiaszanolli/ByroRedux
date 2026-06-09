@@ -46,7 +46,6 @@ fn build_ligh_record(
     buf
 }
 
-
 #[test]
 fn parse_ligh_decodes_color_as_rgba() {
     // Regression: LIGH DATA bytes 8..12 are stored on disk as

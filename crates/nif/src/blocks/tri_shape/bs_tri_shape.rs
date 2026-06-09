@@ -24,7 +24,6 @@ use std::io;
 #[cfg(test)]
 use super::NiTriShape;
 
-
 /// Discriminator for the five wire-distinct types that share the
 /// [`BsTriShape`] Rust struct. Pre-#560 every variant reported
 /// `"BSTriShape"` and downstream consumers (facegen head detection,
@@ -902,155 +901,155 @@ pub(crate) fn decode_bs_vertex_stream(
         bone_indices = stream.allocate_vec(nv_u32)?;
     }
 
-        for _ in 0..num_vertices {
-            let vert_start = stream.position();
+    for _ in 0..num_vertices {
+        let vert_start = stream.position();
 
-            // Per-vertex tangent reconstruction state. Bethesda's
-            // bitangent is split across 3 non-contiguous slots in
-            // the packed vertex (`bitangent_x` at end of position,
-            // `bitangent_y` after normal, `bitangent_z` after
-            // tangent). Capture each as it streams past so the
-            // `[bx, by, bz, sign]` assembly at the end of the loop
-            // body can reconstruct the full tangent record. See
-            // #795 / SK-D1-03 + the on-disk-vs-shader convention
-            // notes on the `tangents` field.
-            let mut bitangent_x: Option<f32> = None;
-            let mut bitangent_y: Option<f32> = None;
-            let mut tangent_xyz: Option<[f32; 3]> = None;
-            let mut bitangent_z: Option<f32> = None;
-            let mut normal_xyz: Option<[f32; 3]> = None;
+        // Per-vertex tangent reconstruction state. Bethesda's
+        // bitangent is split across 3 non-contiguous slots in
+        // the packed vertex (`bitangent_x` at end of position,
+        // `bitangent_y` after normal, `bitangent_z` after
+        // tangent). Capture each as it streams past so the
+        // `[bx, by, bz, sign]` assembly at the end of the loop
+        // body can reconstruct the full tangent record. See
+        // #795 / SK-D1-03 + the on-disk-vs-shader convention
+        // notes on the `tangents` field.
+        let mut bitangent_x: Option<f32> = None;
+        let mut bitangent_y: Option<f32> = None;
+        let mut tangent_xyz: Option<[f32; 3]> = None;
+        let mut bitangent_z: Option<f32> = None;
+        let mut normal_xyz: Option<[f32; 3]> = None;
 
-            // Position: full-precision (3×f32 + f32) or half-precision (3×f16 + u16).
-            // SSE (BSVER < 130): always full-precision.
-            // FO4+ (BSVER >= 130): bit VF_FULL_PRECISION selects precision.
-            if vertex_attrs & VF_VERTEX != 0 {
-                let has_tangents = vertex_attrs & VF_TANGENTS != 0;
-                if full_precision {
-                    let pos = stream.read_ni_point3()?;
-                    vertices.push(pos);
-                    // Trailing 4-byte slot per nif.xml `BSVertexData`:
-                    // `Bitangent X` (f32) when VF_TANGENTS is set,
-                    // else `Unused W` (uint, discarded). Same byte
-                    // width either way so stream stays aligned.
-                    if has_tangents {
-                        bitangent_x = Some(stream.read_f32_le()?);
-                    } else {
-                        stream.skip(4)?;
-                    }
+        // Position: full-precision (3×f32 + f32) or half-precision (3×f16 + u16).
+        // SSE (BSVER < 130): always full-precision.
+        // FO4+ (BSVER >= 130): bit VF_FULL_PRECISION selects precision.
+        if vertex_attrs & VF_VERTEX != 0 {
+            let has_tangents = vertex_attrs & VF_TANGENTS != 0;
+            if full_precision {
+                let pos = stream.read_ni_point3()?;
+                vertices.push(pos);
+                // Trailing 4-byte slot per nif.xml `BSVertexData`:
+                // `Bitangent X` (f32) when VF_TANGENTS is set,
+                // else `Unused W` (uint, discarded). Same byte
+                // width either way so stream stays aligned.
+                if has_tangents {
+                    bitangent_x = Some(stream.read_f32_le()?);
                 } else {
-                    // Half-float positions (FO4 default)
-                    let x = half_to_f32(stream.read_u16_le()?);
-                    let y = half_to_f32(stream.read_u16_le()?);
-                    let z = half_to_f32(stream.read_u16_le()?);
-                    vertices.push(NiPoint3 { x, y, z });
-                    // Trailing 2-byte slot: `Bitangent X` (hfloat)
-                    // when VF_TANGENTS is set, else `Unused W`
-                    // (half, discarded).
-                    if has_tangents {
-                        bitangent_x = Some(half_to_f32(stream.read_u16_le()?));
-                    } else {
-                        stream.skip(2)?;
-                    }
+                    stream.skip(4)?;
+                }
+            } else {
+                // Half-float positions (FO4 default)
+                let x = half_to_f32(stream.read_u16_le()?);
+                let y = half_to_f32(stream.read_u16_le()?);
+                let z = half_to_f32(stream.read_u16_le()?);
+                vertices.push(NiPoint3 { x, y, z });
+                // Trailing 2-byte slot: `Bitangent X` (hfloat)
+                // when VF_TANGENTS is set, else `Unused W`
+                // (half, discarded).
+                if has_tangents {
+                    bitangent_x = Some(half_to_f32(stream.read_u16_le()?));
+                } else {
+                    stream.skip(2)?;
                 }
             }
-
-            // UV (HalfTexCoord = 2 × f16)
-            if vertex_attrs & VF_UVS != 0 {
-                let u = half_to_f32(stream.read_u16_le()?);
-                let v = half_to_f32(stream.read_u16_le()?);
-                uvs.push([u, v]);
-            }
-
-            // Normal (ByteVector3 = 3 × u8 + bitangent Y as normbyte)
-            if vertex_attrs & VF_NORMALS != 0 {
-                let nx = byte_to_normal(stream.read_u8()?);
-                let ny = byte_to_normal(stream.read_u8()?);
-                let nz = byte_to_normal(stream.read_u8()?);
-                bitangent_y = Some(byte_to_normal(stream.read_u8()?));
-                normal_xyz = Some([nx, ny, nz]);
-                normals.push(NiPoint3 {
-                    x: nx,
-                    y: ny,
-                    z: nz,
-                });
-            }
-
-            // Tangent (ByteVector3 + bitangent Z normbyte). The
-            // on-disk "tangent" is Bethesda's ∂P/∂V; we keep it
-            // only to derive the bitangent sign — the value the
-            // fragment shader actually consumes (∂P/∂U) is the
-            // bitangent triplet captured above + below.
-            if vertex_attrs & VF_TANGENTS != 0 && vertex_attrs & VF_NORMALS != 0 {
-                let tx = byte_to_normal(stream.read_u8()?);
-                let ty = byte_to_normal(stream.read_u8()?);
-                let tz = byte_to_normal(stream.read_u8()?);
-                tangent_xyz = Some([tx, ty, tz]);
-                bitangent_z = Some(byte_to_normal(stream.read_u8()?));
-            }
-
-            // Assemble the per-vertex tangent record (Bethesda
-            // bitangent triplet → our tangent slot, sign derived
-            // from on-disk tangent). All in raw Z-up; importer
-            // converts xyz → Y-up. Sign is rotation-invariant.
-            if let (Some(bx), Some(by), Some(bz), Some(t_xyz), Some(n)) = (
-                bitangent_x,
-                bitangent_y,
-                bitangent_z,
-                tangent_xyz,
-                normal_xyz,
-            ) {
-                // sign(dot(B, cross(N, T))) — disambiguates left/
-                // right-handed TBN. Operates on raw Z-up values;
-                // determinant is preserved across the proper
-                // rotation Z-up → Y-up so the sign is correct
-                // post-conversion. Mirrors `extract_tangents_from_extra_data`.
-                let cnx = n[1] * t_xyz[2] - n[2] * t_xyz[1];
-                let cny = n[2] * t_xyz[0] - n[0] * t_xyz[2];
-                let cnz = n[0] * t_xyz[1] - n[1] * t_xyz[0];
-                let dot_b_cross = bx * cnx + by * cny + bz * cnz;
-                let sign = if dot_b_cross >= 0.0 { 1.0 } else { -1.0 };
-                tangents.push([bx, by, bz, sign]);
-            }
-
-            // Vertex colors (RGBA as 4 × u8)
-            if vertex_attrs & VF_VERTEX_COLORS != 0 {
-                let r = stream.read_u8()? as f32 / 255.0;
-                let g = stream.read_u8()? as f32 / 255.0;
-                let b = stream.read_u8()? as f32 / 255.0;
-                let a = stream.read_u8()? as f32 / 255.0;
-                vertex_colors.push([r, g, b, a]);
-            }
-
-            // Skinning data — 4 × half-float weights + 4 × u8 bone indices
-            // (12 bytes total). Present when the vertex descriptor has
-            // VF_SKINNED set. Valid for both Skyrim LE/SE and FO4+ layouts.
-            if is_skinned {
-                let (weights, indices) = read_vertex_skin_data(stream)?;
-                bone_weights.push(weights);
-                bone_indices.push(indices);
-            }
-
-            // Eye data (f32)
-            if vertex_attrs & VF_EYE_DATA != 0 {
-                stream.skip(4)?;
-            }
-
-            // Ensure we consumed exactly vertex_size_bytes.
-            // Guard against underflow: if consumed > vertex_size_bytes (malformed
-            // vertex descriptor), report an error instead of wrapping to a huge skip.
-            let consumed = (stream.position() - vert_start) as usize;
-            if consumed < vertex_size_bytes {
-                stream.skip((vertex_size_bytes - consumed) as u64)?;
-            } else if consumed > vertex_size_bytes {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "BsTriShape vertex consumed {} bytes but descriptor says {}",
-                        consumed, vertex_size_bytes
-                    ),
-                ));
-            }
         }
+
+        // UV (HalfTexCoord = 2 × f16)
+        if vertex_attrs & VF_UVS != 0 {
+            let u = half_to_f32(stream.read_u16_le()?);
+            let v = half_to_f32(stream.read_u16_le()?);
+            uvs.push([u, v]);
+        }
+
+        // Normal (ByteVector3 = 3 × u8 + bitangent Y as normbyte)
+        if vertex_attrs & VF_NORMALS != 0 {
+            let nx = byte_to_normal(stream.read_u8()?);
+            let ny = byte_to_normal(stream.read_u8()?);
+            let nz = byte_to_normal(stream.read_u8()?);
+            bitangent_y = Some(byte_to_normal(stream.read_u8()?));
+            normal_xyz = Some([nx, ny, nz]);
+            normals.push(NiPoint3 {
+                x: nx,
+                y: ny,
+                z: nz,
+            });
+        }
+
+        // Tangent (ByteVector3 + bitangent Z normbyte). The
+        // on-disk "tangent" is Bethesda's ∂P/∂V; we keep it
+        // only to derive the bitangent sign — the value the
+        // fragment shader actually consumes (∂P/∂U) is the
+        // bitangent triplet captured above + below.
+        if vertex_attrs & VF_TANGENTS != 0 && vertex_attrs & VF_NORMALS != 0 {
+            let tx = byte_to_normal(stream.read_u8()?);
+            let ty = byte_to_normal(stream.read_u8()?);
+            let tz = byte_to_normal(stream.read_u8()?);
+            tangent_xyz = Some([tx, ty, tz]);
+            bitangent_z = Some(byte_to_normal(stream.read_u8()?));
+        }
+
+        // Assemble the per-vertex tangent record (Bethesda
+        // bitangent triplet → our tangent slot, sign derived
+        // from on-disk tangent). All in raw Z-up; importer
+        // converts xyz → Y-up. Sign is rotation-invariant.
+        if let (Some(bx), Some(by), Some(bz), Some(t_xyz), Some(n)) = (
+            bitangent_x,
+            bitangent_y,
+            bitangent_z,
+            tangent_xyz,
+            normal_xyz,
+        ) {
+            // sign(dot(B, cross(N, T))) — disambiguates left/
+            // right-handed TBN. Operates on raw Z-up values;
+            // determinant is preserved across the proper
+            // rotation Z-up → Y-up so the sign is correct
+            // post-conversion. Mirrors `extract_tangents_from_extra_data`.
+            let cnx = n[1] * t_xyz[2] - n[2] * t_xyz[1];
+            let cny = n[2] * t_xyz[0] - n[0] * t_xyz[2];
+            let cnz = n[0] * t_xyz[1] - n[1] * t_xyz[0];
+            let dot_b_cross = bx * cnx + by * cny + bz * cnz;
+            let sign = if dot_b_cross >= 0.0 { 1.0 } else { -1.0 };
+            tangents.push([bx, by, bz, sign]);
+        }
+
+        // Vertex colors (RGBA as 4 × u8)
+        if vertex_attrs & VF_VERTEX_COLORS != 0 {
+            let r = stream.read_u8()? as f32 / 255.0;
+            let g = stream.read_u8()? as f32 / 255.0;
+            let b = stream.read_u8()? as f32 / 255.0;
+            let a = stream.read_u8()? as f32 / 255.0;
+            vertex_colors.push([r, g, b, a]);
+        }
+
+        // Skinning data — 4 × half-float weights + 4 × u8 bone indices
+        // (12 bytes total). Present when the vertex descriptor has
+        // VF_SKINNED set. Valid for both Skyrim LE/SE and FO4+ layouts.
+        if is_skinned {
+            let (weights, indices) = read_vertex_skin_data(stream)?;
+            bone_weights.push(weights);
+            bone_indices.push(indices);
+        }
+
+        // Eye data (f32)
+        if vertex_attrs & VF_EYE_DATA != 0 {
+            stream.skip(4)?;
+        }
+
+        // Ensure we consumed exactly vertex_size_bytes.
+        // Guard against underflow: if consumed > vertex_size_bytes (malformed
+        // vertex descriptor), report an error instead of wrapping to a huge skip.
+        let consumed = (stream.position() - vert_start) as usize;
+        if consumed < vertex_size_bytes {
+            stream.skip((vertex_size_bytes - consumed) as u64)?;
+        } else if consumed > vertex_size_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "BsTriShape vertex consumed {} bytes but descriptor says {}",
+                    consumed, vertex_size_bytes
+                ),
+            ));
+        }
+    }
 
     Ok(DecodedBsVertices {
         vertices,

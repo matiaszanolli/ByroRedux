@@ -378,8 +378,7 @@ fn is_device_suitable(
                 // `timestampComputeAndGraphics == true` means the
                 // graphics queue's timestamp_valid_bits is non-zero.
                 timestamp_period_ns: properties.limits.timestamp_period,
-                timestamp_supported: properties.limits.timestamp_compute_and_graphics
-                    == vk::TRUE,
+                timestamp_supported: properties.limits.timestamp_compute_and_graphics == vk::TRUE,
                 synchronization2_supported,
                 memory_budget_supported,
                 texture_compression_bc,

@@ -559,10 +559,7 @@ impl<'a> ShaderFlags<'a> {
         sf2_crcs: &'a [u32],
     ) -> Self {
         if !sf1_crcs.is_empty() || !sf2_crcs.is_empty() {
-            return ShaderFlags::Crc32 {
-                sf1_crcs,
-                sf2_crcs,
-            };
+            return ShaderFlags::Crc32 { sf1_crcs, sf2_crcs };
         }
         if variant.has_shader_property_fo3_fields() {
             ShaderFlags::LegacyFo3Fnv {
@@ -604,10 +601,7 @@ impl<'a> ShaderFlags<'a> {
             ShaderFlags::LegacySkyrimFo4 { sf1, .. } => {
                 sf1 & (skyrim_slsf1::DECAL | skyrim_slsf1::DYNAMIC_DECAL) != 0
             }
-            ShaderFlags::Crc32 {
-                sf1_crcs,
-                sf2_crcs,
-            } => {
+            ShaderFlags::Crc32 { sf1_crcs, sf2_crcs } => {
                 let targets = [bs_shader_crc32::DECAL, bs_shader_crc32::DYNAMIC_DECAL];
                 bs_shader_crc32::contains_any(sf1_crcs, &targets)
                     || bs_shader_crc32::contains_any(sf2_crcs, &targets)
@@ -624,10 +618,7 @@ impl<'a> ShaderFlags<'a> {
         match self {
             ShaderFlags::LegacyFo3Fnv { .. } => false,
             ShaderFlags::LegacySkyrimFo4 { sf2, .. } => sf2 & skyrim_slsf2::DOUBLE_SIDED != 0,
-            ShaderFlags::Crc32 {
-                sf1_crcs,
-                sf2_crcs,
-            } => {
+            ShaderFlags::Crc32 { sf1_crcs, sf2_crcs } => {
                 let targets = [bs_shader_crc32::TWO_SIDED];
                 bs_shader_crc32::contains_any(sf1_crcs, &targets)
                     || bs_shader_crc32::contains_any(sf2_crcs, &targets)
@@ -670,16 +661,19 @@ mod shader_flags_tests {
         assert!(flags.is_decal(), "FO3/FNV bit-26 must classify as decal");
 
         // FO3/FNV: bit 21 of flags2 (ALPHA_DECAL) is FO3/FNV-only.
-        let flags = ShaderFlags::classify(NifVariant::FalloutNV, 0, fo3nv_f2::ALPHA_DECAL, &[], &[]);
+        let flags =
+            ShaderFlags::classify(NifVariant::FalloutNV, 0, fo3nv_f2::ALPHA_DECAL, &[], &[]);
         assert!(
             flags.is_decal(),
             "FO3/FNV bit-21 ALPHA_DECAL must classify as decal"
         );
 
         // Skyrim: SLSF1 bit 26.
-        let flags =
-            ShaderFlags::classify(NifVariant::SkyrimSE, skyrim_slsf1::DECAL, 0, &[], &[]);
-        assert!(flags.is_decal(), "Skyrim SLSF1 bit-26 must classify as decal");
+        let flags = ShaderFlags::classify(NifVariant::SkyrimSE, skyrim_slsf1::DECAL, 0, &[], &[]);
+        assert!(
+            flags.is_decal(),
+            "Skyrim SLSF1 bit-26 must classify as decal"
+        );
 
         // Skyrim: flags2 bit 21 is Cloud_LOD on Skyrim, NOT decal. The
         // critical no-cross-vocabulary regression guard.
@@ -699,7 +693,10 @@ mod shader_flags_tests {
         // FO76+ CRC32: detect DECAL hash in sf1_crcs.
         let crcs = vec![bs_shader_crc32::DECAL];
         let flags = ShaderFlags::classify(NifVariant::Fallout76, 0, 0, &crcs, &[]);
-        assert!(flags.is_decal(), "FO76 CRC32 DECAL hash must classify as decal");
+        assert!(
+            flags.is_decal(),
+            "FO76 CRC32 DECAL hash must classify as decal"
+        );
 
         // FO76+ CRC32: detect DYNAMIC_DECAL hash in sf2_crcs.
         let crcs = vec![bs_shader_crc32::DYNAMIC_DECAL];
@@ -717,9 +714,17 @@ mod shader_flags_tests {
     #[test]
     fn is_two_sided_picks_correct_vocabulary_per_variant() {
         // Skyrim: SLSF2 bit 4 (DOUBLE_SIDED).
-        let flags =
-            ShaderFlags::classify(NifVariant::SkyrimSE, 0, skyrim_slsf2::DOUBLE_SIDED, &[], &[]);
-        assert!(flags.is_two_sided(), "Skyrim SLSF2 bit-4 must classify as two-sided");
+        let flags = ShaderFlags::classify(
+            NifVariant::SkyrimSE,
+            0,
+            skyrim_slsf2::DOUBLE_SIDED,
+            &[],
+            &[],
+        );
+        assert!(
+            flags.is_two_sided(),
+            "Skyrim SLSF2 bit-4 must classify as two-sided"
+        );
 
         // FO3/FNV: no SLSF2 double-sided bit — always returns false here.
         // (Detection lives in NiStencilProperty elsewhere; documented in
@@ -734,10 +739,16 @@ mod shader_flags_tests {
         // FO76+ CRC32: TWO_SIDED hash.
         let crcs = vec![bs_shader_crc32::TWO_SIDED];
         let flags = ShaderFlags::classify(NifVariant::Fallout76, 0, 0, &crcs, &[]);
-        assert!(flags.is_two_sided(), "FO76 CRC32 TWO_SIDED hash must classify");
+        assert!(
+            flags.is_two_sided(),
+            "FO76 CRC32 TWO_SIDED hash must classify"
+        );
 
         let flags = ShaderFlags::classify(NifVariant::Fallout76, 0, 0, &[], &crcs);
-        assert!(flags.is_two_sided(), "FO76 CRC32 TWO_SIDED hash in sf2_crcs must classify");
+        assert!(
+            flags.is_two_sided(),
+            "FO76 CRC32 TWO_SIDED hash in sf2_crcs must classify"
+        );
     }
 
     #[test]

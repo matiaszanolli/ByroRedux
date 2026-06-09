@@ -460,10 +460,11 @@ impl BSGeometryMeshData {
         // Per nifly: weight count is interpreted as a *flat* count of
         // BoneWeight entries; the per-vertex grouping is `weights_per_vert`.
         // When `weights_per_vert == 0` we skip the resize (no skin weights).
-        let mut skin_weights: Vec<Vec<BoneWeight>> = match n_total_weights.checked_div(weights_per_vert) {
-            Some(outer_len) => stream.allocate_vec::<Vec<BoneWeight>>(outer_len)?,
-            None => Vec::new(),
-        };
+        let mut skin_weights: Vec<Vec<BoneWeight>> =
+            match n_total_weights.checked_div(weights_per_vert) {
+                Some(outer_len) => stream.allocate_vec::<Vec<BoneWeight>>(outer_len)?,
+                None => Vec::new(),
+            };
         if let Some(outer_len) = n_total_weights.checked_div(weights_per_vert) {
             let outer_len = outer_len as usize;
             for _ in 0..outer_len {

@@ -2,8 +2,8 @@
 //! lighting templates, image-space adapters, activators, terminals.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
-use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
+use crate::esm::sub_reader::SubReader;
 
 /// Navigation mesh master record (`NAVI`). Skyrim+ splits navigation
 /// metadata into a top-level master + per-cell `NAVM` children; for
@@ -362,7 +362,6 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord]) -> TermRecord {
     }
     out
 }
-
 
 #[cfg(test)]
 mod tests {

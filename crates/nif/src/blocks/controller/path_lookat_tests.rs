@@ -207,9 +207,9 @@ fn nigeommorpher_oblivion_refs_only_no_weight_float() {
     data.push(1u8); // always_update
     data.extend_from_slice(&2u32.to_le_bytes()); // num_interpolators = 2
     data.extend_from_slice(&5i32.to_le_bytes()); // interpolator_ref[0] = 5
-    // NO weight float between refs (absent at v <= 20.0.0.5)
+                                                 // NO weight float between refs (absent at v <= 20.0.0.5)
     data.extend_from_slice(&6i32.to_le_bytes()); // interpolator_ref[1] = 6
-    // NO weight float
+                                                 // NO weight float
     data.extend_from_slice(&0u32.to_le_bytes()); // trailing num_unknown_ints=0
 
     let expected_len = data.len();
@@ -223,8 +223,14 @@ fn nigeommorpher_oblivion_refs_only_no_weight_float() {
          phantom weight floats must NOT be consumed"
     );
     assert_eq!(ctrl.interpolator_weights.len(), 2);
-    assert_eq!(ctrl.interpolator_weights[0].interpolator_ref.index(), Some(5));
-    assert_eq!(ctrl.interpolator_weights[1].interpolator_ref.index(), Some(6));
+    assert_eq!(
+        ctrl.interpolator_weights[0].interpolator_ref.index(),
+        Some(5)
+    );
+    assert_eq!(
+        ctrl.interpolator_weights[1].interpolator_ref.index(),
+        Some(6)
+    );
     // Weight defaults to 1.0 when absent on disk
     assert_eq!(ctrl.interpolator_weights[0].weight, 1.0);
     assert_eq!(ctrl.interpolator_weights[1].weight, 1.0);
@@ -253,7 +259,7 @@ fn nigeommorpher_fnv_reads_interpolator_weights() {
     data.extend_from_slice(&0.75f32.to_le_bytes()); // weight[0] = 0.75
     data.extend_from_slice(&8i32.to_le_bytes()); // ref[1] = 8
     data.extend_from_slice(&0.25f32.to_le_bytes()); // weight[1] = 0.25
-    // No trailing unknown ints — FNV bsver=34 > 11
+                                                    // No trailing unknown ints — FNV bsver=34 > 11
 
     let expected_len = data.len();
     let mut stream = NifStream::new(&data, &header);
@@ -265,9 +271,15 @@ fn nigeommorpher_fnv_reads_interpolator_weights() {
         "FNV MorphWeight is 8 bytes (ref + f32); both fields must be consumed"
     );
     assert_eq!(ctrl.interpolator_weights.len(), 2);
-    assert_eq!(ctrl.interpolator_weights[0].interpolator_ref.index(), Some(7));
+    assert_eq!(
+        ctrl.interpolator_weights[0].interpolator_ref.index(),
+        Some(7)
+    );
     assert!((ctrl.interpolator_weights[0].weight - 0.75).abs() < 1e-6);
-    assert_eq!(ctrl.interpolator_weights[1].interpolator_ref.index(), Some(8));
+    assert_eq!(
+        ctrl.interpolator_weights[1].interpolator_ref.index(),
+        Some(8)
+    );
     assert!((ctrl.interpolator_weights[1].weight - 0.25).abs() < 1e-6);
 }
 

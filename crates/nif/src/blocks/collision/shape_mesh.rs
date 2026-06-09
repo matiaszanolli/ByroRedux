@@ -18,7 +18,6 @@ pub struct BhkNiTriStripsShape {
     pub filters: Vec<u32>,
 }
 
-
 impl BhkNiTriStripsShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let material = read_havok_material(stream)?;
@@ -63,7 +62,6 @@ pub struct HkSubPartData {
     pub num_vertices: u32,
     pub material: u32,
 }
-
 
 impl BhkPackedNiTriStripsShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -121,7 +119,6 @@ pub struct PackedTriangle {
     pub welding_info: u16,
     pub normal: Option<[f32; 3]>,
 }
-
 
 impl HkPackedNiTriStripsData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -219,7 +216,6 @@ pub struct BhkMeshShape {
     pub data_refs: Vec<BlockRef>,
 }
 
-
 impl BhkMeshShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         stream.skip(8)?; // Unknown 01 (2 × u32)
@@ -230,8 +226,8 @@ impl BhkMeshShape {
         let num_shape_props = u64::from(stream.read_u32_le()?);
         stream.skip(num_shape_props * 12)?;
         stream.skip(12)?; // Unknown 03 (3 × u32)
-        // Strips Data: u32 count + N × Ref to NiTriStripsData (present at
-        // 10.0.1.0, the only version this block exists at).
+                          // Strips Data: u32 count + N × Ref to NiTriStripsData (present at
+                          // 10.0.1.0, the only version this block exists at).
         let data_refs = stream.read_block_ref_list()?;
         Ok(Self {
             radius,

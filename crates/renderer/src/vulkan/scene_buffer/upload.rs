@@ -8,14 +8,13 @@ use byroredux_core::ecs::components::MAX_BONES_PER_MESH;
 
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
-use super::*;
-use super::descriptors::{hash_instance_slice, hash_material_slice};
 use super::buffers::LightHeader;
+use super::descriptors::{hash_instance_slice, hash_material_slice};
+use super::*;
 use anyhow::{Context, Result};
 use ash::vk;
 
 impl super::buffers::SceneBuffers {
-
     /// Upload light data for the current frame-in-flight.
     pub fn upload_lights(
         &mut self,
@@ -44,7 +43,9 @@ impl super::buffers::SceneBuffers {
             header_size + light_size * count <= mapped.len(),
             "upload_lights: header_size({}) + light_size({}) * count({}) = {} > mapped.len()({}); \
              buffer must be sized for LightHeader + MAX_LIGHTS * GpuLight",
-            header_size, light_size, count,
+            header_size,
+            light_size,
+            count,
             header_size + light_size * count,
             mapped.len(),
         );
@@ -268,12 +269,13 @@ impl super::buffers::SceneBuffers {
         device: &ash::Device,
         pending: &[(u32, Vec<[[f32; 4]; 4]>)],
     ) -> Result<usize> {
-        let capped = pending.len().min(MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME);
+        let capped = pending
+            .len()
+            .min(MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME);
         if capped == 0 {
             return Ok(0);
         }
-        let slot_byte_stride =
-            (MAX_BONES_PER_MESH * std::mem::size_of::<[[f32; 4]; 4]>()) as usize;
+        let slot_byte_stride = (MAX_BONES_PER_MESH * std::mem::size_of::<[[f32; 4]; 4]>()) as usize;
         let staging = &mut self.bind_inverse_upload_staging;
         let mapped = staging.mapped_slice_mut()?;
         for (i, (_slot_id, bind_inverses)) in pending.iter().take(capped).enumerate() {
@@ -677,7 +679,10 @@ impl super::buffers::SceneBuffers {
                 allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
             })
             .context("Failed to allocate terrain tile staging memory")?;
-        super::super::buffer::debug_assert_cpu_to_gpu_mapped(&staging_alloc, "terrain_tile_staging");
+        super::super::buffer::debug_assert_cpu_to_gpu_mapped(
+            &staging_alloc,
+            "terrain_tile_staging",
+        );
         unsafe {
             device
                 .bind_buffer_memory(
@@ -707,12 +712,13 @@ impl super::buffers::SceneBuffers {
             size: byte_size,
         };
         let dst = self.terrain_tile_buffer.buffer;
-        let result = super::super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
-            unsafe {
-                device.cmd_copy_buffer(cmd, staging_buffer, dst, &[copy]);
-            }
-            Ok(())
-        });
+        let result =
+            super::super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
+                unsafe {
+                    device.cmd_copy_buffer(cmd, staging_buffer, dst, &[copy]);
+                }
+                Ok(())
+            });
 
         // Tear down staging regardless of copy outcome.
         unsafe {

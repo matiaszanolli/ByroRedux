@@ -629,7 +629,14 @@ mod tests {
     fn untracked_component_never_accumulates_dirty() {
         // `Transform` here leaves TRACK_CHANGES at its default (false).
         let mut s = PackedStorage::<Transform>::default();
-        s.insert(0, Transform { x: 1.0, y: 0.0, z: 0.0 });
+        s.insert(
+            0,
+            Transform {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
         let _ = s.get_mut(0);
         for (_, t) in s.iter_mut() {
             t.x = 9.0;
@@ -694,7 +701,10 @@ mod tests {
         // Second drain into a pre-populated `out` — must clear first.
         out.push(99); // sentinel to verify clear() runs
         s.drain_dirty_into(&mut out);
-        assert!(!out.contains(&99), "drain_dirty_into must clear `out` first");
+        assert!(
+            !out.contains(&99),
+            "drain_dirty_into must clear `out` first"
+        );
         assert_eq!(out.len(), 4);
         assert!(s.dirty_len() == 0);
     }

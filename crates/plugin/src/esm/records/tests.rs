@@ -918,8 +918,7 @@ fn lstring_resolved_via_strings_table_guard() {
         let index = parse_esm(&esm_bytes).unwrap();
         let item = index.items.get(&0xBEEF).expect("WEAP indexed");
         assert_eq!(
-            item.common.full_name,
-            "<lstring 0x00000001>",
+            item.common.full_name, "<lstring 0x00000001>",
             "without StringsTableGuard the placeholder must survive"
         );
     }
@@ -940,8 +939,7 @@ fn lstring_resolved_via_strings_table_guard() {
         let index = parse_esm(&esm_bytes).unwrap();
         let item = index.items.get(&0xBEEF).expect("WEAP indexed");
         assert_eq!(
-            item.common.full_name,
-            "<lstring 0x00000001>",
+            item.common.full_name, "<lstring 0x00000001>",
             "guard drop must restore placeholder behaviour"
         );
     }
@@ -1406,10 +1404,18 @@ fn dial_conversation_tree_resolves_pnam_chains_and_tclt_edges() {
 
     // Should have one chain: [0x1001 (A), 0x1002 (B), 0x1003 (C)]
     assert_eq!(tree.chains.len(), 1, "should have 1 PNAM chain");
-    assert_eq!(tree.chains[0], vec![0x1001, 0x1002, 0x1003], "PNAM chain should be ordered A→B→C");
+    assert_eq!(
+        tree.chains[0],
+        vec![0x1001, 0x1002, 0x1003],
+        "PNAM chain should be ordered A→B→C"
+    );
 
     // INFO C (0x1003) should have TCLT edge to 0x5555.
-    assert_eq!(tree.topic_links.len(), 1, "should have 1 INFO with TCLT edges");
+    assert_eq!(
+        tree.topic_links.len(),
+        1,
+        "should have 1 INFO with TCLT edges"
+    );
     assert_eq!(
         tree.topic_links.get(&0x1003),
         Some(&vec![0x5555]),

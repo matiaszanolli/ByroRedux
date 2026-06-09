@@ -17,16 +17,14 @@
 //! [`ConditionList`] of `GetStageDone` CTDAs — the same data shape the
 //! `da10_main_door` hand-builder produces.
 
-use byroredux_papyrus::ast::{BinaryOp, Expr, Script, ScriptItem, Stmt, StateItem};
+use byroredux_papyrus::ast::{BinaryOp, Expr, Script, ScriptItem, StateItem, Stmt};
 use byroredux_papyrus::span::Spanned;
 
 use crate::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
 use crate::quest_stages::QuestFormId;
 use crate::translate::archetype::{RecognizeCtx, Recognized};
 use crate::translate::source::ScriptSource;
-use byroredux_plugin::esm::records::condition::{
-    ComparisonOp, Condition, ConditionValue, RunOn,
-};
+use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue, RunOn};
 
 /// How a quest-stage call names its quest.
 #[derive(Debug, Clone, PartialEq)]
@@ -124,7 +122,10 @@ fn find_on_activate_body(script: &Script) -> Option<&[Spanned<Stmt>]> {
 /// and whose body calls `SetStage(Z)`. `None` if the shape doesn't match.
 fn extract_stage_gate(body: &[Spanned<Stmt>]) -> Option<StageGate> {
     for stmt in body {
-        let Stmt::If { condition, body, .. } = &stmt.node else {
+        let Stmt::If {
+            condition, body, ..
+        } = &stmt.node
+        else {
             continue;
         };
         let mut conditions = Vec::new();
@@ -152,17 +153,21 @@ fn extract_stage_gate(body: &[Spanned<Stmt>]) -> Option<StageGate> {
 
 /// Walk an `If` condition collecting `GetStageDone(stage) == expected`
 /// predicates (And-combined), recording how the quest is named.
-fn collect_stage_predicates(
-    e: &Expr,
-    out: &mut Vec<(u16, f32)>,
-    via: &mut Option<QuestVia>,
-) {
+fn collect_stage_predicates(e: &Expr, out: &mut Vec<(u16, f32)>, via: &mut Option<QuestVia>) {
     match e {
-        Expr::BinaryOp { op: BinaryOp::And, left, right } => {
+        Expr::BinaryOp {
+            op: BinaryOp::And,
+            left,
+            right,
+        } => {
             collect_stage_predicates(&left.node, out, via);
             collect_stage_predicates(&right.node, out, via);
         }
-        Expr::BinaryOp { op: BinaryOp::Eq, left, right } => {
+        Expr::BinaryOp {
+            op: BinaryOp::Eq,
+            left,
+            right,
+        } => {
             // One side is GetStageDone(stage); the other is the expected
             // literal (`1`/`0`, possibly `as Bool`).
             let staged = as_get_stage_done(&left.node)
@@ -224,7 +229,10 @@ fn method_call<'a>(
     let Expr::MemberAccess { object, member } = &callee.node else {
         return None;
     };
-    member.node.eq_ignore_case(method).then_some((&object.node, args.as_slice()))
+    member
+        .node
+        .eq_ignore_case(method)
+        .then_some((&object.node, args.as_slice()))
 }
 
 /// The integer value of positional argument `idx`.

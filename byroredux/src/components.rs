@@ -1168,7 +1168,7 @@ mod fx_mesh_classification_tests {
         for path in [
             "meshes\\architecture\\house01.nif",
             "meshes\\clutter\\ingredients\\sweetroll01.nif",
-            "fxbutreal.nif", // not in the needle set
+            "fxbutreal.nif",  // not in the needle set
             "effectsbox.nif", // missing the trailing \\ or /
             "",
         ] {

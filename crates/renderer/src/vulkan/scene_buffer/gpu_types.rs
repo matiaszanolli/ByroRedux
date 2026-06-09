@@ -4,7 +4,6 @@
 //! impls. Byte layout is shader-contract-critical — see the layout tests in
 //! [`super::gpu_instance_layout_tests`].
 
-
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct GpuTerrainTile {

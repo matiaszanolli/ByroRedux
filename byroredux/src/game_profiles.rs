@@ -356,7 +356,10 @@ esm = "FalloutNV.esm"
         "#;
         let parsed: ProfilesFile = toml::from_str(toml).expect("parse");
         assert_eq!(parsed.defaults.game.as_deref(), Some("fnv"));
-        assert_eq!(parsed.defaults.cell.as_deref(), Some("GSProspectorSaloonInterior"));
+        assert_eq!(
+            parsed.defaults.cell.as_deref(),
+            Some("GSProspectorSaloonInterior")
+        );
         assert_eq!(parsed.defaults.light_atten_knee, Some(0.4));
         assert_eq!(parsed.defaults.games_root, None);
     }
@@ -381,7 +384,11 @@ esm = "FalloutNV.esm"
             toml::from_str("[defaults]\ncell = \"UserCell\"\nlight_atten_knee = 0.35\n").unwrap();
         acc.overlay(user.defaults);
 
-        assert_eq!(acc.game.as_deref(), Some("fnv"), "shipped game survives (user didn't set it)");
+        assert_eq!(
+            acc.game.as_deref(),
+            Some("fnv"),
+            "shipped game survives (user didn't set it)"
+        );
         assert_eq!(acc.cell.as_deref(), Some("UserCell"), "user cell wins");
         assert_eq!(acc.light_atten_knee, Some(0.35), "user-only field applies");
     }

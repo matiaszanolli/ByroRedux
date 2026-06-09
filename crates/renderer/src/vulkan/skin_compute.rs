@@ -363,11 +363,10 @@ impl SkinComputePipeline {
         // than only `vkResetDescriptorPool`. Pool sizes derived from
         // `bindings` so any future binding addition flows through to
         // the pool count automatically (#1030 / REN-D10-NEW-09).
-        let descriptor_pool =
-            DescriptorPoolBuilder::from_layout_bindings(&bindings, pool_total)
-                .max_sets(pool_total)
-                .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-                .build(device, "create skin_compute descriptor pool")?;
+        let descriptor_pool = DescriptorPoolBuilder::from_layout_bindings(&bindings, pool_total)
+            .max_sets(pool_total)
+            .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
+            .build(device, "create skin_compute descriptor pool")?;
 
         log::info!(
             "Skin compute pipeline created (max_slots={}, sets={}, push={} B)",
@@ -803,10 +802,9 @@ impl SkinPaletteComputePipeline {
         // from `bindings` so a future binding addition flows through
         // automatically (#1030 / REN-D10-NEW-09).
         let pool_total = MAX_FRAMES_IN_FLIGHT as u32;
-        let descriptor_pool =
-            DescriptorPoolBuilder::from_layout_bindings(&bindings, pool_total)
-                .max_sets(pool_total)
-                .build(device, "create skin_palette descriptor pool")?;
+        let descriptor_pool = DescriptorPoolBuilder::from_layout_bindings(&bindings, pool_total)
+            .max_sets(pool_total)
+            .build(device, "create skin_palette descriptor pool")?;
 
         let layouts = [descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         let allocated = unsafe {
@@ -1125,14 +1123,18 @@ mod tests {
         // the `update_descriptor_sets` call. Search for the
         // comparison + the call site, and assert the comparison
         // precedes the call in both dispatch bodies.
-        let guard = src.find("let needs_write = slot.descriptor_bindings[frame_index]").expect(
-            "SkinComputePipeline::dispatch must guard descriptor writes \
+        let guard = src
+            .find("let needs_write = slot.descriptor_bindings[frame_index]")
+            .expect(
+                "SkinComputePipeline::dispatch must guard descriptor writes \
              via slot.descriptor_bindings[frame_index] comparison (#1197)",
-        );
-        let palette_guard = src.find("let needs_write = self.descriptor_bindings[frame_index]").expect(
-            "SkinPaletteComputePipeline::dispatch must guard descriptor \
+            );
+        let palette_guard = src
+            .find("let needs_write = self.descriptor_bindings[frame_index]")
+            .expect(
+                "SkinPaletteComputePipeline::dispatch must guard descriptor \
              writes via self.descriptor_bindings[frame_index] comparison (#1197)",
-        );
+            );
 
         // Both guards must appear before their respective
         // `update_descriptor_sets` calls. We scope the search to the
@@ -1241,8 +1243,14 @@ mod tests {
     fn skin_palette_workgroup_size_matches_skin_vertices() {
         let expected = format!("local_size_x = {}", WORKGROUP_SIZE);
         for (name, src) in [
-            ("skin_palette.comp", include_str!("../../shaders/skin_palette.comp")),
-            ("skin_vertices.comp", include_str!("../../shaders/skin_vertices.comp")),
+            (
+                "skin_palette.comp",
+                include_str!("../../shaders/skin_palette.comp"),
+            ),
+            (
+                "skin_vertices.comp",
+                include_str!("../../shaders/skin_vertices.comp"),
+            ),
         ] {
             assert!(
                 src.contains(&expected),
@@ -1286,8 +1294,7 @@ mod tests {
         // CPU ground truth via the canonical helper. EntityId is a
         // `u32` typedef (crates/core/src/ecs/storage.rs:10), so the
         // closure can use it as a direct index into `bone_worlds`.
-        let bone_entities: Vec<Option<EntityId>> =
-            (0..3u32).map(Some).collect();
+        let bone_entities: Vec<Option<EntityId>> = (0..3u32).map(Some).collect();
         // `SkinnedMesh::new` is `#[cfg(test)]`-gated within
         // byroredux-core and unreachable from another crate's test
         // build; route through the production constructor with an
@@ -1300,9 +1307,7 @@ mod tests {
             Mat4::IDENTITY,
         );
         let mut cpu_palette: Vec<Mat4> = Vec::with_capacity(3);
-        skin.compute_palette_into(&mut cpu_palette, |e| {
-            bone_worlds.get(e as usize).copied()
-        });
+        skin.compute_palette_into(&mut cpu_palette, |e| bone_worlds.get(e as usize).copied());
 
         // Reproduce the GPU per-slot math:
         //   palette[i] = bone_world[i] * bind_inverses[i]

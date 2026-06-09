@@ -51,7 +51,6 @@ pub(crate) use keys::*;
 pub(crate) use sequence::*;
 pub(crate) use transform::*;
 
-
 /// Sampling rate for B-spline interpolators during import.
 /// 30 Hz matches the typical Bethesda animation frame rate.
 pub(crate) const BSPLINE_SAMPLE_HZ: f32 = 30.0;

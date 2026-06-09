@@ -221,8 +221,8 @@ fn bs_effect_shader_explicit_opaque_blocks_implicit_blend() {
     let mut pool = StringPool::new();
     let info = walker::extract_material_info_from_refs(
         &scene,
-        BlockRef(0),       // shader_property_ref → BSEffectShader
-        BlockRef(1),       // alpha_property_ref → flags=0
+        BlockRef(0), // shader_property_ref → BSEffectShader
+        BlockRef(1), // alpha_property_ref → flags=0
         &[],
         &[],
         &mut pool,
@@ -286,7 +286,7 @@ fn bs_effect_shader_without_alpha_property_still_gets_implicit_blend() {
     let info = walker::extract_material_info_from_refs(
         &scene,
         BlockRef(0),
-        BlockRef::NULL,    // no explicit alpha property
+        BlockRef::NULL, // no explicit alpha property
         &[],
         &[],
         &mut pool,
@@ -313,8 +313,8 @@ fn no_direct_alpha_property_still_consumes_inherited() {
         &scene,
         BlockRef::NULL,
         BlockRef::NULL,
-        &[],                // no direct properties
-        &[BlockRef(0)],     // inherited only
+        &[],            // no direct properties
+        &[BlockRef(0)], // inherited only
         &mut pool,
     );
     assert!(

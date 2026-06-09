@@ -3,8 +3,6 @@
 //! `extract_bs_tri_shape` / `_local` — packed-half-float vertex stream
 //! variant used by Skyrim, FO4, FO76.
 
-
-
 use crate::blocks::tri_shape::{BsTriShape, BsTriShapeKind};
 use crate::scene::NifScene;
 use crate::types::NiTransform;
@@ -153,9 +151,7 @@ pub fn extract_bs_tri_shape(
             indices
                 .chunks_exact(3)
                 .filter_map(|c| {
-                    if c[0] <= u16::MAX as u32
-                        && c[1] <= u16::MAX as u32
-                        && c[2] <= u16::MAX as u32
+                    if c[0] <= u16::MAX as u32 && c[1] <= u16::MAX as u32 && c[2] <= u16::MAX as u32
                     {
                         Some([c[0] as u16, c[1] as u16, c[2] as u16])
                     } else {
@@ -337,4 +333,3 @@ pub fn extract_bs_tri_shape_local(
 ) -> Option<ImportedMesh> {
     extract_bs_tri_shape(scene, shape, &shape.av.transform, pool)
 }
-

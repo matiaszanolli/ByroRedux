@@ -211,7 +211,11 @@ fn skyrim_header_at_bsver(bsver: u32) -> NifHeader {
 /// behaviour from the body_flags width gate.
 fn skyrim_bhk_rigid_body_bytes_at_bsver(bsver: u32) -> (Vec<u8>, usize) {
     let (mut d, _mass) = minimal_skyrim_bhk_rigid_body_bytes();
-    let width = if bsver < crate::version::bsver::RIGID_BODY_FLAGS16 { 4 } else { 2 };
+    let width = if bsver < crate::version::bsver::RIGID_BODY_FLAGS16 {
+        4
+    } else {
+        2
+    };
     if bsver < crate::version::bsver::RIGID_BODY_FLAGS16 {
         // Base fixture wrote u16 body_flags. Pad to u32.
         d.extend_from_slice(&0u16.to_le_bytes());

@@ -56,8 +56,8 @@ fn bindless_binding_matches_triangle_ui_frag() {
 /// or STORAGE_IMAGE doesn't pass silently.
 #[test]
 fn wrong_descriptor_type_trips_diagnostic() {
-    let binding = build_bindless_descriptor_binding(1024)
-        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE);
+    let binding =
+        build_bindless_descriptor_binding(1024).descriptor_type(vk::DescriptorType::SAMPLED_IMAGE);
     let err = crate::vulkan::reflect::validate_set_layout(
         0,
         std::slice::from_ref(&binding),

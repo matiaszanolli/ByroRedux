@@ -110,7 +110,6 @@ impl PhysicsWorld {
         )
     }
 
-
     /// Mark the simulation as needing at least one pipeline step on the next
     /// [`step`](Self::step) call. Must be called by every mutation that can
     /// introduce motion — spawning a body, pushing a kinematic target,
@@ -358,9 +357,7 @@ impl PhysicsWorld {
     /// world, plus the count. Returns `None` when there are no static
     /// colliders. Used by the M28.5 controller's one-shot "collider
     /// world overlaps character XZ?" sanity log.
-    pub fn static_colliders_aabb(
-        &self,
-    ) -> Option<([f32; 3], [f32; 3], u32)> {
+    pub fn static_colliders_aabb(&self) -> Option<([f32; 3], [f32; 3], u32)> {
         use rapier3d::prelude::*;
         let mut min = [f32::INFINITY; 3];
         let mut max = [f32::NEG_INFINITY; 3];
@@ -402,9 +399,7 @@ impl PhysicsWorld {
     ///   3. Resetting `vertical_velocity` to 0 on `result.grounded`
     ///      transitions and to `jump_velocity` on jump triggers.
     pub fn move_character(&self, params: CharacterMoveParams) -> CharacterMoveResult {
-        use rapier3d::control::{
-            CharacterAutostep, CharacterLength, KinematicCharacterController,
-        };
+        use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
         use rapier3d::prelude::*;
 
         // M28.5 KCC offset — at Skyrim's 70 BU/m scale, 0.5 BU
@@ -430,8 +425,7 @@ impl PhysicsWorld {
                 include_dynamic_bodies: false,
             }),
             max_slope_climb_angle: params.max_slope_climb_deg.to_radians(),
-            min_slope_slide_angle: ((params.max_slope_climb_deg + 90.0) * 0.5)
-                .to_radians(),
+            min_slope_slide_angle: ((params.max_slope_climb_deg + 90.0) * 0.5).to_radians(),
             snap_to_ground: if params.snap_to_ground > 0.0 {
                 Some(CharacterLength::Absolute(params.snap_to_ground))
             } else {
@@ -444,11 +438,7 @@ impl PhysicsWorld {
             params.capsule_half_height.max(1e-3),
             params.capsule_radius.max(1e-3),
         );
-        let pos = Isometry::translation(
-            params.position.x,
-            params.position.y,
-            params.position.z,
-        );
+        let pos = Isometry::translation(params.position.x, params.position.y, params.position.z);
         let desired = Vector::new(
             params.desired_translation.x,
             params.desired_translation.y,
@@ -626,7 +616,7 @@ mod tests {
             .insert_with_parent(ColliderBuilder::new(shape).build(), h, &mut w.bodies);
 
         w.step(PHYSICS_DT); // frame 1
-        // Still falling on frame 2 → must keep stepping (not gated away).
+                            // Still falling on frame 2 → must keep stepping (not gated away).
         assert!(
             w.step(PHYSICS_DT) > 0,
             "a falling (awake) body must keep the simulation stepping"

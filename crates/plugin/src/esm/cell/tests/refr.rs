@@ -130,7 +130,6 @@ fn parse_one_refr_for_ownership(record: &[u8]) -> PlacedRef {
     refs.into_iter().next().unwrap()
 }
 
-
 #[test]
 fn parse_refr_extracts_position_and_scale() {
     // Build a minimal REFR record with NAME, DATA, XSCL.
@@ -671,4 +670,3 @@ fn parse_refr_group_collects_navm_records() {
 // Cell-side last-write-wins semantics on every map, with the
 // exterior_cells nested map merging per-worldspace so a DLC
 // adding a new worldspace doesn't stomp the base game's table.
-

@@ -10,8 +10,7 @@ use std::collections::BTreeMap;
 // captured inside each closure; callers pass the erased store (`&dyn Any`)
 // + an entity id. Aliased to keep [`ComponentDescriptor`] readable and to
 // satisfy `clippy::type_complexity`.
-type GetJsonFn =
-    Box<dyn Fn(&dyn std::any::Any, u32) -> Option<serde_json::Value> + Send + Sync>;
+type GetJsonFn = Box<dyn Fn(&dyn std::any::Any, u32) -> Option<serde_json::Value> + Send + Sync>;
 type SetJsonFn =
     Box<dyn Fn(&dyn std::any::Any, u32, serde_json::Value) -> Result<(), String> + Send + Sync>;
 type ListEntitiesFn = Box<dyn Fn(&dyn std::any::Any) -> Vec<u32> + Send + Sync>;

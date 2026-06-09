@@ -100,7 +100,10 @@ pub(crate) fn stream_object_lod_blocks(
     full_radius_load: i32,
     blocks: &mut HashMap<(i32, i32), ObjectLodBlock>,
 ) {
-    if !matches!(wctx.record_index.game, GameKind::Skyrim | GameKind::Fallout4) {
+    if !matches!(
+        wctx.record_index.game,
+        GameKind::Skyrim | GameKind::Fallout4
+    ) {
         return;
     }
     let level = OBJECT_LOD_LEVEL;
@@ -356,8 +359,8 @@ mod tests {
         assert_eq!(quad_origin(89, 9, 4), (88, 8));
         assert_eq!(quad_origin(88, 8, 4), (88, 8)); // corner maps to itself
         assert_eq!(quad_origin(91, 11, 4), (88, 8)); // last cell in the quad
-        // Negative: Euclidean floor — cell (-5, -13) at level 4 → (-8, -16),
-        // the quad `tamriel.4.-8.-16.bto` covers [-8,-4)×[-16,-12).
+                                                     // Negative: Euclidean floor — cell (-5, -13) at level 4 → (-8, -16),
+                                                     // the quad `tamriel.4.-8.-16.bto` covers [-8,-4)×[-16,-12).
         assert_eq!(quad_origin(-5, -13, 4), (-8, -16));
         assert_eq!(quad_origin(-8, -16, 4), (-8, -16));
         // Coarser levels snap to their own multiples.

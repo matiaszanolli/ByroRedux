@@ -239,7 +239,10 @@ pub fn collect_precombine_geom_refs(
 ) -> Vec<PrecombineGeomRef> {
     let mut out = Vec::new();
     for (idx, block) in scene.blocks.iter().enumerate() {
-        let Some(packed) = block.as_any().downcast_ref::<BsPackedCombinedGeomDataExtra>() else {
+        let Some(packed) = block
+            .as_any()
+            .downcast_ref::<BsPackedCombinedGeomDataExtra>()
+        else {
             continue;
         };
         let BsPackedCombinedPayload::Shared { objects, data } = &packed.payload else {
@@ -255,7 +258,11 @@ pub fn collect_precombine_geom_refs(
                 num_verts: hdr.num_verts as usize,
                 vertex_desc: hdr.vertex_desc,
                 lod_counts: [hdr.tri_count_lod0, hdr.tri_count_lod1, hdr.tri_count_lod2],
-                lod_offsets: [hdr.tri_offset_lod0, hdr.tri_offset_lod1, hdr.tri_offset_lod2],
+                lod_offsets: [
+                    hdr.tri_offset_lod0,
+                    hdr.tri_offset_lod1,
+                    hdr.tri_offset_lod2,
+                ],
                 instances: hdr.combined.iter().map(|c| c.transform).collect(),
                 material: material.clone(),
             });
@@ -352,7 +359,8 @@ mod tests {
             psg.extend_from_slice(&half(0.5)); // u
             psg.extend_from_slice(&half(0.25)); // v
             psg.extend_from_slice(&[nbyte(0.0), nbyte(0.0), nbyte(1.0), nbyte(0.0)]); // normal +Z, bitY
-            psg.extend_from_slice(&[nbyte(1.0), nbyte(0.0), nbyte(0.0), nbyte(0.0)]); // tangent +X, bitZ
+            psg.extend_from_slice(&[nbyte(1.0), nbyte(0.0), nbyte(0.0), nbyte(0.0)]);
+            // tangent +X, bitZ
         }
         assert_eq!(psg.len(), 2 * 20);
         // one triangle (0,1,0)

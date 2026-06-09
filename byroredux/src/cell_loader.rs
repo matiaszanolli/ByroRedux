@@ -27,9 +27,6 @@
 // historically relied on through the (pre-split) flat `cell_loader.rs`.
 #[cfg(test)]
 #[allow(unused_imports)]
-use std::sync::Arc;
-#[cfg(test)]
-#[allow(unused_imports)]
 use byroredux_core::ecs::components::{Inventory, ItemInstanceId};
 #[cfg(test)]
 #[allow(unused_imports)]
@@ -49,6 +46,9 @@ use byroredux_core::math::{Quat, Vec3};
 #[cfg(test)]
 #[allow(unused_imports)]
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+#[allow(unused_imports)]
+use std::sync::Arc;
 
 #[cfg(test)]
 #[allow(unused_imports)]
@@ -58,6 +58,7 @@ use crate::components::{
 };
 
 mod euler;
+mod exterior;
 mod index;
 mod load;
 mod load_order;
@@ -73,14 +74,13 @@ mod terrain_lod;
 mod transition;
 mod unload;
 mod water;
-mod exterior;
 
 pub use index::LoadedCellIndex;
 pub use transition::{
     load_interior_cell, log_transition_header, position_zup_to_yup, reposition_camera,
-    InteriorCellRequest,
     rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior, CurrentCellRoot,
-    LoadedPluginSet, PendingCellTransition, PendingCellTransitionSlot, TransitionDestination,
+    InteriorCellRequest, LoadedPluginSet, PendingCellTransition, PendingCellTransitionSlot,
+    TransitionDestination,
 };
 
 // Public re-exports — keep the existing `crate::cell_loader::FOO`
@@ -103,16 +103,16 @@ pub(crate) use euler::{euler_zup_to_quat_yup, euler_zup_to_quat_yup_refr};
 pub use exterior::{
     build_exterior_world_context, load_one_exterior_cell, ExteriorWorldContext, OneCellLoadInfo,
 };
+pub(crate) use load::apply_interior_cell_lighting;
 #[allow(unused_imports)]
-pub(crate) use object_lod::{stream_object_lod_blocks, ObjectLodBlock};
-pub(crate) use terrain_lod::stream_lod_blocks;
+pub(crate) use load::resolve_cell_lighting;
 #[allow(unused_imports)]
 pub use load::{load_cell_with_masters, CellLoadResult};
 #[allow(unused_imports)]
-pub(crate) use load::resolve_cell_lighting;
-pub(crate) use load::apply_interior_cell_lighting;
-pub use unload::unload_cell;
+pub(crate) use object_lod::{stream_object_lod_blocks, ObjectLodBlock};
 pub(crate) use partial::finish_partial_import;
+pub(crate) use terrain_lod::stream_lod_blocks;
+pub use unload::unload_cell;
 
 // Test-only re-exports so the `use super::*;` patterns inside the
 // child test modules see the helpers they exercise. Production code
@@ -124,9 +124,9 @@ pub(crate) use spawn::{
     count_spawnable_nif_lights, is_spawnable_nif_light, light_radius_or_default,
 };
 #[cfg(test)]
-pub(crate) use unload::release_victim_item_instances;
-#[cfg(test)]
 pub(crate) use unload::collect_victim_gpu_handles;
+#[cfg(test)]
+pub(crate) use unload::release_victim_item_instances;
 
 /// Pack `BSEffectShaderProperty` flag booleans (captured in Stage 1 by
 /// `BsEffectShaderData::effect_{soft,palette_color,palette_alpha,lit}`)
@@ -145,7 +145,7 @@ pub(crate) fn pack_effect_shader_flags(
     eff: Option<&byroredux_nif::import::BsEffectShaderData>,
 ) -> u32 {
     use byroredux_renderer::vulkan::material::material_flag::{
-        EFFECT_LI_SHIFT, EFFECT_LIT, EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR, EFFECT_SOFT,
+        EFFECT_LIT, EFFECT_LI_SHIFT, EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR, EFFECT_SOFT,
     };
     let Some(es) = eff else {
         return 0;
@@ -420,8 +420,11 @@ mod pack_bgsm_material_flags_tests {
             VERTEX_COLOR_EMISSIVE,
         };
         let bgsm_bits = BGSM_PBR | BGSM_TRANSLUCENCY | BGSM_MODEL_SPACE_NORMALS;
-        let prior_bits =
-            VERTEX_COLOR_EMISSIVE | EFFECT_SOFT | EFFECT_PALETTE_COLOR | EFFECT_PALETTE_ALPHA | EFFECT_LIT;
+        let prior_bits = VERTEX_COLOR_EMISSIVE
+            | EFFECT_SOFT
+            | EFFECT_PALETTE_COLOR
+            | EFFECT_PALETTE_ALPHA
+            | EFFECT_LIT;
         assert_eq!(
             bgsm_bits & prior_bits,
             0,
@@ -435,30 +438,30 @@ mod pack_bgsm_material_flags_tests {
 #[cfg(test)]
 mod euler_zup_to_quat_yup_tests;
 #[cfg(test)]
-mod nif_import_registry_tests;
-#[cfg(test)]
 mod finish_partial_tests;
-#[cfg(test)]
-mod refr_texture_overlay_tests;
-#[cfg(test)]
-mod pkin_expansion_tests;
-#[cfg(test)]
-mod scol_expansion_tests;
-#[cfg(test)]
-mod terrain_splat_tests;
-#[cfg(test)]
-mod sky_params_cleanup_tests;
-#[cfg(test)]
-mod nif_light_spawn_gate_tests;
-#[cfg(test)]
-mod lgtm_fallback_tests;
-#[cfg(test)]
-mod unload_skin_cleanup_tests;
-#[cfg(test)]
-mod placement_root_subtree_tests;
-#[cfg(test)]
-mod root_index_tests;
 #[cfg(test)]
 mod inventory_release_tests;
 #[cfg(test)]
+mod lgtm_fallback_tests;
+#[cfg(test)]
+mod nif_import_registry_tests;
+#[cfg(test)]
+mod nif_light_spawn_gate_tests;
+#[cfg(test)]
+mod pkin_expansion_tests;
+#[cfg(test)]
+mod placement_root_subtree_tests;
+#[cfg(test)]
+mod refr_texture_overlay_tests;
+#[cfg(test)]
+mod root_index_tests;
+#[cfg(test)]
+mod scol_expansion_tests;
+#[cfg(test)]
+mod sky_params_cleanup_tests;
+#[cfg(test)]
+mod terrain_splat_tests;
+#[cfg(test)]
 mod unload_greyscale_lut_tests;
+#[cfg(test)]
+mod unload_skin_cleanup_tests;

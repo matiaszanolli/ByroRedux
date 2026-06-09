@@ -36,7 +36,6 @@ fn sse_header_with_name(name: &str) -> NifHeader {
     }
 }
 
-
 /// Regression test for issue #164: array-form extra data.
 #[test]
 fn oblivion_strings_and_integers_extra_data_roundtrip() {

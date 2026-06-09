@@ -7,14 +7,10 @@
 
 use super::*;
 
-use crate::blocks::controller::{
-    ControlledBlock, NiGeomMorpherController,
-    NiMorphData,
-};
+use crate::blocks::controller::{ControlledBlock, NiGeomMorpherController, NiMorphData};
 use crate::blocks::interpolator::{
     FloatKey, KeyGroup, KeyType, NiFloatData, NiFloatInterpolator, NiLookAtInterpolator,
-    NiPathInterpolator, NiPosData, NiTransformData,
-    Vec3Key,
+    NiPathInterpolator, NiPosData, NiTransformData, Vec3Key,
 };
 use crate::scene::NifScene;
 use std::sync::Arc;
@@ -1623,19 +1619,19 @@ fn import_embedded_animations_captures_nilight_controllers() {
 
     let scene = NifScene {
         blocks: vec![
-            Box::new(float_data(0.0, 1.0)),  // [0] dimmer data
-            Box::new(float_interp(0)),       // [1] dimmer interp
-            Box::new(float_data(0.0, 2.0)),  // [2] intensity data
-            Box::new(float_interp(2)),       // [3] intensity interp
+            Box::new(float_data(0.0, 1.0)),     // [0] dimmer data
+            Box::new(float_interp(0)),          // [1] dimmer interp
+            Box::new(float_data(0.0, 2.0)),     // [2] intensity data
+            Box::new(float_interp(2)),          // [3] intensity interp
             Box::new(float_data(100.0, 200.0)), // [4] radius data
-            Box::new(float_interp(4)),       // [5] radius interp
-            Box::new(pos_data),              // [6] color data
-            Box::new(p3_interp),             // [7] color interp
-            Box::new(color_ctrl),            // [8] color ctrl
-            Box::new(radius_ctrl),           // [9] radius ctrl
-            Box::new(intensity_ctrl),        // [10] intensity ctrl
-            Box::new(dimmer_ctrl),           // [11] dimmer ctrl (chain head)
-            Box::new(light),                 // [12] NiPointLight
+            Box::new(float_interp(4)),          // [5] radius interp
+            Box::new(pos_data),                 // [6] color data
+            Box::new(p3_interp),                // [7] color interp
+            Box::new(color_ctrl),               // [8] color ctrl
+            Box::new(radius_ctrl),              // [9] radius ctrl
+            Box::new(intensity_ctrl),           // [10] intensity ctrl
+            Box::new(dimmer_ctrl),              // [11] dimmer ctrl (chain head)
+            Box::new(light),                    // [12] NiPointLight
         ],
         ..NifScene::default()
     };

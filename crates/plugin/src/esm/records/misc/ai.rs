@@ -2,8 +2,8 @@
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
 use super::super::condition::{parse_ctda, ConditionList};
-use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
+use crate::esm::sub_reader::SubReader;
 
 /// `PACK` AI package record. 30-procedure scheduling system
 /// (guard patrols, merchant behavior, dialogue triggers, ambient
@@ -362,7 +362,11 @@ pub struct InfoRecord {
     pub conditions: ConditionList,
 }
 
-pub fn parse_dial(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::reader::FormIdRemap>) -> DialRecord {
+pub fn parse_dial(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> DialRecord {
     let mut out = DialRecord {
         form_id,
         ..Default::default()
@@ -386,7 +390,11 @@ pub fn parse_dial(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::r
     out
 }
 
-pub fn parse_info(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::reader::FormIdRemap>) -> InfoRecord {
+pub fn parse_info(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> InfoRecord {
     let mut out = InfoRecord {
         form_id,
         ..Default::default()
@@ -417,9 +425,7 @@ pub fn parse_info(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::r
                 out.previous_info = remapped;
             }
             b"ANAM" if sub.data.len() >= 4 => {
-                let raw = u32::from_le_bytes([
-                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
-                ]);
+                let raw = u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
                 let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
                 out.actor_form_id = remapped;
             }
@@ -437,7 +443,9 @@ pub fn parse_info(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::r
 /// Build a conversation tree from flat INFO list.
 /// Orders INFOs by PNAM chains (head = previous_info == 0).
 /// Detects cycles to ensure chain termination.
-pub fn build_conversation_tree(infos: &[InfoRecord]) -> Result<ConversationTree, ConversationTreeError> {
+pub fn build_conversation_tree(
+    infos: &[InfoRecord],
+) -> Result<ConversationTree, ConversationTreeError> {
     use std::collections::HashMap;
 
     // Index by form_id for fast lookup and cycle detection.
@@ -551,7 +559,10 @@ pub fn build_conversation_tree(infos: &[InfoRecord]) -> Result<ConversationTree,
         }
     }
 
-    Ok(ConversationTree { chains, topic_links })
+    Ok(ConversationTree {
+        chains,
+        topic_links,
+    })
 }
 
 /// `MESG` message / popup record. Quest-tutorial banners and
@@ -645,7 +656,6 @@ pub fn parse_idle(form_id: u32, subs: &[SubRecord]) -> IdleRecord {
     }
     out
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -811,10 +821,7 @@ mod tests {
     #[test]
     fn parse_dial_captures_dialogue_type_byte() {
         // Oblivion DATA: a single type byte. 3 = Persuasion in the TES4 enum.
-        let subs = vec![
-            sub(b"EDID", b"PersuasionTopic\0"),
-            sub(b"DATA", &[3u8]),
-        ];
+        let subs = vec![sub(b"EDID", b"PersuasionTopic\0"), sub(b"DATA", &[3u8])];
         let d = parse_dial(0xDEAD, &subs, &None);
         assert_eq!(d.dial_type, 3);
 
@@ -893,10 +900,7 @@ mod tests {
     #[test]
     fn parse_info_picks_anam_actor() {
         let anam = 0xDEAD_BEEFu32.to_le_bytes();
-        let subs = vec![
-            sub(b"NAM1", b"hello\0"),
-            sub(b"ANAM", &anam),
-        ];
+        let subs = vec![sub(b"NAM1", b"hello\0"), sub(b"ANAM", &anam)];
         let info = parse_info(0x1234, &subs, &None);
         assert_eq!(info.actor_form_id, 0xDEAD_BEEF);
     }
@@ -913,10 +917,7 @@ mod tests {
         ctda.extend_from_slice(&0u32.to_le_bytes()); // run_on (offsets 20-23, u32)
         ctda.extend_from_slice(&0u32.to_le_bytes()); // ref_fid (offsets 24-27, u32)
 
-        let subs = vec![
-            sub(b"NAM1", b"hi\0"),
-            sub(b"CTDA", &ctda),
-        ];
+        let subs = vec![sub(b"NAM1", b"hi\0"), sub(b"CTDA", &ctda)];
         let info = parse_info(0x5678, &subs, &None);
         assert_eq!(info.conditions.len(), 1);
         assert_eq!(info.conditions[0].function_index, 36);
@@ -928,7 +929,7 @@ mod tests {
         // PNAM (previous_info) and TCLT (topic_links) and ANAM (actor)
         // should be remapped when a remap is provided.
         let remap = FormIdRemap {
-            plugin_index: 1, // This plugin is at index 1
+            plugin_index: 1,         // This plugin is at index 1
             master_indices: vec![0], // Master is at index 0
         };
         let subs = vec![
@@ -974,7 +975,11 @@ mod tests {
 
         let tree = build_conversation_tree(&infos).expect("should build tree");
         assert_eq!(tree.chains.len(), 1, "should have 1 chain");
-        assert_eq!(tree.chains[0], vec![0xAAAA, 0xBBBB, 0xCCCC], "chain should be ordered A→B→C");
+        assert_eq!(
+            tree.chains[0],
+            vec![0xAAAA, 0xBBBB, 0xCCCC],
+            "chain should be ordered A→B→C"
+        );
     }
 
     #[test]
@@ -1005,7 +1010,10 @@ mod tests {
         assert!(result.is_err(), "should detect cycle");
         match result.unwrap_err() {
             ConversationTreeError::PnamCycle { info_form_id } => {
-                assert_eq!(info_form_id, 0xAAAA, "cycle detection should report the repeating form_id");
+                assert_eq!(
+                    info_form_id, 0xAAAA,
+                    "cycle detection should report the repeating form_id"
+                );
             }
         }
     }
@@ -1031,29 +1039,38 @@ mod tests {
         ];
 
         let tree = build_conversation_tree(&infos).expect("should build tree");
-        assert_eq!(tree.topic_links.len(), 1, "should have 1 INFO with topic_links");
+        assert_eq!(
+            tree.topic_links.len(),
+            1,
+            "should have 1 INFO with topic_links"
+        );
         assert_eq!(
             tree.topic_links.get(&0xAAAA),
             Some(&vec![0x1111, 0x2222]),
             "should surface TCLT edges for chain1 head"
         );
-        assert!(!tree.topic_links.contains_key(&0xBBBB), "chain2 head has no TCLT");
+        assert!(
+            !tree.topic_links.contains_key(&0xBBBB),
+            "chain2 head has no TCLT"
+        );
     }
 
     #[test]
     fn build_conversation_tree_handles_orphaned_infos() {
         // An INFO with previous_info pointing to a non-existent INFO becomes a 1-element chain.
-        let infos = vec![
-            InfoRecord {
-                form_id: 0xAAAA,
-                response_text: "Orphan".to_string(),
-                previous_info: 0x9999, // Points to non-existent INFO
-                ..Default::default()
-            },
-        ];
+        let infos = vec![InfoRecord {
+            form_id: 0xAAAA,
+            response_text: "Orphan".to_string(),
+            previous_info: 0x9999, // Points to non-existent INFO
+            ..Default::default()
+        }];
 
         let tree = build_conversation_tree(&infos).expect("should build tree");
-        assert_eq!(tree.chains.len(), 1, "orphan should become a 1-element chain");
+        assert_eq!(
+            tree.chains.len(),
+            1,
+            "orphan should become a 1-element chain"
+        );
         assert_eq!(tree.chains[0], vec![0xAAAA]);
     }
 }

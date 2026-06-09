@@ -83,10 +83,16 @@ impl StringsTable {
         let data_size = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
 
         let dir_bytes = count.checked_mul(8).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "strings directory count overflow")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "strings directory count overflow",
+            )
         })?;
         let dir_end = 8usize.checked_add(dir_bytes).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "strings directory offset overflow")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "strings directory offset overflow",
+            )
         })?;
         let blob_end = dir_end.checked_add(data_size).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "strings blob offset overflow")
@@ -113,13 +119,22 @@ impl StringsTable {
             let offset = u32::from_le_bytes(entry[4..8].try_into().unwrap()) as usize;
 
             if offset >= blob.len() {
-                log::warn!("strings entry 0x{:08X}: offset {} out of blob ({})", id, offset, blob.len());
+                log::warn!(
+                    "strings entry 0x{:08X}: offset {} out of blob ({})",
+                    id,
+                    offset,
+                    blob.len()
+                );
                 continue;
             }
 
             let s = if has_length_prefix {
                 if offset + 4 > blob.len() {
-                    log::warn!("strings entry 0x{:08X}: truncated length prefix at {}", id, offset);
+                    log::warn!(
+                        "strings entry 0x{:08X}: truncated length prefix at {}",
+                        id,
+                        offset
+                    );
                     continue;
                 }
                 // 4-byte LE length prefix (may or may not include the null).
@@ -212,11 +227,7 @@ impl StringTableSet {
             let data = std::fs::read(&path).ok()?;
             match StringsTable::parse(&data, has_prefix) {
                 Ok(t) => {
-                    log::debug!(
-                        "loaded {} ({} entries)",
-                        path.display(),
-                        t.len()
-                    );
+                    log::debug!("loaded {} ({} entries)", path.display(), t.len());
                     Some(t)
                 }
                 Err(e) => {
@@ -296,7 +307,10 @@ mod tests {
     #[test]
     fn dlstrings_round_trip() {
         let data = build_strings_file(
-            &[(0x0010u32, "A fine blade, worthy of a Companion."), (0x0020, "")],
+            &[
+                (0x0010u32, "A fine blade, worthy of a Companion."),
+                (0x0020, ""),
+            ],
             true,
         );
         let table = StringsTable::parse(&data, true).unwrap();
@@ -311,10 +325,8 @@ mod tests {
     #[test]
     fn string_table_set_resolve_priority() {
         // ID 0x0001 exists only in .STRINGS; ID 0x0010 only in .DLSTRINGS.
-        let strings_data =
-            build_strings_file(&[(0x0001u32, "Iron Sword")], false);
-        let dlstrings_data =
-            build_strings_file(&[(0x0010u32, "A fine blade.")], true);
+        let strings_data = build_strings_file(&[(0x0001u32, "Iron Sword")], false);
+        let dlstrings_data = build_strings_file(&[(0x0010u32, "A fine blade.")], true);
 
         let set = StringTableSet {
             strings: Some(StringsTable::parse(&strings_data, false).unwrap()),

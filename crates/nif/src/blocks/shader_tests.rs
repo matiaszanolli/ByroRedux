@@ -503,8 +503,8 @@ fn build_bs_lighting_fo4_env_map() -> Vec<u8> {
     // (the parser skips these with (0.0, 0.0))
     // FO4 common fields:
     data.extend_from_slice(&0.3f32.to_le_bytes()); // subsurface_rolloff
-    // rimlight_power = FLT_MAX sentinel → has backlight (#1175). Pre-fix
-    // this fixture authored a finite 2.5 to match an inverted gate.
+                                                   // rimlight_power = FLT_MAX sentinel → has backlight (#1175). Pre-fix
+                                                   // this fixture authored a finite 2.5 to match an inverted gate.
     data.extend_from_slice(&f32::MAX.to_le_bytes()); // rimlight_power
     data.extend_from_slice(&1.0f32.to_le_bytes()); // backlight_power
     data.extend_from_slice(&0.7f32.to_le_bytes()); // grayscale_to_palette_scale
@@ -696,7 +696,10 @@ fn bs_lighting_bsver_132_reads_crc_counts_but_not_flag_pair() {
     assert_eq!(prop.shader_flags_1, 0);
     assert_eq!(prop.shader_flags_2, 0);
     assert_eq!(prop.sf1_crcs, vec![0xDEADBEEF, 0xCAFEBABE]);
-    assert!(prop.sf2_crcs.is_empty(), "Num SF2 requires bsver >= crate::version::bsver::FO76_SF2_CRCS");
+    assert!(
+        prop.sf2_crcs.is_empty(),
+        "Num SF2 requires bsver >= crate::version::bsver::FO76_SF2_CRCS"
+    );
     assert_eq!(
         stream.position() as usize,
         expected_len,
@@ -1103,7 +1106,11 @@ fn parse_bs_lighting_fo4_bsver130_consumes_exactly_140_bytes() {
         data.extend_from_slice(&v.to_le_bytes());
     }
     // No shader_type=0 trailing.
-    assert_eq!(data.len(), 140, "BSVER=130 + shader_type=0 wire format = 140 B");
+    assert_eq!(
+        data.len(),
+        140,
+        "BSVER=130 + shader_type=0 wire format = 140 B"
+    );
 
     let mut stream = NifStream::new(&data, &header);
     let _prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
@@ -1123,10 +1130,10 @@ fn parse_bs_lighting_fo4_env_map_with_wetness() {
     let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
     assert_eq!(prop.shader_type, 1);
     assert_eq!(prop.shader_flags_1, 0x80000000); // FO4 flags read correctly
-    // FO4 authors this as "smoothness" 0–1; parser normalizes to the
-    // 0–100 glossiness scale so downstream consumers stay in one convention.
-    // Wire byte is 0.5 → post-normalize = 50.0. 1e-4 tolerance because
-    // the conversion amplifies the f32 representation error by 100×.
+                                                 // FO4 authors this as "smoothness" 0–1; parser normalizes to the
+                                                 // 0–100 glossiness scale so downstream consumers stay in one convention.
+                                                 // Wire byte is 0.5 → post-normalize = 50.0. 1e-4 tolerance because
+                                                 // the conversion amplifies the f32 representation error by 100×.
     assert!((prop.glossiness - 50.0).abs() < 1e-4);
     assert!((prop.subsurface_rolloff - 0.3).abs() < 1e-6);
     // #1175: rimlight=FLT_MAX is the sentinel that gates Backlight presence.
@@ -1138,7 +1145,10 @@ fn parse_bs_lighting_fo4_env_map_with_wetness() {
     // belongs to the shader_type=1 trailing block at BSVER < FO4_DLC_UPPER.
     let w = prop.wetness.as_ref().unwrap();
     assert!((w.spec_scale - 0.1).abs() < 1e-6);
-    assert_eq!(w.env_map_scale, 0.0, "env_map_scale stays at default in wetness at BSVER < 140 (#1223)");
+    assert_eq!(
+        w.env_map_scale, 0.0,
+        "env_map_scale stays at default in wetness at BSVER < 140 (#1223)"
+    );
     assert!((w.metalness - 0.6).abs() < 1e-6);
     assert!(
         (w.unknown_1 - 0.95).abs() < 1e-6,
@@ -1183,11 +1193,11 @@ fn parse_bs_lighting_fo4_finite_rimlight_skips_backlight() {
         .expect("locate subsurface marker");
     new_data.extend_from_slice(&data[..subsurface_off + 4]);
     new_data.extend_from_slice(&2.5f32.to_le_bytes()); // rim (finite override)
-    // backlight bytes intentionally absent
+                                                       // backlight bytes intentionally absent
     new_data.extend_from_slice(&0.7f32.to_le_bytes()); // grayscale (was after backlight)
     new_data.extend_from_slice(&5.0f32.to_le_bytes()); // fresnel
-    // skip past the four floats the helper wrote after subsurface
-    // (rim, back, gray, fresnel = 16 B); resume at wetness.
+                                                       // skip past the four floats the helper wrote after subsurface
+                                                       // (rim, back, gray, fresnel = 16 B); resume at wetness.
     new_data.extend_from_slice(&data[subsurface_off + 4 + 4 * 4..]);
     data = new_data;
 
@@ -1752,13 +1762,13 @@ fn build_no_lighting_bytes(file_name: &str, falloff: Option<[f32; 4]>) -> Vec<u8
     d.extend_from_slice(&0i32.to_le_bytes()); // name string index 0
     d.extend_from_slice(&0u32.to_le_bytes()); // extra_data list count = 0
     d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = -1
-    // BSShaderPropertyData::parse_base
+                                                 // BSShaderPropertyData::parse_base
     d.extend_from_slice(&0u16.to_le_bytes()); // shade_flags
     d.extend_from_slice(&1u32.to_le_bytes()); // shader_type
     d.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_1
     d.extend_from_slice(&0u32.to_le_bytes()); // shader_flags_2
     d.extend_from_slice(&1.0f32.to_le_bytes()); // env_map_scale
-    // BSShaderLightingProperty texture_clamp_mode
+                                                // BSShaderLightingProperty texture_clamp_mode
     d.extend_from_slice(&3u32.to_le_bytes());
     // file_name (sized string)
     d.extend_from_slice(&(file_name.len() as u32).to_le_bytes());

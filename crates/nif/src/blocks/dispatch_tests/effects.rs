@@ -55,7 +55,6 @@ fn fo4_niavobject_bytes() -> Vec<u8> {
     d
 }
 
-
 /// Regression test for issue #156: NiLight hierarchy dispatch + payload.
 #[test]
 fn oblivion_lights_parse_with_attenuation_and_color() {

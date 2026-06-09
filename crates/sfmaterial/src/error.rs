@@ -13,7 +13,9 @@ pub enum Error {
     #[error("bad magic at offset 0: got {got:#010x}, expected BETH (0x{expected:08X})")]
     BadMagic { got: u32, expected: u32 },
 
-    #[error("unsupported endianness — Starfield CDB is always little-endian; magic byte-swap detected")]
+    #[error(
+        "unsupported endianness — Starfield CDB is always little-endian; magic byte-swap detected"
+    )]
     BigEndianUnsupported,
 
     #[error("bad header size: got {got}, expected 8")]
@@ -26,10 +28,7 @@ pub enum Error {
     EmptyChunkList,
 
     #[error("expected {wanted:?} chunk, got {got:?}")]
-    WrongChunkType {
-        wanted: ChunkType,
-        got: ChunkType,
-    },
+    WrongChunkType { wanted: ChunkType, got: ChunkType },
 
     #[error("unknown chunk type {raw:#010x} at chunk index {index}")]
     UnknownChunkType { raw: u32, index: usize },

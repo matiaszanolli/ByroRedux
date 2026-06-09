@@ -412,7 +412,9 @@ fn resolve_sun_sprite(
 /// so `weather_system` runs the sun arc each frame instead of
 /// early-returning. See #542 / M33-10.
 pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [f32; 3]) {
-    world.insert_resource(crate::env_translate::procedural_fallback_cell_lighting(sun_dir));
+    world.insert_resource(crate::env_translate::procedural_fallback_cell_lighting(
+        sun_dir,
+    ));
     world.insert_resource(crate::env_translate::procedural_fallback_sky(sun_dir));
     // #803 — same survives-transitions pattern as the WTHR path: seed
     // CloudSimState only on the first exterior load.
@@ -645,4 +647,3 @@ mod tests {
         assert!(sky_textures_to_release(Some([0, 0, 0, 0, 0]), 99).is_empty());
     }
 }
-

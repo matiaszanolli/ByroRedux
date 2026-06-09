@@ -109,7 +109,6 @@ pub fn parse_hair(form_id: u32, subs: &[SubRecord]) -> HairRecord {
 // cross-references resolve; full per-record decoding lands with the
 // consuming subsystem (AI runtime, dialogue system, perk pipeline).
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

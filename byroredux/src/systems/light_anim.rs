@@ -61,12 +61,7 @@ fn hash_to_unit(seed: u32) -> f32 {
 ///
 /// Returns the value written to `LightSource.intensity`: `1.0` when no
 /// animation bit is set, otherwise `1 + modulation · amplitude · damping`.
-fn flicker_intensity(
-    entity: EntityId,
-    flags: u32,
-    flicker: &LightFlicker,
-    total_time: f32,
-) -> f32 {
+fn flicker_intensity(entity: EntityId, flags: u32, flicker: &LightFlicker, total_time: f32) -> f32 {
     // Slow variants run at half rate by halving the angular velocity.
     // Cheaper than reading period at half the FNAM authored value
     // because some lights set both bits.
@@ -171,7 +166,7 @@ mod tests {
     #[test]
     fn pulse_is_sine_of_phase() {
         let f = flicker(0.4, 1.0); // amplitude 0.4, period 1 s
-        // total_time 0 → phase 0 → sin(0) = 0 → unit.
+                                   // total_time 0 → phase 0 → sin(0) = 0 → unit.
         assert!((flicker_intensity(1, LIGHT_FLAG_PULSE, &f, 0.0) - 1.0).abs() < 1e-6);
         // total_time = period/4 → phase 0.25 → sin(TAU·0.25) = 1
         // → 1 + 1·0.4·0.5 = 1.2.
@@ -200,7 +195,10 @@ mod tests {
         assert_eq!(a, b, "same inputs must be deterministic");
         // modulation ∈ [-1, 1] → intensity ∈ [1 ± amplitude·damping].
         let half = 0.4 * FLICKER_INTENSITY_DAMPING;
-        assert!(a >= 1.0 - half - 1e-6 && a <= 1.0 + half + 1e-6, "out of band: {a}");
+        assert!(
+            a >= 1.0 - half - 1e-6 && a <= 1.0 + half + 1e-6,
+            "out of band: {a}"
+        );
         // Distinct entity seeds generally diverge → confirm the seed
         // actually feeds the hash (not a constant).
         let other = flicker_intensity(43, LIGHT_FLAG_FLICKER, &f, 1.234);

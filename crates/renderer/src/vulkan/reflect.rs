@@ -436,12 +436,24 @@ mod tests {
         // Every shader that declares the `CameraUBO` block. Add new readers
         // here so they are pinned too.
         let shaders: &[(&str, &[u8])] = &[
-            ("triangle.vert", include_bytes!("../../shaders/triangle.vert.spv")),
-            ("triangle.frag", include_bytes!("../../shaders/triangle.frag.spv")),
-            ("cluster_cull.comp", include_bytes!("../../shaders/cluster_cull.comp.spv")),
+            (
+                "triangle.vert",
+                include_bytes!("../../shaders/triangle.vert.spv"),
+            ),
+            (
+                "triangle.frag",
+                include_bytes!("../../shaders/triangle.frag.spv"),
+            ),
+            (
+                "cluster_cull.comp",
+                include_bytes!("../../shaders/cluster_cull.comp.spv"),
+            ),
             ("water.vert", include_bytes!("../../shaders/water.vert.spv")),
             ("water.frag", include_bytes!("../../shaders/water.frag.spv")),
-            ("caustic_splat.comp", include_bytes!("../../shaders/caustic_splat.comp.spv")),
+            (
+                "caustic_splat.comp",
+                include_bytes!("../../shaders/caustic_splat.comp.spv"),
+            ),
         ];
         for (name, spv) in shaders {
             let size = uniform_block_size_by_name(spv, "CameraUBO")

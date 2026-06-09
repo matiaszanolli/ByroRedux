@@ -237,8 +237,12 @@ fn collect_stats(archive: &MeshArchive, resolver: Option<&dyn MeshResolver>) -> 
     files.truncate(SAMPLE_LIMIT);
 
     for path in &files {
-        let Ok(bytes) = archive.extract(path) else { continue };
-        let Ok(scene) = parse_nif(&bytes) else { continue };
+        let Ok(bytes) = archive.extract(path) else {
+            continue;
+        };
+        let Ok(scene) = parse_nif(&bytes) else {
+            continue;
+        };
         let mut pool = StringPool::new();
         let meshes = import_nif_with_resolver(&scene, &mut pool, resolver);
         for mesh in &meshes {
@@ -284,7 +288,10 @@ fn cross_game_translation_completeness() {
         // actually see its translation path (#1362). Inline-geometry games
         // pass `None`.
         let sf_resolver = (game == Game::Starfield).then(starfield_resolver).flatten();
-        let stats = collect_stats(&archive, sf_resolver.as_ref().map(|r| r as &dyn MeshResolver));
+        let stats = collect_stats(
+            &archive,
+            sf_resolver.as_ref().map(|r| r as &dyn MeshResolver),
+        );
         stats.print_row(label);
         // A 0-mesh Starfield row means the external geometry archives are
         // absent (or the resolver couldn't be built), NOT a translation
@@ -332,91 +339,153 @@ fn cross_game_translation_completeness() {
     // translation regression.
     eprintln!("\n=== PER-GAME FILL-RATE FLOORS (#1320) ===");
     let mut fill_assertions: Vec<(&str, Box<dyn Fn(&MaterialStats, &str)>)> = vec![
-        ("Oblivion", Box::new(|s, label| {
-            // Oblivion has no native BGSM; minimal metadata in NIF properties.
-            assert!(MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 60.0,
+        (
+            "Oblivion",
+            Box::new(|s, label| {
+                // Oblivion has no native BGSM; minimal metadata in NIF properties.
+                assert!(
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 60.0,
                     "[{label}] texture_path fill < 60% (got {:.1}%)",
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes));
-            assert!(MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 40.0,
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 40.0,
                     "[{label}] tangents fill < 40% (got {:.1}%)",
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes));
-        })),
-        ("FO3", Box::new(|s, label| {
-            // FO3 similar to Oblivion; improved with some material metadata.
-            assert!(MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 65.0,
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+            }),
+        ),
+        (
+            "FO3",
+            Box::new(|s, label| {
+                // FO3 similar to Oblivion; improved with some material metadata.
+                assert!(
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 65.0,
                     "[{label}] texture_path fill < 65% (got {:.1}%)",
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes));
-            assert!(MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 45.0,
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 45.0,
                     "[{label}] tangents fill < 45% (got {:.1}%)",
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes));
-        })),
-        ("FNV", Box::new(|s, label| {
-            // FNV has BSShaderPPLighting + some BGSM content.
-            assert!(MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 70.0,
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+            }),
+        ),
+        (
+            "FNV",
+            Box::new(|s, label| {
+                // FNV has BSShaderPPLighting + some BGSM content.
+                assert!(
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 70.0,
                     "[{label}] texture_path fill < 70% (got {:.1}%)",
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes));
-            assert!(MaterialStats::pct(s.with_material_kind, s.imported_meshes) >= 35.0,
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_material_kind, s.imported_meshes) >= 35.0,
                     "[{label}] material_kind fill < 35% (got {:.1}%)",
-                    MaterialStats::pct(s.with_material_kind, s.imported_meshes));
-            assert!(MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 50.0,
+                    MaterialStats::pct(s.with_material_kind, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 50.0,
                     "[{label}] tangents fill < 50% (got {:.1}%)",
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes));
-        })),
-        ("SkyrimSE", Box::new(|s, label| {
-            // SkyrimSE has native BGSM + strong texture + material infrastructure.
-            assert!(MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+            }),
+        ),
+        (
+            "SkyrimSE",
+            Box::new(|s, label| {
+                // SkyrimSE has native BGSM + strong texture + material infrastructure.
+                assert!(
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
                     "[{label}] texture_path fill < 75% (got {:.1}%)",
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes));
-            assert!(MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 35.0,
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 35.0,
                     "[{label}] material_path fill < 35% (got {:.1}%)",
-                    MaterialStats::pct(s.with_material_path, s.imported_meshes));
-            assert!(MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 60.0,
+                    MaterialStats::pct(s.with_material_path, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 60.0,
                     "[{label}] tangents fill < 60% (got {:.1}%)",
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes));
-        })),
-        ("FO4", Box::new(|s, label| {
-            // FO4 has full BGSM + modern material system.
-            assert!(MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+            }),
+        ),
+        (
+            "FO4",
+            Box::new(|s, label| {
+                // FO4 has full BGSM + modern material system.
+                assert!(
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
                     "[{label}] texture_path fill < 75% (got {:.1}%)",
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes));
-            assert!(MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 40.0,
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 40.0,
                     "[{label}] material_path fill < 40% (got {:.1}%)",
-                    MaterialStats::pct(s.with_material_path, s.imported_meshes));
-            assert!(MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 65.0,
+                    MaterialStats::pct(s.with_material_path, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 65.0,
                     "[{label}] tangents fill < 65% (got {:.1}%)",
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes));
-        })),
-        ("FO76", Box::new(|s, label| {
-            // FO76 inherits FO4 engine + updated content.
-            assert!(MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+            }),
+        ),
+        (
+            "FO76",
+            Box::new(|s, label| {
+                // FO76 inherits FO4 engine + updated content.
+                assert!(
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
                     "[{label}] texture_path fill < 75% (got {:.1}%)",
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes));
-            assert!(MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 40.0,
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 40.0,
                     "[{label}] material_path fill < 40% (got {:.1}%)",
-                    MaterialStats::pct(s.with_material_path, s.imported_meshes));
-            assert!(MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 65.0,
+                    MaterialStats::pct(s.with_material_path, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 65.0,
                     "[{label}] tangents fill < 65% (got {:.1}%)",
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes));
-        })),
-        ("Starfield", Box::new(|s, label| {
-            // Starfield has newest engine + CDB material system.
-            assert!(MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+            }),
+        ),
+        (
+            "Starfield",
+            Box::new(|s, label| {
+                // Starfield has newest engine + CDB material system.
+                assert!(
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
                     "[{label}] texture_path fill < 75% (got {:.1}%)",
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes));
-            // Note: Starfield material_path is CDB (Chunk Database) format, resolved
-            // separately; BGSM paths may be lower. This is expected, not a regression.
-            assert!(MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 65.0,
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes)
+                );
+                // Note: Starfield material_path is CDB (Chunk Database) format, resolved
+                // separately; BGSM paths may be lower. This is expected, not a regression.
+                assert!(
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 65.0,
                     "[{label}] tangents fill < 65% (got {:.1}%)",
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes));
-        })),
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+            }),
+        ),
     ];
 
     // Re-run the games one more time, this time asserting fill-rate floors.
     eprintln!("Checking per-game fill-rate floors...");
     for &(label, game) in HARNESS_GAMES {
-        let Some(archive) = open_mesh_archive(game) else { continue };
+        let Some(archive) = open_mesh_archive(game) else {
+            continue;
+        };
         let sf_resolver = (game == Game::Starfield).then(starfield_resolver).flatten();
-        let stats = collect_stats(&archive, sf_resolver.as_ref().map(|r| r as &dyn MeshResolver));
+        let stats = collect_stats(
+            &archive,
+            sf_resolver.as_ref().map(|r| r as &dyn MeshResolver),
+        );
         if let Some(assertion) = fill_assertions.iter_mut().find(|(l, _)| l == &label) {
             (assertion.1)(&stats, label);
             eprintln!("  [{label}] all fill-rate floors passed");

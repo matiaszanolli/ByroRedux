@@ -14,7 +14,6 @@ pub struct BsMultiBound {
     pub data_ref: BlockRef,
 }
 
-
 impl BsMultiBound {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let data_ref = stream.read_block_ref()?;
@@ -28,7 +27,6 @@ pub struct BsMultiBoundAABB {
     pub position: [f32; 3],
     pub extent: [f32; 3],
 }
-
 
 impl BsMultiBoundAABB {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -53,7 +51,6 @@ pub struct BsMultiBoundOBB {
     pub size: [f32; 3],
     pub rotation: [[f32; 3]; 3],
 }
-
 
 impl BsMultiBoundOBB {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -87,7 +84,6 @@ pub struct BsMultiBoundSphere {
     pub center: [f32; 3],
     pub radius: f32,
 }
-
 
 impl BsMultiBoundSphere {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {

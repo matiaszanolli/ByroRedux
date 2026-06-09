@@ -11,6 +11,4 @@
 //! compatibility of the `zup_to_yup_pos` / `zup_to_yup_quat` names
 //! and to keep call-site rewrites minimal.
 
-pub use byroredux_core::math::coord::{
-    zup_to_yup_pos, zup_to_yup_quat_wxyz as zup_to_yup_quat,
-};
+pub use byroredux_core::math::coord::{zup_to_yup_pos, zup_to_yup_quat_wxyz as zup_to_yup_quat};

@@ -44,7 +44,8 @@ impl<'w, T: Component> QueryRead<'w, T> {
         let storage = guard
             .as_any()
             .downcast_ref::<T::Storage>()
-            .expect("storage type mismatch (bug in World)") as *const T::Storage;
+            .expect("storage type mismatch (bug in World)")
+            as *const T::Storage;
         Self {
             guard,
             storage,
@@ -108,11 +109,15 @@ impl<'w, T: Component> QueryWrite<'w, T> {
     /// when the wrapper is dropped. The caller must have called
     /// `scope.defuse()` after successful lock acquisition so the scope hands
     /// ownership of the tracker entry to this wrapper. (See #137.)
-    pub(crate) fn new(mut guard: RwLockWriteGuard<'w, Box<dyn DynStorage>>, type_id: TypeId) -> Self {
+    pub(crate) fn new(
+        mut guard: RwLockWriteGuard<'w, Box<dyn DynStorage>>,
+        type_id: TypeId,
+    ) -> Self {
         let storage = guard
             .as_any_mut()
             .downcast_mut::<T::Storage>()
-            .expect("storage type mismatch (bug in World)") as *mut T::Storage;
+            .expect("storage type mismatch (bug in World)")
+            as *mut T::Storage;
         Self {
             guard,
             storage,

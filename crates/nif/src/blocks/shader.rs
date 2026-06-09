@@ -80,11 +80,12 @@ impl BSShaderPPLightingProperty {
         // nif.xml:6245-6246 — Refraction Strength (f32) + Refraction Fire Period (i32)
         // vercond="#BSVER# #GT# 14" (strictly greater).
         let bsver = stream.bsver();
-        let (refraction_strength, refraction_fire_period) = if bsver > crate::version::bsver::FO3_REFRACTION {
-            (stream.read_f32_le()?, stream.read_i32_le()?)
-        } else {
-            (0.0, 0)
-        };
+        let (refraction_strength, refraction_fire_period) =
+            if bsver > crate::version::bsver::FO3_REFRACTION {
+                (stream.read_f32_le()?, stream.read_i32_le()?)
+            } else {
+                (0.0, 0)
+            };
 
         // nif.xml:6247-6248 — Parallax Max Passes (f32) + Parallax Scale (f32)
         // vercond="#BSVER# #GT# 24" (strictly greater). FO3 ships content at
@@ -1285,7 +1286,9 @@ fn parse_shader_type_data_fo4(
         1 => {
             let env_map_scale = stream.read_f32_le()?;
             // FO4-specific: SSR bools (BSVER 130–139).
-            if (crate::version::bsver::FALLOUT4..crate::version::bsver::FO4_DLC_UPPER).contains(&bsver) {
+            if (crate::version::bsver::FALLOUT4..crate::version::bsver::FO4_DLC_UPPER)
+                .contains(&bsver)
+            {
                 let _use_ssr = stream.read_byte_bool()?;
                 let _wetness_use_ssr = stream.read_byte_bool()?;
             }
@@ -1298,7 +1301,9 @@ fn parse_shader_type_data_fo4(
                 stream.read_f32_le()?,
             ];
             // FO4-specific: skin tint alpha (BSVER 130–139).
-            if (crate::version::bsver::FALLOUT4..crate::version::bsver::FO4_DLC_UPPER).contains(&bsver) {
+            if (crate::version::bsver::FALLOUT4..crate::version::bsver::FO4_DLC_UPPER)
+                .contains(&bsver)
+            {
                 let _skin_tint_alpha = stream.read_f32_le()?;
             }
             Ok(ShaderTypeData::SkinTint { skin_tint_color })
@@ -1598,15 +1603,16 @@ impl BSEffectShaderProperty {
         let greyscale_texture = stream.read_sized_string()?;
 
         // FO4+ additional textures (BSVER >= 130).
-        let (env_map_texture, normal_texture, env_mask_texture, env_map_scale) = if bsver >= crate::version::bsver::FALLOUT4 {
-            let env = stream.read_sized_string()?;
-            let norm = stream.read_sized_string()?;
-            let mask = stream.read_sized_string()?;
-            let scale = stream.read_f32_le()?;
-            (env, norm, mask, scale)
-        } else {
-            (String::new(), String::new(), String::new(), 0.0)
-        };
+        let (env_map_texture, normal_texture, env_mask_texture, env_map_scale) =
+            if bsver >= crate::version::bsver::FALLOUT4 {
+                let env = stream.read_sized_string()?;
+                let norm = stream.read_sized_string()?;
+                let mask = stream.read_sized_string()?;
+                let scale = stream.read_f32_le()?;
+                (env, norm, mask, scale)
+            } else {
+                (String::new(), String::new(), String::new(), 0.0)
+            };
 
         // FO76+ trailing fields. #746 / SF-D1-04 — same value-gate
         // regression as `refraction_power` and the BLSP tail. nif.xml

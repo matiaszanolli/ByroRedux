@@ -2,8 +2,8 @@
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
 use super::super::condition::{parse_ctda, ConditionList};
-use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
+use crate::esm::sub_reader::SubReader;
 use anyhow::Result;
 
 /// Trait for typed sub-record schema decoding.
@@ -33,9 +33,9 @@ pub fn read_sub<T: SubRecordSchema>(sub: &SubRecord) -> Result<T> {
 /// Phase C schema decoder with per-game size branching.
 #[derive(Debug, Clone, Copy)]
 struct SpellHeader {
-    pub cost: u32,         // @0
-    pub spell_flags: u32,  // @12
-    // Skyrim adds: cast_type: u32 @16, … (not decoded here)
+    pub cost: u32, // @0
+    pub spell_flags: u32, // @12
+                   // Skyrim adds: cast_type: u32 @16, … (not decoded here)
 }
 
 impl SubRecordSchema for SpellHeader {
@@ -43,7 +43,7 @@ impl SubRecordSchema for SpellHeader {
 
     fn read(r: &mut SubReader) -> Result<Self> {
         let cost = r.u32_or_default();
-        r.skip_or_eof(8);  // spell_type (u32) + level (u32) at offsets 4..12
+        r.skip_or_eof(8); // spell_type (u32) + level (u32) at offsets 4..12
         let spell_flags = r.u32_or_default();
         Ok(SpellHeader { cost, spell_flags })
     }
@@ -53,11 +53,11 @@ impl SubRecordSchema for SpellHeader {
 /// or 20 bytes (Skyrim adds cast_type u32). Phase C schema decoder.
 #[derive(Debug, Clone, Copy)]
 struct EnchantmentHeader {
-    pub enchantment_type: u32,    // @0
-    pub charge_amount: u32,       // @4
-    pub enchant_cost: u32,        // @8
-    pub enchant_flags: u32,       // @12
-    // Skyrim adds: cast_type: u32 @16 (not decoded here)
+    pub enchantment_type: u32, // @0
+    pub charge_amount: u32,    // @4
+    pub enchant_cost: u32,     // @8
+    pub enchant_flags: u32,    // @12
+                               // Skyrim adds: cast_type: u32 @16 (not decoded here)
 }
 
 impl SubRecordSchema for EnchantmentHeader {
@@ -116,7 +116,7 @@ impl SubRecordSchema for MagicEffectHeader {
         let associated_item = r.u32_or_default();
         let magic_school = r.i32_or_default();
         let resistance_av = r.i32_or_default();
-        r.skip_or_eof(4);  // counter_effect_count u16 + pad u16 @20..24
+        r.skip_or_eof(4); // counter_effect_count u16 + pad u16 @20..24
         let light_form_id = r.u32_or_default();
         let projectile_speed = r.f32_or_default();
         let effect_shader_id = r.u32_or_default();
@@ -140,7 +140,10 @@ pub enum PerkFunctionData {
     #[default]
     None,
     Float(f32),
-    Range { min: f32, max: f32 },
+    Range {
+        min: f32,
+        max: f32,
+    },
     FormId(u32),
     LString(u32),
 }
@@ -365,8 +368,7 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
             // Overwrite the body's function_type when present.
             b"EPFT" if !sub.data.is_empty() => {
                 if let PerkBlock::Open {
-                    body:
-                        Some(PerkEntryBody::EntryPoint { function_type, .. }),
+                    body: Some(PerkEntryBody::EntryPoint { function_type, .. }),
                     ..
                 } = &mut block
                 {
@@ -378,30 +380,31 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
             // DATA (old authoring) or EPFT (new authoring).
             b"EPFD" => {
                 if let PerkBlock::Open {
-                    body: Some(PerkEntryBody::EntryPoint {
-                        function_type,
-                        function_data,
-                        ..
-                    }),
+                    body:
+                        Some(PerkEntryBody::EntryPoint {
+                            function_type,
+                            function_data,
+                            ..
+                        }),
                     ..
                 } = &mut block
                 {
                     let d = &sub.data;
                     *function_data = match function_type {
                         1 => PerkFunctionData::None,
-                        2 if d.len() >= 4 => PerkFunctionData::Float(
-                            f32::from_le_bytes([d[0], d[1], d[2], d[3]])
-                        ),
+                        2 if d.len() >= 4 => {
+                            PerkFunctionData::Float(f32::from_le_bytes([d[0], d[1], d[2], d[3]]))
+                        }
                         3 if d.len() >= 8 => PerkFunctionData::Range {
                             min: f32::from_le_bytes([d[0], d[1], d[2], d[3]]),
                             max: f32::from_le_bytes([d[4], d[5], d[6], d[7]]),
                         },
-                        4 if d.len() >= 4 => PerkFunctionData::FormId(
-                            u32::from_le_bytes([d[0], d[1], d[2], d[3]])
-                        ),
-                        5 if d.len() >= 4 => PerkFunctionData::LString(
-                            u32::from_le_bytes([d[0], d[1], d[2], d[3]])
-                        ),
+                        4 if d.len() >= 4 => {
+                            PerkFunctionData::FormId(u32::from_le_bytes([d[0], d[1], d[2], d[3]]))
+                        }
+                        5 if d.len() >= 4 => {
+                            PerkFunctionData::LString(u32::from_le_bytes([d[0], d[1], d[2], d[3]]))
+                        }
                         _ => PerkFunctionData::None,
                     };
                 }
@@ -425,7 +428,10 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
                 }
             }
             b"CTDA" => {
-                if let PerkBlock::Open { ref mut conditions, .. } = &mut block {
+                if let PerkBlock::Open {
+                    ref mut conditions, ..
+                } = &mut block
+                {
                     if let Some(cond) = parse_ctda(sub) {
                         conditions.push(cond);
                     }
@@ -509,20 +515,28 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
                 }
             }
             b"EFID" if sub.data.len() >= 4 => {
-                current_efid = u32::from_le_bytes([
-                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
-                ]);
+                current_efid =
+                    u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
             }
-            b"EFIT" if sub.data.len() >= 12
-                && current_efid != 0 => {
-                    out.effects.push(MagicEffectItem {
-                        effect_form_id: current_efid,
-                        magnitude: f32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
-                        area: u32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]),
-                        duration: u32::from_le_bytes([sub.data[8], sub.data[9], sub.data[10], sub.data[11]]),
-                    });
-                    current_efid = 0;
-                }
+            b"EFIT" if sub.data.len() >= 12 && current_efid != 0 => {
+                out.effects.push(MagicEffectItem {
+                    effect_form_id: current_efid,
+                    magnitude: f32::from_le_bytes([
+                        sub.data[0],
+                        sub.data[1],
+                        sub.data[2],
+                        sub.data[3],
+                    ]),
+                    area: u32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]),
+                    duration: u32::from_le_bytes([
+                        sub.data[8],
+                        sub.data[9],
+                        sub.data[10],
+                        sub.data[11],
+                    ]),
+                });
+                current_efid = 0;
+            }
             _ => {}
         }
     }
@@ -659,26 +673,33 @@ pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
                 }
             }
             b"EFID" if sub.data.len() >= 4 => {
-                current_efid = u32::from_le_bytes([
-                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
-                ]);
+                current_efid =
+                    u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
             }
-            b"EFIT" if sub.data.len() >= 12
-                && current_efid != 0 => {
-                    out.effects.push(MagicEffectItem {
-                        effect_form_id: current_efid,
-                        magnitude: f32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]),
-                        area: u32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]),
-                        duration: u32::from_le_bytes([sub.data[8], sub.data[9], sub.data[10], sub.data[11]]),
-                    });
-                    current_efid = 0;
-                }
+            b"EFIT" if sub.data.len() >= 12 && current_efid != 0 => {
+                out.effects.push(MagicEffectItem {
+                    effect_form_id: current_efid,
+                    magnitude: f32::from_le_bytes([
+                        sub.data[0],
+                        sub.data[1],
+                        sub.data[2],
+                        sub.data[3],
+                    ]),
+                    area: u32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]),
+                    duration: u32::from_le_bytes([
+                        sub.data[8],
+                        sub.data[9],
+                        sub.data[10],
+                        sub.data[11],
+                    ]),
+                });
+                current_efid = 0;
+            }
             _ => {}
         }
     }
     out
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -781,7 +802,7 @@ mod tests {
             sub(b"EDID", b"ModAttackDamage\0"),
             sub(b"PRKE", &[2u8, 0, 99]),
             sub(b"DATA", &[0x07, 0x01, 0x00, 0x00]), // entry_point=7 (Mod Attack Dmg), function=1 (Add)
-            sub(b"EPFT", &[0x02]),                    // function overwrite to 2 (Multiply = Float)
+            sub(b"EPFT", &[0x02]),                   // function overwrite to 2 (Multiply = Float)
             sub(b"EPFD", &epfd),
             sub(b"PRKF", &[]),
         ];
@@ -823,7 +844,10 @@ mod tests {
         assert_eq!(p.entries[2].priority, 3);
         assert!(matches!(p.entries[0].body, PerkEntryBody::Quest { .. }));
         assert!(matches!(p.entries[1].body, PerkEntryBody::Ability { .. }));
-        assert!(matches!(p.entries[2].body, PerkEntryBody::EntryPoint { .. }));
+        assert!(matches!(
+            p.entries[2].body,
+            PerkEntryBody::EntryPoint { .. }
+        ));
     }
 
     #[test]
@@ -945,7 +969,7 @@ mod tests {
             sub(b"EDID", b"TestPerk\0"),
             sub(b"DATA", &[0x00, 0, 1, 0, 0]),
             sub(b"PRKE", &[0u8, 1, 50]), // type=Quest
-            sub(b"DATA", &data), // quest_form_id=0x1234, stage=0
+            sub(b"DATA", &data),         // quest_form_id=0x1234, stage=0
             sub(b"CTDA", &ctda),
             sub(b"PRKF", &[]),
         ];
@@ -991,10 +1015,7 @@ mod tests {
             PerkEntryBody::EntryPoint { function_data, .. } => {
                 assert_eq!(
                     *function_data,
-                    PerkFunctionData::Range {
-                        min: 1.0,
-                        max: 5.0
-                    }
+                    PerkFunctionData::Range { min: 1.0, max: 5.0 }
                 );
             }
             _ => panic!("expected EntryPoint"),

@@ -10,7 +10,6 @@ use crate::types::BlockRef;
 use std::any::Any;
 use std::io;
 
-
 /// NiCollisionObject — base class for collision attachments.
 ///
 /// Per nif.xml `NiCollisionObject` has exactly one field, a weak `Target`
@@ -25,7 +24,6 @@ use std::io;
 pub struct NiCollisionObjectBase {
     pub target_ref: BlockRef,
 }
-
 
 impl NiCollisionObjectBase {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -42,7 +40,6 @@ pub struct BhkCollisionObject {
     pub flags: u16,
     pub body_ref: BlockRef,
 }
-
 
 impl BhkCollisionObject {
     pub fn parse(stream: &mut NifStream, is_blend: bool) -> io::Result<Self> {
@@ -105,7 +102,6 @@ pub struct BhkNPCollisionObject {
     pub data_ref: BlockRef,
     pub body_id: u32,
 }
-
 
 impl BhkNPCollisionObject {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -171,7 +167,6 @@ pub struct BhkPCollisionObject {
     /// `bhkSimpleShapePhantom`) that supplies the collision volume.
     pub body_ref: BlockRef,
 }
-
 
 impl BhkPCollisionObject {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {

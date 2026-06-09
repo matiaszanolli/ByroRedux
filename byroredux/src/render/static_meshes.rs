@@ -28,7 +28,7 @@ use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
 
 use crate::components::{
-    AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, IsFxMesh, IsCollisionOnly,
+    AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, IsCollisionOnly, IsFxMesh,
     IsLodTerrain, NormalMapHandle, TerrainTileSlot, TwoSided,
 };
 
@@ -197,8 +197,9 @@ pub(super) fn collect_static_mesh_draws(
                 // entities (physics proxies) stay out of the TLAS. Everything
                 // else rides the TLAS. See IsLodTerrain / IsCollisionOnly.
                 let is_lod = lod_q.as_ref().is_some_and(|q| q.get(entity).is_some());
-                let is_collision_only =
-                    collision_only_q.as_ref().is_some_and(|q| q.get(entity).is_some());
+                let is_collision_only = collision_only_q
+                    .as_ref()
+                    .is_some_and(|q| q.get(entity).is_some());
                 let in_tlas = !is_lod && !is_collision_only;
                 let bone_offset = skin_offsets.get(&entity).copied().unwrap_or(0);
                 let (normal_map_index, normal_has_alpha) = nmap_q
@@ -400,8 +401,7 @@ pub(super) fn collect_static_mesh_draws(
                             gloss_map_index = normal_map_index | NORMAL_ALPHA_SPEC_BIT;
                             roughness = (1.0 - glossiness / 100.0).clamp(0.05, 0.95);
                         } else if specular_strength > 1.2 {
-                            roughness =
-                                (0.85 - (specular_strength - 1.0) * 0.1).clamp(0.4, 0.85);
+                            roughness = (0.85 - (specular_strength - 1.0) * 0.1).clamp(0.4, 0.85);
                         }
                     }
                 }
@@ -495,18 +495,18 @@ pub(super) fn collect_static_mesh_draws(
                 } else {
                     (0.0, 0.0, 0.0, [1.0, 1.0])
                 };
-                let (eye_left_center, eye_cubemap_scale, eye_right_center) =
-                    if material_kind == 16 {
-                        (
-                            stf.and_then(|f| f.eye_left_reflection_center)
-                                .unwrap_or([0.0; 3]),
-                            stf.and_then(|f| f.eye_cubemap_scale).unwrap_or(0.0),
-                            stf.and_then(|f| f.eye_right_reflection_center)
-                                .unwrap_or([0.0; 3]),
-                        )
-                    } else {
-                        ([0.0; 3], 0.0, [0.0; 3])
-                    };
+                let (eye_left_center, eye_cubemap_scale, eye_right_center) = if material_kind == 16
+                {
+                    (
+                        stf.and_then(|f| f.eye_left_reflection_center)
+                            .unwrap_or([0.0; 3]),
+                        stf.and_then(|f| f.eye_cubemap_scale).unwrap_or(0.0),
+                        stf.and_then(|f| f.eye_right_reflection_center)
+                            .unwrap_or([0.0; 3]),
+                    )
+                } else {
+                    ([0.0; 3], 0.0, [0.0; 3])
+                };
                 // #620 / SK-D4-01 — BSEffectShaderProperty falloff cone
                 // pulled from `MaterialInfo.effect_shader` (Skyrim+
                 // BSEffectShaderProperty path) or `no_lighting_falloff`
@@ -689,9 +689,7 @@ pub(super) fn collect_static_mesh_draws(
                     translucency_transmissive_scale: mat
                         .map(|m| m.translucency_transmissive_scale)
                         .unwrap_or(0.0),
-                    translucency_turbulence: mat
-                        .map(|m| m.translucency_turbulence)
-                        .unwrap_or(0.0),
+                    translucency_turbulence: mat.map(|m| m.translucency_turbulence).unwrap_or(0.0),
                     is_water: false,
                 };
                 // #781 / PERF-N4 — `intern_by_hash` skips the

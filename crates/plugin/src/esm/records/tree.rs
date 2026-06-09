@@ -40,9 +40,7 @@
 //! because `.spt` files need ICON for the leaf texture and CNAM/BNAM for
 //! wind tuning.
 
-use super::common::{
-    find_sub, read_f32_sub, read_u32_sub, CommonNamedFields,
-};
+use super::common::{find_sub, read_f32_sub, read_u32_sub, CommonNamedFields};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 

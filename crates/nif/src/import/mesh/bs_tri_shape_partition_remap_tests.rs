@@ -13,12 +13,9 @@
 //! to the wrong bones.
 use super::*;
 use crate::blocks::node::NiNode;
-use crate::blocks::skin::{
-    NiSkinData, NiSkinInstance,
-    NiSkinPartition,
-};
-use crate::blocks::tri_shape::BsTriShapeKind;
+use crate::blocks::skin::{NiSkinData, NiSkinInstance, NiSkinPartition};
 use crate::blocks::tri_shape::BsTriShape;
+use crate::blocks::tri_shape::BsTriShapeKind;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 

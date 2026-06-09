@@ -180,10 +180,7 @@ pub enum ParticleForceField {
     /// (`v -= v * strength * dt`). When `direction` is non-zero the
     /// damping projects velocity onto the direction axis first
     /// (authored anisotropic drag, rare).
-    Drag {
-        strength: f32,
-        direction: [f32; 3],
-    },
+    Drag { strength: f32, direction: [f32; 3] },
     /// Pseudo-random per-particle force. `scale` is the per-frame
     /// acceleration magnitude, `frequency` drives the noise sampling
     /// rate (jitter cadence). The simulator's first-pass uses a fast

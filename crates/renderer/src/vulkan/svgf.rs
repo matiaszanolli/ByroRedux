@@ -53,13 +53,13 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
-use super::GpuUploadCtx;
 use super::descriptors::{
     image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
     write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use super::GpuUploadCtx;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -521,8 +521,8 @@ impl SvgfPipeline {
             &bindings,
             MAX_FRAMES_IN_FLIGHT as u32,
         )
-            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-            .build(device, "SVGF descriptor pool"));
+        .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+        .build(device, "SVGF descriptor pool"));
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         // SAFETY: pool just sized for MAX_FRAMES_IN_FLIGHT sets with the
@@ -984,8 +984,7 @@ impl SvgfPipeline {
         // MFIF count. (#964 / REN-D10-NEW-07)
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             if self.dispatched_this_frame[i] {
-                self.frames_since_creation[i] =
-                    self.frames_since_creation[i].saturating_add(1);
+                self.frames_since_creation[i] = self.frames_since_creation[i].saturating_add(1);
                 self.dispatched_this_frame[i] = false;
             }
         }
@@ -1049,9 +1048,9 @@ impl SvgfPipeline {
         self.width = width;
         self.height = height;
         self.frames_since_creation = [0; MAX_FRAMES_IN_FLIGHT]; // history is meaningless after resize
-                                        // Drop any pending mark — pre-resize-recorded dispatch (if any)
-                                        // never sees `queue_submit` because the resize path waited on
-                                        // both fences. See #917.
+                                                                // Drop any pending mark — pre-resize-recorded dispatch (if any)
+                                                                // never sees `queue_submit` because the resize path waited on
+                                                                // both fences. See #917.
         self.dispatched_this_frame = [false; MAX_FRAMES_IN_FLIGHT];
 
         let result = (|| -> Result<()> {
@@ -1099,9 +1098,7 @@ impl SvgfPipeline {
         // no concurrent reader on these images. Warn-log on failure
         // matches the caller's pre-#1031 behaviour at
         // `context::resize::recreate_swapchain`.
-        if let Err(e) =
-            unsafe { self.initialize_layouts(device, queue, command_pool) }
-        {
+        if let Err(e) = unsafe { self.initialize_layouts(device, queue, command_pool) } {
             log::warn!("SVGF layout re-init after resize failed: {e}");
         }
         Ok(())

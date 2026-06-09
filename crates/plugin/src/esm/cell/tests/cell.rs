@@ -48,7 +48,13 @@ fn parse_cell_xclw_populates_water_height() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
 
     assert_eq!(cells.len(), 1, "interior CELL must be registered");
     let cell = cells.get("floodedruin").expect("lowercase key");
@@ -97,7 +103,13 @@ fn parse_cell_rclr_populates_regional_color_override() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
 
     let cell = cells.get("oblivionfog").expect("lowercase key");
     assert_eq!(
@@ -135,8 +147,18 @@ fn parse_cell_without_rclr_leaves_regional_color_override_none() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
-    assert!(cells.get("norclrcell").unwrap().regional_color_override.is_none());
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
+    assert!(cells
+        .get("norclrcell")
+        .unwrap()
+        .regional_color_override
+        .is_none());
 }
 
 #[test]
@@ -189,7 +211,13 @@ fn parse_cell_skyrim_extended_subrecords() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
 
     let cell = cells.get("skyrimroom").expect("interior CELL present");
     assert_eq!(cell.image_space_form, Some(0x000A1234));
@@ -244,7 +272,13 @@ fn parse_cell_full_inline_zstring_populates_display_name() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
 
     let cell = cells
         .get("whiterunbanneredmare")
@@ -296,7 +330,13 @@ fn parse_cell_full_lstring_index_renders_as_placeholder() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
 
     let cell = cells
         .get("dragonsreachjarl")
@@ -337,7 +377,13 @@ fn parse_cell_without_skyrim_extras_leaves_them_default() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
 
     let cell = cells.get("bareroom").expect("interior CELL present");
     assert_eq!(cell.image_space_form, None);
@@ -389,7 +435,13 @@ fn parse_cell_tes4_xcmt_populates_music_type_enum() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
 
     let cell = cells.get("ayleidruin").expect("interior CELL present");
     assert_eq!(cell.music_type_enum, Some(0x02));
@@ -435,7 +487,13 @@ fn parse_cell_skyrim_xccm_populates_climate_override() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
 
     let cell = cells.get("bossarena").expect("interior CELL present");
     assert_eq!(cell.climate_override, Some(0x0001_A2B3));
@@ -527,7 +585,13 @@ fn parse_cell_skyrim_xcll_extracts_directional_ambient_cube() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
 
     let cell = cells.get("skyrimcave").expect("interior CELL present");
     let lit = cell.lighting.as_ref().expect("XCLL must populate lighting");
@@ -639,7 +703,13 @@ fn parse_cell_starfield_xcll_decodes_volumetric_height_fog_tail() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Starfield).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Starfield,
+    )
+    .unwrap();
 
     let cell = cells.get("cydoniaint").expect("interior CELL present");
     let lit = cell.lighting.as_ref().expect("XCLL must populate lighting");
@@ -651,27 +721,45 @@ fn parse_cell_starfield_xcll_decodes_volumetric_height_fog_tail() {
     assert_eq!(lit.fog_clip, Some(7500.0));
     assert_eq!(lit.fog_power, Some(1.5));
     // 40-55 fog-far-colour / max / light-fade map onto the base fields.
-    assert_eq!(lit.fog_far_color, Some([120.0 / 255.0, 130.0 / 255.0, 140.0 / 255.0]));
+    assert_eq!(
+        lit.fog_far_color,
+        Some([120.0 / 255.0, 130.0 / 255.0, 140.0 / 255.0])
+    );
     assert_eq!(lit.fog_max, Some(0.85));
     assert_eq!(lit.light_fade_begin, Some(500.0));
     assert_eq!(lit.light_fade_end, Some(800.0));
 
     // Skyrim-only fields MUST stay None — Starfield has no ambient
     // cube / specular / fresnel, and byte 28 is gravity_scale not fade.
-    assert!(lit.directional_ambient.is_none(), "SF XCLL has no Skyrim ambient cube");
+    assert!(
+        lit.directional_ambient.is_none(),
+        "SF XCLL has no Skyrim ambient cube"
+    );
     assert!(lit.specular_color.is_none());
     assert!(lit.specular_alpha.is_none());
     assert!(lit.fresnel_power.is_none());
-    assert!(lit.directional_fade.is_none(), "SF reuses byte 28 as gravity_scale");
+    assert!(
+        lit.directional_fade.is_none(),
+        "SF reuses byte 28 as gravity_scale"
+    );
 
     // SF-specific volumetric height-fog tail.
-    let sf = lit.starfield.as_ref().expect("Starfield XCLL must populate .starfield");
+    let sf = lit
+        .starfield
+        .as_ref()
+        .expect("Starfield XCLL must populate .starfield");
     assert_eq!(sf.gravity_scale, 0.7);
     assert_eq!(sf.unknown_color, [10.0 / 255.0, 11.0 / 255.0, 12.0 / 255.0]);
     assert_eq!(sf.near_height_mid, -20.0);
     assert_eq!(sf.near_height_range, 24.0);
-    assert_eq!(sf.fog_color_high_near, [30.0 / 255.0, 31.0 / 255.0, 32.0 / 255.0]);
-    assert_eq!(sf.fog_color_high_far, [40.0 / 255.0, 41.0 / 255.0, 42.0 / 255.0]);
+    assert_eq!(
+        sf.fog_color_high_near,
+        [30.0 / 255.0, 31.0 / 255.0, 32.0 / 255.0]
+    );
+    assert_eq!(
+        sf.fog_color_high_far,
+        [40.0 / 255.0, 41.0 / 255.0, 42.0 / 255.0]
+    );
     assert_eq!(sf.high_density_scale, 0.5);
     assert_eq!(sf.fog_near_scale, 1.1);
     assert_eq!(sf.fog_far_scale, 1.2);
@@ -679,7 +767,10 @@ fn parse_cell_starfield_xcll_decodes_volumetric_height_fog_tail() {
     assert_eq!(sf.fog_high_far_scale, 0.8);
     assert_eq!(sf.far_height_mid, 20.0);
     assert_eq!(sf.far_height_range, 10.0);
-    assert_eq!(sf.interior_type, 2, "Space Cell — and the 3 garbage pad bytes are ignored");
+    assert_eq!(
+        sf.interior_type, 2,
+        "Space Cell — and the 3 garbage pad bytes are ignored"
+    );
 }
 
 #[test]
@@ -734,7 +825,13 @@ fn parse_cell_fnv_xcll_decodes_colors_as_rgba() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
 
     let cell = cells
         .get("gsprospectorsalooninterior")
@@ -810,7 +907,13 @@ fn parse_cell_fnv_xcll_extracts_40byte_tail_and_skips_skyrim_fields() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
 
     let cell = cells.get("fnvroom").expect("FNV-shaped interior CELL");
     let lit = cell.lighting.as_ref().unwrap();
@@ -836,7 +939,11 @@ fn parse_cell_fnv_xcll_extracts_40byte_tail_and_skips_skyrim_fields() {
 
 /// Helper: build a CELL buffer wrapping a single interior `XCLL` of the
 /// given bytes, then parse it with `game` and return its `CellLighting`.
-fn parse_oblivion_xcll(edid: &str, xcll: &[u8], game: crate::esm::reader::GameKind) -> CellLighting {
+fn parse_oblivion_xcll(
+    edid: &str,
+    xcll: &[u8],
+    game: crate::esm::reader::GameKind,
+) -> CellLighting {
     let mut sub_data = Vec::new();
     let edid_z = format!("{edid}\0");
     sub_data.extend_from_slice(b"EDID");
@@ -888,9 +995,20 @@ fn parse_cell_oblivion_36byte_xcll_extracts_dir_fade_and_fog_clip() {
     xcll[32..36].copy_from_slice(&7000.0f32.to_le_bytes()); // Fog Clip Dist
 
     let lit = parse_oblivion_xcll("OblRoom36", &xcll, crate::esm::reader::GameKind::Oblivion);
-    assert_eq!(lit.directional_fade, Some(0.6), "dir_fade(@28) must be read at 36 bytes");
-    assert_eq!(lit.fog_clip, Some(7000.0), "fog_clip(@32) must be read at 36 bytes");
-    assert_eq!(lit.fog_power, None, "TES4 has no Fog Power — absent below 40 bytes");
+    assert_eq!(
+        lit.directional_fade,
+        Some(0.6),
+        "dir_fade(@28) must be read at 36 bytes"
+    );
+    assert_eq!(
+        lit.fog_clip,
+        Some(7000.0),
+        "fog_clip(@32) must be read at 36 bytes"
+    );
+    assert_eq!(
+        lit.fog_power, None,
+        "TES4 has no Fog Power — absent below 40 bytes"
+    );
     assert!(lit.directional_ambient.is_none());
     assert!(lit.starfield.is_none());
 }
@@ -905,7 +1023,11 @@ fn parse_cell_oblivion_32byte_xcll_extracts_dir_fade_only() {
     xcll[12..16].copy_from_slice(&80.0f32.to_le_bytes()); // fog_near
     xcll[28..32].copy_from_slice(&0.45f32.to_le_bytes()); // Directional Fade
     let lit = parse_oblivion_xcll("OblRoom32", &xcll, crate::esm::reader::GameKind::Oblivion);
-    assert_eq!(lit.directional_fade, Some(0.45), "dir_fade(@28) must be read at 32 bytes");
+    assert_eq!(
+        lit.directional_fade,
+        Some(0.45),
+        "dir_fade(@28) must be read at 32 bytes"
+    );
     assert_eq!(lit.fog_clip, None, "fog_clip(@32) absent below 36 bytes");
     assert_eq!(lit.fog_power, None);
 }
@@ -939,7 +1061,13 @@ fn parse_cell_without_xclw_leaves_water_height_none() {
     );
     let end = buf.len();
     let mut cells = HashMap::new();
-    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout3NV).unwrap();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout3NV,
+    )
+    .unwrap();
 
     let cell = cells.get("dryroom").expect("interior CELL present");
     assert_eq!(cell.water_height, None);

@@ -90,7 +90,6 @@ fn dodt_payload(
     p
 }
 
-
 /// Regression: #357 — TXST parser must extract all 8 texture slots
 /// (TX00..TX07) into a `TextureSet`, not just the diffuse path.
 /// Pre-fix every Skyrim TXST-driven REFR override silently dropped
@@ -450,4 +449,3 @@ fn parse_txst_dodt_only_record_is_preserved() {
 // arm dropped these on the `_` match — stealing-detection /
 // property-crime gameplay had no input. Cross-game (Oblivion +
 // FO3 + FNV + Skyrim+ all use the same wire format).
-

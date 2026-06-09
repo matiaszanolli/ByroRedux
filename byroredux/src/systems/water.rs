@@ -234,7 +234,7 @@ mod tests {
         assert!(!resolve_head_submerged(false, Some(0.0)));
         assert!(!resolve_head_submerged(false, Some(EPS * 0.5)));
         assert!(!resolve_head_submerged(false, Some(EPS))); // strict `>`
-        // Past the band, it submerges.
+                                                            // Past the band, it submerges.
         assert!(resolve_head_submerged(false, Some(EPS + 0.1)));
         assert!(resolve_head_submerged(false, Some(1000.0)));
     }

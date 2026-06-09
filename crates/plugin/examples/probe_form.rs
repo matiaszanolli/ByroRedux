@@ -7,9 +7,9 @@
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let esm_path = args.next().ok_or_else(|| {
-        anyhow::anyhow!("usage: probe_form ESM FORMID_HEX [FORMID_HEX …]")
-    })?;
+    let esm_path = args
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("usage: probe_form ESM FORMID_HEX [FORMID_HEX …]"))?;
     let candidates: Vec<u32> = args
         .map(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16))
         .collect::<Result<_, _>>()?;
@@ -19,7 +19,11 @@ fn main() -> anyhow::Result<()> {
 
     let bytes = std::fs::read(&esm_path)?;
     let index = byroredux_plugin::esm::parse_esm(&bytes)?;
-    eprintln!("[probe_form] {} — probing {} FormID(s)", esm_path, candidates.len());
+    eprintln!(
+        "[probe_form] {} — probing {} FormID(s)",
+        esm_path,
+        candidates.len()
+    );
 
     for fid in candidates {
         if let Some(r) = index.cells.statics.get(&fid) {

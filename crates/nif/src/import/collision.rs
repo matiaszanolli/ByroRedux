@@ -687,7 +687,10 @@ fn decompose_havok_matrix(m: &[[f32; 4]; 4], scale: f32) -> (Vec3, Quat) {
 ///
 /// Merges big tris (full-precision) and chunk tris (quantized, strip-based)
 /// into a single vertex/index buffer in engine space.
-fn resolve_compressed_mesh(data: &BhkCompressedMeshShapeData, scale: f32) -> Option<CollisionShape> {
+fn resolve_compressed_mesh(
+    data: &BhkCompressedMeshShapeData,
+    scale: f32,
+) -> Option<CollisionShape> {
     let mut all_verts = Vec::new();
     let mut all_indices = Vec::new();
 
@@ -847,12 +850,13 @@ mod dispatch_tests {
     #[test]
     fn examine_classifies_each_collision_subclass() {
         let mut scene = empty_scene();
-        scene.blocks.push(classic_collision(BlockRef::NULL));   // [0]
-        scene.blocks.push(np_collision(BlockRef::NULL));        // [1]
-        scene.blocks.push(phantom_collision(BlockRef::NULL));   // [2]
-        scene
-            .blocks
-            .push(Box::new(BhkSphereShape { material: 0, radius: 1.0 })); // [3] — non-collision block
+        scene.blocks.push(classic_collision(BlockRef::NULL)); // [0]
+        scene.blocks.push(np_collision(BlockRef::NULL)); // [1]
+        scene.blocks.push(phantom_collision(BlockRef::NULL)); // [2]
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 0,
+            radius: 1.0,
+        })); // [3] — non-collision block
 
         assert_eq!(
             examine_collision_kind(&scene, BlockRef(0u32)),
@@ -881,8 +885,8 @@ mod dispatch_tests {
         // branch — a regression that returned None silently from the
         // top-level dispatcher would be invisible without this gate.
         let mut scene = empty_scene();
-        scene.blocks.push(system_binary(2048));                  // [0] blob
-        scene.blocks.push(np_collision(BlockRef(0u32)));            // [1] NP coll
+        scene.blocks.push(system_binary(2048)); // [0] blob
+        scene.blocks.push(np_collision(BlockRef(0u32))); // [1] NP coll
         let result = extract_collision(&scene, BlockRef(1u32));
         assert!(
             result.is_none(),
@@ -910,10 +914,11 @@ mod dispatch_tests {
         // Phantom wraps a non-rigid-body. We return None so the consumer
         // doesn't mis-promote a trigger volume into a solid collider.
         let mut scene = empty_scene();
-        scene
-            .blocks
-            .push(Box::new(BhkSphereShape { material: 0, radius: 1.0 })); // [0]
-        scene.blocks.push(phantom_collision(BlockRef(0u32)));               // [1]
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 0,
+            radius: 1.0,
+        })); // [0]
+        scene.blocks.push(phantom_collision(BlockRef(0u32))); // [1]
         assert!(extract_collision(&scene, BlockRef(1u32)).is_none());
     }
 
@@ -923,9 +928,10 @@ mod dispatch_tests {
         // takes the unrecognised arm rather than panicking or returning
         // a malformed shape.
         let mut scene = empty_scene();
-        scene
-            .blocks
-            .push(Box::new(BhkSphereShape { material: 0, radius: 1.0 }));
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 0,
+            radius: 1.0,
+        }));
         assert!(extract_collision(&scene, BlockRef(0u32)).is_none());
         assert_eq!(
             examine_collision_kind(&scene, BlockRef(0u32)),
@@ -1013,7 +1019,9 @@ mod cycle_tests {
         let mut scene = NifScene::default();
         scene.havok_scale = 1.0;
         for i in 0..n {
-            scene.blocks.push(list_shape(vec![BlockRef((i + 1) as u32)]));
+            scene
+                .blocks
+                .push(list_shape(vec![BlockRef((i + 1) as u32)]));
         }
         scene.blocks.push(sphere_shape(0.5)); // terminal, never reached
         let mut visited = HashSet::new();
@@ -1042,7 +1050,9 @@ mod cycle_tests {
         let mut scene = NifScene::default();
         scene.havok_scale = 1.0;
         for i in 0..depth {
-            scene.blocks.push(list_shape(vec![BlockRef((i + 1) as u32)]));
+            scene
+                .blocks
+                .push(list_shape(vec![BlockRef((i + 1) as u32)]));
         }
         scene.blocks.push(sphere_shape(0.5));
         let mut visited = HashSet::new();
@@ -1176,7 +1186,9 @@ mod cycle_tests {
         // still resolves rather than being mis-flagged as a cycle.
         let mut scene = NifScene::default();
         scene.havok_scale = 1.0;
-        scene.blocks.push(list_shape(vec![BlockRef(1u32), BlockRef(1u32)]));
+        scene
+            .blocks
+            .push(list_shape(vec![BlockRef(1u32), BlockRef(1u32)]));
         scene.blocks.push(sphere_shape(2.0));
         let mut visited = HashSet::new();
         let result = resolve_shape(&scene, BlockRef(0u32), &mut visited);
@@ -1312,7 +1324,9 @@ mod cycle_tests {
                 // havok_to_engine maps (x,y,z) → (x, z, -y) = (2, 5, -3).
                 let v = vertices[1];
                 assert!(
-                    (v.x - 2.0).abs() < 1e-5 && (v.y - 5.0).abs() < 1e-5 && (v.z + 3.0).abs() < 1e-5,
+                    (v.x - 2.0).abs() < 1e-5
+                        && (v.y - 5.0).abs() < 1e-5
+                        && (v.z + 3.0).abs() < 1e-5,
                     "per-axis scale not folded; got {v:?}"
                 );
             }

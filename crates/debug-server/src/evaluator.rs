@@ -186,7 +186,11 @@ fn eval_metrics(world: &World) -> DebugResponse {
         // `BTreeMap` already iterates in key order — preserve that
         // for the wire response so the UI's rendering of pass times
         // doesn't shuffle frame-to-frame.
-        gpu_pass_ms: snap.gpu_pass_ms.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        gpu_pass_ms: snap
+            .gpu_pass_ms
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect(),
     }
 }
 
@@ -211,11 +215,7 @@ fn eval_queue_load(world: &World, load: PendingDebugLoad) -> DebugResponse {
 /// command) sets the world's `SelectedRef`; this handler, called
 /// without an explicit `entity` arg, reads it and dumps the picked
 /// reference.
-fn eval_inspect(
-    world: &World,
-    registry: &ComponentRegistry,
-    entity: Option<u32>,
-) -> DebugResponse {
+fn eval_inspect(world: &World, registry: &ComponentRegistry, entity: Option<u32>) -> DebugResponse {
     let entity = match entity {
         Some(e) => e,
         None => match world.try_resource::<byroredux_core::ecs::SelectedRef>() {
@@ -946,7 +946,10 @@ mod tests {
 
         let mut world = World::new();
         let target = world.spawn();
-        world.insert(target, Transform::from_translation(Vec3::new(5.0, 6.0, 7.0)));
+        world.insert(
+            target,
+            Transform::from_translation(Vec3::new(5.0, 6.0, 7.0)),
+        );
         world.insert(
             target,
             GlobalTransform::new(Vec3::new(5.0, 6.0, 7.0), Quat::IDENTITY, 1.0),

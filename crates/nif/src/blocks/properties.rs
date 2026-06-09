@@ -469,7 +469,6 @@ impl NiTexturingProperty {
     }
 }
 
-
 // ── NiFogProperty ────────────────────────────────────────────────────
 
 /// Per-node fog override (legacy; 1 FO3 block observed in the wild).
@@ -807,7 +806,6 @@ impl NiZBufferProperty {
         })
     }
 }
-
 
 impl_ni_object!(
     NiMaterialProperty,

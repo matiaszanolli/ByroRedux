@@ -128,9 +128,7 @@ pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
     // a guaranteed miss → 99.7% spawn-rate failure on Cydonia.
     if bytes.len() >= 11 {
         let head = &bytes[..11];
-        if head.eq_ignore_ascii_case(b"geometries\\")
-            || head.eq_ignore_ascii_case(b"geometries/")
-        {
+        if head.eq_ignore_ascii_case(b"geometries\\") || head.eq_ignore_ascii_case(b"geometries/") {
             return std::borrow::Cow::Borrowed(path);
         }
     }
@@ -261,9 +259,8 @@ pub(crate) fn normalize_material_path(path: &str) -> std::borrow::Cow<'_, str> {
     // on the prefix check so `Materials\foo.bgsm` doesn't get
     // double-prefixed.
     let bytes = after_sep.as_bytes();
-    let has_materials = bytes.len() >= 10
-        && bytes[..9].eq_ignore_ascii_case(b"materials")
-        && bytes[9] == b'\\';
+    let has_materials =
+        bytes.len() >= 10 && bytes[..9].eq_ignore_ascii_case(b"materials") && bytes[9] == b'\\';
     if has_materials {
         after_sep
     } else {
@@ -1463,8 +1460,7 @@ pub(crate) fn merge_bgsm_into_mesh(
         // second emissive slot exists on `ImportedMesh`.
         mesh.emissive_color = bgem.base_color;
         mesh.emissive_mult = bgem.base_color_scale;
-        mesh.emissive_source =
-            byroredux_core::ecs::components::material::EmissiveSource::Effect;
+        mesh.emissive_source = byroredux_core::ecs::components::material::EmissiveSource::Effect;
         mesh.mat_alpha = bgem.base.alpha;
         mesh.uv_offset = [bgem.base.u_offset, bgem.base.v_offset];
         mesh.uv_scale = [bgem.base.u_scale, bgem.base.v_scale];
@@ -1608,9 +1604,7 @@ mod tests {
     /// exist in the archive → 99.7% spawn-rate failure on Cydonia.
     #[test]
     fn normalize_mesh_path_passes_geometries_prefix_unchanged() {
-        let out = normalize_mesh_path(
-            r"geometries\aa2d865fc6bf336b909b\e84b59f1a4b705a40845.mesh",
-        );
+        let out = normalize_mesh_path(r"geometries\aa2d865fc6bf336b909b\e84b59f1a4b705a40845.mesh");
         assert_eq!(
             out.as_ref(),
             r"geometries\aa2d865fc6bf336b909b\e84b59f1a4b705a40845.mesh",
@@ -1634,7 +1628,11 @@ mod tests {
             "GEOMETRIES/abc/def.mesh",
         ] {
             let out = normalize_mesh_path(variant);
-            assert_eq!(out.as_ref(), variant, "{variant:?} must pass through unchanged");
+            assert_eq!(
+                out.as_ref(),
+                variant,
+                "{variant:?} must pass through unchanged"
+            );
         }
     }
 
@@ -1778,7 +1776,10 @@ mod tests {
     #[test]
     fn normalize_material_path_converts_forward_slashes_to_backslashes() {
         let out = normalize_material_path("materials/template/defaulttemplate_wet.bgsm");
-        assert_eq!(out.as_ref(), "materials\\template\\defaulttemplate_wet.bgsm");
+        assert_eq!(
+            out.as_ref(),
+            "materials\\template\\defaulttemplate_wet.bgsm"
+        );
     }
 
     /// Rule 4: `materials\` prefix add when missing. Live case from
@@ -1787,7 +1788,10 @@ mod tests {
     #[test]
     fn normalize_material_path_prepends_materials_when_missing() {
         let out = normalize_material_path("template\\defaulttemplate_wet.bgsm");
-        assert_eq!(out.as_ref(), "materials\\template\\defaulttemplate_wet.bgsm");
+        assert_eq!(
+            out.as_ref(),
+            "materials\\template\\defaulttemplate_wet.bgsm"
+        );
     }
 
     /// Composed: `template/defaulttemplate_wet.bgsm` — the headline
@@ -1798,7 +1802,10 @@ mod tests {
     #[test]
     fn normalize_material_path_handles_template_parent_form() {
         let out = normalize_material_path("template/defaulttemplate_wet.bgsm");
-        assert_eq!(out.as_ref(), "materials\\template\\defaulttemplate_wet.bgsm");
+        assert_eq!(
+            out.as_ref(),
+            "materials\\template\\defaulttemplate_wet.bgsm"
+        );
     }
 
     /// Canonical-form passthrough: no allocation when the input is
@@ -2159,7 +2166,10 @@ mod tests {
             model_space_normals = true;
         }
 
-        assert!(is_pbr, "BGSM.pbr=true must propagate to ImportedMesh.is_pbr");
+        assert!(
+            is_pbr,
+            "BGSM.pbr=true must propagate to ImportedMesh.is_pbr"
+        );
         assert!(has_translucency);
         assert!(model_space_normals);
     }
@@ -2237,7 +2247,10 @@ mod tests {
             }
         }
 
-        assert!(is_pbr, "parent's pbr=true must flow down to the merged result");
+        assert!(
+            is_pbr,
+            "parent's pbr=true must flow down to the merged result"
+        );
     }
 
     /// Regression for FO4 BGSM glass / alpha-blended decals. FO4
@@ -2403,7 +2416,10 @@ mod tests {
         if lut_path.is_none() && !bgem_empty.grayscale_texture.is_empty() {
             lut_path = Some(bgem_empty.grayscale_texture.clone());
         }
-        assert_eq!(lut_path, original_path, "empty texture must not clobber existing path");
+        assert_eq!(
+            lut_path, original_path,
+            "empty texture must not clobber existing path"
+        );
     }
 
     /// Every failing-to-resolve path logs at most once, so a broken
@@ -2463,7 +2479,7 @@ mod tests {
             specular_color: [0.9, 0.8, 0.7],
             specular_mult: 3.5,
             smoothness: 0.85,
-            fresnel_power: 3.5,            // non-default; must win over parent's 9.0
+            fresnel_power: 3.5, // non-default; must win over parent's 9.0
             grayscale_to_palette_scale: 0.75, // non-default; must win over parent's 2.5
             ..Default::default()
         };
@@ -2476,9 +2492,9 @@ mod tests {
             emit_enabled: true,
             emittance_color: [0.0, 0.0, 0.0],
             emittance_mult: 0.0,
-            specular_mult: 0.01,           // must NOT win
-            smoothness: 0.01,              // must NOT win
-            fresnel_power: 9.0,            // must NOT win
+            specular_mult: 0.01,             // must NOT win
+            smoothness: 0.01,                // must NOT win
+            fresnel_power: 9.0,              // must NOT win
             grayscale_to_palette_scale: 2.5, // must NOT win
             ..Default::default()
         };
@@ -2723,16 +2739,16 @@ mod tests {
         let mut buf = Vec::with_capacity(40);
         // 16-byte header: magic + headerSize + fileVersion + chunkCount=3.
         buf.extend_from_slice(&0x48544542u32.to_le_bytes()); // BETH
-        buf.extend_from_slice(&8u32.to_le_bytes());          // headerSize
-        buf.extend_from_slice(&4u32.to_le_bytes());          // fileVersion
-        buf.extend_from_slice(&3u32.to_le_bytes());          // chunkCount (incl BETH)
-        // STRT chunk: type + size + empty payload.
+        buf.extend_from_slice(&8u32.to_le_bytes()); // headerSize
+        buf.extend_from_slice(&4u32.to_le_bytes()); // fileVersion
+        buf.extend_from_slice(&3u32.to_le_bytes()); // chunkCount (incl BETH)
+                                                    // STRT chunk: type + size + empty payload.
         buf.extend_from_slice(b"STRT");
-        buf.extend_from_slice(&0u32.to_le_bytes());          // size = 0
-        // TYPE chunk: type + size=4 + u32 type_count=0.
+        buf.extend_from_slice(&0u32.to_le_bytes()); // size = 0
+                                                    // TYPE chunk: type + size=4 + u32 type_count=0.
         buf.extend_from_slice(b"TYPE");
-        buf.extend_from_slice(&4u32.to_le_bytes());          // size = 4
-        buf.extend_from_slice(&0u32.to_le_bytes());          // type_count = 0
+        buf.extend_from_slice(&4u32.to_le_bytes()); // size = 4
+        buf.extend_from_slice(&0u32.to_le_bytes()); // type_count = 0
         buf
     }
 
@@ -2750,10 +2766,8 @@ mod tests {
             "minimal CDB payload must mark the provider as Starfield-loaded"
         );
 
-        let mut mesh = imported_mesh_with_material_path(
-            &mut pool,
-            "materials/setpieces/cargobay.mat",
-        );
+        let mut mesh =
+            imported_mesh_with_material_path(&mut pool, "materials/setpieces/cargobay.mat");
         assert!(!mesh.is_pbr, "fresh ImportedMesh defaults to is_pbr=false");
 
         let touched = merge_bgsm_into_mesh(&mut mesh, &mut provider, &mut pool);
@@ -2780,10 +2794,7 @@ mod tests {
         // No `load_starfield_cdb` call.
         assert!(!provider.has_starfield_cdb());
 
-        let mut mesh = imported_mesh_with_material_path(
-            &mut pool,
-            "materials/modded.mat",
-        );
+        let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/modded.mat");
         let touched = merge_bgsm_into_mesh(&mut mesh, &mut provider, &mut pool);
 
         // Falls through past the .mat arm; bgsm/bgem dispatch fails
@@ -2802,10 +2813,8 @@ mod tests {
         let mut provider = MaterialProvider::new();
         provider.load_starfield_cdb(&minimal_cdb_bytes());
 
-        let mut mesh = imported_mesh_with_material_path(
-            &mut pool,
-            "materials/setdressing/metallocker01.bgsm",
-        );
+        let mut mesh =
+            imported_mesh_with_material_path(&mut pool, "materials/setdressing/metallocker01.bgsm");
         let _ = merge_bgsm_into_mesh(&mut mesh, &mut provider, &mut pool);
 
         // The .bgsm path falls past the .mat arm into BGSM dispatch,

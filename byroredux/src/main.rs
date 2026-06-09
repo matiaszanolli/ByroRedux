@@ -54,14 +54,12 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::cli_args::{parse_string_arg, parse_vec3_arg};
 use crate::commands::build_command_registry;
+use crate::components::{CellRootIndex, FootstepConfig, InputState, NameIndex, SubtreeCache};
+use crate::helpers::world_resource_set;
+use crate::render::build_render_data;
 use crate::streaming_helpers::{
     consume_streaming_payload, drain_streaming_state, SVGF_TAA_STREAMING_RECOVERY_FRAMES,
 };
-use crate::components::{
-    CellRootIndex, FootstepConfig, InputState, NameIndex, SubtreeCache,
-};
-use crate::helpers::world_resource_set;
-use crate::render::build_render_data;
 use crate::systems::{
     animate_lights_system, compute_underwater_params, footstep_system, log_stats_system,
     make_animation_system, make_billboard_system, make_transform_propagation_system,
@@ -200,9 +198,10 @@ fn main() -> Result<()> {
     // Logger is the global one initialised at line 152 above; the smoke
     // is a no-window, no-engine path that prints to stdout and exits.
     if let Some(idx) = args.iter().position(|a| a == "--sf-smoke") {
-        let cell_edid = args.get(idx + 1).cloned().ok_or_else(|| {
-            anyhow::anyhow!("--sf-smoke requires a cell EDID argument")
-        })?;
+        let cell_edid = args
+            .get(idx + 1)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("--sf-smoke requires a cell EDID argument"))?;
         let esm_path = parse_string_arg(&args, "--esm").ok_or_else(|| {
             anyhow::anyhow!("--sf-smoke requires --esm <PATH> to specify the ESM")
         })?;
@@ -225,12 +224,23 @@ fn main() -> Result<()> {
         // unblock for CI regression checks, but is substantially more
         // scope than this LOW-severity bundle covers. Filed as a
         // follow-up if/when CI starts asserting on baselines.
-        let conflicting: Vec<&str> = ["--esm", "--bsa", "--textures-bsa", "--master", "--grid",
-            "--cell", "--wrld", "--radius", "--mesh", "--tree", "--kf"]
-            .iter()
-            .copied()
-            .filter(|flag| args.iter().any(|a| a == flag))
-            .collect();
+        let conflicting: Vec<&str> = [
+            "--esm",
+            "--bsa",
+            "--textures-bsa",
+            "--master",
+            "--grid",
+            "--cell",
+            "--wrld",
+            "--radius",
+            "--mesh",
+            "--tree",
+            "--kf",
+        ]
+        .iter()
+        .copied()
+        .filter(|flag| args.iter().any(|a| a == flag))
+        .collect();
         if !conflicting.is_empty() {
             eprintln!(
                 "error: --cmd is headless and cannot resolve a cell-aware scene. \
@@ -470,9 +480,7 @@ impl App {
         // structurally inserting. Drained by `App::step_debug_loads`
         // between frames where `&mut World + &mut VulkanContext` are
         // both held.
-        world.insert_resource(
-            byroredux_core::ecs::PendingDebugLoadSlot::default(),
-        );
+        world.insert_resource(byroredux_core::ecs::PendingDebugLoadSlot::default());
         // Phase 5 — game profile registry. Loads
         // `assets/debug_profiles.toml` (engine-shipped defaults)
         // plus `~/.byroredux/profiles.toml` (per-user override).
@@ -650,7 +658,9 @@ impl App {
             byroredux_scripting::papyrus_demo::rumble_on_activate_system(world)
         }
         fn quest_advance_on_activate_dispatch(world: &World, _dt: f32) {
-            byroredux_scripting::papyrus_demo::quest_advance::quest_advance_on_activate_system(world)
+            byroredux_scripting::papyrus_demo::quest_advance::quest_advance_on_activate_system(
+                world,
+            )
         }
         fn dlc2_ttr4a_on_init_dispatch(world: &World, _dt: f32) {
             byroredux_scripting::papyrus_demo::dlc2_ttr4a::dlc2_ttr4a_on_init_system(world)
@@ -1205,9 +1215,7 @@ impl App {
         let Some(ctx) = self.renderer.as_mut() else {
             return;
         };
-        let Some(pending) =
-            cell_loader::take_pending_transition(&self.world)
-        else {
+        let Some(pending) = cell_loader::take_pending_transition(&self.world) else {
             return;
         };
 
@@ -1357,7 +1365,6 @@ impl App {
             }
         }
     }
-
 }
 
 // Tear down the active exterior streaming state: drain every loaded
@@ -1410,26 +1417,21 @@ impl App {
         // is skipped when the overlay is hidden (boot default). The
         // `ui.run` path below already early-returns on `!visible` and
         // ignores the snapshot; returning a default here is safe.
-        let snapshot = if self
-            .debug_ui
-            .as_ref()
-            .is_some_and(|ui| ui.visible)
-        {
+        let snapshot = if self.debug_ui.as_ref().is_some_and(|ui| ui.visible) {
             build_debug_ui_snapshot(&self.world, self.debug_ui_refresh_entities)
         } else {
             byroredux_debug_ui::PanelSnapshot::default()
         };
         self.debug_ui_refresh_entities = false;
 
-        let (egui_frame, outputs) = if let (Some(ref mut ui), Some(win)) =
-            (self.debug_ui.as_mut(), self.window.as_ref())
-        {
-            let outputs = ui.run(win, &snapshot);
-            let frame = ui.take_output().map(|out| (ui.egui_ctx.clone(), out));
-            (frame, outputs)
-        } else {
-            (None, byroredux_debug_ui::PanelOutputs::default())
-        };
+        let (egui_frame, outputs) =
+            if let (Some(ref mut ui), Some(win)) = (self.debug_ui.as_mut(), self.window.as_ref()) {
+                let outputs = ui.run(win, &snapshot);
+                let frame = ui.take_output().map(|out| (ui.egui_ctx.clone(), out));
+                (frame, outputs)
+            } else {
+                (None, byroredux_debug_ui::PanelOutputs::default())
+            };
 
         apply_debug_ui_outputs(
             &mut self.world,
@@ -1471,7 +1473,8 @@ impl App {
             // Only fires in debug; the `mem` console command surfaces the
             // per-frame count in all builds.
             debug_assert_eq!(
-                self.material_table.overflow_count(), 0,
+                self.material_table.overflow_count(),
+                0,
                 "MaterialTable overflow: {} intern call(s) fell back to the \
                  neutral-default slot 0 (MAX_MATERIALS={cap}). Run `mem` to \
                  confirm; consider raising MAX_MATERIALS in \
@@ -1517,9 +1520,10 @@ impl App {
                             queue: &ctx.graphics_queue,
                             command_pool: ctx.transfer_pool,
                         };
-                        if let Err(e) = ctx.texture_registry.update_rgba(
-                            upload_ctx, handle, ui_w, ui_h, pixels,
-                        ) {
+                        if let Err(e) = ctx
+                            .texture_registry
+                            .update_rgba(upload_ctx, handle, ui_w, ui_h, pixels)
+                        {
                             log::error!("UI texture update failed: {e:#}");
                         }
                         ui_tex = Some(handle);
@@ -1542,8 +1546,7 @@ impl App {
                 byroredux_core::types::Color::CORNFLOWER_BLUE.as_array()
             };
             let render_t0 = Instant::now();
-            let mut frame_timings =
-                Some(byroredux_renderer::FrameTimings::default());
+            let mut frame_timings = Some(byroredux_renderer::FrameTimings::default());
             let pending = self.skin_slot_pool.drain_pending(
                 byroredux_renderer::vulkan::scene_buffer::MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME,
             );
@@ -1629,8 +1632,7 @@ impl App {
                         cpu_t.tlas_build_ms = ft.tlas_build_ns as f32 * NS_TO_MS;
                         cpu_t.ssbo_build_ms = ft.ssbo_build_ns as f32 * NS_TO_MS;
                         cpu_t.cmd_record_ms = ft.cmd_record_ns as f32 * NS_TO_MS;
-                        cpu_t.submit_present_ms =
-                            ft.submit_present_ns as f32 * NS_TO_MS;
+                        cpu_t.submit_present_ms = ft.submit_present_ns as f32 * NS_TO_MS;
                         cpu_t.acquire_ms = ft.acquire_ns as f32 * NS_TO_MS;
                         cpu_t.between_frames_ms = self
                             .last_redraw_end
@@ -1656,9 +1658,7 @@ impl App {
                         if let Some(ref win) = self.window {
                             let size = win.inner_size();
                             if size.width > 0 && size.height > 0 {
-                                if let Err(e) =
-                                    ctx.recreate_swapchain([size.width, size.height])
-                                {
+                                if let Err(e) = ctx.recreate_swapchain([size.width, size.height]) {
                                     log::error!("Swapchain recreate failed: {e:#}");
                                     event_loop.exit();
                                 }
@@ -1692,7 +1692,8 @@ impl App {
         let rof_post_draw_ns = rof_pre_t0
             .elapsed()
             .as_nanos()
-            .saturating_sub((rof_pre_draw_ns + rof_draw_call_ns) as u128) as u64;
+            .saturating_sub((rof_pre_draw_ns + rof_draw_call_ns) as u128)
+            as u64;
         let mut cpu_t = self
             .world
             .resource_mut::<byroredux_core::ecs::CpuFrameTimings>();
@@ -1742,11 +1743,9 @@ impl ApplicationHandler for App {
                         // debug-server `DebugRequest::Screenshot`
                         // can't race on a single result slot.
                         // Starts idle (SCREENSHOT_OWNER_NONE).
-                        owner: std::sync::Arc::new(
-                            std::sync::atomic::AtomicU8::new(
-                                byroredux_core::ecs::resources::SCREENSHOT_OWNER_NONE,
-                            ),
-                        ),
+                        owner: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                            byroredux_core::ecs::resources::SCREENSHOT_OWNER_NONE,
+                        )),
                     });
 
                 // Expose the GPU allocator to the ECS so the
@@ -1773,9 +1772,9 @@ impl ApplicationHandler for App {
                 // Phase 4 of the debug-UI plan — initialise the
                 // egui overlay before the first frame.
                 let mut ctx = ctx;
-                if let Err(e) = ctx.init_egui(
-                    byroredux_renderer::vulkan::sync::MAX_FRAMES_IN_FLIGHT,
-                ) {
+                if let Err(e) =
+                    ctx.init_egui(byroredux_renderer::vulkan::sync::MAX_FRAMES_IN_FLIGHT)
+                {
                     log::warn!("debug-UI overlay init failed: {e:#}");
                 }
                 let debug_ui_state = byroredux_debug_ui::DebugUiState::new(event_loop, &win);
@@ -1820,11 +1819,7 @@ impl ApplicationHandler for App {
         } else {
             false
         };
-        if egui_consumed
-            && !matches!(
-                event,
-                WindowEvent::CloseRequested | WindowEvent::Resized(_)
-            )
+        if egui_consumed && !matches!(event, WindowEvent::CloseRequested | WindowEvent::Resized(_))
         {
             return;
         }
@@ -2052,8 +2047,7 @@ impl ApplicationHandler for App {
         // in two scopes because the queries need an immutable world
         // borrow that can't coexist with `resource_mut::<DebugStats>`.
         let (meshes_in_use, textures_in_use) = {
-            let mut mesh_set: std::collections::HashSet<u32> =
-                std::collections::HashSet::new();
+            let mut mesh_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
             if let Some(q) = self.world.query::<byroredux_core::ecs::MeshHandle>() {
                 for (_, h) in q.iter() {
                     if h.0 != 0 {
@@ -2061,8 +2055,7 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            let mut tex_set: std::collections::HashSet<u32> =
-                std::collections::HashSet::new();
+            let mut tex_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
             if let Some(q) = self.world.query::<byroredux_core::ecs::TextureHandle>() {
                 for (_, h) in q.iter() {
                     if h.0 != 0 {
@@ -2086,8 +2079,7 @@ impl ApplicationHandler for App {
             // `log_stats_system` (ECS, no App access) can surface it.
             stats.skin_pool_live = self.skin_slot_pool.live_slot_count();
             stats.skin_pool_max = self.skin_slot_pool.max_slot();
-            stats.skin_pool_overflow_attempts =
-                self.skin_slot_pool.overflow_attempt_count();
+            stats.skin_pool_overflow_attempts = self.skin_slot_pool.overflow_attempt_count();
         }
 
         // Refresh renderer-side scratch-Vec telemetry (R6). Reuses the
@@ -2228,7 +2220,13 @@ impl ApplicationHandler for App {
                     let (gpu_skin_disp_ms, gpu_blas_refit_ms, gpu_taa_ms) = self
                         .world
                         .try_resource::<byroredux_core::ecs::SkinCoverageStats>()
-                        .map(|s| (s.gpu_skin_dispatch_ms, s.gpu_skin_blas_refit_ms, s.gpu_taa_ms))
+                        .map(|s| {
+                            (
+                                s.gpu_skin_dispatch_ms,
+                                s.gpu_skin_blas_refit_ms,
+                                s.gpu_taa_ms,
+                            )
+                        })
                         .unwrap_or((0.0, 0.0, 0.0));
                     println!(
                         "bench: frames={} wall_fps={:.1} wall_ms={:.2} \
@@ -2290,9 +2288,9 @@ impl ApplicationHandler for App {
                                 // clear error so the user knows the
                                 // collision happened instead of silently
                                 // racing for the result slot.
-                                if !bridge.try_claim(
-                                    byroredux_core::ecs::resources::SCREENSHOT_OWNER_CLI,
-                                ) {
+                                if !bridge
+                                    .try_claim(byroredux_core::ecs::resources::SCREENSHOT_OWNER_CLI)
+                                {
                                     eprintln!(
                                         "screenshot: bridge already claimed (debug-server owns it) — skipping CLI capture"
                                     );
@@ -2406,7 +2404,10 @@ fn build_debug_ui_snapshot(
             world.try_resource::<StringPool>(),
         ) {
             for (id, name) in q.iter() {
-                let resolved = pool.resolve(name.0).map(|s| s.to_string()).unwrap_or_default();
+                let resolved = pool
+                    .resolve(name.0)
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
                 out.push((id, resolved));
             }
         }
@@ -2533,8 +2534,7 @@ fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         }
     };
 
-    let games_root =
-        crate::game_profiles::resolve_games_root(games_root_cli.as_deref());
+    let games_root = crate::game_profiles::resolve_games_root(games_root_cli.as_deref());
     let data_dir = crate::game_profiles::resolve_profile_root(&entry, &games_root);
 
     if data_dir.as_os_str().is_empty() {
@@ -2564,9 +2564,8 @@ fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         entry.name,
         data_dir.display(),
     );
-    let join_arg = |archive: &str| -> String {
-        data_dir.join(archive).to_string_lossy().into_owned()
-    };
+    let join_arg =
+        |archive: &str| -> String { data_dir.join(archive).to_string_lossy().into_owned() };
 
     args.push("--esm".to_string());
     args.push(join_arg(&entry.esm));

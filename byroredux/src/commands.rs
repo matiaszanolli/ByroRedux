@@ -1,24 +1,28 @@
 //! Console commands for the engine's built-in command system.
 
+use crate::components::{
+    AlphaBlend, DoorTeleport, InputState, IsCollisionOnly, IsFxMesh, TwoSided,
+};
+use crate::helpers::world_resource_set;
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
+use byroredux_core::ecs::components::{
+    CollisionShape, FormIdComponent, RenderLayer, RigidBodyData,
+};
 use byroredux_core::ecs::{
     AccessConflict, ActiveCamera, Camera, ConflictKind, DebugStats, EntityId, GlobalTransform,
-    LightSource, Material, MeshHandle, Name, Parent, ParticleEmitter, SchedulerAccessReport,
-    ScratchTelemetry, SceneFlags, SelectedRef, SkinCoverageStats, SkinnedMesh, TextureHandle,
-    Transform, World, WorldBound,
+    LightSource, Material, MeshHandle, Name, Parent, ParticleEmitter, SceneFlags,
+    SchedulerAccessReport, ScratchTelemetry, SelectedRef, SkinCoverageStats, SkinnedMesh,
+    TextureHandle, Transform, World, WorldBound,
 };
-use byroredux_core::ecs::components::{CollisionShape, FormIdComponent, RenderLayer, RigidBodyData};
-use crate::components::{AlphaBlend, DoorTeleport, InputState, IsFxMesh, IsCollisionOnly, TwoSided};
-use crate::helpers::world_resource_set;
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
 use std::collections::HashMap;
 
-use byroredux_core::ecs::SystemList;
 use crate::cell_loader::{
     LoadedCellIndex, LoadedPluginSet, PendingCellTransition, PendingCellTransitionSlot,
     TransitionDestination,
 };
+use byroredux_core::ecs::SystemList;
 
 struct HelpCommand;
 impl ConsoleCommand for HelpCommand {
@@ -114,10 +118,19 @@ impl ConsoleCommand for EntitiesCommand {
         };
 
         let mut lines = vec![format!("Total entities spawned: {}", total)];
-        lines.push(format!("  Transform:           {}", world.count::<Transform>()));
+        lines.push(format!(
+            "  Transform:           {}",
+            world.count::<Transform>()
+        ));
         lines.push(format!("  MeshHandle (render): {}", mesh_count));
-        lines.push(format!("  TextureHandle:       {}", world.count::<TextureHandle>()));
-        lines.push(format!("  Camera:              {}", world.count::<Camera>()));
+        lines.push(format!(
+            "  TextureHandle:       {}",
+            world.count::<TextureHandle>()
+        ));
+        lines.push(format!(
+            "  Camera:              {}",
+            world.count::<Camera>()
+        ));
         lines.push(format!("  CollisionShape:      {}", collision_count));
         lines.push(format!(
             "    physics-only (no MeshHandle): {}",
@@ -195,7 +208,7 @@ impl ConsoleCommand for TexMissingCommand {
         }
 
         let mut sorted: Vec<_> = missing.into_iter().collect();
-        sorted.sort_by_key(|e| std::cmp::Reverse(e.1.0));
+        sorted.sort_by_key(|e| std::cmp::Reverse(e.1 .0));
 
         let mut lines = vec![format!("{} unique missing textures:", sorted.len())];
         for (path, (count, samples)) in sorted.iter().take(50) {
@@ -363,9 +376,7 @@ impl ConsoleCommand for MeshInfoCommand {
                             plugin_prefix
                         ));
                     } else {
-                        lines.push(
-                            "  REFR FormID:       <unresolved in FormIdPool>".to_string(),
-                        );
+                        lines.push("  REFR FormID:       <unresolved in FormIdPool>".to_string());
                     }
                 } else {
                     lines.push("  REFR FormID:       <FormIdPool resource missing>".to_string());
@@ -436,7 +447,9 @@ impl ConsoleCommand for MeshInfoCommand {
             lines.push(format!(
                 "  emissive (mult/color): {:.2} / [{:.2},{:.2},{:.2}]",
                 mat.emissive_mult,
-                mat.emissive_color[0], mat.emissive_color[1], mat.emissive_color[2],
+                mat.emissive_color[0],
+                mat.emissive_color[1],
+                mat.emissive_color[2],
             ));
             // Effect-shader flags + env_map_scale + vertex_color_mode all
             // tell us what *kind* of material this is even if no texture
@@ -456,7 +469,10 @@ impl ConsoleCommand for MeshInfoCommand {
         // populated some of the shape but not the texture/material.
         let mut markers: Vec<String> = Vec::new();
         if let Some(ab) = world.get::<AlphaBlend>(id) {
-            markers.push(format!("AlphaBlend(src={}, dst={})", ab.src_blend, ab.dst_blend));
+            markers.push(format!(
+                "AlphaBlend(src={}, dst={})",
+                ab.src_blend, ab.dst_blend
+            ));
         }
         if world.get::<TwoSided>(id).is_some() {
             markers.push("TwoSided".to_string());
@@ -720,18 +736,13 @@ impl ConsoleCommand for SkinCoverageCommand {
             "  gpu_skin_blas_refit_ms = {:.3}",
             cov.gpu_skin_blas_refit_ms,
         ));
-        lines.push(format!(
-            "  gpu_taa_ms             = {:.3}",
-            cov.gpu_taa_ms,
-        ));
+        lines.push(format!("  gpu_taa_ms             = {:.3}", cov.gpu_taa_ms,));
         if cov.dispatches_total == 0 {
             lines.push("  coverage: n/a (no skinned entities this frame)".to_string());
         } else if cov.fully_covered() {
             lines.push("  coverage: full".to_string());
         } else {
-            let missed = cov
-                .dispatches_total
-                .saturating_sub(cov.refits_succeeded);
+            let missed = cov.dispatches_total.saturating_sub(cov.refits_succeeded);
             lines.push(format!(
                 "  coverage: PARTIAL — {} of {} visible skinned entities missed this frame",
                 missed, cov.dispatches_total,
@@ -890,9 +901,7 @@ impl ConsoleCommand for CamWhereCommand {
             .query::<Transform>()
             .and_then(|q| q.get(cam_entity).map(|t| t.translation));
         let Some(pos) = pos else {
-            return CommandOutput::line(format!(
-                "Camera entity {cam_entity} has no Transform"
-            ));
+            return CommandOutput::line(format!("Camera entity {cam_entity} has no Transform"));
         };
         let (yaw, pitch) = if let Some(input) = world.try_resource::<InputState>() {
             (input.yaw, input.pitch)
@@ -901,20 +910,9 @@ impl ConsoleCommand for CamWhereCommand {
         };
         CommandOutput::lines(vec![
             format!("Camera entity: {}", cam_entity),
-            format!(
-                "  position: ({:.2}, {:.2}, {:.2})",
-                pos.x, pos.y, pos.z
-            ),
-            format!(
-                "  yaw:      {:.4} rad ({:.1}°)",
-                yaw,
-                yaw.to_degrees()
-            ),
-            format!(
-                "  pitch:    {:.4} rad ({:.1}°)",
-                pitch,
-                pitch.to_degrees()
-            ),
+            format!("  position: ({:.2}, {:.2}, {:.2})", pos.x, pos.y, pos.z),
+            format!("  yaw:      {:.4} rad ({:.1}°)", yaw, yaw.to_degrees()),
+            format!("  pitch:    {:.4} rad ({:.1}°)", pitch, pitch.to_degrees()),
         ])
     }
 }
@@ -953,9 +951,7 @@ impl ConsoleCommand for NearCommand {
             .query::<Transform>()
             .and_then(|q| q.get(cam_entity).map(|t| t.translation));
         let Some(cam_pos) = cam_pos else {
-            return CommandOutput::line(format!(
-                "Camera entity {cam_entity} has no Transform"
-            ));
+            return CommandOutput::line(format!("Camera entity {cam_entity} has no Transform"));
         };
         let Some(gtq) = world.query::<GlobalTransform>() else {
             return CommandOutput::line("GlobalTransform storage not present");
@@ -1047,9 +1043,7 @@ impl ConsoleCommand for PickCommand {
             .query::<Transform>()
             .and_then(|q| q.get(cam_entity).map(|t| t.translation));
         let Some(cam_pos) = cam_pos else {
-            return CommandOutput::line(format!(
-                "Camera entity {cam_entity} has no Transform"
-            ));
+            return CommandOutput::line(format!("Camera entity {cam_entity} has no Transform"));
         };
         // Camera forward derived from InputState (yaw, pitch) the way
         // fly_camera_system computes it: forward = R_y(yaw)·R_x(pitch)·-Z.
@@ -1138,8 +1132,14 @@ impl ConsoleCommand for PickCommand {
         lines.push(format!(
             "ray from ({:.1},{:.1},{:.1}) dir ({:+.3},{:+.3},{:+.3}) — \
              {} hits (top {}):",
-            cam_pos.x, cam_pos.y, cam_pos.z, forward.x, forward.y, forward.z,
-            hits.len(), take_n
+            cam_pos.x,
+            cam_pos.y,
+            cam_pos.z,
+            forward.x,
+            forward.y,
+            forward.z,
+            hits.len(),
+            take_n
         ));
         lines.push(format!(
             "{:>7}  {:>6}  {:<28}  {:<48}  {:>7}  {}",
@@ -1189,13 +1189,10 @@ impl ConsoleCommand for CamPosCommand {
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         let parts: Vec<&str> = args.split_whitespace().collect();
         if parts.len() != 3 {
-            return CommandOutput::line(
-                "usage: cam.pos <x> <y> <z>  (renderer Y-up coordinates)",
-            );
+            return CommandOutput::line("usage: cam.pos <x> <y> <z>  (renderer Y-up coordinates)");
         }
         let parse = |s: &str| -> Option<f32> { s.parse::<f32>().ok() };
-        let (Some(x), Some(y), Some(z)) =
-            (parse(parts[0]), parse(parts[1]), parse(parts[2]))
+        let (Some(x), Some(y), Some(z)) = (parse(parts[0]), parse(parts[1]), parse(parts[2]))
         else {
             return CommandOutput::line(format!(
                 "cam.pos: failed to parse coordinates from `{args}`"
@@ -1210,14 +1207,10 @@ impl ConsoleCommand for CamPosCommand {
             return CommandOutput::line("Transform storage not present");
         };
         let Some(transform) = tq.get_mut(cam_entity) else {
-            return CommandOutput::line(format!(
-                "Camera entity {cam_entity} has no Transform"
-            ));
+            return CommandOutput::line(format!("Camera entity {cam_entity} has no Transform"));
         };
         transform.translation = Vec3::new(x, y, z);
-        CommandOutput::line(format!(
-            "Camera teleported to ({x:.2}, {y:.2}, {z:.2})"
-        ))
+        CommandOutput::line(format!("Camera teleported to ({x:.2}, {y:.2}, {z:.2})"))
     }
 }
 
@@ -1296,9 +1289,7 @@ impl ConsoleCommand for CamTpCommand {
                 return CommandOutput::line("Transform storage not present");
             };
             let Some(transform) = tq.get_mut(cam_entity) else {
-                return CommandOutput::line(format!(
-                    "Camera entity {cam_entity} has no Transform"
-                ));
+                return CommandOutput::line(format!("Camera entity {cam_entity} has no Transform"));
             };
             transform.translation = camera_pos;
             transform.rotation = rotation;
@@ -1558,7 +1549,10 @@ fn format_skin_dump(world: &World, entity: u32, skin: &SkinnedMesh) -> Vec<Strin
         lines.push("  skeleton_root: (none)".to_string());
     }
     if skin.global_skin_transform != Mat4::IDENTITY {
-        lines.push("  global_skin_transform: NON-IDENTITY (informational; not multiplied at runtime)".to_string());
+        lines.push(
+            "  global_skin_transform: NON-IDENTITY (informational; not multiplied at runtime)"
+                .to_string(),
+        );
         lines.push(format!(
             "    {}",
             format_mat4_row(&skin.global_skin_transform)
@@ -1932,7 +1926,9 @@ impl ConsoleCommand for LightAttenCommand {
             lines.push(format!("  ! {e}"));
         }
         lines.push("LightTuning (REND-#1451):".to_string());
-        lines.push(format!("  knee_frac = {knee:.3}  (authored radius = knee × cull radius)"));
+        lines.push(format!(
+            "  knee_frac = {knee:.3}  (authored radius = knee × cull radius)"
+        ));
         lines.push(format!(
             "  legacy    = {}  ({})",
             legacy,
@@ -2045,10 +2041,7 @@ impl ConsoleCommand for DoorTeleportCommand {
 
         let mut lines = vec![
             format!("Door {entity_id} teleport payload:"),
-            format!(
-                "  destination FormID: {:08X}",
-                door.destination_form_id
-            ),
+            format!("  destination FormID: {:08X}", door.destination_form_id),
             format!(
                 "  destination position (Z-up): ({:.2}, {:.2}, {:.2})",
                 door.position_zup[0], door.position_zup[1], door.position_zup[2]
@@ -2213,10 +2206,7 @@ impl ConsoleCommand for ScriptActivateCommand {
                  scripting::register must run at engine init.",
             );
         };
-        q.insert(
-            entity_id,
-            byroredux_scripting::ActivateEvent { activator },
-        );
+        q.insert(entity_id, byroredux_scripting::ActivateEvent { activator });
 
         CommandOutput::line(format!(
             "script.activate: ActivateEvent emitted on entity {entity_id} (activator = {activator})"
@@ -2288,7 +2278,10 @@ impl MatSetCommand {
         }
         parts
             .iter()
-            .map(|s| s.parse::<f32>().map_err(|_| format!("`{s}` is not a number")))
+            .map(|s| {
+                s.parse::<f32>()
+                    .map_err(|_| format!("`{s}` is not a number"))
+            })
             .collect()
     }
 }
@@ -2400,7 +2393,6 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MatSetCommand);
     registry
 }
-
 
 #[cfg(test)]
 #[path = "commands_tests.rs"]

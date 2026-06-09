@@ -613,11 +613,12 @@ impl CompositePipeline {
         // (#1030 / REN-D10-NEW-09). One set per frame-in-flight; the
         // descriptor counts inside each binding are 1, so the total
         // per type is `bindings.count(type) * MAX_FRAMES_IN_FLIGHT`.
-        partial.descriptor_pool = try_or_cleanup!(
-            DescriptorPoolBuilder::from_layout_bindings(&ds_bindings, MAX_FRAMES_IN_FLIGHT as u32)
-                .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-                .build(device, "composite descriptor pool")
-        );
+        partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
+            &ds_bindings,
+            MAX_FRAMES_IN_FLIGHT as u32
+        )
+        .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+        .build(device, "composite descriptor pool"));
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         partial.descriptor_sets = try_or_cleanup!(unsafe {

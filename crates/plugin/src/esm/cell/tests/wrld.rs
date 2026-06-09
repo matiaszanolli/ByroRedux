@@ -73,7 +73,6 @@ pub(super) fn parse_synthetic_wrld(
     (worldspaces, climates, exterior)
 }
 
-
 #[test]
 fn parse_wrld_captures_oblivion_root_worldspace_fields() {
     // Synthetic Tamriel-shaped WRLD: object bounds (f32 world units),
@@ -252,10 +251,7 @@ fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
     );
     let children = build_world_children_group(wrld_fid, &cell);
 
-    let wrld = build_wrld_record(
-        wrld_fid,
-        &[(b"EDID", b"Commonwealth\0".to_vec())],
-    );
+    let wrld = build_wrld_record(wrld_fid, &[(b"EDID", b"Commonwealth\0".to_vec())]);
 
     // Layout the WRLD-GRUP payload as [WRLD record] + [children GRUP].
     let mut wrld_grup_payload = Vec::new();
@@ -306,11 +302,11 @@ fn parse_wrld_truncated_payloads_default_safely() {
         0x0000_0BAD,
         &[
             (b"EDID", b"TruncatedWorld\0".to_vec()),
-            (b"PNAM", vec![0x07]),       // single-byte form
-            (b"NAM0", vec![0u8; 7]),     // too short → ignored
-            (b"NAM9", vec![]),           // empty → ignored
-            (b"DATA", vec![]),           // empty → ignored
-            (b"ICON", vec![]),           // empty zstring
+            (b"PNAM", vec![0x07]),   // single-byte form
+            (b"NAM0", vec![0u8; 7]), // too short → ignored
+            (b"NAM9", vec![]),       // empty → ignored
+            (b"DATA", vec![]),       // empty → ignored
+            (b"ICON", vec![]),       // empty zstring
         ],
     );
     let buf = build_wrld_group(&[wrld]);

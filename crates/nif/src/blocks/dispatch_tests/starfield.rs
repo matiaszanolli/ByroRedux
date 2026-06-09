@@ -88,7 +88,6 @@ fn starfield_external_geometry_bytes(flags: u32, mesh_names: &[&str]) -> Vec<u8>
     d
 }
 
-
 /// Regression for #708 / NIF-D5-01: BSGeometry now dispatches and
 /// captures the external-mesh-path branch (the 99% Starfield case).
 /// Pre-fix it fell into NiUnknown and the entire mesh body was lost.
@@ -246,4 +245,3 @@ fn starfield_bone_translations_dispatches() {
 }
 
 // ── O5-3 / #688 — early-Gamebryo NiObject groupID prefix ─────────
-

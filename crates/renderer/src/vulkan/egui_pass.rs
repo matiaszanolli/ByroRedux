@@ -224,7 +224,10 @@ impl EguiPass {
 /// swapchain image. `loadOp = LOAD` preserves whatever composite
 /// already wrote; `initialLayout = PRESENT_SRC_KHR` matches the
 /// final layout composite leaves the image in.
-fn create_render_pass(device: &ash::Device, swapchain_format: vk::Format) -> Result<vk::RenderPass> {
+fn create_render_pass(
+    device: &ash::Device,
+    swapchain_format: vk::Format,
+) -> Result<vk::RenderPass> {
     let attachment = vk::AttachmentDescription::default()
         .format(swapchain_format)
         .samples(vk::SampleCountFlags::TYPE_1)

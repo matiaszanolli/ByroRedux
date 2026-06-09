@@ -6,8 +6,7 @@ use super::*;
 /// regress daytime surface lighting brightness.
 #[test]
 fn exterior_noon_preserves_pre_fix_brightness() {
-    let (color, radius) =
-        compute_directional_upload(&[0.7, 0.65, 0.55], false, SUN_INTENSITY_PEAK);
+    let (color, radius) = compute_directional_upload(&[0.7, 0.65, 0.55], false, SUN_INTENSITY_PEAK);
     assert_eq!(radius, 0.0, "exterior radius must be 0 (shadowed)");
     assert!((color[0] - 0.7).abs() < 1e-6);
     assert!((color[1] - 0.65).abs() < 1e-6);
@@ -75,8 +74,7 @@ fn exterior_out_of_range_intensity_is_clamped() {
 fn interior_uses_fixed_fill_independent_of_sun_intensity() {
     let (noon_color, noon_radius) =
         compute_directional_upload(&[0.5, 0.5, 0.5], true, SUN_INTENSITY_PEAK);
-    let (midnight_color, midnight_radius) =
-        compute_directional_upload(&[0.5, 0.5, 0.5], true, 0.0);
+    let (midnight_color, midnight_radius) = compute_directional_upload(&[0.5, 0.5, 0.5], true, 0.0);
     assert_eq!(
         noon_color, midnight_color,
         "interior fill must NOT vary with sun_intensity"

@@ -10,8 +10,8 @@
 //! observable `ImportedMesh` output rather than deleted helper
 //! implementation details.
 use super::*;
-use crate::blocks::tri_shape::BsTriShapeKind;
 use crate::blocks::tri_shape::BsTriShape;
+use crate::blocks::tri_shape::BsTriShapeKind;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3};
 

@@ -171,9 +171,8 @@ pub(crate) fn apply_color_channels(
                 write_lazy!(shader_q, AnimatedShaderColor, world, target_entity, value)
             }
             ColorTarget::LightDiffuse => {
-                let q = light_q.get_or_insert_with(|| {
-                    world.query_mut::<byroredux_core::ecs::LightSource>()
-                });
+                let q = light_q
+                    .get_or_insert_with(|| world.query_mut::<byroredux_core::ecs::LightSource>());
                 if let Some(q) = q.as_mut() {
                     if let Some(ls) = q.get_mut(target_entity) {
                         ls.color = [value.x, value.y, value.z];
@@ -279,12 +278,9 @@ pub(crate) fn apply_float_channels(
                     }
                 }
             }
-            FloatTarget::LightDimmer
-            | FloatTarget::LightIntensity
-            | FloatTarget::LightRadius => {
-                let q = light_q.get_or_insert_with(|| {
-                    world.query_mut::<byroredux_core::ecs::LightSource>()
-                });
+            FloatTarget::LightDimmer | FloatTarget::LightIntensity | FloatTarget::LightRadius => {
+                let q = light_q
+                    .get_or_insert_with(|| world.query_mut::<byroredux_core::ecs::LightSource>());
                 if let Some(q) = q.as_mut() {
                     if let Some(ls) = q.get_mut(target_entity) {
                         match channel.target {

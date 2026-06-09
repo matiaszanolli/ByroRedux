@@ -108,7 +108,8 @@ mod glass_classification_tests {
         // FNV whiskey bottle: texture path carries "bottle", alpha-blend.
         let mut m = mat();
         m.roughness = 0.40; // post-resolve_pbr glossiness value
-        classify_glass_into_material(&mut m,
+        classify_glass_into_material(
+            &mut m,
             Some("WhiskeyBottle01:0"),
             Some("textures/clutter/liquorbottles/whiskeybottle01.dds"),
             true,
@@ -125,7 +126,8 @@ mod glass_classification_tests {
         // but the NIF node name does. Alpha-blended → glass.
         let mut m = mat();
         m.roughness = 0.60;
-        classify_glass_into_material(&mut m,
+        classify_glass_into_material(
+            &mut m,
             Some("DrinkingGlass:0"),
             Some("textures/clutter/junk/kitchenutensils01.dds"),
             true,
@@ -143,7 +145,8 @@ mod glass_classification_tests {
         // its roughness must be left untouched (no over-shine).
         let mut m = mat();
         m.roughness = 0.80;
-        classify_glass_into_material(&mut m,
+        classify_glass_into_material(
+            &mut m,
             Some("PawnShopWindow:0"),
             Some("textures/architecture/westside/pawnshop_d.dds"),
             false, // no alpha blend
@@ -161,7 +164,12 @@ mod glass_classification_tests {
         let mut m = mat();
         m.metalness = 0.90;
         m.roughness = 0.30;
-        classify_glass_into_material(&mut m, Some("glasscasing"), Some("metalglass.dds"), true, false,
+        classify_glass_into_material(
+            &mut m,
+            Some("glasscasing"),
+            Some("metalglass.dds"),
+            true,
+            false,
             false,
         );
         assert_eq!(m.material_kind, 0);
@@ -172,24 +180,38 @@ mod glass_classification_tests {
         // Engine-synthesized kinds (≥ 100) win — never demote a fire plane.
         let mut m = mat();
         m.material_kind = byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
-        classify_glass_into_material(&mut m, Some("glassfire"), Some("glass.dds"), true, false,
+        classify_glass_into_material(
+            &mut m,
+            Some("glassfire"),
+            Some("glass.dds"),
+            true,
+            false,
             false,
         );
-        assert_eq!(m.material_kind, byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER);
+        assert_eq!(
+            m.material_kind,
+            byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+        );
     }
 
     #[test]
     fn decal_and_opaque_non_keyword_are_not_glass() {
         // Decal with glass keyword + alpha → excluded by the decal gate.
         let mut m = mat();
-        classify_glass_into_material(&mut m, Some("glassdecal"), Some("glass.dds"), true, true,
+        classify_glass_into_material(
+            &mut m,
+            Some("glassdecal"),
+            Some("glass.dds"),
+            true,
+            true,
             false,
         );
         assert_eq!(m.material_kind, 0);
         // Plain alpha-blend wood (no keyword) stays non-glass — guards the
         // historical FNV-wood-table / Markarth-banner false positives.
         let mut w = mat();
-        classify_glass_into_material(&mut w,
+        classify_glass_into_material(
+            &mut w,
             Some("WoodTable01"),
             Some("textures/furniture/woodtable01.dds"),
             true,

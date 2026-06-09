@@ -1182,8 +1182,7 @@ fn race_oblivion_data_and_subs_against_vanilla() {
         .races
         .values()
         .filter(|r| {
-            (0.5..=2.0).contains(&r.base_height.0)
-                && (0.5..=2.0).contains(&r.base_height.1)
+            (0.5..=2.0).contains(&r.base_height.0) && (0.5..=2.0).contains(&r.base_height.1)
         })
         .count();
     assert_eq!(
@@ -1425,19 +1424,11 @@ fn parse_fo4_architecture_fixture_populates_typed_maps() {
     // SCOL: empty subs still inserts (parse_scol_group has no record-
     // contents condition on the insert). Minimal EDID makes the fixture
     // realistic + survives the StaticObject `editor_id.is_empty()` gate.
-    let scol = fixture_build_record(
-        b"SCOL",
-        0x0010_0001,
-        &[(b"EDID", b"TestScol\0")],
-    );
+    let scol = fixture_build_record(b"SCOL", 0x0010_0001, &[(b"EDID", b"TestScol\0")]);
     let scol_group = fixture_wrap_top_group(b"SCOL", &scol);
 
     // PKIN: same shape — EDID + the unconditional `packins.insert`.
-    let pkin = fixture_build_record(
-        b"PKIN",
-        0x0020_0001,
-        &[(b"EDID", b"TestPkin\0")],
-    );
+    let pkin = fixture_build_record(b"PKIN", 0x0020_0001, &[(b"EDID", b"TestPkin\0")]);
     let pkin_group = fixture_wrap_top_group(b"PKIN", &pkin);
 
     // TXST: needs at least one TX00..TX07 or MNAM so the parsed
@@ -1455,11 +1446,7 @@ fn parse_fo4_architecture_fixture_populates_typed_maps() {
     let txst_group = fixture_wrap_top_group(b"TXST", &txst);
 
     // MSWP: unconditional insert in `parse_mswp_group`.
-    let mswp = fixture_build_record(
-        b"MSWP",
-        0x0040_0001,
-        &[(b"EDID", b"TestMswp\0")],
-    );
+    let mswp = fixture_build_record(b"MSWP", 0x0040_0001, &[(b"EDID", b"TestMswp\0")]);
     let mswp_group = fixture_wrap_top_group(b"MSWP", &mswp);
 
     // Assemble the synthetic ESM: TES4 header + the four top-level

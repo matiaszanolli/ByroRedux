@@ -791,8 +791,8 @@ mod tests {
         let mut m = Material::default();
         m.glossiness = 50.0;
         m.env_map_scale = 0.5; // cushion-with-sheen tier — low specular, dielectric
-        // Vinyl/cloth hospital bed: env_map_scale alone does NOT mean metallic.
-        // Metalness comes from specular_color luminance; cloth/vinyl has grey/dark specular.
+                               // Vinyl/cloth hospital bed: env_map_scale alone does NOT mean metallic.
+                               // Metalness comes from specular_color luminance; cloth/vinyl has grey/dark specular.
         let p = classify_with_spec(&m, "textures/clutter/medical/hospitalbed01.dds", [0.2; 3]);
         assert_eq!(
             p.metalness, 0.0,

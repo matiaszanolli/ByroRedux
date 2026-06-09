@@ -451,7 +451,10 @@ mod tests {
     /// false. The vanilla case for every FO4 SCOL.
     #[test]
     fn parse_scol_without_vmad_leaves_has_script_false() {
-        let subs = vec![edid("PlainScol"), modl("SCOL\\Fallout4.esm\\CM00000001.NIF")];
+        let subs = vec![
+            edid("PlainScol"),
+            modl("SCOL\\Fallout4.esm\\CM00000001.NIF"),
+        ];
         let rec = parse_scol(0x9999_CAFE, &subs);
         assert!(!rec.has_script);
     }

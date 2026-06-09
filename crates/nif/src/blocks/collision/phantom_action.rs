@@ -18,7 +18,6 @@ pub struct BhkSimpleShapePhantom {
     pub transform: [[f32; 4]; 4],
 }
 
-
 impl BhkSimpleShapePhantom {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // bhkWorldObject: shape ref + filter + world CInfo (20 bytes)
@@ -70,7 +69,6 @@ pub struct BhkAabbPhantom {
     pub aabb_max: [f32; 4],
 }
 
-
 impl BhkAabbPhantom {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // bhkWorldObject prefix (28 B): shape + filter + bhkWorldObjectCInfo.
@@ -110,7 +108,6 @@ pub struct BhkLiquidAction {
     pub neighbor_distance: f32,
     pub neighbor_strength: f32,
 }
-
 
 impl BhkLiquidAction {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -156,7 +153,6 @@ pub struct BhkOrientHingedBodyAction {
     /// Angular damping on the reorientation torque.
     pub damping: f32,
 }
-
 
 impl BhkOrientHingedBodyAction {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {

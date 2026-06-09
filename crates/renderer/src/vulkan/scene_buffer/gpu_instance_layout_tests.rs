@@ -22,17 +22,17 @@ use std::mem::offset_of;
 /// before touching this struct).
 #[test]
 fn gpu_instance_is_112_bytes_std430_compatible() {
-        // R1 Phase 6 collapsed the per-material fields onto the
-        // separate `MaterialTable` SSBO. What's left here is
-        // strictly per-DRAW: model (64 B) + 4 mesh refs +
-        // bone_offset + flags + material_id + avg_albedo (kept
-        // for caustic compute reads off its own descriptor set)
-        // packed into 7 vec4 slots = 112 B.
-        assert_eq!(
-            size_of::<GpuInstance>(),
-            112,
-            "GpuInstance must stay 112 B to match std430 shader layout"
-        );
+    // R1 Phase 6 collapsed the per-material fields onto the
+    // separate `MaterialTable` SSBO. What's left here is
+    // strictly per-DRAW: model (64 B) + 4 mesh refs +
+    // bone_offset + flags + material_id + avg_albedo (kept
+    // for caustic compute reads off its own descriptor set)
+    // packed into 7 vec4 slots = 112 B.
+    assert_eq!(
+        size_of::<GpuInstance>(),
+        112,
+        "GpuInstance must stay 112 B to match std430 shader layout"
+    );
 }
 
 /// Regression for #1028 / R-D6-01. `GpuCamera` must stay 288 B
@@ -48,7 +48,7 @@ fn gpu_instance_is_112_bytes_std430_compatible() {
 /// comment stays honest.
 #[test]
 fn gpu_camera_is_320_bytes() {
-        assert_eq!(
+    assert_eq!(
             size_of::<GpuCamera>(),
             320,
             "GpuCamera must be 320 B (304 B pre-DOF + 16 B dof_params vec4) to match the CameraUBO \
@@ -58,19 +58,19 @@ fn gpu_camera_is_320_bytes() {
 
 #[test]
 fn gpu_instance_field_offsets_match_shader_contract() {
-        assert_eq!(offset_of!(GpuInstance, model), 0);
-        assert_eq!(offset_of!(GpuInstance, texture_index), 64);
-        assert_eq!(offset_of!(GpuInstance, bone_offset), 68);
-        assert_eq!(offset_of!(GpuInstance, vertex_offset), 72);
-        assert_eq!(offset_of!(GpuInstance, index_offset), 76);
-        assert_eq!(offset_of!(GpuInstance, vertex_count), 80);
-        assert_eq!(offset_of!(GpuInstance, flags), 84);
-        assert_eq!(offset_of!(GpuInstance, material_id), 88);
-        assert_eq!(offset_of!(GpuInstance, _pad_id0), 92);
-        assert_eq!(offset_of!(GpuInstance, avg_albedo_r), 96);
-        assert_eq!(offset_of!(GpuInstance, avg_albedo_g), 100);
-        assert_eq!(offset_of!(GpuInstance, avg_albedo_b), 104);
-        assert_eq!(offset_of!(GpuInstance, _pad_albedo), 108);
+    assert_eq!(offset_of!(GpuInstance, model), 0);
+    assert_eq!(offset_of!(GpuInstance, texture_index), 64);
+    assert_eq!(offset_of!(GpuInstance, bone_offset), 68);
+    assert_eq!(offset_of!(GpuInstance, vertex_offset), 72);
+    assert_eq!(offset_of!(GpuInstance, index_offset), 76);
+    assert_eq!(offset_of!(GpuInstance, vertex_count), 80);
+    assert_eq!(offset_of!(GpuInstance, flags), 84);
+    assert_eq!(offset_of!(GpuInstance, material_id), 88);
+    assert_eq!(offset_of!(GpuInstance, _pad_id0), 92);
+    assert_eq!(offset_of!(GpuInstance, avg_albedo_r), 96);
+    assert_eq!(offset_of!(GpuInstance, avg_albedo_g), 100);
+    assert_eq!(offset_of!(GpuInstance, avg_albedo_b), 104);
+    assert_eq!(offset_of!(GpuInstance, _pad_albedo), 108);
 }
 
 /// R1 Phase 6 sentinel — list of fields that USED to live on
@@ -78,11 +78,11 @@ fn gpu_instance_field_offsets_match_shader_contract() {
 /// If this test grows back any of those names, R1 is being undone.
 #[test]
 fn gpu_instance_does_not_re_expand_with_per_material_fields() {
-        // Build trivially via Default and rely on the size assertion
-        // above (112 B) to fail loudly if a field is reintroduced.
-        // The list below is documentary only; the size guard is what
-        // catches actual regressions.
-        let _ = GpuInstance::default();
+    // Build trivially via Default and rely on the size assertion
+    // above (112 B) to fail loudly if a field is reintroduced.
+    // The list below is documentary only; the size guard is what
+    // catches actual regressions.
+    let _ = GpuInstance::default();
 }
 
 /// Regression: #309 — `VkDrawIndexedIndirectCommand` is a Vulkan-
@@ -94,11 +94,11 @@ fn gpu_instance_does_not_re_expand_with_per_material_fields() {
 /// instead of silently producing garbage draw params.
 #[test]
 fn draw_indexed_indirect_command_is_20_bytes() {
-        assert_eq!(
-            size_of::<vk::DrawIndexedIndirectCommand>(),
-            20,
-            "VkDrawIndexedIndirectCommand must be 20 bytes (5 × u32) per the Vulkan spec"
-        );
+    assert_eq!(
+        size_of::<vk::DrawIndexedIndirectCommand>(),
+        20,
+        "VkDrawIndexedIndirectCommand must be 20 bytes (5 × u32) per the Vulkan spec"
+    );
 }
 
 /// Regression: #309 — `upload_indirect_draws` clamps at
@@ -112,14 +112,14 @@ fn draw_indexed_indirect_command_is_20_bytes() {
 /// to match `MAX_INSTANCES` so the worst-case 1:1 mapping fits.
 #[test]
 fn indirect_buffer_capacity_matches_max_draw_constant() {
-        let bytes_per_command = size_of::<vk::DrawIndexedIndirectCommand>();
-        assert_eq!(bytes_per_command, 20);
-        assert_eq!(
-            bytes_per_command * MAX_INDIRECT_DRAWS,
-            20 * 0x40000,
-            "MAX_INDIRECT_DRAWS × sizeof(VkDrawIndexedIndirectCommand) \
+    let bytes_per_command = size_of::<vk::DrawIndexedIndirectCommand>();
+    assert_eq!(bytes_per_command, 20);
+    assert_eq!(
+        bytes_per_command * MAX_INDIRECT_DRAWS,
+        20 * 0x40000,
+        "MAX_INDIRECT_DRAWS × sizeof(VkDrawIndexedIndirectCommand) \
              must match the per-frame indirect buffer allocation"
-        );
+    );
 }
 
 /// Regression: `MAX_INSTANCES` must stay at or below the
@@ -143,14 +143,14 @@ fn indirect_buffer_capacity_matches_max_draw_constant() {
 /// (~262K), with ~5× headroom past the worst observed scene.
 #[test]
 fn max_instances_stays_within_mesh_id_encoding_ceiling() {
-        const MESH_ID_ENCODING_CEILING: usize = 0x7FFF_FFFF;
-        assert!(
-            MAX_INSTANCES <= MESH_ID_ENCODING_CEILING,
-            "MAX_INSTANCES ({}) exceeds the R32_UINT mesh_id encoding ceiling \
+    const MESH_ID_ENCODING_CEILING: usize = 0x7FFF_FFFF;
+    assert!(
+        MAX_INSTANCES <= MESH_ID_ENCODING_CEILING,
+        "MAX_INSTANCES ({}) exceeds the R32_UINT mesh_id encoding ceiling \
              (0x7FFFFFFF, with bit 31 reserved for ALPHA_BLEND_NO_HISTORY). \
              Widen `MESH_ID_FORMAT` past 32 bits before bumping past this value.",
-            MAX_INSTANCES
-        );
+        MAX_INSTANCES
+    );
 }
 
 /// Regression: pin `MESH_ID_FORMAT` at `R32_UINT` so a future
@@ -162,16 +162,16 @@ fn max_instances_stays_within_mesh_id_encoding_ceiling() {
 /// would re-introduce the silent ghosting / flicker regression.
 #[test]
 fn mesh_id_format_is_r32_uint() {
-        assert_eq!(
-            super::super::gbuffer::MESH_ID_FORMAT,
-            ash::vk::Format::R32_UINT,
-            "MESH_ID_FORMAT must stay R32_UINT — the R16_UINT \
+    assert_eq!(
+        super::super::gbuffer::MESH_ID_FORMAT,
+        ash::vk::Format::R32_UINT,
+        "MESH_ID_FORMAT must stay R32_UINT — the R16_UINT \
              predecessor capped at 32767 distinct instances and \
              dense city cells silently wrap-collapsed to meshId 0 \
              (the sky sentinel), misrouting every shadow / \
              reflection / SVGF disocclusion query against the \
              wrapped instance. See #992 / REN-MESH-ID-32."
-        );
+    );
 }
 
 /// Regression: #417 — every shader that declares its own copy of
@@ -190,99 +190,105 @@ fn mesh_id_format_is_r32_uint() {
 /// `uint _pad1;` after the triangle.* / ui.vert rename).
 #[test]
 fn every_shader_struct_gpu_instance_names_material_kind_slot() {
-        const SOURCES: &[(&str, &str)] = &[
-            ("triangle.vert", include_str!("../../../shaders/triangle.vert")),
-            ("triangle.frag", include_str!("../../../shaders/triangle.frag")),
-            ("ui.vert", include_str!("../../../shaders/ui.vert")),
-            (
-                "caustic_splat.comp",
-                include_str!("../../../shaders/caustic_splat.comp"),
-            ),
-        ];
-        for (name, src) in SOURCES {
-            assert!(
-                src.contains("struct GpuInstance"),
-                "{name} no longer declares `struct GpuInstance` — update \
+    const SOURCES: &[(&str, &str)] = &[
+        (
+            "triangle.vert",
+            include_str!("../../../shaders/triangle.vert"),
+        ),
+        (
+            "triangle.frag",
+            include_str!("../../../shaders/triangle.frag"),
+        ),
+        ("ui.vert", include_str!("../../../shaders/ui.vert")),
+        (
+            "caustic_splat.comp",
+            include_str!("../../../shaders/caustic_splat.comp"),
+        ),
+    ];
+    for (name, src) in SOURCES {
+        assert!(
+            src.contains("struct GpuInstance"),
+            "{name} no longer declares `struct GpuInstance` — update \
                  the sync list at feedback_shader_struct_sync.md"
-            );
-            // R1 Phase 6 — `material_kind` moved off `GpuInstance`
-            // into the `MaterialBuffer` SSBO. The assertion that
-            // every shader's per-instance struct names a final
-            // `materialKind` slot (#417) no longer applies.
-            // `triangle.frag` is the only shader that declares a
-            // `GpuMaterial` block at all (see binding 13 below).
-            assert!(
-                !src.contains("uint _pad1"),
-                "{name}: GpuInstance slot is still named `_pad1` — \
+        );
+        // R1 Phase 6 — `material_kind` moved off `GpuInstance`
+        // into the `MaterialBuffer` SSBO. The assertion that
+        // every shader's per-instance struct names a final
+        // `materialKind` slot (#417) no longer applies.
+        // `triangle.frag` is the only shader that declares a
+        // `GpuMaterial` block at all (see binding 13 below).
+        assert!(
+            !src.contains("uint _pad1"),
+            "{name}: GpuInstance slot is still named `_pad1` — \
                  the shader has the pre-#417 layout (Shader Struct \
                  Sync invariant #318 / #417)."
-            );
-            // R1 Phase 6 — these fields were migrated to the
-            // `MaterialBuffer` SSBO and dropped from `GpuInstance`.
-            // `material_kind` is now read as `materials[id].materialKind`
-            // and `materialId` is the only material-table-related
-            // slot left on the per-instance struct.
-            for needle in [
-                // R1 Phase 3 — material table indirection. Every shader
-                // copy declares the slot so the std430 stride stays
-                // byte-identical across the four.
-                "materialId",
-            ] {
-                assert!(
-                    src.contains(needle),
-                    "{name}: GpuInstance must declare `{needle}` (R1 Phase 3+). \
+        );
+        // R1 Phase 6 — these fields were migrated to the
+        // `MaterialBuffer` SSBO and dropped from `GpuInstance`.
+        // `material_kind` is now read as `materials[id].materialKind`
+        // and `materialId` is the only material-table-related
+        // slot left on the per-instance struct.
+        for needle in [
+            // R1 Phase 3 — material table indirection. Every shader
+            // copy declares the slot so the std430 stride stays
+            // byte-identical across the four.
+            "materialId",
+        ] {
+            assert!(
+                src.contains(needle),
+                "{name}: GpuInstance must declare `{needle}` (R1 Phase 3+). \
                      Every copy updates in lockstep — see the \
                      feedback_shader_struct_sync memory note."
-                );
-            }
-            // R1 Phase 6 — these names lived on `GpuInstance` before
-            // the material-table collapse. A reappearance means the
-            // refactor is being undone.
-            for stale in [
-                "parallaxMapIndex",
-                "parallaxHeightScale",
-                "parallaxMaxPasses",
-                "envMapIndex",
-                "envMaskIndex",
-                "uvOffsetU",
-                "uvScaleU",
-                "materialAlpha",
-                "skinTintR",
-                "hairTintR",
-                "multiLayerEnvmapStrength",
-                "eyeLeftCenterX",
-                "eyeCubemapScale",
-                "eyeRightCenterX",
-                "multiLayerInnerThickness",
-                "multiLayerRefractionScale",
-                "multiLayerInnerScaleU",
-                "sparkleR",
-                "sparkleIntensity",
-                "diffuseR",
-                "ambientR",
-                "falloffStartAngle",
-                "falloffStopAngle",
-                "falloffStartOpacity",
-                "falloffStopOpacity",
-                "softFalloffDepth",
-            ] {
-                // The names CAN appear on the `GpuMaterial` mirror
-                // declarations — what's forbidden is reappearance on
-                // `struct GpuInstance` after Phase 6 dropped them.
-                let gi_start = src.find("struct GpuInstance");
-                let gi_end = gi_start.and_then(|s| src[s..].find('}').map(|e| s + e));
-                if let (Some(s), Some(e)) = (gi_start, gi_end) {
-                    let gi_block = &src[s..e];
-                    assert!(
-                        !gi_block.contains(stale),
-                        "{name}: per-material field `{stale}` reappeared on \
+            );
+        }
+        // R1 Phase 6 — these names lived on `GpuInstance` before
+        // the material-table collapse. A reappearance means the
+        // refactor is being undone.
+        for stale in [
+            "parallaxMapIndex",
+            "parallaxHeightScale",
+            "parallaxMaxPasses",
+            "envMapIndex",
+            "envMaskIndex",
+            "uvOffsetU",
+            "uvScaleU",
+            "materialAlpha",
+            "skinTintR",
+            "hairTintR",
+            "multiLayerEnvmapStrength",
+            "eyeLeftCenterX",
+            "eyeCubemapScale",
+            "eyeRightCenterX",
+            "multiLayerInnerThickness",
+            "multiLayerRefractionScale",
+            "multiLayerInnerScaleU",
+            "sparkleR",
+            "sparkleIntensity",
+            "diffuseR",
+            "ambientR",
+            "falloffStartAngle",
+            "falloffStopAngle",
+            "falloffStartOpacity",
+            "falloffStopOpacity",
+            "softFalloffDepth",
+        ] {
+            // The names CAN appear on the `GpuMaterial` mirror
+            // declarations — what's forbidden is reappearance on
+            // `struct GpuInstance` after Phase 6 dropped them.
+            let gi_start = src.find("struct GpuInstance");
+            let gi_end = gi_start.and_then(|s| src[s..].find('}').map(|e| s + e));
+            if let (Some(s), Some(e)) = (gi_start, gi_end) {
+                let gi_block = &src[s..e];
+                assert!(
+                    !gi_block.contains(stale),
+                    "{name}: per-material field `{stale}` reappeared on \
                          `struct GpuInstance` — R1 Phase 6 dropped it. \
                          Read it from `materials[gpuInstance.materialId]` \
                          instead."
-                    );
-                }
+                );
             }
         }
+    }
 }
 
 /// Regression: #776 / #785 — `ui.vert` must read its texture index
@@ -304,37 +310,37 @@ fn every_shader_struct_gpu_instance_names_material_kind_slot() {
 /// fails `cargo test` without needing glslangValidator.
 #[test]
 fn ui_vert_reads_texture_index_from_instance_not_material_table() {
-        let src = include_str!("../../../shaders/ui.vert");
-        assert!(
-            src.contains("fragTexIndex = inst.textureIndex"),
-            "ui.vert: `fragTexIndex` must be assigned from \
+    let src = include_str!("../../../shaders/ui.vert");
+    assert!(
+        src.contains("fragTexIndex = inst.textureIndex"),
+        "ui.vert: `fragTexIndex` must be assigned from \
              `inst.textureIndex` (the per-instance UI texture handle). \
              Reading `materials[inst.materialId].textureIndex` samples \
              the first scene material instead — see #776 / #785."
-        );
-        // Match syntactic declarations only — the surrounding comments
-        // legitimately reference `MaterialBuffer` / `materials[…]` to
-        // explain why the read is forbidden, and the test must not
-        // catch its own documentation.
-        assert!(
-            !src.contains("buffer MaterialBuffer"),
-            "ui.vert: must NOT declare a `MaterialBuffer` SSBO. The UI \
+    );
+    // Match syntactic declarations only — the surrounding comments
+    // legitimately reference `MaterialBuffer` / `materials[…]` to
+    // explain why the read is forbidden, and the test must not
+    // catch its own documentation.
+    assert!(
+        !src.contains("buffer MaterialBuffer"),
+        "ui.vert: must NOT declare a `MaterialBuffer` SSBO. The UI \
              vertex stage only consumes per-instance `textureIndex`; \
              pulling in the material table re-enables the #776 / #785 \
              failure mode."
-        );
-        assert!(
-            !src.contains("struct GpuMaterial"),
-            "ui.vert: must NOT declare `struct GpuMaterial`. Only \
+    );
+    assert!(
+        !src.contains("struct GpuMaterial"),
+        "ui.vert: must NOT declare `struct GpuMaterial`. Only \
              `triangle.frag` mirrors the material struct (binding 13). \
              See #776 / #785."
-        );
-        assert!(
-            !src.contains("materials[inst"),
-            "ui.vert: must NOT index into `materials[inst.…]`. The UI \
+    );
+    assert!(
+        !src.contains("materials[inst"),
+        "ui.vert: must NOT index into `materials[inst.…]`. The UI \
              quad's `materialId` is 0 (default-initialized), so any \
              read aliases the first scene material — see #776 / #785."
-        );
+    );
 }
 
 /// #1067 / REN-D14-NEW-07 — sibling guard for the water shaders.
@@ -384,33 +390,33 @@ fn water_shaders_must_not_acquire_material_buffer_binding() {
 /// `fragPrevClipPos = prevViewProj * …`.
 #[test]
 fn triangle_vert_uses_bones_prev_for_motion_vectors() {
-        let src = include_str!("../../../shaders/triangle.vert");
-        assert!(
-            src.contains("binding = 12) readonly buffer BonesPrevBuffer"),
-            "triangle.vert must declare a previous-frame bone palette \
+    let src = include_str!("../../../shaders/triangle.vert");
+    assert!(
+        src.contains("binding = 12) readonly buffer BonesPrevBuffer"),
+        "triangle.vert must declare a previous-frame bone palette \
              SSBO at `set 1, binding = 12` (SH-3 / #641). Without it \
              skinned vertices produce wrong motion vectors and SVGF / \
              TAA ghost actor limbs in motion."
-        );
-        assert!(
-            src.contains("mat4 bones_prev[]"),
-            "triangle.vert: `BonesPrevBuffer` must expose a `mat4 \
+    );
+    assert!(
+        src.contains("mat4 bones_prev[]"),
+        "triangle.vert: `BonesPrevBuffer` must expose a `mat4 \
              bones_prev[]` array — same layout as `bones[]` so the \
              current and previous palettes can share `inBoneIndices`."
-        );
-        assert!(
-            src.contains("fragPrevClipPos = prevViewProj * prevWorldPos"),
-            "triangle.vert: `fragPrevClipPos` must project the \
+    );
+    assert!(
+        src.contains("fragPrevClipPos = prevViewProj * prevWorldPos"),
+        "triangle.vert: `fragPrevClipPos` must project the \
              previous-frame skinned `prevWorldPos`, not the current \
              frame's `worldPos`. SH-3 / #641 — composing through \
              `bones[]` for both frames is the bug this test guards."
-        );
-        assert!(
-            src.contains("xformPrev"),
-            "triangle.vert: a separate `xformPrev` matrix must be \
+    );
+    assert!(
+        src.contains("xformPrev"),
+        "triangle.vert: a separate `xformPrev` matrix must be \
              composed from `bones_prev` so `prevWorldPos` reflects \
              last frame's joint poses (SH-3 / #641)."
-        );
+    );
 }
 
 /// Regression for #575 / SH-1. The global `GlobalVertices` SSBO
@@ -438,55 +444,55 @@ fn triangle_vert_uses_bones_prev_for_motion_vectors() {
 /// excludes that pattern.
 #[test]
 fn triangle_frag_no_unsafe_vertex_data_reads() {
-        let src = include_str!("../../../shaders/triangle.frag");
+    let src = include_str!("../../../shaders/triangle.frag");
 
-        // Strip safe-recovery wrappers so a forbidden raw read
-        // surfaces as a literal `vertexData[... + 11..14|19|20]`.
-        // We don't run a full GLSL parser; instead, line-by-line
-        // we reject any line that contains the forbidden offset
-        // pattern AND no `floatBitsToUint` / `unpackUnorm4x8` /
-        // `floatBitsToInt` recovery call. Whitespace tolerant.
-        for (lineno, line) in src.lines().enumerate() {
-            // Skip the SSBO-declaration block — it documents the
-            // unsafe offsets but doesn't read them.
-            if line.contains("WARNING")
-                || line.contains("│")
-                || line.contains("//")
-                    && (line.contains("floatBitsToUint") || line.contains("unpackUnorm4x8"))
-            {
-                continue;
-            }
-            // Look for `vertexData[ ... + N ]` where N is 11-14 or
-            // 19-20. Tolerate whitespace and the `(vOff + iN)` outer
-            // expression that the existing `getHitUV` site uses.
-            for forbidden in [11, 12, 13, 14, 19, 20] {
-                let needle_simple = format!("+ {}]", forbidden);
-                let needle_alt = format!("+{}]", forbidden);
-                if line.contains(&needle_simple) || line.contains(&needle_alt) {
-                    // Allow the read when it's wrapped in a
-                    // recovery call.
-                    if line.contains("floatBitsToUint")
-                        || line.contains("unpackUnorm4x8")
-                        || line.contains("floatBitsToInt")
-                    {
-                        continue;
-                    }
-                    panic!(
-                        "triangle.frag:{}: unsafe `vertexData[... + {}]` read \
+    // Strip safe-recovery wrappers so a forbidden raw read
+    // surfaces as a literal `vertexData[... + 11..14|19|20]`.
+    // We don't run a full GLSL parser; instead, line-by-line
+    // we reject any line that contains the forbidden offset
+    // pattern AND no `floatBitsToUint` / `unpackUnorm4x8` /
+    // `floatBitsToInt` recovery call. Whitespace tolerant.
+    for (lineno, line) in src.lines().enumerate() {
+        // Skip the SSBO-declaration block — it documents the
+        // unsafe offsets but doesn't read them.
+        if line.contains("WARNING")
+            || line.contains("│")
+            || line.contains("//")
+                && (line.contains("floatBitsToUint") || line.contains("unpackUnorm4x8"))
+        {
+            continue;
+        }
+        // Look for `vertexData[ ... + N ]` where N is 11-14 or
+        // 19-20. Tolerate whitespace and the `(vOff + iN)` outer
+        // expression that the existing `getHitUV` site uses.
+        for forbidden in [11, 12, 13, 14, 19, 20] {
+            let needle_simple = format!("+ {}]", forbidden);
+            let needle_alt = format!("+{}]", forbidden);
+            if line.contains(&needle_simple) || line.contains(&needle_alt) {
+                // Allow the read when it's wrapped in a
+                // recovery call.
+                if line.contains("floatBitsToUint")
+                    || line.contains("unpackUnorm4x8")
+                    || line.contains("floatBitsToInt")
+                {
+                    continue;
+                }
+                panic!(
+                    "triangle.frag:{}: unsafe `vertexData[... + {}]` read \
                          (offset {} is {} — not an IEEE-754 float). Use \
                          `floatBitsToUint(...)` or `unpackUnorm4x8(...)` to \
                          recover the bit pattern. See #575 / SH-1.\nLine: {}",
-                        lineno + 1,
-                        forbidden,
-                        forbidden,
-                        if (11..=14).contains(&forbidden) {
-                            "u32 (bone index)"
-                        } else {
-                            "packed 4× u8 unorm (splat weight)"
-                        },
-                        line.trim()
-                    );
-                }
+                    lineno + 1,
+                    forbidden,
+                    forbidden,
+                    if (11..=14).contains(&forbidden) {
+                        "u32 (bone index)"
+                    } else {
+                        "packed 4× u8 unorm (splat weight)"
+                    },
+                    line.trim()
+                );
             }
         }
+    }
 }

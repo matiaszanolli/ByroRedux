@@ -6,7 +6,9 @@ use byroredux_nif::blocks::shader::{
 };
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: dump_nolighting <path.nif>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: dump_nolighting <path.nif>");
     let bytes = std::fs::read(&path).expect("read");
     let scene = byroredux_nif::parse_nif(&bytes).expect("parse");
 
@@ -25,7 +27,10 @@ fn main() {
             println!("  block {:3}: file_name={:?}", i, label);
         }
     }
-    println!("  total NoLighting: {} ({} with empty file_name)", nlcount, empty_filename);
+    println!(
+        "  total NoLighting: {} ({} with empty file_name)",
+        nlcount, empty_filename
+    );
 
     println!("\nBSShaderPPLightingProperty entries (with linked BSShaderTextureSet):");
     let mut ppcount = 0;

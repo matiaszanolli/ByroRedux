@@ -672,7 +672,8 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             // `captures_runtime_facegen`, both keyed off `GameKind`
             // semantic predicates.
             b"PNAM" if captures_fo4_face && sub.data.len() >= 4 => {
-                face.head_parts.push(SubReader::new(&sub.data).u32_or_default());
+                face.head_parts
+                    .push(SubReader::new(&sub.data).u32_or_default());
             }
             _ => {}
         }
@@ -1122,10 +1123,7 @@ mod tests {
     /// the arm is gated on `>= 4`, so a 0-length SCRI no-ops.
     #[test]
     fn npc_short_scri_is_ignored() {
-        let subs = vec![
-            sub(b"EDID", b"NoScript\0"),
-            sub(b"SCRI", &[]),
-        ];
+        let subs = vec![sub(b"EDID", b"NoScript\0"), sub(b"SCRI", &[])];
         let n = parse_npc(0x000A_0003, &subs, GameKind::Fallout3NV);
         assert_eq!(n.script_form_id, 0);
     }
@@ -1710,12 +1708,7 @@ mod tests {
     ///   u32 flags                  (4 B)
     ///   u32 services               (4 B)
     ///   i8 trainer + u8 level + 2 B pad (4 B)
-    fn oblivion_clas_data(
-        attrs: (u32, u32),
-        spec: u32,
-        majors: [u32; 7],
-        flags: u32,
-    ) -> Vec<u8> {
+    fn oblivion_clas_data(attrs: (u32, u32), spec: u32, majors: [u32; 7], flags: u32) -> Vec<u8> {
         let mut data = Vec::with_capacity(52);
         data.extend_from_slice(&attrs.0.to_le_bytes());
         data.extend_from_slice(&attrs.1.to_le_bytes());
@@ -1749,7 +1742,10 @@ mod tests {
         let c = parse_clas(0x836, &subs, GameKind::Oblivion);
         assert_eq!(c.primary_attributes, Some((0, 6)));
         assert_eq!(c.specialization, Some(0));
-        assert_eq!(c.major_skills, vec![0x0F, 0x17, 0x12, 0x10, 0x0E, 0x20, 0x11]);
+        assert_eq!(
+            c.major_skills,
+            vec![0x0F, 0x17, 0x12, 0x10, 0x0E, 0x20, 0x11]
+        );
         assert_eq!(c.flags_oblivion, Some(0x01));
         // FNV-shape fields stay empty on Oblivion.
         assert!(c.tag_skills.is_empty());

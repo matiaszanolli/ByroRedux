@@ -2,8 +2,8 @@
 //!
 //! Lead types: ShaderControllerKind, NiLightColorController, NiLightFloatController, BsShaderController, NiMaterialColorController, NiTextureTransformController.
 
-use crate::impl_ni_object;
 use super::*;
+use crate::impl_ni_object;
 
 /// Which shader-property controller kind and its enum payload.
 ///

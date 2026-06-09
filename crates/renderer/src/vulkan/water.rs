@@ -233,8 +233,7 @@ impl WaterPipeline {
         let water_caustic_set_layout = unsafe {
             device
                 .create_descriptor_set_layout(
-                    &vk::DescriptorSetLayoutCreateInfo::default()
-                        .bindings(&water_caustic_bindings),
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&water_caustic_bindings),
                     None,
                 )
                 .context("water-caustic set layout")?
@@ -743,7 +742,7 @@ mod tests {
             alpha_test_func: 0,
             roughness: 0.5,
             metalness: 0.0,
-            ior: 1.5, // #1248 — test fixture; default dielectric.
+            ior: 1.5,        // #1248 — test fixture; default dielectric.
             subsurface: 0.0, // #1249 — Disney diffuse off in test fixture.
             sheen: 0.0,
             sheen_tint: 0.0,

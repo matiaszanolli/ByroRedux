@@ -76,8 +76,7 @@ pub(super) fn emit_particles(
             ];
             let size = em.start_size + (em.end_size - em.start_size) * t;
 
-            let model =
-                Mat4::from_scale_rotation_translation(Vec3::splat(size), rot, world_pos);
+            let model = Mat4::from_scale_rotation_translation(Vec3::splat(size), rot, world_pos);
             let pos_clip = vp_mat * Vec4::new(world_pos.x, world_pos.y, world_pos.z, 1.0);
             let sort_depth = f32_sortable_u32(pos_clip.w);
 

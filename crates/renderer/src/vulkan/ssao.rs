@@ -190,9 +190,7 @@ impl SsaoPipeline {
 
             // SAFETY: `ao_image` matches the memory requirements that
             // produced the allocation just pushed; bound once per image.
-            if let Err(e) =
-                unsafe { device.bind_image_memory(ao_image, mem, offset) }
-            {
+            if let Err(e) = unsafe { device.bind_image_memory(ao_image, mem, offset) } {
                 // SAFETY: bind failed; the allocation is already owned
                 // by `partial.ao_allocations`, so `partial.destroy`
                 // frees it symmetrically with `partial.ao_images`.
@@ -548,7 +546,8 @@ impl SsaoPipeline {
         // HOST → COMPUTE_SHADER (UBO flush before dispatch; required even for
         // HOST_COHERENT memory — the execution dependency ensures ordering).
         memory_barrier(
-            device, cmd,
+            device,
+            cmd,
             vk::PipelineStageFlags::HOST,
             vk::AccessFlags::HOST_WRITE,
             vk::PipelineStageFlags::COMPUTE_SHADER,

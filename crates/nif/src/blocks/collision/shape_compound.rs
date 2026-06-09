@@ -19,7 +19,6 @@ pub struct BhkConvexVerticesShape {
     pub normals: Vec<[f32; 4]>,
 }
 
-
 impl BhkConvexVerticesShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let material = read_havok_material(stream)?;
@@ -48,7 +47,6 @@ pub struct BhkListShape {
     pub material: u32,
     pub filters: Vec<u32>,
 }
-
 
 impl BhkListShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -80,7 +78,6 @@ pub struct BhkTransformShape {
     pub transform: [[f32; 4]; 4],
 }
 
-
 impl BhkTransformShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let shape_ref = stream.read_block_ref()?;
@@ -111,7 +108,6 @@ pub struct BhkMoppBvTreeShape {
     pub origin: [f32; 4],
     pub scale: f32,
 }
-
 
 impl BhkMoppBvTreeShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -164,7 +160,6 @@ pub struct BhkConvexListShape {
     pub closest_point_min_distance: f32,
 }
 
-
 impl BhkConvexListShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let num_sub_shapes = stream.read_u32_le()?;
@@ -206,7 +201,6 @@ pub struct BhkConvexSweepShape {
     pub material: u32,
     pub radius: f32,
 }
-
 
 impl BhkConvexSweepShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {

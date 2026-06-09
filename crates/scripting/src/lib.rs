@@ -21,8 +21,8 @@ pub mod translate;
 
 pub use cleanup::event_cleanup_system;
 pub use condition::{
-    evaluate as evaluate_condition_list, evaluate_condition, evaluate_function,
-    ConditionContext, ConditionFunction,
+    evaluate as evaluate_condition_list, evaluate_condition, evaluate_function, ConditionContext,
+    ConditionFunction,
 };
 pub use events::{
     ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, HitEvent, OnCellLoadEvent,

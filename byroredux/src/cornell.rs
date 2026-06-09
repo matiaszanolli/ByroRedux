@@ -102,12 +102,35 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
     let walls: &[(MeshHandle, Vec3, [f32; 3], &str)] = &[
         (h_slab, Vec3::new(0.0, -T, 0.0), WHITE, "floor"),
         (h_slab, Vec3::new(0.0, HEIGHT + T, 0.0), WHITE, "ceiling"),
-        (back_slab, Vec3::new(0.0, cy, -HALF_W - T), WHITE, "back_wall"),
-        (side_slab, Vec3::new(-HALF_W - T, cy, 0.0), RED, "left_wall_red"),
-        (side_slab, Vec3::new(HALF_W + T, cy, 0.0), GREEN, "right_wall_green"),
+        (
+            back_slab,
+            Vec3::new(0.0, cy, -HALF_W - T),
+            WHITE,
+            "back_wall",
+        ),
+        (
+            side_slab,
+            Vec3::new(-HALF_W - T, cy, 0.0),
+            RED,
+            "left_wall_red",
+        ),
+        (
+            side_slab,
+            Vec3::new(HALF_W + T, cy, 0.0),
+            GREEN,
+            "right_wall_green",
+        ),
     ];
     for &(mesh, pos, color, name) in walls {
-        spawn_object(world, mesh, neutral, pos, Quat::IDENTITY, matte(color), name);
+        spawn_object(
+            world,
+            mesh,
+            neutral,
+            pos,
+            Quat::IDENTITY,
+            matte(color),
+            name,
+        );
     }
 
     // ── Ceiling area light ──────────────────────────────────────────
@@ -394,11 +417,7 @@ impl<'a> MeshBuilder<'a> {
         self.upload(&v, &i)
     }
 
-    fn upload(
-        &mut self,
-        verts: &[byroredux_renderer::Vertex],
-        idxs: &[u32],
-    ) -> MeshHandle {
+    fn upload(&mut self, verts: &[byroredux_renderer::Vertex], idxs: &[u32]) -> MeshHandle {
         let alloc = self.ctx.allocator.as_ref().unwrap();
         let rt = self.ctx.device_caps.ray_query_supported;
         let upload_ctx = GpuUploadCtx {

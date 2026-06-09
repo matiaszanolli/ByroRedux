@@ -28,11 +28,10 @@ use collision::{
     BhkAabbPhantom, BhkBoxShape, BhkBreakableConstraint, BhkCapsuleShape, BhkCollisionObject,
     BhkCompressedMeshShape, BhkCompressedMeshShapeData, BhkConstraint, BhkConvexListShape,
     BhkConvexSweepShape, BhkConvexVerticesShape, BhkCylinderShape, BhkLiquidAction, BhkListShape,
-    BhkMeshShape, BhkMoppBvTreeShape,
-    BhkMultiSphereShape, BhkNiTriStripsShape, BhkOrientHingedBodyAction, BhkPCollisionObject,
-    BhkPackedNiTriStripsShape, BhkPoseArray, BhkRagdollTemplate, BhkRagdollTemplateData,
-    BhkRigidBody, BhkSimpleShapePhantom, BhkSphereShape, BhkTransformShape,
-    HkPackedNiTriStripsData, NiCollisionObjectBase,
+    BhkMeshShape, BhkMoppBvTreeShape, BhkMultiSphereShape, BhkNiTriStripsShape,
+    BhkOrientHingedBodyAction, BhkPCollisionObject, BhkPackedNiTriStripsShape, BhkPoseArray,
+    BhkRagdollTemplate, BhkRagdollTemplateData, BhkRigidBody, BhkSimpleShapePhantom,
+    BhkSphereShape, BhkTransformShape, HkPackedNiTriStripsData, NiCollisionObjectBase,
 };
 use controller::{
     BhkBlendController, BsNiAlphaPropertyTestRefController, BsRefractionFirePeriodController,

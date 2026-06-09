@@ -813,7 +813,10 @@ pub(super) fn load_references(
     if nif_not_found > 0 {
         let sample = nif_not_found_sample.join(", ");
         let trunc = if nif_not_found > nif_not_found_sample.len() as u32 {
-            format!(", … +{} more", nif_not_found - nif_not_found_sample.len() as u32)
+            format!(
+                ", … +{} more",
+                nif_not_found - nif_not_found_sample.len() as u32
+            )
         } else {
             String::new()
         };
@@ -927,12 +930,13 @@ fn parse_and_import_nif(
     let bsver = byroredux_nif::header::NifHeader::parse(nif_data)
         .map(|(h, _)| h.user_version_2)
         .unwrap_or(0);
-    let bsx_editor_marker = bsx & 0x20 != 0
-        && bsver < byroredux_nif::version::bsver::FALLOUT4;
+    let bsx_editor_marker = bsx & 0x20 != 0 && bsver < byroredux_nif::version::bsver::FALLOUT4;
     if bsx_editor_marker {
         log::debug!(
             "Skipping editor marker NIF '{}' (BSXFlags 0x{:X}, BSVER {})",
-            label, bsx, bsver,
+            label,
+            bsx,
+            bsver,
         );
         return None;
     }
@@ -1049,9 +1053,7 @@ fn parse_and_import_nif(
 /// Cost: O(nodes). NIF scenes typically have 10-100 nodes; the
 /// search runs once per unique model path at cache fill time
 /// and the result is cached across every placement.
-pub(super) fn find_flame_attach_offset(
-    scene: &byroredux_nif::scene::NifScene,
-) -> Option<[f32; 3]> {
+pub(super) fn find_flame_attach_offset(scene: &byroredux_nif::scene::NifScene) -> Option<[f32; 3]> {
     const PATTERNS: &[&str] = &["flame", "fire", "attachlight"];
 
     // Walk raw NIF blocks. Limited to first-level lookup: returns
@@ -1159,9 +1161,7 @@ fn parse_and_import_spt(
     // Cyrodiil trees correctly (vanilla MODB range 157–3621 game
     // units). FO3/FNV are inverse: 100 % OBND, 0 % MODB. Surface both
     // and let `compute_billboard_size` pick its precedence.
-    let bound_radius = tree_record
-        .map(|t| t.bound_radius)
-        .filter(|r| *r > 0.0);
+    let bound_radius = tree_record.map(|t| t.bound_radius).filter(|r| *r > 0.0);
 
     // #1002 — BNAM (FO3/FNV billboard width × height) as a fallback
     // BELOW OBND. Corpus inspection (2026-05-13) showed BNAM clamps
@@ -1324,10 +1324,8 @@ fn attach_light_flicker_if_needed(
     ld: &byroredux_plugin::esm::cell::LightData,
     base_translation: byroredux_core::math::Vec3,
 ) {
-    const FLICKER_MASK: u32 = LIGHT_FLAG_FLICKER
-        | LIGHT_FLAG_FLICKER_SLOW
-        | LIGHT_FLAG_PULSE
-        | LIGHT_FLAG_PULSE_SLOW;
+    const FLICKER_MASK: u32 =
+        LIGHT_FLAG_FLICKER | LIGHT_FLAG_FLICKER_SLOW | LIGHT_FLAG_PULSE | LIGHT_FLAG_PULSE_SLOW;
     if ld.flags & FLICKER_MASK == 0 {
         return;
     }
@@ -1335,11 +1333,16 @@ fn attach_light_flicker_if_needed(
     // reads as 0.0 then. Fall back to 0.5 s (the Skyrim vanilla
     // default for candle FNAM authoring) so flicker still
     // visibly fires on those records.
-    let period_secs = if ld.period_secs > 0.0 { ld.period_secs } else { 0.5 };
+    let period_secs = if ld.period_secs > 0.0 {
+        ld.period_secs
+    } else {
+        0.5
+    };
     // EntityId-derived phase offset in [0, period). The wrap-around
     // is automatic because the animator computes `phase = (t +
     // phase_offset) / period` mod 1. Cheap, deterministic, no RNG.
-    let phase_offset_secs = (entity.wrapping_mul(2654435761) as f32 / u32::MAX as f32) * period_secs;
+    let phase_offset_secs =
+        (entity.wrapping_mul(2654435761) as f32 / u32::MAX as f32) * period_secs;
     world.insert(
         entity,
         LightFlicker {

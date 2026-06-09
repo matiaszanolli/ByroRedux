@@ -169,9 +169,7 @@ pub fn unload_current_interior(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
 ) {
-    let prev_root = world
-        .try_resource::<CurrentCellRoot>()
-        .and_then(|r| r.0);
+    let prev_root = world.try_resource::<CurrentCellRoot>().and_then(|r| r.0);
     if let Some(prev) = prev_root {
         log::info!("Transition: unloading prior interior cell (root {prev})");
         super::unload_cell(world, ctx, prev);
@@ -182,11 +180,7 @@ pub fn unload_current_interior(
 /// Reposition the [`ActiveCamera`] at a destination spawn point.
 /// Pure World mutation — used by both Interior→Interior and
 /// Interior→Exterior / Exterior→Interior paths.
-pub fn reposition_camera(
-    world: &mut byroredux_core::ecs::World,
-    dest_pos: Vec3,
-    dest_rot: Quat,
-) {
+pub fn reposition_camera(world: &mut byroredux_core::ecs::World, dest_pos: Vec3, dest_rot: Quat) {
     if let Some(active) = world.try_resource::<byroredux_core::ecs::ActiveCamera>() {
         let cam_entity = active.0;
         drop(active);
@@ -371,9 +365,7 @@ mod tests {
     #[test]
     fn current_cell_root_absence_is_treated_as_no_interior() {
         let world = World::new();
-        let prev = world
-            .try_resource::<CurrentCellRoot>()
-            .and_then(|r| r.0);
+        let prev = world.try_resource::<CurrentCellRoot>().and_then(|r| r.0);
         assert!(
             prev.is_none(),
             "no CurrentCellRoot resource → orchestrator must treat as clean-slate"

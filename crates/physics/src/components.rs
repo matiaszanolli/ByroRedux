@@ -153,12 +153,18 @@ mod tests {
         assert!(c.half_height > 0.0);
         assert!(c.radius > 0.0);
         assert!(c.eye_height > 0.0);
-        assert!(c.eye_height < c.half_height + c.radius, "eyes must sit inside capsule");
+        assert!(
+            c.eye_height < c.half_height + c.radius,
+            "eyes must sit inside capsule"
+        );
         assert!(c.move_speed > 0.0);
         assert!(c.jump_velocity > 0.0);
         assert!(c.gravity < 0.0, "gravity is downward (negative Y)");
         assert!(c.terminal_velocity < 0.0);
-        assert!(c.terminal_velocity < c.gravity, "terminal velocity must be more negative than 1-frame gravity");
+        assert!(
+            c.terminal_velocity < c.gravity,
+            "terminal velocity must be more negative than 1-frame gravity"
+        );
         assert!(c.step_height > 0.0);
         assert!(c.step_min_width > 0.0);
         assert!(c.max_slope_climb_deg > 0.0 && c.max_slope_climb_deg < 90.0);

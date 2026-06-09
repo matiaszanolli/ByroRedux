@@ -37,10 +37,7 @@ impl Parser {
     pub fn parse_stmt(&mut self) -> Result<Spanned<Stmt>, ParseError> {
         self.skip_newlines();
         let Some((tok, span)) = self.peek_with_span() else {
-            return Err(ParseError::unexpected_eof(
-                "statement",
-                self.current_span(),
-            ));
+            return Err(ParseError::unexpected_eof("statement", self.current_span()));
         };
         let tok = tok.clone();
         match tok {
@@ -49,11 +46,9 @@ impl Parser {
             Token::KwWhile => self.parse_while_stmt(span),
             // Primitive type keywords always start a VarDecl at
             // statement position. `Int x = …`, `Float[] f = …`, etc.
-            Token::KwBool
-            | Token::KwInt
-            | Token::KwFloat
-            | Token::KwString
-            | Token::KwVar => self.parse_var_decl_stmt(),
+            Token::KwBool | Token::KwInt | Token::KwFloat | Token::KwString | Token::KwVar => {
+                self.parse_var_decl_stmt()
+            }
             // Identifier-prefix line — could be either VarDecl
             // (`Form myProp = SomeRef`) or expression (`x = 5`,
             // `Self.MyFunc()`, `someActor.SetActorValue(...)`).
@@ -174,12 +169,9 @@ impl Parser {
                 } else {
                     None
                 };
-                let span = ty.span.merge(
-                    initial_value
-                        .as_ref()
-                        .map(|v| v.span)
-                        .unwrap_or(name.span),
-                );
+                let span = ty
+                    .span
+                    .merge(initial_value.as_ref().map(|v| v.span).unwrap_or(name.span));
                 self.expect_eol()?;
                 return Ok(Spanned::new(
                     Stmt::VarDecl(Variable {
@@ -258,10 +250,7 @@ impl Parser {
     /// Parse a block of statements until any of `terminators` is
     /// peeked (without consuming). Used by If / While / Else /
     /// Function / Event bodies.
-    pub fn parse_block(
-        &mut self,
-        terminators: &[Token],
-    ) -> Result<Vec<Spanned<Stmt>>, ParseError> {
+    pub fn parse_block(&mut self, terminators: &[Token]) -> Result<Vec<Spanned<Stmt>>, ParseError> {
         let mut stmts = Vec::new();
         loop {
             self.skip_newlines();
@@ -270,14 +259,16 @@ impl Parser {
                 // sensible error on the missing terminator.
                 break;
             };
-            if terminators.iter().any(|t| std::mem::discriminant(tok) == std::mem::discriminant(t)) {
+            if terminators
+                .iter()
+                .any(|t| std::mem::discriminant(tok) == std::mem::discriminant(t))
+            {
                 break;
             }
             stmts.push(self.parse_stmt()?);
         }
         Ok(stmts)
     }
-
 }
 
 #[cfg(test)]

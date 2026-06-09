@@ -707,7 +707,8 @@ impl CausticPipeline {
 
         // HOST → COMPUTE_SHADER (UBO flush before dispatch).
         memory_barrier(
-            device, cmd,
+            device,
+            cmd,
             vk::PipelineStageFlags::HOST,
             vk::AccessFlags::HOST_WRITE,
             vk::PipelineStageFlags::COMPUTE_SHADER,

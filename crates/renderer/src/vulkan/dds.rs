@@ -24,7 +24,7 @@ const DXGI_FORMAT_R8G8B8A8_UNORM: u32 = 28;
 const DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: u32 = 29;
 // Single-channel uncompressed (#1074 / FO4-D2-008)
 const DXGI_FORMAT_R16_UNORM: u32 = 56; // 2 bytes/px — heightmaps, mono masks
-const DXGI_FORMAT_R8_UNORM: u32 = 61;  // 1 byte/px  — single-channel masks
+const DXGI_FORMAT_R8_UNORM: u32 = 61; // 1 byte/px  — single-channel masks
 const DXGI_FORMAT_BC1_UNORM: u32 = 71;
 const DXGI_FORMAT_BC1_UNORM_SRGB: u32 = 72;
 const DXGI_FORMAT_BC2_UNORM: u32 = 74;
@@ -36,9 +36,9 @@ const DXGI_FORMAT_BC4_SNORM: u32 = 81; // 8 B/block — signed normal channel (#
 const DXGI_FORMAT_BC5_UNORM: u32 = 83;
 const DXGI_FORMAT_BC5_SNORM: u32 = 84;
 // BGRA uncompressed (#1074 / FO4-D2-008) — FO4 normal maps ship as B8G8R8A8_UNORM
-const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87;     // 4 bytes/px
+const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87; // 4 bytes/px
 const DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: u32 = 91; // 4 bytes/px — sRGB variant
-// BC6H HDR (#1074 / FO4-D2-008) — Starfield env maps; requires textureCompressionBC
+                                                 // BC6H HDR (#1074 / FO4-D2-008) — Starfield env maps; requires textureCompressionBC
 const DXGI_FORMAT_BC6H_UF16: u32 = 95; // 16 B/block — unsigned half-float
 const DXGI_FORMAT_BC6H_SF16: u32 = 96; // 16 B/block — signed half-float
 const DXGI_FORMAT_BC7_UNORM: u32 = 98;
@@ -295,7 +295,7 @@ mod tests {
         buf[76..80].copy_from_slice(&32u32.to_le_bytes()); // DDS_PIXELFORMAT.dwSize
         buf[80..84].copy_from_slice(&DDPF_FOURCC.to_le_bytes());
         buf[84..88].copy_from_slice(b"DX10"); // FourCC = "DX10"
-        // DX10 extended header at offset 128:
+                                              // DX10 extended header at offset 128:
         buf[128..132].copy_from_slice(&dxgi_format.to_le_bytes()); // dxgiFormat
         buf[132..136].copy_from_slice(&3u32.to_le_bytes()); // resourceDimension = TEXTURE2D
         buf[136..140].copy_from_slice(&0u32.to_le_bytes()); // miscFlag
@@ -505,7 +505,10 @@ mod tests {
         assert_eq!(meta.block_size, 8);
         assert!(meta.compressed);
         // Verify mip_size uses BC block layout (same as BC4_UNORM).
-        assert_eq!(mip_size(256, 256, 0, meta.block_size, meta.compressed), 32768);
+        assert_eq!(
+            mip_size(256, 256, 0, meta.block_size, meta.compressed),
+            32768
+        );
     }
 
     #[test]
@@ -517,7 +520,10 @@ mod tests {
         assert_eq!(meta.block_size, 16);
         assert!(meta.compressed);
         // 128×128 → 32×32 blocks × 16 bytes = 16384
-        assert_eq!(mip_size(128, 128, 0, meta.block_size, meta.compressed), 16384);
+        assert_eq!(
+            mip_size(128, 128, 0, meta.block_size, meta.compressed),
+            16384
+        );
     }
 
     #[test]

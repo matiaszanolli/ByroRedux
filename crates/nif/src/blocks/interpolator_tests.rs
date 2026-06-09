@@ -718,7 +718,7 @@ fn parse_ni_bspline_transform_interpolator_uncompressed() {
     data.extend_from_slice(&0.0f32.to_le_bytes()); // qy
     data.extend_from_slice(&0.0f32.to_le_bytes()); // qz
     data.extend_from_slice(&1.0f32.to_le_bytes()); // scale
-    // Three handles.
+                                                   // Three handles.
     data.extend_from_slice(&10u32.to_le_bytes());
     data.extend_from_slice(&20u32.to_le_bytes());
     data.extend_from_slice(&u32::MAX.to_le_bytes()); // scale handle: static
@@ -778,7 +778,7 @@ fn parse_ni_bspline_float_interpolator_uncompressed() {
     data.extend_from_slice(&3.5f32.to_le_bytes()); // stop_time
     data.extend_from_slice(&11i32.to_le_bytes()); // spline_data_ref
     data.extend_from_slice(&13i32.to_le_bytes()); // basis_data_ref
-    // NiBSplineFloatInterpolator.
+                                                  // NiBSplineFloatInterpolator.
     data.extend_from_slice(&0.75f32.to_le_bytes()); // value
     data.extend_from_slice(&42u32.to_le_bytes()); // handle
 
@@ -823,7 +823,7 @@ fn parse_ni_bspline_point3_interpolator_uncompressed() {
     data.extend_from_slice(&5.0f32.to_le_bytes()); // stop_time
     data.extend_from_slice(&21i32.to_le_bytes()); // spline_data_ref
     data.extend_from_slice(&22i32.to_le_bytes()); // basis_data_ref
-    // NiBSplinePoint3Interpolator.
+                                                  // NiBSplinePoint3Interpolator.
     data.extend_from_slice(&0.1f32.to_le_bytes()); // value.x
     data.extend_from_slice(&0.2f32.to_le_bytes()); // value.y
     data.extend_from_slice(&0.3f32.to_le_bytes()); // value.z

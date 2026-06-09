@@ -817,11 +817,9 @@ impl NiBoolData {
     }
 }
 
-
 #[cfg(test)]
 #[path = "interpolator_tests.rs"]
 mod tests;
-
 
 // ── NiBlendInterpolator family ──────────────────────────────────────
 

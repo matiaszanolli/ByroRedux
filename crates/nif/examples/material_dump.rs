@@ -22,8 +22,19 @@ fn main() {
     println!("# {} (BSVER {})  — {} meshes", path, bsver, imported.len());
     println!(
         "{:<22} {:>5} {:>5} {:>5} {:>5} {:>5} {:>5} {:>6} {:>6} {:>5} {:>5} {:>5}  {}",
-        "mesh", "kind", "metO", "rghO", "gloss", "env", "specS", "specClum", "emisM", "emSrc",
-        "alpha", "decal", "tex/mat path",
+        "mesh",
+        "kind",
+        "metO",
+        "rghO",
+        "gloss",
+        "env",
+        "specS",
+        "specClum",
+        "emisM",
+        "emSrc",
+        "alpha",
+        "decal",
+        "tex/mat path",
     );
     for m in &imported {
         let name = m
@@ -35,7 +46,11 @@ fn main() {
             .texture_path
             .and_then(|s| pool.resolve(s))
             .map(str::to_string)
-            .or_else(|| m.material_path.and_then(|s| pool.resolve(s)).map(str::to_string))
+            .or_else(|| {
+                m.material_path
+                    .and_then(|s| pool.resolve(s))
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| "(none)".to_string());
         let meto = m
             .metalness_override
@@ -55,9 +70,9 @@ fn main() {
         use byroredux_core::ecs::components::material::EmissiveSource;
         let emis_src = match m.emissive_source {
             EmissiveSource::None => "-",
-            EmissiveSource::Material => "mat",  // NiMaterialProperty.emissive_mult
-            EmissiveSource::Lighting => "lit",  // BSLightingShaderProperty.emissive_multiple
-            EmissiveSource::Effect => "fx",     // BSEffectShaderProperty.base_color_scale
+            EmissiveSource::Material => "mat", // NiMaterialProperty.emissive_mult
+            EmissiveSource::Lighting => "lit", // BSLightingShaderProperty.emissive_multiple
+            EmissiveSource::Effect => "fx",    // BSEffectShaderProperty.base_color_scale
         };
         println!(
             "{:<22.22} {:>5} {:>5} {:>5} {:>5.0} {:>5.2} {:>5.2} {:>6.2} {:>6.1} {:>6} {:>5} {:>5}  {}",

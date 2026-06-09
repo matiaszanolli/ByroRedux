@@ -331,7 +331,11 @@ mod tests {
     fn tag_13005_followed_by_string_length_resolves_as_string() {
         // Mirror the exact vanilla-Oblivion-outlier curve string.
         let curve_body: &[u8] = b"BezierSpline 0\t1\t0\n{\n\n\t2\n\t0 1 0.714831 -0.699297 0.079604\n\t1 0.000782381 0.699609 -0.714526 0.107006\n\n}\n";
-        assert_eq!(curve_body.len(), 104, "fixture mirrors the observed 104-byte curve");
+        assert_eq!(
+            curve_body.len(),
+            104,
+            "fixture mirrors the observed 104-byte curve"
+        );
 
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC_HEAD);
@@ -345,7 +349,10 @@ mod tests {
         bytes.extend_from_slice(&0x4E25u32.to_le_bytes());
 
         let scene = parse_spt(&bytes).expect("must parse");
-        assert!(scene.unknown_tags.is_empty(), "no bail on tag-104 confounder");
+        assert!(
+            scene.unknown_tags.is_empty(),
+            "no bail on tag-104 confounder"
+        );
         assert_eq!(scene.entries.len(), 2);
         assert_eq!(scene.entries[0].tag, 13005);
         match &scene.entries[0].value {
@@ -371,8 +378,13 @@ mod tests {
         match result {
             Ok(scene) => {
                 // If the walker treated 13005 as Bare on a None peek, fine.
-                assert!(scene.entries.iter().all(|e| e.tag != 13005)
-                    || scene.entries.iter().any(|e| matches!(e.value, SptValue::Bare)));
+                assert!(
+                    scene.entries.iter().all(|e| e.tag != 13005)
+                        || scene
+                            .entries
+                            .iter()
+                            .any(|e| matches!(e.value, SptValue::Bare))
+                );
             }
             Err(e) => assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof),
         }

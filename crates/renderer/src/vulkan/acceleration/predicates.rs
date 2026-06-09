@@ -48,9 +48,9 @@ where
     F: FnOnce(vk::CommandBuffer) -> Result<()>,
 {
     match fence {
-        Some(f_mutex) => {
-            super::super::texture::with_one_time_commands_reuse_fence(device, queue, pool, f_mutex, f)
-        }
+        Some(f_mutex) => super::super::texture::with_one_time_commands_reuse_fence(
+            device, queue, pool, f_mutex, f,
+        ),
         None => super::super::texture::with_one_time_commands(device, queue, pool, f),
     }
 }
@@ -259,7 +259,10 @@ pub(super) fn scratch_needs_growth(
 /// keeps us from churning through reallocation for small wins. See
 /// issue #495 for the failure mode — a single 80–200 MB BLAS build
 /// pinning VRAM for the rest of the process lifetime.
-pub(super) fn scratch_should_shrink(current_capacity: vk::DeviceSize, peak_required: vk::DeviceSize) -> bool {
+pub(super) fn scratch_should_shrink(
+    current_capacity: vk::DeviceSize,
+    peak_required: vk::DeviceSize,
+) -> bool {
     current_capacity > peak_required.saturating_mul(2)
         && current_capacity.saturating_sub(peak_required) > BLAS_REBUILD_SLACK_BYTES
 }
@@ -501,6 +504,7 @@ pub(super) fn compute_blas_budget(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
 ) -> vk::DeviceSize {
-    let device_local_bytes = super::super::device::total_device_local_bytes(instance, physical_device);
+    let device_local_bytes =
+        super::super::device::total_device_local_bytes(instance, physical_device);
     (device_local_bytes / 3).max(MIN_BLAS_BUDGET_BYTES)
 }

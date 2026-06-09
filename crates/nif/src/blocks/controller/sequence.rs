@@ -2,8 +2,8 @@
 //!
 //! Lead types: NiMultiTargetTransformController, NiControllerManager, ControlledBlock, NiControllerSequence, BsRefractionFirePeriodController.
 
-use crate::impl_ni_object;
 use super::*;
+use crate::impl_ni_object;
 
 #[derive(Debug)]
 pub struct NiMultiTargetTransformController {
@@ -152,8 +152,8 @@ impl NiControllerSequence {
         // inline string and then went 5 more bytes past the descriptor,
         // corrupting the stream for every subsequent block. See #107.
         let bsver = stream.bsver();
-        let uses_string_palette =
-            stream.version() >= NifVersion::V10_2_0_0 && stream.version() < NifVersion::STRING_TABLE_THRESHOLD;
+        let uses_string_palette = stream.version() >= NifVersion::V10_2_0_0
+            && stream.version() < NifVersion::STRING_TABLE_THRESHOLD;
         let mut controlled_blocks = stream.allocate_vec(num_controlled_blocks)?;
         for _ in 0..num_controlled_blocks {
             let interpolator_ref = stream.read_block_ref()?;
@@ -265,7 +265,9 @@ impl NiControllerSequence {
         // with BSVER >= 24) use the modern string-table layout and
         // skip this field. See #402 (audit premise was wrong — Oblivion
         // uses NiControllerSequence, not NiSequenceStreamHelper).
-        if stream.version() >= NifVersion::V10_1_0_113 && stream.version() < NifVersion::STRING_TABLE_THRESHOLD {
+        if stream.version() >= NifVersion::V10_1_0_113
+            && stream.version() < NifVersion::STRING_TABLE_THRESHOLD
+        {
             let _deprecated_string_palette_ref = stream.read_block_ref()?;
         }
 

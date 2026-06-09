@@ -34,7 +34,8 @@ fn skin_dump_renders_resolved_bone_with_world_and_palette() {
     // canonical "bone hasn't moved relative to bind" case).
     let bind_inv = Mat4::from_translation(Vec3::new(0.0, -5.0, 0.0));
     let skin_entity = world.spawn();
-    let skin = SkinnedMesh::new_with_global(Some(bone), vec![Some(bone)], vec![bind_inv], Mat4::IDENTITY);
+    let skin =
+        SkinnedMesh::new_with_global(Some(bone), vec![Some(bone)], vec![bind_inv], Mat4::IDENTITY);
     let lines = format_skin_dump(&world, skin_entity, &skin);
     let dump = lines.join("\n");
 
@@ -277,7 +278,10 @@ fn prid_sets_selected_ref_resource() {
     world.insert_resource(StringPool::new());
 
     let target = world.spawn();
-    world.insert(target, Transform::from_translation(Vec3::new(1.0, 2.0, 3.0)));
+    world.insert(
+        target,
+        Transform::from_translation(Vec3::new(1.0, 2.0, 3.0)),
+    );
 
     let cmd = PridCommand;
     let out = cmd.execute(&world, &target.to_string()).lines.join("\n");
@@ -321,7 +325,10 @@ fn prid_rejects_entity_without_transform_or_global_transform() {
 
     // Resource must be untouched.
     let sel = world.resource::<SelectedRef>();
-    assert!(sel.0.is_none(), "SelectedRef should remain None on rejected prid");
+    assert!(
+        sel.0.is_none(),
+        "SelectedRef should remain None on rejected prid"
+    );
 }
 
 #[test]
@@ -400,13 +407,19 @@ fn mat_set_mutates_scalar_and_vec3() {
     world.insert(e, Material::default());
 
     let cmd = MatSetCommand;
-    let out = cmd.execute(&world, &format!("{e} roughness 0.25")).lines.join("\n");
+    let out = cmd
+        .execute(&world, &format!("{e} roughness 0.25"))
+        .lines
+        .join("\n");
     assert!(out.contains("roughness = 0.2500"), "got: {out}");
     assert_eq!(world.get::<Material>(e).unwrap().roughness, 0.25);
 
     // `color` is the alias for diffuse_color, 3 values.
     cmd.execute(&world, &format!("{e} color 0.1 0.2 0.3"));
-    assert_eq!(world.get::<Material>(e).unwrap().diffuse_color, [0.1, 0.2, 0.3]);
+    assert_eq!(
+        world.get::<Material>(e).unwrap().diffuse_color,
+        [0.1, 0.2, 0.3]
+    );
 
     // material_kind takes an integer arm.
     cmd.execute(&world, &format!("{e} material_kind 100"));
@@ -423,10 +436,16 @@ fn mat_set_validates_input() {
     world.insert(e, Material::default());
     let cmd = MatSetCommand;
 
-    let unknown = cmd.execute(&world, &format!("{e} bogus 1.0")).lines.join("\n");
+    let unknown = cmd
+        .execute(&world, &format!("{e} bogus 1.0"))
+        .lines
+        .join("\n");
     assert!(unknown.contains("unknown field"), "got: {unknown}");
 
-    let arity = cmd.execute(&world, &format!("{e} color 0.5")).lines.join("\n");
+    let arity = cmd
+        .execute(&world, &format!("{e} color 0.5"))
+        .lines
+        .join("\n");
     assert!(arity.contains("expected 3"), "got: {arity}");
 
     let missing = cmd.execute(&world, "999999 roughness 0.5").lines.join("\n");
@@ -452,7 +471,10 @@ fn mat_list_tabulates_materials() {
     world.insert(e, Name(probe));
 
     let out = MatListCommand.execute(&world, "").lines.join("\n");
-    assert!(out.contains(&e.to_string()), "row for entity missing: {out}");
+    assert!(
+        out.contains(&e.to_string()),
+        "row for entity missing: {out}"
+    );
     assert!(out.contains("probe_a"), "name missing: {out}");
     assert!(out.contains("kind"), "header missing: {out}");
 }

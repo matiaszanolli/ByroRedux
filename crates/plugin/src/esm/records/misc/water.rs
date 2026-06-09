@@ -1,8 +1,8 @@
 //! Water record (`WATR`) and decoded water parameters.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
-use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
+use crate::esm::sub_reader::SubReader;
 
 /// Water record — referenced by `CELL.XCWT` (water type form ID on a
 /// cell). Pre-fix every XCWT reference dangled at cell load.
@@ -457,9 +457,6 @@ mod tests {
         gnam.extend_from_slice(&0x33333333u32.to_le_bytes());
         let subs = vec![sub(b"GNAM", &gnam)];
         let w = parse_watr(0xDDDD, &subs);
-        assert_eq!(
-            w.noise_textures,
-            [0x11111111, 0x22222222, 0x33333333]
-        );
+        assert_eq!(w.noise_textures, [0x11111111, 0x22222222, 0x33333333]);
     }
 }

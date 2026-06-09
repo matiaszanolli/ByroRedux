@@ -332,8 +332,11 @@ pub(super) fn spawn_terrain_mesh(
     // allocator / mesh-upload failure), release them here so the refcount +
     // bindless slot don't leak. Snapshot the indices now so the release
     // doesn't re-borrow `splat_layers` (still needed by the vertex loop).
-    let splat_tex_indices: Vec<u32> =
-        splat_layers.layers.iter().map(|l| l.texture_index).collect();
+    let splat_tex_indices: Vec<u32> = splat_layers
+        .layers
+        .iter()
+        .map(|l| l.texture_index)
+        .collect();
 
     // Build vertices (33×33 = 1089).
     let mut vertices = Vec::with_capacity(GRID * GRID);
@@ -569,7 +572,12 @@ mod tests {
     /// Build a layer tuple with one painted quadrant filled to a
     /// constant alpha value. `alpha = 0.0` produces a zero-coverage
     /// layer; `alpha = 1.0` produces full coverage in that quadrant.
-    fn layer(ltex: u32, layer_field: u16, q_idx: usize, alpha: f32) -> (u32, u16, PerQuadrantAlpha) {
+    fn layer(
+        ltex: u32,
+        layer_field: u16,
+        q_idx: usize,
+        alpha: f32,
+    ) -> (u32, u16, PerQuadrantAlpha) {
         let mut slots: PerQuadrantAlpha = Default::default();
         slots[q_idx] = Some(vec![alpha; 17 * 17]);
         (ltex, layer_field, slots)
@@ -594,7 +602,12 @@ mod tests {
         for i in 0..4u32 {
             // Zero-coverage layers, high `layer_field` values — pre-fix
             // these would have survived the truncation.
-            sorted.push(layer(0xD000_0000 + i, (8 + i) as u16, (i % 4) as usize, 0.0));
+            sorted.push(layer(
+                0xD000_0000 + i,
+                (8 + i) as u16,
+                (i % 4) as usize,
+                0.0,
+            ));
         }
         // Sort matches the call-site state at entry to select_top_8_by_coverage.
         sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
@@ -627,7 +640,12 @@ mod tests {
         }
         // 6 trim: 10% coverage in one quadrant each.
         for i in 0..6u32 {
-            sorted.push(layer(0xB000_0000 + i, (4 + i) as u16, (i % 4) as usize, 0.1));
+            sorted.push(layer(
+                0xB000_0000 + i,
+                (4 + i) as u16,
+                (i % 4) as usize,
+                0.1,
+            ));
         }
         sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
         assert_eq!(sorted.len(), 10);

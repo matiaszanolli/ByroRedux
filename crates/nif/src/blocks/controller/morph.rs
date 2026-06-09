@@ -2,8 +2,8 @@
 //!
 //! Lead types: NiGeomMorpherController, MorphWeight, MorphTarget, NiMorphData.
 
-use crate::impl_ni_object;
 use super::*;
+use crate::impl_ni_object;
 use crate::types::NiPoint3;
 
 /// Morph target controller — drives facial animation and mesh deformation.
@@ -246,7 +246,4 @@ impl NiMorphData {
     }
 }
 
-impl_ni_object!(
-    NiGeomMorpherController,
-    NiMorphData,
-);
+impl_ni_object!(NiGeomMorpherController, NiMorphData,);

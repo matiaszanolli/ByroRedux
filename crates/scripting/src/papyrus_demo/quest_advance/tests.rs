@@ -223,7 +223,11 @@ fn separate_quests_do_not_alias_stage_state() {
     let stage_state = world.resource::<QuestStageState>();
     // DA10 quest has nothing done — predicate fails, no advance.
     assert_eq!(stage_state.get_stage(DA10_QUEST_FORM_ID), 0);
-    assert_eq!(stage_state.get_stage(other_quest), 37, "other quest untouched");
+    assert_eq!(
+        stage_state.get_stage(other_quest),
+        37,
+        "other quest untouched"
+    );
 }
 
 // ── Two doors, one quest ─────────────────────────────────────

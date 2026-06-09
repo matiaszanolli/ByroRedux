@@ -114,11 +114,7 @@ fn main() {
                                 let n = ssz.min(16);
                                 let hex: Vec<String> =
                                     b[sd..sd + n].iter().map(|x| format!("{:02x}", x)).collect();
-                                eprintln!(
-                                    "  INFO TRDT len={} bytes=[{}]",
-                                    ssz,
-                                    hex.join(" ")
-                                );
+                                eprintln!("  INFO TRDT len={} bytes=[{}]", ssz, hex.join(" "));
                                 *samples += 1;
                             }
                         }

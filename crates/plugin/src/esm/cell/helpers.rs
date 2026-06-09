@@ -62,7 +62,10 @@ mod tests {
 
     #[test]
     fn xclw_normal_height_passes_through() {
-        assert_eq!(xclw_water_height(&(-2000.0f32).to_le_bytes()), Some(-2000.0));
+        assert_eq!(
+            xclw_water_height(&(-2000.0f32).to_le_bytes()),
+            Some(-2000.0)
+        );
         assert_eq!(xclw_water_height(&3450.0f32.to_le_bytes()), Some(3450.0));
         assert_eq!(xclw_water_height(&0.0f32.to_le_bytes()), Some(0.0));
     }
@@ -70,7 +73,10 @@ mod tests {
     #[test]
     fn xclw_int_min_sentinel_is_no_water() {
         // The #INT_MIN# "no water" marker — must NOT spawn a water plane.
-        assert_eq!(xclw_water_height(&(-2_147_483_648.0f32).to_le_bytes()), None);
+        assert_eq!(
+            xclw_water_height(&(-2_147_483_648.0f32).to_le_bytes()),
+            None
+        );
     }
 
     #[test]

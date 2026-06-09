@@ -346,13 +346,12 @@ pub fn parse_grow_fade_modifier(stream: &mut NifStream) -> io::Result<NiPSysGrow
     // v20.0.0.4 does NOT → `None`). Pre-#383 these 4 bytes were dropped
     // on every grow-fade modifier (890 occurrences in vanilla
     // `Fallout - Meshes.bsa`).
-    let base_scale = if stream.version() == crate::version::NifVersion::V20_2_0_7
-        && stream.bsver() >= 34
-    {
-        Some(stream.read_f32_le()?)
-    } else {
-        None
-    };
+    let base_scale =
+        if stream.version() == crate::version::NifVersion::V20_2_0_7 && stream.bsver() >= 34 {
+            Some(stream.read_f32_le()?)
+        } else {
+            None
+        };
     Ok(NiPSysGrowFadeModifier { base_scale })
 }
 
@@ -869,7 +868,6 @@ impl NiPSysRadialFieldModifier {
         })
     }
 }
-
 
 // ── Controller parsers ──────────────────────────────────────────────
 
@@ -1573,10 +1571,10 @@ mod tests {
             4.0,    // declination_variation
             5.0,    // planar_angle
             6.0,    // planar_angle_variation
-            0.1, 0.2, 0.3, 0.4, // initial_color RGBA
-            7.0, // initial_radius
-            8.0, // radius_variation (since 10.4.0.1 — interleaved here)
-            9.0, // life_span
+            0.1, 0.2, 0.3, 0.4,  // initial_color RGBA
+            7.0,  // initial_radius
+            8.0,  // radius_variation (since 10.4.0.1 — interleaved here)
+            9.0,  // life_span
             10.0, // life_span_variation
         ] {
             d.extend_from_slice(&v.to_le_bytes());
@@ -1958,7 +1956,7 @@ mod tests {
         d.extend_from_slice(&0u32.to_le_bytes()); // force_type
         d.extend_from_slice(&0.0f32.to_le_bytes()); // turbulence
         d.extend_from_slice(&1.0f32.to_le_bytes()); // turbulence_scale
-        // NO world_aligned byte on Oblivion (bsver 11 <= 16).
+                                                    // NO world_aligned byte on Oblivion (bsver 11 <= 16).
         assert_eq!(d.len(), 13 + 4 + 12 + 4 + 4 + 4 + 4 + 4); // 49
 
         let mut stream = NifStream::new(&d, &header);
@@ -1989,6 +1987,10 @@ mod tests {
 
         let mut stream = NifStream::new(&d, &header);
         parse_gravity_modifier(&mut stream).expect("FNV gravity modifier parses");
-        assert_eq!(stream.position() as usize, d.len(), "FNV must read World Aligned");
+        assert_eq!(
+            stream.position() as usize,
+            d.len(),
+            "FNV must read World Aligned"
+        );
     }
 }

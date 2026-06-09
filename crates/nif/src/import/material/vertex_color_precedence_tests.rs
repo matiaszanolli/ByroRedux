@@ -106,10 +106,10 @@ fn bsl_inhibits_inherited_nvcp_ignore() {
     let mut pool = StringPool::new();
     let info = walker::extract_material_info_from_refs(
         &scene,
-        BlockRef(0),         // shader_property_ref → BSL
-        BlockRef::NULL,      // no alpha
-        &[],                 // direct_properties (empty for BsTriShape-like)
-        &[BlockRef(1)],      // inherited_props carries NVCP
+        BlockRef(0),    // shader_property_ref → BSL
+        BlockRef::NULL, // no alpha
+        &[],            // direct_properties (empty for BsTriShape-like)
+        &[BlockRef(1)], // inherited_props carries NVCP
         &mut pool,
     );
     assert!(
@@ -163,10 +163,10 @@ fn legacy_path_still_honors_inherited_nvcp() {
     let mut pool = StringPool::new();
     let info = walker::extract_material_info_from_refs(
         &scene,
-        BlockRef::NULL,      // no shader property
+        BlockRef::NULL, // no shader property
         BlockRef::NULL,
         &[],
-        &[BlockRef(0)],      // inherited NVCP
+        &[BlockRef(0)], // inherited NVCP
         &mut pool,
     );
     assert!(

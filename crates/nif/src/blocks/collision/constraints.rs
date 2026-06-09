@@ -11,7 +11,6 @@ use crate::version::NifVersion;
 use std::any::Any;
 use std::io;
 
-
 /// Opaque stub for a Havok constraint block.
 ///
 /// Holds just the shared `bhkConstraintCInfo` base (two entity refs
@@ -168,7 +167,6 @@ pub struct BhkBreakableConstraint {
     /// present so the game can re-enable it.
     pub remove_when_broken: bool,
 }
-
 
 impl BhkBreakableConstraint {
     /// Payload size (in bytes, past the 16-byte outer bhkConstraintCInfo

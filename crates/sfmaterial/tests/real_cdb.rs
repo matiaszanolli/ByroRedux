@@ -14,7 +14,9 @@ use std::path::PathBuf;
 fn data_dir() -> Option<PathBuf> {
     let env = std::env::var("BYROREDUX_STARFIELD_DATA").ok();
     let fallback = "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data";
-    let path = env.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(fallback));
+    let path = env
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(fallback));
     if path.exists() {
         Some(path)
     } else {
@@ -29,8 +31,7 @@ fn parse_vanilla_materialsbeta_cdb() {
     let Some(data) = data_dir() else {
         return;
     };
-    let ba2 = Ba2Archive::open(data.join("Starfield - Materials.ba2"))
-        .expect("open materials BA2");
+    let ba2 = Ba2Archive::open(data.join("Starfield - Materials.ba2")).expect("open materials BA2");
     let bytes = ba2
         .extract("materials\\materialsbeta.cdb")
         .expect("extract cdb");
@@ -45,7 +46,10 @@ fn parse_vanilla_materialsbeta_cdb() {
 
     // Floor asserts — these should hold for any non-empty CDB.
     assert!(cdb.classes.len() > 0, "vanilla CDB must declare classes");
-    assert!(cdb.instances.len() > 0, "vanilla CDB must contain instances");
+    assert!(
+        cdb.instances.len() > 0,
+        "vanilla CDB must contain instances"
+    );
 
     // Spot-check that the first few class names look sensible (printable
     // ASCII) — a misaligned reader would print mojibake.

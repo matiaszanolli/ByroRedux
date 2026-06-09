@@ -16,9 +16,9 @@
 
 use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::StagingPool;
-use crate::vulkan::GpuUploadCtx;
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::vulkan::texture::Texture;
+use crate::vulkan::GpuUploadCtx;
 use anyhow::{Context, Result};
 use ash::vk;
 use std::collections::{HashMap, VecDeque};
@@ -570,7 +570,10 @@ impl TextureRegistry {
     /// Gates the normal-alpha-as-spec gloss path (Skyrim/Gamebryo author the
     /// gloss mask in the normal alpha; BC5 normals have none).
     pub fn handle_has_alpha(&self, handle: TextureHandle) -> bool {
-        self.texture_has_alpha.get(&handle).copied().unwrap_or(false)
+        self.texture_has_alpha
+            .get(&handle)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Enqueue a DDS upload for batched flush. Counterpart of
@@ -1423,7 +1426,6 @@ fn clamp_keyed_path(path: &str, clamp_mode: u8) -> String {
 fn should_destroy_pending(current_frame: u64, queued_frame: u64) -> bool {
     current_frame.wrapping_sub(queued_frame) >= MAX_FRAMES_IN_FLIGHT as u64
 }
-
 
 #[cfg(test)]
 #[path = "texture_registry_tests.rs"]

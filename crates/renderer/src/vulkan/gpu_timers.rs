@@ -181,7 +181,10 @@ impl GpuPerFrameTimers {
     /// Returns `Ok(None)` when the driver lacks
     /// `timestampComputeAndGraphics` — caller continues without
     /// instrumentation.
-    pub fn new(device: &ash::Device, caps: &super::super::vulkan::device::DeviceCapabilities) -> Result<Option<Self>> {
+    pub fn new(
+        device: &ash::Device,
+        caps: &super::super::vulkan::device::DeviceCapabilities,
+    ) -> Result<Option<Self>> {
         if !caps.timestamp_supported {
             return Ok(None);
         }
@@ -339,7 +342,12 @@ impl GpuPerFrameTimers {
 
     /// Write the skin-dispatch START timestamp. Caller must pair
     /// with `cmd_skin_dispatch_end` in the same command buffer.
-    pub fn cmd_skin_dispatch_start(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+    pub fn cmd_skin_dispatch_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
             device.cmd_write_timestamp(
@@ -352,7 +360,12 @@ impl GpuPerFrameTimers {
     }
 
     /// Write the skin-dispatch END timestamp.
-    pub fn cmd_skin_dispatch_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+    pub fn cmd_skin_dispatch_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
             device.cmd_write_timestamp(
@@ -366,7 +379,12 @@ impl GpuPerFrameTimers {
     }
 
     /// Write the BLAS-refit START timestamp.
-    pub fn cmd_blas_refit_start(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+    pub fn cmd_blas_refit_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
             device.cmd_write_timestamp(
@@ -379,7 +397,12 @@ impl GpuPerFrameTimers {
     }
 
     /// Write the BLAS-refit END timestamp.
-    pub fn cmd_blas_refit_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+    pub fn cmd_blas_refit_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
             device.cmd_write_timestamp(
@@ -540,12 +563,7 @@ impl GpuPerFrameTimers {
     }
 
     /// Write the SVGF-dispatch START timestamp.
-    pub fn cmd_svgf_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
+    pub fn cmd_svgf_start(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
             device.cmd_write_timestamp(
@@ -558,12 +576,7 @@ impl GpuPerFrameTimers {
     }
 
     /// Write the SVGF-dispatch END timestamp.
-    pub fn cmd_svgf_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
+    pub fn cmd_svgf_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
             device.cmd_write_timestamp(
@@ -616,12 +629,7 @@ impl GpuPerFrameTimers {
         self.active_bits[frame] |= BIT_COMPOSITE;
     }
 
-    pub fn cmd_ssao_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
+    pub fn cmd_ssao_start(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
             device.cmd_write_timestamp(
@@ -633,12 +641,7 @@ impl GpuPerFrameTimers {
         }
     }
 
-    pub fn cmd_ssao_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
+    pub fn cmd_ssao_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
             device.cmd_write_timestamp(
@@ -651,12 +654,7 @@ impl GpuPerFrameTimers {
         self.active_bits[frame] |= BIT_SSAO;
     }
 
-    pub fn cmd_bloom_start(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
+    pub fn cmd_bloom_start(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
             device.cmd_write_timestamp(
@@ -668,12 +666,7 @@ impl GpuPerFrameTimers {
         }
     }
 
-    pub fn cmd_bloom_end(
-        &mut self,
-        device: &ash::Device,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-    ) {
+    pub fn cmd_bloom_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
             device.cmd_write_timestamp(

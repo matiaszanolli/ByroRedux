@@ -28,9 +28,9 @@ struct Stats {
     files: usize,
     parse_fail: usize,
     av_blocks: usize,
-    uniform_scale: usize,   // norms equal, ≠ 1
+    uniform_scale: usize,    // norms equal, ≠ 1
     nonuniform_scale: usize, // norms unequal
-    shear: usize,           // off-orthogonal columns
+    shear: usize,            // off-orthogonal columns
     non_identity_rot: usize, // matrices that are not the identity (tool-liveness check)
     max_norm_spread: f32,    // worst (n_max - n_min) observed
     max_off_diag: f32,       // worst column dot observed
@@ -64,7 +64,9 @@ fn inspect(name: &str, bytes: &[u8], stats: &mut Stats, verbose: bool) {
     };
     stats.files += 1;
     for block in &scene.blocks {
-        let Some(av) = block.as_av_object() else { continue };
+        let Some(av) = block.as_av_object() else {
+            continue;
+        };
         stats.av_blocks += 1;
         let t = av.transform();
         let (norms, max_dot) = analyze(&t.rotation);
@@ -119,11 +121,14 @@ fn inspect(name: &str, bytes: &[u8], stats: &mut Stats, verbose: bool) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let target = args.first().expect(
-        "usage: dump_transforms <archive.bsa|path.nif> [path-filter] [limit]",
-    );
+    let target = args
+        .first()
+        .expect("usage: dump_transforms <archive.bsa|path.nif> [path-filter] [limit]");
     let filter = args.get(1).map(|s| s.to_lowercase());
-    let limit: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+    let limit: usize = args
+        .get(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(usize::MAX);
 
     let mut stats = Stats::default();
 
@@ -138,8 +143,7 @@ fn main() {
             .iter()
             .filter(|p| {
                 let pl = p.to_lowercase();
-                pl.ends_with(".nif")
-                    && filter.as_ref().map(|f| pl.contains(f)).unwrap_or(true)
+                pl.ends_with(".nif") && filter.as_ref().map(|f| pl.contains(f)).unwrap_or(true)
             })
             .take(limit)
             .map(|s| s.to_string())
@@ -185,7 +189,10 @@ fn main() {
         stats.non_identity_rot,
         pct(stats.non_identity_rot, stats.av_blocks)
     );
-    println!("max column-norm spread:    {:.5}  (TOL={})", stats.max_norm_spread, TOL);
+    println!(
+        "max column-norm spread:    {:.5}  (TOL={})",
+        stats.max_norm_spread, TOL
+    );
     println!("max column off-diagonal:   {:.5}", stats.max_off_diag);
     println!(
         "scalar NiTransform.scale:  [{:.3} .. {:.3}]",

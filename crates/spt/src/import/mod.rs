@@ -325,7 +325,7 @@ fn placeholder_billboard_mesh(
         has_translucency: false,
         model_space_normals: false,
         from_bgsm: false,
-            bgem_glass: false,
+        bgem_glass: false,
         metalness_override: None,
         roughness_override: None,
         // #1147 Phase 2b — translucency suite (zero default; SpeedTree
@@ -341,7 +341,7 @@ fn placeholder_billboard_mesh(
         texture_clamp_mode: 0, // WRAP_S_WRAP_T
         emissive_color: [0.0; 3],
         emissive_mult: 0.0,
-            emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,
+        emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,
         specular_color: [1.0; 3],
         diffuse_color: [1.0; 3],
         ambient_color: [1.0; 3],

@@ -44,7 +44,9 @@ pub use constraints::{BhkBreakableConstraint, BhkConstraint};
 pub use phantom_action::{
     BhkAabbPhantom, BhkLiquidAction, BhkOrientHingedBodyAction, BhkSimpleShapePhantom,
 };
-pub use ragdoll::{BhkPoseArray, BhkRagdollTemplate, BhkRagdollTemplateData, BonePose, BoneTransform};
+pub use ragdoll::{
+    BhkPoseArray, BhkRagdollTemplate, BhkRagdollTemplateData, BonePose, BoneTransform,
+};
 pub use rigid_body::BhkRigidBody;
 pub use shape_compound::{
     BhkConvexListShape, BhkConvexSweepShape, BhkConvexVerticesShape, BhkListShape,

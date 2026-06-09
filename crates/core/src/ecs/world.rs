@@ -751,7 +751,6 @@ impl Default for World {
     }
 }
 
-
 #[cfg(test)]
 #[path = "world_tests.rs"]
 mod tests;

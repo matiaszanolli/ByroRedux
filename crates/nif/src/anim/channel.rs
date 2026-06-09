@@ -4,14 +4,11 @@
 //! resolution.
 
 use super::*;
-use crate::blocks::controller::{
-    ControlledBlock, NiGeomMorpherController,
-    NiMorphData,
-};
+use crate::blocks::controller::{ControlledBlock, NiGeomMorpherController, NiMorphData};
 use crate::blocks::interpolator::{
-    NiBSplineBasisData, NiBSplineCompFloatInterpolator,
-    NiBSplineCompPoint3Interpolator, NiBSplineData, NiBoolInterpolator, NiColorData,
-    NiColorInterpolator, NiFloatData, NiFloatInterpolator, NiPoint3Interpolator, NiPosData,
+    NiBSplineBasisData, NiBSplineCompFloatInterpolator, NiBSplineCompPoint3Interpolator,
+    NiBSplineData, NiBoolInterpolator, NiColorData, NiColorInterpolator, NiFloatData,
+    NiFloatInterpolator, NiPoint3Interpolator, NiPosData,
 };
 use crate::scene::NifScene;
 use std::sync::Arc;
@@ -302,7 +299,10 @@ pub fn extract_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<C
 /// `BSEffect/BSLightingShaderPropertyColorController` interpolator
 /// chain. Same resolver as the material-color path — targets
 /// `ColorTarget::ShaderColor` unconditionally.
-pub fn extract_shader_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<ColorChannel> {
+pub fn extract_shader_color_channel(
+    scene: &NifScene,
+    cb: &ControlledBlock,
+) -> Option<ColorChannel> {
     let keys = resolve_color_keys(scene, cb);
     if keys.is_empty() {
         return None;

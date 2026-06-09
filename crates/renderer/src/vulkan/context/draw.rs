@@ -6,9 +6,8 @@ use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
 use super::super::scene_buffer::{
     self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
     INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_NON_UNIFORM_SCALE, INSTANCE_FLAG_TERRAIN_SPLAT,
-    INSTANCE_RENDER_LAYER_MASK,
-    INSTANCE_RENDER_LAYER_SHIFT, INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT,
-    MATERIAL_KIND_GLASS,
+    INSTANCE_RENDER_LAYER_MASK, INSTANCE_RENDER_LAYER_SHIFT, INSTANCE_TERRAIN_TILE_MASK,
+    INSTANCE_TERRAIN_TILE_SHIFT, MATERIAL_KIND_GLASS,
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::water::WaterDrawCommand;
@@ -34,7 +33,10 @@ fn concentric_disk_sample(a: f32, b: f32) -> (f32, f32) {
     let (r, theta) = if a.abs() > b.abs() {
         (a, std::f32::consts::FRAC_PI_4 * (b / a))
     } else {
-        (b, std::f32::consts::FRAC_PI_2 - std::f32::consts::FRAC_PI_4 * (a / b))
+        (
+            b,
+            std::f32::consts::FRAC_PI_2 - std::f32::consts::FRAC_PI_4 * (a / b),
+        )
     };
     (r * theta.cos(), r * theta.sin())
 }
@@ -257,8 +259,7 @@ impl VulkanContext {
         // reads zero instead of holding the previous frame's counts.
         // Section-local increments below populate it; `fill_skin_
         // coverage_stats` snapshots it after `Scheduler::run`.
-        self.last_skin_coverage_frame =
-            super::super::skin_compute::SkinCoverageFrame::default();
+        self.last_skin_coverage_frame = super::super::skin_compute::SkinCoverageFrame::default();
         // Reset per-frame draw-call counts. Populated after the batch
         // merge (`batch_count`) and inside the indirect-grouping draw
         // loop below (`indirect_call_count`). Read by the app's stats
@@ -502,16 +503,15 @@ impl VulkanContext {
         // `crates/renderer/src/vulkan/acceleration.rs::build_tlas` and
         // the SSBO builder below — both must honour this map.
         let tlas_t0 = Instant::now();
-        let instance_map: Vec<Option<u32>> =
-            super::super::acceleration::build_instance_map(
-                draw_commands.len(),
-                super::super::scene_buffer::MAX_INSTANCES,
-                |i| {
-                    self.mesh_registry
-                        .get(draw_commands[i].mesh_handle)
-                        .is_some()
-                },
-            );
+        let instance_map: Vec<Option<u32>> = super::super::acceleration::build_instance_map(
+            draw_commands.len(),
+            super::super::scene_buffer::MAX_INSTANCES,
+            |i| {
+                self.mesh_registry
+                    .get(draw_commands[i].mesh_handle)
+                    .is_some()
+            },
+        );
         // M29 Phase 2: TLAS build moved to AFTER bone upload + skin
         // chain (compute dispatch + BLAS refit) so the TLAS sees this
         // frame's skinned poses with zero lag. instance_map computed
@@ -571,8 +571,7 @@ impl VulkanContext {
         // period without correlated low-discrepancy gaps.
         let (effective_vp, effective_cam_pos) = if dof.aperture > 0.0 {
             let idx = (self.frame_counter % 32) + 1;
-            let (disk_u, disk_v) =
-                concentric_disk_sample(halton(idx, 5), halton(idx, 7));
+            let (disk_u, disk_v) = concentric_disk_sample(halton(idx, 5), halton(idx, 7));
             let lens_u = disk_u * dof.aperture;
             let lens_v = disk_v * dof.aperture;
 
@@ -586,8 +585,7 @@ impl VulkanContext {
             // All rays converge at the focal plane.
             let focal_pt = pos + dof.focus_dist * fwd;
 
-            let jittered_view =
-                byroredux_core::math::Mat4::look_at_rh(jittered_eye, focal_pt, up);
+            let jittered_view = byroredux_core::math::Mat4::look_at_rh(jittered_eye, focal_pt, up);
             let proj = byroredux_core::math::Mat4::from_cols_array(&dof.proj_mat);
             let jvp = (proj * jittered_view).to_cols_array();
             (jvp, jittered_eye.to_array())
@@ -838,13 +836,12 @@ impl VulkanContext {
                 .take(pending_capped)
                 .map(|(s, _)| *s)
                 .collect();
-            self.scene_buffers
-                .record_pending_bind_inverse_copies(
-                    &self.device,
-                    cmd,
-                    &pending_slots,
-                    pending_capped,
-                );
+            self.scene_buffers.record_pending_bind_inverse_copies(
+                &self.device,
+                cmd,
+                &pending_slots,
+                pending_capped,
+            );
         }
 
         // M29.5/M29.6 — dispatch the palette-build compute pass.
@@ -864,12 +861,11 @@ impl VulkanContext {
             // frame 0), so any raster sampling at `bone_offset = 0`
             // either reads identity (post-warm) or garbage that
             // never gets shaded (no entity points there).
-            let bone_count = (bone_byte_size as usize
-                / std::mem::size_of::<[[f32; 4]; 4]>()) as u32;
+            let bone_count =
+                (bone_byte_size as usize / std::mem::size_of::<[[f32; 4]; 4]>()) as u32;
             if bone_count > 0 {
                 let bone_world_buf = self.scene_buffers.bone_world_buffers()[frame].buffer;
-                let bind_inverse_buf =
-                    self.scene_buffers.bind_inverses_persistent().buffer;
+                let bind_inverse_buf = self.scene_buffers.bind_inverses_persistent().buffer;
                 let bind_inverse_size = self.scene_buffers.bone_buffer_size();
                 let palette_buf = self.scene_buffers.bone_buffers()[frame].buffer;
                 let palette_size = self.scene_buffers.bone_buffer_size();
@@ -886,9 +882,7 @@ impl VulkanContext {
                             palette_buffer: palette_buf,
                             palette_buffer_size: palette_size,
                         },
-                        super::super::skin_compute::SkinPalettePushConstants {
-                            bone_count,
-                        },
+                        super::super::skin_compute::SkinPalettePushConstants { bone_count },
                     );
                     // COMPUTE_SHADER_WRITE → SHADER_READ barrier on the
                     // palette buffer covers both downstream consumers:
@@ -1253,7 +1247,8 @@ impl VulkanContext {
                             // as BLAS-build vertex input.
                             // COMPUTE_SHADER → ACCELERATION_STRUCTURE_BUILD_KHR
                             memory_barrier(
-                                &self.device, cmd,
+                                &self.device,
+                                cmd,
                                 vk::PipelineStageFlags::COMPUTE_SHADER,
                                 vk::AccessFlags::SHADER_WRITE,
                                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
@@ -1289,8 +1284,8 @@ impl VulkanContext {
                                 for (entity_id, result) in results {
                                     match result {
                                         Ok(()) => {
-                                            self.last_skin_coverage_frame
-                                                .first_sight_succeeded += 1;
+                                            self.last_skin_coverage_frame.first_sight_succeeded +=
+                                                1;
                                         }
                                         Err(e) => {
                                             log::warn!(
@@ -1402,7 +1397,8 @@ impl VulkanContext {
                             // BLAS refit writes → TLAS build reads.
                             // ACCELERATION_STRUCTURE_BUILD_KHR → ACCELERATION_STRUCTURE_BUILD_KHR
                             memory_barrier(
-                                &self.device, cmd,
+                                &self.device,
+                                cmd,
                                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
                                 vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
                                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
@@ -1455,16 +1451,14 @@ impl VulkanContext {
                     // that aged out via the idle policy (the original path
                     // that protects against entity-still-alive-but-not-
                     // drawn scenarios — camera moved off-screen, etc.).
-                    evictees.extend(
-                        self.skin_slots.iter().filter_map(|(&eid, slot)| {
-                            super::super::skin_compute::should_evict_skin_slot(
-                                slot.last_used_frame,
-                                now,
-                                min_idle,
-                            )
-                            .then_some(eid)
-                        }),
-                    );
+                    evictees.extend(self.skin_slots.iter().filter_map(|(&eid, slot)| {
+                        super::super::skin_compute::should_evict_skin_slot(
+                            slot.last_used_frame,
+                            now,
+                            min_idle,
+                        )
+                        .then_some(eid)
+                    }));
                     if !evictees.is_empty() {
                         log::debug!(
                             "skin_slots eviction: dropping {} idle SkinSlot(s) and matching skinned BLAS",
@@ -1520,7 +1514,8 @@ impl VulkanContext {
                         // #415 for the COMPUTE_SHADER widening.
                         // AS_BUILD_KHR → FRAGMENT_SHADER|COMPUTE_SHADER
                         memory_barrier(
-                            &self.device, cmd,
+                            &self.device,
+                            cmd,
                             vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
                             vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
                             vk::PipelineStageFlags::FRAGMENT_SHADER
@@ -1532,8 +1527,7 @@ impl VulkanContext {
                             // TLAS lands for this FIF slot — `write_tlas`
                             // flips `tlas_written[frame] = true`, but
                             // we want to know if it WAS false before.
-                            let first_tlas_this_slot =
-                                !self.scene_buffers.tlas_written[frame];
+                            let first_tlas_this_slot = !self.scene_buffers.tlas_written[frame];
                             self.scene_buffers
                                 .write_tlas(&self.device, frame, tlas_handle);
                             // #1227 / REN-D8-NEW-21 — earlier in this
@@ -1550,16 +1544,13 @@ impl VulkanContext {
                             // on RT-capable hardware AND only on the
                             // slot's first valid-TLAS frame — steady
                             // state pays nothing.
-                            if first_tlas_this_slot
-                                && self.device_caps.ray_query_supported
-                            {
-                                if let Err(e) = self
-                                    .scene_buffers
-                                    .patch_camera_rt_flag(&self.device, frame, 1.0)
-                                {
-                                    log::warn!(
-                                        "Failed to patch rt_flag post-TLAS: {e}"
-                                    );
+                            if first_tlas_this_slot && self.device_caps.ray_query_supported {
+                                if let Err(e) = self.scene_buffers.patch_camera_rt_flag(
+                                    &self.device,
+                                    frame,
+                                    1.0,
+                                ) {
+                                    log::warn!("Failed to patch rt_flag post-TLAS: {e}");
                                 }
                             }
                         }
@@ -1583,7 +1574,8 @@ impl VulkanContext {
                 // uploaded yet — it is built and uploaded after this dispatch.
                 // HOST → COMPUTE_SHADER (light/camera UBO flush)
                 memory_barrier(
-                    &self.device, cmd,
+                    &self.device,
+                    cmd,
                     vk::PipelineStageFlags::HOST,
                     vk::AccessFlags::HOST_WRITE,
                     vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1600,7 +1592,8 @@ impl VulkanContext {
                 // Barrier: compute writes → fragment reads on cluster SSBOs.
                 // COMPUTE_SHADER → FRAGMENT_SHADER (cluster SSBO outputs)
                 memory_barrier(
-                    &self.device, cmd,
+                    &self.device,
+                    cmd,
                     vk::PipelineStageFlags::COMPUTE_SHADER,
                     vk::AccessFlags::SHADER_WRITE,
                     vk::PipelineStageFlags::FRAGMENT_SHADER,
@@ -1966,7 +1959,12 @@ impl VulkanContext {
         // the common steady-state path.
         self.blend_seen_scratch.clear();
         for batch in &batches {
-            if let PipelineKey::Blended { src, dst, wireframe } = batch.pipeline_key {
+            if let PipelineKey::Blended {
+                src,
+                dst,
+                wireframe,
+            } = batch.pipeline_key
+            {
                 // Normalize cache key against the device-cap gate so a
                 // disabled-wireframe device hits the same slot it would
                 // for a regular opaque blend. Matches the gate in
@@ -2176,7 +2174,8 @@ impl VulkanContext {
         // HOST → VERTEX|FRAGMENT|COMPUTE|DRAW_INDIRECT (instance SSBO + UBOs)
         unsafe {
             memory_barrier(
-                &self.device, cmd,
+                &self.device,
+                cmd,
                 vk::PipelineStageFlags::HOST,
                 vk::AccessFlags::HOST_WRITE,
                 vk::PipelineStageFlags::VERTEX_SHADER
@@ -2408,7 +2407,11 @@ impl VulkanContext {
                         PipelineKey::Opaque { wireframe: true } => {
                             self.pipeline_wireframe.unwrap_or(self.pipeline)
                         }
-                        PipelineKey::Blended { src, dst, wireframe } => {
+                        PipelineKey::Blended {
+                            src,
+                            dst,
+                            wireframe,
+                        } => {
                             // Always present after the pre-population
                             // pass above. If creation failed earlier we
                             // fall back to the opaque pipeline rather
@@ -2694,7 +2697,7 @@ impl VulkanContext {
                                 wc.instance_index,
                                 frame, // #1255 — selects set 2 per-FIF water-caustic descriptor
                                 self.texture_registry.descriptor_set(frame), // #1258 — set 0
-                                self.scene_buffers.descriptor_set(frame),    // #1258 — set 1
+                                self.scene_buffers.descriptor_set(frame), // #1258 — set 1
                             );
                         }
                     }
@@ -2774,12 +2777,8 @@ impl VulkanContext {
                         .expect("UI mesh requires a per-mesh index buffer");
                     self.device
                         .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
-                    self.device.cmd_bind_index_buffer(
-                        cmd,
-                        ib.buffer,
-                        0,
-                        vk::IndexType::UINT32,
-                    );
+                    self.device
+                        .cmd_bind_index_buffer(cmd, ib.buffer, 0, vk::IndexType::UINT32);
                     self.device
                         .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, idx);
                 }
@@ -2959,12 +2958,7 @@ impl VulkanContext {
                         };
                         let vol_params = super::super::volumetrics::VolumetricsParams {
                             inv_view_proj: inv_vp_arr,
-                            camera_pos: [
-                                camera_pos[0],
-                                camera_pos[1],
-                                camera_pos[2],
-                                scatter_coef,
-                            ],
+                            camera_pos: [camera_pos[0], camera_pos[1], camera_pos[2], scatter_coef],
                             sun_dir: [
                                 sky_params.sun_direction[0],
                                 sky_params.sun_direction[1],
@@ -3413,7 +3407,7 @@ mod is_caustic_source_tests {
             alpha_test_func: 0,
             roughness: 0.5,
             metalness: 0.0,
-            ior: 1.5, // #1248
+            ior: 1.5,        // #1248
             subsurface: 0.0, // #1249
             sheen: 0.0,
             sheen_tint: 0.0,

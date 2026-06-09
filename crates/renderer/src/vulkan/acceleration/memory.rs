@@ -313,5 +313,4 @@ impl AccelerationManager {
             self.tlas_instances_scratch.capacity(),
         )
     }
-
 }

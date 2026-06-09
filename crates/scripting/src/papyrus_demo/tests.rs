@@ -84,7 +84,9 @@ fn active_state_transitions_to_busy_after_emit() {
 
     let rumble = world.get::<RumbleOnActivate>(lever).unwrap();
     match rumble.state {
-        RumbleState::Busy { wait_remaining_secs } => {
+        RumbleState::Busy {
+            wait_remaining_secs,
+        } => {
             // Wait counter started at `duration` (= 0.25 by default).
             assert_eq!(wait_remaining_secs, 0.25);
         }
@@ -146,7 +148,9 @@ fn tick_decrements_wait_and_holds_busy_until_zero() {
     // Half the wait passes — must still be Busy.
     rumble_tick_system(&world, 0.10);
     match world.get::<RumbleOnActivate>(lever).unwrap().state {
-        RumbleState::Busy { wait_remaining_secs } => {
+        RumbleState::Busy {
+            wait_remaining_secs,
+        } => {
             assert!(
                 (wait_remaining_secs - 0.15).abs() < 1e-6,
                 "wait_remaining_secs should be 0.25 - 0.10 = 0.15, got {}",

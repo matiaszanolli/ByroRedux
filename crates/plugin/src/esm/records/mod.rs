@@ -43,6 +43,7 @@ pub use actor::{
     FactionRelation, NpcInventoryEntry, NpcRecord, RaceRecord,
 };
 pub use climate::{parse_clmt, ClimateRecord, ClimateWeather};
+pub use common::StringsTableGuard;
 pub use container::{
     parse_cont, parse_leveled_list, ContainerRecord, InventoryEntry, LeveledEntry, LeveledList,
 };
@@ -63,7 +64,6 @@ pub use misc::{
     NaviRecord, NavmRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RegnRecord, RepuRecord,
     SlgmRecord, SpelRecord, TermRecord, WatrRecord,
 };
-pub use common::StringsTableGuard;
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use tree::{parse_tree, TreeRecord};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
@@ -79,7 +79,6 @@ use super::reader::{EsmReader, FormIdRemap, GameKind};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
-
 // ── #1118 / TD9-003 split — see `index.rs` and `grup_walker.rs` ─────
 mod grup_walker;
 mod index;
@@ -87,7 +86,6 @@ mod index;
 pub use index::EsmIndex;
 
 use grup_walker::{extract_dial_with_info, extract_records, extract_records_with_modl};
-
 
 /// Parse an entire ESM/ESP file in a single pass.
 ///
@@ -227,9 +225,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             }
             b"TXST" => parse_txst_group(&mut reader, end, &mut txst_textures, &mut texture_sets)?,
             // FO4+ only — see warned_*  / is_fo4_plus rationale above.
-            b"SCOL" if is_fo4_plus => {
-                parse_scol_group(&mut reader, end, &mut statics, &mut scols)?
-            }
+            b"SCOL" if is_fo4_plus => parse_scol_group(&mut reader, end, &mut statics, &mut scols)?,
             b"SCOL" => {
                 if !warned_scol {
                     warned_scol = true;
@@ -277,9 +273,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 }
                 reader.skip_group(&group);
             }
-            b"MSWP" if is_fo4_plus => {
-                parse_mswp_group(&mut reader, end, &mut material_swaps)?
-            }
+            b"MSWP" if is_fo4_plus => parse_mswp_group(&mut reader, end, &mut material_swaps)?,
             b"MSWP" => {
                 if !warned_mswp {
                     warned_mswp = true;
@@ -604,9 +598,11 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"AVIF" => {
                 let avif_remap = reader.get_form_id_remap();
                 extract_records(&mut reader, end, b"AVIF", &mut |fid, subs| {
-                    index.actor_values.insert(fid, parse_avif(fid, subs, &avif_remap));
+                    index
+                        .actor_values
+                        .insert(fid, parse_avif(fid, subs, &avif_remap));
                 })?;
-            },
+            }
             // ACTI / TERM #521 — dual-target: typed map for SCRI /
             // menu-tree cross-refs AND `cells.statics` for visual
             // placement. Pre-#527 the cell first-pass walked them via
@@ -1016,7 +1012,6 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
 /// each dual-target group. Recurses into nested groups so worldspace
 /// children and persistent/temporary cell children are handled too —
 /// same recursion shape as `extract_records`.
-
 
 #[cfg(test)]
 mod tests;

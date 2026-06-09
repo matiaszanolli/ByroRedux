@@ -102,7 +102,10 @@ fn main() -> anyhow::Result<()> {
     let landscape_textures = index.cells.landscape_textures.len();
     let texture_sets = index.cells.texture_sets.len();
     eprintln!("  STAT-family   : {} base objects", statics_count);
-    eprintln!("  LTEX→TXST     : {} landscape textures", landscape_textures);
+    eprintln!(
+        "  LTEX→TXST     : {} landscape textures",
+        landscape_textures
+    );
     eprintln!("  TXST records  : {} texture sets", texture_sets);
 
     let items = index.items.len();

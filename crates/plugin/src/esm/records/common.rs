@@ -169,8 +169,7 @@ pub fn read_lstring_or_zstring(data: &[u8]) -> String {
         // Resolve against the active StringTableSet first (#989).
         // Falls back to the placeholder when no table is installed or
         // the ID is absent from all three companion files.
-        return resolve_lstring(id)
-            .unwrap_or_else(|| format!("<lstring 0x{:08X}>", id));
+        return resolve_lstring(id).unwrap_or_else(|| format!("<lstring 0x{:08X}>", id));
     }
     read_zstring(data)
 }
@@ -252,8 +251,8 @@ impl CommonNamedFields {
                 b"MODL" => out.model_path = read_zstring(&sub.data),
                 b"ICON" => out.icon_path = read_zstring(&sub.data),
                 b"SCRI" if sub.data.len() >= 4 => {
-                    out.script_form_id = crate::esm::sub_reader::SubReader::new(&sub.data)
-                        .u32_or_default();
+                    out.script_form_id =
+                        crate::esm::sub_reader::SubReader::new(&sub.data).u32_or_default();
                 }
                 b"VMAD" => {
                     // Presence flag unchanged; the decoded attachments +
@@ -306,8 +305,8 @@ impl CommonItemFields {
                 b"MODL" => out.model_path = read_zstring(&sub.data),
                 b"ICON" => out.icon_path = read_zstring(&sub.data),
                 b"SCRI" if sub.data.len() >= 4 => {
-                    out.script_form_id = crate::esm::sub_reader::SubReader::new(&sub.data)
-                        .u32_or_default();
+                    out.script_form_id =
+                        crate::esm::sub_reader::SubReader::new(&sub.data).u32_or_default();
                 }
                 // VMAD presence-only flag — see `has_script` field doc.
                 b"VMAD" => out.has_script = true,
@@ -347,7 +346,9 @@ mod tests {
         let subs = vec![sub(b"EDID", b"ScriptedActi\0"), sub(b"VMAD", &vmad)];
         let c = CommonNamedFields::from_subs(&subs);
         assert!(c.has_script, "presence flag preserved");
-        let inst = c.script_instance.expect("VMAD decoded into script_instance");
+        let inst = c
+            .script_instance
+            .expect("VMAD decoded into script_instance");
         assert_eq!(inst.scripts.len(), 1);
         assert_eq!(inst.scripts[0].name, "DoorScript");
     }

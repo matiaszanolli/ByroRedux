@@ -114,10 +114,7 @@ impl CsgArchive {
         if &head[0..4] != MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "not a CSG blob: magic {:02x?} != \"bcsg\"",
-                    &head[0..4]
-                ),
+                format!("not a CSG blob: magic {:02x?} != \"bcsg\"", &head[0..4]),
             ));
         }
         let num_objects = u32::from_le_bytes(head[4..8].try_into().unwrap());
@@ -135,9 +132,7 @@ impl CsgArchive {
             if file_offset as u64 > file_len {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!(
-                        "CSG chunk {i} file_offset {file_offset} past EOF {file_len}"
-                    ),
+                    format!("CSG chunk {i} file_offset {file_offset} past EOF {file_len}"),
                 ));
             }
             chunks.push(ChunkEntry {
@@ -295,7 +290,8 @@ mod tests {
     }
 
     fn write_temp(bytes: &[u8], tag: &str) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!("byro_csg_test_{tag}_{}.csg", std::process::id()));
+        let p =
+            std::env::temp_dir().join(format!("byro_csg_test_{tag}_{}.csg", std::process::id()));
         std::fs::write(&p, bytes).unwrap();
         p
     }
@@ -329,7 +325,10 @@ mod tests {
         // Straddle the 64 KiB boundary: 6 bytes tail of c0 + 6 head of c1.
         let mut expect = c0[CSG_CHUNK_SIZE - 6..].to_vec();
         expect.extend_from_slice(&c1[0..6]);
-        assert_eq!(csg.read_psg((CSG_CHUNK_SIZE - 6) as u64, 12).unwrap(), expect);
+        assert_eq!(
+            csg.read_psg((CSG_CHUNK_SIZE - 6) as u64, 12).unwrap(),
+            expect
+        );
         // Tail of the partial last chunk.
         assert_eq!(
             csg.read_psg((CSG_CHUNK_SIZE + 990) as u64, 10).unwrap(),
@@ -351,7 +350,11 @@ mod tests {
     fn cache_eviction_keeps_reads_correct() {
         // 4 chunks, cache cap 1 → every read evicts; results must stay right.
         let chunks: Vec<Vec<u8>> = (0..4)
-            .map(|k| (0..CSG_CHUNK_SIZE).map(|i| ((i + k * 13) % 251) as u8).collect())
+            .map(|k| {
+                (0..CSG_CHUNK_SIZE)
+                    .map(|i| ((i + k * 13) % 251) as u8)
+                    .collect()
+            })
             .collect();
         let p = write_temp(&build_csg(&chunks), "evict");
         let csg = CsgArchive::open_with_cache(&p, 1).unwrap();

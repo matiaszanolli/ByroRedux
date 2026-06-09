@@ -9,7 +9,8 @@ use super::compute::ClusterCullPipeline;
 use super::debug;
 use super::device::{self, QueueFamilyIndices};
 use super::gbuffer::{
-    GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT, RESERVOIR_FORMAT,
+    GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT,
+    RESERVOIR_FORMAT,
 };
 use super::instance;
 use super::material::GpuMaterial;
@@ -594,7 +595,7 @@ impl DrawCommand {
         h.write_u32(self.effect_falloff[2].to_bits()); // start_opacity
         h.write_u32(self.effect_falloff[3].to_bits()); // stop_opacity
         h.write_u32(self.effect_falloff[4].to_bits()); // soft_falloff_depth
-        // greyscale LUT bindless handle (#890 Stage 2c)
+                                                       // greyscale LUT bindless handle (#890 Stage 2c)
         h.write_u32(self.greyscale_lut_index);
         // #1147 Phase 2b — BGSM v>=8 translucency suite. Must mirror
         // the `to_gpu_material` field order so the hash stays
@@ -1035,8 +1036,7 @@ pub struct VulkanContext {
     /// ~9 reallocs × 34 NPCs × 60 fps ≈ 18 K reallocs/s. Same
     /// `mem::take` → `clear()` → `mem::replace` pattern as the
     /// instance / batch / indirect scratches above.
-    skin_dispatch_seen_scratch:
-        std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
+    skin_dispatch_seen_scratch: std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
     /// Sibling of `skin_dispatch_seen_scratch` — entity → SkinPushConstants
     /// + buffer handles for the per-frame compute dispatch.
     skin_dispatches_scratch: Vec<(
@@ -1575,11 +1575,7 @@ impl VulkanContext {
         // `palette[0..MBPM] = identity × identity = identity` and the
         // overflow case falls back to bind pose (pre-M29.6 behaviour).
         scene_buffers
-            .seed_persistent_bind_inverses_identity(
-                &device,
-                &graphics_queue,
-                transfer_pool,
-            )
+            .seed_persistent_bind_inverses_identity(&device, &graphics_queue, transfer_pool)
             .context("seed bind_inverses_persistent slot 0 identity (M29.6 / #1191)")?;
 
         // 12b. Acceleration manager (RT only) — build empty TLAS so descriptors are valid
@@ -1696,10 +1692,7 @@ impl VulkanContext {
         // legacy `upload_bones` + staging-copy path is removed since
         // M29.5 cleanup, and the engine has no supported no-RT mode).
         let skin_palette = if device_caps.ray_query_supported {
-            match super::skin_compute::SkinPaletteComputePipeline::new(
-                &device,
-                pipeline_cache,
-            ) {
+            match super::skin_compute::SkinPaletteComputePipeline::new(&device, pipeline_cache) {
                 Ok(sp) => Some(sp),
                 Err(e) => {
                     log::warn!(
@@ -1718,10 +1711,7 @@ impl VulkanContext {
         // or pool allocation errored) leaves `gpu_timers = None`, the
         // brackets in `draw_frame` no-op, and `skin.coverage` shows
         // `gpu_timer: unavailable` instead of ms values.
-        let gpu_timers = match super::gpu_timers::GpuPerFrameTimers::new(
-            &device,
-            &device_caps,
-        ) {
+        let gpu_timers = match super::gpu_timers::GpuPerFrameTimers::new(&device, &device_caps) {
             Ok(t) => t,
             Err(e) => {
                 log::warn!(
@@ -1795,9 +1785,9 @@ impl VulkanContext {
                 // VUID-vkCmdDraw-None-09600 (the barrier assumes
                 // `oldLayout = GENERAL`). Mirror of CausticPipeline's
                 // initialize_layouts call in the caustic block below.
-                if let Err(e) = unsafe {
-                    a.initialize_layouts(&device, &graphics_queue, transfer_pool)
-                } {
+                if let Err(e) =
+                    unsafe { a.initialize_layouts(&device, &graphics_queue, transfer_pool) }
+                {
                     log::warn!(
                         "Water-caustic initialize_layouts failed: {e} — disabling for the rest of the session"
                     );
@@ -1870,16 +1860,18 @@ impl VulkanContext {
         // ray-march integration. Skipped silently on failure — the
         // dispatch site is gated on `Some` so the rest of the
         // pipeline stays unaffected.
-        let mut volumetrics = match VolumetricsPipeline::new(&device, &gpu_allocator, pipeline_cache) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                log::warn!("Volumetrics pipeline creation failed: {e} — no volumetric lighting");
-                None
-            }
-        };
+        let mut volumetrics =
+            match VolumetricsPipeline::new(&device, &gpu_allocator, pipeline_cache) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    log::warn!(
+                        "Volumetrics pipeline creation failed: {e} — no volumetric lighting"
+                    );
+                    None
+                }
+            };
         if let Some(ref v) = volumetrics {
-            if let Err(e) =
-                unsafe { v.initialize_layouts(&device, &graphics_queue, transfer_pool) }
+            if let Err(e) = unsafe { v.initialize_layouts(&device, &graphics_queue, transfer_pool) }
             {
                 log::warn!("Volumetrics froxel layout init failed: {e} — disabling volumetrics");
                 if let Some(mut pipe) = volumetrics.take() {
@@ -1930,8 +1922,9 @@ impl VulkanContext {
             (0..n_frames).map(|i| gbuffer_ref.normal_view(i)).collect();
         let albedo_views: Vec<vk::ImageView> =
             (0..n_frames).map(|i| gbuffer_ref.albedo_view(i)).collect();
-        let reservoir_views: Vec<vk::ImageView> =
-            (0..n_frames).map(|i| gbuffer_ref.reservoir_view(i)).collect();
+        let reservoir_views: Vec<vk::ImageView> = (0..n_frames)
+            .map(|i| gbuffer_ref.reservoir_view(i))
+            .collect();
 
         // 14b2. SVGF temporal denoiser — reads raw_indirect + motion +
         // mesh_id from the G-buffer, writes accumulated_indirect images

@@ -1069,10 +1069,7 @@ mod tests {
             sequence_groups: vec![],
         };
         let cat = KfmCatalog::new(kfm);
-        let order: Vec<(&str, u32)> = cat
-            .iter_named()
-            .map(|(n, s)| (n, s.sequence_id))
-            .collect();
+        let order: Vec<(&str, u32)> = cat.iter_named().map(|(n, s)| (n, s.sequence_id)).collect();
         assert_eq!(
             order,
             vec![("alpha", 2u32), ("zeta", 5), ("mu", 8)],

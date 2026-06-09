@@ -3,11 +3,8 @@
 //! Extra-data tangent capture, Mikkelsen-style synthesis fallback, and
 //! Zup→Yup quaternion fix-up for BS tangent payloads.
 
-
-
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3};
-
 
 pub fn extract_tangents_from_extra_data(
     scene: &NifScene,
@@ -446,58 +443,58 @@ pub fn synthesize_tangents_yup(
         let tangent_in = tan_u[i];
         let bitangent_in = tan_v[i];
 
-        let (tangent_yup, bitangent_yup) = if vec3_is_zero(&tangent_in) || vec3_is_zero(&bitangent_in)
-        {
-            // Degenerate fallback (nifly: permute N components). Since
-            // we're already Y-up, the permutation lives in Y-up space
-            // too — pick `[n_yup.y, n_yup.z, n_yup.x]` and let B fall
-            // out of `cross(N, T)` so the basis is right-handed.
-            //
-            // Note: this permutation is NOT the Y-up image of the Z-up
-            // flavor's `[n_zup.y, n_zup.z, n_zup.x]` permutation —
-            // both produce valid orthogonal tangents for the degenerate
-            // case but the chosen direction differs by space. Documented
-            // divergence (AUDIT_INCREMENTAL_2026-05-22 ID-4); both are
-            // acceptable since the degenerate case has no canonical
-            // tangent and any orthogonal-to-N direction is correct.
-            let t_y = [n_yup[1], n_yup[2], n_yup[0]];
-            let b_y = [
-                n_yup[1] * t_y[2] - n_yup[2] * t_y[1],
-                n_yup[2] * t_y[0] - n_yup[0] * t_y[2],
-                n_yup[0] * t_y[1] - n_yup[1] * t_y[0],
-            ];
-            (t_y, b_y)
-        } else {
-            // Gram-Schmidt against N (no Z-up→Y-up swap — inputs are
-            // already in renderer space).
-            let mut t_yup = tangent_in;
-            let mut b_yup = bitangent_in;
+        let (tangent_yup, bitangent_yup) =
+            if vec3_is_zero(&tangent_in) || vec3_is_zero(&bitangent_in) {
+                // Degenerate fallback (nifly: permute N components). Since
+                // we're already Y-up, the permutation lives in Y-up space
+                // too — pick `[n_yup.y, n_yup.z, n_yup.x]` and let B fall
+                // out of `cross(N, T)` so the basis is right-handed.
+                //
+                // Note: this permutation is NOT the Y-up image of the Z-up
+                // flavor's `[n_zup.y, n_zup.z, n_zup.x]` permutation —
+                // both produce valid orthogonal tangents for the degenerate
+                // case but the chosen direction differs by space. Documented
+                // divergence (AUDIT_INCREMENTAL_2026-05-22 ID-4); both are
+                // acceptable since the degenerate case has no canonical
+                // tangent and any orthogonal-to-N direction is correct.
+                let t_y = [n_yup[1], n_yup[2], n_yup[0]];
+                let b_y = [
+                    n_yup[1] * t_y[2] - n_yup[2] * t_y[1],
+                    n_yup[2] * t_y[0] - n_yup[0] * t_y[2],
+                    n_yup[0] * t_y[1] - n_yup[1] * t_y[0],
+                ];
+                (t_y, b_y)
+            } else {
+                // Gram-Schmidt against N (no Z-up→Y-up swap — inputs are
+                // already in renderer space).
+                let mut t_yup = tangent_in;
+                let mut b_yup = bitangent_in;
 
-            normalize_inplace(&mut t_yup);
-            let dot_nt = n_yup[0] * t_yup[0] + n_yup[1] * t_yup[1] + n_yup[2] * t_yup[2];
-            t_yup = [
-                t_yup[0] - n_yup[0] * dot_nt,
-                t_yup[1] - n_yup[1] * dot_nt,
-                t_yup[2] - n_yup[2] * dot_nt,
-            ];
-            normalize_inplace(&mut t_yup);
+                normalize_inplace(&mut t_yup);
+                let dot_nt = n_yup[0] * t_yup[0] + n_yup[1] * t_yup[1] + n_yup[2] * t_yup[2];
+                t_yup = [
+                    t_yup[0] - n_yup[0] * dot_nt,
+                    t_yup[1] - n_yup[1] * dot_nt,
+                    t_yup[2] - n_yup[2] * dot_nt,
+                ];
+                normalize_inplace(&mut t_yup);
 
-            normalize_inplace(&mut b_yup);
-            let dot_nb = n_yup[0] * b_yup[0] + n_yup[1] * b_yup[1] + n_yup[2] * b_yup[2];
-            b_yup = [
-                b_yup[0] - n_yup[0] * dot_nb,
-                b_yup[1] - n_yup[1] * dot_nb,
-                b_yup[2] - n_yup[2] * dot_nb,
-            ];
-            let dot_tb = t_yup[0] * b_yup[0] + t_yup[1] * b_yup[1] + t_yup[2] * b_yup[2];
-            b_yup = [
-                b_yup[0] - t_yup[0] * dot_tb,
-                b_yup[1] - t_yup[1] * dot_tb,
-                b_yup[2] - t_yup[2] * dot_tb,
-            ];
-            normalize_inplace(&mut b_yup);
-            (t_yup, b_yup)
-        };
+                normalize_inplace(&mut b_yup);
+                let dot_nb = n_yup[0] * b_yup[0] + n_yup[1] * b_yup[1] + n_yup[2] * b_yup[2];
+                b_yup = [
+                    b_yup[0] - n_yup[0] * dot_nb,
+                    b_yup[1] - n_yup[1] * dot_nb,
+                    b_yup[2] - n_yup[2] * dot_nb,
+                ];
+                let dot_tb = t_yup[0] * b_yup[0] + t_yup[1] * b_yup[1] + t_yup[2] * b_yup[2];
+                b_yup = [
+                    b_yup[0] - t_yup[0] * dot_tb,
+                    b_yup[1] - t_yup[1] * dot_tb,
+                    b_yup[2] - t_yup[2] * dot_tb,
+                ];
+                normalize_inplace(&mut b_yup);
+                (t_yup, b_yup)
+            };
 
         let cross_nt = [
             n_yup[1] * tangent_yup[2] - n_yup[2] * tangent_yup[1],
@@ -531,4 +528,3 @@ pub fn normalize_inplace(v: &mut [f32; 3]) {
         *v = [0.0, 0.0, 0.0];
     }
 }
-

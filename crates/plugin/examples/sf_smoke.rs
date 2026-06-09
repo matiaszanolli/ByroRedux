@@ -42,21 +42,18 @@ use std::collections::BTreeMap;
 /// for pre-FO4 games — they'll never appear in SF ESMs but the
 /// dispatch still recognizes them. Snapshot 2026-05-28 (post-Phase 0).
 const DISPATCH_HANDLED_FOURCCS: &[&[u8; 4]] = &[
-    b"ACTI", b"ADDN", b"ALCH", b"ALOC", b"AMEF", b"AMMO", b"ANIO", b"APPA",
-    b"ARMA", b"ARMO", b"ASPC", b"AVIF", b"BNDS", b"BOOK", b"BPTD", b"BSGN",
-    b"CAMS", b"CCRD", b"CDCK", b"CELL", b"CHAL", b"CHIP", b"CLAS", b"CLMT",
-    b"CLOT", b"CMNY", b"COBJ", b"CONT", b"CPTH", b"CREA", b"CSNO", b"CSTY",
-    b"DEBR", b"DEHY", b"DIAL", b"DOBJ", b"DOOR", b"ECZN", b"EFSH", b"ENCH",
-    b"EXPL", b"EYES", b"FACT", b"FLOR", b"FLST", b"FURN", b"GLOB", b"GMST",
-    b"GRAS", b"HAIR", b"HDPT", b"HUNG", b"IDLE", b"IDLM", b"IMAD", b"IMGS",
-    b"IMOD", b"INGR", b"IPCT", b"IPDS", b"KEYM", b"LGTM", b"LIGH", b"LSCR",
-    b"LSCT", b"LTEX", b"LVLC", b"LVLI", b"LVLN", b"MESG", b"MGEF", b"MICN",
-    b"MISC", b"MOVS", b"MSET", b"MSTT", b"MSWP", b"MUSC", b"NAVI", b"NAVM",
-    b"NOTE", b"NPC_", b"OTFT", b"PACK", b"PERK", b"PKIN", b"PROJ", b"PWAT",
-    b"QUST", b"RACE", b"RADS", b"RCCT", b"RCPE", b"REGN", b"REPU", b"RGDL",
-    b"SCOL", b"SCPT", b"SGST", b"SLGM", b"SLPD", b"SOUN", b"SPEL", b"STAT",
-    b"TACT", b"TERM", b"TREE", b"TXST", b"VTYP", b"WATR", b"WEAP", b"WRLD",
-    b"WTHR",
+    b"ACTI", b"ADDN", b"ALCH", b"ALOC", b"AMEF", b"AMMO", b"ANIO", b"APPA", b"ARMA", b"ARMO",
+    b"ASPC", b"AVIF", b"BNDS", b"BOOK", b"BPTD", b"BSGN", b"CAMS", b"CCRD", b"CDCK", b"CELL",
+    b"CHAL", b"CHIP", b"CLAS", b"CLMT", b"CLOT", b"CMNY", b"COBJ", b"CONT", b"CPTH", b"CREA",
+    b"CSNO", b"CSTY", b"DEBR", b"DEHY", b"DIAL", b"DOBJ", b"DOOR", b"ECZN", b"EFSH", b"ENCH",
+    b"EXPL", b"EYES", b"FACT", b"FLOR", b"FLST", b"FURN", b"GLOB", b"GMST", b"GRAS", b"HAIR",
+    b"HDPT", b"HUNG", b"IDLE", b"IDLM", b"IMAD", b"IMGS", b"IMOD", b"INGR", b"IPCT", b"IPDS",
+    b"KEYM", b"LGTM", b"LIGH", b"LSCR", b"LSCT", b"LTEX", b"LVLC", b"LVLI", b"LVLN", b"MESG",
+    b"MGEF", b"MICN", b"MISC", b"MOVS", b"MSET", b"MSTT", b"MSWP", b"MUSC", b"NAVI", b"NAVM",
+    b"NOTE", b"NPC_", b"OTFT", b"PACK", b"PERK", b"PKIN", b"PROJ", b"PWAT", b"QUST", b"RACE",
+    b"RADS", b"RCCT", b"RCPE", b"REGN", b"REPU", b"RGDL", b"SCOL", b"SCPT", b"SGST", b"SLGM",
+    b"SLPD", b"SOUN", b"SPEL", b"STAT", b"TACT", b"TERM", b"TREE", b"TXST", b"VTYP", b"WATR",
+    b"WEAP", b"WRLD", b"WTHR",
 ];
 
 fn is_dispatch_handled(fourcc: &[u8; 4]) -> bool {
@@ -111,7 +108,8 @@ struct RecursiveLeafCounts {
 struct WalkReport {
     /// Bytes consumed by the TES4 header (subtracted from file size
     /// to derive "GRUP payload bytes" below).
-    #[allow(dead_code)] // exposed via the console report only — kept on the struct for diffing.
+    #[allow(dead_code)]
+    // exposed via the console report only — kept on the struct for diffing.
     tes4_bytes: u64,
     /// Total bytes accounted for by top-level GRUPs (sum of
     /// `grup.total_size`).
@@ -152,14 +150,8 @@ fn main() -> anyhow::Result<()> {
     let tes4_bytes = reader.position() as u64;
 
     eprintln!("[sf_smoke] {}", esm_path);
-    eprintln!(
-        "  variant       : {:?}",
-        variant
-    );
-    eprintln!(
-        "  hedr_version  : {:.4}",
-        file_header.hedr_version
-    );
+    eprintln!("  variant       : {:?}", variant);
+    eprintln!("  hedr_version  : {:.4}", file_header.hedr_version);
     eprintln!("  game_kind     : {:?}", game_kind);
     eprintln!("  localized     : {}", file_header.localized);
     eprintln!(
@@ -167,7 +159,10 @@ fn main() -> anyhow::Result<()> {
         file_header.master_files.len(),
         &file_header.master_files
     );
-    eprintln!("  total_records : {} (declared in HEDR)", file_header.record_count);
+    eprintln!(
+        "  total_records : {} (declared in HEDR)",
+        file_header.record_count
+    );
     eprintln!("  file_size     : {} bytes", file_len);
     eprintln!("  tes4_bytes    : {} bytes", tes4_bytes);
 
@@ -177,7 +172,11 @@ fn main() -> anyhow::Result<()> {
     // CELL/WRLD handler decode SF records or silently drop them?"
     let mut report = WalkReport {
         tes4_bytes,
-        recursive: if recurse { Some(RecursiveLeafCounts::default()) } else { None },
+        recursive: if recurse {
+            Some(RecursiveLeafCounts::default())
+        } else {
+            None
+        },
         ..Default::default()
     };
 
@@ -205,11 +204,9 @@ fn main() -> anyhow::Result<()> {
         let grup = match reader.read_group_header() {
             Ok(g) => g,
             Err(e) => {
-                report.errors.push((
-                    reader.position(),
-                    *b"GRUP",
-                    format!("group header: {e}"),
-                ));
+                report
+                    .errors
+                    .push((reader.position(), *b"GRUP", format!("group header: {e}")));
                 break;
             }
         };
@@ -246,12 +243,19 @@ fn main() -> anyhow::Result<()> {
 
     // ── Console report ──────────────────────────────────────────────
     eprintln!();
-    eprintln!("  grup_bytes    : {} bytes ({:.1}% of file)",
+    eprintln!(
+        "  grup_bytes    : {} bytes ({:.1}% of file)",
         report.grup_bytes_total,
-        100.0 * report.grup_bytes_total as f64 / file_len as f64);
-    eprintln!("  orphans       : {} stray top-level records",
-        report.orphan_record_count);
-    eprintln!("  errors        : {} byte-level walk errors", report.errors.len());
+        100.0 * report.grup_bytes_total as f64 / file_len as f64
+    );
+    eprintln!(
+        "  orphans       : {} stray top-level records",
+        report.orphan_record_count
+    );
+    eprintln!(
+        "  errors        : {} byte-level walk errors",
+        report.errors.len()
+    );
     if !report.errors.is_empty() {
         for (off, fourcc, msg) in report.errors.iter().take(10) {
             eprintln!(
@@ -268,8 +272,10 @@ fn main() -> anyhow::Result<()> {
 
     eprintln!();
     eprintln!("  Per-FourCC top-level GRUPs (sorted by byte size):");
-    eprintln!("    {:>4} {:>8} {:>12} {:>12} {:>9} {}",
-        "type", "grups", "bytes", "imm-rec", "handled?", "fourcc");
+    eprintln!(
+        "    {:>4} {:>8} {:>12} {:>12} {:>9} {}",
+        "type", "grups", "bytes", "imm-rec", "handled?", "fourcc"
+    );
     let mut by_size: Vec<(&[u8; 4], &GrupStats)> = report.by_fourcc.iter().collect();
     by_size.sort_by(|a, b| b.1.bytes_total.cmp(&a.1.bytes_total));
     let mut handled_bytes: u64 = 0;
@@ -285,35 +291,49 @@ fn main() -> anyhow::Result<()> {
             unhandled_bytes += stats.bytes_total;
             unhandled_grups += stats.grup_count;
         }
-        eprintln!("    {:>4} {:>8} {:>12} {:>12} {:>9} {}",
+        eprintln!(
+            "    {:>4} {:>8} {:>12} {:>12} {:>9} {}",
             String::from_utf8_lossy(fourcc.as_slice()),
             stats.grup_count,
             stats.bytes_total,
             stats.immediate_records,
             if handled { "YES" } else { "skip" },
-            if stats.saw_byte_error { "(byte-error)" } else { "" });
+            if stats.saw_byte_error {
+                "(byte-error)"
+            } else {
+                ""
+            }
+        );
     }
 
     eprintln!();
     eprintln!("  ── Summary ────────────────────────────────");
-    eprintln!("  Distinct top-level GRUP FourCCs: {}",
-        report.by_fourcc.len());
-    eprintln!("  Handled by dispatch  : {} grups / {} bytes ({:.1}% of GRUP bytes)",
+    eprintln!(
+        "  Distinct top-level GRUP FourCCs: {}",
+        report.by_fourcc.len()
+    );
+    eprintln!(
+        "  Handled by dispatch  : {} grups / {} bytes ({:.1}% of GRUP bytes)",
         handled_grups,
         handled_bytes,
-        100.0 * handled_bytes as f64 / report.grup_bytes_total.max(1) as f64);
-    eprintln!("  Silently skipped     : {} grups / {} bytes ({:.1}% of GRUP bytes)",
+        100.0 * handled_bytes as f64 / report.grup_bytes_total.max(1) as f64
+    );
+    eprintln!(
+        "  Silently skipped     : {} grups / {} bytes ({:.1}% of GRUP bytes)",
         unhandled_grups,
         unhandled_bytes,
-        100.0 * unhandled_bytes as f64 / report.grup_bytes_total.max(1) as f64);
+        100.0 * unhandled_bytes as f64 / report.grup_bytes_total.max(1) as f64
+    );
 
     // Recursive leaf-record report (--recurse only).
     if let Some(ref leaves) = report.recursive {
         eprintln!();
         eprintln!("  ── Recursive leaf records (inside CELL/WRLD/etc. sub-GRUPs) ──");
-        eprintln!("  Total leaf bytes  : {} ({:.1}% of GRUP bytes)",
+        eprintln!(
+            "  Total leaf bytes  : {} ({:.1}% of GRUP bytes)",
             leaves.bytes_total,
-            100.0 * leaves.bytes_total as f64 / report.grup_bytes_total.max(1) as f64);
+            100.0 * leaves.bytes_total as f64 / report.grup_bytes_total.max(1) as f64
+        );
         eprintln!("  Distinct leaf FourCCs: {}", leaves.by_fourcc.len());
         eprintln!("  Recursive walk errors: {}", leaves.errors.len());
         if !leaves.errors.is_empty() {
@@ -334,9 +354,11 @@ fn main() -> anyhow::Result<()> {
         let mut leaf_by_count: Vec<(&[u8; 4], &u64)> = leaves.by_fourcc.iter().collect();
         leaf_by_count.sort_by(|a, b| b.1.cmp(a.1));
         for (fourcc, count) in leaf_by_count.iter().take(20) {
-            eprintln!("    {:>4} {:>12}",
+            eprintln!(
+                "    {:>4} {:>12}",
                 String::from_utf8_lossy(fourcc.as_slice()),
-                count);
+                count
+            );
         }
     }
 
@@ -434,11 +456,9 @@ fn recursive_walk(
             let header: RecordHeader = match reader.read_record_header() {
                 Ok(h) => h,
                 Err(e) => {
-                    leaves.errors.push((
-                        reader.position(),
-                        *b"____",
-                        format!("leaf header: {e}"),
-                    ));
+                    leaves
+                        .errors
+                        .push((reader.position(), *b"____", format!("leaf header: {e}")));
                     // Can't recover at this nesting level — skip to
                     // the enclosing GRUP boundary.
                     let skip = top.saturating_sub(reader.position());

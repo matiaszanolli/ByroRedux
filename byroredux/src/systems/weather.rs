@@ -258,7 +258,15 @@ pub(crate) fn cloud_scroll_rate_from_wind(wind_speed: u8) -> f32 {
 
 /// Seven blended WTHR sky fields, in order:
 /// zenith, horizon, lower, sun_col, ambient, sunlight, fog_col.
-type WthrColors = ([f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3], [f32; 3]);
+type WthrColors = (
+    [f32; 3],
+    [f32; 3],
+    [f32; 3],
+    [f32; 3],
+    [f32; 3],
+    [f32; 3],
+    [f32; 3],
+);
 
 /// Sample a `WeatherDataRes`-shaped snapshot at the given `(slot_a, slot_b, t)`
 /// tuple. Returns the seven blended fields the WTHR cross-fade composer
@@ -276,12 +284,32 @@ fn sample_wthr_colors(
 ) -> WthrColors {
     use byroredux_plugin::esm::records::weather::*;
     (
-        lerp3(sky_colors[SKY_UPPER][slot_a], sky_colors[SKY_UPPER][slot_b], t),
-        lerp3(sky_colors[SKY_HORIZON][slot_a], sky_colors[SKY_HORIZON][slot_b], t),
-        lerp3(sky_colors[SKY_LOWER][slot_a], sky_colors[SKY_LOWER][slot_b], t),
+        lerp3(
+            sky_colors[SKY_UPPER][slot_a],
+            sky_colors[SKY_UPPER][slot_b],
+            t,
+        ),
+        lerp3(
+            sky_colors[SKY_HORIZON][slot_a],
+            sky_colors[SKY_HORIZON][slot_b],
+            t,
+        ),
+        lerp3(
+            sky_colors[SKY_LOWER][slot_a],
+            sky_colors[SKY_LOWER][slot_b],
+            t,
+        ),
         lerp3(sky_colors[SKY_SUN][slot_a], sky_colors[SKY_SUN][slot_b], t),
-        lerp3(sky_colors[SKY_AMBIENT][slot_a], sky_colors[SKY_AMBIENT][slot_b], t),
-        lerp3(sky_colors[SKY_SUNLIGHT][slot_a], sky_colors[SKY_SUNLIGHT][slot_b], t),
+        lerp3(
+            sky_colors[SKY_AMBIENT][slot_a],
+            sky_colors[SKY_AMBIENT][slot_b],
+            t,
+        ),
+        lerp3(
+            sky_colors[SKY_SUNLIGHT][slot_a],
+            sky_colors[SKY_SUNLIGHT][slot_b],
+            t,
+        ),
         lerp3(sky_colors[SKY_FOG][slot_a], sky_colors[SKY_FOG][slot_b], t),
     )
 }
@@ -500,11 +528,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
                 TOD_MIDNIGHT => TOD_NIGHT,
                 s => s,
             };
-            crate::components::DalcCubeYup::lerp(
-                &cubes[fold(slot_a)],
-                &cubes[fold(slot_b)],
-                t,
-            )
+            crate::components::DalcCubeYup::lerp(&cubes[fold(slot_a)], &cubes[fold(slot_b)], t)
         });
 
     // Update SkyParamsRes.
@@ -947,7 +971,9 @@ mod tod_keys_tests {
             dir[1] > 0.0,
             "sun must be above horizon at hour 5.5 on FO3 (sunrise_begin=5.333). \
              Pre-#1012: dir=[0,-1,0] sentinel; got dir=[{:.3},{:.3},{:.3}]",
-            dir[0], dir[1], dir[2],
+            dir[0],
+            dir[1],
+            dir[2],
         );
         assert!(
             dir[0] > 0.5,
@@ -964,7 +990,9 @@ mod tod_keys_tests {
             dir[1] > 0.0,
             "sun must still be above horizon at hour 17.5 on FO3 (sunset_end=22). \
              Got dir=[{:.3},{:.3},{:.3}]",
-            dir[0], dir[1], dir[2],
+            dir[0],
+            dir[1],
+            dir[2],
         );
         assert!(
             dir[0] < 0.0,

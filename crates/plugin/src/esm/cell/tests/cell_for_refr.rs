@@ -118,15 +118,12 @@ fn cell_for_refr_form_id_hits_exterior_cell_with_worldspace_and_grid() {
 #[test]
 fn cell_for_refr_form_id_misses_when_form_id_is_unknown() {
     let mut index = EsmCellIndex::default();
-    index.cells.insert(
-        "stub".to_string(),
-        interior_cell("Stub", &[0x1001]),
-    );
+    index
+        .cells
+        .insert("stub".to_string(), interior_cell("Stub", &[0x1001]));
     let mut grids = std::collections::HashMap::new();
     grids.insert((0, 0), exterior_cell(0, 0, &[0x2001]));
-    index
-        .exterior_cells
-        .insert("worldspace".to_string(), grids);
+    index.exterior_cells.insert("worldspace".to_string(), grids);
 
     let found = index.cell_for_refr_form_id(0xDEADBEEF);
     assert_eq!(

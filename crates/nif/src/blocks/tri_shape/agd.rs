@@ -208,7 +208,6 @@ impl NiAdditionalGeometryData {
     }
 }
 
-
 #[cfg(test)]
 #[path = "../tri_shape_ni_additional_geometry_data_tests.rs"]
 mod ni_additional_geometry_data_tests;

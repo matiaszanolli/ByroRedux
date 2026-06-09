@@ -22,8 +22,8 @@ fn make_draw_command(in_tlas: bool, is_water: bool) -> DrawCommand {
         dst_blend: 7,
         two_sided: false,
         wireframe: false,
-            flat_shading: false,
-            is_decal: false,
+        flat_shading: false,
+        is_decal: false,
         render_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
         bone_offset: 0,
         normal_map_index: 0,
@@ -40,7 +40,7 @@ fn make_draw_command(in_tlas: bool, is_water: bool) -> DrawCommand {
         alpha_test_func: 0,
         roughness: 0.5,
         metalness: 0.0,
-        ior: 1.5, // #1248
+        ior: 1.5,        // #1248
         subsurface: 0.0, // #1249
         sheen: 0.0,
         sheen_tint: 0.0,
@@ -177,8 +177,8 @@ fn validate_refit_counts_accepts_matching_counts() {
 /// max_vertex-based VUIDs.
 #[test]
 fn validate_refit_counts_rejects_vertex_only_drift() {
-    let err = validate_refit_counts(100, 300, 80, 300)
-        .expect_err("vertex-count drift must be rejected");
+    let err =
+        validate_refit_counts(100, 300, 80, 300).expect_err("vertex-count drift must be rejected");
     assert!(err.contains("v=100") && err.contains("v=80"));
     assert!(err.contains("03667"));
 }
@@ -571,8 +571,7 @@ fn decide_use_update_skip_then_add_round_trip_forces_build() {
 
     // Same generation across both frames (no BLAS-map mutation), no
     // forced full rebuild — the address-zip is the only signal.
-    let (use_update, did_zip) =
-        decide_use_update(false, 7, 7, &cached_after_skip, &current_full);
+    let (use_update, did_zip) = decide_use_update(false, 7, 7, &cached_after_skip, &current_full);
     assert!(
         !use_update,
         "skip→add transition (address-set change) must force BUILD, \
@@ -584,8 +583,7 @@ fn decide_use_update_skip_then_add_round_trip_forces_build() {
     // evicted). Same expectation — address-set change → BUILD.
     let cached_full = vec![1u64, 2, 3];
     let current_after_evict = vec![1u64, 3];
-    let (use_update, _) =
-        decide_use_update(false, 7, 7, &cached_full, &current_after_evict);
+    let (use_update, _) = decide_use_update(false, 7, 7, &cached_full, &current_after_evict);
     assert!(
         !use_update,
         "BLAS eviction (entry disappearing from address sequence) \
@@ -817,7 +815,10 @@ fn tlas_scratch_shrink_fires_at_realistic_excess() {
     // > 256 KB slack → shrink.
     let exterior_capacity = 4 * MB;
     let interior_steady = 256 * KB;
-    assert!(tlas_scratch_should_shrink(exterior_capacity, interior_steady));
+    assert!(tlas_scratch_should_shrink(
+        exterior_capacity,
+        interior_steady
+    ));
 }
 
 #[test]
@@ -1263,9 +1264,7 @@ fn scratch_barrier_required_between_refits() {
 #[test]
 fn scratch_barrier_required_across_submission_despite_fence_wait() {
     assert!(
-        requires_scratch_serialize_barrier_before(
-            ScratchUser::CrossSubmissionBuildWithFenceWait
-        ),
+        requires_scratch_serialize_barrier_before(ScratchUser::CrossSubmissionBuildWithFenceWait),
         "Host fence-wait establishes host-side dependency only — \
          device-side AS_WRITE → AS_WRITE barrier is still required \
          when the next submission reuses the shared scratch buffer \

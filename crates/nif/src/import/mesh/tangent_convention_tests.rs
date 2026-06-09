@@ -229,8 +229,11 @@ fn synthesize_tangents_yup_empty_inputs_return_empty() {
     let empty_normals: Vec<[f32; 3]> = Vec::new();
     let empty_uvs: Vec<[f32; 2]> = Vec::new();
     let empty_triangles: Vec<[u16; 3]> = Vec::new();
-    assert!(
-        synthesize_tangents_yup(&empty_positions, &empty_normals, &empty_uvs, &empty_triangles)
-            .is_empty()
-    );
+    assert!(synthesize_tangents_yup(
+        &empty_positions,
+        &empty_normals,
+        &empty_uvs,
+        &empty_triangles
+    )
+    .is_empty());
 }

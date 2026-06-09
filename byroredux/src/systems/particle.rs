@@ -90,7 +90,9 @@ pub fn convert_force_fields_zup_to_yup(
                     [0.0, 0.0, 0.0]
                 },
             },
-            I::Turbulence { frequency, scale } => ParticleForceField::Turbulence { frequency, scale },
+            I::Turbulence { frequency, scale } => {
+                ParticleForceField::Turbulence { frequency, scale }
+            }
             I::Air {
                 direction,
                 strength,
@@ -168,8 +170,10 @@ fn integrate_force_fields(
             } => {
                 // Isotropic when direction is zero; otherwise project
                 // velocity onto direction and damp that component only.
-                let dn =
-                    (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]).sqrt();
+                let dn = (direction[0] * direction[0]
+                    + direction[1] * direction[1]
+                    + direction[2] * direction[2])
+                    .sqrt();
                 let damping = (strength * dt).min(1.0);
                 if dn <= 1e-6 {
                     velocity[0] -= velocity[0] * damping;
@@ -200,8 +204,10 @@ fn integrate_force_fields(
                 }
                 let t = age * frequency;
                 let seed_x = ((position[0] * 17.0 + t) as i32 as u32).wrapping_add(0xA341_1B07);
-                let seed_y = ((position[1] * 17.0 + t * 1.3) as i32 as u32).wrapping_add(0xB571_3C9F);
-                let seed_z = ((position[2] * 17.0 + t * 0.7) as i32 as u32).wrapping_add(0xC621_5DD3);
+                let seed_y =
+                    ((position[1] * 17.0 + t * 1.3) as i32 as u32).wrapping_add(0xB571_3C9F);
+                let seed_z =
+                    ((position[2] * 17.0 + t * 0.7) as i32 as u32).wrapping_add(0xC621_5DD3);
                 let nx = hash01(seed_x) * 2.0 - 1.0;
                 let ny = hash01(seed_y) * 2.0 - 1.0;
                 let nz = hash01(seed_z) * 2.0 - 1.0;
@@ -338,10 +344,7 @@ pub(crate) fn particle_system(world: &World, dt: f32) {
         // clamped via `.max(0.05)` below. The guard wraps ONLY the spawn
         // step — existing particles still integrate + expire above, so a
         // corrupt rate doesn't freeze the live particles on screen.
-        if em.rate.is_finite()
-            && em.rate > 0.0
-            && em.start_size.is_finite()
-            && em.start_size > 0.0
+        if em.rate.is_finite() && em.rate > 0.0 && em.start_size.is_finite() && em.start_size > 0.0
         {
             em.spawn_accumulator += em.rate * dt;
             let spawn_count = em.spawn_accumulator.floor() as i32;

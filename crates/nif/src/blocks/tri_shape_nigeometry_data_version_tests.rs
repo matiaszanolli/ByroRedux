@@ -284,12 +284,15 @@ fn nitrishapedata_at_10_0_1_2_no_has_triangles_bool() {
     let mut bytes = nigeometry_data_bytes(false, false, true);
     bytes.extend_from_slice(&0u16.to_le_bytes()); // num_triangles = 0
     bytes.extend_from_slice(&0u32.to_le_bytes()); // num_triangle_points = 0
-    // NO has_triangles bool on the wire at v10.0.1.2
+                                                  // NO has_triangles bool on the wire at v10.0.1.2
     bytes.extend_from_slice(&0u16.to_le_bytes()); // num_match_groups = 0
 
     let mut stream = crate::stream::NifStream::new(&bytes, &header);
     let result = NiTriShapeData::parse(&mut stream);
-    assert!(result.is_ok(), "NiTriShapeData should parse cleanly at v10.0.1.2");
+    assert!(
+        result.is_ok(),
+        "NiTriShapeData should parse cleanly at v10.0.1.2"
+    );
     assert_eq!(
         stream.position() as usize,
         bytes.len(),
@@ -316,13 +319,16 @@ fn nitristripsdata_at_10_0_1_2_no_has_points_bool() {
     let mut bytes = nigeometry_data_bytes(false, false, true);
     bytes.extend_from_slice(&0u16.to_le_bytes()); // num_triangles = 0
     bytes.extend_from_slice(&0u16.to_le_bytes()); // num_strips = 0
-    // strip_lengths: empty (num_strips == 0)
-    // NO has_strips bool on the wire at v10.0.1.2
-    // strips: empty (num_strips == 0 => has_strips = num_strips > 0 = false)
+                                                  // strip_lengths: empty (num_strips == 0)
+                                                  // NO has_strips bool on the wire at v10.0.1.2
+                                                  // strips: empty (num_strips == 0 => has_strips = num_strips > 0 = false)
 
     let mut stream = crate::stream::NifStream::new(&bytes, &header);
     let result = NiTriStripsData::parse(&mut stream);
-    assert!(result.is_ok(), "NiTriStripsData should parse cleanly at v10.0.1.2");
+    assert!(
+        result.is_ok(),
+        "NiTriStripsData should parse cleanly at v10.0.1.2"
+    );
     assert_eq!(
         stream.position() as usize,
         bytes.len(),

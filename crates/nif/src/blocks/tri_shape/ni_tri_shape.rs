@@ -293,11 +293,16 @@ pub(crate) fn parse_geometry_data_base(stream: &mut NifStream) -> io::Result<Geo
 /// NiPSysData on BS_GTE_FO3 streams where nif.xml (line 3880) says:
 /// "Vertices, Normals, Tangents, Colors, and UV arrays do not have length
 /// for NiPSysData regardless of 'Num' or booleans." See #322.
-pub(crate) fn parse_psys_geometry_data_base(stream: &mut NifStream) -> io::Result<GeometryDataBase> {
+pub(crate) fn parse_psys_geometry_data_base(
+    stream: &mut NifStream,
+) -> io::Result<GeometryDataBase> {
     parse_geometry_data_base_inner(stream, true)
 }
 
-fn parse_geometry_data_base_inner(stream: &mut NifStream, zero_arrays: bool) -> io::Result<GeometryDataBase> {
+fn parse_geometry_data_base_inner(
+    stream: &mut NifStream,
+    zero_arrays: bool,
+) -> io::Result<GeometryDataBase> {
     // Group ID: nif.xml says `since="10.1.0.114"` (0x0A010072), not
     // 10.0.1.0. Files in the [10.0.1.0, 10.1.0.114) range (non-Bethesda
     // Gamebryo, pre-Civ IV era) read 4 phantom bytes, misaligning every
@@ -585,10 +590,7 @@ impl NiTriStripsData {
     }
 }
 
-impl_ni_object!(
-    NiTriShapeData,
-    NiTriStripsData,
-);
+impl_ni_object!(NiTriShapeData, NiTriStripsData,);
 
 #[cfg(test)]
 #[path = "../tri_shape_nigeometry_data_version_tests.rs"]

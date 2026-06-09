@@ -4,15 +4,12 @@
 //! `write_tlas` + `reset_ray_budget`.
 
 use super::super::allocator::SharedAllocator;
-use super::super::descriptors::{
-    write_combined_image_sampler, write_storage_buffer,
-};
+use super::super::descriptors::{write_combined_image_sampler, write_storage_buffer};
 use super::*;
 use anyhow::Result;
 use ash::vk;
 
 impl super::buffers::SceneBuffers {
-
     /// Write the SSAO texture into the scene descriptor set for a given frame.
     pub fn write_ao_texture(
         &self,

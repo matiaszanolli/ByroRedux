@@ -248,7 +248,7 @@ fn fnv_bs_tread_transf_interpolator_round_trip_two_tread_transforms() {
 
     // Tread 0: name string-table index = -1 (None), two NiQuatTransforms.
     data.extend_from_slice(&(-1i32).to_le_bytes()); // name
-    // T1: translation (1,2,3) + rotation (w=1,x=0,y=0,z=0 identity) + scale=1
+                                                    // T1: translation (1,2,3) + rotation (w=1,x=0,y=0,z=0 identity) + scale=1
     for v in [1.0f32, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
         data.extend_from_slice(&v.to_le_bytes());
     }
@@ -343,7 +343,7 @@ fn ni_bspline_transform_interpolator_uncompressed_round_trip() {
     data.extend_from_slice(&0.0f32.to_le_bytes()); // qy
     data.extend_from_slice(&0.0f32.to_le_bytes()); // qz
     data.extend_from_slice(&1.0f32.to_le_bytes()); // scale
-    // Three handles.
+                                                   // Three handles.
     data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&1u32.to_le_bytes());
     data.extend_from_slice(&u32::MAX.to_le_bytes());

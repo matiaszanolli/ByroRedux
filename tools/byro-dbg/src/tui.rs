@@ -287,9 +287,9 @@ impl App {
         match self.tab {
             Tab::Metrics => None,
             Tab::Entities => match key.code {
-                KeyCode::Char('r') | KeyCode::Char('R') => Some(DebugRequest::ListEntities {
-                    component: None,
-                }),
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    Some(DebugRequest::ListEntities { component: None })
+                }
                 _ => None,
             },
             Tab::Loader => self.handle_loader_key(key),
@@ -345,9 +345,9 @@ impl App {
     /// the list once). Returns the request to send, if any.
     fn on_tab_enter(&mut self) -> Option<DebugRequest> {
         match self.tab {
-            Tab::Entities if self.entities.is_none() => Some(DebugRequest::ListEntities {
-                component: None,
-            }),
+            Tab::Entities if self.entities.is_none() => {
+                Some(DebugRequest::ListEntities { component: None })
+            }
             _ => None,
         }
     }
@@ -380,9 +380,7 @@ fn variant_name(resp: &DebugResponse) -> &'static str {
 /// the returned `Sender` are written to the wire; responses arrive
 /// on the `Receiver`. The thread exits when either channel closes
 /// or a wire error occurs.
-fn spawn_net_thread(
-    mut stream: TcpStream,
-) -> (Sender<DebugRequest>, Receiver<DebugResponse>) {
+fn spawn_net_thread(mut stream: TcpStream) -> (Sender<DebugRequest>, Receiver<DebugResponse>) {
     let (req_tx, req_rx) = mpsc::channel::<DebugRequest>();
     let (resp_tx, resp_rx) = mpsc::channel::<DebugResponse>();
     thread::Builder::new()
@@ -482,11 +480,7 @@ fn render_metrics(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let ram_ratio = ratio(m.ram_used_mb, m.ram_total_mb);
     let ram_gauge = Gauge::default()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("RAM (system)"),
-        )
+        .block(Block::default().borders(Borders::ALL).title("RAM (system)"))
         .gauge_style(Style::default().fg(Color::Green))
         .label(format!(
             "{} / {} MB  (process RSS {} MB)",
@@ -514,10 +508,7 @@ fn render_metrics(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .ratio(vram_ratio);
     f.render_widget(vram_gauge, chunks[2]);
 
-    let mut lines = vec![Line::from(format!(
-        "sampled at unix={}",
-        m.sampled_at_secs
-    ))];
+    let mut lines = vec![Line::from(format!("sampled at unix={}", m.sampled_at_secs))];
     if m.gpu_pass_ms.is_empty() {
         lines.push(Line::from("(no GPU pass times reported)"));
     } else {
@@ -526,11 +517,8 @@ fn render_metrics(f: &mut ratatui::Frame, area: Rect, app: &App) {
             lines.push(Line::from(format!("  {:<20} {:>6.3}", name, ms)));
         }
     }
-    let para = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("GPU passes"),
-    );
+    let para =
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("GPU passes"));
     f.render_widget(para, chunks[3]);
 }
 

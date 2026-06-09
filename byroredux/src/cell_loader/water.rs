@@ -29,8 +29,8 @@
 
 use byroredux_core::ecs::components::water::{WaterPlane, WaterVolume};
 use byroredux_core::ecs::{GlobalTransform, MeshHandle, Transform, World};
-use byroredux_plugin::esm;
 use byroredux_core::math::{Quat, Vec3};
+use byroredux_plugin::esm;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 use std::collections::HashMap;
@@ -164,14 +164,11 @@ pub(super) fn spawn_water_plane(
         command_pool: ctx.transfer_pool,
     };
     let mesh_handle = match ctx.mesh_registry.upload_scene_mesh(
-        upload_ctx,
-        &vertices,
-        &indices,
+        upload_ctx, &vertices, &indices,
         // Water meshes do NOT need BLAS — they're skipped from TLAS
         // (water-on-water self-hits are avoided by the CP2077-style
         // terminate-on-hit policy on water rays).
-        false,
-        None,
+        false, None,
     ) {
         Ok(h) => h,
         Err(e) => {
@@ -217,10 +214,7 @@ pub(super) fn spawn_water_plane(
     let scale = half_extent;
 
     let entity = world.spawn();
-    world.insert(
-        entity,
-        Transform::new(position, Quat::IDENTITY, scale),
-    );
+    world.insert(entity, Transform::new(position, Quat::IDENTITY, scale));
     world.insert(
         entity,
         GlobalTransform::new(position, Quat::IDENTITY, scale),
@@ -274,10 +268,7 @@ pub(super) fn spawn_water_plane(
     // ladder so it stays above coincident architectural geometry
     // (lake floor mesh, river bed) without z-fighting. The engine-
     // wide depth-bias ladder treats `Decal` as a soft over-bias.
-    world.insert(
-        entity,
-        byroredux_core::ecs::components::RenderLayer::Decal,
-    );
+    world.insert(entity, byroredux_core::ecs::components::RenderLayer::Decal);
 
     log::debug!(
         "Water plane spawned: pos={:?}, half_extent={}, kind={:?}, normalIdx={}",

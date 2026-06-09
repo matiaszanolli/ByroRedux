@@ -190,8 +190,7 @@ fn main() {
             }
         }
         let resolver = ArcResolver(&arc);
-        let imp_with_resolver =
-            import_nif_scene_with_resolver(&scene, &mut pool, Some(&resolver));
+        let imp_with_resolver = import_nif_scene_with_resolver(&scene, &mut pool, Some(&resolver));
         println!(
             "  with-resolver: nodes={} meshes={}",
             imp_with_resolver.nodes.len(),
@@ -199,7 +198,11 @@ fn main() {
         );
 
         let imp = import_nif_scene(&scene, &mut pool);
-        println!("  no-resolver:   nodes={} meshes={}", imp.nodes.len(), imp.meshes.len());
+        println!(
+            "  no-resolver:   nodes={} meshes={}",
+            imp.nodes.len(),
+            imp.meshes.len()
+        );
         for (i, m) in imp.meshes.iter().enumerate() {
             let name = m.name.as_deref().unwrap_or("<unnamed>");
             let mat_path = m

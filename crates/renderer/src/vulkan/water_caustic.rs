@@ -433,11 +433,7 @@ impl WaterCausticAccum {
     /// # Safety
     /// Caller guarantees no in-flight command buffer references any
     /// resource owned by `slot`.
-    unsafe fn destroy_slot(
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        slot: Slot,
-    ) {
+    unsafe fn destroy_slot(device: &ash::Device, allocator: &SharedAllocator, slot: Slot) {
         // SAFETY: caller's contract — no in-flight refs.
         unsafe {
             device.destroy_image_view(slot.storage_view, None);

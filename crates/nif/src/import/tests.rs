@@ -75,10 +75,7 @@ fn make_tri_shape_data() -> NiTriShapeData {
     }
 }
 
-fn make_ni_node(
-    transform: NiTransform,
-    children: Vec<BlockRef>,
-) -> crate::blocks::node::NiNode {
+fn make_ni_node(transform: NiTransform, children: Vec<BlockRef>) -> crate::blocks::node::NiNode {
     use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
     crate::blocks::node::NiNode {
         av: NiAVObjectData {
@@ -1043,13 +1040,12 @@ fn plain_ni_node_has_no_bs_subclass_payloads() {
 /// here.
 fn synthetic_particle_block(type_name: &str) -> Box<dyn crate::blocks::NiObject> {
     match type_name {
-        "NiParticleSystem"
-        | "NiMeshParticleSystem"
-        | "NiParticles"
-        | "BSStripParticleSystem" => Box::new(crate::blocks::particle::NiParticleSystem {
-            original_type: type_name.to_string(),
-            modifier_refs: Vec::new(),
-        }),
+        "NiParticleSystem" | "NiMeshParticleSystem" | "NiParticles" | "BSStripParticleSystem" => {
+            Box::new(crate::blocks::particle::NiParticleSystem {
+                original_type: type_name.to_string(),
+                modifier_refs: Vec::new(),
+            })
+        }
         _ => Box::new(crate::blocks::particle::NiPSysBlock {
             original_type: type_name.to_string(),
         }),
@@ -1100,7 +1096,11 @@ fn flat_import_recognizes_modern_particle_system_aliases() {
     // NiAutoNormalParticles, NiRotatingParticles) dispatch to
     // `legacy_particle::*` and are deliberately not surfaced (#1327), so
     // they are not exercised here.
-    for variant in ["NiMeshParticleSystem", "NiParticles", "BSStripParticleSystem"] {
+    for variant in [
+        "NiMeshParticleSystem",
+        "NiParticles",
+        "BSStripParticleSystem",
+    ] {
         let root = make_ni_node(identity_transform(), vec![BlockRef(1)]);
         let blocks: Vec<Box<dyn crate::blocks::NiObject>> =
             vec![Box::new(root), synthetic_particle_block(variant)];

@@ -58,11 +58,7 @@ fn bone_trans(idx: usize) -> BsSkinBoneTrans {
     // bone[i] in the import maps to bone[i] in the input.
     BsSkinBoneTrans {
         bounding_sphere: [idx as f32, 0.0, 0.0, 1.0],
-        rotation: [
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ],
+        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         translation: [idx as f32 * 10.0, 0.0, 0.0],
         scale: 1.0,
     }
@@ -94,16 +90,18 @@ fn bs_geometry_with_skin(skin_idx: u32) -> BSGeometry {
 fn bs_geometry_skin_instance_resolves_to_imported_skin() {
     let scene = NifScene {
         blocks: vec![
-            Box::new(bone_node("Bip01")),    // block 0 — skeleton root
-            Box::new(bone_node("Spine")),    // block 1
-            Box::new(bone_node("Head")),     // block 2
-            Box::new(BsSkinInstance {        // block 3
+            Box::new(bone_node("Bip01")), // block 0 — skeleton root
+            Box::new(bone_node("Spine")), // block 1
+            Box::new(bone_node("Head")),  // block 2
+            Box::new(BsSkinInstance {
+                // block 3
                 skeleton_root_ref: BlockRef(0),
                 bone_data_ref: BlockRef(4),
                 bone_refs: vec![BlockRef(1), BlockRef(2)],
                 scales: Vec::new(),
             }),
-            Box::new(BsSkinBoneData {        // block 4
+            Box::new(BsSkinBoneData {
+                // block 4
                 bones: vec![bone_trans(1), bone_trans(2)],
             }),
         ],

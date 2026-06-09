@@ -831,14 +831,13 @@ fn play_oneshot_queue_caps_at_max_pending_when_active() {
     // Acquire a real manager. Skip the test on hosts without a
     // working audio device — the inactive path is covered by
     // `play_oneshot_drops_when_manager_inactive` above.
-    let manager =
-        match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("skipping cap-pin test — no audio device: {e}");
-                return;
-            }
-        };
+    let manager = match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skipping cap-pin test — no audio device: {e}");
+            return;
+        }
+    };
     let mut audio_world = AudioWorld {
         active_sounds: Vec::new(),
         pending_oneshots: VecDeque::new(),

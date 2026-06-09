@@ -315,7 +315,7 @@ const DISPATCH_KEYS: &[&str] = &[
     "bhkSphereShape",
     "bhkStiffSpringConstraint",
     "bhkTransformShape",
-    "hkPackedNiTriStripsData"
+    "hkPackedNiTriStripsData",
 ];
 
 #[derive(Default)]
@@ -326,10 +326,10 @@ struct Stats {
     files_parse_err: usize,
     sizeless_files: usize,                 // block_sizes empty (Oblivion-style)
     sizeless_files_uncovered: usize,       // sizeless AND header references an uncovered type
-    sizeless_files_uncovered_err: usize,   // sizeless AND uncovered AND parse_nif errored (cascade-confirmed)
-    block_instances: u64,                  // total block instances across files (from indices)
+    sizeless_files_uncovered_err: usize, // sizeless AND uncovered AND parse_nif errored (cascade-confirmed)
+    block_instances: u64,                // total block instances across files (from indices)
     type_instances: BTreeMap<String, u64>, // per-type total instance count
-    type_files: BTreeMap<String, u64>,     // per-type distinct-file count
+    type_files: BTreeMap<String, u64>,   // per-type distinct-file count
 }
 
 fn covered(name: &str) -> bool {
@@ -381,73 +381,123 @@ fn process_bytes(st: &mut Stats, bytes: &[u8]) {
 fn process_bsa(st: &mut Stats, path: &Path) {
     let archive = match BsaArchive::open(path) {
         Ok(a) => a,
-        Err(e) => { eprintln!("open BSA {}: {e}", path.display()); return; }
+        Err(e) => {
+            eprintln!("open BSA {}: {e}", path.display());
+            return;
+        }
     };
-    let nifs: Vec<String> = archive.list_files().iter()
+    let nifs: Vec<String> = archive
+        .list_files()
+        .iter()
         .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
-        .map(|s| s.to_string()).collect();
+        .map(|s| s.to_string())
+        .collect();
     eprintln!("BSA {} -> {} NIFs", path.display(), nifs.len());
     for (i, p) in nifs.iter().enumerate() {
-        if i > 0 && i % 5000 == 0 { eprintln!("  {}/{}", i, nifs.len()); }
-        if let Ok(bytes) = archive.extract(p) { process_bytes(st, &bytes); }
+        if i > 0 && i % 5000 == 0 {
+            eprintln!("  {}/{}", i, nifs.len());
+        }
+        if let Ok(bytes) = archive.extract(p) {
+            process_bytes(st, &bytes);
+        }
     }
 }
 
 fn process_ba2(st: &mut Stats, path: &Path) {
     let archive = match Ba2Archive::open(path) {
         Ok(a) => a,
-        Err(e) => { eprintln!("open BA2 {}: {e}", path.display()); return; }
+        Err(e) => {
+            eprintln!("open BA2 {}: {e}", path.display());
+            return;
+        }
     };
-    let nifs: Vec<String> = archive.list_files().iter()
+    let nifs: Vec<String> = archive
+        .list_files()
+        .iter()
         .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
-        .map(|s| s.to_string()).collect();
+        .map(|s| s.to_string())
+        .collect();
     eprintln!("BA2 {} -> {} NIFs", path.display(), nifs.len());
     for (i, p) in nifs.iter().enumerate() {
-        if i > 0 && i % 5000 == 0 { eprintln!("  {}/{}", i, nifs.len()); }
-        if let Ok(bytes) = archive.extract(p) { process_bytes(st, &bytes); }
+        if i > 0 && i % 5000 == 0 {
+            eprintln!("  {}/{}", i, nifs.len());
+        }
+        if let Ok(bytes) = archive.extract(p) {
+            process_bytes(st, &bytes);
+        }
     }
 }
 
 fn main() {
     // debug-assert dispatch keys are sorted for binary_search
-    debug_assert!(DISPATCH_KEYS.windows(2).all(|w| w[0] < w[1]), "DISPATCH_KEYS must be sorted+unique");
+    debug_assert!(
+        DISPATCH_KEYS.windows(2).all(|w| w[0] < w[1]),
+        "DISPATCH_KEYS must be sorted+unique"
+    );
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.is_empty() { eprintln!("usage: d5_coverage <archive>..."); std::process::exit(1); }
+    if args.is_empty() {
+        eprintln!("usage: d5_coverage <archive>...");
+        std::process::exit(1);
+    }
     let mut st = Stats::default();
     for a in &args {
         let p = PathBuf::from(a);
         let lower = a.to_ascii_lowercase();
-        if lower.ends_with(".ba2") { process_ba2(&mut st, &p); }
-        else { process_bsa(&mut st, &p); }
+        if lower.ends_with(".ba2") {
+            process_ba2(&mut st, &p);
+        } else {
+            process_bsa(&mut st, &p);
+        }
     }
     println!("\n========= COVERAGE SUMMARY =========");
     println!("files (nif)            : {}", st.files);
     println!("  header parsed ok     : {}", st.files_header_ok);
     println!("  parse_nif ok         : {}", st.files_parse_ok);
     println!("  parse_nif ERR        : {}", st.files_parse_err);
-    println!("sizeless files (no block_sizes / Oblivion-style) : {}", st.sizeless_files);
-    println!("  ...referencing an UNCOVERED type               : {}", st.sizeless_files_uncovered);
-    println!("  ...AND parse_nif errored (cascade-confirmed)   : {}", st.sizeless_files_uncovered_err);
+    println!(
+        "sizeless files (no block_sizes / Oblivion-style) : {}",
+        st.sizeless_files
+    );
+    println!(
+        "  ...referencing an UNCOVERED type               : {}",
+        st.sizeless_files_uncovered
+    );
+    println!(
+        "  ...AND parse_nif errored (cascade-confirmed)   : {}",
+        st.sizeless_files_uncovered_err
+    );
     println!("total block instances  : {}", st.block_instances);
 
     let distinct = st.type_instances.len();
-    let uncovered_types: Vec<(&String,&u64)> = st.type_instances.iter()
-        .filter(|(t,_)| !covered(t)).collect();
-    let uncovered_instances: u64 = uncovered_types.iter().map(|(_,c)| **c).sum();
+    let uncovered_types: Vec<(&String, &u64)> = st
+        .type_instances
+        .iter()
+        .filter(|(t, _)| !covered(t))
+        .collect();
+    let uncovered_instances: u64 = uncovered_types.iter().map(|(_, c)| **c).sum();
     println!("distinct block types   : {}", distinct);
-    println!("  covered              : {}", distinct - uncovered_types.len());
+    println!(
+        "  covered              : {}",
+        distinct - uncovered_types.len()
+    );
     println!("  UNCOVERED            : {}", uncovered_types.len());
-    let cov_pct = if st.block_instances>0 {
+    let cov_pct = if st.block_instances > 0 {
         100.0 * (st.block_instances - uncovered_instances) as f64 / st.block_instances as f64
-    } else { 100.0 };
-    println!("instance coverage %%    : {:.4}  ({} uncovered instances / {})",
-        cov_pct, uncovered_instances, st.block_instances);
+    } else {
+        100.0
+    };
+    println!(
+        "instance coverage %%    : {:.4}  ({} uncovered instances / {})",
+        cov_pct, uncovered_instances, st.block_instances
+    );
 
     println!("\n--- UNCOVERED block types (instances / files) ---");
-    let mut u: Vec<(String,u64,u64)> = uncovered_types.iter()
-        .map(|(t,c)| (t.to_string(), **c, *st.type_files.get(*t).unwrap_or(&0))).collect();
-    u.sort_by(|a,b| b.1.cmp(&a.1));
-    for (t,c,f) in &u {
+    let mut u: Vec<(String, u64, u64)> = uncovered_types
+        .iter()
+        .map(|(t, c)| (t.to_string(), **c, *st.type_files.get(*t).unwrap_or(&0)))
+        .collect();
+    u.sort_by(|a, b| b.1.cmp(&a.1));
+    for (t, c, f) in &u {
         println!("  inst={:>8}  files={:>6}  {}", c, f, t);
     }
 }

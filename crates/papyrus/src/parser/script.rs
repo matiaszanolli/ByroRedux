@@ -39,7 +39,11 @@ use super::Parser;
 /// Parsed `ScriptName <ident> [Extends <ident>] [flags…]` header:
 /// `(script name, optional parent, flags)`. Aliased to satisfy
 /// `clippy::type_complexity` on `parse_script_header`'s return.
-type ScriptHeader = (Spanned<Identifier>, Option<Spanned<Identifier>>, ScriptFlags);
+type ScriptHeader = (
+    Spanned<Identifier>,
+    Option<Spanned<Identifier>>,
+    ScriptFlags,
+);
 
 impl Parser {
     /// Parse a complete `.psc` source into a [`Script`]. The
@@ -266,7 +270,10 @@ impl Parser {
     /// `Native` functions have no body — the EndFunction is omitted
     /// (and there's no NEWLINE before EndFunction either since the
     /// declaration ends after the flags).
-    fn parse_function(&mut self, return_type: Option<Spanned<Type>>) -> Result<Function, ParseError> {
+    fn parse_function(
+        &mut self,
+        return_type: Option<Spanned<Type>>,
+    ) -> Result<Function, ParseError> {
         let doc_comment = self.skip_newlines_collect_doc();
         self.expect(&Token::KwFunction, "Function")?;
         let name = self.expect_ident("function name")?;
@@ -635,9 +642,7 @@ mod tests {
         let (preprocessed, _map) = preprocess(src);
         let (tokens, _errs) = lex(&preprocessed);
         let mut parser = Parser::new(tokens);
-        let script = parser
-            .parse_script()
-            .expect("parse_script must succeed");
+        let script = parser.parse_script().expect("parse_script must succeed");
         if !parser.errors().is_empty() {
             panic!(
                 "parse_script left {} recovered errors: {:#?}",

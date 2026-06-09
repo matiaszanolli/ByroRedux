@@ -3,14 +3,13 @@
 //! `extract_skin_ni_tri_shape` / `extract_skin_bs_tri_shape`, partition /
 //! palette remap, bone-pose flattening, sparse-weight densification.
 
-
 use std::sync::Arc;
 
+use crate::blocks::bs_geometry::BSGeometry;
 use crate::blocks::node::NiNode;
 use crate::blocks::skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
 };
-use crate::blocks::bs_geometry::BSGeometry;
 use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
@@ -86,10 +85,7 @@ pub fn extract_skin_ni_tri_shape(
 /// Handles both:
 ///   - NiSkinInstance (Skyrim LE BSTriShape) via NiSkinData
 ///   - BSSkin::Instance (Skyrim SE / FO4+) via BSSkin::BoneData
-pub fn extract_skin_bs_tri_shape(
-    scene: &NifScene,
-    shape: &BsTriShape,
-) -> Option<ImportedSkin> {
+pub fn extract_skin_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option<ImportedSkin> {
     let skin_idx = shape.skin_ref.index()?;
 
     // Per-vertex weights come from the BSTriShape vertex buffer
@@ -222,10 +218,7 @@ pub fn extract_skin_bs_tri_shape(
 ///
 /// Mirrors the FO4+ BSSkin path in `extract_skin_bs_tri_shape` — only
 /// the geometry container differs.
-pub fn extract_skin_bs_geometry(
-    scene: &NifScene,
-    shape: &BSGeometry,
-) -> Option<ImportedSkin> {
+pub fn extract_skin_bs_geometry(scene: &NifScene, shape: &BSGeometry) -> Option<ImportedSkin> {
     let skin_idx = shape.skin_instance_ref.index()?;
 
     let inst = scene.get_as::<BsSkinInstance>(skin_idx)?;

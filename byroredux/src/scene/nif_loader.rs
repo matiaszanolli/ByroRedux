@@ -13,9 +13,9 @@
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
-    BSBound, BSXFlags, Billboard, BillboardMode, GlobalTransform, LocalBound,
-    MeshHandle, Name, Parent, ParticleEmitter, SceneFlags, SkinnedMesh, TextureHandle,
-    Transform, World, WorldBound, MAX_BONES_PER_MESH,
+    BSBound, BSXFlags, Billboard, BillboardMode, GlobalTransform, LocalBound, MeshHandle, Name,
+    Parent, ParticleEmitter, SceneFlags, SkinnedMesh, TextureHandle, Transform, World, WorldBound,
+    MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
@@ -23,8 +23,8 @@ use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{
-    build_material_provider, build_texture_provider, merge_bgsm_into_mesh,
-    derive_normal_map_path, resolve_texture, MaterialProvider, TextureProvider,
+    build_material_provider, build_texture_provider, derive_normal_map_path, merge_bgsm_into_mesh,
+    resolve_texture, MaterialProvider, TextureProvider,
 };
 use crate::components::{
     texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle,
@@ -42,7 +42,10 @@ use crate::helpers::add_child;
 ///       SpeedTree visualiser (Phase 1.6). Renders the placeholder billboard
 ///       per the SpeedTree compatibility plan; useful for one-tree
 ///       reverse-engineering iteration without spinning up a whole cell.
-pub(super) fn load_nif_from_args(world: &mut World, ctx: &mut VulkanContext) -> (usize, Option<EntityId>) {
+pub(super) fn load_nif_from_args(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+) -> (usize, Option<EntityId>) {
     let args: Vec<String> = crate::cli_args::effective_args();
 
     // Collect BSA/BA2 archives (auto-detects format).
@@ -238,8 +241,7 @@ pub(super) fn parse_import_and_merge(
     // class of failure.
     if imported.meshes.is_empty() {
         let label_lower = label.to_lowercase();
-        let cause_hint = if label_lower.contains("facegendata")
-            && label_lower.contains("facegeom")
+        let cause_hint = if label_lower.contains("facegendata") && label_lower.contains("facegeom")
         {
             "per-NPC FaceGen geometry (`facegendata\\facegeom\\…`) — \
              expected head + body geometry; this is almost certainly \
@@ -260,11 +262,7 @@ pub(super) fn parse_import_and_merge(
              resolution, and BSVER dispatch. May also be a pure \
              marker scene (NiNode-only) if no geometry was authored."
         };
-        log::warn!(
-            "NIF '{}' imported with zero meshes — {}",
-            label,
-            cause_hint,
-        );
+        log::warn!("NIF '{}' imported with zero meshes — {}", label, cause_hint,);
     }
     Some(imported)
 }
@@ -730,8 +728,8 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // normal/bump slot, derive the sibling from the diffuse path; it
         // resolves like any texture below and fails soft if absent
         // (#1303 / OBL-D4-NEW-01).
-        let owned_normal_map = owned_normal_map
-            .or_else(|| owned_texture_path.as_deref().map(derive_normal_map_path));
+        let owned_normal_map =
+            owned_normal_map.or_else(|| owned_texture_path.as_deref().map(derive_normal_map_path));
 
         let tex_handle = resolve_texture(ctx, tex_provider, owned_texture_path.as_deref());
 
@@ -862,8 +860,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         }
         // #890 Stage 2c — BSEffectShaderProperty greyscale LUT. Mirrors
         // the cell_loader::spawn site.
-        if let Some(lut_path) =
-            mesh.effect_shader.as_ref().and_then(|es| es.greyscale_texture.as_ref())
+        if let Some(lut_path) = mesh
+            .effect_shader
+            .as_ref()
+            .and_then(|es| es.greyscale_texture.as_ref())
         {
             let h = resolve_texture(ctx, tex_provider, Some(lut_path.as_str()));
             if h != ctx.texture_registry.fallback() {

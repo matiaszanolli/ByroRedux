@@ -618,9 +618,7 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
         // would mask the malformed archive. Same pattern as the
         // `num_mips == 0` warn at lines 512-519 and the
         // `chunk_hdr_len != 24` debug_assert at lines 490-495.
-        let monotonic = chunks
-            .windows(2)
-            .all(|w| w[0].start_mip <= w[1].start_mip);
+        let monotonic = chunks.windows(2).all(|w| w[0].start_mip <= w[1].start_mip);
         debug_assert!(
             monotonic,
             "BA2 DX10 chunks non-monotonic on start_mip: {:?} — \

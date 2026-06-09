@@ -5,8 +5,13 @@
 use byroredux_bsa::Ba2Archive;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: ba2_grep <path.ba2> <needle>");
-    let needle = std::env::args().nth(2).unwrap_or_default().to_ascii_lowercase();
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: ba2_grep <path.ba2> <needle>");
+    let needle = std::env::args()
+        .nth(2)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let archive = Ba2Archive::open(&path).unwrap();
     eprintln!(
         "BA2 v{} {:?}, {} files; searching for: {:?}",

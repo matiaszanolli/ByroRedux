@@ -704,14 +704,11 @@ impl VolumetricsPipeline {
                 .iter()
                 .chain(self.integrated_volumes.iter())
             {
-                barriers.push(
-                    image_barrier_undef_to_general(slot.image)
-                        .dst_access_mask(
-                            vk::AccessFlags::SHADER_READ
-                                | vk::AccessFlags::SHADER_WRITE
-                                | vk::AccessFlags::TRANSFER_WRITE,
-                        ),
-                );
+                barriers.push(image_barrier_undef_to_general(slot.image).dst_access_mask(
+                    vk::AccessFlags::SHADER_READ
+                        | vk::AccessFlags::SHADER_WRITE
+                        | vk::AccessFlags::TRANSFER_WRITE,
+                ));
             }
             // NONE as srcStageMask: UNDEFINED → GENERAL on the lighting +
             // integrated volumes has no prior writes to expose; NONE is
@@ -820,7 +817,8 @@ impl VolumetricsPipeline {
         // HOST → COMPUTE_SHADER (UBO flush; execution dependency required even
         // for HOST_COHERENT memory to make the write visible to the compute stage).
         memory_barrier(
-            device, cmd,
+            device,
+            cmd,
             vk::PipelineStageFlags::HOST,
             vk::AccessFlags::HOST_WRITE,
             vk::PipelineStageFlags::COMPUTE_SHADER,

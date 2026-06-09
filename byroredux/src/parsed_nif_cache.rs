@@ -182,7 +182,6 @@ impl<T> ParsedNifCache<T> {
     pub(crate) fn keys(&self) -> impl Iterator<Item = &String> {
         self.cache.keys()
     }
-
 }
 
 #[cfg(test)]
@@ -255,5 +254,4 @@ mod tests {
         // 10 / 13 ≈ 76.9%
         assert!((cache.hit_rate_pct() - (1000.0 / 13.0)).abs() < 1e-6);
     }
-
 }

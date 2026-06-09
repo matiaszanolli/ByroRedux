@@ -329,7 +329,11 @@ const FB_ZENITH: [f32; 3] = [0.15, 0.3, 0.65];
 const FB_HORIZON: [f32; 3] = [0.55, 0.5, 0.42];
 // Pre-#541 the `compute_sky` below-horizon branch faked the ground tint as
 // `horizon * 0.3`; matching that keeps the procedural look unchanged.
-const FB_LOWER: [f32; 3] = [FB_HORIZON[0] * 0.3, FB_HORIZON[1] * 0.3, FB_HORIZON[2] * 0.3];
+const FB_LOWER: [f32; 3] = [
+    FB_HORIZON[0] * 0.3,
+    FB_HORIZON[1] * 0.3,
+    FB_HORIZON[2] * 0.3,
+];
 const FB_SUN_COLOR: [f32; 3] = [1.0, 0.95, 0.8];
 const FB_FOG_NEAR: f32 = 15000.0;
 const FB_FOG_FAR: f32 = 80000.0;
@@ -421,7 +425,7 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_plugin::esm::records::misc::{WatrRecord, WaterParams};
+    use byroredux_plugin::esm::records::misc::{WaterParams, WatrRecord};
 
     // ── default_water_for_worldspace ──────────────────────────────
 
@@ -454,7 +458,10 @@ mod tests {
             (None, None)
         );
         // A missing worldspace record likewise yields no default water.
-        assert_eq!(default_water_for_worldspace(None, GameKind::Oblivion), (None, None));
+        assert_eq!(
+            default_water_for_worldspace(None, GameKind::Oblivion),
+            (None, None)
+        );
     }
 
     /// Non-Oblivion games must NOT be forced to Z=0: a NAM2 water_form
@@ -543,8 +550,7 @@ mod tests {
         let mut waters = HashMap::new();
         waters.insert(rec.form_id, rec);
 
-        let (mat, _kind, _flow, _normal) =
-            resolve_water_material(&waters, Some(0x000A_BCDE));
+        let (mat, _kind, _flow, _normal) = resolve_water_material(&waters, Some(0x000A_BCDE));
 
         assert_eq!(
             mat.reflection_tint, lava_tint,
@@ -581,9 +587,24 @@ mod tests {
     #[test]
     fn translate_cell_lighting_reads_day_slot_and_marks_exterior() {
         let mut w = WeatherRecord::default();
-        w.sky_colors[SKY_AMBIENT][TOD_DAY] = SkyColor { r: 51, g: 0, b: 0, a: 255 };
-        w.sky_colors[SKY_SUNLIGHT][TOD_DAY] = SkyColor { r: 0, g: 102, b: 0, a: 255 };
-        w.sky_colors[SKY_FOG][TOD_DAY] = SkyColor { r: 0, g: 0, b: 204, a: 255 };
+        w.sky_colors[SKY_AMBIENT][TOD_DAY] = SkyColor {
+            r: 51,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
+        w.sky_colors[SKY_SUNLIGHT][TOD_DAY] = SkyColor {
+            r: 0,
+            g: 102,
+            b: 0,
+            a: 255,
+        };
+        w.sky_colors[SKY_FOG][TOD_DAY] = SkyColor {
+            r: 0,
+            g: 0,
+            b: 204,
+            a: 255,
+        };
         w.fog_day_near = 1500.0;
         w.fog_day_far = 9000.0;
 
@@ -600,10 +621,33 @@ mod tests {
     #[test]
     fn translate_sky_routes_each_cloud_layer_and_sun_sprite() {
         // Distinct day-slot colours so the slot→field mapping is pinned.
-        let mut w = wthr_with(SKY_UPPER, SkyColor { r: 10, g: 0, b: 0, a: 255 });
-        w.sky_colors[SKY_HORIZON][TOD_DAY] = SkyColor { r: 0, g: 20, b: 0, a: 255 };
-        w.sky_colors[SKY_LOWER][TOD_DAY] = SkyColor { r: 0, g: 0, b: 30, a: 255 };
-        w.sky_colors[SKY_SUN][TOD_DAY] = SkyColor { r: 40, g: 40, b: 0, a: 255 };
+        let mut w = wthr_with(
+            SKY_UPPER,
+            SkyColor {
+                r: 10,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+        );
+        w.sky_colors[SKY_HORIZON][TOD_DAY] = SkyColor {
+            r: 0,
+            g: 20,
+            b: 0,
+            a: 255,
+        };
+        w.sky_colors[SKY_LOWER][TOD_DAY] = SkyColor {
+            r: 0,
+            g: 0,
+            b: 30,
+            a: 255,
+        };
+        w.sky_colors[SKY_SUN][TOD_DAY] = SkyColor {
+            r: 40,
+            g: 40,
+            b: 0,
+            a: 255,
+        };
 
         let textures = SkyTextures {
             cloud_layers: [(11, 0.11), (22, 0.22), (33, 0.33), (44, 0.44)],
@@ -619,9 +663,18 @@ mod tests {
         assert_eq!(sky.sun_color, [40.0 / 255.0, 40.0 / 255.0, 0.0]);
         // Cloud-layer handle/scale routing — each of the 4 lands in its slot.
         assert_eq!((sky.cloud_texture_index, sky.cloud_tile_scale), (11, 0.11));
-        assert_eq!((sky.cloud_texture_index_1, sky.cloud_tile_scale_1), (22, 0.22));
-        assert_eq!((sky.cloud_texture_index_2, sky.cloud_tile_scale_2), (33, 0.33));
-        assert_eq!((sky.cloud_texture_index_3, sky.cloud_tile_scale_3), (44, 0.44));
+        assert_eq!(
+            (sky.cloud_texture_index_1, sky.cloud_tile_scale_1),
+            (22, 0.22)
+        );
+        assert_eq!(
+            (sky.cloud_texture_index_2, sky.cloud_tile_scale_2),
+            (33, 0.33)
+        );
+        assert_eq!(
+            (sky.cloud_texture_index_3, sky.cloud_tile_scale_3),
+            (44, 0.44)
+        );
         assert_eq!(sky.sun_texture_index, 99);
         // Canonical seeds.
         assert_eq!(sky.sun_direction, sun_dir);
@@ -641,7 +694,12 @@ mod tests {
         w.fog_night_near = 300.0;
         w.fog_night_far = 400.0;
         w.wind_speed = 7;
-        w.sky_colors[SKY_UPPER][TOD_DAY] = SkyColor { r: 255, g: 0, b: 0, a: 255 };
+        w.sky_colors[SKY_UPPER][TOD_DAY] = SkyColor {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
 
         let wd = translate_weather(&w, None);
         assert_eq!(wd.fog, [100.0, 200.0, 300.0, 400.0]);
@@ -677,6 +735,9 @@ mod tests {
         // Synthetic table: the day slot of the read groups carries the
         // procedural colour, and the lerp endpoints are equal.
         assert_eq!(wd.sky_colors[SKY_AMBIENT][TOD_DAY], [0.15, 0.14, 0.12]);
-        assert_eq!(wd.sky_colors[SKY_HORIZON][0], wd.sky_colors[SKY_HORIZON][TOD_DAY]);
+        assert_eq!(
+            wd.sky_colors[SKY_HORIZON][0],
+            wd.sky_colors[SKY_HORIZON][TOD_DAY]
+        );
     }
 }

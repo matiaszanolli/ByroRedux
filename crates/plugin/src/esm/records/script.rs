@@ -20,8 +20,8 @@
 //! layout, tracked via `CommonItemFields.has_script`.
 
 use super::common::read_zstring;
-use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
+use crate::esm::sub_reader::SubReader;
 
 /// Script type byte (from `SCHR.script_type`). Values come from the
 /// Oblivion / FO3 script compiler.

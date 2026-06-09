@@ -248,8 +248,7 @@ pub fn quest_advance_on_activate_system(world: &World) {
             continue;
         };
         // Activator gate.
-        if matches!(comp.activator_gate, ActivatorGate::PlayerOnly)
-            && ev.activator != player_entity
+        if matches!(comp.activator_gate, ActivatorGate::PlayerOnly) && ev.activator != player_entity
         {
             continue;
         }

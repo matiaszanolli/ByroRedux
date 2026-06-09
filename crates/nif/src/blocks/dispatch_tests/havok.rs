@@ -472,7 +472,6 @@ fn fo4_bhk_ragdoll_system_keeps_byte_array_verbatim() {
 
 // ── #708 / NIF-D5-01 + NIF-D5-02 + NIF-D5-08 — Starfield BSGeometry triple ──
 
-
 // ── #1329 — Oblivion v10.0.1.0 ("old Oblivion") Havok cascade ───────
 //
 // These rare early-Oblivion meshes (handscythe01 / oar01 /
@@ -577,8 +576,7 @@ fn oblivion_old_bhk_mesh_shape() {
     bytes.extend_from_slice(&1u32.to_le_bytes()); // Num Strips Data = 1
     bytes.extend_from_slice(&2i32.to_le_bytes()); // Strips Data ref → block 2
     let mut stream = NifStream::new(&bytes, &header);
-    let block = parse_block("bhkMeshShape", &mut stream, None)
-        .expect("bhkMeshShape must parse");
+    let block = parse_block("bhkMeshShape", &mut stream, None).expect("bhkMeshShape must parse");
     let m = block
         .as_any()
         .downcast_ref::<collision::BhkMeshShape>()
@@ -616,7 +614,7 @@ fn oblivion_old_bhk_rigid_body() {
     bytes.extend_from_slice(&0.05f32.to_le_bytes()); // angular_damping
     bytes.extend_from_slice(&0.3f32.to_le_bytes()); // friction
     bytes.extend_from_slice(&0.4f32.to_le_bytes()); // restitution
-    // NO max velocities / penetration depth at v10.0.x.
+                                                    // NO max velocities / penetration depth at v10.0.x.
     bytes.push(1); // motion_type
     bytes.push(2); // deactivator_type
     bytes.push(3); // solver_deactivation
@@ -655,7 +653,7 @@ fn oblivion_old_bs_keyframe_controller() {
     let header = oblivion_old_header();
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&0u32.to_le_bytes()); // groupID (consumed by parse_block)
-    // NiTimeController base (26 B).
+                                                  // NiTimeController base (26 B).
     bytes.extend_from_slice(&(-1i32).to_le_bytes()); // next_controller
     bytes.extend_from_slice(&8u16.to_le_bytes()); // flags
     bytes.extend_from_slice(&1.0f32.to_le_bytes()); // frequency
@@ -663,7 +661,7 @@ fn oblivion_old_bs_keyframe_controller() {
     bytes.extend_from_slice(&0.0f32.to_le_bytes()); // start_time
     bytes.extend_from_slice(&1.33f32.to_le_bytes()); // stop_time
     bytes.extend_from_slice(&3i32.to_le_bytes()); // target
-    // No interpolator (< 10.1.0.104).
+                                                  // No interpolator (< 10.1.0.104).
     bytes.extend_from_slice(&7i32.to_le_bytes()); // Data ref (until 10.1.0.103)
     bytes.extend_from_slice(&9i32.to_le_bytes()); // Data 2 ref (always)
     let mut stream = NifStream::new(&bytes, &header);

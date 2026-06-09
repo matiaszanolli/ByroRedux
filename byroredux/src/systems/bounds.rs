@@ -124,8 +124,7 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
                 let (Some(local), Some(global)) = (lb_q.get(entity), g_q.get(entity)) else {
                     continue;
                 };
-                let center =
-                    global.translation + global.rotation * (local.center * global.scale);
+                let center = global.translation + global.rotation * (local.center * global.scale);
                 if let Some(wb) = wb_q.get_mut(entity) {
                     *wb = WorldBound::new(center, local.radius * global.scale);
                 }

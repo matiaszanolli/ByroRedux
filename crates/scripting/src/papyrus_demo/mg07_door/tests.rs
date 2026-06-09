@@ -84,7 +84,11 @@ fn on_load_blocks_activation_when_not_yet_opened() {
     mg07_on_load_system(&world);
 
     let door = world.get::<MG07LabyrinthianDoor>(keystone_door).unwrap();
-    assert_eq!(door.state, MG07State::Waiting, "OnLoad transitions to waiting");
+    assert_eq!(
+        door.state,
+        MG07State::Waiting,
+        "OnLoad transitions to waiting"
+    );
     assert!(
         door.activation_blocked,
         "fresh `beenOpened=False` arm sets blockActivation(true)"
@@ -120,7 +124,10 @@ fn on_load_is_idempotent() {
     let (world, _player, keystone_door, _secret_door) = setup_world();
 
     mg07_on_load_system(&world);
-    let state_after_first = world.get::<MG07LabyrinthianDoor>(keystone_door).unwrap().state;
+    let state_after_first = world
+        .get::<MG07LabyrinthianDoor>(keystone_door)
+        .unwrap()
+        .state;
 
     // Force an artificial perturbation between runs to prove
     // re-invocation doesn't reset.
@@ -130,7 +137,10 @@ fn on_load_is_idempotent() {
     }
 
     mg07_on_load_system(&world);
-    let state_after_second = world.get::<MG07LabyrinthianDoor>(keystone_door).unwrap().state;
+    let state_after_second = world
+        .get::<MG07LabyrinthianDoor>(keystone_door)
+        .unwrap()
+        .state;
     assert_eq!(state_after_first, state_after_second);
     // Perturbation wasn't undone — re-run was a no-op.
     let door = world.get::<MG07LabyrinthianDoor>(keystone_door).unwrap();
@@ -223,7 +233,10 @@ fn denial_branch_emits_ui_message_when_activator_not_player() {
     // here.)
     assert!(world.has::<UiMessageCommand>(world.resource::<PlayerEntity>().0));
     assert_eq!(
-        world.get::<MG07LabyrinthianDoor>(keystone_door).unwrap().state,
+        world
+            .get::<MG07LabyrinthianDoor>(keystone_door)
+            .unwrap()
+            .state,
         MG07State::Waiting
     );
 }
@@ -251,9 +264,14 @@ fn success_path_consumes_keystone_and_transitions_to_inserting() {
     // form a cross-thread ABBA pair with the headline test (#1410), which
     // reads ActivateEvent-then-Door. `world.get` returns a Drop guard held
     // to end-of-scope, so the value must be copied out explicitly.
-    let door_state = world.get::<MG07LabyrinthianDoor>(keystone_door).unwrap().state;
+    let door_state = world
+        .get::<MG07LabyrinthianDoor>(keystone_door)
+        .unwrap()
+        .state;
     match door_state {
-        MG07State::Inserting { wait_remaining_secs } => {
+        MG07State::Inserting {
+            wait_remaining_secs,
+        } => {
             assert_eq!(wait_remaining_secs, DELAY);
         }
         other => panic!("expected Inserting, got {:?}", other),
@@ -342,7 +360,9 @@ fn inserting_state_swallows_re_activation_during_wait() {
     assert!(!world.has::<UiMessageCommand>(player));
     let door = world.get::<MG07LabyrinthianDoor>(keystone_door).unwrap();
     match door.state {
-        MG07State::Inserting { wait_remaining_secs } => {
+        MG07State::Inserting {
+            wait_remaining_secs,
+        } => {
             assert!((wait_remaining_secs - DELAY * 0.5).abs() < 1e-6);
         }
         other => panic!("expected mid-wait Inserting, got {:?}", other),
@@ -377,7 +397,10 @@ fn inactive_state_swallows_re_activation_post_open() {
     // no new Inserting transition.
     assert!(!world.has::<UiMessageCommand>(player));
     assert_eq!(
-        world.get::<MG07LabyrinthianDoor>(keystone_door).unwrap().state,
+        world
+            .get::<MG07LabyrinthianDoor>(keystone_door)
+            .unwrap()
+            .state,
         MG07State::Inactive
     );
 }
@@ -413,5 +436,8 @@ fn beenopened_is_never_flipped_due_to_source_typo() {
         !door.been_opened,
         "shipping Papyrus bug: been_opened is never flipped — Self.disable() carries the lockout instead"
     );
-    assert!(door.disabled, "Self.disable() is the actual lockout — and DOES fire");
+    assert!(
+        door.disabled,
+        "Self.disable() is the actual lockout — and DOES fire"
+    );
 }

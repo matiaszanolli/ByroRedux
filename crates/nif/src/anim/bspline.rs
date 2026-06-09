@@ -5,7 +5,8 @@
 
 use super::*;
 use crate::blocks::interpolator::{
-    KeyType, NiBSplineBasisData, NiBSplineCompFloatInterpolator, NiBSplineCompTransformInterpolator, NiBSplineData,
+    KeyType, NiBSplineBasisData, NiBSplineCompFloatInterpolator,
+    NiBSplineCompTransformInterpolator, NiBSplineData,
 };
 use crate::scene::NifScene;
 
@@ -492,10 +493,7 @@ pub fn channel_slice(
     }
     let start = handle as usize;
     let needed = n_cp * stride;
-    if start
-        .checked_add(needed)
-        .is_none_or(|end| end > raw.len())
-    {
+    if start.checked_add(needed).is_none_or(|end| end > raw.len()) {
         log::debug!(
             "NiBSplineCompTransformInterpolator: handle {} + {} > data len {}",
             handle,
@@ -508,4 +506,3 @@ pub fn channel_slice(
         raw, start, n_cp, stride, offset, half_range,
     ))
 }
-

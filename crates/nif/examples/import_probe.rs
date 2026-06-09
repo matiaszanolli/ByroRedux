@@ -11,7 +11,10 @@ fn main() {
     // re-parses this to get bs_version for game-aware filtering.
     match byroredux_nif::header::NifHeader::parse(&bytes) {
         Ok((h, _)) => {
-            println!("Header parse OK: user_version_2 (BSVER) = {}", h.user_version_2);
+            println!(
+                "Header parse OK: user_version_2 (BSVER) = {}",
+                h.user_version_2
+            );
         }
         Err(e) => println!("Header parse FAIL: {}", e),
     }

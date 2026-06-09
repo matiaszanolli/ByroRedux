@@ -2,11 +2,7 @@
 
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::{
-    ActiveCamera, Camera, GlobalTransform,
-    MeshHandle, Transform,
-    World,
-};
+use byroredux_core::ecs::{ActiveCamera, Camera, GlobalTransform, MeshHandle, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
 use byroredux_renderer::vulkan::GpuUploadCtx;
@@ -14,9 +10,7 @@ use byroredux_renderer::{cube_vertices, quad_vertices, triangle_vertices, Vulkan
 use byroredux_ui::UiManager;
 
 use crate::anim_convert::convert_nif_clip;
-use crate::asset_provider::{
-    build_material_provider, build_texture_provider, parse_grid_coords,
-};
+use crate::asset_provider::{build_material_provider, build_texture_provider, parse_grid_coords};
 use crate::cell_loader;
 use crate::components::{InputState, Spinning};
 // Interior cell lighting is now applied via
@@ -59,7 +53,6 @@ pub(crate) fn parse_exterior_radius(s: &str) -> i32 {
         Err(_) => 5,
     }
 }
-
 
 mod world_setup;
 // Re-export the streaming setup helpers so the M40 Phase 2 cell-
@@ -575,13 +568,8 @@ pub(crate) fn setup_scene(
             let inward_xz = {
                 let pw = world.resource::<byroredux_physics::PhysicsWorld>();
                 pw.static_colliders_aabb().and_then(|(min, max, _)| {
-                    let centre = Vec3::new(
-                        0.5 * (min[0] + max[0]),
-                        0.0,
-                        0.5 * (min[2] + max[2]),
-                    );
-                    let to_centre =
-                        Vec3::new(centre.x - door_pos.x, 0.0, centre.z - door_pos.z);
+                    let centre = Vec3::new(0.5 * (min[0] + max[0]), 0.0, 0.5 * (min[2] + max[2]));
+                    let to_centre = Vec3::new(centre.x - door_pos.x, 0.0, centre.z - door_pos.z);
                     let len_sq = to_centre.length_squared();
                     if len_sq > 1.0 {
                         Some(to_centre / len_sq.sqrt())
@@ -855,16 +843,15 @@ pub(crate) fn setup_scene(
     }
 }
 
-
 mod nif_loader;
-pub(crate) use nif_loader::{load_nif_bytes, load_nif_bytes_with_skeleton};
 use nif_loader::load_nif_from_args;
+pub(crate) use nif_loader::{load_nif_bytes, load_nif_bytes_with_skeleton};
 
 #[cfg(test)]
-mod radius_parse_tests;
+mod climate_tod_hours_tests;
 #[cfg(test)]
 mod cloud_tile_scale_tests;
 #[cfg(test)]
 mod procedural_fallback_tests;
 #[cfg(test)]
-mod climate_tod_hours_tests;
+mod radius_parse_tests;

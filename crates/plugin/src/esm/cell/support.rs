@@ -70,13 +70,26 @@ pub(crate) fn build_static_object_from_subs(
                         sub.data[off + 3],
                     ])
                 };
-                let falloff_exponent =
-                    if sub.data.len() >= 20 { read_f32(16) } else { 0.0 };
-                let period_secs = if sub.data.len() >= 32 { read_f32(28) } else { 0.0 };
-                let intensity_amplitude =
-                    if sub.data.len() >= 36 { read_f32(32) } else { 0.0 };
-                let movement_amplitude =
-                    if sub.data.len() >= 40 { read_f32(36) } else { 0.0 };
+                let falloff_exponent = if sub.data.len() >= 20 {
+                    read_f32(16)
+                } else {
+                    0.0
+                };
+                let period_secs = if sub.data.len() >= 32 {
+                    read_f32(28)
+                } else {
+                    0.0
+                };
+                let intensity_amplitude = if sub.data.len() >= 36 {
+                    read_f32(32)
+                } else {
+                    0.0
+                };
+                let movement_amplitude = if sub.data.len() >= 40 {
+                    read_f32(36)
+                } else {
+                    0.0
+                };
                 light_data = Some(LightData {
                     radius,
                     color: [r, g, b],

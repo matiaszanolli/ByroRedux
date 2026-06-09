@@ -195,8 +195,7 @@ mod tests {
         // Transform rotation.
         let drifted = [1.0001_f32, 0.0, 0.0, 0.0];
         let out = zup_to_yup_quat_wxyz(drifted);
-        let len =
-            (out[0] * out[0] + out[1] * out[1] + out[2] * out[2] + out[3] * out[3]).sqrt();
+        let len = (out[0] * out[0] + out[1] * out[1] + out[2] * out[2] + out[3] * out[3]).sqrt();
         assert!(
             (len - 1.0).abs() < 1e-5,
             "drifted quat must normalise to unit length, got len {len}",
@@ -204,8 +203,7 @@ mod tests {
 
         let drifted_short = [0.9999_f32, 0.0, 0.0, 0.0];
         let out = zup_to_yup_quat_wxyz(drifted_short);
-        let len =
-            (out[0] * out[0] + out[1] * out[1] + out[2] * out[2] + out[3] * out[3]).sqrt();
+        let len = (out[0] * out[0] + out[1] * out[1] + out[2] * out[2] + out[3] * out[3]).sqrt();
         assert!(
             (len - 1.0).abs() < 1e-5,
             "shrunk quat must normalise to unit length, got len {len}",
@@ -216,7 +214,10 @@ mod tests {
     fn zero_length_quat_returns_unchanged() {
         // Should not produce NaN — matching `nif::import::coord`'s
         // matrix-path behaviour for the degenerate-zero case.
-        assert_eq!(zup_to_yup_quat_wxyz([0.0, 0.0, 0.0, 0.0]), [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(
+            zup_to_yup_quat_wxyz([0.0, 0.0, 0.0, 0.0]),
+            [0.0, 0.0, 0.0, 0.0]
+        );
     }
 
     #[test]

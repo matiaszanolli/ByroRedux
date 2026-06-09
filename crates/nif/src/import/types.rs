@@ -763,7 +763,11 @@ impl ImportedMesh {
         indices: Vec<u32>,
     ) -> Self {
         let (local_bound_center, local_bound_radius) = crate::import::mesh::extract_local_bound(
-            crate::types::NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            crate::types::NiPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
             0.0,
             &positions,
         );
@@ -781,8 +785,8 @@ impl ImportedMesh {
             material_path: None,
             name: None,
             has_alpha: false,
-            src_blend_mode: 6,  // SRC_ALPHA (unused when opaque)
-            dst_blend_mode: 7,  // INV_SRC_ALPHA
+            src_blend_mode: 6, // SRC_ALPHA (unused when opaque)
+            dst_blend_mode: 7, // INV_SRC_ALPHA
             alpha_test: false,
             alpha_threshold: 0.5,
             alpha_test_func: 6, // GREATEREQUAL
@@ -814,7 +818,7 @@ impl ImportedMesh {
             translucency_mix_albedo: false,
             parallax_max_passes: None,
             parallax_height_scale: None,
-            vertex_color_mode: 2, // AmbientDiffuse
+            vertex_color_mode: 2,  // AmbientDiffuse
             texture_clamp_mode: 0, // WRAP_S_WRAP_T
             emissive_color: [0.0; 3],
             emissive_mult: 0.0,

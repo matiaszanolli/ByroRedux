@@ -8,9 +8,9 @@
 
 use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::{
-    BSXFlags, Billboard, GlobalTransform, LightFlicker, LightSource, LocalBound,
-    MeshHandle, ParticleEmitter, SceneFlags, TextureHandle, Transform, World, WorldBound,
-    LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
+    BSXFlags, Billboard, GlobalTransform, LightFlicker, LightSource, LocalBound, MeshHandle,
+    ParticleEmitter, SceneFlags, TextureHandle, Transform, World, WorldBound, LIGHT_FLAG_FLICKER,
+    LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
 };
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
@@ -350,8 +350,7 @@ pub(super) fn spawn_placed_instances(
         // surfaces a measurable cost.
         if let Some(ref nif_name) = light.name {
             let interned = {
-                let mut pool =
-                    world.resource_mut::<byroredux_core::string::StringPool>();
+                let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
                 pool.intern(nif_name)
             };
             world.insert(entity, Name(interned));
@@ -432,8 +431,7 @@ pub(super) fn spawn_placed_instances(
         // `convert_force_fields_zup_to_yup`. Empty for emitters whose
         // source NIF authored no field modifiers — preset behaviour
         // is unchanged in that case.
-        preset.force_fields =
-            crate::systems::convert_force_fields_zup_to_yup(&em.force_fields);
+        preset.force_fields = crate::systems::convert_force_fields_zup_to_yup(&em.force_fields);
         let entity = world.spawn();
         world.insert(entity, Transform::from_translation(world_pos));
         world.insert(entity, GlobalTransform::new(world_pos, Quat::IDENTITY, 1.0));
@@ -544,8 +542,9 @@ pub(super) fn spawn_placed_instances(
                 // mesh left both normal/bump slots empty, derive the sibling
                 // from the (effective) diffuse path; it resolves like any
                 // texture and fails soft if absent (#1303 / OBL-D4-NEW-01).
-                let normal_map = resolve_to_owned(&pool, ov.and_then(|o| o.normal).or(mesh.normal_map))
-                    .or_else(|| texture_path.as_deref().map(derive_normal_map_path));
+                let normal_map =
+                    resolve_to_owned(&pool, ov.and_then(|o| o.normal).or(mesh.normal_map))
+                        .or_else(|| texture_path.as_deref().map(derive_normal_map_path));
                 let glow_map = resolve_to_owned(&pool, ov.and_then(|o| o.glow).or(mesh.glow_map));
                 let gloss_map =
                     resolve_to_owned(&pool, ov.and_then(|o| o.specular).or(mesh.gloss_map));
@@ -1138,7 +1137,11 @@ pub(super) fn spawn_placed_instances(
                     | LIGHT_FLAG_PULSE
                     | LIGHT_FLAG_PULSE_SLOW;
                 if ld.flags & FLICKER_MASK != 0 {
-                    let period_secs = if ld.period_secs > 0.0 { ld.period_secs } else { 0.5 };
+                    let period_secs = if ld.period_secs > 0.0 {
+                        ld.period_secs
+                    } else {
+                        0.5
+                    };
                     let phase_offset_secs =
                         (entity.wrapping_mul(2654435761) as f32 / u32::MAX as f32) * period_secs;
                     world.insert(

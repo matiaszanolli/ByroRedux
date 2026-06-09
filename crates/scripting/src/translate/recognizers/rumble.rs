@@ -97,7 +97,10 @@ mod tests {
 
         let recognized = translate_script(&source, GameKind::Skyrim, None, None)
             .expect("rumble archetype recognized");
-        assert_eq!(recognized.archetype, "rumble_on_activate@defaultRumbleOnActivate");
+        assert_eq!(
+            recognized.archetype,
+            "rumble_on_activate@defaultRumbleOnActivate"
+        );
 
         // Run the spawn against a real world and read back the component —
         // proves AST → canonical component end to end.
@@ -106,7 +109,9 @@ mod tests {
         let entity = world.spawn();
         (recognized.spawn)(&mut world, entity);
 
-        let q = world.query::<RumbleOnActivate>().expect("RumbleOnActivate registered");
+        let q = world
+            .query::<RumbleOnActivate>()
+            .expect("RumbleOnActivate registered");
         let r = q.get(entity).expect("rumble component spawned");
         assert_eq!(r.camera_intensity, 0.25);
         assert_eq!(r.duration, 0.25);
@@ -118,8 +123,8 @@ mod tests {
 
     #[test]
     fn declines_a_different_script() {
-        let (script, _) = parse_script("ScriptName SomethingElse extends ObjectReference\n")
-            .expect("parses");
+        let (script, _) =
+            parse_script("ScriptName SomethingElse extends ObjectReference\n").expect("parses");
         let source = ScriptSource::PapyrusSource(&script);
         assert!(translate_script(&source, GameKind::Skyrim, None, None).is_none());
     }

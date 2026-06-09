@@ -46,12 +46,11 @@ impl NiSourceTexture {
         // inclusive per the version.rs doctrine — present at v <=
         // 10.0.1.3. Post-10.0.1.3 content with embedded textures relies
         // on the `Use External == 0` cond alone.
-        let use_internal =
-            if !use_external && stream.version() <= NifVersion::V10_0_1_3 {
-                stream.read_u8()? != 0
-            } else {
-                true
-            };
+        let use_internal = if !use_external && stream.version() <= NifVersion::V10_0_1_3 {
+            stream.read_u8()? != 0
+        } else {
+            true
+        };
 
         let (filename, pixel_data_ref) = if use_external {
             let fname: Option<Arc<str>> = if use_string_table {
@@ -307,10 +306,7 @@ impl NiPixelData {
     }
 }
 
-impl_ni_object!(
-    NiSourceTexture,
-    NiPixelData,
-);
+impl_ni_object!(NiSourceTexture, NiPixelData,);
 
 #[cfg(test)]
 mod tests {
@@ -521,9 +517,9 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes()); // name length = 0
         data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
         data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
-        // use_external = 1 → external file path. The `use_internal`
-        // byte MUST NOT be read here even though the version satisfies
-        // the `until` gate; nif.xml's gate is the AND of both.
+                                                        // use_external = 1 → external file path. The `use_internal`
+                                                        // byte MUST NOT be read here even though the version satisfies
+                                                        // the `until` gate; nif.xml's gate is the AND of both.
         data.push(1u8);
         // Filename: pre-string-table layout (v < 20.2.0.7) reads a
         // sized string (u32 length + bytes).

@@ -190,10 +190,7 @@ fn bslighting_mat_name_plus_texture_set_both_captured() {
         ],
     };
 
-    let blocks: Vec<Box<dyn NiObject>> = vec![
-        Box::new(shader),
-        Box::new(tex_set),
-    ];
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader), Box::new(tex_set)];
     // Patch texture_set_ref to point at block 1.
     let mut scene = NifScene {
         blocks,
@@ -215,9 +212,21 @@ fn bslighting_mat_name_plus_texture_set_both_captured() {
 
     // StringPool lowercases all paths.
     let mat = info.material_path.and_then(|s| pool.resolve(s));
-    assert_eq!(mat, Some("materials\\test.mat"), "material_path must be captured");
+    assert_eq!(
+        mat,
+        Some("materials\\test.mat"),
+        "material_path must be captured"
+    );
     let tex = info.texture_path.and_then(|s| pool.resolve(s));
-    assert_eq!(tex, Some("textures\\test_d.dds"), "texture_path must be captured");
+    assert_eq!(
+        tex,
+        Some("textures\\test_d.dds"),
+        "texture_path must be captured"
+    );
     let nrm = info.normal_map.and_then(|s| pool.resolve(s));
-    assert_eq!(nrm, Some("textures\\test_n.dds"), "normal_map must be captured");
+    assert_eq!(
+        nrm,
+        Some("textures\\test_n.dds"),
+        "normal_map must be captured"
+    );
 }

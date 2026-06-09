@@ -463,9 +463,7 @@ impl VulkanContext {
         // Rebind WaterPipeline's set 2 to the new accumulator views
         // (the recreate above produced fresh `vk::ImageView` handles
         // per FIF slot). Skipped when either side dropped out above.
-        if let (Some(w), Some(accum)) =
-            (self.water.as_ref(), self.water_caustic_accum.as_ref())
-        {
+        if let (Some(w), Some(accum)) = (self.water.as_ref(), self.water_caustic_accum.as_ref()) {
             let views: Vec<vk::ImageView> = (0..MAX_FRAMES_IN_FLIGHT)
                 .map(|i| accum.storage_view(i))
                 .collect();
@@ -551,7 +549,9 @@ impl VulkanContext {
         // sampled views. Same fall-back-to-existing-caustic shape as
         // the init path in context::new.
         let water_caustic_views: Vec<vk::ImageView> = match self.water_caustic_accum.as_ref() {
-            Some(a) => (0..MAX_FRAMES_IN_FLIGHT).map(|i| a.sampled_view(i)).collect(),
+            Some(a) => (0..MAX_FRAMES_IN_FLIGHT)
+                .map(|i| a.sampled_view(i))
+                .collect(),
             None => caustic_views.clone(),
         };
         if let Some(ref mut composite) = self.composite {

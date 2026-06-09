@@ -4,15 +4,15 @@
 
 use super::*;
 use crate::blocks::shader::is_material_reference;
-use crate::blocks::tri_shape::BsTriShapeKind;
 use crate::blocks::tri_shape::BsTriShape;
+use crate::blocks::tri_shape::BsTriShapeKind;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 
 use super::super::ImportedMesh;
-use std::sync::Arc;
 use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
 use crate::blocks::shader::{BSEffectShaderProperty, BSLightingShaderProperty, ShaderTypeData};
+use std::sync::Arc;
 
 fn net_with_name(name: &str) -> NiObjectNETData {
     NiObjectNETData {

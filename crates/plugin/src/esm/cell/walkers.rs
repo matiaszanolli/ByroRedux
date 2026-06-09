@@ -63,9 +63,7 @@ fn xcll_size_sanity_warn(len: usize, game: GameKind) {
 fn xcll_canonical_sizes(game: GameKind) -> &'static [usize] {
     match game {
         GameKind::Oblivion => XCLL_SIZES_OBLIVION,
-        GameKind::Fallout3NV | GameKind::Fallout4 | GameKind::Fallout76 => {
-            XCLL_SIZES_FALLOUT_ERA
-        }
+        GameKind::Fallout3NV | GameKind::Fallout4 | GameKind::Fallout76 => XCLL_SIZES_FALLOUT_ERA,
         GameKind::Skyrim => XCLL_SIZES_SKYRIM,
         GameKind::Starfield => XCLL_SIZES_STARFIELD,
     }
@@ -250,13 +248,7 @@ pub(crate) fn parse_cell_group(
                         let mut refs = Vec::new();
                         let mut _land = None; // Interior cells don't have LAND records
                         let mut navmeshes = Vec::new();
-                        parse_refr_group(
-                            reader,
-                            sub_end,
-                            &mut refs,
-                            &mut _land,
-                            &mut navmeshes,
-                        )?;
+                        parse_refr_group(reader, sub_end, &mut refs, &mut _land, &mut navmeshes)?;
                         if let Some(cell) = cells.get_mut(&key) {
                             cell.references.extend(refs);
                             cell.navmeshes.extend(navmeshes);
@@ -426,8 +418,7 @@ pub(crate) fn parse_cell_group(
                         b"XPRI" if sub.data.len() % 4 == 0 => {
                             absorbed_refs.reserve(sub.data.len() / 4);
                             for chunk in sub.data.chunks_exact(4) {
-                                let fid =
-                                    u32::from_le_bytes(chunk.try_into().unwrap());
+                                let fid = u32::from_le_bytes(chunk.try_into().unwrap());
                                 absorbed_refs.insert(fid);
                             }
                         }
@@ -467,8 +458,7 @@ pub(crate) fn parse_cell_group(
                         // trailing pad — accept >= 3 and read the
                         // first three bytes only.
                         b"RCLR" if sub.data.len() >= 3 => {
-                            regional_color_override =
-                                Some([sub.data[0], sub.data[1], sub.data[2]]);
+                            regional_color_override = Some([sub.data[0], sub.data[1], sub.data[2]]);
                         }
                         b"XCLL" if sub.data.len() >= 28 => {
                             // XCLL layout (shared 28-byte prefix across all games):

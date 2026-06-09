@@ -1268,6 +1268,5 @@ impl SoundCache {
 
 impl Resource for SoundCache {}
 
-
 #[cfg(test)]
 mod tests;

@@ -6,7 +6,6 @@
 
 use ash::vk;
 
-
 /// Maximum lights we can upload per frame. The SSBO is pre-allocated to this size.
 /// 512 lights × 48 bytes = 24 KB per frame — trivial.
 pub(super) const MAX_LIGHTS: usize = 512;

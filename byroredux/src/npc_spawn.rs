@@ -348,13 +348,9 @@ fn build_npc_equip_state<'a>(
 
         let _ = equipment_slots.equip(biped_flags, inv_idx);
 
-        if let Some(model_path) = byroredux_plugin::equip::resolve_armor_mesh(
-            item,
-            gender,
-            npc.race_form_id,
-            index,
-            game,
-        ) {
+        if let Some(model_path) =
+            byroredux_plugin::equip::resolve_armor_mesh(item, gender, npc.race_form_id, index, game)
+        {
             armor_to_spawn.push(ResolvedArmor {
                 form_id,
                 model_path,
@@ -792,11 +788,11 @@ pub fn spawn_npc_entity(
     //      and eyebrows are accessory meshes that slot on top.
     if let (Some(skel), Some(recipe)) = (skel_root, npc.runtime_facegen.as_ref()) {
         let _ = skel; // skinning routes through `skel_map` below; only the presence gate matters.
-        // Hair mesh — `HAIR.model_path` is authored relative to the
-        // meshes root (same as ARMO MODL), so `extract_mesh`'s
-        // `normalize_mesh_path` handles the prefix. `None` when the
-        // NPC's recipe didn't author HNAM (rare on humanoid actors;
-        // possible on creatures using the recipe shell).
+                      // Hair mesh — `HAIR.model_path` is authored relative to the
+                      // meshes root (same as ARMO MODL), so `extract_mesh`'s
+                      // `normalize_mesh_path` handles the prefix. `None` when the
+                      // NPC's recipe didn't author HNAM (rare on humanoid actors;
+                      // possible on creatures using the recipe shell).
         if let Some(hair_form) = recipe.hair_form_id {
             if let Some(hair) = index.hair.get(&hair_form) {
                 if !hair.model_path.is_empty() {

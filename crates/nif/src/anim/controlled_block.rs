@@ -30,7 +30,11 @@ pub enum CbString {
 /// files. Falling through to the palette lookup fixes the whole range
 /// of pre-Skyrim animations (Oblivion / Morrowind BBBB-era content)
 /// without changing modern-path semantics.
-pub fn resolve_cb_string(scene: &NifScene, cb: &ControlledBlock, which: CbString) -> Option<Arc<str>> {
+pub fn resolve_cb_string(
+    scene: &NifScene,
+    cb: &ControlledBlock,
+    which: CbString,
+) -> Option<Arc<str>> {
     let (inline, offset) = match which {
         CbString::NodeName => (cb.node_name.as_ref(), cb.node_name_offset),
         CbString::ControllerType => (cb.controller_type.as_ref(), cb.controller_type_offset),

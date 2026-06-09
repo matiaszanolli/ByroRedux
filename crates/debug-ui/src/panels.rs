@@ -73,10 +73,7 @@ pub struct PanelOutputs {
 /// `PendingDebugLoad` directly.
 #[derive(Debug, Clone)]
 pub enum QueuedLoad {
-    Nif {
-        path: String,
-        label: Option<String>,
-    },
+    Nif { path: String, label: Option<String> },
 }
 
 /// Top-level draw — orchestrates the four panel windows. Called by
@@ -111,8 +108,7 @@ pub fn draw(
 
 /// Tab selector enum — `PartialEq` because `selectable_value` needs
 /// it to highlight the active choice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PanelTab {
     #[default]
     Metrics,
@@ -120,7 +116,6 @@ pub enum PanelTab {
     Entities,
     Console,
 }
-
 
 fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
     let Some(m) = snap else {
@@ -142,10 +137,10 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
         m.ram_used_mb, m.ram_total_mb
     ));
     let ram_ratio = ratio(m.ram_used_mb, m.ram_total_mb);
-    ui.add(egui::ProgressBar::new(ram_ratio as f32).text(format!(
-        "process RSS: {} MB",
-        m.process_ram_mb
-    )));
+    ui.add(
+        egui::ProgressBar::new(ram_ratio as f32)
+            .text(format!("process RSS: {} MB", m.process_ram_mb)),
+    );
 
     // VRAM
     ui.add_space(6.0);
@@ -214,9 +209,7 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
     ui.add_space(6.0);
     ui.separator();
     let sys_count = m.top_systems_ms.len();
-    ui.label(
-        egui::RichText::new(format!("Top systems (of {})", sys_count)).strong(),
-    );
+    ui.label(egui::RichText::new(format!("Top systems (of {})", sys_count)).strong());
     if m.top_systems_ms.is_empty() {
         ui.label("(none reported — scheduler hasn't run yet)");
     } else {
@@ -338,7 +331,11 @@ fn draw_console(ui: &mut egui::Ui, state: &mut PanelState, outputs: &mut PanelOu
         .show(ui, |ui| {
             let joined = state.console_history.join("\n");
             let text = egui::RichText::new(joined).monospace();
-            ui.add(egui::Label::new(text).selectable(true).wrap_mode(egui::TextWrapMode::Extend));
+            ui.add(
+                egui::Label::new(text)
+                    .selectable(true)
+                    .wrap_mode(egui::TextWrapMode::Extend),
+            );
         });
     ui.separator();
     let input_resp = ui.add(
@@ -349,9 +346,7 @@ fn draw_console(ui: &mut egui::Ui, state: &mut PanelState, outputs: &mut PanelOu
     if input_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
         let text = state.console_input.trim().to_string();
         if !text.is_empty() {
-            state
-                .console_history
-                .push(format!("byro> {}", text));
+            state.console_history.push(format!("byro> {}", text));
             outputs.console_evals.push(text);
             state.console_input.clear();
             input_resp.request_focus();

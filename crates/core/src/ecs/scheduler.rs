@@ -107,7 +107,6 @@ pub struct SchedulerSystemTimings {
 
 impl Resource for SchedulerSystemTimings {}
 
-
 impl Scheduler {
     pub fn new() -> Self {
         Self {
@@ -821,7 +820,11 @@ mod tests {
 
         let world = World::new();
         scheduler.run(&world, 0.0);
-        assert_eq!(order.load(Ordering::SeqCst), 5, "every stage must run exactly once");
+        assert_eq!(
+            order.load(Ordering::SeqCst),
+            5,
+            "every stage must run exactly once"
+        );
     }
 
     // ── Mutation visible across stages ──────────────────────────────────
@@ -1209,9 +1212,7 @@ mod tests {
         assert!(declared_rows[0].is_exclusive);
         let declared = declared_rows[0].declared.as_ref().unwrap();
         assert_eq!(declared.components_write.len(), 1);
-        assert!(declared.components_write[0]
-            .type_name
-            .ends_with("Position"));
+        assert!(declared.components_write[0].type_name.ends_with("Position"));
     }
 
     /// #1236 — `try_add_exclusive_with_access` rejects duplicates by

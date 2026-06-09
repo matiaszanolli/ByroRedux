@@ -7,7 +7,6 @@ use crate::stream::NifStream;
 use crate::types::BlockRef;
 use std::io;
 
-
 /// Thin wrapper pointing to bhkCompressedMeshShapeData.
 #[derive(Debug)]
 pub struct BhkCompressedMeshShape {
@@ -17,7 +16,6 @@ pub struct BhkCompressedMeshShape {
     pub scale: [f32; 4],
     pub data_ref: BlockRef,
 }
-
 
 impl BhkCompressedMeshShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -99,7 +97,6 @@ pub struct BhkCompressedMeshShapeData {
     /// Quantized collision geometry chunks.
     pub chunks: Vec<CmsChunk>,
 }
-
 
 impl BhkCompressedMeshShapeData {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {

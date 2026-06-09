@@ -5,7 +5,9 @@
 use byroredux_nif::blocks::properties::NiAlphaProperty;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: dump_alpha <path.nif>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: dump_alpha <path.nif>");
     let bytes = std::fs::read(&path).expect("read");
     let scene = byroredux_nif::parse_nif(&bytes).expect("parse");
     for (i, block) in scene.blocks.iter().enumerate() {

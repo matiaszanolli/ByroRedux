@@ -257,11 +257,7 @@ fn expand_pkin_recurses_into_scol_child() {
     let outer_pos = Vec3::new(1000.0, 0.0, 0.0);
     let synths = expand_pkin_placements(pkin_id, outer_pos, Quat::IDENTITY, 1.0, &index)
         .expect("PKIN with SCOL child must expand");
-    assert_eq!(
-        synths.len(),
-        1,
-        "SCOL child's leaf placement must fan out"
-    );
+    assert_eq!(synths.len(), 1, "SCOL child's leaf placement must fan out");
     assert_eq!(synths[0].0, leaf_id);
     // Outer (1000,0,0) + SCOL placement Y-up (50,0,0) = (1050,0,0).
     assert_eq!(synths[0].1, Vec3::new(1050.0, 0.0, 0.0));
@@ -279,9 +275,10 @@ fn expand_pkin_with_cached_scol_child_does_not_recurse() {
     let pkin_id = 0x0068_0001;
     let scol_id = 0x0068_0002;
     let leaf_id = 0x0010_0001;
-    index
-        .packins
-        .insert(pkin_id, mk_pkin(pkin_id, "PkinWithCachedScol", vec![scol_id]));
+    index.packins.insert(
+        pkin_id,
+        mk_pkin(pkin_id, "PkinWithCachedScol", vec![scol_id]),
+    );
     // SCOL with a cached CM*.NIF — vanilla 2616/2617 path. Expand
     // should bail with single-entry.
     index.statics.insert(

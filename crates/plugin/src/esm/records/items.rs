@@ -217,9 +217,9 @@ pub fn parse_weap(form_id: u32, subs: &[SubRecord], game: GameKind) -> ItemRecor
                 // `ap_cost`'s true DNAM offset is unconfirmed; it stays
                 // at the zero default until the full layout is mapped.
                 min_spread = r.f32_or_default(); // offset 16 confirmed
-                // Offset 20 — next f32 present in the blob; semantic
-                // TBD (may or may not duplicate the NAM6 spread). Not
-                // stored; NAM6 remains the authoritative spread source.
+                                                 // Offset 20 — next f32 present in the blob; semantic
+                                                 // TBD (may or may not duplicate the NAM6 spread). Not
+                                                 // stored; NAM6 remains the authoritative spread source.
                 let _offset_20 = r.f32_or_default();
             }
             b"ANAM" => {

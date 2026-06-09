@@ -208,8 +208,8 @@ pub fn print_response(response: &DebugResponse) {
                 // serde_json::to_string_pretty produces a JSON-RFC-compliant
                 // multi-line form. Re-indent so each component is visually
                 // grouped under the type header.
-                let pretty = serde_json::to_string_pretty(json)
-                    .unwrap_or_else(|_| json.to_string());
+                let pretty =
+                    serde_json::to_string_pretty(json).unwrap_or_else(|_| json.to_string());
                 let indented = pretty
                     .lines()
                     .map(|l| format!("    {l}"))

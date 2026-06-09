@@ -25,8 +25,8 @@
 //! DNAM/CNAM/ANAM/BNAM, not NAM0). See issue #729 / EXT-RENDER-1.
 
 use super::common::read_zstring;
-use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::{GameKind, SubRecord};
+use crate::esm::sub_reader::SubReader;
 
 /// Number of color groups in NAM0.
 pub const SKY_COLOR_GROUPS: usize = 10;
@@ -547,10 +547,7 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
             // Moon Glare); slot the 10th group (Effects Lighting) into
             // `SKY_UNUSED_9` so a future consumer has it without
             // schema churn, and discard the rest for v1.
-            b"NAM0"
-                if sub.data.len()
-                    >= SKYRIM_NAM0_GROUPS * SKYRIM_NAM0_TOD_SLOTS * 4 =>
-            {
+            b"NAM0" if sub.data.len() >= SKYRIM_NAM0_GROUPS * SKYRIM_NAM0_TOD_SLOTS * 4 => {
                 let mut offset = 0;
                 for group in 0..SKYRIM_NAM0_GROUPS {
                     for slot in 0..SKYRIM_NAM0_TOD_SLOTS {
@@ -573,8 +570,7 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
                     // dense for `weather_system`. Mirrors the Oblivion
                     // / FO3 short-NAM0 fallback above.
                     if group < SKY_COLOR_GROUPS {
-                        record.sky_colors[group][TOD_HIGH_NOON] =
-                            record.sky_colors[group][TOD_DAY];
+                        record.sky_colors[group][TOD_HIGH_NOON] = record.sky_colors[group][TOD_DAY];
                         record.sky_colors[group][TOD_MIDNIGHT] =
                             record.sky_colors[group][TOD_NIGHT];
                     }
@@ -608,12 +604,11 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
             // Captured into `skyrim_ambient_cube`. Out-of-order or
             // extra entries clamp at 4 — Bethesda content always ships
             // exactly 4 in sunrise/day/sunset/night order per UESP.
-            b"DALC" if sub.data.len() >= SKYRIM_DALC_SIZE
-                && dalc_idx < dalc_buf.len() => {
-                    let cube = parse_skyrim_dalc(&sub.data);
-                    dalc_buf[dalc_idx] = Some(cube);
-                    dalc_idx += 1;
-                }
+            b"DALC" if sub.data.len() >= SKYRIM_DALC_SIZE && dalc_idx < dalc_buf.len() => {
+                let cube = parse_skyrim_dalc(&sub.data);
+                dalc_buf[dalc_idx] = Some(cube);
+                dalc_idx += 1;
+            }
 
             // Other sub-records (LNAM, MNAM, NNAM, RNAM, QNAM, PNAM,
             // JNAM, NAM1, TNAM ×many, IMSP, 00TX..L0TX) carry data
@@ -1278,8 +1273,7 @@ mod tests {
         // Stripe each of the 17 groups with a recognisable colour so
         // we can assert which group landed in which slot of the
         // shared `[10][6]` table.
-        let mut groups: [[[u8; 4]; 4]; SKYRIM_NAM0_GROUPS] =
-            [[[0u8; 4]; 4]; SKYRIM_NAM0_GROUPS];
+        let mut groups: [[[u8; 4]; 4]; SKYRIM_NAM0_GROUPS] = [[[0u8; 4]; 4]; SKYRIM_NAM0_GROUPS];
         for (g_idx, group) in groups.iter_mut().enumerate() {
             for (s_idx, slot) in group.iter_mut().enumerate() {
                 *slot = [g_idx as u8 + 1, s_idx as u8 + 1, 0xAA, 0];
@@ -1446,8 +1440,7 @@ mod tests {
     #[test]
     fn parse_skyrim_full_record_round_trip() {
         // End-to-end: NAM0 + FNAM + DATA + DALC all populate together.
-        let mut groups: [[[u8; 4]; 4]; SKYRIM_NAM0_GROUPS] =
-            [[[0u8; 4]; 4]; SKYRIM_NAM0_GROUPS];
+        let mut groups: [[[u8; 4]; 4]; SKYRIM_NAM0_GROUPS] = [[[0u8; 4]; 4]; SKYRIM_NAM0_GROUPS];
         // Stripe so we can verify cross-group alignment.
         groups[SKY_UPPER][TOD_DAY] = [40, 110, 155, 0];
         groups[SKY_AMBIENT][TOD_DAY] = [160, 180, 195, 0];

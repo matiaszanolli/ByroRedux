@@ -3,11 +3,8 @@
 //! `ReconstructedSseGeometry` + `DecodedPackedBuffer` — recover vertex /
 //! index streams from `SseSkinGlobalBuffer` when the legacy reader couldn't.
 
-
-
 use crate::blocks::skin::{
-    BsDismemberSkinInstance, NiSkinInstance,
-    NiSkinPartition, SseSkinGlobalBuffer,
+    BsDismemberSkinInstance, NiSkinInstance, NiSkinPartition, SseSkinGlobalBuffer,
 };
 use crate::blocks::tri_shape::BsTriShape;
 use crate::scene::NifScene;

@@ -5,8 +5,8 @@
 //! the possible weathers with relative chances.
 
 use super::common::read_zstring;
-use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::{GameKind, SubRecord};
+use crate::esm::sub_reader::SubReader;
 
 /// A weather entry in the climate's weather list.
 #[derive(Debug, Clone)]
@@ -22,8 +22,7 @@ pub struct ClimateWeather {
 }
 
 /// Parsed CLMT record.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ClimateRecord {
     pub form_id: u32,
     pub editor_id: String,
@@ -38,7 +37,6 @@ pub struct ClimateRecord {
     pub sunset_begin: u8,
     pub sunset_end: u8,
 }
-
 
 /// Parse a CLMT record from its sub-records.
 ///

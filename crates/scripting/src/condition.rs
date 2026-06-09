@@ -40,9 +40,7 @@
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
-use byroredux_plugin::esm::records::condition::{
-    Condition, ConditionList, ConditionValue, RunOn,
-};
+use byroredux_plugin::esm::records::condition::{Condition, ConditionList, ConditionValue, RunOn};
 
 /// Identifier for a condition function. Wraps the raw u32 function
 /// index from `Condition.function_index` with a typed constructor so
@@ -188,11 +186,7 @@ impl ConditionContext {
 ///
 /// Returns the boolean result. Used internally by [`evaluate`]; exposed
 /// for tests + diagnostic dumps.
-pub fn evaluate_condition(
-    condition: &Condition,
-    world: &World,
-    ctx: &ConditionContext,
-) -> bool {
+pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionContext) -> bool {
     // Resolve Run-On to a concrete entity. `None` → condition fails
     // (Bethesda: "missing reference fails the predicate").
     let Some(entity) = ctx.resolve(condition.run_on, condition, world) else {
@@ -338,11 +332,7 @@ pub fn evaluate_function(
 /// Short-circuits: any AND-block returning `false` terminates the
 /// scan early. Any OR-block returning `true` finishes the block and
 /// moves on without evaluating the remaining OR members.
-pub fn evaluate(
-    conditions: &ConditionList,
-    world: &World,
-    ctx: &ConditionContext,
-) -> bool {
+pub fn evaluate(conditions: &ConditionList, world: &World, ctx: &ConditionContext) -> bool {
     if conditions.is_empty() {
         return true; // "no conditions = always fires" contract
     }
@@ -363,9 +353,8 @@ pub fn evaluate(
         // Evaluate the block. Single-condition blocks (no preceding
         // OR flag) reduce to one evaluation; multi-condition blocks
         // are OR-combined with short-circuit.
-        let block_result = (block_start..=block_end_inclusive).any(|j| {
-            evaluate_condition(&conditions[j], world, ctx)
-        });
+        let block_result = (block_start..=block_end_inclusive)
+            .any(|j| evaluate_condition(&conditions[j], world, ctx));
         if !block_result {
             // AND-combine with the surrounding chain — false block
             // fails the whole list.
@@ -461,8 +450,8 @@ mod tests {
         // [c0 OR c1 OR c2] — c0 false, c1 true short-circuits the block.
         let world = World::new();
         let list = vec![
-            cond(99999, ComparisonOp::Ne, 0.0, true), // false, or_next
-            cond(99999, ComparisonOp::Eq, 0.0, true), // true (block hit)
+            cond(99999, ComparisonOp::Ne, 0.0, true),  // false, or_next
+            cond(99999, ComparisonOp::Eq, 0.0, true),  // true (block hit)
             cond(99999, ComparisonOp::Ne, 0.0, false), // would be false; block already true
         ];
         assert!(evaluate(&list, &world, &ctx(0)));

@@ -639,8 +639,9 @@ fn fo3_no_lighting(file_name: &str) -> crate::blocks::shader::BSShaderNoLighting
 #[test]
 fn nolighting_sets_material_kind_to_102() {
     // Scene: [0] BSShaderNoLightingProperty (FO3/FNV terminal screen).
-    let blocks: Vec<Box<dyn NiObject>> =
-        vec![Box::new(fo3_no_lighting("textures\\terminals\\terminalscreen01.dds"))];
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(fo3_no_lighting(
+        "textures\\terminals\\terminalscreen01.dds",
+    ))];
     let scene = NifScene {
         blocks,
         ..NifScene::default()
@@ -656,7 +657,11 @@ fn nolighting_sets_material_kind_to_102() {
          (102) so the fragment shader emits fullbright/unlit"
     );
     // Texture path still captured from the NoLighting file_name.
-    assert_path(&pool, info.texture_path, "textures\\terminals\\terminalscreen01.dds");
+    assert_path(
+        &pool,
+        info.texture_path,
+        "textures\\terminals\\terminalscreen01.dds",
+    );
 }
 
 #[test]

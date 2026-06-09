@@ -2,11 +2,11 @@
 
 use super::allocator::SharedAllocator;
 use super::buffer::{StagingGuard, StagingPool};
-use super::GpuUploadCtx;
 use super::descriptors::{
     color_subresource_mips, image_barrier_transfer_dst_to_shader_read,
     image_barrier_undef_to_transfer_dst,
 };
+use super::GpuUploadCtx;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;

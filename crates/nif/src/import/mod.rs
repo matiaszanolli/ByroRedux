@@ -20,7 +20,6 @@ mod walk;
 // the internal module path.
 pub use material::{BsEffectShaderData, NoLightingFalloff, ShaderTypeFields};
 
-
 use crate::scene::NifScene;
 use crate::types::NiTransform;
 use byroredux_core::string::StringPool;
@@ -45,7 +44,6 @@ use std::sync::Arc;
 pub trait MeshResolver {
     fn resolve(&self, mesh_name: &str) -> Option<Vec<u8>>;
 }
-
 
 mod types;
 
@@ -207,8 +205,7 @@ fn import_nif_scene_impl(
                         // Y half-extent. Magnitudes don't change sign,
                         // so the dimensions swap is just `[x, z, y]`.
                         let center = [bb.center[0], bb.center[2], -bb.center[1]];
-                        let half_extents =
-                            [bb.dimensions[0], bb.dimensions[2], bb.dimensions[1]];
+                        let half_extents = [bb.dimensions[0], bb.dimensions[2], bb.dimensions[1]];
                         imported.bs_bound = Some((center, half_extents));
                     }
                     // #985 / NIF-D5-ORPHAN-A3 — FO4+ weapon-mod
@@ -218,8 +215,8 @@ fn import_nif_scene_impl(
                     // function without these reaching the ECS.
                     if let Some(parents) = block
                         .as_any()
-                        .downcast_ref::<crate::blocks::extra_data::BsConnectPointParents>()
-                    {
+                        .downcast_ref::<crate::blocks::extra_data::BsConnectPointParents>(
+                    ) {
                         let points = parents
                             .connect_points
                             .iter()
@@ -235,13 +232,12 @@ fn import_nif_scene_impl(
                     }
                     if let Some(children) = block
                         .as_any()
-                        .downcast_ref::<crate::blocks::extra_data::BsConnectPointChildren>()
-                    {
-                        imported.child_attach_connections =
-                            Some(ImportedChildAttachConnections {
-                                point_names: children.point_names.clone(),
-                                skinned: children.skinned,
-                            });
+                        .downcast_ref::<crate::blocks::extra_data::BsConnectPointChildren>(
+                    ) {
+                        imported.child_attach_connections = Some(ImportedChildAttachConnections {
+                            point_names: children.point_names.clone(),
+                            skinned: children.skinned,
+                        });
                     }
                 }
             }

@@ -26,8 +26,12 @@ fn main() {
                 // Authored fields only — the spec-gloss → metal/rough
                 // translation lives in `asset_provider::merge_bgsm_into_mesh`
                 // (gated on `pbr`); don't duplicate it here or it drifts.
-                let mx = m.specular_color[0].max(m.specular_color[1]).max(m.specular_color[2]);
-                let mn = m.specular_color[0].min(m.specular_color[1]).min(m.specular_color[2]);
+                let mx = m.specular_color[0]
+                    .max(m.specular_color[1])
+                    .max(m.specular_color[2]);
+                let mn = m.specular_color[0]
+                    .min(m.specular_color[1])
+                    .min(m.specular_color[2]);
                 let saturation = if mx > 1.0e-4 { (mx - mn) / mx } else { 0.0 };
                 println!(
                     "{f}\n  v={} pbr={} spec_enabled={} spec_color={:?} spec_mult={:.3} smoothness={:.3}\n  spec_saturation={:.3} (legacy metalness signal)  template={:?}",

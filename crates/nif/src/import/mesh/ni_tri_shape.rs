@@ -3,8 +3,6 @@
 //! `GeomData<'a>` SoA + `extract_mesh` / `extract_mesh_local` + local-bound
 //! helper.
 
-
-
 use crate::blocks::tri_shape::{NiTriShape, NiTriShapeData, NiTriStripsData};
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
@@ -362,4 +360,3 @@ pub fn extract_mesh_local(
 ) -> Option<ImportedMesh> {
     extract_mesh(scene, shape, &shape.av.transform, inherited_props, pool)
 }
-

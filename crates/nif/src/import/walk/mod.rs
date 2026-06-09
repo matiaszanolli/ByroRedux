@@ -970,8 +970,19 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
-        push_shape_collision(scene, &mut ctx.collisions, shape.av.collision_ref, &world_transform);
-        if let Some(mesh) = extract_mesh(scene, shape, &world_transform, ctx.inherited_props, ctx.pool) {
+        push_shape_collision(
+            scene,
+            &mut ctx.collisions,
+            shape.av.collision_ref,
+            &world_transform,
+        );
+        if let Some(mesh) = extract_mesh(
+            scene,
+            shape,
+            &world_transform,
+            ctx.inherited_props,
+            ctx.pool,
+        ) {
             ctx.out.push(mesh);
         }
     }
@@ -996,7 +1007,12 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
-        push_shape_collision(scene, &mut ctx.collisions, shape.av.collision_ref, &world_transform);
+        push_shape_collision(
+            scene,
+            &mut ctx.collisions,
+            shape.av.collision_ref,
+            &world_transform,
+        );
         if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform, ctx.pool) {
             ctx.out.push(mesh);
         }
@@ -1013,8 +1029,19 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
-        push_shape_collision(scene, &mut ctx.collisions, shape.av.collision_ref, &world_transform);
-        if let Some(mesh) = extract_mesh(scene, shape, &world_transform, ctx.inherited_props, ctx.pool) {
+        push_shape_collision(
+            scene,
+            &mut ctx.collisions,
+            shape.av.collision_ref,
+            &world_transform,
+        );
+        if let Some(mesh) = extract_mesh(
+            scene,
+            shape,
+            &world_transform,
+            ctx.inherited_props,
+            ctx.pool,
+        ) {
             ctx.out.push(mesh);
         }
     }
@@ -1027,8 +1054,14 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &shape.av.transform);
-        push_shape_collision(scene, &mut ctx.collisions, shape.av.collision_ref, &world_transform);
-        if let Some(mesh) = extract_bs_geometry(scene, shape, &world_transform, ctx.pool, resolver) {
+        push_shape_collision(
+            scene,
+            &mut ctx.collisions,
+            shape.av.collision_ref,
+            &world_transform,
+        );
+        if let Some(mesh) = extract_bs_geometry(scene, shape, &world_transform, ctx.pool, resolver)
+        {
             ctx.out.push(mesh);
         }
     }

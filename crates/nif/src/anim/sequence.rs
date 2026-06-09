@@ -193,4 +193,3 @@ pub fn import_sequence(scene: &NifScene, seq: &NiControllerSequence) -> Animatio
         text_keys,
     }
 }
-

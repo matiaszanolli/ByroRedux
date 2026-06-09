@@ -443,8 +443,8 @@ mod tests {
     #[test]
     fn try_enqueue_cancel_flag_is_shared_with_pending_command() {
         let queue = empty_queue();
-        let (_rx, cancel) = try_enqueue_command(&queue, ping_request())
-            .expect("empty queue must accept");
+        let (_rx, cancel) =
+            try_enqueue_command(&queue, ping_request()).expect("empty queue must accept");
 
         // Per-client side flips the flag.
         cancel.store(true, Ordering::Release);

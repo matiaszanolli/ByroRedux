@@ -205,13 +205,7 @@ pub(crate) fn parse_wrld_children(
                         let mut refs = Vec::new();
                         let mut land = None;
                         let mut navmeshes = Vec::new();
-                        parse_refr_group(
-                            reader,
-                            sub_end,
-                            &mut refs,
-                            &mut land,
-                            &mut navmeshes,
-                        )?;
+                        parse_refr_group(reader, sub_end, &mut refs, &mut land, &mut navmeshes)?;
                         if let Some(cell) = exterior_cells.get_mut(&grid) {
                             cell.references.extend(refs);
                             cell.navmeshes.extend(navmeshes);
@@ -351,8 +345,7 @@ pub(crate) fn parse_wrld_children(
                         // for semantics. Oblivion exterior cells are
                         // the dominant authoring site for this tag.
                         b"RCLR" if sub.data.len() >= 3 => {
-                            regional_color_override =
-                                Some([sub.data[0], sub.data[1], sub.data[2]]);
+                            regional_color_override = Some([sub.data[0], sub.data[1], sub.data[2]]);
                         }
                         // #1220 / D3-NEW-01 — XCRI: FO4+ PreCombined
                         // Mesh hash list + visibility-group tail.
@@ -401,8 +394,7 @@ pub(crate) fn parse_wrld_children(
                         b"XPRI" if sub.data.len() % 4 == 0 => {
                             absorbed_refs.reserve(sub.data.len() / 4);
                             for chunk in sub.data.chunks_exact(4) {
-                                let fid =
-                                    u32::from_le_bytes(chunk.try_into().unwrap());
+                                let fid = u32::from_le_bytes(chunk.try_into().unwrap());
                                 absorbed_refs.insert(fid);
                             }
                         }

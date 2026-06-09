@@ -186,7 +186,8 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // The helper normalises the WASD vector before scaling so diagonal
     // strafe doesn't go √2× faster than pure forward.
     let speed_mul = if want_sprint { 2.0 } else { 1.0 };
-    let horizontal_translation = horizontal_motion(yaw, move_dir, controller.move_speed * speed_mul, dt);
+    let horizontal_translation =
+        horizontal_motion(yaw, move_dir, controller.move_speed * speed_mul, dt);
 
     // Integrate gravity into a fresh local vertical_velocity. Then
     // apply the jump impulse if requested + allowed (grounded +
@@ -259,10 +260,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     let frame = FRAME.fetch_add(1, Ordering::Relaxed);
     let prev_grounded = WAS_GROUNDED.swap(result.grounded, Ordering::Relaxed);
     let grounded_transition = prev_grounded != result.grounded;
-    if frame < 5
-        || grounded_transition
-        || (!result.grounded && frame.is_multiple_of(60))
-    {
+    if frame < 5 || grounded_transition || (!result.grounded && frame.is_multiple_of(60)) {
         let pw = world.resource::<byroredux_physics::PhysicsWorld>();
         let body_count = pw.body_count();
         // Dump the AABB of all static colliders ONCE (frame 0) so the
@@ -491,9 +489,7 @@ pub fn toggle_player_mode(world: &mut byroredux_core::ecs::World) {
     // spawn a character body); in that case bail with a warn — the
     // toggle is a no-op and we stay in FlyCam.
     if matches!(next, PlayerMode::Character) {
-        let player_entity = world
-            .try_resource::<PlayerEntity>()
-            .and_then(|r| r.0);
+        let player_entity = world.try_resource::<PlayerEntity>().and_then(|r| r.0);
         let Some(player) = player_entity else {
             log::warn!(
                 "Walk/Fly toggle: no PlayerEntity registered \
@@ -557,10 +553,7 @@ pub fn toggle_player_mode(world: &mut byroredux_core::ecs::World) {
     }
 
     *world.resource_mut::<PlayerMode>() = next;
-    log::info!(
-        "Player mode → {:?} (F key — toggle walk/fly)",
-        next
-    );
+    log::info!("Player mode → {:?} (F key — toggle walk/fly)", next);
 }
 
 /// Compute the world-space horizontal motion vector for the character

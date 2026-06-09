@@ -116,10 +116,7 @@ pub(super) fn spawn_precombined_meshes(
             // the same `_oc.nif` path hit this branch and skip the
             // warn site. Without this debug line an operator only
             // sees the first occurrence per process.
-            if c.meshes.is_empty()
-                && c.collisions.is_empty()
-                && c.lights.is_empty()
-            {
+            if c.meshes.is_empty() && c.collisions.is_empty() && c.lights.is_empty() {
                 log::debug!(
                     "PreCombined cache hit on zero-mesh entry: '{}' \
                      (cell {:08X}) — CSG-deferred fallback",
@@ -161,21 +158,24 @@ pub(super) fn spawn_precombined_meshes(
             // through to the standard import path when the CSG is absent or
             // the `_oc.nif` carries no shared geometry (baked variant /
             // non-precombine content).
-            let csg_parsed: Option<Arc<CachedNifImport>> = csg.as_ref().and_then(|csg| {
-                match byroredux_nif::parse_nif(&bytes) {
-                    Ok(scene) => {
-                        let meshes = {
-                            let mut pool = world.resource_mut::<StringPool>();
-                            build_precombine_meshes(&scene, csg, &mut pool)
-                        };
-                        (!meshes.is_empty()).then(|| Arc::new(geometry_only_cached(meshes)))
-                    }
-                    Err(e) => {
-                        log::warn!("PreCombined CSG parse failed: '{path}' (cell {:08X}): {e}", cell.form_id);
-                        None
-                    }
-                }
-            });
+            let csg_parsed: Option<Arc<CachedNifImport>> =
+                csg.as_ref()
+                    .and_then(|csg| match byroredux_nif::parse_nif(&bytes) {
+                        Ok(scene) => {
+                            let meshes = {
+                                let mut pool = world.resource_mut::<StringPool>();
+                                build_precombine_meshes(&scene, csg, &mut pool)
+                            };
+                            (!meshes.is_empty()).then(|| Arc::new(geometry_only_cached(meshes)))
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "PreCombined CSG parse failed: '{path}' (cell {:08X}): {e}",
+                                cell.form_id
+                            );
+                            None
+                        }
+                    });
             let parsed = match csg_parsed {
                 Some(c) => Some(c),
                 None => {
@@ -232,11 +232,13 @@ pub(super) fn spawn_precombined_meshes(
             /* mesh_cache_key = */ Some(&path),
             // Precombined entities are bake artifacts, not placed REFRs
             // — no placement form-id. #1212.
-            /* placement_form_id_pair = */ None,
+            /* placement_form_id_pair = */
+            None,
             // Precombines absorb static architecture / clutter; doors
             // are excluded from the absorption set by Bethesda's bake
             // pipeline, so this path never carries XTEL.
-            /* teleport = */ None,
+            /* teleport = */
+            None,
         );
         spawned += count;
     }
@@ -285,7 +287,10 @@ pub(super) fn open_geometry_csg(plugin_path: &str) -> Option<CsgArchive> {
             Some(a)
         }
         Err(e) => {
-            log::warn!("PreCombined: failed to open CSG '{}': {e}", csg_path.display());
+            log::warn!(
+                "PreCombined: failed to open CSG '{}': {e}",
+                csg_path.display()
+            );
             None
         }
     }
@@ -337,18 +342,29 @@ pub(super) fn build_precombine_meshes(
         let psg = match csg.read_psg(geom.data_offset as u64, need) {
             Ok(b) => b,
             Err(e) => {
-                log::debug!("PreCombined: CSG read at offset {} failed: {e}", geom.data_offset);
+                log::debug!(
+                    "PreCombined: CSG read at offset {} failed: {e}",
+                    geom.data_offset
+                );
                 continue;
             }
         };
-        let decoded =
-            match decode_shared_geom_object(&psg, geom.vertex_desc, geom.num_verts, tri_start, lod_count) {
-                Ok(g) => g,
-                Err(e) => {
-                    log::debug!("PreCombined: decode at offset {} failed: {e}", geom.data_offset);
-                    continue;
-                }
-            };
+        let decoded = match decode_shared_geom_object(
+            &psg,
+            geom.vertex_desc,
+            geom.num_verts,
+            tri_start,
+            lod_count,
+        ) {
+            Ok(g) => g,
+            Err(e) => {
+                log::debug!(
+                    "PreCombined: decode at offset {} failed: {e}",
+                    geom.data_offset
+                );
+                continue;
+            }
+        };
         // One placed instance per combined transform, each carrying the
         // resolved material. Objects with no combined entries carry no
         // placement (an unplaced merge) and contribute nothing.

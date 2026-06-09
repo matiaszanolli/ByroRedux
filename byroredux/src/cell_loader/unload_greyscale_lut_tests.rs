@@ -24,8 +24,7 @@ fn unload_walk_collects_greyscale_lut_handle() {
     world.insert(fx, MeshHandle(1));
     world.insert(fx, GreyscaleLutHandle(42));
 
-    let (_mesh, texture_drops, _terrain) =
-        collect_victim_gpu_handles(&world, &[fx], fallback_tex);
+    let (_mesh, texture_drops, _terrain) = collect_victim_gpu_handles(&world, &[fx], fallback_tex);
 
     assert!(
         texture_drops.contains(&42),

@@ -1,7 +1,7 @@
 use crate::chunk::{Chunk, ChunkType};
+use crate::string_table::StringTable;
 use crate::types::{BuiltinType, Class, ClassFlags, Field, TypeReference};
 use crate::value::{ObjectInstance, Ref, Value};
-use crate::string_table::StringTable;
 use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
@@ -293,10 +293,12 @@ fn consume_object(state: &mut State) -> Result<Value> {
         ChunkType::User => (true, false),
         ChunkType::Diff => (false, true),
         ChunkType::Usrd => (true, true),
-        _ => return Err(Error::WrongChunkType {
-            wanted: ChunkType::Objt,
-            got: kind,
-        }),
+        _ => {
+            return Err(Error::WrongChunkType {
+                wanted: ChunkType::Objt,
+                got: kind,
+            })
+        }
     };
     let payload = state.consume_chunk(kind)?;
     let mut cur = Cursor::new(payload);

@@ -10,7 +10,7 @@ fn make_synthetic_minimum() -> Vec<u8> {
     bytes.extend_from_slice(&0x48544542u32.to_le_bytes());
     bytes.extend_from_slice(&8u32.to_le_bytes()); // headerSize
     bytes.extend_from_slice(&4u32.to_le_bytes()); // fileVersion
-    // chunkCount = 3 (BETH + STRT + TYPE — type_count 0 means no CLAS chunks)
+                                                  // chunkCount = 3 (BETH + STRT + TYPE — type_count 0 means no CLAS chunks)
     bytes.extend_from_slice(&3u32.to_le_bytes());
 
     // STRT chunk (empty body)

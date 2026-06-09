@@ -50,10 +50,7 @@ pub struct CellLoadResult {
 /// the flag makes `CellLightingRes` skip the directional as a scene light
 /// to prevent wall light leakage. The 9 extended XCLL fields (`fog_clip`,
 /// `directional_ambient`, …) are propagated by `from_cell_lighting` (#861).
-pub(crate) fn apply_interior_cell_lighting(
-    world: &mut World,
-    lighting: &esm::cell::CellLighting,
-) {
+pub(crate) fn apply_interior_cell_lighting(world: &mut World, lighting: &esm::cell::CellLighting) {
     let (rx, ry) = (
         lighting.directional_rotation[0],
         lighting.directional_rotation[1],

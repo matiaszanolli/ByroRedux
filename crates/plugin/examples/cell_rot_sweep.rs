@@ -77,9 +77,8 @@ fn main() -> anyhow::Result<()> {
 
     for refr in &cell.references {
         let r = refr.rotation;
-        let nonzero = (r[0].abs() > 1e-5) as u8
-            + (r[1].abs() > 1e-5) as u8
-            + (r[2].abs() > 1e-5) as u8;
+        let nonzero =
+            (r[0].abs() > 1e-5) as u8 + (r[1].abs() > 1e-5) as u8 + (r[2].abs() > 1e-5) as u8;
         if nonzero >= 2 {
             multi_axis += 1;
         }

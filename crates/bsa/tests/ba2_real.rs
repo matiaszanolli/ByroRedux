@@ -524,7 +524,13 @@ fn starfield_full_corpus_ba2_sweep() {
                 let entry = suffix
                     .iter()
                     .find_map(|s| pick_entry(&archive, s))
-                    .or_else(|| archive.list_files().into_iter().next().map(|s| s.to_string()));
+                    .or_else(|| {
+                        archive
+                            .list_files()
+                            .into_iter()
+                            .next()
+                            .map(|s| s.to_string())
+                    });
                 let outcome = match entry {
                     None => Err("archive has zero listable entries".to_string()),
                     Some(e) => match archive.extract(&e) {

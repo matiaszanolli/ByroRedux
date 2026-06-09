@@ -84,9 +84,18 @@ mod tests {
 
     #[test]
     fn canonical_event_maps_known_papyrus_names_case_insensitively() {
-        assert_eq!(CanonicalEvent::from_papyrus("OnActivate"), CanonicalEvent::Activate);
-        assert_eq!(CanonicalEvent::from_papyrus("onactivate"), CanonicalEvent::Activate);
-        assert_eq!(CanonicalEvent::from_papyrus("OnUpdate"), CanonicalEvent::Update);
+        assert_eq!(
+            CanonicalEvent::from_papyrus("OnActivate"),
+            CanonicalEvent::Activate
+        );
+        assert_eq!(
+            CanonicalEvent::from_papyrus("onactivate"),
+            CanonicalEvent::Activate
+        );
+        assert_eq!(
+            CanonicalEvent::from_papyrus("OnUpdate"),
+            CanonicalEvent::Update
+        );
         assert_eq!(CanonicalEvent::from_papyrus("OnInit"), CanonicalEvent::Init);
         assert_eq!(CanonicalEvent::from_papyrus("OnLoad"), CanonicalEvent::Load);
     }
@@ -102,6 +111,9 @@ mod tests {
     #[test]
     fn condition_function_reexport_is_the_m47_1_canonical() {
         // The table re-exports M47.1's canonical mapping, not a copy.
-        assert_eq!(ConditionFunction::from_index(59), ConditionFunction::GetStageDone);
+        assert_eq!(
+            ConditionFunction::from_index(59),
+            ConditionFunction::GetStageDone
+        );
     }
 }

@@ -15,8 +15,7 @@ fn run_build(world: &World) -> Vec<DrawCommand> {
     let max_skinned = ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
         / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
         - 1) as u32;
-    let mut skin_slot_pool =
-        byroredux_core::ecs::resources::SkinSlotPool::new(max_skinned);
+    let mut skin_slot_pool = byroredux_core::ecs::resources::SkinSlotPool::new(max_skinned);
     let mut material_table = byroredux_renderer::MaterialTable::new();
     let mut water_commands = Vec::new();
     let _ = build_render_data(

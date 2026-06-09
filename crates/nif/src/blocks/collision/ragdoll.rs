@@ -9,7 +9,6 @@ use crate::types::BlockRef;
 use std::io;
 use std::sync::Arc;
 
-
 /// One bone's pose-frame inside a [`BonePose`]. Translation + quaternion
 /// rotation + scale = 40 bytes, matching nif.xml's `size="40"` pin.
 #[derive(Debug, Clone, Copy)]
@@ -79,7 +78,6 @@ pub struct BhkPoseArray {
     pub poses: Vec<BonePose>,
 }
 
-
 impl BhkPoseArray {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let num_bones = stream.read_u32_le()?;
@@ -121,7 +119,6 @@ pub struct BhkRagdollTemplate {
     /// parse cleanly.
     pub bones: Vec<BlockRef>,
 }
-
 
 impl BhkRagdollTemplate {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
@@ -167,7 +164,6 @@ pub struct BhkRagdollTemplateData {
     /// (polymorphic constraint-CInfo expansion is a follow-up).
     pub num_constraints: u32,
 }
-
 
 impl BhkRagdollTemplateData {
     pub fn parse(stream: &mut NifStream, block_size: Option<u32>) -> io::Result<Self> {

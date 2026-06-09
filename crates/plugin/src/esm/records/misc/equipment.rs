@@ -1,8 +1,8 @@
 //! Equipment / crafting / generic-record records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
-use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::{GameKind, SubRecord};
+use crate::esm::sub_reader::SubReader;
 
 /// ARMA — armor addon record. Race-specific biped slot variants for
 /// armor. The ARMO → ARMA → race-specific MODL chain resolves armor

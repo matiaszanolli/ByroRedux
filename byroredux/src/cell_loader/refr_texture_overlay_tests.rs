@@ -415,8 +415,8 @@ fn build_overlay_first_txst_owns_model_space_normals_flag() {
     index2.texture_sets.insert(0x0020_0021, second_ts);
     let mut placed2 = empty_placed_ref(0x0100_0002);
     placed2.alt_texture_ref = Some(0x0020_0021);
-    let ov_solo = build_refr_texture_overlay(&placed2, &index2, None, &mut pool)
-        .expect("solo overlay");
+    let ov_solo =
+        build_refr_texture_overlay(&placed2, &index2, None, &mut pool).expect("solo overlay");
     assert!(
         ov_solo.model_space_normals,
         "control: same TXST in isolation must surface the flag"

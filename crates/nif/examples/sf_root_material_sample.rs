@@ -54,9 +54,10 @@ fn main() {
         };
         parsed_nifs += 1;
         for block in &scene.blocks {
-            let Some(lsp) = block.as_any().downcast_ref::<
-                byroredux_nif::blocks::shader::BSLightingShaderProperty,
-            >() else {
+            let Some(lsp) = block
+                .as_any()
+                .downcast_ref::<byroredux_nif::blocks::shader::BSLightingShaderProperty>()
+            else {
                 continue;
             };
             total_lsps += 1;
@@ -89,7 +90,16 @@ fn main() {
     println!();
     println!("name=material  root=material  → {}", both_mat);
     println!("name=material  root=label     → {}", name_is_mat);
-    println!("name=label     root=material  → {} ← FALLBACK FIRES (#1183 captures these)", name_is_label_root_is_mat);
-    println!("name=label     root=label     → {}", name_is_label_root_is_label);
-    println!("name=label     root=empty     → {}", name_is_label_root_is_empty);
+    println!(
+        "name=label     root=material  → {} ← FALLBACK FIRES (#1183 captures these)",
+        name_is_label_root_is_mat
+    );
+    println!(
+        "name=label     root=label     → {}",
+        name_is_label_root_is_label
+    );
+    println!(
+        "name=label     root=empty     → {}",
+        name_is_label_root_is_empty
+    );
 }

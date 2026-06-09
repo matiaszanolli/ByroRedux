@@ -15,7 +15,10 @@ fn make_skinned_world(num_meshes: usize) -> World {
         world.insert(mesh_entity, GlobalTransform::IDENTITY);
         let bones = vec![Some(mesh_entity); MAX_BONES_PER_MESH];
         let binds = vec![Mat4::IDENTITY; MAX_BONES_PER_MESH];
-        world.insert(mesh_entity, SkinnedMesh::new_with_global(None, bones, binds, Mat4::IDENTITY));
+        world.insert(
+            mesh_entity,
+            SkinnedMesh::new_with_global(None, bones, binds, Mat4::IDENTITY),
+        );
     }
     world
 }
@@ -39,8 +42,7 @@ fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, HashMap<EntityId, u32>) {
     let max_skinned = ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
         / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
         - 1) as u32;
-    let mut skin_slot_pool =
-        byroredux_core::ecs::resources::SkinSlotPool::new(max_skinned);
+    let mut skin_slot_pool = byroredux_core::ecs::resources::SkinSlotPool::new(max_skinned);
     let _ = build_render_data(
         world,
         &mut draw_commands,

@@ -1,8 +1,6 @@
 //! Per-frame render data collection from ECS queries.
 
-use byroredux_core::ecs::{
-    resources::SkinSlotPool, ActiveCamera, EntityId, Transform, World,
-};
+use byroredux_core::ecs::{resources::SkinSlotPool, ActiveCamera, EntityId, Transform, World};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::vulkan::water::WaterDrawCommand;
 use byroredux_renderer::{MaterialTable, SkyParams};
@@ -314,20 +312,15 @@ pub(crate) fn build_render_data(
     // sort / lights) so the dominant cost is localized without guessing.
     let profile = std::env::var_os("BYRO_PROFILE").is_some();
     let mark = |on: bool| on.then(std::time::Instant::now);
-    let took = |s: Option<std::time::Instant>| s.map_or(0.0, |i| i.elapsed().as_secs_f32() * 1000.0);
+    let took =
+        |s: Option<std::time::Instant>| s.map_or(0.0, |i| i.elapsed().as_secs_f32() * 1000.0);
 
     // First pass: skinned-mesh palette assembly — see
     // `render::skinned::build_skinned_palettes`. Allocates pool slots,
     // writes per-entity bone_world matrices into sparse slots, and
     // queues first-sight `bind_inverses` uploads on the pool.
     let t_skin = mark(profile);
-    skinned::build_skinned_palettes(
-        world,
-        frame_count,
-        bone_world,
-        skin_offsets,
-        skin_slot_pool,
-    );
+    skinned::build_skinned_palettes(world, frame_count, bone_world, skin_offsets, skin_slot_pool);
     let ms_skin = took(t_skin);
 
     // Camera view-projection + frustum + cam_pos — see

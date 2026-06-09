@@ -979,11 +979,7 @@ impl EsmCellIndex {
     /// so the F-key path stays cheap.
     pub fn cell_for_refr_form_id(&self, refr_form_id: u32) -> Option<CellRef<'_>> {
         for cell in self.cells.values() {
-            if cell
-                .references
-                .iter()
-                .any(|r| r.form_id == refr_form_id)
-            {
+            if cell.references.iter().any(|r| r.form_id == refr_form_id) {
                 return Some(CellRef::Interior {
                     editor_id: &cell.editor_id,
                 });
@@ -991,11 +987,7 @@ impl EsmCellIndex {
         }
         for (worldspace, grids) in &self.exterior_cells {
             for ((gx, gy), cell) in grids {
-                if cell
-                    .references
-                    .iter()
-                    .any(|r| r.form_id == refr_form_id)
-                {
+                if cell.references.iter().any(|r| r.form_id == refr_form_id) {
                     return Some(CellRef::Exterior {
                         worldspace,
                         grid: (*gx, *gy),

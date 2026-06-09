@@ -23,9 +23,9 @@ mod descriptors;
 mod gpu_types;
 mod upload;
 
+pub use buffers::SceneBuffers;
 pub use constants::*;
 pub use gpu_types::{GpuCamera, GpuDalcCube, GpuInstance, GpuLight, GpuTerrainTile};
-pub use buffers::SceneBuffers;
 
 #[cfg(test)]
 mod gpu_instance_layout_tests;

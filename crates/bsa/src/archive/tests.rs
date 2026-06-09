@@ -12,7 +12,6 @@ use std::fs::File;
 use std::io;
 use std::sync::Mutex;
 
-
 /// Real-data path helpers — env-var override falling back to the
 /// canonical Steam install on the reference dev machine (#1058).
 /// Each test still guards via `skip_if_*_missing` so absent data
@@ -904,8 +903,7 @@ fn synthetic_v105_per_file_compression_toggle_xors_archive_flag() {
     // bit (0x40000000) set so the parser reads it as "opt out of
     // archive compression".
     let toggled_size = new_body_len | 0x40000000;
-    bytes[file_record_pos + 8..file_record_pos + 12]
-        .copy_from_slice(&toggled_size.to_le_bytes());
+    bytes[file_record_pos + 8..file_record_pos + 12].copy_from_slice(&toggled_size.to_le_bytes());
 
     // Truncate everything from the file_data_offset onward and
     // append the raw payload (no LZ4 framing).

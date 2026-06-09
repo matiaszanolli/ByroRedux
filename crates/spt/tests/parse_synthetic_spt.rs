@@ -91,14 +91,10 @@ fn build_synthetic_spt() -> Vec<u8> {
 const PINNED_BYTES: &[u8] = &[
     // Magic (20 B).
     0xE8, 0x03, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00, b'_', b'_', b'I', b'd', b'v', b'S', b'p', b't',
-    b'_', b'0', b'2', b'_',
-    // Tag 1002 — Bare.
-    0xEA, 0x03, 0x00, 0x00,
-    // Tag 2002 — U8 0x42.
-    0xD2, 0x07, 0x00, 0x00, 0x42,
-    // Tag 2001 — U32 (f32 1100.0 = 0x44898000 LE).
-    0xD1, 0x07, 0x00, 0x00, 0x00, 0x80, 0x89, 0x44,
-    // Tag 4001 — Vec3 (1.0, 2.0, 3.0).
+    b'_', b'0', b'2', b'_', // Tag 1002 — Bare.
+    0xEA, 0x03, 0x00, 0x00, // Tag 2002 — U8 0x42.
+    0xD2, 0x07, 0x00, 0x00, 0x42, // Tag 2001 — U32 (f32 1100.0 = 0x44898000 LE).
+    0xD1, 0x07, 0x00, 0x00, 0x00, 0x80, 0x89, 0x44, // Tag 4001 — Vec3 (1.0, 2.0, 3.0).
     0xA1, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x40, 0x40,
     // Tag 8003 — FixedBytes(52) of zeros.
     0x43, 0x1F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -143,8 +139,15 @@ fn parser_decodes_every_dispatch_arm_against_pinned_fixture() {
         "no unknown tags in the pinned fixture — got {:?}",
         scene.unknown_tags,
     );
-    assert!(!scene.reached_eof, "walker stops at the geometry-tail sentinel, not EOF");
-    assert_eq!(scene.entries.len(), 9, "every dispatch arm contributes one entry");
+    assert!(
+        !scene.reached_eof,
+        "walker stops at the geometry-tail sentinel, not EOF"
+    );
+    assert_eq!(
+        scene.entries.len(),
+        9,
+        "every dispatch arm contributes one entry"
+    );
 
     // Verify each entry's tag + value kind in stream order.
     let (tag, value) = (scene.entries[0].tag, &scene.entries[0].value);
@@ -188,7 +191,11 @@ fn parser_decodes_every_dispatch_arm_against_pinned_fixture() {
     let (tag, value) = (scene.entries[7].tag, &scene.entries[7].value);
     assert_eq!(tag, 10002);
     match value {
-        SptValue::ArrayBytes { stride, count, bytes } => {
+        SptValue::ArrayBytes {
+            stride,
+            count,
+            bytes,
+        } => {
             assert_eq!(*stride, 1);
             assert_eq!(*count, 4);
             assert_eq!(bytes.as_slice(), &[0xDE, 0xAD, 0xBE, 0xEF]);
@@ -199,11 +206,18 @@ fn parser_decodes_every_dispatch_arm_against_pinned_fixture() {
     let (tag, value) = (scene.entries[8].tag, &scene.entries[8].value);
     assert_eq!(tag, 10003);
     match value {
-        SptValue::ArrayBytes { stride, count, bytes } => {
+        SptValue::ArrayBytes {
+            stride,
+            count,
+            bytes,
+        } => {
             assert_eq!(*stride, 8);
             assert_eq!(*count, 2);
             assert_eq!(bytes.len(), 16);
-            assert_eq!(&bytes[0..8], &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+            assert_eq!(
+                &bytes[0..8],
+                &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+            );
         }
         _ => panic!("tag 10003 must decode as ArrayBytes(stride=8)"),
     }
@@ -217,6 +231,12 @@ fn typed_accessors_resolve_against_pinned_fixture() {
         vec!["trees/oak/bark.dds"],
         "tag 2000 must flow through `bark_textures()` accessor",
     );
-    assert!(scene.leaf_textures().is_empty(), "fixture authors no tag 4003");
-    assert!(scene.curves().is_empty(), "fixture authors no tag 6000-6007");
+    assert!(
+        scene.leaf_textures().is_empty(),
+        "fixture authors no tag 4003"
+    );
+    assert!(
+        scene.curves().is_empty(),
+        "fixture authors no tag 6000-6007"
+    );
 }

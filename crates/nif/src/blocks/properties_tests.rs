@@ -220,8 +220,8 @@ fn parse_ni_texturing_property_retains_oblivion_decal_slots() {
 
     let expected_len = data.len();
     let mut stream = NifStream::new(&data, &header);
-    let prop = NiTexturingProperty::parse(&mut stream)
-        .expect("Oblivion NiTexturingProperty should parse");
+    let prop =
+        NiTexturingProperty::parse(&mut stream).expect("Oblivion NiTexturingProperty should parse");
     assert_eq!(
         stream.position() as usize,
         expected_len,
@@ -315,9 +315,8 @@ fn parse_ni_texturing_property_apply_mode_at_v20_1_0_1_exactly() {
 
     let expected_len = data.len();
     let mut stream = NifStream::new(&data, &header);
-    let prop = NiTexturingProperty::parse(&mut stream).expect(
-        "v20.1.0.1 NiTexturingProperty must consume Apply Mode under inclusive doctrine",
-    );
+    let prop = NiTexturingProperty::parse(&mut stream)
+        .expect("v20.1.0.1 NiTexturingProperty must consume Apply Mode under inclusive doctrine");
     assert_eq!(stream.position() as usize, expected_len);
     assert_eq!(prop.texture_count, 0);
     assert!(prop.base_texture.is_none());

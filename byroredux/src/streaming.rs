@@ -476,9 +476,7 @@ where
 /// the worker thread (#854). Preserved verbatim across the #877
 /// refactor; extracted in #1262 (NIF-D5-NEW-02) to avoid duplicating
 /// the closure between the serial / parallel branches.
-fn parse_one_nif(
-    (path, bytes): (String, Option<Vec<u8>>),
-) -> (String, Option<PartialNifImport>) {
+fn parse_one_nif((path, bytes): (String, Option<Vec<u8>>)) -> (String, Option<PartialNifImport>) {
     let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let Some(bytes) = bytes else {
             log::debug!("[stream-worker] NIF not in BSA: '{}'", path);

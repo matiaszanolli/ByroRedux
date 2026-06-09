@@ -329,12 +329,8 @@ fn exec_load_exterior(
         }
     };
     crate::scene::apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
-    let mut state = streaming::WorldStreamingState::new(
-        wctx,
-        tex_provider,
-        mat_provider,
-        clamped_radius,
-    );
+    let mut state =
+        streaming::WorldStreamingState::new(wctx, tex_provider, mat_provider, clamped_radius);
     state.last_player_grid = Some((grid_x, grid_y));
     let _ = crate::scene::stream_initial_radius(world, ctx, &mut state, grid_x, grid_y);
     *streaming = Some(state);

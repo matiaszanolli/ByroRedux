@@ -193,7 +193,7 @@ pub struct GpuMaterial {
     /// `triangle.frag` (`MATERIAL_KIND_EFFECT_SHADER` branch) +
     /// `cell_loader/spawn.rs` (resolution site). Previously named
     /// `_pad_falloff` — repacked #890 Stage 2c.
-    pub greyscale_lut_index: u32,   // offset 256
+    pub greyscale_lut_index: u32, // offset 256
 
     // ── BGSM translucency parameter suite (vec4 #18; offsets 260-280) ─
     //
@@ -1235,32 +1235,83 @@ mod tests {
         // disambiguates field declarations from incidental uses of
         // the same identifier in comments / other structs.
         for name in &[
-            "roughness;", "metalness;", "emissiveMult;", "materialFlags;",
-            "emissiveR,", "emissiveG,", "emissiveB,", "specularStrength;",
-            "specularR,", "specularG,", "specularB,", "alphaThreshold;",
-            "textureIndex,", "normalMapIndex,", "darkMapIndex,", "glowMapIndex;",
-            "detailMapIndex,", "glossMapIndex,", "parallaxMapIndex,", "envMapIndex;",
-            "envMaskIndex,", "alphaTestFunc,", "materialKind;",
+            "roughness;",
+            "metalness;",
+            "emissiveMult;",
+            "materialFlags;",
+            "emissiveR,",
+            "emissiveG,",
+            "emissiveB,",
+            "specularStrength;",
+            "specularR,",
+            "specularG,",
+            "specularB,",
+            "alphaThreshold;",
+            "textureIndex,",
+            "normalMapIndex,",
+            "darkMapIndex,",
+            "glowMapIndex;",
+            "detailMapIndex,",
+            "glossMapIndex,",
+            "parallaxMapIndex,",
+            "envMapIndex;",
+            "envMaskIndex,",
+            "alphaTestFunc,",
+            "materialKind;",
             "materialAlpha;",
-            "parallaxHeightScale,", "parallaxMaxPasses,", "uvOffsetU,", "uvOffsetV;",
-            "uvScaleU,", "uvScaleV,", "diffuseR,", "diffuseG;",
-            "diffuseB,", "ambientR,", "ambientG,", "ambientB;",
-            "skinTintA,", "skinTintR,", "skinTintG,", "skinTintB;",
-            "hairTintR,", "hairTintG,", "hairTintB,", "multiLayerEnvmapStrength;",
-            "eyeLeftCenterX,", "eyeLeftCenterY,", "eyeLeftCenterZ,", "eyeCubemapScale;",
-            "eyeRightCenterX,", "eyeRightCenterY,", "eyeRightCenterZ,", "multiLayerInnerThickness;",
-            "multiLayerRefractionScale,", "multiLayerInnerScaleU,", "multiLayerInnerScaleV,", "sparkleR;",
-            "sparkleG,", "sparkleB,", "sparkleIntensity,", "falloffStartAngle;",
-            "falloffStopAngle,", "falloffStartOpacity,", "falloffStopOpacity,", "softFalloffDepth;",
+            "parallaxHeightScale,",
+            "parallaxMaxPasses,",
+            "uvOffsetU,",
+            "uvOffsetV;",
+            "uvScaleU,",
+            "uvScaleV,",
+            "diffuseR,",
+            "diffuseG;",
+            "diffuseB,",
+            "ambientR,",
+            "ambientG,",
+            "ambientB;",
+            "skinTintA,",
+            "skinTintR,",
+            "skinTintG,",
+            "skinTintB;",
+            "hairTintR,",
+            "hairTintG,",
+            "hairTintB,",
+            "multiLayerEnvmapStrength;",
+            "eyeLeftCenterX,",
+            "eyeLeftCenterY,",
+            "eyeLeftCenterZ,",
+            "eyeCubemapScale;",
+            "eyeRightCenterX,",
+            "eyeRightCenterY,",
+            "eyeRightCenterZ,",
+            "multiLayerInnerThickness;",
+            "multiLayerRefractionScale,",
+            "multiLayerInnerScaleU,",
+            "multiLayerInnerScaleV,",
+            "sparkleR;",
+            "sparkleG,",
+            "sparkleB,",
+            "sparkleIntensity,",
+            "falloffStartAngle;",
+            "falloffStopAngle,",
+            "falloffStartOpacity,",
+            "falloffStopOpacity,",
+            "softFalloffDepth;",
             "greyscaleLutIndex;",
             // #1147 Phase 2b — BGSM translucency suite
-            "translucencySubsurfaceR,", "translucencySubsurfaceG,", "translucencySubsurfaceB;",
+            "translucencySubsurfaceR,",
+            "translucencySubsurfaceG,",
+            "translucencySubsurfaceB;",
             "translucencyTransmissiveScale;",
             "translucencyTurbulence;",
             // #1248 — per-material refractive index for Schlick F0
             "ior;",
             // #1249 — Disney diffuse lobe (subsurface + sheen + sheenTint)
-            "subsurface;", "sheen;", "sheenTint;",
+            "subsurface;",
+            "sheen;",
+            "sheenTint;",
             // #1250 — anisotropic GGX ax/ay driver
             "anisotropic;",
         ] {
@@ -1405,7 +1456,10 @@ mod tests {
         assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_r), 260);
         assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_g), 264);
         assert_eq!(offset_of!(GpuMaterial, translucency_subsurface_b), 268);
-        assert_eq!(offset_of!(GpuMaterial, translucency_transmissive_scale), 272);
+        assert_eq!(
+            offset_of!(GpuMaterial, translucency_transmissive_scale),
+            272
+        );
         assert_eq!(offset_of!(GpuMaterial, translucency_turbulence), 276);
 
         // ── PBR IOR (#1248, offset 280) ──────────────────────────
@@ -1468,11 +1522,7 @@ mod tests {
             0,
             "fresh table has only the seeded neutral; zero user materials"
         );
-        assert_eq!(
-            table.len(),
-            1,
-            "sanity: len() still counts the seeded slot"
-        );
+        assert_eq!(table.len(), 1, "sanity: len() still counts the seeded slot");
 
         let mut user = GpuMaterial::default();
         user.roughness = 0.7;

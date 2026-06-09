@@ -157,10 +157,26 @@ fn minimal_bseffect() -> BSEffectShaderProperty {
 fn minimal_nimaterial() -> NiMaterialProperty {
     NiMaterialProperty {
         net: empty_net(),
-        ambient: NiColor { r: 1.0, g: 1.0, b: 1.0 },
-        diffuse: NiColor { r: 1.0, g: 1.0, b: 1.0 },
-        specular: NiColor { r: 1.0, g: 1.0, b: 1.0 },
-        emissive: NiColor { r: 0.2, g: 0.4, b: 0.6 },
+        ambient: NiColor {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+        },
+        diffuse: NiColor {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+        },
+        specular: NiColor {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+        },
+        emissive: NiColor {
+            r: 0.2,
+            g: 0.4,
+            b: 0.6,
+        },
         shininess: 40.0,
         alpha: 1.0,
         emissive_mult: 1.75, // distinctive non-default

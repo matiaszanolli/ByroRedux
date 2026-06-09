@@ -60,10 +60,11 @@ pub fn run(esm_path: &Path, cell_edid: &str) -> Result<()> {
 
     let target_key = cell_edid.to_ascii_lowercase();
     let Some(cell) = index.cells.cells.get(&target_key) else {
-        println!("cell EDID  : {} (NOT FOUND in interior cell index)", cell_edid);
         println!(
-            "─── available interiors (first 20) ──────────────────────────"
+            "cell EDID  : {} (NOT FOUND in interior cell index)",
+            cell_edid
         );
+        println!("─── available interiors (first 20) ──────────────────────────");
         let mut keys: Vec<&String> = index.cells.cells.keys().collect();
         keys.sort();
         for k in keys.iter().take(20) {
@@ -83,16 +84,16 @@ pub fn run(esm_path: &Path, cell_edid: &str) -> Result<()> {
     Ok(())
 }
 
-fn print_cell_report(
-    cell: &CellData,
-    cells_index: &byroredux_plugin::esm::cell::EsmCellIndex,
-) {
+fn print_cell_report(cell: &CellData, cells_index: &byroredux_plugin::esm::cell::EsmCellIndex) {
     let total = cell.references.len();
     println!(
         "─── cell {} ───────────────────────────────────────────────",
         cell.editor_id
     );
-    println!("display    : {:?}", cell.display_name.as_deref().unwrap_or("(no FULL)"));
+    println!(
+        "display    : {:?}",
+        cell.display_name.as_deref().unwrap_or("(no FULL)")
+    );
     println!("interior   : {}", cell.is_interior);
     println!("references : {} REFRs", total);
 
@@ -115,7 +116,9 @@ fn print_cell_report(
     let mut resolved = 0usize;
     for r in &cell.references {
         if let Some(obj) = cells_index.statics.get(&r.base_form_id) {
-            *resolved_by_type.entry(obj.record_type.as_str().to_string()).or_default() += 1;
+            *resolved_by_type
+                .entry(obj.record_type.as_str().to_string())
+                .or_default() += 1;
             resolved += 1;
         } else {
             // The high byte of a FormID is the master file slot (load
@@ -132,7 +135,12 @@ fn print_cell_report(
     let pct = 100.0 * resolved as f32 / total as f32;
     println!("─── resolve rate ──────────────────────────────────────────");
     println!("resolved   : {} / {} ({:.1}%)", resolved, total, pct);
-    println!("unresolved : {} / {} ({:.1}%)", total - resolved, total, 100.0 - pct);
+    println!(
+        "unresolved : {} / {} ({:.1}%)",
+        total - resolved,
+        total,
+        100.0 - pct
+    );
 
     if !resolved_by_type.is_empty() {
         println!("─── resolved by base record type ──────────────────────────");
@@ -158,7 +166,10 @@ fn print_cell_report(
             };
             println!("  slot 0x{:02X}  {:>5}  — {}", slot, count, hint);
         }
-        println!("─── unresolved FormID sample (first {}) ────────────────────", unresolved_sample.len());
+        println!(
+            "─── unresolved FormID sample (first {}) ────────────────────",
+            unresolved_sample.len()
+        );
         for id in &unresolved_sample {
             println!("  {:08X}", id);
         }

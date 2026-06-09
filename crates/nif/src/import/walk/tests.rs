@@ -758,14 +758,38 @@ mod emitter_param_tests {
         // Every scalar `apply_emitter_params` consumes — a NaN/Inf in any
         // one of them must block the whole emitter (→ heuristic preset).
         let cases = [
-            EmitterBaseParams { speed: f32::NAN, ..sane_params() },
-            EmitterBaseParams { speed: f32::INFINITY, ..sane_params() },
-            EmitterBaseParams { speed_variation: f32::NAN, ..sane_params() },
-            EmitterBaseParams { declination: f32::INFINITY, ..sane_params() },
-            EmitterBaseParams { declination_variation: f32::NAN, ..sane_params() },
-            EmitterBaseParams { initial_radius: f32::INFINITY, ..sane_params() },
-            EmitterBaseParams { life_span: f32::NAN, ..sane_params() },
-            EmitterBaseParams { life_span_variation: f32::INFINITY, ..sane_params() },
+            EmitterBaseParams {
+                speed: f32::NAN,
+                ..sane_params()
+            },
+            EmitterBaseParams {
+                speed: f32::INFINITY,
+                ..sane_params()
+            },
+            EmitterBaseParams {
+                speed_variation: f32::NAN,
+                ..sane_params()
+            },
+            EmitterBaseParams {
+                declination: f32::INFINITY,
+                ..sane_params()
+            },
+            EmitterBaseParams {
+                declination_variation: f32::NAN,
+                ..sane_params()
+            },
+            EmitterBaseParams {
+                initial_radius: f32::INFINITY,
+                ..sane_params()
+            },
+            EmitterBaseParams {
+                life_span: f32::NAN,
+                ..sane_params()
+            },
+            EmitterBaseParams {
+                life_span_variation: f32::INFINITY,
+                ..sane_params()
+            },
         ];
         for bad in cases {
             assert!(
@@ -779,20 +803,26 @@ mod emitter_param_tests {
     fn non_positive_life_and_negative_radius_rejected() {
         // life_span == 0 spawns already-dead particles; negative radius is
         // physically meaningless. Both fall back to the preset.
-        assert!(extract_emitter_params(&scene_with_emitter(EmitterBaseParams {
-            life_span: 0.0,
-            ..sane_params()
-        }))
-        .is_none());
-        assert!(extract_emitter_params(&scene_with_emitter(EmitterBaseParams {
-            life_span: -1.0,
-            ..sane_params()
-        }))
-        .is_none());
-        assert!(extract_emitter_params(&scene_with_emitter(EmitterBaseParams {
-            initial_radius: -1.0,
-            ..sane_params()
-        }))
-        .is_none());
+        assert!(
+            extract_emitter_params(&scene_with_emitter(EmitterBaseParams {
+                life_span: 0.0,
+                ..sane_params()
+            }))
+            .is_none()
+        );
+        assert!(
+            extract_emitter_params(&scene_with_emitter(EmitterBaseParams {
+                life_span: -1.0,
+                ..sane_params()
+            }))
+            .is_none()
+        );
+        assert!(
+            extract_emitter_params(&scene_with_emitter(EmitterBaseParams {
+                initial_radius: -1.0,
+                ..sane_params()
+            }))
+            .is_none()
+        );
     }
 }

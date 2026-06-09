@@ -4,9 +4,9 @@
 //! single-mesh + batched builds, deferred destroy, eviction. Skinned
 //! (per-entity) BLAS live in [`super::blas_skinned`].
 
-use super::super::descriptors::memory_barrier;
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
+use super::super::descriptors::memory_barrier;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::constants::{BATCH_EVICTION_CHECK_INTERVAL, STATIC_BLAS_FLAGS};
 use super::predicates::{
@@ -517,21 +517,23 @@ impl AccelerationManager {
             // Mid-batch eviction check. Trigger only every N iterations
             // so the cost is amortized; the predicate itself is pure
             // arithmetic. #510.
-            if idx > 0 && idx % BATCH_EVICTION_CHECK_INTERVAL == 0
+            if idx > 0
+                && idx % BATCH_EVICTION_CHECK_INTERVAL == 0
                 && should_evict_mid_batch(
                     self.static_blas_bytes,
                     pending_bytes,
                     self.blas_budget_bytes,
-                ) {
-                    // SAFETY: prepared buffers for this batch are local
-                    // to `prepared` and not yet in `self.blas_entries`,
-                    // so `evict_unused_blas` cannot touch them — it only
-                    // frees entries in `blas_entries` that are past the
-                    // idle threshold.
-                    unsafe {
-                        self.evict_unused_blas(device, allocator);
-                    }
+                )
+            {
+                // SAFETY: prepared buffers for this batch are local
+                // to `prepared` and not yet in `self.blas_entries`,
+                // so `evict_unused_blas` cannot touch them — it only
+                // frees entries in `blas_entries` that are past the
+                // idle threshold.
+                unsafe {
+                    self.evict_unused_blas(device, allocator);
                 }
+            }
 
             let primitive_count = index_count / 3;
 
@@ -613,7 +615,8 @@ impl AccelerationManager {
                             // by `prepared` (just moved in by push); no
                             // command buffer references them yet (the build
                             // hasn't been recorded).
-                            self.accel_loader.destroy_acceleration_structure(p.accel, None);
+                            self.accel_loader
+                                .destroy_acceleration_structure(p.accel, None);
                             p.buffer.destroy(device, allocator);
                         }
                         anyhow::bail!("Failed to create BLAS for mesh {mesh_handle}: {e}");
@@ -717,7 +720,8 @@ impl AccelerationManager {
             // AS_BUILD_KHR → AS_BUILD_KHR (WRITE → READ for compaction query).
             unsafe {
                 memory_barrier(
-                    device, cmd,
+                    device,
+                    cmd,
                     vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
                     vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
                     vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,

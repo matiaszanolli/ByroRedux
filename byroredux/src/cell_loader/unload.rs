@@ -3,9 +3,7 @@
 use byroredux_core::ecs::components::{Inventory, ItemInstanceId};
 use byroredux_core::ecs::resources::ItemInstancePool;
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::{
-    MeshHandle, TextureHandle, World,
-};
+use byroredux_core::ecs::{MeshHandle, TextureHandle, World};
 use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
 

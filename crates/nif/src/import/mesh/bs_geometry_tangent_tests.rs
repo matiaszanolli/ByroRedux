@@ -25,7 +25,11 @@ fn udec3_tangent_roundtrip_x_plus_sign() {
     assert!((xyzw[0] - 1.0).abs() < EPS, "x ≈ 1.0, got {}", xyzw[0]);
     assert!(xyzw[1].abs() < EPS, "y ≈ 0.0, got {}", xyzw[1]);
     assert!(xyzw[2].abs() < EPS, "z ≈ 0.0, got {}", xyzw[2]);
-    assert!((xyzw[3] - 1.0).abs() < EPS, "w (sign) ≈ +1.0, got {}", xyzw[3]);
+    assert!(
+        (xyzw[3] - 1.0).abs() < EPS,
+        "w (sign) ≈ +1.0, got {}",
+        xyzw[3]
+    );
 }
 
 /// Verify that negative bitangent sign (w = -1) is correctly decoded.
@@ -35,7 +39,11 @@ fn udec3_tangent_negative_sign() {
     let packed = encode_udec3(1023, 511, 511, 0);
     let xyzw = unpack_udec3_xyzw(packed);
     const EPS: f32 = 0.003;
-    assert!((xyzw[3] - (-1.0)).abs() < EPS, "w (sign) ≈ -1.0, got {}", xyzw[3]);
+    assert!(
+        (xyzw[3] - (-1.0)).abs() < EPS,
+        "w (sign) ≈ -1.0, got {}",
+        xyzw[3]
+    );
 }
 
 /// The extraction path: N entries in tangents_raw should produce N tangents,
@@ -117,7 +125,10 @@ fn empty_tangents_raw_and_empty_geometry_yields_empty_vec() {
     let uvs: Vec<[f32; 2]> = Vec::new();
     let triangles: Vec<[u16; 3]> = Vec::new();
     let tangents = synthesize_tangents_yup(&positions, &normals, &uvs, &triangles);
-    assert!(tangents.is_empty(), "degenerate input must yield Vec::new()");
+    assert!(
+        tangents.is_empty(),
+        "degenerate input must yield Vec::new()"
+    );
 }
 
 // ── #1209: Stage-A LOD-slot iteration ──────────────────────────────

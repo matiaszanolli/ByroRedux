@@ -1,8 +1,8 @@
 //! Effects / FX / VATS / impact records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
-use crate::esm::sub_reader::SubReader;
 use crate::esm::reader::SubRecord;
+use crate::esm::sub_reader::SubReader;
 
 /// Actor Value Information record (`AVIF`). Defines the ~30 actor
 /// values FO3/FNV expose to the perk / VATS / SPECIAL pipelines —
@@ -41,7 +41,11 @@ pub struct AvifRecord {
     pub perks: Vec<u32>,
 }
 
-pub fn parse_avif(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::reader::FormIdRemap>) -> AvifRecord {
+pub fn parse_avif(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> AvifRecord {
     let mut out = AvifRecord {
         form_id,
         ..Default::default()
@@ -61,9 +65,7 @@ pub fn parse_avif(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::r
                 );
             }
             b"PNAM" if sub.data.len() >= 4 => {
-                let raw = u32::from_le_bytes([
-                    sub.data[0], sub.data[1], sub.data[2], sub.data[3],
-                ]);
+                let raw = u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
                 let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
                 out.perks.push(remapped);
             }
@@ -336,7 +338,6 @@ pub fn parse_ipds(form_id: u32, subs: &[SubRecord]) -> IpdsRecord {
     out
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,10 +541,7 @@ mod tests {
 
     #[test]
     fn parse_avif_no_pnam_keeps_perks_empty() {
-        let subs = vec![
-            sub(b"EDID", b"Strength\0"),
-            sub(b"FULL", b"Strength\0"),
-        ];
+        let subs = vec![sub(b"EDID", b"Strength\0"), sub(b"FULL", b"Strength\0")];
         let a = parse_avif(0xDEAD0001, &subs, &None);
         assert!(a.perks.is_empty());
     }

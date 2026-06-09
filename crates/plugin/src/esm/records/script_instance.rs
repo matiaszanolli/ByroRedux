@@ -298,13 +298,13 @@ mod tests {
         v.extend_from_slice(&5i16.to_le_bytes()); // version
         v.extend_from_slice(&2i16.to_le_bytes()); // objectFormat
         v.extend_from_slice(&1u16.to_le_bytes()); // scriptCount
-        // script
+                                                  // script
         let name = b"TestScript";
         v.extend_from_slice(&(name.len() as u16).to_le_bytes());
         v.extend_from_slice(name);
         v.push(0); // script status (version >= 4)
         v.extend_from_slice(&1u16.to_le_bytes()); // propCount
-        // property: Object "MyQuest"
+                                                  // property: Object "MyQuest"
         let pname = b"MyQuest";
         v.extend_from_slice(&(pname.len() as u16).to_le_bytes());
         v.extend_from_slice(pname);
@@ -324,7 +324,9 @@ mod tests {
         assert_eq!(d.object_format, 2);
         assert!(d.has_script());
         assert_eq!(d.scripts.len(), 1);
-        let s = d.script("testscript").expect("case-insensitive script lookup");
+        let s = d
+            .script("testscript")
+            .expect("case-insensitive script lookup");
         assert_eq!(s.name, "TestScript");
         assert_eq!(s.properties.len(), 1);
         assert_eq!(s.object_form_id("MyQuest"), Some(0x0002_42af));
@@ -378,7 +380,10 @@ mod tests {
         assert_eq!(s.name, "WinterholdJailTriggerScript");
         assert_eq!(s.properties.len(), 3);
         assert_eq!(s.object_form_id("PlayerFaction"), Some(0x0000_0db1));
-        assert_eq!(s.object_form_id("WinterholdJailExtAtronachRef"), Some(0x0009_624a));
+        assert_eq!(
+            s.object_form_id("WinterholdJailExtAtronachRef"),
+            Some(0x0009_624a)
+        );
         assert_eq!(s.object_form_id("WinterholdJailFaction"), Some(0x0000_0ea8));
         // All three are non-alias-bound (alias = -1).
         for p in &s.properties {

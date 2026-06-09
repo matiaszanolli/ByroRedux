@@ -113,7 +113,11 @@ impl ScreenshotBridge {
             return None;
         }
         // #1174 — see `take_result` for poison-recovery rationale.
-        let bytes = self.result.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+        let bytes = self
+            .result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()?;
         // Release the bridge for the next consumer.
         self.owner
             .store(SCREENSHOT_OWNER_NONE, std::sync::atomic::Ordering::Release);
@@ -726,11 +730,7 @@ impl SkinSlotPool {
     /// Side effects:
     /// - First-sight calls push `(slot, entity)` onto `pending_uploads`.
     /// - Every call refreshes `last_seen_frame[entity] = frame`.
-    pub fn allocate(
-        &mut self,
-        entity: super::storage::EntityId,
-        frame: u64,
-    ) -> Option<u32> {
+    pub fn allocate(&mut self, entity: super::storage::EntityId, frame: u64) -> Option<u32> {
         if let Some(&slot) = self.entity_to_slot.get(&entity) {
             self.last_seen_frame.insert(entity, frame);
             return Some(slot);
@@ -742,8 +742,7 @@ impl SkinSlotPool {
             self.next_slot += 1;
             s
         } else {
-            self.overflow_attempt_count =
-                self.overflow_attempt_count.saturating_add(1);
+            self.overflow_attempt_count = self.overflow_attempt_count.saturating_add(1);
             if !self.overflow_warned {
                 self.overflow_warned = true;
                 log::warn!(
@@ -911,11 +910,7 @@ impl SkinSlotPool {
     ///
     /// First-sight (no prior hash) always returns `true`. Idle bone
     /// poses converge to "not dirty" on the second consecutive frame.
-    pub fn try_mark_pose_dirty(
-        &mut self,
-        entity: super::storage::EntityId,
-        new_hash: u64,
-    ) -> bool {
+    pub fn try_mark_pose_dirty(&mut self, entity: super::storage::EntityId, new_hash: u64) -> bool {
         let dirty = match self.last_pose_hash.get(&entity) {
             Some(&old) => old != new_hash,
             None => true,
@@ -1276,8 +1271,7 @@ impl SkinCoverageStats {
     /// the snapshot; before that all counters are 0 and this returns
     /// `true` trivially.
     pub fn fully_covered(&self) -> bool {
-        self.refits_succeeded == self.dispatches_total
-            && self.slots_failed == 0
+        self.refits_succeeded == self.dispatches_total && self.slots_failed == 0
     }
 }
 
@@ -1667,11 +1661,7 @@ mod tests {
         let bridge = idle_bridge();
         bridge.request();
         assert!(bridge.cancel());
-        assert!(
-            !bridge
-                .requested
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
+        assert!(!bridge.requested.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
@@ -1689,9 +1679,7 @@ mod tests {
         let bridge = idle_bridge();
         assert!(bridge.try_claim(SCREENSHOT_OWNER_CLI));
         assert_eq!(bridge.current_owner(), SCREENSHOT_OWNER_CLI);
-        assert!(bridge
-            .requested
-            .load(std::sync::atomic::Ordering::Acquire));
+        assert!(bridge.requested.load(std::sync::atomic::Ordering::Acquire));
     }
 
     /// #1006 — second `try_claim` rejects when another owner holds

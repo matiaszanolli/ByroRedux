@@ -145,11 +145,9 @@ fn parse_shorthand(input: &str) -> Option<DebugRequest> {
                 if arg.is_empty() {
                     Some(DebugRequest::Inspect { entity: None })
                 } else {
-                    arg.parse::<u32>()
-                        .ok()
-                        .map(|entity| DebugRequest::Inspect {
-                            entity: Some(entity),
-                        })
+                    arg.parse::<u32>().ok().map(|entity| DebugRequest::Inspect {
+                        entity: Some(entity),
+                    })
                 }
             } else {
                 None

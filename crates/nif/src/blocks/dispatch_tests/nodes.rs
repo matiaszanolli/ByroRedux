@@ -126,7 +126,6 @@ fn build_bs_multi_bound_node_body() -> Vec<u8> {
     b
 }
 
-
 /// Regression test for issue #142: NiNode subtypes with trailing fields.
 #[test]
 fn oblivion_node_subtypes_dispatch_with_correct_payload() {
@@ -186,7 +185,10 @@ fn oblivion_node_subtypes_dispatch_with_correct_payload() {
     let block = parse_block("NiRangeLODData", &mut stream, Some(rld.len() as u32))
         .expect("NiRangeLODData dispatch");
     let n = block.as_any().downcast_ref::<NiRangeLODData>().unwrap();
-    assert_eq!([n.lod_center.x, n.lod_center.y, n.lod_center.z], [1.0, 2.0, 3.0]);
+    assert_eq!(
+        [n.lod_center.x, n.lod_center.y, n.lod_center.z],
+        [1.0, 2.0, 3.0]
+    );
     assert_eq!(n.lod_levels, vec![(0.0, 500.0), (500.0, 5000.0)]);
     assert_eq!(stream.position(), rld.len() as u64);
 
@@ -635,4 +637,3 @@ fn fo76_bs_distant_object_instanced_node_root_recognised_by_is_ni_node_subclass(
 }
 
 // ── #936 / NIF-D5-NEW-01 — NiBSplineComp{Float,Point3}Interpolator ──
-

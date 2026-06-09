@@ -44,9 +44,7 @@ pub use bs_tri_shape::{
     BsGeometryPerSegmentSharedData, BsGeometrySegmentData, BsGeometrySegmentSharedData,
     BsGeometrySubSegment, BsSubIndexTriShapeData, BsTriShape, BsTriShapeKind,
 };
-pub use ni_tri_shape::{
-    NiLodTriShape, NiTriShape, NiTriShapeData, NiTriStrips, NiTriStripsData,
-};
+pub use ni_tri_shape::{NiLodTriShape, NiTriShape, NiTriShapeData, NiTriStrips, NiTriStripsData};
 
 // Re-export crate-internal parse helpers so `blocks::particle::parse` and the sibling
 // version test files keep accessing them via the `tri_shape::` path.

@@ -170,8 +170,7 @@ impl Default for ConditionValue {
 ///
 /// Multiple `Condition`s on the same record form a [`ConditionList`]
 /// evaluated with the OR-precedence rule. See [`evaluate`].
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Condition {
     /// Function index (Bethesda's `~300` catalog; see `ConditionFunction`
     /// enum in `byroredux_scripting::condition`). Raw u32 here keeps
@@ -204,7 +203,6 @@ pub struct Condition {
     /// than the surrounding AND chain). See [`evaluate`].
     pub or_next: bool,
 }
-
 
 /// A list of conditions, evaluated with OR-precedence (see [`evaluate`]).
 ///

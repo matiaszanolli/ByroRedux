@@ -15,9 +15,8 @@ use super::{
     EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, HairRecord, HdptRecord,
     IdleRecord, ImgsRecord, ImodRecord, IpctRecord, IpdsRecord, ItemRecord, LeveledList,
     LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord, NaviRecord, NavmRecord, NpcRecord,
-    OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
-    RepuRecord, ScriptRecord, SlgmRecord, SpelRecord, TermRecord, TreeRecord, WatrRecord,
-    WeatherRecord,
+    OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord, RepuRecord,
+    ScriptRecord, SlgmRecord, SpelRecord, TermRecord, TreeRecord, WatrRecord, WeatherRecord,
 };
 use std::collections::HashMap;
 

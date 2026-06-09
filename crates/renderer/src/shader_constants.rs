@@ -44,8 +44,7 @@ mod tests {
     /// This pins that build.rs actually emitted the current values.
     #[test]
     fn generated_header_contains_all_defines() {
-        let header =
-            include_str!("../shaders/include/shader_constants.glsl");
+        let header = include_str!("../shaders/include/shader_constants.glsl");
         for (name, expected) in [
             ("CLUSTER_TILES_X", format!("#define CLUSTER_TILES_X {CLUSTER_TILES_X}u")),
             ("CLUSTER_TILES_Y", format!("#define CLUSTER_TILES_Y {CLUSTER_TILES_Y}u")),
@@ -101,15 +100,33 @@ mod tests {
     #[test]
     fn affected_shaders_include_constants_header() {
         for (shader, src) in [
-            ("cluster_cull.comp", include_str!("../shaders/cluster_cull.comp")),
+            (
+                "cluster_cull.comp",
+                include_str!("../shaders/cluster_cull.comp"),
+            ),
             ("triangle.frag", include_str!("../shaders/triangle.frag")),
             ("triangle.vert", include_str!("../shaders/triangle.vert")),
-            ("skin_vertices.comp", include_str!("../shaders/skin_vertices.comp")),
+            (
+                "skin_vertices.comp",
+                include_str!("../shaders/skin_vertices.comp"),
+            ),
             ("composite.frag", include_str!("../shaders/composite.frag")),
-            ("bloom_downsample.comp", include_str!("../shaders/bloom_downsample.comp")),
-            ("bloom_upsample.comp", include_str!("../shaders/bloom_upsample.comp")),
-            ("volumetrics_inject.comp", include_str!("../shaders/volumetrics_inject.comp")),
-            ("volumetrics_integrate.comp", include_str!("../shaders/volumetrics_integrate.comp")),
+            (
+                "bloom_downsample.comp",
+                include_str!("../shaders/bloom_downsample.comp"),
+            ),
+            (
+                "bloom_upsample.comp",
+                include_str!("../shaders/bloom_upsample.comp"),
+            ),
+            (
+                "volumetrics_inject.comp",
+                include_str!("../shaders/volumetrics_inject.comp"),
+            ),
+            (
+                "volumetrics_integrate.comp",
+                include_str!("../shaders/volumetrics_integrate.comp"),
+            ),
         ] {
             assert!(
                 src.contains("#include \"include/shader_constants.glsl\""),
@@ -164,7 +181,12 @@ mod tests {
     #[test]
     fn water_frag_motion_enum_matches() {
         let src = include_str!("../shaders/water.frag");
-        for name in ["WATER_CALM", "WATER_RIVER", "WATER_RAPIDS", "WATER_WATERFALL"] {
+        for name in [
+            "WATER_CALM",
+            "WATER_RIVER",
+            "WATER_RAPIDS",
+            "WATER_WATERFALL",
+        ] {
             let needle = format!("const uint {name}");
             assert!(
                 !src.contains(&needle),
@@ -280,8 +302,7 @@ mod tests {
     #[test]
     fn material_kind_matches_scene_buffer_consts() {
         use crate::vulkan::scene_buffer::{
-            MATERIAL_KIND_EFFECT_SHADER as SB_EFFECT_SHADER,
-            MATERIAL_KIND_GLASS as SB_GLASS,
+            MATERIAL_KIND_EFFECT_SHADER as SB_EFFECT_SHADER, MATERIAL_KIND_GLASS as SB_GLASS,
             MATERIAL_KIND_NO_LIGHTING as SB_NO_LIGHTING,
         };
         assert_eq!(MATERIAL_KIND_GLASS, SB_GLASS);
@@ -315,7 +336,9 @@ mod tests {
                 if trimmed.starts_with("//") || trimmed.starts_with("/*") {
                     continue;
                 }
-                let Some(start) = line.find("inst.flags") else { continue };
+                let Some(start) = line.find("inst.flags") else {
+                    continue;
+                };
                 let rest = &line[start + "inst.flags".len()..];
                 // The next non-whitespace char must be either nothing
                 // (declaration like `inst.flags = ...`), `.` (field
@@ -323,9 +346,13 @@ mod tests {
                 // or `&`. If it's `&`, the token immediately after
                 // the `&` and whitespace must NOT be a digit.
                 let rest_trimmed = rest.trim_start();
-                let Some(after_amp) = rest_trimmed.strip_prefix('&') else { continue };
+                let Some(after_amp) = rest_trimmed.strip_prefix('&') else {
+                    continue;
+                };
                 let after_amp_trimmed = after_amp.trim_start();
-                let Some(first_char) = after_amp_trimmed.chars().next() else { continue };
+                let Some(first_char) = after_amp_trimmed.chars().next() else {
+                    continue;
+                };
                 assert!(
                     !first_char.is_ascii_digit(),
                     "{path}:{} uses bare numeric literal on `inst.flags`; \
@@ -364,18 +391,36 @@ mod tests {
     #[test]
     fn material_flag_bits_match_material_consts() {
         use crate::vulkan::material::material_flag;
-        assert_eq!(MAT_FLAG_VERTEX_COLOR_EMISSIVE, material_flag::VERTEX_COLOR_EMISSIVE);
+        assert_eq!(
+            MAT_FLAG_VERTEX_COLOR_EMISSIVE,
+            material_flag::VERTEX_COLOR_EMISSIVE
+        );
         assert_eq!(MAT_FLAG_EFFECT_SOFT, material_flag::EFFECT_SOFT);
-        assert_eq!(MAT_FLAG_EFFECT_PALETTE_COLOR, material_flag::EFFECT_PALETTE_COLOR);
-        assert_eq!(MAT_FLAG_EFFECT_PALETTE_ALPHA, material_flag::EFFECT_PALETTE_ALPHA);
+        assert_eq!(
+            MAT_FLAG_EFFECT_PALETTE_COLOR,
+            material_flag::EFFECT_PALETTE_COLOR
+        );
+        assert_eq!(
+            MAT_FLAG_EFFECT_PALETTE_ALPHA,
+            material_flag::EFFECT_PALETTE_ALPHA
+        );
         assert_eq!(MAT_FLAG_EFFECT_LIT, material_flag::EFFECT_LIT);
         // Bits 5-9 — Disney BSDF / SSS / model-space-normals suite
         // (#1285, was hand-written in triangle.frag without this pin).
         assert_eq!(MAT_FLAG_PBR_BSDF, material_flag::PBR_BSDF);
         assert_eq!(MAT_FLAG_TRANSLUCENCY, material_flag::TRANSLUCENCY);
-        assert_eq!(MAT_FLAG_MODEL_SPACE_NORMALS, material_flag::MODEL_SPACE_NORMALS);
-        assert_eq!(MAT_FLAG_TRANSLUCENCY_THICK_OBJECT, material_flag::TRANSLUCENCY_THICK_OBJECT);
-        assert_eq!(MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO, material_flag::TRANSLUCENCY_MIX_ALBEDO);
+        assert_eq!(
+            MAT_FLAG_MODEL_SPACE_NORMALS,
+            material_flag::MODEL_SPACE_NORMALS
+        );
+        assert_eq!(
+            MAT_FLAG_TRANSLUCENCY_THICK_OBJECT,
+            material_flag::TRANSLUCENCY_THICK_OBJECT
+        );
+        assert_eq!(
+            MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO,
+            material_flag::TRANSLUCENCY_MIX_ALBEDO
+        );
         // Lighting-influence shift — a byte-field offset, not a single-bit flag.
         assert_eq!(MAT_FLAG_EFFECT_LI_SHIFT, material_flag::EFFECT_LI_SHIFT);
         // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.

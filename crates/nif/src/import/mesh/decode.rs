@@ -3,10 +3,6 @@
 //! Used by every mesh extractor; pinned to a single file so the bit-twiddling
 //! lives in one place.
 
-
-
-
-
 pub fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
     let slice = bytes.get(offset..offset + 4)?;
     Some(f32::from_le_bytes(slice.try_into().ok()?))
@@ -54,4 +50,3 @@ pub fn byte_to_normal(b: u8) -> f32 {
     // Same `(b / 127.5) - 1.0` as `tri_shape::byte_to_normal`.
     (b as f32 / 127.5) - 1.0
 }
-

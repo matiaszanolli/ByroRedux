@@ -1305,7 +1305,7 @@ mod tests {
         buf.extend_from_slice(&data_size.to_le_bytes()); // data_size
         buf.extend_from_slice(&FLAG_COMPRESSED.to_le_bytes()); // flags
         buf.extend_from_slice(&form_id.to_le_bytes()); // form_id
-        // Tes5Plus trailing 8 bytes (vc_info + revision + version + unknown).
+                                                       // Tes5Plus trailing 8 bytes (vc_info + revision + version + unknown).
         buf.extend_from_slice(&[0u8; 8]);
         buf.extend_from_slice(&decompressed_size.to_le_bytes()); // 4-byte prefix
         buf.extend_from_slice(&compressed);
@@ -1319,7 +1319,10 @@ mod tests {
         let data = build_compressed_record(
             b"STAT",
             0x200,
-            &[(b"EDID", b"TreeLOD\0"), (b"MODL", b"meshes\\tree_lod.nif\0")],
+            &[
+                (b"EDID", b"TreeLOD\0"),
+                (b"MODL", b"meshes\\tree_lod.nif\0"),
+            ],
         );
         let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
         let header = reader.read_record_header().unwrap();
@@ -1373,8 +1376,11 @@ mod tests {
         let subs = reader.read_sub_records(&header).unwrap();
 
         assert_eq!(subs.len(), 1);
-        assert_eq!(subs[0].data.len() + 6, expected_len, // +6 for sub-type + length prefix
-            "decompressed payload length must match the 4-byte prefix");
+        assert_eq!(
+            subs[0].data.len() + 6,
+            expected_len, // +6 for sub-type + length prefix
+            "decompressed payload length must match the 4-byte prefix"
+        );
     }
 
     /// Error path: data_size < 4 must be rejected with an error, not a panic.
@@ -1392,9 +1398,6 @@ mod tests {
         let mut reader = EsmReader::with_variant(&buf, EsmVariant::Tes5Plus);
         let header = reader.read_record_header().unwrap();
         let result = reader.read_sub_records(&header);
-        assert!(
-            result.is_err(),
-            "data_size < 4 must return Err, got Ok"
-        );
+        assert!(result.is_err(), "data_size < 4 must return Err, got Ok");
     }
 }

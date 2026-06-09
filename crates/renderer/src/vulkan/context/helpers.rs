@@ -23,10 +23,7 @@ pub(super) fn find_depth_format(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
 ) -> Result<vk::Format> {
-    let candidates = [
-        vk::Format::D32_SFLOAT,
-        vk::Format::D16_UNORM,
-    ];
+    let candidates = [vk::Format::D32_SFLOAT, vk::Format::D16_UNORM];
 
     for &format in &candidates {
         let props =

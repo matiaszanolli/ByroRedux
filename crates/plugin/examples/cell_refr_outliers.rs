@@ -95,10 +95,7 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!(
-        "# {} ({:08X}) — {} REFRs",
-        cell_edid, cell.form_id, n
-    );
+    println!("# {} ({:08X}) — {} REFRs", cell_edid, cell.form_id, n);
 
     // ── 1. Distribution stats ────────────────────────────────────────
     let mean_pos = {
@@ -143,10 +140,18 @@ fn main() -> anyhow::Result<()> {
          position stddev: ({:.1}, {:.1}, {:.1})\n  \
          scale range: [{:.4} .. {:.4}]  (= 1.0 within ε on {}/{} REFRs)\n  \
          rotation: {}/{} REFRs are axis-aligned (multiples of π/2 within ~0.57°)",
-        mean_pos[0], mean_pos[1], mean_pos[2],
-        stddev_pos[0], stddev_pos[1], stddev_pos[2],
-        scale_min, scale_max, scale_eq_one, n,
-        axis_aligned, n,
+        mean_pos[0],
+        mean_pos[1],
+        mean_pos[2],
+        stddev_pos[0],
+        stddev_pos[1],
+        stddev_pos[2],
+        scale_min,
+        scale_max,
+        scale_eq_one,
+        n,
+        axis_aligned,
+        n,
     );
 
     // ── 2. Scale outliers ────────────────────────────────────────────
@@ -232,18 +237,9 @@ fn main() -> anyhow::Result<()> {
         .iter()
         .enumerate()
         .filter_map(|(i, r)| {
-            let dx = stddev_pos[0]
-                .max(1e-3)
-                .recip()
-                * (r.position[0] - mean_pos[0]);
-            let dy = stddev_pos[1]
-                .max(1e-3)
-                .recip()
-                * (r.position[1] - mean_pos[1]);
-            let dz = stddev_pos[2]
-                .max(1e-3)
-                .recip()
-                * (r.position[2] - mean_pos[2]);
+            let dx = stddev_pos[0].max(1e-3).recip() * (r.position[0] - mean_pos[0]);
+            let dy = stddev_pos[1].max(1e-3).recip() * (r.position[1] - mean_pos[1]);
+            let dz = stddev_pos[2].max(1e-3).recip() * (r.position[2] - mean_pos[2]);
             let sigma = (dx * dx + dy * dy + dz * dz).sqrt();
             if sigma > POSITION_SIGMA_CUTOFF {
                 Some((i, sigma))
@@ -270,13 +266,7 @@ fn main() -> anyhow::Result<()> {
             .unwrap_or("<no STAT model>");
         println!(
             "{:>10X} {:>10X} {:>10.1} {:>10.1} {:>10.1} {:>7.2}  {}",
-            r.form_id,
-            r.base_form_id,
-            r.position[0],
-            r.position[1],
-            r.position[2],
-            sigma,
-            mesh,
+            r.form_id, r.base_form_id, r.position[0], r.position[1], r.position[2], sigma, mesh,
         );
     }
 

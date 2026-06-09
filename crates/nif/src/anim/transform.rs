@@ -6,12 +6,15 @@
 use super::*;
 use crate::blocks::controller::ControlledBlock;
 use crate::blocks::interpolator::{
-    KeyType, NiBSplineCompTransformInterpolator, NiLookAtInterpolator,
-    NiPathInterpolator, NiPosData, NiTransformData, NiTransformInterpolator,
+    KeyType, NiBSplineCompTransformInterpolator, NiLookAtInterpolator, NiPathInterpolator,
+    NiPosData, NiTransformData, NiTransformInterpolator,
 };
 use crate::scene::NifScene;
 
-pub fn extract_transform_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<TransformChannel> {
+pub fn extract_transform_channel(
+    scene: &NifScene,
+    cb: &ControlledBlock,
+) -> Option<TransformChannel> {
     extract_transform_channel_at(scene, cb.interpolator_ref.index()?)
 }
 

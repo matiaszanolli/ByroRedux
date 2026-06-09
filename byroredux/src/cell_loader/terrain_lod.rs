@@ -368,7 +368,8 @@ fn spawn_lod_block(
             // SAMPLES_PER_CELL` is the cell-fraction along the block edge.
             let uv = [
                 c as f32 / SAMPLES_PER_CELL as f32 * super::terrain::LAND_TEXTURE_TILES_PER_CELL,
-                (1.0 - r as f32 / SAMPLES_PER_CELL as f32) * super::terrain::LAND_TEXTURE_TILES_PER_CELL,
+                (1.0 - r as f32 / SAMPLES_PER_CELL as f32)
+                    * super::terrain::LAND_TEXTURE_TILES_PER_CELL,
             ];
 
             vertices.push(Vertex::new(
@@ -509,7 +510,7 @@ mod tests {
     #[test]
     fn sample_to_cell_walks_boundaries() {
         let k = LOD_BLOCK_CELLS as usize; // 4
-        // First cell: samples at local 0, 8, 16, 24.
+                                          // First cell: samples at local 0, 8, 16, 24.
         assert_eq!(sample_to_cell(0, k), (0, 0));
         assert_eq!(sample_to_cell(1, k), (0, 8));
         assert_eq!(sample_to_cell(3, k), (0, 24));

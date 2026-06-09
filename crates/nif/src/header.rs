@@ -176,10 +176,7 @@ impl NifHeader {
             // bound. u16 max already constrains `num_block_types` to
             // 65535 but the explicit check makes the invariant local.
             let num_block_types = read_u16_le(&mut cursor)? as usize;
-            if num_block_types
-                .checked_mul(4)
-                .is_none_or(|n| n > remaining)
-            {
+            if num_block_types.checked_mul(4).is_none_or(|n| n > remaining) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(

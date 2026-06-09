@@ -59,7 +59,10 @@ fn build_movs_group(records: &[Vec<u8>]) -> Vec<u8> {
 /// Drive `parse_movs_group` over a synthetic GRUP-MOVS buffer.
 fn parse_synthetic_movs(
     buf: &[u8],
-) -> (HashMap<u32, StaticObject>, HashMap<u32, MovableStaticRecord>) {
+) -> (
+    HashMap<u32, StaticObject>,
+    HashMap<u32, MovableStaticRecord>,
+) {
     let mut reader = EsmReader::new(buf);
     let gh = reader.read_group_header().expect("MOVS group header");
     let end = reader.group_content_end(&gh);
@@ -79,10 +82,7 @@ fn parse_movs_captures_full_subrecord_set() {
         0x0010_0001,
         &[
             (b"EDID", b"TestBreakable\0".to_vec()),
-            (
-                b"MODL",
-                b"Furniture\\Test\\BreakableTable01.nif\0".to_vec(),
-            ),
+            (b"MODL", b"Furniture\\Test\\BreakableTable01.nif\0".to_vec()),
             (b"LNAM", 0x0010_AAAA_u32.to_le_bytes().to_vec()),
             (b"ZNAM", 0x0010_BBBB_u32.to_le_bytes().to_vec()),
             // DEST + VMAD payloads are marker-only at this layer —

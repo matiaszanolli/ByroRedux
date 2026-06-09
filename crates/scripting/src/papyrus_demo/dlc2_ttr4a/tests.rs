@@ -188,7 +188,10 @@ fn threshold_cross_during_polling_fires_on_next_tick() {
     recurring_update_tick_system(&world, POLL_INTERVAL);
     dlc2_ttr4a_on_update_system(&world);
     crate::event_cleanup_system(&world, 0.0);
-    assert_eq!(world.resource::<QuestStageState>().get_stage(QUEST_FORM_ID), 0);
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(QUEST_FORM_ID),
+        0
+    );
     assert!(world.has::<RecurringUpdate>(script_entity));
 
     // Player crosses the threshold between ticks.
@@ -198,7 +201,10 @@ fn threshold_cross_during_polling_fires_on_next_tick() {
     recurring_update_tick_system(&world, POLL_INTERVAL);
     dlc2_ttr4a_on_update_system(&world);
 
-    assert_eq!(world.resource::<QuestStageState>().get_stage(QUEST_FORM_ID), 200);
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(QUEST_FORM_ID),
+        200
+    );
     assert!(!world.has::<RecurringUpdate>(script_entity));
 }
 
@@ -219,7 +225,10 @@ fn handler_no_ops_without_on_update_marker() {
     // handler is a no-op.
     dlc2_ttr4a_on_update_system(&world);
 
-    assert_eq!(world.resource::<QuestStageState>().get_stage(QUEST_FORM_ID), 0);
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(QUEST_FORM_ID),
+        0
+    );
 }
 
 // ── Custom thresholds + stat names ────────────────────────────
@@ -246,7 +255,10 @@ fn custom_threshold_and_stat_name_are_honoured() {
     set_player_stat(&world, player, "Health", 50.0);
     recurring_update_tick_system(&world, POLL_INTERVAL);
     dlc2_ttr4a_on_update_system(&world);
-    assert_eq!(world.resource::<QuestStageState>().get_stage(QUEST_FORM_ID), 0);
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(QUEST_FORM_ID),
+        0
+    );
     crate::event_cleanup_system(&world, 0.0);
 
     // Push Health past the threshold — fires + advances to 50,
@@ -254,7 +266,10 @@ fn custom_threshold_and_stat_name_are_honoured() {
     set_player_stat(&world, player, "Health", 150.0);
     recurring_update_tick_system(&world, POLL_INTERVAL);
     dlc2_ttr4a_on_update_system(&world);
-    assert_eq!(world.resource::<QuestStageState>().get_stage(QUEST_FORM_ID), 50);
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(QUEST_FORM_ID),
+        50
+    );
 }
 
 // ── Multiple scripts of the same type ─────────────────────────
@@ -302,6 +317,9 @@ fn missing_stat_defaults_to_zero_and_does_not_fire() {
     // get() returns 0.0 for unknown stat → predicate (0.0 > 0.0)
     // is false → no advance. Matches Papyrus's "unknown
     // actor-value resolves to 0" contract.
-    assert_eq!(world.resource::<QuestStageState>().get_stage(QUEST_FORM_ID), 0);
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(QUEST_FORM_ID),
+        0
+    );
     let _ = player; // suppress unused-binding lint
 }

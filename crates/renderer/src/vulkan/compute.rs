@@ -9,11 +9,11 @@ use super::buffer::GpuBuffer;
 use super::descriptors::{write_storage_buffer, write_uniform_buffer, DescriptorPoolBuilder};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use crate::shader_constants::{
+    CLUSTER_SLICES_Z, CLUSTER_TILES_X, CLUSTER_TILES_Y, MAX_LIGHTS_PER_CLUSTER, TOTAL_CLUSTERS,
+};
 use anyhow::{Context, Result};
 use ash::vk;
-use crate::shader_constants::{
-    CLUSTER_TILES_X, CLUSTER_TILES_Y, CLUSTER_SLICES_Z, TOTAL_CLUSTERS, MAX_LIGHTS_PER_CLUSTER,
-};
 
 const CLUSTER_CULL_COMP_SPV: &[u8] = include_bytes!("../../shaders/cluster_cull.comp.spv");
 

@@ -964,7 +964,18 @@ impl BsPackedCombinedGeomDataExtra {
 
 /// Decoded fields of the shared `BSPackedCombined*` geometry header,
 /// returned by [`parse_common_geom_header`].
-type CommonGeomHeader = (u32, u32, u32, u32, u32, u32, u32, u32, Vec<BsPackedGeomDataCombined>, u64);
+type CommonGeomHeader = (
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    Vec<BsPackedGeomDataCombined>,
+    u64,
+);
 
 fn parse_common_geom_header(stream: &mut NifStream) -> io::Result<CommonGeomHeader> {
     let num_verts = stream.read_u32_le()?;
@@ -1286,7 +1297,6 @@ impl BsAnimNotes {
         Ok(Self { notes })
     }
 }
-
 
 impl_ni_object!(
     NiExtraData,

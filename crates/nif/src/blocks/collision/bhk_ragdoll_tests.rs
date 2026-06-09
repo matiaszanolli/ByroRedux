@@ -67,8 +67,7 @@ fn bhk_pose_array_dispatches_through_dedicated_parser() {
     let header = fo3_header();
     let bytes = build_pose_array_bytes();
     let mut stream = NifStream::new(&bytes, &header);
-    let block =
-        parse_block("bhkPoseArray", &mut stream, Some(bytes.len() as u32)).expect("parse");
+    let block = parse_block("bhkPoseArray", &mut stream, Some(bytes.len() as u32)).expect("parse");
     // Must NOT fall through to NiUnknown — that's the entire #980 fix.
     assert!(
         block.as_any().downcast_ref::<NiUnknown>().is_none(),

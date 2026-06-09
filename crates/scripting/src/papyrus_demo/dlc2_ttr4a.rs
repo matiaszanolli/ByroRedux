@@ -230,7 +230,8 @@ pub fn dlc2_ttr4a_on_update_system(world: &World) {
     // can't write to QuestStageState or remove RecurringUpdate
     // while the read borrows are live, so this is the standard
     // collect-then-apply two-phase.
-    let mut to_advance: Vec<(byroredux_core::ecs::storage::EntityId, QuestFormId, u16)> = Vec::new();
+    let mut to_advance: Vec<(byroredux_core::ecs::storage::EntityId, QuestFormId, u16)> =
+        Vec::new();
     {
         let Some(events) = world.query::<OnUpdateEvent>() else {
             return;

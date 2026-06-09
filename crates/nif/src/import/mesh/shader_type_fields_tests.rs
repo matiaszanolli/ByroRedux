@@ -3,8 +3,8 @@
 //! Same qualified path preserved (`shader_type_fields_tests::FOO`).
 
 use super::*;
-use crate::blocks::tri_shape::BsTriShapeKind;
 use crate::blocks::tri_shape::BsTriShape;
+use crate::blocks::tri_shape::BsTriShapeKind;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 

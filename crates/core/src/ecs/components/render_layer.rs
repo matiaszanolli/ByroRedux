@@ -84,7 +84,6 @@ impl RenderLayer {
     }
 }
 
-
 /// Apply the spawn-site decal / cutout bias escalation. Two distinct
 /// signals, two distinct outcomes (they used to be conflated — see below):
 ///
