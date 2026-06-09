@@ -201,11 +201,11 @@ pub(super) fn collect_static_mesh_draws(
                     collision_only_q.as_ref().is_some_and(|q| q.get(entity).is_some());
                 let in_tlas = !is_lod && !is_collision_only;
                 let bone_offset = skin_offsets.get(&entity).copied().unwrap_or(0);
-                let normal_map_index = nmap_q
+                let (normal_map_index, normal_has_alpha) = nmap_q
                     .as_ref()
                     .and_then(|q| q.get(entity))
-                    .map(|n| n.0)
-                    .unwrap_or(0);
+                    .map(|n| (n.0, n.1))
+                    .unwrap_or((0, false));
                 let dark_map_index = dmap_q
                     .as_ref()
                     .and_then(|q| q.get(entity))
@@ -231,7 +231,7 @@ pub(super) fn collect_static_mesh_draws(
                 let (
                     glow_map_index,
                     detail_map_index,
-                    gloss_map_index,
+                    mut gloss_map_index,
                     parallax_map_index,
                     env_map_index,
                     env_mask_index,
@@ -279,7 +279,7 @@ pub(super) fn collect_static_mesh_draws(
                 }
 
                 let (
-                    roughness,
+                    mut roughness,
                     metalness,
                     emissive_mult,
                     emissive_color,
@@ -372,6 +372,39 @@ pub(super) fn collect_static_mesh_draws(
                 // translation-completeness harness (zero drift in
                 // per-game m_kind% / mat_path% pre/post deletion).
                 let material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
+
+                // Step 2 — normal-alpha-as-spec (Skyrim/Gamebryo convention).
+                // When a lit Skyrim-era surface (env_map_scale ~ 0 — the same
+                // population as the matte-default classifier fallback) ships no
+                // dedicated gloss map but its normal carries an alpha channel,
+                // that alpha IS the per-pixel specular/smoothness mask. Point
+                // the gloss slot at the normal with a high-bit "sample .a" flag
+                // and seed a SMOOTH glossiness-derived base; the in-shader gloss
+                // modulation then roughens per-pixel — a dark-spec stone floor
+                // reads matte, a polished trim reads glossy. Excludes glass /
+                // effect kinds (>= 100, own roughness) and FNV/FO4 (env_map_scale
+                // > 0.3 / dedicated gloss map). BC5/alpha-less normals keep the
+                // matte default, only lowered when specular_strength is authored
+                // well above the 1.0 neutral default (no per-pixel mask there).
+                {
+                    let glossiness = mat.map(|m| m.glossiness).unwrap_or(80.0);
+                    let env_map_scale = mat.map(|m| m.env_map_scale).unwrap_or(0.0);
+                    if material_kind < 100
+                        && metalness < 0.3
+                        && env_map_scale <= 0.3
+                        && normal_map_index != 0
+                        && gloss_map_index == 0
+                    {
+                        const NORMAL_ALPHA_SPEC_BIT: u32 = 0x8000_0000;
+                        if normal_has_alpha {
+                            gloss_map_index = normal_map_index | NORMAL_ALPHA_SPEC_BIT;
+                            roughness = (1.0 - glossiness / 100.0).clamp(0.05, 0.95);
+                        } else if specular_strength > 1.2 {
+                            roughness =
+                                (0.85 - (specular_strength - 1.0) * 0.1).clamp(0.4, 0.85);
+                        }
+                    }
+                }
 
                 // Glass single-sided override — Bethesda authors many
                 // glass meshes (drinking glasses, pitchers, bottles)

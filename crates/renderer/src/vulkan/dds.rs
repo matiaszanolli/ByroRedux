@@ -59,6 +59,23 @@ pub struct DdsMetadata {
     pub data_offset: usize,
 }
 
+/// Whether a loaded DDS format carries a usable alpha channel. Skyrim (and
+/// Gamebryo) author the specular/gloss mask in the normal-map ALPHA, so this
+/// gates the normal-alpha-as-spec path: BC1(RGB)/BC4/BC5/BC6H and single-
+/// channel formats have no alpha (sampling `.a` returns 1.0), and must fall
+/// back to the scalar `specular_strength` rather than read garbage gloss.
+pub fn format_has_alpha(format: vk::Format) -> bool {
+    matches!(
+        format,
+        vk::Format::B8G8R8A8_SRGB
+            | vk::Format::B8G8R8A8_UNORM
+            | vk::Format::R8G8B8A8_SRGB
+            | vk::Format::BC2_SRGB_BLOCK
+            | vk::Format::BC3_SRGB_BLOCK
+            | vk::Format::BC7_SRGB_BLOCK
+    )
+}
+
 /// Parse a DDS file header and return metadata.
 pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
     ensure!(

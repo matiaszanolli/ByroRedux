@@ -1914,10 +1914,16 @@ void main() {
     // both regions shared the same specular lobe shape — only the
     // intensity differed.
     if (mat.glossMapIndex != 0u) {
-        float glossSample = texture(
-            textures[nonuniformEXT(mat.glossMapIndex)],
-            sampleUV
-        ).r;
+        // High bit (0x80000000) = "the gloss/smoothness mask lives in the
+        // NORMAL map's ALPHA channel" (Skyrim/Gamebryo normal-alpha-as-spec),
+        // set CPU-side in static_meshes when a lit surface has no dedicated
+        // gloss map but its normal carries alpha. Mask it off for the index
+        // and sample `.a`. Plain gloss maps (Oblivion slot 3 / FO4 BGSM smooth-
+        // spec) keep bit 31 clear and sample `.r` exactly as before.
+        uint glossIdx = mat.glossMapIndex & 0x7FFFFFFFu;
+        bool glossInAlpha = (mat.glossMapIndex & 0x80000000u) != 0u;
+        vec4 glossTexel = texture(textures[nonuniformEXT(glossIdx)], sampleUV);
+        float glossSample = glossInAlpha ? glossTexel.a : glossTexel.r;
         roughness = mix(1.0, roughness, glossSample);
     }
 
@@ -2945,7 +2951,13 @@ void main() {
             envColor = ambientFallback;
         }
 
-        Lo += envColor * F;
+        // Attenuate the environment reflection by roughness so it reads as a
+        // brushed/satin sheen on moderately-rough metal (the env-map tableware
+        // at roughness ~0.55 → ×0.45) instead of chroming out, while polished
+        // surfaces (low roughness) keep their near-mirror reflection. The
+        // specular lobe spreads — and thus dims per-direction — as roughness
+        // rises; this is the cheap energy stand-in for that.
+        Lo += envColor * F * (1.0 - roughness);
     }
 
     // World-space distance from camera for cluster depth slicing.
@@ -3351,7 +3363,12 @@ void main() {
 
             if (lightType < 1.5) {
                 // Point / spot: jittered ray toward the light's physical disk.
-                float lightDiskRadius = 0.1; // DIAG: near-hard shadow to test penumbra noise
+                // Physical light-disk radius → soft penumbra. Scales with the
+                // light's influence radius (bigger lamp = softer shadow), with
+                // a 1.5-unit floor so even small point lights cast a visible
+                // penumbra. (Was briefly hard-coded to 0.1 for penumbra-noise
+                // diagnostics — that DIAG value shipped a near-hard shadow.)
+                float lightDiskRadius = max(radius * 0.025, 1.5);
                 vec3 jitteredTarget = lightPos + (T * diskSample.x + B * diskSample.y) * lightDiskRadius;
                 rayDir = normalize(jitteredTarget - rayOrigin);
                 rayDist = length(jitteredTarget - rayOrigin) - 0.1;

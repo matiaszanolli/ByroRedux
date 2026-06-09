@@ -849,7 +849,8 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         if let Some(ref nmap_path) = owned_normal_map {
             let h = resolve_texture(ctx, tex_provider, Some(nmap_path.as_str()));
             if h != ctx.texture_registry.fallback() {
-                world.insert(entity, NormalMapHandle(h));
+                let has_alpha = ctx.texture_registry.handle_has_alpha(h);
+                world.insert(entity, NormalMapHandle(h, has_alpha));
             }
         }
         // Load and attach dark/lightmap texture handle.

@@ -71,7 +71,7 @@ fn unload_walk_collects_all_texture_handle_components() {
     let e = world.spawn();
     world.insert(e, MeshHandle(7));
     world.insert(e, TextureHandle(10));
-    world.insert(e, NormalMapHandle(11));
+    world.insert(e, NormalMapHandle(11, false));
     world.insert(e, DarkMapHandle(12));
     world.insert(e, GreyscaleLutHandle(13));
 

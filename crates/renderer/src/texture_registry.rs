@@ -100,6 +100,12 @@ struct TextureEntry {
 pub struct TextureRegistry {
     textures: Vec<TextureEntry>,
     path_map: HashMap<String, TextureHandle>,
+    /// Per-handle "the DDS format carries an alpha channel" flag, captured at
+    /// load. Gates the normal-alpha-as-spec path: Skyrim/Gamebryo author the
+    /// gloss mask in the normal-map alpha, but BC5/BC4/BC1 normals have none
+    /// (`.a` samples as 1.0). Populated only at the two DDS-load points;
+    /// absent handles (fallbacks, reserved-but-unflushed) read `false`.
+    texture_has_alpha: HashMap<TextureHandle, bool>,
     /// Magenta-checker handle — "this entity should have had a
     /// texture, but the file isn't in the archive / failed to load."
     /// Diagnostic indicator; visible artefact in-game.
@@ -404,6 +410,7 @@ impl TextureRegistry {
         let staging_pool = Some(StagingPool::new(device.clone(), allocator.clone()));
 
         Ok(Self {
+            texture_has_alpha: HashMap::new(),
             textures: Vec::new(),
             path_map: HashMap::new(),
             fallback_handle: 0,
@@ -549,8 +556,21 @@ impl TextureRegistry {
             ref_count: 1,
         });
         self.path_map.insert(normalized, handle);
+        if let Ok(meta) = super::vulkan::dds::parse_dds(dds_bytes) {
+            self.texture_has_alpha
+                .insert(handle, super::vulkan::dds::format_has_alpha(meta.format));
+        }
 
         Ok(handle)
+    }
+
+    /// Whether the texture at `handle` was loaded from a DDS format that
+    /// carries an alpha channel (BC2/BC3/BC7/RGBA). False for alpha-less
+    /// normals (BC5/BC4/BC1) and handles never loaded from DDS (fallbacks).
+    /// Gates the normal-alpha-as-spec gloss path (Skyrim/Gamebryo author the
+    /// gloss mask in the normal alpha; BC5 normals have none).
+    pub fn handle_has_alpha(&self, handle: TextureHandle) -> bool {
+        self.texture_has_alpha.get(&handle).copied().unwrap_or(false)
     }
 
     /// Enqueue a DDS upload for batched flush. Counterpart of
@@ -723,6 +743,10 @@ impl TextureRegistry {
                             continue;
                         }
                     };
+                    self.texture_has_alpha.insert(
+                        upload.handle,
+                        super::vulkan::dds::format_has_alpha(meta.format),
+                    );
                     let pixel_data = &upload.dds_bytes[meta.data_offset..];
                     let sampler = self.samplers[upload.clamp_mode as usize];
                     let (texture, staging, staging_capacity) =

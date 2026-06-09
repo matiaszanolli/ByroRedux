@@ -279,12 +279,13 @@ fn triangle_pipeline_inner(
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(false);
     let color_blend_attachment = [
-        color_blend_none,
-        color_blend_none,
-        color_blend_none,
-        color_blend_none,
-        color_blend_none,
-        color_blend_none,
+        color_blend_none, // 0 HDR color
+        color_blend_none, // 1 normal
+        color_blend_none, // 2 motion
+        color_blend_none, // 3 mesh_id
+        color_blend_none, // 4 raw_indirect
+        color_blend_none, // 5 albedo
+        color_blend_none, // 6 reservoir (uvec4 — integer, no blend)
     ];
 
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
@@ -536,7 +537,13 @@ pub fn create_blend_pipeline(
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(false);
     let attachments = [
-        hdr_blend, overwrite, overwrite, overwrite, overwrite, overwrite,
+        hdr_blend, // 0 HDR color (blends)
+        overwrite, // 1 normal
+        overwrite, // 2 motion
+        overwrite, // 3 mesh_id
+        overwrite, // 4 raw_indirect
+        overwrite, // 5 albedo
+        overwrite, // 6 reservoir (uvec4 — integer, no blend)
     ];
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
@@ -717,12 +724,13 @@ pub fn create_ui_pipeline(
         .color_write_mask(vk::ColorComponentFlags::empty())
         .blend_enable(false);
     let color_blend_attachment = [
-        ui_hdr_blend,
-        ui_noop_blend,
-        ui_noop_blend,
-        ui_noop_blend,
-        ui_noop_blend,
-        ui_noop_blend,
+        ui_hdr_blend,  // 0 HDR color (UI blends over)
+        ui_noop_blend, // 1 normal
+        ui_noop_blend, // 2 motion
+        ui_noop_blend, // 3 mesh_id
+        ui_noop_blend, // 4 raw_indirect
+        ui_noop_blend, // 5 albedo
+        ui_noop_blend, // 6 reservoir (UI writes none of the G-buffer)
     ];
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)

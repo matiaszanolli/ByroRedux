@@ -151,9 +151,13 @@ pub(crate) fn texture_path_is_fx_mesh(texture_path: &str) -> bool {
 // shader / GpuInstance flag paths) is now derived from
 // `render_layer == RenderLayer::Decal` at DrawCommand construction.
 
-/// Bindless texture handle for a normal map (parallels TextureHandle for diffuse).
+/// Bindless texture handle for a normal map (parallels TextureHandle for
+/// diffuse). `.1` = whether the loaded DDS carries an alpha channel — Skyrim/
+/// Gamebryo author the gloss mask in the normal alpha, so this gates the
+/// normal-alpha-as-spec path (false for BC5/alpha-less normals → scalar
+/// fallback). Captured from the texture registry at load. See static_meshes.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct NormalMapHandle(pub(crate) u32);
+pub(crate) struct NormalMapHandle(pub(crate) u32, pub(crate) bool);
 impl Component for NormalMapHandle {
     type Storage = SparseSetStorage<Self>;
 }
