@@ -428,6 +428,30 @@ struct App {
     last_redraw_end: Option<Instant>,
 }
 
+impl Drop for App {
+    /// Release the ECS clone of the GPU allocator BEFORE `VulkanContext`
+    /// is dropped, on *every* teardown path — not just the
+    /// `WindowEvent::CloseRequested` arm (#1477 / REN-D7-NEW-01).
+    ///
+    /// `App` declares `renderer` before `world`, so Rust's
+    /// declaration-order field drop would otherwise run
+    /// `VulkanContext::Drop` (which calls `Arc::try_unwrap` on the
+    /// allocator) while `world` still holds the extra strong-count via
+    /// `AllocatorResource` — re-arming the device+surface+instance leak
+    /// path (#1406 / MEM-03) on any panic unwind or non-CloseRequested
+    /// exit. Doing the removal here makes the ordering structural: this
+    /// `drop()` body runs first, then the fields drop naturally with the
+    /// resource already gone and `renderer` already taken.
+    ///
+    /// Idempotent with the `CloseRequested` handler — `remove_resource`
+    /// and `Option::take` are both no-ops the second time.
+    fn drop(&mut self) {
+        self.world
+            .remove_resource::<byroredux_renderer::vulkan::allocator::AllocatorResource>();
+        self.renderer.take();
+    }
+}
+
 impl App {
     fn new(debug_mode: bool, args: &[String]) -> Self {
         let mut world = World::new();
