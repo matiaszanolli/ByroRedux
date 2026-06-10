@@ -906,6 +906,11 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 },
             );
         }
+        // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
+        // ONCE into the canonical Material now that Material + NormalMapHandle
+        // + ExtraTextureMaps are all attached (mirrors the cell-loader spawn
+        // path), instead of recomputing it per draw in the render path.
+        crate::material_translate::resolve_normal_alpha_spec_roughness(world, entity);
 
         if let Some(ref name) = mesh.name {
             let mut pool = world.resource_mut::<StringPool>();

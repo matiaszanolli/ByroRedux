@@ -955,6 +955,12 @@ pub(super) fn spawn_placed_instances(
                 },
             );
         }
+        // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
+        // ONCE into the canonical Material now that Material + NormalMapHandle
+        // + ExtraTextureMaps are all attached, instead of recomputing it per
+        // draw in the render path. Reads the same components the renderer
+        // reads, so the value is identical — only canonical + tooling-visible.
+        crate::material_translate::resolve_normal_alpha_spec_roughness(world, entity);
         if mesh.has_alpha {
             world.insert(
                 entity,

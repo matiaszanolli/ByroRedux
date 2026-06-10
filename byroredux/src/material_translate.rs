@@ -21,7 +21,9 @@
 //! is game-agnostic, and is what the renderer reads) — this boundary is
 //! the `translate()` step, not a new type.
 
+use crate::components::{ExtraTextureMaps, NormalMapHandle};
 use byroredux_core::ecs::components::material::{EffectFalloff, Material};
+use byroredux_core::ecs::{EntityId, World};
 use byroredux_nif::import::ImportedMesh;
 
 /// Spawn-resolved texture-slot paths the caller computes before
@@ -165,4 +167,202 @@ pub(crate) fn translate_material(
         mesh.bgem_glass,
     );
     material
+}
+
+/// High bit OR'd into the gloss texture slot to tell the fragment shader
+/// "sample the per-pixel spec/smoothness mask from the NORMAL map's alpha
+/// channel" — the Skyrim/Gamebryo normal-alpha-as-spec convention. The
+/// gloss slot then points at the normal map's bindless handle. This bit is
+/// applied per-draw in `render::static_meshes` because it is a transient
+/// texture-binding instruction, not canonical material state; the matching
+/// *roughness* scalar is resolved once at spawn by
+/// [`resolve_normal_alpha_spec_roughness`] (#1480 / REN-D22-NEW-01).
+pub(crate) const NORMAL_ALPHA_SPEC_BIT: u32 = 0x8000_0000;
+
+/// The normal-alpha-as-spec population gate (Skyrim/Gamebryo era): a lit
+/// surface (`material_kind < 100`, low metalness, ~zero env-map scale) that
+/// ships a normal map but no dedicated gloss map. Excludes glass/effect
+/// kinds (>= 100, own roughness) and the FNV/FO4 env-mapped population. The
+/// inputs are the exact values both the spawn write-back and the render
+/// path read from the `Material` / `NormalMapHandle` / `ExtraTextureMaps`
+/// components, so the gate cannot diverge between the two call sites.
+pub(crate) fn normal_alpha_spec_applies(
+    material_kind: u32,
+    metalness: f32,
+    env_map_scale: f32,
+    normal_map_index: u32,
+    gloss_map_index: u32,
+) -> bool {
+    material_kind < 100
+        && metalness < 0.3
+        && env_map_scale <= 0.3
+        && normal_map_index != 0
+        && gloss_map_index == 0
+}
+
+/// Canonical roughness for the normal-alpha-as-spec population, or `None`
+/// when the gate does not apply (caller keeps the `resolve_pbr`-resolved
+/// roughness). With an alpha-bearing normal, the normal's alpha is the
+/// per-pixel smoothness mask and the base roughness is seeded SMOOTH from
+/// the authored glossiness; an alpha-less normal with an authored
+/// above-neutral specular strength roughens from that instead. Both
+/// formulas mirror the legacy per-draw derivation verbatim, so relocating
+/// them to spawn is value-identical (#1480 / REN-D22-NEW-01). Idempotent —
+/// it derives from `glossiness` / `specular_strength`, never from the
+/// current `roughness`, so re-running it never drifts.
+pub(crate) fn normal_alpha_spec_roughness(
+    material_kind: u32,
+    metalness: f32,
+    env_map_scale: f32,
+    glossiness: f32,
+    specular_strength: f32,
+    normal_map_index: u32,
+    gloss_map_index: u32,
+    normal_has_alpha: bool,
+) -> Option<f32> {
+    if !normal_alpha_spec_applies(
+        material_kind,
+        metalness,
+        env_map_scale,
+        normal_map_index,
+        gloss_map_index,
+    ) {
+        return None;
+    }
+    if normal_has_alpha {
+        Some((1.0 - glossiness / 100.0).clamp(0.05, 0.95))
+    } else if specular_strength > 1.2 {
+        Some((0.85 - (specular_strength - 1.0) * 0.1).clamp(0.4, 0.85))
+    } else {
+        None
+    }
+}
+
+/// Resolve the normal-alpha-as-spec roughness ONCE at spawn and write it
+/// into the canonical [`Material::roughness`], instead of recomputing it
+/// per draw in the render path. This is the #1480 / REN-D22-NEW-01 contract
+/// fix: the renderer reads the resolved scalar directly (NIFAL
+/// resolve-once), with no render-time heuristic mutating canonical state.
+///
+/// Reads the SAME components the render path reads (`Material`,
+/// `NormalMapHandle`, `ExtraTextureMaps`), so the written value is
+/// byte-identical to the legacy per-draw result — only its home (the
+/// canonical field, now visible to `mat.*` / `material_dump` tooling) and
+/// its timing (once at spawn, not every frame) change. Idempotent (see
+/// [`normal_alpha_spec_roughness`]). Call after all three components are
+/// attached to `entity`.
+pub(crate) fn resolve_normal_alpha_spec_roughness(world: &mut World, entity: EntityId) {
+    let Some((material_kind, metalness, env_map_scale, glossiness, specular_strength)) =
+        world.get::<Material>(entity).map(|m| {
+            (
+                m.material_kind,
+                m.metalness,
+                m.env_map_scale,
+                m.glossiness,
+                m.specular_strength,
+            )
+        })
+    else {
+        return;
+    };
+    let (normal_map_index, normal_has_alpha) = world
+        .get::<NormalMapHandle>(entity)
+        .map(|n| (n.0, n.1))
+        .unwrap_or((0, false));
+    let gloss_map_index = world
+        .get::<ExtraTextureMaps>(entity)
+        .map(|e| e.gloss)
+        .unwrap_or(0);
+    if let Some(r) = normal_alpha_spec_roughness(
+        material_kind,
+        metalness,
+        env_map_scale,
+        glossiness,
+        specular_strength,
+        normal_map_index,
+        gloss_map_index,
+        normal_has_alpha,
+    ) {
+        if let Some(m) = world.get_mut::<Material>(entity) {
+            m.roughness = r;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Inputs that pass the gate (lit Skyrim-era matte surface w/ normal map,
+    // no gloss map): material_kind 0, metalness 0, env_map_scale 0,
+    // normal_map_index 7, gloss_map_index 0.
+    const PASS: (u32, f32, f32, u32, u32) = (0, 0.0, 0.0, 7, 0);
+
+    #[test]
+    fn alpha_normal_seeds_smooth_roughness_from_glossiness() {
+        // glossiness 80 → 1.0 - 0.80 = 0.20 (f32: ~0.19999999).
+        let r = normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 1.0, PASS.3, PASS.4, true);
+        assert!((r.unwrap() - 0.20).abs() < 1e-5, "{r:?}");
+    }
+
+    #[test]
+    fn alphaless_normal_uses_specular_strength_when_above_neutral() {
+        // specular_strength 2.0 → 0.85 - (1.0)*0.1 = 0.75.
+        let r =
+            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 2.0, PASS.3, PASS.4, false);
+        assert!((r.unwrap() - 0.75).abs() < 1e-5, "{r:?}");
+    }
+
+    #[test]
+    fn alphaless_normal_with_neutral_specular_keeps_resolved_roughness() {
+        // specular_strength 1.0 (<= 1.2) and no normal alpha → None (caller
+        // keeps the translate-resolved roughness, no override).
+        let r =
+            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 1.0, PASS.3, PASS.4, false);
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn gate_excludes_glass_metal_envmapped_glossmapped_and_normalless() {
+        // material_kind >= 100 (glass/effect — own roughness).
+        assert!(!normal_alpha_spec_applies(100, 0.0, 0.0, 7, 0));
+        // metalness >= 0.3 (metal — Disney/legacy own path).
+        assert!(!normal_alpha_spec_applies(0, 0.3, 0.0, 7, 0));
+        // env_map_scale > 0.3 (FNV/FO4 env-mapped population).
+        assert!(!normal_alpha_spec_applies(0, 0.0, 0.31, 7, 0));
+        // no normal map.
+        assert!(!normal_alpha_spec_applies(0, 0.0, 0.0, 0, 0));
+        // dedicated gloss map present.
+        assert!(!normal_alpha_spec_applies(0, 0.0, 0.0, 7, 5));
+        // baseline passes.
+        assert!(normal_alpha_spec_applies(0, 0.0, 0.0, 7, 0));
+    }
+
+    #[test]
+    fn roughness_clamps_to_renderer_ranges() {
+        // glossiness 100 → 0.0, clamped up to 0.05 floor.
+        assert_eq!(
+            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 100.0, 1.0, PASS.3, PASS.4, true),
+            Some(0.05)
+        );
+        // huge specular_strength → 0.85 - big, clamped to 0.4 floor.
+        assert_eq!(
+            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 99.0, PASS.3, PASS.4, false),
+            Some(0.4)
+        );
+    }
+
+    #[test]
+    fn derivation_is_idempotent_over_roughness() {
+        // The formula ignores the current roughness (derives from glossiness /
+        // specular_strength), so re-deriving after a prior write is a no-op —
+        // the property that makes the resolve-at-spawn relocation safe to run
+        // more than once (#1480).
+        let first =
+            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 65.0, 1.0, PASS.3, PASS.4, true);
+        let second =
+            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 65.0, 1.0, PASS.3, PASS.4, true);
+        assert_eq!(first, second);
+        assert!((first.unwrap() - 0.35).abs() < 1e-5, "{first:?}");
+    }
 }

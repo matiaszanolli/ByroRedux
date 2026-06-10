@@ -280,7 +280,10 @@ pub(super) fn collect_static_mesh_draws(
                 }
 
                 let (
-                    mut roughness,
+                    // #1480 — roughness is the canonical resolve-once value
+                    // (incl. the normal-alpha-as-spec derivation, now applied
+                    // at spawn). The render path no longer mutates it.
+                    roughness,
                     metalness,
                     emissive_mult,
                     emissive_color,
@@ -374,35 +377,36 @@ pub(super) fn collect_static_mesh_draws(
                 // per-game m_kind% / mat_path% pre/post deletion).
                 let material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
 
-                // Step 2 — normal-alpha-as-spec (Skyrim/Gamebryo convention).
-                // When a lit Skyrim-era surface (env_map_scale ~ 0 — the same
-                // population as the matte-default classifier fallback) ships no
+                // Step 2 — normal-alpha-as-spec gloss-flag BINDING (Skyrim/
+                // Gamebryo convention). When a lit Skyrim-era surface
+                // (env_map_scale ~ 0 — the matte-default population) ships no
                 // dedicated gloss map but its normal carries an alpha channel,
-                // that alpha IS the per-pixel specular/smoothness mask. Point
-                // the gloss slot at the normal with a high-bit "sample .a" flag
-                // and seed a SMOOTH glossiness-derived base; the in-shader gloss
-                // modulation then roughens per-pixel — a dark-spec stone floor
-                // reads matte, a polished trim reads glossy. Excludes glass /
-                // effect kinds (>= 100, own roughness) and FNV/FO4 (env_map_scale
-                // > 0.3 / dedicated gloss map). BC5/alpha-less normals keep the
-                // matte default, only lowered when specular_strength is authored
-                // well above the 1.0 neutral default (no per-pixel mask there).
+                // that alpha IS the per-pixel specular/smoothness mask: point
+                // the gloss slot at the normal with the high-bit "sample .a"
+                // flag so the in-shader gloss modulation roughens per-pixel —
+                // a dark-spec stone floor reads matte, a polished trim glossy.
+                //
+                // #1480 / REN-D22-NEW-01 — the matching *roughness scalar* is
+                // resolved ONCE at spawn into Material.roughness (read above as
+                // `roughness`) by `material_translate::
+                // resolve_normal_alpha_spec_roughness`; the render path no
+                // longer recomputes it. What stays here is only the per-draw
+                // texture binding (transient, not canonical state), gated by
+                // the SAME shared predicate the spawn write-back uses so the
+                // two cannot diverge.
                 {
-                    let glossiness = mat.map(|m| m.glossiness).unwrap_or(80.0);
                     let env_map_scale = mat.map(|m| m.env_map_scale).unwrap_or(0.0);
-                    if material_kind < 100
-                        && metalness < 0.3
-                        && env_map_scale <= 0.3
-                        && normal_map_index != 0
-                        && gloss_map_index == 0
+                    if normal_has_alpha
+                        && crate::material_translate::normal_alpha_spec_applies(
+                            material_kind,
+                            metalness,
+                            env_map_scale,
+                            normal_map_index,
+                            gloss_map_index,
+                        )
                     {
-                        const NORMAL_ALPHA_SPEC_BIT: u32 = 0x8000_0000;
-                        if normal_has_alpha {
-                            gloss_map_index = normal_map_index | NORMAL_ALPHA_SPEC_BIT;
-                            roughness = (1.0 - glossiness / 100.0).clamp(0.05, 0.95);
-                        } else if specular_strength > 1.2 {
-                            roughness = (0.85 - (specular_strength - 1.0) * 0.1).clamp(0.4, 0.85);
-                        }
+                        gloss_map_index =
+                            normal_map_index | crate::material_translate::NORMAL_ALPHA_SPEC_BIT;
                     }
                 }
 
