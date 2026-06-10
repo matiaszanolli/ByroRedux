@@ -374,6 +374,32 @@ impl MeshRegistry {
             });
         }
 
+        // DEBUG DIAGNOSTIC (#markarth-fragments) — validate that this mesh's
+        // LOCAL indices stay within its own uploaded vertex block. At draw
+        // time `cmd_draw_indexed` adds the per-mesh `vertex_offset`
+        // (global_vertex_offset) to each local index; an index >= vertex_count
+        // therefore reads PAST this mesh into the next mesh's vertices in the
+        // shared global pool — exactly the "exploding spike" geometry that
+        // shifts as the pool churns during streaming. If this fires, the NIF
+        // decode emitted a self-inconsistent (index, vertex) pair (a
+        // partition/vertex-map/SSE-reconstruction remap bug); if it never
+        // fires, the decoded data is consistent and the corruption is in pool
+        // relocation/compaction instead. Bisects decode-bug vs compaction-bug.
+        if let Some(&max_idx) = indices.iter().max() {
+            if max_idx as usize >= vertices.len() {
+                log::error!(
+                    "GEOMETRY CORRUPTION (#markarth-fragments): local index {} \
+                     >= vertex_count {} (overshoot {}, idx_count {}). Mesh triangles \
+                     will read past its vertex block → spike artifact. NIF decode \
+                     index/vertex-count mismatch.",
+                    max_idx,
+                    vertices.len(),
+                    max_idx as usize + 1 - vertices.len(),
+                    indices.len(),
+                );
+            }
+        }
+
         self.pending_vertices.extend_from_slice(vertices);
         self.pending_indices.extend_from_slice(indices);
 

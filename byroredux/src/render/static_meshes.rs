@@ -133,6 +133,12 @@ pub(super) fn collect_static_mesh_draws(
     // Synthesized collision-only entities (FNV/FO4 fallback trimesh colliders,
     // R6a-stale-13-collider-cost): physics proxies that must never enter BLAS.
     let collision_only_q = world.query::<IsCollisionOnly>();
+    // DEBUG BISECT (#markarth-fragments) — `BYRO_NO_CULL=1` forces every
+    // static visible (skips the frustum cull) to test whether the
+    // "polygons come and go as I move" fragmentation is the under-counted
+    // per-sub-mesh `WorldBound.radius` (#1294 trap) culling composite
+    // architecture at frustum edges. Off by default; read once per frame.
+    let no_cull = std::env::var_os("BYRO_NO_CULL").is_some();
     if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
             // #1377: hoist the GlobalTransform presence gate to the top —
@@ -163,10 +169,11 @@ pub(super) fn collect_static_mesh_draws(
             // without a WorldBound (or radius 0, i.e. not yet computed)
             // pass through as visible. See #237 (original cull) +
             // #516 (split raster / TLAS predicate).
-            let in_raster = match wb_q.as_ref().and_then(|q| q.get(entity)) {
-                Some(wb) if wb.radius > 0.0 => frustum.contains_sphere(wb.center, wb.radius),
-                _ => true,
-            };
+            let in_raster = no_cull
+                || match wb_q.as_ref().and_then(|q| q.get(entity)) {
+                    Some(wb) if wb.radius > 0.0 => frustum.contains_sphere(wb.center, wb.radius),
+                    _ => true,
+                };
 
             if let Some(transform) = tq.get(entity) {
                 let tex_handle = tex_q
