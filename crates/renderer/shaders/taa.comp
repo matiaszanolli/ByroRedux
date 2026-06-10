@@ -219,17 +219,32 @@ void main() {
     // refraction, rough-metal reflection) never settles. Skip it while
     // static and let the pure 1/N running average converge to ground
     // truth; reinstate it the instant the camera moves.
+    // #1479 / REN-D11-NEW-01 — `cameraStatic` (params.z) is derived from the
+    // view-proj matrix delta alone (host side) and is blind to in-scene
+    // motion. A walking actor / animated mesh under a parked camera leaves
+    // the matrix unchanged, so the luma-clamp skip below would otherwise
+    // fire for its pixels: they carry non-zero motion vectors but the SAME
+    // mesh_id at the reprojected pixel (the actor occupies both), so
+    // `disocclusion == false`, the temporal tap is taken at the ≈1/N static
+    // alpha, and with the anti-ghost luma clamp disabled the actor's
+    // luminance edges trail. Gate the skip on PER-PIXEL stillness instead:
+    // truly-static geometry under a static camera reprojects bit-identically
+    // (`motion == 0`), while any real motion (here the dilated vector) re-arms
+    // the full clamp. Threshold ≈ (1e-4 UV)² ≈ 0.1 px — generous for the
+    // exact-zero static case, far below any moving actor's per-frame motion.
+    bool pixelStatic = cameraStatic && dot(motion, motion) < 1e-8;
     vec3 clampedHist;
     {
         vec3 histYc = rgb_to_ycocg(histRgb);
-        if (cameraStatic) {
-            // Parked: let LUMA (Y) converge via the pure 1/N running average —
-            // a neighborhood luma clamp drags high-variance content (glass
-            // refraction, rough-metal reflection) and stops it settling. But
-            // keep CHROMA (Co/Cg) bounded to the local window: a sub-pixel-
-            // jittered high-contrast COLOUR edge (white tall box against the
-            // red / green Cornell walls) would otherwise accumulate a stable
-            // red/cyan rim in the unbounded chroma average. TARGET 3 fringing.
+        if (pixelStatic) {
+            // Parked + locally static: let LUMA (Y) converge via the pure 1/N
+            // running average — a neighborhood luma clamp drags high-variance
+            // content (glass refraction, rough-metal reflection) and stops it
+            // settling. But keep CHROMA (Co/Cg) bounded to the local window: a
+            // sub-pixel-jittered high-contrast COLOUR edge (white tall box
+            // against the red / green Cornell walls) would otherwise accumulate
+            // a stable red/cyan rim in the unbounded chroma average. TARGET 3
+            // fringing.
             histYc.yz = clamp(histYc.yz, yMin.yz, yMax.yz);
         } else {
             histYc = clamp(histYc, yMin, yMax);
