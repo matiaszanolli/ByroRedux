@@ -254,6 +254,23 @@ pub struct GpuCamera {
     /// was applied this frame). Available to shaders for future screen-space DOF
     /// or circle-of-confusion visualisation without an extra UBO binding.
     pub dof_params: [f32; 4],
+    /// **Camera-relative render origin** (#markarth-precision). xyz = the
+    /// world-space origin all GPU clip-space math is performed relative to;
+    /// w = unused. To survive large worldspace offsets (e.g. MarkarthWorld
+    /// at world X ≈ −176 000, where f32 carries only ~0.015-unit precision),
+    /// `view_proj` / `prev_view_proj` / `inv_view_proj` are built with the
+    /// camera at `cam − render_origin`, and `GpuInstance.model` translations
+    /// are pre-rebased by `render_origin` on the CPU. The vertex shader
+    /// therefore transforms vertices near the origin (full f32 precision)
+    /// and reconstructs the ABSOLUTE world position as
+    /// `worldPos_rel + render_origin` for lighting / RT / fog (which tolerate
+    /// the residual ~0.015 uniform shift). `render_origin` is snapped to the
+    /// cell grid (4096) so it is stable between cell crossings — keeping
+    /// motion vectors valid (the prev frame used the same origin) except on a
+    /// crossing, where temporal continuity is already reset by streaming.
+    /// Shaders that reconstruct world position from `inv_view_proj`
+    /// (`ssao.comp`, `composite.frag`) must add `render_origin` back.
+    pub render_origin: [f32; 4],
 }
 
 impl Default for GpuCamera {
@@ -285,6 +302,9 @@ impl Default for GpuCamera {
             // > 0, see Phase D below).
             sun_direction: [0.0, -1.0, 0.0, 0.0],
             dof_params: [0.0; 4],
+            // Identity origin: unbootstrapped frames render in absolute
+            // world space (rel == abs), matching pre-camera-relative behaviour.
+            render_origin: [0.0; 4],
         }
     }
 }
