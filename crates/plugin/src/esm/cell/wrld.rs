@@ -157,7 +157,7 @@ pub(crate) fn parse_wrld_group(
                     log::info!(
                         "Found worldspace: '{}' (form {:08X}, climate: {:08X?}, \
                          parent: {:08X?}, world bounds: {:?}..{:?} \
-                         (cells {:?}), flags: 0x{:02X})",
+                         (cells {:?}), flags: 0x{:02X}, parent_flags: 0x{:04X})",
                         record.editor_id,
                         header.form_id,
                         climate_fid,
@@ -166,6 +166,7 @@ pub(crate) fn parse_wrld_group(
                         record.usable_max,
                         cell_bounds,
                         record.flags,
+                        record.parent_flags,
                     );
                     if let Some(clmt_fid) = climate_fid {
                         worldspace_climates.insert(key.clone(), clmt_fid);
