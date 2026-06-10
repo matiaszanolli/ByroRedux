@@ -89,6 +89,19 @@ pub struct DeviceCapabilities {
     /// doesn't expose it, so this field is always `true` at runtime.
     /// Kept in `DeviceCapabilities` for diagnostic logging only. #1437.
     pub synchronization2_supported: bool,
+    /// `hostQueryReset` from `VkPhysicalDeviceVulkan12Features`. Enables
+    /// the host-side `vkResetQueryPool` (no command buffer). Two
+    /// independent consumers need it: the BLAS-compaction path
+    /// (`blas_static.rs`, RT-only) and the per-pass GPU timers
+    /// (`gpu_timers.rs`, #1194 — RT-*independent*). It was previously
+    /// gated on `ray_query_supported`, which silently broke the timer
+    /// path on a timestamp-capable but RT-less GPU (the feature was
+    /// disabled yet `GpuPerFrameTimers::new` still called
+    /// `reset_query_pool` → VUID-vkResetQueryPool-None-02665). We now
+    /// probe and enable it on its own merits (#1478 / REN-D23-NEW-01).
+    /// Vulkan 1.2 core; universally available on every RT-capable
+    /// desktop GPU, so the BLAS-compaction path is unaffected.
+    pub host_query_reset_supported: bool,
     /// `VK_EXT_memory_budget` exposes a live per-heap usage / budget
     /// pair via `vkGetPhysicalDeviceMemoryProperties2` chained with
     /// `VkPhysicalDeviceMemoryBudgetPropertiesEXT`. Without it, the
@@ -265,8 +278,15 @@ fn is_device_suitable(
     // Without this feature those barriers violate VUID-vkCmdPipeline
     // Barrier-srcStageMask-4957. Available on all RTX-class GPUs
     // (Vulkan 1.3 core); devices that return FALSE are rejected. #1437.
+    //
+    // Also probe `VkPhysicalDeviceVulkan12Features.hostQueryReset` in the
+    // same round-trip — needed (decoupled from RT) by the GPU timer path
+    // (#1478 / REN-D23-NEW-01).
+    let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::default();
     let mut vulkan13_features = vk::PhysicalDeviceVulkan13Features::default();
-    let mut features2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut vulkan13_features);
+    let mut features2 = vk::PhysicalDeviceFeatures2::default()
+        .push_next(&mut vulkan12_features)
+        .push_next(&mut vulkan13_features);
     unsafe {
         instance.get_physical_device_features2(device, &mut features2);
     }
@@ -274,6 +294,7 @@ fn is_device_suitable(
     if !synchronization2_supported {
         return Ok(None);
     }
+    let host_query_reset_supported = vulkan12_features.host_query_reset == vk::TRUE;
 
     // Query descriptor indexing properties for the UPDATE_AFTER_BIND bindless
     // array ceiling. Vulkan 1.2 core exposes this via the pNext chain on
@@ -380,6 +401,7 @@ fn is_device_suitable(
                 timestamp_period_ns: properties.limits.timestamp_period,
                 timestamp_supported: properties.limits.timestamp_compute_and_graphics == vk::TRUE,
                 synchronization2_supported,
+                host_query_reset_supported,
                 memory_budget_supported,
                 texture_compression_bc,
             },
@@ -467,12 +489,16 @@ pub fn create_logical_device(
         .runtime_descriptor_array(true)
         .descriptor_binding_partially_bound(true)
         .descriptor_binding_sampled_image_update_after_bind(true)
-        // Host-side `vkResetQueryPool` is required by the BLAS
-        // compaction path in `acceleration.rs` — reset happens on the
-        // CPU before the command buffer records `vkCmdWriteAccelerationStructuresPropertiesKHR`.
-        // Only the RT pipeline uses this; gating on `ray_query_supported`
-        // keeps the non-RT fallback from requesting an unused feature.
-        .host_query_reset(caps.ray_query_supported);
+        // Host-side `vkResetQueryPool`. Two consumers: the BLAS-compaction
+        // path (`blas_static.rs`, RT-only) AND the per-pass GPU timers
+        // (`gpu_timers.rs`, #1194 — RT-independent). It was previously
+        // gated on `ray_query_supported`, which left the feature disabled
+        // on a timestamp-capable but RT-less GPU while the timer path still
+        // issued `reset_query_pool` (VUID-vkResetQueryPool-None-02665,
+        // #1478 / REN-D23-NEW-01). Enable it on its own probed support so
+        // both consumers are correct; `GpuPerFrameTimers::new` gates on the
+        // same flag so it self-disables on a device that lacks it.
+        .host_query_reset(caps.host_query_reset_supported);
 
     let mut accel_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
         .acceleration_structure(caps.ray_query_supported);

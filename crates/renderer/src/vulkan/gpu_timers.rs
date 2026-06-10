@@ -185,7 +185,14 @@ impl GpuPerFrameTimers {
         device: &ash::Device,
         caps: &super::super::vulkan::device::DeviceCapabilities,
     ) -> Result<Option<Self>> {
-        if !caps.timestamp_supported {
+        // Both gates are required: timestamps for `vkCmdWriteTimestamp`,
+        // and `hostQueryReset` because `new()` + `read_and_reset()` use the
+        // host-side `device.reset_query_pool` (no command buffer). The
+        // latter was historically enabled only on RT-capable devices, so a
+        // timestamp-capable but RT-less GPU would otherwise reach the
+        // `reset_query_pool` call with the feature disabled
+        // (VUID-vkResetQueryPool-None-02665, #1478 / REN-D23-NEW-01).
+        if !caps.timestamp_supported || !caps.host_query_reset_supported {
             return Ok(None);
         }
         let mut pools = [vk::QueryPool::null(); MAX_FRAMES_IN_FLIGHT];
