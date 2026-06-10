@@ -569,6 +569,20 @@ impl VulkanContext {
         // Bases 5 and 7 are coprime to the TAA bases (2 and 3) so the
         // 32-frame DOF period interleaves cleanly with the 16-frame TAA
         // period without correlated low-discrepancy gaps.
+        // Camera-relative render origin (#markarth-precision). MUST use the
+        // same cell-grid snap (4096) and the same un-jittered `camera_pos`
+        // that `render::camera::assemble_camera` used to build the RELATIVE
+        // `view_proj`, so the rebased per-instance models below and the
+        // uploaded matrices agree on the origin. Uploaded `view_proj` /
+        // `inv_view_proj` are relative; the vertex shader reconstructs the
+        // absolute world position as `worldPos_rel + render_origin`, and every
+        // deferred pass that reconstructs world from `inv_view_proj` (ssao,
+        // composite, cluster_cull, volumetrics) adds it back.
+        const RENDER_ORIGIN_SNAP: f32 = 4096.0; // MUST match render/camera.rs
+        let render_origin = (byroredux_core::math::Vec3::from_array(camera_pos)
+            / RENDER_ORIGIN_SNAP)
+            .floor()
+            * RENDER_ORIGIN_SNAP;
         let (effective_vp, effective_cam_pos) = if dof.aperture > 0.0 {
             let idx = (self.frame_counter % 32) + 1;
             let (disk_u, disk_v) = concentric_disk_sample(halton(idx, 5), halton(idx, 7));
@@ -580,12 +594,19 @@ impl VulkanContext {
             let up = byroredux_core::math::Vec3::from_array(dof.cam_up);
             let fwd = byroredux_core::math::Vec3::from_array(dof.cam_forward);
 
-            // Jitter the camera position on the aperture disk.
+            // Jitter the camera position on the aperture disk (absolute).
             let jittered_eye = pos + lens_u * right + lens_v * up;
-            // All rays converge at the focal plane.
+            // All rays converge at the focal plane (absolute).
             let focal_pt = pos + dof.focus_dist * fwd;
 
-            let jittered_view = byroredux_core::math::Mat4::look_at_rh(jittered_eye, focal_pt, up);
+            // Build the jittered view RELATIVE to render_origin so the DOF
+            // path stays camera-relative like the pinhole path. The returned
+            // camera position stays ABSOLUTE (view-dir math in the shader).
+            let jittered_view = byroredux_core::math::Mat4::look_at_rh(
+                jittered_eye - render_origin,
+                focal_pt - render_origin,
+                up,
+            );
             let proj = byroredux_core::math::Mat4::from_cols_array(&dof.proj_mat);
             let jvp = (proj * jittered_view).to_cols_array();
             (jvp, jittered_eye.to_array())
@@ -761,6 +782,10 @@ impl VulkanContext {
                 self.light_atten_knee,
                 if camera_static { 1.0 } else { 0.0 },
             ],
+            // #markarth-precision — camera-relative render origin (xyz; w
+            // unused). Vertex/deferred shaders add this back to recover the
+            // absolute world position from the relative `view_proj` space.
+            render_origin: [render_origin.x, render_origin.y, render_origin.z, 0.0],
         };
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)
@@ -1724,11 +1749,23 @@ impl VulkanContext {
             // per-material field reads through `materials[material_id]`
             // in the fragment shader.
             gpu_instances.push(GpuInstance {
+                // #markarth-precision — rebase the model translation by the
+                // camera-relative render origin so `model * pos` stays near 0
+                // in the shader (full f32 precision; large worldspace offsets
+                // like MarkarthWorld's ~-176000 otherwise quantize fine detail
+                // into spikes). The shader adds render_origin back for the
+                // absolute world position. Columns 0-2 (rotation/scale) are
+                // unchanged; only the translation column (m[12..14]) shifts.
                 model: [
                     [m[0], m[1], m[2], m[3]],
                     [m[4], m[5], m[6], m[7]],
                     [m[8], m[9], m[10], m[11]],
-                    [m[12], m[13], m[14], m[15]],
+                    [
+                        m[12] - render_origin.x,
+                        m[13] - render_origin.y,
+                        m[14] - render_origin.z,
+                        m[15],
+                    ],
                 ],
                 texture_index: draw_cmd.texture_handle,
                 bone_offset: draw_cmd.bone_offset,
@@ -2103,7 +2140,17 @@ impl VulkanContext {
                 // #428 — composite-pass fog needs the camera origin to
                 // compute per-pixel world-space distance from a depth
                 // sample. `w` is unused padding.
-                camera_pos: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
+                // #markarth-precision — `inv_view_proj` is the camera-RELATIVE
+                // inverse, so composite reconstructs world in relative space.
+                // It uses that only as `length(worldPos - camera_pos)` (fog
+                // distance) + view directions, which are origin-invariant, so
+                // supply the camera position in the SAME relative space.
+                camera_pos: [
+                    camera_pos[0] - render_origin.x,
+                    camera_pos[1] - render_origin.y,
+                    camera_pos[2] - render_origin.z,
+                    0.0,
+                ],
                 inv_view_proj: inv_vp_arr,
                 underwater,
             };
@@ -2972,6 +3019,15 @@ impl VulkanContext {
                                 0.0,
                                 0.0,
                             ],
+                            // #markarth-precision — inv_view_proj is relative;
+                            // the inject shader adds this to recover absolute
+                            // froxel positions for the TLAS shadow rays.
+                            render_origin: [
+                                render_origin.x,
+                                render_origin.y,
+                                render_origin.z,
+                                0.0,
+                            ],
                         };
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_volumetrics_start(&self.device, cmd, frame);
@@ -3032,8 +3088,18 @@ impl VulkanContext {
                 if let Some(ref mut timers) = self.gpu_timers {
                     timers.cmd_ssao_start(&self.device, cmd, frame);
                 }
+                // #markarth-precision — SSAO reconstructs world from the
+                // RELATIVE inv_view_proj and uses it only in differences
+                // (worldPos - cameraPos, sample - worldPos), which are
+                // origin-invariant, so feed the camera in the same relative
+                // space. The AO result is unchanged.
+                let ssao_cam_rel = [
+                    camera_pos[0] - render_origin.x,
+                    camera_pos[1] - render_origin.y,
+                    camera_pos[2] - render_origin.z,
+                ];
                 let ssao_result =
-                    ssao.dispatch(&self.device, cmd, frame, &vp_arr, &inv_vp_arr, camera_pos);
+                    ssao.dispatch(&self.device, cmd, frame, &vp_arr, &inv_vp_arr, ssao_cam_rel);
                 if let Some(ref mut timers) = self.gpu_timers {
                     timers.cmd_ssao_end(&self.device, cmd, frame);
                 }

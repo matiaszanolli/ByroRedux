@@ -110,6 +110,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 skyTint;
     vec4 sunDirection; // xyz = world-space direction TO the sun (light-incoming, matches GpuLight.direction_angle), w = intensity. #1210.
     vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
+    vec4 renderOrigin;   // #markarth-precision — camera-relative render origin. Unused here (vWorldPos arrives ABSOLUTE from water.vert); declared to keep CameraUBO == sizeof(GpuCamera).
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;

@@ -90,6 +90,12 @@ pub(super) struct CameraView {
     pub focus_dist: f32,
 }
 
+/// Cell-grid snap for the camera-relative render origin. Keeping the origin
+/// on the 4096-unit cell grid means it only moves when the camera crosses a
+/// cell boundary — where streaming already resets temporal continuity — so
+/// motion vectors stay valid between crossings. See `CameraView::render_origin`.
+const RENDER_ORIGIN_SNAP: f32 = 4096.0;
+
 /// Assemble the active camera's view-projection matrices + frustum.
 ///
 /// Returns identity matrices and a degenerate frustum when no active
@@ -111,7 +117,11 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
         let cam_q = world.query::<Camera>();
         let transform_q = world.query::<Transform>();
 
-        let vp = match (cam_q, transform_q) {
+        // Absolute view-projection (full-magnitude camera translation).
+        // Consumed by the CPU-side frustum cull + sort-depth, which compare
+        // against ABSOLUTE world positions (`WorldBound.center`), so this
+        // must stay absolute — only the GPU-uploaded matrix goes relative.
+        let vp_abs = match (cam_q, transform_q) {
             (Some(cq), Some(tq)) => {
                 let cam = cq.get(cam_entity);
                 let t = tq.get(cam_entity);
@@ -134,8 +144,20 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
             }
             _ => Mat4::IDENTITY,
         };
-        let frustum = FrustumPlanes::from_view_proj(vp);
-        (vp.to_cols_array(), frustum, vp)
+        // Camera-relative view-projection (#markarth-precision): snap the
+        // origin to the cell grid and rebuild the view with the camera near 0,
+        // so the GPU clip-space f32 math avoids the precision cliff at large
+        // worldspace offsets (Markarth at world X ≈ -176000, where f32 carries
+        // only ~0.015-unit precision → fine carved detail collapses to spikes).
+        // This matrix is uploaded to `GpuCamera.view_proj`; per-instance model
+        // translations are rebased by the same origin in `draw_frame`, and the
+        // vertex shader reconstructs absolute world position as
+        // `worldPos_rel + render_origin`.
+        let o = (cam_pos / RENDER_ORIGIN_SNAP).floor() * RENDER_ORIGIN_SNAP;
+        let eye_rel = cam_pos - o;
+        let vp_rel = proj_mat * Mat4::look_at_rh(eye_rel, eye_rel + cam_forward, cam_up);
+        let frustum = FrustumPlanes::from_view_proj(vp_abs);
+        (vp_rel.to_cols_array(), frustum, vp_abs)
     } else {
         (
             Mat4::IDENTITY.to_cols_array(),

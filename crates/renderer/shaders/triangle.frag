@@ -240,6 +240,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 skyTint;     // xyz = TOD/weather zenith colour, w = sun_angular_radius (rad; SkyParams::sun_angular_radius, #1023)
     vec4 sunDirection;
     vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = camera_static (1.0 = parked).
+    vec4 renderOrigin;   // #markarth-precision — camera-relative render origin. Unused here (fragWorldPos arrives ABSOLUTE via the vertex varying); declared to keep CameraUBO == sizeof(GpuCamera).
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;

@@ -73,6 +73,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 skyTint;
     vec4 sunDirection;
     vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
+    vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin; add to worldPos_rel for the absolute world position. w unused.
 };
 
 layout(location = 0) out vec3 vWorldPos;
@@ -91,7 +92,12 @@ void main() {
     GpuInstance inst = instances[gl_InstanceIndex];
 
     vec4 worldPos = inst.model * vec4(inPosition, 1.0);
-    vWorldPos = worldPos.xyz;
+    // #markarth-precision — `inst.model` is rebased by the render origin (the
+    // water plane reuses the same instance buffer as opaques), so `worldPos`
+    // is relative; clip is computed from the relative viewProj below. Output
+    // the ABSOLUTE world position for water.frag's lighting / RT reflection +
+    // refraction (the TLAS is absolute).
+    vWorldPos = worldPos.xyz + renderOrigin.xyz;
 
     // For the water quad, `inst.model` is composed of (translation,
     // axis-aligned rotation, uniform scale) — see the cell loader's

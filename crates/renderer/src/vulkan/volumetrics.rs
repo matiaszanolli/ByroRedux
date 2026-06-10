@@ -85,6 +85,10 @@ pub struct VolumetricsParams {
     /// x = volume far plane (m) — maps slice z = 1 to this distance
     /// along the view ray. y/z/w = unused.
     pub volume_extent: [f32; 4],
+    /// #markarth-precision — xyz = camera-relative render origin; the inject
+    /// shader adds it to the `inv_view_proj`-reconstructed far point so froxel
+    /// world positions (and their TLAS shadow rays) are absolute. w unused.
+    pub render_origin: [f32; 4],
 }
 
 /// Default participating-medium scattering coefficient (1 / m). At

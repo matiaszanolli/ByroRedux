@@ -47,12 +47,15 @@ fn gpu_instance_is_112_bytes_std430_compatible() {
 /// pin at least catches the Rust-side regression so the doc-
 /// comment stays honest.
 #[test]
-fn gpu_camera_is_320_bytes() {
+fn gpu_camera_is_336_bytes() {
     assert_eq!(
             size_of::<GpuCamera>(),
-            320,
-            "GpuCamera must be 320 B (304 B pre-DOF + 16 B dof_params vec4) to match the CameraUBO \
-             declaration in every shader that re-declares it — update all 6 shaders when changing this"
+            336,
+            "GpuCamera must be 336 B (320 B + 16 B render_origin vec4, #markarth-precision) to match \
+             the CameraUBO declaration in every shader that re-declares it. render_origin was \
+             APPENDED at the end, so shaders that don't read it keep their existing prefix; the 3 \
+             that do (triangle.vert, ssao.comp, composite.frag) must declare the full field list up \
+             to and including render_origin so std140 offsets line up."
         );
 }
 
