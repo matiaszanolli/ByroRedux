@@ -45,6 +45,10 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // x = volume far plane (m), y/z/w = unused. Defines the maximum
     // along-ray distance covered by the volume's depth slices.
     vec4 volume_extent;
+    // #markarth-precision — xyz = camera-relative render origin; added to the
+    // inv_view_proj-reconstructed far point to recover ABSOLUTE froxel world
+    // positions (the TLAS shadow rays below are cast in absolute space). w unused.
+    vec4 render_origin;
 } params;
 
 // Phase 2c — scene TLAS. Updated each frame from the host side via
@@ -85,6 +89,11 @@ vec3 froxel_to_world(vec2 uv, float t) {
     vec4 ndc_far = vec4(uv * 2.0 - 1.0, 1.0, 1.0);
     vec4 world_far = params.inv_view_proj * ndc_far;
     world_far.xyz /= world_far.w;
+    // #markarth-precision — inv_view_proj is camera-relative; lift the far
+    // point to ABSOLUTE world so the froxel positions (and the TLAS shadow
+    // rays cast from them) share the absolute TLAS space. camera_pos is
+    // already absolute.
+    world_far.xyz += params.render_origin.xyz;
     vec3 ray_dir = normalize(world_far.xyz - params.camera_pos.xyz);
     return params.camera_pos.xyz + ray_dir * t;
 }

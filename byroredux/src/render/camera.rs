@@ -88,14 +88,6 @@ pub(super) struct CameraView {
     pub aperture: f32,
     /// Focal distance (world units). Surfaces at this depth are in sharp focus.
     pub focus_dist: f32,
-    /// Camera-relative render origin (#markarth-precision). xyz = the world
-    /// origin the uploaded `view_proj` (and the per-instance model matrices)
-    /// are rebased by; w = unused. Snapped to the cell grid (4096) so it is
-    /// stable between cell crossings. `view_proj` is RELATIVE (camera at
-    /// `cam − origin`); `vp_mat` and `frustum` stay ABSOLUTE (they operate on
-    /// absolute world positions: CPU sort-depth + sphere culling). See the
-    /// `GpuCamera::render_origin` doc for the full rationale.
-    pub render_origin: [f32; 4],
 }
 
 /// Cell-grid snap for the camera-relative render origin. Keeping the origin
@@ -117,7 +109,6 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
     let mut proj_mat = Mat4::IDENTITY;
     let mut aperture = 0.0f32;
     let mut focus_dist = 20.0f32;
-    let mut render_origin = [0.0f32; 4];
 
     let (view_proj, frustum, vp_mat) = if let Some(active) = world.try_resource::<ActiveCamera>() {
         let cam_entity = active.0;
@@ -163,7 +154,6 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
         // vertex shader reconstructs absolute world position as
         // `worldPos_rel + render_origin`.
         let o = (cam_pos / RENDER_ORIGIN_SNAP).floor() * RENDER_ORIGIN_SNAP;
-        render_origin = [o.x, o.y, o.z, 0.0];
         let eye_rel = cam_pos - o;
         let vp_rel = proj_mat * Mat4::look_at_rh(eye_rel, eye_rel + cam_forward, cam_up);
         let frustum = FrustumPlanes::from_view_proj(vp_abs);
@@ -186,6 +176,5 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
         proj_mat,
         aperture,
         focus_dist,
-        render_origin,
     }
 }

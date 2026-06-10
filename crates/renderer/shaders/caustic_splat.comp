@@ -65,6 +65,7 @@ layout(set = 0, binding = 4) uniform CameraUBO {
     vec4 skyTint;       // xyz = TOD/weather zenith colour, w = reserved. #1028.
     vec4 sunDirection;
     vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
+    vec4 renderOrigin;   // #markarth-precision — camera-relative render origin (added to inv_view_proj world reconstruction below). Keeps CameraUBO == sizeof(GpuCamera).
 };
 
 // R1 Phase 6 — `GpuInstance` collapsed to per-DRAW data only.
@@ -137,7 +138,9 @@ vec3 reconstructWorldPos(ivec2 pixel, float depth) {
     vec2 uv = (vec2(pixel) + 0.5) * causticScreen.zw;
     vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
     vec4 world = invViewProj * ndc;
-    return world.xyz / world.w;
+    // #markarth-precision — invViewProj is the camera-RELATIVE inverse; lift to
+    // ABSOLUTE world (caustic source selection + TLAS interactions are absolute).
+    return world.xyz / world.w + renderOrigin.xyz;
 }
 
 void main() {

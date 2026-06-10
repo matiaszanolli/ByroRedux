@@ -76,6 +76,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 skyTint;        // xyz = TOD/weather zenith colour, w = reserved. #1028.
     vec4 sunDirection;
     vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
+    vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin (cell-grid snapped); add to worldPos_rel for the absolute world position. w unused.
 };
 
 // Bone palette SSBO (set 1, binding 3) — skinning matrices for the
@@ -180,7 +181,13 @@ void main() {
         n = m3 * inNormal;
     }
     fragNormal = (dot(n, n) > 0.0) ? normalize(n) : vec3(0.0, 1.0, 0.0);
-    fragWorldPos = worldPos.xyz;
+    // #markarth-precision — `worldPos` is in render-origin-relative space (the
+    // model translation was rebased on the CPU and viewProj is relative, so
+    // the clip-space geometry above keeps full f32 precision at large
+    // worldspace offsets). Reconstruct the ABSOLUTE world position for the
+    // fragment shader's lighting / RT (the TLAS is in absolute world space) /
+    // fog math — those tolerate the residual ~0.015-unit uniform shift.
+    fragWorldPos = worldPos.xyz + renderOrigin.xyz;
     fragTexIndex = inst.textureIndex;
     fragInstanceIndex = gl_InstanceIndex;
 
