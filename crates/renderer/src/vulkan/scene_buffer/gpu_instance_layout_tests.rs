@@ -457,6 +457,45 @@ fn triangle_vert_skinned_branch_rebases_render_origin() {
     );
 }
 
+/// #1488 / REN2-03 regression. Both caustic deposit writers trace in
+/// ABSOLUTE world space (their landing points are lifted by
+/// `+renderOrigin` / arrive absolute for the TLAS), but `viewProj` has
+/// been camera-relative since the #markarth-precision cascade
+/// (36f66493). Re-projecting the absolute landing point without
+/// subtracting the origin displaces NDC by the full render origin —
+/// the in-bounds guards then silently `continue`, dropping every
+/// splat: glass caustics (#321) and water floor caustics (#1210
+/// Phase E) vanished in all content outside the `[0,4096)³` origin
+/// cell.
+///
+/// Static source check (no `glslangValidator` dependency): both
+/// writers must rebase by `renderOrigin` inside the projection.
+#[test]
+fn caustic_writers_rebase_render_origin_before_reprojection() {
+    let cases = [
+        (
+            "caustic_splat.comp",
+            include_str!("../../../shaders/caustic_splat.comp"),
+            "viewProj * vec4(P - renderOrigin.xyz, 1.0)",
+        ),
+        (
+            "water.frag",
+            include_str!("../../../shaders/water.frag"),
+            "viewProj * vec4(floorWorld - renderOrigin.xyz, 1.0)",
+        ),
+    ];
+    for (name, src, needle) in cases {
+        assert!(
+            src.contains(needle),
+            "{name}: caustic deposit re-projection must subtract \
+                 `renderOrigin` before multiplying by the camera-relative \
+                 `viewProj` (expected `{needle}`); projecting the absolute \
+                 landing point makes the NDC guard cull every splat at any \
+                 non-zero render origin (#1488 / REN2-03)."
+        );
+    }
+}
+
 /// Regression for #575 / SH-1. The global `GlobalVertices` SSBO
 /// is declared as `float vertexData[]` so every read implicitly
 /// reinterprets the bytes as IEEE-754 float. Per the layout

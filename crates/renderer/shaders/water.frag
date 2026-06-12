@@ -110,7 +110,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 skyTint;
     vec4 sunDirection; // xyz = world-space direction TO the sun (light-incoming, matches GpuLight.direction_angle), w = intensity. #1210.
     vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
-    vec4 renderOrigin;   // #markarth-precision — camera-relative render origin. Unused here (vWorldPos arrives ABSOLUTE from water.vert); declared to keep CameraUBO == sizeof(GpuCamera).
+    vec4 renderOrigin;   // #markarth-precision — camera-relative render origin. vWorldPos arrives ABSOLUTE from water.vert; subtracted before any viewProj re-projection (caustic floor splat, #1488).
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
@@ -582,7 +582,12 @@ void main() {
                     float floorT = rayQueryGetIntersectionTEXT(floorRq, true);
                     vec3 floorWorld = vWorldPos + refractDir * floorT;
                     // 4. Project floor hit to screen-space.
-                    vec4 floorClip = viewProj * vec4(floorWorld, 1.0);
+                    // #markarth-precision / #1488 — `floorWorld` is ABSOLUTE
+                    // (vWorldPos arrives absolute for the TLAS trace) but
+                    // `viewProj` is camera-RELATIVE; rebase before projecting
+                    // or the uv01 guard below drops every deposit whenever
+                    // render_origin != 0.
+                    vec4 floorClip = viewProj * vec4(floorWorld - renderOrigin.xyz, 1.0);
                     if (floorClip.w > 0.0) {
                         vec2 ndc = floorClip.xy / floorClip.w;
                         vec2 uv01 = ndc * 0.5 + 0.5;
