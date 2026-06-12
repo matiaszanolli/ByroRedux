@@ -92,8 +92,14 @@ pub(super) struct CameraView {
 
 /// Cell-grid snap for the camera-relative render origin. Keeping the origin
 /// on the 4096-unit cell grid means it only moves when the camera crosses a
-/// cell boundary — where streaming already resets temporal continuity — so
-/// motion vectors stay valid between crossings. See `CameraView::render_origin`.
+/// cell boundary. A crossing does NOT reset TAA/SVGF temporal history —
+/// instead the renderer tracks `prev_render_origin` and uploads an
+/// origin-corrected previous view-projection
+/// (`prev_vp · translation(O₂ − O₁)`, see
+/// `origin_corrected_prev_view_proj` in `vulkan/context/draw.rs`), so motion
+/// vectors stay valid across crossings (#1489 / REN2-04).
+/// MUST match `RENDER_ORIGIN_SNAP` in `vulkan/context/draw.rs` (#1494
+/// tracks hoisting the duplicate into a shared constant).
 const RENDER_ORIGIN_SNAP: f32 = 4096.0;
 
 /// Assemble the active camera's view-projection matrices + frustum.

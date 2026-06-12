@@ -614,7 +614,20 @@ impl VulkanContext {
             (*view_proj, camera_pos)
         };
         let vp = &effective_vp;
-        let pvp = &self.prev_view_proj;
+        // #1489 / REN2-04 — `prev_view_proj` is relative to LAST frame's
+        // render origin O₁; this frame's geometry (per-instance models, bone
+        // palettes) is rebased by the CURRENT origin O₂. On a 4096-grid
+        // crossing the two differ and every motion vector would be off by
+        // ΔO — a one-frame full-screen TAA flash + SVGF history drop per
+        // crossing. Right-multiplying by `translation(O₂ − O₁)` makes the
+        // uploaded matrix consume current-origin positions exactly:
+        // `M·(x − O₂) = prev_vp·(x − O₁)`. Off the jump frame ΔO = 0 and
+        // the correction is the identity.
+        let pvp = origin_corrected_prev_view_proj(
+            &self.prev_view_proj,
+            self.prev_render_origin,
+            [render_origin.x, render_origin.y, render_origin.z],
+        );
         // Precompute inverse(viewProj) once on the CPU so shaders
         // (cluster culling, SSAO) can read it directly from the UBO
         // instead of computing a ~100 ALU-op matrix inverse per invocation.
@@ -822,8 +835,11 @@ impl VulkanContext {
         // built) so the flag could ride `dof_params.w` into triangle.frag's
         // GI-seed decorrelation; it is reused here for the SVGF / TAA /
         // caustic param uploads. Store this frame's viewProj as next frame's
-        // "previous" for motion vectors.
+        // "previous" for motion vectors — together with the origin it was
+        // built against, so next frame's upload can origin-correct it
+        // (#1489 / REN2-04).
         self.prev_view_proj = *vp;
+        self.prev_render_origin = [render_origin.x, render_origin.y, render_origin.z];
 
         // M29.5/M29.6 — upload bone_world (per-frame) and any pending
         // first-sight bind_inverses (write-once persistent SSBO). The
@@ -2142,9 +2158,11 @@ impl VulkanContext {
                 // sample. `w` is unused padding.
                 // #markarth-precision — `inv_view_proj` is the camera-RELATIVE
                 // inverse, so composite reconstructs world in relative space.
-                // It uses that only as `length(worldPos - camera_pos)` (fog
-                // distance) + view directions, which are origin-invariant, so
-                // supply the camera position in the SAME relative space.
+                // It uses that as `length(worldPos - camera_pos)` (fog
+                // distance) + view directions (`screen_to_world_dir` subtracts
+                // `camera_pos` from the unprojected far point, #1490), all
+                // origin-invariant differences, so supply the camera position
+                // in the SAME relative space.
                 camera_pos: [
                     camera_pos[0] - render_origin.x,
                     camera_pos[1] - render_origin.y,
@@ -3434,6 +3452,85 @@ impl VulkanContext {
         }
 
         Ok(suboptimal || present_suboptimal)
+    }
+}
+
+/// #1489 / REN2-04 — re-express last frame's camera-relative view-projection
+/// (built against render origin `prev_origin` = O₁) in the CURRENT frame's
+/// render-origin space (O₂). Geometry uploaded this frame is rebased by O₂,
+/// so the previous-frame matrix must satisfy
+/// `M·(x_abs − O₂) = prev_vp·(x_abs − O₁)` for every world point — i.e.
+/// `M = prev_vp · translation(O₂ − O₁)`. This is exact (a pure translation
+/// composition), so motion vectors stay valid across 4096-unit grid
+/// crossings; without it the jump frame produced full-screen garbage motion
+/// vectors (TAA aliasing flash + SVGF full-frame history drop).
+fn origin_corrected_prev_view_proj(
+    prev_vp: &[f32; 16],
+    prev_origin: [f32; 3],
+    cur_origin: [f32; 3],
+) -> [f32; 16] {
+    let delta = byroredux_core::math::Vec3::from_array(cur_origin)
+        - byroredux_core::math::Vec3::from_array(prev_origin);
+    if delta == byroredux_core::math::Vec3::ZERO {
+        // Hot path: the origin only moves on cell-grid crossings.
+        return *prev_vp;
+    }
+    (byroredux_core::math::Mat4::from_cols_array(prev_vp)
+        * byroredux_core::math::Mat4::from_translation(delta))
+    .to_cols_array()
+}
+
+#[cfg(test)]
+mod prev_view_proj_origin_tests {
+    use super::origin_corrected_prev_view_proj;
+    use byroredux_core::math::{Mat4, Vec3, Vec4};
+
+    /// Build a plausible camera-relative view-projection for an eye near
+    /// the origin (the post-#markarth-precision convention).
+    fn sample_vp(eye_rel: Vec3) -> Mat4 {
+        let proj = Mat4::perspective_rh(60f32.to_radians(), 16.0 / 9.0, 0.1, 300_000.0);
+        proj * Mat4::look_at_rh(eye_rel, eye_rel + Vec3::new(0.3, -0.1, -1.0), Vec3::Y)
+    }
+
+    /// Identity case: no grid crossing → the matrix passes through
+    /// untouched (bitwise, not just numerically).
+    #[test]
+    fn unchanged_origin_returns_matrix_verbatim() {
+        let vp = sample_vp(Vec3::new(1000.0, 200.0, 3000.0)).to_cols_array();
+        let o = [-176_128.0, 0.0, 8192.0];
+        assert_eq!(origin_corrected_prev_view_proj(&vp, o, o), vp);
+    }
+
+    /// Grid-crossing case (#1489 / REN2-04): for points rebased by the
+    /// CURRENT origin O₂, the corrected matrix must reproduce what the
+    /// previous-frame matrix produced for the same ABSOLUTE point rebased
+    /// by ITS origin O₁ — `M·(x − O₂) = prev_vp·(x − O₁)`. Uses
+    /// Markarth-scale coordinates where the pre-fix ΔO error was the
+    /// full 4096-unit snap.
+    #[test]
+    fn corrected_matrix_matches_prev_origin_projection() {
+        let o1 = Vec3::new(-176_128.0, 0.0, 8192.0);
+        let o2 = Vec3::new(-180_224.0, 4096.0, 8192.0); // crossed in -X and +Y
+        let prev_vp = sample_vp(Vec3::new(310.5, 140.0, 2007.25));
+        let corrected = Mat4::from_cols_array(&origin_corrected_prev_view_proj(
+            &prev_vp.to_cols_array(),
+            o1.to_array(),
+            o2.to_array(),
+        ));
+        for x_abs in [
+            Vec3::new(-176_500.0, 350.0, 9000.0),
+            Vec3::new(-179_800.0, 4200.0, 7500.0),
+            Vec3::new(-177_000.0, 0.0, 8192.0),
+        ] {
+            let want = prev_vp * Vec4::from((x_abs - o1, 1.0));
+            let got = corrected * Vec4::from((x_abs - o2, 1.0));
+            for i in 0..4 {
+                assert!(
+                    (want[i] - got[i]).abs() <= 1e-2 * want[i].abs().max(1.0),
+                    "clip component {i} diverged: want {want:?}, got {got:?} for {x_abs:?}"
+                );
+            }
+        }
     }
 }
 
