@@ -158,6 +158,16 @@ void main() {
             + inBoneWeights.y * bones_prev[base + bIdx.y]
             + inBoneWeights.z * bones_prev[base + bIdx.z]
             + inBoneWeights.w * bones_prev[base + bIdx.w];
+        // #markarth-precision / #1486 — bone palettes are uploaded in
+        // ABSOLUTE world space (skin_vertices.comp builds the skinned
+        // BLAS from the same palette and the TLAS is absolute), but
+        // `viewProj` is render-origin-relative. Rebase the blended
+        // matrix's translation so the skinned path projects in the
+        // same relative space as the rigid path, whose `inst.model`
+        // translation was rebased on the CPU. The `fragWorldPos`
+        // reconstruction below then holds for both branches.
+        xform[3].xyz -= renderOrigin.xyz;
+        xformPrev[3].xyz -= renderOrigin.xyz;
     }
 
     vec4 worldPos = xform * vec4(inPosition, 1.0);
@@ -181,12 +191,14 @@ void main() {
         n = m3 * inNormal;
     }
     fragNormal = (dot(n, n) > 0.0) ? normalize(n) : vec3(0.0, 1.0, 0.0);
-    // #markarth-precision — `worldPos` is in render-origin-relative space (the
-    // model translation was rebased on the CPU and viewProj is relative, so
-    // the clip-space geometry above keeps full f32 precision at large
-    // worldspace offsets). Reconstruct the ABSOLUTE world position for the
-    // fragment shader's lighting / RT (the TLAS is in absolute world space) /
-    // fog math — those tolerate the residual ~0.015-unit uniform shift.
+    // #markarth-precision — `worldPos` is in render-origin-relative space in
+    // BOTH branches (rigid: the model translation was rebased on the CPU;
+    // skinned: the blended palette translation was rebased above, #1486) and
+    // viewProj is relative, so the clip-space geometry above keeps full f32
+    // precision at large worldspace offsets. Reconstruct the ABSOLUTE world
+    // position for the fragment shader's lighting / RT (the TLAS is in
+    // absolute world space) / fog math — those tolerate the residual
+    // ~0.015-unit uniform shift.
     fragWorldPos = worldPos.xyz + renderOrigin.xyz;
     fragTexIndex = inst.textureIndex;
     fragInstanceIndex = gl_InstanceIndex;

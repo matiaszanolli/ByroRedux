@@ -422,6 +422,41 @@ fn triangle_vert_uses_bones_prev_for_motion_vectors() {
     );
 }
 
+/// #1486 / REN2-01 regression. Bone palettes are uploaded in ABSOLUTE
+/// world space (`skin_vertices.comp` builds the skinned BLAS from the
+/// same palette and the TLAS is absolute), but `viewProj` has been
+/// camera-relative since the #markarth-precision cascade (36f66493).
+/// The skinned vertex branch must therefore rebase the blended palette
+/// matrix's translation by `renderOrigin` before projecting — without
+/// it every skinned mesh rasterizes displaced by the full render
+/// origin (≥4096 units, typically off-screen) whenever the camera
+/// leaves the `[0,4096)³` origin box, and the unconditional
+/// `fragWorldPos = worldPos + renderOrigin` double-adds the origin
+/// for the skinned fragments that do remain visible.
+///
+/// Static source check (no `glslangValidator` dependency): both the
+/// current- and previous-frame blended matrices must subtract
+/// `renderOrigin` in the skinned branch.
+#[test]
+fn triangle_vert_skinned_branch_rebases_render_origin() {
+    let src = include_str!("../../../shaders/triangle.vert");
+    assert!(
+        src.contains("xform[3].xyz -= renderOrigin.xyz"),
+        "triangle.vert: the skinned branch must rebase the blended \
+             bone-palette matrix translation by `renderOrigin` \
+             (`xform[3].xyz -= renderOrigin.xyz`) so skinned geometry \
+             projects in the same render-origin-relative space as the \
+             rigid path (#1486 / REN2-01)."
+    );
+    assert!(
+        src.contains("xformPrev[3].xyz -= renderOrigin.xyz"),
+        "triangle.vert: the previous-frame blended matrix must get \
+             the same `renderOrigin` rebase as `xform` — otherwise \
+             skinned motion vectors are off by the full render origin \
+             (#1486 / REN2-01)."
+    );
+}
+
 /// Regression for #575 / SH-1. The global `GlobalVertices` SSBO
 /// is declared as `float vertexData[]` so every read implicitly
 /// reinterprets the bytes as IEEE-754 float. Per the layout
