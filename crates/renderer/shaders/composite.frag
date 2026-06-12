@@ -43,7 +43,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 cloud_params_1; // cloud layer 1 (WTHR CNAM) — same packing as cloud_params
     vec4 cloud_params_2; // cloud layer 2 (WTHR ANAM) — same packing (M33.1)
     vec4 cloud_params_3; // cloud layer 3 (WTHR BNAM) — same packing (M33.1)
-    vec4 camera_pos;     // xyz = world position, w = unused. Fog distance origin (#428).
+    vec4 camera_pos;     // xyz = camera position in render-origin-RELATIVE space (matches inv_view_proj; the CPU subtracts render_origin at upload), w = unused. Fog distance origin (#428) + ray origin for screen_to_world_dir (#1490).
     mat4 inv_view_proj;  // inverse view-projection for ray reconstruction
     // Underwater post-FX: xyz = water deep-color tint (linear RGB),
     // w = camera depth below water surface (world units, >0 = under).
@@ -115,7 +115,14 @@ vec3 screen_to_world_dir(vec2 uv) {
     // keeps the result finite instead of producing NaN/inf that
     // would propagate into the sky / aerial-perspective branches.
     float w = max(abs(world.w), 1e-6);
-    return normalize(world.xyz / w);
+    // #1490 / REN2-05 — the ray direction runs from the CAMERA to the far-
+    // plane point, so subtract the camera position (same relative space as
+    // inv_view_proj). Pre-fix this returned the direction from the
+    // coordinate-space origin instead: with the camera up to ~7094 u from
+    // the relative origin against the 300000 far plane, sky/sun/cloud/haze
+    // directions skewed up to ~1.35° (≈75% of the sun disc's angular
+    // radius) and popped at every 4096-unit origin snap.
+    return normalize(world.xyz / w - params.camera_pos.xyz);
 }
 
 // Compute sky color from view direction.

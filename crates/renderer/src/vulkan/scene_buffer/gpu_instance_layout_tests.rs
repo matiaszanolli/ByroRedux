@@ -496,6 +496,27 @@ fn caustic_writers_rebase_render_origin_before_reprojection() {
     }
 }
 
+/// #1490 / REN2-05 regression. `screen_to_world_dir` must return the
+/// direction from the CAMERA to the unprojected far-plane point, not
+/// from the coordinate-space origin. `params.camera_pos` is uploaded in
+/// the same render-origin-relative space as `inv_view_proj` (draw.rs
+/// subtracts `render_origin` at the composite upload), so the subtraction
+/// is exact. Pre-fix the missing term skewed sky/sun/cloud/haze
+/// directions by up to ~1.35° (≈75% of the sun disc) and popped at
+/// every 4096-unit origin snap.
+#[test]
+fn composite_screen_to_world_dir_subtracts_camera_pos() {
+    let src = include_str!("../../../shaders/composite.frag");
+    assert!(
+        src.contains("normalize(world.xyz / w - params.camera_pos.xyz)"),
+        "composite.frag: `screen_to_world_dir` must subtract \
+             `params.camera_pos` from the unprojected far point before \
+             normalizing — without it the returned direction is measured \
+             from the coordinate-space origin and the sky dome swims / \
+             the sun disc misaligns vs `sun_dir` (#1490 / REN2-05)."
+    );
+}
+
 /// Regression for #575 / SH-1. The global `GlobalVertices` SSBO
 /// is declared as `float vertexData[]` so every read implicitly
 /// reinterprets the bytes as IEEE-754 float. Per the layout
