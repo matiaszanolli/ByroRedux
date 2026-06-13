@@ -2313,6 +2313,18 @@ void main() {
     // REFRACT_PASSTHRU_BUDGET declared inside the IOR block below.
     bool glassIORAllowed = isGlass && rtEnabled && !isWindow && rtLOD < RT_LOD_IOR;
     if (glassIORAllowed) {
+        // IOR-03 — the atomicAdd claims GLASS_RAY_COST UNCONDITIONALLY, then
+        // tests the returned value. Threads that lose the race (old + cost >
+        // budget) still leave their claim in the counter: there is no cheap
+        // lock-free "un-claim" after an atomicAdd, and a CAS retry loop would
+        // cost more contention than it saves for a counter that is zeroed
+        // every frame (reset_ray_budget, scene_buffer/descriptors.rs). The
+        // gate stays correct — rejected fragments fall to the Fresnel path —
+        // but `rayBudgetCount` overshoots GLASS_RAY_BUDGET by up to
+        // (in-flight rejected threads × GLASS_RAY_COST). The overshoot has no
+        // render effect; it only matters if a future telemetry/tuning overlay
+        // reads the counter back, in which case the CPU reader MUST clamp the
+        // displayed value to GLASS_RAY_BUDGET. No CPU code reads it today.
         uint old = atomicAdd(rayBudget.rayBudgetCount, GLASS_RAY_COST);
         glassIORAllowed = (old + GLASS_RAY_COST <= GLASS_RAY_BUDGET);
     }
