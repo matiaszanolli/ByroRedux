@@ -49,8 +49,11 @@
 // `maxPushConstantsSize ≥ 128` — no headroom remains):
 
 layout(push_constant) uniform WaterPush {
-    // x = time (seconds since cell load), y = WaterKind enum cast to
-    // float, z = foam_strength (0..1), w = ior (1.33 ~ 1.5)
+    // x = time (engine uptime in seconds — `TotalTime`, accumulated
+    //     since engine start and never reset on cell load; f32, so wave
+    //     animation quality degrades after many hours of uptime),
+    //     y = WaterKind enum cast to float, z = foam_strength (0..1),
+    //     w = ior (1.33 ~ 1.5)
     vec4 timing;
     // xyz = flow direction (unit), w = flow speed (world units / s)
     vec4 flow;
