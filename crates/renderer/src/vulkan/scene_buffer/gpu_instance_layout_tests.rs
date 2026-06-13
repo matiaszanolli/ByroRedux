@@ -35,27 +35,33 @@ fn gpu_instance_is_112_bytes_std430_compatible() {
     );
 }
 
-/// Regression for #1028 / R-D6-01. `GpuCamera` must stay 288 B
-/// — three `mat4` (192 B) plus six trailing `vec4` (96 B) for
-/// `position`, `flags`, `screen`, `fog`, `jitter`, `sky_tint`,
-/// `sun_direction` (added by #1210 Phase A+B scaffold).
+/// Regression for #1028 / R-D6-01, updated for #markarth-precision.
+/// `GpuCamera` must stay 336 B — three `mat4` (192 B) plus nine
+/// trailing `vec4` (144 B): `position`, `flags`, `screen`, `fog`,
+/// `jitter`, `sky_tint`, `sun_direction` (#1210 Phase A+B),
+/// `dof_params`, `render_origin` (#markarth-precision).
 /// Every shader that re-declares `CameraUBO` (`triangle.vert`,
 /// `triangle.frag`, `water.vert`, `water.frag`, `cluster_cull.comp`,
-/// `caustic_splat.comp`) must match this size — pre-#1028 the
-/// first and last two were one `vec4` short, which the test would
-/// not have caught (no Rust-side drift) but the audit did. This
+/// `caustic_splat.comp`) must match this size — pre-#1028 some
+/// were a `vec4` short, which this test would not have caught (no
+/// Rust-side drift) but the audit did; the `.spv`-level check is the
+/// `uniform_block_size_by_name` reflection pin in `reflect.rs`. This
 /// pin at least catches the Rust-side regression so the doc-
-/// comment stays honest.
+/// comment stays honest. (#1492 — an earlier revision of this doc
+/// named `ssao.comp`/`composite.frag` as CameraUBO readers; neither
+/// declares `CameraUBO` — they use their own param blocks in
+/// origin-relative space.)
 #[test]
 fn gpu_camera_is_336_bytes() {
     assert_eq!(
             size_of::<GpuCamera>(),
             336,
             "GpuCamera must be 336 B (320 B + 16 B render_origin vec4, #markarth-precision) to match \
-             the CameraUBO declaration in every shader that re-declares it. render_origin was \
-             APPENDED at the end, so shaders that don't read it keep their existing prefix; the 3 \
-             that do (triangle.vert, ssao.comp, composite.frag) must declare the full field list up \
-             to and including render_origin so std140 offsets line up."
+             the CameraUBO declaration in all 6 re-declaring shaders (triangle.vert, triangle.frag, \
+             water.vert, water.frag, cluster_cull.comp, caustic_splat.comp — each pinned against the \
+             shipped .spv by the reflect.rs uniform_block_size_by_name check). render_origin was \
+             APPENDED at the end; every re-declarer must carry the full field list up to and \
+             including render_origin so std140 offsets line up."
         );
 }
 

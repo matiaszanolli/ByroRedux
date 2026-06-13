@@ -299,9 +299,42 @@ pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
 /// the mesh isn't already an engine-synthesized kind.
 pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
 
+/// Cell-grid snap for the camera-relative render origin
+/// (#markarth-precision). The origin all GPU clip-space math is performed
+/// relative to is `floor(camera_pos / SNAP) * SNAP`, so it only moves when
+/// the camera crosses a 4096-unit cell boundary; on a crossing the renderer
+/// uploads an origin-corrected `prev_view_proj` so motion vectors stay
+/// valid (#1489). 4096 is the Gamebryo/Creation exterior cell edge length —
+/// the same grid the cell loader streams on.
+///
+/// Single source of truth (#1494 / REN2-09): consumed by the camera
+/// assembly in the `byroredux` binary (`render::camera::assemble_camera`)
+/// and by `context::draw::draw_frame`, which MUST agree on the origin for
+/// the rebased per-instance models and the uploaded matrices to line up.
+/// Pre-#1494 each site carried its own `4096.0` literal coupled only by a
+/// comment.
+pub const RENDER_ORIGIN_SNAP: f32 = 4096.0;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1494 / REN2-09 — the render-origin snap is the exterior cell edge
+    /// length; the cell loader streams on the same 4096-unit grid and the
+    /// `floor()` snap math in both consumers (`render::camera` in the
+    /// binary, `context::draw` here) assumes it. Changing it is a renderer-
+    /// wide retune (motion-vector correction, doc'd headroom bounds), not a
+    /// constant tweak — pin the value so it can't drift casually.
+    #[test]
+    fn render_origin_snap_is_exterior_cell_edge() {
+        assert_eq!(
+            RENDER_ORIGIN_SNAP, 4096.0,
+            "RENDER_ORIGIN_SNAP must equal the 4096-unit exterior cell edge \
+             — both the camera assembly and draw_frame snap the origin with \
+             it, and the #1489 prev_view_proj origin correction assumes \
+             grid-aligned jumps"
+        );
+    }
 
     /// #869 — every `INSTANCE_FLAG_*` bit must be distinct and must
     /// not collide with the render-layer slot (bits 4..5) or the

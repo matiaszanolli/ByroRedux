@@ -12,6 +12,7 @@
 
 use byroredux_core::ecs::{ActiveCamera, Camera, Transform, World};
 use byroredux_core::math::{Mat4, Vec3, Vec4};
+use byroredux_renderer::vulkan::scene_buffer::RENDER_ORIGIN_SNAP;
 
 /// 6-plane camera frustum, normalized so a plane-distance comparison
 /// against radius is direct. Built by [`assemble_camera`] from the
@@ -90,17 +91,15 @@ pub(super) struct CameraView {
     pub focus_dist: f32,
 }
 
-/// Cell-grid snap for the camera-relative render origin. Keeping the origin
-/// on the 4096-unit cell grid means it only moves when the camera crosses a
-/// cell boundary. A crossing does NOT reset TAA/SVGF temporal history —
-/// instead the renderer tracks `prev_render_origin` and uploads an
-/// origin-corrected previous view-projection
-/// (`prev_vp · translation(O₂ − O₁)`, see
-/// `origin_corrected_prev_view_proj` in `vulkan/context/draw.rs`), so motion
-/// vectors stay valid across crossings (#1489 / REN2-04).
-/// MUST match `RENDER_ORIGIN_SNAP` in `vulkan/context/draw.rs` (#1494
-/// tracks hoisting the duplicate into a shared constant).
-const RENDER_ORIGIN_SNAP: f32 = 4096.0;
+// Cell-grid snap for the camera-relative render origin: the shared
+// `RENDER_ORIGIN_SNAP` imported above (#1494 — single source of truth with
+// `context::draw::draw_frame`, which must agree on the origin). Keeping the
+// origin on the 4096-unit cell grid means it only moves when the camera
+// crosses a cell boundary. A crossing does NOT reset TAA/SVGF temporal
+// history — the renderer tracks `prev_render_origin` and uploads an
+// origin-corrected previous view-projection (`prev_vp · translation(O₂ −
+// O₁)`, see `origin_corrected_prev_view_proj` in `vulkan/context/draw.rs`),
+// so motion vectors stay valid across crossings (#1489 / REN2-04).
 
 /// Assemble the active camera's view-projection matrices + frustum.
 ///

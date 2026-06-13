@@ -570,19 +570,21 @@ impl VulkanContext {
         // 32-frame DOF period interleaves cleanly with the 16-frame TAA
         // period without correlated low-discrepancy gaps.
         // Camera-relative render origin (#markarth-precision). MUST use the
-        // same cell-grid snap (4096) and the same un-jittered `camera_pos`
-        // that `render::camera::assemble_camera` used to build the RELATIVE
-        // `view_proj`, so the rebased per-instance models below and the
-        // uploaded matrices agree on the origin. Uploaded `view_proj` /
-        // `inv_view_proj` are relative; the vertex shader reconstructs the
-        // absolute world position as `worldPos_rel + render_origin`, and every
-        // deferred pass that reconstructs world from `inv_view_proj` (ssao,
-        // composite, cluster_cull, volumetrics) adds it back.
-        const RENDER_ORIGIN_SNAP: f32 = 4096.0; // MUST match render/camera.rs
+        // shared `RENDER_ORIGIN_SNAP` (#1494) and the same un-jittered
+        // `camera_pos` that `render::camera::assemble_camera` used to build
+        // the RELATIVE `view_proj`, so the rebased per-instance models below
+        // and the uploaded matrices agree on the origin. Uploaded `view_proj`
+        // / `inv_view_proj` are relative; the vertex shader reconstructs the
+        // absolute world position as `worldPos_rel + renderOrigin`. Passes
+        // that reconstruct world from an inverse VP either add the origin
+        // back where absolute space is required (cluster_cull,
+        // caustic_splat, volumetrics_inject) or stay fully relative with a
+        // relative camera position (ssao, composite — origin-invariant
+        // differences only). See `GpuCamera::render_origin` (#1492).
         let render_origin = (byroredux_core::math::Vec3::from_array(camera_pos)
-            / RENDER_ORIGIN_SNAP)
+            / scene_buffer::RENDER_ORIGIN_SNAP)
             .floor()
-            * RENDER_ORIGIN_SNAP;
+            * scene_buffer::RENDER_ORIGIN_SNAP;
         let (effective_vp, effective_cam_pos) = if dof.aperture > 0.0 {
             let idx = (self.frame_counter % 32) + 1;
             let (disk_u, disk_v) = concentric_disk_sample(halton(idx, 5), halton(idx, 7));

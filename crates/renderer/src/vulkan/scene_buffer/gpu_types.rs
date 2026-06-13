@@ -265,11 +265,21 @@ pub struct GpuCamera {
     /// and reconstructs the ABSOLUTE world position as
     /// `worldPos_rel + render_origin` for lighting / RT / fog (which tolerate
     /// the residual ~0.015 uniform shift). `render_origin` is snapped to the
-    /// cell grid (4096) so it is stable between cell crossings — keeping
-    /// motion vectors valid (the prev frame used the same origin) except on a
-    /// crossing, where temporal continuity is already reset by streaming.
-    /// Shaders that reconstruct world position from `inv_view_proj`
-    /// (`ssao.comp`, `composite.frag`) must add `render_origin` back.
+    /// cell grid ([`RENDER_ORIGIN_SNAP`](super::constants::RENDER_ORIGIN_SNAP))
+    /// so it is stable between cell crossings; on a crossing the uploaded
+    /// `prev_view_proj` is origin-corrected (`prev_vp · translation(O₂ − O₁)`,
+    /// #1489) so motion vectors stay valid — temporal history is NOT reset.
+    ///
+    /// Consumers (#1492): every `CameraUBO` re-declarer carries the field for
+    /// layout parity; the ones that USE it are `triangle.vert` (skinned-path
+    /// rebase + absolute `fragWorldPos`), `water.vert` (absolute `vWorldPos`),
+    /// `cluster_cull.comp` + `caustic_splat.comp` (absolute reconstruction),
+    /// and `water.frag` / `caustic_splat.comp` again on the deposit
+    /// re-projection side (#1488). `ssao.comp` and `composite.frag` do NOT
+    /// declare `CameraUBO` at all — they take their own param blocks and stay
+    /// fully origin-relative (the CPU supplies the camera position minus
+    /// `render_origin`); `volumetrics_inject.comp` receives the origin via
+    /// `VolumetricsParams`.
     pub render_origin: [f32; 4],
 }
 
