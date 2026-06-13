@@ -499,7 +499,12 @@ pub mod material_flag {
 
     /// "This material came from a BGSM (or BGEM) external file" — set
     /// on every BGSM-sourced surface regardless of the `BgsmFile.pbr`
-    /// flag. Disambiguates Bethesda's two shading conventions:
+    /// flag. Telemetry/provenance only: it records which of Bethesda's
+    /// two shading conventions the CPU translation followed, but the
+    /// shader never reads it (it is format-agnostic and consumes only
+    /// the resolved `Material.{metalness,roughness}` — see
+    /// `shader_constants_data.rs`). The two conventions, resolved
+    /// CPU-side in `merge_bgsm_into_mesh` + `translate_material`:
     ///   * BGSM-authored (Skyrim SE / FO4 / FO76) → spec-glossiness:
     ///     `F0 = specular_color * specular_mult` directly, no metalness
     ///     mix. Vanilla content uniformly authors per-material spec_color
@@ -523,7 +528,9 @@ pub mod material_flag {
     /// in vanilla content (sampled across 793 metal/crate/cargo
     /// vanilla FO4 BGSMs in `Fallout4 - Materials.ba2`: 0 with
     /// pbr=true), so `BGSM_PBR` alone is a dead gate. `BGSM_AUTHORED`
-    /// is the load-bearing flag for the spec-glossiness routing.
+    /// records that the spec-glossiness translation ran, but the routing
+    /// itself is the CPU-side `metalness_override` / `roughness_override`
+    /// write — not a GPU branch on this bit.
     pub const BGSM_AUTHORED: u32 = 1 << 10;
 }
 

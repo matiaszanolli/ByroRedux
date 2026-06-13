@@ -198,9 +198,14 @@ pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMes
     // `BGSM_AUTHORED` — set when `merge_bgsm_into_mesh` resolved a
     // BGSM/BGEM file successfully (independent of `bgsm.pbr`, which
     // vanilla FO4 virtually never authors — sampled: 0 of 793
-    // metal/cargo BGSMs in `Fallout4 - Materials.ba2`). Drives the
-    // spec-glossiness F0 derivation in the fragment shader; see
-    // `material_flag::BGSM_AUTHORED` for the rationale.
+    // metal/cargo BGSMs in `Fallout4 - Materials.ba2`). The
+    // spec-glossiness → metallic-roughness translation is entirely
+    // CPU-side (`merge_bgsm_into_mesh` writes `metalness_override` /
+    // `roughness_override`, then `translate_material` resolves them into
+    // `Material.{metalness,roughness}`); the shader is format-agnostic
+    // and does NOT branch on this flag. The bit rides through to the GPU
+    // material for debug-server inspection only — see
+    // `material_flag::BGSM_AUTHORED` and `shader_constants_data.rs`.
     if mesh.from_bgsm {
         flags |= BGSM_AUTHORED;
     }
