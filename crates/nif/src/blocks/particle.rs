@@ -232,6 +232,28 @@ pub fn parse_age_death_modifier(stream: &mut NifStream) -> io::Result<NiPSysBloc
     })
 }
 
+/// `NiPSysPartSpawnModifier` (#1444 / LC-D9-01) — a WorldShift-specific
+/// `NiPSysModifier` subclass that only ever appears in v10.2.0.1–10.4.0.1
+/// content (per nif.xml `versions="V10_2_0_1 V10_3_0_1 V10_4_0_1"`), i.e.
+/// strictly below the Oblivion floor. Pre-fix it fell to the catch-all,
+/// which hard-errors on any sizeless (block_sizes-less) header — that's
+/// every v10.x NIF — and truncated the rest of the file (the #1332 class).
+///
+/// It is NOT a base-only modifier: nif.xml adds three trailing fields
+/// after the shared base, so a `parse_modifier_only` arm (as the audit
+/// suggested) would under-read by 12 bytes and corrupt the stream on
+/// exactly the sizeless eras where this block lives. Read them all:
+///   base + particles_per_second(f32) + time(f32) + spawner_ref(ref).
+pub fn parse_part_spawn_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
+    let _base = NiPSysModifierBase::parse(stream)?;
+    let _particles_per_second = stream.read_f32_le()?;
+    let _time = stream.read_f32_le()?;
+    let _spawner_ref = stream.read_block_ref()?;
+    Ok(NiPSysBlock {
+        original_type: "NiPSysPartSpawnModifier".to_string(),
+    })
+}
+
 /// NiPSysBombModifier: base + bomber_ref + axis + decay + delta_v + decay_type + symmetry_type
 pub fn parse_bomb_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
@@ -1668,6 +1690,36 @@ mod tests {
             .expect("Oblivion NiPSysSphereEmitter should parse cleanly post-#1239");
         assert_eq!(stream.position() as usize, d.len());
         assert_eq!(block.original_type, "NiPSysSphereEmitter");
+    }
+
+    /// Regression: #1444 / LC-D9-01 — `NiPSysPartSpawnModifier` is a
+    /// WorldShift-only (v10.2–10.4) modifier with three trailing fields
+    /// (Particles Per Second, Time, Spawner ref) past the shared base. It
+    /// must consume base + 12 bytes; a base-only parse would under-read by
+    /// 12 B and cascade-truncate the rest of the sizeless v10.x NIF (the
+    /// #1332 ceiling). The inline-string base layout is identical at v10.x
+    /// (below the string-table threshold), so `modifier_base_bytes_oblivion`
+    /// is reused.
+    #[test]
+    fn parse_part_spawn_modifier_consumes_base_plus_three_fields() {
+        let header = make_header_oblivion();
+        let mut d = modifier_base_bytes_oblivion();
+        d.extend_from_slice(&40.0f32.to_le_bytes()); // particles_per_second
+        d.extend_from_slice(&0.5f32.to_le_bytes()); // time
+        d.extend_from_slice(&(-1i32).to_le_bytes()); // spawner ref
+
+        // 13 base + 4 + 4 + 4 = 25 bytes.
+        assert_eq!(d.len(), 25);
+
+        let mut stream = NifStream::new(&d, &header);
+        let block = parse_part_spawn_modifier(&mut stream)
+            .expect("NiPSysPartSpawnModifier should parse base + 3 fields");
+        assert_eq!(
+            stream.position() as usize,
+            d.len(),
+            "must consume base + 12 B (a base-only parse would stop 12 B short)"
+        );
+        assert_eq!(block.original_type, "NiPSysPartSpawnModifier");
     }
 
     /// Regression: #1507 — at v10.x (< 10.4.0.1) the emitter base must

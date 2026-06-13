@@ -967,6 +967,11 @@ fn parse_block_inner(
             "NiPSysPositionModifier",
         )?)),
         "NiPSysAgeDeathModifier" => Ok(Box::new(particle::parse_age_death_modifier(stream)?)),
+        // #1444 / LC-D9-01 — WorldShift-only (v10.2–10.4) spawn modifier.
+        // Byte-exact parser (base + 3 fields), NOT base-only: the block
+        // carries trailing fields and lives in sizeless v10.x NIFs where
+        // a short read truncates the rest of the file (the #1332 class).
+        "NiPSysPartSpawnModifier" => Ok(Box::new(particle::parse_part_spawn_modifier(stream)?)),
         "NiPSysBombModifier" => Ok(Box::new(particle::parse_bomb_modifier(stream)?)),
         "NiPSysBoundUpdateModifier" => Ok(Box::new(particle::parse_bound_update_modifier(stream)?)),
         "NiPSysColliderManager" => Ok(Box::new(particle::parse_collider_manager(stream)?)),
