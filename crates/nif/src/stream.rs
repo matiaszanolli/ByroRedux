@@ -582,6 +582,17 @@ impl<'a> NifStream<'a> {
         let y = self.read_f32_le()?;
         let z = self.read_f32_le()?;
         let scale = self.read_f32_le()?;
+        // `TRS Valid` — bool[3] present only `until=10.1.0.109` (nif.xml).
+        // Consumed for stream-position correctness on old Gamebryo content
+        // (e.g. Oblivion's 10.1.0.106 first-person skeleton, whose every
+        // NiTransformInterpolator carries the 3 trailing bytes); the engine
+        // treats all components as valid, so the flags are read-and-discarded.
+        // Absent on all retail Bethesda versions (20.0.0.x / 20.2.0.7). (#1506)
+        if self.header.version.has_quat_transform_trs_valid() {
+            let _trans_valid = self.read_bool()?;
+            let _rot_valid = self.read_bool()?;
+            let _scale_valid = self.read_bool()?;
+        }
         Ok(NiQuatTransform {
             translation,
             rotation: [w, x, y, z],

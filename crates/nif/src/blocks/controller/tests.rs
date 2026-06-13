@@ -67,6 +67,32 @@ fn parse_single_interp_controller_30_bytes() {
     assert_eq!(ctrl.interpolator_ref.index(), Some(5));
 }
 
+/// #1506 — on old Gamebryo content in [10.1.0.104, 10.1.0.108] the
+/// `NiInterpController` layer inserts a 1-byte `Manager Controlled`
+/// bool between the `NiTimeController` base and the
+/// `NiSingleInterpController.Interpolator` ref. Pre-fix the parser
+/// skipped it, drifting +1 byte per controller and cascade-truncating
+/// the rest of Oblivion's `_1stperson\skeleton.nif` (10.1.0.106). The
+/// gate is a no-op on retail content (covered by the 30-byte test above
+/// at v20.2.0.7).
+#[test]
+fn parse_single_interp_controller_reads_manager_controlled_on_old_gamebryo() {
+    let mut header = make_header_fnv();
+    header.version = NifVersion::V10_1_0_106;
+    let mut data = Vec::new();
+    write_time_controller_base(&mut data); // 26 B
+    data.push(1u8); // NiInterpController.Manager Controlled = true (1 B)
+    data.extend_from_slice(&5i32.to_le_bytes()); // interpolator_ref (4 B)
+    assert_eq!(data.len(), 31);
+
+    let mut stream = NifStream::new(&data, &header);
+    let ctrl = NiSingleInterpController::parse(&mut stream).unwrap();
+    // 31, not 30: the Manager Controlled byte was consumed, so the
+    // interpolator ref read from the correct offset.
+    assert_eq!(stream.position(), 31);
+    assert_eq!(ctrl.interpolator_ref.index(), Some(5));
+}
+
 /// Regression for #551 — `bhkBlendController` must parse as
 /// `NiTimeController` base (26 B) + `Keys: uint` (4 B) = 30 B
 /// total per nif.xml line 3927. Pre-fix this block had no dispatch

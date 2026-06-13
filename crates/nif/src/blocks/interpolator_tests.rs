@@ -54,6 +54,43 @@ fn parse_transform_interpolator() {
     assert_eq!(stream.position(), 36);
 }
 
+/// #1506 — `NiQuatTransform` carries a trailing `TRS Valid` bool[3]
+/// (3 bytes) `until=10.1.0.109` (nif.xml). On old Gamebryo content
+/// (Oblivion's 10.1.0.106 first-person skeleton) every
+/// `NiTransformInterpolator` ships those 3 bytes; pre-fix the reader
+/// skipped them, under-reading by 3 and drifting the following NiNode
+/// into garbage. The byte budget here is 32 (transform) + 3 (TRS valid)
+/// + 4 (data ref) = 39, vs 36 on the retail path above.
+#[test]
+fn parse_transform_interpolator_reads_trs_valid_on_old_gamebryo() {
+    let mut header = make_header_fnv();
+    header.version = NifVersion::V10_1_0_106;
+    let mut data = Vec::new();
+    // NiQuatTransform: translation + identity quat + scale (32 B).
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    data.extend_from_slice(&2.0f32.to_le_bytes());
+    data.extend_from_slice(&3.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&0.0f32.to_le_bytes());
+    data.extend_from_slice(&1.0f32.to_le_bytes());
+    // TRS Valid bool[3] — present until 10.1.0.109 (3 B).
+    data.extend_from_slice(&[1u8, 1u8, 1u8]);
+    // data_ref: 7 (4 B).
+    data.extend_from_slice(&7i32.to_le_bytes());
+    assert_eq!(data.len(), 39);
+
+    let mut stream = NifStream::new(&data, &header);
+    let interp = NiTransformInterpolator::parse(&mut stream).unwrap();
+    assert_eq!(interp.transform.translation.x, 1.0);
+    assert_eq!(interp.transform.scale, 1.0);
+    // The 3 TRS-valid bytes were consumed, so the data ref read from the
+    // correct offset (7, not a value reinterpreted from the valid bytes).
+    assert_eq!(interp.data_ref.index(), Some(7));
+    assert_eq!(stream.position(), 39);
+}
+
 #[test]
 fn parse_transform_data_linear_rotation() {
     let header = make_header_fnv();

@@ -65,6 +65,30 @@ impl NiTimeControllerBase {
     }
 }
 
+/// Parse the `NiInterpController` abstract layer: the `NiTimeController`
+/// base (26 B) plus the `Manager Controlled` 1-byte bool that
+/// `NiInterpController` inserts `since="10.1.0.104" until="10.1.0.108"`
+/// (nif.xml), between the base and the `NiSingleInterpController.Interpolator`
+/// ref. The flag value is consumed for stream-position correctness only —
+/// the engine does not yet act on controller-manager sequencing — so it is
+/// read-and-discarded rather than threaded into every controller struct.
+///
+/// On all retail Bethesda versions (Oblivion 20.0.0.x, FO3+ 20.2.0.7) the
+/// gate is false and this is exactly `NiTimeControllerBase::parse`; the bool
+/// only appears on old Gamebryo content in the 10.1.0.104–108 band (e.g.
+/// Oblivion's `_1stperson\skeleton.nif`). Used by every NiInterpController
+/// descendant: `NiSingleInterpController` (and its whole subtree),
+/// `NiMultiTargetTransformController`, `NiGeomMorpherController`.
+/// `NiMorphController` is `until=10.0.1.0` (disjoint from the bool's
+/// `since=10.1.0.104`), so it correctly stays on the plain base. (#1506)
+fn parse_interp_controller_base(stream: &mut NifStream) -> io::Result<NiTimeControllerBase> {
+    let base = NiTimeControllerBase::parse(stream)?;
+    if stream.version().has_interp_controller_manager_controlled() {
+        let _manager_controlled = stream.read_bool()?;
+    }
+    Ok(base)
+}
+
 // ── NiTimeController (fallback for unknown controller subtypes) ────────
 
 /// Stub for unknown controller types. Reads only the base 26 bytes.
@@ -226,7 +250,8 @@ pub struct NiSingleInterpController {
 
 impl NiSingleInterpController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let base = NiTimeControllerBase::parse(stream)?;
+        // NiInterpController layer (base + Manager Controlled bool, #1506).
+        let base = parse_interp_controller_base(stream)?;
         // NiSingleInterpController: interpolator ref (since 10.1.0.104)
         let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
             stream.read_block_ref()?

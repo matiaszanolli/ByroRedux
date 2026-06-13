@@ -89,6 +89,14 @@ impl NifVersion {
     /// v10.1.0.106 — NiLight `switch_state` field added.
     /// High-frequency boundary (~6 call sites).
     pub const V10_1_0_106: Self = Self(0x0A01006A);
+    /// v10.1.0.108 — inclusive upper bound of the `NiInterpController`
+    /// `Manager Controlled` bool (`since=10.1.0.104 until=10.1.0.108`). See
+    /// `has_interp_controller_manager_controlled`. (#1506)
+    pub const V10_1_0_108: Self = Self(0x0A01006C);
+    /// v10.1.0.109 — inclusive upper bound of the `NiQuatTransform`
+    /// `TRS Valid` bool[3] (`until=10.1.0.109`). See
+    /// `has_quat_transform_trs_valid`. (#1506)
+    pub const V10_1_0_109: Self = Self(0x0A01006D);
     /// v10.1.0.113 — one below the NiGeometryData bsver gate.
     pub const V10_1_0_113: Self = Self(0x0A010071);
     /// v10.1.0.114 — NiGeometryData data-flags layout changes.
@@ -203,6 +211,31 @@ impl NifVersion {
     /// `NiSingleInterpController.Interpolator` ref. (#1337)
     pub fn has_keyframe_controller_data(self) -> bool {
         self <= Self::V10_1_0_103
+    }
+
+    /// `NiInterpController.Manager Controlled` is a 1-byte `bool` present
+    /// only `since="10.1.0.104" until="10.1.0.108"` (nif.xml, both ends
+    /// inclusive). It sits between the `NiTimeController` base and the
+    /// `NiSingleInterpController.Interpolator` ref, so every
+    /// NiInterpController descendant in that narrow band carries it.
+    /// Retail Bethesda content (Oblivion 20.0.0.x, FO3+ 20.2.0.7) is far
+    /// above the upper bound, so this is false everywhere except old
+    /// Gamebryo content (e.g. Oblivion's `_1stperson\skeleton.nif`,
+    /// file-version 10.1.0.106). (#1506)
+    pub fn has_interp_controller_manager_controlled(self) -> bool {
+        self >= Self::V10_1_0_104 && self <= Self::V10_1_0_108
+    }
+
+    /// `NiQuatTransform.TRS Valid` is a trailing `bool[3]` (3 × 1-byte
+    /// bool, one per Translation/Rotation/Scale component) present only
+    /// `until="10.1.0.109"` (nif.xml, inclusive). After it the struct is
+    /// just translation + rotation + scale. Retail Bethesda content
+    /// (Oblivion 20.0.0.x, FO3+ 20.2.0.7) is above the bound, so the bytes
+    /// are absent there; they appear on old Gamebryo content such as
+    /// Oblivion's `_1stperson\skeleton.nif` (10.1.0.106), where every
+    /// `NiTransformInterpolator` carries them. (#1506)
+    pub fn has_quat_transform_trs_valid(self) -> bool {
+        self <= Self::V10_1_0_109
     }
 
     /// `bhkRigidBody` below `10.1.0.0` uses a distinct wire layout: it
@@ -706,6 +739,34 @@ mod tests {
         // (until=10.1.0.0, inclusive).
         let b = NifVersion::V10_1_0_0;
         assert!(b.has_mopp_offset() && b.has_skin_data_partition_ref());
+    }
+
+    /// #1506 — the two narrow 10.1.0.x sub-band predicates that gate the
+    /// `NiInterpController.Manager Controlled` bool (since=10.1.0.104
+    /// until=10.1.0.108) and the `NiQuatTransform.TRS Valid` bool[3]
+    /// (until=10.1.0.109). Both must be true on the first-person
+    /// skeleton's 10.1.0.106 and false on all retail Bethesda versions.
+    #[test]
+    fn old_gamebryo_10_1_sub_band_predicates() {
+        let skel = NifVersion::V10_1_0_106; // _1stperson\skeleton.nif
+        let obliv = NifVersion::V20_0_0_5;
+        let fo3 = NifVersion::V20_2_0_7;
+
+        // Manager Controlled: inclusive [10.1.0.104, 10.1.0.108].
+        assert!(skel.has_interp_controller_manager_controlled());
+        assert!(NifVersion::V10_1_0_104.has_interp_controller_manager_controlled());
+        assert!(NifVersion::V10_1_0_108.has_interp_controller_manager_controlled());
+        assert!(!NifVersion::V10_1_0_109.has_interp_controller_manager_controlled());
+        assert!(!NifVersion::V10_1_0_103.has_interp_controller_manager_controlled());
+        assert!(!obliv.has_interp_controller_manager_controlled());
+        assert!(!fo3.has_interp_controller_manager_controlled());
+
+        // TRS Valid: inclusive upper bound 10.1.0.109.
+        assert!(skel.has_quat_transform_trs_valid());
+        assert!(NifVersion::V10_1_0_109.has_quat_transform_trs_valid());
+        assert!(!NifVersion::V10_1_0_113.has_quat_transform_trs_valid());
+        assert!(!obliv.has_quat_transform_trs_valid());
+        assert!(!fo3.has_quat_transform_trs_valid());
     }
 
     #[test]

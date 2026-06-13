@@ -28,7 +28,8 @@ pub struct MorphWeight {
 
 impl NiGeomMorpherController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let base = NiTimeControllerBase::parse(stream)?;
+        // NiInterpController layer (base + Manager Controlled bool, #1506).
+        let base = parse_interp_controller_base(stream)?;
         let morpher_flags = stream.read_u16_le()?;
         let data_ref = stream.read_block_ref()?;
         let always_update = stream.read_u8()?;

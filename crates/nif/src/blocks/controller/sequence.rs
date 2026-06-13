@@ -13,7 +13,8 @@ pub struct NiMultiTargetTransformController {
 
 impl NiMultiTargetTransformController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let base = NiTimeControllerBase::parse(stream)?;
+        // NiInterpController layer (base + Manager Controlled bool, #1506).
+        let base = parse_interp_controller_base(stream)?;
         let num_extra_targets = stream.read_u16_le()? as u32;
         let mut extra_targets = stream.allocate_vec(num_extra_targets)?;
         for _ in 0..num_extra_targets {
