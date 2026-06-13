@@ -271,9 +271,23 @@ fn create_render_pass(
             vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
         );
 
+    // Outgoing dep — make the implicit EXTERNAL dependency explicit
+    // (EGUI-04). The egui RP is the last pass before present; without an
+    // out-dependency Vulkan synthesizes one
+    // (dstStage = BOTTOM_OF_PIPE, dstAccess = 0), but relying on that
+    // implicit edge is fragile. Declare the color write → present chain so
+    // the egui draw completes before the swapchain image is presented.
+    let out_dep = vk::SubpassDependency::default()
+        .src_subpass(0)
+        .dst_subpass(vk::SUBPASS_EXTERNAL)
+        .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+        .dst_stage_mask(vk::PipelineStageFlags::BOTTOM_OF_PIPE)
+        .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+        .dst_access_mask(vk::AccessFlags::empty());
+
     let attachments = [attachment];
     let subpasses = [subpass];
-    let dependencies = [in_dep];
+    let dependencies = [in_dep, out_dep];
     let info = vk::RenderPassCreateInfo::default()
         .attachments(&attachments)
         .subpasses(&subpasses)
