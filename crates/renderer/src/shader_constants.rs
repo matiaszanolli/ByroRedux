@@ -21,6 +21,29 @@ pub const VERTEX_STRIDE_BYTES: u64 = VERTEX_STRIDE_FLOATS as u64 * 4;
 mod tests {
     use super::*;
 
+    /// Single source of truth for the `DBG_*` debug-viz bit catalog,
+    /// shared by `generated_header_contains_all_defines` (value-pin) and
+    /// `triangle_frag_dbg_bits_not_redeclared` (no-shadow). Adding a bit
+    /// here covers BOTH contracts automatically — the divergence #1482
+    /// fixed (value-pin covered only 4 of 13 bits, so a `build.rs`
+    /// mis-value on the other 9 would ship silently) cannot recur. Keep in
+    /// emit order to match `build.rs`.
+    const DBG_BITS: &[(&str, u32)] = &[
+        ("DBG_BYPASS_POM", DBG_BYPASS_POM),
+        ("DBG_BYPASS_DETAIL", DBG_BYPASS_DETAIL),
+        ("DBG_VIZ_NORMALS", DBG_VIZ_NORMALS),
+        ("DBG_VIZ_TANGENT", DBG_VIZ_TANGENT),
+        ("DBG_BYPASS_NORMAL_MAP", DBG_BYPASS_NORMAL_MAP),
+        ("DBG_RESERVED_20", DBG_RESERVED_20),
+        ("DBG_VIZ_RENDER_LAYER", DBG_VIZ_RENDER_LAYER),
+        ("DBG_VIZ_GLASS_PASSTHRU", DBG_VIZ_GLASS_PASSTHRU),
+        ("DBG_DISABLE_SPECULAR_AA", DBG_DISABLE_SPECULAR_AA),
+        ("DBG_DISABLE_HALF_LAMBERT_FILL", DBG_DISABLE_HALF_LAMBERT_FILL),
+        ("DBG_BYPASS_VERTEX_COLOR", DBG_BYPASS_VERTEX_COLOR),
+        ("DBG_DISABLE_AO", DBG_DISABLE_AO),
+        ("DBG_LEGACY_LIGHT_ATTEN", DBG_LEGACY_LIGHT_ATTEN),
+    ];
+
     #[test]
     fn max_bones_per_mesh_matches_core() {
         assert_eq!(
@@ -67,10 +90,8 @@ mod tests {
             ("WATER_RIVER", format!("#define WATER_RIVER {WATER_RIVER}u")),
             ("WATER_RAPIDS", format!("#define WATER_RAPIDS {WATER_RAPIDS}u")),
             ("WATER_WATERFALL", format!("#define WATER_WATERFALL {WATER_WATERFALL}u")),
-            ("DBG_BYPASS_POM", format!("#define DBG_BYPASS_POM {DBG_BYPASS_POM}u")),
-            ("DBG_VIZ_NORMALS", format!("#define DBG_VIZ_NORMALS {DBG_VIZ_NORMALS}u")),
-            ("DBG_BYPASS_NORMAL_MAP", format!("#define DBG_BYPASS_NORMAL_MAP {DBG_BYPASS_NORMAL_MAP}u")),
-            ("DBG_DISABLE_HALF_LAMBERT_FILL", format!("#define DBG_DISABLE_HALF_LAMBERT_FILL {DBG_DISABLE_HALF_LAMBERT_FILL}u")),
+            // DBG_* bits are pinned below via the shared DBG_BITS catalog
+            // (all 13, not the 4 that used to live here) — see #1482.
             ("INSTANCE_FLAG_NON_UNIFORM_SCALE", format!("#define INSTANCE_FLAG_NON_UNIFORM_SCALE {INSTANCE_FLAG_NON_UNIFORM_SCALE}u")),
             ("INSTANCE_FLAG_ALPHA_BLEND", format!("#define INSTANCE_FLAG_ALPHA_BLEND {INSTANCE_FLAG_ALPHA_BLEND}u")),
             ("INSTANCE_FLAG_CAUSTIC_SOURCE", format!("#define INSTANCE_FLAG_CAUSTIC_SOURCE {INSTANCE_FLAG_CAUSTIC_SOURCE}u")),
@@ -89,6 +110,15 @@ mod tests {
             ("MAT_FLAG_EFFECT_LI_SHIFT", format!("#define MAT_FLAG_EFFECT_LI_SHIFT {MAT_FLAG_EFFECT_LI_SHIFT}u")),
             // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
         ] {
+            assert!(
+                header.contains(&expected),
+                "shader_constants.glsl missing or wrong value for {name}: expected `{expected}`",
+            );
+        }
+        // All 13 DBG_* bits, driven from the shared catalog so this
+        // value-pin can never again cover a subset (#1482).
+        for (name, value) in DBG_BITS {
+            let expected = format!("#define {name} {value}u");
             assert!(
                 header.contains(&expected),
                 "shader_constants.glsl missing or wrong value for {name}: expected `{expected}`",
@@ -197,32 +227,19 @@ mod tests {
     }
 
     /// TD4-206 / #1162 — `triangle.frag` must NOT redeclare any of the
-    /// 10 `DBG_*` bit flags as `const uint`. The `#define`d values from
-    /// the included `shader_constants.glsl` are the single source of
-    /// truth. A local `const uint DBG_FOO = 0xN u;` after `#include`
-    /// shadows the macro and breaks recompile-from-source (textually
-    /// substitutes to `const uint 1u = 0x1u;`). Positive coverage that
-    /// the value flows through correctly lives in
+    /// `DBG_*` bit flags (the shared `DBG_BITS` catalog) as `const uint`.
+    /// The `#define`d values from the included `shader_constants.glsl` are
+    /// the single source of truth. A local `const uint DBG_FOO = 0xN u;`
+    /// after `#include` shadows the macro and breaks recompile-from-source
+    /// (textually substitutes to `const uint 1u = 0x1u;`). Positive
+    /// coverage that the value flows through correctly lives in
     /// `generated_header_contains_all_defines` (verifies each `#define`
-    /// is emitted with the right value).
+    /// is emitted with the right value) — both tests now iterate the same
+    /// `DBG_BITS` list, so they cannot drift (#1482).
     #[test]
     fn triangle_frag_dbg_bits_not_redeclared() {
         let src = include_str!("../shaders/triangle.frag");
-        for name in [
-            "DBG_BYPASS_POM",
-            "DBG_BYPASS_DETAIL",
-            "DBG_VIZ_NORMALS",
-            "DBG_VIZ_TANGENT",
-            "DBG_BYPASS_NORMAL_MAP",
-            "DBG_RESERVED_20",
-            "DBG_VIZ_RENDER_LAYER",
-            "DBG_VIZ_GLASS_PASSTHRU",
-            "DBG_DISABLE_SPECULAR_AA",
-            "DBG_DISABLE_HALF_LAMBERT_FILL",
-            "DBG_BYPASS_VERTEX_COLOR",
-            "DBG_DISABLE_AO",
-            "DBG_LEGACY_LIGHT_ATTEN",
-        ] {
+        for (name, _) in DBG_BITS {
             let needle = format!("const uint {name}");
             assert!(
                 !src.contains(&needle),
