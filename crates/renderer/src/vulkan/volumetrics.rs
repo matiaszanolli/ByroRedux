@@ -147,7 +147,7 @@ pub const VOLUMETRIC_OUTPUT_CONSUMED: bool = false;
 /// an exponential per-slice `dt[]` array. std140 alignment: vec4 only.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct IntegrationParams {
+pub(crate) struct IntegrationParams {
     /// x = dt (m) = `DEFAULT_VOLUME_FAR / FROXEL_DEPTH`. y/z/w = unused.
     step: [f32; 4],
 }

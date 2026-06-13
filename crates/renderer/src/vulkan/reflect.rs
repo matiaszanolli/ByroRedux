@@ -468,6 +468,44 @@ mod tests {
         }
     }
 
+    /// Regression: #1493. The volumetrics UBOs grew a `render_origin`
+    /// vec4 for #markarth-precision but — unlike `CameraUBO` (#1447) —
+    /// had no committed-`.spv` block-size pin, only `validate_set_layout`
+    /// (binding shape, not block size). That is exactly the stale-`.spv`
+    /// drift mode that bit the DoF commit. Pin each volumetrics UBO's
+    /// std140 block size against the Rust struct it is uploaded from, the
+    /// same semantic way the camera test does (compiler-version-stable).
+    #[test]
+    fn volumetrics_ubo_sizes_match_host_structs_in_every_shader() {
+        use crate::vulkan::volumetrics::{IntegrationParams, VolumetricsParams};
+        // (shader, .spv, GLSL block name, expected host size)
+        let cases: &[(&str, &[u8], &str, u32)] = &[
+            (
+                "volumetrics_inject.comp",
+                include_bytes!("../../shaders/volumetrics_inject.comp.spv"),
+                "VolumetricsParams",
+                std::mem::size_of::<VolumetricsParams>() as u32,
+            ),
+            (
+                "volumetrics_integrate.comp",
+                include_bytes!("../../shaders/volumetrics_integrate.comp.spv"),
+                "IntegrationParams",
+                std::mem::size_of::<IntegrationParams>() as u32,
+            ),
+        ];
+        for (name, spv, block, expected) in cases {
+            let size = uniform_block_size_by_name(spv, block)
+                .unwrap_or_else(|e| panic!("{name}: reflect {block} failed: {e}"))
+                .unwrap_or_else(|| panic!("{name}: declares no {block} block"));
+            assert_eq!(
+                size, *expected,
+                "{name}.spv {block} is {size} B but the host struct is {expected} B — \
+                 the shader's committed .spv is stale; recompile it \
+                 (glslangValidator -V {name} -o {name}.spv from crates/renderer/shaders). See #1493."
+            );
+        }
+    }
+
     #[test]
     fn reflect_ssao_bindings() {
         // ssao.comp:
