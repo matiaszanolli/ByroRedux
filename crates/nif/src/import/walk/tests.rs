@@ -723,7 +723,7 @@ mod emitter_param_tests {
     //! poison the particle sim — `apply_emitter_params` copies every scalar
     //! straight into the `ParticleEmitter` preset.
     use super::super::extract_emitter_params;
-    use crate::blocks::particle::{EmitterBaseParams, NiPSysEmitter};
+    use crate::blocks::particle::{EmitterBaseParams, NiPSysEmitter, NiPSysGrowFadeModifier};
     use crate::scene::NifScene;
 
     fn scene_with_emitter(params: EmitterBaseParams) -> NifScene {
@@ -732,6 +732,17 @@ mod emitter_param_tests {
             params,
             original_type: "NiPSysBoxEmitter".to_string(),
         }));
+        scene
+    }
+
+    fn scene_with_emitter_and_scale(
+        params: EmitterBaseParams,
+        base_scale: Option<f32>,
+    ) -> NifScene {
+        let mut scene = scene_with_emitter(params);
+        scene
+            .blocks
+            .push(Box::new(NiPSysGrowFadeModifier { base_scale }));
         scene
     }
 
@@ -824,5 +835,32 @@ mod emitter_param_tests {
             }))
             .is_none()
         );
+    }
+
+    #[test]
+    fn valid_base_scale_passes_through() {
+        let got = extract_emitter_params(&scene_with_emitter_and_scale(sane_params(), Some(0.15)))
+            .expect("emitter with a valid positive base_scale must translate");
+        assert_eq!(got.base_scale, Some(0.15));
+    }
+
+    #[test]
+    fn bad_base_scale_drops_to_none_but_keeps_emitter() {
+        // NIFAL-S5 (#1434): a non-finite or non-positive grow/fade base_scale
+        // feeds `initial_radius × base_scale`. Drop just the modifier to
+        // `None` (→ ×1.0 default in systems/particle.rs) without rejecting an
+        // otherwise-valid emitter.
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let got =
+                extract_emitter_params(&scene_with_emitter_and_scale(sane_params(), Some(bad)))
+                    .unwrap_or_else(|| panic!("emitter must survive bad base_scale {bad}"));
+            assert_eq!(
+                got.base_scale, None,
+                "bad base_scale {bad} must drop to None (×1.0 default), not poison particle size"
+            );
+            // The emitter's own scalars stay intact.
+            assert_eq!(got.speed, 10.0);
+            assert_eq!(got.initial_radius, 2.0);
+        }
     }
 }

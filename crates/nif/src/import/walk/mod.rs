@@ -687,7 +687,13 @@ pub(super) fn extract_emitter_params(
         .find_map(|b| b.as_any().downcast_ref::<NiPSysEmitter>())?;
     let p = &emitter.params;
     // Pair the emitter base with the first grow/fade modifier's
-    // base_scale (size multiplier), if any.
+    // base_scale (size multiplier), if any. NIFAL-S5 (#1434) — reject a
+    // non-finite or non-positive raw scale here: it feeds `initial_radius ×
+    // base_scale` (systems/particle.rs), so 0.0/negative spawns zero-or-
+    // inverted-size particles and NaN/Inf poisons the product. Dropping just
+    // the modifier to `None` falls back to the ×1.0 default rather than
+    // rejecting the whole (otherwise valid) emitter — sibling of the
+    // NIFAL-S3 finite filter below.
     let base_scale = scene
         .blocks
         .iter()
@@ -695,7 +701,8 @@ pub(super) fn extract_emitter_params(
             b.as_any()
                 .downcast_ref::<crate::blocks::particle::NiPSysGrowFadeModifier>()
         })
-        .and_then(|m| m.base_scale);
+        .and_then(|m| m.base_scale)
+        .filter(|s| s.is_finite() && *s > 0.0);
     // NIFAL-S3 (#1411) — reject corrupt emitter scalars before they reach
     // `apply_emitter_params`, which copies every one straight into the
     // particle preset. A single non-finite value (NaN/Inf from a malformed
@@ -710,8 +717,7 @@ pub(super) fn extract_emitter_params(
         && p.declination_variation.is_finite()
         && p.initial_radius.is_finite()
         && p.life_span.is_finite()
-        && p.life_span_variation.is_finite()
-        && base_scale.is_none_or(f32::is_finite);
+        && p.life_span_variation.is_finite();
     if !(all_finite && p.life_span > 0.0 && p.initial_radius >= 0.0) {
         log::debug!(
             "Rejecting NiPSysEmitter params (non-finite or non-positive): \
