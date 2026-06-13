@@ -193,10 +193,19 @@ impl EguiPass {
             unsafe {
                 device.cmd_begin_render_pass(cmd, &rp_begin, vk::SubpassContents::INLINE);
             }
-            self.renderer
+            // Capture the draw result but DON'T `?`-bail here: the render
+            // pass is open, and an early return would leave the caller's
+            // command buffer with a dangling begin (the pending-screenshot
+            // copy + end_command_buffer that follow would then record
+            // inside an active RP — VUID-vkEndCommandBuffer-commandBuffer-00060,
+            // and an invalid buffer gets submitted). Always balance the
+            // begin with an end first, then propagate.
+            let draw_result = self
+                .renderer
                 .cmd_draw(cmd, self.extent, output.pixels_per_point, &primitives)
-                .map_err(|e| anyhow!("egui cmd_draw: {e:?}"))?;
+                .map_err(|e| anyhow!("egui cmd_draw: {e:?}"));
             unsafe { device.cmd_end_render_pass(cmd) };
+            draw_result?;
         }
 
         // 5. Stash this frame's frees for next frame.
