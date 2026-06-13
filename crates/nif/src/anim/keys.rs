@@ -11,15 +11,43 @@ pub fn is_flt_max(v: f32) -> bool {
     v.abs() >= FLT_MAX_SENTINEL
 }
 
+/// A keyframe-stream scalar is sane when it is finite and below the
+/// FLT_MAX sentinel. The static-pose / B-spline-fallback paths already
+/// gate on `is_flt_max` (`transform.rs`, `bspline.rs`); the mainline
+/// keyframe converters here copy raw NIF floats, so a corrupt value
+/// (NaN / ±inf / ±FLT_MAX) would otherwise reach the sampler and poison
+/// the bone/shader uniform — a NaN skinning matrix that vanishes the
+/// mesh (#1443, same finite-guard family as #772 / #1434 / #1409).
+pub fn is_key_value_sane(v: f32) -> bool {
+    v.is_finite() && !is_flt_max(v)
+}
+
+/// Clamp a Hermite tangent component: a non-finite / sentinel tangent
+/// makes the Quadratic basis emit NaN even when the bracketing key
+/// values are clean, so collapse it to 0 (a locally-linear segment)
+/// rather than dropping the whole key. See [`is_key_value_sane`].
+fn sane_tangent(v: f32) -> f32 {
+    if is_key_value_sane(v) {
+        v
+    } else {
+        0.0
+    }
+}
+
 pub fn convert_vec3_keys(group: &KeyGroup<Vec3Key>) -> (Vec<TranslationKey>, KeyType) {
     let keys = group
         .keys
         .iter()
+        // #1443 — drop keys whose value triple is non-finite / FLT_MAX;
+        // the sampler interpolates across the gap (or falls back to the
+        // bind pose if every key is dropped). Tangents are clamped, not
+        // dropped, so a single bad tangent doesn't discard a clean key.
+        .filter(|k| k.value.iter().all(|&c| is_key_value_sane(c)))
         .map(|k| TranslationKey {
             time: k.time,
             value: zup_to_yup_pos(k.value),
-            forward: zup_to_yup_pos(k.tangent_forward),
-            backward: zup_to_yup_pos(k.tangent_backward),
+            forward: zup_to_yup_pos(k.tangent_forward.map(sane_tangent)),
+            backward: zup_to_yup_pos(k.tangent_backward.map(sane_tangent)),
             tbc: k.tbc,
         })
         .collect();
@@ -36,6 +64,10 @@ pub fn convert_quat_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyType) 
     let keys = data
         .rotation_keys
         .iter()
+        // #1443 — drop keys whose quaternion has any non-finite / FLT_MAX
+        // component; a NaN rotation propagates straight into the bone
+        // matrix. Empty result → channel falls back to the bind pose.
+        .filter(|k| k.value.iter().all(|&c| is_key_value_sane(c)))
         .map(|k| RotationKey {
             time: k.time,
             value: zup_to_yup_quat(k.value),
@@ -69,7 +101,7 @@ pub fn convert_xyz_euler_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyT
 
     let keys: Vec<RotationKey> = times
         .iter()
-        .map(|&OrderedF32(time)| {
+        .filter_map(|&OrderedF32(time)| {
             let x = sample_float_key_group(&xyz[0], time);
             let y = sample_float_key_group(&xyz[1], time);
             let z = sample_float_key_group(&xyz[2], time);
@@ -80,11 +112,18 @@ pub fn convert_xyz_euler_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyT
             let qw = euler_to_quat_wxyz(x, y, z);
             let yup = zup_to_yup_quat(qw);
 
-            RotationKey {
+            // #1443 — a non-finite euler sample (NaN / ±inf) makes
+            // `sin_cos` emit NaN and poisons the quaternion; drop the
+            // sample rather than bake a NaN rotation into the bone matrix.
+            if !yup.iter().all(|&c| is_key_value_sane(c)) {
+                return None;
+            }
+
+            Some(RotationKey {
                 time,
                 value: yup,
                 tbc: None, // Euler→quat bakes interpolation; SLERP between samples
-            }
+            })
         })
         .collect();
 
@@ -183,11 +222,14 @@ pub fn convert_float_keys(group: &KeyGroup<FloatKey>) -> (Vec<ScaleKey>, KeyType
     let keys = group
         .keys
         .iter()
+        // #1443 — drop non-finite / FLT_MAX scale values (a NaN scale
+        // collapses or explodes the skinning matrix); clamp bad tangents.
+        .filter(|k| is_key_value_sane(k.value))
         .map(|k| ScaleKey {
             time: k.time,
             value: k.value,
-            forward: k.tangent_forward,
-            backward: k.tangent_backward,
+            forward: sane_tangent(k.tangent_forward),
+            backward: sane_tangent(k.tangent_backward),
             tbc: k.tbc,
         })
         .collect();

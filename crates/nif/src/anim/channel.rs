@@ -60,6 +60,9 @@ pub fn extract_float_channel_at(
             .keys
             .keys
             .iter()
+            // #1443 — drop non-finite / FLT_MAX float-channel values
+            // (alpha / UV / shader-float) before they reach the sampler.
+            .filter(|k| is_key_value_sane(k.value))
             .map(|k| AnimFloatKey {
                 time: k.time,
                 value: k.value,
@@ -149,6 +152,9 @@ pub fn resolve_color_keys_at(scene: &NifScene, mut interp_idx: usize) -> Vec<Ani
                     .keys
                     .keys
                     .iter()
+                    // #1443 — drop keys with a non-finite / FLT_MAX RGB
+                    // component (alpha is discarded by the channel shape).
+                    .filter(|k| k.value[..3].iter().all(|&c| is_key_value_sane(c)))
                     .map(|k| AnimColorKey {
                         time: k.time,
                         value: [k.value[0], k.value[1], k.value[2]],
@@ -167,6 +173,9 @@ pub fn resolve_color_keys_at(scene: &NifScene, mut interp_idx: usize) -> Vec<Ani
                     .keys
                     .keys
                     .iter()
+                    // #1443 — same finite / FLT_MAX guard on the legacy
+                    // Point3-as-RGB path.
+                    .filter(|k| k.value.iter().all(|&c| is_key_value_sane(c)))
                     .map(|k| AnimColorKey {
                         time: k.time,
                         value: k.value,
