@@ -97,6 +97,16 @@ impl NifVersion {
     /// `TRS Valid` bool[3] (`until=10.1.0.109`). See
     /// `has_quat_transform_trs_valid`. (#1506)
     pub const V10_1_0_109: Self = Self(0x0A01006D);
+    /// v10.1.0.110 — lower bound of the `NiBlendInterpolator` byte-sized
+    /// middle band (`Array Size` byte, `Priority` byte). (#1508)
+    pub const V10_1_0_110: Self = Self(0x0A01006E);
+    /// v10.1.0.111 — inclusive upper bound of the `NiBlendInterpolator`
+    /// legacy layout (the modern `Flags`-gated layout starts at
+    /// 10.1.0.112). (#1508)
+    pub const V10_1_0_111: Self = Self(0x0A01006F);
+    /// v10.1.0.112 — lower bound of the modern `NiBlendInterpolator`
+    /// layout (`Flags` + `Weight Threshold` + Flags-gated fields). (#1508)
+    pub const V10_1_0_112: Self = Self(0x0A010070);
     /// v10.1.0.113 — one below the NiGeometryData bsver gate.
     pub const V10_1_0_113: Self = Self(0x0A010071);
     /// v10.1.0.114 — NiGeometryData data-flags layout changes.

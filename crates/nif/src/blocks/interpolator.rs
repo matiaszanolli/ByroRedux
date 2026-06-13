@@ -850,7 +850,43 @@ pub struct NiBlendInterpolator {
 }
 
 impl NiBlendInterpolator {
+    /// nif.xml splits `NiBlendInterpolator` into three version bands with
+    /// completely different field layouts (only `items[].interpolator_ref`
+    /// and `normalized_weight` are consumed downstream, so the discarded
+    /// fields exist purely for byte-correct stream advancement):
+    ///
+    ///   * `<= 10.1.0.109`: `Array Size`(u16) + `Array Grow By`(u16) +
+    ///     items{ref,weight,normW,**Priority int**,ease = 20 B} +
+    ///     `Manager Controlled`(bool) + `Weight Threshold`(f32) +
+    ///     `Only Use Highest Weight`(bool) + `Interp Count`(u16) +
+    ///     `Single Index`(u16) + `High Priority`(int) + `Next High Priority`(int).
+    ///   * `10.1.0.110 ..= 10.1.0.111`: `Array Size`(byte) +
+    ///     items{ref,weight,normW,**Priority byte**,ease = 17 B} +
+    ///     `Manager Controlled`(bool) + `Weight Threshold`(f32) +
+    ///     `Only Use Highest Weight`(bool) + `Interp Count`(byte) +
+    ///     `Single Index`(byte) + `Single Interpolator`(Ref) +
+    ///     `Single Time`(f32) + `High Priority`(sbyte) + `Next High Priority`(sbyte).
+    ///   * `>= 10.1.0.112`: the modern `Flags`-gated layout.
+    ///
+    /// Before #1508 only the modern band existed; the v10.1.0.x menu/anim
+    /// NIFs (Oblivion lockpicking/health-bar/timer) were parsed with the
+    /// wrong layout, under-reading ~67 B per block and cascading
+    /// truncation through the sizeless format. Verified by byte-tracing
+    /// `menus/lockpicking/pickold.nif` (v10.1.0.106): the `<= 10.1.0.109`
+    /// band lands the next block exactly on its name-length boundary.
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let version = stream.version();
+        if version <= crate::version::NifVersion::V10_1_0_109 {
+            Self::parse_legacy(stream, /* int_priority */ true)
+        } else if version <= crate::version::NifVersion::V10_1_0_111 {
+            Self::parse_legacy(stream, /* int_priority */ false)
+        } else {
+            Self::parse_modern(stream)
+        }
+    }
+
+    /// Modern (`>= 10.1.0.112`) `Flags`-gated layout.
+    fn parse_modern(stream: &mut NifStream) -> io::Result<Self> {
         let flags = stream.read_u8()?;
         let array_size = stream.read_u8()?;
         let weight_threshold = stream.read_f32_le()?;
@@ -898,10 +934,80 @@ impl NiBlendInterpolator {
             items,
         })
     }
+
+    /// Legacy (`<= 10.1.0.111`) layout. `int_priority` selects the
+    /// `<= 10.1.0.109` band (u16 array size + grow-by, int item priority,
+    /// u16 counts, int high-priorities) vs the `10.1.0.110..=111` band
+    /// (byte array size, byte item priority, byte counts + single
+    /// interpolator/time + sbyte high-priorities).
+    fn parse_legacy(stream: &mut NifStream, int_priority: bool) -> io::Result<Self> {
+        let array_size = if int_priority {
+            let n = stream.read_u16_le()?;
+            let _array_grow_by = stream.read_u16_le()?;
+            n
+        } else {
+            stream.read_u8()? as u16
+        };
+
+        let mut items = Vec::with_capacity(array_size as usize);
+        for _ in 0..array_size {
+            let interpolator_ref = stream.read_block_ref()?;
+            let weight = stream.read_f32_le()?;
+            let normalized_weight = stream.read_f32_le()?;
+            // Priority is `int` (<= 10.1.0.109) or `byte` (110..=111).
+            // Only the ref/normalized_weight are used downstream, so we
+            // narrow priority to u8 for storage.
+            let priority = if int_priority {
+                stream.read_i32_le()? as u8
+            } else {
+                stream.read_u8()?
+            };
+            let ease_spinner = stream.read_f32_le()?;
+            items.push(InterpBlendItem {
+                interpolator_ref,
+                weight,
+                normalized_weight,
+                priority,
+                ease_spinner,
+            });
+        }
+
+        let manager_controlled = stream.read_byte_bool()?;
+        let weight_threshold = stream.read_f32_le()?;
+        let _only_use_highest_weight = stream.read_byte_bool()?;
+
+        let (interp_count, single_index);
+        if int_priority {
+            interp_count = stream.read_u16_le()? as u8;
+            single_index = stream.read_u16_le()? as u8;
+            let _high_priority = stream.read_i32_le()?;
+            let _next_high_priority = stream.read_i32_le()?;
+        } else {
+            interp_count = stream.read_u8()?;
+            single_index = stream.read_u8()?;
+            // Single Interpolator (Ref) + Single Time (f32): since 10.1.0.108.
+            let _single_interpolator = stream.read_block_ref()?;
+            let _single_time = stream.read_f32_le()?;
+            let _high_priority = stream.read_u8()? as i8;
+            let _next_high_priority = stream.read_u8()? as i8;
+        }
+
+        Ok(Self {
+            flags: 0,
+            array_size: array_size as u8,
+            weight_threshold,
+            manager_controlled,
+            interp_count,
+            single_index,
+            items,
+        })
+    }
 }
 
 /// NiBlendTransformInterpolator — blends NiQuatTransform values.
-/// No additional fields beyond NiBlendInterpolator for version >= 10.1.0.110.
+/// The trailing `Value` (NiQuatTransform) field is `until=10.1.0.109`
+/// per nif.xml — present only on the legacy v10.1.0.x band, absent on
+/// 10.1.0.110+ (incl. every retail Bethesda title). (#1508)
 #[derive(Debug)]
 pub struct NiBlendTransformInterpolator {
     pub base: NiBlendInterpolator,
@@ -909,9 +1015,14 @@ pub struct NiBlendTransformInterpolator {
 
 impl NiBlendTransformInterpolator {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        Ok(Self {
-            base: NiBlendInterpolator::parse(stream)?,
-        })
+        let base = NiBlendInterpolator::parse(stream)?;
+        // `Value` (NiQuatTransform) until 10.1.0.109. `read_ni_quat_transform`
+        // itself honours the `TRS Valid` bool[3] tail on this same band
+        // (#1506), so this is byte-exact.
+        if stream.version() <= crate::version::NifVersion::V10_1_0_109 {
+            let _value = stream.read_ni_quat_transform()?;
+        }
+        Ok(Self { base })
     }
 }
 

@@ -897,3 +897,68 @@ fn parse_ni_bspline_point3_interpolator_does_not_consume_comp_trailer() {
     let _ = NiBSplinePoint3Interpolator::parse(&mut stream).unwrap();
     assert_eq!(stream.position(), 32);
 }
+
+/// #1508 — `NiBlendInterpolator` has three version bands; pre-fix only
+/// the modern `>= 10.1.0.112` layout existed, so the v10.1.0.x menu/anim
+/// NIFs (Oblivion lockpicking/health-bar/timer) under-read by ~67 B and
+/// cascaded truncation through the sizeless format. This pins the
+/// `<= 10.1.0.109` band of `NiBlendTransformInterpolator` (62 B base +
+/// 35 B `NiQuatTransform` Value = 97 B), reproduced byte-for-byte from
+/// `menus/lockpicking/pickold.nif` (v10.1.0.106, Array Size 2).
+#[test]
+fn parse_blend_transform_interpolator_legacy_10_1_0_106() {
+    let header = NifHeader {
+        version: NifVersion::V10_1_0_106,
+        little_endian: true,
+        user_version: 10,
+        user_version_2: 5,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    };
+    let mut data = Vec::new();
+    // --- NiBlendInterpolator (<= 10.1.0.109 band) ---
+    data.extend_from_slice(&2u16.to_le_bytes()); // Array Size
+    data.extend_from_slice(&2u16.to_le_bytes()); // Array Grow By
+    for iref in [7i32, 8i32] {
+        data.extend_from_slice(&iref.to_le_bytes()); // Interpolator
+        data.extend_from_slice(&0.5f32.to_le_bytes()); // Weight
+        data.extend_from_slice(&0.5f32.to_le_bytes()); // Normalized Weight
+        data.extend_from_slice(&i32::MIN.to_le_bytes()); // Priority (int)
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // Ease Spinner
+    }
+    data.push(1u8); // Manager Controlled
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // Weight Threshold
+    data.push(0u8); // Only Use Highest Weight
+    data.extend_from_slice(&0u16.to_le_bytes()); // Interp Count (u16)
+    data.extend_from_slice(&u16::MAX.to_le_bytes()); // Single Index (u16)
+    data.extend_from_slice(&i32::MIN.to_le_bytes()); // High Priority (int)
+    data.extend_from_slice(&i32::MIN.to_le_bytes()); // Next High Priority (int)
+    // --- NiBlendTransformInterpolator.Value = NiQuatTransform (until 10.1.0.109) ---
+    for _ in 0..3 {
+        data.extend_from_slice(&f32::MIN.to_le_bytes()); // Translation
+    }
+    for _ in 0..4 {
+        data.extend_from_slice(&f32::MIN.to_le_bytes()); // Rotation
+    }
+    data.extend_from_slice(&f32::MIN.to_le_bytes()); // Scale
+    data.extend_from_slice(&[0u8, 0u8, 0u8]); // TRS Valid bool[3] (#1506)
+
+    assert_eq!(data.len(), 97, "v10.1.0.106 NiBlendTransformInterpolator is 97 B");
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = NiBlendTransformInterpolator::parse(&mut stream).unwrap();
+    assert_eq!(
+        stream.position(),
+        97,
+        "legacy band must consume exactly 97 B (62 base + 35 NiQuatTransform)"
+    );
+    // The two captured items' interpolator refs flow downstream.
+    assert_eq!(block.base.items.len(), 2);
+    assert_eq!(block.base.items[0].interpolator_ref.index(), Some(7));
+    assert_eq!(block.base.items[1].interpolator_ref.index(), Some(8));
+}

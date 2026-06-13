@@ -159,6 +159,20 @@ impl NiControllerSequence {
         for _ in 0..num_controlled_blocks {
             let interpolator_ref = stream.read_block_ref()?;
             let controller_ref = stream.read_block_ref()?;
+            // Blend Interpolator (Ref) + Blend Index (ushort): nif.xml
+            // gates both `since=10.1.0.104 until=10.1.0.110`, between
+            // Controller and Priority. Missing them under-read every
+            // v10.1.0.x ControlledBlock by 6 bytes, cascading truncation
+            // through the sizeless format (#1508). Only the discarded
+            // refs/index live here — downstream consumes neither — so the
+            // read exists purely for byte-correct advancement. Every
+            // retail Bethesda title is 20.x (> 10.1.0.110) and skips this.
+            if stream.version() >= NifVersion::V10_1_0_104
+                && stream.version() <= NifVersion::V10_1_0_110
+            {
+                let _blend_interpolator = stream.read_block_ref()?;
+                let _blend_index = stream.read_u16_le()?;
+            }
             // Priority byte (BSVER > 0, i.e. any Bethesda game)
             let priority = if bsver > 0 { stream.read_u8()? } else { 0 };
 
