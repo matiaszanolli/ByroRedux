@@ -73,18 +73,20 @@ pub struct EmitterBaseParams {
 ///   speed, speed_variation, declination, declination_variation,
 ///   planar_angle, planar_angle_variation, initial_color (Color4),
 ///   initial_radius, [radius_variation since 10.4.0.1], life_span,
-///   [life_span_variation since 10.4.0.1].
+///   life_span_variation.
 ///
-/// The trailing-2 gate (`Radius Variation` + `Life Span Variation`) is
-/// `version >= 10.4.0.1` per nif.xml (#1239). Pre-#1239 the gate was
-/// `bsver() >= 34` (BS_GTE_FO3), which excluded Oblivion (bsver=11,
-/// version 20.0.0.5 — still ≥ 10.4.0.1) and under-read every Oblivion
-/// NiPSys*Emitter by 8 bytes, truncating 219 NIFs in
-/// `Oblivion - Meshes.bsa`. The version gate covers Oblivion AND every
-/// later Bethesda title (FNV/FO3/Skyrim+ are 20.x), so no #383
-/// regression. Note `Radius Variation` is interleaved BEFORE `Life
-/// Span` in nif.xml — total bytes are unchanged vs the old 12-then-2
-/// skip, but the value labelling now follows the authoritative order.
+/// Per nif.xml ONLY `Radius Variation` carries `since="10.4.0.1"`; it is
+/// interleaved BEFORE `Life Span`, which is followed by `Life Span
+/// Variation` (no version condition — present at every version).
+/// Pre-#1239 the gate was `bsver() >= 34` (BS_GTE_FO3), which excluded
+/// Oblivion (bsver=11, version 20.0.0.5 — still ≥ 10.4.0.1) and
+/// under-read every Oblivion NiPSys*Emitter by 8 bytes, truncating 219
+/// NIFs in `Oblivion - Meshes.bsa`; #1239 fixed that with a
+/// `>= 10.4.0.1` gate — but bundled `Life Span Variation` into the same
+/// gate, which then dropped 4 bytes on the v10.x sub-versions
+/// (< 10.4.0.1). #1507 split them: `Life Span Variation` is now always
+/// read. All retail Bethesda titles are 20.x (≥ 10.4.0.1), so only the
+/// v10.x Oblivion path changes — no #383/#1239 regression.
 fn read_emitter_base(stream: &mut NifStream) -> io::Result<EmitterBaseParams> {
     let speed = stream.read_f32_le()?;
     let speed_variation = stream.read_f32_le()?;
@@ -99,10 +101,21 @@ fn read_emitter_base(stream: &mut NifStream) -> io::Result<EmitterBaseParams> {
         stream.read_f32_le()?,
     ];
     let initial_radius = stream.read_f32_le()?;
-    let modern = stream.version() >= NifVersion::V10_4_0_1;
-    let radius_variation = if modern { stream.read_f32_le()? } else { 0.0 };
+    // Per nif.xml only `Radius Variation` carries `since="10.4.0.1"`;
+    // `Life Span Variation` has NO `since` and is present at every
+    // version. Pre-#1507 both were bundled under the `>= 10.4.0.1` gate,
+    // which dropped `Life Span Variation` (4 B) on v10.x Oblivion
+    // emitters and under-read every NiPSys*Emitter, cascading truncation
+    // through the sizeless format. Verified by byte-tracing
+    // `effects/metalsparks.nif` (v10.2.0.0): reading Life Span Variation
+    // here lands the next block exactly on its name-length boundary.
+    let radius_variation = if stream.version() >= NifVersion::V10_4_0_1 {
+        stream.read_f32_le()?
+    } else {
+        0.0
+    };
     let life_span = stream.read_f32_le()?;
-    let life_span_variation = if modern { stream.read_f32_le()? } else { 0.0 };
+    let life_span_variation = stream.read_f32_le()?;
     Ok(EmitterBaseParams {
         speed,
         speed_variation,
@@ -1205,8 +1218,14 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
                 stream.skip(count * 4)?;
             }
         }
-        // Num Added Particles + Added Particles Base: !#BS202# only.
-        if !is_bs_202 && stream.version() >= NifVersion::V20_0_0_2 {
+        // Num Added Particles + Added Particles Base: nif.xml gates these
+        // on `vercond="!#BS202#"` with NO `since`, so they are present on
+        // every non-Bethesda (Oblivion-era) NiPSysData regardless of
+        // version — including the v10.x sub-versions. The old
+        // `>= V20_0_0_2` gate dropped these 4 bytes on v10.1/v10.2
+        // Oblivion particle NIFs, under-reading NiPSysData by 4 and
+        // cascading truncation through the sizeless format (#1507).
+        if !is_bs_202 {
             let _num_added = stream.read_u16_le()?;
             let _added_particles_base = stream.read_u16_le()?;
         }
@@ -1651,6 +1670,60 @@ mod tests {
         assert_eq!(block.original_type, "NiPSysSphereEmitter");
     }
 
+    /// Regression: #1507 — at v10.x (< 10.4.0.1) the emitter base must
+    /// read `Life Span Variation` (nif.xml gives it NO `since`) but NOT
+    /// `Radius Variation` (`since="10.4.0.1"`). Pre-fix both were bundled
+    /// under the `>= 10.4.0.1` gate, dropping 4 bytes and under-reading
+    /// every v10.x Oblivion NiPSys*Emitter — cascading truncation through
+    /// the sizeless format (confirmed on `effects/metalsparks.nif`).
+    #[test]
+    fn read_emitter_base_reads_life_span_variation_below_10_4_0_1() {
+        let version = NifVersion::V10_2_0_0;
+        let header = NifHeader {
+            version,
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut d = Vec::new();
+        // speed, speed_var, decl, decl_var, planar, planar_var (6 floats)
+        for v in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        // initial_color (Color4)
+        for _ in 0..4 {
+            d.extend_from_slice(&1.0f32.to_le_bytes());
+        }
+        d.extend_from_slice(&1.15f32.to_le_bytes()); // initial_radius
+        // radius_variation ABSENT at v10.2 (since 10.4.0.1)
+        d.extend_from_slice(&1.5f32.to_le_bytes()); // life_span
+        d.extend_from_slice(&0.25f32.to_le_bytes()); // life_span_variation (always present)
+
+        // 6*4 + 16 + 4 + 4 + 4 = 52 B (no radius_variation slot).
+        assert_eq!(d.len(), 52);
+
+        let mut stream = NifStream::new(&d, &header);
+        let params = read_emitter_base(&mut stream).expect("v10.2 emitter base parses");
+        assert_eq!(
+            stream.position() as usize,
+            d.len(),
+            "v10.2 emitter base must consume 52 B — life_span_variation present, radius_variation absent"
+        );
+        assert_eq!(params.radius_variation, 0.0, "radius_variation absent < 10.4.0.1");
+        assert_eq!(params.life_span, 1.5);
+        assert_eq!(
+            params.life_span_variation, 0.25,
+            "life_span_variation must be read at v10.2 (#1507)"
+        );
+    }
+
     /// Regression: #383 — `parse_grow_fade_modifier` on FNV
     /// (BS_GTE_FO3 + version 20.2.0.7) was missing the trailing
     /// `Base Scale: f32` per nif.xml line 4803. 890 occurrences in
@@ -1824,8 +1897,11 @@ mod tests {
         // Axis present).
         d.extend_from_slice(&[0u8; 40]);
 
-        // has_rotation_speeds gated on >= 20.0.0.2; 10.4.0.1 < that → not
-        // read. Same for num_added / added_particles_base.
+        // has_rotation_speeds gated on >= 20.0.0.2; 10.4.0.0 < that → not
+        // read. Num Added Particles + Added Particles Base carry NO `since`
+        // (only `!#BS202#`), so they ARE present here (#1507).
+        d.extend_from_slice(&0u16.to_le_bytes()); // num_added
+        d.extend_from_slice(&0u16.to_le_bytes()); // added_particles_base
 
         let mut stream = NifStream::new(&d, &header);
         let block = parse_particles_data(&mut stream, "NiPSysData")
