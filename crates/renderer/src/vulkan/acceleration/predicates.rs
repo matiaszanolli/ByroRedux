@@ -35,6 +35,50 @@ pub(super) fn column_major_to_vk_transform(m: &[f32; 16]) -> vk::TransformMatrix
     }
 }
 
+/// The 3×4 row-major identity, in the layout Vulkan's TLAS-instance
+/// struct stores (the affine bottom row `(0,0,0,1)` is dropped). Used
+/// for skinned instances whose BLAS geometry is already in absolute
+/// world space — see [`tlas_instance_transform`].
+const IDENTITY_VK_TRANSFORM: vk::TransformMatrixKHR = vk::TransformMatrixKHR {
+    matrix: [
+        1.0, 0.0, 0.0, 0.0, // row 0
+        0.0, 1.0, 0.0, 0.0, // row 1
+        0.0, 0.0, 1.0, 0.0, // row 2
+    ],
+};
+
+/// Select the TLAS-instance transform for a draw command (#1487 /
+/// REN2-02).
+///
+/// **Rigid draws** (`bone_offset == 0`) reference a mesh-local BLAS, so
+/// the instance transform IS the entity's absolute `model_matrix`:
+/// `local_vertex → world` is done by the TLAS instance.
+///
+/// **Skinned draws** (`bone_offset != 0`) reference a per-entity BLAS
+/// refit each frame from the `skin_vertices.comp` output buffer, which
+/// already bakes the entity's world placement into every vertex through
+/// the bone palette (`boneWorld × bindInverse`, see
+/// `skin_vertices.comp:117`). Its geometry is therefore already in
+/// absolute world space; applying `model_matrix` on top would transform
+/// the placement a SECOND time, putting the actor's RT presence (shadow
+/// caster, reflection / GI subject) at `R·w + t` instead of `w` — no
+/// shadow at the visual location and a phantom occluder elsewhere. Emit
+/// identity so the absolute-world BLAS passes through unchanged.
+///
+/// Note: this is independent of `GpuInstance.model` in the scene SSBO,
+/// which stays the entity placement — `getHitTriNormal` (triangle.frag)
+/// needs it to rotate the bind-pose vertices it reads from the global
+/// vertex SSBO into world space for the RT hit-normal. That bind-pose
+/// normal approximation is a separate M29 concern, untouched here.
+#[inline]
+pub(super) fn tlas_instance_transform(draw_cmd: &DrawCommand) -> vk::TransformMatrixKHR {
+    if draw_cmd.bone_offset != 0 {
+        IDENTITY_VK_TRANSFORM
+    } else {
+        column_major_to_vk_transform(&draw_cmd.model_matrix)
+    }
+}
+
 /// Dispatch helper: reuse the shared transfer fence when available,
 /// otherwise fall back to per-call create/destroy (#302).
 pub(super) fn submit_one_time<F>(

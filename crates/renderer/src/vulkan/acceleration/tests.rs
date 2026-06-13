@@ -977,6 +977,56 @@ fn column_major_to_vk_transform_pins_row_major_3x4_output() {
     assert_eq!(t.matrix[8..12], [-1.0, 0.0, 0.0, 5.0]);
 }
 
+/// #1487 / REN2-02 — `tlas_instance_transform` must emit IDENTITY for
+/// skinned draws (`bone_offset != 0`) and the entity's `model_matrix`
+/// for rigid draws. Skinned BLAS geometry already bakes the world
+/// placement through the bone palette, so re-applying `model_matrix`
+/// at the TLAS instance double-transforms the actor's RT presence
+/// (shadow caster / reflection / GI subject), placing it at `R·w + t`
+/// instead of `w`. Pre-fix every placed actor (since M29 Phase 2) cast
+/// no shadow at its visual location and a phantom occluder sat
+/// elsewhere.
+#[test]
+fn skinned_tlas_instance_uses_identity_transform() {
+    // A non-trivial placement: 90° about +Y then translate (3, 4, 5),
+    // the same affine the row-major pin above exercises. If the skinned
+    // path leaked `model_matrix` through, the asserted identity below
+    // would pick up this rotation + translation.
+    let placed_model: [f32; 16] = [
+        0.0, 0.0, -1.0, 0.0, // column 0
+        0.0, 1.0, 0.0, 0.0, // column 1
+        1.0, 0.0, 0.0, 0.0, // column 2
+        3.0, 4.0, 5.0, 1.0, // column 3 (translation)
+    ];
+
+    // Skinned: bone_offset != 0 → identity, regardless of model_matrix.
+    let mut skinned = make_draw_command(true, false);
+    skinned.bone_offset = 128; // any non-zero palette base
+    skinned.model_matrix = placed_model;
+    let t = tlas_instance_transform(&skinned);
+    assert_eq!(
+        t.matrix,
+        [
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+        ],
+        "skinned TLAS instance must be identity — its BLAS is already \
+         absolute-world; model_matrix here would double-transform it"
+    );
+
+    // Rigid: bone_offset == 0 → the model_matrix passes through exactly
+    // as `column_major_to_vk_transform` would convert it.
+    let mut rigid = make_draw_command(true, false);
+    rigid.bone_offset = 0;
+    rigid.model_matrix = placed_model;
+    assert_eq!(
+        tlas_instance_transform(&rigid).matrix,
+        column_major_to_vk_transform(&placed_model).matrix,
+        "rigid TLAS instance must carry the entity's absolute model_matrix"
+    );
+}
+
 // ── #1123 / REN-D8-NEW-02 — built_primitive_count invariant ────
 //
 // The TLAS UPDATE path at `tlas.rs:753` runtime-asserts

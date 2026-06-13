@@ -8,9 +8,9 @@ use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::constants::{MIN_TLAS_INSTANCE_RESERVE, UPDATABLE_AS_FLAGS};
 use super::predicates::{
-    align_scratch_address, column_major_to_vk_transform, decide_use_update,
-    draw_command_eligible_for_tlas, scratch_alignment_padding, scratch_needs_growth,
-    shrink_scratch_if_oversized,
+    align_scratch_address, decide_use_update, draw_command_eligible_for_tlas,
+    scratch_alignment_padding, scratch_needs_growth, shrink_scratch_if_oversized,
+    tlas_instance_transform,
 };
 use super::types::TlasState;
 use super::AccelerationManager;
@@ -174,10 +174,15 @@ impl AccelerationManager {
                 continue;
             };
 
-            // Convert column-major model_matrix [f32; 16] to
-            // VkTransformMatrixKHR (3x4 row-major). See
-            // `column_major_to_vk_transform` for the layout pin.
-            let transform = column_major_to_vk_transform(&draw_cmd.model_matrix);
+            // TLAS-instance transform. Rigid draws use the entity's
+            // absolute model_matrix (mesh-local BLAS → world); skinned
+            // draws (`bone_offset != 0`) get IDENTITY because their BLAS
+            // is already absolute-world (the bone palette baked the
+            // placement in) — applying model_matrix again would
+            // double-transform the actor's RT presence. See
+            // `tlas_instance_transform` (#1487 / REN2-02) and
+            // `column_major_to_vk_transform` for the 3x4 row-major layout.
+            let transform = tlas_instance_transform(draw_cmd);
 
             // SAFETY: AccelerationStructureReferenceKHR is a union — device_handle field
             // is used because our BLAS is on-device (not host-built). The address was
