@@ -348,16 +348,16 @@ fn read_u32_le(cursor: &mut Cursor<&[u8]>) -> io::Result<u32> {
 /// which executes *before* the `NifStream` wrapper exists and so
 /// can't call the streamed version directly.
 ///
-/// Caller must satisfy: `T` is `Copy + Default` and has no padding
-/// bytes / no validity invariants beyond "any bit pattern is sound"
-/// (true for `u16`, `u32`, `f32`, `[f32; N]`). LE host required —
-/// the `target_endian = "big"` compile-error gate at the top of
-/// `stream.rs` covers the whole crate.
+/// `T: AnyBitPattern` enforces at the type level that any bit pattern is
+/// a sound, padding-free value (the unsafe marker in `stream.rs` — true
+/// for `u16`, `u32`, `f32`, `[f32; N]`). LE host required — the
+/// `target_endian = "big"` compile-error gate at the top of `stream.rs`
+/// covers the whole crate.
 ///
 /// Caller is responsible for the byte-budget bounds check on
 /// `count * size_of::<T>()` — every header call site already does
 /// this against `total_bytes - cursor.position()` (see #388).
-fn read_pod_vec_from_cursor<T: Copy + Default>(
+fn read_pod_vec_from_cursor<T: crate::stream::AnyBitPattern>(
     cursor: &mut Cursor<&[u8]>,
     count: usize,
 ) -> io::Result<Vec<T>> {

@@ -331,6 +331,14 @@ pub struct CullData {
     pub expand: [f32; 3],
 }
 
+// SAFETY (MEM-05, #1439): each is a `#[repr(C)]` aggregate of all-bit-
+// patterns-valid scalars (`u16` / `u32` / `[f32; 3]`) with no padding, so
+// any `size_of`-byte sequence is a sound value — the precondition
+// `read_pod_vec::<T>` relies on for its raw `read_exact` cast.
+unsafe impl crate::stream::AnyBitPattern for BoneWeight {}
+unsafe impl crate::stream::AnyBitPattern for Meshlet {}
+unsafe impl crate::stream::AnyBitPattern for CullData {}
+
 impl BSGeometryMeshData {
     /// Hard-coded havok-scale constant from nifly. Starfield `.mesh`
     /// files are normalised to metric units; this scale brings the

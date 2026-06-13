@@ -23,6 +23,49 @@ compile_error!(
     "NIF parser requires a little-endian host (bulk-array readers cast Vec<T> to &mut [u8])"
 );
 
+/// All-bit-patterns-valid marker for the bulk-read fast path (MEM-05, #1439).
+///
+/// [`NifStream::read_pod_vec`] (and the header parser's
+/// `read_pod_vec_from_cursor`) `read_exact` raw little-endian file bytes
+/// straight into a typed `Vec<T>`, so every `size_of::<T>()`-byte sequence
+/// the file can supply must be a sound, fully-initialized `T`. That holds
+/// for the integer / float primitives and `#[repr(C)]` aggregates of them;
+/// it is *false* for `bool`, `char`, enums, `NonZero*`, references, and any
+/// type carrying padding or validity invariants.
+///
+/// The previous `T: Copy + Default` bound did not express this — nothing
+/// stopped a future caller from instantiating `read_pod_vec::<bool>` and
+/// silently reading uninitialized-pattern UB. This trait pins the
+/// requirement at the type level: adding a new element type now forces an
+/// explicit, auditable `unsafe impl` rather than compiling by accident.
+/// (Equivalent in intent to `bytemuck::AnyBitPattern`, kept local to avoid
+/// a new dependency.)
+///
+/// # Safety
+/// Implement only for types where any bit pattern of `size_of::<Self>()`
+/// bytes is a valid value with no uninitialized padding.
+pub(crate) unsafe trait AnyBitPattern: Copy + Default {}
+
+macro_rules! impl_any_bit_pattern {
+    ($($t:ty),+ $(,)?) => {
+        $(
+            // SAFETY: every bit pattern of `$t` is a valid, padding-free
+            // value — it is a primitive or a `#[repr(C)]` aggregate whose
+            // fields are themselves all-bit-patterns-valid.
+            unsafe impl AnyBitPattern for $t {}
+        )+
+    };
+}
+
+// The exact set `read_pod_vec` / `read_pod_vec_from_cursor` are instantiated
+// for across the crate. Arrays are listed per concrete arity rather than via
+// a blanket impl because `[T; N]: Default` only holds for `N <= 32`.
+impl_any_bit_pattern!(
+    u8, i8, u16, i16, u32, i32, u64, i64, f32, f64,
+    [u8; 4], [u16; 3], [f32; 2], [f32; 3], [f32; 4],
+    NiPoint3,
+);
+
 /// Binary reader with NIF header context for version-aware parsing.
 pub struct NifStream<'a> {
     cursor: Cursor<&'a [u8]>,
@@ -291,10 +334,10 @@ impl<'a> NifStream<'a> {
 
     /// Read `count` POD values directly into a zero-initialized typed
     /// `Vec<T>` via a single `read_exact`, then return the populated
-    /// vector. Call site must satisfy: `T` is `Copy + Default` and has
-    /// no padding bytes / no validity invariants beyond "any bit pattern
-    /// is sound" (true for `u16`, `u32`, `f32`, `[f32; N]`, and
-    /// `#[repr(C)]` 3-or-4-float structs). LE host required.
+    /// vector. `T: AnyBitPattern` enforces at the type level that any bit
+    /// pattern is a sound, padding-free value (the unsafe marker above —
+    /// true for `u16`, `u32`, `f32`, `[f32; N]`, and `#[repr(C)]`
+    /// all-scalar structs). LE host required.
     ///
     /// `#[must_use]` symmetry with [`Self::allocate_vec`] (#831): a
     /// `stream.read_pod_vec(n)?;` call that drops the binding silently
@@ -304,7 +347,7 @@ impl<'a> NifStream<'a> {
     /// carry the attribute independently because `#[must_use]` does
     /// not propagate through the wrapper return. See #1246.
     #[must_use = "read_pod_vec returns a populated Vec; bind it or call stream.skip() to advance the cursor without reading"]
-    pub(crate) fn read_pod_vec<T: Copy + Default>(&mut self, count: usize) -> io::Result<Vec<T>> {
+    pub(crate) fn read_pod_vec<T: AnyBitPattern>(&mut self, count: usize) -> io::Result<Vec<T>> {
         let byte_count = count.checked_mul(std::mem::size_of::<T>()).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -325,7 +368,7 @@ impl<'a> NifStream<'a> {
         // - `read_exact` writes exactly `byte_count` bytes via the slice
         //   and does not read existing contents (Read::read_exact is a
         //   pure writer interface per the trait contract).
-        // - `T` is documented to require any-byte-pattern soundness, so
+        // - `T: AnyBitPattern` guarantees any-byte-pattern soundness, so
         //   the post-read bytes are valid `T` values. `Vec`'s length is
         //   already `count` from `vec![Default; count]`, so no `set_len`
         //   call is needed.
@@ -663,6 +706,33 @@ impl<'a> NifStream<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MEM-05 (#1439): every type `read_pod_vec` / `read_pod_vec_from_cursor`
+    /// is instantiated for across the crate must carry the `AnyBitPattern`
+    /// marker. This compiles iff the marker set stays in sync with the call
+    /// sites — a new element type without an `unsafe impl` fails the build,
+    /// which is the whole point of moving the contract from a doc comment to
+    /// a type bound. (`bool`, `char`, enums, etc. are deliberately absent and
+    /// would not compile here.)
+    #[test]
+    fn pod_marker_covers_every_instantiated_type() {
+        fn assert_abp<T: AnyBitPattern>() {}
+        assert_abp::<u8>();
+        assert_abp::<i16>();
+        assert_abp::<u16>();
+        assert_abp::<i32>();
+        assert_abp::<u32>();
+        assert_abp::<f32>();
+        assert_abp::<[u8; 4]>();
+        assert_abp::<[u16; 3]>();
+        assert_abp::<[f32; 2]>();
+        assert_abp::<[f32; 3]>();
+        assert_abp::<[f32; 4]>();
+        assert_abp::<NiPoint3>();
+        assert_abp::<crate::blocks::bs_geometry::BoneWeight>();
+        assert_abp::<crate::blocks::bs_geometry::Meshlet>();
+        assert_abp::<crate::blocks::bs_geometry::CullData>();
+    }
 
     /// Build a minimal NifHeader for testing stream reads.
     fn test_header(version: NifVersion) -> NifHeader {
