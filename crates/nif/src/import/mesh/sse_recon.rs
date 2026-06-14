@@ -350,11 +350,15 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
 
         // Assemble the per-vertex tangent record (Bethesda bitangent
         // triplet → our tangent.xyz; sign from on-disk tangent
-        // (∂P/∂V) per `sign(dot(B, cross(N, T)))`). Operates on raw
-        // Z-up values and applies the same `(x, y, z) → (x, z, -y)`
-        // axis swap as the inline parser's importer-side helper. Sign
-        // is rotation-invariant so the swap doesn't flip it. See
-        // #796 / SK-D1-04.
+        // (∂P/∂V) per `sign(dot(B, cross(N, T)))`). T is the stored
+        // tangent (∂P/∂U = [bx,by,bz]); B is the on-disk tangent
+        // (∂P/∂V = t_xyz). Operand order must match
+        // `extract_tangents_from_extra_data` — cross(N, ∂P/∂U) dotted
+        // with ∂P/∂V — since the triple product is antisymmetric.
+        // Operates on raw Z-up values and applies the same
+        // `(x, y, z) → (x, z, -y)` axis swap as the inline parser's
+        // importer-side helper. Sign is rotation-invariant so the
+        // swap doesn't flip it. See #796 / SK-D1-04 and #1516.
         if let (Some(bx), Some(by), Some(bz), Some(t_xyz), Some(n)) = (
             bitangent_x,
             bitangent_y,
@@ -362,11 +366,7 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
             tangent_xyz,
             normal_zup,
         ) {
-            let cnx = n[1] * t_xyz[2] - n[2] * t_xyz[1];
-            let cny = n[2] * t_xyz[0] - n[0] * t_xyz[2];
-            let cnz = n[0] * t_xyz[1] - n[1] * t_xyz[0];
-            let dot_b_cross = bx * cnx + by * cny + bz * cnz;
-            let sign = if dot_b_cross >= 0.0 { 1.0 } else { -1.0 };
+            let sign = crate::types::bitangent_sign(n, [bx, by, bz], t_xyz);
             // Z-up → Y-up on the bitangent triplet (xyz). Sign passes
             // through unchanged.
             tangents.push([bx, bz, -by, sign]);

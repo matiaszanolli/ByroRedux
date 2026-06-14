@@ -133,6 +133,38 @@ impl BlockRef {
     }
 }
 
+/// Bitangent handedness sign for the renderer's `B = w * cross(N, T)`
+/// reconstruction. `t` is the tangent we store in `Vertex.tangent.xyz`
+/// (∂P/∂U); `b` is the surface's other tangent derivative (∂P/∂V).
+/// Returns `+1.0` for a standard right-handed UV winding (and for the
+/// degenerate zero case) and `-1.0` for a mirrored shell.
+///
+/// **Operand order is load-bearing.** The scalar triple product is
+/// antisymmetric, so `sign(dot(b, cross(n, t)))` and
+/// `sign(dot(t, cross(n, b)))` are negatives of each other — passing the
+/// stored tangent and the other derivative in the wrong slots silently
+/// inverts every normal-map V channel (see #1516). All three tangent
+/// producers — `extract_tangents_from_extra_data`, the BSTriShape inline
+/// decode, and the SSE skin reconstruction — must call through here so the
+/// convention stays pinned in one place.
+///
+/// Coordinate-frame agnostic: `n`, `t`, `b` must share a frame, but the
+/// result is invariant under the proper Z-up → Y-up rotation, so callers
+/// may pass raw Z-up or converted Y-up triples interchangeably.
+pub(crate) fn bitangent_sign(n: [f32; 3], t: [f32; 3], b: [f32; 3]) -> f32 {
+    let cross_nt = [
+        n[1] * t[2] - n[2] * t[1],
+        n[2] * t[0] - n[0] * t[2],
+        n[0] * t[1] - n[1] * t[0],
+    ];
+    let dot = b[0] * cross_nt[0] + b[1] * cross_nt[1] + b[2] * cross_nt[2];
+    if dot < 0.0 {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +206,51 @@ mod tests {
         assert_eq!(c.r, 1.0);
         assert_eq!(c.g, 1.0);
         assert_eq!(c.b, 1.0);
+    }
+
+    // #1516 — pins the bitangent-sign convention shared by all three
+    // tangent producers. Textbook right-handed basis (N=+Z, T=∂P/∂U=+X,
+    // B=∂P/∂V=+Y) must yield +1; the operand-swapped call must yield -1,
+    // guarding against re-introducing the antisymmetric inversion the
+    // BSTriShape inline + SSE-recon paths shipped before #1516.
+    #[test]
+    fn bitangent_sign_right_handed_is_positive() {
+        let n = [0.0, 0.0, 1.0];
+        let t = [1.0, 0.0, 0.0]; // ∂P/∂U (stored tangent)
+        let b = [0.0, 1.0, 0.0]; // ∂P/∂V
+        assert_eq!(bitangent_sign(n, t, b), 1.0);
+    }
+
+    #[test]
+    fn bitangent_sign_swapped_operands_invert() {
+        let n = [0.0, 0.0, 1.0];
+        let t = [1.0, 0.0, 0.0];
+        let b = [0.0, 1.0, 0.0];
+        // Passing ∂P/∂V as the tangent and ∂P/∂U as the other derivative
+        // is exactly the pre-#1516 bug — antisymmetry flips the sign.
+        assert_eq!(bitangent_sign(n, b, t), -1.0);
+    }
+
+    #[test]
+    fn bitangent_sign_mirrored_uv_is_negative() {
+        // V flipped: ∂P/∂V points -Y, so cross(N, T)=+Y opposes it.
+        let n = [0.0, 0.0, 1.0];
+        let t = [1.0, 0.0, 0.0];
+        let b = [0.0, -1.0, 0.0];
+        assert_eq!(bitangent_sign(n, t, b), -1.0);
+    }
+
+    #[test]
+    fn bitangent_sign_degenerate_defaults_positive() {
+        assert_eq!(bitangent_sign([0.0; 3], [0.0; 3], [0.0; 3]), 1.0);
+    }
+
+    #[test]
+    fn bitangent_sign_rotation_invariant_zup_vs_yup() {
+        // Same basis expressed Z-up and after the (x,z,-y) Y-up swap must
+        // give the same sign — callers pass either frame interchangeably.
+        let zup = bitangent_sign([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let yup = bitangent_sign([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
+        assert_eq!(zup, yup);
     }
 }

@@ -998,16 +998,14 @@ pub(crate) fn decode_bs_vertex_stream(
             tangent_xyz,
             normal_xyz,
         ) {
-            // sign(dot(B, cross(N, T))) — disambiguates left/
-            // right-handed TBN. Operates on raw Z-up values;
-            // determinant is preserved across the proper
-            // rotation Z-up → Y-up so the sign is correct
-            // post-conversion. Mirrors `extract_tangents_from_extra_data`.
-            let cnx = n[1] * t_xyz[2] - n[2] * t_xyz[1];
-            let cny = n[2] * t_xyz[0] - n[0] * t_xyz[2];
-            let cnz = n[0] * t_xyz[1] - n[1] * t_xyz[0];
-            let dot_b_cross = bx * cnx + by * cny + bz * cnz;
-            let sign = if dot_b_cross >= 0.0 { 1.0 } else { -1.0 };
+            // sign(dot(B, cross(N, T))) — disambiguates left/right-
+            // handed TBN. T is the tangent we STORE (∂P/∂U = the
+            // bitangent triplet [bx,by,bz]); B is the on-disk tangent
+            // triplet (∂P/∂V = t_xyz). Shared with the authored + SSE
+            // producers so the antisymmetric operand order can't drift
+            // (see `bitangent_sign` / #1516). Raw Z-up values; the sign
+            // is invariant under the Z-up → Y-up rotation.
+            let sign = crate::types::bitangent_sign(n, [bx, by, bz], t_xyz);
             tangents.push([bx, by, bz, sign]);
         }
 
