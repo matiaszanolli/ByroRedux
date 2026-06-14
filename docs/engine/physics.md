@@ -407,10 +407,14 @@ further conversion is needed inside Rapier.
 
 These are intentionally deferred:
 
-- **Constraints / joints** — `bhkRagdollConstraint`,
-  `bhkHingeConstraint`, `bhkLimitedHingeConstraint`, etc. are still
-  parse-only (N23.6 skipped them); the importer does not emit joint data.
-  Ragdolls remain future work alongside skeletal animation.
+- **Constraints / joints** — `bhkRagdollConstraint` /
+  `bhkLimitedHingeConstraint` are decoded and threaded into ragdolls for the
+  classic-chain games (Oblivion / FO3 / FNV / Skyrim) by **PHYSAL** (the
+  physics abstraction layer — see [`physal.md`](physal.md)), which builds them
+  as Rapier multibody joints and writes the simulated poses back onto the
+  skeleton. Other constraint types (`bhkHingeConstraint`, prismatic, stiff
+  spring) stay parse-only; active (motorised) ragdolls and joint-limit fidelity
+  are PHYSAL follow-ups.
 - **FO4+ Havok content-system blob** — `bhkNPCollisionObject`'s
   serialised physics system isn't decoded; the render-geometry trimesh
   fallback above stands in for static architecture.

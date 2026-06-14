@@ -16,6 +16,7 @@ built, where the code lives, and what guarantees it makes.
 | [NIF Parser](nif-parser.md) | nif | Block-type dispatch (~254 arms, source of truth: `blocks/mod.rs`), version handling, robustness |
 | [NIFAL — NIF Abstraction Layer](nifal.md) | nif, byroredux | `Imported*` → canonical ECS translation boundary; material, particle, collision, LOD slices |
 | [EXAL — Exterior Abstraction Layer](exal.md) | byroredux, renderer | NIFAL mirror for outdoor rendering: terrain, sky, sun, weather, water, LOD |
+| [PHYSAL — Physics Abstraction Layer](physal.md) | nif, physics, byroredux | Per-game Havok → one canonical articulated-physics spec → solver; ragdolls (Oblivion/FO3/FNV/Skyrim), double-ended (source game + backing solver) |
 | [Archives (BSA + BA2 + CSG)](archives.md) | bsa | BSA v103/104/105, BA2 v1/2/3/7/8 GNRL + DX10, FO4 `.csg` precombined geometry |
 | [Plugin Loading](plugin-loading.md) | plugin, core | `PluginManifest`, `DataStore`, `DependencyResolver`, Form ID system, ESM parser, conflict resolution |
 | [ESM Records](esm-records.md) | plugin | Cell loading, items, NPCs, factions, leveled lists |
