@@ -101,6 +101,34 @@ impl PhysicsWorld {
         self.bodies.len()
     }
 
+    /// Remove a rigid body and its attached colliders from the simulation.
+    ///
+    /// Returns `true` if `handle` referenced a live body. The body's
+    /// colliders are cascaded out via the `remove_attached_colliders =
+    /// true` flag, so the caller only needs the `RigidBodyHandle` — the
+    /// representative `ColliderHandle` on `RapierHandles` is freed
+    /// automatically.
+    ///
+    /// This is the symmetric counterpart to the `bodies.insert` /
+    /// `colliders.insert_with_parent` pair in `physics_sync_system`. It
+    /// MUST be called when a simulated entity is despawned (cell unload):
+    /// `World::despawn` only drops the `RapierHandles` ECS row, so without
+    /// this the body + colliders leak into `RigidBodySet` / `ColliderSet`
+    /// and stay in the broad-phase / query-pipeline BVH forever — an
+    /// unbounded per-cell-crossing leak. See #1520.
+    pub fn remove_body(&mut self, handle: RigidBodyHandle) -> bool {
+        self.bodies
+            .remove(
+                handle,
+                &mut self.islands,
+                &mut self.colliders,
+                &mut self.impulse_joints,
+                &mut self.multibody_joints,
+                /* remove_attached_colliders = */ true,
+            )
+            .is_some()
+    }
+
     /// `(awake dynamic, awake kinematic)` body counts from the last step's
     /// island state — diagnostic for the static-scene fast path.
     pub fn awake_counts(&self) -> (usize, usize) {

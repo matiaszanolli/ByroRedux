@@ -127,6 +127,8 @@ pub(crate) use spawn::{
 pub(crate) use unload::collect_victim_gpu_handles;
 #[cfg(test)]
 pub(crate) use unload::release_victim_item_instances;
+#[cfg(test)]
+pub(crate) use unload::release_victim_rapier_bodies;
 
 /// Pack `BSEffectShaderProperty` flag booleans (captured in Stage 1 by
 /// `BsEffectShaderData::effect_{soft,palette_color,palette_alpha,lit}`)
@@ -457,6 +459,8 @@ mod nif_light_spawn_gate_tests;
 mod pkin_expansion_tests;
 #[cfg(test)]
 mod placement_root_subtree_tests;
+#[cfg(test)]
+mod rapier_release_tests;
 #[cfg(test)]
 mod refr_texture_overlay_tests;
 #[cfg(test)]
