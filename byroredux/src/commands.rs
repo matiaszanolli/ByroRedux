@@ -2363,6 +2363,36 @@ impl ConsoleCommand for MatSetCommand {
     }
 }
 
+/// `ragdoll <entity_id>` — flip an actor from bind-pose to a live Havok
+/// ragdoll simulated on our Rapier solver (M41.x). The entity is the
+/// actor placement root carrying a `RagdollTemplate` (attached at NPC
+/// spawn from the skeleton's parsed Havok articulation). Seeds each body
+/// from the bone's current pose, builds the multibody, and tags the actor
+/// `RagdollActive`; the writeback system then crumples the skinned mesh.
+struct RagdollCommand;
+impl ConsoleCommand for RagdollCommand {
+    fn name(&self) -> &str {
+        "ragdoll"
+    }
+    fn description(&self) -> &str {
+        "Ragdoll an actor (usage: ragdoll <entity_id>)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let trimmed = args.trim();
+        let Ok(actor) = trimmed.parse::<EntityId>() else {
+            return CommandOutput::line(format!(
+                "ragdoll: failed to parse entity id from `{trimmed}` — usage: ragdoll <entity_id>"
+            ));
+        };
+        match crate::ragdoll::activate_ragdoll(world, actor) {
+            Ok(n) => CommandOutput::line(format!(
+                "ragdoll: entity {actor} now simulating {n} bodies on Rapier"
+            )),
+            Err(e) => CommandOutput::line(format!("ragdoll: {e}")),
+        }
+    }
+}
+
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(HelpCommand);
@@ -2391,6 +2421,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(ScriptActivateCommand);
     registry.register(MatListCommand);
     registry.register(MatSetCommand);
+    registry.register(RagdollCommand);
     registry
 }
 

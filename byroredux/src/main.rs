@@ -23,6 +23,7 @@ mod helpers;
 mod material_translate;
 mod npc_spawn;
 mod parsed_nif_cache;
+mod ragdoll;
 mod render;
 mod scene;
 mod scene_import_cache;
@@ -570,6 +571,12 @@ impl App {
         // Pre-register component storages that the physics sync system
         // queries on the first frame (before anything has been inserted).
         world.register::<byroredux_physics::RapierHandles>();
+        // M41.x ragdoll — pre-register so the `ragdoll` command's
+        // `query_mut::insert` and the writeback system's queries return
+        // `Some` even before any actor has been ragdolled.
+        world.register::<byroredux_physics::Ragdoll>();
+        world.register::<crate::ragdoll::RagdollTemplate>();
+        world.register::<crate::ragdoll::RagdollActive>();
         // M44 Phase 3.5: pre-register footstep emitter storage so
         // `footstep_system`'s `query_mut::<FootstepEmitter>` returns
         // `Some` even before the first emitter is inserted (e.g. on
@@ -848,6 +855,19 @@ impl App {
                 .writes::<byroredux_core::ecs::GlobalTransform>()
                 .reads::<Transform>()
                 .writes::<Transform>(),
+        );
+        // M41.x — ragdoll writeback. Stage::Late guarantees it runs after
+        // `physics_sync_system` (Stage::Physics) has stepped the multibody
+        // *and* after PostUpdate transform propagation, so overwriting each
+        // ragdoll bone's GlobalTransform with the simulated pose is the last
+        // word before render (no propagation/animation skip needed).
+        scheduler.add_to_with_access(
+            Stage::Late,
+            crate::ragdoll::ragdoll_writeback_system,
+            Access::new()
+                .reads_resource::<byroredux_physics::PhysicsWorld>()
+                .reads::<byroredux_physics::Ragdoll>()
+                .writes::<byroredux_core::ecs::GlobalTransform>(),
         );
         // M44 Phase 6 — cell-acoustics → reverb send (#846). Runs
         // before `audio_system` so any new spatial track constructed
