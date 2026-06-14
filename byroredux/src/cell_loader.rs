@@ -173,7 +173,8 @@ pub(crate) fn pack_effect_shader_flags(
 
 /// Pack the three BGSM v>2 boolean flags
 /// ([`ImportedMesh::is_pbr`] / [`ImportedMesh::has_translucency`] /
-/// [`ImportedMesh::model_space_normals`]) into the `material_flag::BGSM_*`
+/// [`ImportedMesh::model_space_normals`]) into the canonical
+/// `material_flag::{PBR_BSDF, TRANSLUCENCY, MODEL_SPACE_NORMALS, …}`
 /// bit layout. Sibling to [`pack_effect_shader_flags`] — both contribute
 /// to the same `Material.effect_shader_flags` u32 by OR-composition at
 /// the importer boundary, then ride through to
@@ -191,8 +192,8 @@ pub(crate) fn pack_effect_shader_flags(
 /// [`ImportedMesh::model_space_normals`]: byroredux_nif::import::ImportedMesh::model_space_normals
 pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMesh) -> u32 {
     use byroredux_renderer::vulkan::material::material_flag::{
-        BGSM_AUTHORED, BGSM_MODEL_SPACE_NORMALS, BGSM_PBR, BGSM_TRANSLUCENCY,
-        BGSM_TRANSLUCENCY_MIX_ALBEDO, BGSM_TRANSLUCENCY_THICK_OBJECT, EFFECT_PALETTE_COLOR,
+        BGSM_AUTHORED, EFFECT_PALETTE_COLOR, MODEL_SPACE_NORMALS, PBR_BSDF, TRANSLUCENCY,
+        TRANSLUCENCY_MIX_ALBEDO, TRANSLUCENCY_THICK_OBJECT,
     };
     let mut flags = 0u32;
     // `BGSM_AUTHORED` — set when `merge_bgsm_into_mesh` resolved a
@@ -210,13 +211,13 @@ pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMes
         flags |= BGSM_AUTHORED;
     }
     if mesh.is_pbr {
-        flags |= BGSM_PBR;
+        flags |= PBR_BSDF;
     }
     if mesh.has_translucency {
-        flags |= BGSM_TRANSLUCENCY;
+        flags |= TRANSLUCENCY;
     }
     if mesh.model_space_normals {
-        flags |= BGSM_MODEL_SPACE_NORMALS;
+        flags |= MODEL_SPACE_NORMALS;
     }
     // #1353 / FO4-D8-07 — FO4 BGSM grayscale-to-palette. EFFECT_PALETTE_COLOR
     // IS `SLSF1::Greyscale_To_PaletteColor`; setting it on a BGSM lit material
@@ -230,15 +231,15 @@ pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMes
         flags |= EFFECT_PALETTE_COLOR;
     }
     // #1147 Phase 2b — translucency parameter-shape bits. Only
-    // meaningful when `BGSM_TRANSLUCENCY` is also set, but pack them
+    // meaningful when `TRANSLUCENCY` is also set, but pack them
     // unconditionally so the shader's predicate `is_thick` /
     // `mix_albedo` reads the authored value directly. The shader
-    // already gates the whole SSS block on `BGSM_TRANSLUCENCY`.
+    // already gates the whole SSS block on `TRANSLUCENCY`.
     if mesh.translucency_thick_object {
-        flags |= BGSM_TRANSLUCENCY_THICK_OBJECT;
+        flags |= TRANSLUCENCY_THICK_OBJECT;
     }
     if mesh.translucency_mix_albedo {
-        flags |= BGSM_TRANSLUCENCY_MIX_ALBEDO;
+        flags |= TRANSLUCENCY_MIX_ALBEDO;
     }
     flags
 }
@@ -253,7 +254,7 @@ mod pack_bgsm_material_flags_tests {
     use super::pack_bgsm_material_flags;
     use byroredux_nif::import::ImportedMesh;
     use byroredux_renderer::vulkan::material::material_flag::{
-        BGSM_MODEL_SPACE_NORMALS, BGSM_PBR, BGSM_TRANSLUCENCY, EFFECT_PALETTE_COLOR,
+        EFFECT_PALETTE_COLOR, MODEL_SPACE_NORMALS, PBR_BSDF, TRANSLUCENCY,
     };
 
     /// Build an empty-but-valid `ImportedMesh` with all 3 BGSM flags
@@ -367,28 +368,28 @@ mod pack_bgsm_material_flags_tests {
         mesh.model_space_normals = true;
 
         let packed = pack_bgsm_material_flags(&mesh);
-        let expected = BGSM_PBR | BGSM_TRANSLUCENCY | BGSM_MODEL_SPACE_NORMALS;
+        let expected = PBR_BSDF | TRANSLUCENCY | MODEL_SPACE_NORMALS;
         assert_eq!(packed, expected);
         // Sanity-check the canonical bit layout the Phase 2b shader
         // consumer will read against — bits 5, 6, 7.
-        assert_eq!(packed & 0x20, BGSM_PBR);
-        assert_eq!(packed & 0x40, BGSM_TRANSLUCENCY);
-        assert_eq!(packed & 0x80, BGSM_MODEL_SPACE_NORMALS);
+        assert_eq!(packed & 0x20, PBR_BSDF);
+        assert_eq!(packed & 0x40, TRANSLUCENCY);
+        assert_eq!(packed & 0x80, MODEL_SPACE_NORMALS);
     }
 
     #[test]
     fn individual_flags_produce_individual_bits() {
         let mut mesh = empty_mesh();
         mesh.is_pbr = true;
-        assert_eq!(pack_bgsm_material_flags(&mesh), BGSM_PBR);
+        assert_eq!(pack_bgsm_material_flags(&mesh), PBR_BSDF);
 
         let mut mesh = empty_mesh();
         mesh.has_translucency = true;
-        assert_eq!(pack_bgsm_material_flags(&mesh), BGSM_TRANSLUCENCY);
+        assert_eq!(pack_bgsm_material_flags(&mesh), TRANSLUCENCY);
 
         let mut mesh = empty_mesh();
         mesh.model_space_normals = true;
-        assert_eq!(pack_bgsm_material_flags(&mesh), BGSM_MODEL_SPACE_NORMALS);
+        assert_eq!(pack_bgsm_material_flags(&mesh), MODEL_SPACE_NORMALS);
     }
 
     /// #1353 / FO4-D8-07 — a BGSM that authored a greyscale-to-palette LUT
@@ -424,7 +425,7 @@ mod pack_bgsm_material_flags_tests {
             EFFECT_LIT, EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR, EFFECT_SOFT,
             VERTEX_COLOR_EMISSIVE,
         };
-        let bgsm_bits = BGSM_PBR | BGSM_TRANSLUCENCY | BGSM_MODEL_SPACE_NORMALS;
+        let bgsm_bits = PBR_BSDF | TRANSLUCENCY | MODEL_SPACE_NORMALS;
         let prior_bits = VERTEX_COLOR_EMISSIVE
             | EFFECT_SOFT
             | EFFECT_PALETTE_COLOR

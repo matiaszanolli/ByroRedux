@@ -852,7 +852,7 @@ pub(super) fn spawn_placed_instances(
         // the loose-NIF path. See `material_translate.rs`.
         let extra_material_flags = refr_overlay
             .filter(|o| o.model_space_normals)
-            .map(|_| byroredux_renderer::vulkan::material::material_flag::BGSM_MODEL_SPACE_NORMALS)
+            .map(|_| byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS)
             .unwrap_or(0);
         let material = crate::material_translate::translate_material(
             mesh,
