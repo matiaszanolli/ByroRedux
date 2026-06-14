@@ -169,6 +169,17 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 scroll, float 
         // Cheap, doesn't pretend to be real waves but reads as moving
         // water.
         //
+        // PRECISION BOUND (#1502): `uvBase` here is absolute world XZ
+        // (`vWorldPos.xz`, the flat-water branch at the call site).
+        // `hash21`'s sin/fract lattice loses precision and visibly bands
+        // past ~176k-unit coordinates. Currently harmless because this
+        // branch runs ONLY when no water normal map is bound — the
+        // textured path (`texture(...)`, which wraps) covers all shipping
+        // content at ~30× sub-texel margin and never reaches the hash. If
+        // procedural foam/noise ever becomes a default path, feed the hash
+        // render-origin-relative coordinates (or a fract-reduced lattice)
+        // instead of absolute world XZ.
+        //
         // The gradient → tangent-space normal scaling is tuned so the
         // resulting normal stays within ~15° of straight up: anything
         // larger triggers the crest-foam pass downstream on every
