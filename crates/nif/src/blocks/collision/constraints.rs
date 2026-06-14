@@ -171,12 +171,12 @@ impl BhkConstraint {
 
     /// Decode the inner constraint of an FO3+ `bhkMalleableConstraint`.
     /// Layout (nif.xml `bhkMalleableConstraintCInfo`, `since 20.2.0.7`):
-    /// `Type u32` + inner `bhkConstraintCInfo` (16 B, whose entities are
-    /// −1/−1 — the real bodies are the OUTER base the caller already read)
-    /// + the typed inner CInfo. The trailing `Strength` f32 (and the inner
-    /// CInfo's motor) are left for `block_size` recovery. FNV humanoid
-    /// ragdolls wrap 14 of their 17 joints this way, so a malleable-wrapped
-    /// Ragdoll surfaces identically to a bare one.
+    /// a `Type u32`, then an inner `bhkConstraintCInfo` (16 B, whose
+    /// entities are −1/−1 — the real bodies are the OUTER base the caller
+    /// already read), then the typed inner CInfo. The trailing `Strength`
+    /// f32 (and the inner CInfo's motor) are left for `block_size`
+    /// recovery. FNV humanoid ragdolls wrap 14 of their 17 joints this way,
+    /// so a malleable-wrapped Ragdoll surfaces identically to a bare one.
     fn parse_fo3_malleable_inner(stream: &mut NifStream) -> io::Result<BhkConstraintData> {
         let wrapped_type = stream.read_u32_le()?;
         // Inner bhkConstraintCInfo — discard (entities are −1/−1).

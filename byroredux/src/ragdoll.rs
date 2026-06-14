@@ -213,10 +213,15 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
         RagdollSpec { bodies, constraints }
     };
 
-    // 2. Build the Rapier multibody.
+    // 2. Build the Rapier multibody (read the live tuning config; copy out
+    //    so no guard is held across the PhysicsWorld write lock).
+    let cfg = world
+        .try_resource::<ContactConfig>()
+        .map(|c| *c)
+        .unwrap_or(ContactConfig::DEFAULT);
     let ragdoll = {
         let mut pw = world.resource_mut::<PhysicsWorld>();
-        build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT)
+        build_ragdoll(&mut pw, &spec, &cfg)
     };
     let n = ragdoll.bodies.len();
 

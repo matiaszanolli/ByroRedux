@@ -71,6 +71,13 @@ pub struct ContactConfig {
     /// `KinematicCharacterController.offset` distance in BU. Was 4.0
     /// before unification.
     pub kcc_offset_bu: f32,
+
+    /// Extra angular damping added to every ragdoll body on top of the
+    /// authored Havok value (M41.x). The single biggest "less floppy /
+    /// less clunky than the original Havok ragdoll" lever — raise it to
+    /// settle limbs faster. `0.0` = pure Havok-authored damping (inert
+    /// default); ~1–3 gives a noticeably calmer death/hit ragdoll.
+    pub ragdoll_extra_angular_damping: f32,
 }
 
 impl ContactConfig {
@@ -78,6 +85,7 @@ impl ContactConfig {
         trimesh_flags: TriMeshFlagBits::DEFAULT,
         default_contact_skin_bu: 1.0,
         kcc_offset_bu: 4.0,
+        ragdoll_extra_angular_damping: 0.0,
     };
 }
 

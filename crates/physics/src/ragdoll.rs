@@ -100,7 +100,10 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
         let body = RigidBodyBuilder::dynamic()
             .position(iso_from_trs(b.translation, b.rotation))
             .linear_damping(b.linear_damping.max(0.0))
-            .angular_damping(b.angular_damping.max(0.0))
+            // "less floppy than Havok" lever — extra angular damping on top
+            // of the authored value (inert at the 0.0 default). See
+            // ContactConfig::ragdoll_extra_angular_damping.
+            .angular_damping(b.angular_damping.max(0.0) + cfg.ragdoll_extra_angular_damping.max(0.0))
             .build();
         let h = pw.bodies.insert(body);
 
