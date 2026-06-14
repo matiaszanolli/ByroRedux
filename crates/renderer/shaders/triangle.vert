@@ -98,7 +98,7 @@ layout(std430, set = 1, binding = 12) readonly buffer BonesPrevBuffer {
 layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec2 fragUV;
 layout(location = 2) out vec3 fragNormal;
-layout(location = 3) out vec3 fragWorldPos;
+layout(location = 3) out vec3 fragWorldPosRel;  // #1496 — render-origin-RELATIVE; frag adds renderOrigin back for absolute uses
 layout(location = 4) flat out uint fragTexIndex;
 layout(location = 5) flat out int fragInstanceIndex;
 // Current + previous frame clip-space positions for screen-space motion
@@ -191,15 +191,19 @@ void main() {
         n = m3 * inNormal;
     }
     fragNormal = (dot(n, n) > 0.0) ? normalize(n) : vec3(0.0, 1.0, 0.0);
-    // #markarth-precision — `worldPos` is in render-origin-relative space in
-    // BOTH branches (rigid: the model translation was rebased on the CPU;
-    // skinned: the blended palette translation was rebased above, #1486) and
-    // viewProj is relative, so the clip-space geometry above keeps full f32
-    // precision at large worldspace offsets. Reconstruct the ABSOLUTE world
-    // position for the fragment shader's lighting / RT (the TLAS is in
-    // absolute world space) / fog math — those tolerate the residual
-    // ~0.015-unit uniform shift.
-    fragWorldPos = worldPos.xyz + renderOrigin.xyz;
+    // #markarth-precision / #1496 — `worldPos` is in render-origin-relative
+    // space in BOTH branches (rigid: the model translation was rebased on
+    // the CPU; skinned: the blended palette translation was rebased above,
+    // #1486) and viewProj is relative, so the clip-space geometry above
+    // keeps full f32 precision at large worldspace offsets. Pass the
+    // RELATIVE position as the varying — the fragment shader reconstructs
+    // the absolute (`+ renderOrigin`) for lighting / RT ray origins / fog,
+    // but the `dFdx/dFdy` consumers (flat normal, derivative TBN, POM,
+    // rtLOD footprint) read the relative varying directly. That moves the
+    // f32 quantization AFTER the derivative stage: pre-#1496 the absolute
+    // varying fed those derivatives up to ~0.0156-unit ULP noise at
+    // |world| ≥ 131k. Zero extra varying cost (same `location = 3`).
+    fragWorldPosRel = worldPos.xyz;
     fragTexIndex = inst.textureIndex;
     fragInstanceIndex = gl_InstanceIndex;
 

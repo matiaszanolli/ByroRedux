@@ -32,7 +32,7 @@
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;
-layout(location = 3) in vec3 fragWorldPos;
+layout(location = 3) in vec3 fragWorldPosRel;  // #1496 — render-origin-RELATIVE; main() reconstructs absolute `fragWorldPos`
 layout(location = 4) flat in uint fragTexIndex;
 layout(location = 5) flat in int fragInstanceIndex;
 layout(location = 6) in vec4 fragCurrClipPos;
@@ -240,7 +240,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 skyTint;     // xyz = TOD/weather zenith colour, w = sun_angular_radius (rad; SkyParams::sun_angular_radius, #1023)
     vec4 sunDirection;
     vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = camera_static (1.0 = parked).
-    vec4 renderOrigin;   // #markarth-precision — camera-relative render origin. Unused here (fragWorldPos arrives ABSOLUTE via the vertex varying); declared to keep CameraUBO == sizeof(GpuCamera).
+    vec4 renderOrigin;   // #markarth-precision / #1496 — camera-relative render origin (cell-grid snapped). main() adds .xyz to the render-origin-relative `fragWorldPosRel` varying to reconstruct the absolute world position for lighting / RT / fog.
 };
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
@@ -1285,6 +1285,17 @@ uvec4 packReservoir(Reservoir r) {
 }
 
 void main() {
+    // #1496 — reconstruct the ABSOLUTE world position from the
+    // render-origin-relative varying. Every absolute consumer below
+    // (lighting `lightPos - fragWorldPos`, RT ray origins, view dir,
+    // fog distance) reads this local. The `dFdx/dFdy` consumers
+    // (flat normal, derivative TBN, POM, rtLOD footprint) instead read
+    // `fragWorldPosRel` directly so their derivatives form from small
+    // relative magnitudes — that's the precision win. In exact math the
+    // uniform `+renderOrigin` cancels under dFdx; the gain is purely
+    // avoiding the f32 ULP noise of the large absolute interpolant.
+    vec3 fragWorldPos = fragWorldPosRel + renderOrigin.xyz;
+
     // Initialize ReSTIR-DI reservoir to empty (0xFFFFFFFF = invalid light)
     outReservoir = packReservoir(Reservoir(0xFFFFFFFFu, 0u, 0.0, 0.0));
 
@@ -1309,7 +1320,7 @@ void main() {
     // `fragNormalEffective` so normal-map perturbation, RT geometric
     // hits, and G-buffer output all see the same effective normal.
     vec3 fragNormalEffective = ((inst.flags & INSTANCE_FLAG_FLAT_SHADING) != 0u)
-        ? normalize(cross(dFdx(fragWorldPos), dFdy(fragWorldPos)))
+        ? normalize(cross(dFdx(fragWorldPosRel), dFdy(fragWorldPosRel)))  // #1496 — derivative on relative pos
         : fragNormal;
 
     // R1 Phase 5 — deduplicated material payload. Single SSBO load per
@@ -1350,7 +1361,7 @@ void main() {
             baseUV,
             V0,
             N0,
-            fragWorldPos,
+            fragWorldPosRel,  // #1496 — POM builds its TBN from dFdx(worldPos) only
             mat.parallaxMapIndex,
             mat.parallaxHeightScale,
             mat.parallaxMaxPasses
@@ -1498,7 +1509,7 @@ void main() {
             mn.z = sqrt(max(0.0, 1.0 - dot(mn.xy, mn.xy)));
             N = normalize(mn);
         } else {
-            N = perturbNormal(N, fragWorldPos, sampleUV, normalMapIdx, fragTangent);
+            N = perturbNormal(N, fragWorldPosRel, sampleUV, normalMapIdx, fragTangent);  // #1496 — TBN from dFdx(worldPos) only
         }
     }
 
@@ -1640,7 +1651,7 @@ void main() {
     const float RT_LOD_REFLECT = 3.0;
     const float RT_LOD_GI      = 2.0;  // GI ray ceiling
     const float RT_LOD_IOR     = 1.0;  // Phase-3 glass IOR ceiling (budget-gated)
-    float rtFootprint = max(length(dFdx(fragWorldPos)), length(dFdy(fragWorldPos)));
+    float rtFootprint = max(length(dFdx(fragWorldPosRel)), length(dFdy(fragWorldPosRel)));  // #1496 — derivative on relative pos
     float rtLOD = clamp(log2(rtFootprint * RT_LOD_SCALE), 0.0, 3.0);
 
     // ── #706 / FX-1: BSEffectShaderProperty emit-only early-out ─────
