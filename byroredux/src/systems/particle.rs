@@ -41,6 +41,42 @@ pub fn apply_emitter_params(
     preset.end_size = size;
 }
 
+/// NIFAL particles slice — the **single overlay boundary** that folds every
+/// authored emitter override (colour curve, base spawn params, birth rate,
+/// force fields) onto a name-heuristic preset in place. Both scene-build
+/// sites — the loose-NIF loader (`scene/nif_loader.rs`) and the cell-loader
+/// spawn path (`cell_loader/spawn.rs`) — call this, so a newly-wired
+/// authored field can no longer silently diverge the two load paths. This
+/// is the same de-duplication rationale the Materials slice uses for
+/// `translate_material` (see `docs/engine/nifal.md` §3); previously these
+/// four overlays were copy-pasted inline at both sites (#1513).
+///
+/// Field-by-field: `color_curve` overrides `start_color`/`end_color`
+/// (#707); `emitter_params` delegates to [`apply_emitter_params`] for the
+/// kinematic+lifetime+size subset (`initial_color` stays unapplied — see
+/// that fn); `emitter_rate` overrides the preset density; `force_fields`
+/// are Z-up→Y-up converted (#984). A `None`/empty input leaves the preset
+/// default in place.
+pub fn apply_emitter_overlays(
+    preset: &mut ParticleEmitter,
+    color_curve: &Option<byroredux_nif::import::ParticleColorCurve>,
+    emitter_params: &Option<byroredux_nif::import::ImportedEmitterParams>,
+    emitter_rate: Option<f32>,
+    force_fields: &[byroredux_nif::import::ImportedParticleForceField],
+) {
+    if let Some(curve) = color_curve {
+        preset.start_color = curve.start;
+        preset.end_color = curve.end;
+    }
+    if let Some(p) = emitter_params {
+        apply_emitter_params(preset, p);
+    }
+    if let Some(rate) = emitter_rate {
+        preset.rate = rate;
+    }
+    preset.force_fields = convert_force_fields_zup_to_yup(force_fields);
+}
+
 /// Convert a list of imported NIF force fields (Z-up local space) to
 /// engine Y-up local space. Mirrors the per-axis swap used elsewhere
 /// (translation: `[x, z, -y]`; direction: same). Applied at scene-
@@ -433,6 +469,73 @@ mod tests {
         assert_eq!(preset.start_size, preset.end_size);
         // Colour stays at the preset (no white-default washout).
         assert_eq!(preset.start_color, preset_start_color);
+    }
+
+    /// #1513: the consolidated single overlay boundary applies all four
+    /// authored overrides (colour curve, base params, birth rate, force
+    /// fields) in one place, matching the previously-inline behaviour both
+    /// load paths used. Pins that none of the four is silently dropped and
+    /// that `initial_color` still does NOT win over the colour curve.
+    #[test]
+    fn apply_emitter_overlays_applies_color_rate_size_and_force_fields() {
+        use byroredux_nif::import::{
+            ImportedEmitterParams, ImportedParticleForceField, ParticleColorCurve,
+        };
+        let mut preset = ParticleEmitter::torch_flame();
+        let curve = ParticleColorCurve {
+            start: [0.9, 0.4, 0.1, 1.0],
+            end: [0.1, 0.0, 0.0, 0.0],
+        };
+        let authored = ImportedEmitterParams {
+            speed: 24.0,
+            speed_variation: 45.6,
+            declination: 0.0,
+            declination_variation: 0.17,
+            initial_color: [1.0, 1.0, 1.0, 1.0], // white default — must NOT win
+            initial_radius: 50.0,
+            life_span: 1.33,
+            life_span_variation: 0.67,
+            base_scale: Some(0.15), // → authored size 7.5
+        };
+        let fields = vec![ImportedParticleForceField::Gravity {
+            // Z-up axis becomes Y-up [x, z, -y] at the boundary.
+            direction: [0.0, 0.0, -1.0],
+            strength: 9.8,
+            decay: 0.0,
+        }];
+
+        apply_emitter_overlays(
+            &mut preset,
+            &Some(curve),
+            &Some(authored),
+            Some(42.0),
+            &fields,
+        );
+
+        // Colour curve overrides start/end (and beats the white default).
+        assert_eq!(preset.start_color, curve.start);
+        assert_eq!(preset.end_color, curve.end);
+        // Base params overlaid (delegated to apply_emitter_params).
+        assert_eq!(preset.speed, 24.0);
+        assert_eq!(preset.life, 1.33);
+        assert!((preset.start_size - 7.5).abs() < 1e-4);
+        // Birth rate overlaid.
+        assert_eq!(preset.rate, 42.0);
+        // Force fields converted Z-up→Y-up and carried through.
+        assert_eq!(preset.force_fields.len(), 1);
+    }
+
+    /// #1513: `None`/empty inputs leave the preset untouched — the overlay
+    /// boundary must be a no-op when the NIF authored nothing.
+    #[test]
+    fn apply_emitter_overlays_none_inputs_keep_preset_defaults() {
+        let preset_ref = ParticleEmitter::torch_flame();
+        let mut preset = ParticleEmitter::torch_flame();
+        apply_emitter_overlays(&mut preset, &None, &None, None, &[]);
+        assert_eq!(preset.start_color, preset_ref.start_color);
+        assert_eq!(preset.speed, preset_ref.speed);
+        assert_eq!(preset.rate, preset_ref.rate);
+        assert!(preset.force_fields.is_empty());
     }
 
     #[test]

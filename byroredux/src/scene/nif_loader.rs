@@ -518,40 +518,18 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             // failure is still resolved end-to-end.
             ParticleEmitter::torch_flame()
         };
-        // #707 / FX-2 — when the NIF authored a NiPSysColorModifier ->
-        // NiColorData chain, the importer captured the keyframe
-        // stream's first/last RGBA into `emitter.color_curve`.
-        // Override the heuristic preset's start/end colour so authored
-        // Dragonsreach embers / spell-cast colours / geyser steam read
-        // distinctly from the generic preset values. Pre-fix the data
-        // was parsed and immediately discarded — every torch looked
-        // identical. The other preset fields (size_curve, lifetime,
-        // emit_rate, etc.) stay at the heuristic preset's defaults
-        // because the modifier only authors colour.
-        if let Some(curve) = emitter.color_curve {
-            preset.start_color = curve.start;
-            preset.end_color = curve.end;
-        }
-        // NIFAL particles slice — override the preset's guessed
-        // kinematic + lifetime spawn fields with the authored
-        // NiPSysEmitter base params when present. Colour/size stay with
-        // the curve/preset (see `apply_emitter_params`).
-        if let Some(p) = emitter.emitter_params {
-            crate::systems::apply_emitter_params(&mut preset, &p);
-        }
-        // NIFAL spawn-rate follow-up — authored birth rate
-        // (NiPSysEmitterCtlr) overrides the preset's guessed density.
-        if let Some(rate) = emitter.emitter_rate {
-            preset.rate = rate;
-        }
-        // #984 / NIF-D5-ORPHAN-A2 — carry authored
-        // `NiPSys{Gravity,Vortex,Drag,Turbulence,Air,Radial}FieldModifier`
-        // entries onto the spawned `ParticleEmitter` so the simulator
-        // integrates them alongside the preset's `gravity` scalar.
-        // Mirrored by the cell-loader spawn path; see
-        // `cell_loader::spawn` for the parallel block.
-        preset.force_fields =
-            crate::systems::convert_force_fields_zup_to_yup(&emitter.force_fields);
+        // NIFAL particles slice (#1513) — overlay every authored emitter
+        // override (colour curve #707, NiPSysEmitter base params, birth
+        // rate NiPSysEmitterCtlr, force fields #984) onto the heuristic
+        // preset through the single shared boundary. The cell-loader spawn
+        // path calls the same helper, so the two load paths can't diverge.
+        crate::systems::apply_emitter_overlays(
+            &mut preset,
+            &emitter.color_curve,
+            &emitter.emitter_params,
+            emitter.emitter_rate,
+            &emitter.force_fields,
+        );
         world.insert(host_entity, preset);
     }
 
