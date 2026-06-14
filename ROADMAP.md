@@ -124,8 +124,17 @@ refuted by the 2026-04-17 + 2026-04-25 sweeps; v103 extracts
 147 629 / 147 629 vanilla files end-to-end, see #699). **NPC behavior
 beyond spawn** (AI packages, animation playback wiring) — M41 spawns
 visible T-pose actors with equipment but M42 behavior is Tier 7.
-**FO4 humanoid actor meshes** still wait on a Havok `.hkx` skeleton
-loader (M41.x). **The Papyrus runtime** that executes the 1 257 parsed
+**Actor motion** — NPCs spawn in bind pose; Havok `.hkx` *animation* is
+not yet decoded (M41.x animation slice). The FO4 *skeleton* loads fine —
+the old "FO4 humanoid meshes wait on a `.hkx` skeleton loader" framing
+was a stale premise: `characterassets\skeleton.nif` is a NIF that ships
+in `Fallout4 - Meshes.ba2` and resolves through the corrected path table.
+**M41.x ragdoll (Havok-baseline physics)** — the FNV slice shipped: the
+`bhkRigidBody` + ragdoll/malleable constraint chain parses, threads into
+a Rapier **multibody**, and the `ragdoll <id>` console command runs a
+Bethesda ragdoll on our solver (18-body Doc Mitchell verified). FO4/FO76/
+Starfield ragdolls stay blocked on the `BhkSystemBinary` blob decoder.
+**The Papyrus runtime** that executes the 1 257 parsed
 FO3 SCPT records is M47.2 — the event-hook (M47.0) + condition (M47.1)
 foundations ship, the transpiler does not yet. **Save/load** (M45) is
 unstarted. Weather transitions (fade between WTHR states) and cloud

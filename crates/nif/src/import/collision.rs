@@ -22,10 +22,14 @@
 //! [`NifScene`] (`havok_scale` field, populated by `havok_scale_for` at parse
 //! time) so consumers don't have to re-detect the game variant per call.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::blocks::collision::*;
 use crate::blocks::tri_shape::NiTriStripsData;
+use crate::import::types::{
+    ImportedJointKind, ImportedRagdoll, ImportedRagdollBody, ImportedRagdollConstraint,
+};
 use crate::scene::NifScene;
 use crate::types::BlockRef;
 
@@ -247,6 +251,154 @@ fn extract_from_phantom(
         ),
     }
     None
+}
+
+/// Scene-level extractor: assemble the Havok ragdoll articulation (the
+/// rigid bodies + the constraints linking them) into an engine-native
+/// [`ImportedRagdoll`]. Returns `None` unless the scene carries a real
+/// articulation — ≥2 bodies and ≥1 decoded Ragdoll/LimitedHinge joint;
+/// a lone static collider isn't a ragdoll.
+///
+/// Bodies are reached via the classic `BhkCollisionObject → BhkRigidBody`
+/// chain (the only decodable path; FO4+ NP-blob ragdolls are out of
+/// scope — see the module table). Each body's bone name is its host
+/// NiNode's name. Constraint entity refs are rigid-body *block* indices,
+/// remapped here to body-array indices. All geometry is Y-up + havok-
+/// scaled, reusing the same helpers as [`extract_from_classic`].
+pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
+    let scale = scene.havok_scale;
+    let body_to_bone = build_body_to_bone(scene);
+
+    // Collect skeletal rigid bodies in block order; map block idx → array idx
+    // so the constraints below can translate their entity refs.
+    let mut bodies = Vec::new();
+    let mut block_to_body: HashMap<usize, usize> = HashMap::new();
+    for (idx, block) in scene.blocks.iter().enumerate() {
+        let Some(body) = block.as_any().downcast_ref::<BhkRigidBody>() else {
+            continue;
+        };
+        // Only bodies hosted on a named bone take part in the ragdoll — a
+        // stray rigid body with no host bone can't be driven from / written
+        // back to a bone transform.
+        let Some(bone_name) = body_to_bone.get(&idx).cloned() else {
+            continue;
+        };
+        let mut visited = HashSet::new();
+        let Some(shape) = resolve_shape(scene, body.shape_ref, &mut visited) else {
+            continue;
+        };
+        block_to_body.insert(idx, bodies.len());
+        bodies.push(ImportedRagdollBody {
+            bone_name,
+            mass: body.mass,
+            linear_damping: body.linear_damping,
+            angular_damping: body.angular_damping,
+            friction: body.friction,
+            restitution: body.restitution,
+            shape,
+            translation: havok_to_engine(
+                body.translation[0],
+                body.translation[1],
+                body.translation[2],
+            ) * scale,
+            rotation: havok_quat_to_engine(body.rotation),
+        });
+    }
+    if bodies.len() < 2 {
+        return None;
+    }
+
+    let mut constraints = Vec::new();
+    for block in scene.blocks.iter() {
+        let Some(c) = block.as_any().downcast_ref::<BhkConstraint>() else {
+            continue;
+        };
+        let kind = match &c.data {
+            BhkConstraintData::Ragdoll(r) => ragdoll_joint(r, scale),
+            BhkConstraintData::LimitedHinge(h) => limited_hinge_joint(h, scale),
+            BhkConstraintData::Other => continue,
+        };
+        // Constraint entity refs point at the rigid-body blocks; remap to
+        // body-array indices. A ref to a body we skipped (no bone / shape
+        // failed) drops the joint gracefully.
+        let (Some(body_a), Some(body_b)) = (
+            c.entity_a.index().and_then(|i| block_to_body.get(&i).copied()),
+            c.entity_b.index().and_then(|i| block_to_body.get(&i).copied()),
+        ) else {
+            continue;
+        };
+        if body_a == body_b {
+            continue; // a joint must link two distinct bodies
+        }
+        constraints.push(ImportedRagdollConstraint {
+            body_a,
+            body_b,
+            kind,
+        });
+    }
+    if constraints.is_empty() {
+        return None;
+    }
+
+    Some(ImportedRagdoll { bodies, constraints })
+}
+
+/// Map each `BhkRigidBody` block index → the name of the bone NiNode that
+/// hosts it (via `NiNode.collision_ref → BhkCollisionObject.body_ref`).
+/// The reverse link doesn't exist in the NIF, so we scan AVObjects.
+fn build_body_to_bone(scene: &NifScene) -> HashMap<usize, Arc<str>> {
+    let mut map = HashMap::new();
+    for block in scene.blocks.iter() {
+        let Some(av) = block.as_av_object() else {
+            continue;
+        };
+        let Some(coll_idx) = av.collision_ref().index() else {
+            continue;
+        };
+        let Some(coll) = scene.get_as::<BhkCollisionObject>(coll_idx) else {
+            continue;
+        };
+        let Some(body_idx) = coll.body_ref.index() else {
+            continue;
+        };
+        if let Some(name) = av.name_arc() {
+            map.insert(body_idx, name.clone());
+        }
+    }
+    map
+}
+
+/// Direction-only Z-up→Y-up swap: axis swap with no translation and no
+/// havok scale (a unit direction's length must be preserved).
+fn havok_dir_to_engine(v: [f32; 4]) -> Vec3 {
+    havok_to_engine(v[0], v[1], v[2])
+}
+
+fn ragdoll_joint(r: &RagdollCInfo, scale: f32) -> ImportedJointKind {
+    ImportedJointKind::Ragdoll {
+        twist_a: havok_dir_to_engine(r.twist_a),
+        plane_a: havok_dir_to_engine(r.plane_a),
+        pivot_a: havok_to_engine(r.pivot_a[0], r.pivot_a[1], r.pivot_a[2]) * scale,
+        twist_b: havok_dir_to_engine(r.twist_b),
+        plane_b: havok_dir_to_engine(r.plane_b),
+        pivot_b: havok_to_engine(r.pivot_b[0], r.pivot_b[1], r.pivot_b[2]) * scale,
+        cone_max: r.cone_max_angle,
+        plane_min: r.plane_min_angle,
+        plane_max: r.plane_max_angle,
+        twist_min: r.twist_min_angle,
+        twist_max: r.twist_max_angle,
+    }
+}
+
+fn limited_hinge_joint(h: &LimitedHingeCInfo, scale: f32) -> ImportedJointKind {
+    ImportedJointKind::LimitedHinge {
+        axis_a: havok_dir_to_engine(h.axis_a),
+        pivot_a: havok_to_engine(h.pivot_a[0], h.pivot_a[1], h.pivot_a[2]) * scale,
+        axis_b: havok_dir_to_engine(h.axis_b),
+        pivot_b: havok_to_engine(h.pivot_b[0], h.pivot_b[1], h.pivot_b[2]) * scale,
+        min_angle: h.min_angle,
+        max_angle: h.max_angle,
+    }
 }
 
 /// Recursively resolve a bhk shape block into a CollisionShape enum.
@@ -1464,5 +1616,173 @@ mod dispatch_coverage_tests {
             "these bhk*Shape blocks are parse-dispatched but have NO resolve arm in \
              resolve_shape_inner — authored collision silently drops: {missing:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod ragdoll_extract_tests {
+    //! CI-runnable coverage for [`extract_ragdoll`] (M41.x Phase 2). The
+    //! real-data path (18-body FNV skeleton) is `crates/nif/tests/
+    //! ragdoll_import.rs`, `#[ignore]`; these synthetic scenes lock the
+    //! body-collection, host-bone mapping, constraint-remap, and
+    //! not-a-ragdoll gates without game data.
+    use super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::collision::{
+        BhkCollisionObject, BhkConstraint, BhkConstraintData, BhkRigidBody, BhkSphereShape,
+        RagdollCInfo,
+    };
+    use crate::blocks::node::NiNode;
+    use crate::blocks::NiObject;
+    use crate::types::NiTransform;
+
+    fn bone(name: &str, collision_ref: usize) -> Box<dyn NiObject> {
+        Box::new(NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from(name)),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef(collision_ref as u32),
+            },
+            children: Vec::new(),
+            effects: Vec::new(),
+        })
+    }
+
+    fn coll_obj(body_ref: usize) -> Box<dyn NiObject> {
+        Box::new(BhkCollisionObject {
+            target_ref: BlockRef::NULL,
+            flags: 0,
+            body_ref: BlockRef(body_ref as u32),
+        })
+    }
+
+    fn rigid_body(shape_ref: usize) -> Box<dyn NiObject> {
+        Box::new(BhkRigidBody {
+            shape_ref: BlockRef(shape_ref as u32),
+            havok_filter: 0,
+            translation: [0.0; 4],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            linear_velocity: [0.0; 4],
+            angular_velocity: [0.0; 4],
+            inertia_tensor: [0.0; 12],
+            center_of_mass: [0.0; 4],
+            mass: 5.0,
+            linear_damping: 0.1,
+            angular_damping: 0.05,
+            friction: 0.3,
+            restitution: 0.4,
+            max_linear_velocity: 0.0,
+            max_angular_velocity: 0.0,
+            penetration_depth: 0.0,
+            motion_type: 1,
+            deactivator_type: 0,
+            solver_deactivation: 0,
+            quality_type: 0,
+            constraint_refs: Vec::new(),
+            body_flags: 0,
+        })
+    }
+
+    fn sphere(radius: f32) -> Box<dyn NiObject> {
+        Box::new(BhkSphereShape {
+            material: 0,
+            radius,
+        })
+    }
+
+    fn ragdoll_constraint(entity_a: usize, entity_b: usize, pivot_a_x: f32) -> Box<dyn NiObject> {
+        Box::new(BhkConstraint {
+            type_name: "bhkRagdollConstraint",
+            entity_a: BlockRef(entity_a as u32),
+            entity_b: BlockRef(entity_b as u32),
+            priority: 1,
+            data: BhkConstraintData::Ragdoll(RagdollCInfo {
+                twist_a: [0.0, 0.0, 1.0, 0.0],
+                plane_a: [1.0, 0.0, 0.0, 0.0],
+                motor_a: [0.0; 4],
+                pivot_a: [pivot_a_x, 0.0, 0.0, 1.0],
+                twist_b: [0.0, 0.0, 1.0, 0.0],
+                plane_b: [1.0, 0.0, 0.0, 0.0],
+                motor_b: [0.0; 4],
+                pivot_b: [-pivot_a_x, 0.0, 0.0, 1.0],
+                cone_max_angle: 0.5,
+                plane_min_angle: -0.5,
+                plane_max_angle: 0.5,
+                twist_min_angle: -0.3,
+                twist_max_angle: 0.3,
+                max_friction: 0.0,
+            }),
+        })
+    }
+
+    /// Two bones, each with a capsule rigid body, joined by one Ragdoll
+    /// constraint → a 2-body / 1-joint graph with the right bone names,
+    /// remapped indices, and Y-up pivot.
+    #[test]
+    fn two_bone_ragdoll_extracts_graph() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(bone("Bip01 Pelvis", 1)); // [0]
+        scene.blocks.push(coll_obj(2)); // [1]
+        scene.blocks.push(rigid_body(3)); // [2]
+        scene.blocks.push(sphere(1.0)); // [3]
+        scene.blocks.push(bone("Bip01 Spine", 5)); // [4]
+        scene.blocks.push(coll_obj(6)); // [5]
+        scene.blocks.push(rigid_body(7)); // [6]
+        scene.blocks.push(sphere(1.0)); // [7]
+        scene.blocks.push(ragdoll_constraint(2, 6, 10.0)); // [8] refs rigid-body blocks
+
+        let r = extract_ragdoll(&scene).expect("two bodies + one joint must yield a ragdoll");
+        assert_eq!(r.bodies.len(), 2);
+        assert_eq!(r.bodies[0].bone_name.as_ref(), "Bip01 Pelvis");
+        assert_eq!(r.bodies[1].bone_name.as_ref(), "Bip01 Spine");
+        assert_eq!(r.bodies[0].mass, 5.0);
+
+        assert_eq!(r.constraints.len(), 1);
+        let c = &r.constraints[0];
+        // Block 2 → body 0, block 6 → body 1.
+        assert_eq!(c.body_a, 0);
+        assert_eq!(c.body_b, 1);
+        match &c.kind {
+            ImportedJointKind::Ragdoll { pivot_a, .. } => {
+                // Havok pivot (10,0,0) → engine (x,z,-y) = (10,0,0) at scale 1.
+                assert_eq!(*pivot_a, Vec3::new(10.0, 0.0, 0.0));
+            }
+            other => panic!("expected Ragdoll joint, got {other:?}"),
+        }
+    }
+
+    /// A single body (no second body, no joint) is not a ragdoll.
+    #[test]
+    fn single_body_is_not_a_ragdoll() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(bone("Bip01 Pelvis", 1)); // [0]
+        scene.blocks.push(coll_obj(2)); // [1]
+        scene.blocks.push(rigid_body(3)); // [2]
+        scene.blocks.push(sphere(1.0)); // [3]
+        assert!(extract_ragdoll(&scene).is_none());
+    }
+
+    /// Two bodies but no constraint linking them → not a ragdoll.
+    #[test]
+    fn bodies_without_joints_is_not_a_ragdoll() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(bone("Bip01 Pelvis", 1)); // [0]
+        scene.blocks.push(coll_obj(2)); // [1]
+        scene.blocks.push(rigid_body(3)); // [2]
+        scene.blocks.push(sphere(1.0)); // [3]
+        scene.blocks.push(bone("Bip01 Spine", 5)); // [4]
+        scene.blocks.push(coll_obj(6)); // [5]
+        scene.blocks.push(rigid_body(7)); // [6]
+        scene.blocks.push(sphere(1.0)); // [7]
+        assert!(extract_ragdoll(&scene).is_none());
     }
 }

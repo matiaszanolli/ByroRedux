@@ -11,12 +11,15 @@ use crate::version::NifVersion;
 use std::any::Any;
 use std::io;
 
-/// Opaque stub for a Havok constraint block.
+/// A Havok constraint block.
 ///
-/// Holds just the shared `bhkConstraintCInfo` base (two entity refs
-/// plus priority); everything else is skipped. The concrete constraint
-/// type is preserved in `type_name` so downstream consumers and
-/// telemetry can identify it. See #117.
+/// Always holds the shared `bhkConstraintCInfo` base (two entity refs
+/// plus priority). On FO3+ the joint geometry a humanoid ragdoll uses is
+/// decoded into [`BhkConstraintData`] (M41.x): bare `bhkRagdollConstraint`
+/// / `bhkLimitedHingeConstraint`, and — the dominant FNV form —
+/// `bhkMalleableConstraint` wrapping one of those (surfaced as the inner
+/// joint, with the malleable block's outer entity refs as the bodies).
+/// Every other type stays a `type_name`-only stub. See #117 / M41.x.
 #[derive(Debug)]
 pub struct BhkConstraint {
     /// RTTI class name — one of the seven constraint types.
@@ -24,6 +27,10 @@ pub struct BhkConstraint {
     pub entity_a: BlockRef,
     pub entity_b: BlockRef,
     pub priority: u32,
+    /// Decoded per-variant serialization data, when we parse it
+    /// (FO3+ Ragdoll / LimitedHinge). [`BhkConstraintData::Other`]
+    /// otherwise.
+    pub data: BhkConstraintData,
 }
 
 impl NiObject for BhkConstraint {
@@ -32,6 +39,121 @@ impl NiObject for BhkConstraint {
     }
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+/// Decoded per-variant `bhkConstraintCInfo` payload. Only the variants
+/// a humanoid ragdoll articulation uses are decoded today (M41.x); the
+/// rest stay [`Other`](BhkConstraintData::Other) (the bytes are still
+/// consumed/skipped, just not surfaced).
+#[derive(Debug, Clone)]
+pub enum BhkConstraintData {
+    /// `bhkRagdollConstraintCInfo` — a 3-DOF cone/twist ball joint.
+    Ragdoll(RagdollCInfo),
+    /// `bhkLimitedHingeConstraintCInfo` — a 1-DOF angle-limited hinge.
+    LimitedHinge(LimitedHingeCInfo),
+    /// Any constraint type we don't decode the body of yet.
+    Other,
+}
+
+/// `bhkRagdollConstraintCInfo`, FO3/FNV (`!#NI_BS_LTE_16#`) layout from
+/// nif.xml. All vectors are **raw Havok Z-up** — coordinate conversion
+/// happens at the import boundary (Phase 2), not here. The trailing
+/// `bhkConstraintMotorCInfo` is left for `block_size` recovery (it's the
+/// last field and carries nothing slice 1 needs).
+#[derive(Debug, Clone)]
+pub struct RagdollCInfo {
+    pub twist_a: [f32; 4],
+    pub plane_a: [f32; 4],
+    pub motor_a: [f32; 4],
+    pub pivot_a: [f32; 4],
+    pub twist_b: [f32; 4],
+    pub plane_b: [f32; 4],
+    pub motor_b: [f32; 4],
+    pub pivot_b: [f32; 4],
+    /// Max angle around the axis orthogonal to Plane A and Twist A.
+    /// Cone min is `-cone_max_angle` (not stored).
+    pub cone_max_angle: f32,
+    pub plane_min_angle: f32,
+    pub plane_max_angle: f32,
+    pub twist_min_angle: f32,
+    pub twist_max_angle: f32,
+    pub max_friction: f32,
+}
+
+impl RagdollCInfo {
+    /// 8 × Vec4 + 6 × f32 = 152 bytes (matches the FNV Ragdoll prefix in
+    /// [`BhkBreakableConstraint::fnv_motor_prefix_size`]).
+    fn parse_fo3(stream: &mut NifStream) -> io::Result<Self> {
+        let twist_a = super::read_vec4(stream)?;
+        let plane_a = super::read_vec4(stream)?;
+        let motor_a = super::read_vec4(stream)?;
+        let pivot_a = super::read_vec4(stream)?;
+        let twist_b = super::read_vec4(stream)?;
+        let plane_b = super::read_vec4(stream)?;
+        let motor_b = super::read_vec4(stream)?;
+        let pivot_b = super::read_vec4(stream)?;
+        Ok(Self {
+            twist_a,
+            plane_a,
+            motor_a,
+            pivot_a,
+            twist_b,
+            plane_b,
+            motor_b,
+            pivot_b,
+            cone_max_angle: stream.read_f32_le()?,
+            plane_min_angle: stream.read_f32_le()?,
+            plane_max_angle: stream.read_f32_le()?,
+            twist_min_angle: stream.read_f32_le()?,
+            twist_max_angle: stream.read_f32_le()?,
+            max_friction: stream.read_f32_le()?,
+        })
+    }
+}
+
+/// `bhkLimitedHingeConstraintCInfo`, FO3/FNV (`!#NI_BS_LTE_16#`) layout
+/// from nif.xml. Raw Havok Z-up (see [`RagdollCInfo`]).
+#[derive(Debug, Clone)]
+pub struct LimitedHingeCInfo {
+    pub axis_a: [f32; 4],
+    pub perp_axis_in_a1: [f32; 4],
+    pub perp_axis_in_a2: [f32; 4],
+    pub pivot_a: [f32; 4],
+    pub axis_b: [f32; 4],
+    pub perp_axis_in_b1: [f32; 4],
+    pub perp_axis_in_b2: [f32; 4],
+    pub pivot_b: [f32; 4],
+    pub min_angle: f32,
+    pub max_angle: f32,
+    pub max_friction: f32,
+}
+
+impl LimitedHingeCInfo {
+    /// 8 × Vec4 + 3 × f32 = 140 bytes (matches the FNV LimitedHinge
+    /// prefix in [`BhkBreakableConstraint::fnv_motor_prefix_size`]).
+    fn parse_fo3(stream: &mut NifStream) -> io::Result<Self> {
+        let axis_a = super::read_vec4(stream)?;
+        let perp_axis_in_a1 = super::read_vec4(stream)?;
+        let perp_axis_in_a2 = super::read_vec4(stream)?;
+        let pivot_a = super::read_vec4(stream)?;
+        let axis_b = super::read_vec4(stream)?;
+        let perp_axis_in_b1 = super::read_vec4(stream)?;
+        let perp_axis_in_b2 = super::read_vec4(stream)?;
+        let pivot_b = super::read_vec4(stream)?;
+        Ok(Self {
+            axis_a,
+            perp_axis_in_a1,
+            perp_axis_in_a2,
+            pivot_a,
+            axis_b,
+            perp_axis_in_b1,
+            perp_axis_in_b2,
+            pivot_b,
+            min_angle: stream.read_f32_le()?,
+            max_angle: stream.read_f32_le()?,
+            max_friction: stream.read_f32_le()?,
+        })
     }
 }
 
@@ -45,6 +167,25 @@ impl BhkConstraint {
         let entity_b = stream.read_block_ref()?;
         let priority = stream.read_u32_le()?;
         Ok((entity_a, entity_b, priority))
+    }
+
+    /// Decode the inner constraint of an FO3+ `bhkMalleableConstraint`.
+    /// Layout (nif.xml `bhkMalleableConstraintCInfo`, `since 20.2.0.7`):
+    /// a `Type u32`, then an inner `bhkConstraintCInfo` (16 B, whose
+    /// entities are −1/−1 — the real bodies are the OUTER base the caller
+    /// already read), then the typed inner CInfo. The trailing `Strength`
+    /// f32 (and the inner CInfo's motor) are left for `block_size`
+    /// recovery. FNV humanoid ragdolls wrap 14 of their 17 joints this way,
+    /// so a malleable-wrapped Ragdoll surfaces identically to a bare one.
+    fn parse_fo3_malleable_inner(stream: &mut NifStream) -> io::Result<BhkConstraintData> {
+        let wrapped_type = stream.read_u32_le()?;
+        // Inner bhkConstraintCInfo — discard (entities are −1/−1).
+        let _inner = Self::parse_base(stream)?;
+        Ok(match wrapped_type {
+            7 => BhkConstraintData::Ragdoll(RagdollCInfo::parse_fo3(stream)?),
+            2 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_fo3(stream)?),
+            _ => BhkConstraintData::Other,
+        })
     }
 
     /// Parse a constraint block by type name. On Oblivion, reads the
@@ -85,6 +226,7 @@ impl BhkConstraint {
                     entity_a,
                     entity_b,
                     priority,
+                    data: BhkConstraintData::Other,
                 });
             }
 
@@ -121,20 +263,36 @@ impl BhkConstraint {
                     entity_a,
                     entity_b,
                     priority,
+                    data: BhkConstraintData::Other,
                 });
             }
         }
 
-        // FO3+ (or unknown pre-Oblivion content): return after the
-        // 16-byte base. The outer parse_nif loop seeks past the rest
-        // using the header's block_sizes table, which is always present
-        // on v >= 20.2.0.7. The stub still preserves the RTTI name
-        // for telemetry.
+        // FO3+ (FNV/FO3, `!#NI_BS_LTE_16#`). For the two variants a
+        // humanoid ragdoll uses, decode the typed CInfo prefix
+        // (field order + sizes from nif.xml, cross-checked against the
+        // breakable-constraint byte tables below). The trailing
+        // `bhkConstraintMotorCInfo` is deliberately NOT consumed here:
+        // it's the last field of the struct, carries nothing slice 1
+        // needs, and the outer parse_nif loop absolute-seeks to the next
+        // block via the header's block_sizes table (always present on
+        // v >= 20.2.0.7) — so skipping the motor-type dispatch keeps a
+        // recoverable block from ever becoming a hard parse error on
+        // unexpected motor data. Every other type stays a name-only stub.
+        let data = match type_name {
+            "bhkRagdollConstraint" => BhkConstraintData::Ragdoll(RagdollCInfo::parse_fo3(stream)?),
+            "bhkLimitedHingeConstraint" => {
+                BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_fo3(stream)?)
+            }
+            "bhkMalleableConstraint" => Self::parse_fo3_malleable_inner(stream)?,
+            _ => BhkConstraintData::Other,
+        };
         Ok(Self {
             type_name,
             entity_a,
             entity_b,
             priority,
+            data,
         })
     }
 }

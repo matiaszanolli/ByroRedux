@@ -1035,6 +1035,26 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 },
             );
         }
+        // M41.x — when this NIF carries a Havok ragdoll articulation (only
+        // skeletons do; `extract_ragdoll` returns None for meshes), resolve
+        // its bone names against the just-built `node_by_name` map and attach
+        // a `RagdollTemplate` to the root. The `ragdoll <id>` console command
+        // builds the live Rapier multibody from it. Self-gating: facegen /
+        // armor / clutter loads have `ragdoll: None`, so nothing attaches.
+        if let Some(ragdoll) = imported.ragdoll.as_ref() {
+            if let Some(template) =
+                crate::ragdoll::template_from_imported(ragdoll, &node_by_name)
+            {
+                let bodies = template.bodies.len();
+                world.insert(root_entity, template);
+                log::info!(
+                    "Attached RagdollTemplate ({} bodies) to root entity {} from '{}'",
+                    bodies,
+                    root_entity,
+                    label,
+                );
+            }
+        }
     }
 
     // #261 — mesh-embedded controller chains (water UV scroll, torch

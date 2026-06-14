@@ -138,6 +138,7 @@ fn import_nif_scene_impl(
         attach_points: None,
         child_attach_connections: None,
         embedded_clip: crate::anim::import_embedded_animations(scene),
+        ragdoll: collision::extract_ragdoll(scene),
     };
 
     // A truncated scene means at least one block was lost to a mid-parse

@@ -1,8 +1,8 @@
 //! ECS components carrying Rapier handles.
 
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
-use byroredux_core::ecs::storage::Component;
-use rapier3d::prelude::{ColliderHandle, RigidBodyHandle};
+use byroredux_core::ecs::storage::{Component, EntityId};
+use rapier3d::prelude::{ColliderHandle, MultibodyJointHandle, RigidBodyHandle};
 
 /// Handles into the `PhysicsWorld` Rapier sets for one simulated entity.
 ///
@@ -140,6 +140,27 @@ impl CharacterController {
 }
 
 impl Component for CharacterController {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// An active Havok ragdoll running on our Rapier solver (M41.x).
+///
+/// Attached to the actor (placement) entity by the `ragdoll` console
+/// command via [`crate::ragdoll::build_ragdoll`]. Holds the mapping from
+/// each skeleton bone `EntityId` to its Rapier rigid body so the
+/// per-frame writeback can copy simulated poses back onto the bone
+/// entities (which the skinned mesh already reads). `joints` is retained
+/// only for teardown bookkeeping; removal cascades through
+/// [`crate::world::PhysicsWorld::remove_ragdoll`].
+#[derive(Debug, Clone)]
+pub struct Ragdoll {
+    /// `(bone entity, rapier body)` for every ragdoll body, in build order.
+    pub bodies: Vec<(EntityId, RigidBodyHandle)>,
+    /// Multibody joint handles created for this ragdoll.
+    pub joints: Vec<MultibodyJointHandle>,
+}
+
+impl Component for Ragdoll {
     type Storage = SparseSetStorage<Self>;
 }
 
