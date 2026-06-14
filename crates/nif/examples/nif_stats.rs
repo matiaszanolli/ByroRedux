@@ -40,10 +40,13 @@
 //!   is the regression signal R3 cares about: dispatch can parse this
 //!   type, but at least one instance in the corpus failed.
 //!
-//! Exit code is non-zero when parse success rate drops below 100% (the
-//! vanilla-content commitment per ROADMAP). Override with
-//! `NIF_STATS_MIN_SUCCESS_RATE=<0.0..=1.0>` for modded content where
-//! partial coverage is expected.
+//! Exit code is non-zero when the clean-parse rate drops below the default
+//! gate ([`DEFAULT_MIN_SUCCESS_RATE`], currently 1.0). Not every vanilla
+//! archive parses 100% clean — some carry a residual FaceGen / stream-drift
+//! truncation tail. The authoritative per-game clean-parse floors live in
+//! the ROADMAP compatibility matrix; run those archives with
+//! `NIF_STATS_MIN_SUCCESS_RATE=<0.0..=1.0>` set to the matrix floor.
+//! Override likewise for modded content where partial coverage is expected.
 
 use byroredux_bsa::{Ba2Archive, BsaArchive};
 use byroredux_nif::blocks::NiUnknown;
@@ -51,12 +54,18 @@ use byroredux_nif::parse_nif;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Default success rate gate. All 7 supported games ship at 100%
-/// (ROADMAP "Full-archive parse rates: ALL 7 games at 100%") — any drop
-/// is a vanilla regression. Override via `NIF_STATS_MIN_SUCCESS_RATE`
-/// env var when running against modded or unknown content.
+/// Default clean-parse gate. Kept strict at 1.0: a drop on an archive that
+/// parses fully clean is a regression, so the tool fails loud by default.
+/// Archives with a residual truncation tail parse below 1.0 and REQUIRE an
+/// explicit `NIF_STATS_MIN_SUCCESS_RATE` override set to their ROADMAP
+/// compatibility-matrix floor, or they trip a false "below threshold"
+/// failure. The floors live in the ROADMAP matrix (and move as the parser
+/// improves — e.g. FO4 Meshes/MeshesExtra reached 100% clean by 2026-06-14,
+/// #1457), so this comment deliberately does NOT hardcode per-game numbers.
 ///
-/// See issue #487 for the gate-tightening rationale.
+/// There is no ROADMAP sentence asserting a single universal parse rate;
+/// the prior comment quoted one that never existed. See issue #487 for the
+/// gate-tightening rationale and #1452 for this correction.
 const DEFAULT_MIN_SUCCESS_RATE: f64 = 1.0;
 
 fn min_success_rate() -> f64 {
