@@ -30,6 +30,34 @@ pub(super) struct RefLoadResult {
     pub(super) center: Vec3,
 }
 
+/// #1495 / REN2-10 — RT absolute-space f32 precision ceiling, in world
+/// units. TLAS instance transforms, skinned BLAS vertices, and the ray
+/// origins reconstructed in `triangle.frag` all live in ABSOLUTE world
+/// space (the TLAS is absolute by design; the raster path is rebased to
+/// render-origin-relative via `#markarth-precision`, but RT is not). At
+/// `|world| ≈ 2^20 = 1_048_576` the f32 ULP is `2^-3 = 0.125 u`, which
+/// reaches the upper RT bias/tMin margin (~0.15 u) — shadow / reflection
+/// rays start self-intersecting or leaking. Headroom thins earlier
+/// (~0.5 M, where the 0.0156 u ULP loses its 2–3× cushion over the tight
+/// 0.05 u margin), so this ceiling is the hard upper bound, not the
+/// onset. Vanilla worldspaces top out far below it (Skyrim Tamriel
+/// ≈ ±233 k), so a cell past it is a future mega-worldspace that would
+/// silently degrade RT. See docs/engine/shader-pipeline.md "Coordinate
+/// Spaces & Precision".
+const RT_ABSOLUTE_PRECISION_CEILING: f32 = 1_048_576.0; // 2^20
+
+/// Returns the cell's largest absolute world-coordinate magnitude when
+/// it reaches [`RT_ABSOLUTE_PRECISION_CEILING`], else `None`. `None` for
+/// an empty cell (bounds still `±INF`). Pure helper so the cell-load
+/// guard is unit-testable without the full loader. See #1495.
+fn worldspace_extent_over_rt_ceiling(bounds_min: Vec3, bounds_max: Vec3) -> Option<f32> {
+    if !bounds_min.x.is_finite() {
+        return None; // empty cell — no placements accumulated into bounds
+    }
+    let extent = bounds_min.abs().max(bounds_max.abs()).max_element();
+    (extent >= RT_ABSOLUTE_PRECISION_CEILING).then_some(extent)
+}
+
 /// Shared reference-loading pipeline: resolve base forms, load NIFs, spawn entities.
 ///
 /// `load_order` holds the global plugin basenames (lowercase) — used
@@ -613,6 +641,20 @@ pub(super) fn load_references(
 
     let center = (bounds_min + bounds_max) * 0.5;
     let dims = bounds_max - bounds_min;
+    // #1495 / REN2-10 — fail loud in debug if this cell's geometry sits
+    // beyond the RT absolute-space f32 precision ceiling (see
+    // `RT_ABSOLUTE_PRECISION_CEILING`). Never fires on vanilla content;
+    // catches a future mega-worldspace before its rays silently degrade.
+    debug_assert!(
+        worldspace_extent_over_rt_ceiling(bounds_min, bounds_max).is_none(),
+        "cell '{}' worldspace extent {:.0} u reaches the RT absolute-space \
+         f32 precision ceiling ({:.0} u): ray bias/tMin margins fall below \
+         the f32 ULP at this magnitude. See #1495 / \
+         docs/engine/shader-pipeline.md.",
+        label,
+        worldspace_extent_over_rt_ceiling(bounds_min, bounds_max).unwrap_or(0.0),
+        RT_ABSOLUTE_PRECISION_CEILING,
+    );
     // Commit the accumulated counters + pending entries in a single
     // write lock. Stats snapshot happens in the same scope so the log
     // line below reflects post-commit numbers. See #523. `insert`
@@ -1359,6 +1401,44 @@ fn attach_light_flicker_if_needed(
 mod tests {
     use super::*;
     use byroredux_core::string::StringPool;
+
+    /// #1495 / REN2-10 — the RT absolute-space precision ceiling guard.
+    /// Empty cells must not trip (bounds left at ±INF); vanilla-scale
+    /// extents are clear; a mega-worldspace past 2^20 is flagged with its
+    /// extent; the bound is inclusive.
+    #[test]
+    fn worldspace_extent_ceiling_predicate() {
+        // Empty cell — bounds never accumulated, still ±INF → None.
+        assert_eq!(
+            worldspace_extent_over_rt_ceiling(
+                Vec3::splat(f32::INFINITY),
+                Vec3::splat(f32::NEG_INFINITY),
+            ),
+            None,
+        );
+        // Vanilla exterior corner (~±233k, Skyrim Tamriel) — clear.
+        assert_eq!(
+            worldspace_extent_over_rt_ceiling(
+                Vec3::splat(-233_000.0),
+                Vec3::splat(233_000.0),
+            ),
+            None,
+        );
+        // Mega-worldspace past 2^20 — flagged, returns the max |coord|.
+        assert_eq!(
+            worldspace_extent_over_rt_ceiling(
+                Vec3::new(-1_200_000.0, 0.0, 0.0),
+                Vec3::new(50.0, 50.0, 50.0),
+            ),
+            Some(1_200_000.0),
+        );
+        // Inclusive at the ceiling itself.
+        assert!(worldspace_extent_over_rt_ceiling(
+            Vec3::ZERO,
+            Vec3::splat(RT_ABSOLUTE_PRECISION_CEILING),
+        )
+        .is_some());
+    }
 
     /// Minimal vanilla-shaped `.spt` byte stream: 20-byte magic + one
     /// section marker tag + an out-of-range u32 sentinel so the walker

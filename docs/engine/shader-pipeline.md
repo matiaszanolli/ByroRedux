@@ -284,6 +284,67 @@ I/O failure is non-fatal). Cold pipeline creation: 10–50 ms. Warm
 
 ---
 
+## Coordinate Spaces & Precision
+
+Large worldspaces (Skyrim Tamriel, FO4 Commonwealth) place geometry tens
+to hundreds of thousands of units from the origin, where f32 precision
+thins out. Two distinct conventions keep this under control; mixing them
+up is a precision bug, so they're documented here.
+
+### Render-origin-relative (raster path) — `#markarth-precision`
+
+`GpuCamera.renderOrigin` (`xyz`) is a **camera-relative render origin**,
+snapped to the cell grid on the CPU. The raster geometry path runs
+entirely in **render-origin-relative** space so `viewProj × worldPos`
+keeps full f32 precision at large offsets:
+
+- Rigid draws: the instance `model` translation is rebased on the CPU.
+- Skinned draws: `triangle.vert` rebases the blended bone-palette
+  translation by `-renderOrigin` (#1486), since the bone palette and the
+  skinned BLAS are built in absolute world space.
+- The vertex shader emits `fragWorldPosRel` (the render-origin-relative
+  position) as the `location = 3` varying. **#1496**: it is passed
+  *relative* and the absolute is reconstructed in `triangle.frag`
+  (`fragWorldPos = fragWorldPosRel + renderOrigin`) at the top of
+  `main()`. This keeps the `dFdx/dFdy` consumers — flat-shading normal,
+  derivative TBN (`perturbNormal`), POM (`parallaxDisplaceUV`), and the
+  rtLOD footprint — operating on *small relative* magnitudes, moving the
+  f32 quantization after the derivative stage. (Pre-#1496 the varying was
+  absolute, feeding those derivatives up to ~0.0156 u ULP noise at
+  `|world| ≥ 131k`.) Zero extra varying cost.
+
+### Absolute world space (RT path) — and its f32 ceiling
+
+Ray tracing is **not** rebased. By design these stay in **absolute**
+world space:
+
+- TLAS instance transforms (`acceleration/tlas.rs`).
+- Skinned BLAS vertices (`skin_vertices.comp` bakes the absolute palette).
+- Ray origins reconstructed in `triangle.frag` (`fragWorldPos`, lighting,
+  fog) — the absolute reconstruction above feeds them.
+
+The f32 ULP at coordinate magnitude `X` is `2^(floor(log2 X) − 23)`. The
+RT shadow/reflection/GI rays bias their origins off the surface by
+~`0.05–0.15` u (tMin + normal-bias). Headroom (ULP vs the bias margin):
+
+| `\|world\|`        | f32 ULP   | vs ~0.05–0.15 u bias margin |
+|------------------|-----------|------------------------------|
+| ~131k (`2^17`)   | 0.0156 u  | ~3–10× headroom             |
+| ~176k            | ~0.02 u   | ~2–7× headroom (REN2-10)    |
+| ~524k (`2^19`)   | 0.0625 u  | tight 0.05 u margin lost     |
+| ~1.05M (`2^20`)  | 0.125 u   | even the 0.15 u margin lost  |
+
+So absolute-space RT precision **starts thinning near ~0.5 M units and
+the ceiling is ~1 M** (`REN2-10` / **#1495**). Vanilla worldspaces top
+out far below this (Skyrim Tamriel ≈ ±233 k), so nothing ships near the
+limit — but a future mega-worldspace could trip it silently. The cell
+loader guards against that: `cell_loader/references.rs` computes the
+loaded cell's worldspace bounds and `debug_assert!`s the max `|coord|`
+stays below `RT_ABSOLUTE_PRECISION_CEILING` (`2^20 = 1_048_576` u). The
+predicate (`worldspace_extent_over_rt_ceiling`) is unit-tested.
+
+**Any future absolute-space shader consumer inherits this same ceiling.**
+
 ## See Also
 
 - [Vulkan Renderer](renderer.md) — init chain, BLAS/TLAS lifecycle, sync, teardown
