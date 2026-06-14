@@ -24,6 +24,27 @@ Commits hold that record.
 
 ---
 
+## Session 47 — RT glass/Cornell arc + camera-relative precision + Oblivion v10.x NIF + audit bug-bash  (2026-06-14, aed64034..4d61e802, 140 commits)
+
+The longest run between closeouts so far — 11 days, 140 commits across five
+threads. The driver was renderer correctness: the new Cornell-box harness
+exposed glass / GI / caustic artifacts the per-game cells had hidden, and a
+large-world f32 precision bug forced a camera-relative render-origin cascade.
+In parallel, the Oblivion v10.x NIF truncation family kept resurfacing, the
+NIFAL / renderer / ECS / safety audits produced a long bug-bash tail, and ESM
+typed-schema Phase C + DIAL conversation-tree decoding advanced M24.2.
+
+- **RT rendering correctness — Cornell-box arc** (`7b8c0752`..`afaa2fe4`, `08ed03be`) — new `--cornell` RT test scene + live `mat.*` console commands; true one-bounce GI + progressive 1/N accumulation on a parked camera; real refractive/reflective glass (IOR path, two-surface refract-on-exit); deterministic rough-metal reflection; SVGF spatial firefly rejection (Issue A), energy-preserving caustic splat + temporal-EMA (Issues B/C, grazing moiré root-caused to normal sampling); FO4 BGSM metalness from spec chromaticity not luminance (#1476). Plus shader polish: matte-default roughness, larger-reach env reflection, NormalMapHandle alpha, decal/opaque-glass handling, SSAO params, near-hard shadow disk, TAA per-pixel-motion luma-clamp gate (#1497).
+- **Large-world precision — camera-relative render origin** (`bccf06f0`..`8d191d7d`, #1495/#1496/#1498) — render-origin cascade to kill f32 absolute-space jitter; rebasing across the skinned vertex path, caustic re-projection, composite `screen_to_world_dir`, `prev_view_proj` snaps, identity TLAS for skinned instances, render-origin-relative `fragWorldPos`; RT absolute-space precision ceiling documented + guarded at cell load.
+- **NIF parser — Oblivion v10.x + Starfield** (`e1c06a8d`, `91e90560`, `d75035f7`, #1509/#1510) — v10.1.0.x NiInterpController + NiQuatTransform; v10.x NiPSysData + emitter trailing fields; NiBlendInterpolator bands + ControlledBlock blend fields; NiGeomMorpherController bsver=9 over-read (#1509); Starfield BSLightingShaderProperty over-read (#1510, 1036 NiUnknown → 0). Plus KeyType::Constant stepped hold (#1441), NiKeyframeController alias (#1442), NiPSysPartSpawnModifier byte-exact parser (#1444), NiPSysGrowFadeModifier finite-positive filter (#1434), particle-spawn NaN guard (#1382).
+- **Audit-bundle bug-bash — renderer / NIFAL / ECS / safety** (renderer audit `e48d42dc`, safety `cdbb8d49`, NIFAL `11c9fd16`) — AllocatorResource-before-context teardown (#1483), hostQueryReset decoupled from ray-query, egui render-pass balance + explicit EXTERNAL dep (#1433), volumetrics UBO size pin, DBG_* bit value-pin, SVGF firefly clamp hoist; NIFAL fill-rate floor recalibration (#1512), shared particle-overlay helper (#1513), bitangent sign (#1516); inverted caustic sun-direction sign (#1459), water reservoir attachment count, collision-shape finite/depth guards (#1409/#1385), Rapier body/collider release on unload (#1520), `animate_lights` per-frame alloc drop (#1380).
+- **ESM semantic decode — M24.2 Phase C + DIAL** (`c82bea9c`, `a233d8e9`, `01cfa3d0`, `6873438c`) — DIAL PNAM-chain + TCLT-edge conversation tree with FormID remap through DIAL/INFO/AVIF; typed `read_sub::<T>` schema-layer Phase C prototype (ENCH ENIT, SPEL SPIT, MGEF DATA) — the R2 typed-decoder bet gets its first compile-time-layout consumers.
+- **Infra / hygiene** (`c2cbc6ac`, `32ec26bf`, `aee566ce`, `7301f5c2`) — `[defaults]` launch table in profiles.toml (default game/cell/paths); workspace clippy clean under `-D warnings`; R6a-stale-15 canonical bench harness scaffold; CI alsa-sys dep; headless-safe footstep/timeout tests; per-game fill-rate floors + golden baseline refresh (#1320); BSVER/BGSM canonical-name migration (#1336/#1357); DoF degenerate focus_dist guard + GpuCamera doc (#1525/#1526).
+
+Net: +97 tests (2773 → 2870), +~6 650 non-test LOC (~221 700 → ~228 350; total ~234 300 → ~241 846). Bench-of-record unchanged at `1c26bc25` (R6a-stale-14, 2026-06-03) and now **146 commits stale** with heavy RT hot-path churn — R6a-stale-15 GPU re-bench gates any current FPS claim.
+
+---
+
 ## Session 46 — R6a-stale-14 + renderer stability + M24.2 Phase 2 + ReSTIR-DI Phase 1  (2026-06-03, 017996bc..04b8d4d9, 30 commits)
 
 Session 46 opened on the heels of Session 45's CSG precombined geometry + NIFAL surface-audit dual landing, which left three build-breaking crates (sfmaterial, scripting, renderer) and a pending R6a-stale-14 bench cycle. The first half of the session burned through the stability and material backlog; the second half pushed two new capability threads: M24.2 Phase 2 semantic ESM decoding and a ReSTIR-DI Phase 1 reservoir landing.
