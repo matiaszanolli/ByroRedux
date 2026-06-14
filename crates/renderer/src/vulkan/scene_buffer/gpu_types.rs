@@ -168,12 +168,13 @@ pub struct GpuLight {
     pub params: [f32; 4],
 }
 
-/// GPU-side camera data (**320 bytes**, std140-compatible).
+/// GPU-side camera data (**336 bytes**, std140-compatible).
 ///
-/// Layout pinned by `gpu_camera_is_320_bytes` test — three `mat4` (3×64 = 192 B) +
-/// eight trailing `vec4` (8×16 = 128 B: position, flags, screen, fog,
-/// jitter, sky_tint, sun_direction, dof_params — extended from 304 B in
-/// the DOF implementation) → 320 B.
+/// Layout pinned by `gpu_camera_is_336_bytes` test — three `mat4` (3×64 = 192 B) +
+/// nine trailing `vec4` (9×16 = 144 B: position, flags, screen, fog, jitter,
+/// sky_tint, sun_direction, dof_params, render_origin) → 336 B. The size grew
+/// 304 → 320 B with the DOF `dof_params` field and 320 → 336 B with the
+/// `render_origin` field (#markarth-precision / #1492).
 /// Every
 /// shader that re-declares this struct
 /// MUST keep field order and field count in lockstep:

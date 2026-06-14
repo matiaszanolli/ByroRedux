@@ -54,6 +54,64 @@ fn halton(mut index: u32, base: u32) -> f32 {
     result
 }
 
+/// Minimum focal distance for the DOF path. A zero or near-zero `focus_dist`
+/// collapses the look-at eye→center vector onto the (perpendicular) aperture
+/// offset, producing a sideways view basis — or NaN when the aperture disk
+/// sample is also ~0 (eye ≈ center). Below this floor the frame is treated as
+/// a pinhole instead. See #1525.
+const DOF_MIN_FOCUS_DIST: f32 = 1.0e-3;
+
+/// Build the per-frame depth-of-field view-projection.
+///
+/// Applies a Halton(5,7) concentric-disk sample to the camera position each
+/// frame and points the jittered eye at a fixed focal point. TAA accumulates
+/// the per-frame shifts into a spatially-varying bokeh blur: surfaces at
+/// `focus_dist` project to identical NDC every frame (zero apparent motion →
+/// full temporal weight → sharp); surfaces at other depths pick up a
+/// frame-to-frame parallax proportional to their defocus (non-zero motion →
+/// reduced TAA weight → blur). Bases 5 and 7 are coprime to the TAA bases
+/// (2 and 3) so the 32-frame DOF period interleaves cleanly with the 16-frame
+/// TAA period without correlated low-discrepancy gaps.
+///
+/// Returns `(view_proj, eye_pos)`. The matrix is camera-relative to
+/// `render_origin` (so the DOF path stays camera-relative like the pinhole
+/// path); the returned eye position stays ABSOLUTE for the shader's view-dir
+/// math. Falls back to the pinhole `(*pinhole_vp, camera_pos)` when DOF is
+/// disabled (`aperture <= 0.0`) or the focal distance is degenerate
+/// (`<= DOF_MIN_FOCUS_DIST`, #1525) — the latter guards against the
+/// sideways/NaN look-at the unbounded path would otherwise build.
+fn dof_effective_view_proj(
+    dof: &DofView,
+    frame_counter: u32,
+    camera_pos: [f32; 3],
+    render_origin: byroredux_core::math::Vec3,
+    pinhole_vp: &[f32; 16],
+) -> ([f32; 16], [f32; 3]) {
+    use byroredux_core::math::{Mat4, Vec3};
+    if dof.aperture <= 0.0 || dof.focus_dist <= DOF_MIN_FOCUS_DIST {
+        return (*pinhole_vp, camera_pos);
+    }
+    let idx = (frame_counter % 32) + 1;
+    let (disk_u, disk_v) = concentric_disk_sample(halton(idx, 5), halton(idx, 7));
+    let lens_u = disk_u * dof.aperture;
+    let lens_v = disk_v * dof.aperture;
+
+    let pos = Vec3::from_array(camera_pos);
+    let right = Vec3::from_array(dof.cam_right);
+    let up = Vec3::from_array(dof.cam_up);
+    let fwd = Vec3::from_array(dof.cam_forward);
+
+    // Jitter the camera position on the aperture disk (absolute).
+    let jittered_eye = pos + lens_u * right + lens_v * up;
+    // All rays converge at the focal plane (absolute).
+    let focal_pt = pos + dof.focus_dist * fwd;
+
+    let jittered_view = Mat4::look_at_rh(jittered_eye - render_origin, focal_pt - render_origin, up);
+    let proj = Mat4::from_cols_array(&dof.proj_mat);
+    let jvp = (proj * jittered_view).to_cols_array();
+    (jvp, jittered_eye.to_array())
+}
+
 /// Return `true` when `cmd` represents a real refractive surface that the
 /// caustic compute pass (`caustic_splat.comp`) should splat from. The CPU
 /// gate produces `INSTANCE_FLAG_CAUSTIC_SOURCE` on the `GpuInstance.flags`
@@ -559,17 +617,6 @@ impl VulkanContext {
             (0.0, 0.0)
         };
 
-        // DOF aperture disk jitter — applies a Halton(5,7) concentric disk
-        // sample to the camera position each frame. TAA accumulates the
-        // resulting per-frame shifts into a spatially-varying bokeh blur:
-        // surfaces at `focus_dist` project to identical NDC every frame
-        // (zero apparent motion → full temporal weight → sharp); surfaces
-        // at other depths pick up a frame-to-frame parallax proportional to
-        // their defocus amount (non-zero motion → reduced TAA weight → blur).
-        //
-        // Bases 5 and 7 are coprime to the TAA bases (2 and 3) so the
-        // 32-frame DOF period interleaves cleanly with the 16-frame TAA
-        // period without correlated low-discrepancy gaps.
         // Camera-relative render origin (#markarth-precision). MUST use the
         // shared `RENDER_ORIGIN_SNAP` (#1494) and the same un-jittered
         // `camera_pos` that `render::camera::assemble_camera` used to build
@@ -586,36 +633,11 @@ impl VulkanContext {
             / scene_buffer::RENDER_ORIGIN_SNAP)
             .floor()
             * scene_buffer::RENDER_ORIGIN_SNAP;
-        let (effective_vp, effective_cam_pos) = if dof.aperture > 0.0 {
-            let idx = (self.frame_counter % 32) + 1;
-            let (disk_u, disk_v) = concentric_disk_sample(halton(idx, 5), halton(idx, 7));
-            let lens_u = disk_u * dof.aperture;
-            let lens_v = disk_v * dof.aperture;
-
-            let pos = byroredux_core::math::Vec3::from_array(camera_pos);
-            let right = byroredux_core::math::Vec3::from_array(dof.cam_right);
-            let up = byroredux_core::math::Vec3::from_array(dof.cam_up);
-            let fwd = byroredux_core::math::Vec3::from_array(dof.cam_forward);
-
-            // Jitter the camera position on the aperture disk (absolute).
-            let jittered_eye = pos + lens_u * right + lens_v * up;
-            // All rays converge at the focal plane (absolute).
-            let focal_pt = pos + dof.focus_dist * fwd;
-
-            // Build the jittered view RELATIVE to render_origin so the DOF
-            // path stays camera-relative like the pinhole path. The returned
-            // camera position stays ABSOLUTE (view-dir math in the shader).
-            let jittered_view = byroredux_core::math::Mat4::look_at_rh(
-                jittered_eye - render_origin,
-                focal_pt - render_origin,
-                up,
-            );
-            let proj = byroredux_core::math::Mat4::from_cols_array(&dof.proj_mat);
-            let jvp = (proj * jittered_view).to_cols_array();
-            (jvp, jittered_eye.to_array())
-        } else {
-            (*view_proj, camera_pos)
-        };
+        // DOF aperture-disk jitter, or the pinhole pass-through. The bokeh
+        // rationale and the #1525 degenerate-`focus_dist` guard live in
+        // `dof_effective_view_proj`.
+        let (effective_vp, effective_cam_pos) =
+            dof_effective_view_proj(&dof, self.frame_counter, camera_pos, render_origin, view_proj);
         let vp = &effective_vp;
         // #1489 / REN2-04 — `prev_view_proj` is relative to LAST frame's
         // render origin O₁; this frame's geometry (per-instance models, bone
@@ -3534,6 +3556,83 @@ mod prev_view_proj_origin_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod dof_view_proj_tests {
+    use super::{dof_effective_view_proj, DofView, DOF_MIN_FOCUS_DIST};
+    use byroredux_core::math::{Mat4, Vec3};
+
+    fn pinhole() -> [f32; 16] {
+        Mat4::perspective_rh(60f32.to_radians(), 16.0 / 9.0, 0.1, 300_000.0).to_cols_array()
+    }
+
+    fn dof_view(aperture: f32, focus_dist: f32) -> DofView {
+        DofView {
+            aperture,
+            focus_dist,
+            cam_right: [1.0, 0.0, 0.0],
+            cam_up: [0.0, 1.0, 0.0],
+            cam_forward: [0.0, 0.0, -1.0],
+            proj_mat: pinhole(),
+        }
+    }
+
+    /// #1525 — a degenerate `focus_dist` must never yield a NaN/Inf view-proj.
+    /// Pre-fix, `aperture > 0` with `focus_dist = 0` collapsed the look-at
+    /// eye→center vector onto the perpendicular lens offset (sideways view, or
+    /// NaN when the disk sample was also ~0). The guard falls back to pinhole.
+    /// Sweeps the frame counter so the disk-center sample (frame 0 → idx 1) is
+    /// covered.
+    #[test]
+    fn zero_focus_dist_falls_back_to_pinhole_and_stays_finite() {
+        let pin = pinhole();
+        let cam = [1000.0, 200.0, 3000.0];
+        for fc in 0..64u32 {
+            let (vp, eye) = dof_effective_view_proj(&dof_view(0.5, 0.0), fc, cam, Vec3::ZERO, &pin);
+            assert!(vp.iter().all(|x| x.is_finite()), "frame {fc}: non-finite vp {vp:?}");
+            assert!(eye.iter().all(|x| x.is_finite()), "frame {fc}: non-finite eye {eye:?}");
+            assert_eq!(vp, pin, "frame {fc}: degenerate focus_dist must use the pinhole matrix");
+            assert_eq!(eye, cam, "frame {fc}: degenerate focus_dist must keep the un-jittered eye");
+        }
+    }
+
+    /// `aperture <= 0` is a pinhole camera — inputs pass straight through.
+    #[test]
+    fn zero_aperture_is_pinhole() {
+        let pin = pinhole();
+        let cam = [10.0, 20.0, 30.0];
+        let (vp, eye) = dof_effective_view_proj(&dof_view(0.0, 20.0), 7, cam, Vec3::ZERO, &pin);
+        assert_eq!(vp, pin);
+        assert_eq!(eye, cam);
+    }
+
+    /// A valid aperture + focal distance jitters the eye on the aperture disk
+    /// (perpendicular to forward) and produces a finite, non-pinhole matrix.
+    #[test]
+    fn valid_dof_jitters_and_stays_finite() {
+        let pin = pinhole();
+        let cam = [0.0, 0.0, 0.0];
+        // frame 3 → idx 4 → a non-center disk sample, so the eye actually moves.
+        let (vp, eye) = dof_effective_view_proj(&dof_view(0.5, 20.0), 3, cam, Vec3::ZERO, &pin);
+        assert!(vp.iter().all(|x| x.is_finite()));
+        assert!(eye.iter().all(|x| x.is_finite()));
+        assert_ne!(vp, pin, "valid DOF must not equal the pinhole matrix");
+        assert!(eye[2].abs() < 1e-6, "jitter stays in the right/up plane (z unchanged)");
+        assert!(eye[0] != 0.0 || eye[1] != 0.0, "eye should move on the aperture disk");
+    }
+
+    /// The guard threshold is a real positive floor, so exact-zero and
+    /// tiny-positive focus distances both fall back to pinhole.
+    #[test]
+    fn guard_threshold_is_positive_floor() {
+        assert!(DOF_MIN_FOCUS_DIST > 0.0);
+        let pin = pinhole();
+        let cam = [0.0, 0.0, 0.0];
+        let (vp, _) =
+            dof_effective_view_proj(&dof_view(0.5, DOF_MIN_FOCUS_DIST * 0.5), 3, cam, Vec3::ZERO, &pin);
+        assert_eq!(vp, pin, "focus_dist below the floor must fall back to pinhole");
     }
 }
 
