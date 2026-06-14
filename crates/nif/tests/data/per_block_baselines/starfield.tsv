@@ -1,9 +1,9 @@
 # nif_stats per-block histogram	total=31058
 BSBound	142	0
-BSClothExtraData	0	298
+BSClothExtraData	298	0
 BSConnectPoint::Children	734	0
 BSConnectPoint::Parents	370	0
-BSEffectShaderProperty	83	665
+BSEffectShaderProperty	748	0
 BSGeometry	190549	0
 BSLightingShaderProperty	189801	0
 BSOrderedNode	9	0
@@ -16,7 +16,7 @@ NiBillboardNode	67	0
 NiCamera	27	0
 NiExtraData	256939	0
 NiNode	65219	0
-NiPointLight	8	18
+NiPointLight	26	0
 NiSwitchNode	40	0
 bhkNPCollisionObject	33867	0
 bhkPhysicsSystem	22895	0

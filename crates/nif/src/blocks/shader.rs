@@ -1044,12 +1044,39 @@ impl BSLightingShaderProperty {
     fn parse_fo76_plus(stream: &mut NifStream, bsver: u32) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
         if let Some(name) = net.name.as_deref() {
-            if is_material_reference(name) {
+            // #1510 — FO76 keeps the suffix-aware check (#749: an
+            // editor-labelled block with no `.mat`/`.bgsm` suffix carries
+            // a full inline body, so it must NOT stub). Starfield material
+            // references are content-hash paths with NO suffix
+            // (`<hash>\<hash>`), so `is_material_reference` misses them and
+            // the parser ran the full-body path into the 12-byte stub,
+            // over-reading 8 B past EOF. In Starfield a full-body block
+            // instead carries an EMPTY name, so `!name.is_empty()` is the
+            // correct stub discriminator there — matching the a9c7bc9e
+            // baseline (Starfield BSLSP 0 unknown).
+            let is_ref = if bsver >= crate::version::bsver::STARFIELD {
+                !name.is_empty()
+            } else {
+                is_material_reference(name)
+            };
+            if is_ref {
                 return Ok(Self::material_reference_stub(net));
             }
         }
 
-        let shader_type = stream.read_u32_le()?;
+        // #1510 / NIF-NEW-05 — the FO76 `BSShaderType155` field lives
+        // here for FO76 (bsver 152..171) but Starfield (bsver >= 172) does
+        // NOT carry it (its shader_type is implicitly 0, like the legacy
+        // pre-name slot). The #1279 `parse_fo76_plus` split read it
+        // unconditionally for all bsver >= 155, shifting every later field
+        // by 4 B and over-reading — which truncated all 1036 Starfield
+        // BSLightingShaderProperty full-body blocks to NiUnknown. The
+        // a9c7bc9e baseline (Starfield 0 unknown) gated it on `== 155`.
+        let shader_type = if bsver < crate::version::bsver::STARFIELD {
+            stream.read_u32_le()?
+        } else {
+            0
+        };
         let num_sf1 = stream.read_u32_le()? as usize;
         let num_sf2 = stream.read_u32_le()? as usize;
         let sf1_crcs = stream.read_u32_array(num_sf1)?;
@@ -1080,42 +1107,53 @@ impl BSLightingShaderProperty {
         let fresnel_power = stream.read_f32_le()?;
         let wetness = Some(Self::read_wetness_block(stream, bsver)?);
 
-        let luminance = Some(LuminanceParams {
-            lum_emittance: stream.read_f32_le()?,
-            exposure_offset: stream.read_f32_le()?,
-            final_exposure_min: stream.read_f32_le()?,
-            final_exposure_max: stream.read_f32_le()?,
-        });
-
-        let do_translucency = stream.read_byte_bool()?;
-        let translucency = if do_translucency {
-            Some(TranslucencyParams {
-                subsurface_color: [
-                    stream.read_f32_le()?,
-                    stream.read_f32_le()?,
-                    stream.read_f32_le()?,
-                ],
-                transmissive_scale: stream.read_f32_le()?,
-                turbulence: stream.read_f32_le()?,
-                thick_object: stream.read_byte_bool()?,
-                mix_albedo: stream.read_byte_bool()?,
-            })
-        } else {
-            None
-        };
-
+        // #1510 — the luminance / translucency / texture-array tail is
+        // FO76-only (a9c7bc9e baseline gated it on `bsver == 155`).
+        // Starfield (bsver >= 172) ends after the wetness block, so
+        // reading these here over-ran the block into the NIF footer
+        // (EOF → "failed to fill whole buffer") on every Starfield
+        // BSLightingShaderProperty. Gate on the FO76 era.
+        let mut luminance = None;
+        let mut do_translucency = false;
+        let mut translucency = None;
         let mut texture_arrays: Vec<BSTextureArray> = Vec::new();
-        let has_texture_arrays = stream.read_byte_bool()?;
-        if has_texture_arrays {
-            let num_arrays = stream.read_u32_le()?;
-            texture_arrays = stream.allocate_vec(num_arrays)?;
-            for _ in 0..num_arrays {
-                let width = stream.read_u32_le()?;
-                let mut textures = stream.allocate_vec(width)?;
-                for _ in 0..width {
-                    textures.push(stream.read_sized_string()?);
+        if bsver < crate::version::bsver::STARFIELD {
+            luminance = Some(LuminanceParams {
+                lum_emittance: stream.read_f32_le()?,
+                exposure_offset: stream.read_f32_le()?,
+                final_exposure_min: stream.read_f32_le()?,
+                final_exposure_max: stream.read_f32_le()?,
+            });
+
+            do_translucency = stream.read_byte_bool()?;
+            translucency = if do_translucency {
+                Some(TranslucencyParams {
+                    subsurface_color: [
+                        stream.read_f32_le()?,
+                        stream.read_f32_le()?,
+                        stream.read_f32_le()?,
+                    ],
+                    transmissive_scale: stream.read_f32_le()?,
+                    turbulence: stream.read_f32_le()?,
+                    thick_object: stream.read_byte_bool()?,
+                    mix_albedo: stream.read_byte_bool()?,
+                })
+            } else {
+                None
+            };
+
+            let has_texture_arrays = stream.read_byte_bool()?;
+            if has_texture_arrays {
+                let num_arrays = stream.read_u32_le()?;
+                texture_arrays = stream.allocate_vec(num_arrays)?;
+                for _ in 0..num_arrays {
+                    let width = stream.read_u32_le()?;
+                    let mut textures = stream.allocate_vec(width)?;
+                    for _ in 0..width {
+                        textures.push(stream.read_sized_string()?);
+                    }
+                    texture_arrays.push(BSTextureArray { textures });
                 }
-                texture_arrays.push(BSTextureArray { textures });
             }
         }
 
@@ -1175,7 +1213,12 @@ impl BSLightingShaderProperty {
         let fresnel_power = stream.read_f32_le()?;
         let metalness = stream.read_f32_le()?;
         let unknown_1 = stream.read_f32_le()?;
-        let unknown_2 = if bsver >= crate::version::bsver::FO76 {
+        // #1510 — `unknown_2` is FO76-only (a9c7bc9e baseline gated it
+        // `bsver == 155`); Starfield (bsver >= 172) omits it. The old
+        // `>= FO76` gate over-read 4 B on every Starfield BSLSP.
+        let unknown_2 = if (crate::version::bsver::FO76..crate::version::bsver::STARFIELD)
+            .contains(&bsver)
+        {
             stream.read_f32_le()?
         } else {
             0.0

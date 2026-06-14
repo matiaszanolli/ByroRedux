@@ -1487,89 +1487,110 @@ fn make_starfield_header(name: &str) -> NifHeader {
     }
 }
 
-/// Regression for #746 / SF-D1: every BSVER-`>= 155`-gated tail
-/// field on `BSLightingShaderProperty` must populate at Starfield
-/// BSVER (172) too. Pre-fix the gates were `bsver == crate::version::bsver::FO76`, so
-/// Starfield blocks under-read the WetnessParams `unknown_2` (4 B),
-/// the LuminanceParams + TranslucencyParams + texture_arrays
-/// (~24 + 22 + variable B), and silently dropped every authored
-/// PBR scalar. The test reuses the exact byte body that the FO76
-/// regression test (`parse_bs_lighting_fo76_minimal`) walks — the
-/// only difference is the header's `user_version_2`. If the
-/// `bsver == crate::version::bsver::FO76` gate ever returns, every assertion past
-/// `wetness.unknown_2` flips to its default and the test fails.
+/// Build a minimal **Starfield** (BSVER 172) `BSLightingShaderProperty`
+/// body — the FO76 shape MINUS every `#BS_F76#`-gated field. Per
+/// nif.xml `#BS_F76# = (BSVER == 155)` ("Fallout 76 stream 155 only"),
+/// Starfield omits the `BSShaderType155` field, the WetnessParams
+/// `unknown_2`, and the Luminance / Translucency / texture-array tail.
+/// Name index 0 is "" so the block takes the full-body path (a
+/// non-empty Starfield name is a content-hash material reference → stub).
+fn build_starfield_bs_lighting_minimal() -> Vec<u8> {
+    let mut data = Vec::new();
+    data.extend_from_slice(&0i32.to_le_bytes()); // name idx 0 ("")
+    data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+                                                    // NO BSShaderType155 (FO76 == 155 only)
+    data.extend_from_slice(&0u32.to_le_bytes()); // num_sf1 (>= 132)
+    data.extend_from_slice(&0u32.to_le_bytes()); // num_sf2 (>= 152)
+    for v in [0.0f32, 0.0, 1.0, 1.0] {
+        data.extend_from_slice(&v.to_le_bytes()); // uv_offset, uv_scale
+    }
+    data.extend_from_slice(&5i32.to_le_bytes()); // texture_set_ref
+    for v in [0.1f32, 0.2, 0.3] {
+        data.extend_from_slice(&v.to_le_bytes()); // emissive_color
+    }
+    data.extend_from_slice(&1.5f32.to_le_bytes()); // emissive_multiple
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // root_material (>= 130)
+    data.extend_from_slice(&3u32.to_le_bytes()); // texture_clamp_mode
+    data.extend_from_slice(&0.9f32.to_le_bytes()); // alpha
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // refraction_strength
+    data.extend_from_slice(&0.6f32.to_le_bytes()); // smoothness
+    for v in [0.7f32, 0.8, 0.9] {
+        data.extend_from_slice(&v.to_le_bytes()); // specular_color
+    }
+    data.extend_from_slice(&1.25f32.to_le_bytes()); // specular_strength
+    data.extend_from_slice(&0.4f32.to_le_bytes()); // grayscale_to_palette (>= 130)
+    data.extend_from_slice(&4.2f32.to_le_bytes()); // fresnel_power (>= 130)
+                                                   // wetness: spec_scale, spec_power, min_var, fresnel, metalness,
+                                                   // unknown_1 — NO env_map_scale (== 130), NO unknown_2 (== 155).
+    for v in [0.11f32, 0.22, 0.33, 0.44, 0.55, 0.66] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    // NO luminance / translucency / texture-array tail (FO76 == 155 only).
+    // shader_type 0 → ShaderTypeData::None (no trailing fields).
+    data
+}
+
+/// #1510 / NIF-NEW-05 — nif.xml `#BS_F76# = (BSVER == 155)` ("Fallout 76
+/// stream 155 only"): the `BSShaderType155` field, WetnessParams
+/// `unknown_2`, and the Luminance / Translucency / texture-array tail are
+/// FO76-ONLY. Starfield (BSVER 172) omits them. The #746/#747 `>= 155`
+/// gates (via the #1279 `parse_fo76_plus` split) made Starfield read
+/// them, over-reading every full-body `BSLightingShaderProperty` past
+/// its block_size into the NIF footer — 1036 NiUnknown on the Starfield
+/// corpus (0 → 1036 regression vs the a9c7bc9e baseline). This pins the
+/// corrected Starfield body shape: the FO76-only fields stay at default.
 #[test]
-fn parse_bs_lighting_starfield_minimal_picks_up_fo76_tail() {
-    let header = make_starfield_header("");
-    let data = build_fo76_bs_lighting_minimal();
+fn parse_bs_lighting_starfield_minimal_omits_fo76_only_tail() {
+    let header = make_starfield_header(""); // empty name → full-body path
+    let data = build_starfield_bs_lighting_minimal();
     let mut stream = NifStream::new(&data, &header);
 
     let prop = BSLightingShaderProperty::parse(&mut stream)
-        .expect("Starfield BLSP body must parse via the FO76+ tail");
-    let w = prop.wetness.as_ref().expect("wetness present on Starfield");
-    // The pre-#746 regression dropped exactly this byte.
-    assert!(
-        (w.unknown_2 - 0.77).abs() < 1e-6,
-        "unknown_2 must read on BSVER 172 (was: {})",
-        w.unknown_2,
-    );
-    let lum = prop
-        .luminance
-        .as_ref()
-        .expect("luminance present on Starfield (BSVER >= 155)");
-    assert!((lum.lum_emittance - 100.0).abs() < 1e-6);
-    assert!((lum.exposure_offset - 13.5).abs() < 1e-6);
-    assert!((lum.final_exposure_max - 3.0).abs() < 1e-6);
-    assert!(
-        !prop.do_translucency,
-        "translucency byte read; default is false"
-    );
-    assert!(prop.translucency.is_none());
-    assert!(
-        prop.texture_arrays.is_empty(),
-        "has_texture_arrays byte read; default is empty"
-    );
-    // The whole body must consume — block_size is None here, so any
-    // missed read would leave bytes on the stream.
+        .expect("Starfield BLSP full body must parse");
     assert_eq!(
         stream.position(),
         data.len() as u64,
-        "Starfield parse must consume the same body length as FO76",
+        "Starfield body must consume exactly — no FO76-only tail reads",
     );
+    let w = prop.wetness.as_ref().expect("wetness present (BSVER >= 130)");
+    assert_eq!(
+        w.unknown_2, 0.0,
+        "unknown_2 is FO76-only (== 155); absent on Starfield",
+    );
+    assert!(prop.luminance.is_none(), "luminance is FO76-only");
+    assert!(!prop.do_translucency);
+    assert!(prop.translucency.is_none());
+    assert!(prop.texture_arrays.is_empty());
+    assert!(matches!(prop.shader_type_data, ShaderTypeData::None));
 }
 
-/// Regression for #747 / SF-D1-DISPATCH: Starfield uses the same
-/// `BSShaderType155` numeric mapping as FO76 (type 4 = skin tint
-/// Color4, type 5 = hair tint Color3 per nif.xml). Pre-fix the
-/// dispatch gate was `bsver == crate::version::bsver::FO76`, so Starfield routed through
-/// `parse_shader_type_data_fo4` which mis-interprets the type-4
-/// payload — character / face / hair meshes lost 12 B of tint data.
+/// #1510 — Starfield material references are content-hash paths with NO
+/// `.mat`/`.bgsm` suffix, so `is_material_reference` misses them. For
+/// BSVER >= STARFIELD a non-empty Name means a reference (full bodies
+/// carry an empty name), so the parser must return the stub and let
+/// block_size skip the rest — NOT run the full-body path into the
+/// 12-byte stub. That #749 mismatch produced 171 of the 1036 NiUnknown;
+/// `!name.is_empty()` (the a9c7bc9e baseline gate) fixes it.
 #[test]
-fn parse_bs_lighting_starfield_skin_tint_routes_via_fo76_dispatch() {
-    let header = make_starfield_header("");
-    let mut data = build_fo76_bs_lighting_minimal();
-    // Patch Shader Type (NiObjectNET = 12 B, then shader_type u32) from 0 → 4.
-    let st_off = 12;
-    data[st_off..st_off + 4].copy_from_slice(&4u32.to_le_bytes());
-    // Append the BSShaderType155 type-4 payload (Color4).
-    for v in [0.95f32, 0.72, 0.60, 1.0] {
-        data.extend_from_slice(&v.to_le_bytes());
-    }
-
+fn parse_bs_lighting_starfield_hashpath_name_stubs() {
+    // Header string 0 is a content-hash path (two hex segments, no
+    // suffix) — `is_material_reference` would reject it.
+    let header = make_starfield_header("8f3a91c4\\b27e5d06");
+    let data = build_starfield_bs_lighting_minimal(); // name idx 0 → the hash-path
     let mut stream = NifStream::new(&data, &header);
+
     let prop = BSLightingShaderProperty::parse(&mut stream)
-        .expect("Starfield skin-tint BLSP must dispatch via FO76 enum");
-    match prop.shader_type_data {
-        ShaderTypeData::Fo76SkinTint { skin_tint_color } => {
-            assert!((skin_tint_color[0] - 0.95).abs() < 1e-6);
-            assert!((skin_tint_color[3] - 1.0).abs() < 1e-6);
-        }
-        other => panic!(
-            "expected Fo76SkinTint on Starfield (BSVER 172), got {other:?} \
-             — `bsver == crate::version::bsver::FO76` dispatch gate has regressed",
-        ),
-    }
-    assert_eq!(stream.position(), data.len() as u64);
+        .expect("Starfield hash-path BLSP must stub");
+    assert!(
+        prop.material_reference,
+        "a non-empty (hash-path) Starfield name must take the stub path",
+    );
+    assert_eq!(
+        stream.position(),
+        12,
+        "stub consumes only the NiObjectNET base (name + extra + controller)",
+    );
 }
 
 // ── #749 / SF-D3-01: BGSM/BGEM/MAT stopcond suffix gate ───────────────
