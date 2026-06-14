@@ -381,12 +381,13 @@ pub fn parse_grow_fade_modifier(stream: &mut NifStream) -> io::Result<NiPSysGrow
     // v20.0.0.4 does NOT → `None`). Pre-#383 these 4 bytes were dropped
     // on every grow-fade modifier (890 occurrences in vanilla
     // `Fallout - Meshes.bsa`).
-    let base_scale =
-        if stream.version() == crate::version::NifVersion::V20_2_0_7 && stream.bsver() >= 34 {
-            Some(stream.read_f32_le()?)
-        } else {
-            None
-        };
+    let base_scale = if stream.version() == crate::version::NifVersion::V20_2_0_7
+        && stream.bsver() >= crate::version::bsver::FO3_FNV
+    {
+        Some(stream.read_f32_le()?)
+    } else {
+        None
+    };
     Ok(NiPSysGrowFadeModifier { base_scale })
 }
 
@@ -1003,10 +1004,10 @@ pub fn parse_particle_system(
     // On this path NiGeometry's structure is overridden for
     // NiParticleSystem: bounding_sphere + skin ref replace the usual
     // data_ref + skin_instance_ref + material_data triplet.
-    let is_bs_gte_sse = stream.bsver() >= 100;
+    let is_bs_gte_sse = stream.bsver() >= crate::version::bsver::SKYRIM_SE;
     // FO76 (BSVER == 155) adds a 6-float `bound_min_max` after
     // `bounding_sphere`. Other SSE+ titles do not.
-    let is_bs_f76 = stream.bsver() == 155;
+    let is_bs_f76 = stream.bsver() == crate::version::bsver::FO76;
 
     if is_bs_gte_sse {
         // Bounding sphere: 3 floats center + 1 float radius = 16 bytes.
@@ -1056,7 +1057,7 @@ pub fn parse_particle_system(
     // Shader / alpha refs land on every BSVER > 34 path. Use raw bsver()
     // rather than a variant predicate so non-Bethesda Gamebryo content at
     // BSVER > 34 stays aligned (matches base.rs:73 and node.rs:107).
-    if stream.bsver() > 34 {
+    if stream.bsver() > crate::version::bsver::FO3_FNV {
         let _shader_ref = stream.read_block_ref()?;
         let _alpha_ref = stream.read_block_ref()?;
     }
@@ -1188,7 +1189,7 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
         let _has_texture_indices = stream.read_byte_bool()?;
         // Num Subtexture Offsets: byte for BSVER ≤ 34 (FO3/FNV), uint for
         // BSVER > 34 (Skyrim LE+). nif.xml lines 4008–4009.
-        let num_subtex_offsets: u64 = if stream.bsver() <= 34 {
+        let num_subtex_offsets: u64 = if stream.bsver() <= crate::version::bsver::FO3_FNV {
             stream.read_u8()? as u64
         } else {
             stream.read_u32_le()? as u64
@@ -1197,7 +1198,7 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
         stream.skip(num_subtex_offsets * 16)?;
 
         // Skyrim+ (BS_GT_FO3): aspect ratio, aspect flags, 3× speed-to-aspect.
-        if stream.bsver() > 34 {
+        if stream.bsver() > crate::version::bsver::FO3_FNV {
             let _aspect_ratio = stream.read_f32_le()?;
             let _aspect_flags = stream.read_u16_le()?;
             let _speed_to_aspect_aspect_2 = stream.read_f32_le()?;

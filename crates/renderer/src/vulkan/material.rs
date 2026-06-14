@@ -476,16 +476,6 @@ pub mod material_flag {
     /// also set.
     pub const TRANSLUCENCY_MIX_ALBEDO: u32 = 1 << 9;
 
-    // ── Pre-Stage-3 aliases — kept so external callers compile
-    // through the rename. New code should reference the un-prefixed
-    // names above. Targeted for removal in a follow-up sweep after
-    // every reader has migrated.
-    pub const BGSM_PBR: u32 = PBR_BSDF;
-    pub const BGSM_TRANSLUCENCY: u32 = TRANSLUCENCY;
-    pub const BGSM_MODEL_SPACE_NORMALS: u32 = MODEL_SPACE_NORMALS;
-    pub const BGSM_TRANSLUCENCY_THICK_OBJECT: u32 = TRANSLUCENCY_THICK_OBJECT;
-    pub const BGSM_TRANSLUCENCY_MIX_ALBEDO: u32 = TRANSLUCENCY_MIX_ALBEDO;
-
     /// Bit-shift for the 8-bit `BSEffectShaderProperty.lighting_influence`
     /// byte packed into `material_flags` bits 16–23. Extract in GLSL as
     /// `float((materialFlags >> MAT_FLAG_EFFECT_LI_SHIFT) & 0xFFu) / 255.0`.
@@ -523,11 +513,11 @@ pub mod material_flag {
     /// surface a distinguishing signal end-to-end, so it continues
     /// on the legacy path (matches pre-fix behaviour, no regression).
     ///
-    /// Distinct from [`BGSM_PBR`] which gates the Disney BSDF /
+    /// Distinct from [`PBR_BSDF`] which gates the Disney BSDF /
     /// translucency suite — `bgsm.pbr=true` is virtually never authored
     /// in vanilla content (sampled across 793 metal/crate/cargo
     /// vanilla FO4 BGSMs in `Fallout4 - Materials.ba2`: 0 with
-    /// pbr=true), so `BGSM_PBR` alone is a dead gate. `BGSM_AUTHORED`
+    /// pbr=true), so `PBR_BSDF` alone is a dead gate. `BGSM_AUTHORED`
     /// records that the spec-glossiness translation ran, but the routing
     /// itself is the CPU-side `metalness_override` / `roughness_override`
     /// write — not a GPU branch on this bit.
@@ -688,8 +678,8 @@ pub mod presets {
             diffuse_g: base[1],
             diffuse_b: base[2],
             // PBR flag so the Disney-diffuse branch fires at the
-            // shader (#1249 gates on `MAT_FLAG_BGSM_PBR`).
-            material_flags: super::material_flag::BGSM_PBR,
+            // shader (#1249 gates on `MAT_FLAG_PBR_BSDF`).
+            material_flags: super::material_flag::PBR_BSDF,
             ..Default::default()
         }
     }
@@ -750,12 +740,12 @@ pub mod presets {
             assert_eq!(m.metalness, 0.0);
             assert_eq!(m.subsurface, 1.0);
             assert_eq!(m.diffuse_r, 0.93);
-            // BGSM_PBR flag must be set so the shader's Disney-
+            // PBR_BSDF flag must be set so the shader's Disney-
             // diffuse branch consumes `subsurface`.
             assert_ne!(
-                m.material_flags & super::super::material_flag::BGSM_PBR,
+                m.material_flags & super::super::material_flag::PBR_BSDF,
                 0,
-                "skin_wax_marble must set BGSM_PBR so the shader's \
+                "skin_wax_marble must set PBR_BSDF so the shader's \
                  disneyDiffuseTerm branch fires and consumes subsurface = 1.0"
             );
         }

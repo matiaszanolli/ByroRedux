@@ -260,7 +260,7 @@ impl BsTriShape {
         // silently — parse rate stayed at 100% while block contents
         // were wrong. Starfield (BSVER 172) is NOT affected because
         // `BS_F76` is strict equality. See nif.xml:8231.
-        if stream.bsver() == 155 {
+        if stream.bsver() == crate::version::bsver::FO76 {
             stream.skip(24)?;
         }
 
