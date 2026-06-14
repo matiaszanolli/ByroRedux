@@ -175,6 +175,17 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     // the whole point of the M45 save-shape design.
     release_victim_item_instances(world, &victims);
 
+    // #1520 DROP — remove each victim's Rapier body + colliders from the
+    // `PhysicsWorld` before the despawn loop drops the `RapierHandles`
+    // ECS row. `World::despawn` frees only the component row; the body
+    // and colliders it points at have no Drop tied to the ECS, so without
+    // this they accumulate in `RigidBodySet` / `ColliderSet` (and the
+    // broad-phase / query-pipeline BVH) on every cell crossing — an
+    // unbounded leak, worst under exterior radius streaming which never
+    // resets the PhysicsWorld. Skipped silently when the resource isn't
+    // registered (loose-NIF demo / test fixtures that opt out of physics).
+    release_victim_rapier_bodies(world, &victims);
+
     // Remove every surviving component row for the victim entities.
     let victim_count = victims.len();
     for eid in victims {
@@ -335,6 +346,44 @@ pub(crate) fn release_victim_item_instances(world: &mut World, victims: &[Entity
     };
     for id in to_release {
         pool.release(id);
+    }
+}
+
+/// Walk `victims` for [`RapierHandles`] components and remove each
+/// entity's rigid body + attached colliders from the [`PhysicsWorld`]
+/// before the victim despawn loop runs (#1520 DROP completeness check).
+///
+/// Same two-phase shape as [`release_victim_item_instances`]: read the
+/// `RapierHandles` SparseSet first (collecting handles into a scratch
+/// Vec), drop the query guard, then take the `PhysicsWorld` resource
+/// write-lock and remove. Keeps the lock-hold window short and avoids
+/// holding a component read lock across the resource write.
+///
+/// No-op (returns early) when no victim carries a `RapierHandles` row or
+/// when the `PhysicsWorld` resource isn't registered (the loose-NIF demo
+/// path opts out of physics — see `byroredux_physics` crate docs).
+pub(crate) fn release_victim_rapier_bodies(world: &mut World, victims: &[EntityId]) {
+    use byroredux_physics::{PhysicsWorld, RapierHandles};
+
+    let mut to_remove: Vec<RapierHandles> = Vec::new();
+    {
+        let Some(handles_q) = world.query::<RapierHandles>() else {
+            return;
+        };
+        for &eid in victims {
+            if let Some(h) = handles_q.get(eid) {
+                to_remove.push(*h);
+            }
+        }
+    }
+    if to_remove.is_empty() {
+        return;
+    }
+    let Some(mut pw) = world.try_resource_mut::<PhysicsWorld>() else {
+        return;
+    };
+    for h in to_remove {
+        pw.remove_body(h.body);
     }
 }
 
