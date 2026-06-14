@@ -2672,6 +2672,41 @@ impl Drop for VulkanContext {
                 pass.destroy(&self.device);
             }
 
+            // ── Allocator-independent teardown (#1483 / REN-D23-NEW-02
+            // + sibling scan) ─────────────────────────────────────────
+            // These subsystems own only device-level handles (query
+            // pools, compute/graphics pipelines, descriptor pools +
+            // layouts) — no gpu-allocator memory. They were previously
+            // nested inside the `Some(allocator)` guard further down, so
+            // on the allocator-`None` Drop path (#1426 early-return, or
+            // any future allocator-taken-early path) their handles leaked
+            // and the validation layer flagged "destroyed device with
+            // live objects". Hoisting them here — alongside
+            // `egui_pass.destroy()` above — runs them on EVERY Drop path,
+            // and still before the `VkDevice` is destroyed at the bottom.
+            // The pipelines reference `self.render_pass`, destroyed far
+            // below, so pipeline-before-render-pass ordering is preserved.
+            //
+            // NOTE: `skin_compute`'s pipeline destroy is deliberately NOT
+            // hoisted — it must run AFTER the allocator-dependent per-slot
+            // teardown (slots own descriptor sets from its pool; see the
+            // ordering comment in the guard below), so it stays inside the
+            // guard where that ordering holds.
+            if let Some(ref mut timers) = self.gpu_timers {
+                // #1194 — per-pass GPU timer query pools. Queue idle is
+                // guaranteed by the `device_wait_idle()` at the top.
+                timers.destroy(&self.device);
+            }
+            if let Some(ref mut sp) = self.skin_palette {
+                // M29.5 — palette compute pipeline. No per-slot
+                // allocations to drain (single dispatch per frame, not
+                // per-skinned-entity), so destroy is unconditional.
+                sp.destroy(&self.device);
+            }
+            if let Some(ref mut w) = self.water {
+                w.destroy(&self.device);
+            }
+
             self.destroy_screenshot_staging();
 
             self.frame_sync.destroy(&self.device);
@@ -2737,20 +2772,13 @@ impl Drop for VulkanContext {
                 if let Some(ref mut sc) = self.skin_compute {
                     sc.destroy(&self.device);
                 }
-                // M29.5 — palette compute teardown. No per-slot
-                // allocations to drain (single dispatch per frame, not
-                // per-skinned-entity), so destroy is unconditional.
-                if let Some(ref mut sp) = self.skin_palette {
-                    sp.destroy(&self.device);
-                }
-                // #1194 — per-pass GPU timer query pools. No per-frame
-                // resources beyond the pools themselves; destroyed
-                // unconditionally. Must wait for queue idle before
-                // calling — covered by the `device_wait_idle()` at the
-                // top of this Drop.
-                if let Some(ref mut timers) = self.gpu_timers {
-                    timers.destroy(&self.device);
-                }
+                // NOTE: `skin_palette` + `gpu_timers` teardown was
+                // hoisted to the allocator-independent block near the top
+                // of Drop (#1483) — they need no allocator and must run on
+                // the allocator-`None` path too. `skin_compute` above
+                // stays here: its descriptor pool must outlive the
+                // allocator-dependent per-slot teardown earlier in this
+                // guard.
                 if let Some(ref mut ssao) = self.ssao {
                     ssao.destroy(&self.device, alloc);
                 }
@@ -2766,9 +2794,11 @@ impl Drop for VulkanContext {
                 if let Some(ref mut b) = self.bloom {
                     b.destroy(&self.device, alloc);
                 }
-                if let Some(ref mut w) = self.water {
-                    w.destroy(&self.device);
-                }
+                // NOTE: `self.water` teardown hoisted to the
+                // allocator-independent block near the top of Drop
+                // (#1483) — its pipeline + caustic descriptor pool need no
+                // allocator. The per-FIF `water_caustic_accum` images
+                // below DO need the allocator and stay here.
                 if let Some(ref mut wca) = self.water_caustic_accum {
                     // SAFETY: parent Drop runs after `device_wait_idle`
                     // earlier in the teardown sequence; no in-flight
