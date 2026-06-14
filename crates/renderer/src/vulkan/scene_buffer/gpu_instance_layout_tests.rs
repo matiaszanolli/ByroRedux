@@ -135,7 +135,7 @@ fn indirect_buffer_capacity_matches_max_draw_constant() {
 /// `R32_UINT` mesh_id encoding ceiling (`0x7FFFFFFF`, with bit
 /// 31 reserved for the `ALPHA_BLEND_NO_HISTORY` flag). Past
 /// that ceiling the `(instance_index + 1) & 0x7FFFFFFFu`
-/// encoding in `triangle.frag:980` would wrap to meshId 0
+/// encoding in `triangle.frag:1532` would wrap to meshId 0
 /// (the "sky / no instance" sentinel) and shadow / reflection /
 /// SVGF disocclusion queries against that instance silently
 /// route to the wrong target. The `draw.rs` debug_assert

@@ -2,7 +2,7 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, 14 TIMESTAMP queries each:
+//! per frame-in-flight slot, 24 TIMESTAMP queries each:
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -153,7 +153,7 @@ pub struct GpuPerFrameTimers {
     /// Per-frame "was this bracket's pair written?" — set by the
     /// END writer, cleared on reset. Slot index matches the frame
     /// slot the pool reads from. Each u16 packs `BIT_*` flags
-    /// (one per bracket — currently 7). The bit-gated read in
+    /// (one per bracket — currently 12). The bit-gated read in
     /// `read_and_reset` is required because WAIT-reading an
     /// unwritten query blocks forever.
     active_bits: [u16; MAX_FRAMES_IN_FLIGHT],
@@ -235,14 +235,14 @@ impl GpuPerFrameTimers {
     /// the per-frame command buffer.
     ///
     /// The first time a slot is read its `active_bits` are zero —
-    /// nothing has been written yet — so all three ms fields stay
+    /// nothing has been written yet — so all twelve ms fields stay
     /// at the default `0.0` until the second cycle. From then on
     /// the snapshot is whatever the previous cycle wrote, with
     /// inactive brackets reading `0.0`.
     pub fn read_and_reset(&mut self, device: &ash::Device, frame: usize) {
         let pool = self.pools[frame];
         let bits = self.active_bits[frame];
-        // Read brackets individually. WAIT-reading the entire 6-query
+        // Read brackets individually. WAIT-reading the entire 24-query
         // pool when only a subset was written blocks forever on the
         // unwritten queries (Vulkan spec: VK_QUERY_RESULT_WAIT_BIT
         // blocks until ALL queried results are available; reset-but-

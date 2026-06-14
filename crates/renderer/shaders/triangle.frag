@@ -48,7 +48,7 @@ layout(location = 9) in vec4 fragSplat1; // layers 4-7
 // authored tangent — fall back to screen-space derivative TBN."
 layout(location = 10) in vec4 fragTangent;
 
-// Main render pass has 6 color attachments (Phase 2).
+// Main render pass has 7 color attachments (Phase 2).
 layout(location = 0) out vec4 outColor;        // HDR color (direct light only)
 layout(location = 1) out vec2 outNormal;       // octahedral-encoded normal (RG16_SNORM). #275
 layout(location = 2) out vec2 outMotion;       // screen-space motion vector
@@ -2303,8 +2303,8 @@ void main() {
     //
     // Budget sized for a typical interior cell with ~15-20 small glass
     // props (chem tables, drinking glass clusters, vial racks). At 1080p
-    // that's roughly 80k visible glass fragments; 8192 ray slots cover
-    // ~2000 IOR fragments at the worst-case 4-units-per-fragment claim
+    // that's roughly 80k visible glass fragments; 1048576 ray slots cover
+    // ~262k IOR fragments at the worst-case 4-units-per-fragment claim
     // before degrading to Fresnel — a stable cliff over time as TAA
     // accumulates. Pre-fix value was 512 (128 fragments at the post-#916
     // claim rate), exhausted in ~16×16 px and visibly producing
@@ -3600,7 +3600,7 @@ void main() {
                 // without flattening bright bleed.
                 indirect = min(indirect, vec3(8.0));
             } else {
-                // Ray escaped (no geometry within 3000u) — fall back to
+                // Ray escaped (no geometry within 6000u) — fall back to
                 // the per-cell ambient color, NOT a hardcoded sky blue.
                 // Pre-fix used `vec3(0.6, 0.75, 1.0) * 0.06` regardless
                 // of cell mood, which injected unauthored blue into

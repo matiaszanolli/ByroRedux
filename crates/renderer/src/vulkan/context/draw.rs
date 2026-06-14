@@ -440,8 +440,9 @@ impl VulkanContext {
             }
         }
 
-        // 6 color attachments + depth. Order must match the render pass:
-        //   0 HDR, 1 normal, 2 motion, 3 mesh_id, 4 raw_indirect, 5 albedo, 6 depth.
+        // 7 color attachments + depth. Order must match the render pass:
+        //   0 HDR, 1 normal, 2 motion, 3 mesh_id, 4 raw_indirect, 5 albedo,
+        //   6 reservoir, 7 depth.
         let zero_f = vk::ClearValue {
             color: vk::ClearColorValue {
                 float32: [0.0, 0.0, 0.0, 0.0],

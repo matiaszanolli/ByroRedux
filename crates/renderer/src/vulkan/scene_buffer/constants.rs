@@ -95,14 +95,16 @@ pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = 1366;
 /// Whiterun draw distance, Diamond City — ~50K REFRs combined with
 /// landscape + clutter) with ~5× headroom.
 ///
-/// `triangle.frag:980` writes `(instance_index + 1) & 0x7FFFFFFFu`
+/// `triangle.frag:1532` writes `(instance_index + 1) & 0x7FFFFFFFu`
 /// into the low 31 bits of the mesh_id attachment, reserving bit
 /// 31 (`0x80000000`) for the `ALPHA_BLEND_NO_HISTORY` flag consumed
 /// by TAA and SVGF disocclusion. The encoding ceiling is therefore
 /// `0x7FFFFFFF` (~2.1G) — `MAX_INSTANCES` is set well below that
 /// to bound the persistent SSBO allocation, not the encoding.
-/// The `gpu_instances.len() <= MAX_INSTANCES` debug_assert in
-/// `vulkan::context::draw::draw_frame` enforces this contract; the
+/// The warn-once `log::error!` + clamp in
+/// `vulkan::context::draw::draw_frame` (+ `scene_buffer::upload`) keeps
+/// instances within this contract — #956/#992 replaced the prior
+/// `debug_assert!`, which leaked the in-flight cmd buffer on unwind; the
 /// `max_instances_stays_within_mesh_id_encoding_ceiling` test
 /// (`scene_buffer.rs`) pins the encoding ceiling separately so a
 /// future `MAX_INSTANCES` bump past `0x7FFFFFFF` would force a

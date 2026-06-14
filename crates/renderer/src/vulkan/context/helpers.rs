@@ -88,13 +88,17 @@ pub(super) fn create_render_pass(
     //   3 — mesh_id      (R32_UINT)       — per-instance ID + 1.
     //                                       Lower 31 bits = id + 1, bit 31
     //                                       (0x80000000) is the ALPHA_BLEND_NO_HISTORY
-    //                                       flag (`triangle.frag:980`), so the
+    //                                       flag (`triangle.frag:1532`), so the
     //                                       encoding ceiling is 0x7FFFFFFF
     //                                       distinct instances — `MAX_INSTANCES`
     //                                       sits well below that to bound the
-    //                                       persistent SSBO allocation, guarded
-    //                                       by the `debug_assert!` in
-    //                                       `draw.rs::draw_frame` (#647 / RP-1).
+    //                                       persistent SSBO allocation. Overflow
+    //                                       is handled by the warn-once
+    //                                       `log::error!` + clamp in
+    //                                       `draw.rs::draw_frame` + `upload.rs`
+    //                                       (#956/#992 removed the prior
+    //                                       `debug_assert!` — it leaked the
+    //                                       in-flight cmd buffer on unwind).
     //                                       background = 0; shader writes id+1.
     //                                       See #318 / R34-02 / #992.
     //   4 — raw_indirect (B10G11R11_UFLOAT) — demodulated indirect light (for SVGF)
