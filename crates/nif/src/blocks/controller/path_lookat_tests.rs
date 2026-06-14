@@ -157,10 +157,45 @@ fn nigeommorpher_oblivion_consumes_trailing_unknown_ints() {
 }
 
 #[test]
+fn nigeommorpher_v10_2_bsver9_skips_trailing_unknown_ints() {
+    // #1509 / NIF-NEW-04 — at v10.2.0.0 with bsver=9 the "Num Unknown
+    // Ints" field is ABSENT (nif.xml `vercond="#BSVER# #GT# 9"`). The
+    // pre-fix gate `bsver != 0 && bsver <= 11` wrongly read it, over-
+    // consuming 4 + 4×count bytes so the next block (NiMorphData)
+    // drifted and read garbage — truncating
+    // `meshes\creatures\dog\doghead.nif` (v10.2.0.0, bsver=9) + its 15
+    // trailing blocks. bsver=9 must now stop exactly at the
+    // interpolator list (like FNV, but excluded by the bsver gate here
+    // rather than the version gate).
+    let header = make_header_pre_oblivion_v10_2(); // v10.2.0.0, bsver=9
+    let mut data = Vec::new();
+    write_time_controller_base(&mut data);
+    data.extend_from_slice(&0u16.to_le_bytes()); // morpher_flags
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // data_ref null
+    data.push(1); // always_update
+    data.extend_from_slice(&0u32.to_le_bytes()); // num_interpolators = 0
+    let original_len = data.len();
+    // Sentinel that MUST NOT be consumed — pre-fix this 4-byte value was
+    // read as `num_unknown_ints` and triggered the downstream drift.
+    data.extend_from_slice(&5u32.to_le_bytes());
+
+    let mut stream = NifStream::new(&data, &header);
+    NiGeomMorpherController::parse(&mut stream)
+        .expect("v10.2.0.0/bsver=9 morpher parses");
+    assert_eq!(
+        stream.position(),
+        original_len as u64,
+        "v10.2.0.0 bsver=9 must NOT read the BSVER>9-gated trailing \
+             num_unknown_ints (#1509 doghead drift)"
+    );
+}
+
+#[test]
 fn nigeommorpher_fnv_skips_trailing_unknown_ints() {
-    // FNV bsver=34 — the (BSVER <= 11) gate excludes the trailing
-    // u32. Confirms the fix is Oblivion-only and doesn't regress
-    // FNV/FO3 (clean rate must remain 100%).
+    // FNV v20.2.0.7 — excluded by the `version <= 20.0.0.5` gate (the
+    // field is `until=20.0.0.5`). Confirms the trailing read stays
+    // Oblivion-era and doesn't regress FNV/FO3 (clean rate must remain
+    // 100%).
     let header = make_header_fnv();
     let mut data = Vec::new();
     write_time_controller_base(&mut data);

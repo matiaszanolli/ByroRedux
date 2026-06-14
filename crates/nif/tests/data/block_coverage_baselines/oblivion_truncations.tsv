@@ -1,56 +1,9 @@
-# Oblivion sizeless-truncation baseline	truncating=55	parsed=8032
-meshes\creatures\dog\doghead.nif	15
-meshes\creatures\ghost\deatharray.nif	7
-meshes\creatures\goblin\goblinhead.nif	21
-meshes\creatures\goblin\head.nif	21
-meshes\creatures\horse\bridle.nif	8
-meshes\creatures\minotaur\eyelids.nif	12
-meshes\creatures\minotaur\head.nif	12
-meshes\creatures\mountainlion\head.nif	10
-meshes\creatures\mountainlion\paw_l.nif	10
-meshes\creatures\mountainlion\paw_r.nif	10
-meshes\dungeons\ayleidruins\interior\argreatwelkydstoneitem01.nif	31
-meshes\dungeons\ayleidruins\interior\arwelkydclusterfx01.nif	7
-meshes\dungeons\ayleidruins\interior\traps\artrapchannelspikes01.nif	121
-meshes\dungeons\ayleidruins\interior\traps\artrapevilstone01.nif	11
-meshes\dungeons\misc\dustcloudhorizontal01.nif	90
-meshes\dungeons\misc\dustfallingbits01.nif	11
-meshes\dungeons\misc\dustgroundpuff01.nif	13
-meshes\dungeons\misc\fx\fxcloudthick02.nif	11
-meshes\dungeons\misc\fx\fxdustcloud01.nif	14
-meshes\dungeons\misc\fx\fxdustcloudfaint01.nif	7
-meshes\dungeons\misc\fx\fxdustfall01.nif	13
-meshes\dungeons\misc\fx\fxdustpuffup01.nif	14
-meshes\dungeons\misc\fx\fxlightbeamdust01.nif	7
-meshes\dungeons\misc\fx\fxplasmacloud01.nif	11
-meshes\dungeons\misc\fx\fxtwinklelights01.nif	10
-meshes\dungeons\misc\risingdustcloud01.nif	13
-meshes\effects\metalsparks.nif	40
-meshes\effects\skeletonbloodspray.nif	129
-meshes\effects\stonedustcloud.nif	40
-meshes\effects\willothewispbloodspray.nif	113
-meshes\landscape\miscfirefly01.nif	14
-meshes\landscape\miscfirefly02.nif	14
-meshes\landscape\miscfirefly03.nif	14
-meshes\landscape\miscfirefly04.nif	14
-meshes\magiceffects\binditem.nif	36
-meshes\magiceffects\summondaedra.nif	107
+# Oblivion sizeless-truncation baseline	truncating=8	parsed=8032
+meshes\dungeons\ayleidruins\interior\arwelkydclusterfx01.nif	13
 meshes\marker_arrow.nif	5
 meshes\marker_divine.nif	9
 meshes\marker_map.nif	8
 meshes\marker_radius.nif	2
 meshes\marker_temple.nif	9
 meshes\marker_travel.nif	5
-meshes\menus\armor repair\hammer.nif	15
-meshes\menus\armor repair\white spot.nif	16
-meshes\menus\enemy health bar\health_bar01_old.nif	98
-meshes\menus\enemy health bar\health_bar_old.nif	102
-meshes\menus\hud_brackets\a_b_c_d_seq.nif	117
-meshes\menus\lockpicking\boltgearsloop.nif	48
-meshes\menus\lockpicking\pickold.nif	42
-meshes\menus\lockpicking\tumbler.nif	102
-meshes\menus\lockpicking\tumbler01.nif	47
-meshes\menus\lockpicking\tumbler02.nif	47
-meshes\menus\persuasion\gradient.nif	30
-meshes\menus\spell effect timer\timer.nif	102
-meshes\oblivion\architecture\citadel\interior\switch\scampswitch01.nif	52
+meshes\oblivion\architecture\citadel\interior\switch\scampswitch01.nif	42

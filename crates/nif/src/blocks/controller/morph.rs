@@ -68,26 +68,28 @@ impl NiGeomMorpherController {
 
         // Trailing Num Unknown Ints + Unknown Ints array. nif.xml:
         //   <field name="Num Unknown Ints" type="uint"
-        //          since="10.2.0.0" until="20.1.0.3"
-        //          vercond="(#BSVER# #LE# 11) #AND# (#BSVER# #NE# 0)" />
-        //   <field name="Unknown Ints" type="uint"
-        //          length="Num Unknown Ints" since="10.2.0.0" until="20.1.0.3"
-        //          vercond="(#BSVER# #LE# 11) #AND# (#BSVER# #NE# 0)" />
-        // Targets Bethesda content with bsver in 1..=11 — Oblivion
-        // (bsver 11) hits this; FNV/FO3 (bsver 24+) and Skyrim+ skip
-        // it entirely. Pre-fix the 4-byte u32 (typically 0) was left
-        // unread, which misaligned the next block. On `meshes/oblivion/
-        // gate/obgatemini01.nif` the trailing bytes were `0x00000000`,
-        // so the next block (NiMorphData) read num_morphs from the
-        // wrong slot, parsed as a 9-byte stub, and downstream
-        // interpolator blocks tripped the alloc cap with billions of
-        // ghost morph keys (audit O5-2 / #687).
+        //          since="10.2.0.0" until="20.0.0.5" vercond="#BSVER# #GT# 9" />
+        //   <field name="Unknown Ints" type="uint" length="Num Unknown Ints"
+        //          since="10.2.0.0" until="20.0.0.5" vercond="#BSVER# #GT# 9" />
+        //
+        // #1509 / NIF-NEW-04 — the gate was `bsver != 0 && bsver <= 11`,
+        // transcribed from a STALE nif.xml revision. The current spec
+        // gates on `#BSVER# #GT# 9` (bsver ≥ 10), and the corpus confirms
+        // it: `meshes\creatures\dog\doghead.nif` is v10.2.0.0 **bsver 9**,
+        // where the old gate wrongly read `num_unknown_ints` (here 5) +
+        // its 20-byte array — 24 phantom bytes — so the next block
+        // (NiMorphData) started 24 B late and read garbage num_morphs,
+        // truncating the file (15 blocks dropped). Oblivion's bsver-11
+        // morph rigs (e.g. `meshes\oblivion\gate\obgatemini01.nif`,
+        // v20.0.0.4) still read the field — `bsver > 9` keeps them, and
+        // the #687 fix that added this read, working. The upper version
+        // bound is `until=20.0.0.5` (was 20.1.0.3); FNV/FO3 (20.2.0.7)
+        // and Skyrim+ skip it on the version gate as before.
         let version = stream.version();
         let bsver = stream.bsver();
         if version >= NifVersion::V10_2_0_0
-            && version <= NifVersion::V20_1_0_3
-            && bsver != 0
-            && bsver <= 11
+            && version <= NifVersion::V20_0_0_5
+            && bsver > 9
         {
             let num_unknown_ints = stream.read_u32_le()?;
             // Sanity bound: `num_unknown_ints` is a count that has
