@@ -19,10 +19,14 @@
 pub mod components;
 pub mod config;
 pub mod convert;
+pub mod ragdoll;
 pub mod sync;
 pub mod world;
 
-pub use components::{CharacterController, RapierHandles};
+pub use components::{CharacterController, Ragdoll, RapierHandles};
 pub use config::{ContactConfig, TriMeshFlagBits};
+pub use ragdoll::{
+    build_ragdoll, RagdollBodySpec, RagdollConstraintSpec, RagdollJointSpec, RagdollSpec,
+};
 pub use sync::{physics_sync_system, set_kinematic_translation, set_linear_velocity};
 pub use world::{CharacterMoveParams, CharacterMoveResult, PhysicsWorld, PHYSICS_DT};
