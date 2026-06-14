@@ -253,7 +253,17 @@ void main() {
     }
 
     // Luma-weighted blend reduces flicker on bright highlights.
-    float alpha = params.params.x;
+    // #1497 / REN2-12 — `params.params.x` is the global parked-camera
+    // accumulation α, driven down to 1/(static_frames+1) (≈1/256 after
+    // ~4 s parked) by taa.rs so a locally-static pixel converges via the
+    // pure running average. But a *moving* pixel under a parked camera
+    // must NOT inherit that tiny α — its history would pin at the YCoCg
+    // clamp boundary and soft-blur moving actors. Floor α at 0.1 for
+    // non-static pixels; static pixels keep the converging global α.
+    // (The SVGF temporal pass already floors per-pixel via
+    // max(alpha_base, 1/(age+1)) with `age` reset on motion, so it
+    // doesn't share this coupling — verified, SIBLING check.)
+    float alpha = pixelStatic ? params.params.x : max(params.params.x, 0.1);
     float lumCurr = max(currRgb.r * 0.2126 + currRgb.g * 0.7152 + currRgb.b * 0.0722, 1e-4);
     float lumHist = max(clampedHist.r * 0.2126 + clampedHist.g * 0.7152 + clampedHist.b * 0.0722, 1e-4);
     float wCurr = 1.0 / (1.0 + lumCurr);

@@ -992,4 +992,25 @@ mod tests {
             "params.y must be 0.0 in steady state"
         );
     }
+
+    /// #1497 / REN2-12 — pin the per-pixel parked-camera α floor in
+    /// taa.comp. A *moving* pixel under a parked camera must not inherit
+    /// the global `1/(static_frames+1)` accumulation α (that pins its
+    /// history at the YCoCg clamp boundary and soft-blurs moving actors);
+    /// the shader floors α at 0.1 for non-static pixels. This is a
+    /// source assertion because the behaviour lives entirely in the
+    /// compiled `.spv` — pre-fix the floor was the unshipped half of
+    /// `2f7bcf78` and nothing caught the omission. (The SVGF temporal
+    /// pass already floors per-pixel via `max(alpha_base, 1/(age+1))`.)
+    #[test]
+    fn taa_comp_floors_alpha_for_moving_pixels_under_parked_camera() {
+        let src = include_str!("../../shaders/taa.comp");
+        assert!(
+            src.contains("pixelStatic ? params.params.x : max(params.params.x, 0.1)"),
+            "taa.comp lost the per-pixel α floor for moving pixels (#1497) — \
+             restore `float alpha = pixelStatic ? params.params.x : \
+             max(params.params.x, 0.1);` or a moving actor under a parked \
+             camera pins at the YCoCg clamp boundary."
+        );
+    }
 }
