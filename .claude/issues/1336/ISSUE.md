@@ -1,3 +1,5 @@
+# NIF-2026-05-29-08: Residual bare-decimal BSVER literals where named bsver::* constants exist
+
 **Severity:** LOW · **Dimension:** Version Handling (maintainability) · **Game Affected:** None (cosmetic)
 
 From audit `docs/audits/AUDIT_NIF_2026-05-29.md` (finding NIF-2026-05-29-08).
@@ -31,3 +33,4 @@ Replace each bare decimal with the corresponding `crate::version::bsver::*` cons
 ## Completeness Checks
 - [ ] **SIBLING**: After substitution, grep the whole `crates/nif/src/blocks/` tree for any remaining bare `bsver() <op> <decimal>` comparisons with a named equivalent
 - [ ] **TESTS**: No behavior change — existing version-gate tests should stay green
+
