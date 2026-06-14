@@ -25,10 +25,11 @@ pub struct GpuTerrainTile {
 /// `#[repr(C)]` Rust struct where `[f32; 3]` is only 12 bytes.
 ///
 /// **Shader Struct Sync**: the matching `struct GpuInstance` declaration
-/// in `triangle.vert`, `triangle.frag`, `ui.vert` and `caustic_splat.comp`
-/// MUST be updated in lockstep. The `struct_gpuinstance_matches_all_shaders`
-/// test below greps the four .comp/.vert/.frag files for the final trailing
-/// u32 slot name — when you add a field here, update the expected suffix
+/// in `triangle.vert`, `triangle.frag`, `ui.vert`, `caustic_splat.comp`
+/// and `water.vert` (#1498) MUST be updated in lockstep. The
+/// `every_shader_struct_gpu_instance_names_material_kind_slot` test
+/// greps those five .comp/.vert/.frag files for the `struct GpuInstance`
+/// declaration — when you add a field here, update the expected suffix
 /// in the assertion and rename the sentinel to match the new last field.
 ///
 /// Layout: 112 bytes per instance, 16-byte aligned (7×16). R1 Phase 6

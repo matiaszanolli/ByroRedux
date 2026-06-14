@@ -11,9 +11,10 @@ use std::mem::size_of;
 use std::mem::offset_of;
 
 /// Regression guard for the Shader Struct Sync invariant (#318 / #417).
-/// The `GpuInstance` struct is duplicated across **four** GLSL
-/// sources — `triangle.vert`, `triangle.frag`, `ui.vert`, and (since
-/// the caustic pass #321) `caustic_splat.comp` — and must stay
+/// The `GpuInstance` struct is duplicated across **five** GLSL
+/// sources — `triangle.vert`, `triangle.frag`, `ui.vert`, (since
+/// the caustic pass #321) `caustic_splat.comp`, and (#1498)
+/// `water.vert` — and must stay
 /// byte-for-byte identical with the Rust definition. Any drift here
 /// silently corrupts per-instance data on the GPU. Verified offsets
 /// come from the explicit `// offset N` comments inside those shaders.
@@ -213,6 +214,10 @@ fn every_shader_struct_gpu_instance_names_material_kind_slot() {
             "caustic_splat.comp",
             include_str!("../../../shaders/caustic_splat.comp"),
         ),
+        // #1498 / REN2-13 — water.vert is the 5th GpuInstance mirror
+        // (consumes `model` for vertex displacement); it was omitted
+        // from this drift guard even though its layout already matches.
+        ("water.vert", include_str!("../../../shaders/water.vert")),
     ];
     for (name, src) in SOURCES {
         assert!(
