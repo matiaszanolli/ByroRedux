@@ -404,34 +404,19 @@ pub(super) fn spawn_placed_instances(
             } else {
                 ParticleEmitter::torch_flame()
             };
-        // #707 / FX-2 — override preset start/end colour from the
-        // authored `NiPSysColorModifier -> NiColorData` keyframe stream
-        // when the NIF carries one. See the parallel block in scene.rs
-        // for the rationale; same field origin.
-        if let Some(curve) = em.color_curve {
-            preset.start_color = curve.start;
-            preset.end_color = curve.end;
-        }
-        // NIFAL particles slice — authored NiPSysEmitter kinematic +
-        // lifetime params override the preset's guesses (parallel to the
-        // scene.rs loose-NIF site). Colour/size stay with curve/preset.
-        if let Some(p) = em.emitter_params {
-            crate::systems::apply_emitter_params(&mut preset, &p);
-        }
-        // NIFAL spawn-rate follow-up — authored birth rate overrides the
-        // preset's guessed density (parallel to the scene.rs site).
-        if let Some(rate) = em.emitter_rate {
-            preset.rate = rate;
-        }
-        // #984 / NIF-D5-ORPHAN-A2 — carry authored force-field
-        // modifiers onto the spawned `ParticleEmitter` so the
-        // simulator can integrate gravity / vortex / drag /
-        // turbulence / air / radial alongside the preset's `gravity`
-        // scalar. NIF Z-up axes are converted to engine Y-up via
-        // `convert_force_fields_zup_to_yup`. Empty for emitters whose
-        // source NIF authored no field modifiers — preset behaviour
-        // is unchanged in that case.
-        preset.force_fields = crate::systems::convert_force_fields_zup_to_yup(&em.force_fields);
+        // NIFAL particles slice (#1513) — overlay every authored emitter
+        // override (colour curve #707, NiPSysEmitter base params, birth
+        // rate, force fields #984) onto the heuristic preset through the
+        // single shared boundary. Parallel to the loose-NIF site in
+        // scene/nif_loader.rs — both call the same helper so the two load
+        // paths can't diverge.
+        crate::systems::apply_emitter_overlays(
+            &mut preset,
+            &em.color_curve,
+            &em.emitter_params,
+            em.emitter_rate,
+            &em.force_fields,
+        );
         let entity = world.spawn();
         world.insert(entity, Transform::from_translation(world_pos));
         world.insert(entity, GlobalTransform::new(world_pos, Quat::IDENTITY, 1.0));

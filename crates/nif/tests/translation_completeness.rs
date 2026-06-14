@@ -374,15 +374,21 @@ fn cross_game_translation_completeness() {
         (
             "FNV",
             Box::new(|s, label| {
-                // FNV has BSShaderPPLighting + some BGSM content.
+                // FNV uses BSShaderPPLightingProperty, which never sets
+                // `material_kind` (only the Skyrim+ BSLightingShaderProperty arm
+                // does — see import/material/walker.rs). So FNV only classifies
+                // its engine-synthesized effect/nolighting meshes. Measured
+                // 2026-06-13: texture_path 95.1%, material_kind 8.1%, tangents
+                // 97.3% (#1512 recalibration — the old 35% material_kind floor
+                // was an era-assumption never achievable on this corpus).
                 assert!(
                     MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 70.0,
                     "[{label}] texture_path fill < 70% (got {:.1}%)",
                     MaterialStats::pct(s.with_texture_path, s.imported_meshes)
                 );
                 assert!(
-                    MaterialStats::pct(s.with_material_kind, s.imported_meshes) >= 35.0,
-                    "[{label}] material_kind fill < 35% (got {:.1}%)",
+                    MaterialStats::pct(s.with_material_kind, s.imported_meshes) >= 5.0,
+                    "[{label}] material_kind fill < 5% (got {:.1}%)",
                     MaterialStats::pct(s.with_material_kind, s.imported_meshes)
                 );
                 assert!(
@@ -395,16 +401,22 @@ fn cross_game_translation_completeness() {
         (
             "SkyrimSE",
             Box::new(|s, label| {
-                // SkyrimSE has native BGSM + strong texture + material infrastructure.
+                // SkyrimSE materials are INLINE BSLightingShaderProperty, not
+                // external BGSM (BGSM is FO4+) — so `material_path` is ~0% and the
+                // identity slot is `material_kind` (set from shader_type on the
+                // BSLightingShaderProperty arm). Measured 2026-06-13: texture_path
+                // 100%, material_kind 60.8%, tangents 100% (#1512 — the old
+                // material_path>=35% floor mis-described Skyrim as "native BGSM"
+                // and could never pass on vanilla inline-material content).
                 assert!(
                     MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
                     "[{label}] texture_path fill < 75% (got {:.1}%)",
                     MaterialStats::pct(s.with_texture_path, s.imported_meshes)
                 );
                 assert!(
-                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 35.0,
-                    "[{label}] material_path fill < 35% (got {:.1}%)",
-                    MaterialStats::pct(s.with_material_path, s.imported_meshes)
+                    MaterialStats::pct(s.with_material_kind, s.imported_meshes) >= 35.0,
+                    "[{label}] material_kind fill < 35% (got {:.1}%)",
+                    MaterialStats::pct(s.with_material_kind, s.imported_meshes)
                 );
                 assert!(
                     MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 60.0,
@@ -437,15 +449,15 @@ fn cross_game_translation_completeness() {
         (
             "FO76",
             Box::new(|s, label| {
-                // FO76 inherits FO4 engine + updated content.
+                // FO76 fully migrated texture references into BGSM — inline
+                // texture_path is nearly empty (~10%); the material identity lives
+                // in material_path. Measured 2026-06-13: texture_path 9.6%,
+                // material_path 90.4%, tangents 100% (#1512 — the old
+                // texture_path>=75% floor assumed FO4-style inline paths, which
+                // FO76 dropped; assert the slot that actually carries the data).
                 assert!(
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
-                    "[{label}] texture_path fill < 75% (got {:.1}%)",
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes)
-                );
-                assert!(
-                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 40.0,
-                    "[{label}] material_path fill < 40% (got {:.1}%)",
+                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 75.0,
+                    "[{label}] material_path fill < 75% (got {:.1}%)",
                     MaterialStats::pct(s.with_material_path, s.imported_meshes)
                 );
                 assert!(
@@ -458,14 +470,17 @@ fn cross_game_translation_completeness() {
         (
             "Starfield",
             Box::new(|s, label| {
-                // Starfield has newest engine + CDB material system.
+                // Starfield BSGeometry carries NO inline texture path at all —
+                // material lives entirely in material_path (CDB-resolved). Measured
+                // 2026-06-13: texture_path 0.0%, material_path 100%, tangents 100%
+                // (#1512 — the old texture_path>=75% floor was canonically
+                // impossible for BSGeometry; assert material_path + tangents, the
+                // slots that prove the external-.mesh resolver path is intact).
                 assert!(
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
-                    "[{label}] texture_path fill < 75% (got {:.1}%)",
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes)
+                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 75.0,
+                    "[{label}] material_path fill < 75% (got {:.1}%)",
+                    MaterialStats::pct(s.with_material_path, s.imported_meshes)
                 );
-                // Note: Starfield material_path is CDB (Chunk Database) format, resolved
-                // separately; BGSM paths may be lower. This is expected, not a regression.
                 assert!(
                     MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 65.0,
                     "[{label}] tangents fill < 65% (got {:.1}%)",
