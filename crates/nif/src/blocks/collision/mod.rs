@@ -40,7 +40,9 @@ pub use collision_object::{
 pub use compressed_mesh::{
     BhkCompressedMeshShape, BhkCompressedMeshShapeData, CmsBigTri, CmsChunk, CmsTransform,
 };
-pub use constraints::{BhkBreakableConstraint, BhkConstraint};
+pub use constraints::{
+    BhkBreakableConstraint, BhkConstraint, BhkConstraintData, LimitedHingeCInfo, RagdollCInfo,
+};
 pub use phantom_action::{
     BhkAabbPhantom, BhkLiquidAction, BhkOrientHingedBodyAction, BhkSimpleShapePhantom,
 };
@@ -98,6 +100,8 @@ fn read_matrix3(stream: &mut NifStream) -> io::Result<[f32; 12]> {
 mod bhk_blend_collision_object_tests;
 #[cfg(test)]
 mod bhk_breakable_constraint_tests;
+#[cfg(test)]
+mod bhk_constraint_tests;
 #[cfg(test)]
 mod bhk_ragdoll_tests;
 #[cfg(test)]
