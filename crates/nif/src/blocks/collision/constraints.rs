@@ -110,6 +110,39 @@ impl RagdollCInfo {
             max_friction: stream.read_f32_le()?,
         })
     }
+
+    /// Oblivion / Morrowind (`#NI_BS_LTE_16#`) layout from nif.xml:
+    /// 6 × Vec4 + 6 × f32 = 120 bytes. Differs from [`Self::parse_fo3`] in
+    /// BOTH count (no Motor A / Motor B — those are FO3+ additions) and
+    /// order (pivot/plane/twist, A then B — vs FO3's twist/plane/motor/
+    /// pivot). The absent motors are zeroed; the PHYSAL translate boundary
+    /// (`import::collision::ragdoll_joint`) reads only the common subset
+    /// (twist/plane/pivot + the angle limits), so a zeroed motor is
+    /// invisible downstream — the same `RagdollCInfo` feeds every game.
+    fn parse_oblivion(stream: &mut NifStream) -> io::Result<Self> {
+        let pivot_a = super::read_vec4(stream)?;
+        let plane_a = super::read_vec4(stream)?;
+        let twist_a = super::read_vec4(stream)?;
+        let pivot_b = super::read_vec4(stream)?;
+        let plane_b = super::read_vec4(stream)?;
+        let twist_b = super::read_vec4(stream)?;
+        Ok(Self {
+            twist_a,
+            plane_a,
+            motor_a: [0.0; 4],
+            pivot_a,
+            twist_b,
+            plane_b,
+            motor_b: [0.0; 4],
+            pivot_b,
+            cone_max_angle: stream.read_f32_le()?,
+            plane_min_angle: stream.read_f32_le()?,
+            plane_max_angle: stream.read_f32_le()?,
+            twist_min_angle: stream.read_f32_le()?,
+            twist_max_angle: stream.read_f32_le()?,
+            max_friction: stream.read_f32_le()?,
+        })
+    }
 }
 
 /// `bhkLimitedHingeConstraintCInfo`, FO3/FNV (`!#NI_BS_LTE_16#`) layout
@@ -155,6 +188,34 @@ impl LimitedHingeCInfo {
             max_friction: stream.read_f32_le()?,
         })
     }
+
+    /// Oblivion / Morrowind (`#NI_BS_LTE_16#`) layout from nif.xml:
+    /// 7 × Vec4 + 3 × f32 = 124 bytes. No Perp Axis In B1 (an FO3+
+    /// addition) and a pivots-first order. The absent perp axis is zeroed;
+    /// the PHYSAL translate boundary reads only axis/pivot + angle limits,
+    /// so it's invisible downstream.
+    fn parse_oblivion(stream: &mut NifStream) -> io::Result<Self> {
+        let pivot_a = super::read_vec4(stream)?;
+        let axis_a = super::read_vec4(stream)?;
+        let perp_axis_in_a1 = super::read_vec4(stream)?;
+        let perp_axis_in_a2 = super::read_vec4(stream)?;
+        let pivot_b = super::read_vec4(stream)?;
+        let axis_b = super::read_vec4(stream)?;
+        let perp_axis_in_b2 = super::read_vec4(stream)?;
+        Ok(Self {
+            axis_a,
+            perp_axis_in_a1,
+            perp_axis_in_a2,
+            pivot_a,
+            axis_b,
+            perp_axis_in_b1: [0.0; 4],
+            perp_axis_in_b2,
+            pivot_b,
+            min_angle: stream.read_f32_le()?,
+            max_angle: stream.read_f32_le()?,
+            max_friction: stream.read_f32_le()?,
+        })
+    }
 }
 
 impl BhkConstraint {
@@ -188,10 +249,14 @@ impl BhkConstraint {
         })
     }
 
-    /// Parse a constraint block by type name. On Oblivion, reads the
-    /// exact byte layout and returns a `BhkConstraint`. On FO3+, reads
-    /// the 16-byte base and returns early; the caller seeks past the
-    /// remainder via `block_size`.
+    /// Parse a constraint block by type name. For the two joints a
+    /// humanoid ragdoll uses (`bhkRagdollConstraint` /
+    /// `bhkLimitedHingeConstraint`, bare or malleable-wrapped) the typed
+    /// CInfo is decoded into [`BhkConstraintData`] in the era-correct field
+    /// order — Oblivion (`#NI_BS_LTE_16#`) or FO3+ (`!#NI_BS_LTE_16#`).
+    /// Every other type reads its base (and, on Oblivion, skips its fixed
+    /// payload) and stays [`BhkConstraintData::Other`]; on FO3+ the outer
+    /// walker seeks past any unread remainder via `block_size`.
     pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
         let (entity_a, entity_b, priority) = Self::parse_base(stream)?;
 
@@ -200,15 +265,42 @@ impl BhkConstraint {
         // "drop through to the FO3+ short-stub path".
         let is_oblivion = stream.version() <= NifVersion::V20_0_0_5;
         if is_oblivion {
+            // PHYSAL per-game seam: decode the two joints a humanoid
+            // ragdoll uses in the Oblivion (`#NI_BS_LTE_16#`) field order.
+            // Everything downstream of the resulting `BhkConstraintData` is
+            // game-agnostic — only the byte layout differs here, so this is
+            // the *only* Oblivion-specific code in the ragdoll path.
+            match type_name {
+                "bhkRagdollConstraint" => {
+                    return Ok(Self {
+                        type_name,
+                        entity_a,
+                        entity_b,
+                        priority,
+                        data: BhkConstraintData::Ragdoll(RagdollCInfo::parse_oblivion(stream)?),
+                    });
+                }
+                "bhkLimitedHingeConstraint" => {
+                    return Ok(Self {
+                        type_name,
+                        entity_a,
+                        entity_b,
+                        priority,
+                        data: BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_oblivion(
+                            stream,
+                        )?),
+                    });
+                }
+                _ => {}
+            }
+
+            // The remaining types aren't decoded yet; consume their fixed
+            // Oblivion payload by byte size and stay `Other`.
             let payload_size: Option<u64> = match type_name {
                 // 2 × Vec4
                 "bhkBallAndSocketConstraint" => Some(32),
                 // 5 × Vec4
                 "bhkHingeConstraint" => Some(80),
-                // 6 × Vec4 + 6 × f32
-                "bhkRagdollConstraint" => Some(120),
-                // 7 × Vec4 + 3 × f32
-                "bhkLimitedHingeConstraint" => Some(124),
                 // 8 × Vec4 + 3 × f32
                 "bhkPrismaticConstraint" => Some(140),
                 // 2 × Vec4 + f32
@@ -232,30 +324,35 @@ impl BhkConstraint {
 
             if type_name == "bhkMalleableConstraint" {
                 // Oblivion layout: type u32 + nested bhkConstraintCInfo
-                // (16) + wrapped CInfo + tau f32 + damping f32.
+                // (16, entities −1/−1) + wrapped CInfo + tau f32 + damping
+                // f32. Decode an inner Ragdoll / LimitedHinge so a
+                // malleable-wrapped joint surfaces identically to a bare
+                // one; other inner types skip by size and stay `Other`.
                 let wrapped_type = stream.read_u32_le()?;
-                let _nested_entities = stream.read_u32_le()?;
-                let _nested_a = stream.read_block_ref()?;
-                let _nested_b = stream.read_block_ref()?;
-                let _nested_priority = stream.read_u32_le()?;
-                let inner_size: u64 = match wrapped_type {
-                    0 => 32,  // Ball and Socket
-                    1 => 80,  // Hinge
-                    2 => 124, // Limited Hinge
-                    6 => 140, // Prismatic
-                    7 => 120, // Ragdoll
-                    8 => 36,  // Stiff Spring
+                let _nested = Self::parse_base(stream)?;
+                let data = match wrapped_type {
+                    7 => BhkConstraintData::Ragdoll(RagdollCInfo::parse_oblivion(stream)?),
+                    2 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_oblivion(stream)?),
                     other => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "bhkMalleableConstraint: unknown inner type {other} — \
-                                 stream position unreliable"
-                            ),
-                        ));
+                        let inner_size: u64 = match other {
+                            0 => 32,  // Ball and Socket
+                            1 => 80,  // Hinge
+                            6 => 140, // Prismatic
+                            8 => 36,  // Stiff Spring
+                            unknown => {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "bhkMalleableConstraint: unknown inner type {unknown} — \
+                                         stream position unreliable"
+                                    ),
+                                ));
+                            }
+                        };
+                        stream.skip(inner_size)?;
+                        BhkConstraintData::Other
                     }
                 };
-                stream.skip(inner_size)?;
                 // Tau + Damping (Oblivion trailer).
                 stream.skip(8)?;
                 return Ok(Self {
@@ -263,7 +360,7 @@ impl BhkConstraint {
                     entity_a,
                     entity_b,
                     priority,
-                    data: BhkConstraintData::Other,
+                    data,
                 });
             }
         }
