@@ -1,3 +1,5 @@
+# REN2-17: Procedural water-noise hash degrades at large |world| (absolute-UV lattice) — currently unreachable fallback path
+
 ## Finding REN2-17 — Renderer Audit 2026-06-11
 
 - **Severity**: LOW
@@ -19,3 +21,4 @@ When the procedural path becomes reachable: feed the hash render-origin-relative
 
 ---
 Source: `docs/audits/AUDIT_RENDERER_2026-06-11.md` · Filed by `/audit-publish`
+
