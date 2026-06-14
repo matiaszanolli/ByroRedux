@@ -202,8 +202,14 @@ fn parse_rate_starfield_all_meshes() {
 /// block-type coverage gaps are invisible to the existing test.
 /// Mirrors the Starfield multi-archive pattern (#754 / #759).
 ///
-/// Per-archive minimums (clean %) — initial thresholds match the
-/// headline FO4 test; tighten after a first measurement.
+/// Per-archive minimums (clean %) — calibrated from a full sweep on
+/// 2026-06-14 (#1457): both archives parse 100.00% clean / 100%
+/// recoverable (Meshes 34 995/34 995, MeshesExtra 124 871/124 871, 0
+/// truncated). The FaceGen truncation tail the 2026-06-02 audit recorded
+/// (1 238 truncated in Meshes.ba2) is gone. Floors set to 0.995 — within
+/// 0.5% of the measured 100%, rounded down — so a real regression (>0.5%
+/// of the corpus losing clean parse) trips the gate while a single new
+/// FaceGen drift does not.
 #[test]
 #[ignore]
 fn parse_rate_fo4_all_meshes() {
@@ -214,11 +220,11 @@ fn parse_rate_fo4_all_meshes() {
     let archives: &[ArchiveSpec] = &[
         ArchiveSpec {
             name: "Fallout4 - Meshes.ba2",
-            min_clean: 0.960, // Matches the headline test floor (post-#811)
+            min_clean: 0.995, // 100.00% clean measured 2026-06-14 (#1457); -0.5% margin
         },
         ArchiveSpec {
             name: "Fallout4 - MeshesExtra.ba2",
-            min_clean: 0.960, // Same floor — initial baseline pending first sweep
+            min_clean: 0.995, // 100.00% clean measured 2026-06-14 (#1457); -0.5% margin
         },
     ];
 
