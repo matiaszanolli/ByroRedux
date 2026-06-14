@@ -583,6 +583,7 @@ mod recursion_depth_tests {
             attach_points: None,
             child_attach_connections: None,
             embedded_clip: None,
+            ragdoll: None,
         }
     }
 

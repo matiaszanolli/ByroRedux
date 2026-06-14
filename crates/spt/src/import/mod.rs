@@ -180,6 +180,8 @@ pub fn import_spt_scene(
         attach_points: None,
         child_attach_connections: None,
         embedded_clip: None,
+        // SpeedTree placeholder billboards carry no Havok ragdoll.
+        ragdoll: None,
     }
 }
 

@@ -12,6 +12,7 @@
 
 use super::material::{BsEffectShaderData, NoLightingFalloff, ShaderTypeFields};
 use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
+use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::FixedString;
 use std::sync::Arc;
 
@@ -1034,6 +1035,84 @@ pub struct ImportedScene {
     /// `None` when the NIF authored no such controllers — most
     /// non-FX/non-water meshes. See #261.
     pub embedded_clip: Option<crate::anim::AnimationClip>,
+    /// Havok ragdoll articulation (rigid bodies + the constraints linking
+    /// them) extracted from the classic `BhkRigidBody` chain, when the
+    /// scene carries a real one (≥2 bodies + ≥1 decoded joint). `None`
+    /// for non-skeletal NIFs and for FO4+ NP-blob ragdolls (not yet
+    /// decodable). Consumed by the engine to build a Rapier multibody and
+    /// drive Bethesda ragdolls on our own solver (M41.x).
+    pub ragdoll: Option<ImportedRagdoll>,
+}
+
+/// A Havok ragdoll articulation, engine-native (Y-up, havok-scaled).
+///
+/// `bodies` and `constraints` form a kinematic tree: each constraint
+/// links two `bodies` by array index. Built by
+/// [`crate::import::collision::extract_ragdoll`] from the NIF's
+/// `BhkRigidBody` + `BhkConstraint` blocks. See M41.x.
+#[derive(Debug, Clone)]
+pub struct ImportedRagdoll {
+    pub bodies: Vec<ImportedRagdollBody>,
+    pub constraints: Vec<ImportedRagdollConstraint>,
+}
+
+/// One rigid body of a ragdoll, hosted on a skeleton bone.
+#[derive(Debug, Clone)]
+pub struct ImportedRagdollBody {
+    /// Host bone name (the NiNode that carries this body's collision
+    /// object). The engine resolves it to the bone `EntityId` to seed and
+    /// write back the simulated pose.
+    pub bone_name: Arc<str>,
+    pub mass: f32,
+    pub linear_damping: f32,
+    pub angular_damping: f32,
+    pub friction: f32,
+    pub restitution: f32,
+    /// Collider shape in body-local space (Y-up, havok-scaled).
+    pub shape: CollisionShape,
+    /// Rigid-body origin offset relative to the host bone (Y-up, scaled).
+    pub translation: Vec3,
+    /// Rigid-body orientation relative to the host bone (Y-up).
+    pub rotation: Quat,
+}
+
+/// One joint linking two ragdoll bodies (indices into
+/// [`ImportedRagdoll::bodies`]).
+#[derive(Debug, Clone)]
+pub struct ImportedRagdollConstraint {
+    pub body_a: usize,
+    pub body_b: usize,
+    pub kind: ImportedJointKind,
+}
+
+/// Joint geometry, converted to engine space. Pivots are positions
+/// (Y-up, scaled); axes are unit directions (Y-up, unscaled). Angles are
+/// radians, passed through from Havok.
+#[derive(Debug, Clone)]
+pub enum ImportedJointKind {
+    /// 3-DOF cone/twist ball joint (`bhkRagdollConstraint`).
+    Ragdoll {
+        twist_a: Vec3,
+        plane_a: Vec3,
+        pivot_a: Vec3,
+        twist_b: Vec3,
+        plane_b: Vec3,
+        pivot_b: Vec3,
+        cone_max: f32,
+        plane_min: f32,
+        plane_max: f32,
+        twist_min: f32,
+        twist_max: f32,
+    },
+    /// 1-DOF angle-limited hinge (`bhkLimitedHingeConstraint`).
+    LimitedHinge {
+        axis_a: Vec3,
+        pivot_a: Vec3,
+        axis_b: Vec3,
+        pivot_b: Vec3,
+        min_angle: f32,
+        max_angle: f32,
+    },
 }
 
 /// One particle emitter discovered while walking the NIF scene graph.
