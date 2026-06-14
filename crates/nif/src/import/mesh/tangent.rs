@@ -92,20 +92,12 @@ pub fn extract_tangents_from_extra_data(
             let n_yup = [n_zup.x, n_zup.z, -n_zup.y];
 
             // Bitangent sign: sign(dot(B, cross(N, T))). With T = ∂P/∂U
-            // and B = ∂P/∂V on a standard right-handed UV winding,
-            // `cross(N, T) ≈ ∂P/∂V` so `dot(B, cross_nt) > 0` and the
-            // sign lands at +1 — the textbook case. UV-mirrored shells
-            // produce `< 0`, flipping the shader's bitangent so the
-            // tangent-space normal sample stays consistent across the
-            // mirror seam. Zero (degenerate) defaults to +1.
-            let cross_nt = [
-                n_yup[1] * t_yup[2] - n_yup[2] * t_yup[1],
-                n_yup[2] * t_yup[0] - n_yup[0] * t_yup[2],
-                n_yup[0] * t_yup[1] - n_yup[1] * t_yup[0],
-            ];
-            let dot_b_cross =
-                b_yup[0] * cross_nt[0] + b_yup[1] * cross_nt[1] + b_yup[2] * cross_nt[2];
-            let sign = if dot_b_cross < 0.0 { -1.0 } else { 1.0 };
+            // and B = ∂P/∂V on a standard right-handed UV winding the
+            // sign lands at +1 — the textbook case; UV-mirrored shells
+            // flip it so the shader's bitangent stays consistent across
+            // the mirror seam. Shared with the inline + SSE producers so
+            // the operand order can't drift (see `bitangent_sign` / #1516).
+            let sign = crate::types::bitangent_sign(n_yup, t_yup, b_yup);
 
             tangents.push([t_yup[0], t_yup[1], t_yup[2], sign]);
         }
@@ -318,16 +310,9 @@ pub fn synthesize_tangents(
                 (t_yup, b_yup)
             };
 
-        // Bitangent sign: sign(dot(B, cross(N, T))).
-        let cross_nt = [
-            n_yup[1] * tangent_yup[2] - n_yup[2] * tangent_yup[1],
-            n_yup[2] * tangent_yup[0] - n_yup[0] * tangent_yup[2],
-            n_yup[0] * tangent_yup[1] - n_yup[1] * tangent_yup[0],
-        ];
-        let dot_b_cross = bitangent_yup[0] * cross_nt[0]
-            + bitangent_yup[1] * cross_nt[1]
-            + bitangent_yup[2] * cross_nt[2];
-        let sign = if dot_b_cross < 0.0 { -1.0 } else { 1.0 };
+        // Bitangent sign: sign(dot(B, cross(N, T))) — shared helper so the
+        // operand order stays pinned across every tangent producer (#1516).
+        let sign = crate::types::bitangent_sign(n_yup, tangent_yup, bitangent_yup);
 
         out.push([tangent_yup[0], tangent_yup[1], tangent_yup[2], sign]);
     }
@@ -496,15 +481,9 @@ pub fn synthesize_tangents_yup(
                 (t_yup, b_yup)
             };
 
-        let cross_nt = [
-            n_yup[1] * tangent_yup[2] - n_yup[2] * tangent_yup[1],
-            n_yup[2] * tangent_yup[0] - n_yup[0] * tangent_yup[2],
-            n_yup[0] * tangent_yup[1] - n_yup[1] * tangent_yup[0],
-        ];
-        let dot_b_cross = bitangent_yup[0] * cross_nt[0]
-            + bitangent_yup[1] * cross_nt[1]
-            + bitangent_yup[2] * cross_nt[2];
-        let sign = if dot_b_cross < 0.0 { -1.0 } else { 1.0 };
+        // Bitangent sign: sign(dot(B, cross(N, T))) — shared helper so the
+        // operand order stays pinned across every tangent producer (#1516).
+        let sign = crate::types::bitangent_sign(n_yup, tangent_yup, bitangent_yup);
 
         out.push([tangent_yup[0], tangent_yup[1], tangent_yup[2], sign]);
     }
