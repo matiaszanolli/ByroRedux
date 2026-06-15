@@ -7,6 +7,7 @@ use crate::vulkan::buffer::{GpuBuffer, StagingPool};
 use crate::vulkan::GpuUploadCtx;
 use anyhow::{bail, Result};
 use ash::vk;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Once;
 
@@ -315,8 +316,51 @@ impl MeshRegistry {
         Ok(id)
     }
 
-    /// Upload a scene mesh (Vertex type) and track its geometry for the
-    /// global SSBO used by RT reflection ray UV lookups.
+    /// Clamp any local index that overshoots this mesh's own vertex block
+    /// to the last valid vertex, returning a borrowed slice (no allocation)
+    /// when the geometry is already consistent.
+    ///
+    /// #1532 / #markarth-fragments — at draw time `cmd_draw_indexed` adds
+    /// the per-mesh `global_vertex_offset` to each local index; an index
+    /// `>= vertex_count` therefore reads PAST this mesh into the next mesh's
+    /// vertices in the shared global pool (the "exploding spike" artifact),
+    /// and with `robustBufferAccess` off a pool-tail overshoot is an OOB GPU
+    /// fetch (UB / potential DEVICE_LOST). The same out-of-range index is
+    /// also an invalid BLAS build input (it exceeds the declared
+    /// `max_vertex`). The original guard only `log::error!`d and uploaded
+    /// the inconsistent geometry anyway; this hard-gates by clamping so the
+    /// uploaded (index, vertex) pair stays self-consistent — a degenerate
+    /// (collapsed) triangle at worst — for the raster pool AND the per-mesh
+    /// BLAS input (both consume the sanitized slice). The error log is
+    /// retained for the decode-vs-compaction bisect the diagnostic was added
+    /// for: if it fires, the NIF decode emitted a self-inconsistent
+    /// (index, vertex) pair; if it never fires, look at pool compaction.
+    ///
+    /// `vertex_count == 0` can't clamp to a valid vertex, so indices map to
+    /// `0`; such a mesh is already degenerate (no vertices of its own) and
+    /// the clamp at least keeps the index count consistent and in-range of
+    /// the global pool origin rather than producing an OOB fetch.
+    fn sanitize_scene_indices(vertex_count: usize, indices: &[u32]) -> Cow<'_, [u32]> {
+        let Some(&max_idx) = indices.iter().max() else {
+            return Cow::Borrowed(indices);
+        };
+        if (max_idx as usize) < vertex_count {
+            return Cow::Borrowed(indices);
+        }
+        log::error!(
+            "GEOMETRY CORRUPTION (#markarth-fragments): local index {} >= \
+             vertex_count {} (overshoot {}, idx_count {}). Clamping to the last \
+             valid vertex (degenerate triangle) instead of reading past this \
+             mesh's vertex block. NIF decode index/vertex-count mismatch.",
+            max_idx,
+            vertex_count,
+            max_idx as usize + 1 - vertex_count,
+            indices.len(),
+        );
+        let max_valid = vertex_count.saturating_sub(1) as u32;
+        Cow::Owned(indices.iter().map(|&i| i.min(max_valid)).collect())
+    }
+
     /// Accumulate scene geometry into the global SSBO pools, returning the
     /// `(vertex, index)` offsets recorded *before* the append and marking the
     /// SSBO dirty when it has already been built. Shared by
@@ -374,32 +418,9 @@ impl MeshRegistry {
             });
         }
 
-        // DEBUG DIAGNOSTIC (#markarth-fragments) — validate that this mesh's
-        // LOCAL indices stay within its own uploaded vertex block. At draw
-        // time `cmd_draw_indexed` adds the per-mesh `vertex_offset`
-        // (global_vertex_offset) to each local index; an index >= vertex_count
-        // therefore reads PAST this mesh into the next mesh's vertices in the
-        // shared global pool — exactly the "exploding spike" geometry that
-        // shifts as the pool churns during streaming. If this fires, the NIF
-        // decode emitted a self-inconsistent (index, vertex) pair (a
-        // partition/vertex-map/SSE-reconstruction remap bug); if it never
-        // fires, the decoded data is consistent and the corruption is in pool
-        // relocation/compaction instead. Bisects decode-bug vs compaction-bug.
-        if let Some(&max_idx) = indices.iter().max() {
-            if max_idx as usize >= vertices.len() {
-                log::error!(
-                    "GEOMETRY CORRUPTION (#markarth-fragments): local index {} \
-                     >= vertex_count {} (overshoot {}, idx_count {}). Mesh triangles \
-                     will read past its vertex block → spike artifact. NIF decode \
-                     index/vertex-count mismatch.",
-                    max_idx,
-                    vertices.len(),
-                    max_idx as usize + 1 - vertices.len(),
-                    indices.len(),
-                );
-            }
-        }
-
+        // Index/vertex consistency is enforced by `sanitize_scene_indices`
+        // at the `upload_scene_mesh{,_global_only}` entry points (#1532),
+        // so any index reaching here is already in-range for `vertices`.
         self.pending_vertices.extend_from_slice(vertices);
         self.pending_indices.extend_from_slice(indices);
 
@@ -422,11 +443,15 @@ impl MeshRegistry {
         rt_enabled: bool,
         staging_pool: Option<&mut StagingPool>,
     ) -> Result<u32> {
-        let (v_offset, i_offset) = self.accumulate_global_geometry(vertices, indices)?;
+        // Clamp any vertex-block overshoot ONCE (#1532), then feed the same
+        // sanitized indices to both the global pool and the per-mesh / BLAS
+        // upload so neither consumes an out-of-range index.
+        let indices = Self::sanitize_scene_indices(vertices.len(), indices);
+        let (v_offset, i_offset) = self.accumulate_global_geometry(vertices, &indices)?;
 
         // Upload to per-mesh buffers (also the BLAS build input when
         // `rt_enabled`).
-        let id = self.upload(ctx, vertices, indices, rt_enabled, staging_pool)?;
+        let id = self.upload(ctx, vertices, &indices, rt_enabled, staging_pool)?;
 
         // Store offsets.
         let mesh = self.meshes[id as usize]
@@ -457,7 +482,8 @@ impl MeshRegistry {
         vertices: &[Vertex],
         indices: &[u32],
     ) -> Result<u32> {
-        let (v_offset, i_offset) = self.accumulate_global_geometry(vertices, indices)?;
+        let indices = Self::sanitize_scene_indices(vertices.len(), indices);
+        let (v_offset, i_offset) = self.accumulate_global_geometry(vertices, &indices)?;
 
         if self.meshes.len() >= MAX_MESH_SLOTS as usize {
             bail!(
@@ -1287,6 +1313,68 @@ mod pool_growth_cap_tests {
             vertex_bytes,
             index_bytes,
         );
+    }
+}
+
+#[cfg(test)]
+mod sanitize_index_tests {
+    //! Regression for #1532 / #markarth-fragments: the vertex-block
+    //! overshoot guard was log-only and uploaded the inconsistent geometry
+    //! anyway (raster reads into other meshes' vertices, OOB GPU fetch with
+    //! robustness off, invalid BLAS build input). `sanitize_scene_indices`
+    //! now hard-gates by clamping; these pin the clamp without a GPU device.
+    use super::*;
+
+    /// Consistent geometry passes through borrowed — no allocation, bytes
+    /// unchanged.
+    #[test]
+    fn in_range_indices_pass_through_borrowed() {
+        let idx = [0u32, 1, 2, 2, 1, 0];
+        let out = MeshRegistry::sanitize_scene_indices(3, &idx);
+        assert!(matches!(out, Cow::Borrowed(_)), "no clamp ⇒ no allocation");
+        assert_eq!(&*out, &idx);
+    }
+
+    /// `max_idx == vertex_count - 1` is the last valid index and must NOT
+    /// trip the clamp (the bug was a `>=` vs `>` off-by-one risk).
+    #[test]
+    fn last_valid_index_is_not_clamped() {
+        let idx = [2u32, 2, 2];
+        let out = MeshRegistry::sanitize_scene_indices(3, &idx);
+        assert!(matches!(out, Cow::Borrowed(_)));
+    }
+
+    /// An overshoot index is clamped to the last valid vertex; in-range
+    /// indices are untouched and the count is preserved (so the caller's
+    /// `index_count` stays consistent with the appended slice).
+    #[test]
+    fn overshoot_index_is_clamped_to_last_valid_vertex() {
+        // vertex_count 3 ⇒ valid indices 0..=2; index 5 overshoots.
+        let idx = [0u32, 1, 5];
+        let out = MeshRegistry::sanitize_scene_indices(3, &idx);
+        assert!(matches!(out, Cow::Owned(_)), "overshoot ⇒ owned clamp");
+        assert_eq!(&*out, &[0, 1, 2], "5 clamped to 2; rest unchanged");
+        assert_eq!(out.len(), idx.len(), "index count preserved");
+        // Every emitted index is now a valid vertex reference.
+        assert!(out.iter().all(|&i| (i as usize) < 3));
+    }
+
+    /// Empty index list is a borrowed no-op (no `max`, no clamp).
+    #[test]
+    fn empty_indices_pass_through() {
+        let out = MeshRegistry::sanitize_scene_indices(0, &[]);
+        assert!(matches!(out, Cow::Borrowed(_)));
+        assert!(out.is_empty());
+    }
+
+    /// `vertex_count == 0` can't clamp to a valid vertex; indices map to 0
+    /// (in-range of the global pool origin) rather than panicking on the
+    /// `len - 1` underflow.
+    #[test]
+    fn zero_vertex_count_clamps_to_zero_without_underflow() {
+        let idx = [0u32, 3, 7];
+        let out = MeshRegistry::sanitize_scene_indices(0, &idx);
+        assert_eq!(&*out, &[0, 0, 0]);
     }
 }
 
