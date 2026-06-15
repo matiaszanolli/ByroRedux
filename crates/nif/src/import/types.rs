@@ -399,6 +399,14 @@ pub struct ImportedMesh {
     pub env_map: Option<FixedString>,
     /// Environment-reflection mask (BSShaderTextureSet slot 5). #452.
     pub env_mask: Option<FixedString>,
+    /// FaceTint tint map (BSShaderTextureSet slot 7, BSLightingShaderType 8
+    /// FaceTint). Captured by the material walker and forwarded here so it
+    /// survives to a future FaceTint consumer (NIF-D4-01 / #1610).
+    pub tint_map: Option<FixedString>,
+    /// MultiLayerParallax inner-layer map (BSShaderTextureSet slot 7,
+    /// BSLightingShaderType 11). Captured by the material walker and
+    /// forwarded here for a future consumer (NIF-D4-01 / #1610).
+    pub inner_layer_map: Option<FixedString>,
     /// Standalone PBR specular texture (BGSM/BGEM v>2). FO4 authors
     /// this as a per-texel specular colour layer separate from
     /// `gloss_map` (which carries smooth/spec as a single .r-channel
@@ -801,6 +809,8 @@ impl ImportedMesh {
             parallax_map: None,
             env_map: None,
             env_mask: None,
+            tint_map: None,
+            inner_layer_map: None,
             specular_map: None,
             lighting_map: None,
             flow_map: None,

@@ -225,6 +225,8 @@ pub fn extract_bs_tri_shape(
         parallax_map: mat.parallax_map,
         env_map: mat.env_map,
         env_mask: mat.env_mask,
+        tint_map: mat.tint_map,
+        inner_layer_map: mat.inner_layer_map,
         // #1076 / FO4-D6-002 — NIF shader-texture-set slots
         // don't expose these; populated downstream by
         // `merge_bgsm_into_mesh` from BGSM/BGEM v>2.
