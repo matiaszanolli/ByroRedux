@@ -232,7 +232,23 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
     // tail (its bytes 20-23 are unused). Pre-fix the hard `< 28` reject
     // dropped every Oblivion condition silently.
     if data.len() < 24 {
+        log::debug!(
+            "CTDA payload {} bytes < 24 (Oblivion minimum) — dropping condition",
+            data.len()
+        );
         return None;
+    }
+    // Defense-in-depth (#1550): a CTDA is exactly 24 (Oblivion), 28 (FO3/FNV),
+    // or 32 (Skyrim+) bytes. Anything else is parsed best-effort against the
+    // 24-byte prefix but is a layout signal worth surfacing rather than
+    // silently absorbing — this is the trap that hid the Oblivion 24-byte
+    // case (#1548) for so long.
+    if !matches!(data.len(), 24 | 28 | 32) {
+        log::debug!(
+            "CTDA unexpected payload length {} (expected 24/28/32) — \
+             parsing against the 24-byte prefix; possible per-game layout drift",
+            data.len()
+        );
     }
 
     let type_byte = data[0];
@@ -359,6 +375,20 @@ mod tests {
         assert_eq!(cond.param_2, 0xBEEF);
         assert_eq!(cond.run_on, RunOn::Subject);
         assert_eq!(cond.reference_form_id, 0);
+    }
+
+    /// #1550 — an unexpected length (>= 24 but not 24/28/32) is parsed
+    /// best-effort against the 24-byte prefix and logged, NOT silently
+    /// dropped. This pins that the length gate no longer hides layout drift
+    /// the way it hid the Oblivion 24-byte case.
+    #[test]
+    fn parse_ctda_unexpected_length_parses_best_effort() {
+        let mut sub = make_ctda_24(0x00, 2.0_f32.to_le_bytes(), 58, 0x11, 0x22);
+        sub.data.extend_from_slice(&[0u8, 0u8]); // 26 bytes — not 24/28/32
+        assert_eq!(sub.data.len(), 26);
+        let cond = parse_ctda(&sub).expect("26-byte CTDA must still parse, not drop");
+        assert_eq!(cond.function_index, 58);
+        assert_eq!(cond.param_1, 0x11);
     }
 
     /// A payload shorter than the Oblivion minimum (24) is still rejected.
