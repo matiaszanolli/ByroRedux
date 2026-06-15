@@ -230,6 +230,18 @@ pub(crate) fn normal_alpha_spec_roughness(
         return None;
     }
     if normal_has_alpha {
+        // #1535 — `glossiness` is a raw NIF binary float with no finite
+        // guard on its path, and `f32::clamp` PROPAGATES NaN
+        // (`NaN.clamp(a, b) == NaN`). A non-finite glossiness would otherwise
+        // ship `roughness = NaN` into the GpuMaterial SSBO past the only NaN
+        // gate (`resolve_pbr`, which already ran), where NaN GGX terms poison
+        // the lit color and stick in SVGF/TAA history. Drop to `None` so the
+        // resolve_pbr-resolved (finite) canonical roughness is kept. The
+        // `specular_strength` arm below self-blocks on NaN (`NaN > 1.2` is
+        // false), so no sibling guard is needed there.
+        if !glossiness.is_finite() {
+            return None;
+        }
         Some((1.0 - glossiness / 100.0).clamp(0.05, 0.95))
     } else if specular_strength > 1.2 {
         Some((0.85 - (specular_strength - 1.0) * 0.1).clamp(0.4, 0.85))
@@ -350,6 +362,22 @@ mod tests {
             normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 99.0, PASS.3, PASS.4, false),
             Some(0.4)
         );
+    }
+
+    #[test]
+    fn non_finite_glossiness_keeps_resolved_roughness() {
+        // #1535 — a NaN/Inf glossiness must NOT survive the clamp into
+        // canonical roughness (`f32::clamp` propagates NaN). The gate-passing
+        // alpha-normal arm drops to None so the resolve_pbr roughness stays.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let r = normal_alpha_spec_roughness(
+                PASS.0, PASS.1, PASS.2, bad, 1.0, PASS.3, PASS.4, true,
+            );
+            assert_eq!(r, None, "glossiness {bad} must yield None, not a NaN/Inf roughness");
+        }
+        // And the value that DOES come back for a finite glossiness is finite.
+        let ok = normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 50.0, 1.0, PASS.3, PASS.4, true);
+        assert!(ok.unwrap().is_finite());
     }
 
     #[test]
