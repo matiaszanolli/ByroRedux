@@ -29,7 +29,8 @@ use collision::{
     BhkCompressedMeshShape, BhkCompressedMeshShapeData, BhkConstraint, BhkConvexListShape,
     BhkConvexSweepShape, BhkConvexVerticesShape, BhkCylinderShape, BhkLiquidAction, BhkListShape,
     BhkMeshShape, BhkMoppBvTreeShape, BhkMultiSphereShape, BhkNiTriStripsShape,
-    BhkOrientHingedBodyAction, BhkPCollisionObject, BhkPackedNiTriStripsShape, BhkPoseArray,
+    BhkOrientHingedBodyAction, BhkPCollisionObject, BhkPackedNiTriStripsShape, BhkPlaneShape,
+    BhkPoseArray,
     BhkRagdollTemplate, BhkRagdollTemplateData, BhkRigidBody, BhkSimpleShapePhantom,
     BhkSphereShape, BhkTransformShape, HkPackedNiTriStripsData, NiCollisionObjectBase,
 };
@@ -1105,6 +1106,10 @@ fn parse_block_inner(
         "bhkMoppBvTreeShape" => Ok(Box::new(BhkMoppBvTreeShape::parse(stream)?)),
         "bhkBoxShape" => Ok(Box::new(BhkBoxShape::parse(stream)?)),
         "bhkSphereShape" => Ok(Box::new(BhkSphereShape::parse(stream)?)),
+        // #1334 — bhkPlaneShape (bhkHeightFieldShape-derived). One vanilla
+        // SSE instance (slaughterfish egg-cluster ground plane); pre-fix it
+        // hit the NiUnknown fallback. Parsed byte-exact per nif.xml.
+        "bhkPlaneShape" => Ok(Box::new(BhkPlaneShape::parse(stream)?)),
         "bhkCapsuleShape" => Ok(Box::new(BhkCapsuleShape::parse(stream)?)),
         "bhkCylinderShape" => Ok(Box::new(BhkCylinderShape::parse(stream)?)),
         "bhkConvexVerticesShape" => Ok(Box::new(BhkConvexVerticesShape::parse(stream)?)),

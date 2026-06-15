@@ -59,7 +59,8 @@ pub use shape_mesh::{
     HkSubPartData, PackedTriangle,
 };
 pub use shape_primitive::{
-    BhkBoxShape, BhkCapsuleShape, BhkCylinderShape, BhkMultiSphereShape, BhkSphereShape,
+    BhkBoxShape, BhkCapsuleShape, BhkCylinderShape, BhkMultiSphereShape, BhkPlaneShape,
+    BhkSphereShape,
 };
 
 use crate::stream::NifStream;

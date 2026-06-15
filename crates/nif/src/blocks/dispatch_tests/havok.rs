@@ -682,3 +682,46 @@ fn oblivion_old_bs_keyframe_controller() {
     assert_eq!(stream.position() as usize, bytes.len());
     assert_eq!(bytes.len(), 38);
 }
+
+/// #1334 — `bhkPlaneShape` (bhkHeightFieldShape-derived) had no dispatch arm,
+/// so the one vanilla SSE instance (slaughterfish egg-cluster ground plane)
+/// hit the NiUnknown fallback. Layout (nif.xml): material(4) + 12 unused +
+/// Plane Normal(Vector3=12) + Plane Constant(f32=4) + AABB Half Extents
+/// (Vector4=16) + AABB Center(Vector4=16) = 64 bytes. Pins byte-exact
+/// consumption + field decode.
+#[test]
+fn bhk_plane_shape_consumes_full_64_bytes() {
+    let header = fo4_header(); // any version > 10.0.1.2 → 4-byte HavokMaterial
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&7u32.to_le_bytes()); // material
+    bytes.extend_from_slice(&[0u8; 12]); // Unused 01
+    for c in [0.0f32, 0.0, 1.0] {
+        bytes.extend_from_slice(&c.to_le_bytes()); // Plane Normal (+Z)
+    }
+    bytes.extend_from_slice(&128.5f32.to_le_bytes()); // Plane Constant
+    for c in [10.0f32, 20.0, 30.0, 0.0] {
+        bytes.extend_from_slice(&c.to_le_bytes()); // AABB Half Extents
+    }
+    for c in [1.0f32, 2.0, 3.0, 0.0] {
+        bytes.extend_from_slice(&c.to_le_bytes()); // AABB Center
+    }
+    assert_eq!(bytes.len(), 64, "fixture must be 64 bytes per nif.xml");
+
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("bhkPlaneShape", &mut stream, Some(bytes.len() as u32))
+        .expect("bhkPlaneShape must parse without NiUnknown fallback");
+    assert_eq!(
+        stream.position() as usize,
+        64,
+        "must consume the full block, not fall through to NiUnknown",
+    );
+    let prop = block
+        .as_any()
+        .downcast_ref::<crate::blocks::collision::BhkPlaneShape>()
+        .expect("must downcast to BhkPlaneShape");
+    assert_eq!(prop.material, 7);
+    assert_eq!(prop.plane_normal, [0.0, 0.0, 1.0]);
+    assert_eq!(prop.plane_constant, 128.5);
+    assert_eq!(prop.aabb_half_extents, [10.0, 20.0, 30.0, 0.0]);
+    assert_eq!(prop.aabb_center, [1.0, 2.0, 3.0, 0.0]);
+}

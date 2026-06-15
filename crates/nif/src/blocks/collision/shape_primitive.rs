@@ -161,10 +161,52 @@ impl BhkCylinderShape {
     }
 }
 
+/// `bhkPlaneShape` — an infinite plane bounded by an AABB (nif.xml
+/// `inherit="bhkHeightFieldShape"`, `#BETHESDA#`). One vanilla Skyrim SE
+/// instance ships it: the slaughterfish egg-cluster ground plane. Pre-#1334
+/// it hit the `NiUnknown` fallback — `block_size`-recovered on SSE (no
+/// cascade) but the shape was lost. Byte layout (nif.xml): `Material`
+/// (HavokMaterial, from `bhkHeightFieldShape`) + 12 unused bytes + `Plane
+/// Normal` (Vector3) + `Plane Constant` (f32) + `AABB Half Extents`
+/// (Vector4) + `AABB Center` (Vector4). Captured here so the block parses
+/// cleanly; mapping it to a Rapier half-space `CollisionShape` is a future
+/// follow-up (no `Plane` variant yet — the egg-cluster mesh still renders).
+#[derive(Debug)]
+pub struct BhkPlaneShape {
+    pub material: u32,
+    pub plane_normal: [f32; 3],
+    pub plane_constant: f32,
+    pub aabb_half_extents: [f32; 4],
+    pub aabb_center: [f32; 4],
+}
+
+impl BhkPlaneShape {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let material = read_havok_material(stream)?; // bhkHeightFieldShape
+        stream.skip(12)?; // Unused 01 (12 bytes)
+        let plane_normal = [
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+            stream.read_f32_le()?,
+        ];
+        let plane_constant = stream.read_f32_le()?;
+        let aabb_half_extents = read_vec4(stream)?;
+        let aabb_center = read_vec4(stream)?;
+        Ok(Self {
+            material,
+            plane_normal,
+            plane_constant,
+            aabb_half_extents,
+            aabb_center,
+        })
+    }
+}
+
 impl_ni_object!(
     BhkSphereShape => "bhkSphereShape",
     BhkMultiSphereShape => "bhkMultiSphereShape",
     BhkBoxShape => "bhkBoxShape",
     BhkCapsuleShape => "bhkCapsuleShape",
     BhkCylinderShape => "bhkCylinderShape",
+    BhkPlaneShape => "bhkPlaneShape",
 );
