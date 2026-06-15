@@ -16,13 +16,15 @@ run the engine, what do you see?
 | | Oblivion | FO3 | FNV | Skyrim SE | FO4 | FO76 | Starfield |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | **Interior cells** | ✓ | ✓ | ✓ | ✓ | ✓ | parse only | ✓ |
-| **Exterior grid (7×7)** | ✗ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
-| **LAND heightmap + splatting** | ✗ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| **Exterior grid (7×7)** | bench pending | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| **LAND heightmap + splatting** | parse ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | **World streaming (M40)** | — | ✓ | ✓ | ✓ | ✓ | — | ✓ |
 | **Confirmed bench** | 379 ent · ~1 600 FPS | 929 ent | 3 507 ent · 71 FPS | 3 211 ent · 330 FPS | 15 546 ent · 91 FPS | — | Cydonia walkable |
 
-**Oblivion exterior** is blocked on TES4 worldspace + LAND wiring (BSA v103
-extracts fine — that framing was a stale premise, closed by #699).
+**Oblivion exterior**: TES4 worldspace + LAND parse + load ✓ — the wiring
+is implemented and game-agnostic; only an on-device exterior render bench
+is pending. (BSA v103 extracts fine — that framing was a stale premise,
+closed by #699.)
 
 ---
 
