@@ -200,6 +200,43 @@ pub fn parse_block_with_name_arc(
     )
 }
 
+/// Probe whether `type_name` has a dedicated parser arm in [`parse_block`]
+/// (as opposed to falling through to the [`NiUnknown`] catch-all). This is
+/// the LIVE source of truth for dispatch coverage: coverage tooling
+/// (`examples/d5_coverage.rs`) calls this instead of carrying a hand-written
+/// dispatch-key snapshot that silently over-reports as new arms land (#1335 /
+/// NIF-2026-05-29-07).
+///
+/// Mechanism: only the `_ =>` fallback constructs a [`NiUnknown`], so a name
+/// is dispatched iff parsing it against an empty payload does NOT yield
+/// `Ok(NiUnknown)`. A dispatched arm either parses an empty struct
+/// (`Ok(other)`) or — far more often — errors on the truncated input
+/// (`Err`); both verdicts mean "has a parser". `block_size = Some(0)` makes
+/// the fallback skip 0 bytes and return `NiUnknown` cleanly, so the
+/// undispatched case is unambiguous. Dispatch routes only on the type name,
+/// so the empty payload + minimal modern header never change the verdict.
+pub fn is_block_type_dispatched(type_name: &str) -> bool {
+    let header = crate::header::NifHeader {
+        version: crate::version::NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 0,
+        user_version_2: 0,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    };
+    let data: [u8; 0] = [];
+    let mut stream = NifStream::new(&data, &header);
+    match parse_block(type_name, &mut stream, Some(0)) {
+        Ok(block) => block.block_type_name() != "NiUnknown",
+        Err(_) => true,
+    }
+}
+
 /// Is `type_name` a Havok *serializable* (the `bhkRefObject` subtree:
 /// shapes, rigid bodies, constraints, phantoms, ragdoll, `hkPackedNiTriStripsData`)?
 ///
@@ -1292,5 +1329,44 @@ mod group_id_tests {
         for t in ["NiNode", "NiTriStrips", "NiSkinData", "NiKeyframeData"] {
             assert!(!is_havok_serializable(t), "{t} is not a Havok serializable");
         }
+    }
+}
+
+#[cfg(test)]
+mod dispatch_probe_tests {
+    use super::is_block_type_dispatched;
+
+    /// #1335 — the five types `d5_coverage`'s stale snapshot mis-flagged as
+    /// UNCOVERED despite having live dispatch arms. The probe must report them
+    /// covered so the coverage tool stops over-reporting. A regression here
+    /// (an arm deleted) flips the tool's count, which is exactly what this
+    /// guards.
+    #[test]
+    fn previously_misreported_types_are_dispatched() {
+        for t in [
+            "NiAlphaController",
+            "BSKeyframeController",
+            "BSBoneLODExtraData",
+            "NiIntegersExtraData",
+            "NiFloatsExtraData",
+            // A few core types as a sanity floor.
+            "NiNode",
+            "NiTriShape",
+            "bhkRigidBody",
+        ] {
+            assert!(
+                is_block_type_dispatched(t),
+                "{t} has a live parse_block arm but the probe reports it uncovered"
+            );
+        }
+    }
+
+    /// A name with no parser arm must fall through to the `NiUnknown`
+    /// fallback and be reported uncovered — the negative half of the probe
+    /// contract.
+    #[test]
+    fn unknown_type_is_not_dispatched() {
+        assert!(!is_block_type_dispatched("DefinitelyNotARealNifBlockType"));
+        assert!(!is_block_type_dispatched(""));
     }
 }
