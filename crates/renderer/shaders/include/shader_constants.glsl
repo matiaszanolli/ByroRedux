@@ -76,6 +76,9 @@
 #define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO 512u
 #define MAT_FLAG_EFFECT_LI_SHIFT 16u
 
+// Normal-alpha-as-spec marker bit (OR'd into `GpuMaterial.glossMapIndex`).
+#define NORMAL_ALPHA_SPEC_BIT 2147483648u
+
 // Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`).
 #define WATER_CALM 0u
 #define WATER_RIVER 1u

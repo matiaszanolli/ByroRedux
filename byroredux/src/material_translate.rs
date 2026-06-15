@@ -177,7 +177,13 @@ pub(crate) fn translate_material(
 /// texture-binding instruction, not canonical material state; the matching
 /// *roughness* scalar is resolved once at spawn by
 /// [`resolve_normal_alpha_spec_roughness`] (#1480 / REN-D22-NEW-01).
-pub(crate) const NORMAL_ALPHA_SPEC_BIT: u32 = 0x8000_0000;
+///
+/// #1500 / REN2-15 — re-exported from the renderer's shader-constants single
+/// source of truth (which also generates the `triangle.frag` `#define`),
+/// rather than re-declaring the literal here. A value flip now changes both
+/// sides in lockstep and is impossible to desync.
+pub(crate) const NORMAL_ALPHA_SPEC_BIT: u32 =
+    byroredux_renderer::shader_constants::NORMAL_ALPHA_SPEC_BIT;
 
 /// The normal-alpha-as-spec population gate (Skyrim/Gamebryo era): a lit
 /// surface (`material_kind < 100`, low metalness, ~zero env-map scale) that

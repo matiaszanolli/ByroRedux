@@ -164,6 +164,15 @@ pub const MAT_FLAG_EFFECT_LI_SHIFT: u32 = 16;
 // through for debug-server inspection only.
 // See `feedback_format_translation.md`.
 
+// High bit OR'd into `GpuMaterial.glossMapIndex` to tell the fragment shader
+// "the gloss/smoothness mask lives in the NORMAL map's ALPHA channel"
+// (Skyrim/Gamebryo normal-alpha-as-spec). Set per-draw CPU-side in
+// `byroredux::render::static_meshes`; the shader masks it off for the index
+// (`glossMapIndex & ~NORMAL_ALPHA_SPEC_BIT`) and samples `.a` instead of `.r`.
+// Lockstep with `triangle.frag` and `byroredux::material_translate`, which
+// re-exports this value rather than re-declaring it (#1500 / REN2-15).
+pub const NORMAL_ALPHA_SPEC_BIT: u32 = 0x8000_0000;
+
 // Water motion-kind enum (WATR-driven, mapped per-WATR record).
 // Lockstep with `water.frag` and `byroredux/src/cell_loader/water.rs`.
 pub const WATER_CALM: u32 = 0;

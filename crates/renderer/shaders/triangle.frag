@@ -1932,8 +1932,8 @@ void main() {
         // gloss map but its normal carries alpha. Mask it off for the index
         // and sample `.a`. Plain gloss maps (Oblivion slot 3 / FO4 BGSM smooth-
         // spec) keep bit 31 clear and sample `.r` exactly as before.
-        uint glossIdx = mat.glossMapIndex & 0x7FFFFFFFu;
-        bool glossInAlpha = (mat.glossMapIndex & 0x80000000u) != 0u;
+        uint glossIdx = mat.glossMapIndex & ~NORMAL_ALPHA_SPEC_BIT;
+        bool glossInAlpha = (mat.glossMapIndex & NORMAL_ALPHA_SPEC_BIT) != 0u;
         vec4 glossTexel = texture(textures[nonuniformEXT(glossIdx)], sampleUV);
         float glossSample = glossInAlpha ? glossTexel.a : glossTexel.r;
         roughness = mix(1.0, roughness, glossSample);

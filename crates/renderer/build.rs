@@ -257,6 +257,18 @@ fn main() {
 
     writeln!(
         out,
+        "// Normal-alpha-as-spec marker bit (OR'd into `GpuMaterial.glossMapIndex`)."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define NORMAL_ALPHA_SPEC_BIT {NORMAL_ALPHA_SPEC_BIT}u"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(
+        out,
         "// Water motion-kind enum (matches `byroredux::cell_loader::water::WaterKind`)."
     )
     .unwrap();
