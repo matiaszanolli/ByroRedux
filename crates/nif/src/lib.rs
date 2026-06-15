@@ -161,9 +161,20 @@ fn is_animation_block(type_name: &str) -> bool {
 /// The stubs are correct — every skeleton NIF contains 10–50 constraint
 /// blocks and all of them under-consume by design. Without this list
 /// the reconciliation path would fire a `warn!` for each, drowning
-/// real parser-drift signals in an actor-spawn log (#462). When a full
-/// CInfo parser lands for any of these types, remove it from here so
-/// the drift detector goes back to catching real mistakes.
+/// real parser-drift signals in an actor-spawn log (#462).
+///
+/// Note (#1605): `bhkRagdollConstraint` / `bhkLimitedHingeConstraint` /
+/// `bhkMalleableConstraint` now have *typed* CInfo decoders
+/// (`blocks::collision::constraints.rs`) but are kept on this list
+/// deliberately — those decoders under-read by design (the trailing
+/// `bhkConstraintMotorCInfo` is left for `block_size` recovery), so
+/// dropping them would re-introduce the #462 warn-spam. Over-reads in the
+/// typed decoders are instead pinned by exact-consumption assertions in
+/// `bhk_constraint_tests.rs` (`stream.position() == 16 + prefix`), so a
+/// regression fails CI there rather than only in the runtime histogram.
+/// Replacing this blanket suppression with a *signed* tolerance (suppress
+/// the expected under-read, still `warn!` on any over-read) is tracked as
+/// #1605.
 fn is_havok_constraint_stub(type_name: &str) -> bool {
     matches!(
         type_name,
