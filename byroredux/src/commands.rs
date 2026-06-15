@@ -1,7 +1,7 @@
 //! Console commands for the engine's built-in command system.
 
 use crate::components::{
-    AlphaBlend, DoorTeleport, InputState, IsCollisionOnly, IsFxMesh, TwoSided,
+    AlphaBlend, DoorTeleport, InputState, IsFxMesh, TwoSided,
 };
 use crate::helpers::world_resource_set;
 use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
@@ -102,7 +102,6 @@ impl ConsoleCommand for EntitiesCommand {
         let total = world.next_entity_id();
         let mesh_count = world.count::<MeshHandle>();
         let collision_count = world.count::<CollisionShape>();
-        let collision_only_count = world.count::<IsCollisionOnly>();
 
         // Entities with CollisionShape but no MeshHandle are pure physics
         // proxies (bhk-authored or synthesized ghost entities). These carry
@@ -135,10 +134,6 @@ impl ConsoleCommand for EntitiesCommand {
         lines.push(format!(
             "    physics-only (no MeshHandle): {}",
             physics_only_count
-        ));
-        lines.push(format!(
-            "    IsCollisionOnly (render+phys combined, expect 0): {}",
-            collision_only_count
         ));
         CommandOutput::lines(lines)
     }

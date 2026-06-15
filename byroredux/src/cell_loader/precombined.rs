@@ -22,7 +22,8 @@
 //! Deferred sub-items (M49 Stage B):
 //! - Collision (`_precomb.nif` siblings) — authored convex hulls for baked
 //!   surfaces. FO4 architecture today gets synthesized trimesh colliders via
-//!   fallback at `spawn.rs:1063` (see `IsCollisionOnly` marker component).
+//!   fallback in `spawn.rs`, spawned as separate MeshHandle-free ghost
+//!   entities so they stay out of BLAS/TLAS.
 //! - Visibility / `.uvd` occlusion data — previs PVS keyed to visibility groups.
 //!   Currently no occlusion-volume or CPU coarse-cull system exists.
 

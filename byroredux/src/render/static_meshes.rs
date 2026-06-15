@@ -28,7 +28,7 @@ use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
 
 use crate::components::{
-    AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, IsCollisionOnly, IsFxMesh,
+    AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, IsFxMesh,
     IsLodTerrain, NormalMapHandle, TerrainTileSlot, TwoSided,
 };
 
@@ -130,9 +130,6 @@ pub(super) fn collect_static_mesh_draws(
     // material → identity-PBR fallback) but are forced `in_tlas = false`
     // so they never enter the TLAS / RT budget. See `IsLodTerrain`.
     let lod_q = world.query::<IsLodTerrain>();
-    // Synthesized collision-only entities (FNV/FO4 fallback trimesh colliders,
-    // R6a-stale-13-collider-cost): physics proxies that must never enter BLAS.
-    let collision_only_q = world.query::<IsCollisionOnly>();
     // DEBUG BISECT (#markarth-fragments) — `BYRO_NO_CULL=1` forces every
     // static visible (skips the frustum cull) to test whether the
     // "polygons come and go as I move" fragmentation is the under-counted
@@ -200,14 +197,12 @@ pub(super) fn collect_static_mesh_draws(
                     .copied()
                     .unwrap_or_default();
                 let is_decal = render_layer_for_entity == RenderLayer::Decal;
-                // Distant-terrain LOD blocks and synthesized collision-only
-                // entities (physics proxies) stay out of the TLAS. Everything
-                // else rides the TLAS. See IsLodTerrain / IsCollisionOnly.
+                // Distant-terrain LOD blocks stay out of the TLAS; everything
+                // else rides the TLAS. Synthesized collision-only colliders are
+                // separate MeshHandle-free ghost entities (see spawn.rs) and
+                // never reach this render-mesh query. See IsLodTerrain.
                 let is_lod = lod_q.as_ref().is_some_and(|q| q.get(entity).is_some());
-                let is_collision_only = collision_only_q
-                    .as_ref()
-                    .is_some_and(|q| q.get(entity).is_some());
-                let in_tlas = !is_lod && !is_collision_only;
+                let in_tlas = !is_lod;
                 let bone_offset = skin_offsets.get(&entity).copied().unwrap_or(0);
                 let (normal_map_index, normal_has_alpha) = nmap_q
                     .as_ref()
