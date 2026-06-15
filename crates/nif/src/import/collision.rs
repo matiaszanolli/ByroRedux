@@ -515,6 +515,19 @@ fn resolve_shape_inner(
         });
     }
 
+    // bhkPlaneShape — an AABB-bounded infinite plane (#1334). Parsed (no
+    // NiUnknown) but deliberately not mapped to a Rapier collider: there is
+    // no half-space / `Plane` `CollisionShape` variant, and approximating
+    // the bounded plane as a solid `Cuboid` from its AABB would fill the
+    // volume instead of presenting a surface. Returning `None` drops the one
+    // vanilla SSE instance (the slaughterfish egg-cluster ground plane) to
+    // the synthesized-trimesh fallback (`spawn.rs`) — its render-mesh
+    // surface, which is the correct ground anyway. A true half-space mapping
+    // is a follow-up.
+    if block.as_any().downcast_ref::<BhkPlaneShape>().is_some() {
+        return None;
+    }
+
     // Multi-sphere — up to 8 offset spheres approximating a volume.
     // Each becomes a `Ball` child of a `Compound`, positioned at its
     // (havok→engine, scaled) center. Pre-fix this fell through to the
