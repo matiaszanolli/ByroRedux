@@ -570,3 +570,30 @@ fn partition_triangle_with_out_of_range_vertex_map_index_is_dropped() {
     );
     assert_eq!(mesh.indices, vec![0, 1, 0]);
 }
+
+/// Regression: SK-D3-01 (#1547) — a packed buffer whose `vertex_desc`
+/// declares `VF_NORMALS` but whose `vertex_size` stride is too small to
+/// hold the normal quad must return `None` (skip the shape), not panic
+/// with an OOB slice index. Pre-fix the normal/tangent/color/skin-index
+/// reads indexed `bytes[off..]` raw inside the per-vertex sub-slice.
+#[test]
+fn decode_sse_packed_buffer_truncated_stride_returns_none_no_panic() {
+    // vertex_desc declares VF_VERTEX (0x001) | VF_NORMALS (0x008) = 0x009,
+    // but vertex_size = 16 only covers the 16-byte position block. The
+    // normal block then reads bytes[off..off+4] at off == 16 — one past
+    // the per-vertex sub-slice end.
+    let vertex_size: u32 = 16;
+    let vertex_desc: u64 = 0x009u64 << 44;
+    // One vertex worth of bytes (16) — multiple of vertex_size so the
+    // is_multiple_of guard passes and decode proceeds into the loop.
+    let raw_bytes = vec![0u8; vertex_size as usize];
+    let buffer = SseSkinGlobalBuffer {
+        vertex_desc,
+        vertex_size,
+        raw_bytes,
+    };
+    assert!(
+        super::decode_sse_packed_buffer(&buffer).is_none(),
+        "truncated normal stride must fail-soft to None, not panic"
+    );
+}

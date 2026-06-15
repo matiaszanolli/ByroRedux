@@ -276,13 +276,16 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
 
         // Normal: 3 × normbyte + 1 byte bitangent_y normbyte.
         if vertex_attrs & VF_NORMALS != 0 {
-            let nx = byte_to_normal(bytes[off]);
-            let ny = byte_to_normal(bytes[off + 1]);
-            let nz = byte_to_normal(bytes[off + 2]);
+            // Bounds-checked: a malformed vertex_desc can declare VF_NORMALS
+            // while vertex_size is too small to hold the quad. Fail-soft to
+            // None (skip the shape) instead of a raw-index OOB panic (#1547).
+            let nx = byte_to_normal(*bytes.get(off)?);
+            let ny = byte_to_normal(*bytes.get(off + 1)?);
+            let nz = byte_to_normal(*bytes.get(off + 2)?);
             // Z-up → Y-up: (x, z, -y).
             normals.push([nx, nz, -ny]);
             normal_zup = Some([nx, ny, nz]);
-            bitangent_y = Some(byte_to_normal(bytes[off + 3]));
+            bitangent_y = Some(byte_to_normal(*bytes.get(off + 3)?));
             off += 4;
         }
 
@@ -293,20 +296,20 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
         // the on-disk tangent triplet (∂P/∂V).
         if has_tangents {
             tangent_xyz = Some([
-                byte_to_normal(bytes[off]),
-                byte_to_normal(bytes[off + 1]),
-                byte_to_normal(bytes[off + 2]),
+                byte_to_normal(*bytes.get(off)?),
+                byte_to_normal(*bytes.get(off + 1)?),
+                byte_to_normal(*bytes.get(off + 2)?),
             ]);
-            bitangent_z = Some(byte_to_normal(bytes[off + 3]));
+            bitangent_z = Some(byte_to_normal(*bytes.get(off + 3)?));
             off += 4;
         }
 
         // Vertex colors: 4 × u8 → RGBA float. #618 keeps alpha.
         if vertex_attrs & VF_VERTEX_COLORS != 0 {
-            let r = bytes[off] as f32 / 255.0;
-            let g = bytes[off + 1] as f32 / 255.0;
-            let b = bytes[off + 2] as f32 / 255.0;
-            let a = bytes[off + 3] as f32 / 255.0;
+            let r = *bytes.get(off)? as f32 / 255.0;
+            let g = *bytes.get(off + 1)? as f32 / 255.0;
+            let b = *bytes.get(off + 2)? as f32 / 255.0;
+            let a = *bytes.get(off + 3)? as f32 / 255.0;
             colors.push([r, g, b, a]);
             off += 4;
         }
@@ -335,10 +338,10 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
                 w0, w1, w2, w3,
             ]));
             bone_indices.push([
-                bytes[off + 8],
-                bytes[off + 9],
-                bytes[off + 10],
-                bytes[off + 11],
+                *bytes.get(off + 8)?,
+                *bytes.get(off + 9)?,
+                *bytes.get(off + 10)?,
+                *bytes.get(off + 11)?,
             ]);
             off += 12;
         }
