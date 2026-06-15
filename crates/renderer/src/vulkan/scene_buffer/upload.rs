@@ -71,7 +71,9 @@ impl super::buffers::SceneBuffers {
             }
         }
 
-        buf.flush_if_needed(device)
+        // F8 (#1587) — flush only the written prefix (header + live lights),
+        // not the whole allocation, on non-coherent host-visible memory.
+        buf.flush_range(device, 0, (header_size + light_size * count) as vk::DeviceSize)
     }
 
     /// Upload camera data for the current frame-in-flight.
@@ -198,7 +200,8 @@ impl super::buffers::SceneBuffers {
                 byte_size as usize,
             );
         }
-        world_buf.flush_if_needed(device)?;
+        // F8 (#1587) — flush only the written byte range, not the full allocation.
+        world_buf.flush_range(device, 0, byte_size)?;
         self.bone_input_upload_bytes[frame_index] = byte_size;
         Ok(())
     }
@@ -511,7 +514,8 @@ impl super::buffers::SceneBuffers {
                 byte_size,
             );
         }
-        buf.flush_if_needed(device)?;
+        // F8 (#1587) — flush only the written byte range, not the full allocation.
+        buf.flush_range(device, 0, byte_size as vk::DeviceSize)?;
         self.last_uploaded_instance_hash[frame_index] = Some(hash);
         Ok(())
     }
@@ -569,7 +573,8 @@ impl super::buffers::SceneBuffers {
                 byte_size,
             );
         }
-        buf.flush_if_needed(device)?;
+        // F8 (#1587) — flush only the written byte range, not the full allocation.
+        buf.flush_range(device, 0, byte_size as vk::DeviceSize)?;
         // Stamp the hash AFTER a successful flush — a flush failure
         // leaves the buffer in an indeterminate state, so we want
         // the next call to re-upload rather than skip.
@@ -616,7 +621,8 @@ impl super::buffers::SceneBuffers {
                 byte_size,
             );
         }
-        buf.flush_if_needed(device)
+        // F8 (#1587) — flush only the written byte range, not the full allocation.
+        buf.flush_range(device, 0, byte_size as vk::DeviceSize)
     }
 
     /// Return the `VkBuffer` handle for the current frame's indirect
