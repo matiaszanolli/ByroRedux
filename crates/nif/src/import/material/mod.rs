@@ -20,9 +20,14 @@ use byroredux_core::string::{FixedString, StringPool};
 use super::mesh::GeomData;
 
 /// Intern a non-empty path through the engine's `StringPool` and return
-/// the resolved [`FixedString`] handle. Empty inputs collapse to
-/// `None` — matches the pre-#609 `Option<String>` semantic where an
+/// the resolved [`FixedString`] handle. Empty *and whitespace-only* inputs
+/// collapse to `None` — matches the pre-#609 `Option<String>` semantic where an
 /// empty path field meant "no texture for this slot".
+///
+/// Whitespace-only slot strings (`" "`, `"\t"`) on malformed / broken-exporter
+/// content would otherwise intern to `Some(sym)` and bind the magenta checker
+/// placeholder on the unconditionally-bound diffuse slot (see FO3-1-01 / #1541),
+/// bypassing the `None`→`neutral_fallback()` early-out in the asset provider.
 ///
 /// Centralised so every site that pulls a texture-slot name out of a
 /// NIF block routes through one helper — the audit's "store FixedString
@@ -31,7 +36,7 @@ use super::mesh::GeomData;
 /// See #609 / D6-NEW-01.
 #[inline]
 pub(super) fn intern_texture_path(pool: &mut StringPool, path: &str) -> Option<FixedString> {
-    if path.is_empty() {
+    if path.trim().is_empty() {
         None
     } else {
         Some(pool.intern(path))
@@ -1191,3 +1196,23 @@ mod water_shader_legacy_tests;
 /// (#1175, #115, #403) never surfaced.
 #[cfg(test)]
 mod lighting_shader_pbr_tests;
+
+#[cfg(test)]
+mod intern_texture_path_tests {
+    use super::intern_texture_path;
+    use byroredux_core::string::StringPool;
+
+    /// Regression test for FO3-1-01 (#1541): empty *and whitespace-only*
+    /// slot strings must collapse to `None` so the diffuse slot falls back
+    /// to the neutral texture instead of binding the magenta checker.
+    #[test]
+    fn whitespace_only_paths_collapse_to_none() {
+        let mut pool = StringPool::new();
+        assert_eq!(intern_texture_path(&mut pool, ""), None);
+        assert_eq!(intern_texture_path(&mut pool, " "), None);
+        assert_eq!(intern_texture_path(&mut pool, "\t"), None);
+        assert_eq!(intern_texture_path(&mut pool, "  \t \n "), None);
+        // A real path is still interned.
+        assert!(intern_texture_path(&mut pool, "textures/foo.dds").is_some());
+    }
+}
