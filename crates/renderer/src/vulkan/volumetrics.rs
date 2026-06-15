@@ -158,9 +158,10 @@ pub(crate) struct IntegrationParams {
 /// the near field (where most scattering matters) under an
 /// exponential slice distribution to be added in Phase 2.
 ///
-/// Memory cost at RGBA16F: 160·90·128·8 = 14.06 MiB per slot,
-/// ×2 frames-in-flight = 28.12 MiB total. Well under the per-pass
-/// budget; fits in any RT-class GPU's L2.
+/// Memory cost at RGBA16F: 160·90·128·8 = 14.06 MiB per volume. Each
+/// frame-in-flight slot holds two volumes (inject + integrated) =
+/// ~28.12 MiB/slot, ×2 frames-in-flight = ~56.24 MiB total. Well under
+/// the per-pass budget; fits in any RT-class GPU's L2.
 pub const FROXEL_WIDTH: u32 = 160;
 pub const FROXEL_HEIGHT: u32 = 90;
 pub const FROXEL_DEPTH: u32 = 128;

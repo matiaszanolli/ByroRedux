@@ -197,8 +197,9 @@ the fence slot is complete before the tick runs (#418).
 
 The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
 they are design targets. The RTX 4070 Ti (12 GB) has headroom for all
-known scene sizes. A warning fires if the `gpu-allocator` heap
-utilisation exceeds 75% of any heap type.
+known scene sizes. A warning fires when total allocated bytes exceed
+80% of the smallest DEVICE_LOCAL heap (`(heap / 5) * 4`, with a 2 GB
+fallback when no DEVICE_LOCAL heap is reported).
 
 ---
 
