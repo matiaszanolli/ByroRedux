@@ -43,8 +43,11 @@ use crate::vertex::Vertex;
 use anyhow::{Context, Result};
 use ash::vk;
 
-const WATER_VERT_SPV: &[u8] = include_bytes!("../../shaders/water.vert.spv");
-const WATER_FRAG_SPV: &[u8] = include_bytes!("../../shaders/water.frag.spv");
+// `pub(crate)` so the scene-descriptor validation in `scene_buffer::buffers`
+// can pin the water shaders against the shared set=1 layout (#1561 STARTUP-
+// VALIDATION — water reuses set 1 with TLAS at binding 2 as optional).
+pub(crate) const WATER_VERT_SPV: &[u8] = include_bytes!("../../shaders/water.vert.spv");
+pub(crate) const WATER_FRAG_SPV: &[u8] = include_bytes!("../../shaders/water.frag.spv");
 
 /// Push-constant block for one water draw. Layout matches the
 /// `WaterPush` block in `shaders/water.frag` exactly — std430

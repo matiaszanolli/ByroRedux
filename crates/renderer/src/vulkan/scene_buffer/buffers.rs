@@ -576,7 +576,13 @@ fn create_scene_descriptors(
         .collect();
     let mut binding_flags_info =
         vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
-    // Validate against triangle.vert/frag SPIR-V before creating the layout (#427).
+    // Validate against triangle.vert/frag SPIR-V before creating the layout
+    // (#427). water.vert/water.frag are pinned here too (#1561 STARTUP-
+    // VALIDATION): they reuse this set=1 layout (CameraUBO binding 1,
+    // InstanceBuffer binding 4, TLAS binding 2) so any drift between the
+    // water shaders and the hand-written layout is caught at startup. Binding
+    // 2 (TLAS) is in `optional_bindings` on non-RT devices, so water.frag's
+    // static binding-2 declaration validates whether or not RT is present.
     let optional_bindings: &[u32] = if rt_enabled { &[] } else { &[2] };
     super::super::reflect::validate_set_layout(
         1,
@@ -590,11 +596,19 @@ fn create_scene_descriptors(
                 name: "triangle.frag",
                 spirv: super::super::pipeline::TRIANGLE_FRAG_SPV,
             },
+            super::super::reflect::ReflectedShader {
+                name: "water.vert",
+                spirv: super::super::water::WATER_VERT_SPV,
+            },
+            super::super::reflect::ReflectedShader {
+                name: "water.frag",
+                spirv: super::super::water::WATER_FRAG_SPV,
+            },
         ],
         "scene (set=1)",
         optional_bindings,
     )
-    .expect("scene descriptor layout drifted against triangle.vert/frag (see #427)");
+    .expect("scene descriptor layout drifted against triangle/water shaders (see #427, #1561)");
     let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
         .bindings(&bindings)
         .push_next(&mut binding_flags_info);

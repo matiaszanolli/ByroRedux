@@ -226,6 +226,18 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 scroll, float 
 // term on miss (downward refraction rays escaping the BLAS at cliff
 // edges or sparse exterior cells).
 vec3 traceWaterRay(vec3 origin, vec3 direction, float maxDist, vec3 missFallback, out float hitDist, out bool hit) {
+    // #1561 — match triangle.frag / caustic_splat.comp: skip the ray query
+    // when RT is unsupported OR the TLAS was not written this frame.
+    // `sceneFlags.x` is 1.0 only when ray_query is supported AND the TLAS is
+    // current (draw.rs), so this single gate covers both the non-RT-hardware
+    // case (binding 2 may be absent from the bound layout) and the RT first-
+    // frame / TLAS-failure stale-TLAS readback. Degrades to the miss
+    // fallback (sky reflection / deep-water refraction) instead of tracing.
+    if (sceneFlags.x < 0.5) {
+        hit = false;
+        hitDist = maxDist;
+        return missFallback;
+    }
     rayQueryEXT rq;
     rayQueryInitializeEXT(
         rq, topLevelAS,
@@ -298,6 +310,11 @@ vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist) {
 //    the "whitecaps on choppy water" look.
 
 float foamShoreline(vec3 worldPos, vec3 surfaceNormal) {
+    // #1561 — no RT / unwritten TLAS ⇒ no shoreline foam (same gate as
+    // traceWaterRay / caustic_splat.comp).
+    if (sceneFlags.x < 0.5) {
+        return 0.0;
+    }
     rayQueryEXT rq;
     rayQueryInitializeEXT(
         rq, topLevelAS,
@@ -545,7 +562,10 @@ void main() {
     // CAUSTIC_FIXED_SCALE). `clamp_max = 0xFFFFFFFFu / scale`
     // mirrors the #1099 anchor — prevents wraparound when a hot
     // sun + perpendicular surface fragment dumps a large value.
-    if (sunDirection.w > 0.0) {
+    // #1561 — `sceneFlags.x >= 0.5` gates the caustic shadow + floor ray
+    // queries below (mirrors the helper gates): no RT / unwritten TLAS ⇒ no
+    // caustic projection rather than a trace against an absent / stale TLAS.
+    if (sunDirection.w > 0.0 && sceneFlags.x >= 0.5) {
         // `sunDirection.xyz` points TO the sun (light-incoming), matching
         // GpuLight.direction_angle / triangle.frag's directional `L`. The
         // light-*travel* direction (sun → surface) is therefore `-sunDir`.
