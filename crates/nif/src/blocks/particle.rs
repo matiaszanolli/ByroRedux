@@ -5,7 +5,7 @@
 //! subsequent blocks parse correctly, especially on Oblivion NIFs which
 //! have no block_size fallback.
 
-use super::controller::NiTimeControllerBase;
+use super::controller::{parse_interp_controller_base, NiTimeControllerBase};
 use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
@@ -919,7 +919,9 @@ pub fn parse_time_controller(stream: &mut NifStream, type_name: &str) -> io::Res
 /// Used by NiPSysEmitterCtlr (+ visibility_interpolator_ref) and all
 /// NiPSysModifier*Ctlr aliases (no additional fields).
 pub fn parse_modifier_ctlr(stream: &mut NifStream, type_name: &str) -> io::Result<NiPSysBlock> {
-    let _base = NiTimeControllerBase::parse(stream)?;
+    // NiPSysModifierCtlr inherits NiSingleInterpController → NiInterpController,
+    // so it carries the Manager Controlled bool on the 10.1.0.104–108 band. (#1543)
+    let _base = parse_interp_controller_base(stream)?;
     let _interpolator_ref = stream.read_block_ref()?; // NiSingleInterpController
     let _modifier_name = stream.read_string()?; // NiPSysModifierCtlr
     Ok(NiPSysBlock {
@@ -929,11 +931,14 @@ pub fn parse_modifier_ctlr(stream: &mut NifStream, type_name: &str) -> io::Resul
 
 /// NiPSysEmitterCtlr: modifier_ctlr + visibility_interpolator_ref(ref)
 pub fn parse_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysEmitterCtlr> {
-    let _base = NiTimeControllerBase::parse(stream)?;
+    let _base = parse_interp_controller_base(stream)?;
     let interpolator_ref = stream.read_block_ref()?;
     let _modifier_name = stream.read_string()?;
-    // NiPSysEmitterCtlr adds visibility interpolator ref (since v10.2)
-    if stream.version() >= NifVersion::V10_2_0_0 {
+    // NiPSysEmitterCtlr.Visibility Interpolator (Ref) — nif.xml since=10.1.0.104
+    // (the pre-10.1.0.104 `Data` ref is the mutually-exclusive legacy slot).
+    // Was wrongly gated >= V10_2_0_0, skipping the 4-byte ref on old-Gamebryo
+    // FX in the 10.1.0.104–10.2 band. (#1544)
+    if stream.version() >= NifVersion::V10_1_0_104 {
         let _vis_interpolator_ref = stream.read_block_ref()?;
     }
     Ok(NiPSysEmitterCtlr { interpolator_ref })
@@ -941,10 +946,11 @@ pub fn parse_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysEmitterCtl
 
 /// BSPSysMultiTargetEmitterCtlr (FO3+): emitter_ctlr + max_emitters(u16) + master_ref(ptr)
 pub fn parse_multi_target_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
-    let _base = NiTimeControllerBase::parse(stream)?;
+    let _base = parse_interp_controller_base(stream)?;
     let _interpolator_ref = stream.read_block_ref()?;
     let _modifier_name = stream.read_string()?;
-    if stream.version() >= NifVersion::V10_2_0_0 {
+    // Visibility Interpolator (Ref) — nif.xml since=10.1.0.104, not v10.2. (#1544)
+    if stream.version() >= NifVersion::V10_1_0_104 {
         let _vis_interpolator_ref = stream.read_block_ref()?;
     }
     let _max_emitters = stream.read_u16_le()?;

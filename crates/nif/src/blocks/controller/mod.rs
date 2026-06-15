@@ -81,7 +81,9 @@ impl NiTimeControllerBase {
 /// `NiMultiTargetTransformController`, `NiGeomMorpherController`.
 /// `NiMorphController` is `until=10.0.1.0` (disjoint from the bool's
 /// `since=10.1.0.104`), so it correctly stays on the plain base. (#1506)
-fn parse_interp_controller_base(stream: &mut NifStream) -> io::Result<NiTimeControllerBase> {
+pub(crate) fn parse_interp_controller_base(
+    stream: &mut NifStream,
+) -> io::Result<NiTimeControllerBase> {
     let base = NiTimeControllerBase::parse(stream)?;
     if stream.version().has_interp_controller_manager_controlled() {
         let _manager_controlled = stream.read_bool()?;
@@ -586,7 +588,10 @@ pub struct NiFloatExtraDataController {
 
 impl NiFloatExtraDataController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let base = NiTimeControllerBase::parse(stream)?;
+        // NiExtraDataController inherits NiSingleInterpController →
+        // NiInterpController, so it carries the Manager Controlled bool on
+        // the 10.1.0.104–108 band. Route through the shared base. (#1543)
+        let base = parse_interp_controller_base(stream)?;
         // NiSingleInterpController.interpolator_ref (since 10.1.0.104).
         let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
             stream.read_block_ref()?

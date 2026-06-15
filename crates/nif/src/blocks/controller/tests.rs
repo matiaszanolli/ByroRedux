@@ -334,6 +334,33 @@ fn parse_material_color_controller_32_bytes() {
     assert_eq!(ctrl.target_color, 1);
 }
 
+/// #1543 — `NiMaterialColorController` is an `NiInterpController` descendant
+/// (NiPoint3InterpController → NiSingleInterpController → NiInterpController),
+/// so on the 10.1.0.104–108 band it must consume the 1-byte
+/// `Manager Controlled` bool. Pre-fix the parser called
+/// `NiTimeControllerBase::parse` directly, skipped the bool, and drifted +1
+/// byte — cascade-truncating Oblivion's `scampswitch01.nif` at block 9.
+/// Byte budget: base 26 + manager_controlled 1 + interpolator_ref 4 +
+/// target_color 2 = 33.
+#[test]
+fn parse_material_color_controller_reads_manager_controlled_on_old_gamebryo() {
+    let mut header = make_header_fnv();
+    header.version = NifVersion::V10_1_0_106;
+    let mut data = Vec::new();
+    write_time_controller_base(&mut data); // 26 B
+    data.push(1u8); // NiInterpController.Manager Controlled = true (1 B)
+    data.extend_from_slice(&7i32.to_le_bytes()); // interpolator_ref (4 B)
+    data.extend_from_slice(&1u16.to_le_bytes()); // target_color (2 B)
+    assert_eq!(data.len(), 33);
+
+    let mut stream = NifStream::new(&data, &header);
+    let ctrl = NiMaterialColorController::parse(&mut stream).unwrap();
+    // 33, not 32: the Manager Controlled byte was consumed, so target_color
+    // read from the correct offset.
+    assert_eq!(stream.position(), 33);
+    assert_eq!(ctrl.target_color, 1);
+}
+
 #[test]
 fn parse_multi_target_transform_controller() {
     let header = make_header_fnv();
