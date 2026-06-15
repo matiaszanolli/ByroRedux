@@ -629,10 +629,8 @@ impl VulkanContext {
         // caustic_splat, volumetrics_inject) or stay fully relative with a
         // relative camera position (ssao, composite — origin-invariant
         // differences only). See `GpuCamera::render_origin` (#1492).
-        let render_origin = (byroredux_core::math::Vec3::from_array(camera_pos)
-            / scene_buffer::RENDER_ORIGIN_SNAP)
-            .floor()
-            * scene_buffer::RENDER_ORIGIN_SNAP;
+        let render_origin =
+            scene_buffer::snap_render_origin(byroredux_core::math::Vec3::from_array(camera_pos));
         // DOF aperture-disk jitter, or the pinhole pass-through. The bokeh
         // rationale and the #1525 degenerate-`focus_dist` guard live in
         // `dof_effective_view_proj`.

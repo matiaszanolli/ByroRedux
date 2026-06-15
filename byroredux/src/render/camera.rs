@@ -12,7 +12,6 @@
 
 use byroredux_core::ecs::{ActiveCamera, Camera, Transform, World};
 use byroredux_core::math::{Mat4, Vec3, Vec4};
-use byroredux_renderer::vulkan::scene_buffer::RENDER_ORIGIN_SNAP;
 
 /// 6-plane camera frustum, normalized so a plane-distance comparison
 /// against radius is direct. Built by [`assemble_camera`] from the
@@ -158,7 +157,7 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
         // translations are rebased by the same origin in `draw_frame`, and the
         // vertex shader reconstructs absolute world position as
         // `worldPos_rel + render_origin`.
-        let o = (cam_pos / RENDER_ORIGIN_SNAP).floor() * RENDER_ORIGIN_SNAP;
+        let o = byroredux_renderer::vulkan::scene_buffer::snap_render_origin(cam_pos);
         let eye_rel = cam_pos - o;
         let vp_rel = proj_mat * Mat4::look_at_rh(eye_rel, eye_rel + cam_forward, cam_up);
         let frustum = FrustumPlanes::from_view_proj(vp_abs);

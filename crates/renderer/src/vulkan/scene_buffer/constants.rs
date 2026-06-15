@@ -317,6 +317,19 @@ pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
 /// comment.
 pub const RENDER_ORIGIN_SNAP: f32 = 4096.0;
 
+/// Snap a camera position to the render origin (#1494 / #1588): the single
+/// source of truth for the `floor(pos / SNAP) * SNAP` expression that the
+/// per-instance rebase (`context::draw::draw_frame`) and the relative
+/// `view_proj` assembly (`render::camera::assemble_camera`, in the binary)
+/// MUST agree on bit-for-bit. Pre-#1588 the const was unified but the
+/// expression itself stayed duplicated across the crate boundary, so a
+/// one-sided edit could shift geometry by up to one cell with no
+/// compile-time guard.
+#[inline]
+pub fn snap_render_origin(camera_pos: byroredux_core::math::Vec3) -> byroredux_core::math::Vec3 {
+    (camera_pos / RENDER_ORIGIN_SNAP).floor() * RENDER_ORIGIN_SNAP
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +340,33 @@ mod tests {
     /// binary, `context::draw` here) assumes it. Changing it is a renderer-
     /// wide retune (motion-vector correction, doc'd headroom bounds), not a
     /// constant tweak — pin the value so it can't drift casually.
+    /// #1588 — pin `snap_render_origin` so the two consumers (camera.rs in
+    /// the binary, draw.rs here) can never silently diverge from the
+    /// `floor(pos / SNAP) * SNAP` expression.
+    #[test]
+    fn snap_render_origin_floors_to_cell_grid() {
+        use byroredux_core::math::Vec3;
+        // Below one cell on every axis → origin 0.
+        assert_eq!(
+            snap_render_origin(Vec3::new(100.0, 4095.0, -1.0)),
+            Vec3::new(0.0, 0.0, -RENDER_ORIGIN_SNAP)
+        );
+        // Just past one cell on X → 4096 on X only.
+        assert_eq!(
+            snap_render_origin(Vec3::new(4097.0, 0.0, 0.0)),
+            Vec3::new(RENDER_ORIGIN_SNAP, 0.0, 0.0)
+        );
+        // Negative (Markarth-style) floors toward -inf.
+        assert_eq!(
+            snap_render_origin(Vec3::new(-176000.0, 0.0, 0.0)),
+            Vec3::new(
+                (-176000.0_f32 / RENDER_ORIGIN_SNAP).floor() * RENDER_ORIGIN_SNAP,
+                0.0,
+                0.0
+            )
+        );
+    }
+
     #[test]
     fn render_origin_snap_is_exterior_cell_edge() {
         assert_eq!(

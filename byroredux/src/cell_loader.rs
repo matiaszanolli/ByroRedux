@@ -293,6 +293,8 @@ mod pack_bgsm_material_flags_tests {
             parallax_map: None,
             env_map: None,
             env_mask: None,
+            tint_map: None,
+            inner_layer_map: None,
             specular_map: None,
             lighting_map: None,
             flow_map: None,
