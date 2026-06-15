@@ -104,13 +104,16 @@
 //!   loop the per-frame send level naturally as new sounds replace
 //!   old ones).
 //!
-//! # Future phases (not in this commit)
+//! # Future work (not in this commit)
 //!
-//! - Phase 3.5b: FOOT records parser → per-material sound lookup.
-//! - Phase 4: REGN ambient soundscapes (region-based ambient layers).
-//! - Phase 5: MUSC + hardcoded music routing with crossfade.
-//! - Phase 6: Reverb zones (kira's `ReverbBuilder`) keyed off cell
-//!   acoustics; raycast occlusion attenuation.
+//! Listed by name rather than phase number (Phases 4–6 above have
+//! shipped; see `docs/feature-matrix.md` for authoritative status):
+//!
+//! - FOOT records parser (3.5b) → per-material sound lookup.
+//! - REGN ambient soundscapes (region-based ambient layers).
+//! - MUSC + hardcoded music routing with crossfade.
+//! - Per-cell acoustic reverb zones (kira's `ReverbBuilder`) keyed off
+//!   cell acoustics; raycast occlusion attenuation.
 
 use byroredux_core::ecs::components::{GlobalTransform, Transform};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
@@ -1146,15 +1149,17 @@ pub fn load_streaming_sound_from_file(
 /// decoded PCM; the cell-unload path can call `clear()` when a region
 /// exits scope to bound memory across long sessions with mod-loaded
 /// SFX (Project Nevada / TTW / FCO stacks push past 1 GB without it).
-/// [`Self::bytes_estimate`] surfaces the cache footprint to telemetry
-/// so a future unbounded-growth regression shows up in `stats` output
-/// rather than at OOM. If a real LRU is ever needed (1000+ unique
+/// [`Self::bytes_estimate`] is intended to surface the cache footprint
+/// to telemetry once a `stats` consumer wires `SoundCache`, so an
+/// unbounded-growth regression would show up in `stats` output rather
+/// than at OOM. No `stats` consumer exists today (the cache is dormant
+/// — see the #859 note below). If a real LRU is ever needed (1000+ unique
 /// sounds with frequent rotation), bolt it on without touching the
 /// call sites. See #850 / AUD-D6-NEW-09.
 ///
 /// **Dormant API (#859):** the engine binary currently has zero
 /// call sites for `SoundCache`. The footstep dispatch path at
-/// `byroredux/src/asset_provider.rs::resolve_footstep_sound` writes
+/// `byroredux/src/asset_provider.rs::try_load_default_footstep` writes
 /// directly into `FootstepConfig.default_sound: Option<Arc<Sound>>`,
 /// bypassing the cache; the decoded `Arc` is held by exactly one
 /// `Resource` (`FootstepConfig`) for the engine lifetime. The "no
@@ -1254,9 +1259,10 @@ impl SoundCache {
     /// right }` (8 B/frame for stereo). Does NOT count the
     /// `Arc<StaticSoundData>` header, `StaticSoundSettings`, or the
     /// `HashMap` overhead — those are O(entries) and small next to
-    /// the PCM blob. Useful for `stats` console output so a future
-    /// unbounded-growth regression surfaces in telemetry rather than
-    /// at OOM. See #850 / AUD-D6-NEW-09.
+    /// the PCM blob. Intended for `stats` console output (once a
+    /// `SoundCache` consumer is wired) so an unbounded-growth regression
+    /// would surface in telemetry rather than at OOM. Not yet wired — no
+    /// non-test caller exists. See #850 / AUD-D6-NEW-09.
     pub fn bytes_estimate(&self) -> usize {
         let frame_size = std::mem::size_of::<kira::Frame>();
         self.map
