@@ -527,8 +527,8 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
                     rank,
                 });
             }
-            // CNTO: shared with CONT
-            b"CNTO" if sub.data.len() >= 8 => {
+            // CNTO: shared with CONT (size const lives on InventoryEntry, #1631)
+            b"CNTO" if sub.data.len() >= super::container::InventoryEntry::WIRE_SIZE => {
                 let mut r = SubReader::new(&sub.data);
                 record.inventory.push(NpcInventoryEntry {
                     item_form_id: r.u32_or_default(),

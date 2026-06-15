@@ -15,6 +15,12 @@ pub struct InventoryEntry {
     pub count: i32,
 }
 
+impl InventoryEntry {
+    /// On-disk CNTO sub-record size: item form ID (u32) + count (i32).
+    /// Shared by the CONT and NPC_ parsers, which both gate on it. (#1631)
+    pub const WIRE_SIZE: usize = 8;
+}
+
 /// One entry in a leveled list (LVLI / LVLN).
 #[derive(Debug, Clone, Copy)]
 pub struct LeveledEntry {
@@ -85,7 +91,7 @@ pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
     for sub in subs {
         match &sub.sub_type {
             // CNTO: item form ID (u32) + count (i32)
-            b"CNTO" if sub.data.len() >= 8 => {
+            b"CNTO" if sub.data.len() >= InventoryEntry::WIRE_SIZE => {
                 let mut r = SubReader::new(&sub.data);
                 let item_form_id = r.u32_or_default();
                 let count = r.i32_or_default();
