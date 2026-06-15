@@ -190,6 +190,37 @@ pub(super) struct DrawBatch {
     pub z_function: u8,
 }
 
+/// Indirect-merge key for [`DrawBatch`] (#1581 / F1). Two batches may fold
+/// into one `cmd_draw_indexed_indirect` call ONLY when their `group_state`
+/// is equal — the key captures every dynamic state the draw loop sets once
+/// from the group leader: the pipeline + depth-bias layer, the `two_sided`
+/// cull mode (`cmd_set_cull_mode` NONE vs BACK, #930), and the extended-
+/// dynamic depth state (`z_test`/`z_write`/`z_function`, #398). Omitting any
+/// of these let a single-sided / `z_write=1` leader's state bleed across a
+/// boundary onto two-sided cutouts or `z_write=0` halos in the same
+/// `(pipeline, layer)` run. The opaque sort already clusters identical state
+/// (two_sided + packed depth sort before mesh), so this only splits at
+/// genuine state boundaries — no instancing loss within a homogeneous run.
+pub(super) fn group_state(
+    b: &DrawBatch,
+) -> (
+    PipelineKey,
+    byroredux_core::ecs::components::RenderLayer,
+    bool,
+    bool,
+    bool,
+    u8,
+) {
+    (
+        b.pipeline_key,
+        b.render_layer,
+        b.two_sided,
+        b.z_test,
+        b.z_write,
+        b.z_function,
+    )
+}
+
 /// All per-frame inputs consumed by [`VulkanContext::draw_frame`].
 ///
 /// Groups the (formerly 22) loose `draw_frame` arguments into one struct so
@@ -2469,7 +2500,10 @@ impl VulkanContext {
             // depth-bias state-change boundary that pre-#renderlayer
             // was split between `is_decal` and `needs_depth_bias` —
             // the per-layer ladder makes this a single key slot.
-            let batch_state = |b: &DrawBatch| (b.pipeline_key, b.render_layer);
+            // #1581 / F1 — the indirect-merge key is `group_state` (module
+            // fn, unit-tested): it must include EVERY dynamic state set once
+            // from the group leader, or the leader's state wrongly applies to
+            // the whole merged group.
 
             // #1258 / PERF-D3-NEW-03 — snapshot post-merge batch count.
             // Surfaced via `DebugStats::batch_count` and the `stats`
@@ -2672,15 +2706,14 @@ impl VulkanContext {
                     // VkDrawIndexedIndirectCommand. A single
                     // `cmd_draw_indexed_indirect` call dispatches all N.
                     //
-                    // Two-sided blend batches are excluded above and
-                    // can't reach this branch, so grouping is safe.
-                    let key = batch_state(batch);
+                    // Two-sided blend batches are excluded above (`needs_split`
+                    // draws them directly) and can't reach this branch.
+                    // `group_state` now captures two_sided + depth state, so a
+                    // group is homogeneous in every leader-set dynamic state —
+                    // the leader's cull/depth applies correctly to all of it.
+                    let key = group_state(batch);
                     let mut end = i + 1;
-                    while end < batches.len()
-                        && batch_state(&batches[end]) == key
-                        && !(matches!(batches[end].pipeline_key, PipelineKey::Blended { .. })
-                            && batches[end].two_sided)
-                    {
+                    while end < batches.len() && group_state(&batches[end]) == key {
                         end += 1;
                     }
                     let group_size = (end - i) as u32;
@@ -3837,5 +3870,95 @@ mod framebuffers_empty_guard_tests {
              tripping VUID-vkAcquireNextImageKHR-semaphore-01779 on \
              the next acquire. (#1211)"
         );
+    }
+}
+
+#[cfg(test)]
+mod group_state_tests {
+    //! #1581 / F1 — the indirect-merge key must not let a group leader's
+    //! cull (`two_sided`) or depth (`z_test`/`z_write`/`z_function`) state
+    //! bleed across a state boundary onto the rest of a merged group.
+    use super::*;
+    use byroredux_core::ecs::components::RenderLayer;
+
+    /// A baseline single-sided, depth-tested-and-written opaque batch.
+    fn batch() -> DrawBatch {
+        DrawBatch {
+            mesh_handle: 1,
+            pipeline_key: PipelineKey::Opaque { wireframe: false },
+            two_sided: false,
+            render_layer: RenderLayer::Clutter,
+            first_instance: 0,
+            instance_count: 1,
+            index_count: 3,
+            global_index_offset: 0,
+            global_vertex_offset: 0,
+            z_test: true,
+            z_write: true,
+            z_function: 3,
+        }
+    }
+
+    /// Two batches identical in state (only mesh differs) DO share a key —
+    /// the homogeneous run still merges into one indirect call.
+    #[test]
+    fn same_state_different_mesh_merges() {
+        let a = batch();
+        let mut b = batch();
+        b.mesh_handle = 99;
+        b.first_instance = 1;
+        assert_eq!(group_state(&a), group_state(&b));
+    }
+
+    /// A two_sided boundary must split the group: a CULL_NONE batch can't
+    /// inherit a single-sided leader's CULL_BACK (lost back faces on fences
+    /// / grates / foliage cards).
+    #[test]
+    fn two_sided_boundary_splits() {
+        let single = batch();
+        let mut two = batch();
+        two.two_sided = true;
+        assert_ne!(
+            group_state(&single),
+            group_state(&two),
+            "two_sided must break the merge key",
+        );
+    }
+
+    /// Each depth-state axis must split the group on its own — a `z_write=0`
+    /// halo can't inherit a `z_write=1` leader's depth write, etc.
+    #[test]
+    fn depth_state_boundaries_split() {
+        let base = batch();
+        for mutate in [
+            (|b: &mut DrawBatch| b.z_test = false) as fn(&mut DrawBatch),
+            |b: &mut DrawBatch| b.z_write = false,
+            |b: &mut DrawBatch| b.z_function = 7,
+        ] {
+            let mut other = batch();
+            mutate(&mut other);
+            assert_ne!(
+                group_state(&base),
+                group_state(&other),
+                "a depth-state change must break the merge key",
+            );
+        }
+    }
+
+    /// Pipeline + render-layer (the original key axes) still split.
+    #[test]
+    fn pipeline_and_layer_still_split() {
+        let base = batch();
+        let mut blended = batch();
+        blended.pipeline_key = PipelineKey::Blended {
+            src: 10,
+            dst: 6,
+            wireframe: false,
+        };
+        assert_ne!(group_state(&base), group_state(&blended));
+
+        let mut decal = batch();
+        decal.render_layer = RenderLayer::Decal;
+        assert_ne!(group_state(&base), group_state(&decal));
     }
 }
