@@ -924,6 +924,42 @@ pub struct EsmCellIndex {
     pub material_swaps: HashMap<u32, super::records::MaterialSwapRecord>,
 }
 
+/// Merge an override cell's REFRs onto its base in place: start from the
+/// base cell's `references` and overlay `over`'s by REFR FormID
+/// (last-write-wins per REFR), appending FormIDs the base didn't have. The
+/// result becomes `over.references`, so the caller can then insert `over`
+/// (which keeps the override's CELL-level fields) over the base.
+///
+/// A Bethesda DLC override CELL is a *partial* record — it re-emits only the
+/// REFRs it adds or changes — so the whole-vec replacement this fixes
+/// dropped every base REFR the DLC didn't re-emit (#1546). Deleted-REFR
+/// tombstones (the 0x20 Deleted flag) aren't captured by the parser yet, so
+/// a DLC that *deletes* a base REFR leaves the base copy resident — a far
+/// smaller over-render than the catastrophic under-render of the stomp, and
+/// tracked separately. FormID `0` (legacy fixtures with no REFR identity) is
+/// never keyed — those refs always append, so distinct unnamed refs can't
+/// collapse onto each other.
+fn merge_cell_references(base: &CellData, over: &mut CellData) {
+    let mut merged = base.references.clone();
+    let mut by_form: HashMap<u32, usize> = merged
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.form_id != 0)
+        .map(|(i, r)| (r.form_id, i))
+        .collect();
+    for over_ref in over.references.drain(..) {
+        if over_ref.form_id != 0 {
+            if let Some(&i) = by_form.get(&over_ref.form_id) {
+                merged[i] = over_ref;
+                continue;
+            }
+            by_form.insert(over_ref.form_id, merged.len());
+        }
+        merged.push(over_ref);
+    }
+    over.references = merged;
+}
+
 impl EsmCellIndex {
     /// Merge `other` into `self` with last-write-wins semantics on
     /// every map. Mirrors `EsmIndex::merge_from`'s contract — the
@@ -934,21 +970,36 @@ impl EsmCellIndex {
     /// (`HashMap<String, HashMap<(i32,i32), _>>`) need slightly
     /// different treatment than the flat record maps:
     ///
-    /// * Interior cells just `extend` — DLC redefining a base cell
-    ///   wins the entire CellData (REFRs, lighting, water level).
+    /// * A DLC override cell wins the base cell's CELL-level fields
+    ///   (lighting, water, extended sub-records) but its `references` are
+    ///   **merged per-REFR by FormID**, not whole-value replaced — a
+    ///   Bethesda override is a partial record that re-emits only the REFRs
+    ///   it adds/changes, so replacing the whole vec dropped every base REFR
+    ///   the DLC didn't re-emit (Dawnguard's `kagrenzel01` override carries
+    ///   0 REFRs over a 1017-REFR base — the whole cell went empty). See
+    ///   [`merge_cell_references`] and #1546.
     /// * Exterior cells merge per-worldspace so a DLC adding a new
     ///   worldspace doesn't stomp the base game's exterior table.
-    ///   Within a shared worldspace, per-(x, y) overrides apply.
+    ///   Within a shared worldspace, per-(x, y) overrides apply (with the
+    ///   same per-REFR merge as interiors).
     ///
     /// See M46.0 / #561.
     pub fn merge_from(&mut self, other: EsmCellIndex) {
-        self.cells.extend(other.cells);
+        for (key, mut over_cell) in other.cells {
+            if let Some(base) = self.cells.get(&key) {
+                merge_cell_references(base, &mut over_cell);
+            }
+            self.cells.insert(key, over_cell);
+        }
 
         for (worldspace, grids) in other.exterior_cells {
-            self.exterior_cells
-                .entry(worldspace)
-                .or_default()
-                .extend(grids);
+            let entry = self.exterior_cells.entry(worldspace).or_default();
+            for (coord, mut over_cell) in grids {
+                if let Some(base) = entry.get(&coord) {
+                    merge_cell_references(base, &mut over_cell);
+                }
+                entry.insert(coord, over_cell);
+            }
         }
 
         self.statics.extend(other.statics);

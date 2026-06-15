@@ -45,6 +45,121 @@ fn make_interior_cell(form_id: u32, edid: &str) -> CellData {
     }
 }
 
+/// A `PlacedRef` with a given REFR FormID + base FormID (the base encodes
+/// which "version" of the ref this is, so an override can be detected).
+fn placed(form_id: u32, base_form_id: u32) -> PlacedRef {
+    PlacedRef {
+        form_id,
+        base_form_id,
+        position: [0.0; 3],
+        rotation: [0.0; 3],
+        scale: 1.0,
+        enable_parent: None,
+        teleport: None,
+        primitive: None,
+        linked_refs: Vec::new(),
+        rooms: Vec::new(),
+        portals: Vec::new(),
+        radius_override: None,
+        alt_texture_ref: None,
+        land_texture_ref: None,
+        texture_slot_swaps: Vec::new(),
+        emissive_light_ref: None,
+        material_swap_ref: None,
+        ownership: None,
+    }
+}
+
+fn cell_with_refs(edid: &str, refs: Vec<PlacedRef>) -> CellData {
+    let mut c = make_interior_cell(0x0001_0000, edid);
+    c.references = refs;
+    c
+}
+
+/// #1546 — a partial DLC override CELL must keep the base game's REFRs and
+/// overlay only the ones it re-emits. Pre-fix `extend` replaced the whole
+/// `references` vec, so a Dawnguard-style override carrying few/zero REFRs
+/// emptied the cell.
+#[test]
+fn merge_from_interior_override_keeps_base_refrs() {
+    let mut master = EsmCellIndex::default();
+    master.cells.insert(
+        "kagrenzel01".into(),
+        cell_with_refs(
+            "Kagrenzel01",
+            vec![placed(0x10, 0xAA), placed(0x11, 0xBB), placed(0x12, 0xCC)],
+        ),
+    );
+
+    // DLC override: re-emits REFR 0x11 (changed base) + adds 0x20; says
+    // nothing about 0x10 / 0x12.
+    let mut child = EsmCellIndex::default();
+    child.cells.insert(
+        "kagrenzel01".into(),
+        cell_with_refs("Kagrenzel01", vec![placed(0x11, 0xBEEF), placed(0x20, 0xDD)]),
+    );
+
+    master.merge_from(child);
+
+    let cell = master.cells.get("kagrenzel01").unwrap();
+    let by_id: std::collections::HashMap<u32, u32> =
+        cell.references.iter().map(|r| (r.form_id, r.base_form_id)).collect();
+    assert_eq!(cell.references.len(), 4, "3 base REFRs + 1 added, none dropped");
+    assert_eq!(by_id.get(&0x10), Some(&0xAA), "untouched base REFR survives");
+    assert_eq!(by_id.get(&0x12), Some(&0xCC), "untouched base REFR survives");
+    assert_eq!(by_id.get(&0x11), Some(&0xBEEF), "re-emitted REFR takes the override");
+    assert_eq!(by_id.get(&0x20), Some(&0xDD), "newly-added REFR appears");
+}
+
+/// A zero-REFR override (the `kagrenzel01` 1017→0 case) keeps ALL base REFRs
+/// — the override only changes CELL-level fields.
+#[test]
+fn merge_from_zero_refr_override_keeps_whole_base() {
+    let mut master = EsmCellIndex::default();
+    master.cells.insert(
+        "cell".into(),
+        cell_with_refs("Cell", vec![placed(0x10, 0xAA), placed(0x11, 0xBB)]),
+    );
+    let mut child = EsmCellIndex::default();
+    child
+        .cells
+        .insert("cell".into(), cell_with_refs("Cell", Vec::new()));
+
+    master.merge_from(child);
+    assert_eq!(
+        master.cells.get("cell").unwrap().references.len(),
+        2,
+        "an override with no REFRs must not empty the cell",
+    );
+}
+
+/// SIBLING: the exterior per-grid path merges REFRs the same way.
+#[test]
+fn merge_from_exterior_override_keeps_base_refrs() {
+    let mut master = EsmCellIndex::default();
+    master
+        .exterior_cells
+        .entry("tamriel".into())
+        .or_default()
+        .insert((5, 7), cell_with_refs("Ext", vec![placed(0x30, 0x01), placed(0x31, 0x02)]));
+
+    let mut child = EsmCellIndex::default();
+    child
+        .exterior_cells
+        .entry("tamriel".into())
+        .or_default()
+        .insert((5, 7), cell_with_refs("Ext", vec![placed(0x31, 0xFEED)]));
+
+    master.merge_from(child);
+
+    let cell = &master.exterior_cells["tamriel"][&(5, 7)];
+    assert_eq!(cell.references.len(), 2, "base exterior REFR 0x30 survives the override");
+    let by_id: std::collections::HashMap<u32, u32> =
+        cell.references.iter().map(|r| (r.form_id, r.base_form_id)).collect();
+    assert_eq!(by_id.get(&0x30), Some(&0x01));
+    assert_eq!(by_id.get(&0x31), Some(&0xFEED), "re-emitted exterior REFR overrides");
+}
+
 #[test]
 fn merge_from_extends_disjoint_statics_and_cells() {
     // Master plugin contributes one cell + one static; child
