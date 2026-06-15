@@ -59,6 +59,14 @@ const CAUSTIC_SPLAT_COMP_SPV: &[u8] = include_bytes!("../../shaders/caustic_spla
 /// recover the accumulated luminance. Single channel keeps the memory cost
 /// to 4 B/pixel; color tinting is encoded by the per-instance `avgAlbedo`
 /// the shader uses to modulate the splatted value.
+///
+/// `R32_UINT` is used precisely because shader image atomics require it: the
+/// Vulkan "Required Format Support" table makes
+/// `VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT` (alongside `STORAGE_IMAGE`)
+/// **mandatory** for `R32_UINT` and `R32_SINT` — the only two formats
+/// guaranteed for image atomics on every conformant implementation. So no
+/// `vkGetPhysicalDeviceFormatProperties` gate is needed here (it could never
+/// fail); the choice of format IS the capability guarantee. See #1404.
 pub const CAUSTIC_FORMAT: vk::Format = vk::Format::R32_UINT;
 
 /// UBO uploaded once per frame. Matches `CausticParams` in

@@ -219,6 +219,16 @@ impl EguiPass {
     /// (pipeline / descriptor pool / per-frame buffers) drop with the
     /// owned field.
     pub fn destroy(&mut self, device: &ash::Device) {
+        // #1427 — flush the last frame's deferred texture frees before the
+        // renderer's descriptor pool is torn down (its Drop runs when
+        // `EguiPass` drops). Without this the final `TexturesDelta.free` set
+        // never returns to the renderer's free-list, leaving descriptor-pool
+        // accounting mismatched at teardown. The device is still alive here,
+        // so the frees are valid; errors are ignored on the teardown path.
+        if !self.pending_free.is_empty() {
+            let drained = std::mem::take(&mut self.pending_free);
+            let _ = self.renderer.free_textures(&drained);
+        }
         for fb in self.framebuffers.drain(..) {
             unsafe { device.destroy_framebuffer(fb, None) };
         }
