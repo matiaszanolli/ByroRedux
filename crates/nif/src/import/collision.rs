@@ -287,21 +287,35 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
         let Some(shape) = resolve_shape(scene, body.shape_ref, &mut visited) else {
             continue;
         };
+        // #1534 — finite guards on the body CInfo, mirroring the shape path
+        // (#1409) two functions below. A non-finite mass / translation /
+        // rotation from a corrupt or truncated Havok CInfo decode would seed
+        // a NaN Rapier body and propagate through `ragdoll_writeback_system`
+        // into `GlobalTransform` → bone palette → GPU skinning (NaN-on-GPU is
+        // UB; NaN pixels stick through SVGF/TAA history). Drop the body — the
+        // `bodies.len() < 2` guard below then drops the whole ragdoll if too
+        // few survive, exactly like the shape-resolution failure path above.
+        let Some(mass) = finite(body.mass) else { continue };
+        let Some(translation) = finite_vec(
+            havok_to_engine(body.translation[0], body.translation[1], body.translation[2]) * scale,
+        ) else {
+            continue;
+        };
+        let rotation = havok_quat_to_engine(body.rotation);
+        if !rotation.is_finite() {
+            continue;
+        }
         block_to_body.insert(idx, bodies.len());
         bodies.push(ImportedRagdollBody {
             bone_name,
-            mass: body.mass,
+            mass,
             linear_damping: body.linear_damping,
             angular_damping: body.angular_damping,
             friction: body.friction,
             restitution: body.restitution,
             shape,
-            translation: havok_to_engine(
-                body.translation[0],
-                body.translation[1],
-                body.translation[2],
-            ) * scale,
-            rotation: havok_quat_to_engine(body.rotation),
+            translation,
+            rotation,
         });
     }
     if bodies.len() < 2 {
@@ -313,11 +327,14 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
         let Some(c) = block.as_any().downcast_ref::<BhkConstraint>() else {
             continue;
         };
+        // A non-finite limit angle / pivot / axis (#1534) drops the joint —
+        // `[NaN, NaN]` limits handed to the Rapier solver destabilize it.
         let kind = match &c.data {
             BhkConstraintData::Ragdoll(r) => ragdoll_joint(r, scale),
             BhkConstraintData::LimitedHinge(h) => limited_hinge_joint(h, scale),
             BhkConstraintData::Other => continue,
         };
+        let Some(kind) = kind else { continue };
         // Constraint entity refs point at the rigid-body blocks; remap to
         // body-array indices. A ref to a body we skipped (no bone / shape
         // failed) drops the joint gracefully.
@@ -374,31 +391,36 @@ fn havok_dir_to_engine(v: [f32; 4]) -> Vec3 {
     havok_to_engine(v[0], v[1], v[2])
 }
 
-fn ragdoll_joint(r: &RagdollCInfo, scale: f32) -> ImportedJointKind {
-    ImportedJointKind::Ragdoll {
-        twist_a: havok_dir_to_engine(r.twist_a),
-        plane_a: havok_dir_to_engine(r.plane_a),
-        pivot_a: havok_to_engine(r.pivot_a[0], r.pivot_a[1], r.pivot_a[2]) * scale,
-        twist_b: havok_dir_to_engine(r.twist_b),
-        plane_b: havok_dir_to_engine(r.plane_b),
-        pivot_b: havok_to_engine(r.pivot_b[0], r.pivot_b[1], r.pivot_b[2]) * scale,
-        cone_max: r.cone_max_angle,
-        plane_min: r.plane_min_angle,
-        plane_max: r.plane_max_angle,
-        twist_min: r.twist_min_angle,
-        twist_max: r.twist_max_angle,
-    }
+/// Returns `None` (dropping the joint) when any pivot, axis, or limit angle
+/// is non-finite — a corrupt/truncated Havok CInfo decode (#1534). The
+/// limit angles flow into `GenericJointBuilder::limits`, where `[NaN, NaN]`
+/// destabilizes the Rapier solver.
+fn ragdoll_joint(r: &RagdollCInfo, scale: f32) -> Option<ImportedJointKind> {
+    Some(ImportedJointKind::Ragdoll {
+        twist_a: finite_vec(havok_dir_to_engine(r.twist_a))?,
+        plane_a: finite_vec(havok_dir_to_engine(r.plane_a))?,
+        pivot_a: finite_vec(havok_to_engine(r.pivot_a[0], r.pivot_a[1], r.pivot_a[2]) * scale)?,
+        twist_b: finite_vec(havok_dir_to_engine(r.twist_b))?,
+        plane_b: finite_vec(havok_dir_to_engine(r.plane_b))?,
+        pivot_b: finite_vec(havok_to_engine(r.pivot_b[0], r.pivot_b[1], r.pivot_b[2]) * scale)?,
+        cone_max: finite(r.cone_max_angle)?,
+        plane_min: finite(r.plane_min_angle)?,
+        plane_max: finite(r.plane_max_angle)?,
+        twist_min: finite(r.twist_min_angle)?,
+        twist_max: finite(r.twist_max_angle)?,
+    })
 }
 
-fn limited_hinge_joint(h: &LimitedHingeCInfo, scale: f32) -> ImportedJointKind {
-    ImportedJointKind::LimitedHinge {
-        axis_a: havok_dir_to_engine(h.axis_a),
-        pivot_a: havok_to_engine(h.pivot_a[0], h.pivot_a[1], h.pivot_a[2]) * scale,
-        axis_b: havok_dir_to_engine(h.axis_b),
-        pivot_b: havok_to_engine(h.pivot_b[0], h.pivot_b[1], h.pivot_b[2]) * scale,
-        min_angle: h.min_angle,
-        max_angle: h.max_angle,
-    }
+/// `LimitedHinge` sibling of [`ragdoll_joint`] — same non-finite drop (#1534).
+fn limited_hinge_joint(h: &LimitedHingeCInfo, scale: f32) -> Option<ImportedJointKind> {
+    Some(ImportedJointKind::LimitedHinge {
+        axis_a: finite_vec(havok_dir_to_engine(h.axis_a))?,
+        pivot_a: finite_vec(havok_to_engine(h.pivot_a[0], h.pivot_a[1], h.pivot_a[2]) * scale)?,
+        axis_b: finite_vec(havok_dir_to_engine(h.axis_b))?,
+        pivot_b: finite_vec(havok_to_engine(h.pivot_b[0], h.pivot_b[1], h.pivot_b[2]) * scale)?,
+        min_angle: finite(h.min_angle)?,
+        max_angle: finite(h.max_angle)?,
+    })
 }
 
 /// Recursively resolve a bhk shape block into a CollisionShape enum.
@@ -1784,5 +1806,133 @@ mod ragdoll_extract_tests {
         scene.blocks.push(rigid_body(7)); // [6]
         scene.blocks.push(sphere(1.0)); // [7]
         assert!(extract_ragdoll(&scene).is_none());
+    }
+
+    // ── #1534 — non-finite CInfo finite guards ─────────────────────────
+
+    /// A `rigid_body` with a caller-set translation, so the body-extraction
+    /// finite guard can be exercised through `extract_ragdoll`.
+    fn rigid_body_at(shape_ref: usize, translation: [f32; 4]) -> Box<dyn NiObject> {
+        Box::new(BhkRigidBody {
+            shape_ref: BlockRef(shape_ref as u32),
+            havok_filter: 0,
+            translation,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            linear_velocity: [0.0; 4],
+            angular_velocity: [0.0; 4],
+            inertia_tensor: [0.0; 12],
+            center_of_mass: [0.0; 4],
+            mass: 5.0,
+            linear_damping: 0.1,
+            angular_damping: 0.05,
+            friction: 0.3,
+            restitution: 0.4,
+            max_linear_velocity: 0.0,
+            max_angular_velocity: 0.0,
+            penetration_depth: 0.0,
+            motion_type: 1,
+            deactivator_type: 0,
+            solver_deactivation: 0,
+            quality_type: 0,
+            constraint_refs: Vec::new(),
+            body_flags: 0,
+        })
+    }
+
+    /// A ragdoll constraint with a caller-set twist-max limit (poison it to
+    /// NaN to exercise the joint finite guard).
+    fn ragdoll_constraint_twist_max(
+        entity_a: usize,
+        entity_b: usize,
+        twist_max_angle: f32,
+    ) -> Box<dyn NiObject> {
+        Box::new(BhkConstraint {
+            type_name: "bhkRagdollConstraint",
+            entity_a: BlockRef(entity_a as u32),
+            entity_b: BlockRef(entity_b as u32),
+            priority: 1,
+            data: BhkConstraintData::Ragdoll(RagdollCInfo {
+                twist_a: [0.0, 0.0, 1.0, 0.0],
+                plane_a: [1.0, 0.0, 0.0, 0.0],
+                motor_a: [0.0; 4],
+                pivot_a: [10.0, 0.0, 0.0, 1.0],
+                twist_b: [0.0, 0.0, 1.0, 0.0],
+                plane_b: [1.0, 0.0, 0.0, 0.0],
+                motor_b: [0.0; 4],
+                pivot_b: [-10.0, 0.0, 0.0, 1.0],
+                cone_max_angle: 0.5,
+                plane_min_angle: -0.5,
+                plane_max_angle: 0.5,
+                twist_min_angle: -0.3,
+                twist_max_angle,
+                max_friction: 0.0,
+            }),
+        })
+    }
+
+    /// A NaN body translation (corrupt/truncated Havok CInfo) drops that
+    /// body. With only one finite body left, the `< 2` gate drops the whole
+    /// ragdoll rather than seeding a NaN Rapier body that would propagate
+    /// through writeback into the GPU bone palette. See #1534.
+    #[test]
+    fn non_finite_body_translation_drops_the_body() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(bone("Bip01 Pelvis", 1)); // [0]
+        scene.blocks.push(coll_obj(2)); // [1]
+        scene.blocks.push(rigid_body_at(3, [f32::NAN, 0.0, 0.0, 0.0])); // [2]
+        scene.blocks.push(sphere(1.0)); // [3]
+        scene.blocks.push(bone("Bip01 Spine", 5)); // [4]
+        scene.blocks.push(coll_obj(6)); // [5]
+        scene.blocks.push(rigid_body(7)); // [6]
+        scene.blocks.push(sphere(1.0)); // [7]
+        scene.blocks.push(ragdoll_constraint(2, 6, 10.0)); // [8]
+
+        // One body dropped ⇒ fewer than 2 survive ⇒ no ragdoll.
+        assert!(
+            extract_ragdoll(&scene).is_none(),
+            "a NaN-translation body must be dropped, collapsing the ragdoll",
+        );
+    }
+
+    /// A NaN joint limit angle drops the joint; with no constraints left the
+    /// ragdoll is rejected (`[NaN, NaN]` limits would destabilize the Rapier
+    /// solver). See #1534.
+    #[test]
+    fn non_finite_joint_limit_drops_the_joint() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(bone("Bip01 Pelvis", 1)); // [0]
+        scene.blocks.push(coll_obj(2)); // [1]
+        scene.blocks.push(rigid_body(3)); // [2]
+        scene.blocks.push(sphere(1.0)); // [3]
+        scene.blocks.push(bone("Bip01 Spine", 5)); // [4]
+        scene.blocks.push(coll_obj(6)); // [5]
+        scene.blocks.push(rigid_body(7)); // [6]
+        scene.blocks.push(sphere(1.0)); // [7]
+        scene.blocks.push(ragdoll_constraint_twist_max(2, 6, f32::NAN)); // [8]
+
+        assert!(
+            extract_ragdoll(&scene).is_none(),
+            "a NaN joint limit must drop the joint, leaving no constraints",
+        );
+    }
+
+    /// Sanity: the same graphs WITH finite values do build — proves the
+    /// guards reject only the poisoned field, not the healthy path.
+    #[test]
+    fn finite_graph_still_builds() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(bone("Bip01 Pelvis", 1));
+        scene.blocks.push(coll_obj(2));
+        scene.blocks.push(rigid_body(3));
+        scene.blocks.push(sphere(1.0));
+        scene.blocks.push(bone("Bip01 Spine", 5));
+        scene.blocks.push(coll_obj(6));
+        scene.blocks.push(rigid_body(7));
+        scene.blocks.push(sphere(1.0));
+        scene.blocks.push(ragdoll_constraint(2, 6, 10.0));
+        assert!(extract_ragdoll(&scene).is_some());
     }
 }

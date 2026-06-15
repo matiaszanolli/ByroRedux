@@ -269,6 +269,15 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
             let Some((t, r)) = body_pose(&pw, *handle) else {
                 continue;
             };
+            // #1534 belt-and-suspenders: never let a non-finite simulated
+            // pose (a solver that went unstable despite the import-side
+            // finite guards) reach `GlobalTransform` → bone palette → GPU
+            // skinning, where a NaN vertex is UB and NaN pixels stick through
+            // SVGF/TAA history. Skip the bone this frame; it holds its last
+            // good pose.
+            if !t.is_finite() || !r.is_finite() {
+                continue;
+            }
             if let Some(gt) = gtq.get_mut(*bone) {
                 // bone_rotation = body_rotation * local_rotation⁻¹
                 let bone_rotation = r * tb.local_rotation.inverse();
