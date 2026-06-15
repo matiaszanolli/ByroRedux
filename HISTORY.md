@@ -24,6 +24,30 @@ Commits hold that record.
 
 ---
 
+## Session 48 — Havok ragdoll (M41.x + PHYSAL) + 56-issue audit bug-bash  (2026-06-15, 05e9ebd5..ca575eec, 53 commits)
+
+Two distinct bodies of work that were never separately closed out. First, the
+**M41.x Havok ragdoll** deliverable landed end-to-end — `bhkRagdoll` /
+`LimitedHinge` / `Malleable` constraint decode through to Rapier multibodies
+and writeback — then generalized into **PHYSAL**, the double-ended physics
+abstraction layer spanning Oblivion/FO3/FNV/Skyrim. Second, and the bulk by
+commit count, a focused **GitHub-issue bug-bash** cleared **56 of the 100**
+most-recent open issues (#1541–#1640) across the NIF parser, ESM decoders,
+renderer, audio, and ECS scheduler — verified against on-disk game data
+(Oblivion/FO3/FNV/Skyrim/Starfield/FO76) and pinned with regression tests.
+
+- **Havok ragdoll — M41.x + PHYSAL** (`ca631e09`..`0a0bc3ce`, PR #1528/#1529) — Phases 1–5: decode ragdoll constraint CInfo → thread the Havok graph into `ImportedScene` → build Bethesda ragdolls as Rapier multibodies → `ragdoll <id>` activation + writeback → tuning knob + smoke test. PHYSAL generalizes the per-game constraint-CInfo seam across Oblivion/FO3/FNV/Skyrim (FO4+ blocked on `BhkSystemBinary`).
+- **Audit infrastructure** (`6d1e0d41`, `19e99778`, PR #1530) — deep-rewrite of all audit skills to match current code; Tech-Debt audit report (2026-06-14) + material-abstraction doc update.
+- **Bug-bash — NIF parser** — #1543/#1544/#1607 old-Gamebryo `NiInterpController` base, #1548/#1550 Oblivion 24-byte CTDA, #1547 SSE OOB panic→fail-soft, #1549 skin-partition de-strip, #1559 `has_tangents` gate, #1552 FO4 `env_map_scale` gate, #1608/#1630 bsver const gates, #1589 bulk POD reads, #1610 tint/inner-layer forward, #1605 constraint-stub doc. Verified live: **Oblivion clean-parse 99.90% → 99.93%** (6 NetImmerse markers remain, #1611).
+- **Bug-bash — ESM / plugin** — #1629 Skyrim RACE DATA guard, #1631 CNTO wire-size const, #1579 SF XCLL `>= 108`, #1577 placeholder-cube doc; the Oblivion CTDA fix recovers ~60k previously-dropped conditions.
+- **Bug-bash — renderer / audio** — #1575 caustic u32-wrap, #1587 flush-written-range, #1588 `snap_render_origin` dedup, #1595/#1596 DXGI 88 (B8G8R8X8), #1612 audio attenuation clamp, plus ~15 stale-doc / size-comment fixes (#1562–#1566, #1572/#1574, #1599, #1613–#1615, #1618/#1624/#1627).
+- **Bug-bash — ECS scheduler / ragdoll** — #1601 writeback→exclusive, #1602 stronger build-time conflict guard, #1616 invert ragdoll body-local offset.
+- **Bug-bash — regression tests + baselines** — #1573/#1597/#1564/#1600/#1558 new guard tests; #1551/#1611 regenerated Oblivion per-block + truncation baselines; #1570/#1632/#1633 dead-code removal.
+
+Net: tests 2870 → 2915 (+45); total Rust LOC ~241.8k → ~244.7k (+~2.9k); 56 GitHub issues closed (#1541–#1640); Oblivion NIF clean-parse 99.90% → 99.93%. Bench-of-record `1c26bc25` now 201 commits stale (R6a-stale-15 gate open).
+
+---
+
 ## Session 47 — RT glass/Cornell arc + camera-relative precision + Oblivion v10.x NIF + audit bug-bash  (2026-06-14, aed64034..4d61e802, 140 commits)
 
 The longest run between closeouts so far — 11 days, 140 commits across five

@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-06-14 (Session 47 closeout — tests 2870, +97; LOC +~6 650; bench-of-record now 146 commits stale, see staleness caveat below). Notable since Session 46: Cornell-box RT harness + glass refraction/GI/caustic correctness arc (`7b8c0752`..`afaa2fe4`); camera-relative render origin for large-world f32 precision (`bccf06f0`..`8d191d7d`, #1495/#1496/#1498); Oblivion v10.x NIF family (#1509) + Starfield BSLightingShaderProperty over-read (#1510); FO4 BGSM metalness from spec chromaticity (#1476); M24.2 Phase C typed `read_sub::<T>` + DIAL conversation tree (`6873438c`, `c82bea9c`); audit-bundle bug-bash (renderer / NIFAL / ECS / safety); config `[defaults]` launch table + workspace clippy clean. See [HISTORY.md](HISTORY.md) Session 47.
+**Last verified**: 2026-06-15 (Session 48 closeout — tests 2915, +45; LOC +~2 886; bench-of-record now 201 commits stale, see staleness caveat below). Notable since Session 47: M41.x Havok ragdoll end-to-end (constraint CInfo decode → Rapier multibodies → activation/writeback, PR #1528) generalized into PHYSAL across Oblivion/FO3/FNV/Skyrim (PR #1529); audit-skills deep rewrite (PR #1530); a 56-issue audit bug-bash (#1541–#1640) across NIF parser / ESM / renderer / audio / ECS — incl. Oblivion 24-byte CTDA (#1548, ~60k conditions recovered), old-Gamebryo NiInterpController base (#1543/#1544, Oblivion clean-parse 99.90% → 99.93%), SSE OOB fail-soft (#1547), skin-partition de-strip (#1549), DXGI 88 textures (#1595/#1596), and a ragdoll-writeback scheduler-conflict + body-local-offset fix (#1601/#1602/#1616). See [HISTORY.md](HISTORY.md) Session 48.
 **Bench-of-record** (R6a-stale-14 refresh, HEAD `1c26bc25`, 2026-06-03,
 wall-clock bench, 300 frames, RTX 4070 Ti, run from each game's `Data/`
 directory — see Repro-command CWD note below):
@@ -28,7 +28,7 @@ Whiterun (control, authored bhk collision) improved +10% FPS — attributable to
 
 **Repro-command CWD note:** bare `--bsa` / `--textures-bsa` / `--materials-ba2` names resolve against CWD, not the `--esm` folder. Run each bench with CWD set to that game's `Data/` directory. Run from elsewhere → archives silently fail → scene loads near-empty (Prospector: 36 entities / 3 meshes / spurious ~1792 FPS).
 
-**Staleness (2026-06-14, Session 47):** bench-of-record is now **146 commits stale**. Session 47 landed heavy RT hot-path work — Cornell glass / GI / caustics, camera-relative render origin, SVGF firefly rejection, SSAO, TAA — so these numbers predate the churn. R6a-stale-15 (a fresh 300-frame three-scene GPU bench) gates any current FPS claim.
+**Staleness (2026-06-15, Session 48):** bench-of-record is now **201 commits stale**. Session 47 landed heavy RT hot-path work — Cornell glass / GI / caustics, camera-relative render origin, SVGF firefly rejection, SSAO, TAA; Session 48 was mostly a bug-bash but still touched the renderer hot path (caustic-splat shader recompile #1575, written-range flush #1587, `snap_render_origin` rebase #1588) — so these numbers predate the churn. R6a-stale-15 (a fresh 300-frame three-scene GPU bench) gates any current FPS claim.
 
 ---
 
@@ -725,12 +725,12 @@ Ground-truth as of 2026-06-14 (Session 47 closeout). Last `/session-close` verif
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~228 350 (Session 47 measure) |
-| Rust total lines (all `.rs`, excl. `target/`) | ~241 846 (updated 2026-06-14)  |
-| Source files (`.rs`, excl. `target/`)   | 572 total · 538 outside `tests/` dirs |
+| Rust source lines (`src/` dirs)         | ~231 095 (Session 48 measure) |
+| Rust total lines (all `.rs`, excl. `target/`) | ~244 732 (updated 2026-06-15)  |
+| Source files (`.rs`, excl. `target/`)   | 577 total · 542 outside `tests/` dirs |
 | Workspace members                       | 21 (19 crates + `byroredux` binary + `tools/byro-dbg`) |
-| Tests (last reported by ROADMAP)        | **2870 passing** (Session 47 closeout, 2026-06-14). +97 vs Session 46. |
-| Open issue directories                  | 1395 (`.claude/issues/`)     |
+| Tests (last reported by ROADMAP)        | **2915 passing** (Session 48 closeout, 2026-06-15). +45 vs Session 47. |
+| Open issue directories                  | 1505 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 99.93% (2026-06-15 sweep, post-#1543/#1544), FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27 (Oblivion refreshed 2026-06-15). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
