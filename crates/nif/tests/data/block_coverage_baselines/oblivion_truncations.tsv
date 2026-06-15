@@ -1,9 +1,7 @@
-# Oblivion sizeless-truncation baseline	truncating=8	parsed=8032
-meshes\dungeons\ayleidruins\interior\arwelkydclusterfx01.nif	13
+# Oblivion sizeless-truncation baseline	truncating=6	parsed=8032
 meshes\marker_arrow.nif	5
 meshes\marker_divine.nif	9
 meshes\marker_map.nif	8
 meshes\marker_radius.nif	2
 meshes\marker_temple.nif	9
 meshes\marker_travel.nif	5
-meshes\oblivion\architecture\citadel\interior\switch\scampswitch01.nif	42
