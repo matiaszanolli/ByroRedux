@@ -37,6 +37,7 @@ const DXGI_FORMAT_BC5_UNORM: u32 = 83;
 const DXGI_FORMAT_BC5_SNORM: u32 = 84;
 // BGRA uncompressed (#1074 / FO4-D2-008) — FO4 normal maps ship as B8G8R8A8_UNORM
 const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87; // 4 bytes/px
+const DXGI_FORMAT_B8G8R8X8_UNORM: u32 = 88; // 4 bytes/px — BGRX, X ignored (UFO4P + mods)
 const DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: u32 = 91; // 4 bytes/px — sRGB variant
                                                  // BC6H HDR (#1074 / FO4-D2-008) — Starfield env maps; requires textureCompressionBC
 const DXGI_FORMAT_BC6H_UF16: u32 = 95; // 16 B/block — unsigned half-float
@@ -211,6 +212,10 @@ fn map_dxgi_format(dxgi: u32) -> Result<(vk::Format, u32, bool)> {
         // FO4 normal maps ship as B8G8R8A8_UNORM (ba2.rs:808). No special
         // Vulkan feature required — universally supported on Vulkan 1.0 desktop.
         DXGI_FORMAT_B8G8R8A8_UNORM => Ok((vk::Format::B8G8R8A8_UNORM, 4, false)),
+        // B8G8R8X8_UNORM (88): same 4-byte BGRX layout; the X channel is
+        // "ignore", so read it as B8G8R8A8_UNORM (alpha sampled but unused by
+        // the shader on color textures). #1595.
+        DXGI_FORMAT_B8G8R8X8_UNORM => Ok((vk::Format::B8G8R8A8_UNORM, 4, false)),
         DXGI_FORMAT_B8G8R8A8_UNORM_SRGB => Ok((vk::Format::B8G8R8A8_SRGB, 4, false)),
         // Single-channel uncompressed — heightmaps and mono masks.
         DXGI_FORMAT_R16_UNORM => Ok((vk::Format::R16_UNORM, 2, false)),
@@ -472,6 +477,17 @@ mod tests {
         let data = make_dx10_header(128, 128, 1, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
         let meta = parse_dds(&data).unwrap();
         assert_eq!(meta.format, vk::Format::B8G8R8A8_SRGB);
+        assert_eq!(meta.block_size, 4);
+        assert!(!meta.compressed);
+    }
+
+    #[test]
+    fn dxgi_b8g8r8x8_unorm_maps_to_bgra8() {
+        // B8G8R8X8_UNORM (DXGI 88) — BGRX, X ignored. Same 4-byte layout as
+        // B8G8R8A8_UNORM, which it reads as. UFO4P + mods. #1595.
+        let data = make_dx10_header(256, 256, 1, DXGI_FORMAT_B8G8R8X8_UNORM);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::B8G8R8A8_UNORM);
         assert_eq!(meta.block_size, 4);
         assert!(!meta.compressed);
     }

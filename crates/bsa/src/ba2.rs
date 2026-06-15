@@ -934,13 +934,14 @@ fn pitch_or_linear_size_for(
     //   28 = R8G8B8A8_UNORM       (4 bpp)
     //   29 = R8G8B8A8_UNORM_SRGB  (4 bpp)
     //   87 = B8G8R8A8_UNORM       (4 bpp) — FO4 normal maps
+    //   88 = B8G8R8X8_UNORM       (4 bpp) — BGRX, UFO4P + mods (#1596)
     //   91 = B8G8R8A8_UNORM_SRGB  (4 bpp)
     //   56 = R16_UNORM            (2 bpp) — height / mask textures
     //   61 = R8_UNORM             (1 bpp) — mono masks
     // For uncompressed, the pitch is the byte length of one row of
     // pixels (`width * bpp`) — NOT the total buffer size.
     let bpp: Option<u32> = match dxgi_format {
-        28 | 29 | 87 | 91 => Some(4),
+        28 | 29 | 87 | 88 | 91 => Some(4),
         56 => Some(2),
         61 => Some(1),
         _ => None,
@@ -1025,6 +1026,15 @@ mod tests {
         // 512×256 B8G8R8A8_UNORM_SRGB (91): row pitch = 512 * 4 = 2048.
         let (pitch, flag) = pitch_or_linear_size_for(91, 512, 256, 0);
         assert_eq!(pitch, 2048);
+        assert_eq!(flag, DDSD_PITCH);
+    }
+
+    #[test]
+    fn pitch_bgrx8_unorm_matches_row_size_with_pitch_flag() {
+        // 256×256 B8G8R8X8_UNORM (88): BGRX is 4 bpp uncompressed →
+        // row pitch = 256 * 4 = 1024, DDSD_PITCH. #1596.
+        let (pitch, flag) = pitch_or_linear_size_for(88, 256, 256, 0);
+        assert_eq!(pitch, 1024);
         assert_eq!(flag, DDSD_PITCH);
     }
 
