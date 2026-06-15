@@ -217,14 +217,21 @@ pub type ConditionList = Vec<Condition>;
 /// caller (a record walker) skips the condition silently in that
 /// case rather than failing the entire record.
 ///
-/// Accepts both 28-byte (FO3 / FNV) and 32-byte (Skyrim+) layouts.
-/// Anything else (truncated CTDA, malformed plugin) returns `None`.
+/// Accepts the 24-byte (Oblivion / TES4), 28-byte (FO3 / FNV), and
+/// 32-byte (Skyrim+) layouts. Anything shorter than 24 (truncated CTDA,
+/// malformed plugin) returns `None`.
 pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
     if sub.sub_type != *b"CTDA" {
         return None;
     }
     let data = &sub.data;
-    if data.len() < 28 {
+    // Layout by length (#1548): Oblivion (TES4) CTDA is 24 bytes; FO3 / FNV
+    // are 28; Skyrim+ is 32. Offsets 0-19 (type, comparand, function@8,
+    // param1@12, param2@16) are byte-identical across all three — the
+    // Oblivion 24-byte record simply lacks the run_on@20 / reference@24
+    // tail (its bytes 20-23 are unused). Pre-fix the hard `< 28` reject
+    // dropped every Oblivion condition silently.
+    if data.len() < 24 {
         return None;
     }
 
@@ -243,9 +250,17 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
     let function_index = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
     let param_1 = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
     let param_2 = u32::from_le_bytes([data[16], data[17], data[18], data[19]]);
-    let run_on_raw = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
-    let run_on = RunOn::from_u32(run_on_raw);
-    let reference_form_id = u32::from_le_bytes([data[24], data[25], data[26], data[27]]);
+    // run_on / reference exist only on the 28+ byte (FO3+) layout; on
+    // Oblivion 24-byte records they are absent → default Subject / 0.
+    let (run_on, reference_form_id) = if data.len() >= 28 {
+        let run_on_raw = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
+        (
+            RunOn::from_u32(run_on_raw),
+            u32::from_le_bytes([data[24], data[25], data[26], data[27]]),
+        )
+    } else {
+        (RunOn::from_u32(0), 0)
+    };
 
     // Skyrim+ trailing 4-byte field (alias id / package data id /
     // event data id, depending on `run_on`). Optional — FO3 / FNV
@@ -304,6 +319,56 @@ mod tests {
             sub_type: *b"CTDA",
             data,
         }
+    }
+
+    /// Build a synthetic CTDA payload at the Oblivion / TES4 24-byte layout
+    /// (function@8, param1@12, param2@16, then 4 unused bytes — no run_on /
+    /// reference tail).
+    fn make_ctda_24(
+        type_byte: u8,
+        comparand_bytes: [u8; 4],
+        function_index: u32,
+        param_1: u32,
+        param_2: u32,
+    ) -> SubRecord {
+        let mut data = vec![type_byte, 0, 0, 0]; // type + 3 pad
+        data.extend_from_slice(&comparand_bytes);
+        data.extend_from_slice(&function_index.to_le_bytes());
+        data.extend_from_slice(&param_1.to_le_bytes());
+        data.extend_from_slice(&param_2.to_le_bytes());
+        data.extend_from_slice(&[0u8; 4]); // unused @20
+        assert_eq!(data.len(), 24);
+        SubRecord {
+            sub_type: *b"CTDA",
+            data,
+        }
+    }
+
+    /// #1548 — Oblivion's 24-byte CTDA must parse, not be silently rejected
+    /// by the old `< 28` guard. run_on defaults to Subject and reference to 0
+    /// (those fields are absent on the TES4 layout).
+    #[test]
+    fn parse_oblivion_24_byte_ctda() {
+        // 72 = GetIsID, the most common TES4 condition function.
+        let sub = make_ctda_24(0x00, 1.0_f32.to_le_bytes(), 72, 0xDEAD, 0xBEEF);
+        let cond = parse_ctda(&sub).expect("Oblivion 24-byte CTDA must parse");
+        assert_eq!(cond.function_index, 72);
+        assert_eq!(cond.comparator, ComparisonOp::Eq);
+        assert_eq!(cond.comparand, ConditionValue::Literal(1.0));
+        assert_eq!(cond.param_1, 0xDEAD);
+        assert_eq!(cond.param_2, 0xBEEF);
+        assert_eq!(cond.run_on, RunOn::Subject);
+        assert_eq!(cond.reference_form_id, 0);
+    }
+
+    /// A payload shorter than the Oblivion minimum (24) is still rejected.
+    #[test]
+    fn parse_ctda_under_24_bytes_returns_none() {
+        let sub = SubRecord {
+            sub_type: *b"CTDA",
+            data: vec![0u8; 20],
+        };
+        assert!(parse_ctda(&sub).is_none());
     }
 
     #[test]
