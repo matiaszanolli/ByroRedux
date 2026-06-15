@@ -351,3 +351,69 @@ fn expand_scol_propagates_outer_scale_into_translation_and_scale() {
     // scale = outer_scale * local_scale = 2 × 3 = 6.
     assert_eq!(synths[0].3, 6.0);
 }
+
+/// #1600 — pin parent∘child composition with a NON-identity outer rotation.
+/// Every prior test used `Quat::IDENTITY`, which degenerates both
+/// `outer_rot * (scale * local_pos)` and `outer_rot * local_rot`, so an
+/// order/composition regression stayed green. A 90° yaw about +Y rotates the
+/// child position and must propagate to the composed rotation.
+#[test]
+fn expand_scol_composes_non_identity_outer_rotation() {
+    use std::f32::consts::FRAC_PI_2;
+    let mut index = EsmCellIndex::default();
+    let scol_id = 0x0060_0001;
+    index
+        .statics
+        .insert(scol_id, mk_stat(scol_id, "RotScol", ""));
+    index.scols.insert(
+        scol_id,
+        ScolRecord {
+            form_id: scol_id,
+            editor_id: "RotScol".to_string(),
+            model_path: String::new(),
+            parts: vec![ScolPart {
+                base_form_id: 0x0010_0001,
+                // Z-up [10,0,0] → Y-up [10,0,0]; local rot identity.
+                placements: vec![ScolPlacement {
+                    pos: [10.0, 0.0, 0.0],
+                    rot: [0.0, 0.0, 0.0],
+                    scale: 1.0,
+                }],
+            }],
+            filter: Vec::new(),
+            full_name: String::new(),
+            has_script: false,
+        },
+    );
+
+    let outer_rot = Quat::from_rotation_y(FRAC_PI_2);
+    let outer_pos = Vec3::new(5.0, 0.0, 0.0);
+    let synths = expand_scol_placements(scol_id, outer_pos, outer_rot, 1.0, &index);
+    assert_eq!(synths.len(), 1);
+
+    // final_pos = outer_rot * (1 * local) + outer_pos.
+    let local = Vec3::new(10.0, 0.0, 0.0);
+    let expected_pos = outer_rot * local + outer_pos;
+    let got_pos = synths[0].1;
+    assert!(
+        (got_pos - expected_pos).length() < 1e-4,
+        "non-identity outer_rot must rotate the child position: got {got_pos:?}, want {expected_pos:?}"
+    );
+    // A swapped/unrotated order would land at outer_pos + local = (15,0,0).
+    assert!(
+        (got_pos - Vec3::new(15.0, 0.0, 0.0)).length() > 1e-2,
+        "position must reflect the rotation, not the unrotated sum"
+    );
+
+    // final_rot = outer_rot * local_rot; local_rot is identity → must equal
+    // outer_rot (and not collapse to identity).
+    let got_rot = synths[0].2;
+    assert!(
+        got_rot.dot(outer_rot).abs() > 1.0 - 1e-4,
+        "composed rotation must equal outer_rot when local_rot is identity"
+    );
+    assert!(
+        got_rot.dot(Quat::IDENTITY).abs() < 1.0 - 1e-3,
+        "composed rotation must not collapse to identity"
+    );
+}
