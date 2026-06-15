@@ -213,7 +213,12 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
     let mut uvs = Vec::with_capacity(num_vertices);
     let mut colors = Vec::with_capacity(num_vertices);
     let is_skinned = vertex_attrs & VF_SKINNED != 0;
-    let has_tangents = vertex_attrs & VF_TANGENTS != 0 && vertex_attrs & VF_NORMALS != 0;
+    // Match nif.xml `BSVertexDataSSE` / `BSVertexData` (`(#ARG# #BITAND# 0x11)
+    // == 0x11`) and the inline `bs_tri_shape.rs` decoder: the tangent quad is
+    // gated on VF_TANGENTS alone (VF_VERTEX is the outer precondition); NORMALS
+    // (0x8) is not part of the spec predicate. Pre-fix the extra `&& VF_NORMALS`
+    // diverged from both. See #1559.
+    let has_tangents = vertex_attrs & VF_TANGENTS != 0;
     let mut bone_weights: Vec<[f32; 4]> = if is_skinned {
         Vec::with_capacity(num_vertices)
     } else {
