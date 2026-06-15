@@ -37,7 +37,6 @@ impl ComponentDatabaseFile {
             chunks,
             classes: Vec::new(),
             class_by_name_offset: HashMap::new(),
-            class_by_type_id: HashMap::new(),
             strings: StringTable::new(Vec::new()),
         };
 
@@ -58,7 +57,6 @@ impl ComponentDatabaseFile {
             let class = parse_class(&mut state)?;
             let idx = state.classes.len();
             state.class_by_name_offset.insert(class.name_offset, idx);
-            state.class_by_type_id.insert(class.type_id, idx);
             state.classes.push(class);
         }
 
@@ -184,7 +182,6 @@ struct State<'a> {
     chunks: VecDeque<Chunk>,
     classes: Vec<Class>,
     class_by_name_offset: HashMap<i32, usize>,
-    class_by_type_id: HashMap<u32, usize>,
     strings: StringTable,
 }
 
