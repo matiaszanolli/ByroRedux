@@ -1,5 +1,5 @@
 ---
-description: "Per-game audit of Skyrim SE compatibility — BSTriShape, BSLightingShaderProperty 8 variants, BSA v105"
+description: "Per-game audit of Skyrim SE compatibility — BSTriShape packed geometry, BSLightingShaderProperty shader-type dispatch, NPC equip/FaceGen, multi-master load order"
 argument-hint: "--focus <dimensions>"
 ---
 
@@ -9,34 +9,90 @@ Deep audit of ByroRedux readiness for **The Elder Scrolls V: Skyrim Special Edit
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, game data locations, methodology, deduplication rules, and finding format.
+See `.claude/commands/_audit-common.md` for project layout, game-data locations,
+methodology, deduplication rules, and finding format. See
+`.claude/commands/_audit-severity.md` for the severity scale. Do not duplicate
+those here.
+
+## Why Skyrim is the hardest geometry case
+
+Skyrim SE is the engine's renderer **control bench** — cell-load and rendering
+both work (Whiterun BanneredMare). So this audit is *not* readiness scoping; it
+is **regression coverage** plus the genuinely Skyrim-specific risk surface:
+
+1. **BSTriShape packed geometry** — half-float vertex pool with a `vertex_desc`
+   bitfield, inline tangents, and a separate SSE skinned-reconstruction path
+   that is uniquely prone to silent magenta/chrome corruption.
+2. **`BSLightingShaderProperty` shader-type dispatch** — the trailing-field
+   reader branches on ~18 numeric shader types; an off-by-one drops or over-reads
+   geometry on a whole material class.
+3. **NPC equip + FaceGen** — Whiterun ships 6 named equipped NPCs via M41
+   OTFT/LVLI; this is the only vanilla cell that exercises the full outfit chain.
+4. **Multi-master load order** — DLC interiors via `--master` need cross-plugin
+   FormID remap.
+
+Dimensions below are ordered by that risk, highest first.
 
 ## Game Context
 
-| Aspect            | State                                                                              |
-|-------------------|------------------------------------------------------------------------------------|
-| NIF format        | v20.2.0.7 (BSVER 83 / 100)                                                         |
-| BSA format        | v105 ✓ (LZ4 compression)                                                           |
-| ESM parser        | Unified walker ✓ — Skyrim.esm cells parse (`parse_real_skyrim_esm`, SolitudeWinkingSkeever, 92-byte XCLL) |
-| Parse rate        | 100.00% (18862 / 18862) — Meshes0 sweep is `100.00% clean / 0 truncated / 0 recovered / 0 realignment WARN` post #836–#838 |
-| Rendering         | Cells + meshes ✓ — WhiterunBanneredMare is the renderer **control bench** (329.8 FPS / 3.03 ms / 3211 ent / 1296 draws, R6a-stale-13 refresh `4e2ebe8c` 2026-05-28) |
-| Cell loading      | Wired ✓ — WhiterunBanneredMare renders (3211 entities, 6 named NPCs via M41 OTFT/LVLI) |
-| Reference data    | `/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/`             |
+Pull live numbers from `ROADMAP.md` (compat matrix + Bench-of-record) and
+`docs/feature-matrix.md` rather than trusting any figure transcribed here —
+benches refresh every `/session-close`.
 
-### Known Specifics
+| Aspect       | State (cite ROADMAP, do not re-transcribe) |
+|--------------|---------------------------------------------|
+| NIF format   | v20.2.0.7 (BSVER 83 / 100) |
+| BSA format   | v105 ✓ (LZ4 block compression) — `crates/bsa/src/archive/` |
+| ESM parser   | Unified `esm/` walker ✓ — `Skyrim.esm` cells parse (`parse_real_skyrim_esm`, finds `SolitudeWinkingSkeever`) |
+| Parse rate   | 100% clean on the Meshes0 sweep (cite ROADMAP compat matrix for the exact ratio) |
+| Rendering    | Cells + meshes ✓ — Whiterun BanneredMare is the renderer **control bench** (entity/FPS figures: ROADMAP Bench-of-record, currently R6a-stale-14) |
+| NPC equip    | 6 named NPCs equipped via M41 OTFT/LVLI (`byroredux/src/npc_spawn.rs`) |
+| Reference data | `/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/` |
 
-- **BSTriShape** — packed vertex format with u16 half-precision positions/normals, optional skinning (VF_SKINNED), optional full-precision (VF_FULL_PRECISION). Per-vertex tangents ship inline in the packed-vertex blob when `VF_TANGENTS | VF_NORMALS` are set (Skyrim convention; FO4+ shares the same inline path — see #795 / #796).
-- **BSLightingShaderProperty** — 8 shader-type variants: None, EnvironmentMap, GlowShader (SkinTint for hair?), HairTint, ParallaxOcc, MultiLayerParallax, SparkleSnow, EyeEnvmap.
-- **BSEffectShaderProperty** — soft falloff depth, greyscale texture, lighting influence, env map min LOD.
-- **BSDynamicTriShape** (facegen) + **BSLODTriShape** (DLC LOD — see architectural note below) + **BSMeshLODTriShape** + **BSSubIndexTriShape**.
-- **`NiLodTriShape`** (#838 SK-D5-NEW-07, 8d416cc) — **architecturally distinct** from BSTriShape: inherits from `NiTriBasedGeom` per nif.xml, NOT from BSTriShape. Routed through a dedicated `NiLodTriShape` wrapper with `NiTriShape + 3 LOD-size u32s`. Pre-#838 dispatch through BSTriShape produced a 23-byte over-read on every Skyrim tree LOD. Audit guard: any audit that proposes "fold BSLODTriShape back into BSTriShape" is a regression of #838.
-- **`BsLagBoneController`** + **`BsProceduralLightningController`** (#837 SK-D5-NEW-03) — both have dedicated parsers. Without them, ~120 by-design `block_size` WARN events fire per Meshes0 sweep.
-- **BSTriShape `data_size` warning gate** (#836 SK-D5-NEW-02) — gated on `num_vertices != 0`. Removing the gate fires 67 false-positive WARNs/parse on the SSE skinned-body reconstruction path.
-- **BSTreeNode** — SpeedTree wind-bone lists.
-- **BSPackedCombined[Shared]GeomDataExtra** — distant LOD batches.
-- **BsDismemberSkinInstance** — dismemberment data on skinned meshes.
-- Windowed shader trailing fields are fully parsed (N23.2).
-- **Meshes0 sweep baseline (post #836–#838)**: `100.00% clean / 0 truncated / 0 recovered / 0 realignment WARNs`. Any audit observing realignment WARNs on a clean Skyrim Meshes0 corpus has hit a regression.
+### Known Specifics (verified against live code)
+
+- **BSTriShape** — packed vertex pool keyed off a 64-bit `vertex_desc` bitfield
+  (`crates/nif/src/blocks/tri_shape/bs_tri_shape.rs`, `BsTriShape` struct).
+  `VF_*` attribute bits select u16 half-precision positions/normals, optional
+  skinning (`VF_SKINNED`), optional full precision. Per-vertex tangents ship
+  inline in the packed blob when `VF_TANGENTS | VF_NORMALS` are set (Skyrim
+  convention; FO4+ shares the inline path — #795 / #796).
+- **`BsTriShapeKind`** disambiguates the five wire-distinct subclasses that share
+  the one `BsTriShape` Rust struct: `Plain` (BSTriShape), `LOD` (BSLODTriShape),
+  `MeshLOD` (BSMeshLODTriShape), `SubIndex` (BSSubIndexTriShape, boxed
+  segmentation payload, #404), `Dynamic` (BSDynamicTriShape — facegen heads).
+- **`BSLODTriShape` is routed through `NiLodTriShape`, NOT `BsTriShape`** (#838).
+  Per nif.xml, `BSLODTriShape` inherits `NiTriBasedGeom` (`#SKY##SSE#`) while
+  `BSMeshLODTriShape` inherits `BSTriShape` (`#FO4#`) — they look identical at the
+  block name but have different bodies. The dispatch in
+  `crates/nif/src/blocks/mod.rs` sends `"BSLODTriShape"` to
+  `NiLodTriShape::parse` and `"BSMeshLODTriShape"` to `BsTriShape::parse_meshlod`.
+  Pre-#838 routing of `BSLODTriShape` through BSTriShape over-read every Skyrim
+  tree LOD. **Audit guard**: any proposal to "fold BSLODTriShape into BSTriShape"
+  is a regression of #838.
+- **`BSLightingShaderProperty`** lives in `crates/nif/src/blocks/shader.rs`
+  (NOT in `crates/nif/src/blocks/properties.rs`, where it was historically
+  assumed). The shader-type-specific trailing data is the
+  `ShaderTypeData` enum — **9 Rust variants** (`None`, `EnvironmentMap`,
+  `SkinTint`, `HairTint`, `ParallaxOcc`, `MultiLayerParallax`, `SparkleSnow`,
+  `EyeEnvmap`, `Fo76SkinTint`). The dispatch (`parse_shader_type_data`) maps
+  ~18 numeric Skyrim/FO4 `BSLightingShaderType` values onto those variants
+  (most fall through to `None`). FO76 uses the distinct `BSShaderType155`
+  numbering (`parse_shader_type_data_fo76`). There is no `GlowShader` variant —
+  glow (type 2) reads `None` trailing data.
+- **`BSEffectShaderProperty`** — also in `crates/nif/src/blocks/shader.rs`: `soft_falloff_depth`,
+  `greyscale_texture`, `lighting_influence`, `env_map_min_lod`, falloff
+  start/stop angle+opacity.
+- **`BsLagBoneController`** + **`BsProceduralLightningController`** (#837) — both
+  have dedicated parsers (`crates/nif/src/blocks/controller/`). Without them a
+  large by-design `block_size` WARN burst fires per Meshes0 sweep.
+- **BSTriShape `data_size` warning gate** (#836) — gated on `num_vertices != 0`
+  so the SSE skinned-body reconstruction path doesn't fire false-positive WARNs.
+- **`BSBoneLODExtraData`** parser landed (#614, `crates/nif/src/blocks/extra_data.rs`).
+- Other specialty blocks: `BsDismemberSkinInstance` (dismemberment),
+  `BSPackedCombined[Shared]GeomDataExtra` (distant LOD batches), `BSTreeNode`
+  (SpeedTree wind bones), and the `BSFadeNode` / `BSBlastNode` / `BSMultiBoundNode`
+  NiNode subclasses unwrapped by the import walker.
 
 ## Parameters (from $ARGUMENTS)
 
@@ -51,56 +107,90 @@ See `.claude/commands/_audit-common.md` for project layout, game data locations,
 
 ## Phase 2: Launch Dimension Agents (parallel)
 
-### Dimension 1: BSTriShape Vertex Format
+### Dimension 1: BSTriShape Packed Geometry + SSE Skinned Reconstruction
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs` (BSTriShape parser; split out into `tri_shape/bs_tri_shape.rs` post-#1118), `crates/nif/src/import/mesh/bs_tri_shape.rs`
-**Checklist**: Vertex format flag bits (`VF_*`) mapped correctly — VERTEX, UV, NORMAL, TANGENT, COLOR, SKINNED, FULL_PRECISION, EYE_DATA. Half-precision u16 → f32 conversion numerically correct (IEEE 754 binary16 decode). Packed normals → tangent-space reconstruction. Vertex index stride (u16 vs u32) chosen from the BSVER or packed-vertex flag. `extract_bs_tri_shape` in `import/mesh/bs_tri_shape.rs` handles all flag combinations. Skinned-vertex `bone_indices` / `bone_weights` extraction matches the #178 skinning pipeline. **SSE skinned-geometry reconstruction tangent path (#1204 / #1202 / #1201)**: SSE skinned bodies ship geometry in a partition-remapped global buffer, reconstructed in `crates/nif/src/import/mesh/sse_recon.rs` — confirm positions/normals are Z-up→Y-up converted AND the on-disk "bitangent" triplet is routed as the Y-up tangent (∂P/∂U) so reconstructed bodies don't read as magenta/chrome (regression guard mirroring the `feedback_chrome_means_missing_textures` failure mode). Companion alpha-property cascade gated on `alpha_property_consumed` (`crates/nif/src/import/material/walker.rs`, gate sites ~472/541; flag set in `import/material/mod.rs:494`) so skinned geometry inherits the parent `NiAlphaProperty` exactly once (#1202 / #1201).
+**Entry points**: `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs` (`BsTriShape` parser, `vertex_desc` / `VF_*` flags, `BsTriShapeKind`), `crates/nif/src/import/mesh/bs_tri_shape.rs` (`extract_bs_tri_shape` / `_local`), `crates/nif/src/import/mesh/sse_recon.rs` (#559), `crates/nif/src/import/mesh/tangent.rs`
+**Checklist**:
+- `VF_*` flag bits mapped correctly (VERTEX, UVS, UVS_2, NORMALS, TANGENTS, COLORS, SKINNED, FULL_PRECISION, EYE_DATA). Half-precision u16 → f32 decode is IEEE-754 binary16 correct.
+- `extract_bs_tri_shape` handles every flag combination; index stride (u16 vs u32) chosen correctly. Skinned `bone_indices` / `bone_weights` extraction matches the skinning pipeline.
+- **SSE skinned-geometry reconstruction tangent path** (`crates/nif/src/import/mesh/sse_recon.rs` #559, tangent convention #1204 in `crates/nif/src/import/mesh/tangent.rs`): SSE skinned bodies ship geometry in a partition-remapped global buffer; confirm positions/normals are Z-up→Y-up converted AND the on-disk "bitangent" triplet is routed as the Y-up tangent (∂P/∂U) so reconstructed bodies don't read magenta/chrome (regression guard — mirrors the `feedback_chrome_means_missing_textures` failure mode).
+- **Alpha-property cascade** gated on `alpha_property_consumed` (#1201 / #1202): set in `crates/nif/src/import/material/mod.rs` (search `info.alpha_property_consumed = true`), consulted at the two gate sites in `crates/nif/src/import/material/walker.rs` (search `!info.alpha_property_consumed`). Skinned geometry must inherit the parent `NiAlphaProperty` exactly once.
 **Output**: `/tmp/audit/skyrim/dim_1.md`
 
-### Dimension 2: BSA v105 (LZ4)
-**Subagent**: `general-purpose`
-**Entry points**: `crates/bsa/src/archive/`
-**Checklist**: BSA v105 header format. LZ4 block decompression via `lz4_flex::block` — verify against known-good Skyrim mesh (e.g. sweetroll). Hash table layout differences vs v104. Folder record size. Embedded-name flag for files. Compressed-file flag priority (archive-level flag vs per-file flag — which wins when they disagree). Full-archive extraction sweep: `Skyrim - Meshes0.bsa` + `Skyrim - Textures*.bsa` all extract without error.
+### Dimension 2: BSLightingShaderProperty / BSEffectShaderProperty Shader-Type Dispatch
+**Subagent**: `renderer-specialist`
+**Entry points**: `crates/nif/src/blocks/shader.rs` (`BSLightingShaderProperty`, `BSEffectShaderProperty`, `ShaderTypeData`, `parse_shader_type_data` / `_fo4` / `_fo76`), `crates/nif/src/blocks/shader_tests.rs`, `crates/nif/src/import/material/` (mod, walker, shader_data), `crates/renderer/shaders/triangle.frag`
+**Checklist**:
+- Every numeric Skyrim/FO4 shader type dispatches to the correct `ShaderTypeData` arm and reads the right trailing-field count (EnvironmentMap = env scale; SkinTint/HairTint = Color3; ParallaxOcc = max_passes + scale; MultiLayerParallax = inner-layer fields; SparkleSnow = 4 params; EyeEnvmap = eye cubemap + two reflection centers). Types with no trailing data (0/2/3/4/8–10/12–13/15/17–19) fall through to `None` — confirm none of those silently over-read.
+- FO76 (`BSShaderType155`, `parse_shader_type_data_fo76`) uses the *different* numeric mapping (type 4 = `Fo76SkinTint` Color4, type 5 = HairTint Color3) — guard the two enums don't cross-contaminate.
+- Flag bits 0–31 (decal / alpha-test / skinned / …) — Skyrim positions differ from FO4; verify the Skyrim decode.
+- `BSEffectShaderProperty`: `soft_falloff_depth`, `greyscale_texture`, `lighting_influence`, `env_map_min_lod`, falloff angle/opacity. Environment-map slot in the texture set; alpha mask threshold.
+- **#1241 PBR scalars surfaced at import** (`crates/nif/src/import/material/lighting_shader_pbr_tests.rs`, `crates/nif/src/import/types.rs`): smoothness / IOR / specular_strength flow into `MaterialInfo`.
+- **Disney/Burley lobe pin (regression guard)**: the principled BRDF in `crates/renderer/shaders/triangle.frag` is gated on `MAT_FLAG_PBR_BSDF` (`#define MAT_FLAG_PBR_BSDF 32u` in `crates/renderer/shaders/include/shader_constants.glsl`; branch sites search `MAT_FLAG_PBR_BSDF` in the frag). Vanilla Skyrim LE/SSE materials don't author the BGSM PBR flag (BGSM is FO4+), so the lobe must stay **unreachable** for vanilla content — confirm vanilla parse runs set 0 instances of the flag on the Skyrim.esm material universe. Modded BGSM that explicitly opts into PBR is the one legitimate path that flips it. See `/audit-nifal` for the canonical boundary that sets the flag (Dimension 7).
 **Output**: `/tmp/audit/skyrim/dim_2.md`
 
-### Dimension 3: BSLightingShaderProperty Shader Variants
-**Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/blocks/properties.rs` (BSLightingShaderProperty), `crates/nif/src/import/material/` (mod, walker, shader_data), `crates/renderer/shaders/triangle.frag`
-**Checklist**: All 8 shader-type enum values dispatch to the correct trailing-field reader (EnvironmentMap adds env strength + env map, HairTint adds hair color, ParallaxOcc adds height map params, MultiLayerParallax adds inner-layer fields, SparkleSnow adds sparkle params, EyeEnvmap adds eye-specific fields). Flag bits 0–31 — which are decal, alpha-test, skinned, etc. in Skyrim (differ from FO4 flag bit positions). SkinTint color for HairTint variant. Environment map slot in BSShaderTextureSet[4]. Alpha mask threshold. Subsurface scattering params parsed but not yet routed to the renderer (noted as M38 wetness/subsurface deferred). **#1241 BSLightingShaderProperty PBR scalars surfaced at import** (`a82366e9`): smoothness / IOR / specular_strength flow into `MaterialInfo`. Skyrim LE/SSE vanilla materials don't author the BGSM PBR flag (BGSM is FO4+), so the Disney lobe at `triangle.frag` should remain unreachable for vanilla content — but Skyrim SE mods CAN ship BGSM-style authoring. Audit pattern: confirm vanilla parse-rate runs show 0 instances of `MAT_FLAG_PBR_BSDF` set on Skyrim.esm material universe; modded BGSM that explicitly opts into PBR is the legitimate path. **Disney BSDF gating regression guard (#1248-#1252)** mirrors the FNV pattern for vanilla Skyrim. **Disney/Burley lobe pin**: the principled-BRDF lobe in `crates/renderer/shaders/triangle.frag` is gated on `MAT_FLAG_PBR_BSDF` (`#define MAT_FLAG_PBR_BSDF (1u << 5)`, frag line 204; branch sites frag lines 2610 / 2861) and carries the MIT GLSL-PathTracer + Burley-2012 Disney SIGGRAPH attribution block (frag lines 12-29). Confirm the lobe stays unreachable for vanilla Skyrim content (bit 5 unset) — only modded BGSM that opts into PBR should flip it. See also `/audit-nifal` for the canonical material boundary that sets this flag (Dimension 7).
+### Dimension 3: NPC Equip + FaceGen (M41)
+**Subagent**: `general-purpose`
+**Entry points**: `byroredux/src/npc_spawn.rs` (M41 actor instantiation), `crates/facegen/src/` (`.tri`/`.egm`/`.egt` morph + texture blend), `byroredux/src/systems/character.rs` (skinning consumer for heads/bodies), `crates/nif/src/import/mesh/sse_recon.rs`
+**Checklist**:
+- The Whiterun BanneredMare 6 named NPCs (saadia, brenuin, mikael, sinmir, amaundmotierreend, hulda) each land `Inventory` + `EquipmentSlots` and spawn equipped (OTFT.items + LVLI dispatch). Guard that count + components don't regress.
+- Skyrim+ `resolve_armor_mesh` walks ARMO → ARMA → worn-mesh; body-slot armor pre-scan skips `upperbody.nif` to kill z-fight + double bone-palette overhead.
+- LVLI flattening (`expand_leveled_form_id`) gated on actor level — single-pick (highest eligible) vs multi-pick. Pre-fix, default outfits referencing LVLI spawned with no gear.
+- FaceGen heads parse via `BSDynamicTriShape` + the `facegen` crate, but expected visual fidelity is limited (no FaceGen runtime morph at render time) — confirm parse, not pixel match.
+- `BSDismemberSkinInstance` partition data routes into the skinning pipeline.
 **Output**: `/tmp/audit/skyrim/dim_3.md`
 
-### Dimension 4: BSEffectShaderProperty + Specialty Nodes
-**Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/blocks/properties.rs` (BSEffectShaderProperty), `crates/nif/src/import/walk/`, `crates/nif/src/blocks/mod.rs` (NiLodTriShape / BsLagBoneController / BsProceduralLightningController dispatch)
-**Checklist**: BSEffectShaderProperty soft_falloff_depth, greyscale_texture, lighting_influence, env_map_min_lod. BSDynamicTriShape (facegen dynamic verts). **`NiLodTriShape`** (Skyrim DLC tree LOD): inherits from NiTriBasedGeom per nif.xml — distinct wrapper, NOT routed through BSTriShape (#838 regression guard, 8d416cc). BSLODTriShape vs BSMeshLODTriShape vs BSSubIndexTriShape — distinct block types with distinct trailing data; dispatch + import must not confuse them. **`BsLagBoneController`** + **`BsProceduralLightningController`** (#837): dedicated parsers — without them ~120 by-design `block_size` WARN events fire per Meshes0 sweep. BSTreeNode wind-bone list parsing (SpeedTree). BSPackedCombined[Shared]GeomDataExtra — distant LOD batch layout. `as_ni_node` walker unwraps Skyrim NiNode subclasses (BSFadeNode, BSBlastNode, BSDamageStage, BSMultiBoundNode, BSTreeNode).
+### Dimension 4: Multi-Master Load Order + TES5 Cell-Load Regression
+**Subagent**: `general-purpose`
+**Entry points**: `byroredux/src/cell_loader/load_order.rs` (`--master` FormID remap), `crates/plugin/src/esm/records/` (TES5 records share the unified parser — the per-game legacy stub was removed under #390), `crates/plugin/src/esm/cell/` (CELL walker), `crates/plugin/src/esm/cell/tests/integration.rs` (`parse_real_skyrim_esm`), `ROADMAP.md`
+**Checklist**:
+- Repeatable `--master <path>` (M46.0 / #561): each plugin's TES4 master_files header drives a per-plugin FormID remap so cross-plugin REFRs land under merged global FormIDs; last-write-wins on collision (canonical Bethesda load order). Unresolved REFRs name the missing plugin. Repro: `cargo run -- --master Skyrim.esm --esm Dawnguard.esm --cell ForebearsHoldoutInt01`.
+- `parse_real_skyrim_esm` walks real `Skyrim.esm`, finds `SolitudeWinkingSkeever` — guard the unified walker keeps parsing Skyrim cells.
+- TES5 compressed-record decompression (groups can be compressed; interiors render) stays green.
+- Minimum interior-render record set parses: CELL, REFR, STAT, LIGH, WEAP, ARMO, plus Skyrim-specific LAND (heightmap scale), LTEX, TXST, ADDN.
+- Out of scope but must parse without error: NAVM, HDPT (metadata), `BSBehaviorGraphExtraData`.
+- **Control-bench guard**: Whiterun BanneredMare entity count + FPS vs the current ROADMAP Bench-of-record (R6a-stale-14). Skyrim ships real `bhk` collision, so entity count is flat across collider-gate changes — any drop in entity count or substantial FPS regression at the same entity count is a control-bench regression.
 **Output**: `/tmp/audit/skyrim/dim_4.md`
 
-### Dimension 5: Real-Data Validation & Rendering
+### Dimension 5: BSA v105 (LZ4)
 **Subagent**: `general-purpose`
-**Entry points**: `crates/nif/examples/nif_stats.rs`, `byroredux/src/render/` (`static_meshes.rs` / `skinned.rs` — Skyrim mesh/material draw enumeration), `byroredux/src/systems/character.rs` (skinning consumer for Skyrim NPC heads/bodies), canonical CLI demos
-**Checklist**: Parse rate holds at 100% (18862 / 18862). `cargo run -- --bsa "Skyrim - Meshes0.bsa" --mesh meshes\clutter\ingredients\sweetroll01.nif --textures-bsa "Skyrim - Textures3.bsa"` still renders correctly at ≥3000 FPS (2026-04-22 baseline: ~3000-5000 FPS on RTX 4070 Ti @ 1280×720; regression if substantially below 3000). Pick: one creature (dragon skeleton, NPC head), one landscape (tree LOD), one magic effect (BSEffectShaderProperty). Trace each through `import_nif_scene` → `material_translate::translate_material` → `render/static_meshes.rs` (static) / `render/skinned.rs` (skinned via `systems/character.rs`) → verify mesh count, material extraction, and texture handle resolution. Pick a FaceGen head — parses but expected visual fidelity is limited (no FaceGen runtime).
+**Entry points**: `crates/bsa/src/archive/` (mod, open, extract, hash, tests)
+**Checklist**:
+- v105 header format; LZ4 block decompression via `lz4_flex::block` — verify against a known-good Skyrim mesh (e.g. sweetroll).
+- Hash table layout vs v104; folder record size; embedded-name flag; compressed-file flag priority (archive-level vs per-file — which wins on disagreement).
+- Full-archive extraction sweep: `Skyrim - Meshes0.bsa` + `Skyrim - Textures*.bsa` (through Textures8) all extract without error. Note the numeric-sibling auto-load gotcha: it gates on a non-digit suffix, so `Textures0.bsa` siblings must be listed explicitly.
 **Output**: `/tmp/audit/skyrim/dim_5.md`
 
-### Dimension 6: TES5 Cell-Load Regression Coverage
-**Subagent**: `general-purpose`
-**Entry points**: `crates/plugin/src/esm/records/` (TES5 records share the unified parser — the per-game legacy/tes5.rs stub was removed under `#390`), `crates/plugin/src/esm/cell/` (CELL walker + per-feature submodules), `crates/plugin/src/esm/cell/tests/integration.rs` (`parse_real_skyrim_esm`), `ROADMAP.md`
-**Checklist**: NOTE — Skyrim ESM/cell loading is **WIRED and rendering**, not a forward blocker; this dimension is regression coverage, not readiness scoping. `parse_real_skyrim_esm` walks the real `Skyrim.esm`, finds `SolitudeWinkingSkeever` (>50 refs, 92-byte XCLL) — guard that the unified walker keeps parsing Skyrim cells. TES5 group structure vs TES4 (Skyrim uses compressed records extensively — groups can be compressed); compressed-record decompression already works (interiors render) — confirm it stays green. Record types live on the minimum "interior cell renders" path (CELL, REFR, STAT, LIGH, WEAP, ARMO) plus Skyrim-specific: LAND (different heightmap scale), LTEX, TXST, ADDN (addon nodes). `WhiterunBanneredMare` is the renderer **control bench** (3211 entities @ 329.8 FPS, R6a-stale-13 `4e2ebe8c` 2026-05-28) + 6 named NPCs via M41 — any drop in entity count or substantial FPS regression at the same 3211-entity count is a control-bench regression. Out of scope but must parse without error: NAVM (navmesh), HDPT (FaceGen head parts — metadata only), `BSBehaviorGraphExtraData` (havok behavior graphs). Dialog/Quest radiant-story format is not on the render path.
+### Dimension 6: Specialty Blocks + Real-Data Rendering
+**Subagent**: `renderer-specialist`
+**Entry points**: `crates/nif/src/blocks/mod.rs` (NiLodTriShape / BsLagBoneController / BsProceduralLightningController dispatch), `crates/nif/src/blocks/controller/`, `crates/nif/src/import/walk/`, `crates/nif/examples/nif_stats.rs`, `byroredux/src/render/static_meshes.rs`, `byroredux/src/render/skinned.rs`
+**Checklist**:
+- `BSLODTriShape` (Skyrim DLC tree LOD) routed through `NiLodTriShape`, NOT BSTriShape (#838 regression guard). `BSLODTriShape` vs `BSMeshLODTriShape` vs `BSSubIndexTriShape` — distinct bodies, must not be confused.
+- `BsLagBoneController` + `BsProceduralLightningController` (#837): dedicated parsers — without them a by-design `block_size` WARN burst fires per Meshes0 sweep.
+- `BSTreeNode` wind-bone list (SpeedTree); `BSPackedCombined[Shared]GeomDataExtra` distant-LOD batch layout; the import walker unwraps `BSFadeNode` / `BSBlastNode` / `BSMultiBoundNode`.
+- **Meshes0 sweep baseline**: 100% clean / 0 truncated / 0 recovered / 0 realignment WARNs. Any audit observing realignment WARNs on a clean Skyrim Meshes0 corpus has hit a regression.
+- Real-data render trace: pick one creature (dragon skeleton / NPC head), one landscape (tree LOD), one magic effect (BSEffectShaderProperty). Trace each `import_nif_scene` → `material_translate::translate_material` → `byroredux/src/render/static_meshes.rs` (static) / `byroredux/src/render/skinned.rs` (skinned) — verify mesh count, material extraction, texture handle resolution. Single-mesh smoke: render `meshes\clutter\ingredients\sweetroll01.nif` and confirm FPS stays in the ROADMAP-documented band.
 **Output**: `/tmp/audit/skyrim/dim_6.md`
 
 ### Dimension 7: NIFAL Canonical Material Translation (Skyrim slice)
 **Subagent**: `renderer-specialist`
-**Entry points**: `byroredux/src/material_translate.rs` (`translate_material`), `crates/core/src/ecs/components/material.rs` (`Material`, `Material::resolve_pbr`, `EmissiveSource`, `classify_pbr_keyword`), `docs/engine/nifal.md`
-**Checklist**: `translate_material` (`byroredux/src/material_translate.rs:65`) is the **single canonical boundary** mapping the per-game `ImportedMesh` (BSLightingShaderProperty / BSEffectShaderProperty `MaterialInfo`) into one ECS `Material` — no second translation path, no render-time fallback. `Material.metalness` / `Material.roughness` are plain resolved `f32` (`material.rs:216` / `:222`), seeded from BGSM/BGEM authored scalars or a `f32::NAN` sentinel, then filled by `Material::resolve_pbr` (`material.rs:588`) which delegates to the keyword classifier `classify_pbr_keyword` (`material.rs:432`) — the old per-draw `Material::classify_pbr` is **deleted** (any audit proposing render-time PBR classification is a regression of the canonical boundary). Ordering at the boundary: `material.resolve_pbr()` runs **before** `crate::helpers::classify_glass_into_material` (`material_translate.rs:153`) so forced-glass roughness wins over the keyword default. **EmissiveSource discriminator (#1280)**: `enum EmissiveSource { None, Material, Lighting, Effect }` (`material.rs:354`) — Skyrim `GlowShader` / `emissive_multiple` routes through the `Lighting` variant; resolves as an effective ~1.0 no-op across variants today, but the import-side routing is Skyrim-relevant (verify GlowShader maps to `Lighting`, not `Effect`). See also `/audit-nifal` for the cross-game canonical-translation deep dive (no-fabrication / single-boundary / no-render-time-fallback invariants).
+**Entry points**: `byroredux/src/material_translate.rs` (`translate_material`), `crates/core/src/ecs/components/material.rs` (`Material`, `Material::resolve_pbr`, `EmissiveSource`, `classify_pbr_keyword`, `PbrClassifierInputs`), `docs/engine/nifal.md`
+**Checklist**:
+- `translate_material` is the **single canonical boundary** mapping the per-game `ImportedMesh` (BSLightingShaderProperty / BSEffectShaderProperty `MaterialInfo`) into one ECS `Material` — no second translation path, no render-time fallback.
+- `Material.metalness` / `Material.roughness` are plain resolved `f32` fields, seeded from BGSM/BGEM scalars or an `f32::NAN` sentinel, then filled by `Material::resolve_pbr`, which delegates to the keyword classifier `classify_pbr_keyword`. The old per-draw `Material::classify_pbr` is **deleted** — any audit proposing render-time PBR classification is a regression of the canonical boundary.
+- Ordering at the boundary: `material.resolve_pbr()` runs **before** `crate::helpers::classify_glass_into_material` so forced-glass roughness wins over the keyword default.
+- **`EmissiveSource` discriminator (#1280)**: `enum EmissiveSource { None, Material, Lighting, Effect }`. Skyrim `BSLightingShaderProperty.emissive_multiple` routes through the `Lighting` variant (genuine emissive scalar); `Effect` is the BSEffectShaderProperty diffuse-tint conflation. Verify Skyrim emissive maps to `Lighting`, not `Effect`.
+- See `/audit-nifal` for the cross-game canonical-translation deep dive (no-fabrication / single-boundary / no-render-time-fallback invariants).
 **Output**: `/tmp/audit/skyrim/dim_7.md`
 
 ## Phase 3: Merge
 
 1. Read all `/tmp/audit/skyrim/dim_*.md` files.
 2. Combine into `docs/audits/AUDIT_SKYRIM_<TODAY>.md` with structure:
-   - **Executive Summary** — Current state: both loose-mesh and cell rendering work — WhiterunBanneredMare is the renderer control bench (3211 entities). Shader coverage across 8 BSLightingShaderProperty variants + the NIFAL canonical material boundary.
-   - **Dimension Findings** — Grouped by severity per dimension.
-   - **Shader Variant Coverage Matrix** — 8 BSLightingShaderProperty variants × parse-complete / import-complete / render-complete.
-   - **Cell-Load Regression Status** — TES5 cells parse through the unified `esm/cell/` walker (compressed records decompress); Whiterun control-bench entity count + FPS vs the R6a-stale-13 baseline.
+   - **Executive Summary** — Skyrim SE is the renderer control bench (Whiterun BanneredMare, 6 equipped NPCs); both loose-mesh and cell rendering work. This audit is regression coverage + Skyrim-specific geometry/shader/equip risk.
+   - **Dimension Findings** — grouped by severity per dimension.
+   - **Shader-Type Coverage Matrix** — the `ShaderTypeData` variants × parse-complete / import-complete / render-complete (note which numeric types map to `None`).
+   - **Cell-Load Regression Status** — TES5 cells parse through the unified `esm/cell/` walker (compressed records decompress); Whiterun control-bench entity count + FPS vs the current ROADMAP Bench-of-record.
 3. Remove cross-dimension duplicates.
 
 Suggest: `/audit-publish docs/audits/AUDIT_SKYRIM_<TODAY>.md`

@@ -1,121 +1,300 @@
 ---
-description: "Audit the SpeedTree (.spt) TLV parser + placeholder-billboard fallback shipped in Session 33 Phase 1"
+description: "Audit the SpeedTree (.spt) TLV walker + placeholder-billboard fallback shipped in Session 33 Phase 1"
 argument-hint: "--focus <dimensions> --depth shallow|deep"
 ---
 
 # SpeedTree Subsystem Audit
 
-Audit the `byroredux-spt` crate (Session 33 Phase 1, since grown to 7 `src/` modules + 5 example analyzers) for TLV walker correctness, tag coverage against the FNV/FO3/Oblivion `.spt` corpus, the ≥95% acceptance gate, the placeholder-billboard fallback that keeps cell loads alive when a tree fails to decode, and the NIFAL material translation the placeholder mesh now flows through.
+Audit the `byroredux-spt` crate — a young, deliberately small subsystem
+(Session 33 Phase 1, "S1"). It does two things: (1) walks the `.spt`
+parameter section as a tag-length-value stream for FNV / FO3 / Oblivion,
+and (2) emits a **placeholder billboard** `ImportedScene` so TREE cells
+render *something* instead of panicking or going treeless. The real
+geometry tail is **not** decoded — everything past `tail_offset` is left
+on the floor by design.
 
-**Architecture**: Single-pass — small enough to run dimensions inline rather than spawning Tasks.
+Keep the audit proportionate. The highest-risk surface is the **walker's
+byte accounting** (one mis-sized payload desyncs the whole stream), then
+the **placeholder fallback correctness**, then **TREE record → billboard
+wiring**, then **per-game `.spt` differences**. The tag dictionary is
+large but each entry is a fixed-size decode — low risk individually.
 
-See `.claude/commands/_audit-common.md` for project layout, methodology, deduplication, context rules, and finding format.
+**Architecture**: Single-pass — small enough to run all dimensions inline
+rather than spawning Tasks.
+
+See `.claude/commands/_audit-common.md` for project layout, methodology,
+deduplication, context rules, severity, and finding format. Do not
+re-derive any of those here.
 
 ## Scope
 
-**Crate**: `crates/spt/src/` (Session 33 Phase 1 — TLV walker + placeholder fallback).
+**Crate**: `crates/spt/src/` — `parser.rs`, `tag.rs`, `version.rs`,
+`stream.rs`, `scene.rs`, `crates/spt/src/import/mod.rs`, plus the
+feature-gated `crates/spt/src/recon/mod.rs`. Public surface re-exported
+from `crates/spt/src/lib.rs`: `parse_spt`, `import_spt_scene`,
+`SptImportParams`, `SptScene`, `detect_variant`, `dispatch_tag`.
+(`compute_billboard_size` is a *private* helper in the import module, not
+an entry point.)
 
-**Cross-cuts**:
-- `byroredux/src/cell_loader/references.rs` — extension switch routes `.spt` to the SpeedTree importer instead of NIF (`is_spt` test at ~478-490 → `parse_and_import_spt` at ~1080). `refr.rs` does NOT carry the `.spt` route.
-- `byroredux/src/scene/nif_loader.rs` — `--tree` direct-visualisation CLI entry (`--tree trees\\joshua01.spt`; `--mesh foo.spt` is equivalent — both branch on the `.spt` extension)
-- `crates/plugin/src/esm/records/tree.rs` — TREE record parser (was previously falling into the generic record path and losing texture/billboard data)
-- `byroredux/src/material_translate.rs::translate_material` — the NIFAL canonical boundary that consumes the spt placeholder `ImportedMesh` at `cell_loader/spawn.rs:861` (`Material::resolve_pbr` fills any unset PBR slot). See `docs/engine/nifal.md` and `/audit-nifal`.
+**Cross-cuts** (the wiring that actually invokes the crate):
+- `byroredux/src/cell_loader/references.rs` — the production route. An
+  `is_spt` extension check (`model_path … eq_ignore_ascii_case("spt")`)
+  dispatches to `parse_and_import_spt`, which looks up the matching TREE
+  record from `record_index.trees` and threads its metadata into
+  `SptImportParams`. `refr.rs` does **not** carry a `.spt` route.
+- `byroredux/src/scene/nif_loader.rs` — the `--tree` / loose-file
+  direct-visualiser route (`parse_import_and_merge`, `is_spt` branch).
+  This is a **parallel** path: it calls `import_spt_scene` with
+  `SptImportParams::default()` — **no TREE metadata** (no ICON override,
+  no OBND/MODB/BNAM sizing). Verify the two routes don't silently diverge
+  in ways that matter (Dimension 4).
+- `crates/plugin/src/esm/records/tree.rs` — `parse_tree` → `TreeRecord`.
+  Captures OBND / ICON / MODB / SNAM / CNAM / BNAM / PFIG. `has_speedtree_binary()`
+  is the case-insensitive `.spt` predicate. Pre-S1 TREE fell into the
+  generic MODL-only path and dropped every field but MODL.
+- `byroredux/src/systems/billboard.rs` — `make_billboard_system` rotates
+  any entity carrying a `Billboard` component. `BsRotateAboutUp` (the mode
+  the spt placeholder uses) currently falls back to the world-up yaw lock
+  — confirm that's still the behaviour and that the `-Z` front-face
+  convention in `import/mod.rs` matches the rotation arc used here.
+- `byroredux/src/cell_loader/spawn.rs` — attaches the `Billboard`
+  component from `cached.placement_root_billboard`, and routes the
+  placeholder `ImportedMesh` through the NIFAL boundary
+  (`crate::material_translate::translate_material`).
 
-**Crate layout** (Session 33+ — no longer a single file; `crates/spt/src/`):
-- `parser.rs` — `parse_spt(&[u8]) -> io::Result<SptScene>`, tag-band guards `TAG_MIN = 100` / `TAG_MAX = 13_999`
-- `tag.rs` — `SptTagKind` (9 payload kinds: `Bare`/`U8`/`U32`/`Vec3`/`FixedBytes(u8)`/`String`/`ArrayBytes{stride}`/`Unknown`/`MaybeStringElseBare`) + `dispatch_tag(u32)`
-- `version.rs` — `detect_variant(&[u8])`, `SpeedTreeVariant` (`V4Oblivion`/`V5Fo3`/`V5Fnv`/`Unknown`)
-- `stream.rs` — `SptStream<'a>` (LE readers, EOF guard)
-- `scene.rs` — `SptScene` / `SptValue` / `TagEntry`
-- `recon/mod.rs` — feature-gated reconstruction
-- `import/mod.rs` — placeholder importer (`compute_billboard_size`, `ImportedMesh` build)
-- Recon analyzers live in `crates/spt/examples/` (`spt_dissect.rs`, `spt_tagmap.rs`, `spt_transitions.rs`, `spt_walk.rs`, `spt_recon.rs`); format notes at `crates/spt/docs/format-notes.md`
+**Phase 1 ("S1") acceptance** (ground truth — verify before reporting):
+- TLV walker recovered against the FNV/FO3/Oblivion `.spt` corpus
+  (133 vanilla files; Oblivion ≈ 113).
+- Acceptance gate ≥ 95 % *unknown-tag-clean* rate, asserted in
+  `crates/spt/tests/parse_real_spt.rs` (env-var gated, `#[ignore]`).
+- Placeholder fallback: un-decoded trees render as a billboard card,
+  never an `Err` out of the cell loader.
+- `.spt` REFRs route to the SpeedTree importer, not NIF.
+- `--tree` smoke path parses + imports.
 
-**Phase 1 acceptance** (ground truth — verify before reporting):
-- Single-file dissector + tag dictionary recovered against the corpus
-- TLV walker ≥95% on FNV/FO3/Oblivion `.spt` corpus (`>5 GB joshua01.spt` etc.)
-- Importer placeholder fallback — un-decoded trees render as a billboard card (better than parse panic)
-- `.spt` references in cell records route to the SpeedTree importer, not NIF
-- `--tree` smoke test passes
-
-**Future phases (NOT yet shipped — do not flag as missing unless scope includes them)**: full geometry recovery (real branch/leaf mesh, not billboard), wind-bone animation from `BSTreeNode`, distance-LOD swap, baked-shadow lookup.
+**Future phases (NOT shipped — do not flag as missing unless `--focus`
+explicitly includes them)**: real branch/leaf mesh recovery from the
+geometry tail, wind-bone animation from SNAM/CNAM, distance-LOD swap,
+baked-shadow lookup. SNAM/CNAM are *parsed but not consumed* (TD5-011
+gate) — that's intentional, not a drop.
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3`). Default: all 6.
-- `--depth shallow|deep`: `shallow` = walker contract check; `deep` = run corpus against the walker + diff against the baseline. Default: `deep`.
+- `--focus <dimensions>`: comma-separated dimension numbers. Default: all.
+- `--depth shallow|deep`: `shallow` = walker contract + wiring review from
+  source only; `deep` = also run the corpus harness against on-disk BSAs.
+  Default: `deep`.
 
 ## Extra Per-Finding Fields
 
-- **Dimension**: TLV Format | Tag Coverage | Corpus Acceptance | Placeholder Fallback | Routing & CLI | NIFAL Material Translation
+- **Dimension**: Walker Byte-Accounting | Placeholder Fallback | TREE→Billboard Wiring | Per-Game Variants | Tag Dictionary | NIFAL Material Translation
 
 ## Phase 1: Setup
 
 1. `mkdir -p /tmp/audit/speedtree`
-2. `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels --search "speedtree OR .spt OR TREE" > /tmp/audit/speedtree/issues.json`
-3. Confirm corpus path: `find /mnt/data/SteamLibrary/steamapps/common -iname '*.spt' 2>/dev/null | head` — and the in-BSA paths (`trees\\*.spt` in FNV `Fallout - Meshes.bsa`, FO3 `Fallout - Meshes.bsa`, Oblivion `Oblivion - Meshes.bsa`)
+2. Dedup query (per `_audit-common.md`):
+   `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels --search "speedtree OR spt OR TREE" > /tmp/audit/speedtree/issues.json`
+3. Read the prior report `docs/audits/AUDIT_SPEEDTREE_2026-05-13.md` —
+   its findings SPT-D4-01/02/03/04, SPT-D5-01/02, SPT-D2-01, SPT-D3-01,
+   SPT-D1-01 are all **closed** (#994/#995/#996/#997/#998/#999/#1000/#1001/#1002).
+   Treat them as **regression guards**, not open items; only re-flag if a
+   guard has actually broken.
+4. `deep` only — corpus + recon harness:
+   - corpus location: `Fallout - Meshes.bsa` (FNV/FO3), `Oblivion - Meshes.bsa`.
+   - acceptance run: `BYROREDUX_FNV_DATA=… cargo test -p byroredux-spt --release --test parse_real_spt -- --ignored --nocapture` (and `_FO3_DATA` / `_OBL_DATA`).
+   - per-file dumps: the `recon` examples are **feature-gated** —
+     `cargo run -p byroredux-spt --features recon --example spt_walk` (also
+     `spt_tagmap`, `spt_transitions`, `spt_dissect`, `spt_recon`). Findings
+     log to `crates/spt/docs/format-notes.md`.
 
 ## Phase 2: Dimensions
 
-### Dimension 1: TLV Format Correctness
-**Entry points**: `crates/spt/src/parser.rs` (`parse_spt`, `TAG_MIN`/`TAG_MAX`), `crates/spt/src/stream.rs` (`SptStream` LE readers + EOF guard), `crates/spt/src/version.rs` (`detect_variant`, `SpeedTreeVariant`), `crates/spt/tests/parse_synthetic_spt.rs`
-**Checklist**:
-- Header magic + version bytes recognised across FNV/FO3/Oblivion variants (TLV format isn't versioned by a global field — verify each entry point claims its own header)
-- Tag-length-value walker correctly skips unknown tags using their length (no byte-misalignment cascade past the first unknown tag)
-- Length field byte-width is consistent (LE u32 per current dissector; flag if any variant ships u16)
-- Walker stops cleanly at EOF — no off-by-one read past file end on the last tag
-- Negative / zero / pathological lengths bail with `Err`, not panic — `.spt` is artist-shipped data, must not crash the cell loader
-- Endian: LE everywhere (no big-endian fallback path); compile-error gate if a future big-endian host is added
+Ordered by SpeedTree risk.
 
-### Dimension 2: Tag Coverage
-**Entry points**: `crates/spt/src/tag.rs` (`SptTagKind` + `dispatch_tag`), recon analyzers in `crates/spt/examples/` (`spt_tagmap.rs`, `spt_transitions.rs`, `spt_dissect.rs`), format notes at `crates/spt/docs/format-notes.md`
+### Dimension 1: Walker Byte-Accounting
+**Highest risk.** The walker has no length-prefixed framing for most tags —
+it advances by the *payload kind's* fixed size. A single wrong size in the
+dictionary desyncs every subsequent read.
+**Entry points**: `crates/spt/src/parser.rs` (`parse_spt`, `read_payload`,
+`TAG_MIN`/`TAG_MAX`), `crates/spt/src/stream.rs` (`SptStream` LE readers +
+`is_eof`/`remaining` guards), `crates/spt/src/parser.rs` tests.
 **Checklist**:
-- `dispatch_tag` currently recognises ~14 tag values across 9 `SptTagKind` payload kinds; the ~40-known-tags target (texture path, billboard descriptor, branch geometry, leaf cluster, wind params, LOD distances) is aspirational for Phase 1 — flag the gap as an open finding, not a stale claim
-- Any tag that appears in the corpus at ≥1% frequency MUST have either a parser or an explicit skip-with-rationale comment
-- Texture-path tags resolve through the same `resolve_texture` / sibling-BSA auto-load path that NIF uses — verify no parallel "spt resolver" duplicates the logic
-- Billboard tag captures: texture, world-space width/height, mip bias — these flow into the placeholder importer
-- "Last tag wins" vs "first tag wins" semantics for duplicate tags — confirm and document
+- Each `SptTagKind` decode advances the cursor by exactly the bytes it
+  claims: `U8`=1, `U32`=4, `Vec3`=12, `FixedBytes(n)`=n, `String`=4+len,
+  `ArrayBytes{stride}`=4+count×stride, `Bare`=0. Cross-check `read_payload`
+  against the dictionary in `tag.rs` for any size mismatch.
+- The `MaybeStringElseBare` branch (tag 13005, #999) consumes the tag,
+  then peeks the next u32 to decide Bare vs String. Confirm it re-syncs
+  cleanly on **both** arms and that a `None` peek (EOF) can't panic —
+  the `tag_13005_at_eof_does_not_panic` regression guard.
+- Walker stops cleanly at `is_eof()` (sets `reached_eof`) and at an
+  out-of-range / `Unknown` tag (records `tail_offset` + `unknown_tags`),
+  never reads one tag past EOF.
+- Pathological lengths: `read_string_lp` and `ArrayBytes` both cap at
+  64 KiB and bail with `Err`, not OOM. Confirm the cap is on the *byte
+  count* (count × stride), not just `count`.
+- `parse_spt` returns `Err` only on the two fatal conditions (missing
+  magic, mid-payload underflow). In-range-but-unknown tags are non-fatal
+  (recorded, walker stops) — this is the contract the placeholder relies
+  on. Any new fatal-error path is a HIGH finding (it kills the cell-loader
+  fallback).
+- Endian: LE-only, unconditional (no version-gated readers — every `.spt`
+  is `__IdvSpt_02_`). Flag any big-endian assumption or host-endian read.
 
-### Dimension 3: Corpus Acceptance (≥95% gate)
-**Entry points**: `crates/spt/tests/parse_real_spt.rs` (or equivalent), corpus location resolved via env-var (mirror the NIF `BYROREDUX_*_DATA` pattern)
+### Dimension 2: Placeholder Fallback Correctness
+**Entry points**: `crates/spt/src/import/mod.rs` (`import_spt_scene`,
+`compute_billboard_size`, `placeholder_billboard_mesh`,
+`placeholder_root_node`, `DEFAULT_BILLBOARD_WIDTH`/`_HEIGHT`),
+`byroredux/src/systems/billboard.rs`.
 **Checklist**:
-- Acceptance harness runs over FNV + FO3 + Oblivion `.spt` corpus and reports walker-clean rate
-- Threshold: ≥95% (Phase 1 gate). Under-95% = audit finding even if every per-file failure is graceful
-- Walker-clean ≠ semantically-correct — failures should be bucketed (truncation, unknown tag exceeding length, header mismatch, etc.) with corpus-wide histogram
-- Regression-guard sample: 3-5 specific `.spt` files pinned by SHA, in-tree, should parse byte-stable across runs
-- Memory: `parse_spt` currently takes a `&[u8]` (caller pre-loads the file). The "never materialise the whole file" bar is a forward-looking quality goal that the present `&[u8]` API cannot satisfy — flag as design debt, not a walker bug; verify the largest `joshua01.spt` corpus entry doesn't blow the cell-loader's transient memory budget when slurped whole
+- `import_spt_scene` **always** returns a one-node / one-mesh
+  `ImportedScene` — there is no `Err` path out of it. The only way the
+  cell loader gets `None` is `parse_spt` returning `Err` (magic /
+  underflow); confirm that path logs + skips the REFR without aborting
+  the rest of the cell (graceful-degradation contract).
+- Leaf-texture precedence: TREE.ICON override → `.spt` tag 4003 (first
+  wins, #997) → unset (renderer magenta placeholder). Regression guards:
+  `leaf_texture_override_wins_over_spt_tag`,
+  `empty_texture_leaves_path_unset_for_renderer_placeholder`.
+- Billboard sizing precedence in `compute_billboard_size`: **OBND →
+  BNAM → MODB → 256×512 default**, every path clamped to `[16, 8192]`
+  (#1001/#1002). OBND beats BNAM intentionally (BNAM clamps tall trees,
+  e.g. WhiteOak01 OBND 802×1567 vs BNAM 768×768). Vanilla Oblivion ships
+  MODB-only / no OBND, so an OBND-first-or-default path would render
+  Cyrodiil pines at half scale. Guard the ordering.
+- Normal / winding convention (#1000): front-face normal is `-Z`, indices
+  `[0, 3, 2, 2, 1, 0]`. The billboard system rotates via
+  `Quat::from_rotation_arc(-Z, look_dir)`, so object `-Z` ends up facing
+  the camera — the textured face must be `-Z`. Pre-#1000 normals were `+Z`
+  and `two_sided: true` masked it. Guards:
+  `placeholder_normals_point_negative_z_for_billboard_arc`,
+  `placeholder_index_winding_produces_negative_z_geometric_normal`.
+- `bs_bound` Z-up → Y-up swap (#995): center via
+  `byroredux_core::math::coord::zup_to_yup_pos`, half-extents reshuffled
+  `(hx, hz, hy)`. Guard: `placeholder_uses_obnd_bounds_when_present`.
+- Two-sided + alpha-test cutout: `two_sided: true`, `alpha_test: true`,
+  `alpha_threshold: 0.5`, `alpha_test_func: 6` (GREATEREQUAL),
+  `has_alpha: false` (cutout and blend are exclusive).
+- `BsRotateAboutUp` handling in `billboard.rs::compute_billboard_rotation`
+  currently falls back to the world-up yaw lock (it lacks the local frame).
+  Verify that approximation is still acceptable for tree imposters and
+  documented — drifting it silently into pitch would tilt every tree.
 
-### Dimension 4: Placeholder Fallback
-**Entry points**: `crates/spt/src/import/mod.rs` (`compute_billboard_size`, the `ImportedMesh` billboard build at ~281+ with the normal/winding convention documented at ~249-258), `byroredux/src/scene/nif_loader.rs`, billboard mesh creation in `crates/renderer/src/mesh.rs`
+### Dimension 3: TREE → Billboard Wiring
+**Entry points**: `byroredux/src/cell_loader/references.rs`
+(`is_spt` dispatch, `parse_and_import_spt`),
+`byroredux/src/cell_loader/spawn.rs` (`placement_root_billboard` →
+`Billboard::new`), `crates/plugin/src/esm/records/tree.rs` (`parse_tree`,
+`TreeRecord`, `has_speedtree_binary`).
 **Checklist**:
-- When the walker fails OR no billboard tag was captured, importer returns a placeholder card (Quad mesh + magenta-checker placeholder texture OR the texture from the billboard tag if available)
-- Placeholder return is non-null — must never `Err` out of the cell loader (graceful degradation is the Phase 1 contract)
-- Placeholder sizing precedence is **OBND → BNAM (#1002) → Oblivion MODB (#1001) → 256×512 default** (`DEFAULT_BILLBOARD_WIDTH` / `DEFAULT_BILLBOARD_HEIGHT`); guard the `compute_billboard_size` ordering — vanilla Oblivion TREEs ship MODB-only (OBND on none) so an OBND-first-or-default path renders junipers at half scale
-- **Billboard normal faces `-Z`, winding flipped to `[0, 3, 2, 2, 1, 0]`** (#1000): the entity rotates via `Quat::from_rotation_arc(-Z, look_dir)`, so the object-space `-Z` axis ends up pointing at the camera and the front face must be `-Z` to render toward it. Pre-#1000 normals pointed `+Z` and `two_sided: true` masked the inverted convention. Verify the Z-up→Y-up `bs_bound` swap (#995) is applied
-- Two-sided rendering enabled on the placeholder (foliage shouldn't disappear when camera looks from behind); leaf-card path uses alpha-test cutout (`alpha_test: true`, `alpha_threshold: 0.5`, `alpha_test_func: 6` GREATEREQUAL)
-- Material slot: placeholder goes through the same `MaterialTable::intern` path as NIF meshes — verify dedup applies (a forest of 1000 juniper bushes should produce 1 material, not 1000)
+- The `.spt` route fires when the REFR's TREE base's MODL ends in `.spt`;
+  TREE record is fetched from `record_index.trees` by the same form id
+  resolved against `index.statics`. Mixed `.nif` + `.spt` REFRs in one
+  cell must coexist.
+- `parse_and_import_spt` returns the **same** `CachedNifImport` shape as
+  every other model, with synthetic defaults the generic spawn path must
+  not mis-read as NIF-rooted:
+  `placement_root_billboard = Some(BsRotateAboutUp)` (#994),
+  `bsx_flags = 0` (#1214), `root_flags = 0` (#1235),
+  `flame_attach_offset = None`. Confirm the spawn site never assumes the
+  placeholder carries a real NiAVObject root / BSXFlags / flame marker.
+- `spawn.rs` actually inserts the `Billboard` component when
+  `placement_root_billboard.is_some()` — without it the quad spawns static
+  (this was SPT-D4-01, now closed; it's the regression guard for the whole
+  dimension).
+- `TreeRecord` field capture is lossless for the fields the importer reads
+  (OBND→`bounds`, ICON→`leaf_texture`, MODB→`bound_radius`,
+  BNAM→`billboard_size`). SNAM/CNAM are parsed-but-not-consumed (TD5-011) —
+  don't flag as a drop, but DO flag if they're silently *mis-parsed*
+  (e.g. CNAM length not shape-tolerant across the 5-float Oblivion vs
+  8-float FO3/FNV split).
+- `.spt` files in BSAs resolve through the same `extract_mesh` lookup chain
+  as `.nif` (sibling-BSA auto-load, AE pipeline-path strip if relevant) —
+  no parallel "spt resolver".
+- Cell unload despawns the placeholder entities cleanly; no leaked BLAS
+  entries for the billboard quad.
 
-### Dimension 5: Routing & CLI
-**Entry points**: `byroredux/src/cell_loader/references.rs` (`is_spt` extension dispatch ~478-490; `parse_and_import_spt` ~1080), `byroredux/src/scene/nif_loader.rs` (`--tree` flag), `crates/plugin/src/esm/records/tree.rs` (TREE parser)
+### Dimension 4: Per-Game Variants & Route Divergence
+**Entry points**: `crates/spt/src/version.rs` (`detect_variant`,
+`SpeedTreeVariant`, `MAGIC_HEAD`), `byroredux/src/scene/nif_loader.rs`
+(`parse_import_and_merge` `is_spt` branch).
 **Checklist**:
-- Cell-loader `.spt` route fires when the REFR's base record is TREE and the model path ends in `.spt`; mixed `.nif` + `.spt` in the same cell coexist
-- `.spt` references in BSA archives resolve through the same lookup chain as `.nif` (sibling-BSA auto-load, AE pipeline-path strip applied if relevant)
-- `--tree path/to/x.spt` CLI entry instantiates the same code path as the cell-loader route (no parallel "direct viz" stub that drifts from the in-engine path)
-- TREE record parser (Session 33 dedicated dispatch) captures texture / billboard / shadow data without dropping fields — pre-fix every `.spt`-referencing TREE silently lost its authoring
-- `parse_and_import_spt` returns the same `CachedNifImport` shape every other model uses, with synthetic defaults the generic spawn path must not mis-read as NIF-rooted: `placement_root_billboard = Some(BillboardMode::BsRotateAboutUp)` (#994), `bsx_flags = 0` (#1214), `root_flags = 0` (#1235), `flame_attach_offset = None` (Phase 18). Verify the spawn site reads these without assuming an `.spt` placeholder carries a real NiAVObject root / BSXFlags / flame marker
-- Cell unload despawns the SpeedTree entities cleanly; no leaked BLAS entries for placeholder billboards
-- Failed `.spt` import does NOT block the rest of the cell from loading (graceful degradation)
+- `detect_variant` recognises any `__IdvSpt_02_`-prefixed file but cannot
+  tell V4Oblivion from V5Fnv at the magic level — it defaults to `V5Fnv`
+  and the caller is meant to override via game context. Verify nothing
+  downstream actually *depends* on the variant being correct today (the
+  placeholder path is variant-agnostic); if a consumer branches on it,
+  that's a real bug. Guards: `detect_variant_recognises_idvspt_magic`,
+  `detect_variant_unknown_for_non_speedtree_inputs`.
+- `MAGIC_HEAD` is the exact 20 bytes (`u32 1000`, `u32 12`,
+  `"__IdvSpt_02_"`). A one-byte flip must reject → placeholder. Confirm no
+  partial-prefix leakage (input shorter than 20 bytes rejects).
+- **Route divergence** (the real per-game risk here): the cell-loader
+  route threads TREE metadata; the `--tree` / loose route uses
+  `SptImportParams::default()`. That means a loose-loaded Oblivion `.spt`
+  gets the 256×512 default (no MODB sizing) and no ICON override. Confirm
+  this is understood/documented and isn't masking a sizing bug that would
+  also bite the cell route. Flag if the two routes have drifted in the
+  *parse* call (they must both call `parse_spt` + `import_spt_scene`).
+- Oblivion (SpeedTree 4.x) vs FO3/FNV (5.x): the parameter walker is
+  assumed unified across all three (same magic, same tag dictionary). The
+  geometry-tail layout is **not** confirmed unified — but the tail is
+  out-of-scope for Phase 1, so only flag a tail-decode assumption if
+  `--focus` includes the future phases.
+
+### Dimension 5: Tag Dictionary
+Lower risk (fixed-size decodes), but a wrong size here is the Dimension-1
+desync trigger, so spot-check rather than skip.
+**Entry points**: `crates/spt/src/tag.rs` (`SptTagKind`, `dispatch_tag`),
+`crates/spt/docs/format-notes.md`, recon examples (`spt_tagmap`,
+`spt_transitions`).
+**Checklist**:
+- `dispatch_tag` currently maps ~90 tag values across the payload kinds.
+  This is conservative-by-design: any tag not in the table → `Unknown` →
+  walker stops cleanly. The old "~14 tags / 40-tag aspirational target"
+  framing is stale — do **not** report dictionary size as a gap.
+- Cross-check a sample of fixed-size assignments against the
+  `format-notes.md` 2026-05-09 table and the `tag.rs` unit tests
+  (`fixed_byte_payload_tags`, `string_payload_tags`, etc.): e.g. 8003/8005/8009
+  = 52 B, 13008 = 11 B, 13013 = 7 B, 12002 = 16 B, 12003 = 20 B,
+  ArrayBytes 10002 stride 1 / 10003 stride 8. A size that contradicts the
+  observed histogram is a Dimension-1 desync waiting to happen → MEDIUM.
+- Confounder tags (`4096`, `5376`, string-length values that fell in the
+  tag band) must stay `Unknown` so the walker bails rather than misparses
+  (`unknown_for_out_of_dictionary_tags`).
+- Any tag observed in the corpus at ≥1 % frequency that's still `Unknown`
+  should have a `format-notes.md` rationale; an undocumented common-tag
+  bail is a LOW finding.
 
 ### Dimension 6: NIFAL Material Translation for Placeholders
-**Entry points**: the `ImportedMesh` material defaults in `crates/spt/src/import/mod.rs` (~281+), the canonical boundary `byroredux/src/material_translate.rs::translate_material` consumed at `byroredux/src/cell_loader/spawn.rs:861`, `crates/core/src/ecs/components/material.rs::Material::resolve_pbr`
-**See also**: `/audit-nifal` (the dedicated NIFAL canonical-translation-tier audit) — spt is one of its `Imported* → translate() → Canonical` producers; cross-check single-boundary / no-fabrication findings there rather than duplicating them here.
+The placeholder `ImportedMesh` flows through the single NIFAL boundary like
+any other mesh. Cross-cuts `/audit-nifal` — report single-boundary /
+no-fabrication findings *there*, not here.
+**Entry points**: the material defaults in
+`crates/spt/src/import/mod.rs` (`placeholder_billboard_mesh`),
+`byroredux/src/material_translate.rs` (`translate_material`, consumed at
+the `spawn.rs` call site), `crates/core/src/ecs/components/material.rs`
+(`Material::resolve_pbr`).
 **Checklist**:
-- The spt placeholder `ImportedMesh` is canonicalised at the **single** NIFAL boundary (`translate_material` → `resolve_pbr`), not at render time — no parallel "spt material" path that bypasses `material_translate.rs`
-- Billboard material defaults survive translation intact: `is_pbr: false`, `metalness_override: None`, `roughness_override: None`, `from_bgsm: false` — `resolve_pbr` should fill `Material.metalness`/`roughness` (now plain resolved `f32`, not `Option`) from the non-PBR keyword path, NOT promote the billboard to metallic-roughness
-- `emissive_source: EmissiveSource::None` (#1280) holds through translation — a tree billboard must not pick up an emissive lobe
-- `#1241` (BSLightingShaderProperty PBR scalars surfaced at import) does not regress spt: SpeedTree never resolves a BGSM/BGEM, so the PBR-scalar fields stay at their non-PBR defaults — guard that a82366e9-style import-side PBR plumbing left the spt billboard non-PBR
-- Two-sided alpha-test cutout (Dimension 4) maps to the correct canonical `Material` flags after translation (foliage silhouette preserved, not opaque-blitted)
+- The placeholder is canonicalised at the **single** `translate_material`
+  boundary — no parallel "spt material" path that bypasses it (the `--tree`
+  loose route and the cell route must both land here via `spawn.rs`).
+- Non-PBR defaults survive translation: `is_pbr: false`,
+  `metalness_override: None`, `roughness_override: None`,
+  `from_bgsm: false` (#1076/#1077). `resolve_pbr` must fill the canonical
+  `metalness`/`roughness` f32 from the non-PBR keyword path, never promote
+  the billboard to metallic-roughness. SpeedTree never resolves a
+  BGSM/BGEM (#1241/#1353) — guard that import-side PBR plumbing
+  (a82366e9-style) left the billboard non-PBR.
+- `emissive_source: EmissiveSource::None` (#1280) holds — a tree billboard
+  must not pick up an emissive lobe.
+- The two-sided alpha-test cutout maps to the correct canonical `Material`
+  flags after translation (foliage silhouette preserved, not
+  opaque-blitted).
 
 ## Phase 3: Output
 
-Write findings to **`docs/audits/AUDIT_SPEEDTREE_<TODAY>.md`** following the base finding format. Suggest `/audit-publish` on completion.
+Write findings to **`docs/audits/AUDIT_SPEEDTREE_<TODAY>.md`** using the
+base finding format from `_audit-common.md`. Mark anything already covered
+by #994–#1002 as a regression guard, not a new finding. Suggest
+`/audit-publish` on completion.

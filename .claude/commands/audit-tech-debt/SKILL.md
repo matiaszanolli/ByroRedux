@@ -5,238 +5,310 @@ argument-hint: "--focus <dimensions> --depth shallow|deep"
 
 # Tech-Debt Audit
 
-Audit ByroRedux for accumulated technical debt: code that compiles, passes tests, and ships, but quietly raises the cost of every future change. The goal is **not** to find correctness bugs (other audits cover that) — it's to surface decay that has crept in since the last cleanup pass.
+Audit ByroRedux for accumulated technical debt: code that compiles, passes
+tests, and ships, but quietly raises the cost of every future change. The goal
+is **not** correctness bugs (other audits own that) — it is decay that crept in
+since the last cleanup pass.
+
+**Every dimension below is a DISCOVERY RECIPE, not a finding list.** Instances
+churn between audits (markers get deleted, files get split, line numbers drift).
+So each dimension hands you a command to enumerate *current* instances, then a
+triage rule. Do not trust any hardcoded instance list — there are none here on
+purpose. Re-run the recipe; report what it surfaces today.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, methodology, deduplication, context rules, and finding format.
+See `.claude/commands/_audit-common.md` for project layout, the 19-crate roster,
+methodology, deduplication, context rules, severity, and finding format. Do not
+duplicate any of that here.
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,5`). Default: all 11.
-- `--depth shallow|deep`: `shallow` = surface counts and worst offenders; `deep` = file-by-file with concrete fix proposals. Default: `deep`.
+- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,5`). Default: all 9.
+- `--depth shallow|deep`: `shallow` = surface counts + worst offenders; `deep` = per-instance triage with a concrete fix proposal. Default: `deep`.
 
 ## Extra Per-Finding Fields
 
-- **Dimension**: Stale Markers | Dead Code | Logic Duplication | Magic Numbers | Stub Implementations | Test Hygiene | Stale Documentation | Backwards-Compat Cruft | File / Function Complexity | Audit-Finding Rot | NIFAL Translation-Tier Debt
-- **Age** (when applicable): commit hash + date the debt was introduced (use `git log -L` or `git blame`)
-- **Effort**: trivial (≤30 min) | small (≤2 h) | medium (≤1 day) | large (>1 day, decompose first)
+- **Dimension**: one of the 9 below.
+- **Age** (when relevant): commit hash + date the debt landed (`git log -L` / `git blame`).
+- **Effort**: trivial (≤30 min) | small (≤2 h) | medium (≤1 day) | large (>1 day, decompose first).
+- **ID convention**: `TD<dim>-NNN` (e.g. `TD7-050` = Dim 7 Doc Rot, finding 50). The
+  path-validation gate (`_audit-validate.sh`, #1114) was itself a `TD7-*` finding —
+  recurring stale-path findings are what motivated the gate.
 
-## Severity Guidance for Tech Debt
+## Severity for Tech Debt
 
-Tech-debt findings are almost always **LOW** under the standard severity scale (see `_audit-severity.md`). Promote when there's amplification:
+Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only on amplification:
 
 | Promotion Trigger | Floor |
 |-------------------|-------|
 | Duplicated logic with divergent bug-fix history (one branch fixed, the other regressed) | MEDIUM |
-| `unimplemented!()` / `todo!()` reachable from a shipped CLI / smoke test | MEDIUM |
-| `#[ignore]`d test guarding a fix from a closed CRITICAL/HIGH issue | MEDIUM |
-| Stale doc/audit baseline that has misled an audit in the last 90 days | MEDIUM |
-| Magic number that would silently overflow / underflow under documented use cases | HIGH |
-
-Default tech-debt findings to LOW unless one of the above fires.
+| `unimplemented!()` / `todo!()` / `panic!("not …")` reachable from a shipped CLI flag or smoke test | MEDIUM |
+| `#[ignore]`d test that guards a fix from a closed CRITICAL/HIGH issue | MEDIUM |
+| Stale doc/audit baseline that misled an audit in the last 90 days | MEDIUM |
+| Magic number that would silently over/underflow under documented use | HIGH |
+| Stale `GpuCamera`/`GpuInstance`/`GpuMaterial` size in a doc comment (lockstep-drift bait) | MEDIUM |
 
 ## Phase 1: Setup
 
-1. Parse `$ARGUMENTS` for `--focus`, `--depth`
-2. `mkdir -p /tmp/audit/tech-debt`
-3. Fetch dedup baseline:
+1. Parse `$ARGUMENTS` for `--focus`, `--depth`.
+2. `mkdir -p /tmp/audit/tech-debt`.
+3. Dedup baseline:
    ```bash
-   gh issue list --repo matiaszanolli/ByroRedux --limit 200 --label tech-debt --json number,title,state > /tmp/audit/tech-debt/issues_open.json
    gh issue list --repo matiaszanolli/ByroRedux --limit 500 --state all --label tech-debt --json number,title,state > /tmp/audit/tech-debt/issues_all.json
    ```
-4. Scan `docs/audits/` for prior tech-debt reports (`AUDIT_TECH_DEBT_*.md`)
-5. Snapshot current totals as baseline (so the report can show direction):
+4. Scan `docs/audits/` for prior `AUDIT_TECH_DEBT_*.md` (diff direction, not re-litigation).
+5. Snapshot totals so the next audit can diff:
    ```bash
    {
-     echo "TODO/FIXME/HACK/XXX: $(grep -RInE '(TODO|FIXME|HACK|XXX)\b' crates byroredux | wc -l)"
-     echo "allow(dead_code): $(grep -RInE 'allow\(dead_code\)' crates byroredux | wc -l)"
+     echo "TODO/FIXME/HACK/XXX:   $(grep -RInE '(TODO|FIXME|HACK|XXX)\b' crates byroredux | wc -l)"
+     echo "allow(dead_code):      $(grep -RInE 'allow\(dead_code\)' crates byroredux | wc -l)"
      echo "unimplemented!/todo!(): $(grep -RInE 'unimplemented!|todo!\(\)' crates byroredux | wc -l)"
-     echo "#[ignore] tests: $(grep -RIn '#\[ignore\]' . | wc -l)"
-     echo "files >2000 LOC: $(find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1 > 2000 && $2 != "total"' | wc -l)"
+     echo "#[ignore] tests:        $(grep -RIn '#\[ignore\]' . | wc -l)"
+     echo "files >2000 LOC:        $(find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
+   Orientation only (will drift — re-run, never quote): the marker total runs ~20,
+   `unimplemented!/todo!()` is currently **0** (the engine prefers explicit
+   fallbacks over panics — a fresh `todo!()` is therefore notable), `#[ignore]`
+   runs in the low-hundreds (mostly Vulkan/smoke gating, not debt), and the
+   >2000-LOC set is ~6 files (Dim 1).
 
-## Phase 2: Launch Dimension Agents
+## Phase 2: Dimension Agents
 
-### Dimension 1: Stale Markers (TODO / FIXME / HACK / XXX)
-**Entry points**: `crates/`, `byroredux/` (all `.rs`), `crates/renderer/shaders/` (all `.glsl`/`.comp`/`.vert`/`.frag`)
-**Checklist**:
-- Each marker: how old is it? (`git blame` to commit + date — anything older than 6 months gets reported)
-- Does the marker reference an issue number? Is that issue still open?
-  - Closed issue + marker still present → "marker outlived its driver" (delete or reopen)
-- Does the marker reference a milestone (M21, M29, etc.) that is now complete (per ROADMAP.md)?
-- Are there `// TODO: implement` markers in code paths that are now reachable from a shipped CLI flag?
-- Sweep the Disney-BSDF lobe in `crates/renderer/shaders/triangle.frag` for new `// TODO` / `// HACK` markers and bare magic literals around the adapted GGX / Burley diffuse code. **The third-party attribution block (~lines 12–29: GLSL-PathTracer MIT notice + Burley 2012 citation) is must-not-delete** — flag any edit that strips or truncates it (MIT requires the notice travel with the code).
-- Skip markers from the last 30 days unless they reference a closed issue
+Ordered by debt impact: complexity and duplication compound across every future
+edit; doc/audit rot misdirects the *next* audit; markers and dead code are
+cheap. Each agent writes `/tmp/audit/tech-debt/dim_<N>.md`.
 
-**Output**: `/tmp/audit/tech-debt/dim_1.md`
+### Dimension 1: File / Function / Module Complexity
+The highest-leverage debt: an oversized file taxes every edit, review, and merge.
 
-### Dimension 2: Dead Code & Unused Surface
-**Entry points**: `crates/` (19 crates — give the two newest explicit attention: `crates/sfmaterial/src/` Starfield CDB material reader, `crates/debug-ui/src/` egui overlay; both are recent and likely carry first-pass dead surface), `byroredux/`
-**Checklist**:
-- Every `#[allow(dead_code)]` — is the code actually called now, or still dead?
-- Every `pub fn` in a private module that no other module imports (run `cargo +nightly rustc -- -W unused`)
-- Re-exports through `mod.rs` / `lib.rs` that no downstream consumer uses
-- `_` -prefixed unused parameters that survived a refactor (`fn foo(_world: &World)` where `World` is no longer needed)
-- Unused crate dependencies (`cargo machete` if installed; otherwise scan `Cargo.toml` against `use` statements)
-- Trait impls for types no other code constructs (e.g., a `Display` impl that's never called)
-- **Don't flag**: `cfg(test)` / `cfg(debug_assertions)`-gated code, FFI boundary functions, public API of a workspace-internal crate that future binaries will consume (note in CLAUDE.md or ROADMAP.md)
+**Discovery**:
+```bash
+find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | sort -rn
+```
+Session 34/35/36 (2026-05) split the original oversized set (acceleration.rs,
+dispatch_tests.rs, cell/tests.rs, draw.rs, scene_buffer.rs, context/mod.rs,
+import/mesh.rs, blocks/collision.rs, nif/anim.rs) into submodules — **all of
+those are closed; do not re-file them.** Membership has since turned over: the
+two big Vulkan-context files *grew* after re-split, and several `byroredux/`
+files crossed 2000. Re-run the command; the threshold is **2000 LOC** (the
+Session-34 split target). Whatever it lists today is the live set — including any
+file the skill once cited as a *success* (a previously-split module can grow back
+over threshold).
 
-**Output**: `/tmp/audit/tech-debt/dim_2.md`
+**Per oversized file, propose a split AXIS by responsibility** (not by line count):
+- A Vulkan `context/` file → per-pass recording groups (geometry / RT / denoise /
+  composite / overlay) or struct+new() vs Drop vs accessors. Vulkan-recording
+  splits are render-pass-adjacent — see `feedback_speculative_vulkan_fixes.md`
+  before proposing barrier/order changes.
+- `byroredux/src/asset_provider.rs` → BSA/BA2 resolution vs TextureProvider vs mesh extraction.
+- `byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.
+- `byroredux/src/commands.rs` → console-command groups (stats / entities / systems / tex.* / scene).
+- `crates/nif/src/blocks/particle.rs` → typed emitter/ctlr structs vs the opaque `NiPSysBlock` fallback vs grow/fade modifiers.
 
-### Dimension 3: Logic Duplication
-**Entry points**: any subsystem with N>1 similar files (`crates/nif/src/blocks/`, `crates/plugin/src/esm/records/`, `crates/renderer/src/vulkan/`, `byroredux/src/cell_loader/`)
-**Checklist**:
-- Identical or near-identical block-parser scaffolding across `crates/nif/src/blocks/*.rs` (header read → field read → fixup) — is there a `parse_block` macro/helper this should funnel through?
-- Repeated texture-upload paths in `crates/renderer/src/vulkan/` (BC1/BC3/BC5/RGBA chains)
-- Same Vulkan barrier sequence repeated per render pass (image layout transitions)
-- Repeated descriptor set update boilerplate (vk::WriteDescriptorSet builders)
-- ESM record parsers in `crates/plugin/src/esm/records/` — common subrecord parse loops that should share a helper
-- Coordinate-system flip (Z-up → Y-up) reimplemented at multiple call sites (`crates/nif/src/import/coord.rs` is the canonical home — anything outside is a leak)
-- **Cross-reference user policy** (CLAUDE.md global): "Always prioritize improving existing code rather than duplicating logic." Each duplication finding must propose a specific consolidation site.
+**Also flag**: functions >200 LOC (propose extraction); match arms >50 cases
+(want a lookup table); nesting depth >5 (state-machine extraction); a `mod.rs` /
+`lib.rs` with >20 `pub use` (doing two jobs). `cargo +nightly clippy --all-targets
+-- -W clippy::cognitive_complexity` if available, else inspect the worst offenders.
 
-**Output**: `/tmp/audit/tech-debt/dim_3.md`
+### Dimension 2: Logic Duplication
+CLAUDE.md global policy is explicit: *improve existing code, never duplicate logic.*
+Every finding must name a concrete consolidation site.
 
-### Dimension 4: Magic Numbers & Hardcoded Constants
-**Entry points**: `crates/nif/src/blocks/`, `crates/renderer/src/vulkan/`, shaders
-**Checklist**:
-- Bare numeric literals in `crates/nif/src/blocks/*.rs` that compare against version codes (should be a `NifVersion` constant)
-- Vulkan `MAX_*` / `MIN_*` numbers hardcoded inline (should reference `vk::PhysicalDeviceLimits` queries or named constants)
-- Shader `#define` values are now generated from a single Rust source: `crates/renderer/src/shader_constants_data.rs` (e.g. `GLASS_RAY_BUDGET = 8192`) is `include!`d by both `crates/renderer/src/shader_constants.rs` (library) and `crates/renderer/build.rs`, which emits `shaders/include/shader_constants.glsl`. The check is no longer "does generated-header infra exist" (it does) — it's **"verify every shader `#define` is sourced from `shader_constants_data.rs`; flag any literal that bypasses it"**. (Lockstep risk is HIGH — see `feedback_shader_struct_sync.md`.)
-- GPU `#[repr(C)]` struct sizes are a lockstep regression surface: `GpuCamera` is pinned at 304 B (`crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs::gpu_camera_is_288_bytes` asserts 304 — the test NAME is stale, the asserted value is current) and `GpuInstance` is pinned at its std430 size by the layout test. Flag any inline size literal that should reference these tests, and any doc comment quoting an outdated byte size.
-- Frame-budget / ray-budget / cache-size numbers (e.g., `GLASS_RAY_BUDGET = 8192`, `MAX_TOTAL_BONES`, `MAX_MATERIALS = 4096`) — are they all in one tunable module, or scattered?
-- ESM record sub-record sizes hardcoded (e.g., `if data.len() == 24`) — should map to a named constant from the record struct
-- **Don't flag**: protocol-defined magic (4-char FourCC tags, BSA/NIF magic numbers, Vulkan format enums) — these are spec, not arbitrary
+**Discovery**: target subsystems with N>1 sibling files, then read for repeated scaffolding:
+```bash
+ls crates/nif/src/blocks/*.rs crates/plugin/src/esm/records/**/*.rs crates/renderer/src/vulkan/*.rs byroredux/src/cell_loader/*.rs
+```
+**Look for**:
+- Block-parser scaffolding repeated across `crates/nif/src/blocks/` (header read → field read → fixup) that should funnel through a shared helper/macro.
+- Texture-upload chains (BC1/BC3/BC5/RGBA) duplicated in `crates/renderer/src/vulkan/`.
+- The same image-layout barrier sequence repeated per render pass.
+- `vk::WriteDescriptorSet` builder boilerplate.
+- ESM sub-record parse loops repeated across `crates/plugin/src/esm/records/`.
+- Z-up → Y-up coordinate flips reimplemented outside the canonical homes
+  (`crates/nif/src/import/coord.rs`, `crates/nif/src/anim/coord.rs`) — any other
+  call site is a leak.
 
-**Output**: `/tmp/audit/tech-debt/dim_4.md`
-
-### Dimension 5: Stub & Placeholder Implementations
-**Entry points**: `crates/` (19 crates — the recent `crates/sfmaterial/src/` (Starfield CDB) and `crates/debug-ui/src/` (egui overlay) are the likeliest to carry first-pass stubs), `byroredux/`
-**Checklist**:
-- Every `unimplemented!()` and `todo!()` — is the call site reachable from a shipped CLI flag or smoke test?
-- `panic!("not yet")` / `panic!("not implemented")` — same reachability check
-- Functions that return `None` / `Vec::new()` / `Default::default()` with a comment like "// TODO: real impl" or "// stub"
-- Trait impls with empty method bodies that should do work (check against trait docs for required behavior)
-- ESM per-game record coverage in `crates/plugin/src/esm/records/` — which records are fully wired vs still stubbed per game? (The legacy crates/plugin/src/legacy/{tes3,tes4,tes5,fo4}.rs per-game stubs were removed under `#390`; coverage now lives in the unified records tree. Cross-check against ROADMAP.md per-game compat matrix.)
-- Console commands in `byroredux/src/commands.rs` that exist but are no-ops or print "TODO"
-
-**Output**: `/tmp/audit/tech-debt/dim_5.md`
-
-### Dimension 6: Test Hygiene
-**Entry points**: `**/*_tests.rs`, `**/tests/**`, `byroredux/tests/`
-**Checklist**:
-- Every `#[ignore]` test: is there a referenced issue? Is that issue still open?
-- Tests with **only** smoke assertions (`assert!(result.is_ok())` and nothing else) — should assert on returned values
-- Commented-out assertions inside otherwise-passing tests (`// assert_eq!(...)`)
-- `#[cfg(feature = "...")]`-gated tests where the feature is never enabled in CI
-- Tests that print rather than assert (`println!("got {x}")` with no follow-up `assert_eq!`)
-- Tests with `unwrap()` everywhere — are they testing the failure paths they need to?
-- Golden-frame tests (`byroredux/tests/golden_frames.rs`) marked `--ignored` — confirm they're still runnable and the golden image is current
-- **Cross-reference baseline notes** in audit skills (e.g., `audit-performance.md`'s "must not regress" lines) — is each mentioned regression test still present and not `#[ignore]`d?
-
-**Output**: `/tmp/audit/tech-debt/dim_6.md`
-
-### Dimension 7: Stale Documentation & Comments
-**Entry points**: `docs/`, `ROADMAP.md`, `HISTORY.md`, `README.md`, `CLAUDE.md`, `.claude/commands/audit-*.md`, doc comments in source
-**Checklist**:
-- Run `.claude/commands/_audit-validate.sh` first — it's the structural gate added under `#1114` / TD7-050 to catch audit-skill path drift on the commit that introduces it. If the script reports STALE refs, those are auto-eligible Dim 7 findings (effort: trivial).
-- Doc comments that reference renamed types (e.g., `// See OldStruct` where `OldStruct` was renamed)
-- "76-byte Vertex" -style numerical claims in doc comments that no longer match `Vertex::SIZE` (commit 1c388e5 fixed one batch of these — sweep for the rest)
-- ROADMAP.md milestones marked "in progress" but the underlying issues are all closed (or vice versa)
-- HISTORY.md entries that reference issues that were later reverted
-- README.md command examples that no longer work (`cargo run` flag changed, BSA path syntax changed)
-- `docs/legacy/` references to Gamebryo source paths that may have moved
-- Doc comments referencing the **deleted render-time `Material::classify_pbr`**: PBR resolution moved to the parse-time NIFAL boundary (`byroredux/src/material_translate.rs`) + the shared `classify_pbr_keyword` helper. `crates/core/src/ecs/components/material.rs` still carries several doc-comments naming the old `Material::classify_pbr` (e.g. ~lines 396/551/578/587/627/981) — confirm each correctly frames it as *deleted/historical*, not as a live entry point. (Covered in depth by Dimension 11.)
-- `crates/renderer/shaders/triangle.frag` doc comments quoting outdated GPU struct byte sizes (GpuCamera, GpuMaterial) — cross-check against the layout tests rather than trusting the prose.
-
-**Convention** (post-`#1114`): backticked path refs in audit-*.md claim
-"this path exists right now — find it." Forward-looking refs (a file
-that doesn't yet exist) or backwards-looking refs (a file that was
-deleted) must NOT use backticks. The validate script flags any
-backticked path that does not resolve.
-
-**Output**: `/tmp/audit/tech-debt/dim_7.md`
-
-### Dimension 8: Backwards-Compat Cruft
-**Entry points**: `crates/`, `byroredux/`, `Cargo.toml` files
-**Checklist**:
-- `_unused`-renamed parameters or fields that survived a refactor (CLAUDE.md is explicit: don't rename to `_var`, delete it)
-- `// removed: ...` comment markers (CLAUDE.md again: delete completely, no breadcrumbs)
-- Re-exports of deleted types kept "for compatibility" — but ByroRedux has no external consumers yet, so these are just rot
-- Feature flags in `Cargo.toml` for features that have only one branch (always-on or always-off) — remove the flag
-- Deprecated `#[deprecated]` items with no consumers — delete instead of deprecate
-- Cell-loader `nif_import_registry` legacy paths — given the post-Session-34 split, are any old call sites still on the deprecated route?
-
-**Output**: `/tmp/audit/tech-debt/dim_8.md`
-
-### Dimension 9: File / Function / Module Complexity
-**Entry points**: `crates/`, `byroredux/`
-**Checklist**:
-- List `.rs` files >2000 LOC (Session 34 split target was 2000):
+### Dimension 3: Stale Documentation & Comments
+Doc rot is high-impact debt because it misleads the *next* reader and the *next*
+audit. **Run the path gate first** (it is also Dim 9's input):
+```bash
+.claude/commands/_audit-validate.sh
+```
+Any STALE refs it prints are auto-eligible findings (effort: trivial). Then
+sweep for content rot the gate cannot see:
+- **Numeric claims in doc comments that drift from a pinned test.** The canonical
+  trap: `GpuCamera` / `GpuInstance` / `GpuMaterial` byte sizes and `Vertex::SIZE`.
+  Do NOT trust prose — cross-check against the layout test, whose value is
+  authoritative and whose *name* may itself be stale:
   ```bash
-  find crates byroredux -name '*.rs' -exec wc -l {} + | awk '$1 > 2000 && $2 != "total"' | sort -rn
+  grep -rn "fn gpu_camera_is\|fn gpu_instance_is\|assert_eq.*size_of" crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs
   ```
-  Historical baseline (do NOT trust as current — re-run the command above each audit): as of 2026-05-13 the oversized set was acceleration.rs (4200 LOC), dispatch_tests.rs (3667), cell/tests.rs (3329), draw.rs (2554), scene_buffer.rs (2367), context/mod.rs (2348), import/mesh.rs (2212), blocks/collision.rs (2162), nif/anim.rs (2101) — these pre-split paths were since split into submodules (Session 34/35/36 sweeps — #29e9f45/bd45caa/9c1f723/1fe5321/fe47706/014adc8/ca81c19), all 9 closed.
-  As of **2026-05-28** the >2000 LOC set is 5 files (membership changed entirely — the two Vulkan files grew rather than shrank, and three new `byroredux/` files crossed the threshold):
-  - `crates/renderer/src/vulkan/context/draw.rs` 3337 LOC — split axis: per-pass recording groups (geometry / RT / denoise / composite / overlay), Vulkan-recording-adjacent (see `feedback_speculative_vulkan_fixes.md`).
-  - `crates/renderer/src/vulkan/context/mod.rs` 3017 LOC — split axis: struct + new() vs Drop teardown vs accessor groups, also Vulkan-recording-adjacent.
-  - `byroredux/src/asset_provider.rs` 2561 LOC — split axis: BSA/BA2 archive resolution vs TextureProvider vs mesh extraction.
-  - `byroredux/src/main.rs` 2448 LOC — split axis: App/ApplicationHandler event loop vs system registration vs boot/config plumbing.
-  - `byroredux/src/commands.rs` 2115 LOC — split axis: console-command groups (stats / entities / systems / tex.* / scene) into a per-group module.
+- Doc comments naming renamed/deleted symbols. The recurring one: the **deleted
+  render-time `Material::classify_pbr`** (PBR resolution moved to the parse-time
+  NIFAL boundary). Several doc-comments in `crates/core/src/ecs/components/material.rs`
+  still name it — each must frame it as *deleted/historical*, never as a live
+  entry point. Enumerate and read each:
+  ```bash
+  grep -n "classify_pbr" crates/core/src/ecs/components/material.rs
+  ```
+  The surviving symbols are the free function `classify_pbr_keyword` and the
+  method `Material::resolve_pbr`; `metalness`/`roughness` are plain resolved `f32`.
+  (This overlaps Dim 8 — report material doc rot under Dim 3.)
+- ROADMAP.md milestones marked "in progress" whose issues are all closed (or vice versa) — cross-check `git log` / `gh issue`.
+- HISTORY.md entries referencing later-reverted work.
+- README.md command examples whose flags/paths changed.
+- `docs/legacy/` references to Gamebryo source paths that moved.
+- `crates/renderer/shaders/triangle.frag` doc comments quoting outdated GPU struct byte sizes — cross-check the layout test, not the prose.
 
-  For each, propose a split axis (by submodule responsibility, not by line count alone).
-- Functions >200 LOC — propose extraction
-- Match arms >50 cases (these usually want a lookup table)
-- Nesting depth >5 (often a state-machine extraction candidate)
-- Modules with >20 `pub use` re-exports (the module is doing two jobs)
-- `cargo +nightly clippy --all-targets -- -W clippy::cognitive_complexity` if available; otherwise visual inspection of the worst-offender list
+**Path convention (post-#1114)**: a backticked `.ext` path in any audit-*.md or
+this file asserts "exists right now". Forward-looking (not-yet-created) or
+backwards-looking (deleted) refs must NOT use backticks. The gate fails on any
+backticked path that does not resolve. (Note: the gate globs
+`.claude/commands/audit-*.md`, not `audit-*/SKILL.md` subdirs — paths in *this
+very file* are not gate-covered and must be hand-validated.)
 
-**Output**: `/tmp/audit/tech-debt/dim_9.md`
+### Dimension 4: Audit-Finding Rot
+The audit infrastructure decays like any other code, and stale baselines actively
+misdirect future audits.
+**Discovery**:
+```bash
+.claude/commands/_audit-validate.sh            # structural path gate (#1114)
+ls .claude/commands/audit-*.md docs/audits/
+```
+- STALE refs from the gate that live in *other* audit skills → Dim 4 findings (trivial).
+- Symbol-anchor refs the gate cannot verify (e.g. `crates/audio/src/lib.rs::drain_pending_oneshots`) — spot-check the symbol still exists.
+- "Existing: #NNN" callouts in skills where the issue is now CLOSED — reframe as a closed-state baseline.
+- Skill files quoting a dimension count ("all N dimensions") that no longer matches the live list.
+- `docs/audits/` reports >90 days old whose CRITICAL/HIGH findings are not all triaged on GitHub.
+- **Do NOT flag** `.claude/issues/<N>/ISSUE.md` "Status: Open" drift — dropped per
+  TD10-001 / #1156: local issue files are immutable snapshots; GitHub is
+  authoritative. Query `gh issue view <N> --json state` for live state.
 
-### Dimension 10: Audit-Finding Rot
-**Entry points**: `.claude/commands/audit-*.md`, `docs/audits/`, `.claude/issues/`
-**Checklist**:
-- Audit skill "must not regress" baselines — every backticked path in `audit-*.md` is now gated by `.claude/commands/_audit-validate.sh` (post-#1114). Run that gate first; any STALE refs it reports are auto-eligible Dim 10 findings (effort: trivial). For symbol-anchor refs that the gate can't verify (e.g., `crates/audio/src/lib.rs::drain_pending_oneshots`), spot-check that the function still exists.
-- "Existing: #NNN" callouts in skill files where the issue is now CLOSED — should the skill prose reference the closed-state baseline differently?
-- ~~`.claude/issues/<N>/ISSUE.md` entries where the upstream GitHub issue was closed but the local file still says "Status: Open"~~ — **dropped per TD10-001 / #1156**: local issue files are immutable snapshots of the issue as filed; state drift is expected and not a finding. GitHub is authoritative for current state. If you need live state during an audit, query `gh issue view <N> --json state` directly.
-- Audit reports in `docs/audits/` from >90 days ago whose CRITICAL/HIGH findings are not all triaged (open or closed) on GitHub
-- Skill files that reference dimension counts (e.g., "all 9 dimensions") that don't match the current dimension list
+### Dimension 5: Stale Markers (TODO / FIXME / HACK / XXX)
+**Discovery**:
+```bash
+grep -RInE '(TODO|FIXME|HACK|XXX)\b' crates byroredux
+grep -RInE '(TODO|HACK)' crates/renderer/shaders/
+```
+**Triage each** (skip markers <30 days old unless they name a closed issue):
+- `git blame` for age — anything >6 months gets reported.
+- Does it name an issue number? Is that issue still open? Closed issue + live marker → "marker outlived its driver" (delete or reopen).
+- Does it name a milestone (M21, M29, …) now complete per ROADMAP.md?
+- `// TODO: implement` on a path now reachable from a shipped CLI flag → promote (see severity table).
+- **False positives to exclude**: `XXXX` is the ESM extended-size sub-record tag
+  (`crates/plugin/src/esm/reader.rs`, `records/misc/magic.rs`) — protocol, not a
+  marker. `// FIXME note` referencing a *reference implementation's* FIXME (e.g.
+  `crates/bgsm/src/bgem.rs`) is documentation of upstream, not our debt.
+- **Must-not-delete**: the third-party attribution block atop
+  `crates/renderer/shaders/triangle.frag` (GLSL-PathTracer MIT notice + Burley
+  2012 citation, ~first 30 lines). Flag any edit that strips/truncates it — MIT
+  requires the notice travel with the code.
 
-**Output**: `/tmp/audit/tech-debt/dim_10.md`
+### Dimension 6: Stub & Placeholder Implementations
+**Discovery**:
+```bash
+grep -RInE 'unimplemented!|todo!\(\)|panic!\("not ' crates byroredux
+grep -RInE '// *(stub|TODO: real|placeholder|not yet)' crates byroredux
+```
+The first command currently returns **nothing** — the codebase prefers explicit
+fallbacks to panics, so any hit is genuinely notable. For each:
+- Reachable from a shipped CLI flag or smoke test? → promote to MEDIUM.
+- Functions returning `None` / `Vec::new()` / `Default::default()` with a "// stub"/"// TODO: real impl" comment.
+- Trait impls with empty bodies that the trait docs say should do work.
+- Per-game ESM record coverage in `crates/plugin/src/esm/records/` — fully wired
+  vs stubbed per game; cross-check ROADMAP.md per-game compat matrix. (The legacy
+  per-game stubs in `crates/plugin/src/legacy/` were removed under #390 — coverage
+  now lives in the unified records tree; do not re-file the removed stubs.)
+- Console commands in `byroredux/src/commands.rs` that exist but no-op / print "TODO".
 
-### Dimension 11: NIFAL Translation-Tier Debt
-**Entry points**: `byroredux/src/material_translate.rs`, `crates/core/src/ecs/components/material.rs`, `crates/nif/src/import/collision.rs`, `crates/nif/src/import/walk/mod.rs`, `crates/nif/src/blocks/particle.rs`, `byroredux/src/systems/particle.rs`. Spec: `docs/engine/nifal.md`.
+### Dimension 7: Magic Numbers & Hardcoded Constants
+**Discovery**: read the version-gate and budget sites; do not regex blindly (most
+literals are legitimate).
+- Bare numeric literals in `crates/nif/src/blocks/` compared against version codes → should be a `NifVersion` constant.
+- Vulkan `MAX_*`/`MIN_*` hardcoded inline → reference `vk::PhysicalDeviceLimits` or a named constant.
+- **Shader `#define` provenance**: every shader define is generated from one Rust
+  source — `crates/renderer/src/shader_constants_data.rs` is `include!`d by both
+  `crates/renderer/src/shader_constants.rs` and `crates/renderer/build.rs` (which
+  emits `shaders/include/shader_constants.glsl`). The generated-header infra
+  exists; the check is **"every shader `#define` is sourced from
+  `shader_constants_data.rs`; flag any literal that bypasses it"** (lockstep risk
+  HIGH — `feedback_shader_struct_sync.md`).
+- **GPU `#[repr(C)]` size literals**: `GpuCamera`, `GpuInstance`, `GpuMaterial`
+  sizes are pinned by `gpu_instance_layout_tests.rs`. Flag any inline size literal
+  that should reference those tests, and any doc comment quoting an outdated size
+  (overlaps Dim 3). Get the live values from the test, not from memory:
+  ```bash
+  grep -rn "fn gpu_camera_is\|fn gpu_instance_is\|size_of::<Gpu" crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs
+  ```
+- Frame/ray/cache budgets (`GLASS_RAY_BUDGET`, `MAX_TOTAL_BONES`, `MAX_MATERIALS`, …) scattered vs in one tunable module.
+- ESM sub-record sizes hardcoded (`if data.len() == 24`) → named constant from the record struct.
+- **Do NOT flag** protocol-defined magic: FourCC tags, BSA/NIF/BA2 magic, Vulkan format enums.
 
-NIFAL is the canonical translation tier: the single `ImportedMesh → Material` boundary lives at `byroredux/src/material_translate.rs::translate_material`. PBR resolution moved from a render-time path to parse time, so the old indirection left debt behind. This dimension scopes that tier for **debt only** (dead code, stale doc, leftover fallback breadcrumbs) — translation *correctness* is the domain of `/audit-nifal` (**see also `/audit-nifal`**).
+### Dimension 8: Dead Code & Backwards-Compat Cruft
+**Discovery**:
+```bash
+grep -RInE 'allow\(dead_code\)' crates byroredux
+grep -RInE '#\[deprecated\]|// *removed:|_unused|fn .*_unused' crates byroredux
+cargo machete 2>/dev/null || echo "cargo machete not installed — scan Cargo.toml deps vs use stmts"
+```
+- Each `#[allow(dead_code)]` — actually called now, or still dead? Delete if dead.
+- `pub fn` in a private module no one imports (`cargo +nightly rustc -- -W unused`).
+- `mod.rs`/`lib.rs` re-exports with no downstream consumer.
+- `_`-prefixed params that survived a refactor (CLAUDE.md: delete, don't rename to `_var`).
+- `// removed: …` breadcrumbs (CLAUDE.md: delete completely, no breadcrumbs).
+- Re-exports of deleted types kept "for compatibility" — ByroRedux has no external consumers yet, so these are pure rot.
+- `Cargo.toml` feature flags with only one branch (always-on/always-off) → remove the flag.
+- `#[deprecated]` items with no consumers → delete, don't deprecate.
+- **Do NOT flag**: `cfg(test)`/`cfg(debug_assertions)`-gated code, FFI boundary
+  functions, or public API of a workspace-internal crate a future binary will
+  consume (note such cases rather than deleting).
 
-**Checklist**:
-- **Deleted-`classify_pbr` doc rot**: `Material::metalness` / `Material::roughness` are now plain resolved `f32` (no `Option`, no render-time fallback) — `crates/core/src/ecs/components/material.rs:216,222`. The render-time `Material::classify_pbr` is gone; only the shared `classify_pbr_keyword` helper (`material.rs:432`) and `Material::resolve_pbr` (`material.rs:588`) remain. Sweep `material.rs` for doc-comments still naming `Material::classify_pbr` (e.g. ~lines 396/551/578/587/627/981) — each must read as *deleted/historical*, never as a live method. (Overlaps Dim 7; report under Dim 11.)
-- **NaN-sentinel breadcrumbs**: `translate_material` seeds `f32::NAN` into metalness/roughness when there's no authored override (`material_translate.rs:149-150`), relying on `resolve_pbr` to fill them. Confirm no leftover comment or dead branch implies a per-draw classify fallback still exists (`static_meshes.rs` documents "no per-draw keyword scan").
-- **Typed-particle-block cruft**: `NiPSysEmitter` / `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier` are now TYPED structs in `crates/nif/src/blocks/particle.rs` feeding `extract_emitter_params` / `extract_emitter_rate` (`crates/nif/src/import/walk/mod.rs:670,713`) → `byroredux/src/systems/particle.rs::apply_emitter_params:29`. The opaque `NiPSysBlock` fallback (`particle.rs:151`, used at `walk/mod.rs:522,1184`) is still a *legitimate* path for legacy types with no modifier list — confirm it is still reachable, not orphaned dead code superseded by the typed blocks.
-- **Dropped-collision-shape breadcrumbs**: `BhkMultiSphereShape` and `BhkConvexListShape` now translate to `CollisionShape` (`crates/nif/src/import/collision.rs:301,397`) — they were previously dropped. Sweep for stale `// dropped` / `// unsupported` comments around the collision-translate arms that are now wrong.
-- Each finding here must propose a concrete deletion or doc fix; do NOT re-derive translation correctness (that is `/audit-nifal`'s job).
+### Dimension 9: Test Hygiene
+**Discovery**:
+```bash
+grep -RIn '#\[ignore\]' . | grep -v target/
+```
+Most `#[ignore]`s gate Vulkan/smoke tests that need a GPU or on-disk game data —
+those are **not** debt. Triage the rest:
+- Each `#[ignore]` test: referenced issue still open? If it guards a closed CRITICAL/HIGH fix → MEDIUM (severity table).
+- Tests with only smoke assertions (`assert!(result.is_ok())` and nothing else) — should assert on values.
+- Commented-out assertions inside otherwise-passing tests (`// assert_eq!(…)`).
+- `#[cfg(feature = "…")]`-gated tests where the feature is never enabled in CI.
+- Tests that `println!` without a follow-up assert.
+- `byroredux/tests/golden_frames.rs` (opts into `--ignored`) — still runnable, golden image current.
+- Cross-reference "must not regress" lines in other audit skills (e.g. `audit-performance`) — each named regression test still present and not `#[ignore]`d.
 
-**Output**: `/tmp/audit/tech-debt/dim_11.md`
+## Cross-Dimension Dedup
+
+A TODO inside a dead function reports under Dim 8 (Dead Code), not also Dim 5.
+Material doc rot reports under Dim 3, not also Dim 8. A stale GPU-size doc comment
+reports under Dim 3; a stale GPU-size *code literal* under Dim 7. NIFAL/material
+*translation correctness* is out of scope here — that is `/audit-nifal`. This
+audit only owns the *debt* around that tier (dead code, stale doc, leftover
+breadcrumbs).
 
 ## Phase 3: Merge
 
-1. Read all `/tmp/audit/tech-debt/dim_*.md` files
-2. Combine into `docs/audits/AUDIT_TECH_DEBT_<TODAY>.md` with structure:
-   - **Executive Summary** — Total findings by severity + delta vs `baseline.txt`
-   - **Baseline Snapshot** — counts captured in Phase 1, so the next audit can diff
-   - **Top 10 Quick Wins** — trivial / small effort, immediate readability or compile-time payoff
-   - **Top 5 Medium Investments** — file/function splits, duplication consolidations
-   - **Findings** — Grouped by severity (HIGH first, then MEDIUM, then LOW), then by dimension
-   - **Deferred** — Findings that depend on milestones still in progress; note the gating milestone
-3. Remove cross-dimension duplicates (e.g., a TODO inside a dead function reports under Dim 2, not also Dim 1)
+1. Read all `/tmp/audit/tech-debt/dim_*.md`.
+2. Combine into `docs/audits/AUDIT_TECH_DEBT_<TODAY>.md`:
+   - **Executive Summary** — findings by severity + delta vs `baseline.txt`.
+   - **Baseline Snapshot** — the Phase-1 counts, so the next audit can diff.
+   - **Top 10 Quick Wins** — trivial/small effort, immediate readability or compile-time payoff.
+   - **Top 5 Medium Investments** — file/function splits, duplication consolidations.
+   - **Findings** — by severity (HIGH → MEDIUM → LOW), then by dimension.
+   - **Deferred** — findings gated on an in-progress milestone; name the gating milestone.
+3. Remove cross-dimension duplicates per the rules above.
 
 ## Phase 4: Cleanup
 
-1. `rm -rf /tmp/audit/tech-debt`
-2. Inform user the report is ready
-3. Suggest: `/audit-publish docs/audits/AUDIT_TECH_DEBT_<TODAY>.md`
+1. `rm -rf /tmp/audit/tech-debt`.
+2. Tell the user the report is ready.
+3. Suggest: `/audit-publish docs/audits/AUDIT_TECH_DEBT_<TODAY>.md`.
 
 ## GitHub Label
 
-This audit publishes findings under the `tech-debt` label (in addition to the standard `<severity>` and `<domain>` labels). The label is registered in the repository — `/audit-publish` will apply it automatically when a finding's audit type is `TECH_DEBT`.
+Findings publish under the `tech-debt` label (plus the standard `<severity>` and
+`<domain>` labels). It is registered in the repo — `/audit-publish` applies it
+automatically when a finding's audit type is `TECH_DEBT`.
