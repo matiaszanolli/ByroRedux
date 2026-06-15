@@ -133,12 +133,24 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
             })
         }
     } else if pf_flags & DDPF_RGB != 0 {
-        // Uncompressed RGBA
+        // Uncompressed RGBA. Only 32-bpp R8G8B8A8 is uploaded directly today.
+        //
+        // #1542 — 9 of FO3's 12,261 textures are uncompressed RGB at 16-bpp
+        // (8 × `textures\fonts\*_lod_a.dds` glyph atlases) or 24-bpp (1 ×
+        // `textures\interface\hud\hud_comp_direction_vertical.dds`); FNV ships
+        // the same era atlases. They're rejected here and fall back to the
+        // checker placeholder (texture_registry catches the Err and warns), so
+        // those fonts / HUD compass render as the placeholder — UI-only, never
+        // world geometry, graceful (not a crash). Supporting them needs CPU
+        // expansion to R8G8B8A8 (24-bpp R8G8B8 and A4R4G4B4 lack reliable
+        // sampled Vulkan formats, so a native-format map isn't safe), which is
+        // an upload-path refactor deferred as low-value (0.07% of textures).
         let bpp = pf_rgb_bit_count;
         ensure!(
             bpp == 32,
-            "Unsupported uncompressed DDS: {} bpp (only 32-bit RGBA supported)",
-            bpp
+            "Uncompressed DDS at {bpp} bpp not yet supported (only 32-bit \
+             R8G8B8A8 uploaded directly) — rendering as placeholder. FO3/FNV \
+             font + HUD atlases hit this; needs CPU expansion to RGBA8 (#1542).",
         );
         let format = vk::Format::R8G8B8A8_SRGB;
         Ok(DdsMetadata {
