@@ -249,17 +249,33 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
     let Some(rq) = world.query::<Ragdoll>() else {
         return;
     };
+    let Some(tq) = world.query::<RagdollTemplate>() else {
+        return;
+    };
     let Some(mut gtq) = world.query_mut::<GlobalTransform>() else {
         return;
     };
-    for (_actor, ragdoll) in rq.iter() {
-        for (bone, handle) in &ragdoll.bodies {
+    for (actor, ragdoll) in rq.iter() {
+        // The seed (activate_ragdoll) composed the body world pose as
+        // body = bone ∘ body-local: `body_t = bone_t + bone_r * (local_t *
+        // scale)`, `body_r = bone_r * local_r`. Invert that here so the
+        // *bone* pose lands on GlobalTransform, not the body origin — bodies
+        // authored as bhkRigidBodyT carry a non-zero local offset, and
+        // writing the raw body pose displaced the skinned mesh. #1616.
+        let Some(template) = tq.get(actor) else {
+            continue;
+        };
+        for ((bone, handle), tb) in ragdoll.bodies.iter().zip(template.bodies.iter()) {
             let Some((t, r)) = body_pose(&pw, *handle) else {
                 continue;
             };
             if let Some(gt) = gtq.get_mut(*bone) {
-                gt.translation = t;
-                gt.rotation = r;
+                // bone_rotation = body_rotation * local_rotation⁻¹
+                let bone_rotation = r * tb.local_rotation.inverse();
+                // bone_translation = body_translation
+                //                  - bone_rotation * (local_translation * scale)
+                gt.rotation = bone_rotation;
+                gt.translation = t - bone_rotation * (tb.local_translation * gt.scale);
             }
         }
     }
@@ -375,6 +391,72 @@ mod tests {
             end.y < init_y - 1.0,
             "writeback should move the bone down under gravity: {init_y} → {}",
             end.y
+        );
+    }
+
+    /// #1616 — seed a single body with a NON-zero body-local offset, then run
+    /// writeback with no physics step. The seed composed body = bone ∘ local;
+    /// the writeback must invert that, so the bone `GlobalTransform` round-trips
+    /// back to its original pose. Pre-fix the writeback wrote the raw body
+    /// pose (bone + offset), displacing the bone by the offset every frame.
+    #[test]
+    fn writeback_inverts_body_local_offset_round_trip() {
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<RagdollTemplate>();
+        world.register::<RagdollActive>();
+        world.register::<Ragdoll>();
+        world.insert_resource(PhysicsWorld::new());
+
+        let actor = world.spawn();
+        let bone = world.spawn();
+        let orig = GlobalTransform {
+            translation: Vec3::new(100.0, 200.0, 300.0),
+            rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            scale: 1.0,
+        };
+        world.insert(bone, orig);
+
+        let template = RagdollTemplate {
+            bodies: vec![RagdollTemplateBody {
+                bone,
+                // Non-zero offset on BOTH translation and rotation.
+                local_translation: Vec3::new(5.0, -10.0, 2.0),
+                local_rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_6),
+                shape: CollisionShape::Ball { radius: 5.0 },
+                mass: 4.0,
+                linear_damping: 0.05,
+                angular_damping: 0.05,
+                friction: 0.5,
+                restitution: 0.0,
+            }],
+            constraints: Vec::new(),
+        };
+        world.insert(actor, template);
+
+        activate_ragdoll(&world, actor).expect("activation should succeed");
+        // No physics step — the body sits at its seeded pose, so the inverse
+        // must recover the original bone pose exactly (modulo float epsilon).
+        ragdoll_writeback_system(&world, 0.0);
+
+        let gt = *world
+            .query::<GlobalTransform>()
+            .unwrap()
+            .get(bone)
+            .unwrap();
+        assert!(
+            (gt.translation - orig.translation).length() < 1e-2,
+            "bone translation must round-trip: {:?} vs {:?}",
+            gt.translation,
+            orig.translation
+        );
+        // Quaternion proximity via |dot| ≈ 1.
+        assert!(
+            gt.rotation.dot(orig.rotation).abs() > 1.0 - 1e-3,
+            "bone rotation must round-trip: {:?} vs {:?}",
+            gt.rotation,
+            orig.rotation
         );
     }
 
