@@ -603,7 +603,7 @@ pub mod presets {
     /// `roughness = 0.0` (perfectly smooth surface), `metallic = 0`.
     /// Transmission `spec_trans = 1.0` is a Disney-BSDF extension
     /// not yet plumbed into our GpuMaterial — left as a TODO for
-    /// when the transmission lobe lands (#1248-followup).
+    /// when the transmission lobe lands (tracked by #1627; #1248 closed).
     pub fn glass() -> GpuMaterial {
         GpuMaterial {
             roughness: 0.0,
@@ -620,7 +620,7 @@ pub mod presets {
     /// `(0.026, 0.147, 0.075)`, `roughness = 0.01`. Clearcoat
     /// (`clearcoat = 1.0, clearcoat_gloss = 1.0` in Disney
     /// 2012) is a Disney extension not yet on our GpuMaterial —
-    /// when it lands, this preset should set those alongside.
+    /// when it lands (#1627), this preset should set those alongside.
     ///
     /// `base` argument lets the caller override the green default
     /// (Hyperion ships green as the demo colour; real car-paint
