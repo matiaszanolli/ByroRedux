@@ -7,7 +7,6 @@ use crate::blocks::NiObject;
 use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
-use crate::version::NifVersion;
 use std::any::Any;
 use std::io;
 
@@ -262,8 +261,10 @@ impl BhkConstraint {
 
         // Oblivion byte-exact payload sizes (post-base bytes). Derived
         // from nif.xml with `#NI_BS_LTE_16#` active. A zero means
-        // "drop through to the FO3+ short-stub path".
-        let is_oblivion = stream.version() <= NifVersion::V20_0_0_5;
+        // "drop through to the FO3+ short-stub path". nif.xml
+        // `#NI_BS_LTE_16#` is `(#BSVER# #LTE# 16)` — a *bsver* test, not a
+        // NIF-version one; matches the sibling rigid_body.rs gate. (#1608)
+        let is_oblivion = stream.bsver() <= crate::version::bsver::NI_BS_LTE_16;
         if is_oblivion {
             // PHYSAL per-game seam: decode the two joints a humanoid
             // ragdoll uses in the Oblivion (`#NI_BS_LTE_16#`) field order.
@@ -535,7 +536,9 @@ impl BhkBreakableConstraint {
         let wrapped_type = stream.read_u32_le()?;
         // Inner bhkConstraintCInfo — always 16 bytes.
         stream.skip(16)?;
-        let is_oblivion = stream.version() <= NifVersion::V20_0_0_5;
+        // nif.xml `#NI_BS_LTE_16#` = `(#BSVER# #LTE# 16)` — a bsver test,
+        // not a NIF-version one; matches rigid_body.rs. (#1608)
+        let is_oblivion = stream.bsver() <= crate::version::bsver::NI_BS_LTE_16;
 
         // #633: lift the Oblivion-only gate. When the wrapped CInfo size
         // is derivable for the parser's version (Hinge / BallAndSocket /
