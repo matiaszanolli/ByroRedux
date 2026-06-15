@@ -3587,15 +3587,20 @@ void main() {
                 // composite pass multiplies it by the PRIMARY fragment
                 // albedo (`final = direct + indirect * albedo`).
                 vec3 hitPos = giOrigin + giDir * hitDist;
-                // Receiver normal for the bounce surface. We approximate it
-                // with `-giDir` (the surface as seen facing the incoming GI
-                // ray) rather than the interpolated geometry normal: it is
-                // robust, self-shadow-bias-free, and the standard cheap
-                // choice for a 1-spp diffuse bounce. Exact per-hit normals
-                // would sharpen directional colour-bleed but need a correct
-                // hit-normal fetch (TODO — the SSBO normal/position fetch
-                // mis-resolved here).
-                vec3 hitN = -giDir;
+                // Receiver normal for the bounce surface — the TRUE geometric
+                // face normal of the hit triangle, fetched from its vertex
+                // positions via `getHitTriNormal` (the same proven SSBO fetch
+                // the glass-refraction path uses, see giHitIrradiance call at
+                // the tHitN site), oriented to face back along the incoming
+                // GI ray. Replaces the old `-giDir` stand-in, which assumed
+                // every bounce surface faced straight back at the ray and so
+                // over-lit grazing hits and washed out directional colour-
+                // bleed. `giHitIrradiance` biases the shadow-ray origin by
+                // `p + n*0.1`, so a real surface normal also corrects the bias
+                // direction for free.
+                int giPrim = rayQueryGetIntersectionPrimitiveIndexEXT(giRQ, true);
+                vec3 hitN = getHitTriNormal(uint(hitIdx), uint(giPrim));
+                if (dot(hitN, giDir) > 0.0) hitN = -hitN;
 
                 GpuMaterial hitMat = materials[hitInst.materialId];
                 vec3 hitEmissive = vec3(hitMat.emissiveR, hitMat.emissiveG, hitMat.emissiveB)
