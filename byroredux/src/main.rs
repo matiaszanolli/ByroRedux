@@ -861,14 +861,15 @@ impl App {
         // *and* after PostUpdate transform propagation, so overwriting each
         // ragdoll bone's GlobalTransform with the simulated pose is the last
         // word before render (no propagation/animation skip needed).
-        scheduler.add_to_with_access(
-            Stage::Late,
-            crate::ragdoll::ragdoll_writeback_system,
-            Access::new()
-                .reads_resource::<byroredux_physics::PhysicsWorld>()
-                .reads::<byroredux_physics::Ragdoll>()
-                .writes::<byroredux_core::ecs::GlobalTransform>(),
-        );
+        //
+        // Registered **exclusive** (not in the Late parallel batch): it
+        // writes GlobalTransform, and so does `camera_follow_system` in the
+        // same stage — declaring both in the parallel batch is a WriteWrite
+        // conflict (#1601). They write entity-disjoint sets (camera entity
+        // vs. ragdoll bones), so ordering is irrelevant; exclusive sequencing
+        // keeps the scheduler's known_conflict_count() at 0. Matches the
+        // existing add_exclusive treatment of audio_system / event_cleanup.
+        scheduler.add_exclusive(Stage::Late, crate::ragdoll::ragdoll_writeback_system);
         // M44 Phase 6 — cell-acoustics → reverb send (#846). Runs
         // before `audio_system` so any new spatial track constructed
         // this frame picks up the right send level. Already-playing
@@ -935,6 +936,24 @@ impl App {
             report_snapshot.undeclared_parallel_count(),
             0,
             "undeclared parallel system detected — use add_to_with_access instead of add_to"
+        );
+        // #1602 — also gate the *declared*-conflict and unknown-pair
+        // invariants, not just undeclared systems. The old guard checked
+        // only undeclared_parallel_count(), which is why a declared
+        // WriteWrite conflict (#1601: ragdoll/camera both writing
+        // GlobalTransform in the Late parallel batch) slipped through.
+        // Either run `sys.accesses` to see the offending pair, or make one
+        // side exclusive.
+        debug_assert_eq!(
+            report_snapshot.known_conflict_count(),
+            0,
+            "declared access conflict between two parallel same-stage systems \
+             — make one side exclusive or split the access (see sys.accesses)"
+        );
+        debug_assert_eq!(
+            report_snapshot.unknown_pair_count(),
+            0,
+            "unknown (undeclared) parallel pairing detected — declare both sides' access"
         );
 
         // Store system names + console commands as resources.
