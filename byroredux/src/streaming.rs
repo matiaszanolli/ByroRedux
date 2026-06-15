@@ -65,6 +65,13 @@ pub struct LoadedCell {
 pub struct LodBlock {
     pub entity: EntityId,
     pub mesh_handle: u32,
+    /// Base ground `TextureHandle` acquired via `resolve_texture` at spawn
+    /// (refcount bump). `World::despawn` has no GPU side effects, so
+    /// `unload_lod_block` must `drop_texture` this explicitly or the
+    /// refcount never reaches 0 and the VkImage + bindless slot pin for the
+    /// session (#1537). `0` = fallback/placeholder, never per-block
+    /// refcounted (skip the drop).
+    pub texture_handle: u32,
     pub hole_mask: u16,
 }
 

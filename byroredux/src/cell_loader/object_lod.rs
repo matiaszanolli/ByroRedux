@@ -59,6 +59,12 @@ pub(crate) const OBJECT_LOD_RADIUS_CELLS: i32 = 16;
 pub(crate) struct ObjectLodBlock {
     pub(crate) entities: Vec<EntityId>,
     pub(crate) mesh_handles: Vec<u32>,
+    /// Shared worldspace object atlas `TextureHandle`, acquired once via
+    /// `resolve_texture` (refcount bump) per quad and reused across the
+    /// sub-meshes. Dropped once on unload — `World::despawn` has no GPU side
+    /// effects, so without it the refcount never reaches 0 (#1537, sibling
+    /// of the terrain-LOD leak). `0` = fallback/untextured, never refcounted.
+    pub(crate) texture_handle: u32,
 }
 
 impl ObjectLodBlock {
@@ -69,6 +75,7 @@ impl ObjectLodBlock {
         Self {
             entities: Vec::new(),
             mesh_handles: Vec::new(),
+            texture_handle: 0,
         }
     }
 }
@@ -301,6 +308,7 @@ fn spawn_object_lod_quad(
     Some(ObjectLodBlock {
         entities,
         mesh_handles,
+        texture_handle: atlas,
     })
 }
 
@@ -313,6 +321,12 @@ pub(crate) fn unload_object_lod_block(
 ) {
     for &h in &block.mesh_handles {
         ctx.mesh_registry.drop_mesh(h);
+    }
+    // #1537 — release the shared atlas refcount once (acquired once per quad
+    // at spawn). Skip `0`/fallback. Mirrors the terrain-LOD reclaim.
+    if block.texture_handle != 0 {
+        ctx.texture_registry
+            .drop_texture(&ctx.device, block.texture_handle);
     }
     for &e in &block.entities {
         world.despawn(e);

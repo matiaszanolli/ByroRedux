@@ -88,6 +88,7 @@ mod tests {
         LodBlock {
             entity, // EntityId == u32
             mesh_handle: mesh,
+            texture_handle: 0,
             hole_mask: 0,
         }
     }
@@ -107,6 +108,7 @@ mod tests {
             ObjectLodBlock {
                 entities: vec![3],
                 mesh_handles: vec![12, 13],
+                texture_handle: 0,
             },
         );
 

@@ -279,6 +279,15 @@ pub(crate) fn stream_lod_blocks(
 /// path (mirrors the scene-mesh half of `cell_loader::unload_cell`).
 pub(crate) fn unload_lod_block(world: &mut World, ctx: &mut VulkanContext, block: &LodBlock) {
     ctx.mesh_registry.drop_mesh(block.mesh_handle);
+    // #1537 — release the base ground texture refcount. `World::despawn`
+    // has no GPU side effects, so without this the `resolve_texture` bump
+    // from spawn never reaches 0 and the VkImage + bindless slot pin for the
+    // session (one leak per boundary-block regen during normal play). Skip
+    // the fallback/placeholder slot (0), as `collect_victim_gpu_handles` does.
+    if block.texture_handle != 0 {
+        ctx.texture_registry
+            .drop_texture(&ctx.device, block.texture_handle);
+    }
     world.despawn(block.entity);
 }
 
@@ -473,6 +482,7 @@ fn spawn_lod_block(
     Some(LodBlock {
         entity,
         mesh_handle,
+        texture_handle: tex_handle,
         hole_mask,
     })
 }
