@@ -13,7 +13,11 @@ use super::*;
 use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
 use byroredux_core::ecs::components::GlobalTransform;
 use byroredux_core::ecs::World;
-use byroredux_physics::{physics_sync_system, PhysicsWorld, RapierHandles};
+use byroredux_core::math::{Quat, Vec3};
+use byroredux_physics::{
+    build_ragdoll, physics_sync_system, ContactConfig, PhysicsWorld, Ragdoll, RagdollBodySpec,
+    RagdollConstraintSpec, RagdollJointSpec, RagdollSpec, RapierHandles,
+};
 
 /// World with the physics resource + `RapierHandles` storage registered,
 /// matching the engine's App-init setup so `physics_sync_system` can run.
@@ -135,4 +139,133 @@ fn release_is_noop_when_physics_resource_absent() {
     // is hit before any handle is dereferenced.
     world.register::<CollisionShape>();
     release_victim_rapier_bodies(&mut world, &[e]);
+}
+
+// ── #1531 — Ragdoll bodies/colliders/joints must also be swept ─────────
+//
+// The PHYSAL ragdoll path attaches a `Ragdoll` component carrying its own
+// `Vec<(EntityId, RigidBodyHandle)>` + multibody joints, inserted directly
+// into the solver sets — NOT through `RapierHandles`. Cell unload must sweep
+// it too, or `World::despawn` drops the row and orphans every ragdoll body +
+// collider + joint (the #1520 leak class, re-introduced for the new
+// component).
+
+/// World with the physics resource + `Ragdoll` storage registered.
+fn world_with_ragdoll_physics() -> World {
+    let mut world = World::new();
+    world.insert_resource(PhysicsWorld::new());
+    world.register::<RapierHandles>();
+    world.register::<Ragdoll>();
+    world
+}
+
+fn ball_body(entity: byroredux_core::ecs::storage::EntityId, x: f32) -> RagdollBodySpec {
+    RagdollBodySpec {
+        entity,
+        translation: Vec3::new(x, 0.0, 0.0),
+        rotation: Quat::IDENTITY,
+        shape: CollisionShape::Ball { radius: 5.0 },
+        mass: 4.0,
+        linear_damping: 0.05,
+        angular_damping: 0.05,
+        friction: 0.5,
+        restitution: 0.0,
+    }
+}
+
+/// Build a 2-body, 1-joint ragdoll into `pw` and attach the resulting
+/// `Ragdoll` component to a fresh actor entity. Returns the actor and a
+/// clone of the `Ragdoll` (its joint handles drive post-release liveness
+/// checks via `MultibodyJointSet::get`, which is panic-safe where `iter()`
+/// is not).
+fn spawn_ragdoll_actor(
+    world: &mut World,
+) -> (byroredux_core::ecs::storage::EntityId, Ragdoll) {
+    let actor = world.spawn();
+    let bone_a = world.spawn();
+    let bone_b = world.spawn();
+    let spec = RagdollSpec {
+        bodies: vec![ball_body(bone_a, 0.0), ball_body(bone_b, 50.0)],
+        constraints: vec![RagdollConstraintSpec {
+            body_a: 0,
+            body_b: 1,
+            joint: RagdollJointSpec::Ragdoll {
+                twist_a: Vec3::X,
+                plane_a: Vec3::Y,
+                pivot_a: Vec3::new(25.0, 0.0, 0.0),
+                twist_b: Vec3::X,
+                plane_b: Vec3::Y,
+                pivot_b: Vec3::new(-25.0, 0.0, 0.0),
+                cone_max: std::f32::consts::PI,
+                twist_min: -std::f32::consts::PI,
+                twist_max: std::f32::consts::PI,
+            },
+        }],
+    };
+    let ragdoll = {
+        let mut pw = world.resource_mut::<PhysicsWorld>();
+        build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT)
+    };
+    world.insert(actor, ragdoll.clone());
+    (actor, ragdoll)
+}
+
+/// A ragdolling actor's bodies, colliders, AND multibody joints must all
+/// be gone after release — the leak #1531 closes.
+#[test]
+fn release_removes_ragdoll_bodies_colliders_and_joints() {
+    let mut world = world_with_ragdoll_physics();
+    let (actor, ragdoll) = spawn_ragdoll_actor(&mut world);
+    assert_eq!(ragdoll.joints.len(), 1, "one multibody joint built");
+
+    {
+        let pw = world.resource::<PhysicsWorld>();
+        assert_eq!(pw.body_count(), 2, "ragdoll registered both bodies");
+        assert_eq!(pw.colliders.len(), 2, "one collider per ragdoll body");
+        assert!(
+            ragdoll.joints.iter().all(|&h| pw.multibody_joints.get(h).is_some()),
+            "the multibody joint is live before unload",
+        );
+    }
+
+    release_victim_rapier_bodies(&mut world, &[actor]);
+
+    let pw = world.resource::<PhysicsWorld>();
+    assert_eq!(
+        pw.body_count(),
+        0,
+        "cell unload must remove every ragdoll body — no leak across crossings",
+    );
+    assert_eq!(
+        pw.colliders.len(),
+        0,
+        "removing each ragdoll body cascades its collider",
+    );
+    assert!(
+        ragdoll.joints.iter().all(|&h| pw.multibody_joints.get(h).is_none()),
+        "ragdoll multibody joints must not survive in the solver",
+    );
+}
+
+/// A ragdoll victim and a `RapierHandles` victim in the same unload are
+/// both swept — the two component classes coexist (an actor that ragdolls
+/// while character bodies remain resident).
+#[test]
+fn release_sweeps_both_ragdoll_and_rapier_handles() {
+    let mut world = world_with_ragdoll_physics();
+
+    let (actor, ragdoll) = spawn_ragdoll_actor(&mut world); // 2 bodies
+    let collider = spawn_static_collider(&mut world); // +1 body via sync
+    physics_sync_system(&world, 0.0);
+
+    assert_eq!(world.resource::<PhysicsWorld>().body_count(), 3);
+
+    release_victim_rapier_bodies(&mut world, &[actor, collider]);
+
+    let pw = world.resource::<PhysicsWorld>();
+    assert_eq!(pw.body_count(), 0, "both the ragdoll and the handle body cleared");
+    assert!(
+        ragdoll.joints.iter().all(|&h| pw.multibody_joints.get(h).is_none()),
+        "the ragdoll's joints are gone too",
+    );
 }
