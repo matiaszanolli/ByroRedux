@@ -1027,13 +1027,8 @@ fn parse_baked_geom_data(stream: &mut NifStream) -> io::Result<BsPackedGeomData>
     let total_triangles = tri_count_lod0
         .saturating_add(tri_count_lod1)
         .saturating_add(tri_count_lod2);
-    let mut triangles: Vec<[u16; 3]> = stream.allocate_vec(total_triangles)?;
-    for _ in 0..total_triangles {
-        let a = stream.read_u16_le()?;
-        let b = stream.read_u16_le()?;
-        let c = stream.read_u16_le()?;
-        triangles.push([a, b, c]);
-    }
+    // F11 (#1589) — bulk read 3-u16 triangles instead of a push loop.
+    let triangles = stream.read_u16_triple_array(total_triangles as usize)?;
 
     Ok(BsPackedGeomData {
         num_verts,

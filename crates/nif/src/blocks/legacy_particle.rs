@@ -389,13 +389,9 @@ impl NiParticleSystemController {
         // Particle records: 32 bytes each. Skip by reading raw bytes
         // because the layout is compact and the engine doesn't read them.
         // #388: allocate_vec bounds the count against stream budget.
-        let mut particles: Vec<[u8; 32]> = stream.allocate_vec(num_particles as u32)?;
-        for _ in 0..num_particles {
-            let chunk = stream.read_bytes(32)?;
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&chunk);
-            particles.push(arr);
-        }
+        // F13 (#1589) — bulk read fixed 32-byte particle records in one
+        // pass; the per-iteration read_bytes(32) churned a throwaway Vec<u8>.
+        let particles: Vec<[u8; 32]> = stream.read_pod_vec(num_particles as usize)?;
 
         let unknown_ref = stream.read_block_ref()?;
         // #981 — bulk-read emitter-point index array via `read_u32_array`.

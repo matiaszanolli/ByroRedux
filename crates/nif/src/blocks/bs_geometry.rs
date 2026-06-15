@@ -381,13 +381,8 @@ impl BSGeometryMeshData {
 
         let n_tri_indices = stream.read_u32_le()?;
         let tri_count = (n_tri_indices / 3) as usize;
-        let mut triangles = stream.allocate_vec::<[u16; 3]>(tri_count as u32)?;
-        for _ in 0..tri_count {
-            let a = stream.read_u16_le()?;
-            let b = stream.read_u16_le()?;
-            let c = stream.read_u16_le()?;
-            triangles.push([a, b, c]);
-        }
+        // F10 (#1589) — bulk read 3-u16 triangles (matches the LOD path).
+        let triangles = stream.read_u16_triple_array(tri_count)?;
 
         let scale = stream.read_f32_le()?;
         // Sentinel: scale ≤ 0 means "the rest of the body is absent".

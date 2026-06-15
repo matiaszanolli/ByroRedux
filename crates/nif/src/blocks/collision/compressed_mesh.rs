@@ -162,17 +162,10 @@ impl BhkCompressedMeshShapeData {
             });
         }
 
-        // Big verts (full-precision)
+        // Big verts (full-precision). F12 (#1589) — bulk read [f32; 4]
+        // (same on-disk layout the push loop walked).
         let num_big_verts = stream.read_u32_le()?;
-        let mut big_verts = stream.allocate_vec(num_big_verts)?;
-        for _ in 0..num_big_verts {
-            big_verts.push([
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-            ]);
-        }
+        let big_verts = stream.read_pod_vec::<[f32; 4]>(num_big_verts as usize)?;
 
         // Big tris
         let num_big_tris = stream.read_u32_le()?;

@@ -62,7 +62,7 @@ macro_rules! impl_any_bit_pattern {
 // a blanket impl because `[T; N]: Default` only holds for `N <= 32`.
 impl_any_bit_pattern!(
     u8, i8, u16, i16, u32, i32, u64, i64, f32, f64,
-    [u8; 4], [u16; 3], [f32; 2], [f32; 3], [f32; 4],
+    [u8; 4], [u8; 32], [u16; 3], [f32; 2], [f32; 3], [f32; 4],
     NiPoint3,
 );
 
