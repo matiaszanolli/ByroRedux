@@ -640,4 +640,57 @@ mod tests {
             "message names missing binding: {msg}"
         );
     }
+
+    /// REN-D11-03 / #1564: the main geometry pass writes 7 color attachments
+    /// (HDR, normal, motion, mesh_id, raw_indirect, albedo, reservoir). The
+    /// "7" is hand-replicated across the render pass (`context/helpers.rs`
+    /// `color_refs`) and the blend arrays in `pipeline.rs` / `water.rs`, all of
+    /// which live inside device-requiring factories and so aren't host-readable.
+    /// The compiled fragment shader is the single source of truth those sites
+    /// must match; reflect its location-decorated Output variables and pin the
+    /// count. A G-buffer add/remove that forgets to mirror the blend arrays now
+    /// fails here at `cargo test` instead of as a runtime VUID / OOB blend read.
+    #[test]
+    fn triangle_frag_declares_seven_color_outputs() {
+        const EXPECTED_COLOR_OUTPUTS: usize = 7;
+        let spv: &[u8] = include_bytes!("../../shaders/triangle.frag.spv");
+
+        let mut loader = Loader::new();
+        binary::parse_bytes(spv, &mut loader).expect("parse triangle.frag.spv");
+        let module = loader.module();
+
+        // Collect ids carrying a Location decoration (color outputs do; the
+        // built-in gl_FragDepth does not, so it is excluded automatically).
+        let mut located: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for inst in &module.annotations {
+            if inst.class.opcode != Op::Decorate || inst.operands.len() < 2 {
+                continue;
+            }
+            if inst.operands[1].unwrap_decoration() == Decoration::Location {
+                located.insert(inst.operands[0].unwrap_id_ref());
+            }
+        }
+
+        // Count OpVariables in the Output storage class that have a Location.
+        let mut outputs = 0usize;
+        for inst in &module.types_global_values {
+            if inst.class.opcode != Op::Variable {
+                continue;
+            }
+            let Some(id) = inst.result_id else { continue };
+            if inst.operands[0].unwrap_storage_class() == StorageClass::Output
+                && located.contains(&id)
+            {
+                outputs += 1;
+            }
+        }
+
+        assert_eq!(
+            outputs, EXPECTED_COLOR_OUTPUTS,
+            "triangle.frag.spv declares {outputs} location-decorated color outputs but the \
+             main render pass has {EXPECTED_COLOR_OUTPUTS} color attachments — a G-buffer \
+             attachment was added/removed without mirroring the 7-element blend arrays in \
+             pipeline.rs / water.rs and color_refs in context/helpers.rs (#1564)."
+        );
+    }
 }

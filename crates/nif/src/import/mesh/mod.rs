@@ -40,6 +40,8 @@ pub(crate) use tangent::*;
 #[cfg(test)]
 mod bs_geometry_skin_tests;
 #[cfg(test)]
+mod decode_half_float_tests;
+#[cfg(test)]
 mod bs_geometry_tangent_tests;
 #[cfg(test)]
 mod bs_tri_shape_kind_passthrough_tests;

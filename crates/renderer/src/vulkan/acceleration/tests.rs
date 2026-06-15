@@ -1363,3 +1363,17 @@ fn skinned_blas_flags_is_fast_build_plus_allow_update() {
          cost ~18% FPS on FNV Prospector). No ALLOW_COMPACTION (VUID-03667)."
     );
 }
+
+#[test]
+fn static_blas_flags_is_fast_trace_plus_allow_compaction() {
+    use ash::vk::BuildAccelerationStructureFlagsKHR as F;
+    assert_eq!(
+        super::constants::STATIC_BLAS_FLAGS,
+        F::PREFER_FAST_TRACE | F::ALLOW_COMPACTION,
+        "STATIC_BLAS_FLAGS must be exactly PREFER_FAST_TRACE | ALLOW_COMPACTION — \
+         FAST_TRACE because static geometry is traced far more than rebuilt; \
+         ALLOW_COMPACTION kept in lockstep across all static-BLAS sites so the \
+         compact pass lights up without a flag-drift bisect. No ALLOW_UPDATE — \
+         static BLAS is rebuilt, never refit."
+    );
+}
