@@ -124,7 +124,7 @@ impl BsaArchive {
             // shouldn't have to wait.
             drop(file);
 
-            // v104 uses zlib, v105 uses LZ4 frame format.
+            // v103/v104 uses zlib, v105 uses LZ4 frame format.
             let (decompressed, codec) = if self.version >= BSA_V_SKYRIM_SE {
                 let mut decoder = lz4_flex::frame::FrameDecoder::new(&compressed[..]);
                 let mut buf = Vec::with_capacity(original_size);

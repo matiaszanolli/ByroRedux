@@ -89,9 +89,9 @@ impl BsaArchive {
             compressed_by_default
         );
 
-        // -- Folder Records (16 bytes v104 / 24 bytes v105) ----------------------
-        // v104: [hash:u64, count:u32, offset:u32]
-        // v105: [hash:u64, count:u32, _padding:u32, offset:u64]
+        // -- Folder Records (16 bytes v103/v104 / 24 bytes v105) -----------------
+        // v103/v104: [hash:u64, count:u32, offset:u32]
+        // v105:      [hash:u64, count:u32, _padding:u32, offset:u64]
         //
         // The offset is the absolute file position where the folder's
         // name + file records start, **with the `_total_file_name_length`
@@ -108,7 +108,7 @@ impl BsaArchive {
             #[cfg(debug_assertions)]
             hash: u64,
             count: usize,
-            /// v104: u32 at [12..16]. v105: u64 at [16..24]. Used to
+            /// v103/v104: u32 at [12..16]. v105: u64 at [16..24]. Used to
             /// validate folder-block layout in debug builds (#362).
             /// Release-only dead-code per #622 / SK-D2-07.
             #[cfg(debug_assertions)]
