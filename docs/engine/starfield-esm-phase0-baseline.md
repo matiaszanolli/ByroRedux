@@ -129,8 +129,8 @@ Of the Cydonia-relevant gaps, only LCTN and possibly RFGP need pre-Phase-5 work.
 
 1. **Does the CELL handler decode Starfield's nested cell-block sub-GRUPs correctly?** The 254 MB byte count is dispatched to `parse_cell_group`, but if SF moved a subrecord size or added a new XCLL field, the handler could silently drop every REFR. Phase 1's `sf_full_parse` integration test must recurse and count leaf records — top-level byte count is necessary but not sufficient.
 2. **Does the WRLD handler decode Starfield worldspaces?** WRLD is 60% of the file (863 MB). If even one common subrecord is off, the entire exterior-cell catalog gets dropped. Cydonia is INTERIOR (it lives in CELL, not WRLD), so this isn't blocking for Phase 5, but it's a Phase 4 must-verify.
-3. **Does STAT decode SF base records?** 20 607 immediate STAT records vs the 254 MB CELL payload. If a Cydonia REFR references a STAT base form id and the STAT didn't get indexed, the REFR will spawn the 3D-unit-cube placeholder.
-4. **GBFM frequency answer**: 3 141 records in the vanilla ESM. That's significant but not dominant — and crucially, the GBFM total bytes (36 MB) are dwarfed by WRLD/CELL/STAT. **Recommendation: Phase 3 should stub GBFM (warn-once-and-skip pattern) rather than parse it.** A Cydonia REFR pointing at a GBFM-templated base would 3D-cube-placeholder, but the Phase 0 measurement gives us a way to count those after Phase 5 — if the missing-form-id count is dominated by GBFM-targeted refs, Phase 3.5 promotes GBFM. If GBFM-targeted refs are <10% of placeholders, defer.
+3. **Does STAT decode SF base records?** 20 607 immediate STAT records vs the 254 MB CELL payload. If a Cydonia REFR references a STAT base form id and the STAT didn't get indexed, the REFR is silently skipped (no geometry spawned) — see the `statics.get` miss branch in `byroredux/src/cell_loader/references.rs`.
+4. **GBFM frequency answer**: 3 141 records in the vanilla ESM. That's significant but not dominant — and crucially, the GBFM total bytes (36 MB) are dwarfed by WRLD/CELL/STAT. **Recommendation: Phase 3 should stub GBFM (warn-once-and-skip pattern) rather than parse it.** A Cydonia REFR pointing at a GBFM-templated base would be silently skipped (no geometry spawned), but the Phase 0 measurement gives us a way to count those after Phase 5 — if the missing-form-id count is dominated by GBFM-targeted refs, Phase 3.5 promotes GBFM. If GBFM-targeted refs are <10% of skipped refs, defer.
 
 ### Three answered decision points from the roadmap
 
@@ -211,7 +211,7 @@ Open follow-up items (file as issues when the first render attempt produces conc
 
 - **TXST low count** (21 in vanilla SF vs likely thousands authored): probable subrecord-size drift. Diagnose with `sf_parse_check` extended to dump TXST decode failures.
 - **Locations (LCTN)** silently skipped at the top level (6 017 records, 2.2 MB). Cell→Location linking would be the typical consumer; not blocking visible rendering but blocks gameplay later.
-- **GBFM** silently skipped (3 141 records, 36 MB). If Cydonia REFRs reference GBFM-templated base forms, those spawn placeholders. Phase 0's question "stub or implement?" — Phase 5 attempt reveals the answer.
+- **GBFM** silently skipped (3 141 records, 36 MB). If Cydonia REFRs reference GBFM-templated base forms, those REFRs are silently skipped (no geometry spawned). Phase 0's question "stub or implement?" — Phase 5 attempt reveals the answer.
 - **`sf_parse_check`** is currently a one-shot binary; promote to a regression test (`tests/sf_parse_baseline.rs`) gated on `BYROREDUX_STARFIELD_DATA` so any future commit that breaks SF parsing fails the build.
 
 ## References
