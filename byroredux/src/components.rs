@@ -261,12 +261,11 @@ pub(crate) struct CellLightingRes {
     /// Fog far distance (game units).
     pub(crate) fog_far: f32,
     // ── Extended XCLL fields (FNV 40-byte tail + Skyrim 92-byte tail) ──
-    // Each `#[allow(dead_code)]` is removed in lockstep with the
-    // matching shader-side consumer landing (see #865 for fog curve;
-    // ambient-cube + light-fade + specular follow as their own issues).
+    // All of these are now read by the `cell.lighting` console command
+    // and/or the lighting plumbing (see #865 for the fog curve), so the
+    // former per-field `#[allow(dead_code)]` guards have been removed.
     /// Directional light fade multiplier — bytes 28-31 of the XCLL.
     /// FNV+ XCLL.
-    #[allow(dead_code)]
     pub(crate) directional_fade: Option<f32>,
     /// Cubic-fog clip distance — bytes 32-35. FNV+ XCLL. Used together
     /// with `fog_power` to drive a non-linear fog curve in place of
@@ -278,32 +277,24 @@ pub(crate) struct CellLightingRes {
     pub(crate) fog_power: Option<f32>,
     /// Fog far color (RGB 0-1) — bytes 72-74. Skyrim+ XCLL. Distinct
     /// from `fog_color` (which is the near-distance fog tint).
-    #[allow(dead_code)]
     pub(crate) fog_far_color: Option<[f32; 3]>,
     /// Maximum fog opacity — bytes 76-79. Skyrim+ XCLL.
-    #[allow(dead_code)]
     pub(crate) fog_max: Option<f32>,
     /// Light fade begin distance — bytes 80-83. Skyrim+ XCLL.
-    #[allow(dead_code)]
     pub(crate) light_fade_begin: Option<f32>,
     /// Light fade end distance — bytes 84-87. Skyrim+ XCLL.
-    #[allow(dead_code)]
     pub(crate) light_fade_end: Option<f32>,
     /// Directional ambient cube — `[+X, -X, +Y, -Y, +Z, -Z]` RGB
     /// triplets from bytes 40-63. Drives the per-cell ambient probe;
     /// ±Z asymmetry is what makes Skyrim cave floors read warm while
     /// ceilings read cool without a dedicated IBL pass. Skyrim+ XCLL.
-    #[allow(dead_code)]
     pub(crate) directional_ambient: Option<[[f32; 3]; 6]>,
     /// Specular tint (RGB) — bytes 64-66. Skyrim+ XCLL.
-    #[allow(dead_code)]
     pub(crate) specular_color: Option<[f32; 3]>,
     /// Specular alpha — byte 67. Stored separately so consumers can
     /// decide whether the RGBA packing was intentional or padding.
-    #[allow(dead_code)]
     pub(crate) specular_alpha: Option<f32>,
     /// Fresnel power exponent — bytes 68-71. Skyrim+ XCLL.
-    #[allow(dead_code)]
     pub(crate) fresnel_power: Option<f32>,
 }
 

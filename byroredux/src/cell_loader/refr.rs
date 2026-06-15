@@ -59,9 +59,8 @@ pub(crate) struct RefrTextureOverlay {
     pub(crate) env: Option<FixedString>,
     pub(crate) env_mask: Option<FixedString>,
     /// BSShaderTextureSet slot 6 — MultiLayerParallax inner layer.
-    /// Not yet consumed by the spawn path; preserved for parity with
-    /// `TextureSet.inner` so the slot_index=6 XTXR swap round-trips.
-    #[allow(dead_code)]
+    /// Preserved for parity with `TextureSet.inner` so the slot_index=6
+    /// XTXR swap round-trips.
     pub(crate) inner: Option<FixedString>,
     pub(crate) specular: Option<FixedString>,
     pub(crate) material_path: Option<FixedString>,
