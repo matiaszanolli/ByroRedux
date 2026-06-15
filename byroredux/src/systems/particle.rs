@@ -87,8 +87,10 @@ pub fn convert_force_fields_zup_to_yup(
     src: &[byroredux_nif::import::ImportedParticleForceField],
 ) -> Vec<ParticleForceField> {
     use byroredux_nif::import::ImportedParticleForceField as I;
+    // #1617 — delegate the Z-up→Y-up swap to the coord SoT (bit-identical to
+    // the prior inline `[x, z, -y]`).
     fn zup_to_yup(v: [f32; 3]) -> [f32; 3] {
-        [v[0], v[2], -v[1]]
+        byroredux_core::math::coord::zup_to_yup_pos(v)
     }
     src.iter()
         .map(|f| match *f {

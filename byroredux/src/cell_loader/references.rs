@@ -231,12 +231,12 @@ pub(super) fn load_references(
         // Convert the outer REFR's placement (Z-up Bethesda → Y-up
         // renderer). For normal REFRs this is the spawn transform; for
         // SCOL REFRs it's the parent transform the child placements
-        // compose against.
-        let outer_pos = Vec3::new(
-            placed_ref.position[0],
-            placed_ref.position[2],
-            -placed_ref.position[1],
-        );
+        // compose against. #1617 — route through the coord SoT
+        // (`zup_to_yup_pos`) rather than an inline `(x, z, -y)` so a future
+        // change to the canonical swap can't silently skip this hot REFR
+        // placement path. Bit-identical to the old inline form.
+        let outer_pos =
+            Vec3::from_array(byroredux_core::math::coord::zup_to_yup_pos(placed_ref.position));
         let outer_rot = euler_zup_to_quat_yup_refr(
             placed_ref.rotation[0],
             placed_ref.rotation[1],

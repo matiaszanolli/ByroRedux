@@ -267,7 +267,7 @@ pub fn synthesize_tangents(
             if vec3_is_zero(&tangent_zup) || vec3_is_zero(&bitangent_zup) {
                 // Degenerate fallback (nifly: permute N components).
                 let t_z = [n_zup.y, n_zup.z, n_zup.x];
-                let t_y = [t_z[0], t_z[2], -t_z[1]];
+                let t_y = byroredux_core::math::coord::zup_to_yup_pos(t_z); // #1617 — SoT (bit-identical)
                 let b_y = [
                     n_yup[1] * t_y[2] - n_yup[2] * t_y[1],
                     n_yup[2] * t_y[0] - n_yup[0] * t_y[2],
@@ -278,8 +278,10 @@ pub fn synthesize_tangents(
                 // Convert Z-up → Y-up first so the orthogonalization
                 // happens in the same coordinate space as the shader
                 // reads (consistent with the authored-decode path).
-                let mut t_yup = [tangent_zup[0], tangent_zup[2], -tangent_zup[1]];
-                let mut b_yup = [bitangent_zup[0], bitangent_zup[2], -bitangent_zup[1]];
+                // #1617 — Z-up→Y-up direction swap through the coord SoT
+                // (same `(x, z, -y)` axis map as positions; bit-identical).
+                let mut t_yup = byroredux_core::math::coord::zup_to_yup_pos(tangent_zup);
+                let mut b_yup = byroredux_core::math::coord::zup_to_yup_pos(bitangent_zup);
 
                 normalize_inplace(&mut t_yup);
                 // T = T - N * dot(N, T)
@@ -328,7 +330,14 @@ pub fn synthesize_tangents(
 /// `(x, y, z) → (x, z, -y)` convention applied to positions / normals
 /// throughout import. See #795 / SK-D1-03 + #796 / SK-D1-04.
 pub fn bs_tangents_zup_to_yup(zup: &[[f32; 4]]) -> Vec<[f32; 4]> {
-    zup.iter().map(|t| [t[0], t[2], -t[1], t[3]]).collect()
+    // #1617 — swap the .xyz through the coord SoT; the .w sign rides through
+    // unchanged. Bit-identical to the prior inline `[x, z, -y, w]`.
+    zup.iter()
+        .map(|t| {
+            let [x, y, z] = byroredux_core::math::coord::zup_to_yup_pos([t[0], t[1], t[2]]);
+            [x, y, z, t[3]]
+        })
+        .collect()
 }
 
 /// Y-up sibling of [`synthesize_tangents`] for inputs already in the

@@ -205,7 +205,11 @@ fn import_nif_scene_impl(
                         // half-extent is the absolute value of the old
                         // Y half-extent. Magnitudes don't change sign,
                         // so the dimensions swap is just `[x, z, y]`.
-                        let center = [bb.center[0], bb.center[2], -bb.center[1]];
+                        // #1617 — center swap through the coord SoT
+                        // (bit-identical). `half_extents` is a deliberate
+                        // magnitude-only axis reorder (no sign flip), so it
+                        // stays inline — NOT a `zup_to_yup_pos` call.
+                        let center = byroredux_core::math::coord::zup_to_yup_pos(bb.center);
                         let half_extents = [bb.dimensions[0], bb.dimensions[2], bb.dimensions[1]];
                         imported.bs_bound = Some((center, half_extents));
                     }

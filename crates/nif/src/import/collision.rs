@@ -828,14 +828,22 @@ fn resolve_packed_mesh(data: &HkPackedNiTriStripsData, scale: f32) -> Option<Col
 }
 
 /// Convert Havok Z-up coordinates to engine Y-up: (x, z, -y).
+///
+/// #1617 — routed through the coord single source of truth
+/// (`zup_to_yup_pos`) so this (and the ~15 collision sites that call it)
+/// stays in lockstep with the canonical position swap. Bit-identical.
 fn havok_to_engine(x: f32, y: f32, z: f32) -> Vec3 {
-    Vec3::new(x, z, -y)
+    Vec3::from_array(byroredux_core::math::coord::zup_to_yup_pos([x, y, z]))
 }
 
 /// Convert a Havok quaternion [x, y, z, w] from Z-up to Y-up engine space.
 fn havok_quat_to_engine(q: [f32; 4]) -> Quat {
-    // Havok quat is (x, y, z, w) in Z-up. Apply Z-up→Y-up: swap y↔z, negate new z.
-    Quat::from_xyzw(q[0], q[2], -q[1], q[3])
+    // Havok quat is (x, y, z, w) in Z-up. Apply Z-up→Y-up: swap y↔z, negate
+    // new z. #1617 — `.normalize()` adopts the #333 unit-quaternion guard the
+    // array/matrix coord SoT carries, so a drifted-length Havok quat can't
+    // leak scale into the ragdoll Transform rotation. Identity for the unit
+    // quats Havok normally ships; the axis mapping is unchanged.
+    Quat::from_xyzw(q[0], q[2], -q[1], q[3]).normalize()
 }
 
 /// Decompose a Havok 4x4 matrix into (translation, rotation) in engine space.
@@ -865,7 +873,13 @@ fn decompose_havok_matrix(m: &[[f32; 4]; 4], scale: f32) -> (Vec3, Quat) {
         byroredux_core::math::Vec3::new(r20, r22, -r21),
         byroredux_core::math::Vec3::new(-r10, -r12, r11),
     );
-    let rotation = Quat::from_mat3(&mat);
+    // #1617 — `.normalize()` adopts the #333 unit-quaternion guard the coord
+    // SoT (`zup_matrix_to_yup_quat`) carries, so a drifted Havok rotation
+    // matrix can't leak scale into the placed-shape Transform. The basis
+    // change above is left as-is (its column-major `from_cols` layout differs
+    // from the SoT's row-major Shepperd path, so this is NOT a drop-in for
+    // `zup_matrix_to_yup_quat` — only the normalize guard is shared).
+    let rotation = Quat::from_mat3(&mat).normalize();
 
     (translation, rotation)
 }
@@ -1947,5 +1961,54 @@ mod ragdoll_extract_tests {
         scene.blocks.push(sphere(1.0));
         scene.blocks.push(ragdoll_constraint(2, 6, 10.0));
         assert!(extract_ragdoll(&scene).is_some());
+    }
+}
+
+#[cfg(test)]
+mod coord_sot_tests {
+    use super::*;
+
+    /// #1617 — `havok_to_engine` is now a thin wrapper over the coord single
+    /// source of truth. Pin it bit-identical to the canonical `(x, z, -y)`
+    /// swap so the consolidation can't silently diverge.
+    #[test]
+    fn havok_to_engine_matches_coord_sot() {
+        for &(x, y, z) in &[(2.0f32, 3.0, 5.0), (-1.0, 7.0, -4.0), (0.0, 0.0, 0.0)] {
+            let got = havok_to_engine(x, y, z);
+            let sot = byroredux_core::math::coord::zup_to_yup_pos([x, y, z]);
+            assert_eq!([got.x, got.y, got.z], sot, "havok_to_engine drifted from coord SoT");
+            // And the literal canonical mapping it encodes.
+            assert_eq!([got.x, got.y, got.z], [x, z, -y]);
+        }
+    }
+
+    /// #1617 — the Havok rotation helpers adopt the #333 normalize guard:
+    /// a deliberately drifted-length input must come out unit-length, while
+    /// the axis mapping (x→x, y→z, z→-y, w→w) is preserved.
+    #[test]
+    fn havok_quat_to_engine_normalizes_and_keeps_axes() {
+        // Unit input: axis mapping check.
+        let unit = havok_quat_to_engine([0.0, 0.0, 0.0, 1.0]);
+        assert!((unit.w - 1.0).abs() < 1e-6);
+        // Drifted-length input (1.05x): must be renormalised to unit length.
+        let drifted = havok_quat_to_engine([0.0, 0.0, 0.0, 1.05]);
+        assert!((drifted.length() - 1.0).abs() < 1e-6, "guard must renormalise");
+    }
+
+    /// #1617 — `decompose_havok_matrix` likewise emits a unit quaternion even
+    /// from a scaled (drifted) rotation basis.
+    #[test]
+    fn decompose_havok_matrix_emits_unit_quat() {
+        // Identity rotation scaled 1.1x in the upper 3x3; translation in row 3.
+        let m = [
+            [1.1, 0.0, 0.0, 0.0],
+            [0.0, 1.1, 0.0, 0.0],
+            [0.0, 0.0, 1.1, 0.0],
+            [4.0, 5.0, 6.0, 1.0],
+        ];
+        let (t, r) = decompose_havok_matrix(&m, 1.0);
+        assert!((r.length() - 1.0).abs() < 1e-6, "rotation must be unit-length");
+        // Translation still routes (x, z, -y) through the SoT.
+        assert_eq!([t.x, t.y, t.z], [4.0, 6.0, -5.0]);
     }
 }

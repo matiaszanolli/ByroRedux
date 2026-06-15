@@ -491,8 +491,10 @@ fn expand_scol_placements_with_depth(
     for part in &scol.parts {
         for p in &part.placements {
             // Z-up Bethesda → Y-up renderer, matching the outer REFR
-            // conversion policy in `load_references`.
-            let local_pos = Vec3::new(p.pos[0], p.pos[2], -p.pos[1]);
+            // conversion policy in `load_references`. #1617 — through the
+            // coord SoT (bit-identical to the prior inline `(x, z, -y)`).
+            let local_pos =
+                Vec3::from_array(byroredux_core::math::coord::zup_to_yup_pos(p.pos));
             let local_rot = euler_zup_to_quat_yup_refr(p.rot[0], p.rot[1], p.rot[2]);
             let final_pos = outer_rot * (outer_scale * local_pos) + outer_pos;
             let final_rot = outer_rot * local_rot;

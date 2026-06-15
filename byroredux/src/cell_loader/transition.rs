@@ -130,10 +130,11 @@ pub enum TransitionDestination {
 }
 
 /// Convert a Bethesda Z-up world-space position to engine Y-up.
-/// Mirrors the convention used at REFR placement in
-/// `references.rs:198-202`: `(x, z, -y)`.
+/// Mirrors the convention used at REFR placement in `references.rs`:
+/// `(x, z, -y)`. #1617 — delegates to the coord SoT so this stays in
+/// lockstep with the canonical swap (bit-identical to the old inline form).
 pub fn position_zup_to_yup(p: [f32; 3]) -> Vec3 {
-    Vec3::new(p[0], p[2], -p[1])
+    Vec3::from_array(byroredux_core::math::coord::zup_to_yup_pos(p))
 }
 
 /// Convert a Bethesda Z-up Euler rotation triple to an engine Y-up

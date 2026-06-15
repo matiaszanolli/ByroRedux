@@ -476,8 +476,10 @@ pub fn ni_transform_to_yup_matrix(t: &NiTransform) -> [[f32; 4]; 4] {
         [cr[1][0], cr[1][2], -cr[1][1]],
         [cr[2][0], cr[2][2], -cr[2][1]],
     ];
-    // C * t
-    let tt = [tx, tz, -ty];
+    // C * t — translation swap through the coord SoT (#1617, bit-identical).
+    // The `cr`/`rr` matrix basis-change above is the rotation-similarity
+    // analog (C·R·Cᵀ), a deliberate parallel — not the position swap.
+    let tt = byroredux_core::math::coord::zup_to_yup_pos([tx, ty, tz]);
 
     // Pack into column-major 4x4 with uniform scale baked in.
     let s = t.scale;
