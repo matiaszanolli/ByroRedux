@@ -82,18 +82,19 @@ graphics+compute queue. Pass ordering is inside
 
 ## G-Buffer Layout
 
-Six colour attachments + depth, all double-buffered (one set per
+Seven colour attachments + depth, all double-buffered (one set per
 `MAX_FRAMES_IN_FLIGHT` = 2). Written by the main render pass
 (`triangle.frag` + `water.frag`), read by SVGF, TAA, SSAO, and composite.
 
 | Attachment | `VkFormat` | Contents | Layout during pass |
 |---|---|---|---|
-| HDR colour | `B10G11R11_UFLOAT_PACK32` | Direct lighting (pre-denoised) | `COLOR_ATTACHMENT_OPTIMAL` |
+| HDR colour | `R16G16B16A16_SFLOAT` | Direct lighting (pre-denoised); alpha feeds SRC_ALPHA blend + water | `COLOR_ATTACHMENT_OPTIMAL` |
 | Normal | `R16G16_SNORM` | Octahedral-encoded world normal | `COLOR_ATTACHMENT_OPTIMAL` |
 | Motion | `R16G16_SFLOAT` | Screen-space motion vector (current → previous NDC) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Mesh ID | `R32_UINT` | Bits 0–30: instance ID + 1; bit 31: `ALPHA_BLEND_NO_HISTORY` (skip SVGF accumulation) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Raw indirect | `B10G11R11_UFLOAT_PACK32` | Albedo-demodulated indirect light (SVGF input) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Albedo | `B10G11R11_UFLOAT_PACK32` | Surface colour (diffuse × vertex colour) | `COLOR_ATTACHMENT_OPTIMAL` |
+| Reservoir | `R32G32B32A32_UINT` | ReSTIR-DI reservoir (`outReservoir`, location 6); integer attachment, blend disabled | `COLOR_ATTACHMENT_OPTIMAL` |
 | Depth | `D32_SFLOAT` | Reverse-Z depth (1.0 = camera near, 0.0 = far) | `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` |
 
 After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIMAL`.
