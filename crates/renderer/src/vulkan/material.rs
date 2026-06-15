@@ -449,10 +449,12 @@ pub mod material_flag {
     /// Material uses the Disney BSDF path (metalness/roughness with
     /// Burley diffuse, GGX specular, optional sheen / subsurface /
     /// clearcoat). When clear, the fragment shader runs the
-    /// legacy Lambert + simple-GGX path. Currently set by the BGSM
-    /// translator on `BgsmFile.pbr == true`; future translators (.mat,
-    /// Disney-authored legacy NIFs) can set it without re-introducing
-    /// a BGSM branch.
+    /// legacy Lambert + simple-GGX path. Set for all BGSM/BGEM-sourced
+    /// content: since #1352 the BGSM merge flips `ImportedMesh.is_pbr =
+    /// true` unconditionally and the cell loader ORs this bit whenever
+    /// `is_pbr` is set (not just the rarely-authored `BgsmFile.pbr ==
+    /// true` case). Future translators (.mat, Disney-authored legacy
+    /// NIFs) can set it the same way without a BGSM branch.
     pub const PBR_BSDF: u32 = 1 << 5;
     /// Material has subsurface / translucency authoring (skin, foliage,
     /// thin glass, wax). Drives the SSS path; the parameter suite
@@ -514,11 +516,12 @@ pub mod material_flag {
     /// on the legacy path (matches pre-fix behaviour, no regression).
     ///
     /// Distinct from [`PBR_BSDF`] which gates the Disney BSDF /
-    /// translucency suite — `bgsm.pbr=true` is virtually never authored
-    /// in vanilla content (sampled across 793 metal/crate/cargo
-    /// vanilla FO4 BGSMs in `Fallout4 - Materials.ba2`: 0 with
-    /// pbr=true), so `PBR_BSDF` alone is a dead gate. `BGSM_AUTHORED`
-    /// records that the spec-glossiness translation ran, but the routing
+    /// translucency suite. Since #1352 `PBR_BSDF` is set for all
+    /// BGSM/BGEM-sourced content (via `is_pbr`), so every FO4 BGSM
+    /// material takes the Disney lobe regardless of the rarely-authored
+    /// `bgsm.pbr` flag (0 of 793 sampled vanilla FO4 BGSMs in
+    /// `Fallout4 - Materials.ba2` set it). `BGSM_AUTHORED` records that
+    /// the spec-glossiness translation ran, but the routing
     /// itself is the CPU-side `metalness_override` / `roughness_override`
     /// write — not a GPU branch on this bit.
     pub const BGSM_AUTHORED: u32 = 1 << 10;
