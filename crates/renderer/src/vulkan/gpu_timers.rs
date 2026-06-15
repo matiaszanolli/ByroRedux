@@ -45,8 +45,9 @@
 //! Created once per `VulkanContext` (one pool per frame slot). At the
 //! top of `draw_frame` (after the per-frame fence wait — which proves
 //! the *previous* use of this slot is complete), we read the slot's
-//! results into `last_snapshot`, then `cmd_reset_query_pool` for the
-//! upcoming frame. The fence ordering means results are always one
+//! results into `last_snapshot`, then host-side `reset_query_pool`
+//! (`VK_KHR_host_query_reset`, gated on `host_query_reset_supported`)
+//! for the upcoming frame. The fence ordering means results are always one
 //! `MAX_FRAMES_IN_FLIGHT` cycle behind the current frame, but for a
 //! perf instrumentation that's exactly the right amount of lag: the
 //! console / bench summary reads a steady value, not a value that's

@@ -1029,9 +1029,10 @@ impl MaterialTable {
     ///
     /// Capped at [`MAX_MATERIALS`] entries — over-cap interns return
     /// id `0` and share the neutral-default material's record for the
-    /// rest of the frame. See #797 / SAFE-22: the upload at
-    /// `scene_buffer.rs:975` truncates the buffer to `MAX_MATERIALS`
-    /// entries, so without this cap a `DrawCommand` carrying an over-
+    /// rest of the frame. See #797 / SAFE-22: the
+    /// `scene_buffer::upload` material upload truncates the buffer to
+    /// [`MAX_MATERIALS`] entries, so without this cap a `DrawCommand`
+    /// carrying an over-
     /// cap `material_id` would index past the SSBO end on the GPU
     /// (implementation-defined OOB read; AMD returns zeros, NVIDIA
     /// returns last-valid-page contents, Intel may DEVICE_LOST).
@@ -1040,8 +1041,8 @@ impl MaterialTable {
     /// frame," which was an overload.
     ///
     /// Real interior cells dedup to 50–200 unique materials and a
-    /// 3×3 exterior grid lands at 300–600 — well under the 4096 cap
-    /// (`scene_buffer.rs:60-62`). The overflow path is reachable
+    /// 3×3 exterior grid lands at 300–600 — well under the
+    /// [`MAX_MATERIALS`] cap (`scene_buffer/constants.rs`). The overflow path is reachable
     /// today only on modded / synthetic / future Starfield-FO76
     /// large-exterior content.
     pub fn intern(&mut self, material: GpuMaterial) -> u32 {
