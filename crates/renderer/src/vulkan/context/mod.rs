@@ -1760,18 +1760,39 @@ impl VulkanContext {
         // with the bound triangle-pipeline descriptor sets at draw
         // time; the water pipeline layout adds a 112-byte push
         // constant range for per-plane material params.
-        let water = match WaterPipeline::new(
-            &device,
-            render_pass,
-            pipeline_cache,
-            texture_registry.descriptor_set_layout,
-            scene_buffers.descriptor_set_layout,
-        ) {
-            Ok(w) => Some(w),
-            Err(e) => {
-                log::warn!("Water pipeline creation failed: {e} — water surfaces will not render");
-                None
+        // #1561 — gate water pipeline creation on RT support, mirroring
+        // `accel_manager` / `skin_compute` / `skin_palette` above. `water.frag`
+        // uses set=1 binding=2 (TLAS) unconditionally — unlike `triangle.frag`
+        // it has no `sceneFlags.x` runtime guard — and on a non-RT device
+        // binding 2 is omitted from the bound layout while the SPIR-V still
+        // carries the `RayQueryKHR` capability with the `rayQuery` feature
+        // disabled. Creating it there risks a pipeline-creation failure or
+        // (driver-dependent) an undefined ray query against an absent binding.
+        // RT-capable hardware (the only configuration this engine targets —
+        // RT is mandatory) is unaffected: the pipeline is created exactly as
+        // before. The matching draw-side skip lives in `draw.rs`.
+        let water = if device_caps.ray_query_supported {
+            match WaterPipeline::new(
+                &device,
+                render_pass,
+                pipeline_cache,
+                texture_registry.descriptor_set_layout,
+                scene_buffers.descriptor_set_layout,
+            ) {
+                Ok(w) => Some(w),
+                Err(e) => {
+                    log::warn!(
+                        "Water pipeline creation failed: {e} — water surfaces will not render"
+                    );
+                    None
+                }
             }
+        } else {
+            log::info!(
+                "Water pipeline skipped: device lacks ray_query support (water.frag traces \
+                 RT rays unconditionally). See #1561."
+            );
+            None
         };
 
         // 15b. Water-caustic accumulator (#1255 / Phase C of #1210).
