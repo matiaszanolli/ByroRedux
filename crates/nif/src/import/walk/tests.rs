@@ -790,6 +790,15 @@ mod emitter_param_tests {
                 declination_variation: f32::NAN,
                 ..sane_params()
             },
+            // #1445 — the two planar-angle fields were omitted from the sweep.
+            EmitterBaseParams {
+                planar_angle: f32::NAN,
+                ..sane_params()
+            },
+            EmitterBaseParams {
+                planar_angle_variation: f32::INFINITY,
+                ..sane_params()
+            },
             EmitterBaseParams {
                 initial_radius: f32::INFINITY,
                 ..sane_params()

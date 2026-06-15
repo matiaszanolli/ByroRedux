@@ -715,6 +715,13 @@ pub(super) fn extract_emitter_params(
         && p.speed_variation.is_finite()
         && p.declination.is_finite()
         && p.declination_variation.is_finite()
+        // #1445 — planar_angle / planar_angle_variation were lifted into
+        // EmitterBaseParams but omitted from this sweep. Harmless today
+        // (apply_emitter_params doesn't read them yet) but a latent NaN trap
+        // the moment planar angle is wired into the spawn cone; include them
+        // now so the guard can't be silently outrun by a future consumer.
+        && p.planar_angle.is_finite()
+        && p.planar_angle_variation.is_finite()
         && p.initial_radius.is_finite()
         && p.life_span.is_finite()
         && p.life_span_variation.is_finite();
