@@ -420,6 +420,13 @@ struct App {
     /// from `&self.world`, which `DebugUiState::run`'s closure
     /// can't reach.
     debug_ui_refresh_entities: bool,
+    /// #1584 — persistent scratch sets for the per-frame `meshes_in_use` /
+    /// `textures_in_use` dedup walk in `about_to_wait`. Hoisted off the hot
+    /// path so it `clear()`+reuses them instead of allocating two fresh
+    /// `HashSet`s every frame (zero-steady-state-alloc posture). Capacity
+    /// stabilises at the live cell's unique-handle count.
+    in_use_mesh_scratch: std::collections::HashSet<u32>,
+    in_use_tex_scratch: std::collections::HashSet<u32>,
     /// Phase 9 — timestamp at the END of the previous
     /// RedrawRequested handler. Subtracting from `Instant::now()`
     /// at the START of the next RedrawRequested yields
@@ -1030,6 +1037,8 @@ impl App {
             debug_server,
             debug_ui: None,
             debug_ui_refresh_entities: false,
+            in_use_mesh_scratch: std::collections::HashSet::new(),
+            in_use_tex_scratch: std::collections::HashSet::new(),
             last_redraw_end: None,
         }
     }
@@ -2110,23 +2119,29 @@ impl ApplicationHandler for App {
         // in two scopes because the queries need an immutable world
         // borrow that can't coexist with `resource_mut::<DebugStats>`.
         let (meshes_in_use, textures_in_use) = {
-            let mut mesh_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+            // #1584 — reuse persistent scratch sets (clear() keeps the
+            // allocation, drops the contents) so this per-frame dedup walk
+            // does zero steady-state heap allocations.
+            self.in_use_mesh_scratch.clear();
             if let Some(q) = self.world.query::<byroredux_core::ecs::MeshHandle>() {
                 for (_, h) in q.iter() {
                     if h.0 != 0 {
-                        mesh_set.insert(h.0);
+                        self.in_use_mesh_scratch.insert(h.0);
                     }
                 }
             }
-            let mut tex_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+            self.in_use_tex_scratch.clear();
             if let Some(q) = self.world.query::<byroredux_core::ecs::TextureHandle>() {
                 for (_, h) in q.iter() {
                     if h.0 != 0 {
-                        tex_set.insert(h.0);
+                        self.in_use_tex_scratch.insert(h.0);
                     }
                 }
             }
-            (mesh_set.len() as u32, tex_set.len() as u32)
+            (
+                self.in_use_mesh_scratch.len() as u32,
+                self.in_use_tex_scratch.len() as u32,
+            )
         };
         {
             let mut stats = self.world.resource_mut::<DebugStats>();
