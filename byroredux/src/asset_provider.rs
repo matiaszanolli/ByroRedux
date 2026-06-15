@@ -323,6 +323,27 @@ pub(crate) fn normalize_texture_path(path: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Conductor diffuse-tint blend (#1591). When saturation-derived
+/// `metalness > 0.5`, bias the diffuse albedo halfway toward the authored
+/// spec CHROMATICITY so the shader's `F0 = mix(0.04, albedo, metalness)`
+/// lands on the right conductor tint even when the DDS albedo is
+/// BC1-desaturated. The half weight keeps the diffuse texture's detail
+/// (rivets, wear, edge highlights) visually present.
+///
+/// Blends toward the mult-free `specular_color`, NOT `specular_color ×
+/// specular_mult`: per #1476 the `mult` only scales highlight strength —
+/// it's not an albedo/F0 quantity — so folding it in darkened the tint
+/// toward black for `mult < 1` and overshot past 1.0 (unclamped into
+/// `GpuMaterial.diffuse_*`) for `mult > 1`. Making `mult` structurally
+/// absent from this signature is the guarantee. Output is clamped to `[0,1]`.
+pub(crate) fn conductor_diffuse_tint(diffuse: [f32; 3], specular_color: [f32; 3]) -> [f32; 3] {
+    [
+        (0.5 * diffuse[0] + 0.5 * specular_color[0]).clamp(0.0, 1.0),
+        (0.5 * diffuse[1] + 0.5 * specular_color[1]).clamp(0.0, 1.0),
+        (0.5 * diffuse[2] + 0.5 * specular_color[2]).clamp(0.0, 1.0),
+    ]
+}
+
 /// Parse grid coordinates from a "x,y" string.
 pub(crate) fn parse_grid_coords(s: &str) -> (i32, i32) {
     let parts: Vec<&str> = s.split(',').collect();
@@ -1172,16 +1193,11 @@ pub(crate) fn merge_bgsm_into_mesh(
         mesh.metalness_override = Some(metalness);
         mesh.roughness_override = Some(roughness);
         if metalness > 0.5 {
-            // Conductor — bias the diffuse tint toward the authored
-            // spec colour so the shader's `mix(0.04, albedo, metalness)`
-            // lands on the right tint even on desaturated DDS albedos.
-            // Half-weight blend so the diffuse texture's detail (rivets,
-            // wear, edge highlights) still modulates visually.
-            mesh.diffuse_color = [
-                0.5 * mesh.diffuse_color[0] + 0.5 * spec_r,
-                0.5 * mesh.diffuse_color[1] + 0.5 * spec_g,
-                0.5 * mesh.diffuse_color[2] + 0.5 * spec_b,
-            ];
+            // #1591 — blend toward the mult-free `specular_color`, NOT
+            // `spec_*` (= specular_color × specular_mult); the mult-bearing
+            // `spec_*` stays for the pbr F0-luminance path above where
+            // mult-as-scale is correct. See `conductor_diffuse_tint`.
+            mesh.diffuse_color = conductor_diffuse_tint(mesh.diffuse_color, leaf.specular_color);
         }
         for step in resolved.walk() {
             let bgsm = &step.file;
@@ -1525,6 +1541,40 @@ pub(crate) fn merge_bgsm_into_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── #1591 — conductor diffuse-tint must use mult-free chromaticity ──
+
+    /// The blend uses `specular_color` (chromaticity), not
+    /// `specular_color × specular_mult`. The real vanilla strong-metal cases
+    /// the audit sampled: pre-fix the blend target was `spec × mult`, which
+    /// darkened toward black (mult<1) or overshot past 1.0 (mult>1). Because
+    /// `conductor_diffuse_tint` takes no `mult` argument, the tint is
+    /// structurally mult-invariant — these assert the exact mult-free values.
+    #[test]
+    fn conductor_tint_is_mult_free() {
+        // spec=[1.0,0.255,0.255]; diffuse=[0.5,0.5,0.5].
+        // Mult-free target: 0.5*diffuse + 0.5*spec.
+        let got = conductor_diffuse_tint([0.5, 0.5, 0.5], [1.0, 0.255, 0.255]);
+        assert!((got[0] - 0.75).abs() < 1e-6, "{got:?}");
+        assert!((got[1] - 0.3775).abs() < 1e-6, "{got:?}");
+        assert!((got[2] - 0.3775).abs() < 1e-6, "{got:?}");
+        // The old mult=0.25 fold would have blended toward [0.25,0.064,0.064]
+        // → diffuse ≈ [0.375,0.282,0.282], strictly darker than the above.
+        assert!(got[0] > 0.375, "mult<1 must NOT darken the tint: {got:?}");
+    }
+
+    /// `mult > 1` previously overshot a channel past 1.0 unclamped into
+    /// `GpuMaterial.diffuse_*`. The mult-free blend of two `[0,1]` inputs is
+    /// already in range, and the `[0,1]` clamp guards a >1 diffuse input.
+    #[test]
+    fn conductor_tint_clamps_to_unit_range() {
+        // Both inputs in range → result in range (no overshoot).
+        let in_range = conductor_diffuse_tint([1.0, 1.0, 1.0], [1.0, 0.467, 0.318]);
+        assert!(in_range.iter().all(|&c| (0.0..=1.0).contains(&c)), "{in_range:?}");
+        // A >1 diffuse input (defensive) is clamped.
+        let clamped = conductor_diffuse_tint([2.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        assert_eq!(clamped[0], 1.0, "0.5*2.0 + 0.5*1.0 = 1.5 → clamped to 1.0");
+    }
 
     // ── `normalize_mesh_path` — regression for unclothed NPCs in
     //   FNV Prospector Saloon, 2026-05-25. ARMO `MODL` paths are
