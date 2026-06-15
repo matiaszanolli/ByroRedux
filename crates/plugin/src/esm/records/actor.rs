@@ -785,8 +785,15 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
             // weight/flags entirely. Layout per OpenMW
             // `esm4/loadrace.cpp:135-153` (canonical TES4-era reader).
             // TES5 DATA is 128 / 164 bytes with a different layout —
-            // not yet wired here.
-            b"DATA" if sub.data.len() >= 36 => {
+            // not yet wired here. Gate on the TES4/FO3/FNV era so a Skyrim
+            // 128/164-byte DATA (which also satisfies `len >= 36`) is left at
+            // defaults rather than mis-decoded with the 36-byte layout into
+            // garbage skill bonuses / height / weight / flags (#1629). Skyrim+
+            // falls through to the `_ => {}` arm.
+            b"DATA"
+                if matches!(game, GameKind::Oblivion | GameKind::Fallout3NV)
+                    && sub.data.len() >= 36 =>
+            {
                 let mut r = SubReader::new(&sub.data);
                 for _ in 0..8 {
                     let skill = r.u8_or_default();
@@ -1796,5 +1803,36 @@ mod tests {
         // FNV arm would have fired at >= 35 — but we're game=Oblivion,
         // so the gate skipped it.
         assert!(c.tag_skills.is_empty());
+    }
+
+    /// #1629 — a 128-byte Skyrim RACE DATA must NOT be decoded with the
+    /// 36-byte TES4 layout. With the GameKind guard the arm is skipped, so
+    /// skill_bonuses / base_height / base_weight / race_flags stay at their
+    /// RaceRecord defaults instead of garbage from a mis-applied layout.
+    #[test]
+    fn skyrim_race_data_128b_is_not_decoded_as_tes4_layout() {
+        // Non-zero bytes so a TES4 decode WOULD produce visible garbage.
+        let data: Vec<u8> = (0..128).map(|i| (i as u8).wrapping_add(1)).collect();
+        let subs = vec![sub(b"DATA", &data)];
+        let r = parse_race(0x900, &subs, GameKind::Skyrim);
+        assert!(
+            r.skill_bonuses.is_empty(),
+            "Skyrim 128-byte DATA must not yield TES4-layout skill bonuses"
+        );
+        assert_eq!(r.base_height, (1.0, 1.0), "height must stay default");
+        assert_eq!(r.base_weight, (1.0, 1.0), "weight must stay default");
+        assert_eq!(r.race_flags, 0, "flags must stay default");
+    }
+
+    /// The Oblivion path still decodes its 36-byte DATA (guard preserves
+    /// existing behaviour for the TES4/FO3/FNV era).
+    #[test]
+    fn oblivion_race_data_36b_still_decodes() {
+        let mut data = vec![0u8; 36];
+        // base_height/weight live at bytes 16..32 (4 f32). Set height male = 2.0.
+        data[16..20].copy_from_slice(&2.0f32.to_le_bytes());
+        let subs = vec![sub(b"DATA", &data)];
+        let r = parse_race(0x901, &subs, GameKind::Oblivion);
+        assert_eq!(r.base_height.0, 2.0, "Oblivion DATA must still decode");
     }
 }
