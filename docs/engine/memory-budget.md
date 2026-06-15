@@ -20,7 +20,7 @@ Constants in [`scene_buffer/constants.rs`](../../crates/renderer/src/vulkan/scen
 | Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 300 B | 4.9 MB | **9.8 MB** |
 | Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 32 B | 32 KB | **64 KB** |
 | Bone-palette SSBO | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB | **25.2 MB** ¹ |
-| Camera UBO | — | 1 | 320 B | 320 B | **640 B** |
+| Camera UBO | — | 1 | 336 B | 336 B | **672 B** |
 
 ¹ The bone-palette SSBO has a third copy for the previous frame (motion
 vectors); total bone buffer is 3 × 12.6 MB ≈ **37.8 MB**.

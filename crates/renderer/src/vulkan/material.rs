@@ -769,7 +769,7 @@ pub mod presets {
     }
 }
 
-/// Canonical material hash — FxHash (#1368) over the 50 live scalar
+/// Canonical material hash — FxHash (#1368) over the 75 live scalar
 /// fields of [`GpuMaterial`] in declaration order. Used by
 /// [`MaterialTable::intern_by_hash`] to dedup without hashing the full
 /// 300-byte struct.
@@ -1064,7 +1064,7 @@ impl MaterialTable {
     /// one — a hash collision (or a drift between the producer hash
     /// and `hash_gpu_material_fields`) fires a panic with the colliding
     /// hash in the message. In release we trust the hash; collisions
-    /// (rare on FxHash's 64-bit output over 50 scalar fields, #1368)
+    /// (rare on FxHash's 64-bit output over 75 scalar fields, #1368)
     /// would silently alias to the first-seen material at that hash.
     pub fn intern_by_hash(
         &mut self,

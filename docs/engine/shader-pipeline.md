@@ -102,7 +102,7 @@ After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIM
 
 ## GPU Data Types
 
-### `GpuCamera` — 320 bytes, uniform buffer (Set 1, Binding 1)
+### `GpuCamera` — 336 bytes, uniform buffer (Set 1, Binding 1)
 
 [`gpu_types.rs`](../../crates/renderer/src/vulkan/scene_buffer/gpu_types.rs)
 
@@ -119,6 +119,7 @@ After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIM
 | 272 | 16 | `sky_tint` | xyz = TOD/weather zenith colour; w = sun angular radius (rad) |
 | 288 | 16 | `sun_direction` | xyz = direction **from** sun (unit); w = sun intensity |
 | 304 | 16 | `dof_params` | x = aperture half-radius; y = focus distance; zw reserved |
+| 320 | 16 | `render_origin` | xyz = camera-relative render origin (#markarth-precision); w reserved |
 
 ### `GpuInstance` — 112 bytes, SSBO (Set 1, Binding 4)
 
@@ -244,7 +245,7 @@ pipeline. Defined in
 | 0 | 0 | `COMBINED_IMAGE_SAMPLER` (bindless array) | All scene textures | triangle, water, ui, composite, caustic, volumetrics |
 | 0 | 1 | `STORAGE_IMAGE` (bindless) | Per-pass read/write images | bloom, svgf, taa, caustic |
 | 1 | 0 | `STORAGE_BUFFER` | Light buffer (`u32 count` + `GpuLight[]`) | triangle, cluster_cull, caustic_splat |
-| 1 | 1 | `UNIFORM_BUFFER` | `GpuCamera` (320 B) | triangle, water, cluster_cull, caustic_splat, volumetrics |
+| 1 | 1 | `UNIFORM_BUFFER` | `GpuCamera` (336 B) | triangle, water, cluster_cull, caustic_splat, volumetrics |
 | 1 | 2 | `ACCELERATION_STRUCTURE` | TLAS | triangle, water, caustic_splat, volumetrics |
 | 1 | 3 | `STORAGE_BUFFER` | Bone palette (current frame) | triangle |
 | 1 | 4 | `STORAGE_BUFFER` | `GpuInstance[]` | triangle, ui, water, caustic_splat |
