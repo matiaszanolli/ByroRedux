@@ -1327,7 +1327,17 @@ fn parse_shader_type_data_fo4(
 ) -> io::Result<ShaderTypeData> {
     match shader_type {
         1 => {
-            let env_map_scale = stream.read_f32_le()?;
+            // nif.xml gates env_map_scale `#NI_BS_LTE_FO4#` = BSVER <= 139
+            // (i.e. < FO4_DLC_UPPER); for BSVER 140–154 (a dead band, no
+            // shipping game) the field is absent, so reading it
+            // unconditionally over-read 4 bytes. Mirror the SSR-bool upper
+            // bound below. Default to the neutral 1.0 multiplier when absent.
+            // See #1552 / SK-D2-01.
+            let env_map_scale = if bsver < crate::version::bsver::FO4_DLC_UPPER {
+                stream.read_f32_le()?
+            } else {
+                1.0
+            };
             // FO4-specific: SSR bools (BSVER 130–139).
             if (crate::version::bsver::FALLOUT4..crate::version::bsver::FO4_DLC_UPPER)
                 .contains(&bsver)
