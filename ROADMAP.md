@@ -66,7 +66,8 @@ no longer lockstep across 4 shaders + DrawCommand + GpuInstance.
 
 **Parser coverage.** NIF parses across seven games (184 886 files
 on the latest sweep — see compatibility matrix below). FO3 / FNV /
-Skyrim SE land at 100% clean; Oblivion / FO4 / FO76 in the 95–97%
+Skyrim SE land at 100% clean; FO4 at 100% (both base mesh archives,
+2026-06-14); Oblivion / FO76 in the 95–97%
 band (drift-induced truncation; #687/#688 closed). Starfield at 97.19%
 clean (recent BA2 v3 LZ4 chunked content the parser doesn't yet
 fully cover). Recoverable rate is 100% on all seven games except
@@ -200,7 +201,7 @@ gaps tracked under git log).
 | Fallout 3         | BSA v104      | 100% (10 989)                                | Interior (Megaton, 929 REFRs). Exterior wired; fresh GPU bench pending (R6a). |
 | Fallout New Vegas | BSA v104      | 100% (14 881)                                | Interior (Prospector **3516 entities @ 76.2 FPS / 13.11 ms / fence=11.12** on RTX 4070 Ti, R6a-stale-14 `1c26bc25` 2026-06-03; +6.7% FPS vs R6a-stale-13 (3507 ent / 71.4 FPS). Full fence recovery to pre-collider baseline (161.4 FPS / 2.62 ms @ ~2564 ent) still pending — see R6a-stale-15). Exterior 7×7 (radius 3). |
 | Skyrim SE         | BSA v105 LZ4  | 100% (18 862)                                | Interior (WhiterunBanneredMare **3216 entities @ 362.8 FPS / 2.76 ms / 1299 draws / fence=0.98**, R6a-stale-14 `1c26bc25` 2026-06-03; **+10.0% FPS vs R6a-stale-13 (329.8 FPS)** — Session 46 perf wins (#1371–#1379). Whiterun is the steady-state control bench; Skyrim ships real `bhk` collision so entity count is flat. The cell loads 246 unique textures across `Skyrim - Textures0..8.bsa` — repro command must list all 9 archives explicitly since the asset-provider's numeric-sibling auto-load gates on a non-digit suffix). |
-| Fallout 4         | BA2 v1/v7/v8  | **96.46%** (33 757 / 34 995) · recover 100%  | Interior (MedTekResearch01 **21414 entities @ 65.2 FPS / 15.34 ms / 14535 draws / brd=3.74 ms / fence=9.03**, R6a-stale-14 refresh `1c26bc25` 2026-06-03; entity/draw growth vs R6a-stale-13 entirely from M49 CSG precombined geometry — scene is larger and richer, not a regression). FaceGen NIFs dominate the truncation tail (1 235 of 1 238 truncated files). |
+| Fallout 4         | BA2 v1/v7/v8  | **100.00%** (159 866 / 159 866) · recover 100% | Interior (MedTekResearch01 **21414 entities @ 65.2 FPS / 15.34 ms / 14535 draws / brd=3.74 ms / fence=9.03**, R6a-stale-14 refresh `1c26bc25` 2026-06-03; entity/draw growth vs R6a-stale-13 entirely from M49 CSG precombined geometry — scene is larger and richer, not a regression). Both base mesh archives clean, 0 truncated (`Fallout4 - Meshes.ba2` 34 995 + `Fallout4 - MeshesExtra.ba2` 124 871); the former FaceGen truncation tail is gone (2026-06-14 `parse_rate_fo4_all_meshes`). |
 | Fallout 76        | BA2 v1        | **97.34%** (56 915 / 58 469) · recover 100%  | —                                                        |
 | Starfield         | BA2 v2/v3 LZ4 | **98.6%** aggregate · recover 100% (all 5 archives, 2026-04-27 post-#754) | Per-archive: Meshes01 97.21% (31 058 NIFs), Meshes02 **100%** (7 552; was 0% pre-#754 BSWeakReferenceNode), MeshesPatch 98.11% (29 849; was 74% pre-#754), LODMeshes 99.92% (19 535), FaceMeshes **100%** (1 282). Truncation tail in Meshes01/MeshesPatch is residual drift (#746/#747). |
 
@@ -732,7 +733,7 @@ Ground-truth as of 2026-06-14 (Session 47 closeout). Last `/session-close` verif
 | Tests (last reported by ROADMAP)        | **2915 passing** (Session 48 closeout, 2026-06-15). +45 vs Session 47. |
 | Open issue directories                  | 1505 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | 184 886                       |
-| Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE; Oblivion 99.93% (2026-06-15 sweep, post-#1543/#1544), FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27 (Oblivion refreshed 2026-06-15). |
+| Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE / FO4 (FO4 both base mesh archives, 159 866 NIFs, 2026-06-14); Oblivion 99.93% (2026-06-15 sweep, post-#1543/#1544), FO76 97.34%, Starfield 98.6% aggregate (see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep date 2026-04-27 (Oblivion refreshed 2026-06-15, FO4 2026-06-14). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
 
 ### Repro commands for every bench claim
