@@ -144,6 +144,26 @@ pub fn decode_shared_geom_object(
         indices.push(c as u32);
     }
 
+    // #1533 — reject decode-time index/vertex inconsistency. The PSG slice
+    // is located by a `(filename_hash, data_offset)` pointer into a separate
+    // `.csg` blob, so a hash collision or stale/mispointed offset decodes
+    // arbitrary bytes as u16 indices (up to 65535) against this object's
+    // `num_verts`. Caught here, it's a rejected object; let through, it
+    // becomes an OOB raster/BLAS read in the shared global pool (the
+    // producer half of #1532 — whose `accumulate_global_geometry` guard now
+    // clamps, but the precombine path should fail loud rather than silently
+    // render a mispointed object's garbage triangles).
+    if let Some(&bad) = indices.iter().find(|&&i| i as usize >= num_verts) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "precombine PSG triangle index {bad} >= num_verts {num_verts} \
+                 (tri_start {tri_start}, tri_count {tri_count}) — corrupt or \
+                 mispointed CSG slice",
+            ),
+        ));
+    }
+
     // Z-up (Gamebryo) → Y-up (renderer), reusing the shared converters.
     let positions = decoded
         .vertices
@@ -382,6 +402,38 @@ mod tests {
         assert!((nlen - 1.0).abs() < 0.02, "normal unit length, got {nlen}");
         assert_eq!(g.colors.len(), 0, "no VF_COLORS → empty colors");
         assert_eq!(g.tangents.len(), 2, "VF_TANGENTS+VF_NORMALS → tangents");
+    }
+
+    /// #1533 — an out-of-range triangle index (a corrupt / mispointed CSG
+    /// slice decoding garbage as indices) must be rejected at decode time,
+    /// not flow on to become an OOB raster/BLAS read. Same 2-vertex slice as
+    /// above, but the triangle references vertex 9 against num_verts 2.
+    #[test]
+    fn out_of_range_triangle_index_is_rejected() {
+        let vertex_desc: u64 = 0x0041_b000_0065_0407;
+        let mut psg = Vec::new();
+        for (px, py, pz) in [(1.0f32, 2.0, 3.0), (-4.0, 5.0, -6.0)] {
+            psg.extend_from_slice(&half(px));
+            psg.extend_from_slice(&half(py));
+            psg.extend_from_slice(&half(pz));
+            psg.extend_from_slice(&half(1.0));
+            psg.extend_from_slice(&half(0.5));
+            psg.extend_from_slice(&half(0.25));
+            psg.extend_from_slice(&[nbyte(0.0), nbyte(0.0), nbyte(1.0), nbyte(0.0)]);
+            psg.extend_from_slice(&[nbyte(1.0), nbyte(0.0), nbyte(0.0), nbyte(0.0)]);
+        }
+        // one triangle (0, 9, 0) — index 9 overshoots the 2-vertex block.
+        psg.extend_from_slice(&0u16.to_le_bytes());
+        psg.extend_from_slice(&9u16.to_le_bytes());
+        psg.extend_from_slice(&0u16.to_le_bytes());
+
+        let err = decode_shared_geom_object(&psg, vertex_desc, 2, 0, 1)
+            .expect_err("OOB index must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("index 9"),
+            "message names the offending index: {err}",
+        );
     }
 
     #[test]
