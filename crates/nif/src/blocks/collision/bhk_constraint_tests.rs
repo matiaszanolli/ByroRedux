@@ -414,3 +414,50 @@ fn ball_socket_chain_consumes_block_and_reads_trailing_refs() {
     assert_eq!(c.priority, 1);
     assert!(matches!(c.data, BhkConstraintData::Other));
 }
+
+/// #1609 — a malleable-wrapped non-Ragdoll/non-LimitedHinge inner (here a
+/// Hinge, type 1, FNV fixed body = 8×Vec4 = 128 B) must consume its fixed
+/// inner-CInfo body, not rely solely on the outer `block_size` seek. Total:
+/// outer base 16 + type 4 + inner base 16 + body 128 = 164.
+#[test]
+fn fo3_malleable_wrapped_hinge_consumes_inner_body() {
+    let mut bytes = base(); // outer bhkConstraintCInfo (16)
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // wrapped_type = Hinge
+    bytes.extend_from_slice(&base()); // inner bhkConstraintCInfo (16)
+    // Hinge FNV fixed body — 8 × Vec4 = 128 B.
+    for i in 0..8 {
+        bytes.extend(vec4(i as f32, 0.0, 0.0, 1.0));
+    }
+    assert_eq!(bytes.len(), 16 + 4 + 16 + 128);
+
+    let header = fnv_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let c = BhkConstraint::parse(&mut stream, "bhkMalleableConstraint").unwrap();
+
+    assert!(matches!(c.data, BhkConstraintData::Other));
+    assert_eq!(
+        stream.position() as usize,
+        16 + 4 + 16 + 128,
+        "the undecoded Hinge inner body must be size-skipped, not left to block_size",
+    );
+}
+
+/// Sibling: a malleable-wrapped StiffSpring (type 8, 36 B body) — the other
+/// non-motor non-decoded type — likewise consumes its fixed body.
+#[test]
+fn fo3_malleable_wrapped_stiffspring_consumes_inner_body() {
+    let mut bytes = base();
+    bytes.extend_from_slice(&8u32.to_le_bytes()); // wrapped_type = StiffSpring
+    bytes.extend_from_slice(&base());
+    // StiffSpring fixed body — 2 × Vec4 + f32 = 36 B.
+    bytes.extend(vec4(1.0, 0.0, 0.0, 0.0));
+    bytes.extend(vec4(0.0, 1.0, 0.0, 0.0));
+    bytes.extend_from_slice(&0.5f32.to_le_bytes());
+    assert_eq!(bytes.len(), 16 + 4 + 16 + 36);
+
+    let header = fnv_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let c = BhkConstraint::parse(&mut stream, "bhkMalleableConstraint").unwrap();
+    assert!(matches!(c.data, BhkConstraintData::Other));
+    assert_eq!(stream.position() as usize, 16 + 4 + 16 + 36);
+}

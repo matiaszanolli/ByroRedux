@@ -300,7 +300,27 @@ impl BhkConstraint {
         Ok(match wrapped_type {
             7 => BhkConstraintData::Ragdoll(RagdollCInfo::parse_fo3(stream)?),
             2 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_fo3(stream)?),
-            _ => BhkConstraintData::Other,
+            other => {
+                // #1609 — mirror the Oblivion size-skip on FO3+: consume the
+                // undecoded inner CInfo's FIXED body so stream consumption is
+                // self-consistent even on a (hypothetical) sizeless file,
+                // matching the decoded Ragdoll/LimitedHinge arms above instead
+                // of relying entirely on the outer `block_size` seek. Reuses
+                // the authoritative FNV size tables on `BhkBreakableConstraint`
+                // (same module → private-fn access): non-motor types
+                // (BallAndSocket 32 / Hinge 128 / StiffSpring 36) use their
+                // full fixed body; motor-bearing Prismatic uses its fixed
+                // prefix (140). Like the decoded arms, any variable Motor + the
+                // malleable `Strength` trailer stay with `block_size` recovery
+                // (no FO3+ file is sizeless). Unknown types fall through with
+                // no skip — identical to the prior behaviour.
+                let skip = BhkBreakableConstraint::wrapped_payload_size(other, false)
+                    .or_else(|| BhkBreakableConstraint::fnv_motor_prefix_size(other));
+                if let Some(size) = skip {
+                    stream.skip(size)?;
+                }
+                BhkConstraintData::Other
+            }
         })
     }
 
