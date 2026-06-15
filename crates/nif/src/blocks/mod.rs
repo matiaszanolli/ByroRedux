@@ -1151,7 +1151,14 @@ fn parse_block_inner(
         // silently dropped the constraint on FO3+ via block_size recovery
         // — visible as detached-head ragdolls on death.
         "bhkBallSocketConstraintChain" => {
-            Ok(Box::new(BhkConstraint::parse(stream, "bhkBallSocketConstraintChain")?))
+            // #1604 — inherits `bhkSerializable`, NOT `bhkConstraint`: it has
+            // no leading CInfo. The dedicated parser reads the real chain
+            // layout (pivots / params / chained entities + trailing CInfo)
+            // instead of misreading 16 B of pivot data as entity/priority refs.
+            Ok(Box::new(BhkConstraint::parse_ball_socket_chain(
+                stream,
+                "bhkBallSocketConstraintChain",
+            )?))
         }
         // Havok sphere-cluster collision (#394 / OBL-D5-H2). Oblivion
         // creature ragdolls ship these as compact bounding-volume

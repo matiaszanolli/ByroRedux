@@ -365,3 +365,52 @@ fn skyrim_ragdoll_uses_fo3_layout() {
     assert_eq!(r.motor_a, [2.0, 0.0, 0.0, 0.0]); // FO3+ motors present
     assert_eq!(stream.position() as usize, 16 + 152);
 }
+
+/// #1604 — `bhkBallSocketConstraintChain` inherits `bhkSerializable`, not
+/// `bhkConstraint`, so it has NO leading CInfo. Build a 7-entity chain
+/// (num_pivots = (7-1)*2 = 12 → 6 pivot-pairs) and assert the dedicated
+/// parser consumes exactly `block_size` 260, pulling the real entity refs
+/// from the TRAILING bhkConstraintCInfo (not the head pivot bytes the old
+/// `parse` misread).
+#[test]
+fn ball_socket_chain_consumes_block_and_reads_trailing_refs() {
+    let mut bytes = Vec::new();
+    // num_pivots = 12 (6 bhkBallAndSocketConstraintCInfo, each 2×Vec4).
+    bytes.extend_from_slice(&12u32.to_le_bytes());
+    for i in 0..6u32 {
+        bytes.extend(vec4(i as f32, 0.0, 0.0, 1.0)); // pivot A
+        bytes.extend(vec4(i as f32, 1.0, 0.0, 1.0)); // pivot B
+    }
+    // tau, damping, constraint_force_mixing, max_error_distance.
+    for v in [1.0f32, 0.6, 1.1920929e-08, 0.1] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    // bhkConstraintChainCInfo: 7 chained entities, then the trailing CInfo.
+    bytes.extend_from_slice(&7u32.to_le_bytes());
+    for e in 0..7u32 {
+        bytes.extend_from_slice(&(100 + e).to_le_bytes()); // chained-entity Ptr
+    }
+    // Trailing bhkConstraintCInfo — the REAL refs/priority.
+    bytes.extend_from_slice(&2u32.to_le_bytes()); // num_entities
+    bytes.extend_from_slice(&42u32.to_le_bytes()); // entity_a
+    bytes.extend_from_slice(&43u32.to_le_bytes()); // entity_b
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // priority
+
+    assert_eq!(bytes.len(), 260, "7-entity chain must be block_size 260");
+
+    let header = fnv_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let c = BhkConstraint::parse_ball_socket_chain(&mut stream, "bhkBallSocketConstraintChain")
+        .expect("chain parse");
+
+    assert_eq!(
+        stream.position() as usize,
+        260,
+        "must consume the whole chain, not misread the head as a base CInfo",
+    );
+    // Real refs come from the trailing CInfo, NOT the leading pivot floats.
+    assert_eq!(c.entity_a.0, 42);
+    assert_eq!(c.entity_b.0, 43);
+    assert_eq!(c.priority, 1);
+    assert!(matches!(c.data, BhkConstraintData::Other));
+}

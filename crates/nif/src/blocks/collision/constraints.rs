@@ -229,6 +229,62 @@ impl BhkConstraint {
         Ok((entity_a, entity_b, priority))
     }
 
+    /// `bhkBallSocketConstraintChain` — nif.xml declares it
+    /// `inherit="bhkSerializable"`, **not** `bhkConstraint`, so it has NO
+    /// leading `bhkConstraintCInfo`; its real entity refs + priority live in
+    /// the TRAILING `Constraint Chain Info`. Pre-#1604 the dispatch routed it
+    /// through [`Self::parse`], whose unconditional [`Self::parse_base`]
+    /// reinterpreted the first 16 B of pivot data as entity/priority refs
+    /// (garbage), and the chain was effectively dropped (`block_size`
+    /// recovered the misalignment on FO3+/Skyrim).
+    ///
+    /// Layout (nif.xml `bhkBallSocketConstraintChain`; verified — a 7-entity
+    /// chain is exactly `block_size` 260):
+    /// - `num_pivots: u32`
+    /// - `pivots: [bhkBallAndSocketConstraintCInfo; num_pivots / 2]` — each is
+    ///   two `Vector4` (Pivot A, Pivot B) = 32 B
+    /// - `tau`, `damping`, `constraint_force_mixing`, `max_error_distance`:
+    ///   4 × `f32`
+    /// - `bhkConstraintChainCInfo`: `num_chained: u32`, then `num_chained`
+    ///   chained-entity `Ptr`s, then a `bhkConstraintCInfo` (16 B) — the real
+    ///   `entity_a` / `entity_b` / `priority`.
+    ///
+    /// Byte-exact for every Bethesda format (block_sizes or not), so it can
+    /// never cascade and stores the chain's real refs instead of garbage.
+    /// The pivot/float/chained data is consumed but not yet retained — no
+    /// consumer reads it; `data` stays [`BhkConstraintData::Other`].
+    pub fn parse_ball_socket_chain(
+        stream: &mut NifStream,
+        type_name: &'static str,
+    ) -> io::Result<Self> {
+        let num_pivots = stream.read_u32_le()?;
+        // Each bhkBallAndSocketConstraintCInfo = Pivot A + Pivot B (2 × Vec4).
+        // A corrupt count walks the stream to EOF (read errors out) rather
+        // than looping unboundedly.
+        for _ in 0..(num_pivots / 2) {
+            let _pivot_a = super::read_vec4(stream)?;
+            let _pivot_b = super::read_vec4(stream)?;
+        }
+        let _tau = stream.read_f32_le()?;
+        let _damping = stream.read_f32_le()?;
+        let _constraint_force_mixing = stream.read_f32_le()?;
+        let _max_error_distance = stream.read_f32_le()?;
+        // bhkConstraintChainCInfo: chained-entity Ptr array, then the real
+        // trailing bhkConstraintCInfo.
+        let num_chained = stream.read_u32_le()?;
+        for _ in 0..num_chained {
+            let _chained = stream.read_block_ref()?;
+        }
+        let (entity_a, entity_b, priority) = Self::parse_base(stream)?;
+        Ok(Self {
+            type_name,
+            entity_a,
+            entity_b,
+            priority,
+            data: BhkConstraintData::Other,
+        })
+    }
+
     /// Decode the inner constraint of an FO3+ `bhkMalleableConstraint`.
     /// Layout (nif.xml `bhkMalleableConstraintCInfo`, `since 20.2.0.7`):
     /// a `Type u32`, then an inner `bhkConstraintCInfo` (16 B, whose
