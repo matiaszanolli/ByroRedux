@@ -254,6 +254,26 @@ void main() {
     // gaps. Lifting them would require either multi-channel
     // accumulator (3× R32_UINT or RGBA16F) or a multi-pass dispatch.
     // See REN-D13-NEW-04 (audit 2026-05-09).
+    // Normalised 5×5 σ=1 Gaussian splat kernel, computed ONCE per pixel
+    // before the per-light loop (#1582). It depends only on the fixed tap
+    // offsets and constant σ — fully loop-invariant — so recomputing it
+    // inside `for li` cost N_LIGHTS×50 exp() per glass pixel where 25 + a
+    // normalising pass suffice. Indexed `(ky+2)*5 + (kx+2)`.
+    float kGauss5[25];
+    {
+        float wsum = 0.0;
+        for (int ky = -2; ky <= 2; ++ky) {
+            for (int kx = -2; kx <= 2; ++kx) {
+                float wv = exp(-float(kx * kx + ky * ky) * 0.5);
+                kGauss5[(ky + 2) * 5 + (kx + 2)] = wv;
+                wsum += wv;
+            }
+        }
+        for (int i = 0; i < 25; ++i) {
+            kGauss5[i] /= wsum;
+        }
+    }
+
     uint N_LIGHTS = min(lightCount, maxLights);
     for (uint li = 0u; li < N_LIGHTS; ++li) {
         GpuLight L = lights[li];
@@ -405,15 +425,11 @@ void main() {
         // too. The caustic is composited after TAA, so this footprint is
         // its only smoothing. σ=1; normalised over the 5×5 support so the
         // truncated tail doesn't dim the pool.
-        float wsum = 0.0;
-        for (int ky = -2; ky <= 2; ++ky)
-            for (int kx = -2; kx <= 2; ++kx)
-                wsum += exp(-float(kx * kx + ky * ky) * 0.5);
         for (int ky = -2; ky <= 2; ++ky) {
             for (int kx = -2; kx <= 2; ++kx) {
                 ivec2 q = hitPixel + ivec2(kx, ky);
                 if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, size))) continue;
-                float w = exp(-float(kx * kx + ky * ky) * 0.5) / wsum;
+                float w = kGauss5[(ky + 2) * 5 + (kx + 2)]; // #1582 — precomputed
                 uint fv = uint(clamp(contrib * w * scale, 0.0, clamp_max));
                 if (fv != 0u) imageAtomicAdd(causticAccum, q, fv);
             }
