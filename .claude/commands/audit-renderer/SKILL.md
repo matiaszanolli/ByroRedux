@@ -5,425 +5,325 @@ argument-hint: "--focus <dimensions> --depth shallow|deep"
 
 # Renderer Audit
 
-Audit the Vulkan renderer for correctness across the full pipeline: rasterization, ray tracing (BLAS/TLAS, ray queries, shadows, reflections, GI), deferred indirect lighting (G-buffer, SVGF), compositing, synchronization, GPU memory, and resource lifecycle.
+Audit the Vulkan renderer for correctness across the full pipeline: ray tracing
+(BLAS/TLAS, ray queries, shadows, reflections, GI, glass refraction), SSBO/UBO
+indexing, GPU-struct layout, synchronization, GPU memory, deferred indirect
+lighting (G-buffer, SVGF), denoiser/composite, and the per-feature passes
+(TAA, skinning, caustics, water, volumetrics, bloom, material table).
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, methodology, deduplication, context rules, and finding format.
+See `.claude/commands/_audit-common.md` for project layout, the **Key Reference
+Docs** table, methodology, dedup, context rules, and the finding format.
+See `.claude/commands/_audit-severity.md` for the severity scale — the
+RT/SSBO/GPU-struct/denoiser rows there set the floors used below.
+
+**Do NOT restate the GPU-struct byte layouts, descriptor bindings, G-buffer
+formats, or submission order here** — `docs/engine/shader-pipeline.md` is the
+authoritative, code-verified reference. `docs/engine/memory-budget.md` is
+authoritative for VRAM/RAM ceilings, LRU thresholds, and deferred-destroy depth.
+Audit *against* those docs; if the code diverges from the doc, that divergence is
+itself a finding (or the doc is stale — note which).
+
+## Verification discipline (No-Guessing)
+
+- **Symbols, not line numbers.** Anchor every finding on a symbol
+  (`fn`/`struct`/`const`/test name), not `file:NN` — line anchors rot on every
+  refactor. Confirm by `grep`; if a claim is unconfirmable, drop it.
+- **Backticked `.ext` paths must resolve now** (the `_audit-validate.sh` gate).
+  note that `byroredux/src/render/` is a **directory**, not a `render.rs` file
+  (it split out post-#1115); `scene.rs` / `systems.rs` / `cell_loader.rs` are
+  likewise thin dispatchers over sibling dirs.
+- **Recast resolved issues as regression guards** — phrase as "verify X still
+  holds / hasn't drifted", not "X is broken".
+- **No speculative Vulkan changes.** Per the user's standing guidance, do NOT
+  propose render-pass / pipeline / barrier edits whose failure modes are
+  invisible to `cargo test`. Frame such findings as **"needs RenderDoc
+  verification"** and stop at the observation.
+- **Bench numbers rot.** Do not hard-code FPS/ms; cite ROADMAP.md
+  *Bench-of-record* (currently flagged stale — R6a-stale-15 gates any FPS claim).
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,7`). Default: all 23.
+- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3,7`). Default: all.
 - `--depth shallow|deep`: `shallow` = check patterns only; `deep` = trace data flow and validate invariants. Default: `deep`.
 
 ## Extra Per-Finding Fields
 
-- **Dimension**: Vulkan Sync | GPU Memory | Pipeline State | Render Pass | Command Recording | Shader Correctness | Resource Lifecycle | Acceleration Structures | RT Ray Queries | Denoiser & Composite | TAA | GPU Skinning | Caustics | Material Table (R1) | Sky/Weather/Exterior Lighting | Tangent-Space & Normal Maps (M-NORMALS) | Water (M38) | Volumetrics (M55) | Bloom (M58) | M-LIGHT v1 Soft Shadows | Disney BSDF / PBR Gating | NIFAL Material Translation | Debug Overlay & GPU Telemetry
+- **Dimension**: AS Correctness | SSBO/Indexing | GPU-Struct Layout | Sync/Barriers | Memory/Lifecycle | Ray Queries | Denoiser/Composite | TAA | Skinning | Camera-Relative Precision | NIFAL Material | Material Table | Caustics | Water | Volumetrics | Bloom | Disney BSDF | Soft Shadows | Sky/Weather | Tangent-Space | Pipeline/RenderPass | Debug/Telemetry | Cornell Harness
 
 ## Phase 1: Setup
 
-1. Parse `$ARGUMENTS` for `--focus`, `--depth`
-2. `mkdir -p /tmp/audit/renderer`
-3. Fetch dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/renderer/issues.json`
-4. Scan `docs/audits/` for prior renderer reports
+1. Parse `$ARGUMENTS` for `--focus`, `--depth`.
+2. `mkdir -p /tmp/audit/renderer`.
+3. Dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/renderer/issues.json`.
+4. Scan `docs/audits/` for prior renderer reports.
+5. Read `docs/engine/shader-pipeline.md` + `docs/engine/memory-budget.md` first — they pin almost everything below.
 
 ## Phase 2: Launch Dimension Agents
 
-### Dimension 1: Vulkan Synchronization
-**Entry points**: `crates/renderer/src/vulkan/context/draw.rs` (draw_frame), `crates/renderer/src/vulkan/sync.rs`, `crates/renderer/src/vulkan/context/resize.rs`
+Dimensions are ordered **by renderer risk**: AS/SSBO indexing and GPU-struct
+layout corrupt every frame silently (CRITICAL/HIGH floors); sync and memory
+leaks compound; denoiser/shader correctness is mostly visual.
+
+---
+
+### CRITICAL tier — silent whole-frame corruption
+
+#### Dimension 1: Acceleration Structures (BLAS/TLAS correctness)
+**Entry points**: `crates/renderer/src/vulkan/acceleration/` (`blas_static.rs`, `blas_skinned.rs`, `tlas.rs`, `predicates.rs`, `constants.rs`, `types.rs`), `crates/renderer/src/vulkan/context/resources.rs` (`build_blas_for_mesh`).
+**Severity floor**: wrong geometry/address in AS = CRITICAL; missing build→read barrier = HIGH.
 **Checklist**:
-- Semaphore/fence lifecycle (signal before wait, no double-signal)
-- `images_in_flight` tracking correctness
-- Swapchain recreation: are all resources properly waited on and destroyed?
-- Queue submit ordering (graphics vs present)
-- Per-frame fence wait before command buffer reuse
-- TLAS build barrier before fragment shader read (`AS_WRITE → AS_READ`, build stage → fragment stage)
-- SVGF compute dispatch barrier (compute write → fragment read)
-- G-buffer attachment transitions between render pass and compute pass
-- Composite pass dependency on SVGF output
+- BLAS build geometry: vertex format `R32G32B32_SFLOAT` at offset 0, index type `UINT32`, `OPAQUE` flag, correct prefer-trace/build flags per buffer class.
+- Build-flag constants are stable: `STATIC_BLAS_FLAGS` (`FAST_TRACE | ALLOW_COMPACTION`), `SKINNED_BLAS_FLAGS` (`FAST_BUILD | ALLOW_UPDATE` — deliberate, see memory-budget.md), `UPDATABLE_AS_FLAGS` (`FAST_TRACE | ALLOW_UPDATE`). Pinned by tests in `acceleration/`; drift = Vulkan-version-rev breakage (regression guard, #1144/#1196).
+- `BlasEntry.built_flags` records BUILD-time flags; refit must assert the same set (VUID-03667). Mismatch surfaces as validation, not silent corruption (regression guard, #1145).
+- **`instance_custom_index` encoding == draw-command index** used for SSBO lookup — this is the load-bearing AS/SSBO contract (CRITICAL). It is a 24-bit field; `MAX_INSTANCES = 0x40000` stays under `1 << 24`, pinned by the const-assert in `scene_buffer/constants.rs`.
+- TLAS build/update decision keys on the `last_blas_addresses` device-address sequence only. UPDATE mode requires matching geometry + instance count — verify padded/unused instance slots don't break it.
+- Transform: column-major `mat4` → 3×4 row-major `VkTransformMatrixKHR`. `TRIANGLE_FACING_CULL_DISABLE` on all instances (two-sided meshes).
+- Empty TLAS valid from frame 0 (no validation errors before any geometry).
+- Device-address queries require `SHADER_DEVICE_ADDRESS` usage on the source buffer.
+- LRU/shrink wiring (regression guards): `shrink_tlas_scratch_to_fit` uses TLAS-calibrated slack matching `tlas_instance_should_shrink` (`predicates.rs`), called at cell-unload (#1226); the three `missing_blas` cause-counters (skinned/rigid/ssbo_evicted) all increment and surface via `mem.stats` (#1228); post-TLAS `rt_flag` patch in `draw_frame` keeps cell-load frames from rendering RT-disabled (#1227).
 **Output**: `/tmp/audit/renderer/dim_1.md`
 
-### Dimension 2: GPU Memory
-**Entry points**: `crates/renderer/src/vulkan/buffer.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/renderer/src/vulkan/scene_buffer/`, `crates/renderer/src/vulkan/acceleration/`
+#### Dimension 2: SSBO/Index plumbing & RT ray queries (shader)
+**Entry points**: `crates/renderer/shaders/triangle.frag` (all `rayQueryEXT`), `crates/renderer/shaders/water.frag`.
+**Severity floor**: SSBO index mismatch = CRITICAL; ray self-intersection / wrong tMin = HIGH.
 **Checklist**:
-- gpu-allocator usage: correct memory types (CpuToGpu vs GpuOnly)
-- Buffer/image destruction before allocator drop
-- Allocator dropped before device destruction
-- No leaked VkDeviceMemory on shutdown
-- BLAS scratch buffer reuse (high-water mark pattern — never shrinks; verify no use-after-free)
-- TLAS instance buffer: HOST_VISIBLE, per-frame, properly sized with padding
-- Global vertex/index SSBO growth policy (do they ever need resize? what happens?)
-- G-buffer image allocations: properly freed on swapchain recreate
-- SVGF history buffers: allocated once, recreated on resize
+- `instance_custom_index` (NOT `gl_InstanceID`) indexes `GpuInstance[]`; `materials[instance.material_id]`, vertex/index SSBOs (Set 1 bindings 8/9 per shader-pipeline.md) use the same offsets the Rust upload writes.
+- Shadow rays: origin = surface world pos with normal/tMin bias, direction toward light, `TerminateOnFirstHit`, `CommittedIntersectionNone` → 0/1. Disk/cone jitter geometry correct (point/spot concentric disk, directional angular cone).
+- Reflection rays: normal-biased origin, `reflect(viewDir, N)` sign, metalness/roughness gate consistent with PBR intent, barycentric UV interp from vertex SSBO, descriptor-valid texture lookup.
+- 1-bounce GI: cosine-weighted hemisphere with correct tangent-basis, distance cutoff, miss → sky/ambient fill with no NaN/inf.
+- Glass / IOR refraction:
+  - Roughness-spread basis via **Frisvad** orthonormal basis (not `cross(N, up)`, which degenerates vertical) — verify tangent/bitangent unit length (#820).
+  - Window-portal demote on coincident glass to break the IOR self-passthrough infinite loop (#789).
+  - `GLASS_RAY_BUDGET` (from `shader_constants.glsl`) cap wired; the budget `atomicAdd` overshoots unconditionally by design (#1438) — that's documented, not a bug; verify the doc comment is intact and no CPU reads the counter.
+  - Interior miss falls back to cell-ambient, not open-sky tint (no daylight leak in dungeons).
+  - `DBG_VIZ_GLASS_PASSTHRU` viz still wired at the diagnostic-state setup + the two refraction-loop viz-write branches.
+- RT gating: `sceneFlags.x > 0.5` checked before every ray query; TLAS binding is the correct descriptor (Set 1, Binding 2).
+- Interleaved-gradient noise seeded by frame counter — deterministic per-pixel-per-frame so TAA can converge (no true RNG).
 **Output**: `/tmp/audit/renderer/dim_2.md`
 
-### Dimension 3: Pipeline State
-**Entry points**: `crates/renderer/src/vulkan/pipeline.rs`, `crates/renderer/src/vulkan/descriptors.rs`, `crates/renderer/src/vulkan/context/helpers.rs`
+#### Dimension 3: GPU-struct layout (lockstep with shaders)
+**Entry points**: `crates/renderer/src/vulkan/scene_buffer/gpu_types.rs`, `scene_buffer/constants.rs`, `crates/renderer/src/vulkan/material.rs`, the layout-pin tests in `scene_buffer/` (`gpu_instance_layout_tests.rs`, `material_hash_tests.rs`, `instance_hash_tests.rs`) and `material.rs`.
+**Severity floor**: `#[repr(C)]` GPU struct drifting from its shader struct = HIGH (silent per-instance/per-material corruption).
 **Checklist**:
-- Vertex input matches shader layout (binding, location, format, offset)
-- Push constant ranges match shader declarations
-- Dynamic state correctly set each frame (viewport, scissor)
-- Pipeline compatible with render pass (attachment formats, subpass)
-- G-buffer pipeline outputs to all 6 render targets (direct, raw indirect, albedo, normal, motion, mesh ID)
-- Composite pipeline inputs match G-buffer + SVGF outputs
-- SSAO compute pipeline descriptor layout
-- Cluster cull compute pipeline descriptor layout
+- Sizes pinned by tests — confirm they hold and match shader-pipeline.md: `GpuInstance` = **112 B** (`size_of::<GpuInstance>() == 112`), `GpuCamera` = **336 B** (`gpu_camera_is_336_bytes` — grew 320→336 with the `render_origin` vec4, #markarth-precision / #1492), `GpuMaterial` = **300 B** (`gpu_material_size_is_300_bytes`; NOTE the size grew 260→…→300 via #804/#1249/#1250 — the `_300_` test name is current, the old `_260_` name is gone).
+- Per-field offset pins: `gpu_material_field_offsets_match_shader_contract` asserts every named field offset across all vec4 slots (#806) — a size-only pin can't catch within-vec4 reorders. Any added field needs a matching offset assertion plus updates to the Rust struct AND the GLSL `struct GpuMaterial` (only declared in `triangle.frag`).
+- All `GpuMaterial` fields are scalar f32/u32 — **never** `[f32;3]` (std430 vec3 alignment would desync the byte-hash dedup). Named pad fields explicitly zeroed (no uninit bytes feeding Hash/Eq).
+- `struct GpuInstance` is mirrored in **5 shaders** — verify lockstep via `grep -l "struct GpuInstance" crates/renderer/shaders/*` → `triangle.vert`, `triangle.frag`, `ui.vert`, `water.vert`, `caustic_splat.comp` (`ui.vert`/`water.vert` reading wrong offsets is the recurring trap, #785/#1498). Per `feedback_shader_struct_sync.md`.
+- Flag constants are the single source of truth in `crates/renderer/src/shader_constants_data.rs`, emitted into `crates/renderer/shaders/include/shader_constants.glsl` and `#include`d — never hand-written shader-side: `INSTANCE_FLAG_*`, `MATERIAL_KIND_*`, `MAT_FLAG_*` (bits 0–9, including `PBR_BSDF` bit 5, `TRANSLUCENCY` bit 6, `MODEL_SPACE_NORMALS` bit 7, `TRANSLUCENCY_THICK_OBJECT` bit 8, `TRANSLUCENCY_MIX_ALBEDO` bit 9 — all canonical post-#1357, the `BGSM_*` prefix is gone), and the 13 `DBG_*` bits (`0x1`…`0x1000`, value-pinned by the shared catalog, `8eaade44`).
+- Capacity constants match memory-budget.md: `MAX_INSTANCES = 0x40000`, `MAX_MATERIALS = 16384` (`scene_buffer/constants.rs`), `MAX_INDIRECT_DRAWS = MAX_INSTANCES`. Over-cap material intern returns id 0 + one-shot `warn!` (no SSBO-index corruption, #797); upload truncates to `min(intern_count, MAX_MATERIALS)`.
 **Output**: `/tmp/audit/renderer/dim_3.md`
 
-### Dimension 4: Render Pass & G-Buffer
-**Entry points**: `crates/renderer/src/vulkan/context/helpers.rs` (create_render_pass), `crates/renderer/src/vulkan/gbuffer.rs`
-**Checklist**:
-- Attachment load/store ops (CLEAR + STORE for all G-buffer outputs)
-- Layout transitions (UNDEFINED → COLOR_ATTACHMENT → SHADER_READ for G-buffer targets)
-- Subpass dependencies cover all stage/access masks
-- G-buffer format choices match shader output types (RG16_SNORM octahedral-packed for normals per Schied 2017, R16G16_SFLOAT for motion vectors, **R32_UINT** for mesh ID per `gbuffer.rs::MESH_ID_FORMAT` — 31-bit id + bit 31 (0x80000000) = ALPHA_BLEND_NO_HISTORY flag for SVGF disocclusion (encoded shader-side at `triangle.frag:1255` `outMeshID = meshIdBase | (alphaBlendFrag ? 0x80000000u : 0u)`, bit-31 comment at `triangle.frag:1243`), encoding ceiling `0x7FFFFFFF`, runtime cap `MAX_INSTANCES = 0x40000` per `scene_buffer/constants.rs::MAX_INSTANCES`. There is **no `encode_mesh_id` fn** — the encoding lives as the format/ceiling comment block at `context/helpers.rs:64-73` and the runtime overrun guard at `context/draw.rs:1665-1685` (a one-shot `warn!` + clamp via `upload_instances`, NOT a `debug_assert!` — #956 / REN-D5-NEW-05 moved off the assert to avoid leaking the in-flight cmd buffer on unwind); see #992)
-- Depth attachment format and load/store ops
-- G-buffer images created with SAMPLED usage (needed by SVGF and composite reads)
+---
+
+### HIGH tier — sync, memory, leaks, denoiser correctness
+
+#### Dimension 4: Synchronization & barriers
+**Entry points**: `crates/renderer/src/vulkan/context/draw.rs` (`draw_frame`), `sync.rs`, `context/resize.rs`. Cross-check the submission order in shader-pipeline.md.
+**Checklist** (flag invisible-failure-mode items as **needs RenderDoc**):
+- Semaphore/fence lifecycle: signal-before-wait, no double-signal, per-frame fence waited before command-buffer reuse, `images_in_flight` tracking.
+- `render_finished` is **per-swapchain-image, indexed by `image_index`** (not per-frame) — per-frame signalling fires VUID-vkQueueSubmit-pSignalSemaphores-00067 when `MAX_FRAMES_IN_FLIGHT` > swapchain image count (regression guard, `548c1b69`).
+- AS build → fragment read barrier (`AS_WRITE → AS_READ`, build stage → fragment stage); skin compute write → BLAS refit → fragment read chain (Dim 9).
+- G-buffer attachment transitions between render pass and the compute consumers (SVGF/TAA/SSAO); caustic-accum atomic-add → SHADER_READ.
+- egui render pass supplies its own incoming dependency after composite's outgoing `dstStage = NONE` (explicit EXTERNAL dependency, #1433) — missing it is a WAR hazard on the swapchain image.
+- Swapchain recreate: all in-flight work waited and resources destroyed before rebuild.
 **Output**: `/tmp/audit/renderer/dim_4.md`
 
-### Dimension 5: Command Buffer Recording
-**Entry points**: `crates/renderer/src/vulkan/context/draw.rs` (draw_frame command recording)
+#### Dimension 5: GPU memory & resource lifecycle
+**Entry points**: `crates/renderer/src/vulkan/buffer.rs`, `allocator.rs`, `scene_buffer/`, `acceleration/memory.rs`, `crates/renderer/src/vulkan/context/mod.rs` (Drop), `context/resize.rs`. Cross-check ceilings in memory-budget.md.
+**Severity floor**: any per-frame leak = HIGH.
 **Checklist**:
-- Reset before re-record (RESET_COMMAND_BUFFER flag on pool)
-- Begin/end balanced
-- Render pass begin/end balanced
-- TLAS build recorded before render pass begin (outside render pass)
-- Per-draw state: depth bias for decals, pipeline bind, descriptor set bind, push constants, draw indexed
-- Batch coalescing: draws sharing same texture use same descriptor set
-- SVGF compute dispatch recorded after render pass end, before composite
-- Composite render pass recorded last
-- No commands recorded outside render pass that require it (or vice versa)
-- **DrawCommand input count vs GPU-call count distinction** (#1258): `DrawCommand` enumeration is the pre-batch input set; the post-batch GPU draw count is a separate metric. `mem.stats` / `bench-stats` surface both. Regression pattern is reporting a single conflated number — confirm the two counters are independent
-- **Blend pipeline pre-pop fast path** (#1259): in steady state, the blend pipeline cache hit avoids the full pipeline rebuild on every draw. Verify the cache hit path exists at the per-draw blend-state bind site and is not silently fallen through to the slow path
-- **Off-frustum flag assembly skip** (#1260): draws outside the camera frustum skip the `GpuInstance.flags` assembly cost (post-batch they're already gated out by `in_raster=false`). Verify the skip path doesn't accidentally drop required state on visible draws bordering the frustum
-- **SceneFlags parity at cell-loader spawn boundary** (#1235): every REFR spawned during cell load sees the same `SceneFlags` ((`flags.x` RT-enabled, `jitter.w` is_exterior) as the steady-state draws. Drift here is a 1-frame visual glitch at cell-load completion — verify the spawn path reads `SceneFlags` from the world resource, not a cached snapshot
-- **`render_finished` semaphore — per-swapchain-image, not per-frame** (`548c1b69`, fix for VUID-vkQueueSubmit-pSignalSemaphores-00067): if signal is per-frame, queue-submit validation fires when MAX_FRAMES_IN_FLIGHT > swapchain image count. Verify the semaphore is allocated per swapchain image and indexed by `image_index`, not `frame_index`
+- gpu-allocator memory-type correctness (`CpuToGpu` vs `GpuOnly`); buffers/images destroyed before allocator; allocator dropped before device; no leaked `VkDeviceMemory` on shutdown.
+- **`AllocatorResource` ECS-ordering**: must be removed from the `World` BEFORE `VulkanContext::drop()` — the allocator holds a live `Arc<Device>`; a `World` outliving the context fires the allocator Drop against a destroyed device (use-after-free). Verify the drop/remove ordering in `main.rs`, and that it survives a panic-unwind path (#1406). Allocator-independent destroys are hoisted out of the allocator-guarded Drop block (#1483).
+- BLAS scratch high-water-mark reuse never shrinks mid-life (verify no use-after-free); shrink fns (`shrink_blas_scratch_to_fit`, `shrink_tlas_to_fit`) run at cell-unload with the slack constants from memory-budget.md.
+- TLAS resize calls `device_wait_idle()` before `allocator.free()` of the old allocation (`tlas.rs`) — absence opens a use-after-destroy window under resize-while-build-in-flight (latent, #1390).
+- Vertex/index pool growth: soft cap `warn!`, hard cap error (`check_pool_growth`); `NifImportRegistry` LRU cap (`BYRO_NIF_CACHE_MAX`, default 2048) bounds scene count.
+- Deferred-destroy countdown = `MAX_FRAMES_IN_FLIGHT` frames, ticked after the in-flight fence wait (memory-budget.md); BGSM/failed-path caches half-evict on overflow (#1430).
+- Reverse-order teardown of all `VulkanContext` fields; per-subsystem `destroy()` for `AccelerationManager`, `SvgfPipeline`, `GBuffer`, `CompositePipeline`, `Ssao`, `WaterCausticAccum`, `EguiPass`, `GpuPerFrameTimers`, `TextureRegistry`; framebuffers before render pass, image views before swapchain, device last.
 **Output**: `/tmp/audit/renderer/dim_5.md`
 
-### Dimension 6: Shader Correctness
-**Entry points**: `crates/renderer/shaders/triangle.vert`, `crates/renderer/shaders/triangle.frag`, `crates/renderer/shaders/svgf_temporal.comp`, `crates/renderer/shaders/composite.frag`, `crates/renderer/shaders/ssao.comp`, `crates/renderer/shaders/cluster_cull.comp`
+#### Dimension 6: NIFAL material canonical translation
+**Entry points**: `byroredux/src/material_translate.rs` (`translate_material` — the single `ImportedMesh → Material` boundary), `crates/core/src/ecs/components/material.rs` (`Material`, `resolve_pbr`, `EmissiveSource`), the particle slice `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params`/`extract_emitter_rate`) → `byroredux/src/systems/particle.rs` (`apply_emitter_params`) → `byroredux/src/render/particles.rs` (`emit_particles`). Spec: `docs/engine/nifal.md`. See also `/audit-nifal`.
+**Severity floor**: wrong/divergent `Material` out of `translate_material` = HIGH (one boundary, all-game blast radius, no per-draw fallback to mask it).
 **Checklist**:
-- SPIR-V matches GLSL source (recompile and diff)
-- Push constant struct layout matches Rust-side byte offsets
-- Vertex attribute locations match Vertex struct field order
-- Descriptor set/binding indices match Rust-side descriptor layout
-- TLAS binding (set 1, binding 2) type is `accelerationStructureEXT`
-- Global vertex/index SSBO bindings (set 1, bindings 8, 9) match MeshRegistry offsets
-- `instance_custom_index` used correctly to index into SSBOs (not `InstanceId`)
-- RT flag gating: `sceneFlags.x > 0.5` consistently checked before all ray queries
-- Light SSBO struct layout matches Rust GpuLight fields (position, color, direction, params)
-- Camera UBO layout: `position.w` = frame counter, `flags.x` = RT enabled
-- SVGF temporal shader: motion vector reprojection math, mesh ID rejection, accumulation blend factor
-- Composite shader: ACES tone mapping, direct + denoised indirect reassembly
+- **Single boundary**: `translate_material` has exactly two callers — `byroredux/src/scene/nif_loader.rs` (loose NIF) and `byroredux/src/cell_loader/spawn.rs` (REFR placement). A third `Material {…}` literal downstream is a translation leak.
+- `Material::metalness` / `roughness` are plain resolved `f32` (not `Option`); `resolve_pbr` runs once at translate (NaN-sentinel → `classify_pbr_keyword`, then clamp `metalness 0..1`, `roughness 0.04..1`), idempotent (`resolve_pbr_is_idempotent`). No per-frame re-classification anywhere.
+- `EmissiveSource` (None/Material/Lighting/Effect) resolved at translate; the renderer reads the resolved `emissive_mult`, not the raw per-game property (Effect = diffuse-tint multiplier conflated into emissive — drift mis-tints FO4+ glow).
+- **No per-game branch between `Material` and `MaterialTable::intern`** — per-game quirks resolve here, never in the renderer (`feedback_format_translation.md`).
+- Particle slice: authored emitter rate/size override the preset but NOT color (`apply_emitter_params_overrides_kinematics_and_size_not_color`); render assembly reads `ParticleEmitter` post-overlay.
 **Output**: `/tmp/audit/renderer/dim_6.md`
 
-### Dimension 7: Resource Lifecycle
-**Entry points**: `crates/renderer/src/vulkan/context/mod.rs` (Drop impl, struct fields), `crates/renderer/src/vulkan/context/resize.rs`
+#### Dimension 7: Material table (R1 dedup)
+**Entry points**: `crates/renderer/src/vulkan/material.rs` (`MaterialTable::intern`), `scene_buffer/upload.rs`, `byroredux/src/render/mod.rs` (`build_render_data`), `byroredux/src/render/static_meshes.rs`.
+**Upstream**: the interned `Material`s come from Dim 6 (NIFAL) — a corrupt `GpuMaterial` may be a translate-side bug.
 **Checklist**:
-- All VkShaderModule, VkPipeline, VkPipelineLayout destroyed in Drop
-- Framebuffers destroyed before render pass
-- Swapchain image views destroyed before swapchain
-- Device destroyed after all resources
-- AccelerationManager cleanup: all BLAS entries, TLAS states, scratch buffers
-- SvgfPipeline cleanup: history images, descriptor sets, pipeline, layout
-- GBuffer cleanup: all attachment images and views
-- CompositePipeline cleanup: pipeline, layout, descriptor sets
-- SSAO cleanup: noise texture, kernel buffer, output image
-- TextureRegistry cleanup: all per-texture descriptor sets and images
-- Reverse-order teardown of all 54+ VulkanContext fields
-- **`AllocatorResource` ECS ordering (#1406, `299e6a84`)**: `AllocatorResource` MUST be removed from the ECS `World` BEFORE `VulkanContext::drop()` executes. The `gpu-allocator` holds a live `Arc<Device>`; if the `World` outlives the `VulkanContext`, the allocator's `Drop` fires against a destroyed logical device → use-after-free. Verify `main.rs` / `app_event_loop.rs` drops the world or removes the resource before the renderer is dropped, and that this ordering is not bypassable by a panic unwind path.
-- **TLAS resize safety (#1390, `a7e1502b`)**: the TLAS resize path (triggered when the instance buffer is too small) calls `device_wait_idle()` before destroying the old allocation. Verify the wait is present in `tlas.rs` before any `allocator.free()` call in the resize branch — its absence opens a use-after-destroy window when resize runs while the prior frame's TLAS build is still in flight (a latent hazard that would materialise under a future resize-under-load refactor).
+- `intern` produces stable `material_id`s within a frame; identical materials collapse to one entry. Over-cap returns id 0 + warn-once, surfaced via `mem.stats` (#7823eb59/#797). Per-frame SSBO sized to `min(intern_count, MAX_MATERIALS)`.
+- Hash/Eq treat `GpuMaterial` as raw bytes (depends on the Dim-3 scalar-fields + zeroed-pad invariant).
+- Dedup-ratio telemetry surfaced (unique vs placement count) — a drop in hit-rate is a finding even if correctness holds (#780).
+- Import-side scalars feeding the table (regression guards): BSLightingShaderProperty smoothness/IOR/specular into `MaterialInfo` for the Disney lobe, BGSM smoothness normalized once (no double-apply, #1241); WaterShaderProperty + bare BSShaderProperty produce distinct entries (no dedup collapse with glass/opaque, #1243/#1244); `HasModelSpaceNormals` routed for direct-TXST REFRs (#972).
+- Identity invariant: N copies of one material render byte-identical pre/post dedup. No per-instance field remains in `GpuInstance`/`DrawCommand` that should now live in `GpuMaterial` (R1 Phase 6 closeout).
 **Output**: `/tmp/audit/renderer/dim_7.md`
 
-### Dimension 8: Acceleration Structures (RT)
-**Entry points**: `crates/renderer/src/vulkan/acceleration/`, `crates/renderer/src/vulkan/context/resources.rs` (build_blas_for_mesh)
+#### Dimension 8: Denoiser & composite
+**Entry points**: `crates/renderer/src/vulkan/svgf.rs`, `composite.rs`, `crates/renderer/shaders/svgf_temporal.comp`, `composite.frag`.
+**Severity floor**: SVGF using wrong motion vectors = HIGH; ghosting / wrong tone-map order = MEDIUM.
 **Checklist**:
-- BLAS build: vertex format matches Vertex struct (R32G32B32_SFLOAT at offset 0)
-- BLAS build: index type matches mesh index buffer (UINT32)
-- BLAS build: OPAQUE geometry flag correct (no transparency in AS traversal)
-- BLAS build: PREFER_FAST_TRACE flag (not PREFER_FAST_BUILD)
-- BLAS scratch buffer: SHADER_DEVICE_ADDRESS usage, proper alignment
-- BLAS result buffer: ACCELERATION_STRUCTURE_STORAGE + SHADER_DEVICE_ADDRESS
-- TLAS instance buffer: host write → AS read barrier correct
-- TLAS build/update decision: `last_blas_addresses` comparison is correct (only device address sequence matters)
-- TLAS UPDATE mode: spec requires same geometry count, same instance count — verify
-- TLAS padding strategy (max(2x, 4096)) — does UPDATE work with unused instance slots?
-- `instance_custom_index` encoding: matches draw command index for SSBO lookup
-- Transform matrix conversion: column-major to 3×4 row-major (VkTransformMatrixKHR)
-- `TRIANGLE_FACING_CULL_DISABLE` on all instances — correct for two-sided meshes
-- Empty TLAS at init: valid descriptors from frame 0 (no validation errors)
-- Device address queries: buffer must have SHADER_DEVICE_ADDRESS usage flag
-- **TLAS-scratch shrink alive (#1226, was dead code)** (`cf3d8ec6`): `shrink_tlas_scratch_to_fit` now uses TLAS-calibrated slack (was BLAS-calibrated, effectively unreachable). Verify the slack calculation matches `tlas_instance_should_shrink` predicate at `acceleration/predicates.rs` and the function is called from the end-of-frame / cell-unload site
-- **`missing_blas` counter split by cause** (#1228, `289fb07a`): three independent counters (skinned, rigid, ssbo_evicted) replace the conflated single counter. Verify all three increment-paths are wired and surfaced through `bench-stats`. Regression pattern: a fix that only updates one bucket while another silently inflates
-- **`built_flags` pinned as runtime VUID-03667 flag check** (#1145, `b2fd533f`): `BlasEntry.built_flags` records the BUILD-time AS flag set; the matching refit asserts the pair (UPDATABLE | PREFER_FAST_TRACE | ALLOW_COMPACTION must match the original BUILD). Regression here surfaces as Vulkan validation, not silent corruption
-- **`SKINNED_BLAS_FLAGS` / `UPDATABLE_AS_FLAGS` bit composition pinned by tests** (#1144, `a2597487`): the flag-set constants live as module constants in `crates/renderer/src/vulkan/acceleration/`. Drift here is a Vulkan-version-rev breaking change risk; the pin-tests fail loud if either constant flips
-- **GpuCamera.rt_flag post-TLAS patch — cell-load warmup gone** (#1227, `6dd40d3f`): first 1-2 frames after a cell load no longer render with RT-disabled. Verify the post-TLAS rt_flag patch is in `draw_frame` and not removed by a future refactor — regression pattern is visible as a 1-2-frame raster-only flash on cell entry
+- SVGF history ping-pong (read prev, write current); reprojection motion vectors match the vertex-shader output; mesh-ID disocclusion rejection prevents ghosting; blend α clamped, first-frame uses current (no garbage history); dispatch covers exactly the image (ceil division); per-frame history descriptor swap.
+- Firefly rejection hoisted ahead of the `hasHistory` branch (regression guard, `48906670`) — verify the clamp applies on the no-history path too.
+- Composite reassembly: direct + SVGF-denoised indirect + albedo (+ TAA-resolved HDR when TAA on), ACES tone-map applied **after** reassembly, bloom added **before** tone-map (Dim 16). Fog applied to direct only, not indirect. SSAO modulates indirect only.
+- Caustic accumulator (`R32_UINT`) sampled via `usampler2D`, divided by the fixed-point scale, added to **direct** (never the SVGF-denoised indirect — double-count guard, Dims 14/15).
+- Composite output to swapchain (correct format/layout transition to `PRESENT_SRC_KHR`).
 **Output**: `/tmp/audit/renderer/dim_8.md`
 
-### Dimension 9: RT Ray Queries (Shader)
-**Entry points**: `crates/renderer/shaders/triangle.frag` (all `rayQueryEXT` usage)
+#### Dimension 9: GPU skinning compute + BLAS refit (M29)
+**Entry points**: `crates/renderer/src/vulkan/skin_compute.rs`, `crates/renderer/shaders/skin_vertices.comp`, `skin_palette.comp`, `acceleration/blas_skinned.rs`, `byroredux/src/render/skinned.rs`, `byroredux/src/render/bone_palette_overflow_tests.rs`.
 **Checklist**:
-- Shadow rays: origin = fragment world position, direction = toward light, tMin/tMax correct
-- Shadow rays: point/spot jitter (concentric disk sampling on light physical disk) — correct geometry
-- Shadow rays: directional jitter (~2.8° angular cone) — cos/sin correct, unit vector normalization
-- Shadow ray result: `gl_RayQueryCommittedIntersectionNoneEXT` check → binary 0/1 shadow
-- Contact-hardening penumbra: distance-dependent width scaling formula
-- Reflection rays: origin bias along normal to avoid self-intersection
-- Reflection rays: direction = reflect(viewDir, normal) — sign conventions correct
-- Reflection rays: metalness/roughness gating thresholds (>0.3, <0.6) — consistent with PBR intent
-- Reflection hit: barycentric interpolation of UVs from global vertex SSBO — index math correct
-- Reflection hit: texture lookup from interpolated UV — descriptor indexing valid
-- GI bounce rays: cosine-weighted hemisphere sampling — correct tangent-space construction
-- GI bounce rays: distance cutoff (1500 units from camera) — check applied correctly
-- GI miss: sky fill contribution — no NaN or inf from miss
-- Window portal rays: through-ray direction, 2000-unit distance limit; window-portal demote path on glass that would otherwise infinite-loop (#789 — texture-equality identity check breaks the IOR refraction self-passthrough on coincident glass surfaces)
-- IOR refraction: roughness spread basis built via Frisvad orthonormal basis (#820 / REN-D9-NEW-01) — the legacy `cross(N, world-up)` construction degenerates near vertical surfaces; verify Frisvad is in use and tangent/bitangent are unit-length
-- IOR refraction: ray budget is `GLASS_RAY_BUDGET = 8192` (raised from 512 in 9a4dc15) — verify cap is wired and not silently exceeded; sky-tint fallback on miss is replaced by cell-ambient for interiors (bb53fd5 — no more open-sky tint inside dungeons)
-- IOR refraction diagnostics: `DBG_VIZ_GLASS_PASSTHRU = 0x80` flag exposes the passthrough decision per-fragment for bisecting glass loops; verify it's still wired in `triangle.frag` (symbol-anchored: `DBG_VIZ_GLASS_PASSTHRU` callsites at the diagnostic-state setup + the two viz-write branches in the refraction/glass loop) and not stripped by a refactor
-- Interleaved gradient noise: frame counter seeded correctly, no visible patterns
-- All ray queries: `rayQueryInitializeEXT` flags (gl_RayFlagsTerminateOnFirstHitEXT for shadows + reflection + glass)
-- All ray queries: TLAS binding is the correct descriptor (set 1, binding 2)
+- `VERTEX_STRIDE_FLOATS = 25` (100 B/vertex) is defined in `crates/renderer/src/shader_constants_data.rs`, consumed by `skin_compute.rs` via `use crate::shader_constants::VERTEX_STRIDE_FLOATS` (NOT a hardcoded `25`), pinned against `size_of::<Vertex>()` by the assert in `skin_compute.rs` — drift corrupts every skinned vertex.
+- `skin_palette.comp` (palette = `bone_world × bind_inverse`, GPU-side) pre-dispatches before `skin_vertices.comp`; both share a 64-wide workgroup; dispatch `(vertex_count + 63) / 64`.
+- `SkinPushConstants` (vertex_offset/count, bone_offset) matches the GLSL push-constant struct, ≤ 128 B.
+- Skinned output buffer usage flags include `STORAGE_BUFFER`, `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR`, and `VERTEX_BUFFER` (#681).
+- COMPUTE → AS-BUILD → FRAGMENT barrier scopes correct; refit (UPDATE mode) matches original BUILD geometry/vertex count; skinned BLAS pinned against LRU eviction while in flight; refit-count rebuild threshold per memory-budget.md.
+- Bone-palette overflow guard fires (`Once`-gated warn) at the cap — silent truncation past `MAX_TOTAL_BONES` was the M29 regression, pinned by `bone_palette_overflow_tests.rs`.
 **Output**: `/tmp/audit/renderer/dim_9.md`
 
-### Dimension 10: Denoiser & Composite Pipeline
-**Entry points**: `crates/renderer/src/vulkan/svgf.rs`, `crates/renderer/src/vulkan/composite.rs`, `crates/renderer/shaders/svgf_temporal.comp`, `crates/renderer/shaders/composite.frag`
+#### Dimension 10: Camera-relative render origin & f32 precision (#1495/#1496)
+**Entry points**: `crates/renderer/src/vulkan/scene_buffer/gpu_types.rs` (`GpuCamera.render_origin`), `byroredux/src/render/camera.rs`, `crates/renderer/shaders/triangle.vert` / `triangle.frag`, `byroredux/src/cell_loader/references.rs` (`RT_ABSOLUTE_PRECISION_CEILING`). Spec: shader-pipeline.md "Coordinate Spaces & Precision".
+**Severity floor**: a path mixing the two conventions = HIGH (large-world precision corruption).
 **Checklist**:
-- SVGF temporal accumulation: history buffer ping-pong correct (read previous, write current)
-- SVGF reprojection: motion vector application matches vertex shader output
-- SVGF mesh ID rejection: disocclusion detection prevents ghosting
-- SVGF blend factor: alpha clamped to valid range, first frame handled (no history → use current)
-- SVGF dispatch: workgroup size matches image dimensions (ceiling division)
-- SVGF descriptor updates: per-frame history buffer swap
-- Composite pass: direct light + denoised indirect + albedo + TAA-resolved HDR reassembly formula
-- Composite pass: ACES tone mapping applied after reassembly (not before)
-- Composite pass: fog handled correctly (applied to direct, not indirect)
-- Composite pass: output to swapchain image (correct format, correct layout transition)
-- SSAO integration: AO factor applied to indirect lighting (not direct)
-- Caustic accumulator (R32_UINT) sampled via `usampler2D`, divided by fixed-point scale, added to direct lighting (not indirect)
+- **Two conventions, never mixed.** Raster runs render-origin-**relative** (`viewProj × worldPos_rel` keeps full f32 at large offsets); RT stays **absolute** (TLAS transforms, skinned BLAS, ray origins/lighting/fog reconstructed as `worldPos_rel + render_origin`).
+- Rigid `GpuInstance.model` translation rebased on CPU; skinned path rebases blended bone-palette translation by `−render_origin` in `triangle.vert` (#1486).
+- `triangle.vert` emits `fragWorldPosRel` (location 3) **relative**; `triangle.frag` reconstructs absolute at top of `main()` (#1496) so `dFdx/dFdy` consumers (flat-shading normal, `perturbNormal` TBN, `parallaxDisplaceUV`, rtLOD footprint) see small magnitudes. Verify no derivative consumer was moved back to the absolute varying.
+- `RT_ABSOLUTE_PRECISION_CEILING = 2^20 = 1_048_576` — `references.rs` `debug_assert!`s loaded-cell max `|coord|` stays under it via `worldspace_extent_over_rt_ceiling` (unit-tested). Any new absolute-space shader consumer inherits this ceiling.
+- DoF: degenerate `focus_dist` guarded (#1525); `GpuCamera` doc accuracy (#1526).
 **Output**: `/tmp/audit/renderer/dim_10.md`
 
-### Dimension 11: TAA — Temporal Antialiasing (M37.5)
-**Entry points**: `crates/renderer/src/vulkan/taa.rs`, `crates/renderer/shaders/taa.comp`, camera-UBO jitter assembly in `byroredux/src/render/camera.rs` and `crates/renderer/src/vulkan/scene_buffer/`
-**Checklist**:
-- Halton (2,3) sequence: index advances per frame, wraps without seam, jitter applied to projection matrix in NDC pixel units (not clip units)
-- Camera UBO carries the un-jittered projection alongside the jittered one (motion-vector reconstruction must use un-jittered)
-- Per-frame-in-flight history slot: this frame writes its own slot, next frame reads it via reprojection — confirm `MAX_FRAMES_IN_FLIGHT` slots, no aliasing
-- Reprojection: motion-vector sample uses linear filtering (or 5-tap dilation), not point — wrong filter causes edge wobble
-- YCoCg neighborhood clamp: 3×3 min/max in YCoCg, prev-frame sample clamped before blend (prevents history bleed during disocclusion)
-- Mesh ID disocclusion: prev-frame mesh_id sampled at reprojected UV, mismatch → discard history (use current pixel as pure)
-- First-frame / `should_force_history_reset` path: no NaN, no garbage history read, weight α forced to 1.0
-- Layout: history images held in `GENERAL` (storage write + sampled read), no UNDEFINED transitions per frame
-- Descriptor sets: 7 bindings (curr HDR, motion, curr+prev mesh_id, prev history, out storage, params UBO) match the docstring layout in `taa.rs`
-- SPIR-V reflection (`validate_set_layout` from `reflect.rs`) actually fires and matches Rust-side bindings
-- Composite samples the TAA output (not the raw HDR) when TAA is on
-- Disable path: when TAA off, composite must read raw HDR; the TAA dispatch should be skipped entirely (not run + ignored)
+---
+
+### MEDIUM tier — per-feature passes, shader correctness, visual
+
+#### Dimension 11: Pipeline state & render pass / G-buffer
+**Entry points**: `crates/renderer/src/vulkan/pipeline.rs`, `descriptors.rs`, `context/helpers.rs` (`create_render_pass`), `gbuffer.rs`.
+**Severity floor**: G-buffer format mismatch (shader output vs attachment) = HIGH.
+**Checklist** (formats/bindings are in shader-pipeline.md — audit the *match*, don't restate the table):
+- Vertex input matches `crates/renderer/src/vertex.rs` (binding/location/format/offset); push-constant ranges match shader declarations; dynamic viewport/scissor (and dynamic `CULL_MODE` for water two-sided) set each frame.
+- G-buffer pipeline writes all six color attachments; composite inputs match G-buffer + denoiser outputs; SSAO/cluster-cull compute descriptor layouts correct.
+- Mesh-ID encoding: `R32_UINT`, bits 0–30 = instance id + 1, bit 31 (`0x80000000`) = `ALPHA_BLEND_NO_HISTORY` (SVGF skip). Encoded shader-side in `triangle.frag` (`outMeshID = meshIdBase | (alphaBlendFrag ? 0x80000000u : 0u)`); runtime overrun is a one-shot `warn!` + clamp in `draw_frame`/`upload_instances` (NOT a `debug_assert!` — moved off the assert to avoid leaking the in-flight cmd buffer on unwind, #956/#992).
+- Render-pass load/store ops, layout transitions, subpass dependencies cover all stage/access masks; G-buffer images created `SAMPLED` (SVGF/composite read). **Flag barrier/dependency changes as needs-RenderDoc.**
+- Pipeline cache: header pre-validated against the device before handoff; mismatch → warning + empty cache, no crash (`context/helpers.rs`, SAFE-11/#91).
 **Output**: `/tmp/audit/renderer/dim_11.md`
 
-### Dimension 12: GPU Skinning Compute + BLAS Refit (M29.5 + M29.3)
-**Entry points**: `crates/renderer/src/vulkan/skin_compute.rs`, `crates/renderer/shaders/skin_vertices.comp`, `crates/renderer/shaders/skin_palette.comp` (M29.5 palette pre-dispatch — `palette[i] = bone_world[i] * bind_inverses[i]`, SPIR-V at `skin_compute.rs:32`), `crates/renderer/src/vulkan/acceleration/` (per-skinned-entity BLAS refit), `byroredux/src/render/skinned.rs` (skinned-mesh enumeration + `build_skinned_palettes` at `:64`)
+#### Dimension 12: Command buffer recording
+**Entry points**: `crates/renderer/src/vulkan/context/draw.rs`.
 **Checklist**:
-- `VERTEX_STRIDE_FLOATS = 25` matches `crates/renderer/src/vertex.rs::Vertex` exactly (100 B / vertex; widened from the pre-M-NORMALS 21 / 84 B per #783 once tangent + bitangent_sign landed). The const lives in `crates/renderer/src/shader_constants_data.rs:36` (generated into `shaders/include/shader_constants.glsl`) and is consumed by `skin_compute.rs` via `use crate::shader_constants::VERTEX_STRIDE_FLOATS` (NOT a hardcoded `25` in skin_compute.rs); pinned against `size_of::<Vertex>()` by the assert at `skin_compute.rs:923`. Drift here corrupts every skinned vertex
-- `skin_palette.comp` and `skin_vertices.comp` share the same 64-wide workgroup (`skin_compute.rs:35`); the palette pre-dispatch runs before the vertex skin so the bone palette is `bone_world × bind_inverse`-resolved on the GPU, not host-side
-- `SkinPushConstants` (vertex_offset, vertex_count, bone_offset) matches the GLSL `PushConstants` struct in skin_vertices.comp; total ≤ 128 B
-- Per-skinned-mesh output buffer usage flags include `STORAGE_BUFFER` AND `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR` (BLAS reads it). M29.3 Phase 3 also re-adds `VERTEX_BUFFER` (#681 / `MEM-2-6` regression note in roadmap)
-- Bone palette SSBO is DEVICE_LOCAL with HOST_VISIBLE staging, uploaded once per frame, sized for `MAX_TOTAL_BONES`
-- COMPUTE → AS-BUILD → FRAGMENT barrier chain: skin write → BLAS refit → ray-query read in fragment shader (audit barrier scopes match)
-- BLAS refit (UPDATE mode) called per frame for skinned entities; geometry count + vertex count must match the original BUILD or Vulkan validation faults
-- BLAS refit budget / LRU interaction: skinned BLAS must not be evicted by M36 LRU mid-frame (pin while in flight)
-- `MAX_TOTAL_BONES` overflow guard (in `byroredux/src/render/skinned.rs` — `Once`-gated warn at the bone-palette emit site) actually fires when the bone-palette buffer is full — silent truncation past the cap was the regression in M29. Pinned by `byroredux/src/render/bone_palette_overflow_tests.rs`
-- Workgroup size 64 matches `local_size_x` in skin_vertices.comp; dispatch uses `(vertex_count + 63) / 64` invocations
-- Phase status: confirm whether raster reads inline-skinning (`triangle.vert:147-204`) or pre-skinned (M29.3) — both are valid but cannot coexist in a single mesh
+- Reset-before-record, begin/end balanced (command buffer + render pass), AS build recorded outside the render pass, SVGF/compute after RP end and before composite, composite last (then egui, then optional screenshot copy).
+- Per-draw: depth bias for decals, pipeline/descriptor bind, push constants, indexed draw; batch coalescing groups draws by texture/descriptor.
+- Counter independence (regression guards): `DrawCommand` input count vs post-batch GPU draw count are separate metrics, both surfaced (#1258); blend-pipeline cache-hit fast path exists at the per-draw bind site (#1259); off-frustum draws skip `GpuInstance.flags` assembly without dropping state on frustum-border visible draws (#1260); cell-loader REFR spawn reads `SceneFlags` from the world resource, not a cached snapshot (#1235).
 **Output**: `/tmp/audit/renderer/dim_12.md`
 
-### Dimension 13: Caustic Splat (#321 Option A)
-**Entry points**: `crates/renderer/src/vulkan/caustic.rs`, `crates/renderer/shaders/caustic_splat.comp`, composite consumption in `crates/renderer/shaders/composite.frag`
+#### Dimension 13: TAA (M37.5)
+**Entry points**: `crates/renderer/src/vulkan/taa.rs`, `crates/renderer/shaders/taa.comp`, jitter assembly in `byroredux/src/render/camera.rs`.
 **Checklist**:
-- Per-frame-in-flight `caustic_accum` images created with `STORAGE | SAMPLED | TRANSFER_DST` and R32_UINT format
-- Frame begins with `vkCmdClearColorImage` to zero the accumulator BEFORE the dispatch
-- HOST→COMPUTE barrier on params UBO + CLEAR→COMPUTE barrier on the image, both before dispatch
-- Atomic accumulation: shader uses `imageAtomicAdd` on a u32 fixed-point representation (no float storage, no race)
-- Fixed-point scale documented in CausticParams matches the divide in composite.frag
-- COMPUTE→FRAGMENT barrier before composite samples the accumulator (or layout-transition-equivalent dependency)
-- Layout stays in `GENERAL` for the accumulator (composite reads via usampler2D, legal in GENERAL)
-- 9-binding descriptor set matches the layout table in caustic.rs docstring (depth, normal, mesh_id, lights, camera, instances, TLAS, accum image, params UBO)
-- Source-pixel selection (only refractive / water surfaces splat): material flag check pulls from the right field after R1 indirection (`materials[material_id]`, not the legacy GpuInstance copy)
-- Output added to direct lighting only — never doubled into the indirect path that SVGF already denoised
+- Halton(2,3) jitter advances per frame (no seam), applied in NDC pixel units; un-jittered projection retained for motion-vector reconstruction.
+- Per-frame-in-flight history slot (no aliasing); reprojection samples motion with linear/dilated filter (point causes edge wobble); 3×3 YCoCg neighborhood clamp on the history sample; mesh-ID disocclusion discards stale history; first-frame / `should_force_history_reset` forces α = 1.0 with no garbage read.
+- Moving-pixel accumulation α floored under a parked camera (regression guard, #1497).
+- History images in `GENERAL` (no per-frame UNDEFINED); `validate_set_layout` (`reflect.rs`) fires and matches Rust bindings; composite samples TAA output only when TAA on; disable path skips the dispatch entirely.
 **Output**: `/tmp/audit/renderer/dim_13.md`
 
-### Dimension 14: Material Table (R1)
-**Entry points**: `crates/renderer/src/vulkan/material.rs`, `crates/renderer/src/vulkan/scene_buffer/` (GpuInstance, **`MAX_MATERIALS = 16384`** post-`7823eb59` — was 4096; bump came after Riverwood / FO4 cells saturated the 4096 cap), `byroredux/src/render/mod.rs` (build_render_data), `byroredux/src/render/static_meshes.rs` (material intern call sites), all 5 shaders that declare `struct GpuInstance` (`triangle.vert`, `triangle.frag`, `ui.vert`, `water.vert`, `caustic_splat.comp`) — verify via `grep -l "struct GpuInstance" crates/renderer/shaders/`
-**Upstream**: the `Material` records this table interns are produced by the NIFAL boundary (Dim 22, `byroredux/src/material_translate.rs::translate_material`) — a corrupt `GpuMaterial` here may be a translate-side bug, not an intern-side one. See also `/audit-nifal`.
+#### Dimension 14: Caustic splat (#321)
+**Entry points**: `crates/renderer/src/vulkan/caustic.rs`, `crates/renderer/shaders/caustic_splat.comp`, composite consumption in `composite.frag`.
 **Checklist**:
-- `GpuMaterial` is exactly **300 bytes** (`gpu_material_size_is_260_bytes` asserts `300` at `material.rs:1157` — the test NAME is historical, kept for grep continuity, NOT the asserted value; rationale at `material.rs:41-42`). Past size changes: #804, #1249, #1250. Any field add/remove must update the Rust struct, the GLSL `struct GpuMaterial` (in `triangle.frag` — the only shader that declares it), and the `gpu_material_field_offsets_match_shader_contract` offsets in lockstep
-- Per-field offset pinning (`gpu_material_field_offsets_match_shader_contract`, #806): all 65 named-field offsets across 16 vec4 slots are asserted; size-only pin cannot catch within-vec4 reorders (e.g. swapping `texture_index ↔ normal_map_index`). Any new field must add a matching offset assertion
-- ALL `GpuMaterial` fields are scalar (f32/u32) — NEVER `[f32; 3]`. std430 vec3 alignment would silently desync byte-Hash dedup
-- Hash + Eq impls treat `GpuMaterial` as raw bytes; named pad fields explicitly zeroed at construction (no uninit bytes from `MaybeUninit`)
-- `MaterialTable::intern` produces stable `material_id`s within a frame; identical materials collapse to one entry. **Cap**: over-cap interns return id `0` (sharing the first material's record) with a one-shot `warn!` — verify the warn fires and over-cap entries do NOT corrupt SSBO indexing (#797 SAFE-22)
-- Per-frame MaterialBuffer SSBO uploaded once, sized to `min(intern_count, MAX_MATERIALS)`; truncation at the upload site is the safety net, capping at intern is the source of truth (no over-allocation, no reuse-without-resize bug)
-- **Capacity overflow surfaced via mem stats** (`7823eb59`): when intern overflows `MAX_MATERIALS = 16384`, the over-cap counter is exposed in `mem.stats` for diagnostic visibility. Verify the counter is reset per-frame and the warn-once still fires
-- Dedup-ratio telemetry exposed (#780 PERF-N1): unique material count vs placement count surfaced via console — Prospector baseline 1200 placements → 87 unique (~14× hit rate). Regression = audit finding even if correctness holds
-- **Shader flag bits routed through generated header** (#1190 / TD4-NEW-01): `MAT_FLAG_*` bits in `crates/renderer/src/shader_constants_data.rs` emit into the auto-generated `crates/renderer/shaders/include/shader_constants.glsl` consumed by `triangle.frag`. Any new flag added Rust-side must NOT be hand-written into the shader — the generated header is the source of truth. Sibling of the `DBG_*` lockstep contract pinned at Dim 16
-- **BSLightingShaderProperty PBR scalars at import** (#1241): smoothness / IOR / specular-strength surfaced into `MaterialInfo` so the Disney lobe (Dim 21) has authored data to consume. BGSM smoothness is normalized to glossiness scale at parse (`98383caf`); verify the conversion doesn't double-apply on raw FO4 BGSM authoring
-- **WaterShaderProperty + BSShaderPropertyBaseOnly consumers wired at import** (#1243 / #1244, FO3/FNV legacy): water materials and bare BSShaderProperty stubs both route through MaterialInfo now. Verify both produce distinct GpuMaterial entries (no dedup collapse with glass / opaque siblings)
-- **HasModelSpaceNormals flag routed for direct-TXST REFRs** (#972): FO4 TXST records with model-space normals (no DerivedNormalMap) flag through to the shader, gating the PBR / SSS path at `triangle.frag` (#1147 Phase 2b)
-- `GpuInstance.material_id: u32` ships in the Phase 3+ instance struct; legacy per-instance fields confirmed dropped from Phases 4–6 already-migrated slices
-- Shader-side `materials[instance.material_id].foo` reads use the same offsets as the Rust struct (Phase 4–5 mechanical migration check). The #785 R-N1 regression of `ui.vert` reading the wrong MaterialBuffer offset is a recurring trap — verify `ui.vert` is in lockstep with the offset-pin contract, not just `triangle.frag`
-- All 5 shaders updated in lockstep — `triangle.vert`, `triangle.frag`, `ui.vert`, `water.vert`, `caustic_splat.comp` (per `feedback_shader_struct_sync.md`). Use `grep -l "struct GpuInstance" crates/renderer/shaders/` as the canonical drift check
-- Identity invariant: render output for a scene with N copies of the same material must be byte-identical pre/post R1 dedup
-- Phase status check: any per-instance fields that R1 did NOT migrate yet should be flagged (Phase 6 was the closeout — verify nothing remains in DrawCommand/GpuInstance that should now live in GpuMaterial)
+- Per-FIF `caustic_accum` (`R32_UINT`, `STORAGE|SAMPLED|TRANSFER_DST`); cleared via `vkCmdClearColorImage` before dispatch; HOST→COMPUTE + CLEAR→COMPUTE barriers before dispatch; COMPUTE→FRAGMENT before composite sample; stays in `GENERAL`.
+- Accumulation via `imageAtomicAdd` on u32 fixed-point (no float race); fixed-point scale in `CausticParams` matches the composite divide.
+- Source-pixel selection reads the material flag from `materials[material_id]` (post-R1), using `INSTANCE_FLAG_CAUSTIC_SOURCE` macro (not a hex literal, #1234). Output added to direct only.
+- `caustic_splat.comp` "water-side caustic is the water shader's responsibility" comment matches the live `water.frag` impl, not a stub (Dim 15).
 **Output**: `/tmp/audit/renderer/dim_14.md`
 
-### Dimension 15: Sky / Weather / Exterior Lighting (M33 / M33.1 / M34)
-**Entry points**: `byroredux/src/systems/weather.rs` (weather_system; post-Session-34 split — was in monolithic systems.rs), `byroredux/src/render/sky.rs` (sun arc + TOD palette assembly; post-#1115 split — was in monolithic render.rs), `crates/plugin/src/esm/records/weather.rs`, `crates/renderer/shaders/triangle.frag` (sky gradient + cloud sample + fog application)
+#### Dimension 15: Water (M38) + water-side caustics
+**Entry points**: `crates/renderer/src/vulkan/water.rs`, `crates/renderer/src/vulkan/water_caustic.rs` (`WaterCausticAccum`), `crates/renderer/shaders/water.vert`/`water.frag`, `byroredux/src/cell_loader/water.rs`, `byroredux/src/systems/water.rs` (`submersion_system`). Shared water components live in `crates/core/src/ecs/components/water.rs`.
 **Checklist**:
-- `weather_system` advances game time monotonically; sun arc derived from CLMT TNAM hours, not hardcoded
-- TOD color interpolation between WTHR NAM0 colors uses the right easing (linear vs cosine) — verify against legacy
-- Weather fade (`WeatherTransitionRes`) blends over 8 s post-TOD-sample (color blend AFTER TOD lookup, not before)
-- All 4 cloud layers active in exterior cells (M33.1 closed) — layers 2/3 sample ANAM/BNAM with parallax scroll
-- Cloud parallax direction vector is in world XY, not screen-space; magnitude scales with TOD wind multiplier
-- Sky gradient: zenith → horizon RGB pulled from active TOD palette, applied in non-RT miss-fill path; consistent with the GI miss "sky fill contribution" used in Dim 9
-- Sun directional: direction vector from sun arc, color/intensity from TOD, shadow ray budget bounded
-- Fog: applied to direct lighting only, NOT to indirect (composite Dim 10 invariant — re-check after sky changes)
-- Interior fill at 0.6× ambient + `radius=-1` (unshadowed); `triangle.frag` `isInteriorFill = radius < 0.0` gates RT shadow on `!isInteriorFill` — verify the gate (symbol-anchored, post-#1200 convention) hasn't drifted
-- Disabled-WTHR fallback: when no weather record loaded, defaults must produce neutral lighting (no NaN, no pitch-black)
-- M40 streaming interaction: cell transition does not strobe TOD (palette is per-worldspace + global TOD clock, not per-cell)
+- WaterPlane spawned from interior/exterior cell water records (height/extent match); vertex displacement bounded, no NaN, no Z-fight at shoreline; Fresnel base ~0.02 (do NOT reuse glass IOR 1.5); RT reflect/refract (IOR ~1.33) miss → sky/backdrop with fog (not black/magenta).
+- `submersion_system` flips `SubmersionState` at the water plane with no per-frame strobe; cell unload despawns water cleanly (no leaked BLAS vs post-unload TLAS); water doesn't cast opaque shadows; two-sided via dynamic `CULL_MODE`; sort key places water per `byroredux/src/render/sort_key_tests.rs` ordering; distinct `GpuMaterial` entry (no dedup collapse with glass).
+- Procedural-noise precision bound marked for absolute-world UVs (regression guard, #1502).
+- Water-side caustic synthesis (regression guards): `sun_direction` plumbed through `GpuCamera` and uploaded each frame (not stale-from-init); `WaterCausticAccum` lifecycle (per-FIF `R32_UINT`, GENERAL/TRANSFER_DST/GENERAL, reverse-order `destroy`) lives in `water_caustic.rs` while `water.rs` owns only the descriptor set/layout/pool; `water.frag` actually writes the accumulator via `imageAtomicAdd`; composite samples it into **direct** lighting (#1210 Phases A–E / #1255–#1257).
 **Output**: `/tmp/audit/renderer/dim_15.md`
 
-### Dimension 16: Tangent-Space & Normal Maps (M-NORMALS)
-**Entry points**: `crates/nif/src/import/mesh/tangent.rs` (extract_tangents_from_extra_data, synthesize_tangents), `crates/nif/src/import/mesh/bs_tri_shape.rs` (BSTriShape inline-tangent decode), `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs` (VF_TANGENTS = 0x010, packed-vertex tangent stride; split out post-#1118), `crates/renderer/shaders/triangle.frag` (perturbNormal, DBG_BYPASS_NORMAL_MAP / DBG_VIZ_NORMALS / DBG_VIZ_TANGENT)
-**Checklist**:
-- Oblivion / FO3 / FNV path: per-vertex tangents pulled from `NiBinaryExtraData` named `"Tangent space (binormal & tangent vectors)"` — Bethesda's blob is `[tangents..., bitangents...]` Z-up, but their "tangent" field is actually `∂P/∂V` and "bitangent" is `∂P/∂U` (`CalcTangentSpace` swap). The decoder MUST read the **bitangent half** (offset `num_verts * 12`) into `Vertex.tangent.xyz` and use the tangent half to derive the bitangent sign — handedness regression here was #786 (fixed 5dde345). Audit for any new path that re-reads the blob without honoring the swap
-- FO4+ BSTriShape inline tangents: when `VF_TANGENTS | VF_NORMALS` are both set on the packed-vertex flag (`tri_shape/bs_tri_shape.rs::BsTriShape` packed-vertex loop, symbol-anchored per post-#1040 convention), tangents ship inline in the packed-vertex blob, NOT in a separate `NiBinaryExtraData`. This is distinct from the Skyrim path; verify the FO4 inline decode (#795 / #796, b63ab0c) still fires and is not gated behind the wrong BSVER
-- Synthesized fallback: when the authored blob is missing or malformed (size mismatch warns, see `mesh.rs:87`), the importer falls through to nifly's `CalcTangentSpace` synthesis (`synthesize_tangents`). Verify the fallback path produces unit-length tangents and consistent bitangent signs
-- Bitangent sign convention: `B = bitangent_sign * cross(N, T)` — the sign is reconstructed shader-side from `Vertex.tangent.w`. Verify the convention is consistent across the three import paths (Bethesda authored, FO4 inline, synthesized)
-- Coordinate conversion: Z-up (Gamebryo) → Y-up (renderer) applied to tangent xyz components in lockstep with normal conversion (no path that converts N but not T, or vice versa)
-- `perturbNormal` is **default-on** (#787 / #788, b8ab477) with the Path-1 transform fixed; `DBG_BYPASS_NORMAL_MAP = 0x10` is the runtime opt-out for bisecting (`crates/renderer/shaders/triangle.frag::DBG_BYPASS_NORMAL_MAP`). Verify the bit is still recognized
-- Permanent diagnostic bit catalog (Rust source-of-truth at `crates/renderer/src/shader_constants_data.rs::DBG_*`; emitted by `build.rs` into the auto-generated `crates/renderer/shaders/include/shader_constants.glsl` which `triangle.frag` `#include`s): `DBG_BYPASS_POM = 0x1`, `DBG_BYPASS_DETAIL = 0x2`, `DBG_VIZ_NORMALS = 0x4`, `DBG_VIZ_TANGENT = 0x8`, `DBG_BYPASS_NORMAL_MAP = 0x10`, `DBG_RESERVED_20 = 0x20` (formerly `DBG_FORCE_NORMAL_MAP`, no-op post-#1035), `DBG_VIZ_RENDER_LAYER = 0x40`, `DBG_VIZ_GLASS_PASSTHRU = 0x80`, `DBG_DISABLE_SPECULAR_AA = 0x100`, `DBG_DISABLE_HALF_LAMBERT_FILL = 0x200`. Pinned in lockstep by two tests in `crates/renderer/src/shader_constants.rs`: `tests::generated_header_contains_all_defines` (positive side — every `DBG_*` const is emitted into the generated header with the correct value) and `tests::triangle_frag_dbg_bits_not_redeclared` (negative side — `triangle.frag` does NOT redeclare the const block, polarity-flipped post-#1162 when the consts moved out of the shader). Audit for drift: any added bit must not collide; any dropped bit must not orphan shader code
-- "Chrome posterized walls" red herring: per `feedback_chrome_means_missing_textures.md`, that artifact is the magenta-checker placeholder × a (correctly loaded) tangent-space normal map. Audit findings claiming a tangent-space bug from chrome fragments alone are stale — the audit MUST run `tex.missing` first before recommending a tangent-space fix
+#### Dimension 16: Volumetrics (M55) & bloom (M58)
+**Entry points**: `crates/renderer/src/vulkan/volumetrics.rs`, `bloom.rs`, `crates/renderer/shaders/volumetrics_inject.comp`, `volumetrics_integrate.comp`, `bloom_downsample.comp`, `bloom_upsample.comp`, composite consumption in `composite.frag`.
+**Checklist** — volumetrics:
+- Froxel grid 160×90×128 matches the inject `local_size`; dispatch covers exactly the grid; per-FIF buffer (~14 MiB/slot, no cross-frame WAR); inject does a single `TerminateOnFirstHit` shadow ray per froxel; integrate multiplies transmittance across the walk; HG `g` clamped to (−0.999, 0.999).
+- Gate `VOLUMETRIC_OUTPUT_CONSUMED` (#928): if composite drops the sample, the dispatch must be skipped (not dispatched + ignored). Interior cells (no sun) produce neutral non-NaN output; resize rebinds both volumetric and composite descriptors (#905).
+
+**Checklist** — bloom:
+- 5 down-mips + 4 up-mips, `B10G11R11_UFLOAT` throughout (no R16G16B16A16 mid-chain); 4-tap bilinear down (weights sum 1.0), additive up (no [0,1] clamp); per-FIF mip chain (cross-frame WAR gated by fence — do NOT reintroduce the redundant pre-barriers removed in #931).
+- Bloom added **before** ACES tone-map (HDR add); intensity constant in `composite.frag`; source is the un-tone-mapped HDR (NOT the TAA output — descriptor-binding regression pattern); disable path short-circuits both dispatch and composite addition.
 **Output**: `/tmp/audit/renderer/dim_16.md`
 
-### Dimension 17: Water Rendering (M38)
-**Entry points**: `crates/renderer/src/vulkan/water.rs` (WaterPipeline — owns the water-caustic descriptor set/layout/pool), `crates/renderer/src/vulkan/water_caustic.rs` (`WaterCausticAccum` struct at `:57`, per-frame R32_UINT accumulator image lifecycle, `new()` at `:68`), `crates/renderer/shaders/water.vert/frag`, `byroredux/src/cell_loader/water.rs` (water-plane spawn from XCWT / cell water refs), `byroredux/src/systems/water.rs` (`submersion_system`), `byroredux/src/components.rs` (WaterPlane, WaterVolume, SubmersionState components)
-**Checklist**:
-- WaterPlane ECS component spawned from interior/exterior cell water records; height + extent match cell record
-- WaterPipeline vertex displacement: amplitude bounded, no NaN at edge tessellation, no Z-fighting with shoreline geometry
-- Fresnel term: schlick approximation against view dir, base reflectance ~0.02 for water (do not reuse glass IOR 1.5)
-- RT reflection ray: TLAS query reflected about water normal; missed rays sample sky (not black, not magenta)
-- RT refraction ray: TLAS query along refracted dir, IOR ~1.33; missed rays sample backdrop with proper fog
-- Camera SubmersionState write: `submersion_system` flips component when camera Y crosses water plane; underwater fog / tint applied via composite (verify no per-frame strobe at the boundary)
-- Cell unload: water entities despawn cleanly; no leaked BLAS entries against post-unload TLAS (`AccelerationManager::evict_unused_blas` covers them)
-- Shadow casting: water surface does NOT contribute to shadow rays for opaque geometry (reflection-only)
-- Two-sided rendering: water disables back-face cull (underwater view from below); confirm via dynamic CULL_MODE not pipeline duplicate
-- Sort key: water plane rendered after opaques, before transparents (or in transparent pass with alpha-blend) — verify against `render::sort_key` ordering
-- Material slot: water uses a distinct GpuMaterial entry (separate from glass) — verify dedup doesn't collapse them
-- **Water-side caustic synthesis — landed across #1210 Phases A-E.** Verify each phase is still live:
-  - **Phase A+B** (`8a1a06b4`): `sun_direction` plumbed through `CameraUBO` — required input for water-side caustic synthesis. Verify `camera_ubo.sun_direction.xyz` is uploaded each frame and not stale-from-init
-  - **Phase C** (`5f1a9158` / #1255): `WaterCausticAccum` image lifecycle correct (per-frame-in-flight, R32_UINT, STORAGE|SAMPLED|TRANSFER_DST). Layout: GENERAL for compute write, TRANSFER_DST for clear, GENERAL for composite sample. The accumulator image now lives in the dedicated `crates/renderer/src/vulkan/water_caustic.rs` (`WaterCausticAccum`), NOT inline in `water.rs` — verify its `destroy`/teardown reverse-order; `water.rs` only owns the matching descriptor set/layout/pool (`water_caustic_set_layout` etc. at `water.rs:170-177`)
-  - **Phase D** (`19dfc79c` / #1256): water-side caustic synthesis ACTIVE in `water.frag` — verify the synthesis code (sun-direction-based caustic pattern) actually runs and writes to the accumulator via `imageAtomicAdd`. Sibling check: `caustic_splat.comp:223-224`'s "the water-side caustic is the water shader's responsibility (M38)" comment should now match a live water.frag implementation, not a stub
-  - **Phase E** (`c87ca9db` / #1257): composite samples the accumulator at the gather site (composite.frag) and adds to direct lighting (not indirect — same invariant as the glass/MultiLayerParallax caustics from Dim 13)
-  - **INSTANCE_FLAG_CAUSTIC_SOURCE** (#1234): `caustic_splat.comp` uses the named macro from `shader_constants_data.rs`, not a hex literal. Sibling of the `MAT_FLAG_*` lockstep contract (Dim 14)
+#### Dimension 17: Disney BSDF / PBR gating (#1248–#1254) + soft shadows
+**Entry points**: `crates/renderer/shaders/triangle.frag` (Disney lobe fns + gate sites), `crates/renderer/src/vulkan/material.rs` (Disney preset constructors), `byroredux/src/render/sky.rs` (`sun_angular_radius`).
+**Checklist** — Disney (symbol-anchored; flag bits live in `shader_constants_data.rs`, NOT hand-declared in the shader — verify, this was the #1357 migration):
+- Gate is `MAT_FLAG_PBR_BSDF` (bit 5) only — grep `MAT_FLAG_PBR_BSDF` gate sites in `triangle.frag` and confirm each lights the Disney lobe (no FNV/FO3/Skyrim legacy path tripping it). FNV/FO3/Oblivion: zero materials set the flag → lobe unreachable. FO4/FO76/Starfield: BGSM is canonical → lobe is the expected path (regression is a BGSM falling back to Lambert).
+- `dielectricF0FromIor(eta)` derives F0 from per-material IOR (not hardcoded 0.04), with input-domain clamp guarding `eta ≤ 0` (#1248/#1253).
+- `distributionGGXAniso(NdotH, HdotX, HdotY, ax, ay)` MUST degenerate exactly to isotropic GGX when `ax == ay` (legacy-compat contract, #1250); `deriveAxAy(roughness, anisotropic, …)` clamps `anisotropic` to [0,1] (half-axis convention per GLSL-PathTracer, NOT Disney-2012 `[-1,1]`) — verify no `sqrt(<0)` at `anisotropic = 1.0` (#1254).
+- `disneyDiffuseSplit(...)` returns split lobes (Burley retro + sheen + Hanrahan-Krueger SSS); sheen is additive, NOT divided by π (#1249/#1252).
+- `#1147 Phase 2b` siblings fire independently: `MAT_FLAG_TRANSLUCENCY` (bit 6) → SSS, modulated by `MAT_FLAG_TRANSLUCENCY_THICK_OBJECT` (bit 8) / `MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO` (bit 9); `MAT_FLAG_MODEL_SPACE_NORMALS` (bit 7, set by #972) → model-space sampling. No spurious cross-activation.
+- Disney preset constructors in `material.rs` match documented values (cross-ref GLSL-PathTracer per `reference_glsl_pathtracer.md`).
+
+**Checklist** — soft shadows (M-LIGHT):
+- `sun_angular_radius` ships in `GpuCamera`; shipping default `0.020` rad (sky-params assert caps < 0.10) — drift changes shadow softness globally.
+- Single-tap stochastic cone sample around the sun, deterministic per-pixel-per-frame (no true RNG that breaks TAA history); `TerminateOnFirstHit`; TAA absorbs the noise (YCoCg clamp tolerance allows convergence).
+- Interior fill (`radius < 0.0` → `isInteriorFill`) bypasses the cone sample; disocclusion single-sample fallback is not black.
 **Output**: `/tmp/audit/renderer/dim_17.md`
 
-### Dimension 18: Volumetric Lighting (M55)
-**Entry points**: `crates/renderer/src/vulkan/volumetrics.rs` (160×90×128 froxel grid, ~14 MiB / slot), `crates/renderer/shaders/volumetrics_inject.comp`, `crates/renderer/shaders/volumetrics_integrate.comp`, composite consumption in `crates/renderer/shaders/composite.frag`
+#### Dimension 18: Sky / weather / exterior lighting (M33/M34)
+**Entry points**: `byroredux/src/systems/weather.rs`, `byroredux/src/render/sky.rs`, `crates/plugin/src/esm/records/weather.rs`, `crates/renderer/shaders/triangle.frag` (sky gradient + cloud + fog). See also `/audit-exal`.
 **Checklist**:
-- Froxel dimensions `160 × 90 × 128` match `volumetrics_inject.comp` `local_size_x/y/z`; dispatch group count covers exactly the grid (no over-dispatch)
-- Per-frame-in-flight buffer sizing: one ~14 MiB image per frame-in-flight slot, not shared across frames (avoid WAR hazard on integrate read)
-- Inject pass: per-froxel HG phase scattering, single shadow ray vs TLAS per froxel — verify `gl_RayFlagsTerminateOnFirstHitEXT` is set so cost stays bounded
-- Integrate pass: depth-walk integration produces an accumulated luminance + transmittance per froxel; transmittance is multiplied (not added) across the walk
-- HG phase function: anisotropy `g` clamped to (-0.999, 0.999) — `g = ±1` produces division-by-zero
-- Output consumed: composite shader samples the integrated 3D image at fragment depth → world Z mapping; the gate `VOLUMETRIC_OUTPUT_CONSUMED: bool` (#928) must remain in lockstep — if composite path drops the sample, the dispatch must be skipped
-- Disabled path: when volumetrics is off, integrate dispatch is skipped entirely (not dispatched + ignored — was the audit finding from #928)
-- Resize: image-view rebind on composite resize (#905); verify both volumetric and composite descriptor sets get refreshed
-- Sun-arc dependency: scattering color/intensity reads from the TOD palette; interior cells with no exterior sun must still produce neutral non-NaN output
-- Performance: budget allows the inject+integrate pair to complete in <2 ms on RTX 4070 Ti at the documented exterior bench
+- `weather_system` advances game time monotonically; sun arc from CLMT TNAM hours (not hardcoded); TOD color easing matches legacy; weather fade blends AFTER the TOD lookup (`WeatherTransitionRes`); all 4 cloud layers active with world-XY parallax scaled by TOD wind.
+- Sky gradient (zenith→horizon) from active TOD palette in the non-RT miss-fill, consistent with the GI miss "sky fill" (Dim 2); fog applied to direct only (Dim 8); interior fill at 0.6× ambient with `radius = −1` (unshadowed), gating RT shadow on `!isInteriorFill` (symbol-anchored, #1200).
+- Disabled-WTHR fallback is neutral (no NaN / pitch-black); cell transition does not strobe TOD (palette is per-worldspace + global clock, not per-cell).
 **Output**: `/tmp/audit/renderer/dim_18.md`
 
-### Dimension 19: Bloom Pyramid (M58)
-**Entry points**: `crates/renderer/src/vulkan/bloom.rs` (5-mip down + 4-mip up, B10G11R11_UFLOAT), `crates/renderer/shaders/bloom_downsample.comp`, `crates/renderer/shaders/bloom_upsample.comp`, composite addition in `crates/renderer/shaders/composite.frag`
+#### Dimension 19: Tangent-space & normal maps (M-NORMALS)
+**Entry points**: `crates/nif/src/import/mesh/tangent.rs`, `crates/nif/src/import/mesh/bs_tri_shape.rs`, `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs` (`VF_TANGENTS`), `crates/renderer/shaders/triangle.frag` (`perturbNormal`).
 **Checklist**:
-- Pyramid size: 5 down-mips + 4 up-mips; each mip is half the previous in X+Y; format `B10G11R11_UFLOAT` everywhere (no R16G16B16A16 mid-chain)
-- Down-pass: 4-tap bilinear box filter — sample offsets at half-pixel centers, weights sum to 1.0
-- Up-pass: 4-tap bilinear additive blend with previous up-mip; no clamp to [0,1] (HDR additive)
-- Per-frame-in-flight slot owns its own mip chain — cross-frame WAR is gated by the per-frame fence (#931 audit: do NOT reintroduce the 9 redundant pre-barriers that were removed)
-- Barrier count: 10 barriers per dispatch (down to 47% from pre-#931's 19); regression = audit finding even if correctness holds
-- Intensity: composite multiplies bloom by 0.15 (tuned down from 0.20 on Prospector saloon); the constant lives in `composite.frag` — drift here is a visual regression
-- Image-view rebind on composite resize (#905) — verify bloom + composite descriptor sets both refresh
-- Disabled path: when bloom is off, neither down nor up is dispatched; composite must short-circuit the addition
-- Tone-map order: bloom is added BEFORE ACES tone mapping (HDR addition), not after (LDR addition would clip)
-- Source pyramid input: must read the un-tone-mapped HDR (`composite.frag` input), not the TAA output (TAA inputs to bloom is a regression pattern — verify the descriptor binding)
+- Oblivion/FO3/FNV: per-vertex tangents from `NiBinaryExtraData` "Tangent space …" — Bethesda's "tangent" is `∂P/∂V` and "bitangent" is `∂P/∂U` (the `CalcTangentSpace` swap). The decoder must read the **bitangent half** into `Vertex.tangent.xyz` and derive the sign from the tangent half (handedness regression #786). 
+- FO4+ BSTriShape inline tangents when `VF_TANGENTS | VF_NORMALS` set (packed-vertex loop) — distinct from Skyrim, not gated on the wrong BSVER (#795/#796).
+- Synthesized fallback (`synthesize_tangents`) produces unit-length tangents + consistent signs when the blob is missing/malformed.
+- Sign convention `B = bitangent_sign * cross(N, T)` reconstructed from `Vertex.tangent.w`, consistent across all three import paths; Z-up→Y-up conversion applied to tangent xyz in lockstep with the normal (no path converting N but not T).
+- `perturbNormal` default-on (#787/#788); `DBG_BYPASS_NORMAL_MAP` (0x10) runtime opt-out still recognized; the 13-bit `DBG_*` catalog pinned in lockstep (Dim 3).
+- "Chrome posterized walls" is the magenta-checker placeholder × a correctly-loaded normal map — per `feedback_chrome_means_missing_textures.md`, run `tex.missing` before recommending any tangent-space fix.
 **Output**: `/tmp/audit/renderer/dim_19.md`
 
-### Dimension 21: Disney BSDF / PBR Gating (#1248–#1252)
-**Entry points**: `crates/renderer/shaders/triangle.frag` (Disney lobe functions + gate sites; flag `#define`s at `triangle.frag:204-208` are the source of truth — `MAT_FLAG_*` bits 5-9 are NOT in `shader_constants_data.rs` today), `crates/renderer/src/vulkan/material.rs` (Disney material preset table from #1251). **Naming note**: these flags dropped the `BGSM_` prefix (`TRANSLUCENCY` / `MODEL_SPACE_NORMALS` / `TRANSLUCENCY_THICK_OBJECT` / `TRANSLUCENCY_MIX_ALBEDO`).
+#### Dimension 20: Debug overlay & GPU telemetry
+**Entry points**: `crates/renderer/src/vulkan/egui_pass.rs` (`EguiPass`), `crates/renderer/src/vulkan/gpu_timers.rs` (`GpuPerFrameTimers`), `crates/debug-ui/`, wired in `context/draw.rs` + `context/mod.rs`.
 **Checklist**:
-- **Gate is `MAT_FLAG_PBR_BSDF` (bit 5) only** — verify the consumer sites in `triangle.frag` ALL test this single flag (no path lights FNV / FO3 / Skyrim legacy materials with the Disney lobe). Gate-site grep target: `if ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u)`. **Current count: 2** — `:2610` (Disney diffuse consumer in the main `diffuseBrdf` branch) and `:2861` (second Disney diffuse consumer in the deferred-specular path); the F0-derivation gate is no longer flag-gated at a separate site (F0 is selected via `dielectricF0FromIor(mat.ior)` at `:1760` unconditionally). Drift here is a per-game lighting regression — FNV's Lambert-only world would suddenly get Burley retro-reflection
-- **`dielectricF0FromIor(eta)`** (#1248, `454b7a26`): Fresnel F0 derivation from per-material IOR (not the legacy hardcoded 0.04); declared at `triangle.frag:703`, consumed at `:1760` (`f0Dielectric = dielectricF0FromIor(mat.ior)`). Input-domain clamp on `eta` landed via #1253 (`e8e66b61`) — verify the clamp protects against `eta = 0` / `eta < 0` from corrupted material authoring. Symbol-anchored at `triangle.frag::dielectricF0FromIor`
-- **`distributionGGXAniso(NdotH, HdotX, HdotY, ax, ay)`** (#1250, `c0374d00`): anisotropic GGX (Trowbridge-Reitz with ax ≠ ay) for brushed-metal / vinyl / satin authoring. **MUST degenerate exactly to `distributionGGX` when ax == ay** — that's the legacy compatibility contract, regression would break every isotropic material in the catalog. Symbol-anchored at `triangle.frag::distributionGGXAniso`
-- **`deriveAxAy(roughness, anisotropic, out ax, out ay)`** (#1250 + #1253/#1254): declared at `triangle.frag:667`; remaps perceptual roughness + `anisotropic[0..1]` (ByroRedux follows the GLSL-PathTracer half-axis convention, NOT the Disney 2012 paper's full `[-1, 1]`; see the convention-sync comment at `triangle.frag:646-656`) to ax/ay. Input-domain clamp `clamp(anisotropic, 0.0, 1.0)` at `triangle.frag:675` landed in #1254 — verify the clamp returns a fully-degenerate-needle behavior at `anisotropic = 1.0` (Disney convention), not black/undefined fragments from `sqrt(1 - 0.9·a) < 0`
-- **`disneyDiffuseSplit(...)`** (#1249 / #1252, `005eba25` + `32e768af`): Burley retro-reflection + sheen + Hanrahan-Krueger subsurface, **split into separate lobes** post-#1252 to prevent per-light × π sheen over-amplification. Returns `DisneyDiffuseSplit` struct. Verify sheen is NOT divided by π (Disney 2012 spec: layered material on Lambertian base — sheen is additive, not a Lambertian itself)
-- **Disney material preset table** (#1251, `c09d63a6`): documented presets (glass IOR 1.45, copper, gold, plastic, etc.) live in `crates/renderer/src/vulkan/material.rs` as `pub fn` constructors. Verify each preset's authoring matches Disney 2012 documented values (cross-reference the GLSL-PathTracer reference at `/mnt/data/src/reference/GLSL-PathTracer/` per the `reference_glsl_pathtracer.md` memory; the disney lobe lives under `src/shaders/common/` in that external repo — backticked only when checking the local copy)
-- **GLSL-PathTracer reference compliance**: Disney lobe math at `triangle.frag` cites GLSL-PathTracer line numbers in the doc comments (e.g. disney.glsl:56-57 for F0, :67-87 for diffuse — see external reference repo, not a local path). Verify the citations are still accurate — if GLSL-PathTracer upstream has changed, our port is now an undocumented divergence
-- **#1147 Phase 2b gate sibling** (`fe22e64c`): PBR / SSS / model-space-normals are ALSO gated separately in `triangle.frag` (NOT all behind `MAT_FLAG_PBR_BSDF`). Verify:
-  - `MAT_FLAG_TRANSLUCENCY (1u << 6)` → SSS path (sibling modulators: `MAT_FLAG_TRANSLUCENCY_THICK_OBJECT (1u << 8)` and `MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO (1u << 9)` select the SSS sub-mode)
-  - `MAT_FLAG_MODEL_SPACE_NORMALS (1u << 7)` (set by #972 for direct-TXST REFRs) → model-space sampling path
-  - Each gate fires independently; no spurious cross-activation when only one flag is set
-- **Per-game regression-guard checklist** (extends `audit-fnv` / `audit-fo3` / `audit-skyrim` regression guards):
-  - **FNV**: zero materials set `MAT_FLAG_PBR_BSDF` (no BGSM authoring shipped). Disney lobe must be unreachable.
-  - **FO3**: same as FNV.
-  - **Oblivion**: same as FNV.
-  - **Skyrim LE / SSE**: BGSM via mods only; vanilla Skyrim materials should not trip the gate without explicit BGSM intent.
-  - **FO4 / FO76 / Starfield**: BGSM authoring is canonical — Disney lobe is the EXPECTED path. Regression pattern is the opposite: a FO4 BGSM that falls back to Lambert.
-**Output**: `/tmp/audit/renderer/dim_21.md`
-
-### Dimension 20: M-LIGHT v1 — Stochastic Soft Shadows
-**Entry points**: `crates/renderer/shaders/triangle.frag` (sun shadow ray + cone-sample), `byroredux/src/render/sky.rs` (`sun_angular_radius` upload), `crates/renderer/src/vulkan/scene_buffer/`
-**Checklist**:
-- `sunAngularRadius` ships in the camera/scene UBO at the documented offset; current shipping value `0.020` (bumped from `0.0047`) — drift here changes shadow softness globally
-- Per-fragment single-tap stochastic cone sample around the sun direction: random offset derived from frame index + pixel coords (deterministic per-pixel-per-frame), not a true RNG that breaks TAA history
-- Shadow ray flags include `gl_RayFlagsTerminateOnFirstHitEXT` (no closest-hit needed; visibility query only)
-- TAA accumulation absorbs the per-frame noise — verify the YCoCg clamp tolerance allows the noise to converge (too-tight clamp = persistent noise; too-loose = over-blur)
-- Interior `radius=-1` gate (`triangle.frag` `isInteriorFill = radius < 0.0`, symbol-anchored) still bypasses the cone sample — soft-shadow code must not fire inside interior cells
-- Disocclusion: when TAA mesh-id mismatches discard history, the un-converged single-sample frame is visible — verify the fallback isn't black (a black single-sample frame is the regression pattern)
+- egui pass uses `loadOp = LOAD` + `initialLayout = PRESENT_SRC_KHR` and is recorded after composite; supplies its own incoming dependency (Dim 4, #1433); framebuffers recreated on resize; `Option<EguiPass>` taken + `destroy()`d before device teardown; disabled (`= None`) path skips the dispatch with no layout drift.
+- GPU timers: one `VkQueryPool` per FIF slot; `cmd_reset_query_pool` before re-recording brackets; results read `MAX_FRAMES_IN_FLIGHT` behind; driver-absent (`timestamp_supported == false`) → `new()` returns `Ok(None)`, no unwrap in the draw path; skipped passes omit their bracket (no bogus interval).
+- `dispatches_skipped` is a **skin-coverage** counter (`skin_compute.rs`, incremented in `draw.rs` when the bone palette is unchanged), surfaced via `mem.stats`/console — NOT a `GpuPerFrameTimers` field. Issued dispatches = total − skipped (#1194).
 **Output**: `/tmp/audit/renderer/dim_20.md`
 
-### Dimension 22: NIFAL Material Canonical Translation
-**Entry points**: `byroredux/src/material_translate.rs` (`translate_material` at `:65` — the single ImportedMesh→`Material` boundary), `crates/core/src/ecs/components/material.rs` (`Material` struct + `resolve_pbr` at `:588` + `EmissiveSource` enum at `:354`), `crates/nif/src/import/walk/mod.rs` (`extract_emitter_params` at `:670` / `extract_emitter_rate` at `:713` — particle NIFAL slice), `byroredux/src/systems/particle.rs` (`apply_emitter_params` at `:29`), `byroredux/src/render/particles.rs` (`emit_particles` at `:31`). Spec: `docs/engine/nifal.md`. **This is the upstream tier that produces the data Dim 14's `MaterialTable::intern` consumes** — a regression here corrupts every `GpuMaterial`. See also `/audit-nifal` for the full canonical-translation-tier audit (single-boundary / no-fabrication / no-render-time-fallback); this dimension only covers the renderer-facing invariants.
+#### Dimension 21: Cornell-box RT harness
+**Entry points**: `byroredux/src/cornell.rs` (`setup_cornell_scene`, `--cornell` flag), `mat.*` console commands in `byroredux/src/commands.rs`.
 **Checklist**:
-- **Single boundary**: `translate_material` is the ONLY site that turns a per-game `ImportedMesh` into a canonical `Material`. Verify exactly two callers — `byroredux/src/scene/nif_loader.rs:808` (loose-NIF load) and `byroredux/src/cell_loader/spawn.rs:861` (REFR cell placement). A third `Material` struct literal anywhere downstream is a translation leak (the duplication this module was created to kill)
-- **`Material.metalness` / `Material.roughness` are plain resolved `f32`** (`material.rs:216,222`), NOT `Option`. The old per-draw `classify_pbr` indirection is gone — the render path reads the resolved scalars directly (`render/static_meshes.rs:268` comment confirms). Verify no code path re-classifies metalness/roughness per-frame
-- **`resolve_pbr` runs once at translate, not per-draw**: it resolves the NaN-sentinel via `classify_pbr_keyword` only when the field is NaN, then clamps (`metalness.clamp(0.0,1.0)`, `roughness.clamp(0.04,1.0)`). Idempotent (`resolve_pbr_is_idempotent` test) — verify it is invoked at the translate boundary, not from a render system
-- **`EmissiveSource` (None / Material / Lighting / Effect) is resolved at translate**: the Effect variant is semantically a diffuse-tint multiplier conflated into the emissive slot (`material.rs:368` doc) — verify the renderer reads the already-resolved `emissive_mult`, not the raw per-game shader-property field. Drift here mis-tints FO4+ effect-shader glow
-- **Feeds Dim 14 with NO per-game branching downstream**: confirm `GpuMaterial` is built from the canonical `Material` fields only (no `if game == FNV` style branch between `Material` and `MaterialTable::intern`); per `feedback_format_translation.md`, per-game quirks MUST be resolved at this boundary, never in the renderer
-- **Particle NIFAL slice**: typed `NiPSysEmitter` / `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier` blocks (`crates/nif/src/blocks/particle.rs`) flow through `extract_emitter_params` / `extract_emitter_rate` (`import/walk/mod.rs`) into `ImportedScene`, then `apply_emitter_params` (`systems/particle.rs`) overlays authored values onto the preset, and `emit_particles` (`render/particles.rs:31`) assembles the billboard render data. Verify the authored emitter rate/size override the preset but do NOT override color (`apply_emitter_params_overrides_kinematics_and_size_not_color` test), and that the render-data assembly reads `ParticleEmitter` post-overlay
-**Output**: `/tmp/audit/renderer/dim_22.md`
-
-### Dimension 23: Debug Overlay & GPU Telemetry Passes (#1194)
-**Entry points**: `crates/renderer/src/vulkan/egui_pass.rs` (`EguiPass` struct — `new()` at `:60`, `record`/paint with the egui render pass at `:176`, `destroy()` at `:194`), `crates/debug-ui/` (debug overlay crate), `crates/renderer/src/vulkan/gpu_timers.rs` (`GpuPerFrameTimers` at `:148` + `GpuTimerSnapshot` at `:109`, `new()` at `:184`, `destroy()` at `:733`), wired into `crates/renderer/src/vulkan/context/draw.rs` (egui dispatch at `:2897`, timer resolve at `context/mod.rs:2476`) + `context/mod.rs` (`egui_pass: Option<EguiPass>` at `:1287`, `gpu_timers: Option<GpuPerFrameTimers>` at `:1051`)
-**Checklist**:
-- **egui render-pass ordering — composite then egui LAST**: the egui pass uses `loadOp = LOAD` (`egui_pass.rs:213`, doc at `:41`/`:206`) + `initialLayout = PRESENT_SRC_KHR` to preserve the composite's swapchain write. Verify egui is recorded after the composite/main pass (`draw.rs:2897`), not before — a pre-composite egui would be overwritten
-- **egui incoming barrier chains after composite's swapchain write**: composite's outgoing RP dependency sets `dstStage = NONE`, so the egui RP must supply its own incoming dependency (`egui_pass.rs:229`). Verify the dependency exists; missing it is a WAR hazard on the swapchain image
-- **egui descriptor / texture lifecycle**: `EguiPass` owns its pipeline + per-texture descriptors via `egui-ash-renderer`'s `Renderer`. Verify framebuffers are recreated on resize (`egui_pass.rs:114`) and that the `Option<EguiPass>` is taken + `destroy()`d before the device teardown (`context/mod.rs:2576`)
-- **egui disabled / uninitialised path**: when `init_egui` never ran, `egui_pass = None` and the dispatch is skipped (`draw.rs:2897` guard) — verify no swapchain layout drift when the overlay is absent
-- **GPU timer query-pool lifecycle**: `GpuPerFrameTimers` owns one `VkQueryPool` per `MAX_FRAMES_IN_FLIGHT` slot (`gpu_timers.rs:149`). Verify `cmd_reset_query_pool` runs before re-recording the bracket timestamps (results read `MAX_FRAMES_IN_FLIGHT` behind the current frame, `gpu_timers.rs:50`), and `destroy_query_pool` for every pool at teardown (`gpu_timers.rs:737`)
-- **GPU timer driver-absent path**: when `DeviceCapabilities::timestamp_supported == false`, `new()` returns `Ok(None)` (`gpu_timers.rs:185`) and the caller continues without timers — verify no unwrap on a `None` timer in the draw path
-- **Per-pass timestamp correctness**: bracket pairs (`cmd_write_timestamp` at `:338`+) must wrap exactly the pass they measure; on frames where a pass is skipped (e.g. TAA off, `gpu_timers.rs:58`) the bracket must be omitted or the snapshot reports a bogus interval
-- **`dispatches_skipped` counter** (#1194 / PERF-DIM7-INSTR): this is a **skin-coverage** counter (`skin_compute.rs:136`, incremented at `draw.rs:1035` when the bone palette is unchanged), surfaced via `mem.stats` / the console (`commands.rs:653`) — NOT a field on `GpuPerFrameTimers`. Verify the skip path increments it and the GPU dispatch count actually issued = total − `dispatches_skipped`
-**Output**: `/tmp/audit/renderer/dim_23.md`
+- The harness is a self-contained RT material/lighting reference scene (no on-disk game data) — verify it still builds a valid TLAS and renders without the asset pipeline, so it stays usable for bisecting glass/GI/caustic regressions (the Session 47 arc).
+- `mat.*` live commands drive material params at runtime for A/B verification — confirm they round-trip into `GpuMaterial` via the same `MaterialTable` path as game content (no Cornell-only material shortcut that would invalidate it as a reference).
+- Known confound (per memory): metalness-vs-lighting and the glass-stipple / IGN refraction jitter on opaque glass are open observations, not harness bugs — don't re-report them as new.
+**Output**: `/tmp/audit/renderer/dim_21.md`
 
 ## Phase 3: Merge
 
-1. Read all `/tmp/audit/renderer/dim_*.md` files
-2. Combine into `docs/audits/AUDIT_RENDERER_<TODAY>.md` with structure:
-   - **Executive Summary** — Total findings by severity, pipeline areas affected
-   - **RT Pipeline Assessment** — BLAS/TLAS correctness, ray query safety, denoiser stability
-   - **Rasterization Assessment** — Pipeline state, render pass, command recording
-   - **Findings** — Grouped by severity (CRITICAL first), deduplicated
-   - **Prioritized Fix Order** — Correctness fixes first, then safety, then optimization
-3. Remove cross-dimension duplicates
+1. Read all `/tmp/audit/renderer/dim_*.md`.
+2. Combine into `docs/audits/AUDIT_RENDERER_<TODAY>.md`:
+   - **Executive Summary** — findings by severity, pipeline areas affected.
+   - **RT Pipeline Assessment** — BLAS/TLAS + SSBO indexing + ray-query safety + denoiser stability.
+   - **GPU-Struct & Memory Assessment** — layout pins, leaks, lifecycle/teardown.
+   - **Findings** — grouped by severity (CRITICAL first), deduplicated.
+   - **Prioritized Fix Order** — correctness → safety → optimization.
+   - **Needs-RenderDoc** — sync/barrier findings deferred for capture-based verification.
+3. Remove cross-dimension duplicates.
 
 ## Phase 4: Cleanup
 
-1. `rm -rf /tmp/audit/renderer`
-2. Inform user the report is ready
-3. Suggest: `/audit-publish docs/audits/AUDIT_RENDERER_<TODAY>.md`
+1. `rm -rf /tmp/audit/renderer`.
+2. Inform the user the report is ready.
+3. Suggest: `/audit-publish docs/audits/AUDIT_RENDERER_<TODAY>.md`.

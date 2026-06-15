@@ -4,108 +4,286 @@ description: "Safety audit — unsafe blocks, memory leaks, undefined behavior, 
 
 # Safety Audit
 
-Read `_audit-common.md` and `_audit-severity.md` for shared protocol.
+Read `_audit-common.md` (layout, methodology, dedup, report format) and
+`_audit-severity.md` (the unified scale + the Special-Rules table this domain
+leans on heavily) before starting. Do not restate their content here.
+
+Severity anchors for this domain (from `_audit-severity.md`):
+FFI lifetime violation = **CRITICAL** · BLAS/TLAS wrong geometry/address or
+SSBO index mismatch = **CRITICAL** · leak that compounds per frame = **HIGH** ·
+Vulkan spec violation = **HIGH** · `unsafe` without a safety comment = **MEDIUM**.
+
+## Scale of the surface
+
+`unsafe` is concentrated, not scattered: ~612 occurrences live in
+`crates/renderer/src` (ash FFI + gpu-allocator), then a long tail —
+~11 in `crates/nif`, ~6 in `crates/core`, and one each in `byroredux`,
+`crates/plugin`, `crates/facegen`, `crates/cxx-bridge`. Renderer carries roughly
+one `SAFETY` comment per two `unsafe` tokens; the gap is where the
+unsafe-without-comment (MEDIUM) findings live. Budget your time accordingly —
+do not audit the nif/core tail at the expense of the renderer FFI mass.
+
+Dimensions below are ordered by safety blast radius: FFI lifetime, then
+memory-corruption/UB, then per-frame leaks, then unsafe-block discipline, then
+Vulkan-spec compliance, then the narrower regression-guard surfaces.
 
 ## Dimensions
 
-### 1. Unsafe Rust Blocks
-- List every `unsafe` block in the codebase
-- For each: is there a safety comment? Is the invariant actually upheld?
-- Common risks: dangling pointers, aliasing violations, uninitialized memory
-- Focus on World::get() raw pointer extension and any FFI boundaries
-- `crates/sfmaterial` enum decode: `BuiltinType::from_u32` (`src/types.rs`) MUST stay a checked `match` over the `0xFFFFFF##` tags with an `Err` arm for unmatched patterns — the doc-comment's "transmute into this enum" wording is aspirational, NOT the impl. An actual `std::mem::transmute` of an unmatched `#[repr(u32)]` byte pattern is UB; verify the match (and its `_ => Err`) survives any "optimization"
+### 1. FFI Lifetime Safety (cxx bridge) — CRITICAL class
 
-### 2. Vulkan Spec Compliance
-- All vkCreate*/vkDestroy* paired correctly
-- No use-after-destroy (check Drop ordering)
-- Validation layers enabled in debug — run and check for ANY errors
-- Queue submission ordering correct (wait before signal)
-- Acceleration structure builds: correct geometry flags, valid device addresses
-- TLAS UPDATE mode: instance count and geometry count must match original BUILD
-- Ray query extension: `VK_KHR_ray_query` enabled before use, feature gate checked
+- **The cxx surface is currently a placeholder.** `crates/cxx-bridge/src/lib.rs`
+  exposes one bridge fn, `native_hello() -> String` (impl in
+  `crates/cxx-bridge/cpp/native_utils.cpp`). There is **no raw-pointer exchange,
+  no Rust-string-into-C++ borrow, no shared-ownership handoff** across the
+  boundary today. Do NOT report speculative "string lifetime / dangling pointer
+  across cxx" findings against this crate — they describe a surface that does not
+  exist yet. The real check here is a **scope guard**: confirm the bridge still
+  has no owned-pointer / borrowed-slice signatures. The instant a `*const`,
+  `&[u8]`, `Box<…>`, or `unsafe extern "C++"` fn taking a Rust reference appears,
+  this becomes a live CRITICAL-class dimension and the lifetime analysis from
+  `_audit-severity` applies.
+- `unsafe extern "C++"` in the bridge marks the C++ side as trusted — verify no
+  new fn returns a pointer Rust then dereferences past the call.
 
-### 3. Memory Safety
-- GPU memory: all allocations freed before allocator drop
-- GPU memory: allocator dropped before device destroy
-- **`AllocatorResource` ECS drop ordering (#1406, `299e6a84`)**: `AllocatorResource` must be removed from the ECS `World` BEFORE `VulkanContext::drop()` fires. The `gpu-allocator` holds a live `Arc<Device>`; if the `World` outlives the `VulkanContext`, the allocator's `Drop` invokes driver calls against a destroyed logical device (use-after-free). Verify the main loop / app handler removes the resource before dropping the renderer; a panic unwind that skips this removal is an equally valid failure path.
-- **TLAS resize device_wait_idle (#1390, `a7e1502b`)**: the TLAS resize path must call `device.device_wait_idle()` before freeing the old allocation. Without it, the GPU may still be consuming the old TLAS scratch during the free. Latent today but would materialise under a future resize-under-load refactor. Verify the wait is present in `acceleration/tlas.rs` in the resize branch.
-- GPU memory: BLAS scratch buffer, TLAS instance/result buffers, G-buffer images, SVGF history buffers, TAA per-frame-in-flight history images, caustic accumulator images, per-skinned-entity SkinSlot output buffers, MaterialBuffer SSBO (R1) all tracked and freed
-- Cell streaming (`byroredux/src/streaming.rs`): cell-loaded resources (NIF imports, BLAS entries, textures) freed when cell unloads — verify no leak path through the async pre-parse worker thread (M40 milestone closed, but the unload leak path is live since exterior streaming is real)
-- CPU memory: no unbounded growth (Vec without clear, HashMap without remove)
-- Material table dedup map (R1): cleared per frame or pooled? Either is fine, but unbounded HashMap growth across cells is a leak
-- Stack overflow risk: no deep recursion without bounds
+### 2. Memory Corruption / UB
 
-### 4. Thread Safety
-- RwLock: no potential for deadlock (TypeId ordering enforced?)
-- Arc<Mutex<Allocator>>: lock held for minimum duration?
-- Send + Sync bounds on Component and Resource traits correct?
+- **ECS cached-pointer contract (regression guard, #35 + #1367).** `World::get`
+  (`crates/core/src/ecs/world.rs`) returns a `ComponentRef<'_, T>`, NOT a raw
+  pointer with a dropped guard (the unsound #35 pattern). `ComponentRef`,
+  `StorageRef`, and `StorageRefMut` in `crates/core/src/ecs/query.rs` cache a
+  `*const T` / `*mut T` resolved once in `new()` and deref it in the hot path
+  (#1367). Each cached-deref `unsafe` block carries a SAFETY comment tying the
+  pointer's validity to the lock guard the wrapper pins. The invariant: **the
+  guard must outlive every deref, and `&mut self` must gate `&mut *self.storage`.**
+  Verify the SAFETY comments still match the field layout and that no refactor
+  let a guard drop before its pointer (use-after-free → CRITICAL).
+- **`#[repr(C)]` GPU-struct soundness** (`crates/renderer/src/vulkan/scene_buffer/gpu_types.rs`):
+  `GpuInstance`/`GpuCamera`/`GpuLight` etc. are uploaded byte-for-byte to SSBOs.
+  vec3 must be three scalar `f32`, never `[f32; 3]` (std430 vec3 padding). A
+  layout drift here is silent per-instance corruption — see Dimension 6 for the
+  GpuMaterial pin and `_audit-severity`'s `#[repr(C)]`-drift HIGH row.
+- **NIF bulk POD reads** (`NifStream::read_pod_vec`, `crates/nif/src/stream.rs`;
+  the header mirror `read_pod_vec_from_cursor`, `crates/nif/src/header.rs`):
+  `read_exact` of raw LE bytes into a `T: AnyBitPattern` vector. SAFETY comments
+  must hold — `T` is restricted to bit-pattern-safe types (a sealed bound stops
+  `read_pod_vec::<bool>`). Verify the byte-count overflow guard (`count × size`)
+  is present and no caller widens `T` past `AnyBitPattern`.
+- **sfmaterial enum decode** (`BuiltinType::from_u32`, `crates/sfmaterial/src/types.rs`):
+  MUST stay a checked `match` over the `0xFFFFFF##` tags with a
+  `_ => return Err(Error::UnsupportedBuiltin { raw })` arm (confirmed present).
+  The module doc's "transmute into this enum" wording is aspirational prose, NOT
+  the impl — an actual `std::mem::transmute` of an unmatched `#[repr(u32)]` byte
+  pattern is UB. Verify the `match` + `Err` arm survive any "optimization."
+- Stack-overflow risk: no unbounded recursion in block-walk / scene-graph traversal.
 
-### 5. FFI Safety (cxx bridge)
-- C++ exceptions: does cxx handle them correctly?
-- String lifetime: Rust strings passed to C++ — valid for duration of call?
-- No raw pointer exchange across FFI without clear ownership
+### 3. Memory & Resource Leaks (HIGH when per-frame/per-cell)
 
-### 6. RT Pipeline Safety
-- BLAS/TLAS device address queries: buffers must have SHADER_DEVICE_ADDRESS usage
-- Global vertex/index SSBO: `instance_custom_index` bounds not checked on GPU — verify CPU-side encoding is correct
-- Ray query origin bias: self-intersection avoidance (tMin > 0 or offset along normal)
-- TLAS refit: `last_blas_addresses` comparison must handle mesh registry changes (add/remove)
-- Skin compute (GPU pre-skinning, milestone closed): per-skinned-mesh output buffer usage flags include `STORAGE_BUFFER` AND `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR`, plus `VERTEX_BUFFER` (#681 / `MEM-2-6` regression note). Wrong usage mask = device lost — the regression guard is live regardless of milestone status.
-- Skin BLAS refit: vertex/geometry count must match the original BUILD; bone count change forces full rebuild
-- Bone palette: `MAX_TOTAL_BONES` overflow guard in `byroredux/src/render/skinned.rs` (`Once`-gated warn at the bone-palette emit site, post-#1115 split) actually fires (silent truncation past cap was the M29 regression). Regression-guard tests live at `byroredux/src/render/bone_palette_overflow_tests.rs`
+- **Rapier bodies on cell unload (regression guard, #1520, `34c7a218`).**
+  `crates/physics/src/world.rs::remove_*` and `byroredux/src/cell_loader/unload.rs`
+  must release a cell's rigid bodies, colliders, and impulse joints from
+  `RigidBodySet` / `ColliderSet` / `ImpulseJointSet` (plus broad-phase /
+  query-pipeline state) when the cell unloads. Without it they accumulate per
+  cell — a steady leak under exterior streaming. Guard test:
+  `byroredux/src/cell_loader/rapier_release_tests.rs`. Verify the release path is
+  still wired and the test still asserts emptiness post-unload.
+- **Deferred-destroy drain** (`crates/renderer/src/deferred_destroy.rs`,
+  `DeferredDestroyQueue<T>` shared by mesh + BLAS + texture + skin compute):
+  objects are destroyed only after the in-flight fence clears (#418 moved the tick
+  after fence wait; #732 added an explicit shutdown drain). Verify the tick still
+  runs **after** fence wait in `context/draw.rs` and the shutdown sweep drains the
+  queue — a missed drain leaks GPU memory across the app lifetime, a too-early
+  destroy is use-after-free (CRITICAL).
+- **`AllocatorResource` drop ordering (regression guard, #1406, `299e6a84`).**
+  `AllocatorResource` (`crates/renderer/src/vulkan/allocator.rs`; held in
+  `byroredux/src/main.rs`) must be removed from the ECS `World` BEFORE
+  `VulkanContext::drop()` runs. The allocator holds a live `Arc<Device>`; if the
+  `World` outlives the context, the allocator's `Drop` calls the driver against a
+  destroyed logical device (use-after-free → CRITICAL). Verify the main loop
+  removes the resource before dropping the renderer, including the panic-unwind
+  path that could skip the removal.
+- **GPU allocation inventory** — every long-lived allocation tracked and freed:
+  BLAS scratch/result, TLAS instance/result, G-buffer images, SVGF history, TAA
+  per-FIF history images, caustic + water-caustic R32_UINT accumulators
+  (`caustic.rs` / `water_caustic.rs`), per-skinned-entity SkinSlot output buffers,
+  MaterialBuffer SSBO, volumetric/bloom mip pyramids. Cross-check eviction
+  thresholds against `docs/engine/memory-budget.md`; do not re-derive.
+- **CPU-side unbounded growth** — `Vec`/`HashMap` keyed by cell or path that never
+  shrinks. The MaterialTable dedup map and AnimationClipRegistry (Dimension 8) are
+  the known per-cell-growth risks.
 
-### 7. New Compute Pipeline Safety (TAA, Caustic, Skin)
-- TAA history images held in `GENERAL` layout (storage write + sampled read coexist); no UNDEFINED transitions per frame
-- TAA `should_force_history_reset` path produces no NaN reads, weight α forced to 1.0 on first frame
-- Caustic accumulator R32_UINT: `imageAtomicAdd` only — never float storage, no race
-- Caustic CLEAR-before-COMPUTE invariant: missing clear = persistent ghost contributions across frames
-- Skin compute push constants ≤ 128 B (Vulkan-guaranteed minimum); current `SkinPushConstants` is 12 B
-- SPIR-V reflection (`reflect.rs::validate_set_layout`): Rust descriptor layout MUST match shader-declared bindings — reflection mismatch is the only sound layer for catching binding drift before runtime
-- Volumetrics (`crates/renderer/src/vulkan/volumetrics.rs`, froxel grid `volumetrics_inject.comp` / `volumetrics_integrate.comp`): per-frame-in-flight 3D froxel volumes held in `GENERAL` (storage write + sampled read); `initialize_layouts` does the one-time UNDEFINED→GENERAL transition AND clears to `(rgb=0, a=1)` — same persistent-ghost-accumulation class as the caustic CLEAR-before-COMPUTE invariant. Per-froxel TLAS shadow ray fires once; verify no UNDEFINED transition leaks in per frame. (Note: dispatch is currently gated behind a `false` const while per-froxel banding is fixed — verify callers honor the gate.)
-- Bloom (`crates/renderer/src/vulkan/bloom.rs`, `bloom_downsample.comp` / `bloom_upsample.comp`): the down/up `B10G11R11_UFLOAT_PACK32` mip pyramids live in `GENERAL` for their entire lifetime; `initialize_layouts` does the one-time UNDEFINED→GENERAL barrier for every mip in every frame slot (`NONE` srcStageMask, no prior writes). Same UNDEFINED-transition class as TAA — a missed mip in the init barrier is a validation error / undefined read
+### 4. Unsafe-Block Discipline (MEDIUM — the bread-and-butter sweep)
 
-### 8. R1 Material Table Safety
-- `GpuMaterial` (in `crates/renderer/src/vulkan/material.rs`) size pinned at **300 B** by the `gpu_material_size_is_260_bytes` test (the test NAME still says 260 for grep continuity, but the asserted constant is 300 — the struct grew via the BGSM translucency suite `#1147` at offsets 260–276 and the Disney-BSDF lobe scalars + IOR at offsets 280–296, `#1248`/`#1249`/`#1250`; was 272 B until #804 / R1-N4 dropped `avg_albedo`, then 260 B until those additions) — a stale 260/272 in audit prose or a test-name-vs-asserted-size mismatch both mean the GPU-side struct is reading wrong bytes
-- Per-field offset pin (`gpu_material_field_offsets_match_shader_contract`, #806): every named field's byte offset asserted against the shader contract. Size-only pin cannot catch within-vec4 reorders (e.g. swap `texture_index ↔ normal_map_index` is invisible to size, lethal at runtime). Adding a field WITHOUT updating this assertion is a regression
-- ALL fields scalar f32/u32 — never `[f32; 3]` (std430 vec3 alignment ≠ tightly-packed Rust). This includes the newest scalars: the BGSM translucency suite (`translucency_subsurface_r/g/b`, `translucency_transmissive_scale`, `translucency_turbulence`) and the Disney lobe (`ior`, `subsurface`, `sheen`, `sheen_tint`, `anisotropic`) — each is a flat f32, never folded back into a `vec3`/`vec4` pair
-- Named pad fields explicitly zeroed (no uninit bytes leak into the byte-`Hash`/`Eq` dedup — `GpuMaterial::as_bytes` hashes the raw 300 B representation, so the larger struct only widens the blast radius of any alignment hole). The Disney/translucency scalars must be zeroed in `GpuMaterial::default()` so default materials still dedup to slot 0
-- `material_id` bounds: GpuInstance.material_id used as SSBO index — CPU must guarantee in-range; GPU has no bounds check
-- `MaterialTable::intern` cap (#797 SAFE-22): over `MAX_MATERIALS = 16384` (raised from 4096 in `7823eb59`; `crates/renderer/src/vulkan/scene_buffer/constants.rs`) distinct interns return id `0` with one-shot warn — no SSBO over-index, no DEVICE_LOST. Verify the cap fires AND the SSBO upload (`scene_buffer/upload.rs::upload_materials` — `materials.len().min(MAX_MATERIALS)`) truncates to `MAX_MATERIALS`. Mismatch between intern cap and upload truncation is the class of bug the cap was added to prevent
-- `ui.vert` MaterialBuffer read offsets stay in lockstep with `triangle.frag` (#785 R-N1 was a stale-hunk regression of #776 reading wrong bytes — name `ui.vert` explicitly in any R1 audit)
+- Grep every `unsafe` in `crates/` + `byroredux/` (`.rs`). For each: is there a
+  SAFETY comment, and does the comment's stated invariant actually hold at this
+  call site? A correct unsafe block with no comment is still a MEDIUM finding
+  (`_audit-severity` Special Rules). A commented block whose invariant is FALSE is
+  the higher-severity finding.
+- Heaviest in `crates/renderer/src/vulkan/` ash FFI — the SAFETY/unsafe count gap
+  (~310 vs ~612) is the haystack. Spot-check the ash dispatch wrappers, the
+  gpu-allocator `Arc<Mutex<…>>` interactions, and any `from_raw_parts` / `cast` on
+  mapped memory.
+- Report unsafe blocks lacking comments as a batched MEDIUM finding (list the
+  sites) rather than one finding per block, unless an invariant is actually unsound.
 
-### 9. RT IOR-Refraction Safety (Sessions 27–29)
-- Glass-passthrough infinite loop (#789): texture-equality identity check at the refraction hit prevents unbounded recursion when two coincident glass surfaces share the same albedo/normal-map descriptor pair. Verify the check is still in place — a regression here is a frame-time hang under any cell with paired glass
-- Frisvad orthonormal basis (#820 / REN-D9-NEW-01): the `cross(N, world-up)` construction degenerates near vertical surfaces (zero-length basis → NaN ray). Verify Frisvad is the active code path for IOR refraction roughness spread
-- Glass ray budget bounded: `GLASS_RAY_BUDGET = 8192` (raised from 512 in 9a4dc15) — the cap exists to prevent runaway recursion, not as a quality knob. Verify the budget is enforced at every call site
-- IOR miss fallback for interiors uses cell-ambient (bb53fd5), NOT the global sky tint — open-sky leakage into dungeons is a visible regression
-- `DBG_VIZ_GLASS_PASSTHRU = 0x80` debug bit kept as a permanent diagnostic; verify the bit position has not collided with new debug-flag additions (full catalog: `crates/renderer/src/shader_constants_data.rs::DBG_*`, mirrored into the auto-generated `crates/renderer/shaders/include/shader_constants.glsl` consumed by `triangle.frag` via `#include`)
+### 5. Vulkan Spec Compliance (HIGH — but flag what cargo test can't see)
 
-### 10. NPC / Animation Spawn Safety (M41.0 long-tail)
-- B-spline pose-fallback (#772): NPC vanishing under FNV `BSPSysSimpleColorModifier` particle stacks that share keyframe time-zero with the actor's animation player must be gated on a `FLT_MAX` sentinel. Removing the gate causes whole-NPC disappearance, not just a stuck pose — verify the sentinel is still wired
-- AnimationClipRegistry dedup (#790): registry deduplicates by lowercased path so cell streaming does not grow it unboundedly. Without dedup, one full keyframe set leaks per cell load — observable as steady RAM growth across exterior streaming. Verify case-insensitive interning is preserved
-- B-splines are reachable on FNV / FO3 too (`feedback_bspline_not_skyrim_only.md`) — do NOT rule out `NiBSplineCompTransformInterpolator` audits by game era. Skyrim-only assumption is a stale premise that has bitten this audit before
-- Starfield content is now WALKABLE (Cydonia) — do NOT short-circuit spawn-safety reasoning with a "no SF content exercises this path" assumption; SF cells reach the spawn / animation path like any other game
+> Per the No-Speculative-Vulkan-Fixes rule: render-pass / barrier / pipeline-state
+> spec claims that are invisible to `cargo test` MUST be framed as **"needs
+> validation-layer or RenderDoc verification"**, not asserted as confirmed bugs.
+> Run the engine with validation layers (debug build) and report ANY emitted
+> error verbatim — that is the sound evidence channel for this dimension.
 
-### 11. NIFAL Canonical-Translation Safety (NaN sentinels at the import boundary)
-*See also `/audit-nifal` — the dedicated NIFAL canonical-translation-layer audit. This dimension covers only the safety/UB facet (NaN-on-GPU, unbounded scalars); leave correctness-of-mapping to that audit.*
-- The single import boundary `byroredux/src/material_translate.rs::translate_material` deliberately seeds `f32::NAN` into `Material.metalness` / `Material.roughness` (the unresolved sentinels: `mesh.metalness_override.unwrap_or(f32::NAN)` / `roughness_override.unwrap_or(f32::NAN)`). `Material::resolve_pbr` (`crates/core/src/ecs/components/material.rs`) is the ONLY thing that detects (`is_nan`) and clamps those sentinels (`metalness.clamp(0.0,1.0)`, `roughness.clamp(0.04,1.0)`) before the value reaches `GpuMaterial`. A translation path that skips `resolve_pbr()` ships a NaN into the SSBO — NaN-on-GPU is the UB class this dimension exists to catch. `Material.metalness`/`roughness` are now plain `f32` (no `Option`), so a missing resolve is silent until it lands on the GPU
-- Verify EVERY producer of a renderer-bound `Material` runs `resolve_pbr()` (or constructs already-finite values); the `static_meshes.rs` fallback path constructs finite defaults directly — confirm it still does
-- Collision translate (`crates/nif/src/import/collision.rs`) now covers `BhkMultiSphereShape` and `BhkConvexListShape` as additional NIFAL boundaries — verify their emitted half-extents / radii / sphere centers are finite and bounded (a NaN/inf shape param propagates into the physics + BLAS build)
-- Typed particle blocks (`crates/nif/src/blocks/particle.rs`: `NiPSysEmitter` / `NiPSysEmitterCtlr` / `NiPSysEmitterCtlrData` / `NiPSysGrowFadeModifier`) feed `extract_emitter_params` / `extract_emitter_rate` (`crates/nif/src/import/walk/mod.rs`) → `systems::particle::apply_emitter_params` (`byroredux/src/systems/particle.rs`). Verify emitter rate / lifespan / size scalars are finite and non-negative at the extract boundary — an unbounded or NaN emitter rate is an unbounded-allocation / NaN-transform risk downstream
+- All `vkCreate*`/`vkDestroy*` paired; Drop ordering destroys children before
+  parents (device-destroy is last).
+- Queue submission ordering: wait-before-signal; per-image semaphores.
+- **Acceleration structures** (`crates/renderer/src/vulkan/acceleration/`): correct
+  geometry flags, valid device addresses, buffers carry `SHADER_DEVICE_ADDRESS`.
+  TLAS UPDATE mode — instance/geometry count must match the original BUILD.
+  Skin BLAS refit — vertex/geometry count must match BUILD; a bone-count change
+  forces a full rebuild. (Wrong AS geometry/address = CRITICAL per `_audit-severity`.)
+- **TLAS resize wait (regression guard, #1390, `a7e1502b`).** The resize branch in
+  `acceleration/tlas.rs` calls `device.device_wait_idle()` before freeing the old
+  allocation (confirmed present). Verify the wait survives — without it the GPU may
+  still consume the old TLAS scratch during free under a resize-under-load refactor.
+- `VK_KHR_ray_query` enabled + feature-gated before any ray-query use.
+- Per-frame compute layout hygiene (TAA / caustic / water-caustic / volumetrics /
+  bloom): images that coexist as storage-write + sampled-read are held in `GENERAL`;
+  `initialize_layouts` does the one-time UNDEFINED→GENERAL transition for **every**
+  mip / FIF slot. A missed slot is an UNDEFINED-read validation error. CLEAR-before-
+  COMPUTE invariant (caustic R32_UINT `imageAtomicAdd`, volumetric inject) — a
+  missing clear is persistent cross-frame ghost accumulation. Verify the
+  volumetrics caller honors the dispatch gate: dispatch is dead while
+  `VOLUMETRIC_OUTPUT_CONSUMED == false` (`crates/renderer/src/vulkan/volumetrics.rs`);
+  callers MUST gate `vol.dispatch()` on that const.
+- SPIR-V reflection (`crates/renderer/src/vulkan/reflect.rs`): the Rust descriptor
+  layout must match shader-declared bindings — this is the one binding-drift check
+  that IS visible to `cargo test` (scene_descriptor_reflection_tests). Prefer it
+  over eyeballing descriptor writes.
 
-### 12. debug-ui (egui overlay) Vulkan Teardown Safety
-- `crates/debug-ui` (`src/lib.rs`) holds an `ash::Device`, a `vk::RenderPass`, and a shared `Arc<Mutex<gpu_allocator::vulkan::Allocator>>`; it is owned by the engine main loop as `byroredux::main.rs`'s `debug_ui: Option<byroredux_debug_ui::DebugUiState>`
-- The crate wraps `egui-ash-renderer`, which manages its own descriptor pool + per-texture images. Those MUST be freed before the engine destroys the `ash::Device` — ties into Dimension 3 ("allocator dropped before device destroy"). Verify `DebugUiState` Drop / explicit teardown runs ahead of `VulkanContext`'s device-destroy, not after
-- The allocator is SHARED (`Arc<Mutex<…>>`) with the renderer — verify the lock is held for minimum duration during egui texture upload (Dimension 4 lock-duration); a long hold on the shared allocator mutex stalls the render thread
+### 6. R1 Material Table Layout Soundness
 
-1. Use Grep to find all `unsafe` blocks in `crates/` (`.rs` files)
-2. Read each unsafe block and its surrounding context
-3. Check Vulkan resource pairing with Drop implementations
-4. Check RT-specific safety (acceleration structures, device addresses, SSBO indexing)
-5. Check new-compute-pipeline safety (TAA, caustic, skin compute, volumetrics, bloom)
-6. Check R1 material table layout invariants (300 B size pin + per-field offset pin + intern cap; Disney/translucency scalars stay flat f32 + zeroed in Default)
-7. Check IOR-refraction safety (glass loop, Frisvad, ray budget, interior fallback)
-8. Check NPC / animation spawn safety (B-spline FLT_MAX, AnimationClipRegistry dedup)
-9. Check NIFAL canonical-translation safety (no NaN sentinel reaches the GPU — every Material producer runs `resolve_pbr`; collision + particle extract boundaries emit finite, bounded scalars) — see also `/audit-nifal`
-10. Check debug-ui (egui overlay) Vulkan teardown ordering + shared-allocator lock duration
-11. Save report to `docs/audits/AUDIT_SAFETY_<TODAY>.md`
+- **`GpuMaterial` size is pinned at 300 B** by `gpu_material_size_is_300_bytes`
+  (`crates/renderer/src/vulkan/material.rs`) — the test name now matches the
+  asserted size (history: 272 → 260 after #804 dropped `avg_albedo`, → 296 with the
+  Disney sheen/subsurface lobe #1249, → 300 with `anisotropic` #1250). A stale
+  260/272/296 in audit prose, or any test-name-vs-asserted-size mismatch, means the
+  GPU is reading wrong bytes.
+- **Per-field offset pin** `gpu_material_field_offsets_match_shader_contract` (#806):
+  every named field's byte offset asserted against the shader contract. The size pin
+  alone cannot catch a within-vec4 reorder (swap `texture_index ↔ normal_map_index`
+  is size-invisible, runtime-lethal). Adding a field without updating this assertion
+  is a regression.
+- ALL fields are flat scalar `f32`/`u32` — never `[f32; 3]` (std430 vec3 alignment).
+  This includes the newest scalars: the BGSM translucency suite
+  (`translucency_subsurface_r/g/b`, `…_transmissive_scale`, `…_turbulence`) and the
+  Disney lobe (`ior`, `subsurface`, `sheen`, `sheen_tint`, `anisotropic`).
+- Pad fields explicitly zeroed (the byte-`Hash`/`Eq` dedup hashes the raw 300 B; an
+  uninit hole poisons dedup). New scalars must be zeroed in `GpuMaterial::default()`
+  so default materials still dedup to slot 0.
+- **Intern cap (#797).** `MaterialTable::intern` caps at `MAX_MATERIALS = 16384`
+  (`scene_buffer/constants.rs`); over-cap interns return id `0` with a one-shot warn —
+  no SSBO over-index, no DEVICE_LOST. `upload_materials` (`scene_buffer/upload.rs`)
+  `debug_assert`s `len <= MAX_MATERIALS` and clamps with `.min(MAX_MATERIALS)`. Verify
+  the intern cap and the upload truncation stay in lockstep.
+- `GpuInstance.material_id` indexes the SSBO with NO GPU bounds check — CPU must
+  guarantee in-range (SSBO index mismatch = CRITICAL).
+- `ui.vert` MaterialBuffer read offsets must stay in lockstep with `triangle.frag`
+  (#785 was a stale-hunk regression reading wrong bytes) — name `ui.vert` explicitly.
+
+### 7. RT IOR-Refraction Safety (regression guards)
+
+- **Glass-passthrough loop guard (#789):** the texture-equality identity check at
+  the refraction hit prevents unbounded recursion when coincident glass surfaces
+  share an albedo/normal-map descriptor pair. A regression is a frame-time hang on
+  any paired-glass cell. Verify the check is present.
+- **Glass ray budget** `GLASS_RAY_BUDGET = 1048576`
+  (`crates/renderer/src/shader_constants_data.rs`; raised from 8192 in `6efe1706`).
+  It is a runaway-recursion cap, not a quality knob. #1438 documented that the
+  atomicAdd accounting can overshoot the budget unconditionally — note that nuance
+  rather than reporting the overshoot as new. Verify the budget is enforced at every
+  glass call site.
+- **Frisvad orthonormal basis (#820):** the naive `cross(N, world-up)` basis
+  degenerates near-vertical (zero-length → NaN ray). Verify Frisvad is the active
+  path for IOR refraction roughness spread.
+- IOR miss fallback for interiors uses cell-ambient, not global sky tint (open-sky
+  leakage into dungeons is a visible regression).
+- `DBG_VIZ_GLASS_PASSTHRU = 0x80` is a permanent diagnostic bit — verify it hasn't
+  collided with a new debug flag (full catalog in
+  `crates/renderer/src/shader_constants_data.rs`, mirrored to the generated
+  `crates/renderer/shaders/include/shader_constants.glsl`).
+
+### 8. NPC / Animation Spawn Safety
+
+- **B-spline pose-fallback sentinel (#772):** NPCs vanishing under FNV
+  `BSPSysSimpleColorModifier` particle stacks sharing keyframe time-zero with the
+  actor's player must be gated on an `FLT_MAX` sentinel. Removing the gate is
+  whole-NPC disappearance, not a stuck pose. Verify the sentinel is wired.
+- **AnimationClipRegistry dedup (#790):** the registry interns by lowercased path so
+  cell streaming doesn't grow it unboundedly (otherwise one keyframe set leaks per
+  cell load → steady RAM growth). Verify case-insensitive interning is preserved.
+- B-splines reach FNV / FO3 too (`feedback_bspline_not_skyrim_only.md`) — do NOT
+  rule out `NiBSplineCompTransformInterpolator` by game era.
+- Starfield content is WALKABLE (Cydonia) — SF cells reach the spawn/animation path;
+  don't short-circuit spawn-safety reasoning with "no SF content exercises this."
+- `MAX_TOTAL_BONES` overflow guard at the bone-palette emit site
+  (`byroredux/src/render/skinned.rs`, `Once`-gated warn) must fire — silent
+  truncation past cap was the M29 regression. Guard tests:
+  `byroredux/src/render/bone_palette_overflow_tests.rs`.
+
+### 9. NIFAL Boundary — NaN/Inf on the GPU (UB facet only)
+
+*See `/audit-nifal` for correctness-of-mapping; this dimension covers ONLY the
+safety facet — NaN/inf scalars reaching the GPU, unbounded allocation.*
+
+- `byroredux/src/material_translate.rs::translate_material` deliberately seeds
+  `f32::NAN` into `Material.metalness`/`roughness`
+  (`mesh.metalness_override.unwrap_or(f32::NAN)`, same for roughness).
+  `Material::resolve_pbr` (`crates/core/src/ecs/components/material.rs`) is the ONLY
+  thing that detects (`is_nan()`) and clamps these sentinels before they reach
+  `GpuMaterial`. Both fields are now plain `f32` (no `Option`), so a producer that
+  skips `resolve_pbr()` ships a NaN into the SSBO silently (NaN-on-GPU = UB). Verify
+  EVERY renderer-bound `Material` producer runs `resolve_pbr()` or constructs
+  already-finite values (the `static_meshes.rs` fallback constructs finite defaults
+  directly — confirm it still does).
+- Collision translate (`crates/nif/src/import/collision.rs`, covers
+  `BhkMultiSphereShape` + `BhkConvexListShape`): emitted half-extents / radii /
+  sphere centers must be finite and bounded — a NaN/inf shape param propagates into
+  the physics solver and the BLAS build.
+- Typed particle blocks (`crates/nif/src/blocks/particle.rs`) →
+  `extract_emitter_params`/`extract_emitter_rate` (`crates/nif/src/import/walk/mod.rs`)
+  → `apply_emitter_params` (`byroredux/src/systems/particle.rs`): emitter rate /
+  lifespan / size must be finite and non-negative at the extract boundary — an
+  unbounded or NaN rate is an unbounded-allocation / NaN-transform risk downstream.
+
+### 10. debug-ui (egui overlay) Teardown & Shared-Allocator Safety
+
+- `crates/debug-ui/src/lib.rs` `DebugUiState` holds an `ash::Device`, a
+  `vk::RenderPass`, and the renderer's shared `Arc<Mutex<gpu_allocator …>>`; it lives
+  as an ECS resource (`impl Resource for DebugUiState`) and is owned by the main loop.
+- It wraps `egui-ash-renderer`, which owns its own descriptor pool + per-texture
+  images. Those MUST be freed before the engine destroys the `ash::Device` — same
+  class as Dimension 3's allocator-before-device rule. Verify `DebugUiState` teardown
+  runs ahead of `VulkanContext`'s device-destroy.
+- The allocator mutex is SHARED with the render thread — verify it is held for
+  minimum duration during egui texture upload; a long hold stalls rendering.
+
+## Procedure
+
+1. Grep all `unsafe` in `crates/` + `byroredux/` (`.rs`); note the renderer mass
+   and the SAFETY-comment gap (Dimension 4).
+2. Confirm the cxx bridge is still a no-pointer placeholder (Dimension 1).
+3. Audit the cached-pointer ECS contract + repr(C) GPU structs + NIF POD reads +
+   sfmaterial decode (Dimension 2).
+4. Walk the leak inventory and the three drop-ordering regression guards — Rapier
+   release, deferred-destroy drain, AllocatorResource removal (Dimension 3).
+5. Sweep unsafe-block discipline; batch the comment-less blocks (Dimension 4).
+6. Vulkan-spec pass — run validation layers, report emitted errors verbatim; frame
+   barrier/layout claims invisible to cargo test as "needs RenderDoc verification"
+   (Dimension 5).
+7. R1 material layout pins (Dimension 6), IOR/glass guards (7), NPC/anim spawn (8),
+   NIFAL NaN boundary (9), debug-ui teardown (10).
+8. Dedup against open/closed issues (`_audit-common` Deduplication) — most items
+   above are regression guards; recast a confirmed-intact guard as PASS, not a NEW
+   finding.
+9. Save the report to `docs/audits/AUDIT_SAFETY_<TODAY>.md` (see `_audit-common`
+   Report Finalization).

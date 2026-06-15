@@ -12,7 +12,7 @@ Resources:       crates/core/src/ecs/resources.rs
 Strings:         crates/core/src/string/
 NIF Parser:      crates/nif/src/
 NIF Blocks:      crates/nif/src/blocks/               (see blocks/mod.rs dispatch; controller/ subdir, tri_shape/ subdir {mod, ni_tri_shape, bs_tri_shape, agd}, collision/ subdir {mod, collision_object, rigid_body, ragdoll, shape_primitive, shape_compound, shape_mesh, compressed_mesh, constraints, phantom_action}, particle.rs (typed NiPSysEmitter/NiPSysEmitterCtlr/NiPSysEmitterCtlrData/NiPSysGrowFadeModifier), shader.rs, skin.rs, properties.rs, interpolator.rs, extra_data.rs, light.rs, multibound.rs, palette.rs, legacy_particle.rs, texture.rs, bs_geometry.rs, node.rs, base.rs, traits.rs; *_tests.rs siblings)
-NIF Import:      crates/nif/src/import/               (mod.rs thin dispatch + types.rs + tests.rs; walk/{mod, tests} (mod.rs carries extract_emitter_params/extract_emitter_rate), mesh/{mod, material_path, decode, ni_tri_shape, bs_tri_shape, bs_geometry, tangent, sse_recon, skin, *_tests}, material/{mod, walker, shader_data, *_tests}, transform.rs, coord.rs, collision.rs (translates BhkMultiSphereShape + BhkConvexListShape → CollisionShape))
+NIF Import:      crates/nif/src/import/               (mod.rs thin dispatch + types.rs + tests.rs; walk/{mod, tests} (mod.rs carries extract_emitter_params/extract_emitter_rate), mesh/{mod, material_path, decode, ni_tri_shape, bs_tri_shape, bs_geometry, tangent, sse_recon, skin, *_tests}, material/{mod, walker, shader_data, *_tests}, transform.rs, coord.rs, collision.rs (translates BhkMultiSphereShape + BhkConvexListShape → CollisionShape), precombine.rs (M49 FO4 precombined PSG slice → renderer-space mesh, paired with CsgArchive))
 NIF Animation:   crates/nif/src/anim/                 (mod.rs re-exports; coord, controlled_block, transform, sequence, keys, channel, bspline, entry; types.rs + tests.rs)
 BSA Reader:      crates/bsa/src/archive/             (mod.rs, open.rs, extract.rs, hash.rs, tests.rs)
 BA2 Reader:      crates/bsa/src/ba2.rs
@@ -36,14 +36,17 @@ SVGF Denoiser:   crates/renderer/src/vulkan/svgf.rs
 TAA (M37.5):     crates/renderer/src/vulkan/taa.rs
 Composite:       crates/renderer/src/vulkan/composite.rs
 SSAO:            crates/renderer/src/vulkan/ssao.rs
-Caustics (M??):  crates/renderer/src/vulkan/caustic.rs
+Caustics (M22):  crates/renderer/src/vulkan/caustic.rs       (#321 Option A: per-frame compute splat into R32_UINT accumulator)
+Water Caustic:   crates/renderer/src/vulkan/water_caustic.rs (#1210/#1255 Phase C: per-FIF R32_UINT accumulator for water-side caustics)
+GPU Timers:      crates/renderer/src/vulkan/gpu_timers.rs
+egui Pass:       crates/renderer/src/vulkan/egui_pass.rs      (egui overlay render pass; feeds debug-ui)
 Volumetrics(M55):crates/renderer/src/vulkan/volumetrics.rs  (160×90×128 froxel grid, inject + integrate compute, single-ray TLAS shadow, HG phase)
 Bloom (M58):     crates/renderer/src/vulkan/bloom.rs        (5-mip down + 4-mip up pyramid, B10G11R11_UFLOAT, 4-tap bilinear)
 Water (M38):     crates/renderer/src/vulkan/water.rs        (WaterPipeline: vertex displacement + Fresnel, RT reflection/refraction against TLAS)
 GPU Skin (M29):  crates/renderer/src/vulkan/skin_compute.rs
 Material (R1):   crates/renderer/src/vulkan/material.rs   (MaterialBuffer SSBO, GpuMaterial dedup; replaces per-instance fields)
 SPIR-V Reflect:  crates/renderer/src/vulkan/reflect.rs    (descriptor layout reflection from SPIR-V)
-Scene Buffers:   crates/renderer/src/vulkan/scene_buffer/  (mod, constants, gpu_types, buffers, upload, descriptors; gpu_instance_layout_tests + material_hash_tests + scene_descriptor_reflection_tests)
+Scene Buffers:   crates/renderer/src/vulkan/scene_buffer/  (mod, constants, gpu_types, buffers, upload, descriptors; gpu_instance_layout_tests + instance_hash_tests + material_hash_tests + scene_descriptor_reflection_tests)
 Descriptors:     crates/renderer/src/vulkan/descriptors.rs
 Vk Debug Util:   crates/renderer/src/vulkan/debug.rs
 Vk Instance:     crates/renderer/src/vulkan/instance.rs
@@ -59,12 +62,15 @@ CXX Bridge:      crates/cxx-bridge/
 Binary:          byroredux/src/main.rs
 Systems:         byroredux/src/systems.rs (module index) → systems/{animation, audio, billboard, bounds, camera, character, debug, light_anim, metrics, particle, water, weather}.rs (particle.rs carries apply_emitter_params, fed by the typed NIF emitter pipeline)
 Scene Setup:     byroredux/src/scene.rs (thin) → scene/{nif_loader, world_setup}.rs (+ *_tests.rs siblings: climate_tod_hours, cloud_tile_scale, procedural_fallback, radius_parse)
-Render Data:     byroredux/src/render.rs (build_render_data, draw enumeration) + render/*_tests.rs siblings
-Cell Loader:     byroredux/src/cell_loader.rs (thin dispatch) → cell_loader/{load, unload, exterior, references, spawn, partial, euler, refr, terrain, water, load_order, index, precombined, transition, nif_import_registry}.rs (+ *_tests.rs siblings)
+Render Data:     byroredux/src/render/ (mod.rs carries build_render_data + draw enumeration) → render/{camera, lights, skinned, static_meshes, particles, sky, water}.rs (+ *_tests.rs siblings)
+Cell Loader:     byroredux/src/cell_loader.rs (thin dispatch) → cell_loader/{load, unload, exterior, references, spawn, partial, euler, refr, terrain, terrain_lod, object_lod, water, load_order, index, precombined, transition, nif_import_registry}.rs (+ *_tests.rs siblings)
 Commands:        byroredux/src/commands.rs + commands_tests.rs (console: help, stats, entities, tex.missing, light.dump, cam.where/pos/tp, prid, inspect, …)
-NIFAL Translate: byroredux/src/material_translate.rs (translate_material — the SINGLE raw ImportedMesh → ECS Material boundary; per-game material classification happens here, never in the shader) + crates/core/src/ecs/components/material.rs (Material::resolve_pbr; canonical metalness/roughness are plain f32, resolve-once). Spec: docs/engine/nifal.md. See also /audit-nifal.
+NIFAL Translate: byroredux/src/material_translate.rs (translate_material — the SINGLE raw ImportedMesh → ECS Material boundary; per-game material classification happens here, never in the shader) + crates/core/src/ecs/components/material.rs (Material::resolve_pbr; canonical metalness/roughness are plain f32 fields, resolve-once). Spec: docs/engine/nifal.md. See also /audit-nifal.
+EXAL Translate:  byroredux/src/env_translate.rs (EXAL exterior-environment translation boundary: terrain/sky/sun/weather/water/LOD). Spec: docs/engine/exal.md.
+Ragdoll:         byroredux/src/ragdoll.rs (M41.x ragdoll activation + writeback; PHYSAL consumer). Spec: docs/engine/physal.md.
+Cornell Harness: byroredux/src/cornell.rs (--cornell self-contained RT material/lighting reference scene; no on-disk game data)
 Asset Provider:  byroredux/src/asset_provider.rs (BSA/BA2 texture+mesh extraction, resolve_texture, strip_build_prefix for AE pipeline-path paths)
-Components:      byroredux/src/components.rs (markers + app resources: Spinning, AlphaBlend, TwoSided, Decal, WaterPlane, WaterVolume, SubmersionState, SelectedRef, FootstepScratch, …)
+Components:      byroredux/src/components.rs (binary-local markers + app resources: Spinning, AlphaBlend, TwoSided, DoorTeleport, IsFxMesh, IsLodTerrain, IsCollisionOnly, FootstepEmitter/Config/Scratch, CellLightingRes, SkyParamsRes, WeatherDataRes, LightTuning, …). Shared ECS components (WaterPlane/WaterVolume/SubmersionState) live in crates/core/src/ecs/components/water.rs; SelectedRef is a resource in crates/core/src/ecs/resources.rs)
 NPC Spawn:       byroredux/src/npc_spawn.rs           (M41 actor instantiation)
 World Stream:    byroredux/src/streaming.rs           (M40 cell lifecycle) + streaming_tests.rs
 SF Smoke:        byroredux/src/sf_smoke.rs            (Starfield ESM resolve-rate harness, --sf-smoke CLI)
@@ -187,9 +193,18 @@ Deep audit commands add extra fields (e.g., `Trigger Conditions`, `Flow`, `Chang
 
 ## Domain Labels
 
+These are the labels that actually exist in the repo (verify drift with
+`gh label list --repo matiaszanolli/ByroRedux`). `/audit-publish` must only
+apply labels from this set — `gh issue create` rejects unknown labels.
+
 Severity: `critical`, `high`, `medium`, `low`
-Domain: `ecs`, `renderer`, `vulkan`, `pipeline`, `memory`, `sync`, `platform`, `cxx`, `nif`, `bsa`, `esm`, `animation`, `legacy-compat`, `performance`, `safety`, `tech-debt`
-Type: `bug`, `enhancement`, `maintenance`
+Domain: `ecs`, `renderer`, `vulkan`, `pipeline`, `memory`, `sync`, `cxx`, `nif-parser`, `nif`, `import-pipeline`, `animation`, `legacy-compat`, `performance`, `safety`, `tech-debt`
+Type: `bug`, `enhancement`, `documentation`
+
+Subsystems without their own label map to the closest existing domain:
+BSA/BA2/CSG and ESM/cell loading → `import-pipeline`; audio / platform /
+SpeedTree / sfmaterial → `legacy-compat` or `tech-debt`. There is **no**
+`bsa`, `esm`, `platform`, or `maintenance` label — do not apply them.
 
 ## Report Finalization
 

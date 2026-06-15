@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # .claude/commands/_audit-validate.sh
 #
-# Validates file/dir path references in `.claude/commands/audit-*.md` and
-# `_audit-*.md` skill files against the live repository tree.
+# Validates file/dir path references in `.claude/commands/audit-*/SKILL.md`
+# and `.claude/commands/_audit-*.md` skill files against the live repo tree.
 #
 # Why: TD7-* "stale path" findings keep recurring after module splits.
 # A one-shot sed sweep is reactive; this gate catches drift on the
@@ -70,7 +70,15 @@ expand_braces() {
 stale_count=0
 checked_count=0
 shopt -s nullglob
-skill_files=(.claude/commands/audit-*.md .claude/commands/_audit-*.md)
+# Audit skills now live in per-command subdirectories as
+# `.claude/commands/<name>/SKILL.md`; the two shared `_audit-*.md`
+# protocol files stay flat at the top level. Glob both shapes so the
+# gate actually inspects every skill (the old flat `audit-*.md` glob
+# silently matched zero files after the subdir migration).
+skill_files=(
+    .claude/commands/audit-*/SKILL.md
+    .claude/commands/_audit-*.md
+)
 shopt -u nullglob
 
 # Enumerate every checkable repo path once so partial refs like
