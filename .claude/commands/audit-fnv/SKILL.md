@@ -72,7 +72,7 @@ Dimensions are ordered by current FNV risk: the layers most likely to silently b
 **Checklist**:
 - TLAS frustum culling — no lights dropped for in-view fragments.
 - ReSTIR-DI direct lighting in `triangle.frag` — `NUM_RESERVOIRS = 16` reservoirs/fragment, unbiased `W = resWSum / (K · w_sel)` estimator, shadow-ray budget caps, distance-based shadow/GI ray fallback.
-- BLAS compaction + **LRU eviction at the dynamic VRAM-derived budget**: `predicates.rs::blas_budget_bytes` = `device_local_bytes / 3` floored at `MIN_BLAS_BUDGET_BYTES` (~4 GB on a 12 GB-VRAM dev box — NOT any stale "1 GB" figure).
+- BLAS compaction + **LRU eviction at the dynamic VRAM-derived budget**: `predicates.rs::compute_blas_budget` = `device_local_bytes / 3` floored at `MIN_BLAS_BUDGET_BYTES` (~4 GB on a 12 GB-VRAM dev box — NOT any stale "1 GB" figure); the result is cached in the `blas_budget_bytes` field (`acceleration/mod.rs`).
 - SVGF temporal accumulation uses motion vectors + `mesh_id` disocclusion; TAA Halton jitter + YCoCg variance clamp.
 - M33 sky gradient + cloud layer blends correctly with tone-mapped geometry.
 - **Disney BSDF gate guard (#1248–#1252)**: zero FNV materials author BGSM (FO4+), so `MAT_FLAG_PBR_BSDF` (`crates/renderer/shaders/include/shader_constants.glsl` = 32u) must be 0 across the FalloutNV.esm material universe — the Disney lobe at `triangle.frag` is unreachable for FNV. If any FNV scene activates Burley retro-reflection / anisotropic GGX / per-material-IOR Fresnel, the gate regressed.

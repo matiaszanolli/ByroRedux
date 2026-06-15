@@ -3,7 +3,7 @@
 **Source**: `docs/audits/AUDIT_TECH_DEBT_2026-05-16.md` (Top 5 Medium #4)
 **Severity**: LOW × 8
 **Labels**: low, renderer, tech-debt
-**Status**: PARTIAL — 5 of 8 items closed by commit 15ee3169
+**Status**: PARTIAL — 6 of 8 items closed (5 by 15ee3169, TD4-207 by 48646895); TD4-201 / TD4-202 remain
 
 ## Items
 
@@ -15,11 +15,17 @@
 - ✅ **TD4-206** — `DBG_*` bit flags × 10 mirrored + drift test
 - ✅ **TD4-208** — `THREADS_PER_CLUSTER` mirrored + drift test
 
+### Closed (48646895 / #1152)
+
+- ✅ **TD4-207** — Caustic / SSAO / SVGF-temporal / TAA compute shaders now use
+  the canonical `WORKGROUP_X` / `WORKGROUP_Y` constants instead of a bare `8`
+  (taa.comp / ssao.comp / svgf_temporal.comp / caustic_splat.comp). The earlier
+  `GL_GOOGLE_include_directive` blocker no longer applies. See #1325.
+
 ### Deferred
 
 - ⏳ **TD4-201** — 32 `bsver()` bare integer compares (own refactor PR, mechanical sweep)
 - ⏳ **TD4-202** — 142 `data.len() >= N` subrecord-size gates (very large; own refactor PR)
-- ⏳ **TD4-207** — Caustic / SSAO / SVGF-temporal / TAA compute shaders still use bare `8`; blocked on shader-compile environment supporting `GL_GOOGLE_include_directive` for those 4 shaders
 
 ## Notes
 
