@@ -641,16 +641,16 @@ pub(super) fn collect_static_mesh_draws(
                         .or_else(|| mat.map(|m| m.uv_scale))
                         .unwrap_or([1.0, 1.0]),
                     material_alpha: mat.map(|m| m.alpha).unwrap_or(1.0),
-                    // Average albedo for the one-bounce GI bounce colour
-                    // (read at the ray hit as `hitInst.avgAlbedo`). Use the
-                    // material's diffuse_color: exact for untextured /
+                    // Material tint for the one-bounce GI bounce colour
+                    // (read at the ray hit as `hitInst.avgAlbedo`). Carries
+                    // the material's diffuse_color: exact for untextured /
                     // vertex-coloured surfaces (Cornell walls bounce red /
-                    // green), and the correct tint for textured content
-                    // (diffuse_color modulates the texture). Without this the
-                    // hardcoded 0.5 grey made colour-bleeding impossible.
-                    // TODO: fold in a 1×1 texture-average at asset load so
-                    // textured surfaces bounce their texel mean, not just the
-                    // tint.
+                    // green). For textured content the renderer multiplies
+                    // this tint by the diffuse texture's cached texel-mean
+                    // when it builds the GpuInstance (#1628, draw.rs), so the
+                    // bounce carries the true surface mean, not just the tint.
+                    // Without this the hardcoded 0.5 grey made colour-bleeding
+                    // impossible.
                     avg_albedo: mat.map(|m| m.diffuse_color).unwrap_or([0.5, 0.5, 0.5]),
                     z_test,
                     z_write,

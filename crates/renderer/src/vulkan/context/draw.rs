@@ -1818,6 +1818,23 @@ impl VulkanContext {
             // material_id + caustic-source avg_albedo. Every
             // per-material field reads through `materials[material_id]`
             // in the fragment shader.
+            //
+            // #1628 — fold the diffuse texture's texel-mean into the GI
+            // bounce albedo. `draw_cmd.avg_albedo` is the material tint
+            // (diffuse_color); multiplying it by the texture's average
+            // texel colour gives the true surface mean a textured wall
+            // bleeds into the one-bounce GI, instead of the flat tint.
+            // The mean is computed once at DDS upload and cached per
+            // handle, so this is a cheap lookup + multiply. Untextured /
+            // normal-map / BC7 handles return `None` and keep the tint.
+            let gi_albedo = match self.texture_registry.handle_avg_rgb(draw_cmd.texture_handle) {
+                Some(mean) => [
+                    draw_cmd.avg_albedo[0] * mean[0],
+                    draw_cmd.avg_albedo[1] * mean[1],
+                    draw_cmd.avg_albedo[2] * mean[2],
+                ],
+                None => draw_cmd.avg_albedo,
+            };
             gpu_instances.push(GpuInstance {
                 // #markarth-precision — rebase the model translation by the
                 // camera-relative render origin so `model * pos` stays near 0
@@ -1845,9 +1862,9 @@ impl VulkanContext {
                 flags,
                 material_id: draw_cmd.material_id,
                 _pad_id0: 0.0,
-                avg_albedo_r: draw_cmd.avg_albedo[0],
-                avg_albedo_g: draw_cmd.avg_albedo[1],
-                avg_albedo_b: draw_cmd.avg_albedo[2],
+                avg_albedo_r: gi_albedo[0],
+                avg_albedo_g: gi_albedo[1],
+                avg_albedo_b: gi_albedo[2],
                 _pad_albedo: 0.0,
             });
 

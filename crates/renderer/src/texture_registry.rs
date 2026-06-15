@@ -106,6 +106,13 @@ pub struct TextureRegistry {
     /// (`.a` samples as 1.0). Populated only at the two DDS-load points;
     /// absent handles (fallbacks, reserved-but-unflushed) read `false`.
     texture_has_alpha: HashMap<TextureHandle, bool>,
+    /// Per-handle average texel colour in raw monitor (sRGB-encoded) space,
+    /// captured at DDS load (#1628). Folded into the GI bounce albedo so a
+    /// textured surface bleeds its mean texel colour rather than the flat
+    /// material tint. Populated only at the two DDS-load points and only for
+    /// diffuse-colour formats — absent handles (fallbacks, normal/mask maps,
+    /// BC7) keep the material tint unchanged.
+    texture_avg_rgb: HashMap<TextureHandle, [f32; 3]>,
     /// Magenta-checker handle — "this entity should have had a
     /// texture, but the file isn't in the archive / failed to load."
     /// Diagnostic indicator; visible artefact in-game.
@@ -411,6 +418,7 @@ impl TextureRegistry {
 
         Ok(Self {
             texture_has_alpha: HashMap::new(),
+            texture_avg_rgb: HashMap::new(),
             textures: Vec::new(),
             path_map: HashMap::new(),
             fallback_handle: 0,
@@ -559,6 +567,9 @@ impl TextureRegistry {
         if let Ok(meta) = super::vulkan::dds::parse_dds(dds_bytes) {
             self.texture_has_alpha
                 .insert(handle, super::vulkan::dds::format_has_alpha(meta.format));
+            if let Some(avg) = super::vulkan::dds::average_rgb(&meta, dds_bytes) {
+                self.texture_avg_rgb.insert(handle, avg);
+            }
         }
 
         Ok(handle)
@@ -574,6 +585,16 @@ impl TextureRegistry {
             .get(&handle)
             .copied()
             .unwrap_or(false)
+    }
+
+    /// Average texel colour of the diffuse texture at `handle`, in raw
+    /// monitor (sRGB-encoded) space — `None` for fallback handles, normal/
+    /// mask maps, BC7, and any handle never loaded from a diffuse-colour
+    /// DDS. Folded into the GI bounce albedo (#1628) so textured surfaces
+    /// bleed their mean texel colour, not just the flat material tint.
+    /// Computed once at upload; this is a cheap cached lookup.
+    pub fn handle_avg_rgb(&self, handle: TextureHandle) -> Option<[f32; 3]> {
+        self.texture_avg_rgb.get(&handle).copied()
     }
 
     /// Enqueue a DDS upload for batched flush. Counterpart of
@@ -750,6 +771,11 @@ impl TextureRegistry {
                         upload.handle,
                         super::vulkan::dds::format_has_alpha(meta.format),
                     );
+                    if let Some(avg) =
+                        super::vulkan::dds::average_rgb(&meta, &upload.dds_bytes)
+                    {
+                        self.texture_avg_rgb.insert(upload.handle, avg);
+                    }
                     let pixel_data = &upload.dds_bytes[meta.data_offset..];
                     let sampler = self.samplers[upload.clamp_mode as usize];
                     let (texture, staging, staging_capacity) =

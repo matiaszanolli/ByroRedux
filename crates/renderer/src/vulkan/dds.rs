@@ -77,6 +77,116 @@ pub fn format_has_alpha(format: vk::Format) -> bool {
     )
 }
 
+/// Decode an RGB565-packed colour to normalised `[r, g, b]` in `[0, 1]`,
+/// in the raw stored (sRGB-encoded) value space — no linearisation.
+fn rgb565(c: u16) -> [f32; 3] {
+    [
+        ((c >> 11) & 0x1F) as f32 / 31.0,
+        ((c >> 5) & 0x3F) as f32 / 63.0,
+        (c & 0x1F) as f32 / 31.0,
+    ]
+}
+
+/// Average RGB colour of a DDS texture, in the raw stored (monitor /
+/// sRGB-encoded) value space — the SAME space `Material::diffuse_color`
+/// lives in, so the two compose by a straight component multiply with no
+/// sRGB linearisation (see the `feedback_color_space` rule).
+///
+/// Used as the GI bounce-albedo texel-mean (#1628): a textured surface
+/// bleeds its average texel colour into the one-bounce GI rather than the
+/// flat material tint. Computed ONCE at texture upload and cached per
+/// handle — never re-derived per frame.
+///
+/// Reads the SMALLEST mip (already a maximally-downsampled whole-image
+/// average), and strides the block/pixel scan to a fixed cap, so the cost
+/// is bounded regardless of texture size or mip count. Handles the colour
+/// formats Bethesda authors diffuse maps in — BC1/BC2/BC3 (RGB565 endpoint
+/// mean) and uncompressed RGBA8/BGRA8. Returns `None` for non-colour
+/// formats (BC4/BC5 masks + normals, BC6H HDR, single-channel) and BC7
+/// (variable-mode block — not worth a CPU decoder for a 1×1 average); the
+/// caller then keeps the material tint unchanged.
+pub fn average_rgb(meta: &DdsMetadata, data: &[u8]) -> Option<[f32; 3]> {
+    // Byte offset of the smallest mip level.
+    let target = meta.mip_count.saturating_sub(1);
+    let mut offset = meta.data_offset;
+    for m in 0..target {
+        offset += mip_size(meta.width, meta.height, m, meta.block_size, meta.compressed) as usize;
+    }
+    let w = (meta.width >> target).max(1) as usize;
+    let h = (meta.height >> target).max(1) as usize;
+    let bs = meta.block_size as usize;
+
+    // Cap the number of samples so a single-mip 4K texture doesn't pay a
+    // million-block scan; striding keeps a representative spread.
+    const MAX_SAMPLES: usize = 4096;
+
+    if meta.compressed {
+        // Colour sub-block offset inside each block: BC1 carries colour at
+        // byte 0, BC2/BC3 prefix an 8-byte alpha block.
+        let color_off = match meta.format {
+            vk::Format::BC1_RGB_SRGB_BLOCK | vk::Format::BC1_RGBA_SRGB_BLOCK => 0,
+            vk::Format::BC2_SRGB_BLOCK | vk::Format::BC3_SRGB_BLOCK => 8,
+            _ => return None, // BC4/BC5/BC6H/BC7 — not a diffuse-colour format
+        };
+        let blocks = ((w + 3) / 4) * ((h + 3) / 4);
+        if blocks == 0 {
+            return None;
+        }
+        let stride = (blocks / MAX_SAMPLES).max(1);
+        let mut acc = [0.0f32; 3];
+        let mut n = 0u32;
+        let mut b = 0;
+        while b < blocks {
+            let base = offset + b * bs + color_off;
+            if base + 4 > data.len() {
+                break;
+            }
+            let c0 = rgb565(u16::from_le_bytes([data[base], data[base + 1]]));
+            let c1 = rgb565(u16::from_le_bytes([data[base + 2], data[base + 3]]));
+            for i in 0..3 {
+                acc[i] += 0.5 * (c0[i] + c1[i]);
+            }
+            n += 1;
+            b += stride;
+        }
+        (n > 0).then(|| [acc[0] / n as f32, acc[1] / n as f32, acc[2] / n as f32])
+    } else {
+        // Uncompressed 4-byte colour formats only; single-channel masks
+        // (R8/R16) are not albedo.
+        let swap_rb = match meta.format {
+            vk::Format::R8G8B8A8_SRGB => false,
+            vk::Format::B8G8R8A8_SRGB | vk::Format::B8G8R8A8_UNORM => true,
+            _ => return None,
+        };
+        let pixels = w * h;
+        if pixels == 0 {
+            return None;
+        }
+        let stride = (pixels / MAX_SAMPLES).max(1);
+        let mut acc = [0.0f32; 3];
+        let mut n = 0u32;
+        let mut p = 0;
+        while p < pixels {
+            let o = offset + p * bs;
+            if o + 3 > data.len() {
+                break;
+            }
+            let (r, g, b) = if swap_rb {
+                (data[o + 2], data[o + 1], data[o])
+            } else {
+                (data[o], data[o + 1], data[o + 2])
+            };
+            acc[0] += r as f32;
+            acc[1] += g as f32;
+            acc[2] += b as f32;
+            n += 1;
+            p += stride;
+        }
+        let denom = n as f32 * 255.0;
+        (n > 0).then(|| [acc[0] / denom, acc[1] / denom, acc[2] / denom])
+    }
+}
+
 /// Parse a DDS file header and return metadata.
 pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
     ensure!(
@@ -562,5 +672,57 @@ mod tests {
         assert_eq!(meta.format, vk::Format::BC6H_SFLOAT_BLOCK);
         assert_eq!(meta.block_size, 16);
         assert!(meta.compressed);
+    }
+
+    fn approx(a: [f32; 3], b: [f32; 3]) {
+        for i in 0..3 {
+            assert!(
+                (a[i] - b[i]).abs() < 1e-3,
+                "channel {i}: {} vs {}",
+                a[i],
+                b[i]
+            );
+        }
+    }
+
+    #[test]
+    fn average_rgb_bc1_endpoint_mean() {
+        // 4×4 single-mip BC1 block: endpoint0 = pure red (RGB565 0xF800),
+        // endpoint1 = pure blue (0x001F). The texel-mean averages the two
+        // endpoints → [0.5, 0, 0.5].
+        let mut data = make_dds_header(4, 4, 1, b"DXT1");
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.data_offset, 128);
+        data[128..130].copy_from_slice(&0xF800u16.to_le_bytes()); // color0 = red
+        data[130..132].copy_from_slice(&0x001Fu16.to_le_bytes()); // color1 = blue
+        approx(average_rgb(&meta, &data).unwrap(), [0.5, 0.0, 0.5]);
+    }
+
+    #[test]
+    fn average_rgb_uncompressed_rgba() {
+        // 2×2 RGBA8: red, green, blue, white → per-channel mean 0.5.
+        let mut data = make_uncompressed_header(2, 2);
+        let meta = parse_dds(&data).unwrap();
+        assert!(!meta.compressed);
+        let px = [
+            [255u8, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 255, 255],
+        ];
+        for (i, p) in px.iter().enumerate() {
+            data[128 + i * 4..132 + i * 4].copy_from_slice(p);
+        }
+        approx(average_rgb(&meta, &data).unwrap(), [0.5, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn average_rgb_bc5_normal_map_is_none() {
+        // BC5 is a two-channel normal map, not a diffuse-colour format —
+        // the GI bounce must keep the material tint, not fold in garbage.
+        let data = make_dds_header(4, 4, 1, b"ATI2");
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::BC5_UNORM_BLOCK);
+        assert!(average_rgb(&meta, &data).is_none());
     }
 }

@@ -96,6 +96,7 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
             .collect(),
         path_map: HashMap::new(),
         texture_has_alpha: HashMap::new(),
+        texture_avg_rgb: HashMap::new(),
         fallback_handle: 0,
         neutral_fallback_handle: 1,
         descriptor_pool: vk::DescriptorPool::null(),
