@@ -288,9 +288,24 @@ impl NiSkinPartition {
             let mut triangles = Vec::new();
             if has_faces {
                 if num_strips > 0 {
-                    // Jagged strip arrays — skip strip data (not converted to triangles here).
+                    // #1549 — de-strip the jagged strip arrays into a triangle
+                    // list. LE / converted skinned meshes author strips, not
+                    // indexed tris; pre-fix these were skipped, leaving
+                    // `triangles` empty so the SSE reconstructor dropped the
+                    // whole body. Same OpenGL/Vulkan CCW winding +
+                    // degenerate-skip convention as `NiTriStripsData::to_triangles`.
                     for &len in &strip_lengths {
-                        stream.skip(len as u64 * 2)?;
+                        let strip = stream.read_u16_array(len as usize)?;
+                        for i in 2..strip.len() {
+                            let (a, b, c) = if i % 2 == 0 {
+                                (strip[i - 2], strip[i - 1], strip[i])
+                            } else {
+                                (strip[i - 2], strip[i], strip[i - 1])
+                            };
+                            if a != b && b != c && a != c {
+                                triangles.push([a, b, c]);
+                            }
+                        }
                     }
                 } else {
                     // Single bulk read into `Vec<[u16; 3]>`; replaces the
@@ -569,6 +584,51 @@ mod tests {
         assert_eq!(p.triangles.len(), 1);
         assert_eq!(p.triangles[0], [0, 1, 2]);
         assert_eq!(p.bone_indices, vec![0, 1, 0, 1, 1, 0]);
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// #1549 — a strip-authored partition (num_strips > 0) must de-strip into
+    /// a triangle list, not be skipped. Pre-fix `triangles` came back empty,
+    /// so the SSE reconstructor (`try_reconstruct_sse_geometry`) dropped the
+    /// whole skinned mesh.
+    #[test]
+    fn parse_skin_partition_destrips_strip_authored_faces() {
+        let header = make_fnv_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_le_bytes()); // num_partitions
+        let num_verts: u16 = 4;
+        let num_tris: u16 = 2; // a 4-index strip yields 2 triangles
+        let num_bones: u16 = 1;
+        let num_strips: u16 = 1;
+        let num_wpv: u16 = 1;
+        data.extend_from_slice(&num_verts.to_le_bytes());
+        data.extend_from_slice(&num_tris.to_le_bytes());
+        data.extend_from_slice(&num_bones.to_le_bytes());
+        data.extend_from_slice(&num_strips.to_le_bytes());
+        data.extend_from_slice(&num_wpv.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes()); // bones: [0]
+        data.push(1u8); // has vertex map
+        for i in 0..4u16 {
+            data.extend_from_slice(&i.to_le_bytes());
+        }
+        data.push(1u8); // has vertex weights
+        for w in [1.0f32, 1.0, 1.0, 1.0] {
+            data.extend_from_slice(&w.to_le_bytes());
+        }
+        data.extend_from_slice(&4u16.to_le_bytes()); // strip_lengths: one strip of length 4
+        data.push(1u8); // has faces
+        for i in 0..4u16 {
+            // strip indices [0, 1, 2, 3]
+            data.extend_from_slice(&i.to_le_bytes());
+        }
+        data.push(1u8); // has bone indices
+        data.extend_from_slice(&[0u8, 0, 0, 0]); // 4 verts × 1 wpv
+
+        let mut stream = NifStream::new(&data, &header);
+        let part = NiSkinPartition::parse(&mut stream).unwrap();
+        let p = &part.partitions[0];
+        // Strip [0,1,2,3] → tris [0,1,2] (even) and [1,3,2] (odd-index swap).
+        assert_eq!(p.triangles, vec![[0, 1, 2], [1, 3, 2]]);
         assert_eq!(stream.position() as usize, data.len());
     }
 
