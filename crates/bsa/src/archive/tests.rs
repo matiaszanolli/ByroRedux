@@ -837,6 +837,52 @@ fn synthetic_v105_lz4_compressed_round_trips_with_embed_name() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// #1558 / SK-D5-01 — the v105 reader MUST decode with the LZ4 *frame*
+/// codec, not the *block* codec (which Starfield's BA2 uses). The existing
+/// round-trip test already gates a frame→block regression in one direction;
+/// this pins the inverse: a v105 body that is block-encoded must NOT decode
+/// as a valid frame stream. If a refactor swapped the v105 dispatch to
+/// `lz4_flex::block::decompress`, this would wrongly succeed. Unconditional
+/// — no game data required.
+#[test]
+fn synthetic_v105_block_codec_payload_is_rejected_by_frame_reader() {
+    let payload: &[u8] = b"Gamebryo File Format - block-encoded body that the \
+                           v105 frame decoder must NOT accept as a frame stream.";
+    let folder = "meshes\\synthetic";
+    let file = "blockcodec.nif";
+    // embed_name = false → file body is exactly [4-byte orig-size][stream],
+    // so the stream offset is deterministic from the name lengths.
+    let mut bytes = build_v105_archive(folder, file, payload, true, false);
+
+    let folder_lc_len = folder.to_ascii_lowercase().len();
+    let file_lc_len = file.to_ascii_lowercase().len();
+    // header(36) + folder record(24) + folder name block(1 + len + NUL)
+    let file_record_pos = 36 + 24 + (1 + folder_lc_len + 1);
+    // + file record(16) + file name table(len + NUL)
+    let file_data_offset = file_record_pos + 16 + (file_lc_len + 1);
+
+    // Replace the frame stream after the 4-byte original-size header with a
+    // BLOCK-encoded stream, and fix the file record's size field to match.
+    let block = lz4_flex::block::compress(payload);
+    bytes.truncate(file_data_offset + 4); // keep [orig-size]
+    bytes.extend_from_slice(&block);
+    let new_body_len = (4 + block.len()) as u32;
+    bytes[file_record_pos + 8..file_record_pos + 12].copy_from_slice(&new_body_len.to_le_bytes());
+
+    let path = write_temp_v105("block_codec_reject", &bytes);
+    let archive = BsaArchive::open(&path).expect("archive header must still open");
+    match archive.extract("meshes\\synthetic\\blockcodec.nif") {
+        Err(_) => {} // frame decoder rejected the block stream — correct.
+        Ok(decoded) => assert_ne!(
+            decoded.as_slice(),
+            payload,
+            "v105 reader must NOT decode a block-codec body as a frame stream; a \
+             byte-exact round-trip here means the codec dispatch regressed to block"
+        ),
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Uncompressed file with embed-name OFF — exercises the no-LZ4
 /// extract path on a v105 archive (less common but valid;
 /// archive-level `compressed_by_default = 0` and per-file
