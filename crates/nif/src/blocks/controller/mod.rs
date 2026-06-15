@@ -462,7 +462,7 @@ impl NiBsBoneLodController {
         // node_groups; reading further over-consumes by 4+ bytes and
         // trips `allocate_vec` on whatever sentinel the next block
         // happens to start with.
-        let (shape_groups_1, shape_groups_2) = if stream.bsver() == 0 {
+        let (shape_groups_1, shape_groups_2) = if stream.bsver() == crate::version::bsver::PRE_BETHESDA {
             let num_shape_groups = stream.read_u32_le()?;
             let mut shape_groups_1 = stream.allocate_vec::<BoneLodSkinInfoSet>(num_shape_groups)?;
             for _ in 0..num_shape_groups {

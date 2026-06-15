@@ -405,7 +405,7 @@ fn parse_geometry_data_base_inner(
     // Pre-Gamebryo (v < 10.0.1.0) has a separate `num_uv_sets` u16 field.
     let num_uv_sets = if stream.version() < NifVersion::V10_0_1_0 {
         stream.read_u16_le()? as usize
-    } else if stream.bsver() > 0 && stream.version() == NifVersion::V20_2_0_7 {
+    } else if stream.bsver() > crate::version::bsver::PRE_BETHESDA && stream.version() == NifVersion::V20_2_0_7 {
         // BSGeometryDataFlags path.
         (data_flags & 0x0001) as usize
     } else {

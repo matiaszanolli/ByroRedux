@@ -1128,7 +1128,7 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
     // BS202 stream = Bethesda file at version 20.2.0.7+ (bsver != 0). All
     // per-particle data arrays are *absent* on this path; only the bool
     // headers are written. See nif.xml `vercond="!#BS202#"` on every array.
-    let is_bs_202 = stream.version() >= NifVersion::V20_2_0_7 && stream.bsver() > 0;
+    let is_bs_202 = stream.version() >= NifVersion::V20_2_0_7 && stream.bsver() > crate::version::bsver::PRE_BETHESDA;
 
     // NiGeometryData base (shared with NiTriShapeData). For NiPSysData on
     // BS_GTE_FO3, the Vertices/Normals/Tangents/Colors/UV arrays have length
