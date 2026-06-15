@@ -210,6 +210,24 @@ mod xcll_gate_tests {
             "Skyrim canonical sizes {canonical:?} must NOT include 40",
         );
     }
+
+    /// #1579 — the SF XCLL dispatch gate must be `>= 108`, not `== 108`, so a
+    /// future-DLC SF cell with trailing pad still takes the SF arm instead of
+    /// falling through to the Skyrim `>= 92` ambient-cube path. Mirrors the
+    /// in-decoder predicate (`game == Starfield && len >= 108`).
+    #[test]
+    fn starfield_xcll_above_108_still_takes_sf_arm() {
+        let takes_sf_arm = |game: GameKind, len: usize| game == GameKind::Starfield && len >= 108;
+        assert!(takes_sf_arm(GameKind::Starfield, 108), "vanilla 108 still SF");
+        assert!(
+            takes_sf_arm(GameKind::Starfield, 112),
+            "112-byte SF cell must stay SF, not fall to the Skyrim arm",
+        );
+        assert!(
+            !takes_sf_arm(GameKind::Skyrim, 112),
+            "a non-SF 112-byte XCLL must NOT take the SF arm",
+        );
+    }
 }
 
 /// Walk the CELL group hierarchy to find interior cells and their placed references.
@@ -516,7 +534,13 @@ pub(crate) fn parse_cell_group(
                             // slot); 32/36 fog clip/power are shared; 40-55
                             // fog-far-colour / max / light-fade map onto the
                             // base fields; the rest is SF-only height-fog.
-                            if game == GameKind::Starfield && sub.data.len() == 108 {
+                            // `>= 108` (not `== 108`): a future-DLC SF XCLL with
+                            // trailing pad must still take the SF arm and not
+                            // fall through to the Skyrim `>= 92` ambient-cube
+                            // path, which would misread the height-fog bytes.
+                            // The SF decode reads a fixed 108-byte body and
+                            // ignores any excess. See #1579.
+                            if game == GameKind::Starfield && sub.data.len() >= 108 {
                                 let gravity_scale = r.f32_or_default(); // 28
                                 let fog_clip = r.f32_or_default(); // 32 Fog Clip Distance
                                 let fog_power = r.f32_or_default(); // 36 Fog Power
