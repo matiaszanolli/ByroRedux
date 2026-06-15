@@ -1,9 +1,13 @@
-//! SCOL (Static Collection) — FO4+ composite static record.
+//! SCOL (Static Collection) — Gamebryo-Fallout composite static record.
 //!
 //! An SCOL packages a set of child base forms (STATs, usually) with
-//! per-child placement arrays into a single collection. Fallout 4 uses
-//! these to ship prebuilt building interiors, clutter groupings, and
-//! furniture arrangements that are placed in cells by a single REFR.
+//! per-child placement arrays into a single collection placed by a single
+//! REFR. It is NOT FO4-only: it exists from FO3 (FO3 54, FNV 98, FO4+ many;
+//! Oblivion 0, Skyrim 0). FNV uses these for road segments, guardrails, and
+//! debris LOD clusters; Fallout 4 also ships prebuilt building interiors and
+//! clutter/furniture groupings. The FNV and FO4 DATA layouts are identical,
+//! so a single parser serves both — see the `is_scol_era` gate in
+//! [`super`] (#1538).
 //!
 //! **Sub-record layout:**
 //!

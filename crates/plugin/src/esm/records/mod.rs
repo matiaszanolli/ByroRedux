@@ -172,11 +172,11 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     //     when the inner guard drops.
     let _localized_guard = common::LocalizedPluginGuard::new(file_header.localized);
 
-    // FO4-era record-type gate. SCOL (static collections), PKIN (pack-ins),
-    // MOVS (movable statics), and MSWP (material swaps) were all introduced
-    // in Fallout 4 and don't exist in vanilla Oblivion / FO3 / FNV / Skyrim
-    // masters. Pre-#1277-task3 these GRUPs were parsed unconditionally, so a
-    // cross-game plugin stack that injected SCOL/PKIN/MOVS/MSWP into a
+    // FO4-era record-type gate. PKIN (pack-ins), MOVS (movable statics), and
+    // MSWP (material swaps) were introduced in Fallout 4 and don't exist in
+    // vanilla Oblivion / FO3 / FNV / Skyrim masters (confirmed absent from
+    // FalloutNV.esm by byte-scan). Pre-#1277-task3 these GRUPs were parsed
+    // unconditionally, so a cross-game plugin stack injecting them into a
     // non-FO4 master would silently consume them — REFRs referencing those
     // form ids would then mis-resolve at cell-load time. The gate skips the
     // whole GRUP when game isn't FO4+ and warns once per record-type per
@@ -186,6 +186,14 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         game,
         GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield,
     );
+    // SCOL (static collections) is NOT FO4-only — it's a Gamebryo-Fallout
+    // record present since FO3 (Oblivion 0, FO3 54, FNV 98, Skyrim 0,
+    // FO4+ many). FalloutNV.esm carries 98 SCOL records referenced by 1084
+    // REFRs (road segments, guardrails, debris LOD clusters — predominantly
+    // exterior worldspace geometry). The FNV DATA layout is byte-identical to
+    // the FO4 layout `parse_scol_group` already decodes, so the same arm
+    // serves both eras; only the gate had wrongly excluded FNV/FO3 (#1538).
+    let is_scol_era = is_fo4_plus || matches!(game, GameKind::Fallout3NV);
     let mut warned_scol = false;
     let mut warned_pkin = false;
     let mut warned_movs = false;
@@ -224,14 +232,15 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 parse_ltex_group(&mut reader, end, &mut ltex_to_txst, &mut landscape_textures)?
             }
             b"TXST" => parse_txst_group(&mut reader, end, &mut txst_textures, &mut texture_sets)?,
-            // FO4+ only — see warned_*  / is_fo4_plus rationale above.
-            b"SCOL" if is_fo4_plus => parse_scol_group(&mut reader, end, &mut statics, &mut scols)?,
+            // FO3/FNV + FO4+ — see is_scol_era rationale above. Skipped only
+            // for the eras that genuinely lack SCOL (Oblivion, Skyrim).
+            b"SCOL" if is_scol_era => parse_scol_group(&mut reader, end, &mut statics, &mut scols)?,
             b"SCOL" => {
                 if !warned_scol {
                     warned_scol = true;
                     log::warn!(
                         "ESM: SCOL GRUP encountered with GameKind::{:?} \
-                         (HEDR {:.2}); SCOL is FO4+ only — skipping. \
+                         (HEDR {:.2}); SCOL doesn't exist in this era — skipping. \
                          Cross-game plugin risk: REFRs referencing the \
                          dropped form ids won't resolve at cell-load time.",
                         game,

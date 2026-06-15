@@ -569,6 +569,20 @@ fn parse_rate_fnv_esm() {
         "NVWastelandClear should classify as PLEASANT; got 0x{:02X}",
         clear.classification,
     );
+
+    // #1538 regression guard: SCOL (static collections) must parse for FNV.
+    // The `is_fo4_plus` gate wrongly treated SCOL as FO4-only and skipped
+    // the whole GRUP, dropping all 98 FalloutNV.esm SCOL bases — 1084 REFRs
+    // (road segments, guardrails, debris LOD clusters) then mis-resolved to
+    // nothing. SCOL is a Gamebryo-Fallout record (FO3 54, FNV 98); the gate
+    // now admits Fallout3NV. Exact count pins the parse, not a floor.
+    assert_eq!(
+        index.cells.scols.len(),
+        98,
+        "FNV must parse exactly 98 SCOL bases (pre-#1538 the is_fo4_plus \
+         gate skipped the whole GRUP, leaving 0); got {}",
+        index.cells.scols.len(),
+    );
 }
 
 #[test]

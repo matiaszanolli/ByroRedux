@@ -1192,15 +1192,24 @@ fn synthetic_hedr_routes_to_expected_gamekind() {
     );
 }
 
+/// #1538 — SCOL is a Gamebryo-Fallout record (FO3 54, FNV 98), NOT FO4-only.
+/// FNV must PARSE its SCOL GRUP; pre-fix the `is_fo4_plus` gate skipped it,
+/// dropping all 98 FalloutNV.esm SCOL bases and orphaning 1084 REFRs.
 #[test]
-fn scol_grup_skipped_when_game_is_not_fo4_plus() {
+fn scol_grup_parsed_when_game_is_fnv() {
     let mut esm = tes4_with_hedr(1.34); // FNV
     esm.extend_from_slice(&wrap_group(b"SCOL", &minimal_record(b"SCOL", 0x0001_2345)));
     let index = parse_esm(&esm).expect("parse_esm");
-    assert!(
-        index.cells.scols.is_empty(),
-        "FNV plugin's SCOL GRUP must be skipped, found {} records",
+    assert_eq!(
         index.cells.scols.len(),
+        1,
+        "FNV plugin's SCOL GRUP must be parsed (the is_fo4_plus gate wrongly \
+         skipped it), got {} records",
+        index.cells.scols.len(),
+    );
+    assert!(
+        index.cells.scols.contains_key(&0x0001_2345),
+        "form id 0x00012345 must appear in scols map",
     );
 }
 
