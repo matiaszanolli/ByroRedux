@@ -540,6 +540,20 @@ pub struct Attenuation {
     pub max_distance: f32,
 }
 
+impl Attenuation {
+    /// Min/max as a kira `RangeInclusive`, normalized so `min <= max`.
+    /// kira computes attenuation as `distance.clamp(min, max)`, and
+    /// `f32::clamp` panics when `min > max` — a reversed range (e.g. from a
+    /// future data-driven producer, or hand-edited content) would otherwise
+    /// abort the whole audio render thread at playback, invisible to the
+    /// dispatch call site. Clamp-normalize at the boundary instead. #1612.
+    pub fn distance_range(&self) -> std::ops::RangeInclusive<f32> {
+        let lo = self.min_distance.min(self.max_distance);
+        let hi = self.min_distance.max(self.max_distance);
+        lo..=hi
+    }
+}
+
 impl Default for Attenuation {
     fn default() -> Self {
         // Defaults chosen for Bethesda interior cells: inside a 2-3m
@@ -770,7 +784,7 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
     }
     for p in pending {
         let mut track_builder = SpatialTrackBuilder::new()
-            .distances(p.attenuation.min_distance..=p.attenuation.max_distance);
+            .distances(p.attenuation.distance_range());
         // Phase 6: route a fraction of this track's signal to the
         // global reverb send if one exists and the level isn't
         // muted. with_send takes a Decibels-convertible f32; the
@@ -892,7 +906,7 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
         // `Into<SpatialTrackDistances>`. The values are min..=max
         // game-units, falloff between is linear (kira default).
         let mut track_builder = SpatialTrackBuilder::new()
-            .distances(p.attenuation.min_distance..=p.attenuation.max_distance);
+            .distances(p.attenuation.distance_range());
         // Phase 6: route a fraction of this track's signal to the
         // global reverb send if one exists and the level isn't
         // muted. with_send takes a Decibels-convertible f32; the

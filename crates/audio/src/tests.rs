@@ -1154,3 +1154,25 @@ fn real_fnv_sounds_decode_through_kira() {
         );
     }
 }
+
+/// #1612 — a reversed Attenuation (min > max) must normalize to a sane
+/// range, never hand kira a `min > max` that panics `f32::clamp` on the
+/// audio render thread at playback.
+#[test]
+fn reversed_attenuation_normalizes_instead_of_panicking() {
+    let att = Attenuation {
+        min_distance: 30.0,
+        max_distance: 2.0,
+    };
+    let range = att.distance_range();
+    assert!(range.start() <= range.end());
+    assert_eq!(*range.start(), 2.0);
+    assert_eq!(*range.end(), 30.0);
+
+    // A well-ordered range passes through unchanged.
+    let ok = Attenuation {
+        min_distance: 0.5,
+        max_distance: 12.0,
+    };
+    assert_eq!(ok.distance_range(), 0.5..=12.0);
+}
