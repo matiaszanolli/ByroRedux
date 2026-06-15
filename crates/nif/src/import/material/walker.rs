@@ -974,19 +974,19 @@ pub(crate) fn extract_material_info_from_refs(
                 }
                 // NiWireframeProperty: flags=1 enables wireframe rendering
                 // (polygon_mode = LINE). Not present in Oblivion vanilla but
-                // used by FO3/FNV mods. Renderer consumption is deferred —
-                // tracked at #869 (O4-D4-NEW-01); the bool propagates through
-                // ImportedMesh so the lookup is in place when the renderer
-                // grows a `WireframeOpaque` pipeline variant.
+                // used by FO3/FNV mods. Consumed (#869): the bool propagates
+                // through ImportedMesh and selects the `vk::PolygonMode::LINE`
+                // pipeline variant (`PipelineKey::Opaque { wireframe }` /
+                // `Blended { .., wireframe }` in pipeline.rs) at draw time.
                 "NiWireframeProperty" if flag_prop.enabled() => {
                     info.wireframe = true;
                 }
                 // NiShadeProperty: flags=0 requests flat shading (no
                 // per-vertex normal interpolation — faceted look). Used on a
-                // handful of Oblivion architectural pieces. Renderer consumption
-                // (GLSL `flat` qualifier or per-fragment dFdx/dFdy face-normal
-                // recompute) is deferred — tracked at #869 (O4-D4-NEW-01)
-                // alongside `wireframe`.
+                // handful of Oblivion architectural pieces. Consumed (#869):
+                // sets `INSTANCE_FLAG_FLAT_SHADING` (shader_constants_data.rs),
+                // OR'd into the GpuInstance flags in the draw path and read by
+                // the shader.
                 "NiShadeProperty" if !flag_prop.enabled() => {
                     info.flat_shading = true;
                 }

@@ -988,11 +988,11 @@ impl MaterialInfo {
     /// values this method writes; BGSM-using FO4 / Skyrim meshes get
     /// the authored spec-glossiness translation instead.
     ///
-    /// Single source of truth — delegates to
-    /// `byroredux_core::ecs::components::material::classify_pbr_keyword`
-    /// so the per-frame draw build's
-    /// `Material::classify_pbr` and this importer-side translation
-    /// stay in lockstep.
+    /// Single source of truth — delegates to the free fn
+    /// `byroredux_core::ecs::components::material::classify_pbr_keyword`,
+    /// the only surviving PBR classifier. (The per-frame
+    /// `Material::classify_pbr` was removed in the NIFAL refactor; PBR
+    /// now resolves once at the parse-time translate boundary.)
     pub(super) fn classify_legacy_pbr(
         &self,
         pool: &byroredux_core::string::StringPool,
