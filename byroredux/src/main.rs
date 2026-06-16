@@ -454,6 +454,10 @@ impl Drop for App {
     /// Idempotent with the `CloseRequested` handler — `remove_resource`
     /// and `Option::take` are both no-ops the second time.
     fn drop(&mut self) {
+        // INVARIANT (REG-08 / #1640, #1477): remove the `AllocatorResource`
+        // (the ECS allocator clone) BEFORE `renderer.take()` drops the
+        // `VulkanContext`. Reversing these two lines re-arms the
+        // allocator-outlives-context hazard (#1406) on panic-unwind.
         self.world
             .remove_resource::<byroredux_renderer::vulkan::allocator::AllocatorResource>();
         self.renderer.take();

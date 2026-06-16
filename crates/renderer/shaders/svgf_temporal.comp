@@ -254,9 +254,12 @@ void main() {
     // threshold tracks the local neighbourhood, so legitimate bright bleed
     // is preserved and only the per-frame variance spike is removed.
     //
-    // Runs BEFORE the `hasHistory` branch (#1481): the spatial statistic
-    // needs no histAge gate — it is available every frame — so it must
-    // also clamp the freshly-disoccluded (no-history) path that writes
+    // INVARIANT (REG-07 / #1639, #1481): this firefly clamp runs BEFORE the
+    // `hasHistory` branch — moving it inside `hasHistory` re-arms a one-frame
+    // un-clamped firefly on the disocclusion (no-history) path.
+    // The spatial statistic needs no histAge gate — it is available every
+    // frame — so it must also clamp the freshly-disoccluded (no-history) path
+    // that writes
     // `currInd` straight to history below. Scoped inside `hasHistory`, a
     // GI spike leaked into history for one frame on disocclusion edges.
     // A persistent firefly source self-inflates the TEMPORAL variance (so

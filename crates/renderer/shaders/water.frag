@@ -566,9 +566,13 @@ void main() {
     // queries below (mirrors the helper gates): no RT / unwritten TLAS ⇒ no
     // caustic projection rather than a trace against an absent / stale TLAS.
     if (sunDirection.w > 0.0 && sceneFlags.x >= 0.5) {
-        // `sunDirection.xyz` points TO the sun (light-incoming), matching
-        // GpuLight.direction_angle / triangle.frag's directional `L`. The
-        // light-*travel* direction (sun → surface) is therefore `-sunDir`.
+        // INVARIANT (REG-03 / #1635, #1459): `sunDirection.xyz` points TO the
+        // sun (light-incoming), matching GpuLight.direction_angle /
+        // triangle.frag's directional `L` AND the caustic_splat.comp
+        // directional branch. The light-*travel* direction (sun → surface) is
+        // therefore `-sunDir`. Flipping this sign suppresses caustics for an
+        // overhead sun (the #1459 bug) — keep it consistent with
+        // caustic_splat.comp.
         vec3 sunDir = normalize(sunDirection.xyz);       // direction TO the sun
         // 1. Shadow ray toward sun (terminate-on-first-hit). Fire along
         //    +sunDir (toward the sun) so an occluder between the surface and

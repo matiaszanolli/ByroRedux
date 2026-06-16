@@ -293,10 +293,12 @@ void main() {
         vec3 LtoG;
         float lightReach;
         if (Ltype == 2u) {
-            // Directional light: `direction_angle.xyz` points TO the light
-            // (light-incoming, matching GpuLight convention / triangle.frag's
-            // `L`), so the light *travel* direction is its negation. `LtoG`
-            // must hold the travel direction to stay consistent with the
+            // INVARIANT (REG-03 / #1635, #1459): `direction_angle.xyz` points
+            // TO the light (light-incoming, matching GpuLight convention /
+            // triangle.frag's `L` AND the water.frag directional sun case),
+            // so the light *travel* direction is its negation. Flipping this
+            // sign suppresses caustics for an overhead sun (the #1459 bug).
+            // `LtoG` must hold the travel direction to stay consistent with the
             // point/spot branch (`G - Lp`) and the downstream refract/normal-
             // flip below. Apply a Lambert cosine against the surface normal so
             // light hitting the front face of the refractor splats and light

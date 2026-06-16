@@ -14,6 +14,12 @@ impl VulkanContext {
     ///
     /// Called at the top of `draw_frame()` after the fence wait (GPU done).
     pub(super) fn screenshot_finish_readback(&mut self) {
+        // INVARIANT (REG-02 / #1634, #1448): read back the extent CAPTURED at
+        // command-record time (`screenshot_pending_readback`), NOT the live
+        // `swapchain_state.extent`. A same-frame swapchain resize between
+        // record and readback would otherwise read the new dimensions against
+        // the old staging copy → wrong size / OOB (SYNC-01). Do not replace
+        // this with `self.swapchain_state.extent`.
         let Some(extent) = self.screenshot_pending_readback.take() else {
             return;
         };

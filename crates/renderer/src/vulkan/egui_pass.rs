@@ -193,6 +193,8 @@ impl EguiPass {
             unsafe {
                 device.cmd_begin_render_pass(cmd, &rp_begin, vk::SubpassContents::INLINE);
             }
+            // INVARIANT (REG-05 / #1637, #1491): the render pass begin MUST be
+            // balanced with `cmd_end_render_pass` even when `cmd_draw` fails.
             // Capture the draw result but DON'T `?`-bail here: the render
             // pass is open, and an early return would leave the caller's
             // command buffer with a dangling begin (the pending-screenshot

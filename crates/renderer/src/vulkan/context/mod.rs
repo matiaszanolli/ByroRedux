@@ -2714,6 +2714,12 @@ impl Drop for VulkanContext {
             // ordering comment in the guard below), so it stays inside the
             // guard where that ordering holds.
             if let Some(ref mut timers) = self.gpu_timers {
+                // INVARIANT (REG-06 / #1638, #1483): this query-pool destroy
+                // lives in the allocator-INDEPENDENT block (above), NOT inside
+                // the `Some(allocator)` guard below — query pools own no
+                // gpu-allocator memory, so they must be torn down on the
+                // allocator-`None` Drop path too or they leak. Do not move it
+                // back under the allocator guard.
                 // #1194 — per-pass GPU timer query pools. Queue idle is
                 // guaranteed by the `device_wait_idle()` at the top.
                 timers.destroy(&self.device);
