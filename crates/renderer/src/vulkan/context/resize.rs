@@ -3,7 +3,6 @@
 use super::super::composite::HDR_FORMAT;
 use super::super::gbuffer::{
     ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT,
-    RESERVOIR_FORMAT,
 };
 use super::super::ssao::SsaoPipeline;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -191,7 +190,10 @@ impl VulkanContext {
             self.allocator.as_ref().expect("allocator missing"),
             self.swapchain_state.extent,
             self.depth_format,
-            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            // TRANSFER_SRC: soft-particle depth-history copy source (#1583).
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                | vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::TRANSFER_SRC,
             "depth_buffer",
         )?;
         self.depth_image = depth_image;
@@ -248,7 +250,6 @@ impl VulkanContext {
                     mesh_id_format: MESH_ID_FORMAT,
                     raw_indirect_format: RAW_INDIRECT_FORMAT,
                     albedo_format: ALBEDO_FORMAT,
-                    reservoir_format: RESERVOIR_FORMAT,
                     depth_format: self.depth_format,
                 },
             )?;
@@ -691,8 +692,6 @@ impl VulkanContext {
         let motion_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.motion_view(i)).collect();
         let mesh_id_views: Vec<vk::ImageView> =
             (0..n).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
-        let reservoir_views: Vec<vk::ImageView> =
-            (0..n).map(|i| gbuffer_ref.reservoir_view(i)).collect();
         self.framebuffers = create_main_framebuffers(
             &self.device,
             self.render_pass,
@@ -703,7 +702,6 @@ impl VulkanContext {
                 mesh_id_views: &mesh_id_views,
                 raw_indirect_views: &raw_indirect_views,
                 albedo_views: &albedo_views,
-                reservoir_views: &reservoir_views,
             },
             self.depth_image_view,
             self.swapchain_state.extent,

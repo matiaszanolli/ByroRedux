@@ -154,6 +154,59 @@ pub fn reflect_bindings(spirv_bytes: &[u8]) -> Result<Vec<ReflectedBinding>> {
     Ok(out)
 }
 
+/// Reflect the `Location`-decorated **output** variables of a SPIR-V module,
+/// returning their sorted, de-duplicated locations. Built-in outputs
+/// (`gl_FragDepth` etc.) carry a `BuiltIn` decoration rather than `Location`
+/// and are excluded — so for a fragment shader this is exactly the set of
+/// user-declared color outputs, which must match the render pass's color
+/// attachment count or pipeline creation fails at runtime. Guards #1583's
+/// removal of the dead ReSTIR reservoir output (location 6) from silently
+/// drifting back out of sync with the G-buffer (cross-link #1564).
+pub fn reflect_output_locations(spirv_bytes: &[u8]) -> Result<Vec<u32>> {
+    if !spirv_bytes.len().is_multiple_of(4) {
+        bail!(
+            "SPIR-V byte length {} is not a multiple of 4",
+            spirv_bytes.len()
+        );
+    }
+    let mut loader = Loader::new();
+    binary::parse_bytes(spirv_bytes, &mut loader)
+        .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
+    let module = loader.module();
+
+    // `Location` decorations keyed by target variable id.
+    let mut locations: HashMap<u32, u32> = HashMap::new();
+    for inst in &module.annotations {
+        if inst.class.opcode != Op::Decorate || inst.operands.len() < 3 {
+            continue;
+        }
+        if inst.operands[1].unwrap_decoration() == Decoration::Location {
+            locations.insert(
+                inst.operands[0].unwrap_id_ref(),
+                inst.operands[2].unwrap_literal_bit32(),
+            );
+        }
+    }
+
+    let mut out = Vec::new();
+    for inst in &module.types_global_values {
+        if inst.class.opcode != Op::Variable {
+            continue;
+        }
+        if inst.operands[0].unwrap_storage_class() != StorageClass::Output {
+            continue;
+        }
+        if let Some(var_id) = inst.result_id {
+            if let Some(&loc) = locations.get(&var_id) {
+                out.push(loc);
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
 /// Compute the std140 byte size of a named uniform block from a SPIR-V module.
 ///
 /// Returns `Ok(None)` if the module declares no `OpTypeStruct` named `name`.
@@ -468,6 +521,7 @@ mod tests {
         }
     }
 
+
     /// Regression: #1493. The volumetrics UBOs grew a `render_origin`
     /// vec4 for #markarth-precision but — unlike `CameraUBO` (#1447) —
     /// had no committed-`.spv` block-size pin, only `validate_set_layout`
@@ -641,56 +695,28 @@ mod tests {
         );
     }
 
-    /// REN-D11-03 / #1564: the main geometry pass writes 7 color attachments
-    /// (HDR, normal, motion, mesh_id, raw_indirect, albedo, reservoir). The
-    /// "7" is hand-replicated across the render pass (`context/helpers.rs`
-    /// `color_refs`) and the blend arrays in `pipeline.rs` / `water.rs`, all of
-    /// which live inside device-requiring factories and so aren't host-readable.
-    /// The compiled fragment shader is the single source of truth those sites
-    /// must match; reflect its location-decorated Output variables and pin the
-    /// count. A G-buffer add/remove that forgets to mirror the blend arrays now
-    /// fails here at `cargo test` instead of as a runtime VUID / OOB blend read.
+    /// REN-D11-03 / #1564 (count updated by #1583): the main geometry pass
+    /// writes 6 color attachments (HDR, normal, motion, mesh_id, raw_indirect,
+    /// albedo) — the write-only ReSTIR-DI reservoir attachment (location 6) was
+    /// removed under #1583. The "6" is hand-replicated across the render pass
+    /// (`context/helpers.rs` `color_refs`) and the blend arrays in `pipeline.rs`
+    /// / `water.rs`, all of which live inside device-requiring factories and so
+    /// aren't host-readable. The compiled fragment shader is the single source
+    /// of truth those sites must match; reflect its `Location`-decorated Output
+    /// variables and pin them. A G-buffer add/remove that forgets to mirror the
+    /// blend arrays now fails here at `cargo test` instead of as a runtime VUID
+    /// / OOB blend read.
     #[test]
-    fn triangle_frag_declares_seven_color_outputs() {
-        const EXPECTED_COLOR_OUTPUTS: usize = 7;
+    fn triangle_frag_declares_six_color_outputs() {
         let spv: &[u8] = include_bytes!("../../shaders/triangle.frag.spv");
-
-        let mut loader = Loader::new();
-        binary::parse_bytes(spv, &mut loader).expect("parse triangle.frag.spv");
-        let module = loader.module();
-
-        // Collect ids carrying a Location decoration (color outputs do; the
-        // built-in gl_FragDepth does not, so it is excluded automatically).
-        let mut located: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        for inst in &module.annotations {
-            if inst.class.opcode != Op::Decorate || inst.operands.len() < 2 {
-                continue;
-            }
-            if inst.operands[1].unwrap_decoration() == Decoration::Location {
-                located.insert(inst.operands[0].unwrap_id_ref());
-            }
-        }
-
-        // Count OpVariables in the Output storage class that have a Location.
-        let mut outputs = 0usize;
-        for inst in &module.types_global_values {
-            if inst.class.opcode != Op::Variable {
-                continue;
-            }
-            let Some(id) = inst.result_id else { continue };
-            if inst.operands[0].unwrap_storage_class() == StorageClass::Output
-                && located.contains(&id)
-            {
-                outputs += 1;
-            }
-        }
-
+        let locs = reflect_output_locations(spv).expect("reflect triangle.frag.spv outputs");
         assert_eq!(
-            outputs, EXPECTED_COLOR_OUTPUTS,
-            "triangle.frag.spv declares {outputs} location-decorated color outputs but the \
-             main render pass has {EXPECTED_COLOR_OUTPUTS} color attachments — a G-buffer \
-             attachment was added/removed without mirroring the 7-element blend arrays in \
-             pipeline.rs / water.rs and color_refs in context/helpers.rs (#1564)."
+            locs,
+            vec![0, 1, 2, 3, 4, 5],
+            "triangle.frag.spv declares color outputs at {locs:?} but the main render pass has \
+             6 color attachments at locations 0..=5 — a G-buffer attachment was added/removed \
+             without mirroring the blend arrays in pipeline.rs / water.rs and color_refs in \
+             context/helpers.rs (#1564 / #1583)."
         );
     }
 }

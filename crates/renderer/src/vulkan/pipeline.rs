@@ -285,7 +285,6 @@ fn triangle_pipeline_inner(
         color_blend_none, // 3 mesh_id
         color_blend_none, // 4 raw_indirect
         color_blend_none, // 5 albedo
-        color_blend_none, // 6 reservoir (uvec4 — integer, no blend)
     ];
 
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
@@ -543,7 +542,6 @@ pub fn create_blend_pipeline(
         overwrite, // 3 mesh_id
         overwrite, // 4 raw_indirect
         overwrite, // 5 albedo
-        overwrite, // 6 reservoir (uvec4 — integer, no blend)
     ];
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
@@ -730,7 +728,6 @@ pub fn create_ui_pipeline(
         ui_noop_blend, // 3 mesh_id
         ui_noop_blend, // 4 raw_indirect
         ui_noop_blend, // 5 albedo
-        ui_noop_blend, // 6 reservoir (UI writes none of the G-buffer)
     ];
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)

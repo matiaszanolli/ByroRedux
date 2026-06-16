@@ -57,10 +57,6 @@ pub const RAW_INDIRECT_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
 /// render pass and re-multiplied in the composite pass to recover
 /// texture detail after SVGF blurs the demodulated indirect light.
 pub const ALBEDO_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
-/// ReSTIR-DI reservoir: (lightIdx, M, wSum, W) packed as four u32.
-/// R32G32B32A32_UINT matches the `uvec4 outReservoir` layout declaration
-/// in `triangle.frag` — `packReservoir` writes `floatBitsToUint(wSum/W)`.
-pub const RESERVOIR_FORMAT: vk::Format = vk::Format::R32G32B32A32_UINT;
 
 /// A single G-buffer attachment slot (one image per frame-in-flight).
 struct Attachment {
@@ -220,7 +216,7 @@ impl Drop for Attachment {
 }
 
 /// Owns the G-buffer attachment images (normal, motion, mesh_id,
-/// raw_indirect, albedo, reservoir) + their views and allocations.
+/// raw_indirect, albedo) + their views and allocations.
 /// One image per frame-in-flight slot for each attachment.
 pub struct GBuffer {
     normal: Attachment,
@@ -228,7 +224,6 @@ pub struct GBuffer {
     mesh_id: Attachment,
     raw_indirect: Attachment,
     albedo: Attachment,
-    reservoir: Attachment,
     pub width: u32,
     pub height: u32,
 }
@@ -247,7 +242,6 @@ impl GBuffer {
             mesh_id: Attachment::new_empty(),
             raw_indirect: Attachment::new_empty(),
             albedo: Attachment::new_empty(),
-            reservoir: Attachment::new_empty(),
             width,
             height,
         };
@@ -278,15 +272,7 @@ impl GBuffer {
         let r5 = gb
             .albedo
             .allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo");
-        let r6 = gb.reservoir.allocate(
-            device,
-            allocator,
-            RESERVOIR_FORMAT,
-            width,
-            height,
-            "gb_reservoir",
-        );
-        if let Err(e) = r1.and(r2).and(r3).and(r4).and(r5).and(r6) {
+        if let Err(e) = r1.and(r2).and(r3).and(r4).and(r5) {
             // SAFETY: `gb` is local to this function; no command buffer or
             // descriptor set has had a chance to reference it yet because
             // we never returned the partial result. Cleanup path on
@@ -296,7 +282,7 @@ impl GBuffer {
         }
 
         log::info!(
-            "G-buffer created: {}x{} (normal + motion + mesh_id + raw_indirect + albedo + reservoir, {} frames)",
+            "G-buffer created: {}x{} (normal + motion + mesh_id + raw_indirect + albedo, {} frames)",
             width, height, MAX_FRAMES_IN_FLIGHT
         );
         Ok(gb)
@@ -322,10 +308,6 @@ impl GBuffer {
     pub fn albedo_view(&self, frame: usize) -> vk::ImageView {
         self.albedo.views[frame]
     }
-    /// Image view for the ReSTIR-DI reservoir attachment in the given frame slot.
-    pub fn reservoir_view(&self, frame: usize) -> vk::ImageView {
-        self.reservoir.views[frame]
-    }
 
     /// One-time layout transition UNDEFINED → SHADER_READ_ONLY_OPTIMAL for
     /// every G-buffer image across all frame-in-flight slots. Call once after
@@ -350,7 +332,6 @@ impl GBuffer {
                 &self.mesh_id,
                 &self.raw_indirect,
                 &self.albedo,
-                &self.reservoir,
             ];
             let mut barriers = Vec::with_capacity(attachments.len() * MAX_FRAMES_IN_FLIGHT);
             for att in &attachments {
@@ -405,7 +386,6 @@ impl GBuffer {
             self.mesh_id.destroy(device, allocator);
             self.raw_indirect.destroy(device, allocator);
             self.albedo.destroy(device, allocator);
-            self.reservoir.destroy(device, allocator);
         }
         self.width = width;
         self.height = height;
@@ -439,16 +419,6 @@ impl GBuffer {
             .and_then(|()| {
                 self.albedo
                     .allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo")
-            })
-            .and_then(|()| {
-                self.reservoir.allocate(
-                    device,
-                    allocator,
-                    RESERVOIR_FORMAT,
-                    width,
-                    height,
-                    "gb_reservoir",
-                )
             });
         if let Err(ref e) = result {
             log::error!("G-buffer recreate partial failure: {e} — destroying partial state");
@@ -479,7 +449,6 @@ impl GBuffer {
             self.mesh_id.destroy(device, allocator);
             self.raw_indirect.destroy(device, allocator);
             self.albedo.destroy(device, allocator);
-            self.reservoir.destroy(device, allocator);
         }
     }
 }

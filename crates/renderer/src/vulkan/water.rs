@@ -603,15 +603,15 @@ fn build_pipeline(
     let masked_off = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::empty())
         .blend_enable(false);
-    // Seven entries to match the main render pass's seven color
-    // attachments (0 HDR + 1..5 G-buffer + 6 reservoir). The array
-    // length sets `attachmentCount`; if it falls short of the subpass
-    // color-attachment count the driver reads the missing entries out
-    // of bounds — attachment 6 (the R32G32B32A32_UINT ReSTIR reservoir)
-    // then reads back blendEnable=TRUE, an illegal blend on an integer
-    // format (VUID-vkCmdDrawIndexed-blendEnable-04727). See #647 / RP-1.
+    // Six entries to match the main render pass's six color attachments
+    // (0 HDR + 1..5 G-buffer). The array length sets `attachmentCount`;
+    // it must equal the subpass color-attachment count exactly, or the
+    // driver reads missing entries out of bounds / the pipeline fails
+    // creation with a count mismatch (VUID-VkGraphicsPipelineCreateInfo-
+    // renderPass-07609). See #647 / RP-1; the 7th (reservoir) attachment
+    // was removed under #1583.
     let attachments = [
-        hdr_blend, masked_off, masked_off, masked_off, masked_off, masked_off, masked_off,
+        hdr_blend, masked_off, masked_off, masked_off, masked_off, masked_off,
     ];
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)

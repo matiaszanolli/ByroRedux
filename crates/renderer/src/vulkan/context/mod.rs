@@ -10,7 +10,6 @@ use super::debug;
 use super::device::{self, QueueFamilyIndices};
 use super::gbuffer::{
     GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT,
-    RESERVOIR_FORMAT,
 };
 use super::instance;
 use super::material::GpuMaterial;
@@ -1486,7 +1485,11 @@ impl VulkanContext {
             &gpu_allocator,
             swapchain_state.extent,
             depth_format,
-            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            // TRANSFER_SRC: the soft-particle depth-history copy uses the depth
+            // buffer as a `vkCmdCopyImage` source each frame (#1583 validation).
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                | vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::TRANSFER_SRC,
             "depth_buffer",
         )?;
 
@@ -1520,7 +1523,6 @@ impl VulkanContext {
                 mesh_id_format: MESH_ID_FORMAT,
                 raw_indirect_format: RAW_INDIRECT_FORMAT,
                 albedo_format: ALBEDO_FORMAT,
-                reservoir_format: RESERVOIR_FORMAT,
                 depth_format,
             },
         )?;
@@ -1997,9 +1999,6 @@ impl VulkanContext {
             (0..n_frames).map(|i| gbuffer_ref.normal_view(i)).collect();
         let albedo_views: Vec<vk::ImageView> =
             (0..n_frames).map(|i| gbuffer_ref.albedo_view(i)).collect();
-        let reservoir_views: Vec<vk::ImageView> = (0..n_frames)
-            .map(|i| gbuffer_ref.reservoir_view(i))
-            .collect();
 
         // 14b2. SVGF temporal denoiser — reads raw_indirect + motion +
         // mesh_id from the G-buffer, writes accumulated_indirect images
@@ -2268,7 +2267,6 @@ impl VulkanContext {
                 mesh_id_views: &mesh_id_views,
                 raw_indirect_views: &raw_indirect_views,
                 albedo_views: &albedo_views,
-                reservoir_views: &reservoir_views,
             },
             depth_image_view,
             swapchain_state.extent,
