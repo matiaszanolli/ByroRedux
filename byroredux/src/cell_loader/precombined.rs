@@ -78,9 +78,16 @@ pub(super) fn spawn_precombined_meshes(
         return (0, 0);
     }
 
-    // Resolve + open the shared-geometry CSG once per cell load. `None`
-    // keeps the pre-M49 behaviour (zero spawns → REFR fallback).
-    let csg = open_geometry_csg(plugin_path);
+    // Resolve the shared-geometry CSG. #1585 / F6 — route through the
+    // `MaterialProvider` cache so the ~240 MB blob is opened (and its chunk
+    // table parsed) once per session instead of once per cell, preserving the
+    // warm zlib `ChunkCache` across adjacent tiles. When no provider is
+    // present (paths that pass `None`) fall back to an uncached open so CSG
+    // resolution still works. `None` keeps the pre-M49 REFR fallback.
+    let csg: Option<Arc<CsgArchive>> = match mat_provider.as_deref_mut() {
+        Some(mp) => mp.geometry_csg(plugin_path),
+        None => open_geometry_csg(plugin_path).map(Arc::new),
+    };
 
     // Precombined NIFs are baked in cell-local coords; `cell_origin`
     // shifts them into world space (zero for interior, cell-grid-
@@ -269,7 +276,7 @@ pub(super) fn spawn_precombined_meshes(
 /// so v1 keys purely off the plugin stem. Returns `None` when the plugin
 /// has no companion CSG (non-FO4 content, or a plugin that authored no
 /// shared precombines) — the caller then falls back to per-REFR rendering.
-pub(super) fn open_geometry_csg(plugin_path: &str) -> Option<CsgArchive> {
+pub(crate) fn open_geometry_csg(plugin_path: &str) -> Option<CsgArchive> {
     let p = Path::new(plugin_path);
     let dir = p.parent()?;
     let stem = p.file_stem()?.to_str()?;

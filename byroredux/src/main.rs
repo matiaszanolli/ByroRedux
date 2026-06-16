@@ -1084,6 +1084,12 @@ impl App {
     ///
     /// No-ops when `self.streaming` is `None` (interior cell or
     /// NIF-only modes).
+    ///
+    /// #1586 / F7 — steady-state per-frame cap on applied cell spawns. Two
+    /// cells/frame spreads the spawn + GPU-upload + BLAS cost across frames
+    /// while staying inside the hysteresis radius's pop-in tolerance.
+    const MAX_CELLS_SPAWNED_PER_FRAME: usize = 2;
+
     fn step_streaming(&mut self) {
         let Some(ctx) = self.renderer.as_mut() else {
             return;
@@ -1100,19 +1106,34 @@ impl App {
         // method signature borrow-checker friendly). Non-blocking via
         // `try_recv` — fall through immediately when no payload is
         // ready.
-        loop {
+        // #1586 / F7 — cap the steady-state spawn budget. Each applied
+        // payload runs the full main-thread spawn (terrain mesh + batched
+        // BLAS build + water + precombine decode + vertex/index upload), so
+        // draining every ready payload in one frame spikes frame time on
+        // fast-travel / teleport / post-stall catch-up. Spend at most
+        // `MAX_CELLS_SPAWNED_PER_FRAME` real spawns per frame and leave the
+        // rest queued in the channel for subsequent frames; the hysteresis
+        // load/unload radii already tolerate the slightly-later pop-in. Stale
+        // payloads are dropped for free and don't count against the budget.
+        // The blocking initial-radius boot path (`stream_initial_radius`) is
+        // intentionally uncapped — it must fully populate the start cell
+        // before the first frame renders.
+        let mut spawned_this_frame = 0usize;
+        while spawned_this_frame < Self::MAX_CELLS_SPAWNED_PER_FRAME {
             let payload_opt = self
                 .streaming
                 .as_mut()
                 .and_then(|s| s.payload_rx.try_recv().ok());
             let Some(payload) = payload_opt else { break };
 
-            consume_streaming_payload(
+            if consume_streaming_payload(
                 &mut self.world,
                 ctx,
                 self.streaming.as_mut().unwrap(),
                 payload,
-            );
+            ) {
+                spawned_this_frame += 1;
+            }
         }
 
         // ── 2. Diff + dispatch ──────────────────────────────────────

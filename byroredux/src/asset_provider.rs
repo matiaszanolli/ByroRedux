@@ -699,6 +699,14 @@ pub(crate) struct MaterialProvider {
     /// / roughness / texture paths flow into `ImportedMesh` (mirrors the
     /// FO4 BGSM `resolve_bgsm` per-field translation already wired below).
     sf_cdb: Option<Arc<ComponentDatabaseFile>>,
+    /// #1585 / F6 — process-lifetime cache of the `<Plugin> - Geometry.csg`
+    /// companion blob, keyed by the cell's master plugin path. Mirrors the
+    /// `sf_cdb` `Arc` hold: the CSG owns a warm zlib `ChunkCache`, so
+    /// re-opening it per precombine cell-load (the pre-fix behaviour) re-read
+    /// + re-parsed the ~3700-entry chunk table every tile and discarded all
+    /// inter-cell chunk reuse. The negative (`None`) result is cached too, so
+    /// a non-FO4 / no-CSG plugin isn't re-stat'd on every precombine cell.
+    csg_cache: HashMap<String, Option<Arc<byroredux_bsa::CsgArchive>>>,
 }
 
 /// #951 / SAFE-26 — bounded-cache caps for `MaterialProvider`. Sized to
@@ -717,7 +725,28 @@ impl MaterialProvider {
             failed_paths: HashSet::new(),
             failed_paths_order: VecDeque::new(),
             sf_cdb: None,
+            csg_cache: HashMap::new(),
         }
+    }
+
+    /// Resolve + open the `<Plugin> - Geometry.csg` companion blob once per
+    /// session (keyed by `plugin_path`) and hand back a shared handle.
+    /// #1585 / F6 — mirrors the `sf_cdb` `Arc` caching: precombine cell-loads
+    /// re-opened this ~240 MB blob every tile, re-parsing the chunk table and
+    /// throwing away the warm zlib `ChunkCache` that amortises inflate across
+    /// adjacent tiles sharing PSG regions. The negative result is cached so a
+    /// plugin with no companion CSG isn't re-probed per cell.
+    pub(crate) fn geometry_csg(
+        &mut self,
+        plugin_path: &str,
+    ) -> Option<Arc<byroredux_bsa::CsgArchive>> {
+        if let Some(cached) = self.csg_cache.get(plugin_path) {
+            return cached.clone();
+        }
+        let opened = crate::cell_loader::precombined::open_geometry_csg(plugin_path).map(Arc::new);
+        self.csg_cache
+            .insert(plugin_path.to_owned(), opened.clone());
+        opened
     }
 
     fn push_archive(&mut self, archive: Archive) {
@@ -2504,6 +2533,34 @@ mod tests {
             flags & EFFECT_SOFT,
             0,
             "EFFECT_SOFT must be packed so the shader's soft-fade branch fires"
+        );
+    }
+
+    /// Regression for #1585 / F6 — `geometry_csg` must open + resolve the
+    /// `<Plugin> - Geometry.csg` companion ONCE per plugin across N precombine
+    /// cell-loads, caching even the negative (no-CSG) result so a plugin
+    /// without a companion blob isn't re-stat'd on every cell. Pre-fix
+    /// `spawn_precombined_meshes` called `open_geometry_csg` unconditionally
+    /// per cell, re-parsing the chunk table and discarding the warm zlib cache.
+    #[test]
+    fn geometry_csg_caches_result_across_cell_loads() {
+        let mut mp = MaterialProvider::new();
+        // No companion `… - Geometry.csg` exists beside this path → None.
+        let plugin = "/nonexistent/does-not-exist/Fallout4.esm";
+
+        assert!(mp.geometry_csg(plugin).is_none());
+        assert_eq!(
+            mp.csg_cache.len(),
+            1,
+            "the negative result is cached under the plugin key"
+        );
+        // A second (and Nth) precombine cell-load is a pure cache hit — no
+        // re-open, no re-stat, no chunk-table re-parse.
+        assert!(mp.geometry_csg(plugin).is_none());
+        assert_eq!(
+            mp.csg_cache.len(),
+            1,
+            "second call hits cache; no new probe of the missing CSG"
         );
     }
 

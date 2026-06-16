@@ -65,7 +65,7 @@ mod load_order;
 mod nif_import_registry;
 mod object_lod;
 mod partial;
-mod precombined;
+pub(crate) mod precombined;
 mod references;
 mod refr;
 mod spawn;

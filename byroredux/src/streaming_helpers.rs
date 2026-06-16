@@ -125,6 +125,42 @@ mod tests {
         assert_eq!(meshes, vec![10, 11, 12, 13]);
     }
 
+    /// Regression for #1586 / F7 — the steady-state per-frame drain in
+    /// `main.rs::step_streaming` spends a bounded budget of *applied* spawns,
+    /// while stale-dropped payloads (`consume_streaming_payload` → `false`)
+    /// are pulled for free and don't count. This mirrors that loop's policy:
+    /// it must stop after `CAP` applies, draining any interleaved stale drops
+    /// without charging them, and leave the remaining real payloads queued.
+    #[test]
+    fn drain_budget_caps_applied_spawns_not_stale_drops() {
+        const CAP: usize = 2;
+        // A queue mixing stale drops (false) and real applies (true), exactly
+        // as `try_recv` would hand them to the drain loop.
+        let queue = [false, true, false, true, true, true];
+        let mut it = queue.iter().copied();
+
+        let mut spawned = 0usize;
+        let mut pulled = 0usize;
+        while spawned < CAP {
+            let Some(applied) = it.next() else { break };
+            pulled += 1;
+            if applied {
+                spawned += 1;
+            }
+        }
+
+        assert_eq!(spawned, CAP, "exactly CAP real spawns are applied this frame");
+        assert_eq!(
+            pulled, 4,
+            "stale drops are pulled for free; loop stops on the 2nd apply"
+        );
+        assert_eq!(
+            it.count(),
+            2,
+            "the remaining real payloads stay queued for the next frame"
+        );
+    }
+
     /// Empty rings drain to empty vecs — the common interior→interior or
     /// no-LOD-resident transition is a clean no-op.
     #[test]
@@ -152,12 +188,16 @@ mod tests {
     skip_all,
     fields(gx = payload.gx, gy = payload.gy, generation = payload.generation),
 )]
+/// Returns `true` when the payload was applied (the full main-thread spawn —
+/// terrain + BLAS + water + precombines + uploads — ran), `false` when it was
+/// stale-dropped before any spawn work. #1586 / F7 — the per-frame drain uses
+/// this so its cell budget counts only real spawns, not cheap stale drops.
 pub fn consume_streaming_payload(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
     state: &mut streaming::WorldStreamingState,
     payload: streaming::LoadCellPayload,
-) {
+) -> bool {
     let coord = (payload.gx, payload.gy);
     // Stale-load gate via the testable `classify_payload` helper.
     match streaming::classify_payload(&state.pending, coord, payload.generation) {
@@ -172,7 +212,7 @@ pub fn consume_streaming_payload(
                 payload.gy,
                 payload.generation
             );
-            return;
+            return false;
         }
     }
 
@@ -248,4 +288,5 @@ pub fn consume_streaming_payload(
             );
         }
     }
+    true
 }
