@@ -10,7 +10,7 @@
 /// — the two were byte-identical copies (#1318 / TD3-NEW-A). Callers keep
 /// using `super::helpers::read_zstring`; the single definition now lives in
 /// `records::common` alongside the localized-lstring `read_lstring` variant.
-pub(super) use crate::esm::records::common::read_zstring;
+pub(super) use crate::esm::records::common::{read_mesh_path, read_zstring};
 
 /// Read a 4-byte FormID from a sub-record payload. Returns `None` when
 /// the payload is too short to hold a u32 — defensive against truncated

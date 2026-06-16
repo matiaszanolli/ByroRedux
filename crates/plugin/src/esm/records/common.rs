@@ -143,6 +143,33 @@ pub fn read_zstring(data: &[u8]) -> String {
     String::from_utf8_lossy(&data[..end]).to_string()
 }
 
+/// Decode a MODL-style mesh-path z-string, validating that it is a real
+/// path rather than a non-string value mis-read into the path slot.
+///
+/// A mesh path is printable ASCII (`meshes\...\foo.nif`); it can never
+/// contain an ASCII control byte (`0x00`-`0x1F` or `0x7F`). When one is
+/// present, the field was a 4-byte non-string value — e.g. a FormID-shaped
+/// `u32` — read as a path: #1620 saw Skyrim REFR base records yield
+/// `meshes\-e\x03` (the little-endian bytes of `0x0003652D`) and
+/// `meshes\j.\x01` (`0x00012E6A`), the classic read-a-u32-as-a-string
+/// signature. The engine logged ZERO warnings — only the negative-cache
+/// dump exposed it.
+///
+/// Returns `Ok(path)` for a clean (possibly empty) path, or `Err(bad)`
+/// carrying the corrupt decode so the caller can warn with record context
+/// and treat the record as model-less, keeping the garbage key out of the
+/// mesh cache. The root cause of *why* a given base record carries a 4-byte
+/// MODL is content-specific (needs the plugin bytes to byte-trace); this
+/// guard makes the corruption loud and harmless wherever it originates.
+pub fn read_mesh_path(data: &[u8]) -> Result<String, String> {
+    let s = read_zstring(data);
+    if s.bytes().any(|b| b.is_ascii_control()) {
+        Err(s)
+    } else {
+        Ok(s)
+    }
+}
+
 /// Decode an lstring-bearing sub-record payload.
 ///
 /// When the current plugin is localized (`FileHeader.localized == true`,
@@ -314,6 +341,39 @@ impl CommonItemFields {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod mesh_path_tests {
+    use super::read_mesh_path;
+
+    /// #1620 — a clean printable path round-trips (NUL-terminated, trailing
+    /// bytes ignored), and the empty-MODL case stays `Ok("")` (model-less is
+    /// not corruption).
+    #[test]
+    fn clean_mesh_path_accepted() {
+        assert_eq!(
+            read_mesh_path(b"meshes\\clutter\\common\\bucket01.nif\0junk"),
+            Ok("meshes\\clutter\\common\\bucket01.nif".to_string())
+        );
+        assert_eq!(read_mesh_path(b""), Ok(String::new()));
+        assert_eq!(read_mesh_path(b"\0"), Ok(String::new()));
+    }
+
+    /// #1620 — the exact corrupting bytes from the audit: a FormID-shaped u32
+    /// read as a path. `0x0003652D` → `-e\x03`, `0x00012E6A` → `j.\x01`. Both
+    /// carry a control byte and must be rejected (returned as `Err` so the
+    /// caller warns + treats the record as model-less), never accepted as a
+    /// path that would reach the mesh cache.
+    #[test]
+    fn formid_shaped_u32_rejected() {
+        // 0x0003652D little-endian = [0x2D, 0x65, 0x03, 0x00].
+        assert_eq!(read_mesh_path(&[0x2D, 0x65, 0x03, 0x00]), Err("-e\u{3}".to_string()));
+        // 0x00012E6A little-endian = [0x6A, 0x2E, 0x01, 0x00].
+        assert_eq!(read_mesh_path(&[0x6A, 0x2E, 0x01, 0x00]), Err("j.\u{1}".to_string()));
+        // A tab (0x09) mid-string is equally invalid for a mesh path.
+        assert!(read_mesh_path(b"meshes\\a\tb.nif").is_err());
     }
 }
 

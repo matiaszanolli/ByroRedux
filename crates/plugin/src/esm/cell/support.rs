@@ -2,7 +2,7 @@
 //!
 //! Functions: parse_modl_group, parse_ltex_group, parse_txst_group, parse_scol_group, parse_pkin_group, parse_movs_group, parse_mswp_group.
 
-use super::helpers::read_zstring;
+use super::helpers::{read_mesh_path, read_zstring};
 use super::*;
 use crate::esm::reader::SubRecord;
 
@@ -38,7 +38,20 @@ pub(crate) fn build_static_object_from_subs(
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => editor_id = read_zstring(&sub.data),
-            b"MODL" => model_path = read_zstring(&sub.data),
+            b"MODL" => match read_mesh_path(&sub.data) {
+                Ok(p) => model_path = p,
+                // #1620 — a MODL holding control bytes is a non-string value
+                // (FormID-shaped u32) mis-read as a path. Warn (the old path
+                // was silent) and leave `model_path` empty so the REFR is
+                // treated as model-less rather than caching a garbage key.
+                Err(bad) => log::warn!(
+                    "#1620 — {} {:08X}: corrupt MODL mesh path (control bytes), \
+                     treating as model-less: {:?}",
+                    std::str::from_utf8(record_type).unwrap_or("????"),
+                    form_id,
+                    bad,
+                ),
+            },
             b"VMAD" => has_script = true,
             b"DATA" if is_ligh && sub.data.len() >= 12 => {
                 let radius =
