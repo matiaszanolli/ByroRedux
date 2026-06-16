@@ -774,6 +774,78 @@ fn parse_cell_starfield_xcll_decodes_volumetric_height_fog_tail() {
 }
 
 #[test]
+fn parse_cell_fo4_136byte_xcll_decodes_shared_body() {
+    // Render-bug regression: FO4 ships a 92-byte Skyrim body + height-fog
+    // tail (here 136 bytes), NOT the FNV 40-byte tail it used to be bucketed
+    // with. Field values lifted from the real `HalluciGen01` (form 0x000342CB)
+    // XCLL in Fallout4.esm, byte-verified. The length-based dispatch must
+    // decode the shared body (fog + ambient cube) at the Skyrim offsets — the
+    // 44-byte FO4 height-fog tail (@92-135) is currently ignored.
+    let mut xcll = vec![0u8; 136];
+    xcll[0..4].copy_from_slice(&[24, 30, 23, 0]); // ambient
+    xcll[8..12].copy_from_slice(&[26, 28, 27, 0]); // fog near colour
+    xcll[12..16].copy_from_slice(&0.0f32.to_le_bytes()); // fog near
+    xcll[16..20].copy_from_slice(&3000.0f32.to_le_bytes()); // fog far
+    for face in 0..6 {
+        xcll[40 + face * 4..43 + face * 4].copy_from_slice(&[1, 1, 1]); // ambient cube
+    }
+    xcll[72..76].copy_from_slice(&[44, 52, 50, 0]); // fog far colour
+    xcll[76..80].copy_from_slice(&0.7f32.to_le_bytes()); // fog max
+
+    let mut sub_data = Vec::new();
+    let edid = "HalluciGen01\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01); // interior
+    sub_data.extend_from_slice(b"XCLL");
+    sub_data.extend_from_slice(&(xcll.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(&xcll);
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&0x342CBu32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+
+    let mut reader = super::super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(
+        &mut reader,
+        end,
+        &mut cells,
+        crate::esm::reader::GameKind::Fallout4,
+    )
+    .unwrap();
+
+    let cell = cells.get("hallucigen01").expect("interior CELL present");
+    let lit = cell.lighting.as_ref().expect("XCLL must populate lighting");
+    // The rendered fog fields decode correctly from the Skyrim-aligned body.
+    assert_eq!(lit.ambient, [24.0 / 255.0, 30.0 / 255.0, 23.0 / 255.0]);
+    assert_eq!(lit.fog_color, [26.0 / 255.0, 28.0 / 255.0, 27.0 / 255.0]);
+    assert_eq!(lit.fog_near, 0.0);
+    assert_eq!(lit.fog_far, 3000.0);
+    // FO4 reuses the Skyrim 92-byte body, so the ambient cube + fog-far
+    // colour decode (unlike a 40-byte FNV cell, where they'd be None).
+    assert!(
+        lit.directional_ambient.is_some(),
+        "FO4 136-byte XCLL has the Skyrim ambient cube"
+    );
+    assert_eq!(
+        lit.fog_far_color,
+        Some([44.0 / 255.0, 52.0 / 255.0, 50.0 / 255.0])
+    );
+}
+
+#[test]
 fn parse_cell_fnv_xcll_decodes_colors_as_rgba() {
     // Regression guard: XCLL color fields are RGBA byte order — bytes
     // 0=R, 1=G, 2=B, 3=unused — matching the LIGH DATA revert and

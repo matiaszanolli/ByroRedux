@@ -18,10 +18,22 @@ use crate::esm::sub_reader::SubReader;
 ///     `Directional Fade`(@28); 36 = shared + `Directional Fade`(@28) +
 ///     `Fog Clip Dist`(@32) — the FULL TES4 Lighting. TES4 has NO
 ///     `Fog Power` field (that is the FO3/FNV 40-byte addition). #1312.
-///   - FNV / FO3 / FO4 / FO76: 40 bytes (shared + 12-byte dir_fade /
-///     fog_clip / fog_power tail).
+///   - FO3 / FNV: 40 bytes (shared + 12-byte dir_fade / fog_clip /
+///     fog_power tail). NOT FO4/FO76 — those are Creation-Engine (Skyrim)
+///     descendants and ship the 92-byte body + a per-game extended tail.
 ///   - Skyrim LE / SE: 92 bytes (shared + 6-RGBA ambient cube + specular
 ///     + extended fog + light-fade range).
+///   - FO4: 92 / 128 / 136 bytes (#1620-render). Histogram over every CELL
+///     in Fallout4.esm: 92 → 579, 128 → 10, 136 → 606; ZERO 40-byte. FO4
+///     reuses the Skyrim 92-byte body verbatim (byte-verified against
+///     `HalluciGen01` 0x000342CB: ambient/directional/fog-near-colour,
+///     fog_near=0, fog_far=3000, ambient cube, fog-far-colour all decode at
+///     the Skyrim offsets) and appends a height-fog tail (44 B → 136). The
+///     length-based dispatch already decodes the shared body correctly; the
+///     tail is not yet consumed. Pre-fix FO4 was bucketed with FNV's
+///     40-byte tail, tripping the sanity-warn on every vanilla interior.
+///   - FO76: 136 / 160 bytes (histogram over SeventySix.esm: 136 → 885,
+///     160 → 1767; ZERO 40-byte). Same Skyrim-92 body + a longer tail.
 ///   - Starfield: 108 bytes (#1291 / #1293). NOT "Skyrim + 16-byte
 ///     tail" — Starfield's XCLL shares only bytes 0-39 with Skyrim and
 ///     then diverges into a distinct volumetric height-fog model (no
@@ -32,8 +44,10 @@ use crate::esm::sub_reader::SubReader;
 ///     `wbStruct(XCLL,'Lighting')`, byte-verified against Starfield.esm.
 ///     The ~11 985 vanilla Starfield.esm cells all ship at exactly 108.
 const XCLL_SIZES_OBLIVION: &[usize] = &[28, 32, 36];
-const XCLL_SIZES_FALLOUT_ERA: &[usize] = &[28, 40];
+const XCLL_SIZES_FALLOUT_ERA: &[usize] = &[28, 40]; // FO3 / FNV only
 const XCLL_SIZES_SKYRIM: &[usize] = &[28, 92];
+const XCLL_SIZES_FALLOUT4: &[usize] = &[28, 92, 128, 136];
+const XCLL_SIZES_FALLOUT76: &[usize] = &[28, 136, 160];
 const XCLL_SIZES_STARFIELD: &[usize] = &[28, 108];
 
 /// Warn (at WARN level) when an XCLL sub-record size doesn't match the
@@ -63,7 +77,9 @@ fn xcll_size_sanity_warn(len: usize, game: GameKind) {
 fn xcll_canonical_sizes(game: GameKind) -> &'static [usize] {
     match game {
         GameKind::Oblivion => XCLL_SIZES_OBLIVION,
-        GameKind::Fallout3NV | GameKind::Fallout4 | GameKind::Fallout76 => XCLL_SIZES_FALLOUT_ERA,
+        GameKind::Fallout3NV => XCLL_SIZES_FALLOUT_ERA,
+        GameKind::Fallout4 => XCLL_SIZES_FALLOUT4,
+        GameKind::Fallout76 => XCLL_SIZES_FALLOUT76,
         GameKind::Skyrim => XCLL_SIZES_SKYRIM,
         GameKind::Starfield => XCLL_SIZES_STARFIELD,
     }
@@ -83,21 +99,32 @@ mod xcll_gate_tests {
     }
 
     #[test]
-    fn fallout_era_xcll_sizes_pinned() {
-        // FNV / FO3 / FO4 / FO76 share the 40-byte tail. Starfield
-        // was here until #1291 — it ships 108 bytes (Skyrim+ 92-byte
-        // body + 16-byte SF-specific tail), now pinned separately.
-        for game in [
-            GameKind::Fallout3NV,
-            GameKind::Fallout4,
-            GameKind::Fallout76,
-        ] {
-            assert_eq!(
-                xcll_canonical_sizes(game),
-                &[28, 40],
-                "{game:?} must use the FNV-era 40-byte XCLL tail",
-            );
-        }
+    fn fo3_fnv_xcll_sizes_pinned() {
+        // FO3 / FNV genuinely ship the 40-byte tail. FO4/FO76 used to be
+        // bucketed here too, but they are Creation-Engine descendants with a
+        // 92-byte+ body (split out below — see the render-bug investigation
+        // for HalluciGen01). Starfield left in #1291 (108-byte).
+        assert_eq!(xcll_canonical_sizes(GameKind::Fallout3NV), &[28, 40]);
+    }
+
+    /// FO4 ships the Skyrim 92-byte body + an optional height-fog tail.
+    /// Sizes byte-verified by histogram over every CELL in Fallout4.esm:
+    /// 92 → 579, 128 → 10, 136 → 606, and ZERO 40-byte. Pre-fix FO4 was
+    /// bucketed with FNV's 40-byte tail and tripped the sanity-warn on every
+    /// vanilla interior (e.g. HalluciGen01's 136-byte XCLL).
+    #[test]
+    fn fo4_xcll_sizes_pinned() {
+        assert_eq!(xcll_canonical_sizes(GameKind::Fallout4), &[28, 92, 128, 136]);
+        // The FNV 40-byte tail is NOT a vanilla FO4 shape.
+        assert!(!xcll_canonical_sizes(GameKind::Fallout4).contains(&40));
+    }
+
+    /// FO76 likewise — histogram over SeventySix.esm: 136 → 885, 160 → 1767,
+    /// ZERO 40-byte.
+    #[test]
+    fn fo76_xcll_sizes_pinned() {
+        assert_eq!(xcll_canonical_sizes(GameKind::Fallout76), &[28, 136, 160]);
+        assert!(!xcll_canonical_sizes(GameKind::Fallout76).contains(&40));
     }
 
     #[test]
