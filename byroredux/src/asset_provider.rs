@@ -699,6 +699,14 @@ pub(crate) struct MaterialProvider {
     /// / roughness / texture paths flow into `ImportedMesh` (mirrors the
     /// FO4 BGSM `resolve_bgsm` per-field translation already wired below).
     sf_cdb: Option<Arc<ComponentDatabaseFile>>,
+    /// #1585 / F6 — process-lifetime cache of the `<Plugin> - Geometry.csg`
+    /// companion blob, keyed by the cell's master plugin path. Mirrors the
+    /// `sf_cdb` `Arc` hold: the CSG owns a warm zlib `ChunkCache`, so
+    /// re-opening it per precombine cell-load (the pre-fix behaviour) re-read
+    /// + re-parsed the ~3700-entry chunk table every tile and discarded all
+    /// inter-cell chunk reuse. The negative (`None`) result is cached too, so
+    /// a non-FO4 / no-CSG plugin isn't re-stat'd on every precombine cell.
+    csg_cache: HashMap<String, Option<Arc<byroredux_bsa::CsgArchive>>>,
 }
 
 /// #951 / SAFE-26 — bounded-cache caps for `MaterialProvider`. Sized to
@@ -717,7 +725,28 @@ impl MaterialProvider {
             failed_paths: HashSet::new(),
             failed_paths_order: VecDeque::new(),
             sf_cdb: None,
+            csg_cache: HashMap::new(),
         }
+    }
+
+    /// Resolve + open the `<Plugin> - Geometry.csg` companion blob once per
+    /// session (keyed by `plugin_path`) and hand back a shared handle.
+    /// #1585 / F6 — mirrors the `sf_cdb` `Arc` caching: precombine cell-loads
+    /// re-opened this ~240 MB blob every tile, re-parsing the chunk table and
+    /// throwing away the warm zlib `ChunkCache` that amortises inflate across
+    /// adjacent tiles sharing PSG regions. The negative result is cached so a
+    /// plugin with no companion CSG isn't re-probed per cell.
+    pub(crate) fn geometry_csg(
+        &mut self,
+        plugin_path: &str,
+    ) -> Option<Arc<byroredux_bsa::CsgArchive>> {
+        if let Some(cached) = self.csg_cache.get(plugin_path) {
+            return cached.clone();
+        }
+        let opened = crate::cell_loader::precombined::open_geometry_csg(plugin_path).map(Arc::new);
+        self.csg_cache
+            .insert(plugin_path.to_owned(), opened.clone());
+        opened
     }
 
     fn push_archive(&mut self, archive: Archive) {
@@ -1514,6 +1543,26 @@ pub(crate) fn merge_bgsm_into_mesh(
         if bgem.glass_enabled {
             mesh.bgem_glass = true;
         }
+        // Soft-particle depth fade + view-angle falloff cone. The NIF
+        // `BSEffectShaderProperty` path fills `mesh.effect_shader` from the
+        // block; the BGEM path is the FO4+ equivalent and must mirror it so
+        // `material_translate` can build `Material.{effect_falloff,
+        // effect_shader_flags}` (soft_falloff_depth + MAT_FLAG_EFFECT_SOFT)
+        // the same way. Without this every FO4 BGEM mist/steam/beam volume
+        // (`soft = true` in the authored file) rendered with no depth feather
+        // and stacked to an opaque white-out (HalluciGen labs). `lighting_influence`
+        // is authored 0..1 in BGEM but carried 0..255 on the shared payload.
+        mesh.effect_shader = Some(byroredux_nif::import::BsEffectShaderData {
+            falloff_start_angle: bgem.falloff_start_angle,
+            falloff_stop_angle: bgem.falloff_stop_angle,
+            falloff_start_opacity: bgem.falloff_start_opacity,
+            falloff_stop_opacity: bgem.falloff_stop_opacity,
+            soft_falloff_depth: bgem.soft_depth,
+            effect_soft: bgem.soft_enabled,
+            effect_lit: bgem.effect_lighting_enabled,
+            lighting_influence: (bgem.lighting_influence.clamp(0.0, 1.0) * 255.0).round() as u8,
+            ..Default::default()
+        });
         touched = true;
     } else {
         // Unknown extension — most likely a Starfield .mat JSON path that
@@ -2433,6 +2482,86 @@ mod tests {
         );
         // emittance_color must NOT be used as the primary emissive
         assert_ne!(emissive_color, bgem.emittance_color);
+    }
+
+    /// Regression for the FO4 HalluciGen gas-lab white-out — BGEM
+    /// `soft`/`soft_depth` must forward to `mesh.effect_shader` so
+    /// `material_translate` builds `soft_falloff_depth` + MAT_FLAG_EFFECT_SOFT
+    /// for the soft-particle depth fade in triangle.frag. Pre-fix only the NIF
+    /// `BSEffectShaderProperty` path populated these, so every FO4 BGEM
+    /// mist / steam / beam volume (`soft = true` in the authored file)
+    /// rendered with no depth feather and stacked to an opaque white-out.
+    #[test]
+    fn bgem_merge_forwards_soft_particle_depth() {
+        use byroredux_bgsm::BgemFile;
+        use byroredux_nif::import::BsEffectShaderData;
+        use byroredux_renderer::vulkan::material::material_flag::EFFECT_SOFT;
+
+        let bgem = BgemFile {
+            soft_enabled: true,
+            soft_depth: 200.0,
+            effect_lighting_enabled: true,
+            lighting_influence: 1.0,
+            falloff_start_angle: 0.5,
+            falloff_stop_angle: 0.2,
+            falloff_start_opacity: 0.9,
+            falloff_stop_opacity: 0.1,
+            ..Default::default()
+        };
+
+        // Mirror the prod assignment from the BGEM branch.
+        let es = BsEffectShaderData {
+            falloff_start_angle: bgem.falloff_start_angle,
+            falloff_stop_angle: bgem.falloff_stop_angle,
+            falloff_start_opacity: bgem.falloff_start_opacity,
+            falloff_stop_opacity: bgem.falloff_stop_opacity,
+            soft_falloff_depth: bgem.soft_depth,
+            effect_soft: bgem.soft_enabled,
+            effect_lit: bgem.effect_lighting_enabled,
+            lighting_influence: (bgem.lighting_influence.clamp(0.0, 1.0) * 255.0).round() as u8,
+            ..Default::default()
+        };
+
+        assert!(
+            (es.soft_falloff_depth - 200.0).abs() < f32::EPSILON,
+            "soft_depth must forward to soft_falloff_depth"
+        );
+        assert!(es.effect_soft, "soft_enabled must map to effect_soft");
+        assert_eq!(es.lighting_influence, 255, "1.0 influence → 255 on u8 payload");
+        let flags = crate::cell_loader::pack_effect_shader_flags(Some(&es));
+        assert_ne!(
+            flags & EFFECT_SOFT,
+            0,
+            "EFFECT_SOFT must be packed so the shader's soft-fade branch fires"
+        );
+    }
+
+    /// Regression for #1585 / F6 — `geometry_csg` must open + resolve the
+    /// `<Plugin> - Geometry.csg` companion ONCE per plugin across N precombine
+    /// cell-loads, caching even the negative (no-CSG) result so a plugin
+    /// without a companion blob isn't re-stat'd on every cell. Pre-fix
+    /// `spawn_precombined_meshes` called `open_geometry_csg` unconditionally
+    /// per cell, re-parsing the chunk table and discarding the warm zlib cache.
+    #[test]
+    fn geometry_csg_caches_result_across_cell_loads() {
+        let mut mp = MaterialProvider::new();
+        // No companion `… - Geometry.csg` exists beside this path → None.
+        let plugin = "/nonexistent/does-not-exist/Fallout4.esm";
+
+        assert!(mp.geometry_csg(plugin).is_none());
+        assert_eq!(
+            mp.csg_cache.len(),
+            1,
+            "the negative result is cached under the plugin key"
+        );
+        // A second (and Nth) precombine cell-load is a pure cache hit — no
+        // re-open, no re-stat, no chunk-table re-parse.
+        assert!(mp.geometry_csg(plugin).is_none());
+        assert_eq!(
+            mp.csg_cache.len(),
+            1,
+            "second call hits cache; no new probe of the missing CSG"
+        );
     }
 
     /// Regression for #1453 — BGEM `grayscale_texture` (palette/gradient LUT

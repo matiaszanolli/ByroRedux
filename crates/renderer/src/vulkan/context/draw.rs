@@ -294,6 +294,115 @@ pub struct FrameInputs<'a> {
 }
 
 impl VulkanContext {
+    /// Copy the live depth buffer into the sampleable depth-history image
+    /// for next frame's soft-particle fade. Called once per frame right
+    /// after the main render pass ends, while the depth image sits in
+    /// `DEPTH_STENCIL_READ_ONLY_OPTIMAL` (the render pass's final layout).
+    ///
+    /// Layout dance:
+    ///   depth:   READ_ONLY → TRANSFER_SRC → (copy) → READ_ONLY (restored
+    ///            so SSAO / SVGF / composite read it exactly as before).
+    ///   history: SHADER_READ_ONLY → TRANSFER_DST → (copy) → SHADER_READ_ONLY.
+    ///
+    /// # Safety
+    /// `cmd` is the current frame's primary command buffer, recording and
+    /// outside any render pass. `depth_image` / `depth_history_image` are
+    /// live, same-extent, same-format (`D32_SFLOAT`) depth images.
+    fn copy_depth_to_history(&self, cmd: vk::CommandBuffer) {
+        let range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::DEPTH,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        let depth_to_src = vk::ImageMemoryBarrier::default()
+            .src_access_mask(
+                vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags::SHADER_READ,
+            )
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .old_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(self.depth_image)
+            .subresource_range(range);
+        let hist_to_dst = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_READ)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(self.depth_history_image)
+            .subresource_range(range);
+
+        let layers = vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::DEPTH,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        let copy = vk::ImageCopy::default()
+            .src_subresource(layers)
+            .dst_subresource(layers)
+            .extent(vk::Extent3D {
+                width: self.swapchain_state.extent.width,
+                height: self.swapchain_state.extent.height,
+                depth: 1,
+            });
+
+        let depth_restore = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .new_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(self.depth_image)
+            .subresource_range(range);
+        let hist_to_read = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(self.depth_history_image)
+            .subresource_range(range);
+
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::LATE_FRAGMENT_TESTS | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[depth_to_src, hist_to_dst],
+            );
+            self.device.cmd_copy_image(
+                cmd,
+                self.depth_image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                self.depth_history_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[copy],
+            );
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[depth_restore, hist_to_read],
+            );
+        }
+    }
+
     /// Record and submit a frame.
     ///
     /// All per-frame inputs are bundled in [`FrameInputs`].
@@ -2938,6 +3047,16 @@ impl VulkanContext {
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_main_render_end(&self.device, cmd, frame);
             }
+
+            // Soft-particle depth fade: snapshot this frame's opaque depth
+            // into the sampleable history image so next frame's effect-shader
+            // FX can feather their alpha against the geometry behind them.
+            // The transparent FX wrote no depth (z_write off), so the depth
+            // buffer here holds opaque-only depth. Restores depth to
+            // READ_ONLY afterwards so SSAO / SVGF / composite read it
+            // unchanged. See `crates/renderer/shaders/triangle.frag`
+            // (MATERIAL_KIND_EFFECT_SHADER soft-fade block).
+            self.copy_depth_to_history(cmd);
 
             // #1255 / Phase C of #1210 — sequence water.frag's
             // imageAtomicAdd writes (FRAGMENT_SHADER WRITE during the

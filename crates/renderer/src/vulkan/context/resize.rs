@@ -10,7 +10,8 @@ use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::{pipeline, swapchain};
 use super::helpers::{
     create_depth_resources, create_main_framebuffers, create_render_pass, destroy_depth_resources,
-    destroy_main_framebuffers, destroy_render_pass_pipelines, GBufferFormats, GBufferViews,
+    destroy_main_framebuffers, destroy_render_pass_pipelines, init_depth_history_layout,
+    GBufferFormats, GBufferViews,
 };
 use super::VulkanContext;
 use anyhow::{Context, Result};
@@ -71,6 +72,19 @@ impl VulkanContext {
                 &mut self.depth_image_view,
                 &mut self.depth_image,
                 &mut self.depth_allocation,
+            );
+
+            // Soft-particle depth-history image follows the depth buffer's
+            // extent — recreated below. The sampler is extent-independent so
+            // it survives the resize untouched.
+            destroy_depth_resources(
+                &self.device,
+                self.allocator
+                    .as_ref()
+                    .expect("allocator missing during resize"),
+                &mut self.depth_history_view,
+                &mut self.depth_history_image,
+                &mut self.depth_history_allocation,
             );
 
             // NOTE: pipeline + render pass destruction is deferred
@@ -177,10 +191,43 @@ impl VulkanContext {
             self.allocator.as_ref().expect("allocator missing"),
             self.swapchain_state.extent,
             self.depth_format,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            "depth_buffer",
         )?;
         self.depth_image = depth_image;
         self.depth_image_view = depth_image_view;
         self.depth_allocation = Some(depth_allocation);
+
+        // Re-create the soft-particle depth-history image at the new extent
+        // and re-prime its layout (UNDEFINED → far-clear → SHADER_READ_ONLY).
+        // Its descriptor (set 1, binding 15) is rewritten alongside the AO
+        // texture further down (the view handle changed).
+        let (depth_history_image, depth_history_view, depth_history_allocation) =
+            create_depth_resources(
+                &self.device,
+                self.allocator.as_ref().expect("allocator missing"),
+                self.swapchain_state.extent,
+                self.depth_format,
+                vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+                "depth_history",
+            )?;
+        self.depth_history_image = depth_history_image;
+        self.depth_history_view = depth_history_view;
+        self.depth_history_allocation = Some(depth_history_allocation);
+        init_depth_history_layout(
+            &self.device,
+            &self.graphics_queue,
+            self.command_pool,
+            self.depth_history_image,
+        )?;
+        for f in 0..MAX_FRAMES_IN_FLIGHT {
+            self.scene_buffers.write_depth_history(
+                &self.device,
+                f,
+                self.depth_history_view,
+                self.depth_history_sampler,
+            );
+        }
 
         // Pair the destroy-side gate above: only rebuild render pass +
         // rasterization pipelines when the swapchain surface format

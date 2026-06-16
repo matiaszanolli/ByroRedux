@@ -886,6 +886,41 @@ pub struct BsEffectShaderData {
     pub luminance: Option<LuminanceParams>,
 }
 
+impl Default for BsEffectShaderData {
+    /// Identity effect-shader payload: a no-op falloff cone
+    /// (`angle = opacity = 1.0` collapses the shader's `denom > 0` branch
+    /// to a pass-through) and every flag/texture/soft field cleared. Lets
+    /// non-NIF producers (the FO4 BGEM merge in `asset_provider`) build a
+    /// payload from just the fields a BGEM authors, defaulting the rest.
+    fn default() -> Self {
+        Self {
+            falloff_start_angle: 1.0,
+            falloff_stop_angle: 1.0,
+            falloff_start_opacity: 1.0,
+            falloff_stop_opacity: 1.0,
+            soft_falloff_depth: 0.0,
+            greyscale_texture: None,
+            env_map_texture: None,
+            normal_texture: None,
+            env_mask_texture: None,
+            env_map_scale: 1.0,
+            refraction_power: None,
+            lighting_influence: 255,
+            env_map_min_lod: 0,
+            texture_clamp_mode: 3,
+            effect_soft: false,
+            effect_palette_color: false,
+            effect_palette_alpha: false,
+            effect_lit: false,
+            reflectance_texture: None,
+            lighting_texture: None,
+            emit_gradient_texture: None,
+            emittance_color: None,
+            luminance: None,
+        }
+    }
+}
+
 impl Default for MaterialInfo {
     fn default() -> Self {
         Self {

@@ -1100,6 +1100,13 @@ pub struct VulkanContext {
     depth_image_view: vk::ImageView,
     depth_image: vk::Image,
     depth_allocation: Option<vk_alloc::Allocation>,
+    // Soft-particle depth fade — sampleable copy of last frame's opaque
+    // depth, bound to triangle.frag set 1 binding 15. See the creation
+    // comment in `new()` and the per-frame copy in `draw.rs`.
+    depth_history_image: vk::Image,
+    depth_history_view: vk::ImageView,
+    depth_history_allocation: Option<vk_alloc::Allocation>,
+    depth_history_sampler: vk::Sampler,
     pub mesh_registry: MeshRegistry,
     pub texture_registry: TextureRegistry,
     pub scene_buffers: scene_buffer::SceneBuffers,
@@ -1479,7 +1486,28 @@ impl VulkanContext {
             &gpu_allocator,
             swapchain_state.extent,
             depth_format,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            "depth_buffer",
         )?;
+
+        // Soft-particle depth-fade history: a sampleable copy of the prior
+        // frame's opaque depth. Effect-shader (kind 101) FX read it to
+        // feather alpha as they approach geometry behind them — the authored
+        // `BSEffectShaderProperty.soft_falloff_depth` / BGEM `soft_depth`.
+        // Separate from the live depth image because that one is the active
+        // attachment during the transparent pass (can't be sampled while
+        // bound) and is cleared every frame. Initialized to far (1.0) so the
+        // first frame reads "no occluder near" → full alpha (benign).
+        let (depth_history_image, depth_history_view, depth_history_allocation) =
+            create_depth_resources(
+                &device,
+                &gpu_allocator,
+                swapchain_state.extent,
+                depth_format,
+                vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+                "depth_history",
+            )?;
+        let depth_history_sampler = create_depth_history_sampler(&device)?;
 
         // 10. Main render pass: 7 color attachments (HDR + G-buffer +
         // raw_indirect + albedo + reservoir) + depth.
@@ -1502,6 +1530,11 @@ impl VulkanContext {
         //     contention — Vulkan requires external sync on VkCommandPool).
         let command_pool = create_command_pool(&device, queue_indices.graphics)?;
         let transfer_pool = create_transfer_pool(&device, queue_indices.graphics)?;
+
+        // One-time transition of the depth-history image UNDEFINED → clear to
+        // far (1.0) → SHADER_READ_ONLY so the very first frame's effect-shader
+        // FX sample a valid layout before any per-frame depth copy has run.
+        init_depth_history_layout(&device, &graphics_queue, command_pool, depth_history_image)?;
 
         // Persistent fence for one-time submits (#302). Created unsignaled;
         // every use calls reset_fences then wait_for_fences.
@@ -1880,6 +1913,19 @@ impl VulkanContext {
                 None
             }
         };
+
+        // Soft-particle depth-history descriptor (set 1, binding 15). The
+        // image view is stable per swapchain generation, so it's written once
+        // here (and again on resize) rather than per-frame — only the image
+        // contents change each frame via the post-pass copy.
+        for f in 0..MAX_FRAMES_IN_FLIGHT {
+            scene_buffers.write_depth_history(
+                &device,
+                f,
+                depth_history_view,
+                depth_history_sampler,
+            );
+        }
 
         // 14a-bis. Volumetrics pipeline (M55 Phase 1 — no-op clear).
         // Allocates the per-frame-in-flight 3D froxel volumes
@@ -2304,6 +2350,10 @@ impl VulkanContext {
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
+            depth_history_image,
+            depth_history_view,
+            depth_history_allocation: Some(depth_history_allocation),
+            depth_history_sampler,
             framebuffers,
             command_pool,
             transfer_pool,
@@ -2857,6 +2907,17 @@ impl Drop for VulkanContext {
                     &mut self.depth_image,
                     &mut self.depth_allocation,
                 );
+                // Soft-particle depth-history image + its sampler.
+                self.device
+                    .destroy_sampler(self.depth_history_sampler, None);
+                self.depth_history_sampler = vk::Sampler::null();
+                destroy_depth_resources(
+                    &self.device,
+                    allocator,
+                    &mut self.depth_history_view,
+                    &mut self.depth_history_image,
+                    &mut self.depth_history_allocation,
+                );
             }
 
             // `destroy_render_pass_pipelines` destroys both
@@ -2961,10 +3022,11 @@ impl Drop for VulkanContext {
 
 // Helper functions are in helpers.rs — use helpers:: prefix.
 use helpers::{
-    allocate_command_buffers, create_command_pool, create_depth_resources,
-    create_main_framebuffers, create_render_pass, create_transfer_pool, destroy_depth_resources,
-    destroy_main_framebuffers, destroy_render_pass_pipelines, find_depth_format,
-    load_or_create_pipeline_cache, save_pipeline_cache,
+    allocate_command_buffers, create_command_pool, create_depth_history_sampler,
+    create_depth_resources, create_main_framebuffers, create_render_pass, create_transfer_pool,
+    destroy_depth_resources, destroy_main_framebuffers, destroy_render_pass_pipelines,
+    find_depth_format, init_depth_history_layout, load_or_create_pipeline_cache,
+    save_pipeline_cache,
 };
 
 #[cfg(test)]
