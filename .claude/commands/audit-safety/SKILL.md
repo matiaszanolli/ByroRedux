@@ -187,8 +187,10 @@ Vulkan-spec compliance, then the narrower regression-guard surfaces.
   the intern cap and the upload truncation stay in lockstep.
 - `GpuInstance.material_id` indexes the SSBO with NO GPU bounds check — CPU must
   guarantee in-range (SSBO index mismatch = CRITICAL).
-- `ui.vert` MaterialBuffer read offsets must stay in lockstep with `triangle.frag`
-  (#785 was a stale-hunk regression reading wrong bytes) — name `ui.vert` explicitly.
+- `ui.vert` MaterialBuffer read offsets must stay in lockstep with the canonical
+  `struct GpuMaterial` / `GpuInstance` in `crates/renderer/shaders/include/bindings.glsl`
+  (`triangle.frag` `#include`s it) — #785 was a stale-hunk regression reading wrong
+  bytes — name `ui.vert` explicitly.
 
 ### 7. RT IOR-Refraction Safety (regression guards)
 

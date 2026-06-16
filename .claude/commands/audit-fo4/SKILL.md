@@ -32,7 +32,7 @@ Still open (legitimate forward scope): `_precomb.nif` collision, `.uvd` occlusio
 | BA2 format   | Exhaustive `match` over `{1, 2, 3, 7, 8}` in `crates/bsa/src/ba2.rs` (consts `BA2_V_FO4=1`, `BA2_V_FO4_NEXT_GEN_TEX=7`, `BA2_V_FO4_NEXT_GEN_MESH=8`); GNRL + DX10 |
 | ESM records  | SCOL / MOVS / PKIN / TXST in `crates/plugin/src/esm/records/`; SCOL/PKIN expand in `byroredux/src/cell_loader/refr.rs` |
 | Precombines  | M49 CSG pipeline landed — `crates/bsa/src/csg.rs` → `crates/nif/src/import/precombine.rs` → `byroredux/src/cell_loader/precombined.rs` |
-| Parse rate   | 100.00% clean on both vanilla mesh archives per #1457 (`parse_rate_fo4_all_meshes`, 2026-06-14); the FaceGen truncation tail the 2026-06-02 ROADMAP snapshot recorded is gone. The ROADMAP compat-matrix figure (96.46%) lags — re-run the harness before citing a parse rate. |
+| Parse rate   | 100.00% clean on both vanilla mesh archives per #1457 (`parse_rate_fo4_all_meshes`, 2026-06-14); the FaceGen truncation tail the 2026-06-02 ROADMAP snapshot recorded is gone. ROADMAP compat-matrix now also reads 100.00% (159 866/159 866, #1593) — still re-run the harness before citing a parse rate. |
 | Rendering    | Interior cells render end-to-end (MedTekResearch01 bench, ~21k entities). BGSM/BGEM merged; precombined entities spawned interior + exterior. |
 | Reference    | `/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data/` |
 | Bench        | `--cell MedTekResearch01` (see ROADMAP for the full `--bsa`/`--textures-ba2`/`--materials-ba2` invocation) |
@@ -108,7 +108,7 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 
 ### Dimension 5: FO4 Shader Flags & BGSM PBR Routing (Disney path)
 **Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/blocks/properties.rs` (BSLightingShaderProperty), `crates/nif/src/import/material/` (`mod`, `walker`, `shader_data`), `crates/renderer/shaders/triangle.frag` (Disney lobe gates).
+**Entry points**: `crates/nif/src/blocks/shader.rs` (BSLightingShaderProperty), `crates/nif/src/import/material/` (`mod`, `walker`, `shader_data`), `crates/renderer/shaders/include/lighting.glsl` + `include/pbr.glsl` (Disney lobe gates).
 **Checklist**:
 - **u32 flag pair** read as two separate fields (shader_flags_1 + shader_flags_2). FO4 flag bit positions differ from Skyrim — verify decal / alpha-test / skinned / glow / window / refraction / parallax / facegen bits read from the correct mask + bit.
 - **BGSM Name stopcond** — when the material is external, the block parser returns before reading the inline Phong trailing fields (those belong to the BGSM). `ImportedMesh.material_path` flows to `Material.material_path` for diagnostics; `mesh.info <id>` surfaces it when texture_path is absent.

@@ -86,7 +86,7 @@ leaks compound; denoiser/shader correctness is mostly visual.
 **Output**: `/tmp/audit/renderer/dim_1.md`
 
 #### Dimension 2: SSBO/Index plumbing & RT ray queries (shader)
-**Entry points**: `crates/renderer/shaders/triangle.frag` (all `rayQueryEXT`), `crates/renderer/shaders/water.frag`.
+**Entry points**: `crates/renderer/shaders/triangle.frag` + its `#include`d `crates/renderer/shaders/include/raytrace.glsl` / `include/lighting.glsl` (all `rayQueryEXT`), `crates/renderer/shaders/water.frag`.
 **Severity floor**: SSBO index mismatch = CRITICAL; ray self-intersection / wrong tMin = HIGH.
 **Checklist**:
 - `instance_custom_index` (NOT `gl_InstanceID`) indexes `GpuInstance[]`; `materials[instance.material_id]`, vertex/index SSBOs (Set 1 bindings 8/9 per shader-pipeline.md) use the same offsets the Rust upload writes.
@@ -108,9 +108,9 @@ leaks compound; denoiser/shader correctness is mostly visual.
 **Severity floor**: `#[repr(C)]` GPU struct drifting from its shader struct = HIGH (silent per-instance/per-material corruption).
 **Checklist**:
 - Sizes pinned by tests — confirm they hold and match shader-pipeline.md: `GpuInstance` = **112 B** (`size_of::<GpuInstance>() == 112`), `GpuCamera` = **336 B** (`gpu_camera_is_336_bytes` — grew 320→336 with the `render_origin` vec4, #markarth-precision / #1492), `GpuMaterial` = **300 B** (`gpu_material_size_is_300_bytes`; NOTE the size grew 260→…→300 via #804/#1249/#1250 — the `_300_` test name is current, the old `_260_` name is gone).
-- Per-field offset pins: `gpu_material_field_offsets_match_shader_contract` asserts every named field offset across all vec4 slots (#806) — a size-only pin can't catch within-vec4 reorders. Any added field needs a matching offset assertion plus updates to the Rust struct AND the GLSL `struct GpuMaterial` (only declared in `triangle.frag`).
+- Per-field offset pins: `gpu_material_field_offsets_match_shader_contract` asserts every named field offset across all vec4 slots (#806) — a size-only pin can't catch within-vec4 reorders. Any added field needs a matching offset assertion plus updates to the Rust struct AND the GLSL `struct GpuMaterial` (only declared in `crates/renderer/shaders/include/bindings.glsl`, `#include`d by `triangle.frag`).
 - All `GpuMaterial` fields are scalar f32/u32 — **never** `[f32;3]` (std430 vec3 alignment would desync the byte-hash dedup). Named pad fields explicitly zeroed (no uninit bytes feeding Hash/Eq).
-- `struct GpuInstance` is mirrored in **5 shaders** — verify lockstep via `grep -l "struct GpuInstance" crates/renderer/shaders/*` → `triangle.vert`, `triangle.frag`, `ui.vert`, `water.vert`, `caustic_splat.comp` (`ui.vert`/`water.vert` reading wrong offsets is the recurring trap, #785/#1498). Per `feedback_shader_struct_sync.md`.
+- `struct GpuInstance` is declared once in `crates/renderer/shaders/include/bindings.glsl` (pulled into `triangle.frag` via `#include`) and **hand-mirrored in 4 standalone shaders** — verify lockstep via `grep -rl "struct GpuInstance" crates/renderer/shaders/` → `include/bindings.glsl`, `triangle.vert`, `ui.vert`, `water.vert`, `caustic_splat.comp` (5 declaration sites; `ui.vert`/`water.vert` reading wrong offsets is the recurring trap, #785/#1498). Per `feedback_shader_struct_sync.md`.
 - Flag constants are the single source of truth in `crates/renderer/src/shader_constants_data.rs`, emitted into `crates/renderer/shaders/include/shader_constants.glsl` and `#include`d — never hand-written shader-side: `INSTANCE_FLAG_*`, `MATERIAL_KIND_*`, `MAT_FLAG_*` (bits 0–9, including `PBR_BSDF` bit 5, `TRANSLUCENCY` bit 6, `MODEL_SPACE_NORMALS` bit 7, `TRANSLUCENCY_THICK_OBJECT` bit 8, `TRANSLUCENCY_MIX_ALBEDO` bit 9 — all canonical post-#1357, the `BGSM_*` prefix is gone), and the 13 `DBG_*` bits (`0x1`…`0x1000`, value-pinned by the shared catalog, `8eaade44`).
 - Capacity constants match memory-budget.md: `MAX_INSTANCES = 0x40000`, `MAX_MATERIALS = 16384` (`scene_buffer/constants.rs`), `MAX_INDIRECT_DRAWS = MAX_INSTANCES`. Over-cap material intern returns id 0 + one-shot `warn!` (no SSBO-index corruption, #797); upload truncates to `min(intern_count, MAX_MATERIALS)`.
 **Output**: `/tmp/audit/renderer/dim_3.md`
@@ -260,9 +260,9 @@ leaks compound; denoiser/shader correctness is mostly visual.
 **Output**: `/tmp/audit/renderer/dim_16.md`
 
 #### Dimension 17: Disney BSDF / PBR gating (#1248–#1254) + soft shadows
-**Entry points**: `crates/renderer/shaders/triangle.frag` (Disney lobe fns + gate sites), `crates/renderer/src/vulkan/material.rs` (Disney preset constructors), `byroredux/src/render/sky.rs` (`sun_angular_radius`).
+**Entry points**: `crates/renderer/shaders/include/pbr.glsl` (Disney lobe fn *definitions*) + `crates/renderer/shaders/include/lighting.glsl` (gate + call sites; `triangle.frag` `#include`s both), `crates/renderer/src/vulkan/material.rs` (Disney preset constructors), `byroredux/src/render/sky.rs` (`sun_angular_radius`).
 **Checklist** — Disney (symbol-anchored; flag bits live in `shader_constants_data.rs`, NOT hand-declared in the shader — verify, this was the #1357 migration):
-- Gate is `MAT_FLAG_PBR_BSDF` (bit 5) only — grep `MAT_FLAG_PBR_BSDF` gate sites in `triangle.frag` and confirm each lights the Disney lobe (no FNV/FO3/Skyrim legacy path tripping it). FNV/FO3/Oblivion: zero materials set the flag → lobe unreachable. FO4/FO76/Starfield: BGSM is canonical → lobe is the expected path (regression is a BGSM falling back to Lambert).
+- Gate is `MAT_FLAG_PBR_BSDF` (bit 5) only — grep `MAT_FLAG_PBR_BSDF` gate sites in `crates/renderer/shaders/include/lighting.glsl` + `include/pbr.glsl` and confirm each lights the Disney lobe (no FNV/FO3/Skyrim legacy path tripping it). FNV/FO3/Oblivion: zero materials set the flag → lobe unreachable. FO4/FO76/Starfield: BGSM is canonical → lobe is the expected path (regression is a BGSM falling back to Lambert).
 - `dielectricF0FromIor(eta)` derives F0 from per-material IOR (not hardcoded 0.04), with input-domain clamp guarding `eta ≤ 0` (#1248/#1253).
 - `distributionGGXAniso(NdotH, HdotX, HdotY, ax, ay)` MUST degenerate exactly to isotropic GGX when `ax == ay` (legacy-compat contract, #1250); `deriveAxAy(roughness, anisotropic, …)` clamps `anisotropic` to [0,1] (half-axis convention per GLSL-PathTracer, NOT Disney-2012 `[-1,1]`) — verify no `sqrt(<0)` at `anisotropic = 1.0` (#1254).
 - `disneyDiffuseSplit(...)` returns split lobes (Burley retro + sheen + Hanrahan-Krueger SSS); sheen is additive, NOT divided by π (#1249/#1252).
@@ -284,7 +284,7 @@ leaks compound; denoiser/shader correctness is mostly visual.
 **Output**: `/tmp/audit/renderer/dim_18.md`
 
 #### Dimension 19: Tangent-space & normal maps (M-NORMALS)
-**Entry points**: `crates/nif/src/import/mesh/tangent.rs`, `crates/nif/src/import/mesh/bs_tri_shape.rs`, `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs` (`VF_TANGENTS`), `crates/renderer/shaders/triangle.frag` (`perturbNormal`).
+**Entry points**: `crates/nif/src/import/mesh/tangent.rs`, `crates/nif/src/import/mesh/bs_tri_shape.rs`, `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs` (`VF_TANGENTS`), `crates/renderer/shaders/include/material_sampling.glsl` (`perturbNormal`).
 **Checklist**:
 - Oblivion/FO3/FNV: per-vertex tangents from `NiBinaryExtraData` "Tangent space …" — Bethesda's "tangent" is `∂P/∂V` and "bitangent" is `∂P/∂U` (the `CalcTangentSpace` swap). The decoder must read the **bitangent half** into `Vertex.tangent.xyz` and derive the sign from the tangent half (handedness regression #786). 
 - FO4+ BSTriShape inline tangents when `VF_TANGENTS | VF_NORMALS` set (packed-vertex loop) — distinct from Skyrim, not gated on the wrong BSVER (#795/#796).

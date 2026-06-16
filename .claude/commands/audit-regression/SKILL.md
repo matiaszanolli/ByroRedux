@@ -105,9 +105,11 @@ run regardless of Step 1's window. A FAIL here is still reported as a regression
 
 **Disney BSDF + GPU struct contracts** (recent shader wave):
 
-- `crates/renderer/shaders/triangle.frag` keeps the Disney/Burley lobe + the
-  GLSL-PathTracer MIT attribution block (top-of-file, Burley 2012 cite), and
-  `NUM_RESERVOIRS = 16` is intact.
+- The Disney/Burley lobe now lives in `crates/renderer/shaders/include/pbr.glsl`
+  (split out of `triangle.frag`; the GLSL-PathTracer MIT attribution block stays
+  top-of-`triangle.frag`, Burley 2012 cite), and `NUM_RESERVOIRS = 16` is intact in
+  `crates/renderer/shaders/include/lighting.glsl` (the reservoir G-buffer attachment
+  was retired #1583/#1590 — WRS is register-local now).
 - `#[repr(C)]` GPU structs hold their size pins in
   `crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs`:
   `GpuInstance` = 112 B (`gpu_instance_is_112_bytes_std430_compatible`) and

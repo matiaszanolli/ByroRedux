@@ -71,12 +71,12 @@ Dimensions are ordered by current FNV risk: the layers most likely to silently b
 **Entry points**: `crates/renderer/src/vulkan/acceleration/`, `crates/renderer/shaders/triangle.frag`, `crates/renderer/shaders/composite.frag`, `docs/engine/lighting-from-cells.md`
 **Checklist**:
 - TLAS frustum culling — no lights dropped for in-view fragments.
-- ReSTIR-DI direct lighting in `triangle.frag` — `NUM_RESERVOIRS = 16` reservoirs/fragment, unbiased `W = resWSum / (K · w_sel)` estimator, shadow-ray budget caps, distance-based shadow/GI ray fallback.
+- ReSTIR-DI direct lighting in `crates/renderer/shaders/include/lighting.glsl` (`#include`d by `triangle.frag`; the reservoir G-buffer attachment was retired #1583/#1590 — the WRS now stays register-local) — `NUM_RESERVOIRS = 16` reservoirs/fragment, unbiased `W = resWSum / (K · w_sel)` estimator, shadow-ray budget caps, distance-based shadow/GI ray fallback.
 - BLAS compaction + **LRU eviction at the dynamic VRAM-derived budget**: `predicates.rs::compute_blas_budget` = `device_local_bytes / 3` floored at `MIN_BLAS_BUDGET_BYTES` (~4 GB on a 12 GB-VRAM dev box — NOT any stale "1 GB" figure); the result is cached in the `blas_budget_bytes` field (`acceleration/mod.rs`).
 - SVGF temporal accumulation uses motion vectors + `mesh_id` disocclusion; TAA Halton jitter + YCoCg variance clamp.
 - M33 sky gradient + cloud layer blends correctly with tone-mapped geometry.
-- **Disney BSDF gate guard (#1248–#1252)**: zero FNV materials author BGSM (FO4+), so `MAT_FLAG_PBR_BSDF` (`crates/renderer/shaders/include/shader_constants.glsl` = 32u) must be 0 across the FalloutNV.esm material universe — the Disney lobe at `triangle.frag` is unreachable for FNV. If any FNV scene activates Burley retro-reflection / anisotropic GGX / per-material-IOR Fresnel, the gate regressed.
-- **#1125 skyTint interior gate** at `triangle.frag` reflection + refraction miss fallbacks (2 sites) — FNV interiors (Prospector, every Vault) must drop to cell ambient alone, not default zenith blue.
+- **Disney BSDF gate guard (#1248–#1252)**: zero FNV materials author BGSM (FO4+), so `MAT_FLAG_PBR_BSDF` (`crates/renderer/shaders/include/shader_constants.glsl` = 32u) must be 0 across the FalloutNV.esm material universe — the Disney lobe (now in `crates/renderer/shaders/include/pbr.glsl`) is unreachable for FNV. If any FNV scene activates Burley retro-reflection / anisotropic GGX / per-material-IOR Fresnel, the gate regressed.
+- **#1125 skyTint interior gate** at the `crates/renderer/shaders/include/raytrace.glsl` reflection + refraction miss fallbacks (2 sites) — FNV interiors (Prospector, every Vault) must drop to cell ambient alone, not default zenith blue.
 - Sun-sprite mip-0 force (`8b5d77c1`) at `composite.frag::compute_sky` — explicit `textureLod` 0.0 avoids pixelating the tiny screen-space sun disc.
 **Output**: `/tmp/audit/fnv/dim_3.md`
 
@@ -87,7 +87,7 @@ Dimensions are ordered by current FNV risk: the layers most likely to silently b
 - Record counts on FalloutNV.esm match the ROADMAP / `feature-matrix` baseline (do not transcribe a fixed count into this skill — diff against the living doc).
 - Spot-check semantics: Varmint Rifle stats, NCR faction relations, VATS AVIF entries (the FNV gameplay-record path in `crates/plugin/src/esm/records/index.rs` + `crates/plugin/src/esm/records/misc/effects.rs`).
 - CELL `XCLL` `fog_far_color` optional-field handling.
-- FO4 additions (SCOL/MOVS/PKIN/TXST) must not steal FNV dispatch — the TXST/`XATO`/`XTNM`/`XTXR` match arms live in `crates/plugin/src/esm/cell/walkers.rs`; an `unreachable_patterns` warning there is a code smell.
+- **SCOL is FNV-era, not an FO4 addition** (#1538): FalloutNV.esm carries **98 SCOL bases referenced by 1084 REFRs** (road segments, guardrails, debris LOD) — the `is_scol_era = is_fo4_plus || Fallout3NV` gate in `crates/plugin/src/esm/records/mod.rs` MUST keep dispatching `parse_scol_group` for FNV/FO3; re-narrowing it to FO4-only is the regression that silently drops those 1084 placements. The genuinely FO4+-only records are **MOVS / PKIN / MSWP** (byte-scan-confirmed absent from FalloutNV.esm) — those must not steal FNV dispatch. TXST/`XATO`/`XTNM`/`XTXR` cell-subrecord arms live in `crates/plugin/src/esm/cell/walkers.rs`; an `unreachable_patterns` warning there is a code smell.
 - LVLI leveled-list flattening — `crates/plugin/src/equip.rs::expand_leveled_form_id` resolves NPC default-outfit LVLI refs into base ARMO/WEAP; FNV NPCs whose outfits reference LVLI must spawn gear, not empty.
 **Output**: `/tmp/audit/fnv/dim_4.md`
 

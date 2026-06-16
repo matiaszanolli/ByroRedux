@@ -205,8 +205,9 @@ exist".
   Oblivion emitter that parses (per the #1239 gate) actually reaches the ECS
   authoring path and animates — not just parses-then-drops.
 - **Disney BSDF gating regression guard (#1248-#1252)**: zero Oblivion materials
-  author BGSM/`.mat`, so `MAT_FLAG_PBR_BSDF` (`crates/renderer/shaders/triangle.frag`)
-  must be 0 across the entire Oblivion material universe — the Disney lobe is
+  author BGSM/`.mat`, so `MAT_FLAG_PBR_BSDF` (`crates/renderer/shaders/include/shader_constants.glsl`)
+  must be 0 across the entire Oblivion material universe — the Disney lobe
+  (`crates/renderer/shaders/include/pbr.glsl`) is
   unreachable for Oblivion. Any Oblivion scene activating Burley / anisotropic
   GGX is a gate regression.
 **Output**: `/tmp/audit/oblivion/dim_4.md`

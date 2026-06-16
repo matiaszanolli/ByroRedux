@@ -228,7 +228,7 @@ single-boundary violation (a second construction site that can diverge the paths
 - `EmissiveSource::Effect` + `material_kind == 101` — `BSEffectShaderProperty` capture/route.
 
 **Checklist** (`no-render-time-fallback` / `no-leak`):
-- Per-game flag vocabularies are dispatched by **block type** (the wire format already discriminates the game), NOT by a runtime `if game ==`. Verify `triangle.frag` has **zero** `if game ==` branches — the renderer reads `material.is_decal` / `two_sided` with no per-game branch. A per-game branch leaking into the shader is the cardinal `no-render-time-fallback`/leak violation for this dimension.
+- Per-game flag vocabularies are dispatched by **block type** (the wire format already discriminates the game), NOT by a runtime `if game ==`. Verify `triangle.frag` **and its `#include`d `include/*.glsl` headers** have **zero** `if game ==` branches — the renderer reads `material.is_decal` / `two_sided` with no per-game branch. A per-game branch leaking into the shader is the cardinal `no-render-time-fallback`/leak violation for this dimension.
 - All 9 `BSLightingShaderProperty` shader-type variants forward their trailing data (SkinTint/HairTint/Parallax/MultiLayer/Eye/Sparkle — the pre-#343 8-of-9 drop is closed). A variant dropping its trailing data is a regression.
 - `BSEffectShaderProperty` captured + routed (EFFECT_* flags, `material_kind == 101`). The one *deferred* item is the `base_color_scale` diffuse-tint-vs-emissive render path — tagged via `EmissiveSource::Effect`, not dropped (don't re-report as a leak).
 **Output**: `/tmp/audit/nifal/dim_8.md`
