@@ -28,6 +28,29 @@ impl super::buffers::SceneBuffers {
         }
     }
 
+    /// Write the soft-particle depth-history texture (binding 15) into the
+    /// scene descriptor set for a given frame. The image holds the prior
+    /// frame's opaque depth; the effect-shader branch samples it to feather
+    /// FX alpha. Sampled as `SHADER_READ_ONLY_OPTIMAL` (the layout the
+    /// per-frame copy leaves it in).
+    pub fn write_depth_history(
+        &self,
+        device: &ash::Device,
+        frame_index: usize,
+        depth_history_view: vk::ImageView,
+        depth_history_sampler: vk::Sampler,
+    ) {
+        let image_info = [vk::DescriptorImageInfo::default()
+            .sampler(depth_history_sampler)
+            .image_view(depth_history_view)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let write =
+            write_combined_image_sampler(self.descriptor_sets[frame_index], 15, &image_info);
+        unsafe {
+            device.update_descriptor_sets(&[write], &[]);
+        }
+    }
+
     /// Write global geometry SSBO references for RT reflection UV lookups.
     pub fn write_geometry_buffers(
         &self,

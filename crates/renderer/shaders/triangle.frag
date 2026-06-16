@@ -262,6 +262,13 @@ layout(std430, set = 1, binding = 6) readonly buffer ClusterLightIndices {
 // SSAO texture (computed after the render pass, read next frame).
 layout(set = 1, binding = 7) uniform sampler2D aoTexture;
 
+// Soft-particle depth history: previous frame's opaque depth (non-linear,
+// D32). Effect-shader (kind 101) FX feather their alpha against the geometry
+// behind them so authored `soft = true` mist / steam / dust volumes dissolve
+// at surfaces instead of showing hard box silhouettes. Copied from the depth
+// buffer after the main pass (see `VulkanContext::copy_depth_to_history`).
+layout(set = 1, binding = 15) uniform sampler2D depthHistoryTex;
+
 // Global geometry SSBOs for RT reflection UV lookups.
 //
 // Vertex layout (100 B = 25 floats per vertex, mirrors Rust `Vertex`
@@ -1785,13 +1792,6 @@ void main() {
         // identity defaults the math reduces to a no-op (alpha stays
         // at 1.0, the texColor.a value passes through unchanged).
         //
-        // Soft-depth fade (`softFalloffDepth`) requires sampling the
-        // scene depth behind the fragment to fade alpha as the surface
-        // approaches an opaque background. That binding (a depth
-        // sampler bound to triangle.frag) is not in place yet — the
-        // field is plumbed end-to-end via GpuInstance for the future
-        // wiring, but the math below currently uses cone falloff only.
-        // Filed as a follow-up to SK-D4-01.
         float coneFade = mat.falloffStartOpacity;
         float denom = mat.falloffStartAngle - mat.falloffStopAngle;
         if (denom > 1e-5) {
@@ -1802,6 +1802,32 @@ void main() {
         // texColor.a already has `mat.materialAlpha` baked in upstream
         // (line ~567), so don't double-multiply that factor here.
         float finalAlpha = texColor.a * coneFade;
+        // ── Soft-particle depth fade (`SLSF1::Soft_Effect` / BGEM `soft`) ──
+        //
+        // Dissolve the FX as it approaches the opaque surface behind it, so
+        // box-shaped mist / steam / dust volumes feather into geometry
+        // instead of showing a hard silhouette (and — densely placed — stack
+        // into an opaque white-out, as in the FO4 HalluciGen gas labs).
+        // `depthHistoryTex` is the PREVIOUS frame's opaque depth (this
+        // fragment's draw writes no depth; the copy runs post-pass), so the
+        // sampled value is the scene behind this pixel up to one frame of
+        // camera motion — imperceptible for a soft haze. Reconstruction
+        // mirrors `ssao.comp::worldFromDepth` (same `invViewProj`, same
+        // `uv*2-1` NDC). Both points share this pixel's NDC.xy, so their
+        // camera-distance delta is the along-ray gap to the occluder.
+        if ((mat.materialFlags & MAT_FLAG_EFFECT_SOFT) != 0u
+            && mat.softFalloffDepth > 0.0) {
+            vec2 uvScreen = gl_FragCoord.xy / screen.xy;
+            float sceneDepthNDC = texture(depthHistoryTex, uvScreen).r;
+            vec2 ndcXY = uvScreen * 2.0 - 1.0;
+            vec4 sClip = invViewProj * vec4(ndcXY, sceneDepthNDC, 1.0);
+            vec3 sceneWorld = sClip.xyz / sClip.w;
+            vec4 fClip = invViewProj * vec4(ndcXY, gl_FragCoord.z, 1.0);
+            vec3 fragSceneWorld = fClip.xyz / fClip.w;
+            float gap = length(sceneWorld - cameraPos.xyz)
+                      - length(fragSceneWorld - cameraPos.xyz);
+            finalAlpha *= clamp(gap / mat.softFalloffDepth, 0.0, 1.0);
+        }
         outColor = vec4(emit, finalAlpha);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(emit, 1.0);

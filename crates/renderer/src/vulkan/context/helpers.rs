@@ -338,6 +338,8 @@ pub(super) fn create_depth_resources(
     allocator: &SharedAllocator,
     extent: vk::Extent2D,
     depth_format: vk::Format,
+    usage: vk::ImageUsageFlags,
+    name: &str,
 ) -> Result<(vk::Image, vk::ImageView, vk_alloc::Allocation)> {
     let image_info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
@@ -351,7 +353,7 @@ pub(super) fn create_depth_resources(
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
         .tiling(vk::ImageTiling::OPTIMAL)
-        .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
+        .usage(usage)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED);
 
@@ -381,7 +383,7 @@ pub(super) fn create_depth_resources(
     // deadlock identical to #1163. Fix #1165.
     let alloc_result = allocator.lock().expect("allocator lock poisoned").allocate(
         &vk_alloc::AllocationCreateDesc {
-            name: "depth_buffer",
+            name,
             requirements,
             location: MemoryLocation::GpuOnly,
             linear: false,
@@ -520,6 +522,100 @@ pub(super) unsafe fn destroy_depth_resources(
             .free(alloc)
             .expect("Failed to free depth allocation");
     }
+}
+
+/// Subresource range covering the single depth aspect of a depth image.
+/// Shared by the soft-particle depth-history barriers / copy / clear.
+pub(super) fn depth_subresource_range() -> vk::ImageSubresourceRange {
+    vk::ImageSubresourceRange {
+        aspect_mask: vk::ImageAspectFlags::DEPTH,
+        base_mip_level: 0,
+        level_count: 1,
+        base_array_layer: 0,
+        layer_count: 1,
+    }
+}
+
+/// Point sampler with clamp-to-edge addressing for the soft-particle
+/// depth-history image. No mips, no comparison — the effect-shader branch
+/// reads raw non-linear depth and reconstructs world position itself.
+pub(super) fn create_depth_history_sampler(device: &ash::Device) -> Result<vk::Sampler> {
+    let info = vk::SamplerCreateInfo::default()
+        .mag_filter(vk::Filter::NEAREST)
+        .min_filter(vk::Filter::NEAREST)
+        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .min_lod(0.0)
+        .max_lod(0.0);
+    unsafe { device.create_sampler(&info, None) }
+        .context("Failed to create depth-history sampler")
+}
+
+/// One-time init of the depth-history image: UNDEFINED → clear to far depth
+/// (1.0) → SHADER_READ_ONLY_OPTIMAL, so the first frame's effect-shader FX
+/// sample a valid layout (and a "no near occluder" depth ⇒ full alpha)
+/// before any per-frame depth copy has populated it.
+pub(super) fn init_depth_history_layout(
+    device: &ash::Device,
+    queue: &std::sync::Mutex<vk::Queue>,
+    pool: vk::CommandPool,
+    image: vk::Image,
+) -> Result<()> {
+    let range = depth_subresource_range();
+    crate::vulkan::texture::with_one_time_commands(device, queue, pool, |cmd| {
+        let to_dst = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(range);
+        let to_read = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(range);
+        let clear = vk::ClearDepthStencilValue {
+            depth: 1.0,
+            stencil: 0,
+        };
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_dst],
+            );
+            device.cmd_clear_depth_stencil_image(
+                cmd,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &clear,
+                &[range],
+            );
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_read],
+            );
+        }
+        Ok(())
+    })
 }
 
 /// Destroy the rasterization pipelines that bind the main render pass:

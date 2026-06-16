@@ -320,6 +320,17 @@ pub(crate) fn build_scene_descriptor_bindings(
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT),
     );
+    // Binding 15: soft-particle depth-history texture (fragment shader —
+    // effect-shader FX feather their alpha against last frame's opaque
+    // depth). PARTIALLY_BOUND (binding >= 5), so it's valid even on the
+    // first frames before `write_depth_history` runs.
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(15)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
     bindings
 }
 

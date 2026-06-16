@@ -1514,6 +1514,26 @@ pub(crate) fn merge_bgsm_into_mesh(
         if bgem.glass_enabled {
             mesh.bgem_glass = true;
         }
+        // Soft-particle depth fade + view-angle falloff cone. The NIF
+        // `BSEffectShaderProperty` path fills `mesh.effect_shader` from the
+        // block; the BGEM path is the FO4+ equivalent and must mirror it so
+        // `material_translate` can build `Material.{effect_falloff,
+        // effect_shader_flags}` (soft_falloff_depth + MAT_FLAG_EFFECT_SOFT)
+        // the same way. Without this every FO4 BGEM mist/steam/beam volume
+        // (`soft = true` in the authored file) rendered with no depth feather
+        // and stacked to an opaque white-out (HalluciGen labs). `lighting_influence`
+        // is authored 0..1 in BGEM but carried 0..255 on the shared payload.
+        mesh.effect_shader = Some(byroredux_nif::import::BsEffectShaderData {
+            falloff_start_angle: bgem.falloff_start_angle,
+            falloff_stop_angle: bgem.falloff_stop_angle,
+            falloff_start_opacity: bgem.falloff_start_opacity,
+            falloff_stop_opacity: bgem.falloff_stop_opacity,
+            soft_falloff_depth: bgem.soft_depth,
+            effect_soft: bgem.soft_enabled,
+            effect_lit: bgem.effect_lighting_enabled,
+            lighting_influence: (bgem.lighting_influence.clamp(0.0, 1.0) * 255.0).round() as u8,
+            ..Default::default()
+        });
         touched = true;
     } else {
         // Unknown extension — most likely a Starfield .mat JSON path that
@@ -2433,6 +2453,58 @@ mod tests {
         );
         // emittance_color must NOT be used as the primary emissive
         assert_ne!(emissive_color, bgem.emittance_color);
+    }
+
+    /// Regression for the FO4 HalluciGen gas-lab white-out — BGEM
+    /// `soft`/`soft_depth` must forward to `mesh.effect_shader` so
+    /// `material_translate` builds `soft_falloff_depth` + MAT_FLAG_EFFECT_SOFT
+    /// for the soft-particle depth fade in triangle.frag. Pre-fix only the NIF
+    /// `BSEffectShaderProperty` path populated these, so every FO4 BGEM
+    /// mist / steam / beam volume (`soft = true` in the authored file)
+    /// rendered with no depth feather and stacked to an opaque white-out.
+    #[test]
+    fn bgem_merge_forwards_soft_particle_depth() {
+        use byroredux_bgsm::BgemFile;
+        use byroredux_nif::import::BsEffectShaderData;
+        use byroredux_renderer::vulkan::material::material_flag::EFFECT_SOFT;
+
+        let bgem = BgemFile {
+            soft_enabled: true,
+            soft_depth: 200.0,
+            effect_lighting_enabled: true,
+            lighting_influence: 1.0,
+            falloff_start_angle: 0.5,
+            falloff_stop_angle: 0.2,
+            falloff_start_opacity: 0.9,
+            falloff_stop_opacity: 0.1,
+            ..Default::default()
+        };
+
+        // Mirror the prod assignment from the BGEM branch.
+        let es = BsEffectShaderData {
+            falloff_start_angle: bgem.falloff_start_angle,
+            falloff_stop_angle: bgem.falloff_stop_angle,
+            falloff_start_opacity: bgem.falloff_start_opacity,
+            falloff_stop_opacity: bgem.falloff_stop_opacity,
+            soft_falloff_depth: bgem.soft_depth,
+            effect_soft: bgem.soft_enabled,
+            effect_lit: bgem.effect_lighting_enabled,
+            lighting_influence: (bgem.lighting_influence.clamp(0.0, 1.0) * 255.0).round() as u8,
+            ..Default::default()
+        };
+
+        assert!(
+            (es.soft_falloff_depth - 200.0).abs() < f32::EPSILON,
+            "soft_depth must forward to soft_falloff_depth"
+        );
+        assert!(es.effect_soft, "soft_enabled must map to effect_soft");
+        assert_eq!(es.lighting_influence, 255, "1.0 influence → 255 on u8 payload");
+        let flags = crate::cell_loader::pack_effect_shader_flags(Some(&es));
+        assert_ne!(
+            flags & EFFECT_SOFT,
+            0,
+            "EFFECT_SOFT must be packed so the shader's soft-fade branch fires"
+        );
     }
 
     /// Regression for #1453 — BGEM `grayscale_texture` (palette/gradient LUT
