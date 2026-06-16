@@ -12,7 +12,11 @@ pub struct QueueFamilyIndices {
 }
 
 /// Runtime GPU capabilities detected during device creation.
-#[derive(Debug, Clone, Copy)]
+///
+/// `Default` (all-false / zero) is the "no capabilities" baseline — used by
+/// gating-logic unit tests; the real device-creation path fully populates
+/// every field.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct DeviceCapabilities {
     /// True if VK_KHR_acceleration_structure + VK_KHR_ray_query are available.
     pub ray_query_supported: bool,
@@ -123,6 +127,21 @@ pub struct DeviceCapabilities {
     /// for completeness and catches hypothetical SoC / software
     /// rasteriser configurations.
     pub texture_compression_bc: bool,
+}
+
+impl DeviceCapabilities {
+    /// Whether the per-pass GPU timers (`gpu_timers.rs`) can run on this
+    /// device. BOTH gates are required and independent of ray-query support:
+    /// `timestamp_supported` for `vkCmdWriteTimestamp`, and
+    /// `host_query_reset_supported` because the timer's `new()` /
+    /// `read_and_reset()` use the host-side `vkResetQueryPool` (no command
+    /// buffer). `host_query_reset` was historically gated on RT support, so a
+    /// timestamp-capable but RT-less GPU reached `reset_query_pool` with the
+    /// feature disabled (VUID-vkResetQueryPool-None-02665). This predicate is
+    /// the single source of truth for that gate. See #1478 / #1636.
+    pub fn gpu_timers_supported(&self) -> bool {
+        self.timestamp_supported && self.host_query_reset_supported
+    }
 }
 
 /// Sum of `VkMemoryHeap.size` across every `DEVICE_LOCAL` heap exposed
@@ -546,4 +565,31 @@ pub fn create_logical_device(
     );
 
     Ok((device, graphics_queue, present_queue))
+}
+
+#[cfg(test)]
+mod caps_tests {
+    use super::DeviceCapabilities;
+
+    /// #1636 / #1478 — the GPU-timer gate must require BOTH `timestamp` and
+    /// `host_query_reset`, and must NOT depend on ray-query. A regression to
+    /// the old RT-coupled gate would re-arm a host `vkResetQueryPool` with the
+    /// feature disabled on a timestamp-capable, RT-less GPU
+    /// (VUID-vkResetQueryPool-None-02665).
+    #[test]
+    fn gpu_timers_gate_requires_both_flags_independent_of_rt() {
+        let caps = |timestamp: bool, host_reset: bool, rt: bool| DeviceCapabilities {
+            timestamp_supported: timestamp,
+            host_query_reset_supported: host_reset,
+            ray_query_supported: rt,
+            ..Default::default()
+        };
+        // Both present → enabled, regardless of ray-query.
+        assert!(caps(true, true, false).gpu_timers_supported());
+        assert!(caps(true, true, true).gpu_timers_supported());
+        // Either missing → disabled.
+        assert!(!caps(true, false, true).gpu_timers_supported());
+        assert!(!caps(false, true, true).gpu_timers_supported());
+        assert!(!caps(false, false, false).gpu_timers_supported());
+    }
 }
