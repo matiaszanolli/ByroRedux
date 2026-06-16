@@ -539,26 +539,9 @@ impl NifVariant {
     // predicates disagree with the parse path by one bsver step at
     // the v20.2.0.7 boundary, compounding the foot-gun.
 
-    /// NiTriShape has dedicated shader_property_ref and alpha_property_ref fields.
-    /// Present in FO4+ (user_version_2 >= 130). FO76/Starfield use BSTriShape
-    /// exclusively so this is never queried for those games, but the flag is
-    /// correct for completeness.
-    pub fn has_dedicated_shader_refs(self) -> bool {
-        matches!(self, Self::Fallout4 | Self::Fallout76 | Self::Starfield)
-    }
-
     /// NiGeometryData has a material CRC field after data_flags.
     /// Present in Skyrim+ (user_version >= 12).
     pub fn has_material_crc(self) -> bool {
-        matches!(
-            self,
-            Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield
-        )
-    }
-
-    /// Uses BSLightingShaderProperty instead of BSShaderPPLightingProperty.
-    /// Present in Skyrim+ (BSVER >= 83). nif.xml: #SKY_AND_LATER#.
-    pub fn uses_bs_lighting_shader(self) -> bool {
         matches!(
             self,
             Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield
@@ -626,18 +609,6 @@ impl NifVariant {
         matches!(self, Self::Fallout3 | Self::FalloutNV)
     }
 
-    /// BSLightingShaderProperty uses FO4 shader flag format.
-    /// nif.xml: `#BS_FO4#` (BSVER == 130) or `#BS_FO4_2#` (130-139).
-    pub fn uses_fo4_shader_flags(self) -> bool {
-        matches!(self, Self::Fallout4)
-    }
-
-    /// BSLightingShaderProperty uses FO76/Starfield shader flag format.
-    /// nif.xml: `#BS_GTE_132#`.
-    pub fn uses_fo76_shader_flags(self) -> bool {
-        matches!(self, Self::Fallout76 | Self::Starfield)
-    }
-
     // ── BSTriShape (SSE+ specific geometry) ───────────────────────
 
     /// Uses BSTriShape instead of NiTriShape for geometry.
@@ -649,7 +620,7 @@ impl NifVariant {
         )
     }
 
-    // ── NiNode + NiDynamicEffect feature flags (#1277 Task 5) ─────
+    // ── NiNode feature flags (#1277 Task 5) ──────────────────────
 
     /// NiNode has the `culling_mode` field (Skyrim LE+). FO3/FNV stop
     /// after `multi_bound_ref`; Skyrim added `culling_mode` as a new
@@ -664,41 +635,6 @@ impl NifVariant {
         )
     }
 
-    /// NiLight and NiDynamicEffect subclasses carry the pre-FO4 dynamic-
-    /// effect trailing fields (`switch_state` + `affected_nodes` list).
-    /// FO4+ dropped them entirely. nif.xml: `#NI_BS_LT_FO4#` on both.
-    ///
-    /// Same shape as [`Self::has_effects_list`] (both gate at the FO4
-    /// boundary) — kept as a distinct method so the call site documents
-    /// *which* removed field-set is being gated.
-    ///
-    /// Sources: `crates/nif/src/blocks/light.rs:72`,
-    /// `crates/nif/src/blocks/texture.rs:903` previously inlined
-    /// `stream.bsver() < crate::version::bsver::FALLOUT4`.
-    pub fn has_dynamic_effect_fields(self) -> bool {
-        matches!(
-            self,
-            Self::Morrowind
-                | Self::Oblivion
-                | Self::Fallout3
-                | Self::FalloutNV
-                | Self::SkyrimLE
-                | Self::SkyrimSE
-        )
-    }
-
-    /// NiBinaryExtraData uses the FO3/FNV-era tangent/binormal layout
-    /// (`is_legacy = true` path in `crates/nif/src/blocks/extra_data.rs`).
-    /// Skyrim+ uses the modern layout. Threshold `bsver <= FO3_FNV (34)`.
-    ///
-    /// Source: `crates/nif/src/blocks/extra_data.rs:1133` previously
-    /// inlined `stream.bsver() <= 34`.
-    pub fn has_legacy_binary_extra_data(self) -> bool {
-        matches!(
-            self,
-            Self::Morrowind | Self::Oblivion | Self::Fallout3 | Self::FalloutNV
-        )
-    }
 }
 
 #[cfg(test)]
@@ -1025,15 +961,6 @@ mod tests {
     // `Feature flags` section in the impl.
 
     #[test]
-    fn feature_dedicated_shader_refs() {
-        assert!(!NifVariant::FalloutNV.has_dedicated_shader_refs());
-        assert!(!NifVariant::SkyrimSE.has_dedicated_shader_refs());
-        assert!(NifVariant::Fallout4.has_dedicated_shader_refs());
-        assert!(NifVariant::Fallout76.has_dedicated_shader_refs());
-        assert!(NifVariant::Starfield.has_dedicated_shader_refs());
-    }
-
-    #[test]
     fn feature_material_crc() {
         assert!(!NifVariant::FalloutNV.has_material_crc());
         assert!(NifVariant::SkyrimLE.has_material_crc());
@@ -1057,44 +984,5 @@ mod tests {
         assert!(NifVariant::Fallout76.has_culling_mode());
         assert!(NifVariant::Starfield.has_culling_mode());
         assert!(!NifVariant::Unknown.has_culling_mode());
-    }
-
-    #[test]
-    fn feature_dynamic_effect_fields() {
-        // Pre-FO4 — same shape as `has_effects_list` (both gate at the
-        // FO4 boundary). Kept as a distinct method so the call site
-        // documents *which* removed field set is being gated.
-        assert!(NifVariant::Morrowind.has_dynamic_effect_fields());
-        assert!(NifVariant::Oblivion.has_dynamic_effect_fields());
-        assert!(NifVariant::Fallout3.has_dynamic_effect_fields());
-        assert!(NifVariant::FalloutNV.has_dynamic_effect_fields());
-        assert!(NifVariant::SkyrimLE.has_dynamic_effect_fields());
-        assert!(NifVariant::SkyrimSE.has_dynamic_effect_fields());
-        assert!(!NifVariant::Fallout4.has_dynamic_effect_fields());
-        assert!(!NifVariant::Fallout76.has_dynamic_effect_fields());
-        assert!(!NifVariant::Starfield.has_dynamic_effect_fields());
-        // Unknown returns false — callers that need the Unknown-low-bsver
-        // fallback (NifSkope dev exports, bsver==0) must still use raw
-        // `stream.bsver() < FALLOUT4` per #1277 Task 5 reverts. This
-        // assertion pins that boundary so a future helper-only migration
-        // hits the test rather than silently mis-parsing Unknown content.
-        assert!(!NifVariant::Unknown.has_dynamic_effect_fields());
-    }
-
-    #[test]
-    fn feature_legacy_binary_extra_data() {
-        // Pre-Skyrim — FO3/FNV-era NiBinaryExtraData tangent layout.
-        assert!(NifVariant::Morrowind.has_legacy_binary_extra_data());
-        assert!(NifVariant::Oblivion.has_legacy_binary_extra_data());
-        assert!(NifVariant::Fallout3.has_legacy_binary_extra_data());
-        assert!(NifVariant::FalloutNV.has_legacy_binary_extra_data());
-        assert!(!NifVariant::SkyrimLE.has_legacy_binary_extra_data());
-        assert!(!NifVariant::SkyrimSE.has_legacy_binary_extra_data());
-        assert!(!NifVariant::Fallout4.has_legacy_binary_extra_data());
-        assert!(!NifVariant::Fallout76.has_legacy_binary_extra_data());
-        assert!(!NifVariant::Starfield.has_legacy_binary_extra_data());
-        // Same Unknown caveat as `has_dynamic_effect_fields` — see #1277
-        // Task 5 notes.
-        assert!(!NifVariant::Unknown.has_legacy_binary_extra_data());
     }
 }
