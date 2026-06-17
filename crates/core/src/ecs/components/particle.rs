@@ -251,10 +251,14 @@ pub struct ParticleEmitter {
     /// (e.g. `"textures\\fx\\flame01.dds"`). The renderer looks this up
     /// in the [`crate::texture::FixedString`]-keyed texture registry.
     pub texture_path: Option<String>,
-    /// Source-blend factor (Vulkan enum value). Default: SRC_ALPHA (6).
+    /// Source-blend factor (Gamebryo `NiAlphaProperty` enum — the same
+    /// encoding the renderer's `gamebryo_to_vk_blend_factor` consumes via
+    /// `DrawCommand::src_blend`, NOT the raw `VkBlendFactor` values).
+    /// Default: SRC_ALPHA (6).
     pub src_blend: u8,
-    /// Destination-blend factor. Default: ONE (1) for additive blending,
-    /// which is what magic FX and flames use.
+    /// Destination-blend factor (Gamebryo `NiAlphaProperty` enum). In that
+    /// enum **ONE is 0** and ZERO is 1 — additive blending is `dst == 0`,
+    /// not 1. Default: ONE (0), which is what magic FX and flames use.
     pub dst_blend: u8,
     /// Fractional spawn carry between frames. Updated by the spawn
     /// system each tick: integer-floor goes out as the spawn count, the
@@ -292,7 +296,7 @@ impl Default for ParticleEmitter {
             // Additive blending — most flame/glow effects use this and it
             // composites correctly without back-to-front sorting.
             src_blend: 6, // SRC_ALPHA
-            dst_blend: 1, // ONE
+            dst_blend: 0, // ONE (Gamebryo enum) — true additive
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
             particles: ParticleSoA::default(),
@@ -326,7 +330,7 @@ impl ParticleEmitter {
             end_size: 9.0,
             texture_path: None,
             src_blend: 6,
-            dst_blend: 1,
+            dst_blend: 0, // ONE (Gamebryo enum) — true additive
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
             particles: ParticleSoA::default(),
@@ -398,7 +402,7 @@ impl ParticleEmitter {
             end_size: 0.5,
             texture_path: None,
             src_blend: 6,
-            dst_blend: 1, // additive — glints against smoke
+            dst_blend: 0, // ONE (Gamebryo enum) — additive, glints against smoke
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
             particles: ParticleSoA::default(),
@@ -425,7 +429,7 @@ impl ParticleEmitter {
             end_size: 1.0,
             texture_path: None,
             src_blend: 6,
-            dst_blend: 1, // additive
+            dst_blend: 0, // ONE (Gamebryo enum) — additive
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
             particles: ParticleSoA::default(),
@@ -519,7 +523,10 @@ mod tests {
             embers.start_size < flame.start_size,
             "embers must be smaller than the flame body"
         );
-        assert_eq!(embers.dst_blend, 1, "embers use additive blend");
+        assert_eq!(
+            embers.dst_blend, 0,
+            "embers use additive blend (Gamebryo ONE == 0)"
+        );
         // Both embers and flame are warm — pin that the embers' start
         // is at least as warm/bright as the flame's start so the
         // visual hierarchy (bright glints over a softer flame) holds.

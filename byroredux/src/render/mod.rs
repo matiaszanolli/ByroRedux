@@ -167,11 +167,16 @@ fn compute_directional_upload(
 ///   Opaque      — slot 4/5 = 0 (blend factors unused); slot 6 = depth_state;
 ///                 slot 7 = mesh (cluster key); slot 8 = sort_depth
 ///                 (front-to-back); slot 9 = entity_id tiebreaker (#506).
-///   Transparent — slot 4/5 = (src_blend, dst_blend); slot 6 = !sort_depth
-///                 (back-to-front within a (blend, depth_state) cohort);
-///                 slot 7 = depth_state; slot 8 = mesh; slot 9 = entity_id.
-///                 Correctness: alpha compositing requires back-to-front
-///                 order *within one pipeline state*, not across them.
+///   Transparent — slot 4/5 = (src_blend, dst_blend); slot 7 = depth_state;
+///                 slot 9 = entity_id. Slots 6/8 swap by blend mode:
+///                 * alpha-over (dst != ONE) → slot 6 = !sort_depth
+///                   (back-to-front within a (blend, depth_state) cohort),
+///                   slot 8 = mesh. Correctness: alpha compositing requires
+///                   back-to-front order *within one pipeline state*.
+///                 * additive (Gamebryo dst_blend == ONE == 0) is
+///                   order-independent → slot 6 = mesh, slot 8 = sort_depth,
+///                   so same-mesh particles stay contiguous and instance-
+///                   batch (#1649).
 ///
 /// Slot 2 widened from `is_decal as u8` to `render_layer as u8`
 /// (#renderlayer): same shape, but consecutive same-layer draws now
@@ -191,6 +196,21 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u8, u32, u32, u32
     // `MAX_INSTANCES` writeup in `scene_buffer.rs`.
     let rt_only = (!cmd.in_raster) as u8;
     if cmd.alpha_blend {
+        // Additive blending (Gamebryo `dst_blend == ONE`, value 0 — see
+        // `gamebryo_to_vk_blend_factor`) is order-independent: the HDR
+        // target accumulates `src*srcF + dst*1` commutatively, so
+        // same-mesh particles need no back-to-front sort. For that subset
+        // mesh dominates depth so an emitter's billboards stay contiguous
+        // in the sorted array and the CPU batch-merge collapses them into
+        // a single instanced indirect draw (#1649). True alpha-over
+        // (e.g. ONE_MINUS_SRC_ALPHA = 7) keeps depth dominant — its
+        // compositing order is visible.
+        const GAMEBRYO_BLEND_ONE: u8 = 0;
+        let (slot6, slot8) = if cmd.dst_blend == GAMEBRYO_BLEND_ONE {
+            (cmd.mesh_handle, cmd.sort_depth) // mesh dominates → contiguous
+        } else {
+            (!cmd.sort_depth, cmd.mesh_handle) // depth dominates → back-to-front
+        };
         (
             rt_only,
             1u8, // after opaque
@@ -198,9 +218,9 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u8, u32, u32, u32
             cmd.two_sided as u8,
             cmd.src_blend as u32,
             cmd.dst_blend as u32,
-            !cmd.sort_depth, // invert → larger depth first
+            slot6,
             pack_depth_state(cmd) as u32,
-            cmd.mesh_handle,
+            slot8,
             cmd.entity_id,
         )
     } else {

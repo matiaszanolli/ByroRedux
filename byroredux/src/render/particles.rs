@@ -3,15 +3,21 @@
 //! Each live particle becomes one DrawCommand referencing the unit
 //! particle quad mesh (handle passed in from the caller). Model matrix
 //! is `translate(world_pos) · face_camera_rot · scale(size)`, so all
-//! per-particle dynamics live in the model matrix and the existing
-//! instanced batching from #272 collapses every particle (consecutive
-//! in the sorted list, sharing mesh+pipeline) into a single instanced
-//! cmd_draw_indexed.
+//! per-particle dynamics live in the model matrix.
+//!
+//! Batching depends on blend mode (#1649): **additive** emitters
+//! (Gamebryo `dst_blend == ONE == 0` — the default, torch, ember and
+//! magic-sparkle presets) are order-independent, so `draw_sort_key`
+//! orders them mesh-before-depth and the instanced batch-merge from #272
+//! collapses every same-mesh billboard into one indirect draw. **Alpha-
+//! over** emitters (e.g. the smoke preset, `dst_blend == 7`) stay on the
+//! depth-sorted per-particle path — their compositing order is visible,
+//! so they cannot be reordered to batch.
 //!
 //! Color flows through `emissive_color * emissive_mult` — the
 //! fragment shader's emissive add lights the quad with no scene-light
 //! dependency. Particles default to additive blending
-//! (src=SRC_ALPHA, dst=ONE) per ParticleEmitter defaults; per-emitter
+//! (src=SRC_ALPHA=6, dst=ONE=0) per ParticleEmitter defaults; per-emitter
 //! overrides ride through the existing pipeline cache from #392.
 
 use byroredux_core::ecs::{GlobalTransform, ParticleEmitter, RenderLayer, World};

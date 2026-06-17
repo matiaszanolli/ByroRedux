@@ -197,7 +197,7 @@ fn transparent_clusters_by_blend_factors() {
     alpha_near.sort_depth = 100;
     let mut additive_far = cmd(true, false, false);
     additive_far.src_blend = 6;
-    additive_far.dst_blend = 1;
+    additive_far.dst_blend = 0; // Gamebryo ONE == 0 — true additive
     additive_far.sort_depth = 900;
     let mut alpha_far = cmd(true, false, false);
     alpha_far.src_blend = 6;
@@ -205,13 +205,67 @@ fn transparent_clusters_by_blend_factors() {
     alpha_far.sort_depth = 500;
     let mut cmds = vec![alpha_near, additive_far, alpha_far];
     cmds.sort_by_key(draw_sort_key);
-    // Additive (dst=1) sorts before alpha (dst=7) by u32 order.
+    // Additive (dst=0) sorts before alpha (dst=7) by u32 order.
     // Both alpha draws land together, sorted back-to-front within.
-    assert_eq!(cmds[0].dst_blend, 1);
+    assert_eq!(cmds[0].dst_blend, 0);
     assert_eq!(cmds[1].dst_blend, 7);
     assert_eq!(cmds[1].sort_depth, 500);
     assert_eq!(cmds[2].dst_blend, 7);
     assert_eq!(cmds[2].sort_depth, 100);
+}
+
+/// Regression for #1649: additive (Gamebryo `dst_blend == ONE == 0`) is
+/// order-independent, so same-mesh additive draws (e.g. an emitter's
+/// particle billboards) must sort *contiguously by mesh* — not depth-
+/// interleaved — so the CPU batch-merge can collapse them into one
+/// instanced indirect draw. Two interleaved meshes at mixed depths must
+/// come out grouped by mesh.
+#[test]
+fn additive_same_mesh_draws_stay_contiguous_for_instancing() {
+    let depths = [100u32, 900, 300];
+    let mut cmds = Vec::new();
+    for (i, &d) in depths.iter().enumerate() {
+        // Two meshes (7, 9) emitted interleaved at varying depths.
+        for mesh in [7u32, 9u32] {
+            let mut c = cmd(true, false, false);
+            c.src_blend = 6;
+            c.dst_blend = 0; // additive
+            c.mesh_handle = mesh;
+            c.sort_depth = d;
+            c.entity_id = (i as u32) * 2 + mesh;
+            cmds.push(c);
+        }
+    }
+    cmds.sort_by_key(draw_sort_key);
+    // All mesh-7 draws must be contiguous, then all mesh-9 draws — no
+    // depth-driven interleaving that would break the same-mesh run the
+    // batch-merge depends on.
+    let meshes: Vec<u32> = cmds.iter().map(|c| c.mesh_handle).collect();
+    assert_eq!(meshes, vec![7, 7, 7, 9, 9, 9], "additive draws group by mesh");
+}
+
+/// Counterpart to the above: true alpha-over (`dst_blend == 7`) is
+/// order-dependent, so it must stay depth-sorted (back-to-front) even
+/// when that splits a same-mesh run — correctness wins over batching.
+#[test]
+fn alpha_over_same_mesh_draws_stay_depth_sorted() {
+    let depths = [100u32, 900, 300];
+    let mut cmds = Vec::new();
+    for (i, &d) in depths.iter().enumerate() {
+        for mesh in [7u32, 9u32] {
+            let mut c = cmd(true, false, false);
+            c.src_blend = 6;
+            c.dst_blend = 7; // alpha-over
+            c.mesh_handle = mesh;
+            c.sort_depth = d;
+            c.entity_id = (i as u32) * 2 + mesh;
+            cmds.push(c);
+        }
+    }
+    cmds.sort_by_key(draw_sort_key);
+    // Depth dominates mesh: larger sort_depth first (back-to-front).
+    let order: Vec<u32> = cmds.iter().map(|c| c.sort_depth).collect();
+    assert_eq!(order, vec![900, 900, 300, 300, 100, 100]);
 }
 
 /// Regression for #506: with ties in the 8-tuple prefix (same
