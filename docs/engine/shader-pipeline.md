@@ -82,7 +82,7 @@ graphics+compute queue. Pass ordering is inside
 
 ## G-Buffer Layout
 
-Seven colour attachments + depth, all double-buffered (one set per
+Six colour attachments + depth, all double-buffered (one set per
 `MAX_FRAMES_IN_FLIGHT` = 2). Written by the main render pass
 (`triangle.frag` + `water.frag`), read by SVGF, TAA, SSAO, and composite.
 
@@ -94,7 +94,6 @@ Seven colour attachments + depth, all double-buffered (one set per
 | Mesh ID | `R32_UINT` | Bits 0–30: instance ID + 1; bit 31: `ALPHA_BLEND_NO_HISTORY` (skip SVGF accumulation) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Raw indirect | `B10G11R11_UFLOAT_PACK32` | Albedo-demodulated indirect light (SVGF input) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Albedo | `B10G11R11_UFLOAT_PACK32` | Surface colour (diffuse × vertex colour) | `COLOR_ATTACHMENT_OPTIMAL` |
-| Reservoir | `R32G32B32A32_UINT` | ReSTIR-DI reservoir (`outReservoir`, location 6); integer attachment, blend disabled | `COLOR_ATTACHMENT_OPTIMAL` |
 | Depth | `D32_SFLOAT` | Reverse-Z depth (1.0 = camera near, 0.0 = far) | `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` |
 
 After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIMAL`.

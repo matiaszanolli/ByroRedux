@@ -12,7 +12,8 @@ use std::mem::offset_of;
 
 /// Regression guard for the Shader Struct Sync invariant (#318 / #417).
 /// The `GpuInstance` struct is duplicated across **five** GLSL
-/// sources — `triangle.vert`, `triangle.frag`, `ui.vert`, (since
+/// sources — `include/bindings.glsl` (the shared copy `triangle.frag`
+/// `#include`s since #1583/#1590), `triangle.vert`, `ui.vert`, (since
 /// the caustic pass #321) `caustic_splat.comp`, and (#1498)
 /// `water.vert` — and must stay
 /// byte-for-byte identical with the Rust definition. Any drift here
@@ -205,9 +206,13 @@ fn every_shader_struct_gpu_instance_names_material_kind_slot() {
             "triangle.vert",
             include_str!("../../../shaders/triangle.vert"),
         ),
+        // #1583/#1590 — the `struct GpuInstance` declaration was lifted
+        // out of `triangle.frag` into the shared `include/bindings.glsl`
+        // (`triangle.frag` now `#include`s it). The other four mirrors
+        // below still embed their own copy.
         (
-            "triangle.frag",
-            include_str!("../../../shaders/triangle.frag"),
+            "include/bindings.glsl",
+            include_str!("../../../shaders/include/bindings.glsl"),
         ),
         ("ui.vert", include_str!("../../../shaders/ui.vert")),
         (

@@ -1221,15 +1221,18 @@ mod tests {
     /// dead end.
     ///
     /// This test asserts that every documented GLSL field name on
-    /// the shader-side `struct GpuMaterial` declaration at
-    /// `triangle.frag:110-184` is present in the file. Renaming the
+    /// the shader-side `struct GpuMaterial` declaration in
+    /// `include/bindings.glsl` is present in the file. Renaming the
     /// Rust field is fine; renaming the GLSL field fails this test
-    /// and forces an audit of every reader downstream.
+    /// and forces an audit of every reader downstream. (The struct
+    /// was lifted out of `triangle.frag` into the shared
+    /// `include/bindings.glsl` under #1583/#1590 — `triangle.frag`
+    /// now `#include`s it.)
     #[test]
     fn gpu_material_glsl_field_names_pinned() {
-        let src = include_str!("../../shaders/triangle.frag");
+        let src = include_str!("../../shaders/include/bindings.glsl");
         // Authoritative list — every named field declared inside
-        // `struct GpuMaterial { ... };` at `triangle.frag:110-184`.
+        // `struct GpuMaterial { ... };` in `include/bindings.glsl`.
         // Update both sites together when renaming a field on the
         // GLSL side; the Rust-side rename + this list keep the
         // contract bidirectional. The trailing `;` in the needle
@@ -1318,7 +1321,7 @@ mod tests {
         ] {
             assert!(
                 src.contains(name),
-                "triangle.frag: expected GpuMaterial GLSL field needle `{}` not found. \
+                "include/bindings.glsl: expected GpuMaterial GLSL field needle `{}` not found. \
                  If you renamed a field, update both the GLSL source and this list.",
                 name
             );

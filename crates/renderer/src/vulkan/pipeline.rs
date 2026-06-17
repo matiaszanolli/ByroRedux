@@ -272,9 +272,9 @@ fn triangle_pipeline_inner(
         .sample_shading_enable(false)
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
-    // Phase 2: main render pass has 7 color attachments (HDR + normal +
-    // motion + mesh_id + raw_indirect + albedo + reservoir). Each needs a
-    // blend state entry. Opaque pipeline never blends any of them.
+    // Phase 2: main render pass has 6 color attachments (HDR + normal +
+    // motion + mesh_id + raw_indirect + albedo). Each needs a blend state
+    // entry. Opaque pipeline never blends any of them.
     let color_blend_none = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(false);
@@ -706,7 +706,7 @@ pub fn create_ui_pipeline(
         .stencil_test_enable(false);
 
     // Alpha blending for UI transparency.
-    // Main render pass has 7 color attachments. UI writes to HDR (slot 0)
+    // Main render pass has 6 color attachments. UI writes to HDR (slot 0)
     // with alpha blending and masks out writes to normal/motion/mesh_id
     // via color_write_mask(empty) so UI doesn't pollute the G-buffer.
     let ui_hdr_blend = vk::PipelineColorBlendAttachmentState::default()

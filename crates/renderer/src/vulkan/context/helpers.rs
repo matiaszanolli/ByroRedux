@@ -41,7 +41,7 @@ pub(super) fn find_depth_format(
     anyhow::bail!("No supported depth format found (tried D32, D32S8, D24S8, D16)")
 }
 
-/// The eight attachment formats the main render pass writes — the seven
+/// The seven attachment formats the main render pass writes — the six
 /// G-buffer color targets plus depth. Groups the formats that travel
 /// together into [`create_render_pass`].
 #[derive(Clone, Copy)]

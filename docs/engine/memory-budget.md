@@ -186,7 +186,7 @@ the fence slot is complete before the tick runs (#418).
 
 | Subsystem | Typical | Peak |
 |---|---|---|
-| G-buffer (7 attachments × 2 FIF) | ~35 MB | ~70 MB (4K) |
+| G-buffer (6 attachments × 2 FIF) | ~22 MB | ~45 MB (4K) |
 | Scene SSBOs | ~140 MB | ~140 MB |
 | Vertex / index pools | ~200 MB | ~1.6 GB cap |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
