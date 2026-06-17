@@ -601,6 +601,16 @@ void main() {
         // mirrors `ssao.comp::worldFromDepth` (same `invViewProj`, same
         // `uv*2-1` NDC). Both points share this pixel's NDC.xy, so their
         // camera-distance delta is the along-ray gap to the occluder.
+        //
+        // PRECISION: the uploaded `invViewProj` is render-origin-RELATIVE
+        // (see `GpuCamera::render_origin`; `context/draw.rs` builds it from
+        // the relative `view_proj`), so `sceneWorld`/`fragSceneWorld` land in
+        // render-origin-relative space. `cameraPos.xyz` is ABSOLUTE, so the
+        // camera must be rebased into the same relative frame before the
+        // distance delta — otherwise both `length()` terms are dominated by
+        // `|renderOrigin|` in large exterior worldspaces and their difference
+        // collapses to noise. This mirrors `ssao.comp`, which is fed an
+        // already-relative `ssao_cam_rel = cameraPos - renderOrigin`.
         if ((mat.materialFlags & MAT_FLAG_EFFECT_SOFT) != 0u
             && mat.softFalloffDepth > 0.0) {
             vec2 uvScreen = gl_FragCoord.xy / screen.xy;
@@ -610,8 +620,9 @@ void main() {
             vec3 sceneWorld = sClip.xyz / sClip.w;
             vec4 fClip = invViewProj * vec4(ndcXY, gl_FragCoord.z, 1.0);
             vec3 fragSceneWorld = fClip.xyz / fClip.w;
-            float gap = length(sceneWorld - cameraPos.xyz)
-                      - length(fragSceneWorld - cameraPos.xyz);
+            vec3 camRel = cameraPos.xyz - renderOrigin.xyz;
+            float gap = length(sceneWorld - camRel)
+                      - length(fragSceneWorld - camRel);
             finalAlpha *= clamp(gap / mat.softFalloffDepth, 0.0, 1.0);
         }
         outColor = vec4(emit, finalAlpha);
