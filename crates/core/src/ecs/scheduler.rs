@@ -58,6 +58,35 @@ impl SystemEntry {
         }
         self.system.access()
     }
+
+    /// Run the system, recording `(name, ns)` into `timings` only when
+    /// the per-system tracker is active (`Some`). When `None` — the
+    /// steady-state path with no `SchedulerSystemTimings` resource — the
+    /// `Instant::now()` probe and the owned-`String` name allocation are
+    /// both skipped entirely (#1647).
+    fn run_tracked(
+        &mut self,
+        world: &World,
+        dt: f32,
+        timings: Option<&Mutex<Vec<(String, u64)>>>,
+    ) {
+        match timings {
+            Some(timings) => {
+                // Take an owned name up front — `name()` borrows
+                // `self.system` immutably and would otherwise conflict
+                // with the `&mut` run call below.
+                let name = self.system.name().to_string();
+                let t0 = Instant::now();
+                self.system.run(world, dt);
+                let ns = t0.elapsed().as_nanos() as u64;
+                timings
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((name, ns));
+            }
+            None => self.system.run(world, dt),
+        }
+    }
 }
 
 /// Per-stage system storage.
@@ -431,65 +460,51 @@ impl Scheduler {
         // pushes `(name, ns)` here as it completes; final list is
         // sorted desc + handed off to the
         // `SchedulerSystemTimings` resource for the debug-UI.
-        // Cost: one `Instant::now()` + one Mutex-lock-push per
-        // system per frame. Mutex contention is bounded by the
-        // rayon worker count (≤ 1 lock per worker per stage), so
-        // a ~20-system schedule pays ~20 µs at most.
-        let timings: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
+        //
+        // The tracker is allocated only when that resource is present
+        // (debug-UI open). In the steady-state path it's absent, so
+        // `timings` stays `None` and `run_tracked` skips the
+        // `Instant::now()` probe and the owned-`String` name allocation
+        // for every system — no per-frame `Mutex`/`Vec`/`String` churn
+        // (#1647). When present, cost is one `Instant::now()` + one
+        // Mutex-lock-push per system; Mutex contention is bounded by the
+        // rayon worker count (≤ 1 lock per worker per stage), so a
+        // ~20-system schedule pays ~20 µs at most.
+        let timings: Option<Mutex<Vec<(String, u64)>>> = world
+            .try_resource::<SchedulerSystemTimings>()
+            .is_some()
+            .then(|| Mutex::new(Vec::new()));
         for data in self.stages.values_mut() {
             // Phase 1: run parallel systems concurrently.
             #[cfg(feature = "parallel-scheduler")]
             {
-                data.parallel.par_iter_mut().for_each(|entry| {
-                    // Take an owned String up front — `name()`
-                    // borrows `entry.system` immutably and would
-                    // otherwise conflict with the `&mut` run call
-                    // below.
-                    let name = entry.system.name().to_string();
-                    let t0 = Instant::now();
-                    entry.system.run(world, dt);
-                    let ns = t0.elapsed().as_nanos() as u64;
-                    timings
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push((name, ns));
-                });
+                data.parallel
+                    .par_iter_mut()
+                    .for_each(|entry| entry.run_tracked(world, dt, timings.as_ref()));
             }
             #[cfg(not(feature = "parallel-scheduler"))]
             {
                 for entry in &mut data.parallel {
-                    let name = entry.system.name().to_string();
-                    let t0 = Instant::now();
-                    entry.system.run(world, dt);
-                    let ns = t0.elapsed().as_nanos() as u64;
-                    timings
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push((name, ns));
+                    entry.run_tracked(world, dt, timings.as_ref());
                 }
             }
             // Phase 2: run exclusive systems sequentially.
             for entry in &mut data.exclusive {
-                let name = entry.system.name().to_string();
-                let t0 = Instant::now();
-                entry.system.run(world, dt);
-                let ns = t0.elapsed().as_nanos() as u64;
-                timings
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push((name, ns));
+                entry.run_tracked(world, dt, timings.as_ref());
             }
         }
-        // Sort desc + write to the resource. Missing resource is
-        // not an error — older callers that never insert it just
-        // pay the Mutex-build cost and discard the result.
-        let mut all = timings.into_inner().unwrap_or_else(|e| e.into_inner());
-        all.sort_by_key(|e| std::cmp::Reverse(e.1));
-        if let Some(mut out) = world.try_resource_mut::<SchedulerSystemTimings>() {
-            out.systems.clear();
-            const NS_TO_MS: f32 = 1.0e-6;
-            out.systems
-                .extend(all.into_iter().map(|(n, ns)| (n, ns as f32 * NS_TO_MS)));
+        // Sort desc + write to the resource. The tracker is only `Some`
+        // when the resource existed at frame start, so the write is
+        // unconditional within this arm.
+        if let Some(timings) = timings {
+            let mut all = timings.into_inner().unwrap_or_else(|e| e.into_inner());
+            all.sort_by_key(|e| std::cmp::Reverse(e.1));
+            if let Some(mut out) = world.try_resource_mut::<SchedulerSystemTimings>() {
+                out.systems.clear();
+                const NS_TO_MS: f32 = 1.0e-6;
+                out.systems
+                    .extend(all.into_iter().map(|(n, ns)| (n, ns as f32 * NS_TO_MS)));
+            }
         }
     }
 
@@ -753,6 +768,31 @@ mod tests {
 
         scheduler.run(&world, 0.5);
         assert_eq!(world.get::<Health>(e).unwrap().0, 70.0);
+    }
+
+    // ── Per-system timing tracker is gated on the resource (#1647) ──────
+
+    #[test]
+    fn system_timings_collected_only_when_resource_present() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+
+        let mut scheduler = Scheduler::new();
+        scheduler.add(DamageOverTime { dps: 60.0 });
+
+        // No `SchedulerSystemTimings` resource: systems still run, and the
+        // run completes without allocating/populating a timing list.
+        scheduler.run(&world, 0.5);
+        assert_eq!(world.get::<Health>(e).unwrap().0, 70.0);
+        assert!(world.try_resource::<SchedulerSystemTimings>().is_none());
+
+        // With the resource present, the tracker populates it.
+        world.insert_resource(SchedulerSystemTimings::default());
+        scheduler.run(&world, 0.5);
+        let timings = world.try_resource::<SchedulerSystemTimings>().unwrap();
+        assert_eq!(timings.systems.len(), 1);
+        assert_eq!(timings.systems[0].0, "DamageOverTime");
     }
 
     // ── Stage ordering: systems in different stages run in stage order ──
