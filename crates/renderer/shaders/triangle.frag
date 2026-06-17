@@ -254,6 +254,18 @@ void main() {
     // propagates into the bump detail (otherwise the normal map and
     // albedo would disagree on which texel belongs to each fragment).
     vec3 N = normalize(fragNormalEffective);
+    // Two-sided foliage back-face flip. Two-sided draws (vines, roots,
+    // grass cards, leaves — `mesh.two_sided` → cull-off pipeline) present
+    // their back faces to the fragment shader; the interpolated vertex
+    // normal then points away from the viewer/light, so N·L ≤ 0 and the
+    // surface shades pure black (the dark vine cards in FO4 interiors).
+    // Flip the base normal to face the viewer before normal-mapping so the
+    // reconstructed TBN and all downstream lighting / G-buffer normal use a
+    // viewer-facing frame. Single-sided geometry is back-face culled, so
+    // `gl_FrontFacing` is always true there and this is a no-op for it.
+    if (!gl_FrontFacing) {
+        N = -N;
+    }
     // #783 / M-NORMALS — per-fragment normal-map perturbation.
     //
     // Re-enabled-by-default 2026-05-03 (#786 closeout). The
