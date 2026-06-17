@@ -310,7 +310,16 @@ pub fn total_data_size(meta: &DdsMetadata) -> u64 {
 
 fn map_fourcc(fourcc: u32) -> Result<(vk::Format, u32)> {
     match fourcc {
-        FOURCC_DXT1 => Ok((vk::Format::BC1_RGB_SRGB_BLOCK, 8)),
+        // BC1/DXT1 carries an optional 1-bit punch-through alpha (the
+        // "color0 <= color1" 3-colour block mode encodes index-3 as
+        // transparent). Decode as BC1_RGBA so that bit reaches the shader:
+        // FO4 alpha-test cutout textures (groundtrash, leaf/vine cards,
+        // grates) are authored as BC1 with 1-bit alpha, and BC1_RGB samples
+        // `.a == 1.0` everywhere — the alpha test never discards and the
+        // whole opaque quad renders. RGB is byte-identical between the two
+        // formats (same endpoints, same 4-colour blocks), so meshes that
+        // don't alpha-test/blend are visually unchanged.
+        FOURCC_DXT1 => Ok((vk::Format::BC1_RGBA_SRGB_BLOCK, 8)),
         FOURCC_DXT3 => Ok((vk::Format::BC2_SRGB_BLOCK, 16)),
         FOURCC_DXT5 => Ok((vk::Format::BC3_SRGB_BLOCK, 16)),
         FOURCC_ATI2 | FOURCC_BC5S => Ok((vk::Format::BC5_UNORM_BLOCK, 16)),
@@ -345,8 +354,11 @@ fn map_dxgi_format(dxgi: u32) -> Result<(vk::Format, u32, bool)> {
         // ── Block-compressed ─────────────────────────────────────────────────
         // All BC formats below require the `textureCompressionBC` Vulkan feature,
         // already assumed by BC1-BC5/BC7 handling above. RTX 4070 Ti exposes it.
+        // BC1 1-bit punch-through alpha — decode as BC1_RGBA (see the
+        // DXT1 arm in `map_fourcc` for the full rationale). FO4 ships most
+        // alpha-test cutout diffuse maps as DX10 BC1_UNORM_SRGB.
         DXGI_FORMAT_BC1_UNORM | DXGI_FORMAT_BC1_UNORM_SRGB => {
-            Ok((vk::Format::BC1_RGB_SRGB_BLOCK, 8, true))
+            Ok((vk::Format::BC1_RGBA_SRGB_BLOCK, 8, true))
         }
         DXGI_FORMAT_BC2_UNORM | DXGI_FORMAT_BC2_UNORM_SRGB => {
             Ok((vk::Format::BC2_SRGB_BLOCK, 16, true))
@@ -455,7 +467,9 @@ mod tests {
         assert_eq!(meta.width, 256);
         assert_eq!(meta.height, 256);
         assert_eq!(meta.mip_count, 9);
-        assert_eq!(meta.format, vk::Format::BC1_RGB_SRGB_BLOCK);
+        // DXT1/BC1 decodes as BC1_RGBA so the 1-bit punch-through alpha
+        // reaches the shader (FO4 alpha-test cutout diffuse maps).
+        assert_eq!(meta.format, vk::Format::BC1_RGBA_SRGB_BLOCK);
         assert_eq!(meta.block_size, 8);
         assert!(meta.compressed);
         assert_eq!(meta.data_offset, 128);
