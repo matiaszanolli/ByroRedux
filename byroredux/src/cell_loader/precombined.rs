@@ -172,7 +172,26 @@ pub(super) fn spawn_precombined_meshes(
                         Ok(scene) => {
                             let meshes = {
                                 let mut pool = world.resource_mut::<StringPool>();
-                                build_precombine_meshes(&scene, csg, &mut pool)
+                                let mut meshes = build_precombine_meshes(&scene, csg, &mut pool);
+                                // Apply BGSM material flags (two_sided / decal /
+                                // alpha_test / alpha_blend) to the CSG-decoded
+                                // meshes. FO4 authors these in the `.bgsm`, not the
+                                // NIF, so `precombine_material_from_shape` (NIF-only)
+                                // can't see them. The REFR and fallback
+                                // (`parse_and_import_nif`) paths run this merge; the
+                                // shared-precombine CSG path did not — leaving
+                                // precombine foliage/decals with no alpha-test
+                                // (opaque-black cards clipping through walls) and no
+                                // two-sided / decal routing. `merge_bgsm_into_mesh`
+                                // no-ops for meshes without a `material_path`.
+                                if let Some(provider) = mat_provider.as_deref_mut() {
+                                    for mesh in &mut meshes {
+                                        crate::asset_provider::merge_bgsm_into_mesh(
+                                            mesh, provider, &mut pool,
+                                        );
+                                    }
+                                }
+                                meshes
                             };
                             (!meshes.is_empty()).then(|| Arc::new(geometry_only_cached(meshes)))
                         }
