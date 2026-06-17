@@ -206,6 +206,12 @@ pub struct PrecombineMaterial {
     pub alpha_threshold: f32,
     pub alpha_test_func: u8,
     pub two_sided: bool,
+    /// BGSM/shader Decal flag. Without it, decals baked into a precombine
+    /// (grime rings, blood splats, scorch marks) stay `RenderLayer::Architecture`
+    /// and render as opaque black instead of escalating to `RenderLayer::Decal`.
+    /// Mirrors the `is_decal: mat.is_decal` propagation the inline BSTriShape /
+    /// NiTriShape / BSGeometry import paths already do (#1188 follow-up).
+    pub is_decal: bool,
 }
 
 impl PrecombineMaterial {
@@ -223,6 +229,7 @@ impl PrecombineMaterial {
         mesh.alpha_threshold = self.alpha_threshold;
         mesh.alpha_test_func = self.alpha_test_func;
         mesh.two_sided = self.two_sided;
+        mesh.is_decal = self.is_decal;
     }
 }
 
@@ -331,12 +338,37 @@ fn precombine_material_from_shape(
         alpha_threshold: mat.alpha_threshold,
         alpha_test_func: mat.alpha_test_func,
         two_sided: mat.two_sided,
+        is_decal: mat.is_decal,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1188 follow-up — `PrecombineMaterial::apply` must stamp `is_decal`
+    /// onto the mesh. Before the fix, decals baked into a precombine
+    /// (grime rings, blood splats) lost the flag and rendered as opaque
+    /// black architecture instead of escalating to `RenderLayer::Decal`.
+    #[test]
+    fn apply_propagates_is_decal() {
+        let mut mesh = ImportedMesh::from_geometry(vec![], vec![], vec![], vec![], vec![], vec![]);
+        assert!(!mesh.is_decal, "default mesh is not a decal");
+
+        let mat = PrecombineMaterial {
+            is_decal: true,
+            two_sided: true,
+            ..Default::default()
+        };
+        mat.apply(&mut mesh);
+        assert!(mesh.is_decal, "is_decal must survive the precombine apply");
+        assert!(mesh.two_sided, "two_sided still propagates");
+
+        // A non-decal material leaves the flag clear.
+        let mut plain = ImportedMesh::from_geometry(vec![], vec![], vec![], vec![], vec![], vec![]);
+        PrecombineMaterial::default().apply(&mut plain);
+        assert!(!plain.is_decal);
+    }
 
     fn half(f: f32) -> [u8; 2] {
         // Encode f32 → IEEE-754 binary16 (round-to-nearest, no Inf/NaN
