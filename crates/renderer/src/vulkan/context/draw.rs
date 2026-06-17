@@ -371,6 +371,7 @@ impl VulkanContext {
             .image(self.depth_history_image)
             .subresource_range(range);
 
+        // SAFETY: `cmd` is recording and outside any render pass (caller contract); `depth_image` / `depth_history_image` are live, same-extent D32_SFLOAT images. The barriers correctly bracket the READ_ONLY->TRANSFER_SRC / SHADER_READ->TRANSFER_DST transitions around the copy and restore both layouts; no other access to these images is recorded between the barriers.
         unsafe {
             self.device.cmd_pipeline_barrier(
                 cmd,
@@ -484,6 +485,7 @@ impl VulkanContext {
         // Cost: zero in practice — the GPU is rarely more than 1 frame
         // behind the CPU, so the other fence is almost always signaled.
         let fence_t0 = Instant::now();
+        // SAFETY: `in_flight[frame]` and `in_flight[prev]` are live fences; both were signal-targets of prior `queue_submit`s (or created pre-signaled), so the wait cannot deadlock. This frame's `cmd` is not re-recorded until this wait returns, so the GPU is done with the prior recording.
         unsafe {
             let prev = (frame + 1) % super::super::sync::MAX_FRAMES_IN_FLIGHT;
             self.device
@@ -522,6 +524,7 @@ impl VulkanContext {
         // is available; on most desktop drivers + Wayland/X11
         // compositors this is also where vsync ends up.
         let acquire_t0 = Instant::now();
+        // SAFETY: swapchain + loader are live; `image_available[frame]` is an unsignaled binary semaphore (its prior signal was consumed by last cycle's submit wait on this slot) so acquiring into it is legal. The OUT_OF_DATE arm bails before the semaphore is depended on.
         let (image_index, suboptimal) = unsafe {
             match self.swapchain_state.swapchain_loader.acquire_next_image(
                 self.swapchain_state.swapchain,
@@ -550,6 +553,7 @@ impl VulkanContext {
         // If this swapchain image is still in use by a different frame, wait.
         let image_fence = self.frame_sync.images_in_flight[img];
         if image_fence != vk::Fence::null() && image_fence != self.frame_sync.in_flight[frame] {
+            // SAFETY: `image_fence` is a live fence belonging to whichever frame last used this swapchain image; it was a `queue_submit` signal-target, so the wait terminates. Guarantees that image's prior frame finished before we reuse it. On error we clear the pending acquire signal before propagating.
             unsafe {
                 if let Err(e) = self
                     .device
@@ -610,6 +614,7 @@ impl VulkanContext {
         // Safe because in_flight[frame] was just waited on, guaranteeing
         // the GPU has finished with this cmd buffer's previous recording.
         let cmd = self.command_buffers[frame];
+        // SAFETY: `cmd` is `command_buffers[frame]`, whose fence `in_flight[frame]` was just waited on above, so the GPU has finished its previous recording and the buffer is safe to reset. On error we clear the pending acquire signal before propagating.
         unsafe {
             if let Err(e) = self
                 .device
@@ -625,6 +630,7 @@ impl VulkanContext {
 
         let begin_info = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        // SAFETY: `cmd` was just reset (above) and is in the initial state; it is recorded by this thread only, so beginning recording with ONE_TIME_SUBMIT is valid. On error we clear the pending acquire signal before propagating.
         unsafe {
             if let Err(e) = self
                 .device
@@ -1067,6 +1073,7 @@ impl VulkanContext {
                 let bind_inverse_size = self.scene_buffers.bone_buffer_size();
                 let palette_buf = self.scene_buffers.bone_buffers()[frame].buffer;
                 let palette_size = self.scene_buffers.bone_buffer_size();
+                // SAFETY: `cmd` is recording (begin_command_buffer succeeded above); the bone-world / bind-inverse / palette buffers are live SSBOs for this frame and `bone_count > 0`. The COMPUTE_SHADER_WRITE -> SHADER_READ buffer barrier afterward sequences the palette write before its compute + vertex consumers; no concurrent recording of this buffer.
                 unsafe {
                     skin_palette.dispatch(
                         &self.device,
@@ -1388,6 +1395,7 @@ impl VulkanContext {
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_skin_dispatch_start(&self.device, cmd, frame);
                         }
+                        // SAFETY: `cmd` is recording; `skin_pipeline`, each `slot`'s descriptors, and the global vertex / bone input buffers are live for this frame. Each `dispatch` binds the compute pipeline + slot set at the COMPUTE bind point; the loop records sequentially with no concurrent use of `cmd`.
                         unsafe {
                             for &(entity_id, push, _, _, _) in &dispatches {
                                 let Some(slot) = self.skin_slots.get_mut(&entity_id) else {
@@ -1436,6 +1444,7 @@ impl VulkanContext {
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_skin_dispatch_end(&self.device, cmd, frame);
                         }
+                        // SAFETY: `cmd` is recording. The COMPUTE_SHADER_WRITE -> AS_BUILD_READ barrier sequences the skin outputs before they are read as BLAS build inputs; the first-sight builds and refits share `blas_scratch_buffer` and self-emit AS_WRITE->AS_WRITE scratch-serialize barriers between builds; the closing AS_BUILD_WRITE -> AS_BUILD_READ barrier hands refit results to the TLAS build below.
                         unsafe {
                             // Compute writes (skinned vertex output
                             // buffers) → AS build input reads. Covers
@@ -1687,6 +1696,7 @@ impl VulkanContext {
         // Picks up just-refit per-skinned-entity BLAS via the
         // `bone_offset != 0` override in `build_tlas`. Static draws
         // continue using the per-mesh `blas_entries` table.
+        // SAFETY: `cmd` is recording; `accel` and `alloc` are live. `build_tlas` records the TLAS build into `cmd` over this frame's just-refit BLAS; the following AS_BUILD_WRITE -> FRAGMENT|COMPUTE READ barrier sequences it before the ray-query consumers. `write_tlas` / `patch_camera_rt_flag` touch this frame's descriptor + UBO, idle by the fence wait.
         unsafe {
             if let Some(ref mut accel) = self.accel_manager {
                 if let Some(alloc) = self.allocator.as_ref() {
@@ -1764,6 +1774,7 @@ impl VulkanContext {
         // Runs after light + camera uploads, before the render pass.
         // The compute shader reads lights/camera and writes cluster SSBOs
         // that the fragment shader reads during the render pass.
+        // SAFETY: `cmd` is recording; `cc` (cluster-cull pipeline) and its per-frame cluster SSBOs are live. The leading HOST_WRITE -> COMPUTE barrier makes the host-written light/camera buffers visible before `dispatch`; the trailing COMPUTE_WRITE -> FRAGMENT_READ barrier sequences the cluster SSBO outputs before the render pass reads them.
         unsafe {
             if let Some(ref cc) = self.cluster_cull {
                 // Barrier: host writes to light/camera SSBOs must be visible
@@ -2364,6 +2375,7 @@ impl VulkanContext {
                 let (alpha_color, alpha_moments, next_frames) =
                     crate::vulkan::svgf::next_svgf_temporal_alpha(self.svgf_recovery_frames);
                 self.svgf_recovery_frames = next_frames;
+                // SAFETY: `svgf`'s host-visible param buffer for `frame` is live and not in use by an in-flight frame (the fence wait at frame start guarantees the prior use of this slot completed); the host write is made visible to the compute pass by the bulk HOST->COMPUTE barrier below.
                 if let Err(e) = unsafe {
                     svgf.upload_params(
                         &self.device,
@@ -2411,6 +2423,7 @@ impl VulkanContext {
         // (#1397 / NCPS-03). Required by Vulkan spec even for
         // HOST_COHERENT memory.
         // HOST → VERTEX|FRAGMENT|COMPUTE|DRAW_INDIRECT (instance SSBO + UBOs)
+        // SAFETY: `cmd` is recording. This single HOST_WRITE -> VERTEX|FRAGMENT|COMPUTE|DRAW_INDIRECT barrier makes every host-written buffer this frame (instance SSBO + composite/SVGF/TAA/bloom UBOs) visible to its shader consumers before the render pass; required by spec even for HOST_COHERENT memory.
         unsafe {
             memory_barrier(
                 &self.device,
@@ -2436,10 +2449,12 @@ impl VulkanContext {
         // degrade matches the rest of the renderer's optional-pipeline
         // policy.
         if let Some(ref wca) = self.water_caustic_accum {
+            // SAFETY: `cmd` is recording and outside the render pass; `wca` (water-caustic accumulator) and its per-frame buffer are live. The clear is recorded before the main pass that atomic-adds into it, and the post-pass barrier sequences those writes to the composite read.
             unsafe { wca.clear_pre_render_pass(&self.device, cmd, frame) };
         }
 
         let cmd_t0 = Instant::now();
+        // SAFETY: `cmd` is recording (begin_command_buffer succeeded above) and `framebuffers[frame]` / `render_pass` / pipeline layout + descriptor sets / global VB+IB are all live for this frame. `cmd_begin_render_pass` opens the pass; viewport/scissor/cull/depth dynamic state is set before any draw; all binds use the GRAPHICS bind point with the matching `pipeline_layout`; `cmd` is recorded by this thread only and `end_command_buffer` closes it. The fence wait at frame start guarantees no in-flight frame is still using this buffer or its bound resources.
         unsafe {
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_main_render_start(&self.device, cmd, frame);
@@ -3480,6 +3495,7 @@ impl VulkanContext {
         // any earlier opens a deadlock window if a `?`-propagated
         // error fires between the reset and the submit (was ~2200
         // lines pre-fix, see the moved-from comment higher up).
+        // SAFETY: `in_flight[frame]` is live and (per the spec) need only be unsignaled at submit time; resetting it here, immediately before `queue_submit` re-signals it, leaves no deadlock window. On reset failure the fence stays SIGNALED (so next frame's wait won't hang) and we clear the pending acquire signal.
         unsafe {
             if let Err(e) = self
                 .device
@@ -3499,6 +3515,7 @@ impl VulkanContext {
             }
         }
 
+        // SAFETY: queue access is serialized by `graphics_queue`'s Mutex held across the call (VUID-vkQueueSubmit-queue-00893); `cmd` was just closed by `end_command_buffer`, `image_available[frame]` is the wait semaphore and `in_flight[frame]` (just reset) is the signal fence. `cmd` is not re-recorded until that fence is next waited on. On failure both the acquire signal and the fence are recreated before propagating.
         unsafe {
             // Bind the MutexGuard, deref inside the call — `*self
             // .graphics_queue.lock()` would release the guard end-of-
@@ -3563,6 +3580,7 @@ impl VulkanContext {
             .swapchains(&swapchains)
             .image_indices(&image_indices);
 
+        // SAFETY: present-queue access is serialized by `present_queue`'s Mutex held across the call; `render_finished[img]` (signaled by the submit above) is the present wait semaphore, and `swapchain` + `image_index` are the live acquired image. The OUT_OF_DATE arm degrades to `suboptimal=true` instead of touching stale state.
         let present_suboptimal = unsafe {
             let pq = self
                 .present_queue

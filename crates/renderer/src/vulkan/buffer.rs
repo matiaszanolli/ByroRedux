@@ -141,12 +141,17 @@ impl StagingPool {
             .usage(vk::BufferUsageFlags::TRANSFER_SRC)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
+        // SAFETY: `self.device` is this pool's live logical device, which
+        // outlives the call; `buffer_info` is a fully-populated, valid
+        // VkBufferCreateInfo built just above.
         let buffer = unsafe {
             self.device
                 .create_buffer(&buffer_info, None)
                 .context("Failed to create staging buffer")?
         };
 
+        // SAFETY: `buffer` was just created by this device above and not yet
+        // destroyed; the device outlives the call.
         let reqs = unsafe { self.device.get_buffer_memory_requirements(buffer) };
 
         let allocation = self
@@ -166,6 +171,9 @@ impl StagingPool {
         // `debug_assert_cpu_to_gpu_mapped` for the rationale.
         debug_assert_cpu_to_gpu_mapped(&allocation, "StagingPool::acquire");
 
+        // SAFETY: `buffer` and `allocation` were both created here from this
+        // device; the memory/offset come from the allocation that satisfied
+        // `buffer`'s own memory requirements, and the buffer is not yet bound.
         unsafe {
             self.device
                 .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
@@ -514,12 +522,16 @@ impl GpuBuffer {
             .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
+        // SAFETY: `device` is the caller's live logical device, valid for the
+        // call; `buffer_info` is a fully-populated valid VkBufferCreateInfo.
         let buffer = unsafe {
             device
                 .create_buffer(&buffer_info, None)
                 .context("Failed to create host-visible buffer")?
         };
 
+        // SAFETY: `buffer` was just created by this device above and is live;
+        // the device outlives the call.
         let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
 
         let allocation = allocator
@@ -540,6 +552,9 @@ impl GpuBuffer {
         // write.
         debug_assert_cpu_to_gpu_mapped(&allocation, "create_host_visible");
 
+        // SAFETY: `buffer` and `allocation` were both created here from this
+        // device; the memory/offset come from the allocation that satisfied
+        // `buffer`'s memory requirements, and the buffer is not yet bound.
         unsafe {
             device
                 .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
@@ -576,12 +591,16 @@ impl GpuBuffer {
             .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
+        // SAFETY: `device` is the caller's live logical device, valid for the
+        // call; `buffer_info` is a fully-populated valid VkBufferCreateInfo.
         let buffer = unsafe {
             device
                 .create_buffer(&buffer_info, None)
                 .context("Failed to create device-local buffer")?
         };
 
+        // SAFETY: `buffer` was just created by this device above and is live;
+        // the device outlives the call.
         let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
 
         let allocation = allocator
@@ -596,6 +615,9 @@ impl GpuBuffer {
             })
             .context("Failed to allocate device-local memory")?;
 
+        // SAFETY: `buffer` and `allocation` were both created here from this
+        // device; the memory/offset come from the allocation that satisfied
+        // `buffer`'s memory requirements, and the buffer is not yet bound.
         unsafe {
             device
                 .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
@@ -755,6 +777,9 @@ impl GpuBuffer {
     /// Must be called before the device is destroyed.
     pub fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         if let Some(allocation) = self.allocation.take() {
+            // SAFETY: `self.buffer` was created by this device and has not yet
+            // been destroyed (guarded by the `allocation.take()` above, which
+            // runs once); the caller guarantees the device is idle before destroy.
             unsafe {
                 device.destroy_buffer(self.buffer, None);
             }
@@ -799,12 +824,16 @@ impl GpuBuffer {
                 .usage(vk::BufferUsageFlags::TRANSFER_SRC)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
+            // SAFETY: `device` is the caller's live logical device, valid for the
+            // call; `staging_info` is a fully-populated valid VkBufferCreateInfo.
             let buf = unsafe {
                 device
                     .create_buffer(&staging_info, None)
                     .context("Failed to create staging buffer")?
             };
 
+            // SAFETY: `buf` was just created by this device above and is live;
+            // the device outlives the call.
             let reqs = unsafe { device.get_buffer_memory_requirements(buf) };
 
             let alloc = allocator
@@ -820,6 +849,9 @@ impl GpuBuffer {
                 .context("Failed to allocate staging memory")?;
             debug_assert_cpu_to_gpu_mapped(&alloc, "create_device_local_with_data buffer_staging");
 
+            // SAFETY: `buf` and `alloc` were both created here from this device;
+            // the memory/offset come from the allocation that satisfied `buf`'s
+            // memory requirements, and the buffer is not yet bound.
             unsafe {
                 device
                     .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
@@ -854,12 +886,16 @@ impl GpuBuffer {
             .usage(usage | vk::BufferUsageFlags::TRANSFER_DST)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
+        // SAFETY: `device` is the caller's live logical device, valid for the
+        // call; `buffer_info` is a fully-populated valid VkBufferCreateInfo.
         let buffer = unsafe {
             device
                 .create_buffer(&buffer_info, None)
                 .context("Failed to create device-local buffer")?
         };
 
+        // SAFETY: `buffer` was just created by this device above and is live;
+        // the device outlives the call.
         let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
 
         let allocation = allocator
@@ -874,6 +910,9 @@ impl GpuBuffer {
             })
             .context("Failed to allocate device-local memory")?;
 
+        // SAFETY: `buffer` and `allocation` were both created here from this
+        // device; the memory/offset come from the allocation that satisfied
+        // `buffer`'s memory requirements, and the buffer is not yet bound.
         unsafe {
             device
                 .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
@@ -887,6 +926,11 @@ impl GpuBuffer {
             size,
         };
         with_one_time_commands(device, queue, command_pool, |cmd| {
+            // SAFETY: `cmd` is in the recording state for the duration of the
+            // `with_one_time_commands` closure; `staging.buffer` and `buffer` are
+            // both live, distinct, and have matching TRANSFER_SRC/DST usage; the
+            // copy region (offset 0, `size` bytes) was sized to both allocations
+            // and no other access to either buffer races this command.
             unsafe {
                 device.cmd_copy_buffer(cmd, staging.buffer, buffer, &[copy_region]);
             }
@@ -944,6 +988,10 @@ impl Drop for GpuBuffer {
         if !std::thread::panicking() {
             debug_assert!(false, "GpuBuffer leaked into Drop: call destroy() first");
         }
+        // SAFETY: `self.buffer` was created by this device and has not been
+        // destroyed (this Drop arm only runs when `allocation` is still
+        // `Some`, i.e. `destroy()` was never called); reached only on the
+        // leak-safety-net path, where the device is still alive.
         unsafe {
             self.device.destroy_buffer(self.buffer, None);
         }

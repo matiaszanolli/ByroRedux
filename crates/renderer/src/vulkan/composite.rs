@@ -303,6 +303,9 @@ impl CompositePipeline {
                 .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .initial_layout(vk::ImageLayout::UNDEFINED);
+            // SAFETY: `img_info` fully populated above; the new image handle is
+            // owned by `partial.hdr_images` on Ok. On Err, `try_or_cleanup!`
+            // runs `partial.destroy` before returning.
             let img = try_or_cleanup!(unsafe {
                 device
                     .create_image(&img_info, None)
@@ -316,12 +319,16 @@ impl CompositePipeline {
                 .expect("allocator lock")
                 .allocate(&vk_alloc::AllocationCreateDesc {
                     name: &format!("hdr_color_{}", i),
+                    // SAFETY: `img` was just created above (this loop iteration) and is live.
                     requirements: unsafe { device.get_image_memory_requirements(img) },
                     location: gpu_allocator::MemoryLocation::GpuOnly,
                     linear: false,
                     allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                 })
                 .context("Failed to allocate HDR image memory"));
+            // SAFETY: `img` (created above) matches the memory requirements that
+            // produced `alloc`; bound exactly once. On Err, `try_or_cleanup!`
+            // destroys the partial state.
             try_or_cleanup!(unsafe {
                 device
                     .bind_image_memory(img, alloc.memory(), alloc.offset())
@@ -329,6 +336,9 @@ impl CompositePipeline {
             });
             partial.hdr_allocations[i] = Some(alloc);
 
+            // SAFETY: `img` is bound to memory (line above); the view handle is
+            // owned by `partial.hdr_image_views` on Ok, freed by `try_or_cleanup!`
+            // on Err.
             let view = try_or_cleanup!(unsafe {
                 device
                     .create_image_view(
@@ -345,6 +355,8 @@ impl CompositePipeline {
         }
 
         // ── 2. HDR sampler (linear filter for slight bilinear smoothing) ──
+        // SAFETY: `device` is live for this call; the new sampler handle is
+        // stored in `partial.hdr_sampler`, freed by `destroy` on later error.
         partial.hdr_sampler = try_or_cleanup!(unsafe {
             device
                 .create_sampler(
@@ -364,6 +376,8 @@ impl CompositePipeline {
         //   the per-pixel denoised output; LINEAR adds a second blur pass.
         // - caustic (binding 5, R32_UINT): NEAREST required — integer formats
         //   don't expose FILTER_LINEAR (VUID-vkCmdDraw-magFilter-04553).
+        // SAFETY: `device` is live for this call; the new sampler handle is
+        // stored in `partial.nearest_sampler`, freed by `destroy` on later error.
         partial.nearest_sampler = try_or_cleanup!(unsafe {
             device
                 .create_sampler(
@@ -468,6 +482,9 @@ impl CompositePipeline {
             .attachments(&attachments)
             .subpasses(&subpasses)
             .dependencies(&dependencies);
+        // SAFETY: `rp_info` references local `attachments`/`subpasses`/`dependencies`
+        // arrays that outlive the call; the new render-pass handle is stored in
+        // `partial.composite_render_pass`, freed by `destroy` on later error.
         partial.composite_render_pass = try_or_cleanup!(unsafe {
             device
                 .create_render_pass(&rp_info, None)
@@ -483,6 +500,9 @@ impl CompositePipeline {
                 .width(width)
                 .height(height)
                 .layers(1);
+            // SAFETY: `fb_info` references `partial.composite_render_pass` (live)
+            // and the caller-borrowed swapchain `view` (live for this call); the new
+            // framebuffer is owned by `partial.composite_framebuffers`.
             let fb = try_or_cleanup!(unsafe {
                 device
                     .create_framebuffer(&fb_info, None)
@@ -584,6 +604,9 @@ impl CompositePipeline {
             &[],
         )
         .expect("composite descriptor layout drifted against composite.vert/frag (see #427)");
+        // SAFETY: the create-info references local `ds_bindings` (outlives the
+        // call); the new layout handle is stored in `partial.descriptor_set_layout`,
+        // freed by `destroy` on later error.
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -598,6 +621,10 @@ impl CompositePipeline {
         // shader samples cloud textures through the bindless array at an
         // index provided in CompositeParams.cloud_params.w.
         let set_layouts = [partial.descriptor_set_layout, bindless_layout];
+        // SAFETY: the create-info references local `set_layouts` holding
+        // `partial.descriptor_set_layout` (live) and caller-borrowed
+        // `bindless_layout` (live); the new layout is stored in
+        // `partial.pipeline_layout`.
         partial.pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
@@ -621,6 +648,9 @@ impl CompositePipeline {
         .build(device, "composite descriptor pool"));
 
         let set_layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        // SAFETY: allocate-info references `partial.descriptor_pool` (live) and
+        // local `set_layouts` (outlives the call); sets are owned by
+        // `partial.descriptor_sets`, reclaimed when the pool is destroyed.
         partial.descriptor_sets = try_or_cleanup!(unsafe {
             device
                 .allocate_descriptor_sets(

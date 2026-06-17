@@ -114,6 +114,10 @@ impl AccelerationManager {
             ..
         } = self;
         pending_destroy_blas.drain(|mut entry| {
+            // SAFETY: the caller's preceding `device_wait_idle` (the drain's
+            // `# Safety` precondition) guarantees no in-flight command buffer
+            // still references this acceleration structure — standing in for
+            // the per-entry countdown that the tick path relies on.
             unsafe {
                 accel_loader.destroy_acceleration_structure(entry.accel, None);
             }
@@ -160,6 +164,9 @@ impl AccelerationManager {
         // static BLAS pool grow past the budget. Mirror the
         // batched-path call so eviction fires uniformly across the
         // two BLAS-creating entry points.
+        // SAFETY: `device` + `allocator` are live for this call; evicted
+        // entries are gated to idle >= MAX_FRAMES_IN_FLIGHT + 1, so no
+        // in-flight command buffer or TLAS build references them.
         unsafe {
             self.evict_unused_blas(device, allocator);
         }
@@ -179,6 +186,8 @@ impl AccelerationManager {
                 ),
             )
         };
+        // SAFETY: the index buffer was created with SHADER_DEVICE_ADDRESS;
+        // the returned address is valid for the buffer's lifetime.
         let index_address = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default().buffer(
@@ -219,6 +228,9 @@ impl AccelerationManager {
 
         // Query sizes.
         let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
+        // SAFETY: query-only call; `accel_loader` + `build_info`
+        // (value-typed geometry, no host pointers) + `sizes` out-param
+        // are live for the call; device outlives it.
         unsafe {
             self.accel_loader.get_acceleration_structure_build_sizes(
                 vk::AccelerationStructureBuildTypeKHR::DEVICE,
@@ -243,6 +255,9 @@ impl AccelerationManager {
             .size(sizes.acceleration_structure_size)
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
 
+        // SAFETY: `accel_info` references `result_buffer.buffer`, just
+        // created with ACCELERATION_STRUCTURE_STORAGE_KHR and still live;
+        // device outlives the call.
         let accel = unsafe {
             self.accel_loader
                 .create_acceleration_structure(&accel_info, None)
@@ -330,6 +345,9 @@ impl AccelerationManager {
         if let Err(e) = build_result {
             // Clean up the accel structure and result buffer that were
             // already created before the build failed.
+            // SAFETY: `accel` was created above and the build that would
+            // reference it failed before any command buffer recorded it,
+            // so no in-flight build aliases it; device is live.
             unsafe {
                 self.accel_loader
                     .destroy_acceleration_structure(accel, None);
@@ -339,6 +357,8 @@ impl AccelerationManager {
         }
 
         // Get the BLAS device address.
+        // SAFETY: `accel` is the live BLAS just built; query-only call;
+        // device outlives it.
         let device_address = unsafe {
             self.accel_loader.get_acceleration_structure_device_address(
                 &vk::AccelerationStructureDeviceAddressInfoKHR::default()
@@ -456,6 +476,9 @@ impl AccelerationManager {
             Vec::with_capacity(meshes.len());
 
         for &(_mesh_handle, mesh, vertex_count, _index_count) in meshes {
+            // SAFETY: the per-mesh vertex buffer was created with
+            // SHADER_DEVICE_ADDRESS; the returned address is valid for the
+            // buffer's lifetime.
             let vertex_address = unsafe {
                 device.get_buffer_device_address(
                     &vk::BufferDeviceAddressInfo::default().buffer(
@@ -466,6 +489,9 @@ impl AccelerationManager {
                 ),
                 )
             };
+            // SAFETY: the per-mesh index buffer was created with
+            // SHADER_DEVICE_ADDRESS; the returned address is valid for the
+            // buffer's lifetime.
             let index_address = unsafe {
                 device.get_buffer_device_address(
                     &vk::BufferDeviceAddressInfo::default().buffer(
@@ -498,6 +524,10 @@ impl AccelerationManager {
         // (`evict_unused_blas` early-returns under budget); helps cell
         // transitions where the outgoing cell's BLAS still holds live
         // memory that the incoming cell's batch is about to need. #510.
+        // SAFETY: `device` + `allocator` are live; the prepared buffers
+        // for this batch are not yet in `blas_entries`, and eviction only
+        // frees entries past the idle threshold, so no in-flight build is
+        // aliased.
         unsafe {
             self.evict_unused_blas(device, allocator);
         }
@@ -572,6 +602,9 @@ impl AccelerationManager {
                 .geometries(std::slice::from_ref(&geometry));
 
             let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
+            // SAFETY: query-only call; `accel_loader`, `build_info`
+            // (value-typed geometry) and `sizes` out-param are live; device
+            // outlives it.
             unsafe {
                 self.accel_loader.get_acceleration_structure_build_sizes(
                     vk::AccelerationStructureBuildTypeKHR::DEVICE,
@@ -597,6 +630,11 @@ impl AccelerationManager {
                 .size(sizes.acceleration_structure_size)
                 .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
 
+            // SAFETY: `accel_info` references `result_buffer.buffer`, just
+            // created with ACCELERATION_STRUCTURE_STORAGE_KHR and still live;
+            // device outlives the call. On failure the already-prepared
+            // entries (owned by `prepared`, no command buffer yet references
+            // them) are destroyed before bailing.
             let accel = unsafe {
                 match self
                     .accel_loader
@@ -662,6 +700,9 @@ impl AccelerationManager {
         // address shared by every recorded build in this batch satisfies
         // VUID-…-pInfos-03715 in release too (the headroom above absorbs
         // the shift). No-op on aligned drivers. See #1386 / #659.
+        // SAFETY: the shared scratch buffer was created with
+        // SHADER_DEVICE_ADDRESS; the returned address is rounded up to
+        // `scratch_align` below into the padding reserved above.
         let raw_scratch = unsafe {
             device.get_buffer_device_address(
                 &vk::BufferDeviceAddressInfo::default()
@@ -675,12 +716,16 @@ impl AccelerationManager {
         let query_pool_info = vk::QueryPoolCreateInfo::default()
             .query_type(vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR)
             .query_count(n);
+        // SAFETY: `query_pool_info` is fully initialized and device is
+        // live; the returned pool is owned and destroyed below.
         let query_pool = unsafe {
             device
                 .create_query_pool(&query_pool_info, None)
                 .context("Failed to create compaction query pool")?
         };
         // Reset the query pool before use (required by Vulkan spec).
+        // SAFETY: `query_pool` was just created with `n` queries; the
+        // reset range [0, n) is in bounds; no query is in use yet.
         unsafe {
             device.reset_query_pool(query_pool, 0, n);
         }
@@ -707,6 +752,11 @@ impl AccelerationManager {
                     .primitive_offset(0)
                     .first_vertex(0);
 
+                // SAFETY: `cmd` is recording (inside `submit_one_time`); the
+                // shared scratch is sized to `max_scratch_size` + alignment
+                // padding and the per-build scratch ranges are serialized by the
+                // barrier at the loop head; `p.accel` is freshly created and not
+                // referenced by any other in-flight build; geometry handles live.
                 unsafe {
                     self.accel_loader.cmd_build_acceleration_structures(
                         cmd,
@@ -718,6 +768,9 @@ impl AccelerationManager {
 
             // Barrier: all builds must complete before querying compacted sizes.
             // AS_BUILD_KHR → AS_BUILD_KHR (WRITE → READ for compaction query).
+            // SAFETY: `cmd` is recording; the barrier serializes all preceding
+            // AS builds (WRITE) against the compaction-size queries (READ) that
+            // follow on the same command buffer.
             unsafe {
                 memory_barrier(
                     device,
@@ -732,6 +785,9 @@ impl AccelerationManager {
             // Query compacted sizes for all built BLAS.
             let accel_handles: Vec<vk::AccelerationStructureKHR> =
                 prepared.iter().map(|p| p.accel).collect();
+            // SAFETY: `cmd` is recording; every `accel` in `accel_handles` was
+            // built earlier on this command buffer and the barrier above orders
+            // the build writes before this read; `query_pool` holds `n` slots.
             unsafe {
                 self.accel_loader
                     .cmd_write_acceleration_structures_properties(
@@ -748,12 +804,18 @@ impl AccelerationManager {
 
         if let Err(e) = build_result {
             for mut p in prepared {
+                // SAFETY: the build submission failed, so no in-flight command
+                // buffer references `p.accel`; each accel + buffer is owned by
+                // `prepared`; device is live.
                 unsafe {
                     self.accel_loader
                         .destroy_acceleration_structure(p.accel, None);
                 }
                 p.buffer.destroy(device, allocator);
             }
+            // SAFETY: `query_pool` is the live pool created above; device is
+            // live; no in-flight command buffer references it after the failed
+            // submit.
             unsafe {
                 device.destroy_query_pool(query_pool, None);
             }
@@ -770,6 +832,9 @@ impl AccelerationManager {
         // at lines 733-745 / 815-832.
         let alloc_compact = || -> Result<(Vec<CompactedBlas>, u64, u64)> {
             let mut compacted_sizes = vec![0u64; prepared.len()];
+            // SAFETY: the WAIT flag blocks until all `n` compaction-size
+            // queries written above are available; `compacted_sizes` has one
+            // slot per query; device + pool are live.
             unsafe {
                 device
                     .get_query_pool_results(
@@ -816,6 +881,10 @@ impl AccelerationManager {
                     .size(compact_size)
                     .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
 
+                // SAFETY: `compact_accel_info` references `compact_buffer.buffer`,
+                // just created with ACCELERATION_STRUCTURE_STORAGE_KHR and live;
+                // device outlives the call. On failure the local buffer is
+                // destroyed before bailing.
                 let compact_accel = unsafe {
                     match self
                         .accel_loader
@@ -854,12 +923,17 @@ impl AccelerationManager {
                 // happy path) and the query pool. Partial phase-6 compact
                 // state was already cleaned up inside `alloc_compact`.
                 for mut p in prepared {
+                    // SAFETY: the compaction allocation failed before any copy was
+                    // recorded, so no in-flight command buffer references `p.accel`;
+                    // each accel + buffer is owned by `prepared`; device is live.
                     unsafe {
                         self.accel_loader
                             .destroy_acceleration_structure(p.accel, None);
                     }
                     p.buffer.destroy(device, allocator);
                 }
+                // SAFETY: `query_pool` is the live pool created above; device is
+                // live; no in-flight command buffer references it on this path.
                 unsafe {
                     device.destroy_query_pool(query_pool, None);
                 }
@@ -875,6 +949,10 @@ impl AccelerationManager {
                     .dst(*compact_accel)
                     .mode(vk::CopyAccelerationStructureModeKHR::COMPACT);
 
+                // SAFETY: `cmd` is recording; `prepared[i].accel` (src) was built
+                // and the compaction barrier ordered its write; `*compact_accel`
+                // (dst) was sized from the queried compacted size; no other
+                // in-flight build aliases either handle.
                 unsafe {
                     self.accel_loader
                         .cmd_copy_acceleration_structure(cmd, &copy_info);
@@ -884,6 +962,9 @@ impl AccelerationManager {
         });
 
         // Destroy the query pool — no longer needed.
+        // SAFETY: the compaction-size queries have been read back; the
+        // pool is no longer referenced by any command buffer; device is
+        // live.
         unsafe {
             device.destroy_query_pool(query_pool, None);
         }
@@ -891,6 +972,9 @@ impl AccelerationManager {
         if let Err(e) = copy_result {
             // Clean up both original and compact structures on failure.
             for mut p in prepared {
+                // SAFETY: the copy submission failed, so no in-flight command
+                // buffer references `p.accel`; each accel + buffer is owned by
+                // `prepared`; device is live.
                 unsafe {
                     self.accel_loader
                         .destroy_acceleration_structure(p.accel, None);
@@ -898,6 +982,9 @@ impl AccelerationManager {
                 p.buffer.destroy(device, allocator);
             }
             for (_, accel, mut buf, _, _, _) in compact_accels {
+                // SAFETY: the copy submission failed, so the compacted `accel` was
+                // never read by any in-flight command buffer; each accel + buffer
+                // is owned by `compact_accels`; device is live.
                 unsafe {
                     self.accel_loader
                         .destroy_acceleration_structure(accel, None);
@@ -909,6 +996,10 @@ impl AccelerationManager {
 
         // Phase 7: Destroy originals, store compacted entries.
         for mut p in prepared {
+            // SAFETY: the compaction copy completed (the `submit_one_time`
+            // fence has retired), so no command buffer still references the
+            // original `p.accel`; each accel + buffer is owned by `prepared`;
+            // device is live.
             unsafe {
                 self.accel_loader
                     .destroy_acceleration_structure(p.accel, None);
@@ -920,6 +1011,8 @@ impl AccelerationManager {
         for (mesh_handle, accel, buffer, build_scratch_size, vertex_count, index_count) in
             compact_accels
         {
+            // SAFETY: `accel` is the live compacted BLAS; query-only call;
+            // device outlives it.
             let device_address = unsafe {
                 self.accel_loader.get_acceleration_structure_device_address(
                     &vk::AccelerationStructureDeviceAddressInfoKHR::default()

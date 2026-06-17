@@ -261,6 +261,9 @@ impl VolumetricsPipeline {
                 match $expr {
                     Ok(v) => v,
                     Err(e) => {
+                        // SAFETY: cleanup path on construction failure; `partial` owns only
+                        // objects created so far in this fn, none submitted to the GPU, and
+                        // `device`/`allocator` outlive this call.
                         unsafe { partial.destroy(device, allocator) };
                         return Err(e.into());
                     }
@@ -331,6 +334,8 @@ impl VolumetricsPipeline {
             &[],
         )
         .expect("volumetrics descriptor layout drifted against volumetrics_inject.comp (see #427)");
+        // SAFETY: `device` is live; `bindings` outlives the call; the layout
+        // is owned by `partial` and destroyed on the error path / in destroy().
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -340,6 +345,8 @@ impl VolumetricsPipeline {
                 .context("Volumetrics descriptor set layout")
         });
 
+        // SAFETY: `device` is live; the referenced descriptor set layout was
+        // just created above and is still live; result owned by `partial`.
         partial.pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
@@ -359,6 +366,8 @@ impl VolumetricsPipeline {
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(shader_module)
             .name(c"main");
+        // SAFETY: `device` is live; `pipeline_cache`, `partial.pipeline_layout`
+        // and `stage.module` (loaded just above) are all live for the call.
         partial.pipeline = match unsafe {
             device
                 .create_compute_pipelines(
@@ -372,11 +381,17 @@ impl VolumetricsPipeline {
                 .context("Volumetrics clear compute pipeline")
         } {
             Ok(pipelines) => {
+                // SAFETY: `shader_module` was created above by us, not yet destroyed,
+                // and is no longer needed once the pipeline is built; `device` is live.
                 unsafe { device.destroy_shader_module(shader_module, None) };
                 pipelines[0]
             }
             Err(e) => {
+                // SAFETY: `shader_module` was created above by us and not yet destroyed;
+                // `device` is live on this error-cleanup path.
                 unsafe { device.destroy_shader_module(shader_module, None) };
+                // SAFETY: cleanup on pipeline-creation failure; `partial` owns only
+                // objects created so far, none in flight; `device`/`allocator` are live.
                 unsafe { partial.destroy(device, allocator) };
                 return Err(e);
             }
@@ -392,6 +407,8 @@ impl VolumetricsPipeline {
         .build(device, "Volumetrics descriptor pool"));
 
         let layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        // SAFETY: `device` is live; `partial.descriptor_pool` was just built and
+        // `layouts` (clones of the live set layout) outlive the call.
         partial.descriptor_sets = try_or_cleanup!(unsafe {
             device
                 .allocate_descriptor_sets(
@@ -417,6 +434,9 @@ impl VolumetricsPipeline {
                 write_storage_image(set, 0, &lighting_info),
                 write_uniform_buffer(set, 1, &params_info),
             ];
+            // SAFETY: the written descriptor sets and the referenced froxel image
+            // view + param UBO are freshly created here and not yet in use by any
+            // in-flight frame.
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
@@ -479,6 +499,8 @@ impl VolumetricsPipeline {
         .expect(
             "volumetrics integration layout drifted against volumetrics_integrate.comp (see #427)",
         );
+        // SAFETY: `device` is live; `int_bindings` outlives the call; result is
+        // owned by `partial` and destroyed on error / in destroy().
         partial.integration_descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -488,6 +510,8 @@ impl VolumetricsPipeline {
                 .context("Volumetrics integration descriptor set layout")
         });
 
+        // SAFETY: `device` is live; the integration descriptor set layout was
+        // just created above and is still live; result owned by `partial`.
         partial.integration_pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
@@ -508,6 +532,8 @@ impl VolumetricsPipeline {
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(int_shader_module)
             .name(c"main");
+        // SAFETY: `device` is live; `pipeline_cache`, the integration pipeline
+        // layout, and `int_stage.module` (loaded above) are all live for the call.
         partial.integration_pipeline = match unsafe {
             device
                 .create_compute_pipelines(
@@ -521,11 +547,17 @@ impl VolumetricsPipeline {
                 .context("Volumetrics integration compute pipeline")
         } {
             Ok(pipelines) => {
+                // SAFETY: `int_shader_module` was created above by us, not yet destroyed,
+                // and no longer needed once the pipeline is built; `device` is live.
                 unsafe { device.destroy_shader_module(int_shader_module, None) };
                 pipelines[0]
             }
             Err(e) => {
+                // SAFETY: `int_shader_module` was created above by us and not yet
+                // destroyed; `device` is live on this error-cleanup path.
                 unsafe { device.destroy_shader_module(int_shader_module, None) };
+                // SAFETY: cleanup on pipeline-creation failure; `partial` owns only
+                // objects created so far, none in flight; `device`/`allocator` are live.
                 unsafe { partial.destroy(device, allocator) };
                 return Err(e);
             }
@@ -542,6 +574,8 @@ impl VolumetricsPipeline {
             .build(device, "Volumetrics integration descriptor pool"));
 
         let int_layouts = vec![partial.integration_descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        // SAFETY: `device` is live; the integration descriptor pool was just
+        // built and `int_layouts` (clones of the live set layout) outlive the call.
         partial.integration_descriptor_sets = try_or_cleanup!(unsafe {
             device
                 .allocate_descriptor_sets(
@@ -576,6 +610,9 @@ impl VolumetricsPipeline {
                 write_storage_image(set, 1, &int_info),
                 write_uniform_buffer(set, 2, &ubo_info),
             ];
+            // SAFETY: the written integration descriptor sets and the referenced
+            // froxel image views + dt UBO are freshly created here and not yet in
+            // use by any in-flight frame.
             unsafe { device.update_descriptor_sets(&int_writes, &[]) };
         }
 
@@ -617,12 +654,16 @@ impl VolumetricsPipeline {
             )
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
+        // SAFETY: `device` is live; `img_info` outlives the call; the returned
+        // image is owned by the FroxelSlot and destroyed on error / in destroy().
         let image = unsafe {
             device
                 .create_image(&img_info, None)
                 .with_context(|| format!("create {name}"))?
         };
 
+        // SAFETY (get_image_memory_requirements below): `image` was just created
+        // above by us and is still live; `device` outlives the call.
         let alloc = match allocator
             .lock()
             .expect("allocator lock")
@@ -637,21 +678,29 @@ impl VolumetricsPipeline {
         {
             Ok(a) => a,
             Err(e) => {
+                // SAFETY: `image` was created above by us and not yet destroyed;
+                // `device` is live on this allocation-failure cleanup path.
                 unsafe { device.destroy_image(image, None) };
                 return Err(e);
             }
         };
 
+        // SAFETY: `image` was just created and `alloc` was just allocated; both
+        // are live, the offset/memory come from the same allocation; `device` is live.
         if let Err(e) = unsafe {
             device
                 .bind_image_memory(image, alloc.memory(), alloc.offset())
                 .with_context(|| format!("bind {name}"))
         } {
             allocator.lock().expect("allocator lock").free(alloc).ok();
+            // SAFETY: `image` was created above by us and not yet destroyed;
+            // `device` is live on this bind-failure cleanup path.
             unsafe { device.destroy_image(image, None) };
             return Err(e);
         }
 
+        // SAFETY: `device` is live; `image` was created+bound above and is still
+        // live; the view is owned by the FroxelSlot and destroyed on error / in destroy().
         let view = match unsafe {
             device
                 .create_image_view(
@@ -667,6 +716,8 @@ impl VolumetricsPipeline {
             Ok(v) => v,
             Err(e) => {
                 allocator.lock().expect("allocator lock").free(alloc).ok();
+                // SAFETY: `image` was created above by us and not yet destroyed;
+                // `device` is live on this view-creation-failure cleanup path.
                 unsafe { device.destroy_image(image, None) };
                 return Err(e);
             }
@@ -718,6 +769,10 @@ impl VolumetricsPipeline {
             // NONE as srcStageMask: UNDEFINED → GENERAL on the lighting +
             // integrated volumes has no prior writes to expose; NONE is
             // the Vulkan 1.3 idiom post-#949 / #1100 / #1122.
+            // SAFETY: `cmd` is recording (provided by with_one_time_commands);
+            // every barrier targets a froxel image owned by `self`, freshly
+            // allocated and not concurrently accessed by another command buffer;
+            // NONE->{COMPUTE,TRANSFER} correctly orders the layout init before the clear.
             unsafe {
                 device.cmd_pipeline_barrier(
                     cmd,
@@ -976,6 +1031,9 @@ impl VolumetricsPipeline {
             .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
             .descriptor_count(1)
             .push_next(&mut accel_write);
+        // SAFETY: the injection descriptor set for `frame` is live and not in use
+        // by an in-flight frame (caller invokes write_tlas before this frame's
+        // dispatch); `accel_structs`/`accel_write` outlive the call.
         unsafe { device.update_descriptor_sets(&[write], &[]) };
         // Latch so dispatch's debug_assert can verify the binding was
         // written this session. (#1105 / REN-D18-003)

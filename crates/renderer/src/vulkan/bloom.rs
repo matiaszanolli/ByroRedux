@@ -189,6 +189,10 @@ impl BloomPipeline {
                 match $expr {
                     Ok(v) => v,
                     Err(e) => {
+                        // SAFETY: `destroy` is an unsafe fn; on this error path
+                        // the device is still live and no bloom command buffers
+                        // are in flight (we are mid-construction), so tearing
+                        // down the partially-built pipeline is sound.
                         unsafe { partial.destroy(device, allocator) };
                         return Err(e.into());
                     }
@@ -197,6 +201,8 @@ impl BloomPipeline {
         }
 
         // ── 1. Sampler ────────────────────────────────────────────────
+        // SAFETY: trivial ash create call; `device` is live and the
+        // SamplerCreateInfo is fully initialized for the duration of the call.
         partial.sampler = try_or_cleanup!(unsafe {
             device
                 .create_sampler(
@@ -241,6 +247,8 @@ impl BloomPipeline {
             &[],
         )
         .expect("bloom downsample layout drifted against bloom_downsample.comp (see #427)");
+        // SAFETY: trivial ash create call; `device` is live and `down_bindings`
+        // outlives the create info borrowed by this call.
         partial.downsample_dsl = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -285,6 +293,8 @@ impl BloomPipeline {
             &[],
         )
         .expect("bloom upsample layout drifted against bloom_upsample.comp (see #427)");
+        // SAFETY: trivial ash create call; `device` is live and `up_bindings`
+        // outlives the create info borrowed by this call.
         partial.upsample_dsl = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -295,6 +305,8 @@ impl BloomPipeline {
         });
 
         // ── 3. Pipeline layouts ───────────────────────────────────────
+        // SAFETY: trivial ash create call; `device` is live and
+        // `partial.downsample_dsl` was just created by us and is still live.
         partial.downsample_pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
@@ -304,6 +316,8 @@ impl BloomPipeline {
                 )
                 .context("bloom downsample pipeline layout")
         });
+        // SAFETY: trivial ash create call; `device` is live and
+        // `partial.upsample_dsl` was just created by us and is still live.
         partial.upsample_pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
@@ -399,6 +413,11 @@ impl BloomPipeline {
             // NONE as srcStageMask: UNDEFINED → GENERAL on the bloom
             // pyramid mips has no prior writes to expose; NONE is the
             // Vulkan 1.3 idiom post-#949 / #1100 / #1122.
+            // SAFETY: `cmd` is the recording one-time command buffer supplied
+            // by `with_one_time_commands`; every barrier image is a bloom mip
+            // created above and not yet accessed, so the UNDEFINED->GENERAL
+            // transition with srcStage=NONE has no prior writes to make visible
+            // and no concurrent use.
             unsafe {
                 device.cmd_pipeline_barrier(
                     cmd,
@@ -756,6 +775,9 @@ impl BloomFrame {
         // Allocate descriptor sets.
         let down_layouts = vec![down_dsl; BLOOM_MIP_COUNT];
         let up_layouts = vec![up_dsl; BLOOM_MIP_COUNT - 1];
+        // SAFETY: trivial ash call; `device` and `descriptor_pool` are live and
+        // `down_layouts` (BLOOM_MIP_COUNT copies of `down_dsl`) outlives the
+        // call.
         let down_descriptor_sets = unsafe {
             device
                 .allocate_descriptor_sets(
@@ -765,6 +787,9 @@ impl BloomFrame {
                 )
                 .context("bloom down descriptor sets")?
         };
+        // SAFETY: trivial ash call; `device` and `descriptor_pool` are live and
+        // `up_layouts` (BLOOM_MIP_COUNT-1 copies of `up_dsl`) outlives the
+        // call.
         let up_descriptor_sets = unsafe {
             device
                 .allocate_descriptor_sets(
@@ -808,6 +833,8 @@ impl BloomFrame {
             }
             writes.push(write_storage_image(down_descriptor_sets[i], 1, &dst_info));
             writes.push(write_uniform_buffer(down_descriptor_sets[i], 2, &ubo_info));
+            // SAFETY: the written down set, its mip views, and param buffer are
+            // all freshly created and not yet bound by any in-flight frame.
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
@@ -842,6 +869,8 @@ impl BloomFrame {
                 write_storage_image(up_descriptor_sets[i], 2, &dst_info),
                 write_uniform_buffer(up_descriptor_sets[i], 3, &ubo_info),
             ];
+            // SAFETY: the written up set, its mip/down views, and param buffer
+            // are all freshly created and not yet bound by any in-flight frame.
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
@@ -877,6 +906,8 @@ fn create_mip(
         .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED);
+    // SAFETY: trivial ash create call; `device` is live and `img_info` outlives
+    // the borrow held during the create.
     let image = unsafe {
         device
             .create_image(&img_info, None)
@@ -887,6 +918,8 @@ fn create_mip(
         .expect("allocator lock")
         .allocate(&vk_alloc::AllocationCreateDesc {
             name,
+            // SAFETY: trivial ash get call; `image` was just created by us
+            // above and is still live; `device` outlives this call.
             requirements: unsafe { device.get_image_memory_requirements(image) },
             location: gpu_allocator::MemoryLocation::GpuOnly,
             linear: false,
@@ -896,19 +929,28 @@ fn create_mip(
     {
         Ok(a) => a,
         Err(e) => {
+            // SAFETY: `image` was created by us just above and not yet
+            // destroyed; device is live and the image was never submitted to
+            // any queue.
             unsafe { device.destroy_image(image, None) };
             return Err(e);
         }
     };
+    // SAFETY: trivial ash bind call; `image` and `alloc`'s memory were both
+    // created by us above and are still live; `device` outlives the call.
     if let Err(e) = unsafe {
         device
             .bind_image_memory(image, alloc.memory(), alloc.offset())
             .with_context(|| format!("bind {name}"))
     } {
         allocator.lock().expect("allocator lock").free(alloc).ok();
+        // SAFETY: `image` was created by us above and not yet destroyed (its
+        // allocation was just freed); device is live, image never submitted.
         unsafe { device.destroy_image(image, None) };
         return Err(e);
     }
+    // SAFETY: trivial ash create call; `image` was just created and bound by us
+    // and is still live; `device` outlives the borrow during create.
     let view = match unsafe {
         device
             .create_image_view(
@@ -924,6 +966,9 @@ fn create_mip(
         Ok(v) => v,
         Err(e) => {
             allocator.lock().expect("allocator lock").free(alloc).ok();
+            // SAFETY: `image` was created by us above and not yet destroyed
+            // (its allocation was just freed); device is live, image never
+            // submitted.
             unsafe { device.destroy_image(image, None) };
             return Err(e);
         }
@@ -948,6 +993,8 @@ fn create_compute_pipeline(
         .stage(vk::ShaderStageFlags::COMPUTE)
         .module(shader_module)
         .name(c"main");
+    // SAFETY: trivial ash create call; `device`, `pipeline_cache`, `layout` and
+    // `shader_module` (created just above) are all live for the call.
     let result = unsafe {
         device
             .create_compute_pipelines(
@@ -962,10 +1009,16 @@ fn create_compute_pipeline(
     };
     let pipeline = match result {
         Ok(pipelines) => {
+            // SAFETY: `shader_module` was created by us above and not yet
+            // destroyed; the pipeline has been built so the module is no longer
+            // needed; device live.
             unsafe { device.destroy_shader_module(shader_module, None) };
             pipelines[0]
         }
         Err(e) => {
+            // SAFETY: `shader_module` was created by us above and not yet
+            // destroyed; pipeline creation failed so the module can be freed;
+            // device live.
             unsafe { device.destroy_shader_module(shader_module, None) };
             return Err(e);
         }
