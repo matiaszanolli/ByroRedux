@@ -22,8 +22,9 @@
 //! `materials[inst.materialId].foo` for every per-material field.
 //! The legacy per-instance copies were removed in Phase 6 (#785).
 //! See `feedback_shader_struct_sync.md` for the narrowed
-//! "only triangle.frag mirrors GpuMaterial" contract that landed
-//! alongside the closeout.
+//! "only `include/bindings.glsl` declares GpuMaterial" contract that
+//! landed alongside the closeout (the struct lived in `triangle.frag`
+//! until #1583/#1590 lifted it into the shared include).
 
 use super::scene_buffer::MAX_MATERIALS;
 use rustc_hash::FxHashMap;
@@ -53,9 +54,11 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// so the byte-level `Hash`/`Eq` impls below are deterministic.
 ///
 /// **Shader Struct Sync** (current, narrower contract): only
-/// `crates/renderer/shaders/triangle.frag` declares a matching
-/// `struct GpuMaterial` and reads from `materials[inst.materialId]`
-/// (binding 13). `triangle.vert`, `ui.vert`, and `caustic_splat.comp`
+/// `crates/renderer/shaders/include/bindings.glsl` declares the matching
+/// `struct GpuMaterial` (lifted out of `triangle.frag` under
+/// #1583/#1590; `triangle.frag` now `#include`s it and reads from
+/// `materials[inst.materialId]` at binding 13). `triangle.vert`,
+/// `ui.vert`, and `caustic_splat.comp`
 /// MUST NOT mirror the struct or index the material buffer — the build-
 /// time grep at `scene_buffer.rs:1639`
 /// (`ui_vert_reads_texture_index_from_instance_not_material_table`)
@@ -1337,10 +1340,14 @@ mod tests {
     ///
     /// Mirrors the `gpu_instance_field_offsets_match_shader_contract`
     /// pattern at `scene_buffer.rs:1453`. The shader-side
-    /// `struct GpuMaterial` declaration at `triangle.frag:110-184` is the
+    /// `struct GpuMaterial` declaration in
+    /// `crates/renderer/shaders/include/bindings.glsl` (lifted out of
+    /// `triangle.frag` under #1583/#1590 — it now `#include`s it) is the
     /// source of truth for these offsets — every named field on the
     /// Rust side gets an explicit `offset_of!` assertion against the
-    /// vec4 group its shader-side counterpart sits in.
+    /// vec4 group its shader-side counterpart sits in. The GLSL field
+    /// ORDER is cross-checked against this struct by
+    /// `gpu_material_glsl_field_order_matches_rust_struct` (#1657).
     #[test]
     fn gpu_material_field_offsets_match_shader_contract() {
         use std::mem::offset_of;

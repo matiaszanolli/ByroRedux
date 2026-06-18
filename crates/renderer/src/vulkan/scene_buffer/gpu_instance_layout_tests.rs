@@ -234,8 +234,9 @@ fn every_shader_struct_gpu_instance_names_material_kind_slot() {
         // into the `MaterialBuffer` SSBO. The assertion that
         // every shader's per-instance struct names a final
         // `materialKind` slot (#417) no longer applies.
-        // `triangle.frag` is the only shader that declares a
-        // `GpuMaterial` block at all (see binding 13 below).
+        // `include/bindings.glsl` is the only source that declares a
+        // `GpuMaterial` block at all (see binding 13 below);
+        // `triangle.frag` #includes it.
         assert!(
             !src.contains("uint _pad1"),
             "{name}: GpuInstance slot is still named `_pad1` — \
@@ -351,8 +352,8 @@ fn ui_vert_reads_texture_index_from_instance_not_material_table() {
     assert!(
         !src.contains("struct GpuMaterial"),
         "ui.vert: must NOT declare `struct GpuMaterial`. Only \
-             `triangle.frag` mirrors the material struct (binding 13). \
-             See #776 / #785."
+             `include/bindings.glsl` declares the material struct \
+             (binding 13; `triangle.frag` #includes it). See #776 / #785."
     );
     assert!(
         !src.contains("materials[inst"),
@@ -608,5 +609,156 @@ fn triangle_frag_no_unsafe_vertex_data_reads() {
                 );
             }
         }
+    }
+}
+
+// ── GpuMaterial GLSL ↔ Rust field-order cross-check (#1657 / SF-D8-01) ──
+
+/// Normalize an identifier so snake_case and camelCase spellings of the
+/// same field collapse to one key: strip every `_`, lowercase the rest.
+/// `emissive_mult` and `emissiveMult` both → `emissivemult`.
+fn normalize_ident(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c != '_')
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+fn is_ident(s: &str) -> bool {
+    !s.is_empty()
+        && !s.as_bytes()[0].is_ascii_digit()
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// Slice out the body between the first `{` after `decl` and its matching
+/// `}`. Both `struct GpuMaterial` declarations have a flat (un-nested)
+/// body, so the first `}` is the closer.
+fn extract_struct_body<'a>(src: &'a str, decl: &str) -> Option<&'a str> {
+    let start = src.find(decl)?;
+    let open = src[start..].find('{')? + start;
+    let close = src[open..].find('}')? + open;
+    Some(&src[open + 1..close])
+}
+
+/// Ordered field names of the Rust `#[repr(C)] struct GpuMaterial`,
+/// parsed from `material.rs` source. A field line is `pub <ident>: <ty>,`;
+/// comment / attribute / blank lines are skipped.
+fn parse_rust_struct_fields(src: &str) -> Vec<String> {
+    let body = extract_struct_body(src, "pub struct GpuMaterial")
+        .expect("material.rs must declare `pub struct GpuMaterial`");
+    let mut out = Vec::new();
+    for raw in body.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
+            continue;
+        }
+        let Some(colon) = line.find(':') else { continue };
+        let lhs = line[..colon].trim();
+        let ident = lhs.strip_prefix("pub ").unwrap_or(lhs).trim();
+        if is_ident(ident) {
+            out.push(ident.to_string());
+        }
+    }
+    out
+}
+
+/// Ordered field names of the GLSL `struct GpuMaterial`, parsed from
+/// `include/bindings.glsl`. Handles multi-name declarations
+/// (`float a, b, c;`) and skips `//`/`///` comment lines.
+fn parse_glsl_struct_fields(src: &str) -> Vec<String> {
+    const TYPES: &[&str] = &[
+        "float", "uint", "int", "bool", "vec2", "vec3", "vec4", "mat2", "mat3", "mat4",
+    ];
+    let body = extract_struct_body(src, "struct GpuMaterial")
+        .expect("include/bindings.glsl must declare `struct GpuMaterial`");
+    let mut out = Vec::new();
+    for raw in body.lines() {
+        // Drop any trailing line comment first (also collapses `///` /
+        // `//` doc lines to empty so they're skipped).
+        let line = match raw.find("//") {
+            Some(i) => &raw[..i],
+            None => raw,
+        }
+        .trim();
+        let Some(semi) = line.find(';') else { continue };
+        let decl = line[..semi].trim();
+        let mut parts = decl.splitn(2, char::is_whitespace);
+        let ty = parts.next().unwrap_or("");
+        if !TYPES.contains(&ty) {
+            continue;
+        }
+        let Some(rest) = parts.next() else { continue };
+        for piece in rest.split(',') {
+            let id = piece.trim();
+            if is_ident(id) {
+                out.push(id.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// #1657 / SF-D8-01 — cross-check the GLSL `struct GpuMaterial` field
+/// ORDER against the Rust `#[repr(C)]` struct field order.
+///
+/// The pre-existing guards leave one leg of the GpuMaterial lockstep
+/// contract unpinned: `gpu_material_field_offsets_match_shader_contract`
+/// pins only the *Rust* offsets, and `gpu_material_glsl_field_names_pinned`
+/// only asserts each GLSL name is *present* (`src.contains`). Neither
+/// catches a within-vec4 GLSL reorder (e.g. swapping `metalness` and
+/// `roughness`) that preserves the 300 B size — the shader would then
+/// read the wrong scalar on every lit surface, yet every `cargo test`
+/// would pass. This is the positive-order guard the `GpuInstance`
+/// contract already has (`gpu_instance_field_offsets_match_shader_contract`)
+/// but `GpuMaterial` lacked.
+///
+/// Walks BOTH source files at compile time (`include_str!`, no glslang
+/// needed), extracts each struct's declaration-order field list,
+/// normalizes snake_case ↔ camelCase, and asserts the two ordered lists
+/// are identical. The Rust struct stays the source of truth (its offsets
+/// are pinned elsewhere); this makes the GLSL declaration track it.
+#[test]
+fn gpu_material_glsl_field_order_matches_rust_struct() {
+    let rust_src = include_str!("../material.rs");
+    let glsl_src = include_str!("../../../shaders/include/bindings.glsl");
+
+    let rust_fields = parse_rust_struct_fields(rust_src);
+    let glsl_fields = parse_glsl_struct_fields(glsl_src);
+
+    assert!(
+        rust_fields.len() > 60,
+        "parsed only {} fields from the Rust `struct GpuMaterial` — parser likely broke",
+        rust_fields.len()
+    );
+    assert!(
+        glsl_fields.len() > 60,
+        "parsed only {} fields from the GLSL `struct GpuMaterial` — parser likely broke",
+        glsl_fields.len()
+    );
+
+    let rust_norm: Vec<String> = rust_fields.iter().map(|f| normalize_ident(f)).collect();
+    let glsl_norm: Vec<String> = glsl_fields.iter().map(|f| normalize_ident(f)).collect();
+
+    assert_eq!(
+        rust_norm.len(),
+        glsl_norm.len(),
+        "GpuMaterial field COUNT differs: Rust has {} {:?}, GLSL has {} {:?}. The two \
+         `struct GpuMaterial` declarations (material.rs + include/bindings.glsl) must stay in \
+         lockstep — see #1657 / SF-D8-01.",
+        rust_norm.len(),
+        rust_fields,
+        glsl_norm.len(),
+        glsl_fields,
+    );
+
+    for (i, (r, g)) in rust_norm.iter().zip(glsl_norm.iter()).enumerate() {
+        assert_eq!(
+            r, g,
+            "GpuMaterial field #{i} ORDER mismatch: Rust `{}` vs GLSL `{}`. The GLSL \
+             `struct GpuMaterial` in include/bindings.glsl must declare fields in the SAME order \
+             as the Rust `#[repr(C)]` struct (the offset source of truth). A within-vec4 reorder \
+             keeps the 300 B size but corrupts every lit-surface read — see #1657 / SF-D8-01.",
+            rust_fields[i], glsl_fields[i],
+        );
     }
 }
