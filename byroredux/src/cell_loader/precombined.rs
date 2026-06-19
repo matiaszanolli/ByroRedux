@@ -67,12 +67,17 @@ pub(super) fn spawn_precombined_meshes(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     mut mat_provider: Option<&mut MaterialProvider>,
-    // Path to the cell's master plugin (e.g. `…/Data/Fallout4.esm`). Used
-    // to locate the companion `<Plugin> - Geometry.csg` blob that holds
-    // the shared-variant vertex/triangle data (M49). When the CSG is
-    // absent (non-FO4, or no shared precombines) the loader falls back to
-    // per-REFR rendering as before.
+    // Path to the *active* plugin (the last `--esm`, e.g.
+    // `…/Data/Fallout4.esm`). Provides the Data directory and the fallback
+    // CSG when a cell's owner can't be resolved from `load_order_paths`.
     plugin_path: &str,
+    // Correctly-cased plugin paths in load order (masters first, active
+    // plugin last), aligned with the global form-id mod-index byte. Used to
+    // resolve the cell's *owning* plugin so its companion
+    // `<Plugin> - Geometry.csg` is opened — not the last-loaded plugin's,
+    // which holds the wrong blob for master-owned cells (#1590). Single-
+    // plugin loads pass a one-element slice → identical to the old behaviour.
+    load_order_paths: &[&str],
 ) -> (usize, usize) {
     if cell.precombined_mesh_hashes.is_empty() {
         return (0, 0);
@@ -84,9 +89,18 @@ pub(super) fn spawn_precombined_meshes(
     // warm zlib `ChunkCache` across adjacent tiles. When no provider is
     // present (paths that pass `None`) fall back to an uncached open so CSG
     // resolution still works. `None` keeps the pre-M49 REFR fallback.
+    // #1590 — both the CSG and the `_oc.nif` path follow the plugin that
+    // OWNS the cell (its remapped form-id mod-index byte → load order), not
+    // the last-loaded `--esm`. For the dominant single-plugin / DLC-as-active
+    // case these coincide; they diverge when a master owns the cell (e.g. a
+    // Commonwealth tile loaded with a DLC active), where the old assumption
+    // read the wrong blob and built a path with the wrong mod byte + no DLC
+    // subdir.
+    let (owning_path, owning_subdir) =
+        resolve_precombine_owner(cell.form_id, load_order_paths, plugin_path);
     let csg: Option<Arc<CsgArchive>> = match mat_provider.as_deref_mut() {
-        Some(mp) => mp.geometry_csg(plugin_path),
-        None => open_geometry_csg(plugin_path).map(Arc::new),
+        Some(mp) => mp.geometry_csg(owning_path),
+        None => open_geometry_csg(owning_path).map(Arc::new),
     };
 
     // Precombined NIFs are baked in cell-local coords; `cell_origin`
@@ -101,10 +115,7 @@ pub(super) fn spawn_precombined_meshes(
     let mut misses = 0usize;
 
     for hash in &cell.precombined_mesh_hashes {
-        let path = format!(
-            "meshes\\precombined\\{:08x}_{:08x}_oc.nif",
-            cell.form_id, hash
-        );
+        let path = precombine_oc_nif_path(cell.form_id, *hash, owning_subdir.as_deref());
 
         // Check the process-lifetime cache first; precombined NIFs are
         // typically unique-per-cell so the hit-rate is near zero on
@@ -306,13 +317,66 @@ pub(super) fn spawn_precombined_meshes(
     (spawned, misses)
 }
 
+/// On-disk archive path for a cell's precombined `_oc.nif`.
+///
+/// Bethesda keys precombine filenames by the cell's lower 24 form-id bits
+/// with the mod-index byte forced to `00`, and namespaces DLC bakes under a
+/// `<owning-plugin>.esm\` subdirectory while base-game (`Fallout4.esm`)
+/// bakes live at the `meshes\precombined\` root. Verified against the real
+/// `Fallout4 - MeshesExtra.ba2` (120 k names, all at root) and
+/// `DLCCoast - Main.ba2` / `DLCRobot - Main.ba2` (own cells under
+/// `dlccoast.esm\` / `dlcrobot.esm\`; their base-game-cell overrides at the
+/// root). The cell loader holds the *remapped* (global-load-order)
+/// `cell.form_id`, whose top byte is the owner's global slot; masking it off
+/// recovers the baked filename, and `owning_subdir` (the owner's lowercased
+/// basename, or `None` for the base master) restores the namespace. For the
+/// base game both reduce to the pre-fix path. #1590.
+fn precombine_oc_nif_path(form_id: u32, hash: u32, owning_subdir: Option<&str>) -> String {
+    let local = form_id & 0x00FF_FFFF;
+    match owning_subdir {
+        Some(sub) => format!("meshes\\precombined\\{sub}\\{local:08x}_{hash:08x}_oc.nif"),
+        None => format!("meshes\\precombined\\{local:08x}_{hash:08x}_oc.nif"),
+    }
+}
+
+/// Resolve, from a cell's remapped form id, the path of the plugin that
+/// *owns* it (whose `<Plugin> - Geometry.csg` holds the precombine geometry)
+/// and the `meshes\precombined\` subdirectory its baked `_oc.nif` lives
+/// under. The owner is the load-order plugin at the form-id mod-index byte;
+/// `load_order_paths` is the correctly-cased, load-order-aligned plugin list.
+/// The base master (index 0, `Fallout4.esm`) bakes at the root (`None`
+/// subdir); every other owner namespaces under its lowercased basename. When
+/// the index is out of range (the standalone-form-id artifact the remap
+/// passes through unchanged) we fall back to the active plugin + root. #1590.
+///
+/// The residual override-rebake case — a winning plugin re-baking a
+/// master-owned cell into its *own* CSG while the form-id byte still points
+/// at the master — needs the `BSPackedGeomObject.filename_hash` BSCRC32
+/// cross-check (not yet reproduced; `docs/engine/fo4-csg-format.md`). A wrong
+/// read there fails closed via the decode-time index guard in
+/// [`byroredux_nif::import::precombine::decode_shared_geom_object`] (#1533) →
+/// safe REFR fallback.
+fn resolve_precombine_owner<'a>(
+    form_id: u32,
+    load_order_paths: &[&'a str],
+    fallback: &'a str,
+) -> (&'a str, Option<String>) {
+    let idx = (form_id >> 24) as usize;
+    match load_order_paths.get(idx) {
+        Some(&path) if idx == 0 => (path, None),
+        Some(&path) => (path, Some(super::load_order::plugin_basename_lc(path))),
+        None => (fallback, None),
+    }
+}
+
 /// Open the `<Plugin> - Geometry.csg` blob that sits next to `plugin_path`
-/// in the Data directory (M49). Vanilla FO4 precombines reference a single
-/// CSG named for the cell's master plugin (`Fallout4 - Geometry.csg`); the
-/// `BSPackedGeomObject.filename_hash` cross-check (BSCRC32) is a follow-up,
-/// so v1 keys purely off the plugin stem. Returns `None` when the plugin
-/// has no companion CSG (non-FO4 content, or a plugin that authored no
-/// shared precombines) — the caller then falls back to per-REFR rendering.
+/// in the Data directory (M49). The caller passes the cell's *owning*
+/// plugin path (resolved via [`resolve_precombine_owner`]) so the CSG named for
+/// the cell's master (`Fallout4 - Geometry.csg`, `DLCCoast - Geometry.csg`,
+/// …) is opened rather than the last-loaded plugin's. Returns `None` when
+/// the plugin has no companion CSG (non-FO4 content, or a plugin that
+/// authored no shared precombines) — the caller then falls back to per-REFR
+/// rendering.
 pub(crate) fn open_geometry_csg(plugin_path: &str) -> Option<CsgArchive> {
     let p = Path::new(plugin_path);
     let dir = p.parent()?;
@@ -445,6 +509,64 @@ mod tests {
     use byroredux_bsa::Ba2Archive;
     use std::path::PathBuf;
 
+    /// #1590 (b) — the baked `_oc.nif` path drops the form-id mod-index byte
+    /// and namespaces DLC bakes under a `<plugin>.esm\` subdir. Verified
+    /// against the real `Fallout4 - MeshesExtra.ba2` (root) and
+    /// `DLCCoast - Main.ba2` / `DLCRobot - Main.ba2` (own cells under
+    /// `dlccoast.esm\` / `dlcrobot.esm\`, e.g. `…\dlccoast.esm\00000da8_…`).
+    #[test]
+    fn oc_nif_path_base_game_stays_at_root() {
+        // Base master (no subdir) — unchanged from the pre-fix format!().
+        assert_eq!(
+            precombine_oc_nif_path(0x0000_e2db, 0x02be_5e11, None),
+            "meshes\\precombined\\0000e2db_02be5e11_oc.nif"
+        );
+    }
+
+    #[test]
+    fn oc_nif_path_dlc_uses_subdir_and_zeroes_mod_byte() {
+        // A DLCCoast cell remapped to global slot 2: the pre-fix code emitted
+        // `meshes\precombined\020034a6_…` (wrong byte, no subdir) and missed.
+        // The baked path is `…\dlccoast.esm\000034a6_…`.
+        assert_eq!(
+            precombine_oc_nif_path(0x0200_34a6, 0xb831_aac9, Some("dlccoast.esm")),
+            "meshes\\precombined\\dlccoast.esm\\000034a6_b831aac9_oc.nif"
+        );
+    }
+
+    /// #1590 (a) — the CSG + subdir follow the cell's owning plugin (form-id
+    /// mod-index byte → load order), not the last-loaded `--esm`.
+    #[test]
+    fn resolve_precombine_owner_follows_form_id_mod_index() {
+        let paths = [
+            "/Data/Fallout4.esm",
+            "/Data/DLCRobot.esm",
+            "/Data/DLCCoast.esm",
+        ];
+        let fallback = "/Data/DLCCoast.esm";
+        // A base-game cell (mod index 0) resolves Fallout4 + root even when a
+        // DLC is the active plugin — pre-fix opened the active plugin's CSG.
+        assert_eq!(
+            resolve_precombine_owner(0x0000_e2db, &paths, fallback),
+            ("/Data/Fallout4.esm", None)
+        );
+        // A DLCRobot-owned cell at global slot 1 → its CSG + `dlcrobot.esm\`.
+        assert_eq!(
+            resolve_precombine_owner(0x0100_2345, &paths, fallback),
+            ("/Data/DLCRobot.esm", Some("dlcrobot.esm".to_string()))
+        );
+        // Out-of-range mod index (standalone-artifact form) → fallback + root.
+        assert_eq!(
+            resolve_precombine_owner(0x7f00_0001, &paths, fallback),
+            (fallback, None)
+        );
+        // Single-plugin load: one-element slice, owner is slot 0 → root.
+        assert_eq!(
+            resolve_precombine_owner(0x0000_1234, &["/Data/Fallout4.esm"], "/Data/Fallout4.esm"),
+            ("/Data/Fallout4.esm", None)
+        );
+    }
+
     fn fo4_data_dir() -> Option<PathBuf> {
         if let Ok(v) = std::env::var("BYROREDUX_FO4_DATA") {
             let p = PathBuf::from(&v);
@@ -518,5 +640,75 @@ mod tests {
             "build_precombine_meshes: decoded {} mesh(es), {textured} textured",
             meshes.len()
         );
+    }
+
+    /// #1590 — end-to-end DLC regression. A DLCCoast-owned cell loaded with
+    /// `Fallout4.esm` as master gets a *remapped* form id (top byte = global
+    /// slot 1). `resolve_precombine_owner` + `precombine_oc_nif_path` must
+    /// reproduce the real on-disk `meshes\precombined\dlccoast.esm\<low24>_…`
+    /// path (pre-fix the loader emitted `…\01……` with no subdir and missed),
+    /// and the geometry must decode against `DLCCoast - Geometry.csg` — the
+    /// owning plugin's CSG, not the active plugin's. Gated on real data.
+    #[test]
+    #[ignore]
+    fn dlc_precombine_path_and_csg_resolve_end_to_end() {
+        let Some(data) = fo4_data_dir() else {
+            eprintln!("Skipping: no FO4 data dir");
+            return;
+        };
+        let ba2 = match Ba2Archive::open(data.join("DLCCoast - Main.ba2")) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("Skipping: open DLCCoast - Main.ba2: {e}");
+                return;
+            }
+        };
+        let csg = match CsgArchive::open(data.join("DLCCoast - Geometry.csg")) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Skipping: open DLCCoast - Geometry.csg: {e}");
+                return;
+            }
+        };
+
+        // Pick a real DLC-owned (subdir) precombine and parse its baked
+        // <low24>_<hash> off the filename.
+        let on_disk = ba2
+            .list_files()
+            .into_iter()
+            .find(|n| n.contains("\\dlccoast.esm\\") && n.ends_with("_oc.nif"))
+            .expect("a DLCCoast-owned precombine name")
+            .to_string();
+        let stem = on_disk.rsplit('\\').next().unwrap().trim_end_matches("_oc.nif");
+        let (low24_hex, hash_hex) = stem.split_once('_').expect("<low24>_<hash>");
+        let low24 = u32::from_str_radix(low24_hex, 16).unwrap();
+        let hash = u32::from_str_radix(hash_hex, 16).unwrap();
+        assert_eq!(low24 >> 24, 0, "on-disk form id has a zeroed mod byte");
+
+        // Simulate the load `--master Fallout4.esm --esm DLCCoast.esm`: the
+        // cell record's form id is remapped to DLCCoast's global slot (1).
+        let f4 = data.join("Fallout4.esm");
+        let coast = data.join("DLCCoast.esm");
+        let load_order: [&str; 2] = [f4.to_str().unwrap(), coast.to_str().unwrap()];
+        let remapped_form_id = (1u32 << 24) | low24;
+
+        let (owning_path, subdir) =
+            resolve_precombine_owner(remapped_form_id, &load_order, load_order[1]);
+        assert_eq!(owning_path, load_order[1], "owner is DLCCoast, not the master");
+        assert_eq!(subdir.as_deref(), Some("dlccoast.esm"));
+
+        let built = precombine_oc_nif_path(remapped_form_id, hash, subdir.as_deref());
+        assert_eq!(built, on_disk, "reconstructed path matches the on-disk name");
+
+        // And the geometry decodes against the OWNING plugin's CSG.
+        let bytes = ba2.extract(&built).expect("extract via reconstructed path");
+        let scene = byroredux_nif::parse_nif(&bytes).expect("parse _oc.nif");
+        let mut pool = StringPool::new();
+        let meshes = build_precombine_meshes(&scene, &csg, &mut pool);
+        assert!(
+            !meshes.is_empty(),
+            "DLC precombine decodes against its own DLCCoast - Geometry.csg"
+        );
+        eprintln!("dlc path '{built}' → {} mesh(es) from DLCCoast CSG", meshes.len());
     }
 }

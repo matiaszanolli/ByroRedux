@@ -242,8 +242,11 @@ pub fn load_cell_with_masters(
         ctx,
         tex_provider,
         mat_provider.as_deref_mut(),
-        // M49 — the cell's plugin sits beside its `<Plugin> - Geometry.csg`.
+        // M49 — the active plugin provides the Data dir + CSG fallback; the
+        // owning plugin (per cell form-id) selects the actual
+        // `<Plugin> - Geometry.csg` and the `_oc.nif` path. #1590.
         esm_path,
+        &plugin_paths,
     );
 
     // 3b. Load placed references. Honor `cell.absorbed_refs` only
