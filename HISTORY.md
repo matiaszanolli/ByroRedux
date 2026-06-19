@@ -24,6 +24,29 @@ Commits hold that record.
 
 ---
 
+## Session 49 — RT denoiser overhaul + FO4 import-consumer arc + audit bug-bash  (2026-06-19, bac64c45..b1f86290, 79 commits)
+
+Three threads. The headline was an **RT denoiser overhaul** (#1662) pushing
+interior lighting toward reference-grade — the first material/noise-quality
+landing since Session 47's Cornell arc. In parallel, an **FO4 import-consumer
+arc** finally made precombined-geometry cells (MedTek / Institute) render
+correctly — resolving precombines by their owning plugin, consuming the
+BSConnectPoint attach graph and the model-space-normal / alpha-test shader
+flags, and clearing a string of precombine material regressions. The remaining
+bulk was a continued **GitHub-issue bug-bash** (#1317–#1658) across the NIF
+collision / Havok parsers, ESM decoders, renderer, LOD, and tech-debt.
+
+- **RT denoiser overhaul** (`6b061120`, #1662) — multi-scatter energy compensation (Fdez-Agüera 2019 / Filament) on the Cook-Torrance specular lobe so rough conductors stop darkening; the long-missing **SVGF à-trous spatial wavelet pass** (Schied 2017 §4.3) consuming the always-produced moments buffer the temporal-only denoiser never read — **closes M37**; **ReSTIR-DI temporal reservoir reuse** for direct soft shadows (per-pixel SSBO, scene set bindings 16/17, ping-pong, `vulkan::restir`, 4 shadow rays/frame) — **advances M37.3 to Phase 2**; PCG-hash sampling replacing the crawling IGN dither across GI / shadow / WRS / caustic; progressive 1/N caustic + shadow EMA on a parked camera. All behind `DBG_*` toggles. Supporting: #1657 GLSL/Rust `GpuMaterial` field-order pin, #1645/#1646/#1648 reservoir-removal lag reconcile, #1636 GPU-timer `host_query_reset` gate, `218b425b` interim G-buffer reservoir-attachment removal.
+- **FO4 import consumers + precombines** (PR #1682/#1683) — #1590 resolve precombines by the cell's owning plugin (DLC); #1594 materialize the BSConnectPoint attach graph onto spawned entities; #1592 consume model-space-normals + alpha-test shader flags; #1585/#1586 cache `Geometry.csg` + cap steady-state cell-spawn drain; BGSM material flags on shared-precombine meshes (`efd3c41b` wall transparent/reflective regression, `022cac83` decal opaque-black); `2aac5351` DXT1 1-bit punch-through alpha in BC1_RGBA; #1651 BGSM/BGEM blend-factor GL→Gamebryo enum; #1621 InstituteBioScience runtime baseline regen.
+- **NIF parser — collision / Havok / Starfield** — #1334 dispatch `bhkPlaneShape` (+ matching `resolve_shape` arm); #1604 `bhkBallSocketConstraintChain` as `bhkSerializable`; #1652 `bhk` motion_type via the full canonical Havok enum; #1609 size-skip undecoded malleable inner CInfo on FO3+ (Oblivion parity); #1606 Starfield `BSLightingShaderProperty` undocumented tail; #1531/#1534 ragdoll body/joint sweep-on-unload + finite guards; #1532/#1533 mesh-index / precombine-triangle-index hardening; #1620 reject control-byte mesh paths; #1535 non-finite glossiness drop; #1500/#1617/#1335/#1511 contract / coord-SoT / dispatcher hygiene.
+- **ESM / cell loader / equip** — #1650 Oblivion 16-byte ACBS (level + gender); #1538 parse SCOL for FNV/FO3 (not just FO4+); #1546 merge cell overrides per-REFR by FormID; `234c6f1a` FO4/FO76 XCLL size reclassification (Creation-Engine, not FNV-era); #1658 prebaked-equip path walks TPLT inventory inheritance + #1656 ExtraTextureMaps unload-walk coverage.
+- **Renderer + LOD bug-bash** — #1649 additive-particle instance-batching + blend-enum; #1641/#1642 soft-particle depth fade in render-origin-relative space; #1582 caustic Gaussian splat kernel hoist out of the per-light loop; #1561 `water.frag` RT-gate early-outs + pipeline/draw RT-gate; #1628/#1626 GI bounce albedo texel-mean + true hit-triangle normal; #1591 conductor diffuse-tint chromaticity; #1581 indirect-merge key two_sided+depth; #1603 cancelled-screenshot generation discard; #1647 scheduler per-system timing gate; #1644 SAFETY comments on 124 renderer unsafe blocks; #1427/#1404/#1445 teardown / format-guarantee / finite-sweep; #1536/#1537 LOD ring + texture-refcount reclaim on unload.
+- **Tech-debt / infra / audit** — TD9-NEW-03 `commands.rs` per-domain split; #1619 serialize audit-runtime + document per-game debug port; Skyrim SE + Starfield compatibility audit reports; #1317 dead `class_by_type_id` map removal; #1325/#1622/#1625/#1499/#1505/#1643 stale audit / doc-comment refreshes; #1634–#1640 REG hardening invariant naming; #1593 FO4 parse-rate refresh.
+
+Net: tests 2915 → 2985 (+70); non-test Rust LOC ~231.1k → ~235.9k (+~4.8k); total ~244.7k → ~249.8k (+~5.0k); **M37 closed** (SVGF à-trous spatial), **M37.3 → Phase 2** (ReSTIR-DI temporal direct shadows). Bench-of-record `1c26bc25` now **281 commits stale** after heavy RT-denoiser hot-path churn — R6a-stale-15 GPU re-bench still gates any current FPS claim.
+
+---
+
 ## Session 48 — Havok ragdoll (M41.x + PHYSAL) + 56-issue audit bug-bash  (2026-06-15, 05e9ebd5..ca575eec, 53 commits)
 
 Two distinct bodies of work that were never separately closed out. First, the
