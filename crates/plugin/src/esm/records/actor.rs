@@ -557,6 +557,24 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             b"TPLT" if sub.data.len() >= 4 => {
                 record.template_form_id = SubReader::new(&sub.data).u32_or_default();
             }
+            // Oblivion ACBS (NPC_ / CREA Configuration) is a fixed
+            // 16-byte layout with NO disposition or template-flags field:
+            //   flags(u32)@0, baseSpell(u16)@4, fatigue(u16)@6,
+            //   barterGold(u16)@8, level(i16)@10, calcMin(u16)@12,
+            //   calcMax(u16)@14.
+            // 16 < 24 so it never reaches the FNV/FO3 arm below — gate on
+            // GameKind here. Verified by byte-decode over vanilla
+            // Oblivion.esm (all 914 NPC_/CREA ACBS are exactly 16 bytes).
+            // Without this every Oblivion actor kept level=1 / acbs_flags=0
+            // → wrong leveled-list tier + every actor resolved Male. #1650.
+            b"ACBS" if matches!(game, GameKind::Oblivion) && sub.data.len() >= 16 => {
+                let mut r = SubReader::new(&sub.data);
+                record.acbs_flags = r.u32_or_default();
+                r.skip_or_eof(6); // baseSpell(u16) + fatigue(u16) + barterGold(u16)
+                record.level = r.i16_or_default();
+                // disposition_base / template_flags stay at their
+                // constructor defaults — Oblivion ACBS carries neither.
+            }
             // ACBS (FNV NPC_): flags(u32), fatigue(u16), barter(u16), level(i16),
             // calc_min(u16), calc_max(u16), speed_mult(u16), karma(f32),
             // disposition_base(i16), template_flags(u16)
@@ -1092,6 +1110,52 @@ mod tests {
         assert_eq!(n.ai_packages, vec![0xEEEE]);
         assert_eq!(n.acbs_flags, 0x100);
         assert_eq!(n.level, 5);
+    }
+
+    /// #1650 — Oblivion's 16-byte ACBS (no disposition / template field)
+    /// must parse via the `GameKind::Oblivion` arm. Pre-fix the 16-byte
+    /// payload never reached the `>= 24` FNV arm, so every Oblivion actor
+    /// kept `level = 1` / `acbs_flags = 0` → lowest leveled-list tier and
+    /// every actor (incl. all females) resolved Male. Pins a level > 1 and
+    /// the Female flag (bit 0).
+    #[test]
+    fn oblivion_16byte_acbs_parses_level_and_gender() {
+        use crate::equip::Gender;
+        // flags@0 = 1 (Female bit), baseSpell@4, fatigue@6, barterGold@8,
+        // level@10 = 6, calcMin@12, calcMax@14 — 16 bytes total.
+        let mut acbs = Vec::new();
+        acbs.extend_from_slice(&1u32.to_le_bytes()); // flags: Female bit set
+        acbs.extend_from_slice(&[0u8; 6]); // baseSpell + fatigue + barterGold
+        acbs.extend_from_slice(&6i16.to_le_bytes()); // level @10
+        acbs.extend_from_slice(&[0u8; 4]); // calcMin + calcMax → 16 bytes
+        assert_eq!(acbs.len(), 16);
+
+        let subs = vec![sub(b"EDID", b"OblivionGuard\0"), sub(b"ACBS", &acbs)];
+        let n = parse_npc(0x0001_7000, &subs, GameKind::Oblivion);
+        assert_eq!(n.level, 6, "Oblivion ACBS level @10 must decode (not default 1)");
+        assert_eq!(n.acbs_flags, 1, "Oblivion ACBS flags @0 must decode");
+        assert_eq!(
+            Gender::from_acbs_flags(n.acbs_flags),
+            Gender::Female,
+            "ACBS flag bit 0 → Female (pre-fix every actor resolved Male)"
+        );
+    }
+
+    /// The 16-byte ACBS layout is Oblivion-only: under FNV/FO3 the same
+    /// payload must NOT be mis-decoded — that arm requires `>= 24` bytes,
+    /// so a stray 16-byte ACBS is ignored and the defaults stand. Guards
+    /// the new GameKind gate from leaking into later titles.
+    #[test]
+    fn fnv_ignores_16byte_acbs() {
+        let mut acbs = Vec::new();
+        acbs.extend_from_slice(&1u32.to_le_bytes());
+        acbs.extend_from_slice(&[0u8; 6]);
+        acbs.extend_from_slice(&6i16.to_le_bytes());
+        acbs.extend_from_slice(&[0u8; 4]);
+        let subs = vec![sub(b"EDID", b"FnvNpc\0"), sub(b"ACBS", &acbs)];
+        let n = parse_npc(0x0010_0001, &subs, GameKind::Fallout3NV);
+        assert_eq!(n.level, 1, "16-byte ACBS must not parse under FNV (stays default)");
+        assert_eq!(n.acbs_flags, 0);
     }
 
     /// Regression for #1273 — `SCRI` attached-script FormID on NPC_
