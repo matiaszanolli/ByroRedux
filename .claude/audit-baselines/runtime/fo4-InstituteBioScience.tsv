@@ -1,6 +1,12 @@
-# regenerated: 2026-06-01 (post-M49 precombine CSG render + LOD fix)
-# captured at frame ~240 via byro-dbg telemetry; 1722 precombine entities (13 _oc.nif hashes)
-entities_total	9167
+# regenerated: 2026-06-19 (RT-4 / #1621) — captured post the efd3c41b
+# precombine alpha-blend wall fix, present_mode MAILBOX, frame ~240.
+# entities_total 9167 -> 11279 (+2112): intentional NON-rendering drift since
+# 2026-06-01 — collision-only entities now spawned (1c26bc25), ragdoll bodies
+# (2a14b2b7), material/PBR overhaul (83d6a155). Verified non-rendering: render
+# entities (MeshHandle) = 3800 = bench draws cmds, both UNCHANGED from baseline.
+# fps left at the conservative 50.0 floor (>=x0.9 perf gate; MAILBOX runs now
+# ~133). gpu_calls refreshed (view-dependent bench-frame count; was 7).
+entities_total	11279
 tex_missing_unique_paths	1
 mesh_cache_failed_count	0
 light_count_directional	1
@@ -11,4 +17,4 @@ bench_fps_p50	50.0
 bench_fps_avg	50.0
 bench_draws_cmds	3800
 bench_draws_batches	272
-bench_draws_gpu_calls	7
+bench_draws_gpu_calls	40
