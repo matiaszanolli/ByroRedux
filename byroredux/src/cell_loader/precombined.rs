@@ -174,9 +174,9 @@ pub(super) fn spawn_precombined_meshes(
                                 let mut pool = world.resource_mut::<StringPool>();
                                 let mut meshes = build_precombine_meshes(&scene, csg, &mut pool);
                                 // Apply BGSM material flags (two_sided / decal /
-                                // alpha_test / alpha_blend) to the CSG-decoded
-                                // meshes. FO4 authors these in the `.bgsm`, not the
-                                // NIF, so `precombine_material_from_shape` (NIF-only)
+                                // alpha_test) to the CSG-decoded meshes. FO4
+                                // authors these in the `.bgsm`, not the NIF, so
+                                // `precombine_material_from_shape` (NIF-only)
                                 // can't see them. The REFR and fallback
                                 // (`parse_and_import_nif`) paths run this merge; the
                                 // shared-precombine CSG path did not — leaving
@@ -184,11 +184,29 @@ pub(super) fn spawn_precombined_meshes(
                                 // (opaque-black cards clipping through walls) and no
                                 // two-sided / decal routing. `merge_bgsm_into_mesh`
                                 // no-ops for meshes without a `material_path`.
+                                //
+                                // BUT do NOT take the BGSM alpha-BLEND on this path.
+                                // FO4 authors the "Standard" blend mode (function=1,
+                                // src=6, dst=7) identically on transparent lab glass
+                                // AND opaque metal architecture (institutemetal01a,
+                                // flatmetalpanelsdetails01); `merge_bgsm_into_mesh`
+                                // turns any function>0 into `has_alpha`, so applying
+                                // it here made the whole precombined Institute shell
+                                // alpha-blend against its diffuse alpha (specular
+                                // data on lit metal, not opacity) → see-through walls
+                                // (#1619 follow-up; the efd3c41b regression). Keep
+                                // the merge's other flags but restore the pre-merge
+                                // (NIF-shape) alpha-blend state so opaque precombine
+                                // architecture stays opaque.
                                 if let Some(provider) = mat_provider.as_deref_mut() {
                                     for mesh in &mut meshes {
+                                        let blend =
+                                            (mesh.has_alpha, mesh.src_blend_mode, mesh.dst_blend_mode);
                                         crate::asset_provider::merge_bgsm_into_mesh(
                                             mesh, provider, &mut pool,
                                         );
+                                        (mesh.has_alpha, mesh.src_blend_mode, mesh.dst_blend_mode) =
+                                            blend;
                                     }
                                 }
                                 meshes
