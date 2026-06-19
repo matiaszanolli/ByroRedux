@@ -71,6 +71,7 @@ mod refr;
 mod spawn;
 mod terrain;
 mod terrain_lod;
+mod terrain_lod_btr;
 mod transition;
 mod unload;
 mod water;

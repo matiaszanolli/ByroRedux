@@ -29,6 +29,7 @@ use byroredux_core::ecs::{
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::math::Vec3;
 use byroredux_plugin::esm::cell::CellData;
+use byroredux_plugin::esm::reader::GameKind;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
@@ -183,6 +184,10 @@ pub(crate) fn stream_lod_blocks(
     let Some(cells_map) = index.exterior_cells.get(&wctx.worldspace_key) else {
         return;
     };
+    // Prebaked `.btr` distant terrain is a Skyrim+/FO4 scheme (older games use
+    // the heightmap synth fallback exclusively — EXAL §5).
+    let game = wctx.record_index.game;
+    let worldspace_key = wctx.worldspace_key.as_str();
     let k = LOD_BLOCK_CELLS;
     // Block containing the player. `div_euclid` floors toward negative
     // infinity so blocks tile consistently across the origin.
@@ -198,6 +203,7 @@ pub(crate) fn stream_lod_blocks(
     }
 
     let mut spawned = 0usize;
+    let mut btr_spawned = 0usize;
     let mut regenerated = 0usize;
     let mut unloaded = 0usize;
 
@@ -241,29 +247,60 @@ pub(crate) fn stream_lod_blocks(
             None => {} // new block
         }
 
-        if let Some(block) = spawn_lod_block(
-            world,
-            ctx,
-            tex_provider,
-            &index.landscape_textures,
-            cells_map,
-            bi,
-            bj,
-            player_grid,
-            full_radius_load,
-        ) {
+        // Prefer the game's prebaked `.btr` distant-terrain mesh for a
+        // fully-distant block (`mask == 0` → every cell has landscape and
+        // none lie inside the full-detail ring): it carries per-quad
+        // texturing instead of the synth path's single flat base texture.
+        // Boundary blocks (`mask != 0`) need per-cell hole-masking a baked
+        // mesh can't do, and missing `.btr` / older games fall through — the
+        // synth path handles all of those. Exactly one block per coordinate,
+        // so the textured LOD never double-draws the synth LOD (EXAL §5).
+        let btr_block = if mask == 0 && matches!(game, GameKind::Skyrim | GameKind::Fallout4) {
+            super::terrain_lod_btr::spawn_btr_block(
+                world,
+                ctx,
+                tex_provider,
+                worldspace_key,
+                k,
+                bi * k,
+                bj * k,
+                mask,
+            )
+        } else {
+            None
+        };
+        let from_btr = btr_block.is_some();
+        let block = btr_block.or_else(|| {
+            spawn_lod_block(
+                world,
+                ctx,
+                tex_provider,
+                &index.landscape_textures,
+                cells_map,
+                bi,
+                bj,
+                player_grid,
+                full_radius_load,
+            )
+        });
+        if let Some(block) = block {
             lod_blocks.insert((bi, bj), block);
             spawned += 1;
+            if from_btr {
+                btr_spawned += 1;
+            }
         }
     }
 
     if spawned + regenerated + unloaded > 0 {
         log::info!(
-            "LOD ring @block ({},{}): +{} spawned, ~{} regenerated, -{} unloaded \
-             ({} resident, ~{:.0}K BU)",
+            "LOD ring @block ({},{}): +{} spawned ({} prebaked .btr / {} synth), \
+             ~{} regenerated, -{} unloaded ({} resident, ~{:.0}K BU)",
             pbi,
             pbj,
             spawned,
+            btr_spawned,
+            spawned - btr_spawned,
             regenerated,
             unloaded,
             lod_blocks.len(),
