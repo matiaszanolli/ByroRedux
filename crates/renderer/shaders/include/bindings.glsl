@@ -307,3 +307,31 @@ layout(set = 1, binding = 14) uniform DalcCubeUBO {
     vec4 dalcSpecularFresnel; // xyz = specular tint, w = fresnel power
     vec4 dalcFlags;           // x = enabled (0/1), yzw = reserved
 };
+
+// ── ReSTIR-DI direct-shadow reservoirs (Bitterli 2020) ──────────────
+// One reservoir per screen pixel, indexed `pixelY * screenWidth + pixelX`.
+// Persisted across frames as a ping-pong pair of per-frame-in-flight
+// SSBOs: `reservoirsCurr` (this frame's write) + `reservoirsPrev` (last
+// frame's read, the temporal source). 32 B/reservoir. The temporal reuse
+// reprojects the previous reservoir via the motion vector (mesh_id +
+// normal rejection, mirroring svgf_temporal.comp) so the soft-shadow
+// estimate accumulates effective samples across frames instead of
+// re-randomising every frame (the un-denoised WRS crawl). Gated by
+// DBG_DISABLE_RESTIR; the legacy per-frame WRS path stays compiled for A/B.
+struct Reservoir {
+    uint  lightIndex;  // selected light index — temporal SELECTION reuse
+    float W;           // unbiased contribution weight (w_sum / (M * pHat))
+    float M;           // effective sample count (capped)
+    float histLen;     // EMA history length for the accumulated radiance
+    float accumR;      // accumulated direct-shadow radiance — R
+    float accumG;      // accumulated direct-shadow radiance — G
+    float accumB;      // accumulated direct-shadow radiance — B
+    float pad0;        // padding to 32 B (8 × 4)
+};
+
+layout(std430, set = 1, binding = 16) buffer ReservoirCurrBuffer {
+    Reservoir reservoirsCurr[];
+};
+layout(std430, set = 1, binding = 17) readonly buffer ReservoirPrevBuffer {
+    Reservoir reservoirsPrev[];
+};

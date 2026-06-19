@@ -308,3 +308,34 @@ pub const DBG_DISABLE_AO: u32 = 0x800;
 /// `light.atten legacy on|off` console command (routes through the
 /// `LightTuning` resource → `VulkanContext::light_atten_legacy`).
 pub const DBG_LEGACY_LIGHT_ATTEN: u32 = 0x1000;
+
+/// 0x2000 — disable multi-scatter energy compensation
+/// (`multiScatterEnergyCompensation`, Fdez-Agüera 2019 / Filament). The
+/// default-on path multiplies the single-scatter Cook-Torrance specular
+/// lobe by `1 + F0·(1/Ess − 1)` to restore the energy lost to microfacet
+/// masking as roughness rises — without it, rough conductors (brushed
+/// steel, satin, cookware) progressively darken. The factor is a no-op at
+/// low roughness (`Ess → 1`), so it cannot shift the RT reflection
+/// roughness gate. Set this bit to A/B the compensated rough metal
+/// against the legacy single-scatter look in one live session.
+pub const DBG_DISABLE_MULTISCATTER: u32 = 0x2000;
+
+/// 0x4000 — disable the SVGF spatial à-trous wavelet pass
+/// (`svgf_atrous.comp`, Schied 2017 §4.3). The default-on path runs the
+/// variance-guided edge-stopping wavelet filter after temporal
+/// accumulation to remove the per-pixel GI variance the temporal pass
+/// leaves behind (the noisy / slow-moiré floor). Setting this bit turns
+/// every à-trous iteration into a pass-through copy, so the composite
+/// samples the raw temporal-only result — the pre-Phase-4 look — for live
+/// A/B in one session.
+pub const DBG_DISABLE_ATROUS: u32 = 0x4000;
+
+/// 0x8000 — disable ReSTIR-DI direct-shadow reservoir reuse and fall back
+/// to the legacy per-frame WRS streaming-RIS shadow sampling. ReSTIR-DI
+/// (Bitterli 2020) reuses shadow reservoirs across frames (and, in a later
+/// phase, neighbours) so the direct soft-shadow estimate accumulates many
+/// effective samples instead of re-randomising every frame — fixing the
+/// "incredibly noisy + slow moiré" direct shadows the un-denoised WRS path
+/// produced (`resFrameSeed = cameraPos.w`). Set this bit to A/B ReSTIR
+/// against the legacy WRS path in one live session.
+pub const DBG_DISABLE_RESTIR: u32 = 0x8000;

@@ -1207,6 +1207,10 @@ pub struct VulkanContext {
     pub composite: Option<CompositePipeline>,
     pub gbuffer: Option<GBuffer>,
     pub svgf: Option<SvgfPipeline>,
+    /// ReSTIR-DI direct-shadow reservoir buffers (screen-sized, ping-pong
+    /// per frame-in-flight). Read/written by `triangle.frag` via scene-set
+    /// bindings 16/17 for temporal shadow-sample reuse. See `vulkan::restir`.
+    pub reservoir_buffers: super::restir::ReservoirBuffers,
     /// TAA resolve pass — reprojects + clamps history to produce the final
     /// HDR image that composite samples. None when allocation fails; the
     /// fallback path feeds raw HDR directly into composite.
@@ -2037,6 +2041,26 @@ impl VulkanContext {
             }
         }
 
+        // ReSTIR-DI reservoir buffers (screen-sized, ping-pong per FIF).
+        // Written into the scene descriptor set (bindings 16/17) here and
+        // re-written after a resize recreates them. The fragment shader
+        // gates use on `!DBG_DISABLE_RESTIR`. See `vulkan::restir`.
+        let reservoir_buffers = super::restir::ReservoirBuffers::new(
+            &device,
+            &gpu_allocator,
+            swapchain_state.extent.width,
+            swapchain_state.extent.height,
+        )?;
+        for i in 0..n_frames {
+            scene_buffers.write_reservoir_buffers(
+                &device,
+                i,
+                reservoir_buffers.curr_buffer(i),
+                reservoir_buffers.prev_buffer(i),
+                reservoir_buffers.buffer_size(),
+            );
+        }
+
         // Composite samples SVGF's accumulated indirect (GENERAL layout)
         // when SVGF is available, else falls back to raw G-buffer indirect
         // (SHADER_READ_ONLY_OPTIMAL layout).
@@ -2335,6 +2359,7 @@ impl VulkanContext {
             composite,
             gbuffer,
             svgf,
+            reservoir_buffers,
             taa,
             caustic,
             volumetrics,
@@ -2884,6 +2909,9 @@ impl Drop for VulkanContext {
                 if let Some(ref mut svgf) = self.svgf {
                     svgf.destroy(&self.device, alloc);
                 }
+                // SAFETY: Drop runs after device_wait_idle; no in-flight
+                // command references the reservoir buffers.
+                unsafe { self.reservoir_buffers.destroy(&self.device, alloc) };
                 if let Some(ref mut taa) = self.taa {
                     taa.destroy(&self.device, alloc);
                 }

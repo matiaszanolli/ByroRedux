@@ -17,6 +17,7 @@ pub mod instance;
 pub mod material;
 pub mod pipeline;
 pub mod reflect;
+pub mod restir;
 pub mod scene_buffer;
 pub mod skin_compute;
 pub mod ssao;

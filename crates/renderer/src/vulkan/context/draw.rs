@@ -3095,6 +3095,11 @@ impl VulkanContext {
             // picture but requires composite-side plumbing deferred
             // until a real lost-device repro. See #479.
             if !self.svgf_failed {
+                // Captured before the &mut self.svgf borrow: the à-trous
+                // pass reads DBG_DISABLE_ATROUS out of the same render-debug
+                // bitmask the fragment shader sees (env-set; console legacy
+                // toggle is light-atten-only and not relevant here).
+                let svgf_dbg_flags = self.render_debug_flags;
                 if let Some(ref mut svgf) = self.svgf {
                     // #674 temporal α state machine + UBO host write
                     // both ran BEFORE the bulk pre-render barrier
@@ -3103,7 +3108,7 @@ impl VulkanContext {
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_svgf_start(&self.device, cmd, frame);
                     }
-                    let svgf_result = svgf.dispatch(&self.device, cmd, frame);
+                    let svgf_result = svgf.dispatch(&self.device, cmd, frame, svgf_dbg_flags);
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_svgf_end(&self.device, cmd, frame);
                     }

@@ -137,6 +137,16 @@ vec3 shadowableLightRadiance(
 
     vec3 kD = (1.0 - F) * (1.0 - metalness);
     vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
+    // Multi-scatter energy compensation (Fdez-Agüera / Filament). Restores
+    // the energy the single-scatter D·G·F lobe loses to microfacet masking
+    // as roughness rises — rough conductors stop darkening. Computed inside
+    // this shared function so BOTH WRS passes (pass-1 accumulate, pass-2
+    // shadowed subtract) evaluate the identical expression and the
+    // unshadowed accumulation still cancels bit-for-bit (#1369 invariant).
+    // No-op at low roughness, so it cannot affect the reflection gate.
+    if ((dbgFlags & DBG_DISABLE_MULTISCATTER) == 0u) {
+        specular *= multiScatterEnergyCompensation(F0, NdotV, aaRoughness);
+    }
     vec3 unshadowedRadiance = lightColor * atten;
     vec3 diffuseBrdf;
     if ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u) {
