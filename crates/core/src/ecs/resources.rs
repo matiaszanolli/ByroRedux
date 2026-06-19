@@ -36,6 +36,18 @@ pub struct ScreenshotBridge {
     /// CAS'd from NONE → owner by `try_claim`, reset to NONE by
     /// successful `take_result_for` or by `cancel`.
     pub owner: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// Monotonic capture generation, shared with the renderer (#1603).
+    ///
+    /// `owner` cannot distinguish a *cancelled* in-flight capture from a
+    /// fresh claim that reuses the same owner tag, so it can't gate the
+    /// renderer's private `screenshot_pending_readback` latch: a copy
+    /// recorded under owner X, cancelled mid-flight, then a new claim by
+    /// the same owner X, would let the straggler readback publish into
+    /// the new claimant's slot. This generation does: the renderer
+    /// captures it when it records the copy and only publishes the PNG if
+    /// it still matches at readback time. [`cancel`](Self::cancel) bumps
+    /// it, invalidating any capture recorded before the cancel.
+    pub generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// `ScreenshotBridge` is idle — neither CLI nor debug-server holds it.
@@ -151,7 +163,31 @@ impl ScreenshotBridge {
         // #1006 — release ownership so the next consumer can claim.
         self.owner
             .store(SCREENSHOT_OWNER_NONE, std::sync::atomic::Ordering::Release);
+        // #1603 — bump the capture generation so a copy already recorded
+        // into the renderer's staging buffer (but not yet read back) is
+        // rejected when its delayed readback completes, instead of
+        // publishing a stale PNG into the next claimant's result slot.
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         had_request || had_result
+    }
+
+    /// Current capture generation (#1603). The renderer captures this
+    /// when it records a screenshot copy and passes it back to
+    /// [`readback_is_current`](Self::readback_is_current) before
+    /// publishing the encoded PNG.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Whether a readback captured at `captured_generation` is still the
+    /// live capture — i.e. no [`cancel`](Self::cancel) has intervened
+    /// since the copy was recorded. The renderer gates its
+    /// `screenshot_result` write on this so a cancelled-then-resumed
+    /// straggler is discarded rather than served to a later claimant.
+    /// #1603.
+    pub fn readback_is_current(&self, captured_generation: u64) -> bool {
+        self.generation() == captured_generation
     }
 }
 
@@ -1622,7 +1658,46 @@ mod tests {
             requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             owner: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(SCREENSHOT_OWNER_NONE)),
+            generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
+    }
+
+    /// #1603 — a screenshot copy recorded into the renderer staging
+    /// buffer, then cancelled (client `recv_timeout` during an engine
+    /// stall), must NOT be published when its delayed readback finally
+    /// completes — even if a new request has since claimed the bridge
+    /// under the same owner tag. The renderer gates the
+    /// `screenshot_result` write on the capture generation; this pins
+    /// the generation discipline that makes that gate correct.
+    #[test]
+    fn screenshot_cancelled_readback_not_served_to_later_claimant() {
+        let bridge = idle_bridge();
+
+        // Claim A records a copy; the renderer captures the generation.
+        assert!(bridge.try_claim(SCREENSHOT_OWNER_DEBUG_SERVER));
+        let captured_gen = bridge.generation();
+        assert!(
+            bridge.readback_is_current(captured_gen),
+            "uncancelled in-flight capture is current"
+        );
+
+        // Client A times out → drain cancels.
+        bridge.cancel();
+
+        // A new request (claim B) reuses the same owner tag.
+        assert!(bridge.try_claim(SCREENSHOT_OWNER_DEBUG_SERVER));
+
+        // A's straggler readback finally completes. Despite owner being
+        // DEBUG_SERVER again (B's claim), the captured generation is
+        // stale → the renderer must NOT publish A's pixels.
+        assert!(
+            !bridge.readback_is_current(captured_gen),
+            "cancel() must invalidate the pre-cancel capture generation"
+        );
+
+        // B's own capture, recorded after the claim, IS current.
+        let b_gen = bridge.generation();
+        assert!(bridge.readback_is_current(b_gen), "B's fresh capture is current");
     }
 
     /// #1011 — `cancel()` must clear both the AtomicBool `requested`

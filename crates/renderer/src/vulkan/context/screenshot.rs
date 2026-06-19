@@ -20,7 +20,7 @@ impl VulkanContext {
         // record and readback would otherwise read the new dimensions against
         // the old staging copy → wrong size / OOB (SYNC-01). Do not replace
         // this with `self.swapchain_state.extent`.
-        let Some(extent) = self.screenshot_pending_readback.take() else {
+        let Some((extent, captured_generation)) = self.screenshot_pending_readback.take() else {
             return;
         };
 
@@ -58,6 +58,23 @@ impl VulkanContext {
                 log::warn!("Screenshot PNG encode failed: {e}");
                 return;
             }
+        }
+
+        // #1603 — discard a straggler whose claim was cancelled while the
+        // copy sat in the staging buffer. `cancel()` bumps the shared
+        // generation; if it no longer matches the value captured at record
+        // time, publishing these pixels would serve a cancelled capture to
+        // whatever claimant next reads `result` (the same-owner reuse race
+        // `owner` alone can't catch). Drop them; the latch is already
+        // cleared by the `.take()` above.
+        if self.screenshot_generation.load(Ordering::Acquire) != captured_generation {
+            log::debug!(
+                "Screenshot readback discarded (gen {} != captured {}): \
+                 capture was cancelled before readback completed",
+                self.screenshot_generation.load(Ordering::Acquire),
+                captured_generation,
+            );
+            return;
         }
 
         log::info!(
@@ -174,7 +191,14 @@ impl VulkanContext {
             &[barrier_to_present],
         );
 
-        self.screenshot_pending_readback = Some(vk::Extent2D { width, height });
+        // #1603 — tag the recorded copy with the capture generation at
+        // record time. If a `cancel()` bumps the shared generation before
+        // the readback completes (client timed out during an engine
+        // stall), `screenshot_finish_readback` sees the mismatch and
+        // discards the straggler instead of publishing it to a later
+        // claimant.
+        let generation = self.screenshot_generation.load(Ordering::Acquire);
+        self.screenshot_pending_readback = Some((vk::Extent2D { width, height }, generation));
     }
 
     /// Ensure a host-visible staging buffer exists for screenshot readback.
