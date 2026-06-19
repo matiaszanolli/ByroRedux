@@ -131,14 +131,19 @@ exactly the kind of per-game branch EXAL routes through the GameVariant table (�
 
 `terrain_lod.rs` synthesizes distant terrain from the LAND heightmap directly
 (4×4-cell blocks, 12-block Chebyshev radius, stride-8 sampling, single base
-texture, no BLAS). This is game-agnostic and works, but:
-- it ignores the games' **prebaked** LOD assets (Skyrim+ `.btr` terrain meshes +
-  per-quad diffuse/normal DDS; Oblivion/FO3/FNV `Landscape\LOD\*.nif` + `_lod`
-  textures), so distant texturing is flat;
-- there is **no distant object LOD** at all — neither the Skyrim+ baked per-quad
-  `.bto` macro-meshes + object atlas, nor the Oblivion/FO3/FNV `DistantLOD\*.lod`
-  placement lists that instance `_far.nif` low-poly meshes;
-- there is **no canonical LOD model** the renderer can reason about uniformly.
+texture, no BLAS). This is game-agnostic and works, and as of step 6 (below) it
+is now the **universal fallback** behind the games' prebaked assets:
+- Skyrim+/FO4 prebaked **`.btr` terrain meshes** + per-quad diffuse are consumed
+  (step 6, 2026-06-19) as a per-block source upgrade inside the synth ring, so
+  distant terrain is textured rather than flat there; Oblivion/FO3/FNV
+  `Landscape\LOD\*.nif` + `_lod` textures are still un-consumed (synth-only);
+- distant **object LOD** is consumed for Skyrim+/FO4 (baked per-quad `.bto`
+  macro-meshes + object atlas, step 6); the Oblivion/FO3/FNV `DistantLOD\*.lod`
+  → `_far.nif` placement scheme remains unimplemented (`PlacementLodProvider`);
+- there is still **no single canonical LOD model** — `terrain_lod` /
+  `terrain_lod_btr` / `object_lod` are the per-game providers, fused to the
+  streaming ring, with `IsLodTerrain` as the shared renderer-facing marker
+  (the trait/`WorldLodRes` was judged forced ceremony — see step 6 note).
 
 (Note: FO4 **precombined/previs** geometry is a *near-field* active-cell
 optimization, not distant LOD — it is already handled by the M49 path and is
@@ -421,15 +426,34 @@ render-pass / pipeline.
      `+77 .bto quads loaded`, entities 2552→5501, draws 1190→2866, 30f @ 154 fps,
      no parse/upload errors.
 
+   **Distant terrain `.btr` done (2026-06-19, M35):**
+   `byroredux/src/cell_loader/terrain_lod_btr.rs` loads the games' prebaked
+   per-quad `.btr` terrain meshes (Skyrim+/FO4) as a *source upgrade* inside
+   the existing terrain-LOD ring. Level-4 `.btr` quads align 1:1 with the
+   4-cell synth blocks, so `terrain_lod::spawn_lod_block` produces **either** a
+   textured `.btr` block **or** a heightmap-synth block per coordinate (never
+   both → no double-draw/z-fight); `.btr` is chosen only for fully-distant
+   blocks (`hole_mask == 0`), with synth handling boundary holes, missing
+   `.btr`, and older games. **Real-data finding (verified, not the doc's
+   guess): `.btr` is NOT world-absolute like `.bto`** — every `.btr` at any
+   level is a normalized quad-local mesh (constant `X∈[0,4096]`, `Z∈[-4096,0]`,
+   identity transform); placement scales the horizontal footprint by the LOD
+   `level` (cells/quad) and offsets to the quad's SW world corner, heights
+   absolute (`btr_local_to_world`, unit-tested). Live-verified on Skyrim
+   Tamriel (grid 2,-4): `+574 LOD blocks spawned (544 prebaked .btr / 30
+   synth)`, 0 parse/bake/upload errors, per-quad diffuse resolved from
+   `Skyrim - Textures7.bsa`. The LOD-ring log now reports the `.btr`/synth split.
+
    **Deferred follow-ups** (clearly de-risked now): coarser LOD bands (8/16/32 —
-   first cut loads level 4 only); the **VWD / "Has Distant LOD" record-header
-   flag** to cull full models at the boundary ring (today's "outside full-detail
-   only" rule avoids the conflict more conservatively); `.btr` distant-terrain
-   loading (terrain LOD still uses the heightmap synthesis — the prebaked `.btr`
-   would upgrade distant texturing); the `PlacementLodProvider` for Oblivion/FO3/
-   FNV (`DistantLOD\*.lod` → `_far.nif`). Per-mesh atlas UV is wired via the
-   shared `<world>.objects.dds`; Skyrim texture resolution is presently weak
-   (atlas often unresolved → object LOD draws untextured), a separate issue.
+   both terrain + object LOD load level 4 only); the **VWD / "Has Distant LOD"
+   record-header flag** to cull full models at the boundary ring (today's
+   "outside full-detail only" rule avoids the conflict more conservatively);
+   `.btr` per-quad **normal map** (`_n.dds`) — the block carries the mesh's own
+   per-vertex normals today, matching the synth path; the `PlacementLodProvider`
+   for Oblivion/FO3/FNV (`DistantLOD\*.lod` → `_far.nif`). Object-LOD per-mesh
+   atlas UV is wired via the shared `<world>.objects.dds`; Skyrim object-atlas
+   resolution is presently weak (atlas often unresolved → object LOD draws
+   untextured), a separate issue.
 
    Note: no `LodProvider` trait / `WorldLodRes` was introduced. `terrain_lod` is
    already a clean self-contained provider fused to streaming-ring reconciliation;
