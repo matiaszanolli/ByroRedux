@@ -118,6 +118,41 @@ pub fn extract_collision(
     None
 }
 
+/// Map the raw Havok `hkMotionType` byte to the engine [`MotionType`].
+///
+/// Values per the canonical `hkMotionType` enum (`hkpMotion::MotionType`,
+/// nif.xml `<enum name="hkMotionType">`):
+///
+/// | Value | Havok | Engine |
+/// |-------|-------|--------|
+/// | 1 | DYNAMIC | Dynamic |
+/// | 2 | SPHERE_INERTIA | Dynamic |
+/// | 3 | SPHERE_STABILIZED | Dynamic |
+/// | 4 | BOX_INERTIA | Dynamic |
+/// | 5 | BOX_STABILIZED | Dynamic |
+/// | 6 | KEYFRAMED | Keyframed |
+/// | 7 | FIXED | Static |
+/// | 8 | THIN_BOX | Dynamic |
+/// | 9 | CHARACTER | CharacterKinematic |
+/// | 0 / other | INVALID | Static |
+///
+/// The pre-#1652 mapping collapsed `4 => Keyframed` and `_ => Static`,
+/// which froze the most common dynamic clutter (BOX_INERTIA 4 crates/
+/// debris) into a kinematic body with no animated transform and turned
+/// every KEYFRAMED (6) door/platform into immovable Static. This is the
+/// canonical translation boundary — the physics solver only ever sees
+/// the engine [`MotionType`], never the raw Havok byte.
+fn havok_motion_type(raw: u8) -> MotionType {
+    match raw {
+        1..=5 | 8 => MotionType::Dynamic,
+        6 => MotionType::Keyframed,
+        7 => MotionType::Static,
+        9 => MotionType::CharacterKinematic,
+        // 0 = MO_SYS_INVALID and any out-of-range value → Static.
+        _ => MotionType::Static,
+    }
+}
+
 /// Classic `BhkCollisionObject` → `BhkRigidBody` → shape-tree extractor.
 /// This is the dominant path for Oblivion / FO3 / FNV / Skyrim LE / SSE and
 /// still covers most FO4+ rigid bodies that author the legacy chain. Body of
@@ -152,11 +187,7 @@ fn extract_from_classic(
         };
     }
 
-    let motion_type = match body.motion_type {
-        1..=3 => MotionType::Dynamic,
-        4 => MotionType::Keyframed,
-        _ => MotionType::Static,
-    };
+    let motion_type = havok_motion_type(body.motion_type);
 
     let body_data = RigidBodyData {
         motion_type,
@@ -995,6 +1026,33 @@ mod dispatch_tests {
     };
     use crate::blocks::NiObject;
     use crate::types::BlockRef;
+
+    /// #1652 — `havok_motion_type` must map the full canonical
+    /// `hkMotionType` enum, not the pre-fix `4 => Keyframed / _ => Static`
+    /// collapse. Pins the four previously-wrong values (4, 5, 6, 8) plus
+    /// the correct edges (1, 7, 9, 0).
+    #[test]
+    fn havok_motion_type_maps_full_enum() {
+        // Dynamic family: DYNAMIC(1), SPHERE_INERTIA(2), SPHERE_STABILIZED(3),
+        // BOX_INERTIA(4), BOX_STABILIZED(5), THIN_BOX(8).
+        for v in [1u8, 2, 3, 4, 5, 8] {
+            assert_eq!(
+                havok_motion_type(v),
+                MotionType::Dynamic,
+                "hkMotionType {v} must be Dynamic"
+            );
+        }
+        assert_eq!(havok_motion_type(6), MotionType::Keyframed, "KEYFRAMED");
+        assert_eq!(havok_motion_type(7), MotionType::Static, "FIXED");
+        assert_eq!(
+            havok_motion_type(9),
+            MotionType::CharacterKinematic,
+            "CHARACTER"
+        );
+        // INVALID(0) and any out-of-range value fall back to Static.
+        assert_eq!(havok_motion_type(0), MotionType::Static, "INVALID");
+        assert_eq!(havok_motion_type(200), MotionType::Static, "out-of-range");
+    }
 
     fn empty_scene() -> NifScene {
         let mut scene = NifScene::default();
