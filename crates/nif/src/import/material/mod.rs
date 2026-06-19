@@ -499,6 +499,14 @@ pub(super) struct MaterialInfo {
     pub alpha_property_consumed: bool,
     pub two_sided: bool,
     pub is_decal: bool,
+    /// Object/model-space normal map (vs the default tangent-space). Set
+    /// from the FO4 `F4SF1::Model_Space_Normals` shader-flag bit (or the
+    /// FO76+ CRC) on `BSLightingShaderProperty` when no BGSM overrides it —
+    /// vanilla FO4 sources this from the `.bgsm` (authoritative), so this
+    /// only fires for inline / modded NIFs with no material file. Flows to
+    /// `ImportedMesh::model_space_normals`, where the BGSM merge can still
+    /// upgrade it (OR semantics). See #1592 / FO4-D5-MEDIUM-01.
+    pub model_space_normals: bool,
     pub emissive_color: [f32; 3],
     pub emissive_mult: f32,
     /// Provenance of `emissive_mult` — disambiguates the three NIF
@@ -946,6 +954,7 @@ impl Default for MaterialInfo {
             alpha_property_consumed: false,
             two_sided: false,
             is_decal: false,
+            model_space_normals: false,
             emissive_color: [0.0, 0.0, 0.0],
             emissive_mult: 0.0,
             emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,
@@ -1176,6 +1185,12 @@ mod texture_slot_3_4_5_tests;
 /// unaffected.
 #[cfg(test)]
 mod double_sided_tests;
+
+/// Regression tests for #1592 (FO4-D5-MEDIUM-01) — FO4 `BSLightingShaderProperty`
+/// shader-flag bits (model-space-normals / alpha-test) OR'd into MaterialInfo,
+/// gated on the FO4 BSVER so a Skyrim property isn't read with FO4 semantics.
+#[cfg(test)]
+mod fo4_shader_flag_tests;
 
 /// Regression tests for #337 (D4-NEW-01) — `NiStencilProperty` test
 /// state must round-trip into `MaterialInfo.stencil_state` so the

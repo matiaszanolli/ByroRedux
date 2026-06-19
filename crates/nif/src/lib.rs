@@ -764,6 +764,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         drift_histogram: scene_drift_histogram,
         stubbed_drift_histogram: scene_stubbed_drift_histogram,
         havok_scale: havok_scale_for(&header),
+        bsver: header.user_version_2,
     };
     // Opt-in dangling-ref walk (#892). Off by default; debug builds,
     // `nif_stats`, and integration sweeps flip

@@ -112,6 +112,16 @@ pub struct NifScene {
     /// surfaced this as "character falls forever, KCC never finds a
     /// floor."
     pub havok_scale: f32,
+    /// The file's `BSVER` (`NifHeader.user_version_2`), retained so
+    /// post-parse consumers can make game-era decisions the raw block data
+    /// no longer carries. `BSLightingShaderProperty` is shared between
+    /// Skyrim (bsver 83/100) and FO4 (130/131) with *different* shader-flag
+    /// bit vocabularies, so the material walker gates FO4-only F4SF2 bits
+    /// (alpha-test, glow) on `bsver >= bsver::FALLOUT4` — without this it
+    /// would read a Skyrim property with FO4 semantics. See #1592 /
+    /// FO4-D5-MEDIUM-01. `0` for `NifScene::default()` (no header) — below
+    /// every real game's bsver, so flag-gating defaults to off in fixtures.
+    pub bsver: u32,
 }
 
 impl Default for NifScene {
@@ -130,6 +140,10 @@ impl Default for NifScene {
             // pre-#1230 behaviour, so any test that didn't care about
             // the scale before continues to not care.
             havok_scale: 7.0,
+            // No header → bsver 0, below every real game's bsver, so the
+            // FO4 shader-flag gate in the material walker stays off for
+            // header-less test fixtures.
+            bsver: 0,
         }
     }
 }
@@ -363,6 +377,7 @@ mod validate_refs_tests {
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
             havok_scale: 7.0,
+            bsver: 0,
         };
         assert!(scene.validate_refs().is_empty());
     }
@@ -384,6 +399,7 @@ mod validate_refs_tests {
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
             havok_scale: 7.0,
+            bsver: 0,
         };
         assert!(scene.validate_refs().is_empty());
     }
@@ -402,6 +418,7 @@ mod validate_refs_tests {
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
             havok_scale: 7.0,
+            bsver: 0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
@@ -428,6 +445,7 @@ mod validate_refs_tests {
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
             havok_scale: 7.0,
+            bsver: 0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 2);
@@ -452,6 +470,7 @@ mod validate_refs_tests {
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
             havok_scale: 7.0,
+            bsver: 0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);
@@ -472,6 +491,7 @@ mod validate_refs_tests {
             drift_histogram: BTreeMap::new(),
             stubbed_drift_histogram: BTreeMap::new(),
             havok_scale: 7.0,
+            bsver: 0,
         };
         let errs = scene.validate_refs();
         assert_eq!(errs.len(), 1);

@@ -304,6 +304,40 @@ pub(crate) fn extract_material_info_from_refs(
             ) {
                 info.is_decal = true;
             }
+            // #1592 — FO4 NIF shader-flag bits the BGSM merge can't see on
+            // inline / modded content. `BSLightingShaderProperty` is shared
+            // with Skyrim under a *different* bit vocabulary, so gate on
+            // `bsver >= FALLOUT4`: F4SF2 bit 25 (`Alpha_Test`) and bit 6
+            // (`Glow_Map`) mean other things on Skyrim, which routes
+            // alpha-test through `NiAlphaProperty` instead. These are a
+            // LOWER-priority source than the BGSM merge — vanilla FO4 leaves
+            // them unset and sources the same attributes from the `.bgsm`
+            // (authoritative); `asset_provider`'s BGSM merge OR-upgrades, so
+            // vanilla content is unchanged. See FO4-D5-MEDIUM-01.
+            if scene.bsver >= crate::version::bsver::FALLOUT4 {
+                use crate::shader_flags::bs_shader_crc32::{contains_any, MODELSPACENORMALS};
+                // Model-space normals — F4SF1 bit 12 (same position on
+                // Skyrim, but kept FO4-gated to leave the validated Skyrim
+                // path untouched) OR the FO76/Starfield CRC. Drives the MSN
+                // normal-decode branch via `ImportedMesh::model_space_normals`.
+                if shader.shader_flags_1 & crate::shader_flags::fo4_slsf1::MODEL_SPACE_NORMALS
+                    != 0
+                    || contains_any(&shader.sf1_crcs, &[MODELSPACENORMALS])
+                    || contains_any(&shader.sf2_crcs, &[MODELSPACENORMALS])
+                {
+                    info.model_space_normals = true;
+                }
+                // Alpha-test cutout — F4SF2 bit 25 (FO4-only; nif.xml lists
+                // no CRC identifier, and the typed field is zero on
+                // BSVER >= 132, so this is a no-op for FO76+). The
+                // `NiAlphaProperty` path already covers meshes that ship one
+                // (it sets the threshold/func); this catches inline FO4 NIFs
+                // that signal cutout via the shader flag alone, where the
+                // GREATEREQUAL/default threshold stands in.
+                if shader.shader_flags_2 & crate::shader_flags::fo4_slsf2::ALPHA_TEST != 0 {
+                    info.alpha_test = true;
+                }
+            }
             // Capture rich material data.
             info.emissive_color = shader.emissive_color;
             info.emissive_mult = shader.emissive_multiple;
