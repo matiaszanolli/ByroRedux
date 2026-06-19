@@ -327,6 +327,11 @@ fn main() {
     .unwrap();
     writeln!(out, "#define DBG_DISABLE_ATROUS {DBG_DISABLE_ATROUS}u").unwrap();
     writeln!(out, "#define DBG_DISABLE_RESTIR {DBG_DISABLE_RESTIR}u").unwrap();
+    writeln!(
+        out,
+        "#define DBG_DISABLE_SPATIAL {DBG_DISABLE_SPATIAL}u"
+    )
+    .unwrap();
 
     let out_path = Path::new("shaders/include/shader_constants.glsl");
     if let Some(parent) = out_path.parent() {

@@ -339,3 +339,18 @@ pub const DBG_DISABLE_ATROUS: u32 = 0x4000;
 /// produced (`resFrameSeed = cameraPos.w`). Set this bit to A/B ReSTIR
 /// against the legacy WRS path in one live session.
 pub const DBG_DISABLE_RESTIR: u32 = 0x8000;
+
+/// 0x10000 — disable ReSTIR-DI **spatial** reservoir reuse (ReSTIR "P2",
+/// Bitterli 2020 §5) while leaving the temporal reuse (`DBG_DISABLE_RESTIR`
+/// path) active. The default-on path samples a small disk of neighbour
+/// reservoirs from the *previous* frame's buffer around the reprojected
+/// pixel, re-evaluates each neighbour's selected light against the **current**
+/// surface (target pdf p̂), and combines them with the same 1/M streaming-RIS
+/// estimator the temporal path uses — so a freshly disoccluded or fast-moving
+/// pixel inherits many effective samples from its neighbourhood instead of
+/// restarting from a single noisy frame. It also seeds the soft-shadow colour
+/// EMA from valid neighbours on disocclusion (where temporal reprojection
+/// fails), which is what visibly removes the "convergence resets on camera
+/// motion" restart noise. Set this bit to A/B temporal-only ReSTIR against the
+/// full spatiotemporal path in one live session.
+pub const DBG_DISABLE_SPATIAL: u32 = 0x10000;

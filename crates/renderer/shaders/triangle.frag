@@ -1917,9 +1917,12 @@ void main() {
         // cast shadows on large receivers. Temporal variance is
         // absorbed by SVGF.
         //
-        // Full ReSTIR-DI (temporal + spatial reservoir reuse across
-        // frames/neighbors) is a separate milestone — needs a GBuffer
-        // reservoir attachment and a dedicated resample compute pass.
+        // Full ReSTIR-DI (temporal + spatial reservoir reuse) is the
+        // default-on path below (the `useRestir` branch): temporal reproject
+        // from reservoirsPrev, then a spatial disk of previous-frame
+        // neighbours combined in-pass (no dedicated resample compute pass —
+        // single-pass spatiotemporal). This legacy WRS `else` arm is kept
+        // compiled for live A/B via DBG_DISABLE_RESTIR.
         //
         // Distance fallback: shadows fade out past camera range at
         // 4000–6000 units (~57–86 m at Bethesda's ~70u/m) so interior
@@ -2300,6 +2303,107 @@ void main() {
                     reprojValid = true;
                     prevAccum = max(vec3(rp.accumR, rp.accumG, rp.accumB), vec3(0.0));
                     histPrev = clamp(rp.histLen, 0.0, 64.0);
+                }
+            }
+
+            // ── ReSTIR-DI spatial reuse (ReSTIR "P2", Bitterli 2020 §5) ──────
+            // Temporal reuse above accumulates samples over TIME at this one
+            // pixel; spatial reuse accumulates them over SPACE by pulling a
+            // small disk of neighbour reservoirs and re-evaluating each
+            // neighbour's selected light against THIS pixel's surface. The win
+            // the temporal-only path can't get: a freshly disoccluded or
+            // fast-moving pixel (temporal reproject invalid) inherits many
+            // effective samples from its neighbourhood instead of restarting
+            // from one noisy frame — the fix for "convergence resets on camera
+            // motion". Even when temporal is valid, the selection variance
+            // drops because the reservoir now sees the whole neighbourhood's
+            // candidate lights.
+            //
+            // Neighbours are read from reservoirsPrev (the fully-written,
+            // fenced previous-frame buffer) around the REPROJECTED location, so
+            // this is single-pass spatiotemporal reuse — no read-after-write
+            // hazard, no extra resample pass. The spatial source being one
+            // frame old is the standard real-time tradeoff (the final
+            // visibility ray re-validates every shaded sample ⇒ no light
+            // leaks). Re-evaluating p̂ at the current surface is the geometric
+            // guard: a neighbour whose pick is occluded/irrelevant here gets
+            // ~zero weight, so cross-edge neighbours self-reject without needing
+            // per-neighbour normals (which this pass, being the G-buffer writer,
+            // can't read for other pixels). Combine uses the same biased 1/M
+            // streaming-RIS form as the temporal path. Gated by
+            // DBG_DISABLE_SPATIAL for live A/B against temporal-only ReSTIR.
+            bool useSpatial = (dbgFlags & DBG_DISABLE_SPATIAL) == 0u;
+            if (useSpatial && shadowFade > 0.01) {
+                const int   SPATIAL_SAMPLES = 5;
+                const float SPATIAL_RADIUS  = 16.0; // neighbour disk radius (px)
+                const float SPATIAL_M_CAP   = 8.0;  // per-neighbour trust bound
+                const float SPATIAL_SEED_HIST = 4.0; // borrowed-colour eff. samples
+                // Centre on the reprojected location when valid (keeps the disk
+                // geometrically aligned under motion); else on this pixel.
+                vec2 spatialCenter = reprojValid ? prevFrag : gl_FragCoord.xy;
+                // The colour-EMA seed only matters on disocclusion (temporal
+                // reproject failed) — skip its bookkeeping otherwise.
+                bool seedColour = !reprojValid;
+
+                // Colour seed accumulator: a neighbour's converged soft-shadow
+                // estimate weighted by its history length × its pick's relevance
+                // here (p̂), so cross-edge / stale neighbours contribute little.
+                vec3  spatColSum = vec3(0.0);
+                float spatColW   = 0.0;
+
+                for (int sp = 0; sp < SPATIAL_SAMPLES; sp++) {
+                    // Fresh per-frame, per-tap disk offset (PCG hash, rotates
+                    // each frame ⇒ the neighbourhood is resampled over time).
+                    vec2 dr = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
+                        (uint(resFrameSeed) * uint(SPATIAL_SAMPLES) + uint(sp)) * 7u + 977u);
+                    vec2 disk = concentricDiskSample(dr.x, dr.y) * SPATIAL_RADIUS;
+                    ivec2 nq = ivec2(spatialCenter + disk);
+                    if (nq.x < 0 || nq.y < 0
+                        || nq.x >= int(screen.x) || nq.y >= int(screen.y)) continue;
+                    uint nIdx = uint(nq.y) * scrW + uint(nq.x);
+                    Reservoir rn = reservoirsPrev[nIdx];
+
+                    // Re-evaluate the neighbour's pick at THIS surface.
+                    if (rn.lightIndex < lightCount && rn.M > 0.0
+                        && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)) {
+                        vec3 rnRad = shadowableLightRadiance(
+                            rn.lightIndex, N, V, NdotV, F0, albedo, roughness,
+                            metalness, specStrength, specColor, mat, fragTangent,
+                            fragWorldPos, dbgFlags);
+                        float rnPHat = max(dot(rnRad,
+                            vec3(RESTIR_LUMA_X, RESTIR_LUMA_Y, RESTIR_LUMA_Z)), 1e-6);
+                        float mN = min(rn.M, SPATIAL_M_CAP);
+                        float wN = rn.W * rnPHat * mN;
+                        restirWSum += wN;
+                        restirM += mN;
+                        float u = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
+                            (uint(resFrameSeed) * uint(SPATIAL_SAMPLES) + uint(sp)) * 31u + 401u).x;
+                        if (u * restirWSum < wN) {
+                            restirY = rn.lightIndex;
+                            restirPHat = rnPHat;
+                        }
+
+                        // Colour seed: weight a converged neighbour's soft-
+                        // shadow estimate by its history length and relevance.
+                        if (seedColour && rn.histLen > 1.0
+                            && !isnan(rn.accumR) && !isinf(rn.accumR)) {
+                            float cw = clamp(rn.histLen, 0.0, 64.0) * rnPHat;
+                            spatColSum += max(vec3(rn.accumR, rn.accumG, rn.accumB),
+                                              vec3(0.0)) * cw;
+                            spatColW += cw;
+                        }
+                    }
+                }
+
+                // On disocclusion with valid spatial colour, seed the EMA from
+                // the neighbourhood so the pixel starts from a smooth estimate
+                // instead of one noisy frame. histPrev is held small so fresh
+                // frames quickly dominate and correct any cross-edge borrow —
+                // the borrowed value is a head-start, not a lock-in.
+                if (seedColour && spatColW > 0.0) {
+                    reprojValid = true;
+                    prevAccum = spatColSum / spatColW;
+                    histPrev = SPATIAL_SEED_HIST;
                 }
             }
 

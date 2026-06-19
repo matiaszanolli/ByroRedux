@@ -2910,8 +2910,9 @@ impl Drop for VulkanContext {
                     svgf.destroy(&self.device, alloc);
                 }
                 // SAFETY: Drop runs after device_wait_idle; no in-flight
-                // command references the reservoir buffers.
-                unsafe { self.reservoir_buffers.destroy(&self.device, alloc) };
+                // command references the reservoir buffers. (Already inside an
+                // `unsafe` block, so no inner `unsafe` wrap needed.)
+                self.reservoir_buffers.destroy(&self.device, alloc);
                 if let Some(ref mut taa) = self.taa {
                     taa.destroy(&self.device, alloc);
                 }
