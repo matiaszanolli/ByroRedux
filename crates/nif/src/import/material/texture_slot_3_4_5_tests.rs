@@ -286,6 +286,7 @@ fn bs_lighting_shader_populates_parallax_env_slots() {
         translucency: None,
         texture_arrays: Vec::new(),
         shader_type_data: ShaderTypeData::None,
+        starfield_tail: Vec::new(),
     };
     let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader), Box::new(tex_set)];
     let scene = NifScene {
@@ -472,6 +473,7 @@ fn bs_lighting_shader_uv_transform_blocks_later_ni_texturing_property() {
         translucency: None,
         texture_arrays: Vec::new(),
         shader_type_data: ShaderTypeData::None,
+        starfield_tail: Vec::new(),
     };
     let tex = NiTexturingProperty {
         net: empty_net(),
@@ -722,6 +724,7 @@ fn skin_tint_lighting_shader() -> BSLightingShaderProperty {
         translucency: None,
         texture_arrays: Vec::new(),
         shader_type_data: ShaderTypeData::None,
+        starfield_tail: Vec::new(),
     }
 }
 
@@ -918,6 +921,7 @@ fn lighting_shader_with_type_and_texset(
         translucency: None,
         texture_arrays: Vec::new(),
         shader_type_data: ShaderTypeData::None,
+        starfield_tail: Vec::new(),
     }
 }
 

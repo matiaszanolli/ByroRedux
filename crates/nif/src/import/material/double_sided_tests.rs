@@ -111,6 +111,7 @@ fn make_bs_lighting_with_flags(flags1: u32, flags2: u32) -> BSLightingShaderProp
         translucency: None,
         texture_arrays: Vec::new(),
         shader_type_data: ShaderTypeData::None,
+        starfield_tail: Vec::new(),
     }
 }
 

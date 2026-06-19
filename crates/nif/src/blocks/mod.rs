@@ -573,7 +573,9 @@ fn parse_block_inner(
         "TileShaderProperty" => Ok(Box::new(TileShaderProperty::parse(stream)?)),
         "BSShaderNoLightingProperty" => Ok(Box::new(BSShaderNoLightingProperty::parse(stream)?)),
         "BSShaderTextureSet" => Ok(Box::new(BSShaderTextureSet::parse(stream)?)),
-        "BSLightingShaderProperty" => Ok(Box::new(BSLightingShaderProperty::parse(stream)?)),
+        "BSLightingShaderProperty" => Ok(Box::new(BSLightingShaderProperty::parse_with_size(
+            stream, block_size,
+        )?)),
         "BSEffectShaderProperty" => Ok(Box::new(BSEffectShaderProperty::parse(stream)?)),
         "NiMaterialProperty" => Ok(Box::new(NiMaterialProperty::parse(stream)?)),
         "NiAlphaProperty" => Ok(Box::new(NiAlphaProperty::parse(stream)?)),

@@ -74,6 +74,7 @@ fn lighting_shader() -> BSLightingShaderProperty {
         translucency: None,
         texture_arrays: Vec::new(),
         shader_type_data: ShaderTypeData::None,
+        starfield_tail: Vec::new(),
     }
 }
 
