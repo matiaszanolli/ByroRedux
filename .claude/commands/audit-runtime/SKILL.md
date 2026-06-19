@@ -134,7 +134,18 @@ For each selected `(game, cell)`:
 
 6. Tear down: `kill -INT $PID; sleep 2; kill -9 $PID; wait $PID`.
 
-Up to 4 games run in parallel (Xvfb auto-display lets them coexist).
+Run games **serially** — one engine + `byro-dbg` capture at a time. The
+debug server binds a single fixed TCP port (`BYRO_DEBUG_PORT`, default
+`9876`) with **no rebind/retry** (`crates/debug-server/src/listener.rs`), so
+two engines launched in parallel collide: the second logs `failed to bind
+port 9876: Address already in use`, its telemetry is unreachable for the
+whole run, and the capture silently mis-attributes the first game's numbers
+to the second (RT-1 / #1619). Serial is the contract this audit assumes.
+
+To parallelise anyway, give **each** concurrent game a distinct port —
+export `BYRO_DEBUG_PORT=$((9876 + i))` for **both** the engine launch and
+its `byro-dbg` capture (both honour the env var). Without that per-game
+offset, do not run them concurrently.
 
 > **Where each metric lives.** The bench scalars (`wall_fps`, `draws=N/Mb/Kc`,
 > `entities=`) are on the single `bench:` line printed at `--bench-frames` exit
