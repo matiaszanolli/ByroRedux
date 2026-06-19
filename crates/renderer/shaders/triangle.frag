@@ -1870,6 +1870,13 @@ void main() {
 
         vec3 kD = (1.0 - F) * (1.0 - metalness);
         vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
+        // Multi-scatter energy compensation (Fdez-Agüera / Filament) —
+        // matches the per-light path in lighting.glsl so the no-cluster
+        // fallback directional shades rough metal identically. No-op at
+        // low roughness; never widens the reflection gate.
+        if ((dbgFlags & DBG_DISABLE_MULTISCATTER) == 0u) {
+            specular *= multiScatterEnergyCompensation(F0, NdotV, aaRoughness);
+        }
         // #1249 — Disney diffuse for PBR-authored content; plain
         // Lambert for legacy NIF. Gated on MAT_FLAG_PBR_BSDF so
         // every NIF without a v>=8 BGSM keeps the pre-fix value.
@@ -1954,6 +1961,28 @@ void main() {
             resWSel[s] = 0.0;
         }
         float resFrameSeed = cameraPos.w;
+
+        // ── ReSTIR-DI temporal reuse (Bitterli 2020) ────────────────────
+        // Default path (unless DBG_DISABLE_RESTIR): a SINGLE reservoir,
+        // streamed from the cluster this frame, then COMBINED with the
+        // reprojected previous-frame reservoir so the soft-shadow estimate
+        // accumulates effective samples across frames instead of the
+        // legacy 16-reservoir per-frame WRS that re-randomises (the
+        // crawling IGN "moiré lines"). One visibility ray on the final
+        // selected sample (re-validated every frame ⇒ no light leaks).
+        // Energy: additive single-sample RIS estimator, W = wSum/(M·pHat),
+        // pHat = luminance(shadowableRadiance) — expectation equals the
+        // legacy subtractive Σ radiance_i·V_i. The legacy WRS path is kept
+        // verbatim below (gated) for live A/B via `0x8000`.
+        bool useRestir = rtEnabled && (dbgFlags & DBG_DISABLE_RESTIR) == 0u;
+        const float RESTIR_LUMA_X = 0.2126;
+        const float RESTIR_LUMA_Y = 0.7152;
+        const float RESTIR_LUMA_Z = 0.0722;
+        const float RESTIR_M_CAP = 20.0; // bound temporal history → limit ghosting
+        uint  restirY = 0xFFFFFFFFu;     // selected light index
+        float restirWSum = 0.0;          // running reservoir weight sum
+        float restirM = 0.0;             // effective sample count
+        float restirPHat = 0.0;          // target pdf of the selected sample
 
         ClusterEntry cluster = clusters[clusterIdx];
         for (uint ci = 0; ci < cluster.count; ci++) {
@@ -2082,8 +2111,11 @@ void main() {
                 i, N, V, NdotV, F0, albedo, roughness, metalness,
                 specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
 
-            // Accumulate as if unshadowed.
-            Lo += shadowableRadiance;
+            // Accumulate as if unshadowed (legacy subtractive estimator
+            // only — ReSTIR adds the single shadowed sample after the loop).
+            if (!useRestir) {
+                Lo += shadowableRadiance;
+            }
 
             // #1147 Phase 2b — subsurface translucency. Adds a back-
             // side wraparound term so light leaks through thin
@@ -2167,23 +2199,207 @@ void main() {
                 // "importance sample by potential contribution". #1369 —
                 // only the light index + selection weight are stored; the
                 // radiance itself is recomputed in pass 2.
-                float w_i = max(dot(shadowableRadiance, vec3(0.2126, 0.7152, 0.0722)), 1e-6);
-                resWSum += w_i;
-                // Independent reservoir streams via per-slot noise offset.
-                // With probability w_i / resWSum, replace the selection.
-                for (uint s = 0; s < NUM_RESERVOIRS; s++) {
-                    float u = interleavedGradientNoise(
-                        gl_FragCoord.xy + vec2(float(s) * 13.1, float(s) * 27.7),
-                        resFrameSeed + float(ci) * 0.37
-                    );
-                    if (u * resWSum < w_i) {
-                        resLight[s] = i;
-                        resWSel[s] = w_i;
+                float w_i = max(dot(shadowableRadiance,
+                    vec3(RESTIR_LUMA_X, RESTIR_LUMA_Y, RESTIR_LUMA_Z)), 1e-6);
+                if (useRestir) {
+                    // Stream the cluster into ONE reservoir (RIS). A fresh
+                    // per-frame seed keeps each frame's initial candidate
+                    // decorrelated so temporal reuse accumulates diversity.
+                    restirWSum += w_i;
+                    restirM += 1.0;
+                    float u = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
+                        uint(resFrameSeed) * 64u + ci).x;
+                    if (u * restirWSum < w_i) {
+                        restirY = i;
+                        restirPHat = w_i;
+                    }
+                } else {
+                    resWSum += w_i;
+                    // Independent reservoir streams via per-slot noise offset.
+                    // With probability w_i / resWSum, replace the selection.
+                    for (uint s = 0; s < NUM_RESERVOIRS; s++) {
+                        float u = interleavedGradientNoise(
+                            gl_FragCoord.xy + vec2(float(s) * 13.1, float(s) * 27.7),
+                            resFrameSeed + float(ci) * 0.37
+                        );
+                        if (u * resWSum < w_i) {
+                            resLight[s] = i;
+                            resWSel[s] = w_i;
+                        }
                     }
                 }
             }
         }
 
+        if (useRestir) {
+            // ── ReSTIR finalize: temporal combine + accumulated soft shadow ─
+            uint scrW = uint(screen.x);
+            uint pixelIdx = uint(gl_FragCoord.y) * scrW + uint(gl_FragCoord.x);
+            float frameCount = cameraPos.w;
+
+            // Radiance history (the SOFT-shadow accumulator). One per-frame
+            // visibility ray is BINARY ("a shadow without alpha"); we jitter
+            // the penumbra sample FRESH every frame and EMA-accumulate the
+            // resulting SHADED RADIANCE (rad·W·V — a colour) across frames.
+            //
+            // We accumulate the COLOUR, not the per-light visibility: each
+            // frame's rad·W·V is an INDEPENDENT UNBIASED estimate of the
+            // pixel's direct shadowed radiance, so averaging converges no
+            // matter which light each frame's ReSTIR pick landed on. (The
+            // earlier per-light-visibility accumulator reset whenever the
+            // selection flipped — which is exactly what happens at the front
+            // of the box where two lights compete, leaving that region in
+            // per-frame binary noise: the "moiré at the front".)
+            vec3 prevAccum = vec3(0.0);
+            float histPrev = 0.0;
+            bool reprojValid = false;
+
+            // Reproject to last frame's pixel via the motion vector (matches
+            // outMotion = (currNDC-prevNDC)*0.5, consumed as prevUV = uv -
+            // motion), then combine that reservoir in.
+            vec2 motion = (fragCurrClipPos.xy / fragCurrClipPos.w
+                         - fragPrevClipPos.xy / fragPrevClipPos.w) * 0.5;
+            vec2 prevFrag = gl_FragCoord.xy - motion * screen.xy;
+            if (shadowFade > 0.01
+                && prevFrag.x >= 0.0 && prevFrag.y >= 0.0
+                && prevFrag.x < screen.x && prevFrag.y < screen.y) {
+                uint prevIdx = uint(prevFrag.y) * scrW + uint(prevFrag.x);
+                Reservoir rp = reservoirsPrev[prevIdx];
+                // Selection reuse: guard against first-frame / garbage
+                // contents (light index in range, W finite-positive). The
+                // final visibility ray re-validates the sample, so a stale
+                // reused index can ghost but never leak light.
+                if (rp.lightIndex < lightCount && rp.M > 0.0
+                    && rp.W > 0.0 && !isnan(rp.W) && !isinf(rp.W)) {
+                    vec3 rpRad = shadowableLightRadiance(
+                        rp.lightIndex, N, V, NdotV, F0, albedo, roughness,
+                        metalness, specStrength, specColor, mat, fragTangent,
+                        fragWorldPos, dbgFlags);
+                    float rpPHat = max(dot(rpRad,
+                        vec3(RESTIR_LUMA_X, RESTIR_LUMA_Y, RESTIR_LUMA_Z)), 1e-6);
+                    float mPrev = min(rp.M, RESTIR_M_CAP);
+                    // Combine (1/M form, Bitterli Alg. 4): the incoming
+                    // reservoir contributes weight W·pHat·M.
+                    float wPrev = rp.W * rpPHat * mPrev;
+                    restirWSum += wPrev;
+                    restirM += mPrev;
+                    float u = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
+                        uint(resFrameSeed) * 64u + 131u).x;
+                    if (u * restirWSum < wPrev) {
+                        restirY = rp.lightIndex;
+                        restirPHat = rpPHat;
+                    }
+                }
+                // Radiance history is valid on any in-bounds reproject with a
+                // sane history length — independent of the selection guard,
+                // so the colour EMA survives selection flips. The disocclusion
+                // reset is the bounds test itself (off-screen ⇒ reprojValid
+                // stays false ⇒ fresh start).
+                if (rp.histLen > 0.0 && !isnan(rp.histLen) && !isinf(rp.histLen)
+                    && !isnan(rp.accumR) && !isinf(rp.accumR)) {
+                    reprojValid = true;
+                    prevAccum = max(vec3(rp.accumR, rp.accumG, rp.accumB), vec3(0.0));
+                    histPrev = clamp(rp.histLen, 0.0, 64.0);
+                }
+            }
+
+            // Finalize W = wSum / (M · pHat).
+            float restirW = 0.0;
+            if (restirY != 0xFFFFFFFFu && restirM > 0.0 && restirPHat > 1e-6) {
+                restirW = min(restirWSum / (restirM * restirPHat), RESERVOIR_W_CLAMP);
+            }
+            vec3 frameContribution = vec3(0.0); // this frame's rad·W·V estimate
+            if (restirY != 0xFFFFFFFFu && restirW > 0.0 && shadowFade > 0.01) {
+                uint i = restirY;
+                vec3 lightPos = lights[i].position_radius.xyz;
+                float radius = lights[i].position_radius.w;
+                float lightType = lights[i].color_type.w;
+                vec3 L = (lightType < 1.5)
+                    ? normalize(lightPos - fragWorldPos)
+                    : normalize(lights[i].direction_angle.xyz);
+                vec3 Tb, Bb;
+                buildOrthoBasis(L, Tb, Bb);
+                vec3 rayOrigin = fragWorldPos + N_bias * 0.05;
+                // K shadow rays per frame, each with a FRESH decorrelated disk
+                // sample (PCG hash, not IGN — IGN's per-frame offset crawls;
+                // white noise decorrelates so the EMA converges). Averaging K
+                // binary visibilities drops per-frame variance by √K, so the
+                // penumbra converges K× faster — the cheap way to fix "a bit
+                // slow", spending the 4070 Ti's 300+ fps headroom. (The EMA
+                // below still refines further over parked frames via 1/N.)
+                const int SHADOW_RAYS = 4;
+                float visSum = 0.0;
+                for (int sr = 0; sr < SHADOW_RAYS; sr++) {
+                    vec2 dRand = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
+                        (uint(frameCount) * uint(SHADOW_RAYS) + uint(sr)) * 9u + i);
+                    vec2 diskSample = concentricDiskSample(dRand.x, dRand.y);
+                    vec3 rayDir;
+                    float rayDist;
+                    if (lightType < 1.5) {
+                        float lightDiskRadius = max(radius * 0.025, 1.5);
+                        vec3 jitteredTarget =
+                            lightPos + (Tb * diskSample.x + Bb * diskSample.y) * lightDiskRadius;
+                        rayDir = normalize(jitteredTarget - rayOrigin);
+                        rayDist = length(jitteredTarget - rayOrigin) - 0.1;
+                    } else {
+                        float sunAngularRadius = skyTint.w;
+                        vec3 jitteredDir =
+                            L + (Tb * diskSample.x + Bb * diskSample.y) * sunAngularRadius;
+                        rayDir = normalize(jitteredDir);
+                        rayDist = 100000.0;
+                    }
+                    rayQueryEXT rqR;
+                    rayQueryInitializeEXT(rqR, topLevelAS,
+                        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF,
+                        rayOrigin, 0.05, rayDir, max(rayDist, 0.01));
+                    rayQueryProceedEXT(rqR);
+                    visSum += (rayQueryGetIntersectionTypeEXT(rqR, true)
+                        != gl_RayQueryCommittedIntersectionNoneEXT) ? 0.0 : 1.0;
+                }
+                float visFrame = visSum / float(SHADOW_RAYS);
+                vec3 rad = shadowableLightRadiance(
+                    i, N, V, NdotV, F0, albedo, roughness, metalness,
+                    specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
+                // This frame's unbiased ReSTIR estimate of the pixel's direct
+                // shadowed radiance: rad·W·V̄ (V̄ = K-ray averaged visibility).
+                frameContribution = rad * restirW * visFrame * shadowFade;
+            }
+
+            // EMA-accumulate the colour estimate. alpha = 1/N (0.05 floor):
+            // a static camera converges to a clean soft shadow over ~20-64
+            // frames; a moving one reprojects and stays responsive.
+            vec3 accum;
+            float histLen;
+            if (reprojValid) {
+                // PARKED → pure 1/N progressive accumulation (floor 0, cap
+                // 255): converges to ground truth exactly like SVGF's GI
+                // path, instead of plateauing at a fixed-window noise floor.
+                // MOVING → floored EMA (cap 32, floor 0.1) so it stays
+                // responsive and doesn't ghost. dofParams.w = camera_static.
+                bool parked = dofParams.w > 0.5;
+                float histCap = parked ? 255.0 : 32.0;
+                float alphaFloor = parked ? 0.0 : 0.1;
+                histLen = min(histPrev + 1.0, histCap);
+                float alpha = max(1.0 / histLen, alphaFloor);
+                accum = mix(prevAccum, frameContribution, alpha);
+            } else {
+                histLen = 1.0;
+                accum = frameContribution;
+            }
+            Lo += accum;
+
+            // Persist selection + radiance history for next-frame reuse.
+            Reservoir rc;
+            rc.lightIndex = restirY;
+            rc.W = restirW;
+            rc.M = restirM;
+            rc.histLen = histLen;
+            rc.accumR = accum.r;
+            rc.accumG = accum.g;
+            rc.accumB = accum.b;
+            rc.pad0 = 0.0;
+            reservoirsCurr[pixelIdx] = rc;
+        } else {
         // ── Pass 2: shadow rays for sampled reservoirs ─────────────
         //
         // For each reservoir with a valid selection, cast a shadow ray
@@ -2305,6 +2521,7 @@ void main() {
                 Lo = max(Lo - shadowable * W * shadowFade, vec3(0.0));
             }
         }
+        } // end legacy WRS pass-2 (else of useRestir)
     }
 
     // ── 1-bounce RT ambient GI ──────────────────────────────────────
@@ -2344,8 +2561,17 @@ void main() {
             // budget — the dominant cause of residual floor speckle (TARGET 1).
             float frameCount = cameraPos.w;
             float giSeed = dofParams.w > 0.5 ? frameCount : floor(frameCount * 0.25);
-            float n1 = interleavedGradientNoise(gl_FragCoord.xy, giSeed);
-            float n2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(73.7, 191.3), giSeed + 37.0);
+            // DECORRELATED per-(pixel, frame) 2D sample for the hemisphere
+            // direction. Was two interleaved-gradient-noise values — a SCALAR
+            // dither used for both axes, which produced CORRELATED/structured
+            // directions and a coherent grid moiré on the dark GI floor that
+            // neither the à-trous (spatial) nor SVGF (temporal) could remove.
+            // White-noise 2D samples decorrelate the 1-spp error so both
+            // denoiser stages resolve it. (giSeed still holds 4 frames under
+            // motion for flicker suppression; advances every frame parked.)
+            vec2 giRand = hash2_pixel_frame(uvec2(gl_FragCoord.xy), uint(giSeed));
+            float n1 = giRand.x;
+            float n2 = giRand.y;
 
             // GI hemisphere ray uses the GEOMETRIC normal, not the
             // per-fragment perturbed `N`. The normal-mapped corrugation

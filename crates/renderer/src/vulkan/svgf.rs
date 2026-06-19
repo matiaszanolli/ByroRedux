@@ -78,6 +78,31 @@ const _: () = assert!(
 );
 
 const SVGF_TEMPORAL_COMP_SPV: &[u8] = include_bytes!("../../shaders/svgf_temporal.comp.spv");
+const SVGF_ATROUS_COMP_SPV: &[u8] = include_bytes!("../../shaders/svgf_atrous.comp.spv");
+
+/// Number of à-trous wavelet iterations (Schied 2017 §4.3). Each doubles
+/// the tap stride (1, 2, 4, 8, 16) so the 5×5 B3-spline kernel reaches a
+/// ~65-px effective radius. Must be ODD so the final iteration lands in
+/// ping-pong slot 0 (`atrous_final_pp()`), which `indirect_view` returns to
+/// the composite pass.
+const ATROUS_ITERATIONS: usize = 5;
+const _: () = assert!(
+    ATROUS_ITERATIONS % 2 == 1,
+    "ATROUS_ITERATIONS must be odd so the final iteration writes ping-pong slot 0"
+);
+
+/// Push constants for one à-trous iteration. `#[repr(C)]`, 16 bytes
+/// (uvec2 + 2×uint), well under the 128-byte guaranteed minimum.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AtrousPush {
+    /// Image dimensions in pixels (uvec2 in the shader).
+    screen: [u32; 2],
+    /// Tap stride for this iteration: 2^iteration.
+    step: u32,
+    /// Render-debug bitmask (DBG_DISABLE_ATROUS turns the pass into a copy).
+    dbg_flags: u32,
+}
 
 /// Accumulated indirect light format. R11G11B10F saves 50% vs RGBA16F
 /// (4B vs 8B/pixel). Alpha is always 1.0 and never read. Storage image
@@ -87,6 +112,24 @@ const INDIRECT_HIST_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
 /// Moments format (μ1, μ2, history_length, unused). Kept as RGBA16F for
 /// precision — luminance² values up to 100+ need 10+ bit mantissa.
 const MOMENTS_HIST_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
+
+/// Destination ping-pong slot for à-trous iteration `k`: `k % 2`.
+const fn atrous_dst_pp(k: usize) -> usize {
+    k % 2
+}
+
+/// Source ping-pong slot for à-trous iteration `k` (`k >= 1`): the slot the
+/// PREVIOUS iteration wrote, `(k - 1) % 2`. Iteration 0 reads the temporal
+/// output instead of a ping-pong slot, so this is only meaningful for k>=1.
+const fn atrous_src_pp(k: usize) -> usize {
+    (k - 1) % 2
+}
+
+/// Ping-pong slot holding the final filtered colour (what composite reads).
+/// `ATROUS_ITERATIONS` is asserted odd so this is slot 0.
+const fn atrous_final_pp() -> usize {
+    atrous_dst_pp(ATROUS_ITERATIONS - 1)
+}
 
 /// Steady-state SVGF temporal blend α (Schied 2017 §4 floor). One-fifth
 /// weight on the current frame, four-fifths on the temporally-clamped
@@ -240,6 +283,27 @@ pub struct SvgfPipeline {
     /// recording-then-completion handshake gates the counter advance on
     /// submit success. See #917 / REN-D10-NEW-03. Per-FIF since #964.
     dispatched_this_frame: [bool; MAX_FRAMES_IN_FLIGHT],
+
+    // ── SVGF spatial à-trous pass (Schied 2017 §4.3) ──────────────────
+    // The "Phase 4" the temporal pass's comments referenced. Runs after
+    // temporal accumulation in `dispatch`, removing the per-pixel GI
+    // variance temporal-alone leaves behind. Post-filter integration: the
+    // temporal history feedback is untouched; only `indirect_view` (the
+    // composite input) is repointed at the filtered output.
+    atrous_pipeline: vk::Pipeline,
+    atrous_pipeline_layout: vk::PipelineLayout,
+    atrous_descriptor_set_layout: vk::DescriptorSetLayout,
+    atrous_descriptor_pool: vk::DescriptorPool,
+    atrous_shader_module: vk::ShaderModule,
+    /// One descriptor set per (frame, iteration): index
+    /// `frame * ATROUS_ITERATIONS + iter`.
+    atrous_descriptor_sets: Vec<vk::DescriptorSet>,
+    /// Ping-pong colour buffers, 2 per frame-in-flight: index
+    /// `frame * 2 + pp`. Iteration k reads slot `src_pp(k)` (or the
+    /// temporal output on k==0) and writes slot `dst_pp(k) = k % 2`. With
+    /// `ATROUS_ITERATIONS` odd the final result lands in slot 0, which
+    /// `indirect_view` hands to composite.
+    atrous_color: Vec<HistorySlot>,
 }
 
 /// The four per-frame G-buffer view slices SVGF samples — raw indirect,
@@ -308,6 +372,13 @@ impl SvgfPipeline {
             height,
             frames_since_creation: [0; MAX_FRAMES_IN_FLIGHT],
             dispatched_this_frame: [false; MAX_FRAMES_IN_FLIGHT],
+            atrous_pipeline: vk::Pipeline::null(),
+            atrous_pipeline_layout: vk::PipelineLayout::null(),
+            atrous_descriptor_set_layout: vk::DescriptorSetLayout::null(),
+            atrous_descriptor_pool: vk::DescriptorPool::null(),
+            atrous_shader_module: vk::ShaderModule::null(),
+            atrous_descriptor_sets: Vec::new(),
+            atrous_color: Vec::new(),
         };
 
         macro_rules! try_or_cleanup {
@@ -345,6 +416,19 @@ impl SvgfPipeline {
                 &format!("svgf_moments_{i}"),
             ));
             partial.moments_history.push(mom);
+            // À-trous ping-pong colour buffers (2 per frame-in-flight),
+            // same packed format as the indirect history.
+            for pp in 0..2 {
+                let at = try_or_cleanup!(Self::create_history_image(
+                    device,
+                    allocator,
+                    width,
+                    height,
+                    INDIRECT_HIST_FORMAT,
+                    &format!("svgf_atrous_{i}_{pp}"),
+                ));
+                partial.atrous_color.push(at);
+            }
         }
 
         // ── 2. Sampler ────────────────────────────────────────────────
@@ -546,7 +630,20 @@ impl SvgfPipeline {
             normal_views,
         );
 
-        log::info!("SVGF pipeline created: {}x{}", width, height);
+        // ── 8. SVGF spatial à-trous pass (Schied 2017 §4.3) ───────────
+        try_or_cleanup!(partial.create_atrous_resources(
+            device,
+            pipeline_cache,
+            normal_views,
+            mesh_id_views,
+        ));
+
+        log::info!(
+            "SVGF pipeline created: {}x{} (temporal + {}-iter à-trous)",
+            width,
+            height,
+            ATROUS_ITERATIONS,
+        );
         Ok(partial)
     }
 
@@ -733,10 +830,194 @@ impl SvgfPipeline {
         }
     }
 
-    /// View for the accumulated indirect light (this frame's output), used
-    /// by the composite pass to sample the denoised result.
+    /// Build the à-trous pipeline, descriptor pool, per-(frame,iteration)
+    /// descriptor sets, and write them. On error the partially-created
+    /// handles are left on `self` for the caller's `destroy` to reclaim.
+    fn create_atrous_resources(
+        &mut self,
+        device: &ash::Device,
+        pipeline_cache: vk::PipelineCache,
+        normal_views: &[vk::ImageView],
+        mesh_id_views: &[vk::ImageView],
+    ) -> Result<()> {
+        // Binding layout — see svgf_atrous.comp.
+        let bindings = [
+            // 0: in colour (sampler2D) — temporal output, then ping-pong
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 1: moments (sampler2D) — variance source (μ2 − μ1²)
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(1)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 2: normal (sampler2D, octahedral)
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(2)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 3: mesh_id (usampler2D)
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 4: out colour (storage image)
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        ];
+        validate_set_layout(
+            0,
+            &bindings,
+            &[ReflectedShader {
+                name: "svgf_atrous.comp",
+                spirv: SVGF_ATROUS_COMP_SPV,
+            }],
+            "svgf_atrous",
+            &[],
+        )
+        .expect("svgf_atrous descriptor layout drifted against svgf_atrous.comp");
+
+        // SAFETY: bindings validated against svgf_atrous.comp above.
+        self.atrous_descriptor_set_layout = unsafe {
+            device
+                .create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
+                    None,
+                )
+                .context("SVGF à-trous descriptor set layout")?
+        };
+
+        let push_range = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .offset(0)
+            .size(std::mem::size_of::<AtrousPush>() as u32);
+        // SAFETY: descriptor_set_layout just created above; borrows live
+        // only for this call.
+        self.atrous_pipeline_layout = unsafe {
+            device
+                .create_pipeline_layout(
+                    &vk::PipelineLayoutCreateInfo::default()
+                        .set_layouts(std::slice::from_ref(&self.atrous_descriptor_set_layout))
+                        .push_constant_ranges(std::slice::from_ref(&push_range)),
+                    None,
+                )
+                .context("SVGF à-trous pipeline layout")?
+        };
+
+        self.atrous_shader_module =
+            super::pipeline::load_shader_module(device, SVGF_ATROUS_COMP_SPV)?;
+        let stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(self.atrous_shader_module)
+            .name(c"main");
+        // SAFETY: `stage` references the shader module + pipeline layout
+        // just created on `self`.
+        self.atrous_pipeline = unsafe {
+            device
+                .create_compute_pipelines(
+                    pipeline_cache,
+                    &[vk::ComputePipelineCreateInfo::default()
+                        .stage(stage)
+                        .layout(self.atrous_pipeline_layout)],
+                    None,
+                )
+                .map_err(|(_, e)| e)
+                .context("SVGF à-trous compute pipeline")?[0]
+        };
+
+        // One descriptor set per (frame, iteration).
+        let set_count = (ATROUS_ITERATIONS * MAX_FRAMES_IN_FLIGHT) as u32;
+        self.atrous_descriptor_pool =
+            DescriptorPoolBuilder::from_layout_bindings(&bindings, set_count)
+                .max_sets(set_count)
+                .build(device, "SVGF à-trous descriptor pool")?;
+
+        let set_layouts = vec![self.atrous_descriptor_set_layout; set_count as usize];
+        // SAFETY: pool sized for `set_count` sets of the same layout.
+        self.atrous_descriptor_sets = unsafe {
+            device
+                .allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(self.atrous_descriptor_pool)
+                        .set_layouts(&set_layouts),
+                )
+                .context("SVGF à-trous descriptor sets")?
+        };
+
+        self.write_atrous_descriptor_sets(device, normal_views, mesh_id_views);
+        Ok(())
+    }
+
+    /// (Re)write the à-trous descriptor sets. Iteration 0 reads the temporal
+    /// output (`indirect_history[f]`); later iterations read the previous
+    /// iteration's ping-pong slot. moments / normal / mesh_id are the
+    /// current frame's. Called from `create_atrous_resources` and after a
+    /// resize recreates the ping-pong images.
+    fn write_atrous_descriptor_sets(
+        &self,
+        device: &ash::Device,
+        normal_views: &[vk::ImageView],
+        mesh_id_views: &[vk::ImageView],
+    ) {
+        for f in 0..MAX_FRAMES_IN_FLIGHT {
+            for k in 0..ATROUS_ITERATIONS {
+                let in_color_view = if k == 0 {
+                    self.indirect_history[f].view
+                } else {
+                    self.atrous_color[f * 2 + atrous_src_pp(k)].view
+                };
+                let out_color_view = self.atrous_color[f * 2 + atrous_dst_pp(k)].view;
+
+                let in_color = [vk::DescriptorImageInfo::default()
+                    .sampler(self.point_sampler)
+                    .image_view(in_color_view)
+                    .image_layout(vk::ImageLayout::GENERAL)];
+                let moments = [vk::DescriptorImageInfo::default()
+                    .sampler(self.point_sampler)
+                    .image_view(self.moments_history[f].view)
+                    .image_layout(vk::ImageLayout::GENERAL)];
+                let normal = [vk::DescriptorImageInfo::default()
+                    .sampler(self.point_sampler)
+                    .image_view(normal_views[f])
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                let mesh_id = [vk::DescriptorImageInfo::default()
+                    .sampler(self.point_sampler)
+                    .image_view(mesh_id_views[f])
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                let out_color = [vk::DescriptorImageInfo::default()
+                    .image_view(out_color_view)
+                    .image_layout(vk::ImageLayout::GENERAL)];
+
+                let set = self.atrous_descriptor_sets[f * ATROUS_ITERATIONS + k];
+                let writes = [
+                    write_combined_image_sampler(set, 0, &in_color),
+                    write_combined_image_sampler(set, 1, &moments),
+                    write_combined_image_sampler(set, 2, &normal),
+                    write_combined_image_sampler(set, 3, &mesh_id),
+                    write_storage_image(set, 4, &out_color),
+                ];
+                // SAFETY: sets owned by self; views reference self-owned
+                // images + caller-borrowed G-buffer views live for this call.
+                unsafe { device.update_descriptor_sets(&writes, &[]) };
+            }
+        }
+    }
+
+    /// View for the accumulated + spatially-filtered indirect light (this
+    /// frame's output), used by the composite pass to sample the denoised
+    /// result. Returns the à-trous final ping-pong slot — the temporal
+    /// history (`indirect_history`) is still fed back internally by the
+    /// temporal pass; only the composite-facing output is the filtered one.
     pub fn indirect_view(&self, frame: usize) -> vk::ImageView {
-        self.indirect_history[frame].view
+        self.atrous_color[frame * 2 + atrous_final_pp()].view
     }
 
     /// One-time layout transition UNDEFINED → GENERAL for every history
@@ -756,11 +1037,12 @@ impl SvgfPipeline {
         pool: vk::CommandPool,
     ) -> Result<()> {
         super::texture::with_one_time_commands(device, queue, pool, |cmd| {
-            let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 2);
+            let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 4);
             for slot in self
                 .indirect_history
                 .iter()
                 .chain(self.moments_history.iter())
+                .chain(self.atrous_color.iter())
             {
                 barriers.push(image_barrier_undef_to_general(slot.image));
             }
@@ -873,6 +1155,7 @@ impl SvgfPipeline {
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
+        dbg_flags: u32,
     ) -> Result<()> {
         // Barrier: the previous use of this frame's OUT slots (writes in
         // the previous use of this frame-in-flight index, at least two
@@ -953,12 +1236,81 @@ impl SvgfPipeline {
             // both consumers today, but if MAX_FRAMES_IN_FLIGHT goes past 2 or
             // a future timeline-semaphore refactor relaxes the fence wait,
             // missing the COMPUTE bit would become a real hazard. #653.
+            // The COMPUTE bit ALSO covers this frame's à-trous seed reading
+            // `indirect_history[frame]` + `moments_history[frame]` below.
             vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
             vk::DependencyFlags::empty(),
             &[],
             &[],
             &out_barriers,
         );
+
+        // ── SVGF spatial à-trous wavelet pass (Schied 2017 §4.3) ──────
+        // Iterations run serially in this command buffer; each is gated on
+        // the previous by a COMPUTE→COMPUTE barrier (execution dependency
+        // serialises the full chain, covering both the RAW on the written
+        // ping-pong slot and the WAR on the slot the next iteration
+        // overwrites). The final iteration's slot is read by composite
+        // (FRAGMENT) — `indirect_view(frame)` returns it.
+        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.atrous_pipeline);
+        let agx = self.width.div_ceil(8);
+        let agy = self.height.div_ceil(8);
+        for k in 0..ATROUS_ITERATIONS {
+            let push = AtrousPush {
+                screen: [self.width, self.height],
+                step: 1u32 << k,
+                dbg_flags,
+            };
+            // SAFETY: AtrousPush is #[repr(C)], all-u32, no padding — a
+            // valid byte view for the COMPUTE push-constant range declared
+            // in the à-trous pipeline layout.
+            let push_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    &push as *const AtrousPush as *const u8,
+                    std::mem::size_of::<AtrousPush>(),
+                )
+            };
+            device.cmd_push_constants(
+                cmd,
+                self.atrous_pipeline_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                push_bytes,
+            );
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.atrous_pipeline_layout,
+                0,
+                &[self.atrous_descriptor_sets[frame * ATROUS_ITERATIONS + k]],
+                &[],
+            );
+            device.cmd_dispatch(cmd, agx, agy, 1);
+
+            let written = self.atrous_color[frame * 2 + atrous_dst_pp(k)].image;
+            let is_last = k + 1 == ATROUS_ITERATIONS;
+            let dst_stage = if is_last {
+                vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER
+            } else {
+                vk::PipelineStageFlags::COMPUTE_SHADER
+            };
+            let bar = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .image(written)
+                .subresource_range(super::descriptors::color_subresource_single_mip());
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                dst_stage,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[bar],
+            );
+        }
 
         // #917 / REN-D10-NEW-03 — dispatch was successfully recorded
         // into `cmd`. `mark_frame_completed` will bump
@@ -1044,6 +1396,16 @@ impl SvgfPipeline {
                 allocator.lock().expect("allocator lock").free(a).ok();
             }
         }
+        for mut slot in self.atrous_color.drain(..) {
+            // SAFETY: same fenced-resize contract as the loops above.
+            unsafe {
+                device.destroy_image_view(slot.view, None);
+                device.destroy_image(slot.image, None);
+            }
+            if let Some(a) = slot.allocation.take() {
+                allocator.lock().expect("allocator lock").free(a).ok();
+            }
+        }
 
         self.width = width;
         self.height = height;
@@ -1071,6 +1433,16 @@ impl SvgfPipeline {
                     MOMENTS_HIST_FORMAT,
                     &format!("svgf_moments_{i}"),
                 )?);
+                for pp in 0..2 {
+                    self.atrous_color.push(Self::create_history_image(
+                        device,
+                        allocator,
+                        width,
+                        height,
+                        INDIRECT_HIST_FORMAT,
+                        &format!("svgf_atrous_{i}_{pp}"),
+                    )?);
+                }
             }
             Ok(())
         })();
@@ -1088,6 +1460,10 @@ impl SvgfPipeline {
             mesh_id_views,
             normal_views,
         );
+        // The à-trous pipeline / descriptor sets persist across resize;
+        // only the ping-pong images were recreated, so rewrite the sets to
+        // point at the fresh views (and the fresh indirect_history seed).
+        self.write_atrous_descriptor_sets(device, normal_views, mesh_id_views);
 
         // #1031 — walk the fresh history images from UNDEFINED to
         // GENERAL so the next dispatch sees them in a valid storage
@@ -1139,6 +1515,32 @@ impl SvgfPipeline {
         }
         if self.point_sampler != vk::Sampler::null() {
             unsafe { device.destroy_sampler(self.point_sampler, None) };
+        }
+        // À-trous pipeline objects (descriptor sets are freed with the pool).
+        if self.atrous_pipeline != vk::Pipeline::null() {
+            unsafe { device.destroy_pipeline(self.atrous_pipeline, None) };
+        }
+        if self.atrous_shader_module != vk::ShaderModule::null() {
+            unsafe { device.destroy_shader_module(self.atrous_shader_module, None) };
+        }
+        if self.atrous_pipeline_layout != vk::PipelineLayout::null() {
+            unsafe { device.destroy_pipeline_layout(self.atrous_pipeline_layout, None) };
+        }
+        if self.atrous_descriptor_pool != vk::DescriptorPool::null() {
+            unsafe { device.destroy_descriptor_pool(self.atrous_descriptor_pool, None) };
+        }
+        if self.atrous_descriptor_set_layout != vk::DescriptorSetLayout::null() {
+            unsafe { device.destroy_descriptor_set_layout(self.atrous_descriptor_set_layout, None) };
+        }
+        for mut slot in self.atrous_color.drain(..) {
+            // SAFETY: same in-flight-free contract as the history loops below.
+            unsafe {
+                device.destroy_image_view(slot.view, None);
+                device.destroy_image(slot.image, None);
+            }
+            if let Some(a) = slot.allocation.take() {
+                allocator.lock().expect("allocator lock").free(a).ok();
+            }
         }
         for mut slot in self.indirect_history.drain(..) {
             // SAFETY: `recreate_on_resize` runs from the fenced

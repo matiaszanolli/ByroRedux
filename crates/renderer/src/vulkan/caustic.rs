@@ -112,6 +112,12 @@ pub struct CausticPipeline {
     pub ior: f32,
     pub strength: f32,
     pub max_lights: u32,
+
+    /// Consecutive parked (camera-static) frames, for progressive 1/N EMA
+    /// convergence. Reset to 0 on camera motion. Capped so the decay factor
+    /// `N/(N+1)` approaches but never reaches 1.0 (a true 1.0 would freeze
+    /// the pool and never admit new energy).
+    parked_frames: u32,
 }
 
 impl CausticPipeline {
@@ -192,6 +198,7 @@ impl CausticPipeline {
             ior: 1.5,
             strength: 1.0,
             max_lights: 8,
+            parked_frames: 0,
         };
 
         // SAFETY (inside macro): `partial` is local to this fn and not
@@ -744,10 +751,28 @@ impl CausticPipeline {
         // composite; frame 0 the slot is GENERAL from initialize_layouts,
         // so the wait stages are merely over-specified, not wrong — see
         // REN-D13-NEW-03, audit 2026-05-09.)
-        const CAUSTIC_DECAY: f32 = 0.85;
+        // Parked-camera EMA. Progressive 1/N convergence (matches the SVGF
+        // GI path) instead of a fixed-window decay: a constant decay (e.g.
+        // 0.96) plateaus at a fixed noise floor (~1/√25) and never resolves
+        // the per-deposit white-noise jitter; `decay = N/(N+1)` makes the
+        // accumulator a true running average that converges to ground truth
+        // the longer the camera stays parked. Capped at 0.995 so it never
+        // freezes (a true 1.0 would stop admitting new energy). Resets on
+        // motion (decay 0 → single-frame clear, no smear).
+        const CAUSTIC_DECAY_MAX: f32 = 0.995;
+        if camera_static {
+            self.parked_frames = self.parked_frames.saturating_add(1);
+        } else {
+            self.parked_frames = 0;
+        }
         let slot_img = self.slots[frame].image;
         let clear_range = super::descriptors::color_subresource_single_mip();
-        let decay_factor = if camera_static { CAUSTIC_DECAY } else { 0.0 };
+        let decay_factor = if camera_static {
+            let n = self.parked_frames as f32;
+            (n / (n + 1.0)).min(CAUSTIC_DECAY_MAX)
+        } else {
+            0.0
+        };
 
         // Bind pipeline + descriptor once; the decay and splat passes share
         // them and differ only by push constant.

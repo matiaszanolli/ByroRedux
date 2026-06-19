@@ -61,6 +61,36 @@ float interleavedGradientNoise(vec2 fragCoord, float frameCount) {
     return shifted;
 }
 
+// PCG 2D hash (Jarzynski & Olano 2020, "Hash Functions for GPU Rendering").
+// Maps a 2D integer key to two well-distributed 32-bit values. Used to build
+// DECORRELATED per-(pixel, frame) 2D samples for 1-spp Monte-Carlo passes.
+uvec2 pcg2d(uvec2 v) {
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    v.x ^= v.x >> 16u;
+    v.y ^= v.y >> 16u;
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    v.x ^= v.x >> 16u;
+    v.y ^= v.y >> 16u;
+    return v;
+}
+
+// Two uniforms in [0,1) decorrelated per pixel AND per frame. Unlike
+// `interleavedGradientNoise` (a SCALAR low-discrepancy dither — correlated
+// when used for both axes of a 2D sample), this yields white-noise 2D
+// samples: the 1-spp error is spatially AND temporally UNCORRELATED, so the
+// à-trous spatial filter and the SVGF temporal accumulation can both resolve
+// it. IGN-derived 2D samples instead leave a coherent grid moiré that no
+// denoiser can remove (neighbours share the bias). Reference: Jimenez 2014
+// (IGN, scalar use) vs. Jarzynski/Olano 2020 (hash, 2D use).
+vec2 hash2_pixel_frame(uvec2 pixel, uint frame) {
+    uvec2 key = pixel ^ uvec2(frame * 0x9E3779B9u, frame * 0x85EBCA6Bu);
+    uvec2 h = pcg2d(key);
+    return vec2(h) * (1.0 / 4294967296.0);
+}
+
 // Generate a 2D sample on a unit disk using concentric mapping.
 // t1, t2 in [0,1] → (x,y) uniformly distributed on unit disk.
 vec2 concentricDiskSample(float t1, float t2) {

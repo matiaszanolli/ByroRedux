@@ -320,6 +320,13 @@ fn main() {
         "#define DBG_LEGACY_LIGHT_ATTEN {DBG_LEGACY_LIGHT_ATTEN}u"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define DBG_DISABLE_MULTISCATTER {DBG_DISABLE_MULTISCATTER}u"
+    )
+    .unwrap();
+    writeln!(out, "#define DBG_DISABLE_ATROUS {DBG_DISABLE_ATROUS}u").unwrap();
+    writeln!(out, "#define DBG_DISABLE_RESTIR {DBG_DISABLE_RESTIR}u").unwrap();
 
     let out_path = Path::new("shaders/include/shader_constants.glsl");
     if let Some(parent) = out_path.parent() {

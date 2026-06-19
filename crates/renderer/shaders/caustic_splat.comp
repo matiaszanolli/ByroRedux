@@ -379,9 +379,26 @@ void main() {
         const float CAUSTIC_TEMPORAL_JITTER_PX = 8.0;
         vec2 landPx = (ndc.xy * 0.5 + 0.5) * causticScreen.xy;
         if (pc.decayFactor > 0.0) {
-            float fc = cameraPos.w;
-            landPx += (fract(vec2(fc * 0.7548776662, fc * 0.5698402909)) - 0.5)
-                      * CAUSTIC_TEMPORAL_JITTER_PX;
+            // PER-DEPOSIT jitter (PCG hash of source pixel + frame). The old
+            // `fract(fc * R2)` term depended ONLY on the frame, so it was
+            // IDENTICAL for every deposit — the entire caustic pool
+            // translated rigidly each frame (an additive R2 sequence drifts
+            // in a constant direction), which read as the floor caustic
+            // "crawling to the right" under the glass spheres. Hashing the
+            // SOURCE pixel scatters each deposit independently within the
+            // footprint, so the parked-camera EMA fills the inter-deposit
+            // gaps IN PLACE instead of sliding the whole pattern. Same fix
+            // family as the GI/shadow IGN→hash decorrelation. Only runs
+            // parked (decayFactor > 0); under motion the deposit is unjittered.
+            uint fcu = uint(cameraPos.w);
+            uvec2 v = uvec2(pixel) ^ uvec2(fcu * 0x9E3779B9u, fcu * 0x85EBCA6Bu);
+            v = v * 1664525u + 1013904223u;
+            v.x += v.y * 1664525u; v.y += v.x * 1664525u;
+            v.x ^= v.x >> 16u;     v.y ^= v.y >> 16u;
+            v.x += v.y * 1664525u; v.y += v.x * 1664525u;
+            v.x ^= v.x >> 16u;     v.y ^= v.y >> 16u;
+            vec2 jr = vec2(v) * (1.0 / 4294967296.0);
+            landPx += (jr - 0.5) * CAUSTIC_TEMPORAL_JITTER_PX;
         }
         ivec2 hitPixel = ivec2(landPx);
         if (any(lessThan(hitPixel, ivec2(0))) || any(greaterThanEqual(hitPixel, size))) continue;

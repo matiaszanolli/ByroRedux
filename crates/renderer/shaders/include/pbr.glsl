@@ -216,3 +216,60 @@ float specularAaRoughness(vec3 N, float roughness) {
     return sqrt(filteredR2);
 }
 
+// Karis analytic split-sum environment BRDF (the Lazarov / Karis
+// approximation). Returns the (scale, bias) pair such that the
+// single-scattering environment response for specular reflectance F0 is
+// `F0 · scale + bias`. This is the LUT-FREE form — no precomputed DFG
+// texture, no tunable parameter.
+//
+// Reference: Karis, "Physically Based Shading on Mobile" (2014) —
+// `EnvBRDFApprox`. Same form used by Frostbite / UE4 mobile.
+vec2 envBRDFApprox(float NdotV, float roughness) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
+// Multi-scatter energy compensation (Fdez-Agüera 2019 / Filament §4.7.2).
+//
+// The single-scattering Cook-Torrance lobe `D·G·F / (4·NdotV·NdotL)` only
+// accounts for light that leaves the microsurface after ONE bounce. Energy
+// that bounces multiple times between microfacets before exiting is dropped,
+// so rough conductors (brushed steel, satin, frosted metal, the kitchen
+// cookware class) progressively DARKEN as roughness rises — visibly
+// under-energized vs. ground truth, and the darker the rougher.
+//
+// We add that lost energy back with the standard analytic correction: a
+// multiplicative boost applied to the single-scatter specular,
+//
+//     compensation = 1 + F0 · (1 / Ess − 1)
+//
+// where `Ess = scale + bias` is the directional albedo of the white-furnace
+// microfacet specular (F0 = 1) — the fraction of energy surviving
+// single-scatter masking, read from `envBRDFApprox` above.
+//
+// Well-behaved at both extremes by construction:
+//   - roughness → 0  ⇒  Ess → 1  ⇒  compensation → 1 (smooth surfaces
+//     are untouched; this CANNOT widen the roughness reflection gate or
+//     re-trigger the reverted "chrome thugs" regression — it only scales
+//     the existing rough lobe's magnitude).
+//   - roughness → 1  ⇒  Ess < 1  ⇒  compensation > 1 (energy restored;
+//     fully-rough metal recovers ~the half it loses to masking).
+//   - F0 → 0         ⇒  compensation → 1 (never brightens a surface that
+//     reflects nothing).
+//
+// Parameter-free and game-agnostic (both source methods are published) —
+// no per-game branch, no authored data, no `feedback_no_guessing` exposure.
+//
+// References:
+//   - Fdez-Agüera, "A Multiple-Scattering Microfacet Model for Real-Time
+//     Image-Based Lighting" (JCGT 2019) §4.
+//   - Filament documentation §4.7.2 "Energy compensation".
+vec3 multiScatterEnergyCompensation(vec3 F0, float NdotV, float roughness) {
+    vec2 ab = envBRDFApprox(NdotV, roughness);
+    float Ess = ab.x + ab.y;
+    return 1.0 + F0 * (1.0 / max(Ess, 1e-3) - 1.0);
+}
+

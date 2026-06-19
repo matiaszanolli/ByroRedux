@@ -429,6 +429,33 @@ impl VulkanContext {
             )?;
         }
 
+        // ReSTIR reservoir buffers are screen-sized — recreate them at the
+        // new extent and re-write the scene descriptor set (bindings 16/17)
+        // so triangle.frag reads/writes the fresh buffers. History is
+        // meaningless across a resize; the final visibility ray re-validates
+        // every shaded sample, so stale contents are harmless.
+        {
+            let allocator = self
+                .allocator
+                .as_ref()
+                .expect("allocator missing during resize");
+            self.reservoir_buffers.recreate_on_resize(
+                &self.device,
+                allocator,
+                self.swapchain_state.extent.width,
+                self.swapchain_state.extent.height,
+            )?;
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                self.scene_buffers.write_reservoir_buffers(
+                    &self.device,
+                    i,
+                    self.reservoir_buffers.curr_buffer(i),
+                    self.reservoir_buffers.prev_buffer(i),
+                    self.reservoir_buffers.buffer_size(),
+                );
+            }
+        }
+
         // Choose the indirect source for composite: SVGF accumulated (in
         // GENERAL layout) if available, else raw G-buffer indirect.
         let (composite_indirect_views, indirect_is_general): (Vec<vk::ImageView>, bool) =

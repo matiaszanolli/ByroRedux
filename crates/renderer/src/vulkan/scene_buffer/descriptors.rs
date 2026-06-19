@@ -110,6 +110,41 @@ impl super::buffers::SceneBuffers {
         }
     }
 
+    /// Write the ReSTIR-DI reservoir SSBOs into the scene descriptor set for
+    /// a given frame: binding 16 = this frame's write target (`curr`),
+    /// binding 17 = the previous frame's slot read as temporal history
+    /// (`prev`). Ping-pong is owned by the caller (`ReservoirBuffers`), which
+    /// passes the correct curr/prev buffers per frame. Called at init and
+    /// re-called after a swapchain resize recreates the buffers. Mirrors
+    /// `write_cluster_buffers`. See `vulkan::restir`.
+    pub fn write_reservoir_buffers(
+        &self,
+        device: &ash::Device,
+        frame_index: usize,
+        curr_buffer: vk::Buffer,
+        prev_buffer: vk::Buffer,
+        size: vk::DeviceSize,
+    ) {
+        let curr_info = [vk::DescriptorBufferInfo {
+            buffer: curr_buffer,
+            offset: 0,
+            range: size,
+        }];
+        let prev_info = [vk::DescriptorBufferInfo {
+            buffer: prev_buffer,
+            offset: 0,
+            range: size,
+        }];
+        let set = self.descriptor_sets[frame_index];
+        let writes = [
+            write_storage_buffer(set, 16, &curr_info),
+            write_storage_buffer(set, 17, &prev_info),
+        ];
+        unsafe {
+            device.update_descriptor_sets(&writes, &[]);
+        }
+    }
+
     /// Update the TLAS acceleration structure in the descriptor set for a given frame.
     pub fn write_tlas(
         &mut self,

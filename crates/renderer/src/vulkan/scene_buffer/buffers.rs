@@ -331,6 +331,28 @@ pub(crate) fn build_scene_descriptor_bindings(
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT),
     );
+    // Bindings 16/17: ReSTIR-DI direct-shadow reservoir SSBOs (fragment —
+    // Bitterli 2020). 16 = current frame's write target, 17 = previous
+    // frame's read (temporal history); ping-ponged across the
+    // frame-in-flight slots host-side (`ReservoirBuffers`). Screen-sized,
+    // owned outside `SceneBuffers` and written in via
+    // `write_reservoir_buffers` (the SSAO / depth-history precedent). The
+    // fragment shader gates use on `!DBG_DISABLE_RESTIR`; the legacy WRS
+    // path stays compiled for live A/B.
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(16)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(17)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+    );
     bindings
 }
 
