@@ -733,6 +733,44 @@ pub struct BSLightingShaderProperty {
     pub texture_arrays: Vec<BSTextureArray>,
     /// Shader-type-specific trailing fields (env map, skin tint, eye cubemap, etc.).
     pub shader_type_data: ShaderTypeData,
+    /// #1606 — opaque Starfield trailing block. Starfield (bsver ≥ 172)
+    /// full-body `BSLightingShaderProperty` blocks carry a trailing field
+    /// the FO76+ parser doesn't decode: byte-audited over
+    /// `Starfield - LODMeshes.ba2` as **38 B = 9× f32 + 2 B**, byte-identical
+    /// across all 26 LOD instances (`[2.0, 3.0, 0.1, 0.0, 0.02, 0.0289,
+    /// 0.095, 0.003, 1.0, 0x00, 0x00]`), but **undocumented in nif.xml**
+    /// (every tail field there gates on `#FO4#`/`#F76#`). Rather than
+    /// fabricate field names/semantics, the bytes are captured opaquely up
+    /// to `block_size` so they're preserved for a future decoder and the
+    /// stream stays self-consistent. Empty for the 12-B material-reference
+    /// stub and for every non-Starfield variant.
+    pub starfield_tail: Vec<u8>,
+}
+
+/// #1606 — capture the trailing Starfield shader bytes between the
+/// parser's stop point and `block_size`, as an opaque tail. Returns empty
+/// for non-Starfield files, when `block_size` is unknown, or when the
+/// parser already consumed the whole block (no drift). Never over-reads:
+/// it consumes exactly `block_size - consumed`, whatever that is, so it is
+/// correct for any future tail length without assuming the LOD layout.
+fn read_starfield_tail(
+    stream: &mut NifStream,
+    block_start: u64,
+    block_size: Option<u32>,
+    bsver: u32,
+) -> io::Result<Vec<u8>> {
+    if bsver < crate::version::bsver::STARFIELD {
+        return Ok(Vec::new());
+    }
+    let Some(block_size) = block_size else {
+        return Ok(Vec::new());
+    };
+    let consumed = stream.position().saturating_sub(block_start);
+    let remaining = u64::from(block_size).saturating_sub(consumed);
+    if remaining == 0 {
+        return Ok(Vec::new());
+    }
+    stream.read_bytes(remaining as usize)
 }
 
 impl BSLightingShaderProperty {
@@ -780,6 +818,7 @@ impl BSLightingShaderProperty {
             translucency: None,
             texture_arrays: Vec::new(),
             shader_type_data: ShaderTypeData::None,
+            starfield_tail: Vec::new(),
         }
     }
 }
@@ -807,14 +846,29 @@ impl BSLightingShaderProperty {
     /// `m_kind%` / `metO%` fill-rates printed by the
     /// `translation_completeness --ignored` harness within ±2pp.
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        Self::parse_with_size(stream, None)
+    }
+
+    /// As [`parse`](Self::parse), but with the block's declared
+    /// `block_size` so the Starfield trailing block (#1606) can be
+    /// captured opaquely up to the block boundary. The dispatcher passes
+    /// `Some(block_size)`; the legacy `parse(stream)` entry passes `None`
+    /// (no tail capture — drift recovery handles it as before).
+    pub fn parse_with_size(
+        stream: &mut NifStream,
+        block_size: Option<u32>,
+    ) -> io::Result<Self> {
+        let block_start = stream.position();
         let bsver = stream.bsver();
-        if bsver >= crate::version::bsver::FO76 {
-            Self::parse_fo76_plus(stream, bsver)
+        let mut me = if bsver >= crate::version::bsver::FO76 {
+            Self::parse_fo76_plus(stream, bsver)?
         } else if bsver >= crate::version::bsver::FALLOUT4 {
-            Self::parse_fo4(stream, bsver)
+            Self::parse_fo4(stream, bsver)?
         } else {
-            Self::parse_skyrim(stream, bsver)
-        }
+            Self::parse_skyrim(stream, bsver)?
+        };
+        me.starfield_tail = read_starfield_tail(stream, block_start, block_size, bsver)?;
+        Ok(me)
     }
 
     /// Skyrim LE/SE parser (BSVER 83-129).
@@ -888,6 +942,7 @@ impl BSLightingShaderProperty {
             translucency: None,
             texture_arrays: Vec::new(),
             shader_type_data,
+            starfield_tail: Vec::new(),
         })
     }
 
@@ -1014,6 +1069,7 @@ impl BSLightingShaderProperty {
             translucency: None,
             texture_arrays: Vec::new(),
             shader_type_data,
+            starfield_tail: Vec::new(),
         })
     }
 
@@ -1192,6 +1248,7 @@ impl BSLightingShaderProperty {
             translucency,
             texture_arrays,
             shader_type_data,
+            starfield_tail: Vec::new(),
         })
     }
 

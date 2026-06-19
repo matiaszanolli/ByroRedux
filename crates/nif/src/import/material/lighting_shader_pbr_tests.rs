@@ -85,6 +85,7 @@ fn bslsp_with_pbr_scalars(
         translucency: None,
         texture_arrays: Vec::new(),
         shader_type_data: ShaderTypeData::None,
+        starfield_tail: Vec::new(),
     }
 }
 

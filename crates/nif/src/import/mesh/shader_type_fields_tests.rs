@@ -53,6 +53,7 @@ fn lighting_shader_with(shader_type: u32, data: ShaderTypeData) -> BSLightingSha
         translucency: None,
         texture_arrays: Vec::new(),
         shader_type_data: data,
+        starfield_tail: Vec::new(),
     }
 }
 

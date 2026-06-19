@@ -1565,6 +1565,64 @@ fn parse_bs_lighting_starfield_minimal_omits_fo76_only_tail() {
     assert!(matches!(prop.shader_type_data, ShaderTypeData::None));
 }
 
+/// #1606 — Starfield full-body `BSLightingShaderProperty` carries a
+/// trailing block (byte-audited as 38 B = 9× f32 + 2 B, constant across
+/// the 26 LODMeshes instances) that the FO76+ parser doesn't decode and
+/// nif.xml doesn't document. `parse_with_size` captures it opaquely up to
+/// `block_size` so the stream is self-consistent (no +38 drift) and the
+/// bytes survive for a future decoder.
+#[test]
+fn parse_bs_lighting_starfield_captures_trailing_tail() {
+    let header = make_starfield_header(""); // empty name → full-body path
+    let body = build_starfield_bs_lighting_minimal();
+    // Real layout is 9 f32 + 2 B; pin an arbitrary-but-distinct 38 B so we
+    // assert capture without asserting (unknown) semantics.
+    let tail: Vec<u8> = (0u8..38).collect();
+    let mut data = body.clone();
+    data.extend_from_slice(&tail);
+    let block_size = data.len() as u32;
+
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSLightingShaderProperty::parse_with_size(&mut stream, Some(block_size))
+        .expect("Starfield full body + tail must parse");
+    assert_eq!(
+        prop.starfield_tail, tail,
+        "the trailing block_size bytes are captured opaquely",
+    );
+    assert_eq!(
+        stream.position(),
+        data.len() as u64,
+        "tail capture consumes exactly to block_size — no drift",
+    );
+    // Body fields still decode unchanged.
+    assert!(prop.wetness.is_some());
+    assert!(matches!(prop.shader_type_data, ShaderTypeData::None));
+}
+
+/// #1606 — the tail is captured ONLY when a `block_size` is supplied and
+/// there are trailing bytes. The legacy `parse(stream)` entry (no size)
+/// and a block that consumed exactly to its boundary both yield an empty
+/// tail — drift recovery continues to handle the no-size case as before.
+#[test]
+fn parse_bs_lighting_starfield_tail_empty_without_size_or_drift() {
+    let header = make_starfield_header("");
+    let body = build_starfield_bs_lighting_minimal();
+
+    // (a) legacy parse(stream): no block_size → no tail capture.
+    let mut s1 = NifStream::new(&body, &header);
+    let p1 = BSLightingShaderProperty::parse(&mut s1).unwrap();
+    assert!(p1.starfield_tail.is_empty(), "no block_size → no tail capture");
+
+    // (b) parse_with_size with the exact body size (no trailing bytes).
+    let mut s2 = NifStream::new(&body, &header);
+    let p2 =
+        BSLightingShaderProperty::parse_with_size(&mut s2, Some(body.len() as u32)).unwrap();
+    assert!(
+        p2.starfield_tail.is_empty(),
+        "consumed == block_size → empty tail",
+    );
+}
+
 /// #1510 — Starfield material references are content-hash paths with NO
 /// `.mat`/`.bgsm` suffix, so `is_material_reference` misses them. For
 /// BSVER >= STARFIELD a non-empty Name means a reference (full bodies
