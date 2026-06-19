@@ -139,6 +139,13 @@ pub(crate) fn finish_partial_import(
         // Phase 18 — see note above; streamed-partial path keeps
         // None, sync parse path fills it.
         flame_attach_offset: None,
+        // #1594 — the streaming-partial path keeps the attach graph None,
+        // mirroring `flame_attach_offset` above; the sync
+        // `parse_and_import_nif` path materializes it. Cell-streamed REFRs
+        // are architecture / clutter, not modular weapons, so this is a
+        // near-zero-loss follow-up.
+        attach_points: None,
+        child_attach_connections: None,
     });
 
     let freed_clip_handles = {

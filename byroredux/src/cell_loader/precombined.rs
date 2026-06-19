@@ -500,6 +500,10 @@ fn geometry_only_cached(meshes: Vec<ImportedMesh>) -> CachedNifImport {
         bsx_flags: 0,
         root_flags: 0,
         flame_attach_offset: None,
+        // Precombines are baked static architecture — no FO4 weapon-mod
+        // connect points. #1594.
+        attach_points: None,
+        child_attach_connections: None,
     }
 }
 

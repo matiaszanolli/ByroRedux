@@ -93,6 +93,20 @@ pub(crate) struct CachedNifImport {
     /// matters for mesh-attached lights (candles + chandeliers +
     /// torches).
     pub(super) flame_attach_offset: Option<[f32; 3]>,
+    /// FO4+ weapon-mod / power-armor attach points the NIF *exposes*
+    /// (`BSConnectPoint::Parents`). Interned to the `AttachPoints` ECS
+    /// component at parse time (the node array doesn't survive into this
+    /// cache) and stamped onto the placement root at spawn. `None` when the
+    /// NIF authors no connect-point parents — the dominant case (only
+    /// modular weapons / armor carry them). The visible attachment of mod
+    /// parts is the #973 OMOD consumer's job; this just lands the graph in
+    /// the ECS. See #985 / #1594.
+    pub(super) attach_points: Option<byroredux_core::ecs::components::AttachPoints>,
+    /// FO4+ attach-point names the NIF *connects back to* on its host
+    /// (`BSConnectPoint::Children`), interned to `ChildAttachConnections`.
+    /// `None` when absent. See #985 / #1594.
+    pub(super) child_attach_connections:
+        Option<byroredux_core::ecs::components::ChildAttachConnections>,
 }
 
 /// Process-lifetime cache of parsed-and-imported NIF scenes keyed by

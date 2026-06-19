@@ -147,6 +147,24 @@ pub(crate) fn light_radius_or_default(radius: f32) -> f32 {
 /// on a miss. `None` keeps the legacy fresh-upload-per-call path —
 /// callers that don't share placements (terrain-tile / single-NIF CLI
 /// view) keep the old shape.
+/// Stamp the FO4+ weapon-mod attach graph (`AttachPoints` /
+/// `ChildAttachConnections`) from a cache entry onto a placement-root
+/// entity. A no-op for the dominant non-modular case (both `None`). Split
+/// out so the materialization is unit-testable without a Vulkan device.
+/// See #985 / #1594.
+pub(super) fn stamp_attach_components(
+    world: &mut World,
+    root: byroredux_core::ecs::storage::EntityId,
+    cached: &CachedNifImport,
+) {
+    if let Some(ap) = &cached.attach_points {
+        world.insert(root, ap.clone());
+    }
+    if let Some(cac) = &cached.child_attach_connections {
+        world.insert(root, cac.clone());
+    }
+}
+
 #[tracing::instrument(
     name = "spawn_placed_instances",
     skip_all,
@@ -230,6 +248,11 @@ pub(super) fn spawn_placed_instances(
     if let Some(mode) = cached.placement_root_billboard {
         world.insert(placement_root, Billboard::new(mode));
     }
+    // #985 / #1594 — stamp the FO4+ weapon-mod attach graph onto the
+    // placement root so it reaches the ECS (it dead-ended at the import
+    // boundary before this). Visible attachment of mod parts at the named
+    // connect points is the #973 OMOD consumer's job; this lands the data.
+    stamp_attach_components(world, placement_root, cached);
     // #1212 / D1-NEW-01 — attach FormIdComponent so console / Papyrus /
     // debug-server can locate this REFR by its placement form-id. The
     // FormIdPool intern is a single write-lock per REFR; for cell loads

@@ -1583,10 +1583,16 @@ fn bs_connect_point_parents_lifts_to_imported_scene() {
     assert_eq!(points.len(), 2);
     assert_eq!(points[0].name, "CON_Magazine");
     assert_eq!(points[0].parent, "GunBoneReceiver");
-    assert_eq!(points[0].translation, [0.0, -1.5, 0.0]);
+    // #1594 — the lift now converts the attach transform Z-up → Y-up
+    // (`(x,y,z) → (x,z,-y)`), matching BsBound and the `AttachPoint`
+    // component's documented Y-up frame. Authored Z-up `[0,-1.5,0]` → `[0,0,1.5]`.
+    assert_eq!(points[0].translation, [0.0, 0.0, 1.5]);
+    // Identity rotation stays identity through the conversion (WXYZ).
+    assert_eq!(points[0].rotation, [1.0, 0.0, 0.0, 0.0]);
     assert_eq!(points[0].scale, 1.0);
     assert_eq!(points[1].name, "CON_Scope");
-    assert_eq!(points[1].translation, [0.0, 0.0, 2.0]);
+    // Authored Z-up `[0,0,2]` → Y-up `[0,2,0]`.
+    assert_eq!(points[1].translation, [0.0, 2.0, 0.0]);
     // Child connections were not authored on this NIF; field stays None.
     assert!(imported.child_attach_connections.is_none());
 }

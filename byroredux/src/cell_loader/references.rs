@@ -1050,6 +1050,17 @@ fn parse_and_import_nif(
     // stored as `flame_attach_offset` for the spawn site to read.
     let flame_attach_offset = find_flame_attach_offset(&scene);
 
+    // #985 / #1594 — materialize the FO4+ weapon-mod attach graph. The flat
+    // import drops the node array, so pull the `BSConnectPoint` blocks
+    // straight off the parsed scene (the transforms are already Y-up — the
+    // extractor converts) and intern them into the ECS components here,
+    // where the StringPool lives. The spawn site stamps them onto the
+    // placement root. `None` for the dominant non-modular case.
+    let attach_points = byroredux_nif::import::extract_attach_points(&scene)
+        .map(|pts| attach_points_component(&pts, pool));
+    let child_attach_connections = byroredux_nif::import::extract_child_attach_connections(&scene)
+        .map(|c| child_attach_connections_component(&c, pool));
+
     Some(Arc::new(CachedNifImport {
         meshes,
         collisions,
@@ -1072,7 +1083,49 @@ fn parse_and_import_nif(
         // placement-root SceneFlags parity with the loose-NIF loader.
         root_flags,
         flame_attach_offset,
+        attach_points,
+        child_attach_connections,
     }))
+}
+
+/// Intern an [`ImportedAttachPoint`] list into the `AttachPoints` ECS
+/// component (#985 / #1594). Attach-point names + parent-bone tags become
+/// `FixedString` handles so the equip-time `AttachPoints::find` lookup is an
+/// integer compare. Transforms arrive already Y-up from the extractor.
+pub(super) fn attach_points_component(
+    imported: &[byroredux_nif::import::ImportedAttachPoint],
+    pool: &mut byroredux_core::string::StringPool,
+) -> byroredux_core::ecs::components::AttachPoints {
+    use byroredux_core::ecs::components::{AttachPoint, AttachPoints};
+    AttachPoints {
+        points: imported
+            .iter()
+            .map(|p| AttachPoint {
+                name: pool.intern(p.name.as_str()),
+                // Empty `parent` → anchored on the host mesh root, not a bone.
+                parent_bone: (!p.parent.is_empty()).then(|| pool.intern(p.parent.as_str())),
+                translation: p.translation,
+                rotation: p.rotation,
+                scale: p.scale,
+            })
+            .collect(),
+    }
+}
+
+/// Intern an [`ImportedChildAttachConnections`] into the
+/// `ChildAttachConnections` ECS component (#985 / #1594).
+pub(super) fn child_attach_connections_component(
+    imported: &byroredux_nif::import::ImportedChildAttachConnections,
+    pool: &mut byroredux_core::string::StringPool,
+) -> byroredux_core::ecs::components::ChildAttachConnections {
+    byroredux_core::ecs::components::ChildAttachConnections {
+        connect_names: imported
+            .point_names
+            .iter()
+            .map(|n| pool.intern(n.as_str()))
+            .collect(),
+        skinned: imported.skinned,
+    }
 }
 
 /// Phase 18 — locate the flame-attach marker node in a parsed NIF
@@ -1256,6 +1309,10 @@ fn parse_and_import_spt(
         // SpeedTree placeholders carry no flame markers — they're
         // pure billboard quads. Phase 18.
         flame_attach_offset: None,
+        // SpeedTree `.spt` is a separate format with no BSConnectPoint
+        // blocks. #1594.
+        attach_points: None,
+        child_attach_connections: None,
     }))
 }
 

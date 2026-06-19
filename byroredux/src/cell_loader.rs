@@ -446,6 +446,8 @@ mod pack_bgsm_material_flags_tests {
 }
 
 #[cfg(test)]
+mod attach_points_spawn_tests;
+#[cfg(test)]
 mod euler_zup_to_quat_yup_tests;
 #[cfg(test)]
 mod finish_partial_tests;
