@@ -10,7 +10,7 @@
 //! that drops the `GreyscaleLutHandle` arm from the walk fails here.
 
 use super::collect_victim_gpu_handles;
-use crate::components::{DarkMapHandle, GreyscaleLutHandle, NormalMapHandle};
+use crate::components::{DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, NormalMapHandle};
 use byroredux_core::ecs::{MeshHandle, TextureHandle, World};
 
 /// A victim entity carrying a real greyscale LUT must have that handle
@@ -62,6 +62,13 @@ fn unload_walk_skips_fallback_and_zero_greyscale_lut() {
 /// Sanity: the walk still sweeps the other texture-handle components in
 /// the same pass, so this fn fully replaces the previous inline loop and
 /// the greyscale add didn't regress the existing coverage.
+///
+/// #1656 — `ExtraTextureMaps` (the 6-slot glow/detail/gloss/parallax/
+/// env/env_mask component, the largest texture-bearing component, each
+/// slot `resolve_texture`-acquired at spawn) is included here so a future
+/// edit that drops any of its six arms from `collect_victim_gpu_handles`
+/// fails this "all components" test instead of silently leaking up to six
+/// texture refcounts per env-mapped mesh per cell-unload cycle.
 #[test]
 fn unload_walk_collects_all_texture_handle_components() {
     let mut world = World::new();
@@ -73,15 +80,36 @@ fn unload_walk_collects_all_texture_handle_components() {
     world.insert(e, NormalMapHandle(11, false));
     world.insert(e, DarkMapHandle(12));
     world.insert(e, GreyscaleLutHandle(13));
+    // Six distinct non-zero slots + one placeholder (0) that must be
+    // skipped, plus the two non-texture POM scalars.
+    world.insert(
+        e,
+        ExtraTextureMaps {
+            glow: 20,
+            detail: 21,
+            gloss: 22,
+            parallax: 23,
+            env: 24,
+            env_mask: 0, // placeholder — must NOT be collected
+            parallax_height_scale: 0.04,
+            parallax_max_passes: 4.0,
+        },
+    );
 
     let (mesh_drops, texture_drops, _terrain) =
         collect_victim_gpu_handles(&world, &[e], fallback_tex);
 
     assert!(mesh_drops.contains(&7), "mesh handle must be collected");
-    for tex in [10, 11, 12, 13] {
+    for tex in [10, 11, 12, 13, 20, 21, 22, 23, 24] {
         assert!(
             texture_drops.contains(&tex),
             "texture handle {tex} must be collected by the unload walk"
         );
     }
+    // The placeholder (0) env_mask slot must never be dropped — handle 0
+    // is the shared sky/missing-texture slot, never per-cell refcounted.
+    assert!(
+        !texture_drops.contains(&0),
+        "ExtraTextureMaps placeholder slot (handle 0) must never be dropped"
+    );
 }

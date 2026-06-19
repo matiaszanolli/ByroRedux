@@ -316,10 +316,15 @@ fn build_npc_equip_state<'a>(
         }
     }
 
-    // Direct CNTO inventory entries (kf-era's primary path; Skyrim+
-    // uses these less often but the loop runs uniformly). Negative
+    // CNTO inventory entries, resolved through the TPLT chain. #1658 —
+    // route through the same game-agnostic `resolve_inherited_inventory`
+    // helper the kf-era path uses (`:498`): it returns the NPC's own
+    // inventory when no template applies, or walks `template_form_id`
+    // (NPC_ or LVLN) when `template_flags & TEMPLATE_FLAG_USE_INVENTORY`
+    // is set. Without it, templated Skyrim NPCs with an empty own CNTO
+    // (leveled actors that inherit gear via TPLT) spawned naked. Negative
     // counts are remove-from-inventory deltas; clamp at runtime.
-    for entry in npc.inventory.iter() {
+    for entry in byroredux_plugin::equip::resolve_inherited_inventory(npc, actor_level, index) {
         if entry.count.max(0) > 0 {
             byroredux_plugin::equip::expand_leveled_form_id(
                 entry.item_form_id,
@@ -1584,5 +1589,125 @@ mod tests {
         assert!(humanoid_default_idle_kf_path(GameKind::Fallout4).is_none());
         assert!(humanoid_default_idle_kf_path(GameKind::Fallout76).is_none());
         assert!(humanoid_default_idle_kf_path(GameKind::Starfield).is_none());
+    }
+
+    // ── #1658 (SKY-D3-02): prebaked equip state routes inventory through
+    //    the TPLT chain, identical to the kf-era path. ──────────────────
+
+    /// Minimal `NpcRecord` for the equip-state tests (mirrors the 21-field
+    /// shape; callers tweak template / inventory fields).
+    fn test_npc(form_id: u32, edid: &str) -> NpcRecord {
+        NpcRecord {
+            form_id,
+            editor_id: edid.to_string(),
+            full_name: String::new(),
+            model_path: String::new(),
+            race_form_id: 0,
+            class_form_id: 0,
+            voice_form_id: 0,
+            factions: Vec::new(),
+            inventory: Vec::new(),
+            default_outfit: None,
+            ai_packages: Vec::new(),
+            death_item_form_id: 0,
+            level: 1,
+            disposition_base: 50,
+            acbs_flags: 0,
+            has_script: false,
+            script_form_id: 0,
+            face_morphs: None,
+            runtime_facegen: None,
+            template_form_id: 0,
+            template_flags: 0,
+        }
+    }
+
+    /// A known (non-leveled) MISC item so `expand_leveled_form_id` lands
+    /// the form in the inventory (it only pushes forms present in
+    /// `index.items` or expandable as an LVLI).
+    fn misc_item(form_id: u32) -> byroredux_plugin::esm::records::ItemRecord {
+        byroredux_plugin::esm::records::ItemRecord {
+            form_id,
+            common: byroredux_plugin::esm::records::common::CommonItemFields::default(),
+            kind: ItemKind::Misc,
+        }
+    }
+
+    /// A templated Skyrim NPC with an empty own CNTO and
+    /// `TEMPLATE_FLAG_USE_INVENTORY` set must inherit its base's gear via
+    /// the TPLT walk — pre-fix `build_npc_equip_state` read `npc.inventory`
+    /// directly and the actor spawned naked.
+    #[test]
+    fn prebaked_equip_state_inherits_templated_inventory() {
+        use byroredux_core::ecs::components::InventoryIndex;
+        use byroredux_plugin::equip::TEMPLATE_FLAG_USE_INVENTORY;
+        use byroredux_plugin::esm::records::NpcInventoryEntry;
+
+        const TEMPLATE: u32 = 0x0100_0001;
+        const BASE: u32 = 0x0100_0002;
+        const GEAR: u32 = 0x0000_AAAA;
+
+        let mut base = test_npc(BASE, "BaseTemplatedNpc");
+        base.inventory.push(NpcInventoryEntry {
+            item_form_id: GEAR,
+            count: 1,
+        });
+
+        let mut templated = test_npc(TEMPLATE, "LvlTemplatedNpc");
+        templated.template_form_id = BASE;
+        templated.template_flags = TEMPLATE_FLAG_USE_INVENTORY;
+
+        let mut index = EsmIndex {
+            game: GameKind::Skyrim,
+            ..Default::default()
+        };
+        index.npcs.insert(BASE, base);
+        index.items.insert(GEAR, misc_item(GEAR));
+
+        let state = build_npc_equip_state(&templated, &index, GameKind::Skyrim, Gender::Male);
+
+        assert_eq!(
+            state.inventory.len(),
+            1,
+            "templated NPC must inherit its base's CNTO via TPLT (#1658) — \
+             pre-fix the inventory was empty (naked actor)"
+        );
+        assert_eq!(
+            state.inventory.get(InventoryIndex(0)).map(|s| s.base_form_id),
+            Some(GEAR),
+            "the inherited gear form must be the one that landed in the inventory"
+        );
+    }
+
+    /// Control: an NPC with its own CNTO and no template still equips from
+    /// its own inventory (the named Bannered Mare NPCs the audit flagged as
+    /// unaffected). `resolve_inherited_inventory` returns the own inventory
+    /// when no template applies, so this path is unchanged.
+    #[test]
+    fn prebaked_equip_state_uses_own_inventory_without_template() {
+        use byroredux_core::ecs::components::InventoryIndex;
+        use byroredux_plugin::esm::records::NpcInventoryEntry;
+
+        const NPC: u32 = 0x0100_0003;
+        const GEAR: u32 = 0x0000_BBBB;
+
+        let mut npc = test_npc(NPC, "OwnInventoryNpc");
+        npc.inventory.push(NpcInventoryEntry {
+            item_form_id: GEAR,
+            count: 1,
+        });
+
+        let mut index = EsmIndex {
+            game: GameKind::Skyrim,
+            ..Default::default()
+        };
+        index.items.insert(GEAR, misc_item(GEAR));
+
+        let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+        assert_eq!(
+            state.inventory.get(InventoryIndex(0)).map(|s| s.base_form_id),
+            Some(GEAR),
+            "no-template NPC equips from its own inventory unchanged"
+        );
     }
 }
