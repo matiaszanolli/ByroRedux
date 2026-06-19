@@ -23,6 +23,12 @@ pub struct ExteriorWorldContext {
     /// Geometry.csg` for FO4 precombined geometry (M49). The cells'
     /// `_oc.nif` precombines reference the CSG named for this plugin.
     pub plugin_path: String,
+    /// Correctly-cased plugin paths in load order (masters first, active
+    /// plugin last), aligned with the global form-id mod-index byte. Lets the
+    /// precombine loader open the *owning* plugin's `<Plugin> - Geometry.csg`
+    /// (not the worldspace plugin's) for master-owned exterior tiles — e.g. a
+    /// Commonwealth cell loaded with a DLC as the active plugin. #1590.
+    pub plugin_paths: Vec<String>,
     /// Lowercase EDID key into `record_index.cells.exterior_cells`.
     pub worldspace_key: String,
     /// Pre-resolved climate (one per worldspace).
@@ -210,6 +216,7 @@ pub fn build_exterior_world_context(
         record_index: Arc::new(record_index),
         load_order: Arc::new(load_order),
         plugin_path: esm_path.to_string(),
+        plugin_paths: plugin_paths.iter().map(|s| s.to_string()).collect(),
         worldspace_key,
         climate,
         default_weather,
@@ -346,8 +353,11 @@ pub fn load_one_exterior_cell(
         ctx,
         tex_provider,
         mat_provider.as_deref_mut(),
-        // M49 — resolve `<Plugin> - Geometry.csg` from the worldspace's plugin.
+        // M49 — active plugin (Data dir + CSG fallback); the owning plugin
+        // per cell form-id selects the actual `<Plugin> - Geometry.csg` and
+        // the `_oc.nif` path. #1590.
         &wctx.plugin_path,
+        &wctx.plugin_paths.iter().map(String::as_str).collect::<Vec<_>>(),
     );
 
     // Spawn placed references. Pre-#M40 every grid load went through a

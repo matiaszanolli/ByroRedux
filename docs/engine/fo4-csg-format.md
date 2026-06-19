@@ -76,9 +76,15 @@ vertex_desc     "
 tri_count_lod0/1/2 "
 ```
 
-1. Resolve `filename_hash` → `<Plugin> - Geometry.csg` (vanilla =
-   `Fallout4 - Geometry`). In practice the cell's master plugin name
-   resolves it; the hash is a BSCRC32 cross-check.
+1. Resolve `<Plugin> - Geometry.csg` from the plugin that **owns the cell**
+   — the cell's remapped form-id mod-index byte → the load order — not the
+   last-loaded `--esm` (#1590). Vanilla single-plugin / DLC-as-active loads
+   coincide (`Fallout4 - Geometry`, `DLCCoast - Geometry`, …); they diverge
+   for master-owned cells loaded under a later plugin. The
+   `BSPackedGeomObject.filename_hash` BSCRC32 remains the authoritative
+   cross-check (still not reproduced); it only matters for the override-
+   rebake edge (a winning plugin re-bakes a master-owned cell into its own
+   CSG), which fails closed via the decode-time index guard (#1533).
 2. `psg_stride = runtime_stride − 8` where `runtime_stride =
    (vertex_desc & 0xF) * 4`. On disk the position is **always half4**
    (8 bytes) even when `vertex_desc` has `VF_FULLPREC` (bit 54) set —
@@ -167,5 +173,13 @@ conversion the rest of the importer uses.
   [`extra_data.rs`](../../crates/nif/src/blocks/extra_data.rs)
   (`BsPackedCombinedGeomDataExtra`, both variants).
 - CSG reader + geometry decode + spawn wiring: in progress (M49).
-- Filename-hash BSCRC32: not yet reproduced (resolution keys off the
-  cell master plugin meanwhile).
+- Filename-hash BSCRC32: not yet reproduced (resolution keys off the cell's
+  **owning** plugin meanwhile — #1590).
+- `_oc.nif` archive path convention (verified against `Fallout4 -
+  MeshesExtra.ba2`, `DLCCoast - Main.ba2`, `DLCRobot - Main.ba2`):
+  `meshes\precombined\<low24>_<hash>_oc.nif` for base-game-owned cells (the
+  mod-index byte is forced to `00`), and
+  `meshes\precombined\<owner>.esm\<low24>_<hash>_oc.nif` for cells a non-base
+  plugin owns (lowercased basename subdir). The cell loader holds the
+  remapped form id, so it masks the top byte off and inserts the owner subdir
+  — see `byroredux::cell_loader::precombined::precombine_oc_nif_path`.
