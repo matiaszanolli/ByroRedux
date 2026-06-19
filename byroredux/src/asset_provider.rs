@@ -1004,6 +1004,31 @@ impl MaterialProvider {
 /// non-empty value for any given field wins. BGEM has no inheritance
 /// (the format carries no `root_material_path`) so we read the single
 /// parsed file. Returns `true` when any field was filled.
+/// Translate a BGSM/BGEM GL-style blend factor into the Gamebryo
+/// `NiAlphaProperty` enum the renderer speaks.
+///
+/// BGSM/BGEM store `src_blend`/`dst_blend` as a GL-style enum
+/// (`Zero=0, One=1, SrcColor=2, …, SrcAlpha=6, InvSrcAlpha=7, …` — see
+/// `byroredux_bgsm::AlphaBlendMode`), whereas the renderer's
+/// [`gamebryo_to_vk_blend_factor`](byroredux_renderer) reads the
+/// Gamebryo nibble (`ONE=0, ZERO=1`, then 2..=10 share the D3D
+/// ordering). The two tables differ **only** at 0 and 1 — `Zero` and
+/// `One` are swapped — so swap 0↔1 and pass everything else through.
+///
+/// Without this, an additive effect/glow BGEM card (`(One, One)` =
+/// `(1, 1)`) forwards verbatim and the renderer reads `(ZERO, ZERO)`,
+/// so the surface contributes nothing and renders invisible (#1651).
+/// This is the material-path twin of the particle-preset fix in #1649:
+/// the renderer speaks one blend enum, and foreign enums are translated
+/// here at the parser→`Material` boundary, never forwarded raw.
+fn gl_to_gamebryo_blend(gl: u32) -> u8 {
+    match gl {
+        0 => 1, // GL Zero → Gamebryo ZERO
+        1 => 0, // GL One  → Gamebryo ONE
+        other => other as u8,
+    }
+}
+
 pub(crate) fn merge_bgsm_into_mesh(
     mesh: &mut ImportedMesh,
     provider: &mut MaterialProvider,
@@ -1428,15 +1453,15 @@ pub(crate) fn merge_bgsm_into_mesh(
             // intentionally does NOT clear an already-set blend — a leaf
             // that opts out shouldn't erase a parent's blend authoring.
             //
-            // Blend-factor enums (BGSM `src_blend` / `dst_blend`) align
-            // 1:1 with the Gamebryo `AlphaFunction` byte the renderer
-            // already speaks (0=Zero, 1=One, 6=SrcAlpha, 7=InvSrcAlpha,
-            // ...), so we forward verbatim and cast u32→u8 — vanilla
-            // values fit easily.
+            // BGSM `src_blend` / `dst_blend` are a GL-style enum
+            // (`Zero=0, One=1, …`) — the Gamebryo nibble the renderer
+            // speaks swaps 0↔1 (`ONE=0, ZERO=1`). Translate at this
+            // parser→Material boundary via `gl_to_gamebryo_blend` so the
+            // renderer never sees a foreign enum (#1651).
             if !set_blend && bgsm.base.alpha_blend_mode.function > 0 {
                 mesh.has_alpha = true;
-                mesh.src_blend_mode = bgsm.base.alpha_blend_mode.src_blend as u8;
-                mesh.dst_blend_mode = bgsm.base.alpha_blend_mode.dst_blend as u8;
+                mesh.src_blend_mode = gl_to_gamebryo_blend(bgsm.base.alpha_blend_mode.src_blend);
+                mesh.dst_blend_mode = gl_to_gamebryo_blend(bgsm.base.alpha_blend_mode.dst_blend);
                 set_blend = true;
                 touched = true;
             }
@@ -1523,13 +1548,16 @@ pub(crate) fn merge_bgsm_into_mesh(
             mesh.alpha_test = true;
             mesh.alpha_threshold = f32::from(bgem.base.alpha_test_ref) / 255.0;
         }
-        // BGEM alpha-blend forwarding — same rationale as the BGSM
+        // BGEM alpha-blend — same GL→Gamebryo translation as the BGSM
         // branch above, applied to the BSEffectShaderProperty path.
+        // This is the path that hit #1651: additive glow/effect cards
+        // author `(One, One)` = `(1, 1)` which, forwarded raw, the
+        // renderer reads as `(ZERO, ZERO)` and renders invisible.
         // BGEM has no inheritance so no child-first guard needed.
         if bgem.base.alpha_blend_mode.function > 0 {
             mesh.has_alpha = true;
-            mesh.src_blend_mode = bgem.base.alpha_blend_mode.src_blend as u8;
-            mesh.dst_blend_mode = bgem.base.alpha_blend_mode.dst_blend as u8;
+            mesh.src_blend_mode = gl_to_gamebryo_blend(bgem.base.alpha_blend_mode.src_blend);
+            mesh.dst_blend_mode = gl_to_gamebryo_blend(bgem.base.alpha_blend_mode.dst_blend);
         }
         // #1280 sub-step 3b — forward BGEM `glass_enabled` so the
         // spawn-time classifier in `helpers::classify_glass_into_material`
@@ -2371,16 +2399,19 @@ mod tests {
     #[test]
     fn bgsm_merge_forwards_alpha_blend_mode() {
         use byroredux_bgsm::AlphaBlendMode;
-        // Mirror the prod merge's three writes for the alpha-blend block.
+        // Mirror the prod merge's three writes for the alpha-blend block,
+        // including the #1651 GL→Gamebryo blend-factor translation.
         fn apply(bgsm: &BgsmFile, has_alpha: &mut bool, src: &mut u8, dst: &mut u8) {
             if bgsm.base.alpha_blend_mode.function > 0 {
                 *has_alpha = true;
-                *src = bgsm.base.alpha_blend_mode.src_blend as u8;
-                *dst = bgsm.base.alpha_blend_mode.dst_blend as u8;
+                *src = gl_to_gamebryo_blend(bgsm.base.alpha_blend_mode.src_blend);
+                *dst = gl_to_gamebryo_blend(bgsm.base.alpha_blend_mode.dst_blend);
             }
         }
         // Case 1: standard alpha-blend (function=1, src=6 SrcAlpha,
-        // dst=7 InvSrcAlpha) — Institute glass case.
+        // dst=7 InvSrcAlpha) — Institute glass case. 6/7 coincide
+        // between the GL and Gamebryo tables, so the translation is a
+        // no-op here.
         let mut has_alpha = false;
         let mut src = 6u8;
         let mut dst = 7u8;
@@ -2395,9 +2426,12 @@ mod tests {
         assert_eq!(src, 6);
         assert_eq!(dst, 7);
 
-        // Case 2: additive blend (function=2) with One/One factors —
-        // common on FO4 effect / glow card BGEMs. Still routes to
-        // alpha-blend so the renderer picks the alpha pipeline.
+        // Case 2: additive blend (function=2) with GL One/One factors —
+        // common on FO4 effect / glow card BGEMs. #1651: the GL `(One,
+        // One)` = `(1, 1)` must translate to the Gamebryo `(ONE, ONE)` =
+        // `(0, 0)` the renderer's `gamebryo_to_vk_blend_factor` reads as
+        // additive accumulation. Forwarding `(1, 1)` raw would mean
+        // Gamebryo `(ZERO, ZERO)` and the surface would render invisible.
         let mut has_alpha = false;
         let mut src = 6u8;
         let mut dst = 7u8;
@@ -2409,8 +2443,8 @@ mod tests {
         };
         apply(&bgsm, &mut has_alpha, &mut src, &mut dst);
         assert!(has_alpha);
-        assert_eq!(src, 1);
-        assert_eq!(dst, 1);
+        assert_eq!(src, 0, "GL One (1) → Gamebryo ONE (0)");
+        assert_eq!(dst, 0, "GL One (1) → Gamebryo ONE (0) = additive dst");
 
         // Case 3: function=0 (None) — the BGSM explicitly says "no
         // blend." Don't flip has_alpha. Caller's `set_blend` guard
@@ -2424,6 +2458,21 @@ mod tests {
         assert!(!has_alpha, "function=0 must NOT set has_alpha");
         assert_eq!(src, 6, "src untouched when function=0");
         assert_eq!(dst, 7);
+    }
+
+    /// #1651 — the GL→Gamebryo blend-factor translation swaps **only**
+    /// `Zero`/`One` (0↔1); every other factor (the shared D3D ordering,
+    /// 2..=10) passes through unchanged. Shared by the BGSM and BGEM
+    /// merge branches, so this pins the contract for both.
+    #[test]
+    fn gl_to_gamebryo_blend_swaps_only_zero_and_one() {
+        assert_eq!(gl_to_gamebryo_blend(0), 1, "GL Zero → Gamebryo ZERO");
+        assert_eq!(gl_to_gamebryo_blend(1), 0, "GL One → Gamebryo ONE");
+        // SrcColor / SrcAlpha / InvSrcAlpha / SrcAlphaSaturate coincide.
+        assert_eq!(gl_to_gamebryo_blend(2), 2);
+        assert_eq!(gl_to_gamebryo_blend(6), 6);
+        assert_eq!(gl_to_gamebryo_blend(7), 7);
+        assert_eq!(gl_to_gamebryo_blend(10), 10);
     }
 
     /// Companion regression for the SIBLING half of #1076 — BGEM also
