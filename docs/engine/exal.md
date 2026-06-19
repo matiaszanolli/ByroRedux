@@ -450,10 +450,22 @@ render-pass / pipeline.
    "outside full-detail only" rule avoids the conflict more conservatively);
    `.btr` per-quad **normal map** (`_n.dds`) — the block carries the mesh's own
    per-vertex normals today, matching the synth path; the `PlacementLodProvider`
-   for Oblivion/FO3/FNV (`DistantLOD\*.lod` → `_far.nif`). Object-LOD per-mesh
-   atlas UV is wired via the shared `<world>.objects.dds`; Skyrim object-atlas
-   resolution is presently weak (atlas often unresolved → object LOD draws
-   untextured), a separate issue.
+   for Oblivion/FO3/FNV (`DistantLOD\*.lod` → `_far.nif`).
+
+   **Object/terrain LOD atlas texturing fixed (2026-06-19, M35):** the
+   object-LOD atlas (`<world>.objects.dds`) and the per-quad `.btr` terrain
+   diffuse both live in `Skyrim - Textures7.bsa`, and the `.btr`/`.bto` meshes
+   in `Skyrim - Meshes1.bsa` — none of which the old numeric-sibling auto-loader
+   pulled in, since it bailed on any digit-suffixed archive (`Textures0` ⇒ no
+   siblings). Root cause of the "atlas often unresolved → LOD untextured"
+   symptom (the path/format were always correct; the atlas is a 2048² 32-bpp
+   R8G8B8A8 DDS the parser handles). Fixed by teaching `open_with_numeric_
+   siblings` (asset_provider.rs) that a `…0`-suffixed archive is Skyrim's
+   zero-based series START → auto-load `…1`..`…9`. The minimal `Meshes0` +
+   `Textures0` invocation now textures distant terrain + objects with no
+   explicit archive list (live-verified: `+Meshes1` + `Textures1..8`
+   auto-opened, 544 `.btr` / 75 `.bto` quads, 0 LOD-atlas missing-texture
+   warnings).
 
    Note: no `LodProvider` trait / `WorldLodRes` was introduced. `terrain_lod` is
    already a clean self-contained provider fused to streaming-ring reconciliation;

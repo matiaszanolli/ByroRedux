@@ -367,10 +367,22 @@ pub(crate) fn parse_grid_coords(s: &str) -> (i32, i32) {
 /// "chrome posterized walls" diagnosis chased through R1 / #783 /
 /// #784. By auto-loading `<stem>2.bsa` … `<stem>9.bsa` siblings when
 /// the explicitly named archive ends in an unsuffixed `.bsa`, FNV's
-/// split is transparent. The pattern is inert for Skyrim's already-
-/// numeric `Skyrim - Meshes0.bsa` / `Meshes1.bsa` style (the user
-/// passes both explicitly anyway) and harmless when the sibling
-/// simply doesn't exist.
+/// split is transparent.
+///
+/// Skyrim splits its assets across a **zero-based** numbered series
+/// instead — `Skyrim - Textures0.bsa` … `Textures8.bsa`,
+/// `Skyrim - Meshes0.bsa` / `Meshes1.bsa`. The distant-LOD pipeline made
+/// this load-bearing: the object-LOD atlas (`<world>.objects.dds`) and the
+/// per-quad `.btr` terrain diffuse live in `Textures7.bsa`, and the `.btr` /
+/// `.bto` meshes in `Meshes1.bsa` — none of which the user passes when they
+/// name only the `…0` archive, so distant LOD rendered untextured (M35).
+/// So when the named archive ends in `…0` (and the char before the `0` is
+/// not itself a digit — i.e. it is the series START, not `…10`), auto-load
+/// `…1.bsa` … `…9.bsa`. A non-zero trailing digit (`…2.bsa`, `…3.bsa`) still
+/// auto-loads nothing — that path is a user listing each member explicitly,
+/// or a mid-series archive we must not re-expand.
+///
+/// All cases are harmless when a sibling simply doesn't exist (skipped).
 fn open_with_numeric_siblings(path: &str, kind: &str, archives: &mut Vec<Archive>) {
     match Archive::open(path) {
         Ok(a) => {
@@ -382,24 +394,7 @@ fn open_with_numeric_siblings(path: &str, kind: &str, archives: &mut Vec<Archive
             return;
         }
     }
-    // Only auto-load siblings when the explicit path ends in `.bsa`
-    // / `.ba2` with no digit immediately before the extension.
-    // `Foo.bsa`  → try `Foo2.bsa`..`Foo9.bsa`.
-    // `Foo2.bsa` → no auto-load (avoids re-opening when the user
-    //              already lists each numbered archive on the CLI).
-    let lower = path.to_ascii_lowercase();
-    let (stem, ext) = if let Some(s) = lower.strip_suffix(".bsa") {
-        (&path[..s.len()], ".bsa")
-    } else if let Some(s) = lower.strip_suffix(".ba2") {
-        (&path[..s.len()], ".ba2")
-    } else {
-        return;
-    };
-    if stem.chars().last().is_some_and(|c| c.is_ascii_digit()) {
-        return;
-    }
-    for n in 2..=9u32 {
-        let sibling = format!("{}{}{}", stem, n, ext);
+    for sibling in numeric_sibling_paths(path) {
         if !std::path::Path::new(&sibling).is_file() {
             continue;
         }
@@ -412,6 +407,42 @@ fn open_with_numeric_siblings(path: &str, kind: &str, archives: &mut Vec<Archive
                 log::warn!("Failed to open sibling {} archive: {}", kind, e);
             }
         }
+    }
+}
+
+/// Candidate numeric-sibling archive paths for an explicitly-named archive
+/// (the primary `path` itself is excluded). Pure (no I/O) so the case logic —
+/// the risky part — is unit-testable; the caller filters to existing files.
+///
+///   * `Foo.bsa`  (no trailing digit, FNV) → `Foo2.bsa` … `Foo9.bsa`
+///   * `Foo0.bsa` (zero-based series start, Skyrim) → `Foo1.bsa` … `Foo9.bsa`
+///   * `Foo2.bsa` (mid-series digit) → none (the user lists members explicitly)
+///   * `Foo10.bsa` (digit before the `0`) → none (explicit member, not a start)
+fn numeric_sibling_paths(path: &str) -> Vec<String> {
+    let lower = path.to_ascii_lowercase();
+    let (stem, ext) = if let Some(s) = lower.strip_suffix(".bsa") {
+        (&path[..s.len()], ".bsa")
+    } else if let Some(s) = lower.strip_suffix(".ba2") {
+        (&path[..s.len()], ".ba2")
+    } else {
+        return Vec::new();
+    };
+
+    let last = stem.chars().last();
+    let prev = stem.chars().rev().nth(1);
+    match last {
+        // Series START `…0` (Skyrim `Textures0` / `Meshes0`): strip the `0`
+        // and offer `…1`..`…9`. Guard against `…10` (digit before the `0`),
+        // which is an explicit member, not a series start.
+        Some('0') if !prev.is_some_and(|c| c.is_ascii_digit()) => {
+            let base = &stem[..stem.len() - 1]; // drop the trailing ASCII '0'
+            (1..=9u32).map(|n| format!("{base}{n}{ext}")).collect()
+        }
+        // Mid-series non-zero digit (`…2`): the user is being explicit — do
+        // not auto-expand (avoids double-opening every numbered archive).
+        Some(c) if c.is_ascii_digit() => Vec::new(),
+        // No trailing digit (FNV `… Textures.bsa`): offer `…2`..`…9`.
+        _ => (2..=9u32).map(|n| format!("{stem}{n}{ext}")).collect(),
     }
 }
 
@@ -1618,6 +1649,57 @@ pub(crate) fn merge_bgsm_into_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── M35 — numeric-sibling archive auto-load (Skyrim zero-based series) ──
+
+    /// FNV ships `Fallout - Textures.bsa` + `Fallout - Textures2.bsa`: a
+    /// no-trailing-digit primary offers `…2`..`…9`. Unchanged by the M35 fix.
+    #[test]
+    fn siblings_fnv_no_suffix_offers_2_through_9() {
+        let s = numeric_sibling_paths("Fallout - Textures.bsa");
+        assert_eq!(s.len(), 8);
+        assert_eq!(s[0], "Fallout - Textures2.bsa");
+        assert_eq!(s[7], "Fallout - Textures9.bsa");
+        assert!(!s.iter().any(|p| p.ends_with("Textures1.bsa")));
+    }
+
+    /// Skyrim's zero-based series start (`…0`) must offer `…1`..`…9` — this is
+    /// the M35 fix that pulls in `Textures7.bsa` (object-LOD atlas + `.btr`
+    /// terrain diffuse) and `Meshes1.bsa` (`.btr`/`.bto`) from the `…0` name.
+    #[test]
+    fn siblings_skyrim_zero_start_offers_1_through_9() {
+        let s = numeric_sibling_paths("Skyrim - Textures0.bsa");
+        assert_eq!(s.len(), 9);
+        assert_eq!(s[0], "Skyrim - Textures1.bsa");
+        assert!(s.iter().any(|p| p == "Skyrim - Textures7.bsa"));
+        assert_eq!(s[8], "Skyrim - Textures9.bsa");
+        // Meshes0 → Meshes1 (the `.btr`/`.bto` archive) without an explicit arg.
+        let m = numeric_sibling_paths("Skyrim - Meshes0.bsa");
+        assert!(m.iter().any(|p| p == "Skyrim - Meshes1.bsa"));
+    }
+
+    /// A mid-series non-zero member (`…2`) auto-expands nothing — the user is
+    /// listing members explicitly; expanding would double-open every archive.
+    #[test]
+    fn siblings_mid_series_digit_offers_none() {
+        assert!(numeric_sibling_paths("Skyrim - Textures3.bsa").is_empty());
+        assert!(numeric_sibling_paths("Skyrim - Textures1.bsa").is_empty());
+    }
+
+    /// `…10` (a digit before the trailing `0`) is an explicit member, NOT a
+    /// series start — must not be mistaken for one and expanded to `…11`..`…19`.
+    #[test]
+    fn siblings_ten_suffix_is_not_a_series_start() {
+        assert!(numeric_sibling_paths("Mod - Textures10.bsa").is_empty());
+    }
+
+    /// BA2 extension is handled the same way (FO4/Starfield naming).
+    #[test]
+    fn siblings_ba2_zero_start() {
+        let s = numeric_sibling_paths("DLC - Textures0.ba2");
+        assert_eq!(s[0], "DLC - Textures1.ba2");
+        assert!(s.iter().all(|p| p.ends_with(".ba2")));
+    }
 
     // ── #1591 — conductor diffuse-tint must use mult-free chromaticity ──
 
