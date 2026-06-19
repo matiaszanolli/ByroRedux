@@ -239,7 +239,10 @@ pub fn extract_bs_tri_shape(
         // downstream by `merge_bgsm_into_mesh` from BgsmFile.
         is_pbr: false,
         has_translucency: false,
-        model_space_normals: false,
+        // #1592 — now also sourced from the FO4 `F4SF1::Model_Space_Normals`
+        // shader flag in the material walker; `merge_bgsm_into_mesh` still
+        // OR-upgrades it from the `.bgsm` (authoritative for vanilla).
+        model_space_normals: mat.model_space_normals,
         from_bgsm: false,
         bgem_glass: false,
         // Stage 2 — legacy PBR translation. BGSM merge overwrites for
