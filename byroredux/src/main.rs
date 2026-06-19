@@ -1843,6 +1843,10 @@ impl ApplicationHandler for App {
                         owner: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
                             byroredux_core::ecs::resources::SCREENSHOT_OWNER_NONE,
                         )),
+                        // #1603 — shared capture generation; the renderer
+                        // gates each readback's publish on it so a
+                        // cancelled-then-resumed straggler is discarded.
+                        generation: ss_handle.generation,
                     });
 
                 // Expose the GPU allocator to the ECS so the

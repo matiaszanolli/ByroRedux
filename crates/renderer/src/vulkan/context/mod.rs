@@ -31,7 +31,7 @@ use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Maximum number of skinned-mesh `SkinSlot`s the per-skinned-entity
@@ -860,6 +860,11 @@ pub struct ScreenshotHandle {
     pub requested: Arc<AtomicBool>,
     /// After capture, the PNG bytes are placed here for retrieval.
     pub result: Arc<Mutex<Option<Vec<u8>>>>,
+    /// Monotonic capture generation, shared with `ScreenshotBridge`
+    /// (#1603). The renderer captures it at record time and only
+    /// publishes the PNG if it still matches at readback time, so a
+    /// cancelled-then-resumed straggler is discarded.
+    pub generation: Arc<AtomicU64>,
 }
 
 impl Default for ScreenshotHandle {
@@ -873,6 +878,7 @@ impl ScreenshotHandle {
         Self {
             requested: Arc::new(AtomicBool::new(false)),
             result: Arc::new(Mutex::new(None)),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1067,12 +1073,19 @@ pub struct VulkanContext {
     // ── Screenshot capture ──────────────────────────────────────────
     screenshot_requested: Arc<AtomicBool>,
     screenshot_result: Arc<Mutex<Option<Vec<u8>>>>,
+    /// Monotonic capture generation, shared with `ScreenshotBridge` (#1603).
+    /// Captured into `screenshot_pending_readback` at record time; the
+    /// readback only publishes its PNG when this still matches, so a
+    /// capture cancelled mid-flight is not served to a later claimant.
+    screenshot_generation: Arc<AtomicU64>,
     /// Staging buffer for screenshot readback (allocated on first capture).
     screenshot_staging: Option<(vk::Buffer, vk_alloc::Allocation, vk::DeviceSize)>,
-    /// Extent captured at record time; `Some` while the staging buffer holds
-    /// data waiting for the fence.  Stored here (not re-derived from the live
-    /// swapchain) so a same-frame resize cannot corrupt the readback dimensions.
-    screenshot_pending_readback: Option<vk::Extent2D>,
+    /// Extent + capture generation recorded at copy time; `Some` while the
+    /// staging buffer holds data waiting for the fence.  The extent is stored
+    /// here (not re-derived from the live swapchain) so a same-frame resize
+    /// cannot corrupt the readback dimensions (#1448); the generation gates
+    /// publication against an intervening `cancel()` (#1603).
+    screenshot_pending_readback: Option<(vk::Extent2D, u64)>,
 
     frame_sync: FrameSync,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -2406,6 +2419,7 @@ impl VulkanContext {
             skin_first_sight_builds_scratch: Vec::new(),
             screenshot_requested: Arc::new(AtomicBool::new(false)),
             screenshot_result: Arc::new(Mutex::new(None)),
+            screenshot_generation: Arc::new(AtomicU64::new(0)),
             screenshot_staging: None,
             screenshot_pending_readback: None,
         })
@@ -2520,6 +2534,7 @@ impl VulkanContext {
         ScreenshotHandle {
             requested: Arc::clone(&self.screenshot_requested),
             result: Arc::clone(&self.screenshot_result),
+            generation: Arc::clone(&self.screenshot_generation),
         }
     }
 
