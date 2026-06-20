@@ -138,6 +138,15 @@ pub struct WaterMaterial {
     /// Refraction IOR. 1.33 = clean water; bumping up to 1.5 for
     /// stylised reads or thick visc fluid. Glass at 1.5.
     pub ior: f32,
+    /// Vertex-displacement magnitude (world units) authored in WATR
+    /// `DATA`/`DNAM`. The flat-mesh RT path does **not** displace the
+    /// BLAS per frame (see `docs/engine/watal.md` §6) — this drives
+    /// normal-only chop today and an optional displacement pass later.
+    /// Promoted onto the canonical material in WATAL Phase 1 so the
+    /// field stops being dropped at the translate boundary.
+    pub wave_amplitude: f32,
+    /// Wave frequency (Hz) — companion to [`Self::wave_amplitude`].
+    pub wave_frequency: f32,
     /// Source WATR FormID for debug overlays / save-game roundtrip.
     /// `0` when the plane was spawned without an XCWT reference
     /// (default water material).
@@ -165,6 +174,11 @@ impl Default for WaterMaterial {
             foam_strength: 0.0,
             shoreline_width: 32.0,
             ior: 1.33,
+            // SENTINEL (WATAL §4): matches `WaterParams::default` so a
+            // record that omits wave data resolves identically across
+            // all games.
+            wave_amplitude: 0.05,
+            wave_frequency: 0.6,
             source_form: 0,
             reflection_tint: [0.65, 0.70, 0.75],
         }

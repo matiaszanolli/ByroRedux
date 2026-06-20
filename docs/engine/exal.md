@@ -118,7 +118,14 @@ cross-fades. The `Option<DalcCubeYup>` is **not** a leak — it is the canonical
 encoding of "this game has no DALC ambient cube", consumed uniformly. **Status:
 canonical.** EXAL only moves the WTHR→`WeatherDataRes` decode under the boundary.
 
-### Water (WATR) — **canonical component; per-game height fallback is the one real leak**
+### Water (WATR) — **carved out into [WATAL](watal.md) (its own double-ended layer)**
+
+> **Moved (2026-06-19):** water graduated from an EXAL sub-category to its own
+> first-class **double-ended** layer — [`watal.md`](watal.md) — because water feeds
+> the **physics solver** (buoyancy/flow/swim/drown) as well as the renderer, which
+> EXAL (render-only) does not model. EXAL retains the `default_water_for_worldspace`
+> height-leak below as the shared §4 GameVariant row; WATAL owns the WATR→material
+> translate, the canonical-type promotion, and the physics arm.
 
 `WaterMaterial`/`WaterKind`/`WaterFlow` (`crates/core/src/ecs/components/water.rs`)
 are a fully-resolved canonical component; `resolve_water_material` (water.rs) is a

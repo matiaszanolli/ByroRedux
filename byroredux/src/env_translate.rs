@@ -104,6 +104,12 @@ pub(crate) fn resolve_water_material(
             mat.fresnel_f0 = rec.params.fresnel.clamp(0.001, 0.20);
             mat.reflectivity = rec.params.reflectivity;
             mat.reflection_tint = rec.params.reflection_color;
+            // WATAL Phase 1: carry the wave fields that were previously
+            // parsed into WaterParams but dropped here. AUTHORED for all
+            // eras (Oblivion/FO3/FNV/Skyrim DATA all encode amp+freq);
+            // see docs/engine/watal.md §4.
+            mat.wave_amplitude = rec.params.wave_amplitude;
+            mat.wave_frequency = rec.params.wave_frequency;
             mat.source_form = rec.form_id;
 
             // ── WaterKind heuristic from EDID naming convention ──
@@ -568,6 +574,110 @@ mod tests {
             [0.65, 0.70, 0.75],
             "default reflection_tint must match the pre-fix shader hard-code"
         );
+    }
+
+    /// Minimal calm WATR with only the named appearance fields authored;
+    /// everything else left at `WaterParams::default`. Helper for the
+    /// WATAL translate-up tests below.
+    fn calm_watr(form: u32, edid: &str, params: WaterParams) -> WatrRecord {
+        WatrRecord {
+            form_id: form,
+            editor_id: edid.to_string(),
+            full_name: String::new(),
+            texture_path: String::new(),
+            noise_textures: [u32::MAX; 3],
+            params,
+            raw_dnam: Vec::new(),
+            raw_data: Vec::new(),
+        }
+    }
+
+    /// WATAL Phase 1: `wave_amplitude` / `wave_frequency` are parsed into
+    /// `WaterParams` for every era but were dropped at the translate
+    /// boundary pre-WATAL. They must now reach the canonical material.
+    #[test]
+    fn resolve_water_material_carries_wave_params() {
+        let rec = calm_watr(
+            0x000A_0001,
+            "DefaultWater",
+            WaterParams {
+                wave_amplitude: 1.5,
+                wave_frequency: 2.0,
+                ..WaterParams::default()
+            },
+        );
+        let mut waters = HashMap::new();
+        waters.insert(rec.form_id, rec);
+
+        let (mat, kind, _flow, _normal) = resolve_water_material(&waters, Some(0x000A_0001));
+        assert_eq!(mat.wave_amplitude, 1.5, "wave_amplitude must round-trip from WATR");
+        assert_eq!(mat.wave_frequency, 2.0, "wave_frequency must round-trip from WATR");
+        assert!(matches!(kind, WaterKind::Calm));
+    }
+
+    /// WATAL translate-up contract (docs/engine/watal.md §3/§4): a poorer
+    /// (Oblivion-shaped) record and a richer (Skyrim-shaped) record that
+    /// author *different* appearance values must still resolve to
+    /// **identical SENTINEL fields** — the engine-default fields no game
+    /// authors. They may differ ONLY in AUTHORED fields. This is what lets
+    /// the renderer + solver consume one `WaterMaterial` regardless of the
+    /// source game.
+    #[test]
+    fn resolve_water_material_sentinels_are_game_invariant() {
+        // "Oblivion-shaped": sparse DATA — colours + a short fog only.
+        let oblivion = calm_watr(
+            0x0001_0000,
+            "OblivionLake",
+            WaterParams {
+                shallow_color: [0.08, 0.20, 0.24],
+                deep_color: [0.01, 0.04, 0.06],
+                fog_near: 80.0,
+                fog_far: 600.0,
+                ..WaterParams::default()
+            },
+        );
+        // "Skyrim-shaped": richer authored colours/fog/reflectivity.
+        let skyrim = calm_watr(
+            0x0002_0000,
+            "SkyrimLake",
+            WaterParams {
+                shallow_color: [0.12, 0.36, 0.42],
+                deep_color: [0.02, 0.07, 0.11],
+                fog_near: 120.0,
+                fog_far: 1200.0,
+                reflectivity: 0.92,
+                ..WaterParams::default()
+            },
+        );
+
+        let mut waters = HashMap::new();
+        waters.insert(oblivion.form_id, oblivion);
+        waters.insert(skyrim.form_id, skyrim);
+
+        let (ob, ob_kind, ob_flow, _) = resolve_water_material(&waters, Some(0x0001_0000));
+        let (sk, _, _, _) = resolve_water_material(&waters, Some(0x0002_0000));
+        let def = WaterMaterial::default();
+
+        // AUTHORED fields differ (proves the two records are distinct).
+        assert_ne!(ob.fog_far, sk.fog_far, "authored fog must differ between the two records");
+
+        // SENTINEL fields no game authors must be identical across games
+        // AND equal to the canonical default — the translate-up invariant.
+        for (label, a, b, d) in [
+            ("ior", ob.ior, sk.ior, def.ior),
+            ("shoreline_width", ob.shoreline_width, sk.shoreline_width, def.shoreline_width),
+            ("uv_scale_a", ob.uv_scale_a, sk.uv_scale_a, def.uv_scale_a),
+            ("uv_scale_b", ob.uv_scale_b, sk.uv_scale_b, def.uv_scale_b),
+            ("foam_strength", ob.foam_strength, sk.foam_strength, def.foam_strength),
+        ] {
+            assert_eq!(a, b, "SENTINEL `{label}` must be game-invariant");
+            assert_eq!(a, d, "SENTINEL `{label}` must equal the canonical default");
+        }
+        assert_eq!(ob.normal_map_index, u32::MAX, "no texture authored → procedural sentinel");
+        assert_eq!(sk.normal_map_index, u32::MAX, "no texture authored → procedural sentinel");
+        // Calm water authors no flow — a real distinction, not a leak.
+        assert!(matches!(ob_kind, WaterKind::Calm));
+        assert!(ob_flow.is_none(), "calm water has no synthesized flow");
     }
 
     // ── exterior sky / sun / weather translation (EXAL step 3) ────

@@ -36,13 +36,14 @@ type CompactedBlas = (
 impl AccelerationManager {
     /// Queue a BLAS for deferred destruction.
     ///
-    /// Unlike [`evict_unused_blas`](Self::evict_unused_blas) — which runs
-    /// only on entries idle for `MAX_FRAMES_IN_FLIGHT` frames and so can
-    /// destroy immediately — `drop_blas` is called by the cell loader on
-    /// unload and the entry may still be in-flight. The entry moves to
+    /// Called by the cell loader on unload, where the entry may still be
+    /// referenced by an in-flight frame. The entry moves to
     /// `pending_destroy_blas` and the actual `VkAccelerationStructureKHR`
     /// and buffer destruction is delayed until the countdown expires in
     /// [`tick_deferred_destroy`](Self::tick_deferred_destroy).
+    /// [`evict_unused_blas`](Self::evict_unused_blas) (the LRU budget path)
+    /// uses the same deferred queue, so both load- and unload-path BLAS frees
+    /// are safe against in-flight frames (#1449).
     ///
     /// Also forces a full TLAS rebuild on both frame slots so no
     /// subsequent `BUILD`/`UPDATE` references the dropped BLAS address.
@@ -1067,69 +1068,65 @@ impl AccelerationManager {
     /// Evict unused BLAS entries when static BLAS memory exceeds the budget.
     ///
     /// Entries unused for more than `min_idle_frames` frames are candidates.
-    /// Eviction is LRU — the least recently used entries are destroyed first.
-    /// Only entries unused for >= MAX_FRAMES_IN_FLIGHT frames are safe to
-    /// evict (guarantees no in-flight TLAS references them).
+    /// Eviction is LRU — the least recently used entries are reclaimed first.
     ///
     /// The budget compare uses `static_blas_bytes`, NOT `total_blas_bytes`,
     /// because skinned per-entity BLAS aren't eviction candidates (see
     /// `static_blas_bytes` doc on the struct field for details / #920).
     ///
-    /// Unlike [`drop_blas`](Self::drop_blas), eviction destroys the
-    /// `VkAccelerationStructureKHR` immediately rather than routing it
-    /// through `pending_destroy_blas`. That is sound because `min_idle`
-    /// (declared inline below) is strictly greater than
-    /// `MAX_FRAMES_IN_FLIGHT`, so any candidate's `last_used_frame`
-    /// predates the oldest in-flight frame's fence — its command buffer
-    /// has retired and the GPU no longer references the AS. The
-    /// `const_assert` inside the function pins that invariant: if
-    /// anyone raises `MAX_FRAMES_IN_FLIGHT` without bumping `min_idle`,
-    /// the workspace fails to compile instead of silently introducing a
-    /// use-after-free window (REN-D8-NEW-16 / #960).
+    /// Like [`drop_blas`](Self::drop_blas), eviction routes the
+    /// `VkAccelerationStructureKHR` + backing buffer through
+    /// `pending_destroy_blas` (deferred-destroy) rather than freeing them
+    /// inline. The per-entry countdown (`MAX_FRAMES_IN_FLIGHT`) is drained in
+    /// `tick_deferred_destroy` only after the per-frame fence proves the
+    /// referencing frame retired, so eviction is safe even when streaming runs
+    /// `build_blas_batched` while frames are in flight (the #1449 device-loss
+    /// this replaced). The `min_idle` gate below is now just an LRU heuristic,
+    /// no longer a safety mechanism (MEM-01 / #1449; was REN-D8-NEW-16 / #960).
     ///
-    /// INVARIANT (MEM-01 / #1449): the immediate-destroy path additionally
-    /// assumes `frame_counter` advances at most once per *retired* frame.
-    /// [`build_blas_batched`](Self::build_blas_batched) bumps `frame_counter`
-    /// once per batch (`:397`) with no `draw_frame`/`build_tlas` in between, so
-    /// during a multi-batch cell load the counter can outrun the GPU's retired
-    /// frames. That is sound today only because cell-load bursts are NOT
-    /// interleaved with in-flight draw frames (they run inside the gated load
-    /// flow). If a future streaming-during-render refactor ever runs
-    /// `build_blas_batched` while frames are genuinely in flight, a BLAS still
-    /// referenced by the in-flight previous TLAS could read as
-    /// `idle >= min_idle` and be destroyed under the GPU — at that point route
-    /// eviction through `pending_destroy_blas` (as `drop_blas` already does),
-    /// or gate the per-batch bump so it cannot outrun retired frames.
+    /// MEM-01 / #1449 (FIXED): eviction now routes the AS + buffer free through
+    /// `pending_destroy_blas` (deferred-destroy), so it is safe even when
+    /// `build_blas_batched` runs while frames are in flight. The original
+    /// immediate-destroy path assumed `frame_counter` advanced at most once per
+    /// *retired* frame; the streaming-during-render path violated that
+    /// (`build_blas_batched` bumps `frame_counter` per call during
+    /// `step_streaming`, which runs in `about_to_wait` BEFORE the next
+    /// `draw_frame`'s fence wait), freeing a BLAS the in-flight previous TLAS
+    /// still referenced → `VK_ERROR_DEVICE_LOST`. The deferred countdown
+    /// (= `MAX_FRAMES_IN_FLIGHT`) now stands in for the fence wait, exactly as
+    /// `drop_blas` / `drop_skinned` already do.
     ///
     /// # Safety
     ///
-    /// Caller must ensure `device` and `allocator` are valid and live, the
-    /// device is not lost, and that the evicted BLAS are no longer referenced
-    /// by any in-flight command buffer or TLAS build.
+    /// Caller must ensure `device` and `allocator` are valid and live. (The
+    /// "no in-flight references" precondition is no longer required — the
+    /// deferred-destroy queue guarantees it. The `unsafe` marker is retained
+    /// only for call-site signature stability; this body performs no unsafe
+    /// operation now that the destroy is deferred.)
     pub unsafe fn evict_unused_blas(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        // The GPU free is now deferred (see the loop body), so this function no
+        // longer touches `device`/`allocator` directly — `tick_deferred_destroy`
+        // does. The params are retained so the call sites
+        // (`build_blas`/`build_blas_batched`/`draw.rs`) keep a stable signature;
+        // the `unsafe` marker is likewise vestigial and can be dropped in a
+        // follow-up once a non-`unsafe` signature is threaded through callers.
+        let _ = (device, allocator);
+
         if self.static_blas_bytes <= self.blas_budget_bytes {
             return;
         }
 
-        // REN-D8-NEW-16 / #960 — `evict_unused_blas` destroys the
-        // `VkAccelerationStructureKHR` immediately (no
-        // `pending_destroy_blas` round-trip), so the gate constant has
-        // to outrun the deepest in-flight frame slot. Today the gate is
-        // `MAX_FRAMES_IN_FLIGHT + 1 = 3` and `MAX_FRAMES_IN_FLIGHT = 2`
-        // (pinned by `sync.rs:32`), but a future bump to either side
-        // could silently close the safety window — e.g. someone
-        // hardcodes `MIN_IDLE_FRAMES = 3` and a later contributor
-        // raises `MAX_FRAMES_IN_FLIGHT` to 3. The const_assert below
-        // ties the two values together at compile time so that
-        // mismatch fails the workspace build instead of producing a
-        // use-after-free.
+        // #1449 / MEM-01 — eviction routes through `pending_destroy_blas`
+        // (deferred-destroy), so the idle gate below is now purely an **LRU
+        // policy** ("don't evict a BLAS used in the last few frames"), NOT the
+        // safety mechanism it used to be. Before the fix, eviction destroyed the
+        // AS immediately and relied on `idle >= MIN_IDLE_FRAMES` to stand in for
+        // a fence wait — which broke once streaming ran `build_blas_batched`
+        // (bumping `frame_counter` per call) while frames were in flight, freeing
+        // a BLAS the in-flight TLAS still referenced (→ device loss). The
+        // deferred countdown now provides the real cross-frame safety; the gate
+        // staying at `MAX_FRAMES_IN_FLIGHT + 1` is just a sensible LRU default.
         const MIN_IDLE_FRAMES: u64 = MAX_FRAMES_IN_FLIGHT as u64 + 1;
-        const _: () = assert!(
-            MIN_IDLE_FRAMES > MAX_FRAMES_IN_FLIGHT as u64,
-            "evict_unused_blas immediate-destroy requires \
-             MIN_IDLE_FRAMES > MAX_FRAMES_IN_FLIGHT; either widen the \
-             gate or route eviction through pending_destroy_blas",
-        );
         let min_idle = MIN_IDLE_FRAMES;
         let current = self.frame_counter;
 
@@ -1159,14 +1156,23 @@ impl AccelerationManager {
             if self.static_blas_bytes <= self.blas_budget_bytes {
                 break;
             }
-            if let Some(mut entry) = self.blas_entries[idx].take() {
-                self.accel_loader
-                    .destroy_acceleration_structure(entry.accel, None);
-                entry.buffer.destroy(device, allocator);
+            if let Some(entry) = self.blas_entries[idx].take() {
                 self.total_blas_bytes = self.total_blas_bytes.saturating_sub(entry.size_bytes);
                 self.static_blas_bytes = self.static_blas_bytes.saturating_sub(entry.size_bytes);
                 freed += entry.size_bytes;
                 evicted += 1;
+                // #1449 / MEM-01 FIX: defer the GPU free instead of destroying
+                // the acceleration structure + backing buffer immediately. The
+                // previous frame's in-flight TLAS may still reference this
+                // BLAS's device address — streaming runs `build_blas_batched`
+                // (which calls this) in `about_to_wait` BEFORE the next
+                // `draw_frame`'s fence wait, so an immediate destroy frees the
+                // AS under a GPU still executing ray queries against it →
+                // page fault → `VK_ERROR_DEVICE_LOST`. `tick_deferred_destroy`
+                // frees the entry `DEFAULT_COUNTDOWN` (= `MAX_FRAMES_IN_FLIGHT`)
+                // frames later, after the per-frame fence proves the referencing
+                // frame has retired — exactly what `drop_blas` already does.
+                self.pending_destroy_blas.push(entry, DEFAULT_COUNTDOWN);
             }
         }
 

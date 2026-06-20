@@ -149,6 +149,76 @@ impl PhysicsWorld {
         self.pending_wake = true;
     }
 
+    /// Add a persistent external force (engine world-space, Y-up) to a
+    /// dynamic body — Bethesda-unit "Newtons" (body mass × BU/s²). The
+    /// force **accumulates across frames** until cleared with
+    /// [`reset_forces`](Self::reset_forces); the WATAL buoyancy / flow
+    /// systems re-derive it every frame, so they call `reset_forces`
+    /// first and `add_force` after. Wakes the body and re-arms the
+    /// static-scene fast path so the next [`step`](Self::step) runs (the
+    /// island lists only reflect the *previous* step, so a freshly-forced
+    /// body isn't in them yet — same reason [`wake`](Self::wake) exists).
+    ///
+    /// Returns `false` (no-op) if `handle` is dead or non-dynamic — a
+    /// static water-plane or kinematic actor can't take a buoyancy force.
+    ///
+    /// This is the load-bearing prerequisite for water physics: pre-WATAL
+    /// the only body mutation exposed was `set_linear_velocity`, so
+    /// buoyancy/flow/drag had no application path (see
+    /// `docs/engine/watal.md` §7 Phase 2).
+    pub fn add_force(&mut self, handle: RigidBodyHandle, force: byroredux_core::math::Vec3) -> bool {
+        if let Some(b) = self.bodies.get_mut(handle) {
+            if b.body_type() == RigidBodyType::Dynamic {
+                b.add_force(vector![force.x, force.y, force.z], true);
+                self.wake();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Apply an instantaneous impulse (engine world-space, Y-up) to a
+    /// dynamic body — changes velocity by `impulse / mass` immediately,
+    /// independent of the per-frame force accumulation. Used for one-shot
+    /// effects (a splash kick, an actor jumping out of water). Wakes the
+    /// body + re-arms the fast path. No-op on dead / non-dynamic handles.
+    pub fn apply_impulse(
+        &mut self,
+        handle: RigidBodyHandle,
+        impulse: byroredux_core::math::Vec3,
+    ) -> bool {
+        if let Some(b) = self.bodies.get_mut(handle) {
+            if b.body_type() == RigidBodyType::Dynamic {
+                b.apply_impulse(vector![impulse.x, impulse.y, impulse.z], true);
+                self.wake();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Clear the accumulated external force + torque on a body. Called by
+    /// the buoyancy / flow systems at the top of each frame before they
+    /// re-`add_force`, so forces don't compound frame-over-frame. No-op on
+    /// a dead handle. Does **not** re-arm the fast path (the following
+    /// `add_force` does that when there's still a force to apply; a body
+    /// with zero net force this frame should be allowed to sleep).
+    pub fn reset_forces(&mut self, handle: RigidBodyHandle) -> bool {
+        if let Some(b) = self.bodies.get_mut(handle) {
+            b.reset_forces(true);
+            b.reset_torques(true);
+            return true;
+        }
+        false
+    }
+
+    /// Read a dynamic body's mass (BU³ × density). Buoyancy derives the
+    /// gravity-cancelling force from this; exposed so the water systems
+    /// stay in engine types without reaching into `RigidBodySet`.
+    pub fn body_mass(&self, handle: RigidBodyHandle) -> Option<f32> {
+        self.bodies.get(handle).map(|b| b.mass())
+    }
+
     /// Advance the simulation by up to `MAX_SUBSTEPS` fixed steps,
     /// draining the accumulator. `frame_dt` is the wall-clock delta
     /// since the last call; anything above `MAX_SUBSTEPS * PHYSICS_DT`
@@ -694,5 +764,108 @@ mod tests {
     fn length_unit_is_bethesda_scale() {
         let w = PhysicsWorld::new();
         assert_eq!(w.integration_parameters.length_unit, BU_PER_METER);
+    }
+
+    // ── WATAL Phase 2: external-force API (buoyancy/flow prerequisite) ──
+
+    /// Helper: spawn a dynamic ball at `y` and return its handle.
+    fn spawn_ball(w: &mut PhysicsWorld, y: f32) -> rapier3d::prelude::RigidBodyHandle {
+        let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
+        let h = w.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .position(iso_from_trs(Vec3::new(0.0, y, 0.0), Quat::IDENTITY))
+                .build(),
+        );
+        w.colliders
+            .insert_with_parent(ColliderBuilder::new(shape).build(), h, &mut w.bodies);
+        h
+    }
+
+    /// A sustained upward force greater than gravity must lift a body that
+    /// would otherwise fall — the buoyancy path. Force is re-applied each
+    /// frame (Rapier forces persist, but re-deriving + resetting is the
+    /// system contract) and derived from the body's own mass so the test
+    /// makes no magic-number assumption (No-Guessing).
+    #[test]
+    fn add_force_lifts_body_against_gravity() {
+        let mut w = PhysicsWorld::new();
+        let h = spawn_ball(&mut w, 1000.0);
+        let mass = w.body_mass(h).expect("dynamic body has mass");
+        // 2× the gravity-cancelling force → net upward ≈ +1 g.
+        let up = byroredux_core::math::Vec3::new(0.0, 2.0 * mass * 686.7, 0.0);
+
+        for _ in 0..30 {
+            w.reset_forces(h);
+            assert!(w.add_force(h, up), "force applies to a live dynamic body");
+            w.step(PHYSICS_DT);
+        }
+
+        let y = w.bodies[h].translation().y;
+        assert!(y > 1000.0, "net-upward force must raise the body; y = {y}");
+    }
+
+    /// An upward impulse must immediately impart upward velocity (vs the
+    /// downward velocity a free-falling body would have).
+    #[test]
+    fn apply_impulse_imparts_upward_velocity() {
+        let mut w = PhysicsWorld::new();
+        let h = spawn_ball(&mut w, 1000.0);
+        let mass = w.body_mass(h).expect("mass");
+        // Impulse = mass · Δv; aim for ~+500 BU/s upward.
+        let imp = byroredux_core::math::Vec3::new(0.0, mass * 500.0, 0.0);
+        assert!(w.apply_impulse(h, imp), "impulse applies to a dynamic body");
+        w.step(PHYSICS_DT); // one tick: gravity barely dents +500 BU/s.
+
+        assert!(
+            w.bodies[h].linvel().y > 0.0,
+            "upward impulse must yield upward velocity; vy = {}",
+            w.bodies[h].linvel().y
+        );
+    }
+
+    /// After `reset_forces`, with nothing re-applied, the body falls under
+    /// gravity again — proving the force does not silently persist past a
+    /// reset (the frame-over-frame compounding guard).
+    #[test]
+    fn reset_forces_lets_body_fall_again() {
+        let mut w = PhysicsWorld::new();
+        let h = spawn_ball(&mut w, 1000.0);
+        let mass = w.body_mass(h).expect("mass");
+        let up = byroredux_core::math::Vec3::new(0.0, 2.0 * mass * 686.7, 0.0);
+
+        // Hold it up for a bit.
+        for _ in 0..10 {
+            w.reset_forces(h);
+            w.add_force(h, up);
+            w.step(PHYSICS_DT);
+        }
+        let y_held = w.bodies[h].translation().y;
+
+        // Clear the force and stop re-applying → must fall.
+        w.reset_forces(h);
+        for _ in 0..30 {
+            w.step(PHYSICS_DT);
+        }
+        let y_after = w.bodies[h].translation().y;
+        assert!(
+            y_after < y_held,
+            "after reset the body must fall: held y = {y_held}, after = {y_after}"
+        );
+    }
+
+    /// The force API must refuse non-dynamic bodies — a static water plane
+    /// or a fixed floor can't take a buoyancy force.
+    #[test]
+    fn force_api_rejects_non_dynamic_bodies() {
+        let mut w = PhysicsWorld::new();
+        let fh = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        let up = byroredux_core::math::Vec3::new(0.0, 1.0, 0.0);
+        assert!(!w.add_force(fh, up), "static body must reject add_force");
+        assert!(!w.apply_impulse(fh, up), "static body must reject apply_impulse");
+        // Dead handle → all no-op.
+        let mut w2 = PhysicsWorld::new();
+        let dead = w2.bodies.insert(RigidBodyBuilder::dynamic().build());
+        w2.remove_body(dead);
+        assert!(!w.add_force(dead, up), "dead handle must be a no-op");
     }
 }
