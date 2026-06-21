@@ -3,7 +3,7 @@
 //! Oblivion, FO3, and FNV predate Papyrus and ship scripts as a binary
 //! layout:
 //!   - `SCHR` — 20-byte header: `numRefs u32`, `compiled_size u32`,
-//!     `var_count u32`, `script_type u16 + flags u16 (or u32)`.
+//!     `var_count u32`, `script_type u16`, `flags u16`.
 //!   - `SCDA` — compiled bytecode blob (opaque here).
 //!   - `SCTX` — original source text (zstring, optional).
 //!   - `SLSD` / `SCVR` — local variable metadata (one pair per local var).
@@ -80,9 +80,13 @@ pub struct ScriptRecord {
     /// this when the parse sees every `SLSD`+`SCVR` pair.
     pub var_count: u32,
     pub script_type: ScriptType,
-    /// Flags u16 (Oblivion) or u32 tail of `SCHR` (FO3/FNV). Only the
-    /// `is_hidden` (bit 1) bit is documented; the rest are reserved.
-    pub flags: u32,
+    /// `SCHR` trailing flags — a `u16` on every game. Oblivion through
+    /// FNV ship a 20-byte SCHR whose final 2 bytes are this field
+    /// (verified via openmw `esm4/script.hpp` + a raw byte-scan: every
+    /// vanilla SCHR is exactly 20 bytes). Only the `is_hidden` (bit 1)
+    /// bit is documented; the rest are reserved. Parsed-but-unused
+    /// today — no downstream consumer (#1654).
+    pub flags: u16,
     /// `SCDA` compiled bytecode — opaque.
     pub compiled: Vec<u8>,
     /// `SCTX` original source text (may be absent on compile-only
@@ -115,10 +119,11 @@ pub fn parse_scpt(form_id: u32, subs: &[SubRecord]) -> ScriptRecord {
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => record.editor_id = read_zstring(&sub.data),
-            // SCHR: numRefs u32 + compiled_size u32 + var_count u32 +
-            //       script_type u16 + flags u16 (or flags u32 on FO3+).
-            // Minimum 16 bytes for the three u32s + script_type u16 +
-            // flags u16. FO3+ extends flags to u32 → 20 bytes total.
+            // SCHR: pad u32 + numRefs u32 + compiled_size u32 +
+            //       var_count u32 + script_type u16 + flags u16
+            //       → 20 bytes total.
+            // Minimum 16 bytes for the leading pad + three u32s; the
+            // script_type / flags u16 pair is read only when present.
             b"SCHR" if sub.data.len() >= 16 => {
                 let mut r = SubReader::new(&sub.data);
                 r.skip_or_eof(4); // Leading u32 is a legacy padding slot.
@@ -129,12 +134,14 @@ pub fn parse_scpt(form_id: u32, subs: &[SubRecord]) -> ScriptRecord {
                     let ty = r.u16().unwrap_or(0);
                     record.script_type = ScriptType::from_u16(ty);
                 }
-                // flags: Oblivion stores u16, FO3+ stores u32 tail.
-                // Accept either — we don't decode specific bits yet,
-                // just preserve the value. Strict u32 read fails-silently
-                // when only a u16 tail is present (Oblivion 20-byte SCHR).
+                // flags is a `u16` on every game (Oblivion through FNV):
+                // the vanilla SCHR is exactly 20 bytes, leaving 2 bytes
+                // after the script_type u16. Reading it as `u32` here
+                // fails-silently on real data and pinned flags to 0 for
+                // every script — the #1654 bug. We don't decode specific
+                // bits yet, just preserve the value.
                 if sub.data.len() >= 20 {
-                    record.flags = r.u32().unwrap_or(0);
+                    record.flags = r.u16_or_default();
                 }
             }
             b"SCDA" => {
@@ -206,14 +213,17 @@ mod tests {
 
     #[test]
     fn parse_scpt_extracts_schr_scda_sctx_and_vars() {
+        // Vanilla 20-byte SCHR: 4-byte pad + 3×u32 + script_type u16 +
+        // flags u16. This is the exact on-disk layout every FO3/FNV
+        // script ships (#1654); a wider fixture would let the flags read
+        // succeed as a u32 and mask the u16/u32 regression.
         let mut schr = Vec::new();
         schr.extend_from_slice(&0u32.to_le_bytes()); // unused pad
         schr.extend_from_slice(&3u32.to_le_bytes()); // num_refs
         schr.extend_from_slice(&128u32.to_le_bytes()); // compiled_size
         schr.extend_from_slice(&2u32.to_le_bytes()); // var_count
         schr.extend_from_slice(&1u16.to_le_bytes()); // script_type = Quest
-        schr.extend_from_slice(&0x0002u16.to_le_bytes()); // flags low bits
-        schr.extend_from_slice(&0u16.to_le_bytes()); // flags high bits (FO3 u32 extension)
+        schr.extend_from_slice(&0x0002u16.to_le_bytes()); // flags (u16)
         let subs = vec![
             sub(b"EDID", b"MegatonDoorScript\0".to_vec()),
             sub(b"SCHR", schr),
@@ -256,7 +266,10 @@ mod tests {
         assert_eq!(rec.compiled_size, 128);
         assert_eq!(rec.var_count, 2);
         assert_eq!(rec.script_type, ScriptType::Quest);
-        assert_eq!(rec.flags & 0x2, 0x2);
+        // Regression guard for #1654: a vanilla 20-byte SCHR has only a
+        // u16 flags tail, so the value must survive the parse intact
+        // (the old strict-u32 read pinned it to 0 on every real script).
+        assert_eq!(rec.flags, 0x0002);
         assert_eq!(rec.compiled, vec![0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34]);
         assert!(rec.source.as_deref().unwrap().starts_with("scn "));
         assert_eq!(rec.locals.len(), 2);
@@ -278,8 +291,8 @@ mod tests {
         schr.extend_from_slice(&0u32.to_le_bytes()); // num_refs = 0
         schr.extend_from_slice(&0u32.to_le_bytes()); // compiled_size = 0
         schr.extend_from_slice(&0u32.to_le_bytes()); // var_count = 0
-        schr.extend_from_slice(&0u16.to_le_bytes()); // object
-        schr.extend_from_slice(&0u32.to_le_bytes()); // flags = 0
+        schr.extend_from_slice(&0u16.to_le_bytes()); // script_type = Object
+        schr.extend_from_slice(&0u16.to_le_bytes()); // flags (u16) = 0
         let subs = vec![sub(b"EDID", b"TinyScript\0".to_vec()), sub(b"SCHR", schr)];
         let rec = parse_scpt(0x0CAFEu32, &subs);
         assert_eq!(rec.editor_id, "TinyScript");
