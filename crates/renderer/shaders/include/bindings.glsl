@@ -326,7 +326,9 @@ struct Reservoir {
     float accumR;      // accumulated direct-shadow radiance — R
     float accumG;      // accumulated direct-shadow radiance — G
     float accumB;      // accumulated direct-shadow radiance — B
-    float pad0;        // padding to 32 B (8 × 4)
+    float pad0;        // geometric normal: octEncode → packSnorm2x16 → float
+                       // bits. Consumed by spatial-reuse neighbour rejection
+                       // (ReSTIR P2, Bitterli §5); keeps the struct at 32 B.
 };
 
 layout(std430, set = 1, binding = 16) buffer ReservoirCurrBuffer {
