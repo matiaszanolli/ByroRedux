@@ -44,8 +44,20 @@ pub enum Error {
     #[error("TYPE chunk must be exactly 4 bytes, got {got}")]
     BadTypeChunkSize { got: usize },
 
-    #[error("CLAS chunk has unknown class flags {raw:#06x} (known: IsUser | IsStruct)")]
-    UnknownClassFlags { raw: u16 },
+    #[error(
+        "CLAS chunk #{class_index} ({class_name:?}) has unknown class flags \
+         {raw:#06x} (known: IsUser | IsStruct)"
+    )]
+    UnknownClassFlags {
+        raw: u16,
+        /// 0-based index of the offending class within the TYPE block —
+        /// names *which* class aborted the parse (#1569), instead of just
+        /// the raw flag value with no positional anchor.
+        class_index: usize,
+        /// Editor name of the offending class, resolved from the string
+        /// table before the flag check.
+        class_name: String,
+    },
 
     #[error("class chunk had {leftover} trailing bytes after fields")]
     ClassTrailingBytes { leftover: usize },
