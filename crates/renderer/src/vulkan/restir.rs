@@ -137,7 +137,8 @@ mod tests {
     /// this and the GLSL must move together.
     #[test]
     fn reservoir_stride_matches_shader() {
-        // lightIndex + packedDisk + wSum + W + M + pHat + pad0 + pad1.
+        // lightIndex + W + M + histLen + accumR + accumG + accumB
+        // + pad0 (packed geometric normal). 8 scalars × 4 bytes.
         assert_eq!(RESERVOIR_STRIDE, 8 * 4);
     }
 

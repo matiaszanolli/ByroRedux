@@ -2325,19 +2325,30 @@ void main() {
             // hazard, no extra resample pass. The spatial source being one
             // frame old is the standard real-time tradeoff (the final
             // visibility ray re-validates every shaded sample ⇒ no light
-            // leaks). Re-evaluating p̂ at the current surface is the geometric
-            // guard: a neighbour whose pick is occluded/irrelevant here gets
-            // ~zero weight, so cross-edge neighbours self-reject without needing
-            // per-neighbour normals (which this pass, being the G-buffer writer,
-            // can't read for other pixels). Combine uses the same biased 1/M
-            // streaming-RIS form as the temporal path. Gated by
-            // DBG_DISABLE_SPATIAL for live A/B against temporal-only ReSTIR.
+            // leaks). Two geometric guards keep the reuse honest across edges:
+            //   1. a 25° geometric-normal-similarity rejection (Bitterli 2020
+            //      §5) — the neighbour's geometric normal is packed into its
+            //      reservoir pad0 at write time (no normal-history texture
+            //      needed), so a neighbour on a differently-oriented surface
+            //      (e.g. across a floor/wall corner) is skipped outright. This
+            //      is what stops the disocclusion colour seed bleeding shadow
+            //      across corners — the case p̂ alone can't catch, since the
+            //      same light can be bright on both sides.
+            //   2. re-evaluating p̂ at the current surface — a neighbour whose
+            //      pick is occluded/irrelevant here gets ~zero weight.
+            // Combine uses the same biased 1/M streaming-RIS form as the
+            // temporal path. Gated by DBG_DISABLE_SPATIAL for live A/B against
+            // temporal-only ReSTIR.
             bool useSpatial = (dbgFlags & DBG_DISABLE_SPATIAL) == 0u;
             if (useSpatial && shadowFade > 0.01) {
                 const int   SPATIAL_SAMPLES = 5;
                 const float SPATIAL_RADIUS  = 16.0; // neighbour disk radius (px)
                 const float SPATIAL_M_CAP   = 8.0;  // per-neighbour trust bound
                 const float SPATIAL_SEED_HIST = 4.0; // borrowed-colour eff. samples
+                const float SPATIAL_NORMAL_COS = 0.906; // cos 25° (Bitterli §5)
+                // This pixel's geometric normal — compared against each
+                // neighbour's packed geometric normal for the similarity gate.
+                vec3 geomN = normalize(fragNormalEffective);
                 // Centre on the reprojected location when valid (keeps the disk
                 // geometrically aligned under motion); else on this pixel.
                 vec2 spatialCenter = reprojValid ? prevFrag : gl_FragCoord.xy;
@@ -2363,9 +2374,18 @@ void main() {
                     uint nIdx = uint(nq.y) * scrW + uint(nq.x);
                     Reservoir rn = reservoirsPrev[nIdx];
 
-                    // Re-evaluate the neighbour's pick at THIS surface.
+                    // Neighbour's geometric normal (packed into pad0 at write).
+                    // Stale / uninitialised reservoirs decode to a near-fixed
+                    // normal that the similarity gate rejects — conservative
+                    // (less reuse), never a leak; the per-sample validity guards
+                    // below already filter garbage selections.
+                    vec3 nGeomN = octDecode(unpackSnorm2x16(floatBitsToUint(rn.pad0)));
+
+                    // Re-evaluate the neighbour's pick at THIS surface, gated on
+                    // geometric-normal similarity (skip cross-edge neighbours).
                     if (rn.lightIndex < lightCount && rn.M > 0.0
-                        && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)) {
+                        && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)
+                        && dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS) {
                         vec3 rnRad = shadowableLightRadiance(
                             rn.lightIndex, N, V, NdotV, F0, albedo, roughness,
                             metalness, specStrength, specColor, mat, fragTangent,
@@ -2501,7 +2521,14 @@ void main() {
             rc.accumR = accum.r;
             rc.accumG = accum.g;
             rc.accumB = accum.b;
-            rc.pad0 = 0.0;
+            // pad0 carries this pixel's GEOMETRIC normal (oct-encoded, snorm16×2
+            // packed into the float's bits) so spatial-reuse neighbours can do a
+            // proper geometric-similarity rejection (Bitterli 2020 §5) without a
+            // separate normal-history texture. Geometric (fragNormalEffective),
+            // NOT the normal-mapped shading N, so a 25° cutoff doesn't over-
+            // reject on high-frequency normal-mapped detail.
+            rc.pad0 = uintBitsToFloat(
+                packSnorm2x16(octEncode(normalize(fragNormalEffective))));
             reservoirsCurr[pixelIdx] = rc;
         } else {
         // ── Pass 2: shadow rays for sampled reservoirs ─────────────
