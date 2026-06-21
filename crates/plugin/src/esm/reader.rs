@@ -238,31 +238,74 @@ pub struct EsmReader<'a> {
 /// Pitt / Zeta all use 0x01 for their own new forms).
 #[derive(Debug, Clone)]
 pub struct FormIdRemap {
-    /// This plugin's index in the global load order (0-based).
-    pub plugin_index: u8,
-    /// For each entry in this plugin's MASTERS list, the global
-    /// load-order index of that master. `master_indices[N]` is
-    /// where a FormID with mod-index `N` actually lives.
-    pub master_indices: Vec<u8>,
+    /// This plugin's slot in the global load order.
+    pub plugin_slot: GlobalSlot,
+    /// For each entry in this plugin's MASTERS list, the global slot of
+    /// that master. `master_slots[N]` is where a FormID with mod-index
+    /// `N` actually lives.
+    pub master_slots: Vec<GlobalSlot>,
+}
+
+/// A plugin's resolved position in the global load order.
+///
+/// Regular plugins occupy a full top-byte slot (`0x00`–`0xFD`) with a
+/// 24-bit object-id space. ESL / light-master plugins (TES4 flag `0x0200`)
+/// all share the `0xFE` top byte and are distinguished by a 12-bit
+/// load-order sub-index, leaving only a 12-bit (`0x000`–`0xFFF`) object-id
+/// space. Modelling the slot as a sum type lets [`FormIdRemap::remap`]
+/// decode both kinds — and references *to* an ESL master — uniformly.
+/// See the Creation Engine light-master spec / SK-D4-03 / #1554.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalSlot {
+    /// Full-byte load-order index (`0x00`–`0xFD`).
+    Regular(u8),
+    /// `0xFE` light-master space; the `u16` is the 12-bit sub-index.
+    Light(u16),
+}
+
+impl GlobalSlot {
+    /// Compose this slot with a raw plugin-local FormID into a global
+    /// FormID.
+    ///
+    /// `Regular` keeps the bottom 24 bits as the object id and writes the
+    /// byte index into the top byte. `Light` packs the 12-bit sub-index
+    /// into the `0xFE` space and keeps only the bottom 12 bits — the ESL
+    /// object-id range — because an ESL's object space is 12 bits, not 24.
+    pub fn compose(self, raw: u32) -> u32 {
+        match self {
+            GlobalSlot::Regular(byte) => ((byte as u32) << 24) | (raw & 0x00FF_FFFF),
+            GlobalSlot::Light(sub) => {
+                0xFE00_0000 | (((sub as u32) & 0x0FFF) << 12) | (raw & 0x0000_0FFF)
+            }
+        }
+    }
 }
 
 impl FormIdRemap {
+    /// All-regular convenience constructor (no ESL in the load order) —
+    /// every slot is a full-byte index. Used by the multi-plugin tests.
+    #[cfg(test)]
+    pub fn regular(plugin_index: u8, master_indices: Vec<u8>) -> Self {
+        Self {
+            plugin_slot: GlobalSlot::Regular(plugin_index),
+            master_slots: master_indices.into_iter().map(GlobalSlot::Regular).collect(),
+        }
+    }
+
     /// Apply this remap to a raw plugin-local FormID.
     ///
-    /// `raw & 0xFFFFFF` (the bottom 24 bits) is preserved unchanged —
-    /// it's the plugin's internal unique-id. The top byte is replaced
-    /// with the global load-order index of whichever plugin owns this
-    /// form.
+    /// The object-id bits (bottom 24 for regular, bottom 12 for ESL) are
+    /// preserved; the load-order portion is rewritten to the global slot
+    /// of whichever plugin owns this form. See [`GlobalSlot::compose`].
     pub fn remap(&self, raw: u32) -> u32 {
-        let mod_index = (raw >> 24) as u8;
-        let local = raw & 0x00FF_FFFF;
-        let global_index = if mod_index as usize == self.master_indices.len() {
+        let mod_index = (raw >> 24) as usize;
+        let slot = if mod_index == self.master_slots.len() {
             // Self-reference — top byte equals master count per the
             // Bethesda ESM spec.
-            self.plugin_index
-        } else if (mod_index as usize) < self.master_indices.len() {
-            self.master_indices[mod_index as usize]
-        } else if self.master_indices.is_empty() {
+            self.plugin_slot
+        } else if mod_index < self.master_slots.len() {
+            self.master_slots[mod_index]
+        } else if self.master_slots.is_empty() {
             // Standalone / single-plugin load (no masters) with a top byte
             // past index 0 — the known Bethesda authoring artifact: vanilla
             // Oblivion.esm (and a few FO3/FNV masters) ship a handful of
@@ -282,18 +325,18 @@ impl FormIdRemap {
                 "standalone FormID {raw:08x} (mod_index {mod_index}, no masters) \
                  passed through — Bethesda index-{mod_index:02x} artifact"
             );
-            mod_index
+            return raw;
         } else {
             // Multi-plugin load with an out-of-range index — genuinely
             // suspicious (malformed file or an in-memory injected form).
             // Keep this at warn; it is rare and worth surfacing.
             log::warn!(
                 "FormID {raw:08x} has mod_index {mod_index} but plugin has {} masters",
-                self.master_indices.len()
+                self.master_slots.len()
             );
-            mod_index
+            return raw;
         };
-        ((global_index as u32) << 24) | local
+        slot.compose(raw)
     }
 }
 
@@ -339,6 +382,16 @@ pub struct FileHeader {
     /// 4-byte payload becomes a `"<lstring 0xNNNNNNNN>"` placeholder
     /// instead of 3-character UTF-8 garbage. See audit S6-03 / #348.
     pub localized: bool,
+    /// TES4 record flag bit `0x0200` (Light Master / ESL). When set, this
+    /// plugin shares the `0xFE` top-byte load-order space with every other
+    /// ESL: its forms are addressed as `0xFE` + a 12-bit load-order
+    /// sub-index + a 12-bit object id, rather than a full-byte mod-index +
+    /// 24-bit object id. The load-order builder turns this into a
+    /// [`GlobalSlot::Light`] so [`FormIdRemap`] decodes the plugin's forms
+    /// (and references to ESL masters) correctly. No vanilla Skyrim SE /
+    /// FO4 / Starfield master is ESL-flagged; this is for third-party ESL
+    /// mods and ESL-flagged CC content. See SK-D4-03 / #1554.
+    pub light_master: bool,
 }
 
 impl<'a> EsmReader<'a> {
@@ -624,6 +677,10 @@ impl<'a> EsmReader<'a> {
         // route string decoding through the lstring helper. See
         // audit S6-03 / #348.
         let localized = header.flags & 0x80 != 0;
+        // Bit 0x0200 is the Light Master (ESL) flag — see
+        // `FileHeader::light_master`. Captured here so the load-order
+        // builder can place the plugin in the 0xFE light space (#1554).
+        let light_master = header.flags & 0x0200 != 0;
 
         let subs = self.read_sub_records(&header)?;
         let mut masters = Vec::new();
@@ -652,6 +709,7 @@ impl<'a> EsmReader<'a> {
             record_count,
             hedr_version,
             localized,
+            light_master,
         })
     }
 
@@ -749,10 +807,7 @@ mod tests {
     /// and every existing consumer keep seeing the same u32 FormIDs.
     #[test]
     fn form_id_remap_single_plugin_is_identity() {
-        let remap = FormIdRemap {
-            plugin_index: 0,
-            master_indices: Vec::new(),
-        };
+        let remap = FormIdRemap::regular(0, Vec::new());
         // Self-references (top byte = 0 = master_count) pass through.
         assert_eq!(remap.remap(0x0001_2345), 0x0001_2345);
         assert_eq!(remap.remap(0x00CA_FEBA), 0x00CA_FEBA);
@@ -767,10 +822,7 @@ mod tests {
     /// contract so a future "clamp" refactor can't land silently.
     #[test]
     fn form_id_remap_standalone_out_of_range_passes_through() {
-        let remap = FormIdRemap {
-            plugin_index: 0,
-            master_indices: Vec::new(),
-        };
+        let remap = FormIdRemap::regular(0, Vec::new());
         // mod_index 0x01 with no masters — the Oblivion artifact. Verbatim
         // pass-through, not clamped to 0x00.
         assert_eq!(remap.remap(0x0100_0ABC), 0x0100_0ABC);
@@ -788,10 +840,7 @@ mod tests {
     #[test]
     fn form_id_remap_dlc_on_base_routes_self_and_master_correctly() {
         // Anchorage.esm loaded at plugin_index=1 with Fallout3.esm as master 0.
-        let remap = FormIdRemap {
-            plugin_index: 1,
-            master_indices: vec![0],
-        };
+        let remap = FormIdRemap::regular(1, vec![0]);
         // Reference to Fallout3 (mod_index=0, master_indices[0]=0) → unchanged.
         assert_eq!(remap.remap(0x0001_2345), 0x0001_2345);
         // Self-reference (mod_index=1 == master count) → plugin_index=1.
@@ -804,15 +853,9 @@ mod tests {
     #[test]
     fn form_id_remap_two_dlcs_resolve_collision() {
         // Anchorage.esm loaded at plugin_index=1, masters=[0 (Fallout3)].
-        let anchorage = FormIdRemap {
-            plugin_index: 1,
-            master_indices: vec![0],
-        };
+        let anchorage = FormIdRemap::regular(1, vec![0]);
         // BrokenSteel.esm loaded at plugin_index=2, masters=[0 (Fallout3)].
-        let broken_steel = FormIdRemap {
-            plugin_index: 2,
-            master_indices: vec![0],
-        };
+        let broken_steel = FormIdRemap::regular(2, vec![0]);
 
         // Both files ship their own 0x01_012345 — the audit's canonical
         // example. Under remap they land in distinct global slots.
@@ -837,10 +880,7 @@ mod tests {
     /// the load-order index.
     #[test]
     fn form_id_remap_rewrites_self_ref_to_load_order_index() {
-        let remap = FormIdRemap {
-            plugin_index: 3,
-            master_indices: vec![0],
-        };
+        let remap = FormIdRemap::regular(3, vec![0]);
         // mod_index 1 == num_masters → self → plugin_index=3.
         assert_eq!(remap.remap(0x0112_3456), 0x0312_3456);
     }
@@ -851,10 +891,7 @@ mod tests {
     fn read_record_header_applies_installed_remap() {
         let data = build_record(b"STAT", 0x0112_3456, &[]);
         let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
-        reader.set_form_id_remap(FormIdRemap {
-            plugin_index: 2,
-            master_indices: vec![0],
-        });
+        reader.set_form_id_remap(FormIdRemap::regular(2, vec![0]));
         let header = reader.read_record_header().unwrap();
         assert_eq!(
             header.form_id, 0x0212_3456,
@@ -866,14 +903,99 @@ mod tests {
     /// the mod-index byte changes.
     #[test]
     fn form_id_remap_preserves_local_24_bits() {
-        let remap = FormIdRemap {
-            plugin_index: 5,
-            master_indices: vec![0, 1],
-        };
+        let remap = FormIdRemap::regular(5, vec![0, 1]);
         let local = 0x00AB_CDEF;
         assert_eq!(remap.remap(local) & 0x00FF_FFFF, local);
         assert_eq!(remap.remap(0x01CD_EF12) & 0x00FF_FFFF, 0x00CD_EF12);
         assert_eq!(remap.remap(0x02CD_EF12) & 0x00FF_FFFF, 0x00CD_EF12);
+    }
+
+    /// #1554 — `GlobalSlot::compose` decode. Regular slots keep the
+    /// 24-bit object id; Light (ESL) slots pack a 12-bit sub-index into
+    /// the 0xFE space and keep only the 12-bit ESL object id.
+    #[test]
+    fn global_slot_compose_decodes_regular_and_light() {
+        // Regular: byte index in the top byte, 24-bit object id preserved.
+        assert_eq!(GlobalSlot::Regular(3).compose(0x00AB_CDEF), 0x03AB_CDEF);
+        // Light: 0xFE | (sub << 12) | (object & 0xFFF).
+        assert_eq!(GlobalSlot::Light(5).compose(0x0000_0ABC), 0xFE00_5ABC);
+        // ESL object space is 12 bits — anything above 0xFFF is masked off
+        // (the higher bits belong to the 12-bit sub-index window).
+        assert_eq!(GlobalSlot::Light(0).compose(0x0000_1FFF), 0xFE00_0FFF);
+        // Max sub-index (0xFFF) and max object id (0xFFF) fill the space.
+        assert_eq!(GlobalSlot::Light(0xFFF).compose(0x0000_0FFF), 0xFEFF_FFFF);
+    }
+
+    /// #1554 / SK-D4-03 — an ESL plugin's OWN forms (self-reference,
+    /// mod_index == master count) decode into the 0xFE light space at the
+    /// plugin's 12-bit sub-index, NOT a flat top-byte index. References to
+    /// the ESL's regular masters are unaffected.
+    #[test]
+    fn form_id_remap_esl_plugin_own_forms_decode_into_light_space() {
+        // An ESL at light sub-index 2 with one regular master (byte 0).
+        let remap = FormIdRemap {
+            plugin_slot: GlobalSlot::Light(2),
+            master_slots: vec![GlobalSlot::Regular(0)],
+        };
+        // Self-ref (mod_index 1 == master count): raw 0x0100_0800 →
+        // 0xFE | sub 2 | object 0x800.
+        assert_eq!(remap.remap(0x0100_0800), 0xFE00_2800);
+        // Reference to the regular master (mod_index 0) stays a byte-0 form.
+        assert_eq!(remap.remap(0x0001_2345), 0x0001_2345);
+    }
+
+    /// #1554 / SK-D4-03 — a reference FROM any plugin TO an ESL master
+    /// decodes into that master's 0xFE light sub-index. This is the
+    /// per-master half the flat-top-byte remap got wrong.
+    #[test]
+    fn form_id_remap_reference_to_esl_master_decodes_into_light_space() {
+        // A regular plugin (byte 1) whose master[0] is an ESL at sub 5.
+        let remap = FormIdRemap {
+            plugin_slot: GlobalSlot::Regular(1),
+            master_slots: vec![GlobalSlot::Light(5)],
+        };
+        // Reference to the ESL master (mod_index 0) → 0xFE | sub 5 | 0xABC.
+        assert_eq!(remap.remap(0x0000_0ABC), 0xFE00_5ABC);
+        // Self-ref (mod_index 1 == master count) → regular byte 1.
+        assert_eq!(remap.remap(0x0112_3456), 0x0112_3456);
+    }
+
+    /// #1554 — `read_file_header` decodes both the Localized (0x80) and
+    /// Light-Master (0x0200) TES4 flags independently.
+    #[test]
+    fn read_file_header_reads_localized_and_light_master_flags() {
+        // Minimal TES4 (Tes5Plus 24-byte header) carrying `flags` + HEDR.
+        fn tes4_with_flags(flags: u32) -> Vec<u8> {
+            let mut hedr = Vec::new();
+            hedr.extend_from_slice(&1.7f32.to_le_bytes()); // version
+            hedr.extend_from_slice(&0u32.to_le_bytes()); // record_count
+            hedr.extend_from_slice(&0u32.to_le_bytes()); // next_object_id
+            let mut subs = Vec::new();
+            subs.extend_from_slice(b"HEDR");
+            subs.extend_from_slice(&(hedr.len() as u16).to_le_bytes());
+            subs.extend_from_slice(&hedr);
+            let mut buf = Vec::new();
+            buf.extend_from_slice(b"TES4");
+            buf.extend_from_slice(&(subs.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&flags.to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes()); // form_id
+            buf.extend_from_slice(&[0u8; 8]); // trailer
+            buf.extend_from_slice(&subs);
+            buf
+        }
+        let read = |flags: u32| {
+            EsmReader::with_variant(&tes4_with_flags(flags), EsmVariant::Tes5Plus)
+                .read_file_header()
+                .unwrap()
+        };
+        let plain = read(0x0000);
+        assert!(!plain.localized && !plain.light_master);
+        let localized = read(0x0080);
+        assert!(localized.localized && !localized.light_master);
+        let esl = read(0x0200);
+        assert!(!esl.localized && esl.light_master);
+        let both = read(0x0280);
+        assert!(both.localized && both.light_master);
     }
 
     #[test]

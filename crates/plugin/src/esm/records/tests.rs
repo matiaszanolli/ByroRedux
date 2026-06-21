@@ -477,10 +477,7 @@ fn parse_esm_with_load_order_remaps_self_form_ids() {
 
     // Load this synthetic "DLC" at plugin_index=2 with Fallout3
     // (plugin_index=0) as its single master.
-    let remap = super::super::reader::FormIdRemap {
-        plugin_index: 2,
-        master_indices: vec![0],
-    };
+    let remap = super::super::reader::FormIdRemap::regular(2, vec![0]);
     let index = parse_esm_with_load_order(&tes4, Some(remap)).unwrap();
     assert_eq!(index.items.len(), 1);
     let remapped_key = 0x0200_BEEFu32;
