@@ -39,105 +39,121 @@ one canonical spec.
 
 ---
 
-## 0. Render-hardening step-0 — the "near water" device-loss is *not* a water bug
+## 0. Render-hardening step-0 — the "near water" device-loss was TWO bugs, both *not* water
 
-The reported crash ("the renderer crashes when I get near water, it's unable to
-render it") is a **static-BLAS use-after-free during streaming-while-rendering** —
-confirmed by GPU instrumentation + an adversarial multi-lens code audit (HIGH
-confidence). It is **not** a water fault, **not** VRAM exhaustion, and **not** the
-RT denoiser cost (an earlier TDR hypothesis, now refuted — see §0.3). Water is
-exonerated entirely; it only *appeared* water-related because lake/coastal cells
-are dense streaming cells. WATAL records it here because water cannot be exercised
-in an exterior cell until streaming stops losing the device.
+The reported crash ("the renderer crashes when I get near water") turned out to be
+**two independent exterior-streaming bugs stacked on the same symptom** — neither a
+water fault. Water only *appeared* implicated because Skyrim's lake/mill/coastal
+cells are dense streaming cells (the confirming cell was `BleakfallsBarrowPath`,
+grid 2,-10). WATAL records both here because water cannot be exercised in an
+exterior cell until streaming stops losing the device. **Both are fixed and
+GPU-confirmed** (2026-06-20, RTX 4070 Ti): a fly-through of the cells that always
+crashed now loads `(2,-10)` clean and holds ~100 fps with **0 device-loss**.
 
-### 0.1 Confirmed mechanism
+Method note: the first two written-up theories (RT-cost TDR; static-BLAS
+use-after-free) were **both wrong** — refuted by measurement, see §0.3. The real
+causes were found only after adding *unconditional per-frame* CPU/GPU phase
+instrumentation (`CpuFrameTimings` → `systems/debug.rs` `cpu_ms:` line) and reading
+the decisive `cpu_ms` of an actual slow frame. The lesson is in
+`feedback_speculative_vulkan_fixes`: instrument and read the failing frame; do not
+theorise a Vulkan cause you can't see.
 
-The measurement that cracked it: on the crashing frame the GPU **render passes
-totalled ~7 ms** (`main_render=6.2`, `tlas=0.1`, `svgf=0.6`) while the **frame
-took 3141 ms**. So the 3141 ms is *not* GPU compute — it is a host
-`wait_for_fences(u64::MAX)` blocking until the driver resets an
-already-faulted device. The fault:
+### 0.1 Bug A — physics freeze (the multi-second stall, *not* a GPU fault at all)
 
-1. On a cell-streaming tick, `about_to_wait` runs `step_streaming` (`main.rs:2231`)
-   → `build_blas_batched`, which **bumps `frame_counter` once per call**
-   (`blas_static.rs:430`) and calls `evict_unused_blas`. Streaming spawns up to
-   `MAX_CELLS_SPAWNED_PER_FRAME = 2` cells × (terrain + statics) builds, so
-   `frame_counter` advances several steps **within one host tick** while the GPU
-   has retired **zero** frames.
-2. `render_one_frame` → `draw_frame` (`main.rs:2275`) runs in the **same** tick,
-   *after* streaming, with **no `device_wait_idle`** between them. `draw_frame`'s
-   only fence wait is at its *start*, and the previous frame was submitted async
-   (`queue_submit` signalling `in_flight[frame]`), so the previous frame's TLAS is
-   **still executing ray queries** that dereference BLAS device addresses baked in
-   at `tlas.rs:252-254`.
-3. `evict_unused_blas` *(pre-fix)* destroyed the `VkAccelerationStructureKHR` +
-   backing buffer **immediately**. Its only guard was `idle = frame_counter −
-   last_used_frame ≥ MIN_IDLE_FRAMES (3)` — defeated by the CPU-side counter bumps
-   in step 1. So a BLAS still referenced by the in-flight TLAS gets freed under the
-   GPU → page fault → `VK_ERROR_DEVICE_LOST`.
+The decisive log: a `dt=3170 ms` frame with `cpu_ms: fence_wait=0 …
+atw_scheduler=3005`. `fence_wait=0` means the GPU was **not** the bottleneck — the
+3 s was pure CPU inside the scheduler. Cause: every streamed Skyrim NPC attaches a
+`RagdollTemplate` (18 bodies, each `motion=Dynamic`), spawned **awake** with no
+terrain collider, so they free-fall forever. After flying through a few cells,
+`physics_sync_system` was stepping **~3000 awake dynamic bodies** every frame →
+multi-second CPU stall. That stall starved frame submission and ultimately
+manifested as a device-loss downstream.
 
-This is the codebase's *own* `MEM-01 / #1449` invariant (`blas_static.rs` doc
-comment) coming true: it explicitly warned that "if a future streaming-during-
-render refactor runs `build_blas_batched` while frames are in flight, a BLAS still
-referenced by the in-flight previous TLAS could be destroyed under the GPU — route
-eviction through `pending_destroy_blas`." Streaming made that precondition real.
+**Fix (landed, `crates/physics/src/sync.rs`):** in `register_newcomers`, spawn
+dynamic bodies **asleep** (`body_builder.sleeping(true)`) and replace the
+`pw.wake()` on registration with `pw.update_query_pipeline()` — newcomers no longer
+force the whole island awake. Regression test
+`sleeping_dynamic_newcomer_does_not_fall_or_pin_sim` (`world.rs`). **Confirmed:**
+`atw_scheduler` dropped from **3005 ms → 1 ms** across the full flight. (The proper
+*complement* — a terrain/water-plane collider so genuinely-woken bodies rest on the
+ground instead of falling — is WATAL §7 Phase 2 + a PHYSAL item, not done yet.)
 
-### 0.2 The fix (landed)
+### 0.2 Bug B — stale RT-geometry descriptor (bindings 8/9 use-after-free)
 
-Route eviction through the **existing** deferred-destroy queue — exactly what
-`drop_blas` / `drop_skinned` / cell-unload already do. Single site,
-`crates/renderer/src/vulkan/acceleration/blas_static.rs`, inside
-`evict_unused_blas`: replace the inline
-`destroy_acceleration_structure(...)` + `entry.buffer.destroy(...)` with
-`self.pending_destroy_blas.push(entry, DEFAULT_COUNTDOWN)`. `tick_deferred_destroy`
-(already called every frame *after* the fence wait, `draw.rs`) frees the entry
-`MAX_FRAMES_IN_FLIGHT` frames later, once the referencing frame has provably
-retired. The byte accounting + the `needs_full_rebuild` TLAS flip stay (the latter
-stops the *next* frame's TLAS from re-referencing the evicted address). The idle
-gate downgrades from a safety mechanism to a plain LRU heuristic. ~6 lines,
-**no new barriers, no `device_wait_idle`, no pipeline/render-pass changes** — the
-minimal-blast-radius fix the project's `feedback_speculative_vulkan_fixes` rule
-demands (reuse a proven mechanism, don't invent sync).
+The signature that isolated it: device-loss on streaming `(2,-10)`, with the last
+*healthy* frame showing **cheap GPU passes** (`main_render=8.7 ms`) and a ~5 s GPU
+hang before TDR — a GPU **page fault**, not a cost overrun. Confirmed by a 4-reader
++ adversarial-verify investigation (`device-loss-ssbo-blas-uaf` workflow, HIGH
+confidence, verify pass could not refute it). Mechanism:
 
-**Confirm on the GPU** (the fault is invisible to `cargo test` — no Vulkan device
-in CI — so this is *confirmed*, not shipped speculatively):
+1. Crossing into a denser cell grows the **global geometry SSBO**
+   (`MeshRegistry::rebuild_geometry_ssbo`, `mesh.rs`) — it allocates a **new**
+   `VkBuffer` and defers-destroys the old one (`DEFAULT_COUNTDOWN ==
+   MAX_FRAMES_IN_FLIGHT == 2`). E.g. 1351207 → 1363605 verts.
+2. The RT-shading descriptor **bindings 8/9** (`GlobalVertices`/`GlobalIndices`,
+   `scene_buffer/descriptors.rs::write_geometry_buffers`) were written **only once**
+   at scene setup (`scene.rs`). Nothing re-pointed them after the realloc — the
+   comment in `mesh.rs` *claimed* they were updated "in the same frame," but the
+   verify pass proved that update was never wired up.
+3. So bindings 8/9 kept naming the **old** buffer. At frame N+2 the deferred-destroy
+   tick frees that `VkBuffer` while the descriptor still points at it; the next RT
+   ray-query hit-fetch (`getHitUV`/`getHitTriNormal`, reflection/refraction/GI
+   paths in `triangle.frag` via `raytrace.glsl`) dereferences freed device memory →
+   page fault → ~5 s TDR → `VK_ERROR_DEVICE_LOST`. The 2-frame countdown is exactly
+   why the loss lands a couple of frames *after* the healthy cell-stream frame.
 
-```
-VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
-VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT \
-cargo run -- --master Skyrim.esm --grid 2,-11 --radius 3 \
-  --bsa <Skyrim BSAs> --textures-bsa <Skyrim Textures BSA> --bench-frames 600 --bench-hold
-```
+The **raster** path never hit this — it re-fetches the global buffer fresh every
+frame (`draw.rs` `cmd_bind_vertex_buffers`). Only the once-bound RT descriptor
+dangled, which is why it surfaced only in the RT era and stayed invisible to
+`cargo test` + sync-validation (a stale-descriptor UAF is not a missing-barrier
+hazard).
 
-Fly-cam stream through the dense cells (e.g. `BleakfallsBarrowPath`, grid 2,-10/-11/-12).
-**Before** the fix: a sync-hazard / "acceleration structure used by submitted
-command buffer has been destroyed" then the `dt≈3141ms` → `DEVICE_LOST`. **After**:
-the hazard and the device-loss are both gone. Cheap A/B isolation if needed: raise
-`blas_budget_bytes` so eviction never fires during the burst — if the crash stops,
-eviction is confirmed as the trigger. The `SLOW FRAME` / `gpu_ms` instrumentation
-(`systems/debug.rs`) added alongside this stays in to verify the fix holds.
+**Fix (landed):** re-point bindings 8/9 for the **current** frame **every frame**
+inside `draw_frame`, immediately after the deferred-destroy tick (i.e. *after* the
+fence wait, so `descriptor_sets[frame]` is provably idle) — mirroring `write_tlas`
+(binding 2, already re-pointed per frame) and the raster path's per-frame rebind.
+Self-healing: any realloc is picked up within the 2-frame window, before the old
+buffer is freed. Site: `crates/renderer/src/vulkan/context/draw.rs` (the
+`write_geometry_buffers(&device, frame, …)` call after `tick_deferred_destroy`); the
+stale `mesh.rs` comment was corrected to document why the rebind lives in
+`draw_frame` and not at the realloc site (re-pointing at the realloc site, before
+the fence wait, would be a descriptor-update-while-in-use hazard — bindings 8/9 are
+not `UPDATE_AFTER_BIND`). **No new barriers, no `device_wait_idle`.**
+
+**GPU-confirmed:** `(2,-10) BleakfallsBarrowPath` loads clean ("92 entities, terrain
+BLAS 1/1"), 0 device-loss, recovers to 97–106 fps. The only residual hitch is a
+single ~200–290 ms `atw_post`-dominated frame on cell-load (synchronous per-cell
+upload cost, `MAX_CELLS_SPAWNED_PER_FRAME`) — GPU idle (`fence_wait=0`), nowhere
+near the ~2 s watchdog; a separate perf item, not a fault.
 
 ### 0.3 Refuted alternatives (recorded so they aren't re-investigated)
 
 - **RT-cost TDR from the denoiser overhaul (commit `6b061120`)** — *refuted* by the
-  ~7 ms GPU measurement (≈280× under the ~2 s watchdog). The earlier HIGH-confidence
-  call was made against a different log (`dt=1982ms`) before per-pass GPU timers
-  existed; the `dt` values are the device-loss *host-block symptom*, not a 2 s GPU
-  frame. The RT overhaul is fine.
-- **Geometry-SSBO realloc UAF** — *refuted*; `mesh.rs` already routes the old
-  vertex/index SSBOs through the deferred-destroy queue. Safe.
-- **Cell-unload BLAS/mesh free** — *refuted*; `unload.rs` already uses the safe
-  deferred `drop_blas`/`drop_mesh`. The crash fires on cells streaming *in*.
-- **Water render fault** — *refuted*; the water draw is RT-gated and skipped on a
-  stale-TLAS frame, the mesh is a 4-vertex quad, every `water.frag` RT helper
-  early-outs.
-- **VRAM exhaustion** — *refuted*; eviction is actively firing (so memory is being
-  reclaimed) and an OOM surfaces as a caught `anyhow::Err`, never `DEVICE_LOST`.
+  ~7 ms GPU measurement (≈280× under the ~2 s watchdog). The `dt` values are the
+  device-loss *host-block symptom*, not a 2 s GPU frame. The RT overhaul is fine.
+- **Static-BLAS use-after-free in `evict_unused_blas`** — *refuted as the active
+  crash*. The original §0 confidently blamed this; the deferred-destroy fix to
+  `evict_unused_blas` was landed and **did not stop the crash** (tell: no "BLAS
+  eviction: freed" log lines — eviction never even fired during the burst). The
+  change is **kept as latent `MEM-01` hardening** (the invariant is still correct;
+  it just wasn't the bug). The real geometry UAF was bindings 8/9 (§0.2), which the
+  later investigation proved BLAS do **not** touch (BLAS reference **per-mesh**
+  buffers by device address, never the global SSBO).
+- **Geometry-SSBO realloc dangling the BLAS device address** — *refuted*; BLAS bake
+  the **per-mesh** `vertex_buffer`/`index_buffer` address, which `rebuild_geometry_
+  ssbo` never touches. (The realloc *did* dangle a descriptor — bindings 8/9 — but
+  that is a shading-read UAF, §0.2, not a BLAS/TLAS address fault.)
+- **Water render fault** — *refuted*; water draw is RT-gated, a 4-vertex quad, every
+  `water.frag` RT helper early-outs. The mill-pond scene renders correctly post-fix.
+- **VRAM exhaustion** — *refuted*; an OOM surfaces as a caught `anyhow::Err`, never
+  `DEVICE_LOST`.
 
-> **Shared dependency:** this fix shares the Rapier/GPU lifecycle discipline with
-> the exterior-reroute and the WATAL Phase 2 buoyancy work — "free a resource only
-> after the frame that referenced it retires" is the same rule as "wake/sleep a
-> body only when the sim genuinely changed." §7 Phase 2 co-designs them.
+> **Shared dependency:** both fixes share the Rapier/GPU lifecycle discipline with
+> the exterior-reroute and the WATAL Phase 2 buoyancy work — "free a resource (or
+> re-point its descriptor) only with respect to the frame that referenced it" is the
+> same rule as "wake/sleep a body only when the sim genuinely changed." §7 Phase 2
+> co-designs them — and Bug A's missing terrain collider is literally the WATAL
+> water-plane-collider precursor.
 
 ---
 

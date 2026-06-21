@@ -766,6 +766,48 @@ mod tests {
         assert_eq!(w.integration_parameters.length_unit, BU_PER_METER);
     }
 
+    /// EXTERIOR-FREEZE FIX: a dynamic body spawned ASLEEP (as
+    /// `register_newcomers` now does for all `MotionType::Dynamic` newcomers)
+    /// must NOT free-fall and must NOT pin the simulation awake — even when
+    /// the sim is poked. This is the core of the fix for the measured
+    /// `atw_scheduler=3005ms` / ~3000-awake-dynamics exterior stall: streamed
+    /// NPC ragdoll bones (no terrain collider beneath them) used to free-fall
+    /// forever, keeping thousands of bodies in the active set every frame.
+    #[test]
+    fn sleeping_dynamic_newcomer_does_not_fall_or_pin_sim() {
+        let mut w = PhysicsWorld::new();
+        let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
+        let h = w.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .position(iso_from_trs(Vec3::new(0.0, 1000.0, 0.0), Quat::IDENTITY))
+                .sleeping(true) // the new spawn state for dynamic newcomers
+                .build(),
+        );
+        w.colliders
+            .insert_with_parent(ColliderBuilder::new(shape).build(), h, &mut w.bodies);
+
+        // Poke the sim (as a kinematic newcomer / registration would) and run
+        // 2 s. With no contact or applied force, the asleep body stays put.
+        w.wake();
+        for _ in 0..120 {
+            w.step(PHYSICS_DT);
+        }
+        let y = w.bodies[h].translation().y;
+        assert!((y - 1000.0).abs() < 1.0, "asleep dynamic must not free-fall; y={y}");
+        assert!(w.bodies[h].is_sleeping(), "must remain asleep without contact/force");
+        // And the scene quiesces — asleep newcomers don't keep the sim stepping.
+        assert_eq!(
+            w.step(PHYSICS_DT),
+            0,
+            "asleep dynamic newcomers must not pin physics_sync_system awake"
+        );
+
+        // Sanity: the WATAL force API still wakes it (buoyancy/interaction path).
+        let up = byroredux_core::math::Vec3::new(0.0, 1.0e7, 0.0);
+        assert!(w.add_force(h, up), "force applies to the sleeping body");
+        assert!(w.step(PHYSICS_DT) > 0, "applied force re-engages the sim");
+    }
+
     // ── WATAL Phase 2: external-force API (buoyancy/flow prerequisite) ──
 
     /// Helper: spawn a dynamic ball at `y` and return its handle.

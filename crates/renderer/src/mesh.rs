@@ -766,8 +766,22 @@ impl MeshRegistry {
         // Defer destruction of old SSBOs instead of stalling with
         // device_wait_idle. The old buffers survive for MAX_FRAMES_IN_FLIGHT
         // frames, guaranteeing no in-flight command buffer references them
-        // when they're finally destroyed. The descriptor set bindings 8/9
-        // will be updated to the new SSBO in the same frame this is called.
+        // when they're finally destroyed.
+        //
+        // CRITICAL: this only covers *command-buffer* lifetime. The RT
+        // descriptor bindings 8/9 (`GlobalVertices`/`GlobalIndices`) keep
+        // naming the OLD `VkBuffer` until something re-points them — they are
+        // NOT updated here. `draw_frame` re-points them for the current
+        // frame-in-flight every frame (see the `write_geometry_buffers` call
+        // right after `tick_deferred_destroy`), so by the time the deferred
+        // free below executes (N+MAX_FRAMES_IN_FLIGHT) no descriptor names
+        // the old buffer. Re-pointing here instead would be a
+        // descriptor-update-while-in-use hazard (the previous frame's set is
+        // still bound to an in-flight command buffer; bindings 8/9 are not
+        // UPDATE_AFTER_BIND). A prior version of this comment claimed the
+        // bindings were "updated in the same frame this is called" — they
+        // were not, which caused a device-loss on cell-stream growth (the
+        // WATAL §0 hunt).
         let old_vb = self.global_vertex_buffer.take();
         let old_ib = self.global_index_buffer.take();
         if old_vb.is_some() || old_ib.is_some() {

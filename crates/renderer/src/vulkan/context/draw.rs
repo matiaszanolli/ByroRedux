@@ -609,6 +609,40 @@ impl VulkanContext {
             }
         }
 
+        // Re-point the RT-shading global-geometry descriptor (bindings 8/9)
+        // to the CURRENT global SSBO for THIS frame-in-flight, every frame.
+        // The global vertex/index SSBO is reallocated to a brand-new
+        // `VkBuffer` whenever cell-stream growth marks geometry dirty
+        // (`MeshRegistry::rebuild_geometry_ssbo`), but the binding was
+        // written only ONCE at scene setup (`scene.rs::setup_scene`). Without
+        // this per-frame refresh the descriptor keeps naming the OLD buffer,
+        // which `rebuild_geometry_ssbo` defers to the destroy queue and
+        // `tick_deferred_destroy` (just above) frees `MAX_FRAMES_IN_FLIGHT`
+        // frames later — at which point the next RT hit-fetch
+        // (`getHitUV` / `getHitTriNormal`, bindings 8/9, on the
+        // reflection / refraction / GI paths) dereferences freed device
+        // memory → GPU page fault → ~TDR → `VK_ERROR_DEVICE_LOST`. The
+        // raster path never hit this because it re-fetches the buffer fresh
+        // each frame (`cmd_bind_vertex_buffers` below); only the once-bound
+        // RT descriptor dangled. Mirrors `write_tlas` (binding 2, re-pointed
+        // every frame): safe because `in_flight[frame]` was just waited on,
+        // so this frame's descriptor set is idle. See WATAL §0 device-loss
+        // hunt. (bindings 8/9 are PARTIALLY_BOUND, so the None case — no
+        // geometry yet / headless — leaves them validly unbound.)
+        if let (Some(vb), Some(ib)) = (
+            self.mesh_registry.global_vertex_buffer.as_ref(),
+            self.mesh_registry.global_index_buffer.as_ref(),
+        ) {
+            self.scene_buffers.write_geometry_buffers(
+                &self.device,
+                frame,
+                vb.buffer,
+                vb.size,
+                ib.buffer,
+                ib.size,
+            );
+        }
+
         // Record command buffer. Indexed by frame-in-flight (not swapchain
         // image) so the fence and command buffer share the same slot — #259.
         // Safe because in_flight[frame] was just waited on, guaranteeing

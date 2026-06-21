@@ -258,6 +258,21 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         if lock_rotations {
             body_builder = body_builder.lock_rotations();
         }
+        // EXTERIOR-FREEZE FIX: spawn dynamic bodies ASLEEP. A streamed cell's
+        // dynamic content — above all each NPC's 18-bone RagdollTemplate —
+        // would otherwise free-fall (no terrain collider beneath it), never
+        // rest, never sleep, and pin `physics_sync_system`'s step over thousands
+        // of awake bodies. Measured: a single Skyrim-exterior streaming frame
+        // hit `atw_scheduler=3005ms` with ~3000 awake dynamics (the "renderer
+        // freezes in exteriors" report; the near-water device-loss was a
+        // downstream symptom of these multi-second stalls — `docs/engine/watal.md`
+        // §0). A live actor's ragdoll is inert until death anyway, and placed
+        // clutter is authored resting, so asleep is the correct spawn state.
+        // Rapier auto-wakes a sleeping body on contact or applied force, so
+        // player interaction and WATAL buoyancy still engage it.
+        if matches!(body_type, RigidBodyType::Dynamic) {
+            body_builder = body_builder.sleeping(true);
+        }
         let body = body_builder.build();
         let body_handle = pw.bodies.insert(body);
 
@@ -300,12 +315,16 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         ));
     }
 
-    // New bodies (and the colliders that change the query pipeline) must be
-    // stepped at least once so dynamic newcomers settle and the query
-    // pipeline rebuilds — otherwise the static-scene fast path could sleep
-    // through their first frame. See `PhysicsWorld::step`.
+    // Refresh the query-pipeline BVH so the new colliders are visible to
+    // raycasts / contacts THIS frame — WITHOUT force-waking the simulation.
+    // Pre-fix this called `pw.wake()`, which force-stepped the whole sim on
+    // every registration; combined with dynamic newcomers spawning awake,
+    // that stepped thousands of free-falling bodies and stalled the frame for
+    // seconds (the exterior-freeze fix above). Dynamic newcomers now spawn
+    // asleep, so they need no settling step — only the BVH must refresh.
+    // Kinematic newcomers' motion still wakes the sim via `push_kinematic`.
     if !registered.is_empty() {
-        pw.wake();
+        pw.update_query_pipeline();
     }
 
     drop(pw);
