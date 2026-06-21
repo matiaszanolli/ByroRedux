@@ -53,8 +53,8 @@ impl ComponentDatabaseFile {
         }
         let type_count = read_u32_le(type_chunk, 0)?;
 
-        for _ in 0..type_count {
-            let class = parse_class(&mut state)?;
+        for class_index in 0..type_count as usize {
+            let class = parse_class(&mut state, class_index)?;
             let idx = state.classes.len();
             state.class_by_name_offset.insert(class.name_offset, idx);
             state.classes.push(class);
@@ -239,7 +239,7 @@ impl<'a> State<'a> {
     }
 }
 
-fn parse_class(state: &mut State) -> Result<Class> {
+fn parse_class(state: &mut State, class_index: usize) -> Result<Class> {
     let payload = state.consume_chunk(ChunkType::Clas)?;
     let mut cur = Cursor::new(payload);
 
@@ -251,7 +251,16 @@ fn parse_class(state: &mut State) -> Result<Class> {
 
     let unknown = flags_raw & !ClassFlags::KNOWN;
     if unknown != 0 {
-        return Err(Error::UnknownClassFlags { raw: flags_raw });
+        // #1569 — name the offending class (index + editor name) instead
+        // of just the raw flag value, so a future patch/DLC CDB that adds
+        // a reflection class-flag bit is diagnosable from the single warn
+        // line rather than leaving the operator guessing which of 1.44M
+        // materials' classes aborted the whole load.
+        return Err(Error::UnknownClassFlags {
+            raw: flags_raw,
+            class_index,
+            class_name: name,
+        });
     }
 
     let mut fields = Vec::with_capacity(field_count);
@@ -600,4 +609,143 @@ fn read_u32_le(bytes: &[u8], pos: usize) -> Result<u32> {
         bytes[pos + 2],
         bytes[pos + 3],
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1569 baseline — the CDB is a flat chunk stream with no
+    /// per-instance recovery: a single unrecognised chunk FourCC aborts
+    /// the whole 1.44M-material parse (`?` on every dispatch). Pin the
+    /// recognised chunk-type set so a future format tag becomes a
+    /// deliberate baseline edit here, not a silent runtime drop — and
+    /// confirm an unknown FourCC fails loud and diagnosable (raw + index).
+    #[test]
+    fn chunk_type_recognized_set_is_pinned() {
+        let known: &[(u32, ChunkType)] = &[
+            (0x54525453, ChunkType::Strt),
+            (0x45505954, ChunkType::Type),
+            (0x53414C43, ChunkType::Clas),
+            (0x544A424F, ChunkType::Objt),
+            (0x46464944, ChunkType::Diff),
+            (0x52455355, ChunkType::User),
+            (0x44525355, ChunkType::Usrd),
+            (0x4350414D, ChunkType::Mapc),
+            (0x5453494C, ChunkType::List),
+        ];
+        for (raw, want) in known {
+            assert_eq!(
+                ChunkType::from_raw(*raw, 0).unwrap(),
+                *want,
+                "chunk FourCC {raw:#010x} must decode"
+            );
+        }
+        match ChunkType::from_raw(0xDEAD_BEEF, 7) {
+            Err(Error::UnknownChunkType { raw, index }) => {
+                assert_eq!(raw, 0xDEAD_BEEF);
+                assert_eq!(index, 7, "the failing chunk index must be carried for diagnostics");
+            }
+            other => panic!("expected UnknownChunkType, got {other:?}"),
+        }
+    }
+
+    /// #1569 baseline — same all-or-nothing brittleness for the
+    /// `BuiltinType` low-byte tag. Pin the recognised primitive set; an
+    /// undocumented tag must fail with `UnsupportedBuiltin` (carries raw).
+    #[test]
+    fn builtin_type_recognized_set_is_pinned() {
+        let known: &[u32] = &[
+            0xFFFFFF01, 0xFFFFFF02, 0xFFFFFF03, 0xFFFFFF04, 0xFFFFFF05, 0xFFFFFF08, 0xFFFFFF09,
+            0xFFFFFF0A, 0xFFFFFF0B, 0xFFFFFF0C, 0xFFFFFF0D, 0xFFFFFF0E, 0xFFFFFF0F, 0xFFFFFF10,
+            0xFFFFFF11, 0xFFFFFF12,
+        ];
+        for raw in known {
+            assert!(
+                BuiltinType::from_u32(*raw).is_ok(),
+                "builtin tag {raw:#010x} must decode"
+            );
+        }
+        // 0xFFFFFF07 sits in the gap between Ref (…05) and Int8 (…08).
+        match BuiltinType::from_u32(0xFFFF_FF07) {
+            Err(Error::UnsupportedBuiltin { raw }) => assert_eq!(raw, 0xFFFF_FF07),
+            other => panic!("expected UnsupportedBuiltin, got {other:?}"),
+        }
+    }
+
+    /// #1569 baseline — only `IsUser | IsStruct` are recognised
+    /// class-flag bits; any other bit aborts the whole parse. Pin the
+    /// mask so a new reflection flag is a conscious edit.
+    #[test]
+    fn class_flags_known_mask_is_pinned() {
+        assert_eq!(ClassFlags::IS_USER, 1 << 2);
+        assert_eq!(ClassFlags::IS_STRUCT, 1 << 3);
+        assert_eq!(ClassFlags::KNOWN, 0b1100);
+        // A bit outside the mask is detected as unknown by parse_class.
+        assert_ne!(0x0001u16 & !ClassFlags::KNOWN, 0);
+    }
+
+    /// Build a minimal valid CDB whose single CLAS carries `flags`.
+    /// Layout: BETH header + STRT ("TestClass") + TYPE (count=1) + CLAS
+    /// (name_offset=0, type_id=0, flags, 0 fields). `chunkCount` includes
+    /// the BETH header, so BETH + STRT + TYPE + CLAS = 4.
+    fn synthetic_cdb_with_class_flags(flags: u16) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&SIGNATURE_BETH.to_le_bytes());
+        bytes.extend_from_slice(&HEADER_SIZE.to_le_bytes());
+        bytes.extend_from_slice(&FILE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes()); // chunkCount incl. BETH
+
+        let strt: &[u8] = b"TestClass\0";
+        bytes.extend_from_slice(&(ChunkType::Strt as u32).to_le_bytes());
+        bytes.extend_from_slice(&(strt.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(strt);
+
+        bytes.extend_from_slice(&(ChunkType::Type as u32).to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // type_count
+
+        let mut clas = Vec::new();
+        clas.extend_from_slice(&0i32.to_le_bytes()); // name_offset → "TestClass"
+        clas.extend_from_slice(&0u32.to_le_bytes()); // type_id
+        clas.extend_from_slice(&flags.to_le_bytes()); // flags
+        clas.extend_from_slice(&0u16.to_le_bytes()); // field_count
+        bytes.extend_from_slice(&(ChunkType::Clas as u32).to_le_bytes());
+        bytes.extend_from_slice(&(clas.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&clas);
+
+        bytes
+    }
+
+    /// #1569 — an unknown class flag must abort with a diagnostic that
+    /// NAMES the offending class (index + editor name), not just the raw
+    /// flag value. Pre-fix the operator got "unknown class flags 0xNNNN"
+    /// with no anchor into the 1.44M-material set.
+    #[test]
+    fn unknown_class_flag_names_offending_class() {
+        let cdb = synthetic_cdb_with_class_flags(0x0001);
+        match ComponentDatabaseFile::parse(&cdb) {
+            Err(Error::UnknownClassFlags {
+                raw,
+                class_index,
+                class_name,
+            }) => {
+                assert_eq!(raw, 0x0001);
+                assert_eq!(class_index, 0);
+                assert_eq!(class_name, "TestClass");
+            }
+            other => panic!("expected UnknownClassFlags naming the class, got {other:?}"),
+        }
+    }
+
+    /// Sanity: the SAME synthetic CDB with a valid flag (IsStruct) parses
+    /// cleanly — proves the failure above is the flag check, not a
+    /// malformed fixture.
+    #[test]
+    fn synthetic_cdb_with_valid_flag_parses() {
+        let cdb = synthetic_cdb_with_class_flags(ClassFlags::IS_STRUCT);
+        let parsed = ComponentDatabaseFile::parse(&cdb).expect("valid-flag CDB parses");
+        assert_eq!(parsed.classes.len(), 1);
+        assert_eq!(parsed.classes[0].name, "TestClass");
+    }
 }
