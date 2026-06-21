@@ -116,6 +116,18 @@ pub fn physics_sync_system(world: &World, dt: f32) {
     push_kinematic(world);
     let ms2 = ms(s2);
 
+    // Phase 2.5: water buoyancy (WATAL Phase 2). Applies Archimedes lift +
+    // submerged damping to dynamic bodies inside a `WaterVolume`, BEFORE the
+    // step integrates them. Wake-disciplined (see `crate::water`) so it
+    // never pins the static-scene fast path. No-op when no `WaterPlane`
+    // entities exist (the loose-NIF demo / interior-without-water path).
+    let s25 = t(profile);
+    // `n_new > 0` lets the buoyancy phase still float a body that streamed in
+    // already submerged (spawned asleep) on its very first frame — the one
+    // case its quiesced-scene fast path must not skip.
+    crate::water::apply_buoyancy(world, n_new > 0);
+    let ms25 = ms(s25);
+
     // Phase 3: step.
     let s3 = t(profile);
     let steps = {
@@ -135,10 +147,11 @@ pub fn physics_sync_system(world: &World, dt: f32) {
     if profile {
         let (awake_dyn, awake_kin) = world.resource::<PhysicsWorld>().awake_counts();
         log::info!(
-            "physics_sync phases: collect/register={:.2}ms (new={}) push_kin={:.2}ms step={:.2}ms({} substeps) pull_dyn={:.2}ms | awake dyn={} kin={}",
+            "physics_sync phases: collect/register={:.2}ms (new={}) push_kin={:.2}ms buoyancy={:.2}ms step={:.2}ms({} substeps) pull_dyn={:.2}ms | awake dyn={} kin={}",
             ms1.unwrap_or(0.0),
             n_new,
             ms2.unwrap_or(0.0),
+            ms25.unwrap_or(0.0),
             ms3.unwrap_or(0.0),
             steps,
             ms4.unwrap_or(0.0),

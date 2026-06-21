@@ -149,6 +149,16 @@ impl PhysicsWorld {
         self.pending_wake = true;
     }
 
+    /// Whether a pipeline step is already pending (something was woken /
+    /// spawned / re-targeted this frame). Read by the WATAL buoyancy phase
+    /// to skip its per-body scan in a fully-quiesced scene: with nothing
+    /// awake and nothing pending, no body's pose changed, so no dry→wet
+    /// water transition can occur and the scan would be pure waste.
+    #[inline]
+    pub fn pending_wake(&self) -> bool {
+        self.pending_wake
+    }
+
     /// Add a persistent external force (engine world-space, Y-up) to a
     /// dynamic body — Bethesda-unit "Newtons" (body mass × BU/s²). The
     /// force **accumulates across frames** until cleared with

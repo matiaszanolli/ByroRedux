@@ -31,5 +31,5 @@ pub use ragdoll::{
     build_ragdoll, RagdollBodySpec, RagdollConstraintSpec, RagdollJointSpec, RagdollSpec,
 };
 pub use sync::{physics_sync_system, set_kinematic_translation, set_linear_velocity};
-pub use water::{buoyancy_force, PhysicsWaterConstants};
+pub use water::{buoyancy_force, submerged_fraction, PhysicsWaterConstants};
 pub use world::{CharacterMoveParams, CharacterMoveResult, PhysicsWorld, PHYSICS_DT};

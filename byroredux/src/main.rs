@@ -542,6 +542,13 @@ impl App {
         // capsule) and the KCC offset stays in lockstep. Defaults match
         // the pre-unification inline values.
         world.insert_resource(byroredux_physics::ContactConfig::default());
+        // WATAL Phase 2 — engine-canonical water-physics constants
+        // (buoyancy density ratio + submerged damping). Game-invariant: no
+        // game's WATR authors physics params (docs/engine/watal.md §5.3), so
+        // one default resource serves every game. The buoyancy phase of
+        // `physics_sync_system` reads it; absent it falls back to the same
+        // default, so this insert is the single source of truth.
+        world.insert_resource(byroredux_physics::PhysicsWaterConstants::default());
         // M44 Phase 1 — audio world. Init failure (no audio device,
         // CI, headless server) leaves the inner `AudioManager` as
         // `None` and every subsequent audio operation no-ops. Boot
@@ -582,6 +589,10 @@ impl App {
         // Pre-register component storages that the physics sync system
         // queries on the first frame (before anything has been inserted).
         world.register::<byroredux_physics::RapierHandles>();
+        // WATAL Phase 2 — pre-register `WaterContact` so the buoyancy phase's
+        // `query_mut::<WaterContact>().insert(..)` succeeds the first time a
+        // body enters water (mirrors the `RapierHandles` pre-register).
+        world.register::<byroredux_core::ecs::components::water::WaterContact>();
         // M41.x ragdoll — pre-register so the `ragdoll` command's
         // `query_mut::insert` and the writeback system's queries return
         // `Some` even before any actor has been ragdolled.
@@ -840,12 +851,21 @@ impl App {
             Access::new()
                 .reads_resource::<byroredux_physics::PhysicsWorld>()
                 .writes_resource::<byroredux_physics::PhysicsWorld>()
+                // WATAL Phase 2 — the buoyancy phase reads the engine water
+                // constants resource (declaration completeness; read-only).
+                .reads_resource::<byroredux_physics::PhysicsWaterConstants>()
                 .reads::<byroredux_core::ecs::components::CollisionShape>()
                 .reads::<byroredux_core::ecs::components::RigidBodyData>()
                 .reads::<byroredux_core::ecs::GlobalTransform>()
                 .reads::<byroredux_physics::RapierHandles>()
                 .writes::<byroredux_physics::RapierHandles>()
-                .writes::<Transform>(),
+                .writes::<Transform>()
+                // WATAL Phase 2 — the buoyancy phase reads the water plane
+                // components and writes per-body `WaterContact`.
+                .reads::<byroredux_core::ecs::components::water::WaterPlane>()
+                .reads::<byroredux_core::ecs::components::water::WaterVolume>()
+                .reads::<byroredux_core::ecs::components::water::WaterFlow>()
+                .writes::<byroredux_core::ecs::components::water::WaterContact>(),
         );
         // M28.5 — camera follow runs in Stage::Late, AFTER
         // `physics_sync_system` has settled the kinematic body's

@@ -267,3 +267,44 @@ pub struct SubmersionState {
 impl Component for SubmersionState {
     type Storage = SparseSetStorage<Self>;
 }
+
+/// Per-**physics-body** water contact — the generalisation of
+/// [`SubmersionState`] from the camera to every dynamic body (WATAL §5.4).
+///
+/// Written each tick by the physics buoyancy phase (`byroredux_physics`)
+/// for any body whose collider overlaps a [`WaterVolume`]. Where
+/// `SubmersionState` carries only a scalar `depth` (enough for camera
+/// underwater FX), `WaterContact` adds [`Self::submerged_fraction`] — the
+/// displaced-volume estimate Archimedes buoyancy needs and the scalar
+/// `depth` cannot provide.
+///
+/// A body that has left every water volume keeps a **dry** `WaterContact`
+/// (`submerged_fraction == 0`, `material == None`) for one transition so
+/// the buoyancy phase can restore the body's authored damping exactly
+/// once; bodies that have never touched water carry no component at all.
+#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct WaterContact {
+    /// Surface Y minus the body's centre Y. Positive = centre below the
+    /// surface. Mirrors [`SubmersionState::depth`].
+    pub depth: f32,
+    /// Fraction of the body's vertical span below the surface, `0.0`
+    /// (dry) … `1.0` (fully under), from the collider AABB vs the water
+    /// column. The displaced-volume proxy buoyancy integrates against.
+    pub submerged_fraction: f32,
+    /// `true` once the whole body (AABB top) is below the surface — the
+    /// drowning / fully-submerged-FX gate. (Drowning is not yet wired.)
+    pub head_submerged: bool,
+    /// The current acting on this body, when it sits in flowing water
+    /// (river / rapids / waterfall). `None` for calm water. Carried here
+    /// so the flow-drift force (a follow-up) and gameplay can consume it
+    /// without re-querying the plane.
+    pub flow: Option<WaterFlow>,
+    /// The water material driving this body's underwater FX / surface
+    /// interaction. `None` when the body is out of all water volumes.
+    pub material: Option<WaterMaterial>,
+}
+
+impl Component for WaterContact {
+    type Storage = SparseSetStorage<Self>;
+}
