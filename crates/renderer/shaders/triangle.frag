@@ -162,6 +162,22 @@ void main() {
     }
 
     vec4 texColor = texture(textures[nonuniformEXT(fragTexIndex)], sampleUV);
+    // #1653 — a BC1 diffuse carries no authored alpha channel: BC1 is
+    // 1-bit punch-through, decoded as BC1_RGBA only so alpha-test cutouts
+    // (aThresh>0) see it (2aac5351). With no alpha test active the
+    // punch-through is meaningless — a 3-colour block reads a==0 in
+    // opaque regions purely as an RGB-fidelity encoder choice. Pin the
+    // texture's alpha contribution to 1.0 for such diffuse, exactly as
+    // the pre-2aac5351 BC1_RGB decode did, so those texels can't leak
+    // transparency into the discard / decalWeight / finalAlpha / glass
+    // paths downstream. INSTANCE_FLAG_DIFFUSE_ALPHA is set CPU-side from
+    // the cached `handle_has_alpha` (`format_has_alpha`, which excludes
+    // BC1_RGBA), so authored-alpha formats (BC2/BC3/BC7/RGBA — the FNV
+    // picture/table blend case) keep their alpha. Applied BEFORE the
+    // materialAlpha multiply so material translucency is preserved.
+    if ((inst.flags & INSTANCE_FLAG_DIFFUSE_ALPHA) == 0u && mat.alphaThreshold == 0.0) {
+        texColor.a = 1.0;
+    }
     // #494 — BGSM `materialAlpha` multiplier. Applied **before** the
     // alpha-test discard so the authored `alphaThreshold` still
     // operates on the final blended alpha (matching FO4's in-engine
@@ -219,7 +235,9 @@ void main() {
     // on this implicit discard — without it, noisy authored alpha
     // channels bleed through as ghost-translucent surfaces. Gate
     // only fires on the pure-blend path (inst.flags bit 1) so it
-    // can't regress existing alpha-test meshes.
+    // can't regress existing alpha-test meshes. BC1 diffuse can't trip
+    // this spuriously: its texture alpha was pinned to 1.0 upstream
+    // (no authored alpha + no alpha test) — see #1653 at the sample.
     if ((inst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u && aThresh == 0.0 && texColor.a < (1.0/255.0)) {
         discard;
     }

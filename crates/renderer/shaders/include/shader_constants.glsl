@@ -61,6 +61,7 @@
 #define INSTANCE_FLAG_CAUSTIC_SOURCE 4u
 #define INSTANCE_FLAG_TERRAIN_SPLAT 8u
 #define INSTANCE_FLAG_FLAT_SHADING 128u
+#define INSTANCE_FLAG_DIFFUSE_ALPHA 256u
 
 // Per-material flag bits (`GpuMaterial.materialFlags`).
 // Authoritative values: vulkan/material.rs `material_flag::*`. #1190.

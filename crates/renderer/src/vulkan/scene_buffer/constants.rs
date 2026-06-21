@@ -246,6 +246,24 @@ pub const INSTANCE_FLAG_PRESKINNED: u32 = 1 << 6;
 /// collides. Lives below the terrain-tile-index window (bits 16..31).
 pub const INSTANCE_FLAG_FLAT_SHADING: u32 = 1 << 7;
 
+/// Diffuse texture carries a genuine authored alpha channel
+/// (BC2/BC3/BC7/RGBA, per `dds::format_has_alpha`).
+/// Set CPU-side in `draw.rs` from the cached `handle_has_alpha`
+/// classification — never re-derived at render time from the texture
+/// encoding. When this bit is CLEAR (BC1 and other alpha-less formats),
+/// `triangle.frag` pins `texColor.a` to 1.0 unless an alpha test is
+/// active: a BC1 diffuse decodes as `BC1_RGBA` so its 1-bit punch-through
+/// alpha reaches alpha-test cutouts (2aac5351), but on a pure-blend mesh
+/// a BC1 3-colour block's index-3 texel reads `a == 0` in opaque regions
+/// and would otherwise leak transparency into the discard / decalWeight /
+/// finalAlpha paths. `format_has_alpha` excludes `BC1_RGBA`, so the pin
+/// fires for exactly that class — restoring pre-2aac5351 behaviour while
+/// authored-alpha formats (BC2/BC3/BC7/RGBA) keep their alpha. See #1653.
+///
+/// Bit 8 is the first slot above the FLAT_SHADING bit (7) and below the
+/// terrain-tile-index window (bits 16..31), so it collides with nothing.
+pub const INSTANCE_FLAG_DIFFUSE_ALPHA: u32 = 1 << 8;
+
 /// Engine-synthesized material kinds for [`GpuInstance::material_kind`].
 ///
 /// The low range (0..=19) is reserved for Skyrim+
@@ -395,6 +413,7 @@ mod tests {
             ("TERRAIN_SPLAT", INSTANCE_FLAG_TERRAIN_SPLAT),
             ("PRESKINNED", INSTANCE_FLAG_PRESKINNED),
             ("FLAT_SHADING", INSTANCE_FLAG_FLAT_SHADING),
+            ("DIFFUSE_ALPHA", INSTANCE_FLAG_DIFFUSE_ALPHA),
         ];
         for (i, (a_name, a)) in flags.iter().enumerate() {
             // Each flag is a single bit.

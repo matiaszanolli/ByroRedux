@@ -124,6 +124,14 @@ pub const INSTANCE_FLAG_ALPHA_BLEND: u32 = 1 << 1;
 pub const INSTANCE_FLAG_CAUSTIC_SOURCE: u32 = 1 << 2;
 pub const INSTANCE_FLAG_TERRAIN_SPLAT: u32 = 1 << 3;
 pub const INSTANCE_FLAG_FLAT_SHADING: u32 = 1 << 7;
+// bit 8 — diffuse texture carries a genuine authored alpha channel
+// (BC2/BC3/BC7/RGBA). Set CPU-side from the cached `handle_has_alpha`
+// classification (`format_has_alpha`, which excludes BC1_RGBA). When
+// CLEAR, `triangle.frag` pins `texColor.a` to 1.0 (unless an alpha test
+// is active) so a BC1 3-colour-block texel (1-bit punch-through, not
+// authored alpha) can't leak transparency into the discard / decalWeight
+// / finalAlpha paths on a pure-blend mesh. See #1653.
+pub const INSTANCE_FLAG_DIFFUSE_ALPHA: u32 = 1 << 8;
 
 // Per-material flag bits on `GpuMaterial.materialFlags`. Authoritative
 // Rust-side values live in `crates/renderer/src/vulkan/material.rs`
