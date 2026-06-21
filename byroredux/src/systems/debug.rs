@@ -133,5 +133,12 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
         if let Some(ref gpu) = gpu {
             log::info!(target: "engine::stats", "gpu_ms: {gpu}");
         }
+        // CPU per-phase breakdown on the once-per-second line too (not just
+        // the per-frame SLOW-FRAME warn, which can be missed). `fence_wait`
+        // large ⇒ a GPU submission hung; `atw_post`/`ssbo_build` large with
+        // small `fence_wait` ⇒ CPU cell-load stall. WATAL §0 device-loss hunt.
+        if let Some(ref cpu) = cpu {
+            log::info!(target: "engine::stats", "cpu_ms: {cpu}");
+        }
     }
 }

@@ -5,8 +5,31 @@ use ash::vk;
 use raw_window_handle::RawDisplayHandle;
 use std::ffi::{CStr, CString};
 
-/// Required validation layers (debug builds only).
+/// Required validation layers.
 const VALIDATION_LAYERS: &[&CStr] = &[c"VK_LAYER_KHRONOS_validation"];
+
+/// Whether to enable the validation layer + debug messenger. Always on in
+/// debug builds; opt-in in **release** via `BYRO_VALIDATION=<v>` so
+/// streaming / device-loss hazards can be caught at release speed (a debug
+/// build is often too slow to stream into the dense cells that fault).
+/// Messages route to the Rust `log` through the debug messenger
+/// (`debug::create_debug_messenger`), so no `VK_INSTANCE_LAYERS` /
+/// `VK_LAYER_ENABLES` env juggling is needed — and the chosen features are
+/// logged at startup so it's unambiguous whether validation is live.
+pub fn validation_enabled() -> bool {
+    cfg!(debug_assertions) || std::env::var_os("BYRO_VALIDATION").is_some()
+}
+
+/// `BYRO_VALIDATION=gpuav` (or any value containing "gpu") additionally
+/// turns on GPU-Assisted Validation, which catches GPU-side faults that
+/// synchronization validation cannot — shader out-of-bounds buffer access
+/// and invalid device addresses (e.g. an RT ray query against a freed
+/// BLAS/TLAS). Heavier; opt-in on top of the default sync-validation.
+fn gpu_assisted_requested() -> bool {
+    std::env::var("BYRO_VALIDATION")
+        .map(|v| v.to_ascii_lowercase().contains("gpu"))
+        .unwrap_or(false)
+}
 
 /// Creates a Vulkan instance with the appropriate extensions for the given
 /// display handle, and validation layers in debug builds.
@@ -29,21 +52,39 @@ pub fn create_instance(
         .context("Failed to enumerate required surface extensions")?
         .to_vec();
 
+    let validation = validation_enabled();
+
     // Debug utils extension for validation layer callbacks.
-    if cfg!(debug_assertions) {
+    if validation {
         extensions.push(ash::ext::debug_utils::NAME.as_ptr());
     }
 
     let mut layer_names_raw: Vec<*const i8> = Vec::new();
-    if cfg!(debug_assertions) {
+    if validation {
         check_validation_layer_support(entry)?;
         layer_names_raw = VALIDATION_LAYERS.iter().map(|l| l.as_ptr()).collect();
     }
 
-    let create_info = vk::InstanceCreateInfo::default()
+    // Enable Synchronization Validation (always, when validation is on) and
+    // GPU-Assisted Validation (opt-in via `BYRO_VALIDATION=gpuav`) through the
+    // instance pNext chain — app-side, so the user doesn't need
+    // `VK_LAYER_ENABLES` and the choice is explicit + logged. `enabled` must
+    // outlive `create_instance` (it does — same scope).
+    let mut enabled_features = vec![vk::ValidationFeatureEnableEXT::SYNCHRONIZATION_VALIDATION];
+    if gpu_assisted_requested() {
+        enabled_features.push(vk::ValidationFeatureEnableEXT::GPU_ASSISTED);
+        enabled_features.push(vk::ValidationFeatureEnableEXT::GPU_ASSISTED_RESERVE_BINDING_SLOT);
+    }
+    let mut validation_features =
+        vk::ValidationFeaturesEXT::default().enabled_validation_features(&enabled_features);
+
+    let mut create_info = vk::InstanceCreateInfo::default()
         .application_info(&app_info)
         .enabled_extension_names(&extensions)
         .enabled_layer_names(&layer_names_raw);
+    if validation {
+        create_info = create_info.push_next(&mut validation_features);
+    }
 
     let instance = unsafe {
         entry
@@ -51,6 +92,17 @@ pub fn create_instance(
             .context("Failed to create Vulkan instance")?
     };
 
+    if validation {
+        log::warn!(
+            "Vulkan VALIDATION ENABLED — sync-validation{} (BYRO_VALIDATION / debug build). \
+             Hazards route to this log as `vulkan::debug` errors.",
+            if gpu_assisted_requested() {
+                " + GPU-Assisted (shader OOB / bad device address)"
+            } else {
+                " (set BYRO_VALIDATION=gpuav to add GPU-Assisted)"
+            },
+        );
+    }
     log::info!("Vulkan instance created (API 1.3)");
     Ok(instance)
 }

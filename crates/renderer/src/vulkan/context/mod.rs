@@ -1439,8 +1439,10 @@ impl VulkanContext {
         // 2. Instance
         let vk_instance = instance::create_instance(&entry, display_handle)?;
 
-        // 3. Debug messenger
-        let debug_messenger = if cfg!(debug_assertions) {
+        // 3. Debug messenger — created whenever validation is enabled
+        // (debug build OR `BYRO_VALIDATION` set), so the layer's messages
+        // route to the Rust `log` instead of vanishing on raw stderr.
+        let debug_messenger = if instance::validation_enabled() {
             Some(debug::create_debug_messenger(&vk_instance, &entry)?)
         } else {
             None
