@@ -5,9 +5,9 @@ use super::super::material::GpuMaterial;
 use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
 use super::super::scene_buffer::{
     self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
-    INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_NON_UNIFORM_SCALE, INSTANCE_FLAG_TERRAIN_SPLAT,
-    INSTANCE_RENDER_LAYER_MASK, INSTANCE_RENDER_LAYER_SHIFT, INSTANCE_TERRAIN_TILE_MASK,
-    INSTANCE_TERRAIN_TILE_SHIFT, MATERIAL_KIND_GLASS,
+    INSTANCE_FLAG_DIFFUSE_ALPHA, INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_NON_UNIFORM_SCALE,
+    INSTANCE_FLAG_TERRAIN_SPLAT, INSTANCE_RENDER_LAYER_MASK, INSTANCE_RENDER_LAYER_SHIFT,
+    INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT, MATERIAL_KIND_GLASS,
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::super::water::WaterDrawCommand;
@@ -1942,6 +1942,27 @@ impl VulkanContext {
                 };
                 if draw_cmd.alpha_blend {
                     f |= INSTANCE_FLAG_ALPHA_BLEND;
+                    // #1653 — tells the fragment shader the diffuse carries
+                    // a GENUINE authored alpha channel. When clear (BC1 and
+                    // other alpha-less formats) the shader pins texColor.a
+                    // to 1.0 unless an alpha test is active, so a BC1
+                    // 3-colour block's index-3 texel (a==0 in opaque
+                    // regions, an RGB-fidelity encoder choice) can't leak
+                    // transparency into the discard / decalWeight /
+                    // finalAlpha paths on a pure-blend mesh. BC1 decodes as
+                    // BC1_RGBA so its 1-bit punch-through still drives
+                    // alpha-test cutouts (2aac5351). `handle_has_alpha` is
+                    // false for BC1_RGBA (`format_has_alpha` excludes it)
+                    // and true for BC2/BC3/BC7/RGBA, so the FNV picture/
+                    // table blend keeps its authored alpha. Cheap cached
+                    // lookup (same map as the gi_albedo mean below), gated
+                    // on alpha_blend so the opaque majority pays nothing.
+                    if self
+                        .texture_registry
+                        .handle_has_alpha(draw_cmd.texture_handle)
+                    {
+                        f |= INSTANCE_FLAG_DIFFUSE_ALPHA;
+                    }
                 }
                 if is_caustic_source(draw_cmd) {
                     f |= INSTANCE_FLAG_CAUSTIC_SOURCE;

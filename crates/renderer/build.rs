@@ -190,6 +190,11 @@ fn main() {
         "#define INSTANCE_FLAG_FLAT_SHADING {INSTANCE_FLAG_FLAT_SHADING}u"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define INSTANCE_FLAG_DIFFUSE_ALPHA {INSTANCE_FLAG_DIFFUSE_ALPHA}u"
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     writeln!(

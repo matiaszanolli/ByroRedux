@@ -483,6 +483,35 @@ mod tests {
         assert_eq!(meta.block_size, 16);
     }
 
+    /// #1653 — the implicit blend-discard gate hinges on a two-part
+    /// invariant that this test pins together:
+    ///   1. BC1/DXT1 decodes as `BC1_RGBA` so its 1-bit punch-through
+    ///      alpha reaches alpha-test cutouts (2aac5351), AND
+    ///   2. `format_has_alpha` still reports `false` for that format —
+    ///      BC1 punch-through is NOT an authored alpha channel.
+    /// Together these keep `INSTANCE_FLAG_DIFFUSE_ALPHA` clear for BC1
+    /// blend meshes (so the pure-blend implicit discard is suppressed and
+    /// 3-colour-block opaque texels survive) while it stays set for
+    /// BC2/BC3/BC7/RGBA (so the FNV picture/table discard is preserved).
+    /// Genuine BC1 cutouts are unaffected: they discard via the explicit
+    /// alpha test (`aThresh > 0`), not this gate.
+    #[test]
+    fn bc1_decodes_rgba_but_reports_no_authored_alpha() {
+        let (fmt, _) = map_fourcc(FOURCC_DXT1).unwrap();
+        assert_eq!(fmt, vk::Format::BC1_RGBA_SRGB_BLOCK);
+        // The gate bit is driven by `handle_has_alpha` → `format_has_alpha`.
+        assert!(
+            !format_has_alpha(fmt),
+            "BC1_RGBA must report no authored alpha so the #1653 gate bit \
+             stays clear and BC1 blend meshes don't spuriously discard"
+        );
+        // The authored-alpha formats keep the discard (FNV picture/table).
+        assert!(format_has_alpha(vk::Format::BC2_SRGB_BLOCK));
+        assert!(format_has_alpha(vk::Format::BC3_SRGB_BLOCK));
+        assert!(format_has_alpha(vk::Format::BC7_SRGB_BLOCK));
+        assert!(format_has_alpha(vk::Format::R8G8B8A8_SRGB));
+    }
+
     #[test]
     fn parse_bc5_ati2() {
         let data = make_dds_header(128, 128, 1, b"ATI2");
