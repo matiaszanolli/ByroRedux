@@ -443,7 +443,20 @@ impl CompositePipeline {
             .src_access_mask(
                 vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::SHADER_WRITE,
             )
-            .dst_stage_mask(vk::PipelineStageFlags::FRAGMENT_SHADER)
+            // FRAGMENT_SHADER covers composite.frag's input sampling;
+            // COLOR_ATTACHMENT_OUTPUT covers the attachment loadOp itself.
+            // The colour attachment is `initial_layout = UNDEFINED` +
+            // `LOAD_OP_DONT_CARE`, so this EXTERNAL→0 dependency is what
+            // synchronizes the swapchain image's UNDEFINED→COLOR_ATTACHMENT
+            // layout transition. A DONT_CARE loadOp is itself a
+            // COLOR_ATTACHMENT_WRITE at COLOR_ATTACHMENT_OUTPUT; without that
+            // stage/access in the dst scope, the loadOp write races the
+            // layout transition this dependency drives — the sync-val
+            // WRITE_AFTER_WRITE flagged on the composite swapchain image.
+            .dst_stage_mask(
+                vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            )
             // #963 / REN-D10-NEW-06 — enumerate UNIFORM_READ alongside
             // SHADER_READ so the render-pass dep documents (and
             // independently covers) composite.frag's read of the
@@ -454,9 +467,14 @@ impl CompositePipeline {
             // defence-in-depth so the dep accurately reflects the
             // consumer access pattern and a future #909
             // revert/restructure can't silently strand the
-            // dependency. Purely additive — widens the access mask,
-            // never narrows.
-            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::UNIFORM_READ);
+            // dependency. COLOR_ATTACHMENT_WRITE orders the DONT_CARE
+            // loadOp after the layout transition. Purely additive —
+            // widens the access mask, never narrows.
+            .dst_access_mask(
+                vk::AccessFlags::SHADER_READ
+                    | vk::AccessFlags::UNIFORM_READ
+                    | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            );
 
         // Outgoing dependency: ensure swapchain write finishes before present.
         //

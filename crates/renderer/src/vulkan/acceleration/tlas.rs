@@ -708,10 +708,16 @@ impl AccelerationManager {
                 &[copy_region],
             );
 
-            // Barrier 2: transfer write → AS build read on the device-local buffer.
+            // Barrier 2: transfer write → AS build INPUT read on the
+            // device-local buffer. AS-build input buffers (instance data here,
+            // and vertex/index elsewhere) are read with SHADER_READ at the
+            // AS_BUILD stage per the Vulkan spec — NOT ACCELERATION_STRUCTURE_
+            // READ_KHR, which is for reading an acceleration STRUCTURE itself.
+            // Synchronization validation flags the latter as a copy→build RAW
+            // hazard on the instance buffer. #1436.
             let transfer_to_as = vk::BufferMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
                 .buffer(tlas.instance_buffer_device.buffer)
                 .offset(0)
                 .size(copy_size);
