@@ -338,6 +338,19 @@ pub struct EsmIndex {
     /// soul. FO3 / FNV drop the record (no soul magic in the
     /// Wasteland) so the map is empty there. See #966.
     pub soul_gems: HashMap<u32, SlgmRecord>,
+    // ── Skip telemetry (#1568 / SF-D4-02) ───────────────────────────
+    /// Top-level GRUP labels the walker consciously skipped because no
+    /// consumer exists for them yet — recorded once per label per parse
+    /// (warned-once, no per-record spam). Unlike the anonymous catch-all
+    /// (`_ => skip_group`), these are *named* here so the skip is visible
+    /// to telemetry / tests instead of silently inflating the unresolved
+    /// bucket. Currently only `PDCL` (Starfield `BGSProjectedDecal`):
+    /// decals are projected onto surrounding geometry and have no MODL,
+    /// so they can't ride the `statics` path even if dispatched — a real
+    /// decal-projection system is needed before they have a consumer.
+    /// Not a record category (carries no count), so it stays out of
+    /// [`categories`](EsmIndex::categories) / [`total`](EsmIndex::total).
+    pub skipped_unconsumed_groups: Vec<[u8; 4]>,
 }
 
 impl EsmIndex {
@@ -638,6 +651,11 @@ impl EsmIndex {
         self.apparatuses.extend(other.apparatuses);
         self.sigil_stones.extend(other.sigil_stones);
         self.soul_gems.extend(other.soul_gems);
+
+        // #1568 — skip telemetry accumulates across the plugin stack so a
+        // master + DLC that both ship PDCL each surface their skip.
+        self.skipped_unconsumed_groups
+            .extend(other.skipped_unconsumed_groups);
     }
 }
 

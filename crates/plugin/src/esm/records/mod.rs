@@ -198,6 +198,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     let mut warned_pkin = false;
     let mut warned_movs = false;
     let mut warned_mswp = false;
+    let mut warned_pdcl = false;
 
     // Walk top-level groups and dispatch by record-type label.
     while reader.remaining() > 0 {
@@ -291,6 +292,34 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                          (HEDR {:.2}); MSWP is FO4+ only — skipping. \
                          Cross-game plugin risk: material-swap references \
                          won't resolve.",
+                        game,
+                        file_header.hedr_version,
+                    );
+                }
+                reader.skip_group(&group);
+            }
+            // PDCL (Starfield BGSProjectedDecal, #1568 / SF-D4-02) — the
+            // single most frequent unresolved base type in Cydonia
+            // (1846 REFRs / 67 forms). Decals are projected onto the
+            // surrounding geometry and carry no MODL, so they could never
+            // ride the `statics` path even if dispatched; a real
+            // decal-projection consumer has to land before they mean
+            // anything. Until then, skip consciously — name the skip in
+            // telemetry (`skipped_unconsumed_groups`) so it stops
+            // vanishing into the anonymous catch-all and warn once so a
+            // Starfield load gets a single visible signal. Do NOT route
+            // into `statics`.
+            b"PDCL" => {
+                if !warned_pdcl {
+                    warned_pdcl = true;
+                    index.skipped_unconsumed_groups.push(*b"PDCL");
+                    log::warn!(
+                        "ESM: PDCL GRUP encountered (Starfield \
+                         BGSProjectedDecal, GameKind::{:?}, HEDR {:.2}); \
+                         no decal-projection consumer exists yet — \
+                         skipping. Placed decal REFRs won't resolve at \
+                         cell-load time (cosmetic only: no collision or \
+                         structural geometry is lost).",
                         game,
                         file_header.hedr_version,
                     );

@@ -561,6 +561,46 @@ fn avif_group_dispatches_to_actor_values_map() {
     assert!(avif.skill_scaling.is_some());
 }
 
+/// Regression: #1568 / SF-D4-02 — a top-level `PDCL` GRUP (Starfield
+/// `BGSProjectedDecal`) has no consumer yet. It must be CONSCIOUSLY
+/// skipped: named in the `skipped_unconsumed_groups` telemetry (not lost
+/// in the anonymous `_ => skip_group` catch-all) and never routed into
+/// `cells.statics` (decals carry no MODL). Pre-fix the whole group fell
+/// through the catch-all and the 1846 Cydonia decal REFRs dangled with
+/// zero signal.
+#[test]
+fn pdcl_group_consciously_skipped_and_counted() {
+    let pdcl: [u8; 4] = *b"PDCL";
+    let subs: Vec<(&[u8; 4], Vec<u8>)> = vec![(b"EDID", b"DecalGrime01\0".to_vec())];
+    let record = build_record(b"PDCL", 0xBEEF_00DE, &subs);
+    let group = wrap_group(b"PDCL", &record);
+    let mut tes4 = build_record(b"TES4", 0, &[]);
+    tes4.extend_from_slice(&group);
+    let index = parse_esm(&tes4).unwrap();
+
+    // Counted in telemetry — named, not silently dropped.
+    assert!(
+        index.skipped_unconsumed_groups.contains(&pdcl),
+        "PDCL must be recorded in skip telemetry, not lost to the catch-all"
+    );
+    // Warned-once: a single PDCL group records exactly one entry, no
+    // per-record spam (matches the warned_scol / warned_movs contract).
+    assert_eq!(
+        index
+            .skipped_unconsumed_groups
+            .iter()
+            .filter(|&&l| l == pdcl)
+            .count(),
+        1,
+        "PDCL skip must be recorded once per parse, not per record"
+    );
+    // Never routed into statics — decals have no MODL.
+    assert!(
+        !index.cells.statics.contains_key(&0xBEEF_00DE),
+        "PDCL must not leak into cells.statics"
+    );
+}
+
 /// Regression: #442 — a top-level `CREA` GRUP must dispatch to
 /// `parse_npc` (schema is NPC_-shaped) and land in
 /// `EsmIndex.creatures`. Pre-fix the whole group fell through to
