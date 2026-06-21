@@ -1165,15 +1165,16 @@ impl VulkanContext {
         //     Final AS_BUILD_WRITE → AS_BUILD_INPUT_READ barrier hands
         //     fresh BLAS to TLAS below.
         //
-        // #661 / SY-4 / #1436 (VKC-007): the COMPUTE→AS_BUILD barriers
-        // below use `ACCELERATION_STRUCTURE_READ_KHR` because that is
-        // what sync1 (`cmd_pipeline_barrier`) exposes. The semantically
-        // correct flag for "read vertex/index data as AS build inputs" is
-        // `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR`; on every
-        // shipping driver today the two are aliased so the sync1 form is
-        // equivalent. When the renderer migrates to sync2 / `cmd_pipeline_
-        // barrier2` (#bench-gate TBD), every COMPUTE→AS_BUILD dst_access
-        // should switch to the more-specific flag (#1436).
+        // #661 / SY-4 / #1436 (VKC-007): AS-build INPUT reads (the skinned
+        // vertex output fed to the BLAS build) use `SHADER_READ` at the
+        // AS_BUILD stage — the access the Vulkan spec assigns to build inputs.
+        // Reading an acceleration STRUCTURE — a BLAS during the TLAS build, or
+        // the TLAS during a ray query — is the separate
+        // `ACCELERATION_STRUCTURE_READ_KHR`, retained on those barriers.
+        // The earlier `ACCELERATION_STRUCTURE_READ_KHR`-for-inputs form was a
+        // sync1 shortcut on the assumption the two flags were aliased;
+        // synchronization validation disproved it (a compute/copy→build RAW
+        // hazard on the input buffer), so input barriers now carry SHADER_READ.
         //
         // Skips entirely when `skin_compute` / `accel_manager` are None
         // (no RT) or no draws are skinned.
@@ -1486,14 +1487,17 @@ impl VulkanContext {
                             // and the refit loop further down — both
                             // read the freshly-written output buffers
                             // as BLAS-build vertex input.
-                            // COMPUTE_SHADER → ACCELERATION_STRUCTURE_BUILD_KHR
+                            // COMPUTE_SHADER → ACCELERATION_STRUCTURE_BUILD_KHR.
+                            // Skinned vertex output is a BLAS-build INPUT, so the
+                            // dst access is SHADER_READ (the spec's build-input
+                            // access), NOT ACCELERATION_STRUCTURE_READ. #1436.
                             memory_barrier(
                                 &self.device,
                                 cmd,
                                 vk::PipelineStageFlags::COMPUTE_SHADER,
                                 vk::AccessFlags::SHADER_WRITE,
                                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                                vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                                vk::AccessFlags::SHADER_READ,
                             );
                             // #911 — first-sight BLAS BUILDs piggyback
                             // on the per-frame `cmd` rather than each
