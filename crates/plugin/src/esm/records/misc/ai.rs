@@ -928,10 +928,8 @@ mod tests {
         use crate::esm::reader::FormIdRemap;
         // PNAM (previous_info) and TCLT (topic_links) and ANAM (actor)
         // should be remapped when a remap is provided.
-        let remap = FormIdRemap {
-            plugin_index: 1,         // This plugin is at index 1
-            master_indices: vec![0], // Master is at index 0
-        };
+        // This plugin at index 1, master at index 0 (all regular, no ESL).
+        let remap = FormIdRemap::regular(1, vec![0]);
         let subs = vec![
             sub(b"PNAM", &0x00_050000u32.to_le_bytes()), // plugin 0 (master), form 0x050000
             sub(b"TCLT", &0x01_030000u32.to_le_bytes()), // plugin 1 (this), form 0x030000

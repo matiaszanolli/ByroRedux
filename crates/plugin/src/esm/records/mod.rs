@@ -105,7 +105,7 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
 /// `remap` rewrites every record's FormID top byte into the global
 /// load order so maps in [`EsmIndex`] stay collision-free across
 /// plugins. Pass `None` for single-plugin loads (the default today);
-/// pass `Some(FormIdRemap { plugin_index, master_indices })` when
+/// pass `Some(FormIdRemap { plugin_slot, master_slots })` when
 /// loading a DLC or mod in a multi-plugin stack so Anchorage's new
 /// form 0x01012345 doesn't collide with BrokenSteel's 0x01012345 in
 /// the same map. See #445.

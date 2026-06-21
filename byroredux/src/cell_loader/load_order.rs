@@ -10,6 +10,7 @@
 //! See M46.0 / #561 / #445 for the multi-plugin landing.
 
 use byroredux_plugin::esm;
+use std::path::Path;
 
 /// Lowercase basename of a plugin path. Used as the global load-order
 /// key (case-insensitive on Bethesda content).
@@ -32,29 +33,30 @@ pub(super) fn plugin_for_form_id(form_id: u32, load_order: &[String]) -> Option<
 
 /// Build the [`FormIdRemap`] that turns this plugin's local FormIDs
 /// (top byte = mod-index in its own MASTERS list) into globally
-/// load-order-indexed FormIDs (top byte = position in the load order
-/// passed to the cell loader).
+/// load-order-resolved FormIDs.
+///
+/// `plugin_slot` is this plugin's already-assigned global slot;
+/// `slots` holds every plugin's slot indexed by load-order position, so
+/// each master resolves to its own [`GlobalSlot`] — regular or ESL
+/// (#1554). Masters always precede their dependents, so their slots are
+/// assigned before this call.
 ///
 /// Returns `Err` when the plugin declares a master that isn't in the
-/// global load order — that's a load-order misconfiguration the caller
-/// must fix (every declared master must be present and earlier).
+/// global load order (or loads after it) — a load-order misconfiguration
+/// the caller must fix (every declared master must be present and earlier).
 pub(super) fn build_remap_for_plugin(
     plugin_path: &str,
-    plugin_data: &[u8],
-    plugin_index: usize,
+    header: &esm::reader::FileHeader,
+    plugin_slot: esm::reader::GlobalSlot,
     load_order: &[String],
+    slots: &[esm::reader::GlobalSlot],
 ) -> anyhow::Result<esm::reader::FormIdRemap> {
-    let mut reader = esm::reader::EsmReader::new(plugin_data);
-    let header = reader
-        .read_file_header()
-        .map_err(|e| anyhow::anyhow!("Failed to read TES4 header for '{}': {}", plugin_path, e))?;
-
-    let master_indices: Vec<u8> = header
+    let master_slots: Vec<esm::reader::GlobalSlot> = header
         .master_files
         .iter()
         .map(|m| {
             let m_lc = m.to_ascii_lowercase();
-            load_order
+            let pos = load_order
                 .iter()
                 .position(|name| name == &m_lc)
                 .ok_or_else(|| {
@@ -65,15 +67,49 @@ pub(super) fn build_remap_for_plugin(
                         m,
                         m,
                     )
-                })
-                .map(|i| i as u8)
+                })?;
+            // Masters load before their dependents, so the slot is already
+            // assigned. A master listed AFTER this plugin is a misordered
+            // load order — fail loudly rather than index unassigned slots.
+            slots.get(pos).copied().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Plugin '{}' declares master '{}' which loads after it — \
+                     masters must come first in the load order",
+                    plugin_path,
+                    m,
+                )
+            })
         })
-        .collect::<anyhow::Result<Vec<u8>>>()?;
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     Ok(esm::reader::FormIdRemap {
-        plugin_index: plugin_index as u8,
-        master_indices,
+        plugin_slot,
+        master_slots,
     })
+}
+
+/// #1553 / SK-D4-02 — load a Localized plugin's companion `.STRINGS` /
+/// `.DLSTRINGS` / `.ILSTRINGS` tables and install them into the
+/// thread-local string table for the duration of the returned guard.
+///
+/// `localized` is the caller's already-read TES4 `0x80` flag. Returns
+/// `None` (identity behaviour — placeholders survive) for a non-localized
+/// plugin. The loader + RAII guard already existed (`esm::strings_table`);
+/// this is the missing wiring that turns `<lstring 0xNNNNNNNN>`
+/// placeholders into authored names. All three table kinds are covered by
+/// `StringTableSet::load`. The guard MUST be held by the caller across the
+/// record walk so `resolve_lstring` sees the tables, then dropped before
+/// the next plugin.
+fn install_strings_guard(
+    localized: bool,
+    plugin_path: &str,
+    language: &str,
+) -> Option<esm::StringsTableGuard> {
+    if !localized {
+        return None;
+    }
+    let tables = esm::StringTableSet::load(Path::new(plugin_path), language);
+    Some(esm::StringsTableGuard::new(tables))
 }
 
 /// Parse a sequence of plugins in load order (masters first, main
@@ -106,7 +142,22 @@ pub(super) fn parse_record_indexes_in_load_order(
             }
         }
     }
+    // #1553 — companion `.STRINGS` language. Vanilla ships `english`;
+    // a localized install (french / german / …) can override it. Read
+    // once outside the loop.
+    let strings_language =
+        std::env::var("BYRO_STRINGS_LANG").unwrap_or_else(|_| "english".to_string());
+
     let mut merged = esm::records::EsmIndex::default();
+    // #1554 — global-slot assignment. Regular plugins consume a full
+    // top-byte slot (0x00–0xFD); ESL / light-master plugins (TES4 0x0200)
+    // share the 0xFE byte via a 12-bit sub-index. Masters precede their
+    // dependents, so a single forward pass assigns every slot before it's
+    // referenced.
+    let mut slots: Vec<esm::reader::GlobalSlot> = Vec::with_capacity(plugin_paths.len());
+    let mut next_regular: u8 = 0;
+    let mut next_light: u16 = 0;
+
     for (idx, path) in plugin_paths.iter().enumerate() {
         let bytes = std::fs::read(path)
             .map_err(|e| anyhow::anyhow!("Failed to read ESM '{}': {}", path, e))?;
@@ -118,7 +169,35 @@ pub(super) fn parse_record_indexes_in_load_order(
             bytes.len() as f64 / 1_048_576.0,
             idx,
         );
-        let remap = build_remap_for_plugin(path, &bytes, idx, &load_order)?;
+
+        // Read the TES4 header once: masters (for the remap), the ESL
+        // flag (slot assignment, #1554), and the Localized flag (the
+        // .STRINGS guard, #1553).
+        let header = {
+            let mut reader = esm::reader::EsmReader::new(&bytes);
+            reader.read_file_header().map_err(|e| {
+                anyhow::anyhow!("Failed to read TES4 header for '{}': {}", path, e)
+            })?
+        };
+
+        let plugin_slot = if header.light_master {
+            let slot = esm::reader::GlobalSlot::Light(next_light);
+            next_light += 1;
+            slot
+        } else {
+            let slot = esm::reader::GlobalSlot::Regular(next_regular);
+            next_regular += 1;
+            slot
+        };
+        slots.push(plugin_slot);
+
+        let remap = build_remap_for_plugin(path, &header, plugin_slot, &load_order, &slots)?;
+        // #1553 — install this plugin's companion string tables for the
+        // record walk so localized FULL/DESC/etc. lstring indices resolve
+        // to authored names instead of `<lstring 0xNNNNNNNN>`. RAII guard:
+        // alive across the parse, dropped before the next plugin so each
+        // plugin sees only its own tables.
+        let _strings_guard = install_strings_guard(header.localized, path, &strings_language);
         let plugin_records = esm::records::parse_esm_with_load_order(&bytes, Some(remap))
             .unwrap_or_else(|e| {
                 log::warn!("Record parse failed for '{}': {}", path, e);
@@ -127,4 +206,177 @@ pub(super) fn parse_record_indexes_in_load_order(
         merged.merge_from(plugin_records);
     }
     Ok((merged, load_order))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// FO3+/TES5 24-byte-header record: `type + size + flags + form_id +
+    /// 8-byte trailer`, then `[subtype, u16 len, data]` sub-records.
+    fn build_record(typ: &[u8; 4], form_id: u32, subs: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut sub_data = Vec::new();
+        for (st, data) in subs {
+            sub_data.extend_from_slice(*st);
+            sub_data.extend_from_slice(&(data.len() as u16).to_le_bytes());
+            sub_data.extend_from_slice(data);
+        }
+        let mut buf = Vec::new();
+        buf.extend_from_slice(typ);
+        buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // flags
+        buf.extend_from_slice(&form_id.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]); // trailer
+        buf.extend_from_slice(&sub_data);
+        buf
+    }
+
+    fn wrap_group(label: &[u8; 4], record: &[u8]) -> Vec<u8> {
+        let total = 24 + record.len();
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GRUP");
+        buf.extend_from_slice(&(total as u32).to_le_bytes());
+        buf.extend_from_slice(label);
+        buf.extend_from_slice(&0u32.to_le_bytes()); // group_type = top
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(record);
+        buf
+    }
+
+    /// TES4 with explicit record `flags` (0x80 = Localized, 0x0200 = ESL)
+    /// + a Skyrim HEDR version.
+    fn build_tes4(flags: u32) -> Vec<u8> {
+        let mut hedr = Vec::new();
+        hedr.extend_from_slice(b"HEDR");
+        hedr.extend_from_slice(&12u16.to_le_bytes());
+        hedr.extend_from_slice(&1.7f32.to_le_bytes()); // Skyrim
+        hedr.extend_from_slice(&0u32.to_le_bytes());
+        hedr.extend_from_slice(&0u32.to_le_bytes());
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"TES4");
+        buf.extend_from_slice(&(hedr.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&flags.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&hedr);
+        buf
+    }
+
+    /// Synthetic `.STRINGS`: `[count][data_size][id,offset…][blob]` with
+    /// bare null-terminated strings (no length prefix).
+    fn build_strings_file(entries: &[(u32, &str)]) -> Vec<u8> {
+        let mut blob = Vec::new();
+        let mut offsets = Vec::new();
+        for (_, s) in entries {
+            offsets.push(blob.len() as u32);
+            blob.extend_from_slice(s.as_bytes());
+            blob.push(0);
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(blob.len() as u32).to_le_bytes());
+        for (i, (id, _)) in entries.iter().enumerate() {
+            out.extend_from_slice(&id.to_le_bytes());
+            out.extend_from_slice(&offsets[i].to_le_bytes());
+        }
+        out.extend_from_slice(&blob);
+        out
+    }
+
+    /// A single-WEAP plugin (FULL = lstring id 0x0001) with TES4 `flags`
+    /// and the WEAP at raw `weap_form_id`, written to `dir/<stem>.esm`.
+    /// Returns the path.
+    fn write_weap_plugin(dir: &Path, stem: &str, flags: u32, weap_form_id: u32) -> std::path::PathBuf {
+        let mut weap_subs = Vec::<(&[u8; 4], Vec<u8>)>::new();
+        weap_subs.push((b"EDID", b"TestBlade\0".to_vec()));
+        weap_subs.push((b"FULL", 0x0001u32.to_le_bytes().to_vec()));
+        weap_subs.push((b"DATA", {
+            let mut d = Vec::new();
+            d.extend_from_slice(&100u32.to_le_bytes()); // value
+            d.extend_from_slice(&0u32.to_le_bytes()); // health
+            d.extend_from_slice(&1.5f32.to_le_bytes()); // weight
+            d.extend_from_slice(&15u16.to_le_bytes()); // damage
+            d.push(0);
+            d.push(0);
+            d
+        }));
+        let weap = build_record(b"WEAP", weap_form_id, &weap_subs);
+        let group = wrap_group(b"WEAP", &weap);
+        let mut esm_bytes = build_tes4(flags);
+        esm_bytes.extend_from_slice(&group);
+        let path = dir.join(format!("{stem}.esm"));
+        fs::write(&path, &esm_bytes).unwrap();
+        path
+    }
+
+    /// #1553 / SK-D4-02 — end-to-end wiring: a Localized plugin on disk
+    /// with a sibling `Strings/<stem>_english.STRINGS` must resolve its
+    /// FULL lstring indices to authored names through
+    /// `parse_record_indexes_in_load_order`. Pre-fix the loader + guard
+    /// existed but were never wired, so every localized name stayed a
+    /// `<lstring 0x…>` placeholder.
+    #[test]
+    fn localized_plugin_resolves_names_through_load_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let stem = "TestPlugin";
+        let esm_path = write_weap_plugin(dir.path(), stem, 0x80, 0xBEEF);
+
+        let strings_dir = dir.path().join("Strings");
+        fs::create_dir(&strings_dir).unwrap();
+        fs::write(
+            strings_dir.join(format!("{stem}_english.STRINGS")),
+            build_strings_file(&[(0x0001, "Iron Sword")]),
+        )
+        .unwrap();
+
+        let path_str = esm_path.to_str().unwrap();
+        let (index, _order) = parse_record_indexes_in_load_order(&[path_str]).unwrap();
+        let item = index.items.get(&0xBEEF).expect("WEAP indexed");
+        assert_eq!(
+            item.common.full_name, "Iron Sword",
+            "the load-order wiring must install the .STRINGS guard so the \
+             FULL lstring resolves (not the <lstring 0x…> placeholder)"
+        );
+    }
+
+    /// Control: the SAME Localized plugin WITHOUT the companion file keeps
+    /// the placeholder — proving the resolution above came from the wired
+    /// guard reading the on-disk table, not some other path.
+    #[test]
+    fn localized_plugin_without_strings_keeps_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        let esm_path = write_weap_plugin(dir.path(), "NoStrings", 0x80, 0xBEEF);
+
+        let path_str = esm_path.to_str().unwrap();
+        let (index, _order) = parse_record_indexes_in_load_order(&[path_str]).unwrap();
+        let item = index.items.get(&0xBEEF).expect("WEAP indexed");
+        assert_eq!(item.common.full_name, "<lstring 0x00000001>");
+    }
+
+    /// #1554 / SK-D4-03 — end-to-end: an ESL-flagged (TES4 0x0200) plugin's
+    /// own forms must land in the 0xFE light space through the load-order
+    /// path, NOT at a flat top-byte index. The single ESL with no masters
+    /// gets light sub-index 0, so a self-ref WEAP at raw 0x0000_0800
+    /// resolves to 0xFE00_0800 in the merged index. Pre-fix the 0x0200
+    /// flag was never read and the form kept its raw 0x0000_0800 id.
+    #[test]
+    fn esl_plugin_own_forms_land_in_light_space() {
+        let dir = tempfile::tempdir().unwrap();
+        // Self-ref object id 0x800 (within the 12-bit ESL object range).
+        let esm_path = write_weap_plugin(dir.path(), "EslMod", 0x0200, 0x0000_0800);
+
+        let path_str = esm_path.to_str().unwrap();
+        let (index, _order) = parse_record_indexes_in_load_order(&[path_str]).unwrap();
+        assert!(
+            index.items.contains_key(&0xFE00_0800),
+            "ESL self-ref form must remap into the 0xFE light space (sub-index 0), \
+             got keys: {:?}",
+            index.items.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !index.items.contains_key(&0x0000_0800),
+            "the raw pre-remap id must not survive — that's the #1554 bug"
+        );
+    }
 }
