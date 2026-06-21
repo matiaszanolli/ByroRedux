@@ -44,6 +44,50 @@ impl Archive {
             Archive::Ba2(a) => a.extract(path),
         }
     }
+
+    /// Enumerate entry paths (BA2 paths are already lowercase +
+    /// backslash-separated, per `Ba2Archive::list_files`). BSA archives
+    /// return empty: Starfield's component databases ship only in BA2s,
+    /// so a BSA can't carry one. Used by Starfield CDB discovery (#1571).
+    fn list_files(&self) -> Vec<&str> {
+        match self {
+            Archive::Bsa(_) => Vec::new(),
+            Archive::Ba2(a) => a.list_files(),
+        }
+    }
+}
+
+/// True for a Starfield component-database path — the base
+/// `materials\materialsbeta.cdb` or any DLC/Creation-namespaced
+/// `materials\creations\<plugin>\materialsbeta.cdb`. #1571 / SF-D3-03.
+fn is_materialsbeta_cdb_path(path: &str) -> bool {
+    let p = path.replace('/', "\\").to_ascii_lowercase();
+    p.starts_with("materials\\") && p.ends_with("materialsbeta.cdb")
+}
+
+/// Scan one archive for Starfield component databases and load each into
+/// `provider` in archive order. #1571 / SF-D3-03 — the base game ships
+/// `materials\materialsbeta.cdb` in `Starfield - Materials.ba2`, but each
+/// DLC / Creation ships its own at `materials\creations\<plugin>\…` inside
+/// its `* - Main.ba2`, so a hardcoded single-path extract misses them.
+fn discover_starfield_cdbs(archive: &Archive, source: &str, provider: &mut MaterialProvider) {
+    // Collect the matching paths first so the immutable `list_files`
+    // borrow is released before the mutable `provider` borrow per extract.
+    let cdb_paths: Vec<String> = archive
+        .list_files()
+        .into_iter()
+        .filter(|p| is_materialsbeta_cdb_path(p))
+        .map(|p| p.to_owned())
+        .collect();
+    for path in cdb_paths {
+        match archive.extract(&path) {
+            Ok(bytes) => {
+                log::info!("Discovered Starfield CDB '{path}' in '{source}'");
+                provider.load_starfield_cdb(&bytes);
+            }
+            Err(e) => log::warn!("Failed to extract CDB '{path}' from '{source}': {e}"),
+        }
+    }
 }
 
 /// Provides file data by searching BSA/BA2 archives.
@@ -538,31 +582,49 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
     let mut provider = MaterialProvider::new();
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--materials-ba2" {
-            if let Some(path) = args.get(i + 1) {
-                match Archive::open(path) {
-                    Ok(a) => {
-                        log::info!("Opened materials archive: '{}'", path);
-                        // #1289 / SF-D3-NEW-01 — opportunistically extract
-                        // `materials\materialsbeta.cdb` (Starfield's single
-                        // binary component database holding every vanilla
-                        // material). Non-Starfield archives don't ship this
-                        // file; extraction returns an Err which we silently
-                        // ignore (FO4's `Fallout4 - Materials.ba2` has no
-                        // CDB). The CDB is loaded once per provider so
-                        // subsequent `--materials-ba2` flags re-extract +
-                        // re-parse on a hit; intentional (matches
-                        // `push_archive`'s replacement semantics).
-                        if let Ok(bytes) = a.extract("materials\\materialsbeta.cdb") {
-                            provider.load_starfield_cdb(&bytes);
+        match args[i].as_str() {
+            "--materials-ba2" => {
+                if let Some(path) = args.get(i + 1) {
+                    match Archive::open(path) {
+                        Ok(a) => {
+                            log::info!("Opened materials archive: '{}'", path);
+                            // #1289 / SF-D3-NEW-01 → #1571 / SF-D3-03 —
+                            // scan the archive for every Starfield component
+                            // database (base `materials\materialsbeta.cdb`
+                            // plus any DLC/Creation-namespaced CDB) instead
+                            // of extracting one hardcoded path. Non-Starfield
+                            // archives (FO4's `Fallout4 - Materials.ba2`)
+                            // ship none, so the scan is a no-op there.
+                            discover_starfield_cdbs(&a, path, &mut provider);
+                            provider.push_archive(a);
                         }
-                        provider.push_archive(a);
+                        Err(e) => log::warn!("Failed to open materials archive: {}", e),
                     }
-                    Err(e) => log::warn!("Failed to open materials archive: {}", e),
+                    i += 2;
+                    continue;
                 }
-                i += 2;
-                continue;
             }
+            // #1571 / SF-D3-03 — DLC / Creation CDBs ship inside the
+            // `* - Main.ba2` MESH archives (passed via `--bsa`), at
+            // `materials\creations\<plugin>\materialsbeta.cdb` — never the
+            // base path and never `--materials-ba2`. Scan those for CDBs
+            // too, but do NOT push them as material archives: they're mesh
+            // archives owned by the TextureProvider. The archive is
+            // re-opened here purely to read its file table (the entry data
+            // isn't touched) and dropped after the scan.
+            "--bsa" => {
+                if let Some(path) = args.get(i + 1) {
+                    match Archive::open(path) {
+                        Ok(a) => discover_starfield_cdbs(&a, path, &mut provider),
+                        Err(e) => {
+                            log::warn!("Failed to open '{}' for CDB discovery: {}", path, e)
+                        }
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+            _ => {}
         }
         i += 1;
     }
@@ -717,22 +779,26 @@ pub(crate) struct MaterialProvider {
     failed_paths: HashSet<String>,
     /// Insertion-order key tracker for [`failed_paths`] — drives half-eviction.
     failed_paths_order: VecDeque<String>,
-    /// Starfield `materialsbeta.cdb` — single binary Component Database
-    /// holding every vanilla Starfield material. Populated by
-    /// [`Self::load_starfield_cdb`] when `Starfield - Materials.ba2`
-    /// is opened. `None` for non-Starfield content. #1289 / SF-D3-NEW-01.
+    /// Starfield `materialsbeta.cdb` Component Databases, in archive /
+    /// load order. The base game ships one (`materials\materialsbeta.cdb`
+    /// in `Starfield - Materials.ba2`); each DLC / Creation ships its own
+    /// at `materials\creations\<plugin>\materialsbeta.cdb` inside its
+    /// `* - Main.ba2`. Empty for non-Starfield content.
+    /// #1289 / SF-D3-NEW-01, multi-CDB discovery #1571 / SF-D3-03.
     ///
-    /// Phase 1 (this commit): presence-only — the CDB is parsed and held
-    /// so [`merge_bgsm_into_mesh`]'s `.mat` arm has confirmation that
+    /// Phase 1 (today): presence-only — the CDBs are parsed and held so
+    /// [`merge_bgsm_into_mesh`]'s `.mat` arm has confirmation that
     /// Starfield material authoring is loaded before flipping `is_pbr`.
-    /// Phase 2 (future): walk the 1.44M-instance tree to build a
-    /// `material_path → MaterialFields` lookup so per-material metalness
-    /// / roughness / texture paths flow into `ImportedMesh` (mirrors the
-    /// FO4 BGSM `resolve_bgsm` per-field translation already wired below).
-    sf_cdb: Option<Arc<ComponentDatabaseFile>>,
+    /// Phase 2 (future, SF-D3-01 #1289): walk the instance trees in load
+    /// order to build ONE `material_path → MaterialFields` lookup (DLC
+    /// last-wins) so per-material metalness / roughness / texture paths
+    /// flow into `ImportedMesh` (mirrors the FO4 BGSM `resolve_bgsm`
+    /// per-field translation already wired below) — a single index, no
+    /// second per-game material path (CANONICAL-BOUNDARY).
+    sf_cdbs: Vec<Arc<ComponentDatabaseFile>>,
     /// #1585 / F6 — process-lifetime cache of the `<Plugin> - Geometry.csg`
     /// companion blob, keyed by the cell's master plugin path. Mirrors the
-    /// `sf_cdb` `Arc` hold: the CSG owns a warm zlib `ChunkCache`, so
+    /// `sf_cdbs` `Arc` hold: the CSG owns a warm zlib `ChunkCache`, so
     /// re-opening it per precombine cell-load (the pre-fix behaviour) re-read
     /// + re-parsed the ~3700-entry chunk table every tile and discarded all
     /// inter-cell chunk reuse. The negative (`None`) result is cached too, so
@@ -755,14 +821,14 @@ impl MaterialProvider {
             bgem_cache_order: VecDeque::new(),
             failed_paths: HashSet::new(),
             failed_paths_order: VecDeque::new(),
-            sf_cdb: None,
+            sf_cdbs: Vec::new(),
             csg_cache: HashMap::new(),
         }
     }
 
     /// Resolve + open the `<Plugin> - Geometry.csg` companion blob once per
     /// session (keyed by `plugin_path`) and hand back a shared handle.
-    /// #1585 / F6 — mirrors the `sf_cdb` `Arc` caching: precombine cell-loads
+    /// #1585 / F6 — mirrors the `sf_cdbs` `Arc` caching: precombine cell-loads
     /// re-opened this ~240 MB blob every tile, re-parsing the chunk table and
     /// throwing away the warm zlib `ChunkCache` that amortises inflate across
     /// adjacent tiles sharing PSG regions. The negative result is cached so a
@@ -784,22 +850,21 @@ impl MaterialProvider {
         self.archives.push(archive);
     }
 
-    /// True once the Starfield Component Database has been loaded.
-    /// Drives the `.mat` arm in [`merge_bgsm_into_mesh`] — flipping
-    /// `mesh.is_pbr = true` on `.mat` material paths only when the CDB
-    /// is present means modded `.mat` paths against a non-Starfield
-    /// archive set don't accidentally route to Disney BSDF.
-    /// #1289 / SF-D3-NEW-01.
+    /// True once at least one Starfield Component Database has been
+    /// loaded (base and/or DLC). Drives the `.mat` arm in
+    /// [`merge_bgsm_into_mesh`] — flipping `mesh.is_pbr = true` on `.mat`
+    /// material paths only when a CDB is present means modded `.mat`
+    /// paths against a non-Starfield archive set don't accidentally route
+    /// to Disney BSDF. #1289 / SF-D3-NEW-01.
     pub(crate) fn has_starfield_cdb(&self) -> bool {
-        self.sf_cdb.is_some()
+        !self.sf_cdbs.is_empty()
     }
 
-    /// Parse the Starfield `materialsbeta.cdb` payload and hold it on
-    /// `self`. Idempotent: a second call replaces the existing CDB
-    /// (matches the archive-replacement semantics of `push_archive`).
-    /// Logs the class + instance count on success; on parse failure
-    /// the CDB stays at `None` and `has_starfield_cdb` keeps reporting
-    /// false. #1289 / SF-D3-NEW-01.
+    /// Parse a Starfield `materialsbeta.cdb` payload and APPEND it on
+    /// `self` in load order (base first, then DLC) — `discover_starfield_cdbs`
+    /// calls this once per CDB found across the loaded archives (#1571).
+    /// Logs the class + instance count on success; a parse failure is
+    /// warned and dropped, leaving the other CDBs intact. #1289 / SF-D3-NEW-01.
     pub(crate) fn load_starfield_cdb(&mut self, bytes: &[u8]) {
         match ComponentDatabaseFile::parse(bytes) {
             Ok(cdb) => {
@@ -811,7 +876,7 @@ impl MaterialProvider {
                     cdb.instances.len(),
                     bytes.len(),
                 );
-                self.sf_cdb = Some(Arc::new(cdb));
+                self.sf_cdbs.push(Arc::new(cdb));
             }
             Err(e) => {
                 log::warn!(
@@ -3066,6 +3131,69 @@ mod tests {
         buf.extend_from_slice(&4u32.to_le_bytes()); // size = 4
         buf.extend_from_slice(&0u32.to_le_bytes()); // type_count = 0
         buf
+    }
+
+    /// #1571 / SF-D3-03 — the discovery predicate must match the base
+    /// CDB AND every DLC/Creation-namespaced one, and reject everything
+    /// else. `Ba2Archive::list_files` hands back lowercase/backslash
+    /// paths, but the predicate normalises so it's robust to either.
+    #[test]
+    fn is_materialsbeta_cdb_path_matches_base_and_dlc() {
+        // Base game.
+        assert!(is_materialsbeta_cdb_path(
+            "materials\\materialsbeta.cdb"
+        ));
+        // DLC / Creations — the paths the hardcoded extract missed.
+        assert!(is_materialsbeta_cdb_path(
+            "materials\\creations\\shatteredspace\\materialsbeta.cdb"
+        ));
+        assert!(is_materialsbeta_cdb_path(
+            "materials\\creations\\sfbgs003\\materialsbeta.cdb"
+        ));
+        assert!(is_materialsbeta_cdb_path(
+            "materials\\creations\\sfbgs00d\\materialsbeta.cdb"
+        ));
+        // Forward-slash + mixed-case input still matches (normalised).
+        assert!(is_materialsbeta_cdb_path(
+            "Materials/Creations/ShatteredSpace/MaterialsBeta.cdb"
+        ));
+        // Non-CDB / wrong-root paths are rejected.
+        assert!(!is_materialsbeta_cdb_path(
+            "materials\\foo\\bar.bgsm"
+        ));
+        assert!(!is_materialsbeta_cdb_path(
+            "meshes\\materialsbeta.cdb" // right filename, wrong root
+        ));
+        assert!(!is_materialsbeta_cdb_path("materialsbeta.cdb")); // no materials\ root
+    }
+
+    /// #1571 — every discovered CDB is held in load order (base first,
+    /// then DLC) so SF-D3-01 Phase 2 can build one last-wins index. The
+    /// pre-fix single `Option<Arc<…>>` could only hold one, silently
+    /// dropping DLC materials once Phase 2 lands.
+    #[test]
+    fn discovered_cdbs_accumulate_in_load_order() {
+        let mut provider = MaterialProvider::new();
+        assert!(!provider.has_starfield_cdb(), "empty provider has no CDB");
+
+        // Base CDB, then a DLC CDB — both parse, both retained.
+        provider.load_starfield_cdb(&minimal_cdb_bytes());
+        provider.load_starfield_cdb(&minimal_cdb_bytes());
+        assert!(provider.has_starfield_cdb());
+        assert_eq!(
+            provider.sf_cdbs.len(),
+            2,
+            "a second CDB must be appended, not replace the first (was the \
+             single-Option bug that dropped DLC CDBs)"
+        );
+
+        // A malformed CDB is warned + dropped, leaving the others intact.
+        provider.load_starfield_cdb(b"not a cdb");
+        assert_eq!(
+            provider.sf_cdbs.len(),
+            2,
+            "a parse failure must not drop the already-loaded CDBs"
+        );
     }
 
     /// Audit-fail closure: a `.mat` path on a Starfield mesh with the
