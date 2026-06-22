@@ -1,0 +1,20 @@
+[package]
+name = "byroredux-pex"
+version.workspace = true
+edition.workspace = true
+
+# Compiled-Papyrus (`.pex`) container reader — the vanilla-runtime script
+# format. Phase 1 of M47.2: decode the file into a structured `Pex` model
+# (header / string table / debug info / objects → properties / states /
+# functions → bytecode instructions). The bytecode→AST decompiler (Phase 2)
+# is a separate module that consumes this model's `Function.instructions`.
+#
+# Ported from Champollion (Orvid/Champollion, the reference `.pex` →
+# `.psc` decompiler). See docs/engine/m47-2-design.md.
+
+[dependencies]
+log = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }

@@ -15,6 +15,7 @@ members = [
     "crates/sfmaterial",
     "crates/ui",
     "crates/papyrus",
+    "crates/pex",
     "crates/facegen",
     "crates/audio",
     "crates/debug-protocol",
@@ -47,6 +48,7 @@ byroredux-physics = { path = "crates/physics" }
 byroredux-cxx-bridge = { path = "crates/cxx-bridge" }
 byroredux-ui = { path = "crates/ui" }
 byroredux-papyrus = { path = "crates/papyrus" }
+byroredux-pex = { path = "crates/pex" }
 byroredux-facegen = { path = "crates/facegen" }
 byroredux-audio = { path = "crates/audio" }
 byroredux-debug-protocol = { path = "crates/debug-protocol" }

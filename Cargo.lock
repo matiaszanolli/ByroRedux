@@ -554,6 +554,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "byroredux-pex"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "byroredux-physics"
 version = "0.1.0"
 dependencies = [

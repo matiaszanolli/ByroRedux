@@ -896,6 +896,7 @@ original `.swf` files. See
 | **M43** | Quests & dialogue | Pending — quest stages (resource shipped), dialogue trees, Story Manager triggers. |
 
 Design doc for the event runtime: [`docs/engine/m47-0-design.md`](m47-0-design.md).
+Design doc for the full scripting runtime: [`docs/engine/m47-2-design.md`](m47-2-design.md).
 Ground-truth milestone state: always confirm against [ROADMAP.md](../../ROADMAP.md).
 
 ---
