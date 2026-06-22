@@ -13,6 +13,7 @@
 //! 3. *control-flow + boolean-operator reconstruction* (next).
 //! 4. *lower the node tree → `byroredux_papyrus::ast::Script`* (next).
 
+mod boolean;
 mod cfg;
 mod control_flow;
 mod event_names;
@@ -20,6 +21,7 @@ mod lift;
 mod lower;
 mod node;
 
+pub use boolean::rebuild_boolean_operators;
 pub use cfg::{build_cfg, CodeBlock, Cfg, END};
 pub use control_flow::reconstruct;
 pub use lift::lift_function;

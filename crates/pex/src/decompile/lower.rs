@@ -18,6 +18,7 @@ use byroredux_papyrus::span::{Span, Spanned};
 
 use crate::model::{Function as PexFunction, Object, Pex, Value};
 
+use super::boolean::rebuild_boolean_operators;
 use super::cfg::build_cfg;
 use super::control_flow::reconstruct;
 use super::event_names::is_event_name;
@@ -208,8 +209,11 @@ fn lower_body(nodes: &[Node]) -> Vec<Spanned<Stmt>> {
 /// Decompile one `.pex` function to a Papyrus body. The public seam the
 /// tests and the script assembly share.
 fn decompile_body(object: &Object, func: &PexFunction) -> Result<Vec<Spanned<Stmt>>, DecompileError> {
-    let cfg = build_cfg(func)?;
-    let scopes = lift_function(object, func, &cfg)?;
+    let mut cfg = build_cfg(func)?;
+    let mut scopes = lift_function(object, func, &cfg)?;
+    // Collapse `&&`/`||` short-circuits before control-flow reconstruction
+    // so compound conditions surface as one expression, not nested ifs.
+    rebuild_boolean_operators(&mut cfg, &mut scopes, &func.name)?;
     let nodes = reconstruct(cfg, scopes, &func.name)?;
     Ok(lower_body(&nodes))
 }

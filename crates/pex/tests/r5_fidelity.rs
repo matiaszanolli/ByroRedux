@@ -9,7 +9,7 @@
 //! ```
 //! It skips gracefully (passing) when the game data isn't present.
 
-use byroredux_papyrus::ast::{Expr, ScriptItem, Stmt};
+use byroredux_papyrus::ast::{BinaryOp, Expr, ScriptItem, Stmt};
 use byroredux_papyrus::span::Spanned;
 use byroredux_pex::decompile::decompile_script;
 
@@ -79,6 +79,52 @@ fn expr_has_call(expr: &Expr, method: &str) -> bool {
     }
 }
 
+/// Whether any expression in a statement body uses the given binary op.
+fn body_has_binary_op(body: &[Spanned<Stmt>], target: BinaryOp) -> bool {
+    body.iter().any(|s| stmt_has_binary_op(&s.node, target))
+}
+
+fn stmt_has_binary_op(stmt: &Stmt, target: BinaryOp) -> bool {
+    match stmt {
+        Stmt::ExprStmt(e) | Stmt::Assign { value: e, .. } => expr_has_binary_op(&e.node, target),
+        Stmt::Return(Some(e)) => expr_has_binary_op(&e.node, target),
+        Stmt::Return(None) => false,
+        Stmt::If { condition, body, elseif_clauses, else_body } => {
+            expr_has_binary_op(&condition.node, target)
+                || body_has_binary_op(body, target)
+                || elseif_clauses.iter().any(|(c, b)| {
+                    expr_has_binary_op(&c.node, target) || body_has_binary_op(b, target)
+                })
+                || else_body.as_ref().is_some_and(|b| body_has_binary_op(b, target))
+        }
+        Stmt::While { condition, body } => {
+            expr_has_binary_op(&condition.node, target) || body_has_binary_op(body, target)
+        }
+        Stmt::VarDecl(_) => false,
+    }
+}
+
+fn expr_has_binary_op(expr: &Expr, target: BinaryOp) -> bool {
+    match expr {
+        Expr::BinaryOp { left, op, right } => {
+            *op == target
+                || expr_has_binary_op(&left.node, target)
+                || expr_has_binary_op(&right.node, target)
+        }
+        Expr::UnaryOp { operand, .. } => expr_has_binary_op(&operand.node, target),
+        Expr::Cast { expr, .. } => expr_has_binary_op(&expr.node, target),
+        Expr::Call { callee, args } => {
+            expr_has_binary_op(&callee.node, target)
+                || args.iter().any(|a| expr_has_binary_op(&a.value.node, target))
+        }
+        Expr::MemberAccess { object, .. } => expr_has_binary_op(&object.node, target),
+        Expr::Index { object, index } => {
+            expr_has_binary_op(&object.node, target) || expr_has_binary_op(&index.node, target)
+        }
+        _ => false,
+    }
+}
+
 /// Find the `OnActivate` event body in a decompiled script (top level).
 fn on_activate_body(script: &byroredux_papyrus::ast::Script) -> Option<&[Spanned<Stmt>]> {
     script.body.iter().find_map(|item| match &item.node {
@@ -107,13 +153,19 @@ fn da10_main_door_decompiles_to_the_r5_reference_shape() {
         Some("referencealias".to_string()),
     );
 
-    // The OnActivate handler is an Event, and its body carries the
-    // stage-gate logic: GetStageDone reads guarding a SetStage(40) write.
-    // (The `&&` is nested ifs here — the boolean pass lands in commit 5 —
-    // so we search recursively rather than asserting one flat condition.)
+    // The OnActivate handler is an Event whose body carries the stage-gate
+    // logic: GetStageDone reads guarding a SetStage(40) write.
     let body = on_activate_body(&script).expect("OnActivate event present");
     assert!(body_has_call(body, "GetStageDone"), "guards on GetStageDone");
     assert!(body_has_call(body, "SetStage"), "writes via SetStage");
+
+    // The two GetStageDone checks are joined by `&&` in the source — the
+    // boolean pass must collapse the short-circuit into one `&&` condition
+    // (rather than nested ifs). This is the real-bytecode `&&` test.
+    assert!(
+        body_has_binary_op(body, BinaryOp::And),
+        "the two stage checks collapse into a single && condition",
+    );
 
     // Cross-check the reference parses to the same header (sanity on the
     // fixture itself).
