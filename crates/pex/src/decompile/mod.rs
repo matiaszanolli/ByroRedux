@@ -14,8 +14,12 @@
 //! 4. *lower the node tree → `byroredux_papyrus::ast::Script`* (next).
 
 mod cfg;
+mod lift;
+mod node;
 
 pub use cfg::{build_cfg, CodeBlock, Cfg, END};
+pub use lift::lift_function;
+pub use node::{Node, NodeKind};
 
 use thiserror::Error;
 
@@ -36,4 +40,14 @@ pub enum DecompileError {
     /// integer (the three forms Champollion accepts).
     #[error("conditional jump at instruction {ip} has an unsupported condition operand")]
     BadJumpCondition { ip: usize },
+
+    /// An operand that must be an identifier (a destination, method name,
+    /// or property name) was a literal instead.
+    #[error("instruction {ip} expected an identifier operand")]
+    ExpectedIdentifier { ip: usize },
+
+    /// Copy-propagation found a temp consumed by more than one expression
+    /// — the bytecode doesn't fit the single-use temp model.
+    #[error("failed to rebuild expression in '{function}' at instruction {ip}")]
+    ExpressionRebuildFailed { function: String, ip: usize },
 }
