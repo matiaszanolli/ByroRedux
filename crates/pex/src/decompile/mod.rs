@@ -14,10 +14,12 @@
 //! 4. *lower the node tree → `byroredux_papyrus::ast::Script`* (next).
 
 mod cfg;
+mod control_flow;
 mod lift;
 mod node;
 
 pub use cfg::{build_cfg, CodeBlock, Cfg, END};
+pub use control_flow::reconstruct;
 pub use lift::lift_function;
 pub use node::{Node, NodeKind};
 
@@ -50,4 +52,9 @@ pub enum DecompileError {
     /// — the bytecode doesn't fit the single-use temp model.
     #[error("failed to rebuild expression in '{function}' at instruction {ip}")]
     ExpressionRebuildFailed { function: String, ip: usize },
+
+    /// Control-flow reconstruction couldn't match the block graph to a
+    /// structured shape (a malformed or unexpected jump topology).
+    #[error("failed to rebuild control flow in '{function}'")]
+    ControlFlowFailed { function: String },
 }

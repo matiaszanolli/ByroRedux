@@ -93,7 +93,7 @@ pub fn lift_function(
                 scope.push(check_assign(node));
             }
         }
-        rebuild_expression(&mut scope, function)?;
+        rebuild_expression(&mut scope, &function.name)?;
         scopes.insert(key, scope);
     }
     Ok(scopes)
@@ -313,7 +313,10 @@ fn check_assign(node: Node) -> Node {
 /// folded into the single following statement that consumes its result,
 /// collapsing temps into nested expression trees. More than one consumer
 /// of a temp at this stage is a structural error.
-fn rebuild_expression(scope: &mut Vec<Node>, function: &Function) -> Result<(), DecompileError> {
+pub(super) fn rebuild_expression(
+    scope: &mut Vec<Node>,
+    func_name: &str,
+) -> Result<(), DecompileError> {
     let mut i = 0;
     while i < scope.len() {
         if !scope[i].is_final() && i + 1 < scope.len() {
@@ -330,7 +333,7 @@ fn rebuild_expression(scope: &mut Vec<Node>, function: &Function) -> Result<(), 
                 }
                 _ => {
                     return Err(DecompileError::ExpressionRebuildFailed {
-                        function: function.name.clone(),
+                        function: func_name.to_string(),
                         ip: scope[i + 1].begin,
                     })
                 }

@@ -12,6 +12,11 @@
 
 use crate::model::Value;
 
+/// Instruction index for nodes the decompiler synthesizes (conditions,
+/// control-flow wrappers) that don't correspond to a single source
+/// instruction. Mirrors Champollion's `(size_t)-1` sentinel.
+pub(crate) const SYNTH_IP: usize = usize::MAX;
+
 /// One node in the decompiled expression/statement tree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
@@ -70,6 +75,19 @@ pub enum NodeKind {
     ArrayAccess { array: Box<Node>, index: Box<Node> },
     /// `new StructType` (FO4+).
     StructCreate { struct_type: String },
+
+    /// `If condition … [ElseIf …] [Else …] EndIf`. `else_if` holds the
+    /// flattened `ElseIf` chain (populated by a later cleanup pass; empty
+    /// as produced by control-flow reconstruction). Bodies are statement
+    /// lists (Champollion's child `Scope`s).
+    IfElse {
+        condition: Box<Node>,
+        body: Vec<Node>,
+        else_body: Vec<Node>,
+        else_if: Vec<Node>,
+    },
+    /// `While condition … EndWhile`.
+    While { condition: Box<Node>, body: Vec<Node> },
 }
 
 impl Node {
@@ -215,6 +233,29 @@ impl Node {
         Node::new(NodeKind::StructCreate { struct_type }, result, ip, 0)
     }
 
+    pub(crate) fn if_else(condition: Node, body: Vec<Node>, else_body: Vec<Node>) -> Node {
+        Node::new(
+            NodeKind::IfElse {
+                condition: Box::new(condition),
+                body,
+                else_body,
+                else_if: Vec::new(),
+            },
+            None,
+            SYNTH_IP,
+            10,
+        )
+    }
+
+    pub(crate) fn while_node(condition: Node, body: Vec<Node>) -> Node {
+        Node::new(
+            NodeKind::While { condition: Box::new(condition), body },
+            None,
+            SYNTH_IP,
+            10,
+        )
+    }
+
     /// Whether this node is a *final* statement (cannot be inlined into a
     /// later expression). Mirrors Champollion `Base::isFinal`: a node with
     /// no result is final; a node whose result is a `::temp…` or
@@ -253,6 +294,18 @@ impl Node {
             NodeKind::ArrayCreate { size, .. } => vec![size],
             NodeKind::ArrayLength { array } => vec![array],
             NodeKind::ArrayAccess { array, index } => vec![array, index],
+            NodeKind::IfElse { condition, body, else_body, else_if } => {
+                let mut v: Vec<&Node> = vec![condition];
+                v.extend(body.iter());
+                v.extend(else_body.iter());
+                v.extend(else_if.iter());
+                v
+            }
+            NodeKind::While { condition, body } => {
+                let mut v: Vec<&Node> = vec![condition];
+                v.extend(body.iter());
+                v
+            }
         }
     }
 
@@ -277,6 +330,18 @@ impl Node {
             NodeKind::ArrayCreate { size, .. } => vec![size],
             NodeKind::ArrayLength { array } => vec![array],
             NodeKind::ArrayAccess { array, index } => vec![array, index],
+            NodeKind::IfElse { condition, body, else_body, else_if } => {
+                let mut v: Vec<&mut Node> = vec![condition.as_mut()];
+                v.extend(body.iter_mut());
+                v.extend(else_body.iter_mut());
+                v.extend(else_if.iter_mut());
+                v
+            }
+            NodeKind::While { condition, body } => {
+                let mut v: Vec<&mut Node> = vec![condition.as_mut()];
+                v.extend(body.iter_mut());
+                v
+            }
         }
     }
 }

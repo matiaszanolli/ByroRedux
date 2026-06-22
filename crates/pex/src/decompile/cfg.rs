@@ -110,6 +110,19 @@ impl Cfg {
     pub fn block(&self, key: usize) -> Option<&CodeBlock> {
         self.blocks.get(&key)
     }
+
+    /// Key of the block containing instruction `ip`, or [`END`] if none
+    /// (Champollion `findBlockForInstruction`).
+    pub fn find_block(&self, ip: usize) -> usize {
+        find_block_for_instruction(&self.blocks, ip)
+    }
+
+    /// The next block key after `key` in ascending order, mirroring a
+    /// `std::map` iterator `++`. `None` when `key` is the last block.
+    pub fn next_key(&self, key: usize) -> Option<usize> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        self.blocks.range((Excluded(key), Unbounded)).next().map(|(&k, _)| k)
+    }
 }
 
 /// Key of the block containing instruction `ip`
