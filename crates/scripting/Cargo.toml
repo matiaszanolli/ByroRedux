@@ -3,8 +3,15 @@ name = "byroredux-scripting"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# M45 — derive serde on the script-owned game-state components
+# (`ScriptTimer`) so the save crate can snapshot them. Off by default;
+# the binary turns it on.
+save = ["serde", "byroredux-core/save"]
+
 [dependencies]
 byroredux-core = { workspace = true }
+serde = { workspace = true, optional = true }
 # M47.1 — scripting needs the `Condition` / `ConditionList` types
 # from `byroredux_plugin::esm::records::condition` so the evaluator
 # can operate on parser-produced data. No cycle: plugin parses ESM

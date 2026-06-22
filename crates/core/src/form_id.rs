@@ -54,6 +54,27 @@ pub struct FormId(u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PluginId(pub u128);
 
+// `PluginId` is a 128-bit UUID; `serde_json::Value`'s number type tops out
+// at `u64`, so a raw-number derive fails with "number out of range" for any
+// real plugin id. Serialise as a fixed 32-char lowercase hex string instead
+// — Value-safe and human-legible in a save dump.
+#[cfg(feature = "inspect")]
+impl serde::Serialize for PluginId {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(&format!("{:032x}", self.0))
+    }
+}
+
+#[cfg(feature = "inspect")]
+impl<'de> serde::Deserialize<'de> for PluginId {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let s = <std::string::String as serde::Deserialize>::deserialize(de)?;
+        u128::from_str_radix(&s, 16)
+            .map(PluginId)
+            .map_err(|e| serde::de::Error::custom(format!("invalid PluginId hex '{s}': {e}")))
+    }
+}
+
 impl PluginId {
     /// Derive a deterministic `PluginId` from a legacy plugin filename.
     ///
@@ -90,6 +111,7 @@ impl PluginId {
 /// For legacy files this is the lower 24 bits of the original Form ID.
 /// For Redux-native plugins this is assigned by the plugin author.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct LocalFormId(pub u32);
 
 /// The canonical, load-order-independent identity of a record.
@@ -97,6 +119,7 @@ pub struct LocalFormId(pub u32);
 /// This is what gets written to save files and plugin manifests.
 /// At runtime it is interned into a [`FormId`] via [`FormIdPool`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct FormIdPair {
     pub plugin: PluginId,
     pub local: LocalFormId,

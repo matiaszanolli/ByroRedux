@@ -410,6 +410,7 @@ dependencies = [
  "byroredux-platform",
  "byroredux-plugin",
  "byroredux-renderer",
+ "byroredux-save",
  "byroredux-scripting",
  "byroredux-sfmaterial",
  "byroredux-spt",
@@ -610,6 +611,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "byroredux-save"
+version = "0.1.0"
+dependencies = [
+ "byroredux-core",
+ "crc32fast",
+ "glam 0.29.3",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "byroredux-scripting"
 version = "0.1.0"
 dependencies = [
@@ -617,6 +631,7 @@ dependencies = [
  "byroredux-papyrus",
  "byroredux-plugin",
  "log",
+ "serde",
 ]
 
 [[package]]

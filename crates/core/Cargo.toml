@@ -7,6 +7,10 @@ edition.workspace = true
 default = ["parallel-scheduler"]
 parallel-scheduler = ["rayon"]
 inspect = ["serde", "serde_json", "glam/serde"]
+# Save/load (M45) reuses the same serde derives as `inspect`; kept as a
+# distinct feature name so the save crate can opt in without implying the
+# debug-inspection intent.
+save = ["inspect"]
 
 [dependencies]
 glam = { workspace = true }

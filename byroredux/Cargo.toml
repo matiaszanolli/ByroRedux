@@ -25,9 +25,12 @@ dhat-heap = ["dep:dhat"]
 byroredux-debug-server = { workspace = true, optional = true }
 byroredux-debug-ui = { workspace = true }
 byroredux-core = { workspace = true }
+byroredux-save = { workspace = true }
 byroredux-renderer = { workspace = true }
 byroredux-platform = { workspace = true }
-byroredux-scripting = { workspace = true }
+# `save` feature: derive serde on script-owned game-state components
+# (ScriptTimer) so the M45 save registry can snapshot them.
+byroredux-scripting = { workspace = true, features = ["save"] }
 byroredux-nif = { workspace = true }
 byroredux-spt = { workspace = true }
 byroredux-bsa = { workspace = true }

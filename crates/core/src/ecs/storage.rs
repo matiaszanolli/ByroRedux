@@ -79,6 +79,13 @@ pub trait DynStorage: Send + Sync + 'static {
     /// No-op if the entity has no component here.
     fn remove_entity_erased(&mut self, entity: EntityId);
 
+    /// Drop every component in this storage, leaving it empty but
+    /// reusable. Used by [`World::clear_entities`](super::world::World::clear_entities)
+    /// when a save load replaces the entire entity population — far
+    /// cheaper than walking `next_entity` and despawning one ID at a
+    /// time, and it can't miss a live entity the way an ID sweep would.
+    fn clear_erased(&mut self);
+
     /// Upcast to `&dyn Any` so `World` can downcast back to the concrete
     /// `T::Storage` for typed access.
     fn as_any(&self) -> &dyn Any;

@@ -1291,3 +1291,47 @@ fn despawn_poisoned_lock_panics_with_type_name() {
         "despawn panic should name the component type, got: {msg}"
     );
 }
+
+// ── Save/load support: clear_entities + set_next_entity (M45) ────────────
+
+#[test]
+fn clear_entities_empties_all_storages_across_backends() {
+    let mut world = World::new();
+    // Mix a sparse-set and a packed component so both DynStorage::clear
+    // impls are exercised.
+    let a = world.spawn();
+    let b = world.spawn();
+    world.insert(a, Health(1.0));
+    world.insert(b, Health(2.0));
+    world.insert(a, Position { x: 5.0, y: 6.0 });
+
+    assert_eq!(world.count::<Health>(), 2);
+    assert_eq!(world.count::<Position>(), 1);
+
+    world.clear_entities();
+
+    assert_eq!(world.count::<Health>(), 0);
+    assert_eq!(world.count::<Position>(), 0);
+    // Storages persist (queries still resolve), they're just empty.
+    assert!(world.query::<Health>().is_some());
+    // next_entity is untouched by clear — only set_next_entity moves it.
+    assert_eq!(world.next_entity_id(), 2);
+}
+
+#[test]
+fn set_next_entity_then_insert_at_original_ids() {
+    // Mimics the load path: clear, set the saved high-water mark, then
+    // re-insert components at their original (sparse) entity ids without
+    // calling spawn().
+    let mut world = World::new();
+    world.set_next_entity(10);
+    // id 7 is < next_entity (10), so insert passes its guard even though
+    // spawn() was never called for it.
+    world.insert(7, Health(99.0));
+    world.insert_batch::<Position, _>(vec![(3, Position { x: 1.0, y: 2.0 })]);
+
+    assert_eq!(world.next_entity_id(), 10);
+    assert_eq!(world.get::<Health>(7).map(|h| h.0), Some(99.0));
+    let q = world.query::<Position>().unwrap();
+    assert_eq!(q.iter().map(|(e, _)| e).collect::<Vec<_>>(), vec![3]);
+}

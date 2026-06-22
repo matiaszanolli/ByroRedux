@@ -86,6 +86,73 @@ impl StringPool {
             None => self.0.get(s.to_ascii_lowercase()),
         }
     }
+
+    /// Dump every interned string in **symbol order** (symbol 0, 1, 2 …).
+    ///
+    /// The `StringBackend` assigns symbols contiguously as strings are
+    /// first interned, so re-interning this exact sequence into a fresh
+    /// pool reproduces identical [`FixedString`] values
+    /// ([`from_dump`](Self::from_dump)). That symbol stability is what lets
+    /// the save format store `FixedString`-bearing components by their raw
+    /// `u32` symbol (see [`fixed_string_serde`]) rather than re-resolving
+    /// every string at the component level.
+    ///
+    /// Strings come back in their canonical lowercased form (the same form
+    /// [`resolve`](Self::resolve) returns); re-interning is idempotent.
+    pub fn dump(&self) -> Vec<String> {
+        use string_interner::Symbol;
+        // Iteration order isn't contractually symbol-order, so index by
+        // symbol explicitly rather than trusting the yield order.
+        let mut by_symbol: Vec<Option<String>> = Vec::new();
+        for (sym, s) in self.0.iter() {
+            let idx = sym.to_usize();
+            if idx >= by_symbol.len() {
+                by_symbol.resize(idx + 1, None);
+            }
+            by_symbol[idx] = Some(s.to_string());
+        }
+        // Every slot 0..len must be filled for a contiguous backend; an
+        // empty slot would desync every later symbol, so surface it loudly.
+        by_symbol
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| s.unwrap_or_else(|| panic!("StringPool dump: gap at symbol {i}")))
+            .collect()
+    }
+
+    /// Rebuild a pool from a [`dump`](Self::dump), reproducing the original
+    /// [`FixedString`] symbol for each string by interning in symbol order.
+    pub fn from_dump(strings: &[String]) -> Self {
+        let mut pool = Self::new();
+        for s in strings {
+            pool.intern(s);
+        }
+        pool
+    }
+}
+
+/// `serde` adapter for serializing a [`FixedString`] as its raw `u32`
+/// symbol, for use with `#[serde(with = "...")]` on component fields.
+///
+/// Only valid when the [`StringPool`] is restored first (via
+/// [`StringPool::from_dump`]) so the symbol resolves to the same string.
+/// The save driver guarantees that ordering: strings are restored before
+/// any component column is deserialized.
+#[cfg(feature = "inspect")]
+pub mod fixed_string_serde {
+    use super::FixedString;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use string_interner::Symbol;
+
+    pub fn serialize<S: Serializer>(fs: &FixedString, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_u32(fs.to_usize() as u32)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<FixedString, D::Error> {
+        let raw = u32::deserialize(de)?;
+        FixedString::try_from_usize(raw as usize)
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid FixedString symbol {raw}")))
+    }
 }
 
 /// Copy `s` into `buf`, ASCII-lowercasing in place, and return the

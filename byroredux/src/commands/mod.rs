@@ -56,6 +56,10 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MatListCommand);
     registry.register(MatSetCommand);
     registry.register(RagdollCommand);
+    // M45 — save/load (the matching `SaveRegistry` + `SaveState`
+    // resources are installed alongside the command registry).
+    registry.register(crate::save_io::SaveCommand);
+    registry.register(crate::save_io::SaveInfoCommand);
     registry
 }
 

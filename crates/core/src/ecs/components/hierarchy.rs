@@ -7,6 +7,7 @@ use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::{Component, EntityId};
 
 /// Points to this entity's parent in the scene hierarchy.
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct Parent(pub EntityId);
 
 impl Component for Parent {
@@ -20,6 +21,7 @@ impl Component for Parent {
 /// Lists this entity's children in the scene hierarchy.
 /// Maintained alongside `Parent` — adding a Parent to a child should
 /// also push the child into the parent's Children list.
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct Children(pub Vec<EntityId>);
 
 impl Component for Children {

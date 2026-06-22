@@ -1342,6 +1342,7 @@ impl Resource for SelectedRef {}
 /// inventory types. Phase A of #896 ships it minimal; Phase B/C and
 /// M45 fill in real fields.
 #[derive(Debug, Default, Clone)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ItemInstance {
     /// Reserved for now. Real fields land alongside the consuming
     /// gameplay system (M45 save round-trip; FO4 OMOD wiring).
@@ -1359,6 +1360,7 @@ pub struct ItemInstance {
 /// wraps `NonZeroU32`) can encode "no instance" as the absence of
 /// the option without burning a u32 niche.
 #[derive(Debug)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ItemInstancePool {
     instances: Vec<Option<ItemInstance>>,
     free: Vec<u32>,

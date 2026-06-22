@@ -25,6 +25,7 @@ mod npc_spawn;
 mod parsed_nif_cache;
 mod ragdoll;
 mod render;
+mod save_io;
 mod scene;
 mod scene_import_cache;
 mod sf_smoke;
@@ -999,6 +1000,15 @@ impl App {
         // declared-access conflicts to the operator.
         world.insert_resource(byroredux_core::ecs::SchedulerAccessReport(report_snapshot));
         world.insert_resource(build_command_registry());
+        // M45 — install the save registry + slot directory so the
+        // `save` / `save.info` console commands can operate. Saves live
+        // under `<cwd>/saves`; the ring keeps the last 10 quicksaves so
+        // a fresh save never immediately clobbers the previous good one.
+        world.insert_resource(crate::save_io::build_save_registry());
+        world.insert_resource(crate::save_io::SaveState::new(
+            std::path::PathBuf::from("saves"),
+            10,
+        ));
 
         // Start debug server (feature-gated, zero cost when disabled).
         // The returned handle's Drop signals shutdown + joins the
