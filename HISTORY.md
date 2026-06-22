@@ -24,6 +24,56 @@ Commits hold that record.
 
 ---
 
+## Session 50 — M45 Save/Load library  (2026-06-21, `bd2d0de2`, branch `feat/m45-save-load`)
+
+ROADMAP pick: M45 was the only unblocked top-tier (Tier 1–4) capability
+milestone — M40 (world streaming) closed in Session 40, and M45 is pure-Rust
+ECS-data work with no GPU/game-data dependency, so it was workable end-to-end
+from the keyboard. Built the full save/load **architecture** (the design from
+the long-standing SaveGame-invariants note) as a new `crates/save`.
+
+- **Snapshot core** — `SaveRegistry`: type-erased per-component/-resource
+  save/load closures the binary populates with the curated game-state set
+  (Transform, Name, Parent/Children, Inventory, EquipmentSlots, Light*,
+  Animation{Player,Stack}, ScriptTimer, FormIdComponent, ItemInstancePool).
+  Versioned binary container (magic / major+minor / FNV schema-fingerprint /
+  CRC32 / payload-len header + serde_json payload); `decode` refuses bad
+  magic, major-version skew, schema drift, truncation, and CRC corruption
+  before any parse.
+- **Drivers + entity-id preservation** — `save_world(&World)` /
+  `restore_world(&mut World)`. The load de-risk: there's no `spawn_at`, but
+  `insert`/`insert_batch` only require `id < next_entity`, so load sets
+  `next_entity` to the saved value and re-inserts at the original (sparse)
+  ids — `Parent`/`Children`/`root_entity`/handle refs stay valid with zero
+  remap. New `World::clear_entities` + `set_next_entity` + `DynStorage::clear_erased`.
+- **Pool round-trips** — `StringPool::dump`/`from_dump` (symbol-order
+  re-intern reproduces every `FixedString` symbol) + a `fixed_string_serde`
+  adapter so `Name` serialises its raw symbol; `FormIdComponent` persists the
+  **stable `FormIdPair`** (resolved through `FormIdPool`), never the
+  session-local handle, honouring the type's "never stored in saves" contract.
+- **Durability + validation** — crash-safe atomic write
+  (`tmp → fsync → read-back verify → rename`) + round-robin `SaveRing` so a
+  quicksave never clobbers the last good save; `validate_world` pre-save pass
+  (Parent⇄Children, equip indices, clip-handle resolution, dangling refs)
+  refuses to persist a structurally broken world.
+- **Binary wiring** — `build_save_registry` + `SaveState` resource; `save [slot]`
+  (validate + snapshot + atomic write) and `save.info <slot>` (decode + verify
+  + summarise) console commands. New core `save = ["inspect"]` feature; serde
+  derives on Name / Parent / Children / FormIdPair / PluginId (Value-safe hex
+  string for the u128) / LocalFormId / ItemInstance{,Pool}; scripting `save`
+  feature for ScriptTimer.
+- **Deferred → M45.1** — live load-apply into a running Vulkan session needs
+  GPU mesh/texture + BLAS + physics + camera re-instantiation (a renderer
+  re-sync, its own integration). The destructive `restore_world` stays
+  library-only + headlessly tested rather than destabilising the live
+  renderer speculatively; `save.info` is the safe in-engine surface. Likely
+  M45.1 shape: reload the saved cell via the existing cell-loader, then apply
+  saved component deltas on top.
+
+Net: +1 crate (`crates/save`), +20 tests (16 save-crate + 2 World + 2 binary,
+incl. a cross-crate ScriptTimer round-trip), workspace + clippy green. M45 row
+moves to "library landed"; M45.1 (live apply) is the open remainder.
+
 ## Session 49 — RT denoiser overhaul + FO4 import-consumer arc + audit bug-bash  (2026-06-19, bac64c45..b1f86290, 79 commits)
 
 Three threads. The headline was an **RT denoiser overhaul** (#1662) pushing
