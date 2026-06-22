@@ -18,3 +18,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
+# For the `pex_corpus_smoke` example only — iterate real Skyrim/FO4/
+# Starfield script archives and parse every `.pex`. bsa does not depend on
+# pex, so this dev-only edge introduces no cycle.
+byroredux-bsa = { workspace = true }

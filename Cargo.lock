@@ -557,6 +557,7 @@ dependencies = [
 name = "byroredux-pex"
 version = "0.1.0"
 dependencies = [
+ "byroredux-bsa",
  "env_logger",
  "log",
  "thiserror 2.0.18",
