@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 
 use byroredux_bsa::{Ba2Archive, BsaArchive};
-use byroredux_pex::{parse, OpCode, MAX_OPCODE, ScriptType};
+use byroredux_pex::{decompile::decompile_script, parse, OpCode, MAX_OPCODE, ScriptType};
 
 /// Minimal archive abstraction over the two container formats — both
 /// expose `list_files` + `extract`.
@@ -59,6 +59,11 @@ struct Stats {
     failures: Vec<(String, String)>,
     max_instr_fn: (String, usize),
     objects_with_no_object: usize,
+    // Decompiler pass (parse → CFG → lift → reconstruct → lower to AST).
+    decompiled_ok: usize,
+    decompiled_err: usize,
+    decompiled_panic: usize,
+    decompile_failures: Vec<(String, String)>,
 }
 
 fn type_name(t: ScriptType) -> &'static str {
@@ -134,6 +139,25 @@ fn main() {
                 Ok(pex) => {
                     stats.ok += 1;
                     tally(&pex, &f, &mut stats);
+                    // Decompile too — catch panics so one bad script can't
+                    // abort the whole corpus sweep.
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        decompile_script(&pex)
+                    })) {
+                        Ok(Ok(_)) => stats.decompiled_ok += 1,
+                        Ok(Err(e)) => {
+                            stats.decompiled_err += 1;
+                            if stats.decompile_failures.len() < 25 {
+                                stats.decompile_failures.push((f.clone(), e.to_string()));
+                            }
+                        }
+                        Err(_) => {
+                            stats.decompiled_panic += 1;
+                            if stats.decompile_failures.len() < 25 {
+                                stats.decompile_failures.push((f.clone(), "PANIC".to_string()));
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     stats.failed += 1;
@@ -172,9 +196,24 @@ fn main() {
     }
 
     if !stats.failures.is_empty() {
-        println!("\nfirst {} failures:", stats.failures.len());
+        println!("\nfirst {} parse failures:", stats.failures.len());
         for (name, err) in &stats.failures {
             println!("  {name}: {err}");
+        }
+    }
+
+    let dtot = stats.decompiled_ok + stats.decompiled_err + stats.decompiled_panic;
+    if dtot > 0 {
+        let pct = 100.0 * stats.decompiled_ok as f64 / dtot as f64;
+        println!(
+            "\ndecompile → AST: ok {} ({pct:.1}%)  err {}  panic {}",
+            stats.decompiled_ok, stats.decompiled_err, stats.decompiled_panic
+        );
+        if !stats.decompile_failures.is_empty() {
+            println!("first {} decompile failures:", stats.decompile_failures.len());
+            for (name, err) in &stats.decompile_failures {
+                println!("  {name}: {err}");
+            }
         }
     }
 

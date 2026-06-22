@@ -15,6 +15,11 @@ edition.workspace = true
 [dependencies]
 log = { workspace = true }
 thiserror = { workspace = true }
+# The decompiler lowers its node tree to the shared Papyrus AST so a
+# decompiled `.pex` reuses every existing `.psc` recognizer. papyrus does
+# not depend on pex, so this is acyclic (mirrors how the nif crate's
+# import module depends on core).
+byroredux-papyrus = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }

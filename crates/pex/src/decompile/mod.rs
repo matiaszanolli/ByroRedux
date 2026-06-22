@@ -15,12 +15,15 @@
 
 mod cfg;
 mod control_flow;
+mod event_names;
 mod lift;
+mod lower;
 mod node;
 
 pub use cfg::{build_cfg, CodeBlock, Cfg, END};
 pub use control_flow::reconstruct;
 pub use lift::lift_function;
+pub use lower::decompile_script;
 pub use node::{Node, NodeKind};
 
 use thiserror::Error;
@@ -57,4 +60,8 @@ pub enum DecompileError {
     /// structured shape (a malformed or unexpected jump topology).
     #[error("failed to rebuild control flow in '{function}'")]
     ControlFlowFailed { function: String },
+
+    /// The `.pex` carried no object to decompile into a script.
+    #[error(".pex has no object to decompile")]
+    EmptyPex,
 }
