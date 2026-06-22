@@ -50,6 +50,26 @@ pub struct LoadedPluginSet {
 
 impl Resource for LoadedPluginSet {}
 
+/// Identity of the interior cell currently loaded, plus the plugin set it
+/// came from — everything a save needs to reload the same cell.
+///
+/// Set by [`super::load::load_cell_with_masters`] on every interior load;
+/// the M45 save registry serialises it as a resource column so `load`
+/// can re-issue the same `TransitionDestination::Interior` before applying
+/// saved component deltas. Absent in loose-NIF / exterior-streaming modes
+/// (no single interior cell identity).
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct CurrentCellContext {
+    /// Cell editor-ID (the `--cell` value / transition destination key).
+    pub cell_editor_id: String,
+    /// Main ESM path (the `--esm` value).
+    pub esm_path: String,
+    /// Master plugin paths in load order (the repeated `--master` values).
+    pub masters: Vec<String>,
+}
+
+impl Resource for CurrentCellContext {}
+
 /// Tracks the placement-root entity of the currently-loaded interior
 /// cell. `Some(root)` after [`super::load::load_cell_with_masters`]
 /// returns; cleared by [`execute_pending`] before loading the next

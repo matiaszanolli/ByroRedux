@@ -221,3 +221,84 @@ fn validation_passes_on_a_consistent_world() {
         "the hand-built world must be referentially consistent"
     );
 }
+
+/// M45.1 — the FormId-keyed delta apply: a saved session and a freshly
+/// reloaded cell carry the *same* form ids on *different* entity ids;
+/// saved Transform/Inventory deltas must land on the matching live
+/// entity, not the (stale) saved id.
+#[test]
+fn delta_apply_reroutes_by_form_id_after_cell_reload() {
+    use byroredux_save::{apply_deltas, build_form_id_remap};
+
+    // Two distinct form ids for two cell objects.
+    let pair_a = FormIdPair {
+        plugin: PluginId::from_filename("FalloutNV.esm"),
+        local: LocalFormId(0x0A),
+    };
+    let pair_b = FormIdPair {
+        plugin: PluginId::from_filename("FalloutNV.esm"),
+        local: LocalFormId(0x0B),
+    };
+
+    // ── "Saved session": objects at ids 5 and 6, A moved + given loot. ──
+    let mut saved_world = World::new();
+    saved_world.insert_resource(StringPool::new());
+    saved_world.insert_resource(FormIdPool::new());
+    for _ in 0..5 {
+        saved_world.spawn();
+    }
+    let s_a = saved_world.spawn(); // 5
+    let s_b = saved_world.spawn(); // 6
+    saved_world.insert(s_a, Transform::from_translation(Vec3::new(100.0, 0.0, 0.0)));
+    let mut inv = Inventory::new();
+    inv.push(ItemStack::new(0xCAFE, 3));
+    saved_world.insert(s_a, inv);
+    saved_world.insert(s_b, Transform::from_translation(Vec3::new(0.0, 50.0, 0.0)));
+    for (e, pair) in [(s_a, pair_a), (s_b, pair_b)] {
+        let fid = saved_world.resource_mut::<FormIdPool>().intern(pair);
+        saved_world.insert(e, FormIdComponent(fid));
+    }
+
+    let reg = registry();
+    let snapshot = save_world(&saved_world, &reg).unwrap();
+
+    // ── "Reloaded cell": SAME form ids, DIFFERENT ids (reverse order, no
+    //    gaps), authored Transforms not yet reflecting the saved deltas. ──
+    let mut live = World::new();
+    live.insert_resource(FormIdPool::new());
+    let l_b = live.spawn(); // 0  (note: B spawns first here)
+    let l_a = live.spawn(); // 1
+    live.insert(l_a, Transform::from_translation(Vec3::new(1.0, 1.0, 1.0)));
+    live.insert(l_b, Transform::from_translation(Vec3::new(2.0, 2.0, 2.0)));
+    for (e, pair) in [(l_a, pair_a), (l_b, pair_b)] {
+        let fid = live.resource_mut::<FormIdPool>().intern(pair);
+        live.insert(e, FormIdComponent(fid));
+    }
+
+    // Build the remap and apply only the mutable delta columns.
+    let remap = build_form_id_remap(&live, &reg, &snapshot);
+    assert_eq!(remap.get(&s_a), Some(&l_a), "saved A → live A");
+    assert_eq!(remap.get(&s_b), Some(&l_b), "saved B → live B");
+
+    let applied = apply_deltas(
+        &mut live,
+        &reg,
+        &snapshot,
+        &remap,
+        &["Transform", "Inventory"],
+    )
+    .unwrap();
+    assert_eq!(applied, 3, "2 transforms + 1 inventory");
+
+    // The saved deltas landed on the correct live entities.
+    let qt = live.query::<Transform>().unwrap();
+    let tf: std::collections::HashMap<u32, Vec3> =
+        qt.iter().map(|(e, t)| (e, t.translation)).collect();
+    assert_eq!(tf[&l_a], Vec3::new(100.0, 0.0, 0.0), "A's saved move applied to live A");
+    assert_eq!(tf[&l_b], Vec3::new(0.0, 50.0, 0.0), "B's saved move applied to live B");
+
+    let qi = live.query::<Inventory>().unwrap();
+    let (e, inv) = qi.iter().next().unwrap();
+    assert_eq!(e, l_a, "loot applied to live A, not the stale saved id");
+    assert_eq!(inv.items[0].base_form_id, 0xCAFE);
+}

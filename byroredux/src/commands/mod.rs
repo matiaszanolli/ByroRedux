@@ -60,6 +60,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     // resources are installed alongside the command registry).
     registry.register(crate::save_io::SaveCommand);
     registry.register(crate::save_io::SaveInfoCommand);
+    registry.register(crate::save_io::LoadCommand);
     registry
 }
 

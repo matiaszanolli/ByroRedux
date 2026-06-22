@@ -350,6 +350,15 @@ pub fn load_cell_with_masters(
     // even when the resource was already present from the prior load.
     world.insert_resource(super::CurrentCellRoot(Some(cell_root)));
 
+    // M45.1 — record the cell identity + plugin set so a save taken here
+    // is self-describing: `load` re-issues this exact interior load before
+    // applying saved deltas. Replaces any prior load's context wholesale.
+    world.insert_resource(super::CurrentCellContext {
+        cell_editor_id: cell_editor_id.to_string(),
+        esm_path: esm_path.to_string(),
+        masters: masters.to_vec(),
+    });
+
     Ok(CellLoadResult {
         cell_name,
         entity_count,

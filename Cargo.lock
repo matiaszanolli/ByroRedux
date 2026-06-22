@@ -421,6 +421,7 @@ dependencies = [
  "log",
  "rayon",
  "serde",
+ "serde_json",
  "sysinfo",
  "tempfile",
  "toml",

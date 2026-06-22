@@ -57,6 +57,7 @@ anyhow = { workspace = true }
 winit = { workspace = true }
 sysinfo = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]
