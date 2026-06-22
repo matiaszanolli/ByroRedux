@@ -23,6 +23,7 @@
 //!
 //! See `docs/engine/m47-2-design.md` for where this sits in the pipeline.
 
+pub mod decompile;
 mod model;
 mod opcode;
 mod reader;
