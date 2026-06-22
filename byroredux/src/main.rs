@@ -1009,6 +1009,9 @@ impl App {
             std::path::PathBuf::from("saves"),
             10,
         ));
+        // M45.1 — deferred live-load slot, drained by `step_save_loads`
+        // between frames (the `load` command has only `&World`).
+        world.insert_resource(crate::save_io::PendingSaveLoadSlot::default());
 
         // Start debug server (feature-gated, zero cost when disabled).
         // The returned handle's Drop signals shutdown + joins the
@@ -1318,6 +1321,17 @@ impl App {
             return;
         };
         debug_load::execute_pending_debug_loads(&mut self.world, ctx, &mut self.streaming);
+    }
+
+    /// Drain a queued live save-load (M45.1). Reloads the saved interior
+    /// cell through the existing loader (full GPU/physics/camera setup),
+    /// then overlays the form-id-keyed mutable game-state deltas. No-op
+    /// when nothing is queued — the steady-state case.
+    fn step_save_loads(&mut self) {
+        let Some(ctx) = self.renderer.as_mut() else {
+            return;
+        };
+        crate::save_io::execute_pending_save_loads(&mut self.world, ctx, &mut self.streaming);
     }
 
     /// Drain any queued [`cell_loader::PendingCellTransition`] and
@@ -2268,6 +2282,11 @@ impl ApplicationHandler for App {
         // `door.teleport` doesn't trample the transition's mid-load
         // state.
         self.step_debug_loads();
+
+        // M45.1 — live save-load: reload the saved cell + overlay saved
+        // form-id-keyed deltas. Runs alongside the other deferred drains,
+        // no-op when no `load` is queued.
+        self.step_save_loads();
 
         // Cell-transition dispatch (M40 Phase 2 Stage 3). Drains the
         // `PendingCellTransitionSlot` posted by `door.teleport`

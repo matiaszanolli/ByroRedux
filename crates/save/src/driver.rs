@@ -7,9 +7,11 @@
 //! storage and repopulates — so it must run off-frame, drained by the
 //! binary between scheduler ticks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
+use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::world::World;
+use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::string::StringPool;
 
 use crate::registry::SaveRegistry;
@@ -92,4 +94,102 @@ pub fn restore_world(
         }
     }
     Ok(())
+}
+
+/// Restore the snapshot's saved **resources** wholesale (e.g.
+/// `ItemInstancePool`) onto a reloaded world.
+///
+/// Resources aren't entity-keyed, so they're replaced outright rather
+/// than remapped. Call this before [`apply_deltas`] so inventory deltas
+/// whose `ItemInstanceId`s index the pool resolve against the restored
+/// arena. Resource columns absent from the snapshot leave the live
+/// resource untouched.
+pub fn restore_resources(
+    world: &mut World,
+    registry: &SaveRegistry,
+    snapshot: &Snapshot,
+) -> Result<(), SaveError> {
+    for (name, _save, load) in registry.resource_entries() {
+        if let Some(value) = snapshot.resources.get(name) {
+            load(world, value.clone())?;
+        }
+    }
+    Ok(())
+}
+
+/// Build the `saved-entity-id → live-entity-id` remap used by
+/// [`apply_deltas`], keyed on the stable [`FormIdPair`].
+///
+/// This is the M45.1 "change form" bridge: after a cell is reloaded its
+/// entities have fresh ids, so a saved delta can only be re-targeted by
+/// matching the saved entity's form id to the live entity that now
+/// carries the same `FormIdPair`. Entities without a form id (NIF child
+/// nodes, particles) aren't remappable and are simply absent from the
+/// returned map — their saved deltas (if any) are skipped.
+///
+/// Returns an empty map if the registry has no form-id column or the
+/// snapshot carries no form-id rows.
+pub fn build_form_id_remap(
+    world: &World,
+    registry: &SaveRegistry,
+    snapshot: &Snapshot,
+) -> HashMap<u32, u32> {
+    let Some(column) = registry.form_id_column() else {
+        return HashMap::new();
+    };
+    let Some(value) = snapshot.components.get(column) else {
+        return HashMap::new();
+    };
+    let saved: Vec<(u32, FormIdPair)> = match serde_json::from_value(value.clone()) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("load: form-id column '{column}' failed to decode for remap: {e}");
+            return HashMap::new();
+        }
+    };
+
+    // pair → live entity id, from the freshly reloaded world.
+    let pair_to_live: HashMap<FormIdPair, u32> = match (
+        world.query::<FormIdComponent>(),
+        world.try_resource::<FormIdPool>(),
+    ) {
+        (Some(q), Some(pool)) => q
+            .iter()
+            .filter_map(|(eid, comp)| pool.resolve(comp.0).copied().map(|pair| (pair, eid)))
+            .collect(),
+        _ => HashMap::new(),
+    };
+
+    saved
+        .into_iter()
+        .filter_map(|(old, pair)| pair_to_live.get(&pair).map(|&live| (old, live)))
+        .collect()
+}
+
+/// Apply saved component deltas onto a freshly reloaded world, remapping
+/// each saved entity id to its live id via `remap`.
+///
+/// `columns` is the curated set of **mutable game-state** component keys
+/// to overlay (e.g. Transform, Inventory, EquipmentSlots, AnimationPlayer,
+/// ScriptTimer) — explicitly *not* structural/identity columns
+/// (Parent / Children / Name / the form-id key), which the reloaded cell
+/// already owns. Unknown column names and columns absent from the
+/// snapshot are skipped. Returns the total rows applied across columns.
+pub fn apply_deltas(
+    world: &mut World,
+    registry: &SaveRegistry,
+    snapshot: &Snapshot,
+    remap: &HashMap<u32, u32>,
+    columns: &[&str],
+) -> Result<usize, SaveError> {
+    let mut applied = 0;
+    for &name in columns {
+        let (Some(value), Some(apply)) =
+            (snapshot.components.get(name), registry.component_apply(name))
+        else {
+            continue;
+        };
+        applied += apply(world, value.clone(), remap)?;
+    }
+    Ok(applied)
 }

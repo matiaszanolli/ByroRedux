@@ -22,14 +22,29 @@ use std::hash::Hasher;
 
 use crate::SaveError;
 
+use std::collections::HashMap;
+
 type SaveFn = Box<dyn Fn(&World) -> Result<serde_json::Value, SaveError> + Send + Sync>;
 type LoadFn = Box<dyn Fn(&mut World, serde_json::Value) -> Result<usize, SaveError> + Send + Sync>;
+/// Apply a saved column onto a *freshly reloaded* world, remapping each
+/// row's saved entity id to its live id (`old → live`) before insert.
+/// Rows whose saved entity isn't in the map (despawned / not present in
+/// the reloaded cell) are skipped. Returns the number applied.
+type ApplyFn = Box<
+    dyn Fn(&mut World, serde_json::Value, &HashMap<u32, u32>) -> Result<usize, SaveError>
+        + Send
+        + Sync,
+>;
 
 /// One registered serialisable type (component or resource).
 struct Entry {
     name: &'static str,
     save: SaveFn,
     load: LoadFn,
+    /// Component-only: remap-and-apply onto a reloaded world. `None` for
+    /// resources and for the form-id key column (which IS the identity,
+    /// not a delta).
+    apply: Option<ApplyFn>,
 }
 
 /// Registry of every component/resource type that participates in a save.
@@ -86,6 +101,24 @@ impl SaveRegistry {
                 world.insert_batch::<T, _>(rows);
                 Ok(n)
             }),
+            apply: Some(Box::new(
+                move |world: &mut World, value: serde_json::Value, remap: &HashMap<u32, u32>| {
+                    let rows: Vec<(u32, T)> =
+                        serde_json::from_value(value).map_err(|source| SaveError::Serde {
+                            column: name.to_string(),
+                            source,
+                        })?;
+                    // Remap saved id → live id; drop rows whose entity
+                    // isn't present in the reloaded world.
+                    let remapped: Vec<(u32, T)> = rows
+                        .into_iter()
+                        .filter_map(|(old, comp)| remap.get(&old).map(|&live| (live, comp)))
+                        .collect();
+                    let n = remapped.len();
+                    world.insert_batch::<T, _>(remapped);
+                    Ok(n)
+                },
+            )),
         });
         self
     }
@@ -120,6 +153,9 @@ impl SaveRegistry {
                 world.insert_resource(res);
                 Ok(1)
             }),
+            // Resources aren't entity-keyed, so they have no remap-apply
+            // form — `apply_deltas` restores them wholesale via `load`.
+            apply: None,
         });
         self
     }
@@ -179,6 +215,10 @@ impl SaveRegistry {
                 world.insert_batch::<FormIdComponent, _>(resolved);
                 Ok(n)
             }),
+            // The form-id column IS the cross-load identity used to build
+            // the remap; it's never re-applied as a delta (a reloaded
+            // cell already carries its own FormIdComponents).
+            apply: None,
         });
         self
     }
@@ -216,6 +256,27 @@ impl SaveRegistry {
 
     pub(crate) fn resource_entries(&self) -> impl Iterator<Item = (&'static str, &SaveFn, &LoadFn)> {
         self.resources.iter().map(|e| (e.name, &e.save, &e.load))
+    }
+
+    /// Look up a component's remap-apply closure by name. `None` if the
+    /// name isn't a registered component or the component has no apply
+    /// form (the form-id key column).
+    pub(crate) fn component_apply(&self, name: &str) -> Option<&ApplyFn> {
+        self.components
+            .iter()
+            .find(|e| e.name == name)
+            .and_then(|e| e.apply.as_ref())
+    }
+
+    /// The name registered via [`register_form_id_component`], if any —
+    /// the column the delta-apply path reads to build its `old → live`
+    /// entity remap. (At most one is expected.)
+    pub(crate) fn form_id_column(&self) -> Option<&'static str> {
+        // The form-id entry is the one component with `apply: None`.
+        self.components
+            .iter()
+            .find(|e| e.apply.is_none())
+            .map(|e| e.name)
     }
 }
 

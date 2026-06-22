@@ -24,7 +24,7 @@ Commits hold that record.
 
 ---
 
-## Session 50 — M45 Save/Load library  (2026-06-21, `bd2d0de2`, branch `feat/m45-save-load`)
+## Session 50 — M45 + M45.1 Save/Load (library + live load)  (2026-06-21, `bd2d0de2` + `48e18c4f`)
 
 ROADMAP pick: M45 was the only unblocked top-tier (Tier 1–4) capability
 milestone — M40 (world streaming) closed in Session 40, and M45 is pure-Rust
@@ -62,17 +62,25 @@ the long-standing SaveGame-invariants note) as a new `crates/save`.
   derives on Name / Parent / Children / FormIdPair / PluginId (Value-safe hex
   string for the u128) / LocalFormId / ItemInstance{,Pool}; scripting `save`
   feature for ScriptTimer.
-- **Deferred → M45.1** — live load-apply into a running Vulkan session needs
-  GPU mesh/texture + BLAS + physics + camera re-instantiation (a renderer
-  re-sync, its own integration). The destructive `restore_world` stays
-  library-only + headlessly tested rather than destabilising the live
-  renderer speculatively; `save.info` is the safe in-engine surface. Likely
-  M45.1 shape: reload the saved cell via the existing cell-loader, then apply
-  saved component deltas on top.
+- **M45.1 live load-apply** (`48e18c4f`, branch `feat/m45.1-live-load`) — the
+  **change-form model**: `load <slot>` reloads the saved cell through the
+  existing loader (full GPU/physics/camera setup), then overlays saved
+  game-state deltas keyed by stable `FormIdPair`. Because reloaded entities
+  get fresh ids, deltas can't restore by entity id — `build_form_id_remap`
+  composes saved-entity→pair (snapshot form-id column) with pair→live-entity
+  (reloaded world) into an `old→live` map, and `apply_deltas` overlays only a
+  curated *mutable* column set (Transform / Inventory / EquipmentSlots /
+  Light* / Animation* / ScriptTimer); structural/identity columns
+  (Name / Parent / Children / form-id key) are not replayed. New
+  `CurrentCellContext` resource (cell + plugins) set at every interior load
+  makes a save self-describing; `restore_resources` replaces `ItemInstancePool`
+  wholesale first. Wired as a `load` console command + `PendingSaveLoadSlot` +
+  `step_save_loads` between-frames drain. **Open refinement**: precise
+  player/camera-pose restore (load lands at cell default for now).
 
-Net: +1 crate (`crates/save`), +20 tests (16 save-crate + 2 World + 2 binary,
-incl. a cross-crate ScriptTimer round-trip), workspace + clippy green. M45 row
-moves to "library landed"; M45.1 (live apply) is the open remainder.
+Net: +1 crate (`crates/save`), +22 tests (17 save-crate + 2 World + 3 binary,
+incl. cross-crate ScriptTimer round-trip + FormId delta-reroute), workspace +
+clippy green. M45 + M45.1 both land: save, verify, and a working in-game load.
 
 ## Session 49 — RT denoiser overhaul + FO4 import-consumer arc + audit bug-bash  (2026-06-19, bac64c45..b1f86290, 79 commits)
 
