@@ -14,21 +14,24 @@
 //!   CRC / schema fingerprint) and prints what it contains, without
 //!   touching the live world.
 //!
-//! ## What's deferred (M45.1)
+//! ## Live load (M45.1)
 //!
-//! Applying a decoded snapshot to a *live* Vulkan session means clearing
-//! the world and re-instantiating GPU meshes/textures, BLAS, physics
-//! bodies, and the camera from the restored components — a renderer
-//! re-sync that's its own milestone-sized integration. The destructive
-//! [`restore_world`](byroredux_save::restore_world) path is fully
-//! implemented and tested headlessly in the save crate; `save.info` is
-//! the safe in-engine surface until the re-instantiation lands.
+//! `load <slot>` reloads the saved cell through the existing loader (full
+//! GPU/physics/camera setup) and overlays the saved game-state deltas
+//! keyed by stable form id (see [`execute_pending_save_loads`]). The
+//! player/camera pose is restored on top of that: [`capture_player_pose`]
+//! refreshes a [`PlayerPose`] resource each frame so a save records where
+//! the player was standing and looking, and [`apply_player_pose`] re-places
+//! the persisted player body (Character mode) or camera (FlyCam) after the
+//! reload — without it, `load` always dropped the player at the cell's
+//! default door spawn rather than the saved spot.
 
 use std::path::PathBuf;
 
 use byroredux_core::console::{CommandOutput, ConsoleCommand};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::World;
+use byroredux_core::math::Vec3;
 use byroredux_save::validate::validate_world;
 use byroredux_save::{disk, encode, save_world, SaveRegistry, Snapshot};
 
@@ -48,6 +51,33 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "AnimationStack",
     "ScriptTimer",
 ];
+
+/// The player's standing position + look direction at save time, so a
+/// live `load` can put the player back where they were rather than at the
+/// reloaded cell's default door spawn.
+///
+/// `position` is the **engine Y-up world position** of the body in
+/// Character mode (the camera is re-pinned to body + eye-height the next
+/// frame by `camera_follow_system`) or of the camera itself in FlyCam
+/// mode. `yaw`/`pitch` are the [`InputState`](crate::components::InputState)
+/// look angles — the source of truth in *both* modes, since both camera
+/// systems rebuild the camera rotation from them every frame, so a saved
+/// `Transform.rotation` alone wouldn't survive a tick.
+///
+/// Refreshed every frame by [`capture_player_pose`]; registered as a save
+/// resource so it rides along in the snapshot; re-applied on load by
+/// [`apply_player_pose`].
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub struct PlayerPose {
+    pub position: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    /// `true` when captured in Character mode (body-driven), `false` for
+    /// FlyCam — tells the restore which entity the `position` refers to.
+    pub character_mode: bool,
+}
+
+impl Resource for PlayerPose {}
 
 /// Where save slots live, plus the round-robin ring cursor.
 ///
@@ -112,7 +142,10 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<ItemInstancePool>("ItemInstancePool")
         // M45.1 — the cell identity + plugin set the save was taken in,
         // so `load` knows which cell to reload before applying deltas.
-        .register_resource::<CurrentCellContext>("CurrentCellContext");
+        .register_resource::<CurrentCellContext>("CurrentCellContext")
+        // M45.1 refinement — where the player was standing + looking, so
+        // `load` restores the pose instead of the cell's default spawn.
+        .register_resource::<PlayerPose>("PlayerPose");
     r
 }
 
@@ -126,6 +159,123 @@ pub fn snapshot_cell_context(
     snap.resources
         .get("CurrentCellContext")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+/// Pull the saved [`PlayerPose`] out of a decoded snapshot, if present.
+///
+/// Absent for pre-refinement saves (schema-fingerprint drift would reject
+/// those before this is reached anyway) and for any snapshot taken with no
+/// `PlayerPose` resource installed.
+pub fn snapshot_player_pose(snap: &Snapshot) -> Option<PlayerPose> {
+    snap.resources
+        .get("PlayerPose")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+/// Refresh the [`PlayerPose`] resource from the live player each frame.
+///
+/// Called App-side in the post-scheduler phase (after the camera systems
+/// have published this frame's pose), so it reads `&World` and writes the
+/// resource through interior mutability — no scheduler-access declaration
+/// needed. No-op until the [`PlayerPose`] resource is installed; leaves the
+/// last good pose untouched if the position source can't be resolved (e.g.
+/// the camera entity has no `Transform` yet).
+pub fn capture_player_pose(world: &World) {
+    use byroredux_core::ecs::{ActiveCamera, Transform};
+
+    let Some(mut pose) = world.try_resource_mut::<PlayerPose>() else {
+        return;
+    };
+    let character_mode = world
+        .try_resource::<crate::systems::PlayerMode>()
+        .map(|m| *m == crate::systems::PlayerMode::Character)
+        .unwrap_or(false);
+    let (yaw, pitch) = world
+        .try_resource::<crate::components::InputState>()
+        .map(|i| (i.yaw, i.pitch))
+        .unwrap_or((0.0, 0.0));
+
+    // Position source: the body in Character mode, the camera in FlyCam.
+    let target = if character_mode {
+        world
+            .try_resource::<crate::systems::PlayerEntity>()
+            .and_then(|r| r.0)
+    } else {
+        world.try_resource::<ActiveCamera>().map(|a| a.0)
+    };
+    let pos = target.and_then(|e| {
+        world
+            .query::<Transform>()
+            .and_then(|q| q.get(e).map(|t| t.translation))
+    });
+
+    if let Some(pos) = pos {
+        pose.position = pos.to_array();
+        pose.yaw = yaw;
+        pose.pitch = pitch;
+        pose.character_mode = character_mode;
+    }
+}
+
+/// Re-place the player at a saved [`PlayerPose`] after a live load.
+///
+/// `yaw`/`pitch` go onto [`InputState`](crate::components::InputState) in
+/// both modes — that's what the camera systems read to rebuild the camera
+/// rotation. The position is applied to whichever entity the active mode
+/// drives: the persisted body (Character — `camera_follow_system` re-pins
+/// the camera next frame) or the camera directly (FlyCam). Falls back to
+/// the camera when Character mode was saved but no player body is live
+/// (e.g. a `--fly` reload), so the look direction is at least honoured.
+pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) {
+    use byroredux_core::ecs::{GlobalTransform, Transform};
+    use byroredux_core::math::Quat;
+
+    if let Some(mut input) = world.try_resource_mut::<crate::components::InputState>() {
+        input.yaw = pose.yaw;
+        input.pitch = pose.pitch;
+    }
+
+    let pos = Vec3::from_array(pose.position);
+    let body = world
+        .try_resource::<crate::systems::PlayerEntity>()
+        .and_then(|r| r.0);
+    let character_now = world
+        .try_resource::<crate::systems::PlayerMode>()
+        .map(|m| *m == crate::systems::PlayerMode::Character)
+        .unwrap_or(false);
+
+    if pose.character_mode && character_now {
+        if let Some(body) = body {
+            if let Some(mut tq) = world.query_mut::<Transform>() {
+                if let Some(t) = tq.get_mut(body) {
+                    t.translation = pos;
+                }
+            }
+            if let Some(mut gq) = world.query_mut::<GlobalTransform>() {
+                if let Some(g) = gq.get_mut(body) {
+                    g.translation = pos;
+                }
+            }
+            // Clear momentum so the body doesn't carry stale free-fall
+            // velocity into the reloaded cell; gravity re-engages next tick.
+            if let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>() {
+                if let Some(c) = cq.get_mut(body) {
+                    c.vertical_velocity = 0.0;
+                    c.is_grounded = false;
+                    c.wants_jump = false;
+                }
+            }
+            // Sync the kinematic Rapier body so the KCC's next collide-and-
+            // slide starts from the restored spot (no-op without handles).
+            byroredux_physics::set_kinematic_translation(world, body, pos);
+            return;
+        }
+    }
+
+    // FlyCam, or Character-saved with no live body: drop the camera at the
+    // saved spot with a yaw/pitch-derived rotation.
+    let rot = Quat::from_rotation_y(pose.yaw) * Quat::from_rotation_x(pose.pitch);
+    crate::cell_loader::reposition_camera(world, pos, rot);
 }
 
 /// `save [slot]` — validate, snapshot, and atomically write the world.
@@ -248,6 +398,17 @@ impl ConsoleCommand for SaveInfoCommand {
                     )),
                     None => lines.push("  cell: <none — loose/exterior save>".to_string()),
                 }
+                if let Some(pose) = snapshot_player_pose(&snap) {
+                    lines.push(format!(
+                        "  player: ({:.1}, {:.1}, {:.1}) yaw={:.2} pitch={:.2} ({})",
+                        pose.position[0],
+                        pose.position[1],
+                        pose.position[2],
+                        pose.yaw,
+                        pose.pitch,
+                        if pose.character_mode { "character" } else { "flycam" },
+                    ));
+                }
                 for (name, col) in &snap.components {
                     let rows = col.as_array().map_or(0, |a| a.len());
                     lines.push(format!("  {name}: {rows} rows"));
@@ -255,10 +416,6 @@ impl ConsoleCommand for SaveInfoCommand {
                 for name in snap.resources.keys() {
                     lines.push(format!("  resource {name}"));
                 }
-                lines.push(
-                    "  (live load/apply is deferred to M45.1 — needs GPU/physics re-instantiation)"
-                        .to_string(),
-                );
                 CommandOutput::lines(lines)
             }
             Err(e) => CommandOutput::error(format!("slot {slot} INVALID: {e}")),
@@ -414,6 +571,21 @@ pub fn execute_pending_save_loads(
         ),
         Err(e) => log::error!("save load: delta apply failed: {e}"),
     }
+
+    // M45.1 refinement — put the player back where they saved, on top of
+    // the reloaded cell (which spawns the player at the default door).
+    if let Some(pose) = snapshot_player_pose(&snapshot) {
+        apply_player_pose(world, &pose);
+        log::info!(
+            "save load: restored player pose at ({:.1}, {:.1}, {:.1}) yaw={:.2} pitch={:.2} ({})",
+            pose.position[0],
+            pose.position[1],
+            pose.position[2],
+            pose.yaw,
+            pose.pitch,
+            if pose.character_mode { "character" } else { "flycam" },
+        );
+    }
 }
 
 #[cfg(test)]
@@ -517,5 +689,116 @@ mod tests {
         assert_eq!(ctx.esm_path, "FalloutNV.esm");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FlyCam round-trip: capture reads the camera Transform + look
+    /// angles into [`PlayerPose`]; apply puts them back after the pose is
+    /// scrambled — the camera returns to the saved spot and InputState to
+    /// the saved yaw/pitch.
+    #[test]
+    fn player_pose_round_trips_flycam() {
+        use crate::components::InputState;
+        use crate::systems::PlayerMode;
+        use byroredux_core::ecs::{ActiveCamera, Transform};
+
+        let mut world = World::new();
+        world.insert_resource(PlayerMode::FlyCam);
+        world.insert_resource(PlayerPose::default());
+        world.insert_resource(InputState {
+            yaw: 1.25,
+            pitch: -0.4,
+            ..InputState::default()
+        });
+
+        let cam = world.spawn();
+        world.insert(cam, Transform::from_translation(Vec3::new(10.0, 20.0, 30.0)));
+        world.insert_resource(ActiveCamera(cam));
+
+        capture_player_pose(&world);
+        let pose = *world.resource::<PlayerPose>();
+        assert_eq!(pose.position, [10.0, 20.0, 30.0]);
+        assert!((pose.yaw - 1.25).abs() < 1e-6);
+        assert!((pose.pitch + 0.4).abs() < 1e-6);
+        assert!(!pose.character_mode);
+
+        // Scramble, then restore.
+        {
+            let mut tq = world.query_mut::<Transform>().unwrap();
+            tq.get_mut(cam).unwrap().translation = Vec3::ZERO;
+        }
+        {
+            let mut i = world.resource_mut::<InputState>();
+            i.yaw = 0.0;
+            i.pitch = 0.0;
+        }
+        apply_player_pose(&mut world, &pose);
+
+        let tq = world.query::<Transform>().unwrap();
+        assert_eq!(tq.get(cam).unwrap().translation, Vec3::new(10.0, 20.0, 30.0));
+        let i = world.resource::<InputState>();
+        assert!((i.yaw - 1.25).abs() < 1e-6);
+        assert!((i.pitch + 0.4).abs() < 1e-6);
+    }
+
+    /// Character mode keys the captured position off the player *body*
+    /// (not the camera), and apply moves that body — the camera follows
+    /// it the next frame via `camera_follow_system`.
+    #[test]
+    fn player_pose_character_tracks_body() {
+        use crate::components::InputState;
+        use crate::systems::{PlayerEntity, PlayerMode};
+        use byroredux_core::ecs::{GlobalTransform, Transform};
+        use byroredux_core::math::Quat;
+
+        let mut world = World::new();
+        world.insert_resource(PlayerMode::Character);
+        world.insert_resource(PlayerPose::default());
+        world.insert_resource(InputState::default());
+        let body = world.spawn();
+        world.insert(body, Transform::from_translation(Vec3::new(-5.0, 64.0, 12.0)));
+        world.insert(body, GlobalTransform::new(Vec3::new(-5.0, 64.0, 12.0), Quat::IDENTITY, 1.0));
+        world.insert_resource(PlayerEntity(Some(body)));
+
+        capture_player_pose(&world);
+        let pose = *world.resource::<PlayerPose>();
+        assert_eq!(pose.position, [-5.0, 64.0, 12.0]);
+        assert!(pose.character_mode);
+
+        // Apply a different saved pose; the body relocates (no Rapier
+        // handles in the test → `set_kinematic_translation` is a no-op).
+        let restored = PlayerPose {
+            position: [100.0, 50.0, -25.0],
+            yaw: 0.5,
+            pitch: 0.1,
+            character_mode: true,
+        };
+        apply_player_pose(&mut world, &restored);
+        let tq = world.query::<Transform>().unwrap();
+        assert_eq!(tq.get(body).unwrap().translation, Vec3::new(100.0, 50.0, -25.0));
+    }
+
+    /// A `PlayerPose` rides along in the snapshot as a registered resource
+    /// and decodes back out by name — the wire the live load reads.
+    #[test]
+    fn player_pose_survives_snapshot_round_trip() {
+        let reg = build_save_registry();
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        world.insert_resource(FormIdPool::new());
+        world.insert_resource(PlayerPose {
+            position: [1.0, 2.0, 3.0],
+            yaw: 0.7,
+            pitch: -0.2,
+            character_mode: true,
+        });
+
+        let snap = save_world(&world, &reg).unwrap();
+        let bytes = encode(&snap, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+        let pose = snapshot_player_pose(&decoded).expect("pose column present");
+        assert_eq!(pose.position, [1.0, 2.0, 3.0]);
+        assert!(pose.character_mode);
+        assert!((pose.yaw - 0.7).abs() < 1e-6);
     }
 }

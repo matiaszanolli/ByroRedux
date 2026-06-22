@@ -1012,6 +1012,10 @@ impl App {
         // M45.1 — deferred live-load slot, drained by `step_save_loads`
         // between frames (the `load` command has only `&World`).
         world.insert_resource(crate::save_io::PendingSaveLoadSlot::default());
+        // M45.1 refinement — player/camera pose, refreshed each frame by
+        // `capture_player_pose` and rode along in the snapshot so `load`
+        // restores the saved spot instead of the cell's default door.
+        world.insert_resource(crate::save_io::PlayerPose::default());
 
         // Start debug server (feature-gated, zero cost when disabled).
         // The returned handle's Drop signals shutdown + joins the
@@ -2282,6 +2286,11 @@ impl ApplicationHandler for App {
         // `door.teleport` doesn't trample the transition's mid-load
         // state.
         self.step_debug_loads();
+
+        // M45.1 refinement — snapshot the player/camera pose now that the
+        // scheduler's camera systems have published this frame's Transform,
+        // so a `save` triggered this frame records where the player stands.
+        crate::save_io::capture_player_pose(&self.world);
 
         // M45.1 — live save-load: reload the saved cell + overlay saved
         // form-id-keyed deltas. Runs alongside the other deferred drains,
