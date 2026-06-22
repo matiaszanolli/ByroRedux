@@ -253,6 +253,16 @@ impl<T: Component<Storage = Self>> DynStorage for PackedStorage<T> {
         <Self as ComponentStorage<T>>::remove(self, entity);
     }
 
+    fn clear_erased(&mut self) {
+        self.entities.clear();
+        self.data.clear();
+        // Tracked components push every cleared entity through the dirty
+        // set on a normal remove; a wholesale clear instead just drops
+        // the dirty list — the consumers re-derive from the (now empty)
+        // population on the next frame.
+        self.dirty.clear();
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

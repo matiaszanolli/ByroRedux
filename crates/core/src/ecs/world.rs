@@ -211,6 +211,40 @@ impl World {
         }));
     }
 
+    /// Drop every component on every entity, emptying all storages.
+    ///
+    /// Used by the save/load path ([`byroredux_save`]) when restoring a
+    /// snapshot replaces the entire entity population. Storages themselves
+    /// are retained (so `query::<T>()` keeps succeeding for already-seen
+    /// types) — only their contents are dropped. Does NOT touch resources
+    /// or `next_entity`; the caller sets `next_entity` via
+    /// [`set_next_entity`](Self::set_next_entity) before re-inserting.
+    ///
+    /// Note: this does not tear down GPU/physics handles referenced by the
+    /// dropped components — callers that own those resources (the binary's
+    /// cell loader) must release them separately, exactly as the cell-unload
+    /// path already does.
+    pub fn clear_entities(&mut self) {
+        for lock in self.storages.values_mut() {
+            lock.get_mut()
+                .unwrap_or_else(|_| panic!("storage lock poisoned during clear_entities"))
+                .clear_erased();
+        }
+    }
+
+    /// Overwrite the entity-id high-water mark.
+    ///
+    /// The save/load path calls this with the snapshot's saved
+    /// `next_entity` **before** re-inserting components, so that
+    /// [`insert`](Self::insert) / [`insert_batch`](Self::insert_batch) at
+    /// the original (possibly sparse) entity ids pass their
+    /// `entity < next_entity` guard and inter-entity references
+    /// (`Parent`, `Children`, animation `root_entity`) stay valid without
+    /// any id remapping.
+    pub fn set_next_entity(&mut self, next_entity: EntityId) {
+        self.next_entity = next_entity;
+    }
+
     /// Remove a component from an entity.
     /// Returns `None` if the entity doesn't have this component or if
     /// no storage exists for this type (avoids creating empty storage).

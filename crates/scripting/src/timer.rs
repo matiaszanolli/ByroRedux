@@ -13,6 +13,7 @@ use byroredux_core::ecs::world::World;
 
 /// A countdown timer attached to an entity.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScriptTimer {
     /// Caller-assigned ID, echoed in the `TimerExpired` event.
     pub id: u32,

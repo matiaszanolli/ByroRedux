@@ -1,0 +1,18 @@
+[package]
+name = "byroredux-save"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# `save` pulls in the serde derives on every snapshot-relevant component
+# + resource, plus the `FixedString` serde adapter and the StringPool
+# dump/restore path.
+byroredux-core = { workspace = true, features = ["save"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+crc32fast = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+glam = { workspace = true }

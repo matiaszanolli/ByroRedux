@@ -11,7 +11,16 @@ use crate::string::FixedString;
 ///
 /// Equality is integer comparison via [`FixedString`] — no string
 /// comparisons in hot paths.
-pub struct Name(pub FixedString);
+///
+/// For save/load the symbol is serialised as its raw `u32` (via
+/// [`fixed_string_serde`](crate::string::fixed_string_serde)); the
+/// snapshot restores the owning `StringPool` first, so the symbol
+/// resolves to the same string on load.
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct Name(
+    #[cfg_attr(feature = "inspect", serde(with = "crate::string::fixed_string_serde"))]
+    pub  FixedString,
+);
 
 impl Component for Name {
     type Storage = SparseSetStorage<Self>;

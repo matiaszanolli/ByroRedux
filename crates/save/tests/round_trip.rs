@@ -1,0 +1,223 @@
+//! End-to-end save → encode → decode → restore round-trip on a realistic
+//! synthetic World, plus the validation pass.
+//!
+//! Proves the data-model half of M45: a snapshot taken from one World and
+//! restored into a fresh, empty World reproduces entity ids, the string
+//! pool, hierarchy edges, inventory/equipment, stable form ids, and
+//! `next_entity` exactly.
+
+use byroredux_core::ecs::components::{
+    Children, EquipmentSlots, FormIdComponent, Inventory, InventoryIndex, ItemStack, Name, Parent,
+    Transform,
+};
+use byroredux_core::ecs::world::World;
+use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+use byroredux_core::string::StringPool;
+use byroredux_save::validate::{validate_world, ValidationKind};
+use byroredux_save::{decode, encode, restore_world, save_world, SaveRegistry};
+use glam::{Quat, Vec3};
+
+/// The curated game-state registry the test (and, later, the binary) uses.
+fn registry() -> SaveRegistry {
+    let mut r = SaveRegistry::new();
+    r.register_component::<Transform>("Transform")
+        .register_component::<Name>("Name")
+        .register_component::<Parent>("Parent")
+        .register_component::<Children>("Children")
+        .register_component::<Inventory>("Inventory")
+        .register_component::<EquipmentSlots>("EquipmentSlots")
+        .register_form_id_component("FormIdComponent");
+    r
+}
+
+/// Build a World with a sparse entity-id layout (a despawn leaves a gap),
+/// a hierarchy, named entities, and an actor with inventory + equipment +
+/// a stable form id.
+fn build_source_world() -> (World, FormIdPair) {
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+
+    // Spawn a handful, then despawn one so ids 0..N are sparse — exercises
+    // the "preserve original ids, gaps and all" guarantee.
+    let root = world.spawn(); // 0
+    let child_a = world.spawn(); // 1
+    let doomed = world.spawn(); // 2
+    let child_b = world.spawn(); // 3
+    let actor = world.spawn(); // 4
+    world.despawn(doomed); // id 2 now a permanent gap
+
+    // Transforms (PackedStorage + change tracking).
+    world.insert(root, Transform::from_translation(Vec3::new(1.0, 2.0, 3.0)));
+    world.insert(
+        actor,
+        Transform::new(Vec3::new(10.0, 0.0, -5.0), Quat::from_rotation_y(0.5), 2.0),
+    );
+
+    // Names (StringPool-backed FixedString).
+    let (root_name, actor_name) = {
+        let mut pool = world.resource_mut::<StringPool>();
+        (pool.intern("Scene Root"), pool.intern("Doc Mitchell"))
+    };
+    world.insert(root, Name(root_name));
+    world.insert(actor, Name(actor_name));
+
+    // Hierarchy: root → [child_a, child_b]; actor is unparented.
+    world.insert(child_a, Parent(root));
+    world.insert(child_b, Parent(root));
+    world.insert(root, Children(vec![child_a, child_b]));
+
+    // Actor inventory + equipment.
+    let pair = FormIdPair {
+        plugin: PluginId::from_filename("FalloutNV.esm"),
+        local: LocalFormId(0x0014),
+    };
+    let mut inv = Inventory::new();
+    let idx = inv.push(ItemStack::new(0xDEAD, 1));
+    inv.push(ItemStack::new(0xBEEF, 5));
+    world.insert(actor, inv);
+    let mut equip = EquipmentSlots::new();
+    equip.equip(0b1, idx); // bit 0 → inventory slot 0
+    world.insert(actor, equip);
+
+    // Stable form id on the actor.
+    let fid = {
+        let mut pool = world.resource_mut::<FormIdPool>();
+        pool.intern(pair)
+    };
+    world.insert(actor, FormIdComponent(fid));
+
+    (world, pair)
+}
+
+#[test]
+fn full_world_round_trips_through_container() {
+    let (src, pair) = build_source_world();
+    let reg = registry();
+
+    // Save → encode → decode → restore into a brand-new, empty World.
+    let snapshot = save_world(&src, &reg).expect("save");
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).expect("encode");
+    let decoded = decode(&bytes, reg.schema_fingerprint()).expect("decode");
+
+    let mut dst = World::new();
+    // The destination needs a FormIdPool present for FormIdComponent
+    // re-interning (the live engine always has one; a fresh load must too).
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).expect("restore");
+
+    // next_entity preserved (high-water mark = 5 even with the id-2 gap).
+    assert_eq!(dst.next_entity_id(), src.next_entity_id());
+    assert_eq!(dst.next_entity_id(), 5);
+
+    // Transforms preserved at their original ids.
+    {
+        let q = dst.query::<Transform>().expect("transform storage");
+        let map: std::collections::HashMap<u32, Transform> =
+            q.iter().map(|(e, t)| (e, *t)).collect();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&0].translation, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(map[&4].translation, Vec3::new(10.0, 0.0, -5.0));
+        assert_eq!(map[&4].scale, 2.0);
+    }
+
+    // Names resolve to the same strings through the restored StringPool.
+    {
+        let pool = dst.resource::<StringPool>();
+        let q = dst.query::<Name>().expect("name storage");
+        let names: std::collections::HashMap<u32, String> = q
+            .iter()
+            .map(|(e, n)| (e, pool.resolve(n.0).unwrap().to_string()))
+            .collect();
+        assert_eq!(names[&0], "scene root"); // pool lowercases canonically
+        assert_eq!(names[&4], "doc mitchell");
+    }
+
+    // Hierarchy edges preserved.
+    {
+        let qp = dst.query::<Parent>().expect("parent storage");
+        let parents: std::collections::HashMap<u32, u32> =
+            qp.iter().map(|(e, p)| (e, p.0)).collect();
+        assert_eq!(parents[&1], 0);
+        assert_eq!(parents[&3], 0);
+
+        let qc = dst.query::<Children>().expect("children storage");
+        let children: Vec<u32> = qc.iter().next().unwrap().1 .0.clone();
+        assert_eq!(children, vec![1, 3]);
+    }
+
+    // Inventory + equipment preserved.
+    {
+        let qi = dst.query::<Inventory>().expect("inventory storage");
+        let (e, inv) = qi.iter().next().unwrap();
+        assert_eq!(e, 4);
+        assert_eq!(inv.items.len(), 2);
+        assert_eq!(inv.items[0].base_form_id, 0xDEAD);
+        assert_eq!(inv.items[1].count, 5);
+
+        let qe = dst.query::<EquipmentSlots>().expect("equip storage");
+        let (_, equip) = qe.iter().next().unwrap();
+        assert_eq!(equip.occupants[0], Some(InventoryIndex(0)));
+    }
+
+    // FormIdComponent resolves back to the SAME stable pair through the
+    // destination pool (handle value is session-local and may differ).
+    {
+        let pool = dst.resource::<FormIdPool>();
+        let qf = dst.query::<FormIdComponent>().expect("formid storage");
+        let (e, comp) = qf.iter().next().unwrap();
+        assert_eq!(e, 4);
+        assert_eq!(pool.resolve(comp.0).copied(), Some(pair));
+    }
+}
+
+#[test]
+fn empty_columns_are_omitted_from_the_snapshot() {
+    // A world with only a StringPool and no entities should produce a
+    // snapshot with no component columns at all.
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    let reg = registry();
+    let snap = save_world(&world, &reg).unwrap();
+    assert_eq!(snap.row_count(), 0);
+    assert!(snap.components.is_empty());
+}
+
+#[test]
+fn validation_catches_equipment_out_of_bounds() {
+    let mut world = World::new();
+    let a = world.spawn();
+    let mut inv = Inventory::new();
+    inv.push(ItemStack::new(1, 1)); // single slot, index 0 only
+    world.insert(a, inv);
+    let mut equip = EquipmentSlots::new();
+    equip.equip(0b1, InventoryIndex(7)); // points past the inventory
+    world.insert(a, equip);
+
+    let errors = validate_world(&world);
+    assert!(errors
+        .iter()
+        .any(|e| e.kind == ValidationKind::Equipment && e.entity == a));
+}
+
+#[test]
+fn validation_catches_dangling_parent() {
+    let mut world = World::new();
+    let child = world.spawn(); // id 0, next_entity = 1
+    world.insert(child, Parent(99)); // 99 never spawned
+
+    let errors = validate_world(&world);
+    assert!(errors
+        .iter()
+        .any(|e| e.kind == ValidationKind::DanglingEntity && e.entity == child));
+}
+
+#[test]
+fn validation_passes_on_a_consistent_world() {
+    let (world, _pair) = build_source_world();
+    assert_eq!(
+        validate_world(&world),
+        vec![],
+        "the hand-built world must be referentially consistent"
+    );
+}

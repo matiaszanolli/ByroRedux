@@ -143,6 +143,13 @@ impl<T: Component<Storage = Self>> DynStorage for SparseSetStorage<T> {
         <Self as ComponentStorage<T>>::remove(self, entity);
     }
 
+    fn clear_erased(&mut self) {
+        self.sparse.clear();
+        self.dense.clear();
+        self.data.clear();
+        self.structural_gen = self.structural_gen.wrapping_add(1);
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
