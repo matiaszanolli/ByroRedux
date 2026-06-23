@@ -211,6 +211,52 @@ ondying 200  oncontainerchanged 199  oncellattach 199  oncellload 196 ...
 onequipped 78 ...
 ```
 
+## Backlog & deferred (sequence items 3–7)
+
+Status after the b1 (compositional guard engine) and b2 (fragment lowerer)
+increments landed:
+
+- **More b2 effect primitives → the ~78% target.** Unblocked and the
+  highest-value continuation. The next quest-scoped primitives are
+  *polymorphic-named*, though: `Quest.Stop()` / `Quest.Start()` share the
+  `Stop`/`Start` names with `Scene`/`Sound`/`Package`/`ObjectReference`,
+  so claiming them on a *bare property* receiver (whose type the AST
+  doesn't carry) risks a misread. Adding them safely needs a stricter
+  receiver resolver that accepts only provably-quest receivers (`Self`,
+  `GetOwningQuest()`, a `Quest`-declared local), declining a bare
+  property — worth a focused, reviewed change rather than an unsupervised
+  one. Object-targeting effects (`Enable`/`Disable`/`MoveTo`/`AddItem`/
+  `EvaluatePackage`) need a runtime **FormID→entity resolver** that does
+  not exist yet; they stay declined until it lands.
+
+- **OnHit emit site (item 3) — blocked on a combat system.** 376 scripts
+  define `OnHit`, and the `HitEvent` marker + cleanup already exist, but
+  *nothing emits it*: there is no combat / projectile / melee / damage
+  system in the engine to detect a hit. An emit site can't be written
+  without fabricating a trigger source, so it is deferred until a combat
+  subsystem exists. The consumer contract (`HitEvent`) is in place for
+  that day.
+
+- **OnEquip emit site (item 4) — blocked on runtime equip dispatch.**
+  78 scripts define `OnEquip(ped)`. `OnEquipEvent` exists; the only equip
+  code today is the M41 *spawn-time* NPC outfit application
+  (`byroredux/src/npc_spawn.rs`), not a runtime equip *action* that a
+  script would observe. A faithful emit site needs the runtime
+  inventory/equip-action path (and the equipped item's VMAD script
+  binding) — deferred with the contract in place.
+
+- **136-event dispatch (item 5) — demand-driven, not built ahead.** The
+  event-frequency table above is the priority order; build a marker +
+  emit site per event only when real content needs it (most top events
+  already have markers). No speculative 136-row table.
+
+- **Perk entry-point composition (item 6) — deferred, no script-coverage
+  leverage.** Perks are PERK records / entry points, not Papyrus scripts,
+  so the fragment/handler survey doesn't bear on them, and there is still
+  no authoritative per-game entry-point index table (see
+  [`tables.rs`](../../crates/scripting/src/translate/tables.rs)). Deferred
+  until that table is sourced — same no-guessing discipline as VMAD.
+
 ## Why not a general AST→ECS interpreter / VM
 
 Explicitly rejected in [`m47-2-design.md`](m47-2-design.md). The compositional
