@@ -94,7 +94,8 @@ for the severity scale (including the NIFAL canonical-translation rows).
 **Entry points**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell/` (post-Session-34 split — `walkers.rs` / helpers / support / `wrld.rs`), `byroredux/src/cell_loader/refr_texture_overlay_tests.rs`
 **Checklist**:
 - Parse `Fallout3.esm` through the shared parser. Reconcile against the live baseline: **44 657 records = 37 459 structured + 7 198 NAVMs** (re-verified 2026-05-26). A drop here is the regression signal — do NOT use any older "13 684 structured" figure.
-- FO3-unique authoring vs FNV: pre-FNV subforms for NPC_, DIAL, INFO. Earlier SCHR-flag layout (the parser deliberately keeps the Oblivion-vs-FO3+ dead-branch truncation semantics — `crates/plugin/src/esm/sub_reader.rs` migration, R2 Phase B).
+- FO3-unique authoring vs FNV: pre-FNV subforms for NPC_, DIAL, INFO. The parser deliberately keeps the soft/strict truncation read semantics (`crates/plugin/src/esm/sub_reader.rs` migration, R2 Phase B).
+- **SCPT SCHR flags are a u16 (#1654, `590351c1`)**: shared with Oblivion/FNV — the SCHR is exactly 20 bytes with a `u16` flags tail (cursor @18). `crates/plugin/src/esm/records/script.rs` reads it via `u16_or_default`; the old "u32 tail on FO3+" comment was itself wrong. A regression to a `u32` read fails on every real FO3 script and pins `ScriptRecord.flags` to 0.
 - CELL XCLL / RCLR layout identity vs FNV (FO3 interior lighting uses the same `CellLightingRes` path — confirm, don't assume).
 - WATR (rivers/ponds) and NAVM differences. WTHR / CLMT pulled through the shared parser.
 - **REFR per-instance texture overrides (XATO/XTNM/XTXR — #584)**: FO3 cell REFRs can carry per-instance texture-set overrides that resolve against `EsmCellIndex.texture_sets` and feed the `ResolvedPaths` consumed by `translate_material` (Dim 1). Confirm FO3 overlays produce distinct resolved paths, not a collapse to the base mesh material. Regression tests: `byroredux/src/cell_loader/refr_texture_overlay_tests.rs`.
@@ -117,6 +118,7 @@ for the severity scale (including the NIFAL canonical-translation rows).
 **Checklist**:
 - FO3 Havok content is no longer merely skipped via `block_size` — `extract_collision` walks `bhk*CollisionObject` → `BhkRigidBody` → shape into `CollisionShape` + `RigidBodyData`. `examine_collision_kind` must classify FO3 chains as `CollisionAuthoring::Classic` (BSVER 34, legacy side), not `NewPhysicsStub` / `Phantom` / `Unrecognised` — a misclassified discriminator silently drops the rigid body.
 - **#1277 / `9c6096aa`**: `BhkMultiSphereShape` (→ sphere path) and `BhkConvexListShape` (→ `CollisionShape::Compound`, mirroring `BhkListShape`) now translate — they were dropped before. FO3 uses these in static/clutter collision; confirm FO3 meshes carrying them yield a non-`None` `extract_collision`, not a discarded shape.
+- **bhk motion_type via the canonical Havok enum (#1652, `dc33ec7d`)**: `collision.rs::havok_motion_type` maps the raw `hkMotionType` byte per the full nif.xml enum (1–5/8 → Dynamic, 6 KEYFRAMED → Keyframed, 7 FIXED → Static, 9 CHARACTER → CharacterKinematic, 0/other → Static). The pre-fix `4 => Keyframed` / `_ => Static` collapse mis-typed BOX_INERTIA (4) clutter (crates/ammo boxes/debris) as kinematic-frozen instead of falling — shared with FNV/Oblivion, so confirm FO3 dynamic clutter still simulates.
 - Cross-check the Dim 2 "skips via block_size" note — that is now only true for shape kinds WITHOUT a translator. See also `/audit-nifal` (collision is part of the canonical tier) and `/audit-nif` for raw block decode.
 **Output**: `/tmp/audit/fo3/dim_5.md`
 
@@ -139,7 +141,7 @@ for the severity scale (including the NIFAL canonical-translation rows).
 - B-spline pose-fallback (#772, `3c32a5e`): gated on the `FLT_MAX` sentinel. B-splines are reachable on FO3 (`feedback_bspline_not_skyrim_only.md`) — don't rule them out by era.
 - `AnimationClipRegistry` dedup (#790, `da99d15`): case-insensitive interning by lowercased path; without it one keyframe set leaks per cell load (RAM growth on FO3 exterior streaming).
 - NPC hand-mesh load (#793 / M41-HANDS, `da8d7e2`): `lefthand.nif` + `righthand.nif` loaded alongside `upperbody.nif` on kf-era NPCs (`byroredux/src/npc_spawn.rs`). Megaton dwellers depend on this — bodies with no hands = #793 regression. FO3 kf-era spawn works because its `skeleton.nif` resolves (unlike FO4).
-- **Scripting gap (FO3-distinctive)**: 1 257 FO3 SCPT records parse but **no runtime executes them** (M47.0 event-hook + M47.1 condition-eval landed; M47.2 closes the loop). This is the largest FO3-specific functional gap — note it as a known blocker for FO3 quest/world interactivity, not a bug to file.
+- **Scripting gap (FO3-distinctive)**: 1 257 FO3 SCPT records parse but **no runtime executes them** (M47.0 event-hook + M47.1 condition-eval landed; the M47.2 compiled-Papyrus recognizer slice is in progress). This is the largest FO3-specific functional gap — note it as a known blocker for FO3 quest/world interactivity, not a bug to file. The scripting runtime itself is owned by `/audit-scripting` (crates/scripting, crates/pex, crates/papyrus) — do not deep-audit it here.
 **Output**: `/tmp/audit/fo3/dim_7.md`
 
 ## Phase 3: Merge

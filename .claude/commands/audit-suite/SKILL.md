@@ -14,10 +14,12 @@ dedup, report format) lives in `.claude/commands/_audit-common.md` and
 
 Every audit referenced below is a live skill under
 `.claude/commands/audit-<name>/SKILL.md`, invoked as `/audit-<name>`.
-The full current set (21): audio, concurrency, ecs, fnv, fo3, fo4, incremental,
+The full current set (23): audio, concurrency, ecs, fnv, fo3, fo4, incremental,
 legacy-compat, nif, nifal, oblivion, performance, publish, regression, renderer,
-runtime, safety, skyrim, speedtree, starfield, tech-debt. (`/audit-publish` is a
-post-processing step, not an analysis pass — it never appears in a preset.)
+runtime, safety, save, scripting, skyrim, speedtree, starfield, tech-debt.
+(`/audit-publish` is a post-processing step, not an analysis pass — it never
+appears in a preset. `/audit-scripting` owns crates/scripting + crates/pex +
+crates/papyrus; `/audit-save` owns crates/save — both added 2026-06-23.)
 
 **`--focus` numbers below track the dimension numbering inside each target skill.
 If a target audit is renumbered, update the focus lists here in lockstep** — the
@@ -44,6 +46,8 @@ suite is the one place those numbers are duplicated, so it drifts first.
 | `bloom-deep` | after bloom-pyramid changes | renderer · performance · safety |
 | `skin-deep` | after GPU-skinning / BLAS-refit changes | renderer · performance · concurrency · safety |
 | `audio-deep` | after audio (kira) changes | audio · concurrency · safety |
+| `scripting-deep` | after scripting / .pex / Papyrus / recognizer changes | scripting · ecs · incremental |
+| `save-deep` | after save/load changes | save · ecs · incremental |
 | `speedtree-deep` | after SpeedTree (.spt) changes | speedtree · incremental |
 | `streaming-deep` | after world-streaming / NPC-spawn changes | performance · concurrency · safety |
 | `legacy-deep` | after compatibility-mapping work | legacy-compat · incremental |
@@ -74,16 +78,18 @@ catches what static audits structurally can't see:
 7. `/audit-nifal`
 8. `/audit-audio`
 9. `/audit-speedtree`
-10. `/audit-legacy-compat`
-11. `/audit-tech-debt`
-12. `/audit-fnv`
-13. `/audit-fo3`
-14. `/audit-skyrim`
-15. `/audit-oblivion`
-16. `/audit-fo4`
-17. `/audit-starfield`
-18. `/audit-regression`
-19. `/audit-runtime --game all`
+10. `/audit-scripting`
+11. `/audit-save`
+12. `/audit-legacy-compat`
+13. `/audit-tech-debt`
+14. `/audit-fnv`
+15. `/audit-fo3`
+16. `/audit-skyrim`
+17. `/audit-oblivion`
+18. `/audit-fo4`
+19. `/audit-starfield`
+20. `/audit-regression`
+21. `/audit-runtime --game all`
 
 ### `--preset tech-debt-deep`
 Surface accumulated debt (run after a milestone closes, before opening the next):
@@ -203,6 +209,22 @@ sub-track lifecycle, reverb send, streaming music:
 1. `/audit-audio`
 2. `/audit-concurrency --focus 6,7`     # GPU/teardown ordering + worker threads
 3. `/audit-safety`
+
+### `--preset scripting-deep`
+After scripting changes — the `.pex` decompiler (`crates/pex`), the `.psc`
+Papyrus parser (`crates/papyrus`), the AST→ECS recognizer chain + runtime
+systems (`crates/scripting`), or the cell-loader script-attach path (M30/M47):
+1. `/audit-scripting`
+2. `/audit-ecs`                # recognizer-emitted components + scripting-runtime systems lock/stage ordering
+3. `/audit-incremental --commits 10`
+
+### `--preset save-deep`
+After save/load changes — full-ECS-snapshot capture, type-erased registry,
+atomic disk write + ring, validation gates, or the M45.1 live load-apply
+(`crates/save` + the engine-side driver):
+1. `/audit-save`
+2. `/audit-ecs`                # snapshot completeness vs component registry + frame-boundary capture safety
+3. `/audit-incremental --commits 10`
 
 ### `--preset speedtree-deep`
 After SpeedTree (.spt) walker / billboard-fallback changes:

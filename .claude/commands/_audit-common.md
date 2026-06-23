@@ -21,8 +21,10 @@ BGSM Materials:  crates/bgsm/src/                     (FO4+ external material pa
 SF Material:     crates/sfmaterial/src/               (Starfield CDB material consumer: chunk, reader, string_table, types, value)
 FaceGen (M41):   crates/facegen/src/                  (.tri/.egt morph + texture blend)
 Physics (M28):   crates/physics/src/                  (Rapier3D bridge)
-Papyrus (M30):   crates/papyrus/src/                  (.psc lexer + Pratt parser → AST)
-Scripting (M12): crates/scripting/src/                (ECS-native events, timers, cleanup)
+Papyrus (M30):   crates/papyrus/src/                  (.psc lexer + Pratt parser → AST: token, lexer, ast, span, error, parser/{mod, expr})
+Pex (M47.2):     crates/pex/src/                      (compiled-Papyrus .pex → AST decompiler, Champollion port: opcode, reader, model, decompile/{mod, cfg, lift, control_flow, lower, boolean, node, event_names}. 5-phase: CFG → node-lift+copy-prop → control-flow recon → AST lower+fidelity gate → short-circuit booleans)
+Scripting (M12/M47): crates/scripting/src/            (ECS-native scripting runtime: events, timer, cleanup, condition (M47.1 cond eval), trigger (M47.2 TriggerVolume detection), quest_stages, fragment, recurring_update, registry; translate/ holds the AST→ECS recognizer chain {mod, source, archetype, compose, effects, tables, recognizers/{mod, quest_stage_gate, rumble}}; papyrus_demo/ holds hand-verified reference scripts)
+Save (M45):      crates/save/src/                     (full-ECS-snapshot save/load: snapshot, registry, disk, validate, driver; M45.1 live load-apply = reload cell + FormId-keyed deltas + player-pose restore)
 Audio (M44):     crates/audio/src/lib.rs + tests.rs   (byroredux-audio: kira backend, AudioWorld resource, AudioListener/AudioEmitter/OneShotSound components, audio_system, SoundCache, streaming music, global reverb send)
 SpeedTree (S1):  crates/spt/src/                      (byroredux-spt: TLV walker for FNV/FO3/Oblivion .spt; placeholder-billboard import fallback)
 Debug Protocol:  crates/debug-protocol/src/           (wire types, component registry)
@@ -64,7 +66,7 @@ Systems:         byroredux/src/systems.rs (module index) → systems/{animation,
 Scene Setup:     byroredux/src/scene.rs (thin) → scene/{nif_loader, world_setup}.rs (+ *_tests.rs siblings: climate_tod_hours, cloud_tile_scale, procedural_fallback, radius_parse)
 Render Data:     byroredux/src/render/ (mod.rs carries build_render_data + draw enumeration) → render/{camera, lights, skinned, static_meshes, particles, sky, water}.rs (+ *_tests.rs siblings)
 Cell Loader:     byroredux/src/cell_loader.rs (thin dispatch) → cell_loader/{load, unload, exterior, references, spawn, partial, euler, refr, terrain, terrain_lod, object_lod, water, load_order, index, precombined, transition, nif_import_registry}.rs (+ *_tests.rs siblings)
-Commands:        byroredux/src/commands.rs + commands_tests.rs (console: help, stats, entities, tex.missing, light.dump, cam.where/pos/tp, prid, inspect, …)
+Commands:        byroredux/src/commands/ (per-domain split #1323/TD9-NEW-03: mod.rs registry + world_info (help/stats/entities/systems/sys.accesses/mem.frag/ctx.scratch) + assets (tex.*/mesh.*/skin.*) + view (prid/cam.*/near/pick) + scene (light.*/door.teleport/script.activate/mat.*/ragdoll) + shared helpers) + byroredux/src/commands_tests.rs
 NIFAL Translate: byroredux/src/material_translate.rs (translate_material — the SINGLE raw ImportedMesh → ECS Material boundary; per-game material classification happens here, never in the shader) + crates/core/src/ecs/components/material.rs (Material::resolve_pbr; canonical metalness/roughness are plain f32 fields, resolve-once). Spec: docs/engine/nifal.md. See also /audit-nifal.
 EXAL Translate:  byroredux/src/env_translate.rs (EXAL exterior-environment translation boundary: terrain/sky/sun/weather/water/LOD). Spec: docs/engine/exal.md.
 Ragdoll:         byroredux/src/ragdoll.rs (M41.x ragdoll activation + writeback; PHYSAL consumer). Spec: docs/engine/physal.md.
@@ -89,14 +91,17 @@ Prefer them over re-deriving facts from source during an audit.
 | `docs/engine/memory-budget.md` | VRAM/RAM ceilings, SSBO sizes, LRU eviction thresholds (`AccelerationManager`, `TextureRegistry`, BGSM cache, `MeshRegistry`), deferred-destroy countdown depth |
 | `docs/engine/nifal.md` | NIFAL three-tier canonical translation spec (Imported* → translate() → Canonical); single-boundary / no-fabrication / no-render-time-fallback rules |
 | `docs/engine/plugin-loading.md` | `PluginManifest` TOML schema, `DataStore`, `DependencyResolver` algorithm, Form ID three-layer design, ESM parser entry points, conflict resolution |
-| `docs/feature-matrix.md` | What works at runtime per game — cell loading, rendering, NPCs, audio, scripting, physics, UI. Living status document. |
+| `docs/feature-matrix.md` | What works at runtime per game — cell loading, rendering, NPCs, audio, scripting, physics, UI. Living status document. (NOTE: the "Scripting (M47)" + "Save / load (M45)" rows lag the code — M45/M45.1 + the M47.2 .pex slice shipped; treat the matrix as a floor, not ceiling, and flag the doc-rot.) |
+| `docs/engine/scripting.md` | ECS-native scripting model (Papyrus VM → ECS), recognizer-chain design, what `.pex`/recognizers translate vs. defer. Paired with `docs/engine/papyrus-parser.md` (`.psc` AST), `docs/engine/m47-0-design.md`, `docs/engine/m47-2-design.md`, `docs/engine/m47-2-recognizer-scaling.md`. Owner audit: `/audit-scripting`. |
 | `docs/contributing.md` | Prerequisites, build, test tiers (unit/integration/Vulkan/smoke), shader recompile, game data paths, CI jobs |
 
-Crate count: 19 under `crates/` — audio, bgsm, bsa, core, cxx-bridge,
-debug-protocol, debug-server, debug-ui, facegen, nif, papyrus, physics,
-platform, plugin, renderer, scripting, sfmaterial, spt, ui. Use this as a
+Crate count: 21 under `crates/` — audio, bgsm, bsa, core, cxx-bridge,
+debug-protocol, debug-server, debug-ui, facegen, nif, papyrus, pex, physics,
+platform, plugin, renderer, save, scripting, sfmaterial, spt, ui. Use this as a
 coverage sanity check: an audit that never touches a relevant crate here is
-incomplete.
+incomplete. (`pex` + `save` are the two newest, added in Sessions 50–51 for the
+M45 save/load and M47.2 compiled-Papyrus arcs — owned by `/audit-save` and
+`/audit-scripting` respectively.)
 
 ## Game Data Locations
 

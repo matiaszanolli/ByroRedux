@@ -145,6 +145,8 @@ benches refresh every `/session-close`.
 **Entry points**: `byroredux/src/cell_loader/load_order.rs` (`--master` FormID remap), `crates/plugin/src/esm/records/` (TES5 records share the unified parser — the per-game legacy stub was removed under #390), `crates/plugin/src/esm/cell/` (CELL walker), `crates/plugin/src/esm/cell/tests/integration.rs` (`parse_real_skyrim_esm`), `ROADMAP.md`
 **Checklist**:
 - Repeatable `--master <path>` (M46.0 / #561): each plugin's TES4 master_files header drives a per-plugin FormID remap so cross-plugin REFRs land under merged global FormIDs; last-write-wins on collision (canonical Bethesda load order). Unresolved REFRs name the missing plugin. Repro: `cargo run -- --master Skyrim.esm --esm Dawnguard.esm --cell ForebearsHoldoutInt01`.
+- **`.STRINGS` loader wired into the multi-plugin load path (`db5bb149`)** — the localized-string table loader (`crates/plugin/src/esm/strings_table.rs`) must be invoked from `cell_loader/load_order.rs` for every loaded plugin, not just the active one; a regression that resolves strings off only the last `--esm` leaves DLC-owned names/dialogue as raw string IDs.
+- **ESL / light-master FormID decode (#1554, `59d3f007`)** — TES4 record flag `0x0200` (Light Master / ESL) plugins share the `0xFE` top-byte space; `crates/plugin/src/esm/reader.rs` decodes their forms as `0xFE00_0000 | ((sub & 0x0FFF) << 12) | (raw & 0x0FFF)` (12-bit load-order sub-index + 12-bit object id), driven by `light_master` on the plugin. A regression that treats an ESL like a full master (top byte = load-order index) collapses every ESL form into the wrong space and unresolves its REFRs.
 - `parse_real_skyrim_esm` walks real `Skyrim.esm`, finds `SolitudeWinkingSkeever` — guard the unified walker keeps parsing Skyrim cells.
 - TES5 compressed-record decompression (groups can be compressed; interiors render) stays green.
 - Minimum interior-render record set parses: CELL, REFR, STAT, LIGH, WEAP, ARMO, plus Skyrim-specific LAND (heightmap scale), LTEX, TXST, ADDN.
@@ -158,7 +160,7 @@ benches refresh every `/session-close`.
 **Checklist**:
 - v105 header format; LZ4 block decompression via `lz4_flex::block` — verify against a known-good Skyrim mesh (e.g. sweetroll).
 - Hash table layout vs v104; folder record size; embedded-name flag; compressed-file flag priority (archive-level vs per-file — which wins on disagreement).
-- Full-archive extraction sweep: `Skyrim - Meshes0.bsa` + `Skyrim - Textures*.bsa` (through Textures8) all extract without error. Note the numeric-sibling auto-load gotcha: it gates on a non-digit suffix, so `Textures0.bsa` siblings must be listed explicitly.
+- Full-archive extraction sweep: `Skyrim - Meshes0.bsa` + `Skyrim - Textures*.bsa` (through Textures8) all extract without error. **Zero-based sibling auto-load (`821a425b`)** — `asset_provider.rs::open_with_numeric_siblings` now auto-loads `<stem>2.bsa`..`<stem>9.bsa` siblings, so distant-LOD diffuse in `Textures7.bsa` and `.btr` meshes in `Textures8.bsa` drag in from a zero-based base archive; a regression that re-narrows sibling discovery starves M35 distant terrain of its LOD textures.
 **Output**: `/tmp/audit/skyrim/dim_5.md`
 
 ### Dimension 6: Specialty Blocks + Real-Data Rendering
@@ -168,6 +170,7 @@ benches refresh every `/session-close`.
 - `BSLODTriShape` (Skyrim DLC tree LOD) routed through `NiLodTriShape`, NOT BSTriShape (#838 regression guard). `BSLODTriShape` vs `BSMeshLODTriShape` vs `BSSubIndexTriShape` — distinct bodies, must not be confused.
 - `BsLagBoneController` + `BsProceduralLightningController` (#837): dedicated parsers — without them a by-design `block_size` WARN burst fires per Meshes0 sweep.
 - `BSTreeNode` wind-bone list (SpeedTree); `BSPackedCombined[Shared]GeomDataExtra` distant-LOD batch layout; the import walker unwraps `BSFadeNode` / `BSBlastNode` / `BSMultiBoundNode`.
+- **M35 prebaked `.btr` distant-terrain LOD (`9384d4c2`, Skyrim+/FO4)** — `byroredux/src/cell_loader/terrain_lod_btr.rs` loads prebaked `.btr` distant-terrain meshes (wired from `cell_loader/terrain_lod.rs`); confirm `.btr` quads parse + render at distance and their diffuse resolves through the zero-based sibling archives (Dim 5). A regression silently drops distant terrain to no-LOD.
 - **Meshes0 sweep baseline**: 100% clean / 0 truncated / 0 recovered / 0 realignment WARNs. Any audit observing realignment WARNs on a clean Skyrim Meshes0 corpus has hit a regression.
 - Real-data render trace: pick one creature (dragon skeleton / NPC head), one landscape (tree LOD), one magic effect (BSEffectShaderProperty). Trace each `import_nif_scene` → `material_translate::translate_material` → `byroredux/src/render/static_meshes.rs` (static) / `byroredux/src/render/skinned.rs` (skinned) — verify mesh count, material extraction, texture handle resolution. Single-mesh smoke: render `meshes\clutter\ingredients\sweetroll01.nif` and confirm FPS stays in the ROADMAP-documented band.
 **Output**: `/tmp/audit/skyrim/dim_6.md`

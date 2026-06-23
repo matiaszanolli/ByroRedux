@@ -15,13 +15,18 @@ Vulkan spec violation = **HIGH** · `unsafe` without a safety comment = **MEDIUM
 
 ## Scale of the surface
 
-`unsafe` is concentrated, not scattered: ~612 occurrences live in
+`unsafe` is concentrated, not scattered: ~600+ occurrences live in
 `crates/renderer/src` (ash FFI + gpu-allocator), then a long tail —
 ~11 in `crates/nif`, ~6 in `crates/core`, and one each in `byroredux`,
-`crates/plugin`, `crates/facegen`, `crates/cxx-bridge`. Renderer carries roughly
-one `SAFETY` comment per two `unsafe` tokens; the gap is where the
-unsafe-without-comment (MEDIUM) findings live. Budget your time accordingly —
-do not audit the nif/core tail at the expense of the renderer FFI mass.
+`crates/plugin`, `crates/facegen`, `crates/cxx-bridge`, and `crates/pex`
+(the M47.2 decompiler — its single `unsafe` is a guarded `transmute` in
+`opcode.rs`, see Dimension 2). `crates/save` (M45) has no `unsafe`. Counts
+drift — recount with `grep -ro unsafe crates/<c>/src | wc -l` rather than
+trusting these figures. Renderer carries roughly one `SAFETY` comment per
+two `unsafe` tokens; the gap is where the unsafe-without-comment (MEDIUM)
+findings live. Budget your time accordingly — do not audit the nif/core/pex
+tail at the expense of the renderer FFI mass. The Dimension-4 sweep greps
+**all** of `crates/` so pex/save are covered automatically.
 
 Dimensions below are ordered by safety blast radius: FFI lifetime, then
 memory-corruption/UB, then per-frame leaks, then unsafe-block discipline, then
@@ -74,6 +79,14 @@ Vulkan-spec compliance, then the narrower regression-guard surfaces.
   The module doc's "transmute into this enum" wording is aspirational prose, NOT
   the impl — an actual `std::mem::transmute` of an unmatched `#[repr(u32)]` byte
   pattern is UB. Verify the `match` + `Err` arm survive any "optimization."
+- **pex opcode decode** (`OpCode::from_u8`, `crates/pex/src/opcode.rs`): unlike
+  sfmaterial, this one IS a real `unsafe { std::mem::transmute::<u8, OpCode>(byte) }`
+  — sound ONLY because the SAFETY comment's two preconditions hold: `OpCode` is
+  `#[repr(u8)]` with **contiguous** discriminants `0..MAX_OPCODE`, AND `byte` is
+  range-checked (`< MAX_OPCODE`) before the transmute. Both must stay true: a gap
+  in the discriminant sequence, or a refactor that drops the bound check, makes an
+  out-of-range byte UB. Verify the guard and the contiguity (no skipped values in
+  the enum) on any opcode-table change.
 - Stack-overflow risk: no unbounded recursion in block-walk / scene-graph traversal.
 
 ### 3. Memory & Resource Leaks (HIGH when per-frame/per-cell)

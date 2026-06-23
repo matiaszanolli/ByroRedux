@@ -41,12 +41,16 @@ no longer spell out archives per game.
 
 ## Checked-in baselines (verified — `ls .claude/audit-baselines/runtime/`)
 
-Two runtime baselines are committed today:
+Five runtime baselines are committed today (the original fnv/fo4 pair plus the
+fo3/oblivion/skyrim_se trio created in the 2026-06-14 `--game all` sweep):
 
 | Baseline TSV | Cell | Notes |
 |--------------|------|-------|
 | `.claude/audit-baselines/runtime/fnv-FreesideAtomicWrangler.tsv` | FNV `FreesideAtomicWrangler` | Primary FNV guard. ~9 250 entities, post-#1284 `SkinSlotPool` schema, `MAX_TOTAL_BONES=196608`. |
-| `.claude/audit-baselines/runtime/fo4-InstituteBioScience.tsv` | FO4 `InstituteBioScience` | Post-M49 precombine-CSG render + LOD fix. 1 722 precombine entities. Profile `sample_cells` lists this EDID. |
+| `.claude/audit-baselines/runtime/fo4-InstituteBioScience.tsv` | FO4 `InstituteBioScience` | Post-M49 precombine-CSG render + LOD fix. Regenerated 2026-06-19 (RT-4 / #1621) post the efd3c41b precombine alpha-blend wall fix; entities_total drifted 9167→11279 intentionally. Profile `sample_cells` lists this EDID. |
+| `.claude/audit-baselines/runtime/fo3-MegatonPlayerHouse.tsv` | FO3 `MegatonPlayerHouse` | Created 2026-06-14. ~3 311 entities, zero fallback textures. |
+| `.claude/audit-baselines/runtime/oblivion-ICMarketDistrictTheGildedCarafe.tsv` | Oblivion `ICMarketDistrictTheGildedCarafe` | Created 2026-06-14. ~701 entities, cleanest path (zero fallback textures / parse fails). |
+| `.claude/audit-baselines/runtime/skyrim_se-WhiterunDragonsreach.tsv` | Skyrim SE `WhiterunDragonsreach` | Created 2026-06-14. ~6 044 entities; `mesh_cache_failed_count=11` includes 2 corrupted control-char paths (see AUDIT_RUNTIME_2026-06-14 RT-3). |
 
 > The `.claude/audit-baselines/sf-esm/` dir holds Starfield **ESM resolve-rate**
 > baselines for the `--sf-smoke` harness (`byroredux/src/sf_smoke.rs`), NOT this
@@ -66,9 +70,9 @@ probe-verified `sample_cells` entry, prefer it.
 |-----------------|-----------|----------|-----------|
 | `fnv` | `FreesideAtomicWrangler` | ✓ | Committed primary guard. |
 | `fnv` | `GSDocMitchellHouse` | — | Profile sample; well-characterised fallback-texture distribution (`docs/audits/FALLOUT_SYMPTOMS_2026-05-26.md` F2). |
-| `oblivion` | `ICMarketDistrictTheGildedCarafe` | — | Profile sample; cleanest path — zero fallback textures / parse fails. Catches regressions on a known-good cell. |
-| `fo3` | `MegatonPlayerHouse` | — | Profile sample; 929 REFRs, exterior-style architecture in an interior shell. |
-| `skyrim_se` | `WhiterunDragonsreach` | — | Profile sample; per-entity hot-path stress. |
+| `oblivion` | `ICMarketDistrictTheGildedCarafe` | ✓ | Committed guard (2026-06-14); cleanest path — zero fallback textures / parse fails. Catches regressions on a known-good cell. |
+| `fo3` | `MegatonPlayerHouse` | ✓ | Committed guard (2026-06-14); exterior-style architecture in an interior shell. |
+| `skyrim_se` | `WhiterunDragonsreach` | ✓ | Committed guard (2026-06-14); per-entity hot-path stress. |
 | `fo4` | `InstituteBioScience` | ✓ | Committed guard; BGSM-heavy + precombine CSG (M49). |
 | `starfield` | — | — | Starfield profile ships empty archives + no `sample_cells`; runtime cell render not yet a stable guard. Use `--sf-smoke` for SF coverage until a cell baseline lands. |
 
@@ -124,7 +128,7 @@ For each selected `(game, cell)`:
 
 4. Sleep 3 s to let the cell settle past initial load.
 5. Drive the capture sequence (the four live console commands —
-   `byroredux/src/commands.rs`):
+   `byroredux/src/commands/assets.rs` + `byroredux/src/commands/world_info.rs`):
 
    ```bash
    printf "stats\ntex.missing\nmesh.cache failed\nlight.dump\nquit\n" \
@@ -186,7 +190,7 @@ Quirks of these scalars (don't fabricate around them):
 - `draws=N/Mb/Kc` is the #1258 three-way split: `N` input DrawCommands / `M`
   post-merge batches / `K` actual GPU calls. The pre-#1258 single draw count is
   gone.
-- `light.dump` (`commands.rs` `LightDumpCommand`) dumps `CellLightingRes` /
+- `light.dump` (`byroredux/src/commands/scene.rs` `LightDumpCommand`) dumps `CellLightingRes` /
   `SkyParamsRes` / `GameTimeRes` only — it surfaces the one directional sun, not
   a per-point-light tally, so `light_count_directional` is effectively a
   constant 1 and there is no `light_count_point`.

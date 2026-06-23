@@ -72,7 +72,9 @@ Risk is the *floor* severity for an un-disproven finding in that area.
 | `byroredux/src/cell_loader/**` | per-game `/audit-<game>` | MEDIUM |
 | `byroredux/src/systems/**`, `byroredux/src/render/**` | `/audit-ecs`, `/audit-renderer`, `/audit-performance` | MEDIUM |
 | `byroredux/src/scene/**` | per-game `/audit-<game>` | MEDIUM |
-| `byroredux/src/main.rs`, `byroredux/src/commands.rs` | `/audit-ecs` | MEDIUM |
+| `byroredux/src/main.rs`, `byroredux/src/commands/**` | `/audit-ecs` | MEDIUM |
+| `crates/scripting/**`, `crates/pex/**`, `crates/papyrus/**` | `/audit-scripting` | MEDIUM |
+| `crates/save/**` | `/audit-save` | MEDIUM |
 | `byroredux/src/asset_provider.rs` (sibling-BSA auto-load, AE path strip) | per-game `/audit-<game>` | MEDIUM |
 | `crates/audio/src/{lib,tests}.rs` | `/audit-audio` | MEDIUM |
 | `crates/sfmaterial/src/**` (Starfield CDB) | `/audit-starfield` | MEDIUM |

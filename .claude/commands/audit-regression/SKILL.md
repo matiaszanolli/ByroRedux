@@ -36,12 +36,22 @@ For each issue, pull out:
 - **Related `#NNNN`** — phased fixes split across several issues (e.g. #1210 →
   #1255 → #1257) regress as a set; verify the whole chain, not just the head.
 
-> **Discovery window caveat.** The repo has 1500+ closed issues. The default
+> **Discovery window caveat.** The repo has 1600+ closed issues. The default
 > `--limit 50` only covers the most-recently-closed bugs, so older high-value
 > fixes get **no coverage** unless you raise `--limit` or pass them via
 > `--issues`. The unconditional **Step 4** fragile-area checks are the safety
 > net for fixes that landed as proactive refactors and were never an issue at
 > all — run them every time regardless of which issues Step 1 surfaced.
+>
+> **Fresh verification candidates (Session 49–51 fix wave).** Recently-closed,
+> high-churn fixes worth an explicit `--issues` pass while they're still warm:
+> #1590 (FO4 precombine resolved by owning plugin), #1592 (FO4 model-space-normals
+> + alpha-test shader flags), #1594 (FO4 BSConnectPoint attach graph), #1606
+> (Starfield BSLightingShaderProperty tail), #1650 (Oblivion 16-byte ACBS), #1651
+> (BGSM/BGEM GL→Gamebryo blend factors), #1652 (bhk motion_type canonical Havok
+> enum), #1656 (unload-walk ExtraTextureMaps coverage), #1658 (prebaked equip TPLT
+> inventory inheritance). Several touch the import→material boundary that **Step 4**
+> already pins — cross-check there.
 
 ## Step 2 — Locate each fix and its guard
 
@@ -107,9 +117,13 @@ run regardless of Step 1's window. A FAIL here is still reported as a regression
 
 - The Disney/Burley lobe now lives in `crates/renderer/shaders/include/pbr.glsl`
   (split out of `triangle.frag`; the GLSL-PathTracer MIT attribution block stays
-  top-of-`triangle.frag`, Burley 2012 cite), and `NUM_RESERVOIRS = 16` is intact in
-  `crates/renderer/shaders/include/lighting.glsl` (the reservoir G-buffer attachment
-  was retired #1583/#1590 — WRS is register-local now).
+  top-of-`triangle.frag`, Burley 2012 cite). The per-reservoir `resRadiance[]`
+  array was retired (#1369 factoring → commit 218b425b, which removed the ReSTIR
+  reservoir G-buffer attachment): WRS is register-local now, recomputing the
+  unshadowed radiance from the light index via `shadowableLightRadiance` in
+  `crates/renderer/shaders/include/lighting.glsl`. A regression here is a
+  reintroduced per-thread reservoir array or a re-added G-buffer reservoir
+  attachment — verify the array stays gone, not "intact".
 - `#[repr(C)]` GPU structs hold their size pins in
   `crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs`:
   `GpuInstance` = 112 B (`gpu_instance_is_112_bytes_std430_compatible`) and

@@ -122,7 +122,12 @@ counts.
 **Checklist**: `ComponentDatabaseFile::parse` consumes `materials\materialsbeta.cdb`
 extracted from `Starfield - Materials.ba2` via `--materials-ba2`. **#762** —
 guard `index_chunks` against the chunk-index regression already referenced in
-`asset_provider.rs`. Walk the parse path: header (`parse_header`) → chunk index
+`asset_provider.rs`. **DLC/Creation CDB discovery by scanning (#1571, `8c99c50d`)** —
+`asset_provider.rs::discover_starfield_cdbs` scans each materials archive for
+**every** `materials\materialsbeta.cdb` AND DLC/Creation-namespaced
+`materials\creations\<plugin>\materialsbeta.cdb`, instead of extracting one
+hardcoded base path; a regression that re-hardcodes the single base path silently
+drops every DLC/Creation material database. Walk the parse path: header (`parse_header`) → chunk index
 (`index_chunks`) → class parse (`parse_class`). Are unknown `ChunkType` /
 `Value` variants handled (warn-and-skip) or do they bail/panic? Confirm
 `peek_magic` correctly distinguishes a CDB from a loose BGSM. Correctness, not
@@ -163,6 +168,11 @@ classifier), `crates/plugin/src/esm/records/mod.rs` (FourCC dispatch),
 **Checklist**: HEDR-0.96 → `GameKind::Starfield` classification (`reader.rs`).
 FourCC dispatch coverage in `records/mod.rs` — which record types are parsed vs
 warned-skip; cross-check against the resolve-rate baseline from Dim 4.
+**PDCL conscious skip (#1568, `b804c180`)** — the Starfield `PDCL`
+(BGSProjectedDecal) GRUP is skipped *consciously* (named into
+`index.skipped_unconsumed_groups` + a one-shot warn) rather than vanishing into
+the anonymous catch-all; verify it stays a named skip (so coverage tooling counts
+it) and does not silently regress into the catch-all.
 **#1291** — `XCLL_SIZES_STARFIELD = [28, 108]` (`walkers.rs`), split off the
 Fallout-era `[28, 40]` bucket. **Important correction to any stale doc**: the
 108-byte Starfield XCLL is **NOT** "Skyrim's 92-byte body + a 16-byte tail" — per
@@ -195,6 +205,18 @@ NiUnknown count for these stays at 0. WetnessParams extended fields, refraction
 power on `BSEffectShaderProperty` (FO76-style), and the new BSEffectShaderProperty
 textures (Reflectance / Lighting / Emittance / Emit Gradient) — verify byte
 consumption against nif.xml.
+**#1606 undocumented BSLightingShaderProperty tail (`497700e7`)** — the empty-name
+full-body Starfield `BSLightingShaderProperty` carries a 38-byte trailing field
+(9× f32 + 2 B) that nif.xml does NOT document; the dispatcher passes the declared
+`block_size` to `BSLightingShaderProperty::parse_with_size`, which captures
+`block_size - consumed` trailing bytes **opaquely** into `starfield_tail: Vec<u8>`
+(gated `bsver >= STARFIELD`). The legacy `parse` (None size) path is unchanged and
+yields an empty tail. Verify the tail is captured to-block_size (not a hardcoded
+38, no over-read) and that LODMeshes drift stays at 0 — do NOT fabricate field
+names/semantics. Tests: `parse_bs_lighting_starfield_captures_trailing_tail` +
+`..._tail_empty_without_size_or_drift` in `crates/nif/src/blocks/shader_tests.rs`.
+The sibling BSEffectShaderProperty +32 B under-read on the same archive is a known
+follow-up (left scoped out) — note frequency, don't re-file as new.
 **Output**: `/tmp/audit/starfield/dim_6.md`
 
 ### Dimension 7: Real-Data Validation

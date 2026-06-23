@@ -53,6 +53,17 @@ RenderDoc confirmation"** and state the concrete signal that would confirm it
 or a visible artifact class). A finding whose only evidence is "this barrier
 looks wrong" is a HYPOTHESIS row, not a fix.
 
+**The cheapest evidence channel is now sync-validation in release (#ec81f233).**
+`BYRO_VALIDATION=<v>` (`instance.rs::validation_enabled`) turns on the Khronos
+validation layer + Synchronization Validation in a **release** build — debug
+builds are too slow to stream into the dense cells that fault. `BYRO_VALIDATION=gpuav`
+additionally enables GPU-Assisted Validation (shader OOB / descriptor checks).
+The debug messenger routes layer messages into the Rust log whenever validation
+is enabled. A sync-validation RAW/WAR hazard count (e.g. the ~40/frame the
+`--cornell` harness reported pre-#507945d8) is the confirmed-bug signal — prefer
+it over "looks wrong." Confirm any AS-build-input / barrier finding against a
+captured validation run before escalating past HYPOTHESIS.
+
 ## Phase 1: Setup
 
 1. Parse `$ARGUMENTS`
@@ -68,6 +79,8 @@ looks wrong" is a HYPOTHESIS row, not a fix.
 - **Frame-in-flight discipline.** The `in_flight[frame]` fence must be waited on before its command buffer / per-frame resources are reused; `image_available[frame]` semaphore must not be reused while a prior acquire is still pending (the draw.rs comment block around the acquire→submit window documents the ordering — verify it still holds).
 - **Acquire → render → present semaphore chain** is correct and uses per-image (not per-frame) signal semaphores where required by the swapchain image index.
 - **AS build → read barrier.** Every BLAS/TLAS build or refit that a later ray query reads must be followed by an `ACCELERATION_STRUCTURE_WRITE_KHR → ACCELERATION_STRUCTURE_READ_KHR` barrier before the fragment-stage ray-query consumer. Static BLAS: `blas_static.rs` (`memory_barrier`, WRITE→READ). Skinned BLAS refit: `blas_skinned.rs` (note its refit-to-refit case is WRITE→WRITE). TLAS: `tlas.rs` (`cmd_pipeline_barrier`). A missing or wrong-stage barrier here is HIGH (CRITICAL if the AS is built at a wrong/stale device address — wrong geometry in shadows/reflections/GI).
+- **AS build INPUT barrier access flag (regression guard, #507945d8).** Distinct from the build→read barrier above: the *inputs* to a build (instance-buffer copy → TLAS build in `tlas.rs`; skinned-vertex compute write → BLAS build in `draw.rs`) must be made visible with `SHADER_READ` at the `ACCELERATION_STRUCTURE_BUILD` stage, NOT `ACCELERATION_STRUCTURE_READ_KHR` (that flag reads an AS structure, not build inputs). The wrong flag is a copy/compute → build RAW hazard sync-validation catches — confirm via a `BYRO_VALIDATION` run, don't escalate on reasoning alone.
+- **Deferred AS destruction vs in-flight reads (#a476b256).** BLAS eviction/drop routes the AS handle + buffers through `pending_destroy_blas` (deferred countdown), so an unload/eviction can't free an AS the in-flight frame's ray queries still read. Verify no path re-introduces an immediate `destroy_acceleration_structure` at the eviction site (use-after-free = CRITICAL) and that shutdown drains the queue.
 - **Swapchain recreate sync.** `recreate_swapchain` (`context/resize.rs`) must cover all in-flight work with `device_wait_idle` (or equivalent fence drain) before destroying/rebuilding swapchain-dependent resources — no use-after-destroy across the recreate.
 - **One-time command buffers** (BLAS initial build, staging copies) block the main thread on a fence — flag if any such blocking submit runs inside the per-frame hot path rather than at load time.
 **Output**: `/tmp/audit/concurrency/dim_1.md`
@@ -93,7 +106,7 @@ looks wrong" is a HYPOTHESIS row, not a fix.
 **Output**: `/tmp/audit/concurrency/dim_3.md`
 
 ### Dimension 4: Scheduler Access Declarations (regression guard — M27 closed)
-**Entry points**: `crates/core/src/ecs/scheduler.rs`, `crates/core/src/ecs/access.rs`, `byroredux/src/commands.rs` (`sys.accesses`)
+**Entry points**: `crates/core/src/ecs/scheduler.rs`, `crates/core/src/ecs/access.rs`, `byroredux/src/commands/world_info.rs` (`sys.accesses`)
 **Status**: M27 (parallel dispatch) and R7 (access declarations) are **closed**
 (ROADMAP.md). The `parallel-scheduler` feature is **on by default**; the
 post-migration `sys.accesses` report is **0 unknown / 0 conflicts**. This

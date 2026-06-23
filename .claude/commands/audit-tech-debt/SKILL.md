@@ -18,9 +18,12 @@ purpose. Re-run the recipe; report what it surfaces today.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, the 19-crate roster,
+See `.claude/commands/_audit-common.md` for project layout, the 21-crate roster,
 methodology, deduplication, context rules, severity, and finding format. Do not
-duplicate any of that here.
+duplicate any of that here. The newest crates — `crates/pex/` (M47.2 compiled-
+Papyrus `.pex` decompiler), `crates/save/` (M45 full-ECS snapshot save/load), and
+the expanded `crates/scripting/` (M47.1/M47.2 recognizer chain) — are young code
+that has not yet seen a debt sweep; the dimensions below should reach them.
 
 ## Parameters (from $ARGUMENTS)
 
@@ -104,7 +107,7 @@ over threshold).
   before proposing barrier/order changes.
 - `byroredux/src/asset_provider.rs` → BSA/BA2 resolution vs TextureProvider vs mesh extraction.
 - `byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.
-- `byroredux/src/commands.rs` → console-command groups (stats / entities / systems / tex.* / scene).
+- `byroredux/src/commands/` → console-command groups, already split per-domain (world_info / assets / view / scene / shared) under #1323; check the submodules stay cohesive, not re-bloated.
 - `crates/nif/src/blocks/particle.rs` → typed emitter/ctlr structs vs the opaque `NiPSysBlock` fallback vs grow/fade modifiers.
 
 **Also flag**: functions >200 LOC (propose extraction); match arms >50 cases
@@ -157,6 +160,12 @@ sweep for content rot the gate cannot see:
   method `Material::resolve_pbr`; `metalness`/`roughness` are plain resolved `f32`.
   (This overlaps Dim 8 — report material doc rot under Dim 3.)
 - ROADMAP.md milestones marked "in progress" whose issues are all closed (or vice versa) — cross-check `git log` / `gh issue`.
+- **`docs/feature-matrix.md` lags shipped milestones** (known doc-rot target). Its
+  "Save / load (M45)" row still reads "unstarted" and "Full Papyrus transpiler
+  (M47.2)" reads "transpiler unstarted", but M45 + M45.1 (`crates/save/`) and the
+  M47.2 compiled-`.pex` recognizer slice (`crates/pex/`, `crates/scripting/`) all
+  shipped (`git log --grep M45`, `--grep M47.2`). Flag each lagging row; the matrix
+  is a status floor, not a record of what exists.
 - HISTORY.md entries referencing later-reverted work.
 - README.md command examples whose flags/paths changed.
 - `docs/legacy/` references to Gamebryo source paths that moved.
@@ -165,9 +174,9 @@ sweep for content rot the gate cannot see:
 **Path convention (post-#1114)**: a backticked `.ext` path in any audit-*.md or
 this file asserts "exists right now". Forward-looking (not-yet-created) or
 backwards-looking (deleted) refs must NOT use backticks. The gate fails on any
-backticked path that does not resolve. (Note: the gate globs
-`.claude/commands/audit-*.md`, not `audit-*/SKILL.md` subdirs — paths in *this
-very file* are not gate-covered and must be hand-validated.)
+backticked path that does not resolve. The gate now globs both the shared
+`.claude/commands/_audit-*.md` files AND every `.claude/commands/audit-*/SKILL.md`
+subdir (so paths in *this very file* ARE gate-covered) — run it before committing.
 
 ### Dimension 4: Audit-Finding Rot
 The audit infrastructure decays like any other code, and stale baselines actively
@@ -221,7 +230,7 @@ fallbacks to panics, so any hit is genuinely notable. For each:
   vs stubbed per game; cross-check ROADMAP.md per-game compat matrix. (The legacy
   per-game stubs in `crates/plugin/src/legacy/` were removed under #390 — coverage
   now lives in the unified records tree; do not re-file the removed stubs.)
-- Console commands in `byroredux/src/commands.rs` that exist but no-op / print "TODO".
+- Console commands in `byroredux/src/commands/` that exist but no-op / print "TODO".
 
 ### Dimension 7: Magic Numbers & Hardcoded Constants
 **Discovery**: read the version-gate and budget sites; do not regex blindly (most

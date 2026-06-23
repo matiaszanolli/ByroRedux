@@ -166,9 +166,11 @@ table, §5 LOD, §7 rollout status).
   `None` on FNV/FO3/Oblivion, `default_water_height` = `None`, encode real game distinctions.
 - **LOD — the largest open gap**: distant **object** LOD has a first cut (Skyrim/FO4 baked
   `.bto` quads via `byroredux/src/cell_loader/object_lod.rs::stream_object_lod_blocks`,
-  spawned as `IsLodTerrain`, live-verified on Tamriel). Distant terrain still uses heightmap
-  synthesis (`cell_loader/terrain_lod.rs`), **not** the prebaked `.btr`. The
-  Oblivion/FO3/FNV placement scheme (`DistantLOD\*.lod` → `_far.nif`) is **unimplemented**.
+  spawned as `IsLodTerrain`, live-verified on Tamriel). Distant **terrain** now prefers the
+  prebaked `.btr` mesh on Skyrim+/FO4 (M35, #1685 — `byroredux/src/cell_loader/terrain_lod_btr.rs::spawn_btr_block`,
+  dispatched from `cell_loader/terrain_lod.rs`), falling back to heightmap synthesis for older
+  games and missing `.btr` blocks. The Oblivion/FO3/FNV placement scheme (`DistantLOD\*.lod` →
+  `_far.nif`) is still **unimplemented**.
   Per `exal.md` §5.4: runtime LOD is asset-driven — neither NIF LOD nodes nor STAT `MNAM`
   unblock it; the **VWD / "Has Distant LOD" record-header flag** (to cull full models) is the
   small parser gap. Findings here are real coverage gaps, not premise errors.

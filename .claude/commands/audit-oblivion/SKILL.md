@@ -129,6 +129,12 @@ Dimensions are ordered by Oblivion-specific risk: NIF version handling first
   `resolve_shape_inner` in the `extract_collision` chain — they must not fall
   out silently. Verify against the `BhkMultiSphereShape` / `BhkConvexListShape`
   downcast arms.
+- **bhk motion_type via the canonical Havok enum (#1652, `dc33ec7d`)**:
+  `collision.rs::havok_motion_type` maps the raw `hkMotionType` byte per the full
+  nif.xml enum (1–5/8 → Dynamic, 6 KEYFRAMED → Keyframed, 7 FIXED → Static, 9
+  CHARACTER → CharacterKinematic, 0/other → Static); the pre-fix
+  `4 => Keyframed` / `_ => Static` collapse froze BOX_INERTIA (4) clutter.
+  Shared with FNV/FO3 — re-introducing the collapse is the regression.
 **Output**: `/tmp/audit/oblivion/dim_1.md`
 
 ### Dimension 2: BSA v103 Archive
@@ -165,6 +171,15 @@ exist".
   effect codes) and the CONT 4-byte-payload guard in
   `crates/plugin/src/esm/records/tests.rs` / `container.rs`; CLMT three-entry
   WLST in `crates/plugin/src/esm/records/climate.rs`.
+- **16-byte ACBS guard (#1650, `3d5d0d68`)**: Oblivion `NPC_`/`CREA` ship a
+  **16-byte** ACBS (flags u32 @0, level i16 @10) — distinct from the ≥24-byte
+  FNV/FO3/Skyrim layout, so `parse_npc` (`actor.rs`) needs a `GameKind::Oblivion`
+  arm gated on `len >= 16` *before* the FNV arm. Pre-fix the ≥24 arm never fired
+  on Oblivion: `record.level` defaulted to 1 (high-level NPCs resolved
+  lowest-tier inventory) and `acbs_flags` defaulted to 0 (every actor read Male
+  via `Gender::from_acbs_flags`). Tests: `oblivion_16byte_acbs_parses_level_and_gender`
+  + `fnv_ignores_16byte_acbs` in `actor.rs`/`tests.rs`. Per-game layout must stay
+  gated at the parser→record boundary, never re-derived at spawn/equip time.
 - The two ignored Oblivion real-data parity tests
   (`clas_oblivion_knight_against_vanilla`, `race_oblivion_data_and_subs_against_vanilla`)
   still pass against vanilla `Oblivion.esm` when un-ignored.

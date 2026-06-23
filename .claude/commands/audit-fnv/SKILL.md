@@ -89,6 +89,7 @@ Dimensions are ordered by current FNV risk: the layers most likely to silently b
 - CELL `XCLL` `fog_far_color` optional-field handling.
 - **SCOL is FNV-era, not an FO4 addition** (#1538): FalloutNV.esm carries **98 SCOL bases referenced by 1084 REFRs** (road segments, guardrails, debris LOD) — the `is_scol_era = is_fo4_plus || Fallout3NV` gate in `crates/plugin/src/esm/records/mod.rs` MUST keep dispatching `parse_scol_group` for FNV/FO3; re-narrowing it to FO4-only is the regression that silently drops those 1084 placements. The genuinely FO4+-only records are **MOVS / PKIN / MSWP** (byte-scan-confirmed absent from FalloutNV.esm) — those must not steal FNV dispatch. TXST/`XATO`/`XTNM`/`XTXR` cell-subrecord arms live in `crates/plugin/src/esm/cell/walkers.rs`; an `unreachable_patterns` warning there is a code smell.
 - LVLI leveled-list flattening — `crates/plugin/src/equip.rs::expand_leveled_form_id` resolves NPC default-outfit LVLI refs into base ARMO/WEAP; FNV NPCs whose outfits reference LVLI must spawn gear, not empty.
+- **SCPT SCHR flags are a u16 (#1654, `590351c1`)**: the Oblivion/FO3/FNV SCHR is exactly 20 bytes with a `u16` flags tail after the `script_type` u16 (cursor @18, 2 bytes left). `crates/plugin/src/esm/records/script.rs` reads it via `u16_or_default` into `ScriptRecord.flags`; a `u32` read fails on every real script and `unwrap_or(0)` pins flags to 0. The field is a u16 on every game — a regression back to u32 silently zeroes all script flags.
 **Output**: `/tmp/audit/fnv/dim_4.md`
 
 ### Dimension 5: NIF Parser — FNV Regression Guard
@@ -99,6 +100,7 @@ Dimensions are ordered by current FNV risk: the layers most likely to silently b
 - `NiTexturingProperty` decal-slot off-by-one; `BSMultiBound*`; `BSDecalPlacementVectorExtraData` all stay fixed (reference N23.4 FO3/FNV validation).
 - **#1277 collision/version guards**:
   - `collision.rs::examine_collision_kind` classifies FNV chains as `CollisionAuthoring::Classic` (the bhk* path), not `NewPhysicsStub`/`Phantom`/`Unrecognised` — a misclassified discriminator silently drops the rigid body.
+  - **bhk motion_type via the canonical Havok enum (#1652, `dc33ec7d`)**: `collision.rs::havok_motion_type` maps the raw `hkMotionType` byte per the full nif.xml enum (1–5/8 → Dynamic, 6 KEYFRAMED → Keyframed, 7 FIXED → Static, 9 CHARACTER → CharacterKinematic, 0/other → Static). The pre-fix `4 => Keyframed` / `_ => Static` collapse mis-typed BOX_INERTIA (4) clutter (crates/ammo boxes) as kinematic-frozen instead of falling — re-introducing the collapse is the regression.
   - `version.rs` raw-`bsver`-compare migration: `bsver::FO3_FNV = 34`, `RIGID_BODY_FLAGS16 = 76`, `NI_BS_LTE_16 = 16` etc. must still place FNV (`bsver` 34, `> NI_BS_LTE_16`) on the post-Oblivion side of every gate — a flipped comparison shifts field layout and corrupts collision/anim reads.
 - **#1269 walker guard**: `MAX_NIF_NODE_DEPTH = 128` in `crates/nif/src/import/walk/mod.rs` guards both hierarchical + flat walkers; a legit FNV scene must never trip the 128-depth bail (covered by `crates/nif/src/import/walk/tests.rs`).
 **Output**: `/tmp/audit/fnv/dim_5.md`
