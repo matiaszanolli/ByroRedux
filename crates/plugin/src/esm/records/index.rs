@@ -560,6 +560,37 @@ impl EsmIndex {
         None
     }
 
+    /// The decoded `VMAD` script attachments for a base record, if it
+    /// carries any (Skyrim+ inline Papyrus). The sibling of
+    /// [`base_record_script`](Self::base_record_script): that one returns
+    /// the FO3/FNV/Oblivion `SCRI` → SCPT form id (Obscript), this one
+    /// returns the Skyrim+ per-instance script bindings the M47.2
+    /// translation layer decompiles to canonical ECS behavior.
+    ///
+    /// Covers the same base-record families `base_record_script` walks —
+    /// activators, containers, NPCs/creatures — in the same priority
+    /// order. Returns `None` when the record is absent or carries no
+    /// `VMAD`. (Items / terminals don't decode `VMAD` yet, so they
+    /// never match here.)
+    pub fn base_record_script_instance(
+        &self,
+        base_form_id: u32,
+    ) -> Option<&super::script_instance::ScriptInstanceData> {
+        if let Some(r) = self.activators.get(&base_form_id) {
+            return r.script_instance.as_ref();
+        }
+        if let Some(r) = self.containers.get(&base_form_id) {
+            return r.script_instance.as_ref();
+        }
+        if let Some(r) = self.npcs.get(&base_form_id) {
+            return r.script_instance.as_ref();
+        }
+        if let Some(r) = self.creatures.get(&base_form_id) {
+            return r.script_instance.as_ref();
+        }
+        None
+    }
+
     /// [`categories`]: Self::categories
     /// [`total`]: Self::total
     pub fn category_breakdown(&self) -> String {
@@ -751,5 +782,49 @@ mod tests {
             },
         );
         assert!(idx.base_record_script(0xAAAA_0002).is_none());
+    }
+
+    /// M47.2 — the Skyrim+ sibling: a base record carrying a `VMAD`
+    /// resolves through `base_record_script_instance` to its decoded
+    /// attached-script name(s), which the attach path decompiles to ECS
+    /// behavior. Build the ACTI through `parse_acti` so the test doubles
+    /// as coverage for the new VMAD arm.
+    #[test]
+    fn base_record_script_instance_resolves_vmad_script_name() {
+        use crate::esm::records::parse_acti;
+        let sub = |t: &[u8; 4], data: &[u8]| crate::esm::reader::SubRecord {
+            sub_type: *t,
+            data: data.to_vec(),
+        };
+
+        // Minimal Skyrim-shape VMAD: version 5, objectFormat 2, one
+        // script "MyActivatorScript", zero properties.
+        let name = b"MyActivatorScript";
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&5i16.to_le_bytes()); // version
+        vmad.extend_from_slice(&2i16.to_le_bytes()); // objectFormat
+        vmad.extend_from_slice(&1u16.to_le_bytes()); // scriptCount
+        vmad.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        vmad.extend_from_slice(name);
+        vmad.push(0); // script status
+        vmad.extend_from_slice(&0u16.to_le_bytes()); // propCount = 0
+
+        let acti = parse_acti(0xAAAA_0003, &[sub(b"EDID", b"VmadActi\0"), sub(b"VMAD", &vmad)]);
+
+        let mut idx = EsmIndex::default();
+        idx.activators.insert(0xAAAA_0003, acti);
+
+        let si = idx
+            .base_record_script_instance(0xAAAA_0003)
+            .expect("ACTI VMAD decoded into script_instance");
+        assert_eq!(si.scripts.len(), 1);
+        assert_eq!(si.scripts[0].name, "MyActivatorScript");
+
+        // A record with no VMAD resolves to None (not an empty struct).
+        let plain = parse_acti(0xAAAA_0004, &[sub(b"EDID", b"PlainActi\0")]);
+        idx.activators.insert(0xAAAA_0004, plain);
+        assert!(idx.base_record_script_instance(0xAAAA_0004).is_none());
+        // And an unknown id is None.
+        assert!(idx.base_record_script_instance(0x0000_9999).is_none());
     }
 }

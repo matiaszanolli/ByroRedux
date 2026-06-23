@@ -216,6 +216,11 @@ pub struct NpcRecord {
     /// instead (see `has_script`). The two paths are mutually
     /// exclusive in vanilla content. See #1273.
     pub script_form_id: u32,
+    /// Decoded `VMAD` script attachments + property bindings (Skyrim+).
+    /// `None` when the record carries no `VMAD`; the presence flag is
+    /// [`Self::has_script`]. Consumed by the M47.2 scripting-translation
+    /// layer to fetch + decompile the attached `.pex`. See #369 / M47.2.
+    pub script_instance: Option<super::script_instance::ScriptInstanceData>,
     /// FO4 face-morph block (FMRI/FMRS/MSDK/MSDV/QNAM/HCLF/BCLF/PNAM).
     /// `None` when the record carries no face-morph sub-records (most
     /// pre-FO4 NPCs and FO4 generic settlers). Driven by audit
@@ -488,6 +493,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
         acbs_flags: 0,
         has_script: common.has_script,
         script_form_id: 0,
+        script_instance: common.script_instance,
         face_morphs: None,
         runtime_facegen: None,
         template_form_id: 0,

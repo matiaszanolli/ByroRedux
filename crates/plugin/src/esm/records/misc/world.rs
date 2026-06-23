@@ -272,6 +272,12 @@ pub struct ActiRecord {
     /// RADR / RNAM — radio station form ID, applicable to FNV radio
     /// transmitters (activator variant). `0` when absent.
     pub radio_form_id: u32,
+    /// Decoded `VMAD` script attachments (Skyrim+ inline Papyrus). `None`
+    /// on FO3 / FNV / Oblivion activators (those use the `SCRI` →  SCPT /
+    /// Obscript path). Consumed by the M47.2 scripting-translation layer
+    /// to fetch + decompile the attached `.pex`. Activators are the most
+    /// common scripted base record in Skyrim cells (levers, doors, traps).
+    pub script_instance: Option<crate::esm::records::script_instance::ScriptInstanceData>,
 }
 
 pub fn parse_acti(form_id: u32, subs: &[SubRecord]) -> ActiRecord {
@@ -288,6 +294,14 @@ pub fn parse_acti(form_id: u32, subs: &[SubRecord]) -> ActiRecord {
             b"SNAM" => out.sound_form_id = SubReader::new(&sub.data).u32_or_default(),
             b"RNAM" | b"RADR" => {
                 out.radio_form_id = SubReader::new(&sub.data).u32_or_default();
+            }
+            // VMAD — Skyrim+ inline Papyrus attachment. Absent on FO3/FNV
+            // (which carry SCRI instead); decoded here so the M47.2 attach
+            // path can decompile the named `.pex` and bind its properties.
+            b"VMAD" => {
+                out.script_instance = Some(
+                    crate::esm::records::script_instance::ScriptInstanceData::parse(&sub.data),
+                );
             }
             _ => {}
         }

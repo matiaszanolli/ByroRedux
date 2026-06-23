@@ -5,6 +5,7 @@
 //! a base item form by ID and gives a count or a level/chance.
 
 use super::common::{read_zstring, CommonNamedFields};
+use super::script_instance::ScriptInstanceData;
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -52,6 +53,11 @@ pub struct ContainerRecord {
     pub close_sound: u32,
     /// Form ID of an attached script (if any).
     pub script_form_id: u32,
+    /// Decoded `VMAD` script attachments + property bindings (Skyrim+).
+    /// `None` when the record has no `VMAD`. Consumed by the M47.2
+    /// scripting-translation layer to fetch + decompile the attached
+    /// `.pex` and bind its per-instance `Quest` / `Object` properties.
+    pub script_instance: Option<ScriptInstanceData>,
     pub contents: Vec<InventoryEntry>,
 }
 
@@ -86,6 +92,7 @@ pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
         open_sound: 0,
         close_sound: 0,
         script_form_id: common.script_form_id,
+        script_instance: common.script_instance,
         contents: Vec::new(),
     };
     for sub in subs {

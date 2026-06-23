@@ -791,6 +791,7 @@ fn esm_index_total_counts_all_categories() {
             acbs_flags: 0,
             has_script: false,
             script_form_id: 0,
+            script_instance: None,
             face_morphs: None,
             runtime_facegen: None,
             template_form_id: 0,
