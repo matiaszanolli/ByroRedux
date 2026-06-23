@@ -179,6 +179,14 @@ pub(crate) fn setup_scene(
                 masters: masters.clone(),
                 esm_path: path.clone(),
             });
+            // M47.2 — install the compiled-script archive (`--scripts-bsa`)
+            // so the cell loader's REFR-attach path can resolve a base
+            // record's VMAD-named `.pex`, decompile it, and run it through
+            // the recognizer chain. Empty (no flag) → every lookup misses
+            // and the attach path falls through, same as an unregistered
+            // SCPT. Inserted once; it persists across door-walk cell
+            // transitions (which reuse the same World).
+            world.insert_resource(crate::asset_provider::build_script_provider(&args));
         }
 
         if let (Some(ref esm_path), Some(ref cell_id)) = (&esm_path, &cell_id) {

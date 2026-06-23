@@ -1344,8 +1344,38 @@ fn attach_script_for_refr(
     base_form_id: u32,
     index: &esm::records::EsmIndex,
 ) {
+    // Two mutually-exclusive per-game attach paths converge here. A
+    // record carries either a pre-Skyrim `SCRI` → SCPT (Obscript, the
+    // M47.0 registry path) or a Skyrim+ `VMAD` inline Papyrus block (the
+    // M47.2 decompile path), never both in vanilla content. Run both —
+    // each no-ops for the wrong era — and emit one `OnCellLoadEvent` if
+    // either attached canonical behavior.
+    let mut attached = attach_scpt_script(world, entity, base_form_id, index);
+    attached |= attach_vmad_scripts(world, entity, base_form_id, index);
+
+    if attached {
+        // M47.0 Phase 5 — emit OnCellLoadEvent on the freshly-attached
+        // entity so the script's first-tick init hook fires on the same
+        // frame the cell loads. Mirrors Papyrus `OnLoad` semantics. The
+        // marker is drained by `event_cleanup_system` at end-of-frame,
+        // so each script sees exactly one OnCellLoad per cell entry.
+        if let Some(mut q) = world.query_mut::<byroredux_scripting::OnCellLoadEvent>() {
+            q.insert(entity, byroredux_scripting::OnCellLoadEvent);
+        }
+    }
+}
+
+/// FO3 / FNV / Oblivion path: resolve the base record's `SCRI` form id
+/// to its SCPT editor id, look up a hand-written M47.0 spawner in the
+/// [`ScriptRegistry`], and run it. Returns `true` when a spawner ran.
+fn attach_scpt_script(
+    world: &mut byroredux_core::ecs::world::World,
+    entity: byroredux_core::ecs::EntityId,
+    base_form_id: u32,
+    index: &esm::records::EsmIndex,
+) -> bool {
     let Some(script_form_id) = index.base_record_script(base_form_id) else {
-        return;
+        return false;
     };
     let Some(script) = index.scripts.get(&script_form_id) else {
         // SCPT cross-ref dangled. Pre-#443 the SCPT records weren't
@@ -1355,7 +1385,7 @@ fn attach_script_for_refr(
         log::debug!(
             "M47.0: SCRI {script_form_id:08X} on base {base_form_id:08X} not in index.scripts (dangling cross-ref)",
         );
-        return;
+        return false;
     };
     // Scope the registry borrow tightly — the spawn fn that comes back
     // is a function pointer (Copy), so we can drop the borrow before
@@ -1371,7 +1401,7 @@ fn attach_script_for_refr(
                  byroredux_scripting::register and ScriptRegistry init \
                  must run before cell load. Script attach disabled."
             );
-            return;
+            return false;
         };
         registry.lookup(&script.editor_id)
     };
@@ -1385,24 +1415,84 @@ fn attach_script_for_refr(
             script.editor_id,
             script_form_id,
         );
-        return;
+        return false;
     };
     spawn_fn(world, entity);
-
-    // M47.0 Phase 5 — emit OnCellLoadEvent on the freshly-attached
-    // entity so the script's first-tick init hook fires on the same
-    // frame the cell loads. Mirrors Papyrus `OnLoad` semantics. The
-    // marker is drained by `event_cleanup_system` at end-of-frame,
-    // so each script sees exactly one OnCellLoad per cell entry.
-    if let Some(mut q) = world.query_mut::<byroredux_scripting::OnCellLoadEvent>() {
-        q.insert(entity, byroredux_scripting::OnCellLoadEvent);
-    }
-
     log::debug!(
         "M47.0: attached script '{}' (SCPT {:08X}) to entity {entity:?} via base {base_form_id:08X}",
         script.editor_id,
         script_form_id,
     );
+    true
+}
+
+/// Skyrim+ path: for each script named in the base record's `VMAD`,
+/// fetch its compiled `.pex` from the script archive, decompile it, and
+/// run it through the recognizer chain
+/// ([`byroredux_scripting::translate_pex`]). A recognized script inserts
+/// its canonical ECS behavior; an unrecognized or missing one is a
+/// silent miss. Returns `true` when at least one script was recognized.
+///
+/// `owning_quest` is `None` here: base-record-attached scripts (lever,
+/// door, trap activators; scripted containers / NPCs) bind their quest
+/// through a VMAD `Quest` property, not an alias. Alias-attached scripts
+/// (which need the owning quest id) flow through the quest-alias attach
+/// path, not this one.
+fn attach_vmad_scripts(
+    world: &mut byroredux_core::ecs::world::World,
+    entity: byroredux_core::ecs::EntityId,
+    base_form_id: u32,
+    index: &esm::records::EsmIndex,
+) -> bool {
+    // Fast-out before any per-REFR work when no `--scripts-bsa` was
+    // supplied (the common case for mesh-only / FO3-FNV launches): no
+    // archive means every `.pex` lookup would miss anyway.
+    let have_archive = world
+        .try_resource::<crate::asset_provider::ScriptProvider>()
+        .is_some_and(|p| !p.is_empty());
+    if !have_archive {
+        return false;
+    }
+    let Some(script_instance) = index.base_record_script_instance(base_form_id) else {
+        return false;
+    };
+    let game = index.game;
+    let mut any = false;
+    for script in &script_instance.scripts {
+        // Scope the provider borrow: extract the owned `.pex` bytes,
+        // then drop the resource read before the `&mut World` spawn.
+        let bytes = {
+            let provider = world.resource::<crate::asset_provider::ScriptProvider>();
+            provider.extract_pex(&script.name)
+        };
+        let Some(bytes) = bytes else {
+            log::trace!(
+                "M47.2: .pex '{}' not in script archive (base {base_form_id:08X})",
+                script.name,
+            );
+            continue;
+        };
+        // `script_instance` borrows `index` (not `world`), so it stays
+        // valid across the `&mut World` spawn below.
+        match byroredux_scripting::translate_pex(&bytes, game, Some(script_instance), None) {
+            Some(recognized) => {
+                log::debug!(
+                    "M47.2: recognized '{}' from .pex '{}' on base {base_form_id:08X} → entity {entity:?}",
+                    recognized.archetype,
+                    script.name,
+                );
+                (recognized.spawn)(world, entity);
+                any = true;
+            }
+            None => {
+                log::trace!(
+                    "M47.2: .pex '{}' decompiled but unrecognized (base {base_form_id:08X})",
+                    script.name,
+                );
+            }
+        }
+    }
+    any
 }
 
 /// Phase 17 — attach a [`LightFlicker`] component when the light's
