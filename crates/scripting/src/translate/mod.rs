@@ -60,6 +60,42 @@ pub fn translate_script(
     RECOGNIZERS.iter().find_map(|recognize| recognize(&ctx))
 }
 
+/// Translate a **compiled** Papyrus script (`.pex` bytes) — the
+/// vanilla-runtime form shipped in game archives.
+///
+/// Decompiles the bytecode to the same `byroredux_papyrus` AST a `.psc`
+/// parses to (via [`byroredux_pex`]) and runs it through the same
+/// [`translate_script`] recognizer chain — so a compiled script and its
+/// source decompile to one canonical behavior. A `.pex` that fails to
+/// parse or decompile is a silent `None` (logged at debug), treated like
+/// any other recognizer miss.
+///
+/// The decompiled `Script` is owned locally; the returned [`Recognized`]
+/// captures only owned constants, so it outlives the borrow.
+pub fn translate_pex(
+    pex_bytes: &[u8],
+    game: GameKind,
+    script_instance: Option<&ScriptInstanceData>,
+    owning_quest: Option<u32>,
+) -> Option<Recognized> {
+    let pex = match byroredux_pex::parse(pex_bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            log::debug!("translate_pex: .pex parse failed: {e}");
+            return None;
+        }
+    };
+    let script = match byroredux_pex::decompile::decompile_script(&pex) {
+        Ok(s) => s,
+        Err(e) => {
+            log::debug!("translate_pex: decompile failed: {e}");
+            return None;
+        }
+    };
+    let source = ScriptSource::PapyrusSource(&script);
+    translate_script(&source, game, script_instance, owning_quest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

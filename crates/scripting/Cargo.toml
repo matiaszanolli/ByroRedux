@@ -21,6 +21,15 @@ serde = { workspace = true, optional = true }
 byroredux-plugin = { workspace = true }
 # M47.2 — the canonical scripting-translation layer (`translate/`) recognizes
 # behavior archetypes from the parsed Papyrus AST. papyrus is standalone
-# (lexer/parser only), so no cycle. The `.pex` / Obscript front-ends land later.
+# (lexer/parser only), so no cycle.
 byroredux-papyrus = { workspace = true }
+# M47.2 — the compiled-Papyrus (`.pex`) front-end: decompile vanilla
+# bytecode to the same Papyrus AST the recognizers consume. pex depends on
+# papyrus only, so this stays acyclic.
+byroredux-pex = { workspace = true }
 log = { workspace = true }
+
+[dev-dependencies]
+# Opt-in end-to-end test: extract a real vanilla `.pex` from a game archive
+# and run it through decompile → recognize.
+byroredux-bsa = { workspace = true }

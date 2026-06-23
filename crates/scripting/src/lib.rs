@@ -31,7 +31,9 @@ pub use events::{
 pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, RecurringUpdate};
 pub use registry::{ScriptRegistry, ScriptSpawnFn};
 pub use timer::{timer_tick_system, ScriptTimer};
-pub use translate::{translate_script, CanonicalEvent, RecognizeCtx, Recognized, ScriptSource};
+pub use translate::{
+    translate_pex, translate_script, CanonicalEvent, RecognizeCtx, Recognized, ScriptSource,
+};
 
 use byroredux_core::ecs::world::World;
 
