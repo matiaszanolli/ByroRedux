@@ -68,6 +68,11 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
     // Resolve the owning quest by how the script named it.
     let owning_quest = match &gate.quest_via {
         QuestRef::OwningQuest => ctx.owning_quest?,
+        // `Self` as a quest only arises in quest stage/scene fragments
+        // (handled by the fragment lowerer), never in a REFR's
+        // `OnActivate`/`OnTriggerEnter` handler — a REFR's `Self` is the
+        // reference, which has no `SetStage`. Decline if it ever appears.
+        QuestRef::SelfRef => return None,
         QuestRef::Property(name) => ctx
             .script_instance?
             .scripts

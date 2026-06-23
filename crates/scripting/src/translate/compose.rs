@@ -38,6 +38,13 @@ pub enum QuestRef {
     /// `Self.GetOwningQuest()` — the quest owning this alias. Resolved
     /// from the attach context's `owning_quest`.
     OwningQuest,
+    /// `Self` — the script's own object. For a quest **stage/scene
+    /// fragment** the script *is* the quest, so `Self.SetStage(..)`
+    /// targets the quest the fragment runs in (the dispatch-context
+    /// quest). Distinct from [`OwningQuest`] only for alias scripts,
+    /// where `Self` is the alias and `GetOwningQuest()` is its quest;
+    /// the fragment dispatcher resolves both to its context quest.
+    SelfRef,
     /// A `Quest Property NAME` — resolved from VMAD by property name.
     Property(String),
 }
@@ -83,7 +90,11 @@ pub fn quest_via(object: &Expr) -> Option<QuestRef> {
     if method_call(object, "GetOwningQuest").is_some() {
         Some(QuestRef::OwningQuest)
     } else if let Expr::Ident(name) = object {
-        Some(QuestRef::Property(name.0.clone()))
+        if name.0.eq_ignore_ascii_case("self") {
+            Some(QuestRef::SelfRef)
+        } else {
+            Some(QuestRef::Property(name.0.clone()))
+        }
     } else {
         None
     }

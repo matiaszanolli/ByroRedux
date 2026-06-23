@@ -159,6 +159,30 @@ guard, SetStage effect), proving the mechanism against its existing golden tests
 - **Fidelity-gated** — each primitive's `lower` carries a golden test (the R5
   pattern). The survey tool is the coverage-regression instrument.
 
+## Empirical validation (landed increment)
+
+The first effect table — **5 primitives** (`SetStage` + the three objective
+setters + `CompleteAllObjectives`) — measured against the real corpus by
+[`crates/scripting/examples/fragment_coverage.rs`](../../crates/scripting/examples/fragment_coverage.rs):
+
+```
+behavioral fragments: 43818
+fully lowered (claimed): 10435 (23.8% of behavioral)   declined: 33383 (76.2%)
+canonical effects emitted: 12536  (SetStage 7856, SetObjectiveDisplayed 2670,
+                                   SetObjectiveCompleted 1868, CompleteAllObjectives 100,
+                                   SetObjectiveFailed 42)
+```
+
+Five primitives claim ~a quarter of the entire fragment population — the
+steep head the primitive-frequency curve predicted. The example doubles
+as a coverage-regression gate as the table grows toward the ~500-primitive
+/ ~78% target. The lowerer is fully tested
+([`crates/scripting/src/translate/effects.rs`](../../crates/scripting/src/translate/effects.rs))
+and dispatched through [`crates/scripting/src/fragment.rs`]; the only
+missing piece for runtime population is the **QUST VMAD fragment-section
+decoder** (stage→`Fragment_N` binding), deferred pending the format spec
+(no-guessing policy).
+
 ## Sequencing
 
 1. **Refactor `quest_stage_gate` into the compositional engine + primitive

@@ -156,6 +156,89 @@ impl QuestStageState {
     }
 }
 
+/// Runtime state of every quest objective the player has touched, keyed
+/// by quest FormID then objective index.
+///
+/// The objectives sibling to [`QuestStageState`] anticipated in this
+/// module's header. Papyrus's quest-stage *fragments* (the 69.5%
+/// fragment population the M47.2 lowerer targets — see
+/// [`docs/engine/m47-2-recognizer-scaling.md`]) overwhelmingly call
+/// `SetObjectiveDisplayed` / `SetObjectiveCompleted` /
+/// `SetObjectiveFailed`; lowering them needs a canonical store, and this
+/// is it. Same lazy, quest-scoped shape as [`QuestStageState`]: only
+/// objectives a fragment has actually touched get a map entry; untouched
+/// objectives read their default (`ObjectiveStatus::default`).
+///
+/// No journal UI consumes this yet (same status as [`QuestStageAdvanced`]
+/// at its introduction) — it ships so the fragment lowerer has a stable,
+/// tested target, and stage/objective causality is observable.
+#[derive(Debug, Default)]
+pub struct QuestObjectiveState {
+    quests: HashMap<QuestFormId, HashMap<u16, ObjectiveStatus>>,
+}
+
+impl Resource for QuestObjectiveState {}
+
+/// Per-objective display state. Papyrus exposes three independent
+/// toggles; `completed` and `failed` are mutually exclusive in authored
+/// content but stored independently (the runtime never enforces it — it
+/// mirrors whatever the fragment set, matching Bethesda's store).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ObjectiveStatus {
+    /// `SetObjectiveDisplayed(idx, true/false)` — visible in the journal.
+    pub displayed: bool,
+    /// `SetObjectiveCompleted(idx, true/false)`.
+    pub completed: bool,
+    /// `SetObjectiveFailed(idx, true/false)`.
+    pub failed: bool,
+}
+
+impl QuestObjectiveState {
+    fn entry(&mut self, quest: QuestFormId, objective: u16) -> &mut ObjectiveStatus {
+        self.quests.entry(quest).or_default().entry(objective).or_default()
+    }
+
+    /// Papyrus `Quest.SetObjectiveDisplayed(idx, displayed)`.
+    pub fn set_displayed(&mut self, quest: QuestFormId, objective: u16, displayed: bool) {
+        self.entry(quest, objective).displayed = displayed;
+    }
+
+    /// Papyrus `Quest.SetObjectiveCompleted(idx, completed)`.
+    pub fn set_completed(&mut self, quest: QuestFormId, objective: u16, completed: bool) {
+        self.entry(quest, objective).completed = completed;
+    }
+
+    /// Papyrus `Quest.SetObjectiveFailed(idx, failed)`.
+    pub fn set_failed(&mut self, quest: QuestFormId, objective: u16, failed: bool) {
+        self.entry(quest, objective).failed = failed;
+    }
+
+    /// Papyrus `Quest.CompleteAllObjectives()` — marks every objective
+    /// the quest has *displayed so far* completed. With the lazy store we
+    /// only know objectives a fragment has touched; this completes those.
+    /// (A future QUST-record objective table could complete the full
+    /// authored set; the touched set is the faithful subset available
+    /// without it — and matches what runtime state has actually shown.)
+    pub fn complete_all(&mut self, quest: QuestFormId) {
+        if let Some(objs) = self.quests.get_mut(&quest) {
+            for status in objs.values_mut() {
+                if status.displayed {
+                    status.completed = true;
+                }
+            }
+        }
+    }
+
+    /// Read an objective's status; default (all false) for untouched.
+    pub fn get(&self, quest: QuestFormId, objective: u16) -> ObjectiveStatus {
+        self.quests
+            .get(&quest)
+            .and_then(|objs| objs.get(&objective))
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
 /// Marker event emitted by [`QuestStageState::set_stage`]-driven
 /// systems whenever a quest advances. Attached to a designated
 /// "quest events" entity (set up at world init); consumed by:

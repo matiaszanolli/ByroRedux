@@ -16,6 +16,7 @@
 
 pub mod archetype;
 pub mod compose;
+pub mod effects;
 pub mod recognizers;
 pub mod source;
 pub mod tables;

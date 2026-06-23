@@ -12,6 +12,7 @@
 pub mod cleanup;
 pub mod condition;
 pub mod events;
+pub mod fragment;
 pub mod papyrus_demo;
 pub mod quest_stages;
 pub mod recurring_update;
@@ -28,6 +29,9 @@ pub use condition::{
 pub use events::{
     ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, HitEvent, OnCellLoadEvent,
     OnEquipEvent, OnTriggerEnterEvent, TimerExpired,
+};
+pub use fragment::{
+    apply_effects, quest_fragment_dispatch_system, QuestStageFragments,
 };
 pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, RecurringUpdate};
 pub use registry::{ScriptRegistry, ScriptSpawnFn};
@@ -66,6 +70,11 @@ pub fn register(world: &mut World) {
     // dispatch consumes (the `default*Trigger` family).
     trigger::register(world);
     recurring_update::register(world);
+    // M47.2 (b2) — quest-stage fragment dispatch. Registers the
+    // QuestStageAdvanced component storage (via quest_advance below it's
+    // also registered, idempotent) and the QuestStageFragments /
+    // QuestObjectiveState resources the dispatcher reads.
+    fragment::register(world);
     // M47.0 Phase 1 — register the R5 prototype storages so
     // `papyrus_demo` scripts can attach their state components when
     // their owning REFR spawns. Without this call, `query_mut::<…>`
