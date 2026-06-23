@@ -168,40 +168,17 @@ fn extract_stage_gate(event: &Event) -> Option<StageGate> {
 
     // Peel an outer `If akActionRef == Game.GetPlayer()` wrapper, if the
     // whole handler body is exactly that guard.
-    let (body, mut player_only) = peel_player_gate(&event.body, player_param);
+    let (body, player_only) = peel_player_gate(&event.body, player_param);
 
-    // Shape 1/2: a guarded SetStage inside an `If`.
-    for stmt in body {
-        let Stmt::If {
-            condition, body, ..
-        } = &stmt.node
-        else {
-            continue;
-        };
-        // Decline if the condition mixes in any term we don't model
-        // (e.g. `GetStage() < N`, a `HasPerk`, an `||`) — recognizing it
-        // as a plain AND-of-GetStageDone would change its behavior.
-        let Some((conditions, quest_via, inner_player)) =
-            classify_if_condition(&condition.node, player_param)
-        else {
-            continue;
-        };
-        player_only |= inner_player;
-        let Some((target_stage, set_via)) = find_set_stage(body) else {
-            continue;
-        };
-        let quest_via = quest_via.unwrap_or_else(|| set_via.clone());
-        // If both the predicate and the SetStage name a quest, they must
-        // agree (a sane quest-gate script writes the quest it gates on).
-        if quest_via != set_via {
-            continue;
+    // Shape 1/2: a guarded SetStage inside an `If`. Mirroring shape 3's
+    // single-statement invariant, the post-peel body must be EXACTLY the
+    // guarded `If` — a sibling statement (a `Self.Disable()` before or
+    // after the gate) means the handler carries logic beyond the advance,
+    // so decline rather than emit and silently drop the sibling.
+    if let [only] = body {
+        if let Some(gate) = match_guarded_if(&only.node, player_param, player_only) {
+            return Some(gate);
         }
-        return Some(StageGate {
-            conditions,
-            target_stage,
-            quest_via,
-            player_only,
-        });
     }
 
     // Shape 3: unconditional — the body is exactly one `SetStage(Z)`.
@@ -242,6 +219,41 @@ fn peel_player_gate<'a>(
         }
     }
     (body, false)
+}
+
+/// Match a single guarded `If <GetStageDone-conjunction> … SetStage(Z) …`
+/// statement (shapes 1/2). The condition must classify cleanly through the
+/// guard-primitive table and the `If` body must contain a `SetStage`;
+/// otherwise `None` (the caller then declines). `outer_player` carries a
+/// peeled outer player gate so it folds into the returned gate.
+fn match_guarded_if(
+    stmt: &Stmt,
+    player_param: Option<&str>,
+    outer_player: bool,
+) -> Option<StageGate> {
+    let Stmt::If {
+        condition, body, ..
+    } = stmt
+    else {
+        return None;
+    };
+    // Decline if the condition mixes in any term we don't model
+    // (e.g. `GetStage() < N`, a `HasPerk`, an `||`) — recognizing it
+    // as a plain AND-of-GetStageDone would change its behavior.
+    let (conditions, quest_via, inner_player) = classify_if_condition(&condition.node, player_param)?;
+    let (target_stage, set_via) = find_set_stage(body)?;
+    let quest_via = quest_via.unwrap_or_else(|| set_via.clone());
+    // If both the predicate and the SetStage name a quest, they must
+    // agree (a sane quest-gate script writes the quest it gates on).
+    if quest_via != set_via {
+        return None;
+    }
+    Some(StageGate {
+        conditions,
+        target_stage,
+        quest_via,
+        player_only: outer_player || inner_player,
+    })
 }
 
 /// Classify an `If` condition through the [`compose`] guard-primitive
@@ -744,6 +756,30 @@ mod tests {
     /// unconditional — `single_set_stage` requires the body be exactly the
     /// one call, so a script that also does something we don't model
     /// declines rather than dropping that behavior.
+    /// The guarded shape holds the same exactly-one-statement invariant
+    /// as shape 3: a guarded `If guard / SetStage / EndIf` followed by a
+    /// sibling `Self.Disable()` carries logic beyond the advance, so it
+    /// must DECLINE rather than emit the advance and silently drop the
+    /// sibling. Pins SCR-D5-01.
+    #[test]
+    fn declines_guarded_with_extra_statements() {
+        let src = "ScriptName NoisyGate extends ObjectReference\n\
+                   Quest Property MyQuest Auto\n\
+                   Event OnActivate(ObjectReference akActionRef)\n\
+                   If MyQuest.GetStageDone(10) == 1\n\
+                   MyQuest.SetStage(20)\n\
+                   EndIf\n\
+                   Self.Disable()\n\
+                   EndEvent\n";
+        let (script, _) = parse_script(src).expect("parses");
+        let source = ScriptSource::PapyrusSource(&script);
+        let instance = quest_property_instance("NoisyGate", 0x0000_8888);
+        assert!(
+            translate_script(&source, GameKind::Skyrim, Some(&instance), None).is_none(),
+            "a sibling statement beside the guarded If must decline, not silently drop",
+        );
+    }
+
     #[test]
     fn declines_unconditional_with_extra_statements() {
         let src = "ScriptName NoisyActi extends ObjectReference\n\
