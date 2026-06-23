@@ -307,19 +307,52 @@ struct PlaybackState {
     prev_time: f32,
 }
 
-/// Inner implementation of the animation system, parameterised on two
-/// scratch buffers that callers can either provide fresh (test path) or
-/// persist across frames (production closure path, #1372).
+/// Reusable per-frame scratch buffers for [`animation_system_inner`].
 ///
-/// * `entities_scratch` — reused for both the player-entity list and the
-///   stack-entity list (the two usages are sequential, not concurrent).
-/// * `playback_scratch` — reused for the per-frame playback-state table.
-fn animation_system_inner(
-    world: &World,
-    dt: f32,
-    entities_scratch: &mut Vec<EntityId>,
-    playback_scratch: &mut Vec<PlaybackState>,
-) {
+/// Captured by [`make_animation_system`] so their backing allocations
+/// survive across frames (production), or built fresh per call (the
+/// `#[cfg(test)]` wrapper). Pre-#1725 only `entities` / `playback`
+/// persisted; every text-event buffer — the player path's `player_events`
+/// and the stack path's `stack_events` / `seen_labels` / `channel_names` /
+/// `updates` — was re-declared `Vec::new()` inside the function and
+/// re-grown 0→N each frame, the same regrowth #828 / #1372 removed
+/// elsewhere. (The stack set's "outer closure scope" comment was stale:
+/// they were function-local, reused across *entities* within a frame but
+/// dropped at frame end, never closure-captured.)
+#[derive(Default)]
+struct AnimScratch {
+    /// Player-entity list, then reused for the stack-entity list (#1372).
+    entities: Vec<EntityId>,
+    /// Per-frame playback-state table (#1372).
+    playback: Vec<PlaybackState>,
+    /// AnimationPlayer text-key events for one entity (#211 / #339).
+    player_events: Vec<byroredux_scripting::events::AnimationTextKeyEvent>,
+    /// AnimationStack text-key events for one entity (#339 / #231 / #828).
+    stack_events: Vec<byroredux_scripting::events::AnimationTextKeyEvent>,
+    /// Dedup guard for labels already emitted this visit (#231).
+    seen_labels: Vec<FixedString>,
+    /// Sorted/deduped channel names across active layers (#251).
+    channel_names: Vec<FixedString>,
+    /// Pending (name, target, pos, rot, scale) transform writes (#252).
+    updates: Vec<(FixedString, EntityId, Vec3, Quat, f32)>,
+}
+
+/// Inner implementation of the animation system, parameterised on a
+/// reusable [`AnimScratch`] the caller either provides fresh (test path)
+/// or persists across frames (production closure path, #1372 / #1725).
+fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
+    // Split the scratch into disjoint per-buffer references up front so the
+    // player and stack passes each see independent `&mut Vec`s (the borrow
+    // checker tracks them as distinct places — no whole-struct aliasing).
+    let AnimScratch {
+        entities: entities_scratch,
+        playback: playback_scratch,
+        player_events,
+        stack_events,
+        seen_labels,
+        channel_names: channel_names_scratch,
+        updates: updates_scratch,
+    } = scratch;
     // Read the clip registry (immutable).
     let Some(registry) = world.try_resource::<AnimationClipRegistry>() else {
         return;
@@ -430,21 +463,20 @@ fn animation_system_inner(
     {
         use byroredux_scripting::events::{AnimationTextKeyEvent, AnimationTextKeyEvents};
         let mut eq = world.query_mut::<AnimationTextKeyEvents>().unwrap();
-        let mut events: Vec<AnimationTextKeyEvent> = Vec::new();
         for ps in playback_scratch.iter() {
             let Some(clip) = registry.get(ps.clip_handle) else {
                 continue;
             };
-            events.clear();
+            player_events.clear();
             visit_text_key_events(clip, ps.prev_time, ps.current_time, |time, sym| {
-                events.push(AnimationTextKeyEvent { label: sym, time });
+                player_events.push(AnimationTextKeyEvent { label: sym, time });
             });
-            if !events.is_empty() {
-                // `events.clone()` instead of `mem::take` so the scratch
-                // keeps its high-water-mark capacity across iterations
-                // (#828). `AnimationTextKeyEvent` is Copy — the clone is
-                // a memcpy of N × 8 bytes.
-                eq.insert(ps.entity, AnimationTextKeyEvents(events.clone()));
+            if !player_events.is_empty() {
+                // `clone()` instead of `mem::take` so the scratch keeps its
+                // high-water-mark capacity across iterations *and* frames
+                // (#828 / #1725). `AnimationTextKeyEvent` is Copy — the
+                // clone is a memcpy of N × 8 bytes.
+                eq.insert(ps.entity, AnimationTextKeyEvents(player_events.clone()));
             }
         }
     }
@@ -544,15 +576,13 @@ fn animation_system_inner(
     entities_scratch.extend(stack_query.iter().map(|(e, _)| e));
     drop(stack_query);
 
-    // Scratch buffers reused across entities to avoid per-tick heap
-    // allocations (#251, #252, #828). Cleared at the start of each
-    // iteration. Text-event scratches were originally declared inside
-    // the loop and re-allocated every entity per frame — see #828.
-    let mut channel_names_scratch: Vec<FixedString> = Vec::new();
-    let mut updates_scratch: Vec<(FixedString, EntityId, Vec3, Quat, f32)> = Vec::new();
+    // Scratch buffers (`channel_names_scratch`, `updates_scratch`,
+    // `stack_events`, `seen_labels`) are the destructured `AnimScratch`
+    // fields — reused across entities within a frame (cleared per
+    // iteration, #251 / #252 / #828) and across frames (#1725). Pre-#828
+    // they were declared inside the loop and re-allocated per entity;
+    // pre-#1725 they were function-local and re-grown 0→N per frame.
     use byroredux_scripting::events::AnimationTextKeyEvent;
-    let mut events: Vec<AnimationTextKeyEvent> = Vec::new();
-    let mut seen_labels: Vec<FixedString> = Vec::new();
 
     for entity in entities_scratch.iter().copied() {
         // Phase 1: advance all layers (write lock).
@@ -582,11 +612,12 @@ fn animation_system_inner(
         // into owned / registry-borrowed data so the lock drops before any
         // writes. Dominant info is stored as (clip_handle, local_time) —
         // NO channel Vec clones (#265).
-        // Text-key event scratches (#339 / #231 / #828) live on the outer
-        // closure scope; clear before each visit. `seen_labels` is also
-        // cleared internally by `visit_stack_text_events`, but we clear
-        // here too to keep the contract obvious.
-        events.clear();
+        // Text-key event scratches (#339 / #231 / #828 / #1725) are the
+        // persisted `AnimScratch` buffers; clear before each visit.
+        // `seen_labels` is also cleared internally by
+        // `visit_stack_text_events`, but we clear here too to keep the
+        // contract obvious.
+        stack_events.clear();
         seen_labels.clear();
         let accum_root: Option<FixedString>;
         let dominant_info: Option<(u32, f32)>;
@@ -599,8 +630,8 @@ fn animation_system_inner(
             // Text key events (#211 / #339 / #231) — visitor form allocates
             // `AnimationTextKeyEvent` only when events actually fire. Labels
             // are passed through as interned `FixedString` symbols.
-            visit_stack_text_events(stack, &registry, &mut seen_labels, |time, sym| {
-                events.push(AnimationTextKeyEvent { label: sym, time });
+            visit_stack_text_events(stack, &registry, seen_labels, |time, sym| {
+                stack_events.push(AnimationTextKeyEvent { label: sym, time });
             });
 
             // Scoped name resolver — reads subtree cache (outer lock).
@@ -629,7 +660,7 @@ fn animation_system_inner(
 
             // Sample blended transforms (#252 scratch reuse).
             updates_scratch.clear();
-            for &channel_name in &channel_names_scratch {
+            for &channel_name in channel_names_scratch.iter() {
                 let Some(target_entity) = stack_resolve(&channel_name) else {
                     continue;
                 };
@@ -675,20 +706,20 @@ fn animation_system_inner(
         }
 
         // Phase 3a: emit text events (write lock on a different component).
-        // `events.clone()` (not `mem::take`) so the scratch retains its
-        // capacity across iterations — `mem::take` swaps in a zero-cap
-        // Vec and forces the next iteration's visitor to grow from
-        // scratch. `AnimationTextKeyEvent` is Copy. See #828.
-        if !events.is_empty() {
+        // `clone()` (not `mem::take`) so the scratch retains its capacity
+        // across iterations and frames — `mem::take` swaps in a zero-cap
+        // Vec and forces the next visitor to grow from scratch.
+        // `AnimationTextKeyEvent` is Copy. See #828 / #1725.
+        if !stack_events.is_empty() {
             use byroredux_scripting::events::AnimationTextKeyEvents;
             let mut eq = world.query_mut::<AnimationTextKeyEvents>().unwrap();
-            eq.insert(entity, AnimationTextKeyEvents(events.clone()));
+            eq.insert(entity, AnimationTextKeyEvents(stack_events.clone()));
         }
 
         // Phase 3b: apply blended transforms with root motion splitting (AR-02).
         let mut tq = world.query_mut::<Transform>().unwrap();
         let mut root_motion = Vec3::ZERO;
-        for &(name, target, pos, rot, scale) in &updates_scratch {
+        for &(name, target, pos, rot, scale) in updates_scratch.iter() {
             if let Some(transform) = tq.get_mut(target) {
                 let is_accum = accum_root == Some(name);
                 if is_accum {
@@ -742,21 +773,20 @@ fn animation_system_inner(
 /// which captures reusable buffers in the closure state.
 #[cfg(test)]
 pub(crate) fn animation_system(world: &World, dt: f32) {
-    animation_system_inner(world, dt, &mut Vec::new(), &mut Vec::new());
+    animation_system_inner(world, dt, &mut AnimScratch::default());
 }
 
 /// Animation system factory — returns a closure that captures two scratch
 /// buffers and reuses their backing allocation across frames (#1372).
 ///
 /// Equivalent behavior to [`animation_system`]; use this when wiring the
-/// system into the scheduler so that the three per-frame `Vec` allocations
-/// (`entities_with_players`, `playback_states`, `stack_entities`) are
-/// eliminated after the first warm-up frame.
+/// system into the scheduler so that every per-frame scratch `Vec` in
+/// [`AnimScratch`] (entity lists, playback table, and both paths'
+/// text-event buffers — #1725) is eliminated after the first warm-up frame.
 pub(crate) fn make_animation_system() -> impl FnMut(&World, f32) + Send + Sync {
-    let mut entities_scratch: Vec<EntityId> = Vec::new();
-    let mut playback_scratch: Vec<PlaybackState> = Vec::new();
+    let mut scratch = AnimScratch::default();
     move |world: &World, dt: f32| {
-        animation_system_inner(world, dt, &mut entities_scratch, &mut playback_scratch);
+        animation_system_inner(world, dt, &mut scratch);
     }
 }
 
