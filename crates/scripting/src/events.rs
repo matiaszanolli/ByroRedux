@@ -90,11 +90,11 @@ impl Component for AnimationTextKeyEvents {
 /// `XPRM` primitive bounds and no MODL), not the entering entity.
 /// Papyrus's `akActionRef` parameter is captured here as `triggerer`.
 ///
-/// Emit site: Rapier sensor-collision callback (Phase 5 follow-up
-/// when Rapier sensor support lands in `byroredux_physics`). For now
-/// this marker is structurally available — scripts can declare
-/// `query::<OnTriggerEnterEvent>()` and the storage is registered —
-/// but no emit site means it never fires from the engine itself.
+/// Emit site: `trigger_detection_system` (M47.2) fires this on the
+/// volume entity when the player crosses into it. Drained by
+/// `event_cleanup_system` at end-of-frame so each crossing is seen for
+/// exactly one frame (without the drain a re-evaluating consumer such as
+/// `quest_advance_system` would re-fire every frame).
 /// Tests can synthesize via `world.query_mut::<OnTriggerEnterEvent>()
 /// .insert(trigger_entity, OnTriggerEnterEvent { triggerer })`.
 #[derive(Debug, Clone, Copy)]

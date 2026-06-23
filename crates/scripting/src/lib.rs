@@ -58,9 +58,11 @@ pub fn register(world: &mut World) {
     // ActivateEvent / HitEvent / TimerExpired in the script-event
     // catalog. Emit sites land per-phase:
     //   * OnCellLoadEvent — emitted by the cell loader's
-    //     `attach_script_for_refr` (Phase 5, this commit).
-    //   * OnTriggerEnterEvent — deferred to Rapier sensor wiring.
+    //     `attach_script_for_refr` (Phase 5).
+    //   * OnTriggerEnterEvent — emitted by `trigger_detection_system`
+    //     on player entry (M47.2).
     //   * OnEquipEvent — deferred to M41 equip pipeline integration.
+    // All three are one-frame transients drained by `event_cleanup_system`.
     world.register::<OnCellLoadEvent>();
     world.register::<OnTriggerEnterEvent>();
     world.register::<OnEquipEvent>();

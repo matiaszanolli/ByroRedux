@@ -4,7 +4,10 @@
 //! events are only visible for one frame. This is the ECS equivalent
 //! of "clearing the event queue."
 
-use crate::events::{ActivateEvent, AnimationTextKeyEvents, HitEvent, TimerExpired};
+use crate::events::{
+    ActivateEvent, AnimationTextKeyEvents, HitEvent, OnCellLoadEvent, OnEquipEvent,
+    OnTriggerEnterEvent, TimerExpired,
+};
 use crate::papyrus_demo::mg07_door::UiMessageCommand;
 use crate::papyrus_demo::{CameraShakeCommand, ControllerRumbleCommand};
 use crate::quest_stages::QuestStageAdvanced;
@@ -35,6 +38,15 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
     drain_component::<CameraShakeCommand>(world);
     drain_component::<ControllerRumbleCommand>(world);
     drain_component::<UiMessageCommand>(world);
+    // M47.0 Phase 5 canonical markers — all one-frame transients. Each
+    // has (or will have) an engine emit site: OnTriggerEnterEvent from
+    // `trigger_detection_system` (M47.2), OnCellLoadEvent from the cell
+    // loader's `attach_script_for_refr`, OnEquipEvent from the M41 equip
+    // pipeline. Without draining, a re-evaluating consumer (e.g.
+    // `quest_advance_system`) re-fires every frame.
+    drain_component::<OnTriggerEnterEvent>(world);
+    drain_component::<OnCellLoadEvent>(world);
+    drain_component::<OnEquipEvent>(world);
 }
 
 /// Remove all instances of a component type from every entity.
@@ -51,7 +63,9 @@ fn drain_component<T: byroredux_core::ecs::storage::Component>(world: &World) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{ActivateEvent, HitEvent, TimerExpired};
+    use crate::events::{
+        ActivateEvent, HitEvent, OnCellLoadEvent, OnEquipEvent, OnTriggerEnterEvent, TimerExpired,
+    };
     use byroredux_core::ecs::world::World;
 
     fn setup_world() -> World {
@@ -82,11 +96,23 @@ mod tests {
         );
         world.insert(c, TimerExpired { timer_id: 5 });
 
+        // M47.0 Phase 5 canonical markers — must drain in lockstep with
+        // the legacy trio, else a re-evaluating consumer re-fires forever.
+        let d = world.spawn();
+        let e = world.spawn();
+        let f = world.spawn();
+        world.insert(d, OnTriggerEnterEvent { triggerer: a });
+        world.insert(e, OnCellLoadEvent);
+        world.insert(f, OnEquipEvent { wearer: a });
+
         event_cleanup_system(&world, 0.0);
 
         assert!(!world.has::<ActivateEvent>(a));
         assert!(!world.has::<HitEvent>(b));
         assert!(!world.has::<TimerExpired>(c));
+        assert!(!world.has::<OnTriggerEnterEvent>(d));
+        assert!(!world.has::<OnCellLoadEvent>(e));
+        assert!(!world.has::<OnEquipEvent>(f));
     }
 
     #[test]
