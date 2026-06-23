@@ -141,6 +141,13 @@ pub(super) fn load_references(
     // ~1 932 statics, Goodsprings exterior similar.
     let mut npc_spawned: u32 = 0;
     let mut npc_spawned_sample: Vec<u32> = Vec::with_capacity(8);
+    // M47.2 — script-attach telemetry for the per-cell summary: how many
+    // REFRs got canonical behavior from the recognizer chain, and how many
+    // invisible trigger volumes were spawned. Both surface in the summary
+    // so a smoke test can confirm the `.pex` attach + trigger paths fired
+    // without inspecting individual entities.
+    let mut scripts_recognized: u32 = 0;
+    let mut trigger_volumes: u32 = 0;
     // `npc_pending` was the Phase 0/2 telemetry for pre-baked-FaceGen
     // games waiting on Phase 4's spawn path — kept (unused after
     // Phase 4 wired) so the cell summary's "0 ACHR refs ... pending"
@@ -387,7 +394,10 @@ pub(super) fn load_references(
                         world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
                         world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
                         world.insert(entity, volume);
-                        attach_script_for_refr(world, entity, child_form_id, record_index);
+                        if attach_script_for_refr(world, entity, child_form_id, record_index) {
+                            scripts_recognized += 1;
+                        }
+                        trigger_volumes += 1;
                         bounds_min = bounds_min.min(ref_pos);
                         bounds_max = bounds_max.max(ref_pos);
                         entity_count += 1;
@@ -672,7 +682,9 @@ pub(super) fn load_references(
             // editor_id → ScriptRegistry → spawner; misses fall
             // through silently per Phase 2's "unregistered scripts are
             // common" contract. See docs/engine/m47-0-design.md.
-            attach_script_for_refr(world, placement_root, child_form_id, record_index);
+            if attach_script_for_refr(world, placement_root, child_form_id, record_index) {
+                scripts_recognized += 1;
+            }
         }
     }
 
@@ -753,6 +765,18 @@ pub(super) fn load_references(
         dims.x, dims.y, dims.z,
         center.x, center.y, center.z,
     );
+    if scripts_recognized > 0 || trigger_volumes > 0 {
+        // M47.2 — the recognizer chain attached canonical ECS behavior to
+        // `scripts_recognized` REFRs (`.pex` decompile / SCPT registry),
+        // and `trigger_volumes` invisible trigger boxes were spawned with
+        // a TriggerVolume. The smoke test asserts on this line to confirm
+        // the compiled-script + trigger paths fired on real game data.
+        log::info!(
+            "  M47.2 scripts: {} REFRs recognized, {} trigger volumes spawned",
+            scripts_recognized,
+            trigger_volumes,
+        );
+    }
     if npc_spawned > 0 {
         // M41.0 Phase 1b + Phase 4 — NPC actors landed. The
         // dispatcher routes through the runtime-FaceGen path
@@ -1411,12 +1435,14 @@ fn trigger_volume_from_primitive(
     })
 }
 
+/// Returns `true` when canonical behavior attached (either per-game arm
+/// recognized the script) — the cell loader counts these for its summary.
 fn attach_script_for_refr(
     world: &mut byroredux_core::ecs::world::World,
     entity: byroredux_core::ecs::EntityId,
     base_form_id: u32,
     index: &esm::records::EsmIndex,
-) {
+) -> bool {
     // Two mutually-exclusive per-game attach paths converge here. A
     // record carries either a pre-Skyrim `SCRI` → SCPT (Obscript, the
     // M47.0 registry path) or a Skyrim+ `VMAD` inline Papyrus block (the
@@ -1436,6 +1462,7 @@ fn attach_script_for_refr(
             q.insert(entity, byroredux_scripting::OnCellLoadEvent);
         }
     }
+    attached
 }
 
 /// FO3 / FNV / Oblivion path: resolve the base record's `SCRI` form id
