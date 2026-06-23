@@ -473,7 +473,14 @@ impl<'a> Reader<'a> {
             let var_args = if op.has_varargs() {
                 match self.value()? {
                     Value::Integer(n) if n >= 0 => {
-                        let mut v = Vec::with_capacity(n as usize);
+                        // #1710 — `n` is attacker-controlled up to i32::MAX
+                        // (~2.1B); `Value` carries a String (≥24 B), so a
+                        // `with_capacity(n)` would request tens of GB and abort
+                        // (OOM) before the per-element read can hit `take`'s EOF
+                        // guard. Grow geometrically instead: each `value()` reads
+                        // ≥1 byte, so the loop EOFs at the first read past the
+                        // buffer and `v` never exceeds the bytes actually present.
+                        let mut v = Vec::new();
                         for _ in 0..n {
                             v.push(self.value()?);
                         }
@@ -487,5 +494,32 @@ impl<'a> Reader<'a> {
             instructions.push(Instruction { op, args, var_args });
         }
         Ok(instructions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1710 / SCR-D1-01 — a hostile var-arg count must decode to `Err`, not
+    /// abort the process via an OOM `Vec::with_capacity`. `n` is attacker-
+    /// controlled up to i32::MAX; pre-fix the reader pre-allocated `n` × ≥24 B
+    /// (tens of GB) before the per-element read could hit the EOF guard.
+    #[test]
+    fn hostile_vararg_count_errors_instead_of_ooming() {
+        // One `lock_guards` (opcode 48: 0 fixed args, has-varargs) whose
+        // var-arg count is Integer(i32::MAX), with no element bytes following.
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&1u16.to_le_bytes()); // instruction count = 1
+        buf.push(OpCode::LockGuards as u8); // opcode 48
+        buf.push(3); // Value tag 3 = Integer (the var-arg count)
+        buf.extend_from_slice(&i32::MAX.to_le_bytes()); // count = 2_147_483_647
+        // Deliberately no further bytes: the first element read must EOF.
+
+        let result = Reader::new(&buf).read_instructions();
+        assert!(
+            matches!(result, Err(PexError::UnexpectedEof { .. })),
+            "expected UnexpectedEof on the first absent element, got {result:?}"
+        );
     }
 }
