@@ -359,6 +359,43 @@ pub(super) fn load_references(
                 continue;
             }
 
+            // M47.2 — invisible trigger volume. A REFR carrying an `XPRM`
+            // box/sphere primitive and an attached script is a Bethesda
+            // trigger box: no MODL, so the statics path below would skip
+            // it (empty / missing mesh). Spawn a transform-only entity,
+            // attach its world-space `TriggerVolume`, and run the script
+            // attach so the recognizer's `OnTriggerEnter → SetStage`
+            // advance lands. `trigger_detection_system` then fires
+            // `OnTriggerEnterEvent` when the player crosses in. Gated on
+            // *no renderable mesh* so a visible scripted activator (lever
+            // with MODL + primitive) still spawns through the normal path
+            // — only genuinely invisible triggers take this branch.
+            let has_mesh = index
+                .statics
+                .get(&child_form_id)
+                .is_some_and(|s| !s.model_path.is_empty());
+            let has_script = record_index.base_record_script(child_form_id).is_some()
+                || record_index
+                    .base_record_script_instance(child_form_id)
+                    .is_some();
+            if !has_mesh && has_script {
+                if let Some(prim) = placed_ref.primitive.as_ref() {
+                    if let Some(volume) =
+                        trigger_volume_from_primitive(prim, ref_pos, ref_rot, ref_scale)
+                    {
+                        let entity = world.spawn();
+                        world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
+                        world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
+                        world.insert(entity, volume);
+                        attach_script_for_refr(world, entity, child_form_id, record_index);
+                        bounds_min = bounds_min.min(ref_pos);
+                        bounds_max = bounds_max.max(ref_pos);
+                        entity_count += 1;
+                        continue;
+                    }
+                }
+            }
+
             let stat = match index.statics.get(&child_form_id) {
                 Some(s) => {
                     stat_hit += 1;
@@ -1338,6 +1375,42 @@ fn parse_and_import_spt(
 /// spawner does `query_mut::<…>().insert(entity, …)`). The
 /// `ScriptRegistry` resource borrow is scoped tightly so the spawner
 /// can re-borrow World freely.
+/// Build a world-space [`TriggerVolume`](byroredux_scripting::TriggerVolume)
+/// from a REFR's `XPRM` primitive + placement. `None` for non-containment
+/// shapes (line / portal / plane).
+///
+/// `XPRM` bounds are Bethesda **z-up half-extents** — the Creation Kit
+/// Primitive convention, consistent with `bhkBoxShape::aabb_half_extents`
+/// and the `XMBO` half-extent bound. Permute to engine y-up (the position
+/// swap is `[x, z, -y]`; extents are magnitudes, so the sign drops) and
+/// bake the REFR scale in, since the volume is stored in world space. For
+/// a sphere, `bounds[0]` is the radius (carried in `half_extents.x`).
+fn trigger_volume_from_primitive(
+    prim: &esm::cell::PrimitiveBounds,
+    center: Vec3,
+    rotation: Quat,
+    scale: f32,
+) -> Option<byroredux_scripting::TriggerVolume> {
+    use byroredux_scripting::{TriggerShape, TriggerVolume};
+    let shape = match prim.shape_type {
+        1 => TriggerShape::Box,
+        3 => TriggerShape::Sphere,
+        _ => return None,
+    };
+    let half_extents = Vec3::new(
+        prim.bounds[0].abs() * scale,
+        prim.bounds[2].abs() * scale,
+        prim.bounds[1].abs() * scale,
+    );
+    Some(TriggerVolume {
+        center,
+        half_extents,
+        rotation,
+        shape,
+        occupant_inside: false,
+    })
+}
+
 fn attach_script_for_refr(
     world: &mut byroredux_core::ecs::world::World,
     entity: byroredux_core::ecs::EntityId,
@@ -1548,6 +1621,60 @@ fn attach_light_flicker_if_needed(
 mod tests {
     use super::*;
     use byroredux_core::string::StringPool;
+
+    /// `XPRM` box primitive → world-space `TriggerVolume`: bounds are
+    /// z-up half-extents, permuted to engine y-up `[x, z, y]` and scaled
+    /// by the REFR scale. Center / rotation pass through verbatim.
+    #[test]
+    fn trigger_volume_from_box_primitive_permutes_and_scales() {
+        let prim = esm::cell::PrimitiveBounds {
+            bounds: [10.0, 20.0, 30.0], // z-up: x=10, y=20, z=30
+            color: [1.0, 0.0, 0.0],
+            unknown: 0.0,
+            shape_type: 1, // Box
+        };
+        let center = Vec3::new(100.0, 5.0, -50.0);
+        let v = trigger_volume_from_primitive(&prim, center, Quat::IDENTITY, 2.0)
+            .expect("box primitive yields a volume");
+        assert_eq!(v.shape, byroredux_scripting::TriggerShape::Box);
+        assert_eq!(v.center, center);
+        // y-up half-extents = [x, z, y] * scale = [10, 30, 20] * 2.
+        assert_eq!(v.half_extents, Vec3::new(20.0, 60.0, 40.0));
+    }
+
+    /// Sphere primitive (shape 3): `bounds[0]` is the radius, carried in
+    /// `half_extents.x` and scaled.
+    #[test]
+    fn trigger_volume_from_sphere_primitive_uses_radius() {
+        let prim = esm::cell::PrimitiveBounds {
+            bounds: [15.0, 0.0, 0.0],
+            color: [0.0; 3],
+            unknown: 0.0,
+            shape_type: 3, // Sphere
+        };
+        let v = trigger_volume_from_primitive(&prim, Vec3::ZERO, Quat::IDENTITY, 3.0)
+            .expect("sphere primitive yields a volume");
+        assert_eq!(v.shape, byroredux_scripting::TriggerShape::Sphere);
+        assert_eq!(v.half_extents.x, 45.0); // 15 * 3
+    }
+
+    /// Non-containment shapes (line / portal / plane) don't become
+    /// trigger volumes — they're not solids a point can be inside.
+    #[test]
+    fn trigger_volume_rejects_non_containment_shapes() {
+        for shape_type in [2u32, 4, 5] {
+            let prim = esm::cell::PrimitiveBounds {
+                bounds: [1.0, 1.0, 1.0],
+                color: [0.0; 3],
+                unknown: 0.0,
+                shape_type,
+            };
+            assert!(
+                trigger_volume_from_primitive(&prim, Vec3::ZERO, Quat::IDENTITY, 1.0).is_none(),
+                "shape_type {shape_type} must not yield a containment volume",
+            );
+        }
+    }
 
     /// #1495 / REN2-10 — the RT absolute-space precision ceiling guard.
     /// Empty cells must not trip (bounds left at ±INF); vanilla-scale
