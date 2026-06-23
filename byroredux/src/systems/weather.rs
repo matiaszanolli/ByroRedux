@@ -194,44 +194,34 @@ fn lerp1(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-/// Neutral exterior lighting written into `CellLightingRes` when an
-/// exterior cell loads without a WTHR record (#1034 / REN-D15-NEW-15).
-/// Pre-#1034 the no-WTHR branch in `weather_system` returned without
-/// writing the resource, so the prior cell's stale values leaked
-/// through — if the prior cell was a dark interior, the exterior
-/// rendered pitch-black.
-///
-/// Mid-grey ambient + neutral-white sun + early-sunrise sun
-/// direction (via `compute_sun_arc(6.0, DEFAULT_TOD_HOURS)`) — fully
-/// lit but flavour-less, the safe default the audit checklist
-/// item 10 explicitly demands.
-const NEUTRAL_AMBIENT: [f32; 3] = [0.4, 0.4, 0.4];
-const NEUTRAL_SUNLIGHT: [f32; 3] = [1.0, 1.0, 1.0];
-/// Hazy-daylight fog tint — slightly cool grey so the no-WTHR
-/// fallback reads as "overcast morning" rather than "tinted void".
-const NEUTRAL_FOG_COLOR: [f32; 3] = [0.5, 0.55, 0.6];
-const NEUTRAL_FOG_NEAR: f32 = 1000.0;
-const NEUTRAL_FOG_FAR: f32 = 50000.0;
 /// Sunrise/sunset/etc. breakpoints used when no climate record drives
 /// `WeatherDataRes::tod_hours`. Matches the pre-#463 hardcoded
 /// defaults the synthetic-fallback path in `scene::world_setup` ships.
 pub(crate) const DEFAULT_TOD_HOURS: [f32; 4] = [6.0, 10.0, 18.0, 22.0];
 
-/// Write the neutral exterior fallback into `cell_lit` when no WTHR
-/// record is loaded. Interior cells are skipped so XCLL/LGTM-authored
-/// values survive — mirrors the interior gate in the main update path
-/// (#782).
+/// Write the exterior no-weather fallback into `cell_lit` when no WTHR
+/// record is loaded (#1034 / REN-D15-NEW-15). Pre-#1034 the no-WTHR
+/// branch in `weather_system` returned without writing the resource, so
+/// the prior cell's stale values leaked through — if the prior cell was a
+/// dark interior, the exterior rendered pitch-black.
+///
+/// The values come from the **one** canonical EXAL boundary fallback
+/// ([`procedural_fallback_cell_lighting`](crate::env_translate::procedural_fallback_cell_lighting)
+/// — the same `FB_*` set `scene::world_setup` installs when no climate
+/// record is present), not a private `NEUTRAL_*` set. Pre-#1722 this
+/// system carried its own divergent constants (ambient ~2.6× brighter,
+/// fog distances 10–15× off), so the same logical state ("exterior, no
+/// authored weather") rendered two different looks depending on which
+/// producer ran — an EXAL "no render-time fallback" violation (exal.md §3).
+///
+/// Interior cells are skipped so XCLL/LGTM-authored values survive —
+/// mirrors the interior gate in the main update path (#782).
 fn apply_neutral_exterior_fallback(cell_lit: &mut CellLightingRes) {
     if cell_lit.is_interior {
         return;
     }
     let (sun_dir, _intensity) = compute_sun_arc(6.0, DEFAULT_TOD_HOURS);
-    cell_lit.ambient = NEUTRAL_AMBIENT;
-    cell_lit.directional_color = NEUTRAL_SUNLIGHT;
-    cell_lit.directional_dir = sun_dir;
-    cell_lit.fog_color = NEUTRAL_FOG_COLOR;
-    cell_lit.fog_near = NEUTRAL_FOG_NEAR;
-    cell_lit.fog_far = NEUTRAL_FOG_FAR;
+    *cell_lit = crate::env_translate::procedural_fallback_cell_lighting(sun_dir);
 }
 
 /// Per-unit `wind_speed` (u8 0..=255) contribution to the cloud-layer 0
@@ -1364,9 +1354,17 @@ mod no_wthr_fallback_tests {
             "no-WTHR exterior must produce non-zero fog_far (#1034); got {}",
             cell_lit.fog_far
         );
-        assert_eq!(cell_lit.ambient, NEUTRAL_AMBIENT);
-        assert_eq!(cell_lit.directional_color, NEUTRAL_SUNLIGHT);
-        assert_eq!(cell_lit.fog_color, NEUTRAL_FOG_COLOR);
+        // #1722 — the no-WTHR fallback must match the single canonical
+        // EXAL boundary default, not a private NEUTRAL_* set. Pin against
+        // `procedural_fallback_cell_lighting` so any future divergence in
+        // either producer fails here.
+        let (sun_dir, _) = compute_sun_arc(6.0, DEFAULT_TOD_HOURS);
+        let canonical = crate::env_translate::procedural_fallback_cell_lighting(sun_dir);
+        assert_eq!(cell_lit.ambient, canonical.ambient);
+        assert_eq!(cell_lit.directional_color, canonical.directional_color);
+        assert_eq!(cell_lit.fog_color, canonical.fog_color);
+        assert_eq!(cell_lit.fog_near, canonical.fog_near);
+        assert_eq!(cell_lit.fog_far, canonical.fog_far);
     }
 
     /// Interior gate survives the fallback path — `is_interior=true`
