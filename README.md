@@ -132,6 +132,15 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
              --mesh "meshes\clutter\ingredients\sweetroll01.nif" \
              --textures-bsa "Skyrim - Textures3.bsa"
 
+# Skyrim interior with compiled-script behavior (M47.2). --scripts-bsa
+# points at the archive holding the .pex bytecode (Skyrim - Misc.bsa,
+# Fallout4 - Misc.ba2, …); the cell loader decompiles each scripted
+# REFR's VMAD-named .pex and attaches its recognized ECS behavior.
+cargo run -- --esm Skyrim.esm --cell <editor_id> \
+             --bsa "Skyrim - Meshes0.bsa" \
+             --textures-bsa "Skyrim - Textures0.bsa" \
+             --scripts-bsa "Skyrim - Misc.bsa"
+
 # Loose NIF + optional animation
 cargo run -- path/to/mesh.nif [--kf path/to/anim.kf]
 
