@@ -1,0 +1,258 @@
+
+######## .pex corpus structural-shape survey ########
+archives 3  .pex 26641  parsed 26641  decompiled 26640  (decompile-fail 1  panic 0)
+scripts with ≥1 event handler: 5935   no handlers: 20705
+  of no-handler: 18502 carry Fragment_* fns (quest/scene fragments), 1658 are libraries (other fns), 545 pure data/property
+
+==== event-handler frequency (scripts defining each) ====
+  onactivate 1310  onload 1003  ontriggerenter 955  ondeath 509  oneffectstart 426  onhit 376
+  onunload 346  ontimer 345  oninit 340  onupdate 265  ontriggerleave 239  ondying 200  oncellattach 199
+  oncontainerchanged 199  onbeginstate 196  oncellload 196  oneffectfinish 194  onanimationevent 185
+  oncombatstatechanged 149  onaliasinit 141  onlocationchange 140  onquestinit 137  onreset 133
+  oncelldetach 122  onitemadded 99  actor_onlocationchange 88  ontimergametime 87  onread 82
+  onequipped 78  ondestructionstagechanged 71  onend 68  onenterbleedout 63  onitemremoved 61
+  onmagiceffectapply 61  ongetup 58  onopen 58  objectreference_onactivate 57  onupdategametime 55
+  onqueststarted 55  ondistancelessthan 45
+
+==== handler-body templates (event + arity + body skeleton) ====
+distinct templates: 9250   population: 12955
+cumulative coverage:
+  top   10 templates →    662 / 12955 (  5.1%)
+  top   25 templates →    981 / 12955 (  7.6%)
+  top   50 templates →   1331 / 12955 ( 10.3%)
+  top  100 templates →   1792 / 12955 ( 13.8%)
+  top  200 templates →   2412 / 12955 ( 18.6%)
+  top  500 templates →   3435 / 12955 ( 26.5%)
+  top 1000 templates →   4464 / 12955 ( 34.5%)
+templates needed to cover:
+   50% → 2773 templates
+   80% → 6659 templates
+   90% → 7955 templates
+   95% → 8603 templates
+   99% → 9121 templates
+top 30 templates:
+     244 ( 1.9%)  onactivate/1=>{}
+      77 ( 0.6%)  onload/0=>{}
+      76 ( 0.6%)  ontriggerenter/1=>{}
+      48 ( 0.4%)  ondeath/1=>{$.setstage(#)}
+      48 ( 0.4%)  onunload/0=>{self.unregisterforallhitevents(#)}
+      40 ( 0.3%)  onbeginstate/0=>{}
+      36 ( 0.3%)  ontriggerleave/1=>{}
+      34 ( 0.3%)  ondeath/1=>{}
+      32 ( 0.2%)  onhit/7=>{}
+      27 ( 0.2%)  onunload/0=>{}
+      26 ( 0.2%)  onunload/0=>{$=#}
+      25 ( 0.2%)  objectreference_onactivate/2=>{}
+      24 ( 0.2%)  onactivate/1=>{self.rotatepillartostate(#,#);self.gotostate(#)}
+      23 ( 0.2%)  oninit/0=>{}
+      23 ( 0.2%)  onload/0=>{$=$}
+      23 ( 0.2%)  onupdate/0=>{}
+      21 ( 0.2%)  onaliasinit/0=>{self.addinventoryeventfilter($)}
+      20 ( 0.2%)  mq00script_mqfactionkickout/2=>{$=$[#];if ($==#){self.setstage(#)}}
+      20 ( 0.2%)  oncombatstatechanged/2=>{}
+      20 ( 0.2%)  onequipped/1=>{}
+      19 ( 0.1%)  oncelldetach/0=>{$=#}
+      19 ( 0.1%)  oneffectstart/2=>{$=$}
+      19 ( 0.1%)  onload/0=>{if self.is3dloaded(){self.registerforhitevent($,#,#,#,#,#,#,#,#)}}
+      19 ( 0.1%)  onlocationchange/2=>{}
+      18 ( 0.1%)  oninit/0=>{self.addinventoryeventfilter($)}
+      18 ( 0.1%)  onreset/0=>{}
+      17 ( 0.1%)  oncellattach/0=>{}
+      17 ( 0.1%)  onquestinit/0=>{}
+      16 ( 0.1%)  oneffectfinish/2=>{$.stop($)}
+      16 ( 0.1%)  oninit/0=>{$=$}
+
+==== whole-script templates (multiset of handler skeletons) ====
+distinct templates: 5324   population: 5935
+cumulative coverage:
+  top   10 templates →    151 / 5935 (  2.5%)
+  top   25 templates →    236 / 5935 (  4.0%)
+  top   50 templates →    342 / 5935 (  5.8%)
+  top  100 templates →    487 / 5935 (  8.2%)
+  top  200 templates →    687 / 5935 ( 11.6%)
+  top  500 templates →   1111 / 5935 ( 18.7%)
+  top 1000 templates →   1611 / 5935 ( 27.1%)
+templates needed to cover:
+   50% → 2357 templates
+   80% → 4137 templates
+   90% → 4731 templates
+   95% → 5028 templates
+   99% → 5265 templates
+top 30 templates:
+      43 ( 0.7%)  ondeath/1=>{$.setstage(#)}
+      18 ( 0.3%)  mq00script_mqfactionkickout/2=>{$=$[#];if ($==#){self.setstage(#)}}
+      14 ( 0.2%)  ontriggerenter/1=>{if (game.getplayer()==$){if ($.getstage()==#){$.start();self.disable(#)}}}
+      13 ( 0.2%)  ontriggerenter/1=>{if ($==game.getplayer()){if ($==#){if ($.isincombat()==#){$.start();$=#}}}}
+      12 ( 0.2%)  oncontainerchanged/2=>{if ($==game.getplayer()){if ($.getstage()==#){$.setstage(#)}}}
+      12 ( 0.2%)  ondeath/1=>{if ${$=self.getowningquest();self.gotostate(#);$.trytorespawn($);self.gotostate(#)}} ⏎ ondeath/1=>{}
+      11 ( 0.2%)  oncontainerchanged/2=>{if ($==game.getplayer()){$.setstage(#)}}
+      10 ( 0.2%)  actor_onlocationchange/3=>{if ((($==game.getplayer())&&($==$))&&$.getstagedone(#)){$.stop()}} ⏎ onquestinit/0=>{}
+       9 ( 0.2%)  onbeginstate/0=>{} ⏎ onendstate/0=>{}
+       9 ( 0.2%)  ontriggerenter/1=>{if ($==game.getplayer()){if ($.getstage()==#){$.setstage(#)}}}
+       8 ( 0.1%)  onactivate/1=>{if (($==game.getplayer())&&($.getstagedone(#)==#)){self.gotostate(#);$.setstage(#);$.show(#,#,#,#,#,#,#,#,#)}}
+       7 ( 0.1%)  oncontainerchanged/2=>{if ($==#){if ($==game.getplayer()){$.setstage(#);$=#}}}
+       7 ( 0.1%)  oninit/0=>{$=$;$=$}
+       6 ( 0.1%)  oncontainerchanged/2=>{if ($==game.getplayer()){if ($.getstage()<#){$.setstage(#)}}}
+       6 ( 0.1%)  oneffectstart/2=>{$.pushactoraway($,$)}
+       6 ( 0.1%)  onload/0=>{self.setnofavorallowed(#)}
+       5 ( 0.1%)  onactivate/1=>{if ($.getstage()==#){$.setstage(#)}}
+       5 ( 0.1%)  onactivate/1=>{if ($==game.getplayer()){$.setstage(#)}}
+       5 ( 0.1%)  onactivate/1=>{self.testfortrigger($,#)} ⏎ onactivate/1=>{} ⏎ onactivate/1=>{} ⏎ oncellload/0=>{self.testfortrigger(game.getplayer(),#)} ⏎ oncombatstatechanged/2=>{if !
+       5 ( 0.1%)  ondeath/1=>{if $.isaccepted{$.setstage(#)}else{$.prematureshutdown()}}
+       5 ( 0.1%)  ondeath/1=>{if ($.getstage()==#){$.setstage(#)}}
+       5 ( 0.1%)  oninit/0=>{$=#} ⏎ ontriggerenter/1=>{$=$.buildparentscriptfunctionparams($,self.getcurrentlocation(),#);self.checkandsetstageandcalldospecificthing($)}
+       5 ( 0.1%)  oninit/0=>{$=$;$=$;$=$;$=$;$=$;$=$;$=$;$=$;$=$;$=$}
+       5 ( 0.1%)  oninit/0=>{}
+       5 ( 0.1%)  onload/0=>{self.blockactivation(#)}
+       5 ( 0.1%)  onread/0=>{$.setstage(#)}
+       5 ( 0.1%)  onstoryscript/6=>{if ($==$){$.forcerefto($.getreference())}else{if ($==$){$.forcerefto($.getreference())}};if !${$.registerradiantquest($)}}
+       5 ( 0.1%)  onterminalmenuenter/2=>{self.updateallterminalvariables($)} ⏎ onterminalmenuitemrun/3=>{$=$.getlinkedrefchain($,#);$=$.getrefslinkedtome($,#);if ($.length>#){self
+       5 ( 0.1%)  ontimergametime/1=>{if ($==#){self.setstage($)}}
+       5 ( 0.1%)  ontriggerenter/1=>{if ($==game.getplayer()){if ($==#){$.setstage(#);$=#}}}
+
+==== EVENT-HANDLER primitives (guard atoms + effect statements) ====
+distinct primitives: 6411   behavioral handlers: 10764
+vocabulary size K → behavioral handlers FULLY covered:
+  K=  10 →   589 / 10764 (  5.5%)
+  K=  25 →  1184 / 10764 ( 11.0%)
+  K=  50 →  1766 / 10764 ( 16.4%)
+  K= 100 →  2631 / 10764 ( 24.4%)
+  K= 150 →  3285 / 10764 ( 30.5%)
+  K= 200 →  3725 / 10764 ( 34.6%)
+  K= 300 →  4315 / 10764 ( 40.1%)
+  K= 500 →  5190 / 10764 ( 48.2%)
+  K= 750 →  5880 / 10764 ( 54.6%)
+  K=1000 →  6386 / 10764 ( 59.3%)
+  K=1500 →  7187 / 10764 ( 66.8%)
+  K=2000 →  7692 / 10764 ( 71.5%)
+coverage milestone → vocabulary size needed:
+   50% → K=560
+   80% → K=3101
+   90% → K=4797
+   95% → K=5746
+   99% → K=6291
+top 30 primitives (frequency):
+   1934 (18.0%)  G:($==#)
+   1898 (17.6%)  S:$=#
+   1807 (16.8%)  G:$
+   1707 (15.9%)  G:($==game.getplayer())
+   1533 (14.2%)  S:self.gotostate(#)
+   1128 (10.5%)  G:($==$)
+   1008 ( 9.4%)  S:$.setstage(#)
+    973 ( 9.0%)  S:$=$
+    662 ( 6.2%)  S:utility.wait(#)
+    405 ( 3.8%)  S:$=($+#)
+    395 ( 3.7%)  S:$.disable(#)
+    394 ( 3.7%)  S:self.disable(#)
+    348 ( 3.2%)  G:($.getstage()==#)
+    343 ( 3.2%)  S:$.setstage($)
+    338 ( 3.1%)  S:$.enable(#)
+    329 ( 3.1%)  S:$.start()
+    296 ( 2.7%)  S:$.show(#,#,#,#,#,#,#,#,#)
+    278 ( 2.6%)  S:$=game.getplayer()
+    266 ( 2.5%)  G:($.getstagedone(#)==#)
+    250 ( 2.3%)  S:self.playanimation(#)
+    233 ( 2.2%)  S:$=self.getowningquest()
+    228 ( 2.1%)  S:$.activate($,#)
+    209 ( 1.9%)  G:$.getstagedone($)
+    199 ( 1.8%)  S:$=self.getlinkedref(#)
+    197 ( 1.8%)  G:($>#)
+    192 ( 1.8%)  G:($.getstage()<#)
+    187 ( 1.7%)  G:$.getstagedone(#)
+    180 ( 1.7%)  S:self.setstage(#)
+    175 ( 1.6%)  G:($<$.length)
+    162 ( 1.5%)  S:$.setvalue(#)
+
+==== fragment population (quest/scene/dialogue/perk) ====
+Fragment_* functions: 45984   behavioral (non-empty): 43818
+
+==== FRAGMENT body templates ====
+distinct templates: 12967   population: 43818
+cumulative coverage:
+  top   10 templates →  11244 / 43818 ( 25.7%)
+  top   25 templates →  14351 / 43818 ( 32.8%)
+  top   50 templates →  16738 / 43818 ( 38.2%)
+  top  100 templates →  19102 / 43818 ( 43.6%)
+  top  200 templates →  21831 / 43818 ( 49.8%)
+  top  500 templates →  26037 / 43818 ( 59.4%)
+  top 1000 templates →  29049 / 43818 ( 66.3%)
+templates needed to cover:
+   50% → 204 templates
+   80% → 4204 templates
+   90% → 8586 templates
+   95% → 10777 templates
+   99% → 12529 templates
+top 20 templates:
+    3680 ( 8.4%)  {$=$;$.setstage(#)}
+    1520 ( 3.5%)  {$.setstage(#)}
+    1043 ( 2.4%)  {$.start()}
+    1039 ( 2.4%)  {self.setstage(#)}
+     992 ( 2.3%)  {self.setobjectivedisplayed(#,#,#)}
+     932 ( 2.1%)  {self.setobjectivecompleted(#,#);self.setobjectivedisplayed(#,#,#)}
+     758 ( 1.7%)  {self.stop()}
+     609 ( 1.4%)  {$.setvalue(#)}
+     338 ( 0.8%)  {$=$;$.setvalue(#)}
+     333 ( 0.8%)  {self.setobjectivecompleted(#,#)}
+     303 ( 0.7%)  {$=$;$.showbartermenu()}
+     300 ( 0.7%)  {$.evaluatepackage(#)}
+     286 ( 0.7%)  {$=$}
+     276 ( 0.6%)  {$=$;$=self.getowningquest();$.currentsong=#;$.updateradio();$.songintroplayed=#}
+     203 ( 0.5%)  {self.setstage(#);self.setstage(#)}
+     200 ( 0.5%)  {$=$;$=$;$.getmysquad(#)}
+     196 ( 0.4%)  {$=$;$.movespouse($,$)}
+     196 ( 0.4%)  {$=$;$.setstage(#);$.movespouse($,$)}
+     194 ( 0.4%)  {$=$;$=$}
+     177 ( 0.4%)  {$.trytosetactorvalue($,#);$.evaluatepackage(#)}
+
+==== FRAGMENT primitives (guard atoms + effect statements) ====
+distinct primitives: 5255   behavioral fragments: 43818
+vocabulary size K → behavioral fragments FULLY covered:
+  K=  10 → 14398 / 43818 ( 32.9%)
+  K=  25 → 18258 / 43818 ( 41.7%)
+  K=  50 → 21905 / 43818 ( 50.0%)
+  K= 100 → 25893 / 43818 ( 59.1%)
+  K= 150 → 27967 / 43818 ( 63.8%)
+  K= 200 → 29553 / 43818 ( 67.4%)
+  K= 300 → 31589 / 43818 ( 72.1%)
+  K= 500 → 34417 / 43818 ( 78.5%)
+  K= 750 → 36520 / 43818 ( 83.3%)
+  K=1000 → 37897 / 43818 ( 86.5%)
+  K=1500 → 39607 / 43818 ( 90.4%)
+  K=2000 → 40635 / 43818 ( 92.7%)
+coverage milestone → vocabulary size needed:
+   50% → K=51
+   80% → K=562
+   90% → K=1441
+   95% → K=2640
+   99% → K=4743
+top 30 primitives (frequency):
+  18457 (42.1%)  S:$=$
+   8869 (20.2%)  S:$.setstage(#)
+   6131 (14.0%)  S:self.setobjectivedisplayed(#,#,#)
+   5626 (12.8%)  S:self.setstage(#)
+   5558 (12.7%)  S:self.setobjectivecompleted(#,#)
+   3431 ( 7.8%)  S:$.start()
+   2974 ( 6.8%)  S:$=self.getowningquest()
+   2531 ( 5.8%)  S:self.stop()
+   2010 ( 4.6%)  S:$.setvalue(#)
+   1988 ( 4.5%)  S:$.evaluatepackage(#)
+   1844 ( 4.2%)  S:$.enable(#)
+   1761 ( 4.0%)  G:self.getstagedone(#)
+   1433 ( 3.3%)  S:$.disable(#)
+   1282 ( 2.9%)  S:$.additem($,#,#)
+   1132 ( 2.6%)  S:$.stop()
+   1108 ( 2.5%)  S:utility.wait(#)
+   1095 ( 2.5%)  S:$=$.getactorref()
+    798 ( 1.8%)  S:self.completeallobjectives()
+    674 ( 1.5%)  S:$.setvalue($,#)
+    673 ( 1.5%)  S:$=$.getref()
+    654 ( 1.5%)  S:$.addtofaction($)
+    592 ( 1.4%)  S:$.moveto($,#,#,#,#)
+    565 ( 1.3%)  S:$.evaluatepackage()
+    527 ( 1.2%)  S:$.moveto($.getref(),#,#,#,#,#)
+    505 ( 1.2%)  S:$.moveto($,#,#,#,#,#)
+    491 ( 1.1%)  S:$=game.getplayer()
+    477 ( 1.1%)  S:$.addtomap(#)
+    462 ( 1.1%)  S:$.removeitem($,#,#,#)
+    462 ( 1.1%)  S:$=#
+    443 ( 1.0%)  S:$.setopen(#)
