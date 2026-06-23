@@ -302,3 +302,85 @@ fn delta_apply_reroutes_by_form_id_after_cell_reload() {
     assert_eq!(e, l_a, "loot applied to live A, not the stale saved id");
     assert_eq!(inv.items[0].base_form_id, 0xCAFE);
 }
+
+/// #1696 — `apply_deltas` remaps each row's entity *key* (saved id → live id)
+/// but moves the component *value* verbatim. `AnimationPlayer.root_entity` is
+/// an `Option<EntityId>` holding a *saved-session* id; overlaying it would
+/// clobber the *fresh* `root_entity` the reloaded cell already set with a
+/// stale one. This test proves both halves: overlaying the column corrupts the
+/// live value (the bug), and the binary's fix — excluding it from the overlay
+/// set — preserves the cell-owned value.
+#[test]
+fn anim_player_root_entity_not_clobbered_by_delta_apply() {
+    use byroredux_core::animation::AnimationPlayer;
+    use byroredux_save::{apply_deltas, build_form_id_remap};
+
+    fn registry_with_anim() -> SaveRegistry {
+        let mut r = SaveRegistry::new();
+        r.register_component::<AnimationPlayer>("AnimationPlayer")
+            .register_form_id_component("FormIdComponent");
+        r
+    }
+
+    let pair = FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(0x0A),
+    };
+
+    // ── "Saved session": animated object at id 6, scoped to subtree root 4. ──
+    let mut saved_world = World::new();
+    saved_world.insert_resource(StringPool::new());
+    saved_world.insert_resource(FormIdPool::new());
+    for _ in 0..6 {
+        saved_world.spawn();
+    }
+    let s_obj = saved_world.spawn(); // 6
+    saved_world.insert(s_obj, AnimationPlayer::new(3).with_root(4)); // stale root id 4
+    let fid = saved_world.resource_mut::<FormIdPool>().intern(pair);
+    saved_world.insert(s_obj, FormIdComponent(fid));
+
+    let reg = registry_with_anim();
+    let snapshot = save_world(&saved_world, &reg).unwrap();
+
+    // ── "Reloaded cell": SAME form id, DIFFERENT ids; the cell loader has
+    //    already attached a player scoped to the FRESH subtree root (1). ──
+    let build_live = || {
+        let mut live = World::new();
+        live.insert_resource(FormIdPool::new());
+        let l_root = live.spawn(); // 0
+        let l_obj = live.spawn(); // 1
+        live.insert(l_obj, AnimationPlayer::new(3).with_root(l_root));
+        let fid = live.resource_mut::<FormIdPool>().intern(pair);
+        live.insert(l_obj, FormIdComponent(fid));
+        (live, l_obj, l_root)
+    };
+
+    // The bug: including "AnimationPlayer" in the overlay set clobbers the
+    // fresh root_entity (0) with the stale saved one (4).
+    {
+        let (mut live, l_obj, _) = build_live();
+        let remap = build_form_id_remap(&live, &reg, &snapshot);
+        apply_deltas(&mut live, &reg, &snapshot, &remap, &["AnimationPlayer"]).unwrap();
+        let q = live.query::<AnimationPlayer>().unwrap();
+        assert_eq!(
+            q.get(l_obj).unwrap().root_entity,
+            Some(4),
+            "overlaying AnimationPlayer leaks the stale saved root_entity (the #1696 hazard)"
+        );
+    }
+
+    // The fix: the binary omits "AnimationPlayer" from the overlay set, so the
+    // cell-owned fresh root_entity survives the live load untouched.
+    {
+        let (mut live, l_obj, l_root) = build_live();
+        let remap = build_form_id_remap(&live, &reg, &snapshot);
+        let applied = apply_deltas(&mut live, &reg, &snapshot, &remap, &["Transform"]).unwrap();
+        assert_eq!(applied, 0, "no animation column overlaid");
+        let q = live.query::<AnimationPlayer>().unwrap();
+        assert_eq!(
+            q.get(l_obj).unwrap().root_entity,
+            Some(l_root),
+            "excluding AnimationPlayer preserves the cell-owned fresh root_entity"
+        );
+    }
+}

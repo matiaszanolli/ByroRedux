@@ -39,16 +39,27 @@ use byroredux_save::{disk, encode, save_world, SaveRegistry, Snapshot};
 /// a reloaded cell, keyed by stable form id. Deliberately excludes
 /// structural/identity columns (`Name` / `Parent` / `Children` / the
 /// form-id key) — the reloaded cell already owns those; only post-spawn
-/// *changes* (moved objects, inventory, equip, light/anim/script state)
-/// are replayed.
+/// *changes* (moved objects, inventory, equip, light/script state) are
+/// replayed.
+///
+/// `AnimationPlayer` / `AnimationStack` are also **excluded** (#1696): the
+/// delta apply remaps each row's entity *key* (saved id → live id) but
+/// moves the component *value* verbatim, and both carry session-local
+/// references that the remap doesn't touch — `root_entity: Option<EntityId>`
+/// (a saved-session id, meaningless in the freshly-reloaded cell) and
+/// `clip_handle: u32` (an `AnimationClipRegistry` index, not stable across
+/// a reload). Overlaying them clobbers the *correct* fresh `root_entity` the
+/// cell loader just set (`scene/nif_loader.rs` re-spawns the player scoped to
+/// the fresh subtree) with a stale one, breaking name-scoped channel lookups.
+/// Their post-spawn playback state is transient, so letting the reloaded cell
+/// own them wholesale is the right call. (A full restore — not a live overlay —
+/// still round-trips them via the registry's `load` path.)
 const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "Transform",
     "Inventory",
     "EquipmentSlots",
     "LightSource",
     "LightFlicker",
-    "AnimationPlayer",
-    "AnimationStack",
     "ScriptTimer",
 ];
 

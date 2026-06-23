@@ -170,11 +170,15 @@ pub fn build_form_id_remap(
 /// each saved entity id to its live id via `remap`.
 ///
 /// `columns` is the curated set of **mutable game-state** component keys
-/// to overlay (e.g. Transform, Inventory, EquipmentSlots, AnimationPlayer,
-/// ScriptTimer) — explicitly *not* structural/identity columns
-/// (Parent / Children / Name / the form-id key), which the reloaded cell
-/// already owns. Unknown column names and columns absent from the
-/// snapshot are skipped. Returns the total rows applied across columns.
+/// to overlay (e.g. Transform, Inventory, EquipmentSlots, ScriptTimer) —
+/// explicitly *not* structural/identity columns (Parent / Children / Name /
+/// the form-id key), which the reloaded cell already owns. Note that each
+/// row's entity *key* is remapped (saved id → live id) but the component
+/// *value* is moved verbatim, so any column whose value embeds a session-local
+/// reference (an `EntityId` or registry handle) must NOT be overlaid — see the
+/// caller's `MUTABLE_DELTA_COLUMNS` (#1696). Unknown column names and columns
+/// absent from the snapshot are skipped. Returns the total rows applied across
+/// columns.
 pub fn apply_deltas(
     world: &mut World,
     registry: &SaveRegistry,
