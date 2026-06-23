@@ -289,8 +289,9 @@ impl NifImportRegistry {
     /// memory leaked under long-running `BYRO_NIF_CACHE_MAX > 0`
     /// sessions. The `must_use` attribute makes a forgetful caller a
     /// compile warning rather than a silent leak. Empty Vec on the
-    /// no-eviction path (the default `BYRO_NIF_CACHE_MAX=0` mode); no
-    /// allocation cost there.
+    /// no-eviction path (`BYRO_NIF_CACHE_MAX=0`, the opt-in *unlimited*
+    /// mode — NOT the default, which is a 2048-entry cap that does
+    /// evict); no allocation cost there.
     #[must_use = "evicted clip handles must be released into AnimationClipRegistry to free their keyframe arrays — see #863"]
     pub(crate) fn insert(&mut self, key: String, value: Option<Arc<CachedNifImport>>) -> Vec<u32> {
         // Core handles parsed/failed counter adjustment + map insertion.
