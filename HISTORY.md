@@ -24,6 +24,56 @@ Commits hold that record.
 
 ---
 
+## Session 51 — M47.2 compiled-Papyrus pipeline (.pex decompiler + recognizer + triggers)  (2026-06-22, `65239fec..f1a00e89`)
+
+ROADMAP pick after M45/M45.1: M47.2 (full scripting runtime), unblocked by M30.2
+(full `.psc` parse) and M47.0/M47.1 (event hooks + condition eval). Three forks
+chosen up front: a **full `.pex` decompiler** (run vanilla *compiled* bytecode,
+not just `.psc` source), **scale the recognizer catalog** (not a general AST→ECS
+lowering), and **Obscript via SCTX** (deferred phase). The session shipped the
+vertical slice end-to-end — compiled bytecode → ECS behavior, no VM — plus the
+trigger-volume dispatch.
+
+- **`.pex` decompiler** (`crates/pex`, new crate) — a Rust port of Champollion.
+  Opcode table + version-aware reader (`70d294fa`), a corpus smoke harness over
+  real archives (`c9048259`), then the 5-phase pipeline: basic-block CFG
+  (`299458e8`), opcode→node lifting + copy-propagation (`0953f45a`), control-flow
+  reconstruction (`f67aa4c4`), lowering to the `byroredux_papyrus` AST with a
+  fidelity gate against the R5 `.psc` reference (`56a2beef`), and short-circuit
+  boolean reconstruction (`22010d60`). Verified: 99.996% of the entire shipping
+  Papyrus corpus (26 640/26 641) decompiles to AST with zero panics; real
+  `DA10MainDoorScript.pex` reproduces the R5 reference shape.
+- **Scripting-translation bridge** — `translate_pex` (`c5293ef7`) decompiles
+  `.pex` and runs it through the existing recognizer chain (no new `ScriptSource`
+  variant — the decompiler targets the same AST `.psc` parses to). VMAD bindings
+  are now retained on base records (ACTI/CONT/NPC) with a
+  `base_record_script_instance` accessor (`d246f971`); the cell loader's
+  REFR-attach path resolves each scripted REFR's VMAD-named `.pex` from a
+  `--scripts-bsa` archive and runs the chain (`fcd46e90`, `f270fd13`).
+- **Recognizer catalog scaling** — quest-advance broadened from the single DA10
+  guarded shape to the whole `default*SetStage*` family (`57df98a5`): player-gated
+  (`akActionRef == Game.GetPlayer()` → PlayerOnly) and unconditional, each
+  declining on any unmodeled condition term. Then unified with triggers
+  (`eebd07b5`): one `quest_advance_system` consumes both `ActivateEvent` and
+  `OnTriggerEnterEvent`; one recognizer matches `OnActivate` or `OnTriggerEnter`.
+- **Trigger-volume dispatch** — the runtime emit site: a `TriggerVolume` component
+  + edge-triggered `trigger_detection_system` (`1712959b`), and a cell-loader
+  branch that builds world-space volumes from `XPRM` box/sphere primitives on
+  invisible (MODL-less) scripted trigger REFRs (`c8c8e5e9`). XPRM extents read as
+  half-extents per the verified CK / `bhkBoxShape` / `XMBO` convention. A per-cell
+  `M47.2 scripts:` summary + the `m47-triggers.sh` smoke test gate the engine path
+  on real data (`f1a00e89`); a coverage pass swept every reachable seam
+  (`92560525`).
+- **M45.1 tail** — player pose restoration for live loads (`93b06b95`, PR #1695),
+  closing Session 50's live-load theme; landed after that session's HISTORY append.
+
+Net: tests 2985 → 3118 (+133); src/ LOC 235 913 → 244 447 (+8 534); new crate
+`crates/pex`. M47.2 in progress — the `.pex` / quest-advance / trigger slice ships;
+recognizer catalog still small (OnEquip/OnHit need emit sites), 136-event dispatch
+and perk entry-point composition remain.
+
+---
+
 ## Session 50 — M45 + M45.1 Save/Load (library + live load)  (2026-06-21, `bd2d0de2` + `48e18c4f`)
 
 ROADMAP pick: M45 was the only unblocked top-tier (Tier 1–4) capability

@@ -29,7 +29,7 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 | **Test count, LOC, file count, workspace size** | See [ROADMAP Project Stats](ROADMAP.md#project-stats) — refreshed per `/session-close` so the README doesn't drift behind. |
 | **Renderer** | Vulkan 1.3 + `VK_KHR_ray_query` — multi-light RT shadows, reflections, 1-bounce GI, SVGF temporal denoiser, TAA, streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction, Disney/Burley BSDF lobe for PBR (BGSM/BGEM + Starfield) content |
 | **Physics** | Rapier3D — collision import from NIF `bhk` chain, dynamic bodies, fixed 60 Hz substep |
-| **Scripting** | Papyrus `.psc` lexer + Pratt expression parser + full AST; ECS-native event + timer runtime |
+| **Scripting** | Papyrus `.psc` parser (full AST) + `.pex` bytecode decompiler; recognizer-driven attach of compiled vanilla scripts at cell load; ECS-native event + timer runtime |
 | **UI** | Scaleform / SWF menus via Ruffle (offscreen wgpu → Vulkan texture overlay) |
 
 ## Highlights
