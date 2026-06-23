@@ -54,6 +54,30 @@ use byroredux_save::{disk, encode, save_world, SaveRegistry, Snapshot};
 /// Their post-spawn playback state is transient, so letting the reloaded cell
 /// own them wholesale is the right call. (A full restore — not a live overlay —
 /// still round-trips them via the registry's `load` path.)
+///
+/// # Invariant — delta-safe fields only (SAVE-D1-02 / SAVE-D6-01)
+///
+/// Unlike the clear/restore path (`byroredux_save::restore_world`), the live
+/// overlay never re-installs the saved `StringPool` and never rebuilds the
+/// entity-id map for *values* — it reloads the cell (which owns its own pool +
+/// freshly-spawned entities) and overlays component values **verbatim**. A
+/// column may therefore carry **only session-stable fields**:
+/// - **No [`FixedString`](byroredux_core::string::FixedString)** (or anything
+///   `#[serde(with = "fixed_string_serde")]`): it serialises as a raw `u32`
+///   symbol that means nothing in the reloaded cell's pool — silent string
+///   corruption. (`Name` is excluded for exactly this reason.)
+/// - **No `EntityId`** (or `Option<EntityId>` / `Vec<EntityId>`): a saved-session
+///   id, meaningless after the cell respawns — this is why `AnimationPlayer`'s
+///   `root_entity` keeps the pair off the list (SAVE-D6-01).
+/// - **No session-local handles** (registry indices like `clip_handle`) that
+///   aren't stable across a reload.
+///
+/// Pool-relative indices are fine *iff* their backing pool is itself a restored
+/// save resource — e.g. `ItemStack.instance` (an `ItemInstancePool` index) is
+/// safe because `ItemInstancePool` round-trips as a resource.
+///
+/// `delta_columns_carry_only_session_stable_fields` (a tripwire test below)
+/// pins the exact set so any addition forces a maintainer through this checklist.
 const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "Transform",
     "Inventory",
@@ -608,6 +632,42 @@ mod tests {
     use byroredux_core::string::StringPool;
     use byroredux_save::{decode, restore_world};
     use byroredux_scripting::ScriptTimer;
+
+    /// Tripwire for the [`MUTABLE_DELTA_COLUMNS`] invariant (SAVE-D1-02 /
+    /// SAVE-D6-01): the live overlay applies component *values* verbatim
+    /// onto a reloaded cell without re-installing the saved `StringPool`
+    /// or remapping value-embedded entity ids, so a delta column may carry
+    /// only session-stable fields — **no `FixedString`, no `EntityId`, no
+    /// session-local registry handle**.
+    ///
+    /// Rust has no field reflection, so this can't auto-scan the structs.
+    /// Instead it pins the exact set against an audited expectation: adding
+    /// a column makes this fail, forcing the maintainer to confirm the new
+    /// type is delta-safe (per the doc comment) and update `AUDITED` here.
+    /// `Name` (FixedString) and `AnimationPlayer`/`AnimationStack`
+    /// (EntityId + registry handle) are the registered-but-excluded types
+    /// this guard exists to keep out.
+    #[test]
+    fn delta_columns_carry_only_session_stable_fields() {
+        // Each entry was hand-verified free of FixedString / EntityId /
+        // session-handle fields (Transform: glam f32s; Inventory: u32 +
+        // ItemInstancePool index; EquipmentSlots: Option<u32> array;
+        // LightSource/LightFlicker: f32/u32 + [f32;3]; ScriptTimer: u32+f32).
+        const AUDITED: &[&str] = &[
+            "Transform",
+            "Inventory",
+            "EquipmentSlots",
+            "LightSource",
+            "LightFlicker",
+            "ScriptTimer",
+        ];
+        assert_eq!(
+            MUTABLE_DELTA_COLUMNS, AUDITED,
+            "MUTABLE_DELTA_COLUMNS changed: a delta column must carry no \
+             FixedString / EntityId / session-handle field (see the type's \
+             doc comment). If the new type is delta-safe, add it to AUDITED.",
+        );
+    }
 
     /// The binary's curated registry must round-trip its full type set —
     /// including the cross-crate `ScriptTimer` and a stable form id —
