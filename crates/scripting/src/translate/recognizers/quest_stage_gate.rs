@@ -32,23 +32,17 @@
 //! behavior attached); a *misread* one would change gameplay, so the
 //! recognizer never guesses past what it fully understands.
 
-use byroredux_papyrus::ast::{BinaryOp, Event, Expr, Script, ScriptItem, StateItem, Stmt};
+use byroredux_papyrus::ast::{Event, Script, ScriptItem, StateItem, Stmt};
 use byroredux_papyrus::span::Spanned;
 
 use crate::papyrus_demo::quest_advance::{ActivatorGate, QuestAdvanceOnActivate};
 use crate::quest_stages::QuestFormId;
 use crate::translate::archetype::{RecognizeCtx, Recognized};
+use crate::translate::compose::{
+    classify_guard_atom, int_arg, method_call, quest_via, split_and, GuardMatch, QuestRef,
+};
 use crate::translate::source::ScriptSource;
 use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue, RunOn};
-
-/// How a quest-stage call names its quest.
-#[derive(Debug, Clone, PartialEq)]
-enum QuestVia {
-    /// `Self.GetOwningQuest()` — the quest owning this alias.
-    OwningQuest,
-    /// A `Quest Property NAME` — bound from VMAD by property name.
-    Property(String),
-}
 
 /// The extracted gate: predicates + target stage + how the quest is
 /// named + whether activation is player-gated.
@@ -57,7 +51,7 @@ struct StageGate {
     /// Empty for the unconditional `defaultSetStageOnActivate` family.
     conditions: Vec<(u16, f32)>,
     target_stage: u16,
-    quest_via: QuestVia,
+    quest_via: QuestRef,
     /// True when the advance is wrapped in `If akActionRef == Game.GetPlayer()`
     /// — the MG07 / TG05 / `default*` player-only idiom. Lowers to
     /// [`ActivatorGate::PlayerOnly`].
@@ -73,8 +67,8 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
 
     // Resolve the owning quest by how the script named it.
     let owning_quest = match &gate.quest_via {
-        QuestVia::OwningQuest => ctx.owning_quest?,
-        QuestVia::Property(name) => ctx
+        QuestRef::OwningQuest => ctx.owning_quest?,
+        QuestRef::Property(name) => ctx
             .script_instance?
             .scripts
             .iter()
@@ -179,21 +173,14 @@ fn extract_stage_gate(event: &Event) -> Option<StageGate> {
         else {
             continue;
         };
-        let mut conditions = Vec::new();
-        let mut quest_via: Option<QuestVia> = None;
-        let mut inner_player = false;
         // Decline if the condition mixes in any term we don't model
         // (e.g. `GetStage() < N`, a `HasPerk`, an `||`) — recognizing it
         // as a plain AND-of-GetStageDone would change its behavior.
-        if !classify_condition(
-            &condition.node,
-            &mut conditions,
-            &mut quest_via,
-            &mut inner_player,
-            player_param,
-        ) {
+        let Some((conditions, quest_via, inner_player)) =
+            classify_if_condition(&condition.node, player_param)
+        else {
             continue;
-        }
+        };
         player_only |= inner_player;
         let Some((target_stage, set_via)) = find_set_stage(body) else {
             continue;
@@ -243,7 +230,7 @@ fn peel_player_gate<'a>(
         {
             if elseif_clauses.is_empty()
                 && else_body.is_none()
-                && is_player_gate(&condition.node, player_param)
+                && crate::translate::compose::is_player_gate(&condition.node, player_param)
             {
                 return (inner, true);
             }
@@ -252,98 +239,47 @@ fn peel_player_gate<'a>(
     (body, false)
 }
 
-/// Classify an `If` condition. Pushes any `GetStageDone(stage) == E`
-/// predicate into `out` (And-combined), records how the quest is named,
-/// and flags a `<param> == Game.GetPlayer()` term in `player`. Returns
-/// `false` the moment it meets a leaf it can't model — the caller then
-/// declines rather than silently dropping the unmodeled guard.
-fn classify_condition(
-    e: &Expr,
-    out: &mut Vec<(u16, f32)>,
-    via: &mut Option<QuestVia>,
-    player: &mut bool,
+/// Classify an `If` condition through the [`compose`] guard-primitive
+/// table. Splits the condition into atomic predicates on `&&` (a `||` is
+/// left as one atom that no primitive claims), runs each atom through the
+/// table, and accumulates the result. Returns `None` the moment it meets
+/// an atom no primitive models — the caller then declines rather than
+/// silently dropping the unmodeled guard. On success: the
+/// `(stage, expected)` predicates, how the quest is named (first naming
+/// wins), and whether a player-gate term was present.
+///
+/// [`compose`]: crate::translate::compose
+fn classify_if_condition(
+    cond: &byroredux_papyrus::ast::Expr,
     player_param: Option<&str>,
-) -> bool {
-    // A `<param> == Game.GetPlayer()` term anywhere is the player gate.
-    if is_player_gate(e, player_param) {
-        *player = true;
-        return true;
-    }
-    match e {
-        Expr::BinaryOp {
-            op: BinaryOp::And,
-            left,
-            right,
-        } => {
-            classify_condition(&left.node, out, via, player, player_param)
-                && classify_condition(&right.node, out, via, player, player_param)
-        }
-        Expr::BinaryOp {
-            op: BinaryOp::Eq,
-            left,
-            right,
-        } => {
-            // One side is GetStageDone(stage); the other is the expected
-            // literal (`1`/`0`, possibly `as Bool`).
-            let staged = as_get_stage_done(&left.node)
-                .map(|sv| (sv, as_num(&right.node)))
-                .or_else(|| as_get_stage_done(&right.node).map(|sv| (sv, as_num(&left.node))));
-            if let Some(((stage, q), Some(expected))) = staged {
-                out.push((stage, expected));
-                via.get_or_insert(q);
-                true
-            } else {
-                false
-            }
-        }
-        // A bare `GetStageDone(stage)` used as a boolean → `== 1`.
-        _ => {
-            if let Some((stage, q)) = as_get_stage_done(e) {
-                out.push((stage, 1.0));
-                via.get_or_insert(q);
-                true
-            } else {
-                false
+) -> Option<(Vec<(u16, f32)>, Option<QuestRef>, bool)> {
+    let mut atoms = Vec::new();
+    split_and(cond, &mut atoms);
+
+    let mut conditions = Vec::new();
+    let mut quest_via: Option<QuestRef> = None;
+    let mut player = false;
+    for atom in atoms {
+        // First match wins; an atom the table can't claim → decline whole.
+        match classify_guard_atom(atom, player_param)? {
+            GuardMatch::PlayerGate => player = true,
+            GuardMatch::StageDone {
+                via,
+                stage,
+                expected,
+            } => {
+                conditions.push((stage, expected));
+                quest_via.get_or_insert(via);
             }
         }
     }
-}
-
-/// True when `e` is `<player_param> == Game.GetPlayer()` (either operand
-/// order, tolerating an `as Actor` cast on the player call).
-fn is_player_gate(e: &Expr, player_param: Option<&str>) -> bool {
-    let Expr::BinaryOp {
-        op: BinaryOp::Eq,
-        left,
-        right,
-    } = e
-    else {
-        return false;
-    };
-    let matches_pair = |a: &Expr, b: &Expr| is_param_ref(a, player_param) && is_game_get_player(b);
-    matches_pair(&left.node, &right.node) || matches_pair(&right.node, &left.node)
-}
-
-/// `e` is a reference to the handler's activator parameter.
-fn is_param_ref(e: &Expr, player_param: Option<&str>) -> bool {
-    matches!((e, player_param), (Expr::Ident(id), Some(p)) if id.0.eq_ignore_ascii_case(p))
-}
-
-/// `e` is a `Game.GetPlayer()` call (unwrapping an optional cast).
-fn is_game_get_player(e: &Expr) -> bool {
-    if let Expr::Cast { expr, .. } = e {
-        return is_game_get_player(&expr.node);
-    }
-    let Some((object, _)) = method_call(e, "GetPlayer") else {
-        return false;
-    };
-    matches!(object, Expr::Ident(id) if id.0.eq_ignore_ascii_case("Game"))
+    Some((conditions, quest_via, player))
 }
 
 /// The single `SetStage(Z)` of a body that contains *only* that call —
 /// the conservative unconditional shape. `None` if the body has any
 /// other statement (which might be a guard we don't model).
-fn single_set_stage(body: &[Spanned<Stmt>]) -> Option<(u16, QuestVia)> {
+fn single_set_stage(body: &[Spanned<Stmt>]) -> Option<(u16, QuestRef)> {
     let [only] = body else {
         return None;
     };
@@ -355,15 +291,8 @@ fn single_set_stage(body: &[Spanned<Stmt>]) -> Option<(u16, QuestVia)> {
     Some((target, quest_via(object)?))
 }
 
-/// If `e` is a `…GetStageDone(stage)` call, return `(stage, quest_via)`.
-fn as_get_stage_done(e: &Expr) -> Option<(u16, QuestVia)> {
-    let (object, args) = method_call(e, "GetStageDone")?;
-    let stage = int_arg(args, 0)?;
-    Some((u16::try_from(stage).ok()?, quest_via(object)?))
-}
-
 /// Find the first `SetStage(Z)` statement in a body → `(Z, quest_via)`.
-fn find_set_stage(body: &[Spanned<Stmt>]) -> Option<(u16, QuestVia)> {
+fn find_set_stage(body: &[Spanned<Stmt>]) -> Option<(u16, QuestRef)> {
     body.iter().find_map(|stmt| {
         let Stmt::ExprStmt(e) = &stmt.node else {
             return None;
@@ -372,54 +301,6 @@ fn find_set_stage(body: &[Spanned<Stmt>]) -> Option<(u16, QuestVia)> {
         let target = u16::try_from(int_arg(args, 0)?).ok()?;
         Some((target, quest_via(object)?))
     })
-}
-
-/// Classify the receiver of a `GetStageDone`/`SetStage` call.
-fn quest_via(object: &Expr) -> Option<QuestVia> {
-    if method_call(object, "GetOwningQuest").is_some() {
-        Some(QuestVia::OwningQuest)
-    } else if let Expr::Ident(name) = object {
-        Some(QuestVia::Property(name.0.clone()))
-    } else {
-        None
-    }
-}
-
-/// If `e` is `<object>.<method>(args)`, return `(&object, args)`.
-fn method_call<'a>(
-    e: &'a Expr,
-    method: &str,
-) -> Option<(&'a Expr, &'a [byroredux_papyrus::ast::CallArg])> {
-    let Expr::Call { callee, args } = e else {
-        return None;
-    };
-    let Expr::MemberAccess { object, member } = &callee.node else {
-        return None;
-    };
-    member
-        .node
-        .eq_ignore_case(method)
-        .then_some((&object.node, args.as_slice()))
-}
-
-/// The integer value of positional argument `idx`.
-fn int_arg(args: &[byroredux_papyrus::ast::CallArg], idx: usize) -> Option<i64> {
-    match &args.get(idx)?.value.node {
-        Expr::IntLit(n) => Some(*n),
-        _ => None,
-    }
-}
-
-/// A numeric literal — `Int`/`Float`/`Bool`, unwrapping a `… as Bool`
-/// cast (the `== 1 as Bool` idiom Champollion emits).
-fn as_num(e: &Expr) -> Option<f32> {
-    match e {
-        Expr::IntLit(n) => Some(*n as f32),
-        Expr::FloatLit(f) => Some(*f as f32),
-        Expr::BoolLit(b) => Some(if *b { 1.0 } else { 0.0 }),
-        Expr::Cast { expr, .. } => as_num(&expr.node),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

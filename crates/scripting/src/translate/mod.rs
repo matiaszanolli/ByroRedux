@@ -15,6 +15,7 @@
 //! consumer yet", exactly like an M47.0 [`crate::ScriptRegistry`] miss.
 
 pub mod archetype;
+pub mod compose;
 pub mod recognizers;
 pub mod source;
 pub mod tables;
