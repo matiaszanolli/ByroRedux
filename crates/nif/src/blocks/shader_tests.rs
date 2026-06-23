@@ -1782,6 +1782,43 @@ fn parse_bs_effect_shader_fo76_editor_label_does_not_short_circuit() {
     }
 }
 
+/// #1721 — sibling of `parse_bs_lighting_starfield_hashpath_name_stubs`.
+/// Starfield material references are content-hash paths with NO
+/// `.mat`/`.bgsm` suffix, so `is_material_reference` misses them. For
+/// BSVER >= STARFIELD a non-empty Name means a reference (full bodies
+/// carry an empty name), so `BSEffectShaderProperty::parse` must return
+/// the 12-byte stub and let block_size skip the rest — NOT run the
+/// full-body path off bytes the block doesn't carry. Pre-#1721 the
+/// effect-shader parser kept the suffix-aware `is_material_reference`
+/// gate (the #1510 fix only reached the BSLightingShaderProperty
+/// sibling), so a hash-path effect shader over-read garbage
+/// source-texture / base-color / falloff fields into its material.
+#[test]
+fn parse_bs_effect_starfield_hashpath_name_stubs() {
+    // Header string 0 is a content-hash path (two hex segments, no
+    // suffix) — `is_material_reference` would reject it.
+    let header = make_starfield_header("8f3a91c4\\b27e5d06");
+    // Only the NiObjectNET base is present; a full body would follow on
+    // disk for a non-reference, but a hash-path name must stub before it.
+    let mut data = Vec::new();
+    data.extend_from_slice(&0i32.to_le_bytes()); // name idx 0 → the hash-path
+    data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count = 0
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = -1
+    let mut stream = NifStream::new(&data, &header);
+
+    let prop = BSEffectShaderProperty::parse(&mut stream)
+        .expect("Starfield hash-path BSEffect must stub");
+    assert!(
+        prop.material_reference,
+        "a non-empty (hash-path) Starfield name must take the stub path",
+    );
+    assert_eq!(
+        stream.position(),
+        12,
+        "stub consumes only the NiObjectNET base (name + extra + controller)",
+    );
+}
+
 /// Regression for #716 — BSShaderPPLightingProperty.Emissive Color (Color4)
 /// is gated by `#BS_GT_FO3#` (bsver > crate::version::bsver::FO3_FNV).  Pre-fix the field was never read,
 /// leaving 16 bytes in the stream; block_size recovery silently masked this on
