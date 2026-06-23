@@ -827,4 +827,68 @@ mod tests {
         // And an unknown id is None.
         assert!(idx.base_record_script_instance(0x0000_9999).is_none());
     }
+
+    /// Build a minimal Skyrim-shape VMAD payload naming a single script
+    /// with zero properties (the shared fixture for the retention tests).
+    fn synthetic_vmad(script_name: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&5i16.to_le_bytes()); // version
+        v.extend_from_slice(&2i16.to_le_bytes()); // objectFormat
+        v.extend_from_slice(&1u16.to_le_bytes()); // scriptCount
+        v.extend_from_slice(&(script_name.len() as u16).to_le_bytes());
+        v.extend_from_slice(script_name);
+        v.push(0); // script status
+        v.extend_from_slice(&0u16.to_le_bytes()); // propCount = 0
+        v
+    }
+
+    /// The Container and NPC paths of `base_record_script_instance`: both
+    /// retain the VMAD their shared `CommonNamedFields` decodes, so a
+    /// scripted chest / NPC resolves its attached-script name through the
+    /// accessor. (ACTI is covered above; this pins the other two families
+    /// `base_record_script_instance` walks.)
+    #[test]
+    fn base_record_script_instance_resolves_container_and_npc_vmad() {
+        use crate::esm::records::{parse_cont, parse_npc, GameKind};
+        let sub = |t: &[u8; 4], data: &[u8]| crate::esm::reader::SubRecord {
+            sub_type: *t,
+            data: data.to_vec(),
+        };
+
+        let mut idx = EsmIndex::default();
+
+        // Scripted container (CONT).
+        let cont = parse_cont(
+            0xC0_0001,
+            &[
+                sub(b"EDID", b"ScriptedChest\0"),
+                sub(b"VMAD", &synthetic_vmad(b"TreasureChestScript")),
+            ],
+        );
+        idx.containers.insert(0xC0_0001, cont);
+        let si = idx
+            .base_record_script_instance(0xC0_0001)
+            .expect("CONT VMAD retained");
+        assert_eq!(si.scripts[0].name, "TreasureChestScript");
+
+        // Scripted NPC (NPC_).
+        let npc = parse_npc(
+            0x0A_0001,
+            &[
+                sub(b"EDID", b"ScriptedNpc\0"),
+                sub(b"VMAD", &synthetic_vmad(b"QuestGiverScript")),
+            ],
+            GameKind::Skyrim,
+        );
+        idx.npcs.insert(0x0A_0001, npc);
+        let si = idx
+            .base_record_script_instance(0x0A_0001)
+            .expect("NPC_ VMAD retained");
+        assert_eq!(si.scripts[0].name, "QuestGiverScript");
+
+        // A container with no VMAD still resolves to None on this path.
+        let plain = parse_cont(0xC0_0002, &[sub(b"EDID", b"PlainChest\0")]);
+        idx.containers.insert(0xC0_0002, plain);
+        assert!(idx.base_record_script_instance(0xC0_0002).is_none());
+    }
 }

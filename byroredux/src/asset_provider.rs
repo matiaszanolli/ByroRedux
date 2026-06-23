@@ -611,13 +611,7 @@ impl ScriptProvider {
     /// Returns the first archive hit, or `None` when no archive carries
     /// the script.
     pub(crate) fn extract_pex(&self, script_name: &str) -> Option<Vec<u8>> {
-        let mut name = script_name.replace('/', "\\").to_ascii_lowercase();
-        if !name.ends_with(".pex") {
-            name.push_str(".pex");
-        }
-        if !name.starts_with("scripts\\") {
-            name = format!("scripts\\{name}");
-        }
+        let name = pex_archive_path(script_name);
         for archive in &self.archives {
             if let Ok(data) = archive.extract(&name) {
                 return Some(data);
@@ -628,6 +622,21 @@ impl ScriptProvider {
 }
 
 impl byroredux_core::ecs::resource::Resource for ScriptProvider {}
+
+/// Normalise a Papyrus script name to its archive key: lowercase,
+/// backslash-separated, under the `scripts\` folder with a `.pex`
+/// extension. A name authored with the folder and/or extension already
+/// present (or with forward slashes) is accepted unchanged in meaning.
+fn pex_archive_path(script_name: &str) -> String {
+    let mut name = script_name.replace('/', "\\").to_ascii_lowercase();
+    if !name.ends_with(".pex") {
+        name.push_str(".pex");
+    }
+    if !name.starts_with("scripts\\") {
+        name = format!("scripts\\{name}");
+    }
+    name
+}
 
 /// Build a [`ScriptProvider`] from CLI arguments. Accepts repeated
 /// `--scripts-bsa <path>` flags so modded script archives can layer over
@@ -2918,6 +2927,35 @@ mod tests {
         let provider = build_script_provider(&[]);
         assert!(provider.is_empty());
         assert!(provider.extract_pex("DA10MainDoorScript").is_none());
+    }
+
+    /// The `.pex` archive-key normalisation: a bare VMAD-authored script
+    /// name resolves to `scripts\<lower>.pex`, and names that already
+    /// carry the folder / extension / forward-slashes are idempotent.
+    #[test]
+    fn pex_archive_path_normalises_every_authored_form() {
+        // Bare name (the common VMAD case).
+        assert_eq!(
+            pex_archive_path("DA10MainDoorScript"),
+            "scripts\\da10maindoorscript.pex"
+        );
+        // Already lowercase + folder + extension → unchanged.
+        assert_eq!(
+            pex_archive_path("scripts\\da10maindoorscript.pex"),
+            "scripts\\da10maindoorscript.pex"
+        );
+        // Extension present, folder missing.
+        assert_eq!(
+            pex_archive_path("MyScript.pex"),
+            "scripts\\myscript.pex"
+        );
+        // Forward slashes are converted to the archive's backslashes.
+        assert_eq!(
+            pex_archive_path("scripts/Sub/MyScript"),
+            "scripts\\sub\\myscript.pex"
+        );
+        // Mixed case folded.
+        assert_eq!(pex_archive_path("FXShader"), "scripts\\fxshader.pex");
     }
 
     /// Regression for #583 / #1454 / #1455 — synthetic BGSM template chain

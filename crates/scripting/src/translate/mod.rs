@@ -110,4 +110,28 @@ mod tests {
         let src = ScriptSource::PapyrusSource(&script);
         assert!(translate_script(&src, GameKind::Skyrim, None, None).is_none());
     }
+
+    #[test]
+    fn translate_pex_on_empty_bytes_is_a_clean_none() {
+        // The attach path hands arbitrary archive bytes to translate_pex;
+        // an empty / truncated `.pex` must be a graceful None, never a
+        // panic (the "no consumer yet" contract for unparseable input).
+        assert!(translate_pex(&[], GameKind::Skyrim, None, None).is_none());
+    }
+
+    #[test]
+    fn translate_pex_on_garbage_bytes_is_a_clean_none() {
+        // Bytes with no valid `.pex` magic — parse fails, logged at debug,
+        // returns None rather than propagating an error or panicking.
+        let garbage = b"this is definitely not compiled papyrus bytecode";
+        assert!(translate_pex(garbage, GameKind::Skyrim, None, None).is_none());
+    }
+
+    #[test]
+    fn translate_pex_on_truncated_after_magic_is_a_clean_none() {
+        // Correct LE magic (0xFA57C0DE) but nothing after it — the reader
+        // runs off the end mid-header; decode must fail gracefully.
+        let truncated = [0xDE, 0xC0, 0x57, 0xFA, 0x00, 0x00];
+        assert!(translate_pex(&truncated, GameKind::Skyrim, None, None).is_none());
+    }
 }

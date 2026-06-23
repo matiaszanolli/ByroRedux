@@ -264,6 +264,65 @@ fn trigger_enter_respects_player_only_gate() {
     assert_eq!(stage_state.get_stage(DA10_QUEST_FORM_ID), 40);
 }
 
+/// Unconditional advance on the trigger path: a trigger volume whose
+/// component has empty `conditions` advances on enter (the empty list is
+/// vacuously satisfied), mirroring the activate-side unconditional case.
+#[test]
+fn trigger_enter_unconditional_advances() {
+    let (world, player, trigger) = setup_da10_world();
+    {
+        let mut q = world.query_mut::<QuestAdvanceOnActivate>().unwrap();
+        let comp = q.get_mut(trigger).unwrap();
+        comp.conditions.clear();
+        comp.target_stage = 12;
+    }
+
+    fire_trigger_enter(&world, trigger, player);
+    quest_advance_system(&world);
+
+    let stage_state = world.resource::<QuestStageState>();
+    assert_eq!(stage_state.get_stage(DA10_QUEST_FORM_ID), 12);
+}
+
+/// Both signals in one frame on two different entities: an activated door
+/// and an entered trigger, each advancing its own quest. The unified
+/// system must process both event sources in a single pass.
+#[test]
+fn activate_and_trigger_in_same_frame_both_advance() {
+    let (mut world, player, door) = setup_da10_world();
+    let other_quest = QuestFormId(0x000B_EEF0);
+
+    // A second entity: an unconditional trigger advancing a different quest.
+    let trigger = world.spawn();
+    {
+        let mut comp = da10_main_door(other_quest);
+        comp.conditions.clear();
+        comp.target_stage = 5;
+        world.insert(trigger, comp);
+    }
+    // Satisfy the door's predicate (it needs stage 37 done).
+    {
+        let mut stage_state = world.resource_mut::<QuestStageState>();
+        stage_state.set_stage(DA10_QUEST_FORM_ID, 37);
+    }
+
+    fire_activate(&world, door, player);
+    fire_trigger_enter(&world, trigger, player);
+    quest_advance_system(&world);
+
+    let stage_state = world.resource::<QuestStageState>();
+    assert_eq!(
+        stage_state.get_stage(DA10_QUEST_FORM_ID),
+        40,
+        "the activated door advanced its quest"
+    );
+    assert_eq!(
+        stage_state.get_stage(other_quest),
+        5,
+        "the entered trigger advanced its (separate) quest in the same pass"
+    );
+}
+
 // ── Cross-quest isolation ────────────────────────────────────
 
 /// Two separate quests must not influence each other through this

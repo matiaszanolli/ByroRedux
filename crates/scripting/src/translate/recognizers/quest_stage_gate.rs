@@ -650,6 +650,39 @@ mod tests {
         assert!(matches!(got.activator_gate, ActivatorGate::PlayerOnly));
     }
 
+    /// The player gate is recognized regardless of operand order and
+    /// through an `as Actor` cast — `Game.GetPlayer() as Actor == akActionRef`
+    /// is the same gate as `akActionRef == Game.GetPlayer()`. Exercises the
+    /// reversed-pair and cast-unwrap branches of the gate detector.
+    #[test]
+    fn player_gate_reversed_order_and_cast() {
+        let src = "ScriptName RevGate extends ObjectReference\n\
+                   Quest Property MyQuest Auto\n\
+                   Event OnActivate(ObjectReference akActionRef)\n\
+                   If (Game.GetPlayer() as Actor) == akActionRef\n\
+                   MyQuest.SetStage(7)\n\
+                   EndIf\n\
+                   EndEvent\n";
+        let (script, errors) = parse_script(src).expect("parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        let source = ScriptSource::PapyrusSource(&script);
+        let instance = quest_property_instance("RevGate", 0x0000_7777);
+        let recognized = translate_script(&source, GameKind::Skyrim, Some(&instance), None)
+            .expect("reversed/cast player gate recognized");
+
+        let mut world = byroredux_core::ecs::world::World::new();
+        crate::register(&mut world);
+        let entity = world.spawn();
+        (recognized.spawn)(&mut world, entity);
+        let q = world.query::<QuestAdvanceOnActivate>().unwrap();
+        let got = q.get(entity).unwrap();
+        assert_eq!(got.target_stage, 7);
+        assert!(
+            matches!(got.activator_gate, ActivatorGate::PlayerOnly),
+            "reversed-order / cast player gate still lowers to PlayerOnly",
+        );
+    }
+
     /// Correctness guard: a condition that mixes in a term the extractor
     /// doesn't model (`MyQuest.GetStage() >= 10`) must DECLINE, not get
     /// misread as an unconditional or partial advance. A silent miss is
@@ -708,6 +741,117 @@ mod tests {
             matches!(got.activator_gate, ActivatorGate::PlayerOnly),
             "the player gate lowers to PlayerOnly even on the trigger path",
         );
+    }
+
+    /// Unconditional advance via the alias-owning quest: the receiver is
+    /// `Self.GetOwningQuest()` (not a Quest Property), so the owning quest
+    /// comes from the attach context, and there are no stage predicates.
+    #[test]
+    fn recognizes_unconditional_owning_quest_advance() {
+        let src = "ScriptName AliasDoor extends ReferenceAlias\n\
+                   Event OnActivate(ObjectReference akActionRef)\n\
+                   Self.GetOwningQuest().SetStage(50)\n\
+                   EndEvent\n";
+        let (script, errors) = parse_script(src).expect("parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        let source = ScriptSource::PapyrusSource(&script);
+
+        // No quest property — resolves only with the alias-owning quest.
+        assert!(
+            translate_script(&source, GameKind::Skyrim, None, None).is_none(),
+            "without the owning quest the advance can't bind — declines",
+        );
+        let recognized = translate_script(&source, GameKind::Skyrim, None, Some(0x0001_9999))
+            .expect("owning-quest unconditional advance recognized");
+        let mut world = byroredux_core::ecs::world::World::new();
+        crate::register(&mut world);
+        let entity = world.spawn();
+        (recognized.spawn)(&mut world, entity);
+        let q = world.query::<QuestAdvanceOnActivate>().unwrap();
+        let got = q.get(entity).unwrap();
+        assert_eq!(got.owning_quest, QuestFormId(0x0001_9999));
+        assert_eq!(got.target_stage, 50);
+        assert!(got.conditions.is_empty());
+    }
+
+    /// When a script declares BOTH handlers, `OnActivate` wins (the
+    /// interactive path is the authored intent; the priority is fixed).
+    #[test]
+    fn on_activate_wins_over_on_trigger_enter() {
+        let src = "ScriptName DualHandler extends ObjectReference\n\
+                   Quest Property MyQuest Auto\n\
+                   Event OnTriggerEnter(ObjectReference akActionRef)\n\
+                   MyQuest.SetStage(99)\n\
+                   EndEvent\n\
+                   Event OnActivate(ObjectReference akActionRef)\n\
+                   MyQuest.SetStage(10)\n\
+                   EndEvent\n";
+        let (script, errors) = parse_script(src).expect("parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        let source = ScriptSource::PapyrusSource(&script);
+        let instance = quest_property_instance("DualHandler", 0x0000_6666);
+        let recognized = translate_script(&source, GameKind::Skyrim, Some(&instance), None)
+            .expect("dual-handler recognized");
+        let mut world = byroredux_core::ecs::world::World::new();
+        crate::register(&mut world);
+        let entity = world.spawn();
+        (recognized.spawn)(&mut world, entity);
+        let q = world.query::<QuestAdvanceOnActivate>().unwrap();
+        assert_eq!(
+            q.get(entity).unwrap().target_stage,
+            10,
+            "OnActivate's SetStage(10) must win over OnTriggerEnter's SetStage(99)",
+        );
+    }
+
+    /// A handler with no `SetStage` at all isn't a quest advance — decline.
+    #[test]
+    fn declines_handler_without_set_stage() {
+        let src = "ScriptName Chatty extends ObjectReference\n\
+                   Event OnActivate(ObjectReference akActionRef)\n\
+                   Debug.Notification(\"hi\")\n\
+                   EndEvent\n";
+        let (script, _) = parse_script(src).expect("parses");
+        let source = ScriptSource::PapyrusSource(&script);
+        assert!(translate_script(&source, GameKind::Skyrim, None, None).is_none());
+    }
+
+    /// The advance names a `Quest Property`, but the VMAD instance doesn't
+    /// bind it (property absent) — the quest can't be resolved, so decline
+    /// rather than attach an advance pointing at form 0.
+    #[test]
+    fn declines_when_quest_property_unbound() {
+        let src = "ScriptName UnboundQuest extends ObjectReference\n\
+                   Quest Property MyQuest Auto\n\
+                   Event OnActivate(ObjectReference akActionRef)\n\
+                   MyQuest.SetStage(20)\n\
+                   EndEvent\n";
+        let (script, _) = parse_script(src).expect("parses");
+        let source = ScriptSource::PapyrusSource(&script);
+
+        // VMAD present but binds a DIFFERENT property name.
+        let instance = ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "UnboundQuest".into(),
+                status: 1,
+                properties: vec![ScriptProperty {
+                    name: "SomeOtherQuest".into(),
+                    status: 1,
+                    value: PropertyValue::Object {
+                        form_id: 0x0001_2345,
+                        alias: -1,
+                    },
+                }],
+            }],
+        };
+        assert!(
+            translate_script(&source, GameKind::Skyrim, Some(&instance), None).is_none(),
+            "an unbound Quest property can't resolve — must decline",
+        );
+        // And with no VMAD at all: also declines.
+        assert!(translate_script(&source, GameKind::Skyrim, None, None).is_none());
     }
 
     /// A body with extra logic alongside the SetStage is NOT treated as
