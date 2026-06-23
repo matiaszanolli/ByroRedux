@@ -30,11 +30,44 @@ use crate::token::Token;
 
 use super::Parser;
 
+/// Maximum `If`/`While` block-nesting depth the statement parser accepts
+/// before bailing with [`ParseError::statement_too_deep`]. Real Papyrus
+/// nests at most a handful of levels; 256 is generous, and matches
+/// `expr::MAX_EXPR_DEPTH` so both axes share one stack-safety budget
+/// (#1712 / SCR-D4-01).
+pub(crate) const MAX_STMT_DEPTH: u32 = 256;
+
 impl Parser {
-    /// Parse one statement. Skips leading newlines / doc-comments,
-    /// dispatches on the first significant token. Terminating newline
-    /// is consumed by the per-stmt handler.
+    /// Parse a single statement.
+    ///
+    /// Tracks `self.stmt_depth` across recursion so a pathologically nested
+    /// chain of `If`/`While` bodies hits the depth cap and surfaces a
+    /// `StatementTooDeep` error rather than stack-overflowing (#1712 /
+    /// SCR-D4-01). Block nesting recurses `parse_stmt → parse_if/while_stmt →
+    /// parse_block → parse_stmt`, so guarding this single chokepoint covers
+    /// every block-nesting site (a flat statement sequence never nests — each
+    /// call returns before the next, so `stmt_depth` only climbs on true
+    /// nesting). Increment-on-entry / decrement-on-exit mirrors
+    /// [`Self::parse_expr_bp`]; the body lives in [`Self::parse_stmt_inner`] so
+    /// the bookkeeping sits at a single entry/exit regardless of which `?`
+    /// early-returns inside.
     pub fn parse_stmt(&mut self) -> Result<Spanned<Stmt>, ParseError> {
+        if self.stmt_depth >= MAX_STMT_DEPTH {
+            return Err(ParseError::statement_too_deep(
+                MAX_STMT_DEPTH,
+                self.current_span(),
+            ));
+        }
+        self.stmt_depth += 1;
+        let result = self.parse_stmt_inner();
+        self.stmt_depth -= 1;
+        result
+    }
+
+    /// Statement dispatch: skips leading newlines / doc-comments, then
+    /// dispatches on the first significant token. The terminating newline is
+    /// consumed by the per-stmt handler.
+    fn parse_stmt_inner(&mut self) -> Result<Spanned<Stmt>, ParseError> {
         self.skip_newlines();
         let Some((tok, span)) = self.peek_with_span() else {
             return Err(ParseError::unexpected_eof("statement", self.current_span()));
@@ -292,6 +325,71 @@ mod tests {
             .into_iter()
             .map(|s| s.node)
             .collect())
+    }
+
+    // ── #1712 / SCR-D4-01 — statement recursion-depth guard ──
+
+    /// Build `depth` nested `<kw> True … End<kw>` blocks around a single
+    /// `Return`, so the statement parser recurses `depth` levels deep.
+    fn nested_blocks(kw: &str, end_kw: &str, depth: usize) -> String {
+        let mut src = String::with_capacity(depth * 12 + 8);
+        for _ in 0..depth {
+            src.push_str(kw);
+            src.push_str(" True\n");
+        }
+        src.push_str("Return\n");
+        for _ in 0..depth {
+            src.push_str(end_kw);
+            src.push('\n');
+        }
+        src
+    }
+
+    #[test]
+    fn stmt_depth_cap_rejects_pathological_nested_if() {
+        // 512 nested If > MAX_STMT_DEPTH = 256. Pre-#1712 this would
+        // stack-overflow the parser (abort, no catchable error).
+        let src = nested_blocks("If", "EndIf", (MAX_STMT_DEPTH as usize) * 2);
+        let err = parse_stmt_from(&src).expect_err("expected StatementTooDeep error");
+        assert!(
+            matches!(err.kind, crate::error::ErrorKind::StatementTooDeep { .. }),
+            "expected StatementTooDeep, got {:?}",
+            err.kind,
+        );
+    }
+
+    #[test]
+    fn stmt_depth_cap_rejects_pathological_nested_while() {
+        // SIBLING — the cap lives in `parse_stmt`, the single chokepoint
+        // every block-nesting site funnels through, so `While` is guarded
+        // identically to `If`.
+        let src = nested_blocks("While", "EndWhile", (MAX_STMT_DEPTH as usize) * 2);
+        let err = parse_stmt_from(&src).expect_err("expected StatementTooDeep error");
+        assert!(
+            matches!(err.kind, crate::error::ErrorKind::StatementTooDeep { .. }),
+            "expected StatementTooDeep, got {:?}",
+            err.kind,
+        );
+    }
+
+    #[test]
+    fn stmt_depth_cap_accepts_legitimate_nesting() {
+        // 100 nested If < MAX_STMT_DEPTH (256). A legitimate (if ugly)
+        // script at that depth must parse without bailing.
+        let src = nested_blocks("If", "EndIf", 100);
+        let stmt = parse_stmt_from(&src).expect("legitimate deep nesting must parse");
+        assert!(matches!(stmt, Stmt::If { .. }));
+    }
+
+    #[test]
+    fn stmt_depth_resets_between_top_level_calls() {
+        // A successful parse must leave stmt_depth back at 0 so the next
+        // top-level parse starts with a fresh budget.
+        let (pre, _) = preprocess("If True\nReturn\nEndIf\n");
+        let (tokens, _) = lex(&pre);
+        let mut parser = Parser::new(tokens);
+        parser.parse_stmt().expect("first parse ok");
+        assert_eq!(parser.stmt_depth, 0);
     }
 
     #[test]

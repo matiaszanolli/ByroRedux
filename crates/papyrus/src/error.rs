@@ -26,6 +26,13 @@ pub enum ErrorKind {
     ExpressionTooDeep {
         max_depth: u32,
     },
+    /// Statement parser hit its block-nesting recursion-depth cap (#1712 /
+    /// SCR-D4-01) — deeply nested `If`/`While` bodies. Carries the cap so
+    /// diagnostics can quote it. The statement-axis analogue of
+    /// [`ErrorKind::ExpressionTooDeep`].
+    StatementTooDeep {
+        max_depth: u32,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -51,6 +58,12 @@ impl fmt::Display for ParseError {
                 write!(
                     f,
                     "expression nesting exceeds parser depth cap ({max_depth})"
+                )
+            }
+            ErrorKind::StatementTooDeep { max_depth } => {
+                write!(
+                    f,
+                    "statement nesting exceeds parser depth cap ({max_depth})"
                 )
             }
         }
@@ -82,6 +95,13 @@ impl ParseError {
     pub fn expression_too_deep(max_depth: u32, span: Span) -> Self {
         Self {
             kind: ErrorKind::ExpressionTooDeep { max_depth },
+            span,
+        }
+    }
+
+    pub fn statement_too_deep(max_depth: u32, span: Span) -> Self {
+        Self {
+            kind: ErrorKind::StatementTooDeep { max_depth },
             span,
         }
     }

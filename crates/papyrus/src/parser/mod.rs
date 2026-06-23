@@ -18,6 +18,11 @@ pub struct Parser {
     /// (#1270 / SAFE-DIM3-NEW-02). Incremented at entry, decremented at
     /// exit, capped at `expr::MAX_EXPR_DEPTH`.
     pub(crate) expr_depth: u32,
+    /// Current `parse_stmt` block-nesting recursion depth, used to bail on
+    /// pathologically nested `If`/`While` bodies before they stack-overflow
+    /// (#1712 / SCR-D4-01). Incremented at entry, decremented at exit, capped
+    /// at `stmt::MAX_STMT_DEPTH`. The statement-axis analogue of `expr_depth`.
+    pub(crate) stmt_depth: u32,
 }
 
 impl Parser {
@@ -27,6 +32,7 @@ impl Parser {
             pos: 0,
             errors: Vec::new(),
             expr_depth: 0,
+            stmt_depth: 0,
         }
     }
 
