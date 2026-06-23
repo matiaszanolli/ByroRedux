@@ -711,8 +711,8 @@ impl App {
         fn rumble_on_activate_dispatch(world: &World, _dt: f32) {
             byroredux_scripting::papyrus_demo::rumble_on_activate_system(world)
         }
-        fn quest_advance_on_activate_dispatch(world: &World, _dt: f32) {
-            byroredux_scripting::papyrus_demo::quest_advance::quest_advance_on_activate_system(
+        fn quest_advance_dispatch(world: &World, _dt: f32) {
+            byroredux_scripting::papyrus_demo::quest_advance::quest_advance_system(
                 world,
             )
         }
@@ -733,7 +733,7 @@ impl App {
             Stage::Update,
             byroredux_scripting::papyrus_demo::rumble_tick_system,
         );
-        scheduler.add_exclusive(Stage::Update, quest_advance_on_activate_dispatch);
+        scheduler.add_exclusive(Stage::Update, quest_advance_dispatch);
         scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_init_dispatch);
         scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_update_dispatch);
         scheduler.add_exclusive(Stage::Update, mg07_on_load_dispatch);

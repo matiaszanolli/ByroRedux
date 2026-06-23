@@ -78,7 +78,8 @@
 
 use super::PlayerEntity;
 use crate::condition::{evaluate as evaluate_condition_list, ConditionContext};
-use crate::events::ActivateEvent;
+use crate::events::{ActivateEvent, OnTriggerEnterEvent};
+use byroredux_core::ecs::storage::EntityId;
 use crate::quest_stages::{QuestFormId, QuestStageAdvanced, QuestStageState};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
@@ -195,17 +196,21 @@ pub fn register(world: &mut World) {
     world.register::<QuestStageAdvanced>();
 }
 
-/// Translation of the OnActivate event-handler body.
+/// Translation of the `OnActivate` / `OnTriggerEnter` event-handler body.
 ///
-/// For every `ActivateEvent` on an entity that has a
-/// `QuestAdvanceOnActivate`, evaluate the predicates against
+/// For every `ActivateEvent` **or** `OnTriggerEnterEvent` on an entity
+/// that has a `QuestAdvanceOnActivate`, evaluate the predicates against
 /// [`QuestStageState`] and, if they hold, write the new stage +
-/// emit a [`QuestStageAdvanced`] marker for downstream consumers.
+/// emit a [`QuestStageAdvanced`] marker for downstream consumers. The two
+/// events are the same advance signal from different sources — a use-key
+/// activation vs. an actor entering a trigger volume — so one system
+/// covers both the `default*OnActivate` door family and the
+/// `default*Trigger` volume family.
 ///
 /// Run-order: between the engine's activation-pipeline emission of
-/// `ActivateEvent` and the end-of-frame cleanup. Sits alongside the
-/// parent module's `rumble_on_activate_system` in the scripting
-/// stage.
+/// `ActivateEvent` / the trigger-detection system's `OnTriggerEnterEvent`
+/// and the end-of-frame cleanup. Sits alongside the parent module's
+/// `rumble_on_activate_system` in the scripting stage.
 ///
 /// ## How the Papyrus predicates translate
 ///
@@ -227,14 +232,30 @@ pub fn register(world: &mut World) {
 /// The `all()` reductions are vacuously true on empty vectors —
 /// `require_done: vec![]` means "no precondition", consistent with
 /// scripts that advance unconditionally on activate.
-pub fn quest_advance_on_activate_system(world: &World) {
-    let Some(events) = world.query::<ActivateEvent>() else {
-        return;
-    };
+pub fn quest_advance_system(world: &World) {
     let Some(advances) = world.query::<QuestAdvanceOnActivate>() else {
         return;
     };
     let player_entity = world.resource::<PlayerEntity>().0;
+
+    // Two activation signals converge on the same advance: a use-key /
+    // console `ActivateEvent` (doors, levers) and an `OnTriggerEnterEvent`
+    // from an actor crossing a trigger volume (the `default*Trigger`
+    // family). A given entity only ever receives one — doors carry no
+    // trigger volume, trigger volumes have no use interaction — so
+    // collecting `(entity, triggerer)` from both unifies the dispatch
+    // without any risk of double-firing one object.
+    let mut triggered: Vec<(EntityId, EntityId)> = Vec::new();
+    if let Some(events) = world.query::<ActivateEvent>() {
+        for (entity, ev) in events.iter() {
+            triggered.push((entity, ev.activator));
+        }
+    }
+    if let Some(events) = world.query::<OnTriggerEnterEvent>() {
+        for (entity, ev) in events.iter() {
+            triggered.push((entity, ev.triggerer));
+        }
+    }
 
     // Two-phase: collect (read), apply (write). Releases the
     // QuestStageState read borrow before we acquire the write.
@@ -243,18 +264,18 @@ pub fn quest_advance_on_activate_system(world: &World) {
         target_stage: u16,
     }
     let mut pending: Vec<PendingAdvance> = Vec::new();
-    for (entity, ev) in events.iter() {
+    for (entity, triggerer) in triggered {
         let Some(comp) = advances.get(entity) else {
             continue;
         };
-        // Activator gate.
-        if matches!(comp.activator_gate, ActivatorGate::PlayerOnly) && ev.activator != player_entity
-        {
+        // Activator gate — the entity that triggered (activator /
+        // triggerer) must be the player when the gate is PlayerOnly.
+        if matches!(comp.activator_gate, ActivatorGate::PlayerOnly) && triggerer != player_entity {
             continue;
         }
         // M47.1 — stage predicates evaluated through the generic
         // `ConditionList` evaluator. The subject for the condition
-        // context is the activator (Papyrus's `Self` on this script
+        // context is the triggered REFR (Papyrus's `Self` on this script
         // type binds to the alias's REFR, which is what `entity`
         // here represents). The evaluator handles the OR-precedence
         // grouping automatically — DA10's two-AND case is trivial,
@@ -269,7 +290,6 @@ pub fn quest_advance_on_activate_system(world: &World) {
         }
     }
     drop(advances);
-    drop(events);
 
     if pending.is_empty() {
         return;

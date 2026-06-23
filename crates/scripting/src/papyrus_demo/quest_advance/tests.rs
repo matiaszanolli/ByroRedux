@@ -1,4 +1,4 @@
-//! Behavioural tests for `quest_advance_on_activate_system`.
+//! Behavioural tests for `quest_advance_system`.
 //!
 //! Each test pins one Papyrus semantic from `DA10MainDoorScript.psc`
 //! against the ECS-side translation. The integration boundary is
@@ -8,7 +8,7 @@
 //! [`crate::quest_stages::QuestStageAdvanced`] marker.
 
 use super::*;
-use crate::events::ActivateEvent;
+use crate::events::{ActivateEvent, OnTriggerEnterEvent};
 use crate::papyrus_demo::PlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestStageAdvanced, QuestStageState};
 use byroredux_core::ecs::storage::EntityId;
@@ -40,6 +40,11 @@ fn fire_activate(world: &World, target: EntityId, activator: EntityId) {
     q.insert(target, ActivateEvent { activator });
 }
 
+fn fire_trigger_enter(world: &World, target: EntityId, triggerer: EntityId) {
+    let mut q = world.query_mut::<OnTriggerEnterEvent>().unwrap();
+    q.insert(target, OnTriggerEnterEvent { triggerer });
+}
+
 // ── Stage-predicate gating ────────────────────────────────────
 
 /// Both pre-conditions wrong — `GetStageDone(37) == 0`, so the
@@ -50,7 +55,7 @@ fn da10_no_advance_when_required_stage_not_done() {
     let (world, player, door) = setup_da10_world();
 
     fire_activate(&world, door, player);
-    quest_advance_on_activate_system(&world);
+    quest_advance_system(&world);
 
     // Quest never had stage 37 set; state unchanged.
     let stage_state = world.resource::<QuestStageState>();
@@ -74,7 +79,7 @@ fn da10_advances_when_stage_37_done_and_stage_40_not_done() {
     }
 
     fire_activate(&world, door, player);
-    quest_advance_on_activate_system(&world);
+    quest_advance_system(&world);
 
     // Quest advanced to 40.
     let stage_state = world.resource::<QuestStageState>();
@@ -113,7 +118,7 @@ fn da10_idempotent_when_target_stage_already_done() {
     }
 
     fire_activate(&world, door, player);
-    quest_advance_on_activate_system(&world);
+    quest_advance_system(&world);
 
     // current_stage stays at 40 (no re-write because the predicate
     // gated the call). stages_done still has both 37 and 40.
@@ -139,7 +144,7 @@ fn da10_any_activator_can_advance() {
 
     let npc = world.spawn();
     fire_activate(&world, door, npc);
-    quest_advance_on_activate_system(&world);
+    quest_advance_system(&world);
 
     let stage_state = world.resource::<QuestStageState>();
     assert_eq!(
@@ -167,7 +172,7 @@ fn player_only_gate_filters_non_player_activator() {
     // NPC activation — must NOT advance.
     let npc = world.spawn();
     fire_activate(&world, door, npc);
-    quest_advance_on_activate_system(&world);
+    quest_advance_system(&world);
     {
         let stage_state = world.resource::<QuestStageState>();
         assert_eq!(stage_state.get_stage(DA10_QUEST_FORM_ID), 37);
@@ -175,7 +180,7 @@ fn player_only_gate_filters_non_player_activator() {
 
     // Re-fire as player — now advances.
     fire_activate(&world, door, player);
-    quest_advance_on_activate_system(&world);
+    quest_advance_system(&world);
     let stage_state = world.resource::<QuestStageState>();
     assert_eq!(stage_state.get_stage(DA10_QUEST_FORM_ID), 40);
 }
@@ -198,10 +203,65 @@ fn empty_predicates_advance_unconditionally() {
     }
 
     fire_activate(&world, door, player);
-    quest_advance_on_activate_system(&world);
+    quest_advance_system(&world);
 
     let stage_state = world.resource::<QuestStageState>();
     assert_eq!(stage_state.get_stage(DA10_QUEST_FORM_ID), 20);
+}
+
+// ── Trigger-enter dispatch ────────────────────────────────────
+
+/// The trigger-volume path: an `OnTriggerEnterEvent` advances the
+/// quest through the same component + system as `ActivateEvent`. This
+/// is the `default*Trigger` family's runtime contract — an actor
+/// crossing a trigger volume fires the advance.
+#[test]
+fn trigger_enter_advances_quest() {
+    let (world, player, trigger) = setup_da10_world();
+    {
+        let mut stage_state = world.resource_mut::<QuestStageState>();
+        stage_state.set_stage(DA10_QUEST_FORM_ID, 37);
+    }
+
+    fire_trigger_enter(&world, trigger, player);
+    quest_advance_system(&world);
+
+    let stage_state = world.resource::<QuestStageState>();
+    assert_eq!(
+        stage_state.get_stage(DA10_QUEST_FORM_ID),
+        40,
+        "an OnTriggerEnterEvent must drive the advance like an activate"
+    );
+}
+
+/// The activator gate applies on the trigger path too: a `PlayerOnly`
+/// volume ignores a non-player triggerer (an NPC patrol crossing it).
+#[test]
+fn trigger_enter_respects_player_only_gate() {
+    let (mut world, player, trigger) = setup_da10_world();
+    {
+        let mut stage_state = world.resource_mut::<QuestStageState>();
+        stage_state.set_stage(DA10_QUEST_FORM_ID, 37);
+    }
+    {
+        let mut q = world.query_mut::<QuestAdvanceOnActivate>().unwrap();
+        q.get_mut(trigger).unwrap().activator_gate = ActivatorGate::PlayerOnly;
+    }
+
+    // NPC crosses the volume — must NOT advance.
+    let npc = world.spawn();
+    fire_trigger_enter(&world, trigger, npc);
+    quest_advance_system(&world);
+    {
+        let stage_state = world.resource::<QuestStageState>();
+        assert_eq!(stage_state.get_stage(DA10_QUEST_FORM_ID), 37);
+    }
+
+    // Player crosses — advances.
+    fire_trigger_enter(&world, trigger, player);
+    quest_advance_system(&world);
+    let stage_state = world.resource::<QuestStageState>();
+    assert_eq!(stage_state.get_stage(DA10_QUEST_FORM_ID), 40);
 }
 
 // ── Cross-quest isolation ────────────────────────────────────
@@ -218,7 +278,7 @@ fn separate_quests_do_not_alias_stage_state() {
     }
 
     fire_activate(&world, door, player);
-    quest_advance_on_activate_system(&world);
+    quest_advance_system(&world);
 
     let stage_state = world.resource::<QuestStageState>();
     // DA10 quest has nothing done — predicate fails, no advance.
@@ -264,7 +324,7 @@ fn two_doors_same_quest_advance_in_one_pass() {
 
     fire_activate(&world, door, player);
     fire_activate(&world, door2, player);
-    quest_advance_on_activate_system(&world);
+    quest_advance_system(&world);
 
     let stage_state = world.resource::<QuestStageState>();
     assert_eq!(stage_state.get_stage(DA10_QUEST_FORM_ID), 40);

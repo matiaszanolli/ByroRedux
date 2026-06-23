@@ -68,7 +68,7 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
     let ScriptSource::PapyrusSource(script) = ctx.source else {
         return None;
     };
-    let event = find_on_activate_event(script)?;
+    let event = find_advance_event(script)?;
     let gate = extract_stage_gate(event)?;
 
     // Resolve the owning quest by how the script named it.
@@ -118,25 +118,36 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
     ))
 }
 
-/// The script's `OnActivate` handler — searched at top level and inside
-/// any `State`. Returns the [`Event`] (not just its body) so the
-/// activator parameter name is available for player-gate detection.
-fn find_on_activate_event(script: &Script) -> Option<&Event> {
-    for item in &script.body {
-        match &item.node {
-            ScriptItem::Event(e) if e.name.node.eq_ignore_case("OnActivate") => {
-                return Some(e);
-            }
-            ScriptItem::State(st) => {
-                for si in &st.body {
-                    if let StateItem::Event(e) = &si.node {
-                        if e.name.node.eq_ignore_case("OnActivate") {
-                            return Some(e);
+/// The script's quest-advance handler — an `OnActivate` (use-key) or
+/// `OnTriggerEnter` (volume-crossing) event, searched at top level and
+/// inside any `State`. Returns the [`Event`] (not just its body) so the
+/// activator/triggerer parameter name is available for player-gate
+/// detection. Both handlers take the entering reference as their first
+/// parameter (`akActionRef`), so the same extraction serves both.
+///
+/// `OnActivate` is preferred when a script declares both — the
+/// interactive path is the more common authored intent; a script with
+/// distinct advance logic per handler is rare and falls to whichever the
+/// extractor fully understands.
+fn find_advance_event(script: &Script) -> Option<&Event> {
+    const HANDLERS: [&str; 2] = ["OnActivate", "OnTriggerEnter"];
+    for handler in HANDLERS {
+        for item in &script.body {
+            match &item.node {
+                ScriptItem::Event(e) if e.name.node.eq_ignore_case(handler) => {
+                    return Some(e);
+                }
+                ScriptItem::State(st) => {
+                    for si in &st.body {
+                        if let StateItem::Event(e) = &si.node {
+                            if e.name.node.eq_ignore_case(handler) {
+                                return Some(e);
+                            }
                         }
                     }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
     None
@@ -658,6 +669,44 @@ mod tests {
         assert!(
             translate_script(&source, GameKind::Skyrim, Some(&instance), None).is_none(),
             "an unmodeled GetStage comparison must decline, not misread",
+        );
+    }
+
+    /// Trigger-volume shape: the advance lives in an `OnTriggerEnter`
+    /// handler (the `default*Trigger` family) rather than `OnActivate`.
+    /// The same extraction applies — the entering reference is the first
+    /// parameter either way — so the recognizer claims it and produces the
+    /// same `QuestAdvanceOnActivate`, which the dispatch system fires from
+    /// an `OnTriggerEnterEvent`.
+    #[test]
+    fn recognizes_on_trigger_enter_advance() {
+        let src = "ScriptName TriggerBox extends ObjectReference\n\
+                   Quest Property MyQuest Auto\n\
+                   Event OnTriggerEnter(ObjectReference akActionRef)\n\
+                   If akActionRef == Game.GetPlayer()\n\
+                   MyQuest.SetStage(25)\n\
+                   EndIf\n\
+                   EndEvent\n";
+        let (script, errors) = parse_script(src).expect("parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        let source = ScriptSource::PapyrusSource(&script);
+        let instance = quest_property_instance("TriggerBox", 0x0000_5555);
+
+        let recognized = translate_script(&source, GameKind::Skyrim, Some(&instance), None)
+            .expect("OnTriggerEnter advance recognized");
+        assert_eq!(recognized.archetype, "quest_stage_gate@TriggerBox");
+
+        let mut world = byroredux_core::ecs::world::World::new();
+        crate::register(&mut world);
+        let entity = world.spawn();
+        (recognized.spawn)(&mut world, entity);
+        let q = world.query::<QuestAdvanceOnActivate>().unwrap();
+        let got = q.get(entity).unwrap();
+        assert_eq!(got.target_stage, 25);
+        assert!(got.conditions.is_empty());
+        assert!(
+            matches!(got.activator_gate, ActivatorGate::PlayerOnly),
+            "the player gate lowers to PlayerOnly even on the trigger path",
         );
     }
 
