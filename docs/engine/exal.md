@@ -145,8 +145,10 @@ is now the **universal fallback** behind the games' prebaked assets:
   distant terrain is textured rather than flat there; Oblivion/FO3/FNV
   `Landscape\LOD\*.nif` + `_lod` textures are still un-consumed (synth-only);
 - distant **object LOD** is consumed for Skyrim+/FO4 (baked per-quad `.bto`
-  macro-meshes + object atlas, step 6); the Oblivion/FO3/FNV `DistantLOD\*.lod`
-  → `_far.nif` placement scheme remains unimplemented (`PlacementLodProvider`);
+  macro-meshes + object atlas, step 6) **and** for Oblivion/FO3/FNV via the
+  `DistantLOD\*.lod` → `_far.nif` placement scheme (`PlacementLodProvider`,
+  `cell_loader/placement_lod.rs`, #1726 — format reverse-engineered from the
+  vanilla Oblivion corpus, see §Q3 below);
 - there is still **no single canonical LOD model** — `terrain_lod` /
   `terrain_lod_btr` / `object_lod` are the per-game providers, fused to the
   streaming ring, with `IsLodTerrain` as the shared renderer-facing marker
@@ -569,6 +571,37 @@ independent lineages — HIGH confidence.)
 This is why §5.2 splits into `CombinedLodProvider` (Skyrim+/FO4) and
 `PlacementLodProvider` (older) rather than a single unified path, and why §5.4
 records that neither NIF LOD nodes nor STAT MNAM are needed for runtime LOD.
+
+#### `DistantLOD\<World>_<x>_<y>.lod` binary format → **RESOLVED (#1726)**
+
+Reverse-engineered 2026-06-23 against all **9889** vanilla `.lod` files in
+`Oblivion - Meshes.bsa` (`distantlod\`). The layout is a **structure-of-arrays
+per base-object group** (the per-entry fields are split into parallel blocks —
+a naive array-of-structs reader misreads any `count > 1` group):
+
+```text
+u32  num_groups
+per group:
+  u32  base_form_id            // STAT/etc. base record this LODs
+  u32  count                   // number of placements of that base
+  count × Vec3<f32>  position  // Bethesda Z-up world units
+  count × Vec3<f32>  rotation  // Euler radians, Z-up (zero in vanilla)
+  count × f32        scale     // PERCENT — divide by 100 → multiplier
+```
+
+Validation: the SoA layout consumes **9888/9889** files exactly (the lone
+outlier is `toddland`, the CS tutorial world, whose LOD data is degenerate —
+the parser errors on it and the streaming ring skips it); all rotations are
+within ±2π rad; all scales positive. Positions confine to the single cell
+named by the file, so the files are **per-cell** (the streaming ring is a
+per-cell Chebyshev ring, not the `.bto` quad ring). The base record's model is
+resolved via `record_index.cells.statics`; the distant mesh is that model with
+`.nif` → `_far.nif` (130 such entries in the Oblivion meshes BSA). The spawn
+reuses the proven `object_lod` import path (`parse_nif` → `import_nif_scene` →
+`upload_scene_mesh_global_only` → `IsLodTerrain`), composing each placement's
+world transform with the `_far.nif`-local TRS. **Visual verification is pending
+an Oblivion exterior smoke test** (a Vulkan device + on-disk Oblivion data, out
+of `cargo test` scope — same as the `.bto` provider).
 
 ### Still requires real-data verification (before step 6 implementation)
 

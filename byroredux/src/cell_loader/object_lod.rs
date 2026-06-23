@@ -14,8 +14,8 @@
 //!   z-fight it (future slice; for now object LOD is loaded only for quads
 //!   **outside** the full-detail ring, where no full model is resident).
 //! - **Oblivion / FO3 / FNV**: a different scheme entirely — per-cell
-//!   `DistantLOD\*.lod` placement lists instancing `_far.nif` meshes. Not
-//!   handled here; a separate `placement_lod` module is the future home.
+//!   `DistantLOD\*.lod` placement lists instancing `_far.nif` meshes,
+//!   handled by the sibling [`super::placement_lod`] module (#1726).
 //!
 //! Verified (2026-06-02): vanilla Skyrim `.bto` (e.g.
 //! `meshes\terrain\tamriel\objects\tamriel.4.-8.-16.bto`) parse with the

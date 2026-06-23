@@ -188,6 +188,13 @@ pub struct WorldStreamingState {
     /// no baked LOD). Streamed alongside `lod_blocks` each cell-boundary
     /// crossing; quads load only outside the full-detail ring.
     pub object_lod_blocks: HashMap<(i32, i32), crate::cell_loader::ObjectLodBlock>,
+    /// Distant **object** LOD cells for the placement scheme (Oblivion /
+    /// FO3 / FNV), keyed by cell `(x, y)`. Each entry is the cell's
+    /// `DistantLOD\*.lod` instanced `_far.nif` meshes (or an empty sentinel
+    /// for a cell with no `.lod`). Streamed alongside `object_lod_blocks`;
+    /// only one of the two ever populates per game (the gate is by
+    /// `GameKind`). Cells load only outside the full-detail ring.
+    pub placement_lod_blocks: HashMap<(i32, i32), crate::cell_loader::PlacementLodBlock>,
     /// Cells whose load request is in flight on the worker. Maps
     /// `(gx, gy)` to the generation of the outstanding request.
     /// Drain compares the payload's generation against this map's
@@ -257,6 +264,7 @@ impl WorldStreamingState {
             loaded: HashMap::new(),
             lod_blocks: HashMap::new(),
             object_lod_blocks: HashMap::new(),
+            placement_lod_blocks: HashMap::new(),
             pending: HashMap::new(),
             next_generation: 0,
             radius_load,

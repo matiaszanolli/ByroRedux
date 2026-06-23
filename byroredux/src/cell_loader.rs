@@ -65,6 +65,7 @@ mod load_order;
 mod nif_import_registry;
 mod object_lod;
 mod partial;
+mod placement_lod;
 pub(crate) mod precombined;
 mod references;
 mod refr;
@@ -112,6 +113,9 @@ pub use load::{load_cell_with_masters, CellLoadResult};
 #[allow(unused_imports)]
 pub(crate) use object_lod::{stream_object_lod_blocks, unload_object_lod_block, ObjectLodBlock};
 pub(crate) use partial::finish_partial_import;
+pub(crate) use placement_lod::{
+    stream_placement_lod_blocks, unload_placement_lod_block, PlacementLodBlock,
+};
 pub(crate) use terrain_lod::{stream_lod_blocks, unload_lod_block};
 pub use unload::unload_cell;
 

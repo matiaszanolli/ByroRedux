@@ -607,6 +607,17 @@ pub(crate) fn stream_initial_radius(
         state.radius_load,
         &mut state.object_lod_blocks,
     );
+    // Distant object LOD (Oblivion/FO3/FNV `DistantLOD\*.lod` → `_far.nif`) —
+    // no-op on Skyrim+/FO4 (#1726). Only one of the two ever populates.
+    cell_loader::stream_placement_lod_blocks(
+        world,
+        ctx,
+        lod_tex.as_ref(),
+        wctx.as_ref(),
+        (cx, cy),
+        state.radius_load,
+        &mut state.placement_lod_blocks,
+    );
 
     center
 }

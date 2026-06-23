@@ -1318,6 +1318,17 @@ impl App {
             lod_full_radius,
             &mut state.object_lod_blocks,
         );
+        // Distant object LOD (Oblivion/FO3/FNV placement scheme) — no-op on
+        // Skyrim+/FO4 (#1726). Mutually exclusive with the `.bto` ring above.
+        cell_loader::stream_placement_lod_blocks(
+            &mut self.world,
+            ctx,
+            lod_tex.as_ref(),
+            lod_wctx.as_ref(),
+            player_grid,
+            lod_full_radius,
+            &mut state.placement_lod_blocks,
+        );
     }
 
     /// Drain any queued debug-UI load ops and dispatch them to the
