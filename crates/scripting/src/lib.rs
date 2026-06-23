@@ -18,6 +18,7 @@ pub mod recurring_update;
 pub mod registry;
 pub mod timer;
 pub mod translate;
+pub mod trigger;
 
 pub use cleanup::event_cleanup_system;
 pub use condition::{
@@ -34,6 +35,7 @@ pub use timer::{timer_tick_system, ScriptTimer};
 pub use translate::{
     translate_pex, translate_script, CanonicalEvent, RecognizeCtx, Recognized, ScriptSource,
 };
+pub use trigger::{trigger_detection_system, TriggerShape, TriggerVolume};
 
 use byroredux_core::ecs::world::World;
 
@@ -58,6 +60,11 @@ pub fn register(world: &mut World) {
     world.register::<OnCellLoadEvent>();
     world.register::<OnTriggerEnterEvent>();
     world.register::<OnEquipEvent>();
+    // M47.2 — trigger-volume storage. The cell loader attaches a
+    // `TriggerVolume` to each invisible trigger REFR; `trigger_detection_system`
+    // emits `OnTriggerEnterEvent` on player entry, which the quest-advance
+    // dispatch consumes (the `default*Trigger` family).
+    trigger::register(world);
     recurring_update::register(world);
     // M47.0 Phase 1 — register the R5 prototype storages so
     // `papyrus_demo` scripts can attach their state components when
