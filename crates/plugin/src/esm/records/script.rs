@@ -2,8 +2,9 @@
 //!
 //! Oblivion, FO3, and FNV predate Papyrus and ship scripts as a binary
 //! layout:
-//!   - `SCHR` — 20-byte header: `numRefs u32`, `compiled_size u32`,
-//!     `var_count u32`, `script_type u16`, `flags u16`.
+//!   - `SCHR` — 20-byte header: a leading `pad u32` (legacy unused slot),
+//!     then `numRefs u32`, `compiled_size u32`, `var_count u32`,
+//!     `script_type u16`, `flags u16` (4 + 4 + 4 + 4 + 2 + 2 = 20 bytes).
 //!   - `SCDA` — compiled bytecode blob (opaque here).
 //!   - `SCTX` — original source text (zstring, optional).
 //!   - `SLSD` / `SCVR` — local variable metadata (one pair per local var).
