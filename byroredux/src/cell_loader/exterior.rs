@@ -256,6 +256,19 @@ pub fn load_one_exterior_cell(
     mat_provider: Option<&mut MaterialProvider>,
     terrain_blas_accumulator: Option<&mut Vec<(u32, u32, u32)>>,
 ) -> anyhow::Result<Option<OneCellLoadInfo>> {
+    // #1668 — surface GLOB runtime values once per streaming session so
+    // CTDA "Use Global" comparands resolve. The exterior path streams many
+    // cells from one `record_index`; build the lean `Globals` map only when
+    // it isn't already present rather than rebuilding it each cell.
+    if world
+        .try_resource::<byroredux_scripting::globals::Globals>()
+        .is_none()
+    {
+        world.insert_resource(byroredux_scripting::globals::Globals::from_records(
+            &wctx.record_index.globals,
+        ));
+    }
+
     let index = &wctx.record_index.cells;
     let Some(cells_map) = index.exterior_cells.get(&wctx.worldspace_key) else {
         return Ok(None);

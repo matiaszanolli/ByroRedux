@@ -13,6 +13,7 @@ pub mod cleanup;
 pub mod condition;
 pub mod events;
 pub mod fragment;
+pub mod globals;
 pub mod papyrus_demo;
 pub mod quest_stages;
 pub mod recurring_update;
@@ -33,6 +34,7 @@ pub use events::{
 pub use fragment::{
     apply_effects, quest_fragment_dispatch_system, QuestStageFragments,
 };
+pub use globals::Globals;
 pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, RecurringUpdate};
 pub use registry::{ScriptRegistry, ScriptSpawnFn};
 pub use timer::{timer_tick_system, ScriptTimer};

@@ -334,6 +334,14 @@ pub fn load_cell_with_masters(
     let entity_count = result.entity_count;
     let center = result.center;
 
+    // #1668 — surface GLOB runtime values so CTDA "Use Global" comparands
+    // resolve. Keyed in global load-order space (EsmIndex remaps record
+    // FormIDs at parse), matching the comparand's remapped space. Built
+    // before the `index.cells` move below — `globals` is a sibling field.
+    world.insert_resource(byroredux_scripting::globals::Globals::from_records(
+        &index.globals,
+    ));
+
     // M40 Phase 2 Stage 1 — surface the parsed cell index as a World
     // resource so `&World` readers (door.teleport console command,
     // future F-key activate system) can resolve XTEL destination

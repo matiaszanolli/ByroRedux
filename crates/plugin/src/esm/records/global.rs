@@ -23,6 +23,21 @@ pub enum SettingValue {
     Short(i16),
 }
 
+impl SettingValue {
+    /// Numeric value as an `f32`, for use as a CTDA condition comparand
+    /// (`GetStage(x) == GameDayGlobal`, etc.). Integer kinds widen; a
+    /// `String` setting has no numeric meaning and yields `0.0` — the
+    /// same Bethesda "non-numeric → 0" behaviour a missing GLOB takes.
+    pub fn as_f32(&self) -> f32 {
+        match self {
+            SettingValue::Int(v) => *v as f32,
+            SettingValue::Float(v) => *v,
+            SettingValue::Short(v) => *v as f32,
+            SettingValue::String(_) => 0.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GlobalRecord {
     pub form_id: u32,

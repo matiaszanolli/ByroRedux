@@ -197,18 +197,17 @@ pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionC
     let function = ConditionFunction::from_index(condition.function_index);
     let function_result = evaluate_function(function, condition, entity, world);
 
-    // Resolve comparand — Globals route through EsmIndex.globals.
+    // Resolve comparand — Globals route through the `Globals` resource
+    // (mirrored from `EsmIndex.globals`, #1668). `form_id` is already in
+    // global load-order space (remapped at CTDA parse time), matching the
+    // resource's key space. A missing resource or unknown GLOB resolves to
+    // 0.0 — Bethesda's "missing GLOB defaults to 0".
     let comparand = match condition.comparand {
         ConditionValue::Literal(v) => v,
-        ConditionValue::Global(form_id) => {
-            // EsmIndex doesn't implement Resource and isn't stored in World yet.
-            // GLOB lookup deferred — returns 0.0 (Bethesda's "missing GLOB defaults to 0").
-            log::trace!(
-                "M47.1: Global comparand {form_id:08X} — \
-                 GLOB lookup deferred (returns 0.0 fallback)"
-            );
-            0.0
-        }
+        ConditionValue::Global(form_id) => world
+            .try_resource::<crate::globals::Globals>()
+            .and_then(|g| g.get(form_id))
+            .unwrap_or(0.0),
     };
 
     condition.comparator.apply(function_result, comparand)
@@ -622,6 +621,51 @@ mod tests {
         let actor: EntityId = 3;
         let list = vec![cond(99, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F80)];
         assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    // ── Global comparand (#1668) ────────────────────────────────────────
+
+    #[test]
+    fn global_comparand_resolves_from_globals_resource() {
+        use crate::globals::Globals;
+        use crate::quest_stages::{QuestFormId, QuestStageState};
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let mut state = QuestStageState::default();
+        state.set_stage(QuestFormId(0xAA), 5);
+        world.insert_resource(state);
+
+        let mut globals = Globals::new();
+        globals.set(0x0100_0042, 5.0); // a GLOB whose value is 5
+        world.insert_resource(globals);
+
+        // GetStage(0xAA) == Global(0x01000042) → 5 == 5 → true.
+        let mut eq = cond(58, ComparisonOp::Eq, 0.0, false).with_param_1(0xAA);
+        eq.comparand = ConditionValue::Global(0x0100_0042);
+        assert!(evaluate(&vec![eq], &world, &ctx(0)));
+
+        // GetStage(0xAA) > Global(0x01000042) → 5 > 5 → false.
+        let mut gt = cond(58, ComparisonOp::Gt, 0.0, false).with_param_1(0xAA);
+        gt.comparand = ConditionValue::Global(0x0100_0042);
+        assert!(!evaluate(&vec![gt], &world, &ctx(0)));
+    }
+
+    #[test]
+    fn global_comparand_defaults_to_zero_when_unresolved() {
+        use crate::quest_stages::{QuestFormId, QuestStageState};
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        let mut state = QuestStageState::default();
+        state.set_stage(QuestFormId(0xAA), 0);
+        world.insert_resource(state);
+
+        // No Globals resource at all → comparand defaults to 0.0.
+        // GetStage(0xAA) == Global(missing) → 0 == 0 → true.
+        let mut eq = cond(58, ComparisonOp::Eq, 0.0, false).with_param_1(0xAA);
+        eq.comparand = ConditionValue::Global(0x0100_0099);
+        assert!(evaluate(&vec![eq], &world, &ctx(0)));
     }
 
     // ── Helper: chainable param_1 setter for compact test construction ──
