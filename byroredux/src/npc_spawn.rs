@@ -9,7 +9,8 @@
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
-    EquipmentSlots, FactionRanks, GlobalTransform, Inventory, ItemStack, Name, Parent, Transform,
+    EquipmentSlots, FactionRanks, GlobalTransform, Inventory, ItemStack, MotionType, Name, Parent,
+    RigidBodyData, Transform,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
@@ -77,6 +78,37 @@ fn stamp_faction_ranks(world: &mut World, placement_root: EntityId, npc: &NpcRec
         placement_root,
         FactionRanks::from_pairs(npc.factions.iter().map(|f| (f.faction_form_id, f.rank))),
     );
+}
+
+/// #1698 — keyframe a live NPC's ragdoll bones.
+///
+/// Skyrim (and FO3/FNV/Oblivion) author each skeleton ragdoll bone's bhk body
+/// as `MO_SYS_DYNAMIC`, but a *living* actor's ragdoll must be **keyframed to
+/// the animation** — driven by the animated skeleton, inert and hittable —
+/// and only free-simulate on death. Importing them as free Dynamic bodies lets
+/// ~18 bones/NPC collapse and free-fall (nothing drives them, no floor beneath
+/// the spawn), and ~480+ such bodies across a dense interior pin
+/// `physics_sync_system`'s dynamic solver at ~140 ms/frame for ~28 s
+/// (Dragonsreach RT-1).
+///
+/// Flip each skeleton bone's Dynamic collision body to [`MotionType::Keyframed`]
+/// **before** the first `physics_sync_system` registers it with Rapier, so it
+/// registers as a kinematic body. `push_kinematic` then drives it from the
+/// bone's animation-written `GlobalTransform` each frame (skipping idle bones),
+/// keeping it out of the dynamic solver entirely. Death-time ragdoll activation
+/// (`RagdollActive` / `build_ragdoll`) is unaffected — it rebuilds the
+/// simulated ragdoll separately.
+fn keyframe_live_ragdoll_bones(
+    world: &mut World,
+    skel_map: &std::collections::HashMap<std::sync::Arc<str>, EntityId>,
+) {
+    for &bone in skel_map.values() {
+        if let Some(body) = world.get_mut::<RigidBodyData>(bone) {
+            if body.motion_type == MotionType::Dynamic {
+                body.motion_type = MotionType::Keyframed;
+            }
+        }
+    }
 }
 
 pub fn humanoid_skeleton_path(game: GameKind) -> Option<&'static str> {
@@ -480,6 +512,10 @@ pub fn spawn_npc_entity(
         None,
         None,
     );
+    // #1698 — keyframe the ragdoll bones so they don't free-simulate (and pin
+    // the physics step) while the actor is alive. Must run before the first
+    // physics_sync registers them.
+    keyframe_live_ragdoll_bones(world, &skel_map);
     if let Some(sr) = skel_root {
         world.insert(sr, Parent(placement_root));
         add_child(world, placement_root, sr);
@@ -1297,6 +1333,10 @@ pub fn spawn_prebaked_npc_entity(
         None,
         None,
     );
+    // #1698 — keyframe the ragdoll bones so they don't free-simulate (and pin
+    // the physics step) while the actor is alive. Must run before the first
+    // physics_sync registers them.
+    keyframe_live_ragdoll_bones(world, &skel_map);
     if let Some(sr) = skel_root {
         world.insert(sr, Parent(placement_root));
         add_child(world, placement_root, sr);

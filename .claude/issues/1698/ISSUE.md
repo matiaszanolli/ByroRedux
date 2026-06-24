@@ -26,3 +26,27 @@ Bisect bench-window `atw_scheduler` on Dragonsreach across the 06-14→06-23 ran
 - [ ] **SIBLING**: Same pattern checked across other heavy interiors (any cell with comparable fresh-mesh + scheduler load)
 - [ ] **LOCK_ORDER**: If a RwLock scope changes in the scheduler, TypeId-sorted acquisition is preserved
 - [ ] **TESTS**: A regression test (or the runtime baseline gate) pins this specific fix
+
+## ROOT CAUSE — confirmed via live profiling (2026-06-24, RTX 4070 Ti + Skyrim SE data)
+Ran `BYRO_PROFILE=1 ... --game skyrim_se --cell WhiterunDragonsreach --bench-frames 240 --bench-hold`.
+Per-system dump (`sched top systems`) names it unambiguously:
+- `byroredux_physics::sync::physics_sync_system = 144ms/frame` (everything else <0.4ms).
+Per-phase (`physics_sync phases`):
+- load frame: collect/register=12.5ms (new=1574 bodies), step=0 (all spawn ASLEEP, awake dyn=0).
+- window frames: `step=144–196ms (5 substeps) | awake dyn=~480 kin=1`.
+~480 of the 1574 dynamic clutter bodies are AWAKE; the Rapier solver steps them at
+MAX_SUBSTEPS=5 (dt≈115ms inflates the fixed-timestep accumulator to the 5-substep cap),
+so cost = 5 × (~29ms solve over 480 bodies). Self-recovers when the bodies re-sleep (~28s).
+Trigger: the character-controller body free-falls (`M28.5: body Y -232→-241, grounded=false`,
+rapier_bodies=1575) — no floor collider under the player spawn — and the first step resolves
+spawn interpenetration across ~480 bodies. The fly-camera (what renders) is decoupled from the
+falling physics body, so the view looks fine while the sim thrashes.
+
+NOT the animation cache / scripting / draw — those are all <0.4ms. The audit's candidate list
+is superseded by this direct attribution.
+
+### Fix direction (needs decision)
+Levers: (a) stop the free-falling controller body from waking the cell (floor-collision coverage
+for the player spawn), (b) keep spawn-interpenetrating clutter asleep (contact-skin / sleep
+threshold), (c) anti-spiral: don't run 5 substeps once a frame is already slow. (a)+(b) attack the
+root (awake-body count); (c) caps the 5× multiplier. Re-run the same bench to verify (fps gate).
