@@ -142,7 +142,11 @@ pub(crate) fn setup_scene(
             .position(|a| a == "--radius")
             .and_then(|i| args.get(i + 1))
             .map(|s| parse_exterior_radius(s))
-            .unwrap_or(5);
+            // #1745 — default full-detail ring extended to the 12-cell max
+            // (25×25 = 625 cells, ~98K-unit view). Distant content beyond it
+            // is the engine LOD ring; the user wants non-distant geometry to
+            // reach much further by default. Override with `--radius N`.
+            .unwrap_or(12);
 
         // #561 — repeatable `--master <path>` arg. Order matters:
         // base masters first, then any required intermediate masters

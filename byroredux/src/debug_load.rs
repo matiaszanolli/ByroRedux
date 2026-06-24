@@ -283,11 +283,11 @@ fn exec_load_exterior(
         radius,
         worldspace,
     } = target;
-    // CLI radius cap is 1..=7 — clamp the wire value here so a
-    // bogus `0` doesn't trip the assertion in
-    // `build_exterior_world_context` and a runaway `200` doesn't try
-    // to stream 40K cells.
-    let clamped_radius = (radius as i32).clamp(1, 7);
+    // Radius cap is 1..=12 (matches the CLI `parse_exterior_radius` max) —
+    // clamp the wire value here so a bogus `0` doesn't trip the assertion in
+    // `build_exterior_world_context` and a runaway `200` doesn't try to stream
+    // 40K cells.
+    let clamped_radius = (radius as i32).clamp(1, 12);
     if clamped_radius != radius as i32 {
         log::warn!(
             "debug load exterior: radius {} clamped to {}",
