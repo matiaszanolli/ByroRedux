@@ -1,0 +1,1089 @@
+use super::*;
+
+use byroredux_bgsm::template::ResolvedMaterial;
+use byroredux_bgsm::{BgemFile, TemplateCache, TemplateResolver};
+use byroredux_nif::import::ImportedMesh;
+use byroredux_sfmaterial::ComponentDatabaseFile;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+
+/// True for a Starfield component-database path — the base
+/// `materials\materialsbeta.cdb` or any DLC/Creation-namespaced
+/// `materials\creations\<plugin>\materialsbeta.cdb`. #1571 / SF-D3-03.
+pub(crate) fn is_materialsbeta_cdb_path(path: &str) -> bool {
+    let p = path.replace('/', "\\").to_ascii_lowercase();
+    p.starts_with("materials\\") && p.ends_with("materialsbeta.cdb")
+}
+
+/// Scan one archive for Starfield component databases and load each into
+/// `provider` in archive order. #1571 / SF-D3-03 — the base game ships
+/// `materials\materialsbeta.cdb` in `Starfield - Materials.ba2`, but each
+/// DLC / Creation ships its own at `materials\creations\<plugin>\…` inside
+/// its `* - Main.ba2`, so a hardcoded single-path extract misses them.
+pub(crate) fn discover_starfield_cdbs(
+    archive: &Archive,
+    source: &str,
+    provider: &mut MaterialProvider,
+) {
+    // Collect the matching paths first so the immutable `list_files`
+    // borrow is released before the mutable `provider` borrow per extract.
+    let cdb_paths: Vec<String> = archive
+        .list_files()
+        .into_iter()
+        .filter(|p| is_materialsbeta_cdb_path(p))
+        .map(|p| p.to_owned())
+        .collect();
+    for path in cdb_paths {
+        match archive.extract(&path) {
+            Ok(bytes) => {
+                log::info!("Discovered Starfield CDB '{path}' in '{source}'");
+                provider.load_starfield_cdb(&bytes);
+            }
+            Err(e) => log::warn!("Failed to extract CDB '{path}' from '{source}': {e}"),
+        }
+    }
+}
+
+/// Conductor diffuse-tint blend (#1591). When saturation-derived
+/// `metalness > 0.5`, bias the diffuse albedo halfway toward the authored
+/// spec CHROMATICITY so the shader's `F0 = mix(0.04, albedo, metalness)`
+/// lands on the right conductor tint even when the DDS albedo is
+/// BC1-desaturated. The half weight keeps the diffuse texture's detail
+/// (rivets, wear, edge highlights) visually present.
+///
+/// Blends toward the mult-free `specular_color`, NOT `specular_color ×
+/// specular_mult`: per #1476 the `mult` only scales highlight strength —
+/// it's not an albedo/F0 quantity — so folding it in darkened the tint
+/// toward black for `mult < 1` and overshot past 1.0 (unclamped into
+/// `GpuMaterial.diffuse_*`) for `mult > 1`. Making `mult` structurally
+/// absent from this signature is the guarantee. Output is clamped to `[0,1]`.
+pub(crate) fn conductor_diffuse_tint(diffuse: [f32; 3], specular_color: [f32; 3]) -> [f32; 3] {
+    [
+        (0.5 * diffuse[0] + 0.5 * specular_color[0]).clamp(0.0, 1.0),
+        (0.5 * diffuse[1] + 0.5 * specular_color[1]).clamp(0.0, 1.0),
+        (0.5 * diffuse[2] + 0.5 * specular_color[2]).clamp(0.0, 1.0),
+    ]
+}
+
+/// Build a MaterialProvider from CLI arguments. Accepts repeated
+/// `--materials-ba2 <path>` flags so a user can layer modded materials
+/// on top of the vanilla `Fallout4 - Materials.ba2`. Silently returns
+/// an empty provider when no flags are present — the merge helper
+/// short-circuits when called on a mesh whose `material_path` can't
+/// resolve anywhere.
+pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
+    let mut provider = MaterialProvider::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--materials-ba2" => {
+                if let Some(path) = args.get(i + 1) {
+                    match Archive::open(path) {
+                        Ok(a) => {
+                            log::info!("Opened materials archive: '{}'", path);
+                            // #1289 / SF-D3-NEW-01 → #1571 / SF-D3-03 —
+                            // scan the archive for every Starfield component
+                            // database (base `materials\materialsbeta.cdb`
+                            // plus any DLC/Creation-namespaced CDB) instead
+                            // of extracting one hardcoded path. Non-Starfield
+                            // archives (FO4's `Fallout4 - Materials.ba2`)
+                            // ship none, so the scan is a no-op there.
+                            discover_starfield_cdbs(&a, path, &mut provider);
+                            provider.push_archive(a);
+                        }
+                        Err(e) => log::warn!("Failed to open materials archive: {}", e),
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+            // #1571 / SF-D3-03 — DLC / Creation CDBs ship inside the
+            // `* - Main.ba2` MESH archives (passed via `--bsa`), at
+            // `materials\creations\<plugin>\materialsbeta.cdb` — never the
+            // base path and never `--materials-ba2`. Scan those for CDBs
+            // too, but do NOT push them as material archives: they're mesh
+            // archives owned by the TextureProvider. The archive is
+            // re-opened here purely to read its file table (the entry data
+            // isn't touched) and dropped after the scan.
+            "--bsa" => {
+                if let Some(path) = args.get(i + 1) {
+                    match Archive::open(path) {
+                        Ok(a) => discover_starfield_cdbs(&a, path, &mut provider),
+                        Err(e) => {
+                            log::warn!("Failed to open '{}' for CDB discovery: {}", path, e)
+                        }
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    provider
+}
+
+/// BGSM/BGEM material file resolver backed by Materials BA2 archives.
+///
+/// FO4+ authors materials as external .bgsm / .bgem files, referenced by
+/// `BSLightingShaderProperty.net.name` (lit) or
+/// `BSEffectShaderProperty.net.name` (effect). The NIF side captures the
+/// path into `ImportedMesh.material_path`; this provider opens the files
+/// out of `Fallout4 - Materials.ba2` (or equivalent) and hands back the
+/// parsed + template-resolved chain. The LRU is owned by `bgsm`'s
+/// [`TemplateCache`] so integration doesn't reinvent chain-walking.
+///
+/// Parse failures are logged once per path and return `None` — callers
+/// must tolerate absence and keep the NIF defaults. Never hard-fail a
+/// cell load on a broken BGSM. See #493.
+pub(crate) struct MaterialProvider {
+    pub(crate) archives: Vec<Archive>,
+    /// BGSM chain cache from the `bgsm` crate — handles template
+    /// inheritance with case-insensitive keying + LRU eviction.
+    bgsm_cache: TemplateCache,
+    /// BGEM has no template inheritance (the format carries no
+    /// `root_material_path`), so we cache parsed files directly by path.
+    /// #951 / SAFE-26 / #1430: bounded at `MAX_BGEM_CACHE_ENTRIES`. On
+    /// overflow the oldest N/2 entries are evicted so the recent
+    /// working-set stays resident (half-eviction by insertion order).
+    bgem_cache: HashMap<String, Arc<BgemFile>>,
+    /// Insertion-order key tracker for [`bgem_cache`] — drives half-eviction.
+    bgem_cache_order: VecDeque<String>,
+    /// Paths we've already warned about so a broken file doesn't spam
+    /// the log on every cell load. Bounded by `MAX_FAILED_PATHS`.
+    /// #1430: evicts oldest N/2 entries on overflow (same pattern as bgem_cache).
+    pub(crate) failed_paths: HashSet<String>,
+    /// Insertion-order key tracker for [`failed_paths`] — drives half-eviction.
+    failed_paths_order: VecDeque<String>,
+    /// Starfield `materialsbeta.cdb` Component Databases, in archive /
+    /// load order. The base game ships one (`materials\materialsbeta.cdb`
+    /// in `Starfield - Materials.ba2`); each DLC / Creation ships its own
+    /// at `materials\creations\<plugin>\materialsbeta.cdb` inside its
+    /// `* - Main.ba2`. Empty for non-Starfield content.
+    /// #1289 / SF-D3-NEW-01, multi-CDB discovery #1571 / SF-D3-03.
+    ///
+    /// Phase 1 (today): presence-only — the CDBs are parsed and held so
+    /// [`merge_bgsm_into_mesh`]'s `.mat` arm has confirmation that
+    /// Starfield material authoring is loaded before flipping `is_pbr`.
+    /// Phase 2 (future, SF-D3-01 #1289): walk the instance trees in load
+    /// order to build ONE `material_path → MaterialFields` lookup (DLC
+    /// last-wins) so per-material metalness / roughness / texture paths
+    /// flow into `ImportedMesh` (mirrors the FO4 BGSM `resolve_bgsm`
+    /// per-field translation already wired below) — a single index, no
+    /// second per-game material path (CANONICAL-BOUNDARY).
+    pub(crate) sf_cdbs: Vec<Arc<ComponentDatabaseFile>>,
+    /// #1585 / F6 — process-lifetime cache of the `<Plugin> - Geometry.csg`
+    /// companion blob, keyed by the cell's master plugin path. Mirrors the
+    /// `sf_cdbs` `Arc` hold: the CSG owns a warm zlib `ChunkCache`, so
+    /// re-opening it per precombine cell-load (the pre-fix behaviour) re-read
+    /// + re-parsed the ~3700-entry chunk table every tile and discarded all
+    /// inter-cell chunk reuse. The negative (`None`) result is cached too, so
+    /// a non-FO4 / no-CSG plugin isn't re-stat'd on every precombine cell.
+    pub(crate) csg_cache: HashMap<String, Option<Arc<byroredux_bsa::CsgArchive>>>,
+}
+
+/// #951 / SAFE-26 — bounded-cache caps for `MaterialProvider`. Sized to
+/// comfortably hold the unique BGEM/BGSM-ref count of any single vanilla
+/// cell (~100s) plus a few cells of streaming residency.
+pub(crate) const MAX_BGEM_CACHE_ENTRIES: usize = 1024;
+pub(crate) const MAX_FAILED_PATHS: usize = 1024;
+
+impl MaterialProvider {
+    pub(crate) fn new() -> Self {
+        Self {
+            archives: Vec::new(),
+            bgsm_cache: TemplateCache::new(256),
+            bgem_cache: HashMap::new(),
+            bgem_cache_order: VecDeque::new(),
+            failed_paths: HashSet::new(),
+            failed_paths_order: VecDeque::new(),
+            sf_cdbs: Vec::new(),
+            csg_cache: HashMap::new(),
+        }
+    }
+
+    /// Resolve + open the `<Plugin> - Geometry.csg` companion blob once per
+    /// session (keyed by `plugin_path`) and hand back a shared handle.
+    /// #1585 / F6 — mirrors the `sf_cdbs` `Arc` caching: precombine cell-loads
+    /// re-opened this ~240 MB blob every tile, re-parsing the chunk table and
+    /// throwing away the warm zlib `ChunkCache` that amortises inflate across
+    /// adjacent tiles sharing PSG regions. The negative result is cached so a
+    /// plugin with no companion CSG isn't re-probed per cell.
+    pub(crate) fn geometry_csg(
+        &mut self,
+        plugin_path: &str,
+    ) -> Option<Arc<byroredux_bsa::CsgArchive>> {
+        if let Some(cached) = self.csg_cache.get(plugin_path) {
+            return cached.clone();
+        }
+        let opened = crate::cell_loader::precombined::open_geometry_csg(plugin_path).map(Arc::new);
+        self.csg_cache
+            .insert(plugin_path.to_owned(), opened.clone());
+        opened
+    }
+
+    fn push_archive(&mut self, archive: Archive) {
+        self.archives.push(archive);
+    }
+
+    /// True once at least one Starfield Component Database has been
+    /// loaded (base and/or DLC). Drives the `.mat` arm in
+    /// [`merge_bgsm_into_mesh`] — flipping `mesh.is_pbr = true` on `.mat`
+    /// material paths only when a CDB is present means modded `.mat`
+    /// paths against a non-Starfield archive set don't accidentally route
+    /// to Disney BSDF. #1289 / SF-D3-NEW-01.
+    pub(crate) fn has_starfield_cdb(&self) -> bool {
+        !self.sf_cdbs.is_empty()
+    }
+
+    /// Parse a Starfield `materialsbeta.cdb` payload and APPEND it on
+    /// `self` in load order (base first, then DLC) — `discover_starfield_cdbs`
+    /// calls this once per CDB found across the loaded archives (#1571).
+    /// Logs the class + instance count on success; a parse failure is
+    /// warned and dropped, leaving the other CDBs intact. #1289 / SF-D3-NEW-01.
+    pub(crate) fn load_starfield_cdb(&mut self, bytes: &[u8]) {
+        match ComponentDatabaseFile::parse(bytes) {
+            Ok(cdb) => {
+                log::info!(
+                    "Starfield CDB loaded: {} classes / {} instances ({} bytes). \
+                     `.mat` material paths on NIFs will route through Disney BSDF \
+                     (Phase 1 — per-field extraction is the deferred Phase 2 follow-up).",
+                    cdb.classes.len(),
+                    cdb.instances.len(),
+                    bytes.len(),
+                );
+                self.sf_cdbs.push(Arc::new(cdb));
+            }
+            Err(e) => {
+                log::warn!(
+                    "Starfield CDB parse failed ({} bytes): {}. \
+                     Starfield content will fall back to legacy Lambert shading.",
+                    bytes.len(),
+                    e,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn extract_from_archives(&self, path: &str) -> Option<Vec<u8>> {
+        // #FO4-D6-NEW — canonicalise the path through
+        // `normalize_material_path` (build-prefix strip + leading
+        // `data\` strip + `/` → `\` + `materials\` prefix-add) before
+        // the archive lookup. The texture resolver at
+        // `resolve_texture_with_clamp` already does its own
+        // equivalent. Pre-fix, FO4 MedTek `tex.missing` reported 11
+        // unique missing-material entries that each failed one or
+        // more of the four normalisation rules. See the
+        // `normalize_material_path` doc for the full transformation
+        // list and per-issue evidence.
+        let normalized = normalize_material_path(path);
+        for archive in &self.archives {
+            if let Ok(bytes) = archive.extract(&normalized) {
+                return Some(bytes);
+            }
+        }
+        None
+    }
+
+    /// Resolve a BGSM file + its template chain. Returns `None` when the
+    /// file isn't in any loaded archive, when parse fails, or when the
+    /// template chain has a cycle. Logs once per path on the failure paths.
+    pub(crate) fn resolve_bgsm(&mut self, path: &str) -> Option<Arc<ResolvedMaterial>> {
+        // #FO4-D6-NEW — canonicalise via `normalize_material_path`
+        // (build-prefix strip + `data\` strip + `/` → `\` +
+        // `materials\` prefix-add) so the cache key + every
+        // recursive parent-walk lookup uses the archive-relative
+        // form. Live tex.missing observations against MedTek
+        // Research:
+        //   * top-level material_path: `c:\projects\fallout4\build\pc\
+        //     data\materials\setdressing\metallocker01.bgsm` →
+        //     normalised to `materials\setdressing\metallocker01.bgsm`
+        //   * template parent `root_material_path` inside the BGSM:
+        //     `template/defaulttemplate_wet.bgsm` → normalised to
+        //     `materials\template\defaulttemplate_wet.bgsm`
+        //   * occasional leaf: `data\materials\…` → normalised by
+        //     stripping the leading `data\`.
+        // See `normalize_material_path` for the full rule set.
+        let key = normalize_material_path(path).to_ascii_lowercase();
+        // Archive slice is borrowed into the ad-hoc resolver so the
+        // cache's mutable borrow doesn't alias archive reads. The
+        // resolver normalises on every read so recursive template-
+        // parent walks (`root_material_path` carrying any of the
+        // four non-canonical forms) resolve correctly.
+        struct ArchiveReader<'a> {
+            archives: &'a [Archive],
+        }
+        impl<'a> TemplateResolver for ArchiveReader<'a> {
+            fn read(&mut self, path: &str) -> Option<Vec<u8>> {
+                let normalized = normalize_material_path(path);
+                for archive in self.archives {
+                    if let Ok(bytes) = archive.extract(&normalized) {
+                        return Some(bytes);
+                    }
+                }
+                None
+            }
+        }
+        let mut reader = ArchiveReader {
+            archives: &self.archives,
+        };
+        match self.bgsm_cache.resolve(&mut reader, &key) {
+            Ok(r) => Some(r),
+            Err(byroredux_bgsm::template::ResolveError::DepthLimit { .. }) => {
+                // #FO4-D6-NEW — vanilla FO4 ships
+                // `materials\template\defaulttemplate_wet.bgsm` with a
+                // `root_material_path` field that self-references its
+                // own archive path. POST-#1148 the bgsm crate detects
+                // cycles internally and returns a cycle-broken chain
+                // (parent=None at the cycle anchor), so this catch is
+                // a safety net only — it now fires for theoretical
+                // >16-deep chains, NOT the documented `defaulttemplate_
+                // wet.bgsm` self-reference (which the resolver handles).
+                //
+                // Recovery (when this DOES fire, on genuine deep chains):
+                // re-read the leaf's bytes through the already-normalising
+                // `ArchiveReader::read` and construct a parentless
+                // `ResolvedMaterial`. The leaf carries authored textures
+                // + PBR scalars, which is the load-bearing material data.
+                //
+                // Vanilla content tops out at depth 3, so the safety net
+                // is effectively dormant. Keeping it preserves the
+                // graceful-degradation guarantee against any future
+                // mod / DLC content that authors >16-deep chains.
+                // See audit AUDIT_INCREMENTAL_2026-05-22 ID-5.
+                let bytes = reader.read(&key)?;
+                let file = match byroredux_bgsm::parse_bgsm(&bytes) {
+                    Ok(f) => f,
+                    Err(parse_err) => {
+                        if self.failed_paths.len() >= MAX_FAILED_PATHS {
+                            // #1430 — half-eviction: keep the newer half resident.
+                            for _ in 0..MAX_FAILED_PATHS / 2 {
+                                if let Some(old) = self.failed_paths_order.pop_front() {
+                                    self.failed_paths.remove(&old);
+                                }
+                            }
+                        }
+                        if self.failed_paths.insert(key.clone()) {
+                            self.failed_paths_order.push_back(key);
+                            log::warn!(
+                                "BGSM leaf-only recovery parse failed for '{}': {} \
+                                 (self-referential template depth-limit hit)",
+                                path,
+                                parse_err
+                            );
+                        }
+                        return None;
+                    }
+                };
+                static ONCE: std::sync::Once = std::sync::Once::new();
+                ONCE.call_once(|| {
+                    log::info!(
+                        "BGSM template-cycle recovery active — vanilla FO4 \
+                         `defaulttemplate_wet.bgsm` self-references; leaf-only \
+                         resolve used. See #FO4-D6-NEW."
+                    );
+                });
+                Some(Arc::new(byroredux_bgsm::template::ResolvedMaterial {
+                    file,
+                    parent: None,
+                }))
+            }
+            Err(e) => {
+                // #951 / SAFE-26 / #1430 — half-eviction on overflow.
+                if self.failed_paths.len() >= MAX_FAILED_PATHS {
+                    for _ in 0..MAX_FAILED_PATHS / 2 {
+                        if let Some(old) = self.failed_paths_order.pop_front() {
+                            self.failed_paths.remove(&old);
+                        }
+                    }
+                }
+                if self.failed_paths.insert(key.clone()) {
+                    self.failed_paths_order.push_back(key);
+                    log::warn!("BGSM resolve failed for '{}': {}", path, e);
+                }
+                None
+            }
+        }
+    }
+
+    /// Read the first 4 bytes of a material file from the archives to detect
+    /// whether it is BGSM or BGEM by magic, independent of its file extension.
+    /// Returns `None` when the file isn't found or the magic is unrecognised.
+    fn peek_magic(&self, path: &str) -> Option<byroredux_bgsm::MaterialKind> {
+        let bytes = self.extract_from_archives(path)?;
+        byroredux_bgsm::detect_kind(&bytes)
+    }
+
+    /// Resolve a BGEM effect-material file. No template inheritance.
+    pub(crate) fn resolve_bgem(&mut self, path: &str) -> Option<Arc<BgemFile>> {
+        // #FO4-D6-NEW — same `normalize_material_path` canonicalisation
+        // as `resolve_bgsm` applied to the cache key. The archive
+        // read goes through `extract_from_archives` (which already
+        // normalises), so this line is purely for cache-key
+        // canonicalisation — two paths that differ only by which
+        // non-canonical form they carry must share one cache entry.
+        let key = normalize_material_path(path).to_ascii_lowercase();
+        if let Some(hit) = self.bgem_cache.get(&key) {
+            return Some(Arc::clone(hit));
+        }
+        let bytes = self.extract_from_archives(&key)?;
+        match byroredux_bgsm::parse_bgem(&bytes) {
+            Ok(parsed) => {
+                let arc = Arc::new(parsed);
+                // #951 / SAFE-26 / #1430 — half-eviction on cap: remove the
+                // oldest N/2 entries by insertion order so the recent
+                // working-set stays resident instead of clearing everything.
+                if self.bgem_cache.len() >= MAX_BGEM_CACHE_ENTRIES {
+                    for _ in 0..MAX_BGEM_CACHE_ENTRIES / 2 {
+                        if let Some(old) = self.bgem_cache_order.pop_front() {
+                            self.bgem_cache.remove(&old);
+                        }
+                    }
+                }
+                self.bgem_cache_order.push_back(key.clone());
+                self.bgem_cache.insert(key, Arc::clone(&arc));
+                Some(arc)
+            }
+            Err(e) => {
+                // Bound failed_paths the same way — broken-content
+                // accumulates more slowly than working BGEM count, but
+                // capping both prevents the unbounded-growth class.
+                // #1430 — half-eviction here too.
+                if self.failed_paths.len() >= MAX_FAILED_PATHS {
+                    for _ in 0..MAX_FAILED_PATHS / 2 {
+                        if let Some(old) = self.failed_paths_order.pop_front() {
+                            self.failed_paths.remove(&old);
+                        }
+                    }
+                }
+                if self.failed_paths.insert(key.clone()) {
+                    self.failed_paths_order.push_back(key);
+                    log::warn!("BGEM parse failed for '{}': {}", path, e);
+                }
+                None
+            }
+        }
+    }
+}
+
+/// Merge BGSM / BGEM material data into an `ImportedMesh` whose
+/// `material_path` points at a .bgsm or .bgem file. NIF fields take
+/// precedence — only empty slots are filled in from the resolved
+/// material chain. This matches Bethesda's runtime behaviour where the
+/// shader property can override template defaults per-mesh.
+///
+/// For BGSM the template chain is walked child-first: the first
+/// non-empty value for any given field wins. BGEM has no inheritance
+/// (the format carries no `root_material_path`) so we read the single
+/// parsed file. Returns `true` when any field was filled.
+/// Translate a BGSM/BGEM GL-style blend factor into the Gamebryo
+/// `NiAlphaProperty` enum the renderer speaks.
+///
+/// BGSM/BGEM store `src_blend`/`dst_blend` as a GL-style enum
+/// (`Zero=0, One=1, SrcColor=2, …, SrcAlpha=6, InvSrcAlpha=7, …` — see
+/// `byroredux_bgsm::AlphaBlendMode`), whereas the renderer's
+/// [`gamebryo_to_vk_blend_factor`](byroredux_renderer) reads the
+/// Gamebryo nibble (`ONE=0, ZERO=1`, then 2..=10 share the D3D
+/// ordering). The two tables differ **only** at 0 and 1 — `Zero` and
+/// `One` are swapped — so swap 0↔1 and pass everything else through.
+///
+/// Without this, an additive effect/glow BGEM card (`(One, One)` =
+/// `(1, 1)`) forwards verbatim and the renderer reads `(ZERO, ZERO)`,
+/// so the surface contributes nothing and renders invisible (#1651).
+/// This is the material-path twin of the particle-preset fix in #1649:
+/// the renderer speaks one blend enum, and foreign enums are translated
+/// here at the parser→`Material` boundary, never forwarded raw.
+pub(crate) fn gl_to_gamebryo_blend(gl: u32) -> u8 {
+    match gl {
+        0 => 1, // GL Zero → Gamebryo ZERO
+        1 => 0, // GL One  → Gamebryo ONE
+        other => other as u8,
+    }
+}
+
+pub(crate) fn merge_bgsm_into_mesh(
+    mesh: &mut ImportedMesh,
+    provider: &mut MaterialProvider,
+    pool: &mut byroredux_core::string::StringPool,
+) -> bool {
+    let Some(path_sym) = mesh.material_path else {
+        return false;
+    };
+    // `StringPool::resolve` returns the canonical lowercased form, so
+    // we own the string for the BGSM dispatch + suffix matching here
+    // without an extra `to_ascii_lowercase` allocation. See #609.
+    let path: String = match pool.resolve(path_sym) {
+        Some(s) => s.to_string(),
+        None => return false,
+    };
+
+    // `touched` flips to `true` on any merged field. Allowed unused
+    // assignment: the success branches (BGSM / BGEM) set `touched`
+    // unconditionally via `mesh.from_bgsm = true`, so the `false`
+    // initializer is overwritten before any read — but the
+    // initializer is load-bearing for the failure / unknown-kind
+    // path that returns it without further assignment.
+    #[allow(unused_assignments)]
+    let mut touched = false;
+    // `fill` populates an `Option<FixedString>` slot only when it's
+    // None and the incoming value is non-empty. Routes through the
+    // engine's `StringPool` so the BGSM/BGEM-resolved paths share the
+    // same intern table as the NIF-side paths (#609 / D6-NEW-01).
+    fn fill(
+        slot: &mut Option<byroredux_core::string::FixedString>,
+        value: &str,
+        touched: &mut bool,
+        pool: &mut byroredux_core::string::StringPool,
+    ) {
+        if slot.is_none() && !value.is_empty() {
+            *slot = Some(pool.intern(value));
+            *touched = true;
+        }
+    }
+
+    // #1289 / SF-D3-NEW-01 — Starfield `.mat` arm. Starfield material
+    // paths captured by the NIF stopcond (`crates/nif/src/blocks/
+    // shader.rs::is_material_path`) end in `.mat`. The actual material
+    // data lives in the binary Component Database at
+    // `materials\materialsbeta.cdb` inside `Starfield - Materials.ba2`,
+    // loaded once at provider init via [`load_starfield_cdb`].
+    //
+    // Phase 1 (this commit): flip `mesh.is_pbr = true` so
+    // `pack_bgsm_material_flags` packs `MAT_FLAG_PBR_BSDF` and
+    // `triangle.frag` routes Starfield content through the Disney BSDF
+    // path instead of the legacy Lambert + simple-GGX path (the audit
+    // FAIL closure). Defaults for metalness / roughness / textures
+    // stay at the NIF-derived values — better than Lambert but still
+    // approximate; Phase 2 will walk the CDB to extract authored values.
+    //
+    // The CDB-presence gate (`has_starfield_cdb`) prevents accidental
+    // PBR routing for modded `.mat` paths against a non-Starfield
+    // archive set (FO4 / FNV cells with a stray mod-authored `.mat`
+    // shouldn't get Disney BSDF).
+    if path.ends_with(".mat") && provider.has_starfield_cdb() {
+        mesh.is_pbr = true;
+        // `from_bgsm` deliberately NOT set — that flag gates BGSM
+        // spec-glossiness translation (FO4-specific format convention).
+        // Starfield .mat authors metalness/roughness directly, but
+        // `metalness_override`/`roughness_override` stay `None` until
+        // Phase 2 walks the CDB. The unset overrides become `f32::NAN`
+        // in `translate_material`, and `Material::resolve_pbr`'s
+        // NaN-sentinel classifier fills them at the canonical NIFAL
+        // boundary (#1480) — there is no shader-side / render-time
+        // classify_pbr fallback anymore (#1522).
+        return true;
+    }
+
+    // BGSM/BGEM scalar-override state. The `Option<String>` slots use
+    // `is_none()` to detect "NIF left this empty", but scalar PBR fields
+    // default to concrete values on the NIF side (e.g. emissive_mult = 0.0,
+    // specular_strength = 1.0), so we can't key off the default.
+    // Instead we track per-field "has a BGSM entry already overridden
+    // this slot" flags — BGSM resolver chain is walked child-first so
+    // the first authored value wins, matching the texture-slot policy.
+    // Pre-#583 every scalar the BGSM parser decoded was silently dropped
+    // and the mesh rendered on NIF-fallback PBR.
+    let mut set_emissive = false;
+    let mut set_specular = false;
+    let mut set_glossiness = false;
+    let mut set_alpha = false;
+    let mut set_uv = false;
+    let mut set_blend = false;
+    let mut set_fresnel = false;
+    let mut set_palette_scale = false;
+
+    // Determine dispatch kind from magic (authoritative) with extension as
+    // fallback. Warn once per path when they disagree — e.g. a mod shipping a
+    // `.bgsm`-named file that carries BGEM magic (wrong-extension footgun).
+    use byroredux_bgsm::MaterialKind;
+    let ext_kind = if path.ends_with(".bgsm") {
+        Some(MaterialKind::Bgsm)
+    } else if path.ends_with(".bgem") {
+        Some(MaterialKind::Bgem)
+    } else {
+        None
+    };
+    let magic_kind = provider.peek_magic(&path);
+    if let (Some(ext), Some(magic)) = (ext_kind, magic_kind) {
+        if ext != magic {
+            log::warn!(
+                "material '{}': extension implies {:?} but file magic implies {:?}; \
+                 dispatching on magic to avoid wrong override semantics",
+                path,
+                ext,
+                magic
+            );
+        }
+    }
+    // Magic wins when present; extension is the fallback for files not (yet)
+    // in any loaded archive (caller already got None from peek_magic).
+    let dispatch_kind = magic_kind.or(ext_kind);
+
+    if dispatch_kind == Some(MaterialKind::Bgsm) {
+        let Some(resolved) = provider.resolve_bgsm(&path) else {
+            return false;
+        };
+        // BGSM resolution succeeded — telemetry-only flag (no renderer
+        // branch); the substantive work happens in the spec-glossiness
+        // → metallic-roughness translation below.
+        mesh.from_bgsm = true;
+        touched = true;
+        // #1352 / FO4-D7-03 — route ALL BGSM-authored content through the
+        // Disney diffuse lobe (MAT_FLAG_PBR_BSDF via `pack_bgsm_material_flags`),
+        // not just the rarely-authored `bgsm.pbr == true` case (0 of 793
+        // sampled vanilla FO4 BGSMs set it). The spec-glossiness →
+        // metallic-roughness translation below gives every `from_bgsm` mesh
+        // valid metalness/roughness for the lobe to consume; the per-BGSM
+        // `if bgsm.pbr` set below is now subsumed (kept as a defensive
+        // backstop). NOTE: this changes the diffuse shading of all vanilla
+        // FO4 BGSM content (was Lambert, correct-as-authored for Bethesda's
+        // modified Blinn-Phong pipeline) — pending RenderDoc visual
+        // validation on real FO4 content. Reverting is this single line.
+        mesh.is_pbr = true;
+
+        // ── Translation layer (BGSM spec-glossiness → standard PBR) ──
+        //
+        // The renderer consumes a single PBR contract: `albedo`,
+        // `metalness`, `roughness`, `F0 = mix(0.04, albedo, metalness)`.
+        // BGSM authors a DIFFERENT contract; how `specular_color * mult`
+        // relates to metalness depends on the BGSM's `pbr` flag:
+        //
+        // * `pbr == true` (rare — 0 of 793 sampled vanilla FO4 BGSMs set
+        //   it; almost exclusively modded content): the material was
+        //   authored in a metallic-roughness workflow and `spec_color *
+        //   mult` IS F0 directly (dielectric ≈ 0.04, conductor ≈ tinted).
+        //   Luminance → metalness is correct here.
+        //
+        // * `pbr == false` (legacy spec-glossiness — essentially all
+        //   vanilla FO4 architecture/clutter): `spec_color` is the Blinn
+        //   highlight TINT, not F0. It is ~white `[1,1,1]` for every
+        //   dielectric (concrete, wood, plaster, painted metal) and the
+        //   `mult` only scales highlight strength. Keying metalness off
+        //   luminance is not just wrong but BACKWARDS: vanilla
+        //   `paintpeelingconcrete` authors `spec=[1,1,1] mult=1.0`
+        //   (lum 1.0 → metalness 1.0, mirror-chrome concrete) while real
+        //   metals author LOWER, often TINTED spec — `metalrubberductpipe`
+        //   `[1,1,1] mult=0.73`, `metallocker` `[1,0.85,0.70] mult=0.45`.
+        //   The only legacy signal that actually distinguishes a conductor
+        //   is spec CHROMATICITY (conductor F0 is tinted; dielectric F0 is
+        //   achromatic grey), so we derive metalness from spec-color
+        //   saturation, which is invariant to `mult`. White spec → 0
+        //   (concrete is dielectric); tinted spec → metallic (brass/gold/
+        //   copper keep their look). Pure-white-spec steel reads dielectric
+        //   — a minor under-read, but never the pervasive chrome the old
+        //   luminance path produced. (Per-texel metalness from the spec
+        //   map would recover white-spec steel; deferred — needs a
+        //   metalness-map shader binding. See `feedback_format_translation`.)
+        //
+        // Roughness is `1 - smoothness` either way (the per-texel
+        // `gloss_map` then modulates it in-shader: `mix(1, roughness,
+        // glossSample)`), so the scalar is only the smooth-end of the lobe.
+        //
+        // Derivation is LEAF-only — the leaf author's choice is
+        // authoritative; template parents are background defaults the
+        // artist explicitly overrode if they set a different value.
+        //
+        // For metallic materials, also tint `mesh.diffuse_color` toward
+        // the authored spec_color so the per-pixel `F0 = mix(0.04,
+        // albedo, metalness)` lands on the right conductor tint when
+        // the diffuse texture is BC1-desaturated (a known FO4 issue —
+        // raw_metal_diff DDS textures lose saturation vs the authored
+        // spec RGB). Pure dielectric materials keep `diffuse_color`
+        // untouched so painted-plastic textures aren't shifted.
+        let leaf = &resolved.file;
+        let spec_r = leaf.specular_color[0] * leaf.specular_mult;
+        let spec_g = leaf.specular_color[1] * leaf.specular_mult;
+        let spec_b = leaf.specular_color[2] * leaf.specular_mult;
+        let metalness = if leaf.pbr {
+            // True metallic-roughness authoring: spec*mult is F0.
+            let spec_lum = 0.2126 * spec_r + 0.7152 * spec_g + 0.0722 * spec_b;
+            ((spec_lum - 0.04) / 0.96).clamp(0.0, 1.0)
+        } else {
+            // Legacy spec-glossiness: only chromatic specular is a
+            // conductor. Saturation = (max-min)/max of spec_color is
+            // mult-invariant, so highlight strength doesn't leak into
+            // metalness — achromatic `[1,1,1]` concrete → 0.
+            let mx = leaf.specular_color[0]
+                .max(leaf.specular_color[1])
+                .max(leaf.specular_color[2]);
+            let mn = leaf.specular_color[0]
+                .min(leaf.specular_color[1])
+                .min(leaf.specular_color[2]);
+            if mx > 1.0e-4 {
+                ((mx - mn) / mx).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+        let roughness = (1.0 - leaf.smoothness).clamp(0.04, 1.0);
+        mesh.metalness_override = Some(metalness);
+        mesh.roughness_override = Some(roughness);
+        if metalness > 0.5 {
+            // #1591 — blend toward the mult-free `specular_color`, NOT
+            // `spec_*` (= specular_color × specular_mult); the mult-bearing
+            // `spec_*` stays for the pbr F0-luminance path above where
+            // mult-as-scale is correct. See `conductor_diffuse_tint`.
+            mesh.diffuse_color = conductor_diffuse_tint(mesh.diffuse_color, leaf.specular_color);
+        }
+        for step in resolved.walk() {
+            let bgsm = &step.file;
+            fill(
+                &mut mesh.texture_path,
+                &bgsm.diffuse_texture,
+                &mut touched,
+                pool,
+            );
+            fill(
+                &mut mesh.normal_map,
+                &bgsm.normal_texture,
+                &mut touched,
+                pool,
+            );
+            fill(&mut mesh.glow_map, &bgsm.glow_texture, &mut touched, pool);
+            // Smoothness/spec mask — .r encodes per-texel specular
+            // strength in the engine's existing gloss_map slot. #453.
+            fill(
+                &mut mesh.gloss_map,
+                &bgsm.smooth_spec_texture,
+                &mut touched,
+                pool,
+            );
+            // #1353 / FO4-D8-07 — BGSM greyscale-to-palette LUT path
+            // (`SLSF1::Greyscale_To_PaletteColor`, used by FO4 NPC /
+            // creature colour variants; the palette slot is authored on
+            // v<=2 BGSMs). First non-empty in the template chain wins, to
+            // match the texture fills above. Routed to ResolvedPaths →
+            // GreyscaleLutHandle and flagged via EFFECT_PALETTE_COLOR in
+            // `pack_bgsm_material_flags` so the lit-path remap in
+            // triangle.frag samples it.
+            if mesh.bgsm_greyscale_lut_path.is_none() && !bgsm.greyscale_texture.is_empty() {
+                mesh.bgsm_greyscale_lut_path = Some(bgsm.greyscale_texture.clone());
+                touched = true;
+            }
+            // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
+            fill(&mut mesh.env_map, &bgsm.envmap_texture, &mut touched, pool);
+            fill(
+                &mut mesh.parallax_map,
+                &bgsm.displacement_texture,
+                &mut touched,
+                pool,
+            );
+            // #1076 / FO4-D6-002 — BGSM v>2 standalone slots that
+            // pre-fix were parsed but dropped on the floor. Each is
+            // empty on the v<=2 path (the parser leaves the String
+            // default) so the `fill` no-op suffices to gate the
+            // forward without an explicit version check.
+            fill(
+                &mut mesh.specular_map,
+                &bgsm.specular_texture,
+                &mut touched,
+                pool,
+            );
+            fill(
+                &mut mesh.lighting_map,
+                &bgsm.lighting_texture,
+                &mut touched,
+                pool,
+            );
+            fill(&mut mesh.flow_map, &bgsm.flow_texture, &mut touched, pool);
+            fill(
+                &mut mesh.wrinkle_map,
+                &bgsm.wrinkles_texture,
+                &mut touched,
+                pool,
+            );
+            // #1077 / FO4-D6-003 (Phase 1: data propagation) —
+            // BGSM-only shader flags. Same child-first precedence as
+            // the texture slots: first authored `true` wins, parent
+            // chain only contributes when the child leaves the flag
+            // at its bool default. The default-false case is
+            // structurally identical to the texture-slot "empty
+            // string" gate — both behave as "not authored, fall
+            // through to parent / leave unchanged".
+            //
+            // The renderer-side consumer (Phase 2) is deferred per
+            // the original #1077 split: gating PBR vs Gamebryo
+            // shading in `triangle.frag` based on `is_pbr` needs
+            // RenderDoc-validated visual diffs against FO4 content,
+            // which is out of scope for this Phase 1 close-out.
+            if !mesh.is_pbr && bgsm.pbr {
+                mesh.is_pbr = true;
+                touched = true;
+            }
+            if !mesh.has_translucency && bgsm.translucency {
+                mesh.has_translucency = true;
+                touched = true;
+            }
+            if !mesh.model_space_normals && bgsm.model_space_normals {
+                mesh.model_space_normals = true;
+                touched = true;
+            }
+
+            // #1147 Phase 2b — BGSM v>=8 translucency suite. Same
+            // child-first precedence as the flags above. The
+            // `has_translucency` flag is the gate; if the child
+            // already set it, the corresponding subsurface params
+            // also came from the child and we don't overwrite them.
+            // If `has_translucency` is set by this chain entry but
+            // the params are still at default-zero, propagate them.
+            if bgsm.translucency
+                && mesh.translucency_transmissive_scale == 0.0
+                && mesh.translucency_subsurface_color == [0.0; 3]
+            {
+                mesh.translucency_subsurface_color = bgsm.translucency_subsurface_color;
+                mesh.translucency_transmissive_scale = bgsm.translucency_transmissive_scale;
+                mesh.translucency_turbulence = bgsm.translucency_turbulence;
+                mesh.translucency_thick_object = bgsm.translucency_thick_object;
+                mesh.translucency_mix_albedo = bgsm.translucency_mix_albedo_with_subsurface_color;
+                touched = true;
+            }
+
+            // Scalar PBR forwarding (#583). Child-first: first authored
+            // value wins. Parser already decodes these fields; the
+            // pre-fix merge dropped them on the floor.
+            if !set_emissive && bgsm.emit_enabled {
+                mesh.emissive_color = bgsm.emittance_color;
+                mesh.emissive_mult = bgsm.emittance_mult;
+                set_emissive = true;
+                touched = true;
+            }
+            if !set_specular {
+                mesh.specular_color = bgsm.specular_color;
+                mesh.specular_strength = bgsm.specular_mult;
+                set_specular = true;
+                touched = true;
+            }
+            if !set_glossiness {
+                // BGSM authors `smoothness` 0–1 (Bethesda Material Editor
+                // convention); `Material::glossiness` is on the 0–100 NIF
+                // scale (`classify_pbr` divides by 100). Multiply by 100
+                // to normalize — without this, BGSM-driven FO4 materials
+                // that don't keyword-match the metal/wood/glass arms in
+                // `classify_pbr` fell through to the glossiness fallback
+                // with `roughness=0.95`, killing direct specular and the
+                // RT-reflection metalness/roughness gate (Med-Tek floors).
+                mesh.glossiness = bgsm.smoothness * 100.0;
+                set_glossiness = true;
+                touched = true;
+            }
+            // #1454 — BGSM authors Fresnel power (Schlick exponent for the
+            // rim Fresnel term). Child-first: first BGSM in the template
+            // chain wins. Vanilla FO4 defaults to 5.0, matching the
+            // `ImportedMesh` default, so no vanilla regression; mod-authored
+            // non-default values (power armor, shiny metals) were silently
+            // falling back to 5.0 before this fix.
+            if !set_fresnel {
+                mesh.fresnel_power = bgsm.fresnel_power;
+                set_fresnel = true;
+                touched = true;
+            }
+            // #1455 — BGSM authors greyscale-to-palette scale. Child-first.
+            // Modulates the LUT remap intensity for NPC creature colour
+            // variants (deathclaw, supermutant). Default 1.0 = no change.
+            if !set_palette_scale {
+                mesh.grayscale_to_palette_scale = bgsm.grayscale_to_palette_scale;
+                set_palette_scale = true;
+                touched = true;
+            }
+            if !set_alpha {
+                mesh.mat_alpha = bgsm.base.alpha;
+                set_alpha = true;
+                touched = true;
+            }
+            if !set_uv {
+                mesh.uv_offset = [bgsm.base.u_offset, bgsm.base.v_offset];
+                mesh.uv_scale = [bgsm.base.u_scale, bgsm.base.v_scale];
+                set_uv = true;
+                touched = true;
+            }
+            // Boolean gameplay flags OR across the template chain — if
+            // ANY ancestor marks the material as two-sided / decal /
+            // alpha-test, the concrete instance is too.
+            if bgsm.base.two_sided {
+                mesh.two_sided = true;
+                touched = true;
+            }
+            if bgsm.base.decal {
+                mesh.is_decal = true;
+                touched = true;
+            }
+            if bgsm.base.alpha_test && !mesh.alpha_test {
+                mesh.alpha_test = true;
+                mesh.alpha_threshold = f32::from(bgsm.base.alpha_test_ref) / 255.0;
+                touched = true;
+            }
+            // BGSM alpha-blend forwarding. FO4+ moved per-material blend
+            // state out of NiAlphaProperty into BGSM, so a BGSM-only
+            // glass / decal authored with `alpha_blend_mode.function == 1`
+            // (Standard) leaves the NIF-side `has_alpha` at false and
+            // every Institute / lab pane renders fully opaque
+            // (`INSTANCE_FLAG_ALPHA_BLEND` never sets → MATERIAL_KIND_GLASS
+            // never classifies → opaque path).
+            //
+            // Child-first precedence (matches the texture / scalar walks):
+            // first authored function > 0 wins. function == 0 (None)
+            // intentionally does NOT clear an already-set blend — a leaf
+            // that opts out shouldn't erase a parent's blend authoring.
+            //
+            // BGSM `src_blend` / `dst_blend` are a GL-style enum
+            // (`Zero=0, One=1, …`) — the Gamebryo nibble the renderer
+            // speaks swaps 0↔1 (`ONE=0, ZERO=1`). Translate at this
+            // parser→Material boundary via `gl_to_gamebryo_blend` so the
+            // renderer never sees a foreign enum (#1651).
+            if !set_blend && bgsm.base.alpha_blend_mode.function > 0 {
+                mesh.has_alpha = true;
+                mesh.src_blend_mode = gl_to_gamebryo_blend(bgsm.base.alpha_blend_mode.src_blend);
+                mesh.dst_blend_mode = gl_to_gamebryo_blend(bgsm.base.alpha_blend_mode.dst_blend);
+                set_blend = true;
+                touched = true;
+            }
+        }
+    } else if dispatch_kind == Some(MaterialKind::Bgem) {
+        let Some(bgem) = provider.resolve_bgem(&path) else {
+            return false;
+        };
+        // BGEM (effect material) has no smoothness/specular authoring —
+        // metalness and roughness are left as NaN sentinels so resolve_pbr
+        // runs the keyword classifier. glass_enabled surfaces get the glass
+        // roughness override from classify_glass_into_material downstream.
+        mesh.from_bgsm = true;
+        touched = true;
+        fill(
+            &mut mesh.texture_path,
+            &bgem.base_texture,
+            &mut touched,
+            pool,
+        );
+        fill(
+            &mut mesh.normal_map,
+            &bgem.normal_texture,
+            &mut touched,
+            pool,
+        );
+        fill(&mut mesh.glow_map, &bgem.glow_texture, &mut touched, pool);
+        // #1453 — BGEM's grayscale_texture is the palette/gradient LUT for
+        // effect materials (fire-gradient, electricity-gradient, magic VFX).
+        // Forward it to the same `bgsm_greyscale_lut_path` field that BGSM
+        // uses — both serve as the greyscale LUT path the renderer resolves
+        // for `GreyscaleLutHandle` and the `EFFECT_PALETTE_COLOR` flag.
+        if mesh.bgsm_greyscale_lut_path.is_none() && !bgem.grayscale_texture.is_empty() {
+            mesh.bgsm_greyscale_lut_path = Some(bgem.grayscale_texture.clone());
+            touched = true;
+        }
+        fill(&mut mesh.env_map, &bgem.envmap_texture, &mut touched, pool);
+        fill(
+            &mut mesh.env_mask,
+            &bgem.envmap_mask_texture,
+            &mut touched,
+            pool,
+        );
+        // #1076 / FO4-D6-002 SIBLING — BGEM also exposes
+        // `specular_texture` + `lighting_texture` (the two BGSM v>2
+        // slots that exist on the BGEM side too; BGEM does NOT
+        // author `flow_texture` or `wrinkles_texture` per
+        // `crates/bgsm/src/bgem.rs`). Forward them here so the BGEM
+        // path has the same coverage as the BGSM path.
+        fill(
+            &mut mesh.specular_map,
+            &bgem.specular_texture,
+            &mut touched,
+            pool,
+        );
+        fill(
+            &mut mesh.lighting_map,
+            &bgem.lighting_texture,
+            &mut touched,
+            pool,
+        );
+
+        // BGEM has no inheritance so there's no child-first chain.
+        // `base_color × base_color_scale` is the primary effect tint —
+        // the same authoring the NIF-side walker reads from
+        // `BSEffectShaderProperty.base_color` / `base_color_scale`. Set
+        // EmissiveSource::Effect so the renderer knows this slot is an
+        // effect-diffuse tint, not a genuine emissive scalar. #1358.
+        // `emittance_color` (v≥11 additive glow) is deferred until a
+        // second emissive slot exists on `ImportedMesh`.
+        mesh.emissive_color = bgem.base_color;
+        mesh.emissive_mult = bgem.base_color_scale;
+        mesh.emissive_source = byroredux_core::ecs::components::material::EmissiveSource::Effect;
+        mesh.mat_alpha = bgem.base.alpha;
+        mesh.uv_offset = [bgem.base.u_offset, bgem.base.v_offset];
+        mesh.uv_scale = [bgem.base.u_scale, bgem.base.v_scale];
+        if bgem.base.two_sided {
+            mesh.two_sided = true;
+        }
+        if bgem.base.decal {
+            mesh.is_decal = true;
+        }
+        if bgem.base.alpha_test {
+            mesh.alpha_test = true;
+            mesh.alpha_threshold = f32::from(bgem.base.alpha_test_ref) / 255.0;
+        }
+        // BGEM alpha-blend — same GL→Gamebryo translation as the BGSM
+        // branch above, applied to the BSEffectShaderProperty path.
+        // This is the path that hit #1651: additive glow/effect cards
+        // author `(One, One)` = `(1, 1)` which, forwarded raw, the
+        // renderer reads as `(ZERO, ZERO)` and renders invisible.
+        // BGEM has no inheritance so no child-first guard needed.
+        if bgem.base.alpha_blend_mode.function > 0 {
+            mesh.has_alpha = true;
+            mesh.src_blend_mode = gl_to_gamebryo_blend(bgem.base.alpha_blend_mode.src_blend);
+            mesh.dst_blend_mode = gl_to_gamebryo_blend(bgem.base.alpha_blend_mode.dst_blend);
+        }
+        // #1280 sub-step 3b — forward BGEM `glass_enabled` so the
+        // spawn-time classifier in `helpers::classify_glass_into_material`
+        // can fire the glass path even when neither the texture path nor
+        // the mesh name carries a glass keyword. FO4 ships BGEM glass
+        // bottles whose atlas texture (e.g. `clutter01.dds`) and node
+        // name (e.g. `Bottle:0`) match nothing in the keyword list; the
+        // BGEM file itself is the only authoritative authoring of "this
+        // material is glass". Pre-fix those bottles rendered as opaque
+        // plastic (`material_kind = 0`, default roughness 0.80).
+        if bgem.glass_enabled {
+            mesh.bgem_glass = true;
+        }
+        // Soft-particle depth fade + view-angle falloff cone. The NIF
+        // `BSEffectShaderProperty` path fills `mesh.effect_shader` from the
+        // block; the BGEM path is the FO4+ equivalent and must mirror it so
+        // `material_translate` can build `Material.{effect_falloff,
+        // effect_shader_flags}` (soft_falloff_depth + MAT_FLAG_EFFECT_SOFT)
+        // the same way. Without this every FO4 BGEM mist/steam/beam volume
+        // (`soft = true` in the authored file) rendered with no depth feather
+        // and stacked to an opaque white-out (HalluciGen labs). `lighting_influence`
+        // is authored 0..1 in BGEM but carried 0..255 on the shared payload.
+        mesh.effect_shader = Some(byroredux_nif::import::BsEffectShaderData {
+            falloff_start_angle: bgem.falloff_start_angle,
+            falloff_stop_angle: bgem.falloff_stop_angle,
+            falloff_start_opacity: bgem.falloff_start_opacity,
+            falloff_stop_opacity: bgem.falloff_stop_opacity,
+            soft_falloff_depth: bgem.soft_depth,
+            effect_soft: bgem.soft_enabled,
+            effect_lit: bgem.effect_lighting_enabled,
+            lighting_influence: (bgem.lighting_influence.clamp(0.0, 1.0) * 255.0).round() as u8,
+            ..Default::default()
+        });
+        touched = true;
+    } else {
+        // Unknown extension — most likely a Starfield .mat JSON path that
+        // SF-D3-01's suffix gate now correctly routes here. The .mat format
+        // is not yet parsed (tracked in SF-D6-03). Log once per path so the
+        // absence of material data is visible without spamming every frame.
+        static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+            std::sync::OnceLock::new();
+        let mut set = WARNED
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if set.insert(path.to_owned()) {
+            log::warn!(
+                "material path '{}' is not a .bgsm/.bgem — unsupported format (Starfield .mat?); mesh will use NIF defaults",
+                path
+            );
+        }
+        return false;
+    }
+
+    touched
+}
