@@ -777,15 +777,24 @@ fn resolve_tri_strips_collision(
 }
 
 /// Merge the `NiTriStripsData` referenced by `data_refs` into a single TriMesh.
-/// `extra_scale` is a per-axis multiplier applied in Havok space BEFORE the
-/// uniform `havok_scale`: `bhkNiTriStripsShape` passes identity, while
-/// `bhkMeshShape` passes its authored per-axis Scale vector.
+/// `extra_scale` is a per-axis multiplier: `bhkNiTriStripsShape` passes identity,
+/// while `bhkMeshShape` passes its authored per-axis Scale vector.
+///
+/// #1744 — these vertices are NOT scaled by `havok_scale`. `bhkNiTriStripsShape`
+/// / `bhkMeshShape` "use NiTriStripsData for geometry storage" (nif.xml) — the
+/// SAME visual-geometry block the render mesh uses, already in game units.
+/// `havok_scale` (×7 for Oblivion) applies to bodies' translations and to
+/// primitive/packed shapes authored in Havok units (`resolve_packed_mesh`,
+/// `BhkConvexVerticesShape`, …), NOT to the visual mesh shared with rendering.
+/// Pre-fix every Oblivion/FO3/FNV `bhkNiTriStripsShape` collider (castle walls,
+/// the Anvil cathedral, every large static) came out 7× oversized — a wall read
+/// ~123 m tall — which threw exterior spawn ray-casts thousands of units into
+/// the sky (a floating collider AABB y[-18185, 20277] in AnvilWorld).
 fn resolve_tri_strips_data_refs(
     scene: &NifScene,
     data_refs: &[BlockRef],
     extra_scale: [f32; 3],
 ) -> Option<CollisionShape> {
-    let scale = scene.havok_scale;
     let mut all_verts = Vec::new();
     let mut all_indices = Vec::new();
 
@@ -799,13 +808,11 @@ fn resolve_tri_strips_data_refs(
 
         let base_idx = all_verts.len() as u32;
         for v in &data.vertices {
-            all_verts.push(
-                havok_to_engine(
-                    v.x * extra_scale[0],
-                    v.y * extra_scale[1],
-                    v.z * extra_scale[2],
-                ) * scale,
-            );
+            all_verts.push(havok_to_engine(
+                v.x * extra_scale[0],
+                v.y * extra_scale[1],
+                v.z * extra_scale[2],
+            ));
         }
         // Convert triangle strips to triangles.
         for strip in &data.strips {
@@ -1210,7 +1217,7 @@ mod cycle_tests {
     use super::*;
     use crate::blocks::collision::{
         BhkAabbPhantom, BhkConvexListShape, BhkConvexSweepShape, BhkListShape, BhkMeshShape,
-        BhkMultiSphereShape, BhkSimpleShapePhantom, BhkSphereShape,
+        BhkMultiSphereShape, BhkNiTriStripsShape, BhkSimpleShapePhantom, BhkSphereShape,
     };
     use crate::blocks::tri_shape::NiTriStripsData;
     use crate::blocks::NiObject;
@@ -1547,8 +1554,9 @@ mod cycle_tests {
 
     #[test]
     fn mesh_shape_folds_per_axis_scale() {
-        // BhkMeshShape's authored per-axis Scale vector must fold in
-        // alongside havok_scale (applied in havok space before the swap).
+        // BhkMeshShape's authored per-axis Scale vector must fold in (#1744:
+        // NiTriStripsData collision is NOT scaled by havok_scale — only the
+        // per-axis Scale applies; here havok_scale is 1.0 regardless).
         let mut scene = NifScene::default();
         scene.havok_scale = 1.0;
         scene.blocks.push(Box::new(BhkMeshShape {
@@ -1587,6 +1595,58 @@ mod cycle_tests {
                         && (v.y - 5.0).abs() < 1e-5
                         && (v.z + 3.0).abs() < 1e-5,
                     "per-axis scale not folded; got {v:?}"
+                );
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ni_tri_strips_shape_ignores_havok_scale() {
+        // #1744 — bhkNiTriStripsShape stores geometry in NiTriStripsData, the
+        // SAME visual-mesh block the renderer uses (game units). havok_scale
+        // (×7 for Oblivion) must NOT inflate it; pre-fix every large static
+        // collider came out 7× oversized (castle walls reading ~123 m tall),
+        // throwing exterior spawn ray-casts into the sky.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 7.0;
+        scene.blocks.push(Box::new(BhkNiTriStripsShape {
+            material: 0,
+            radius: 0.0,
+            data_refs: vec![BlockRef(1u32)],
+            filters: Vec::new(),
+        }));
+        scene.blocks.push(tri_strips_data(
+            vec![
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 10.0,
+                },
+            ],
+            vec![0, 1, 2],
+        ));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::TriMesh { vertices, .. }) => {
+                // Vertex (10,0,0) → havok_to_engine (x,z,-y) = (10,0,0); the
+                // magnitude is the game-unit 10, NOT 70 (10 × havok_scale 7).
+                let v = vertices[1];
+                assert!(
+                    (v.x - 10.0).abs() < 1e-5,
+                    "havok_scale must not inflate NiTriStripsData collision \
+                     (expected x=10, got {})",
+                    v.x
                 );
             }
             other => panic!("expected TriMesh, got {other:?}"),
