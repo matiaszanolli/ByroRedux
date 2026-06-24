@@ -51,6 +51,45 @@ pub(crate) const LOD_BLOCK_CELLS: i32 = 4;
 /// (`Camera::default`) is sized to cover the resulting far-corner diagonal.
 pub(crate) const LOD_RADIUS_BLOCKS: i32 = 12;
 
+/// Cells per baked distant-LOD texture quad (Oblivion `landscapelod\generated`
+/// scheme). Each quad texture covers a `LOD_TEXTURE_QUAD_CELLS²` square and is
+/// keyed by the worldspace's decimal form id + the quad's SW-corner cell
+/// coords; the same `32` doubles as the LOD-level suffix in the filename.
+/// Verified against `Oblivion - Textures - Compressed.bsa` (Tamriel = form 60,
+/// quads `60.<x>.<y>.32.dds` on a 32-aligned grid). Worlds shipping no such
+/// textures (Oblivion "Small World" city worldspaces like AnvilWorld) get no
+/// distant terrain LOD at all — the block is suppressed rather than draping the
+/// translucent checker placeholder over full-detail content.
+const LOD_TEXTURE_QUAD_CELLS: i32 = 32;
+
+/// Oblivion LOD-quad coordinate formatting: zero is written `"00"`, every other
+/// value as its plain signed decimal (e.g. `-96`, `32`). Matches the shipped
+/// filenames (`60.00.-32.32.dds`, `60.-96.-64.32.dds`).
+fn fmt_lod_coord(n: i32) -> String {
+    if n == 0 {
+        "00".to_string()
+    } else {
+        n.to_string()
+    }
+}
+
+/// Path to the baked distant-terrain texture quad covering cell `(cx, cy)` in
+/// worldspace `world_form_id` (low 24 bits = the decimal id Oblivion bakes into
+/// the filename; the mod-index byte is stripped). The caller resolves it and
+/// treats a miss as "no distant LOD here".
+fn lod_quad_texture_path(world_form_id: u32, cx: i32, cy: i32) -> String {
+    let q = LOD_TEXTURE_QUAD_CELLS;
+    let qx = cx.div_euclid(q) * q;
+    let qy = cy.div_euclid(q) * q;
+    format!(
+        "textures\\landscapelod\\generated\\{}.{}.{}.{}.dds",
+        world_form_id & 0x00FF_FFFF,
+        fmt_lod_coord(qx),
+        fmt_lod_coord(qy),
+        q,
+    )
+}
+
 /// Heightmap sample stride within a cell's 33-vertex grid. 8 → 4 quads per
 /// cell edge (5 samples incl. the shared seam), 1/64th the triangles.
 const STRIDE: usize = 8;
@@ -188,6 +227,14 @@ pub(crate) fn stream_lod_blocks(
     // the heightmap synth fallback exclusively — EXAL §5).
     let game = wctx.record_index.game;
     let worldspace_key = wctx.worldspace_key.as_str();
+    // Worldspace form id — keys the baked `landscapelod\generated` distant-LOD
+    // textures (Tamriel = 60). Small worlds (AnvilWorld) ship none, so their
+    // synth blocks resolve no texture and are suppressed (#1745).
+    let world_form_id = index
+        .worldspaces
+        .get(worldspace_key)
+        .map(|w| w.form_id)
+        .unwrap_or(0);
     let k = LOD_BLOCK_CELLS;
     // Block containing the player. `div_euclid` floors toward negative
     // infinity so blocks tile consistently across the origin.
@@ -281,6 +328,7 @@ pub(crate) fn stream_lod_blocks(
                 bj,
                 player_grid,
                 full_radius_load,
+                world_form_id,
             )
         });
         if let Some(block) = block {
@@ -343,6 +391,7 @@ fn spawn_lod_block(
     bj: i32,
     player_grid: (i32, i32),
     full_radius_load: i32,
+    world_form_id: u32,
 ) -> Option<LodBlock> {
     let k = LOD_BLOCK_CELLS;
     let bx0 = bi * k; // SW cell column of the block
@@ -461,26 +510,62 @@ fn spawn_lod_block(
     // beyond the real terrain extent.
     let bound = block_bound(&vertices, &holes);
 
-    // Base ground texture: first BTXT base LTEX among the block's cells,
-    // resolved via LTEX → TXST → diffuse path. `Some(0)` = UESP "default
-    // dirt"; absent → dirt fallback (matches the full-detail terrain base).
-    let base_ltex = (0..k)
-        .flat_map(|dy| (0..k).map(move |dx| (dx, dy)))
-        .find_map(|(dx, dy)| {
-            cells_map
-                .get(&(bx0 + dx, by0 + dy))
-                .and_then(|cell| cell.landscape.as_ref())
-                .and_then(|land| land.quadrants.iter().find_map(|q| q.base))
-        });
-    let tex_handle = match base_ltex {
-        Some(0) | None => {
-            resolve_texture(ctx, tex_provider, Some("textures\\landscape\\dirt02.dds"))
+    // Distant-terrain texture. Priority:
+    //   1. Oblivion's baked `landscapelod\generated\<fid>.<x>.<y>.32.dds` quad
+    //      — one image covering this block's 32×32-cell quad, UV-mapped by world
+    //      position (the proper distant-LOD look). `_baked = true`.
+    //   2. The block's first BTXT base LTEX, tiled like the full-detail terrain
+    //      (FO3/FNV/Skyrim worlds + Oblivion worlds whose quad is absent).
+    //   3. Neither resolves → return `None`. Pre-#1745 this fell back to a
+    //      hardcoded `landscape\dirt02.dds` that doesn't exist in Oblivion, so
+    //      the block got the translucent magenta-checker placeholder and ghosted
+    //      over full-detail content (Small World city worldspaces like AnvilWorld
+    //      ship no LOD textures at all). Suppressing the block is correct: those
+    //      worlds have no distant terrain.
+    let quad_path = lod_quad_texture_path(world_form_id, bx0, by0);
+    let lod_quad_tex = resolve_texture(ctx, tex_provider, Some(&quad_path));
+    let baked = lod_quad_tex != 0;
+    let tex_handle = if baked {
+        lod_quad_tex
+    } else {
+        let base_ltex = (0..k)
+            .flat_map(|dy| (0..k).map(move |dx| (dx, dy)))
+            .find_map(|(dx, dy)| {
+                cells_map
+                    .get(&(bx0 + dx, by0 + dy))
+                    .and_then(|cell| cell.landscape.as_ref())
+                    .and_then(|land| land.quadrants.iter().find_map(|q| q.base))
+            });
+        match base_ltex {
+            Some(ltex_id) if ltex_id != 0 => landscape_textures
+                .get(&ltex_id)
+                .map(|path| resolve_texture(ctx, tex_provider, Some(path.as_str())))
+                .unwrap_or(0),
+            _ => 0,
         }
-        Some(ltex_id) => match landscape_textures.get(&ltex_id) {
-            Some(path) => resolve_texture(ctx, tex_provider, Some(path.as_str())),
-            None => resolve_texture(ctx, tex_provider, Some("textures\\landscape\\dirt02.dds")),
-        },
     };
+    if tex_handle == 0 {
+        // No real distant-terrain texture (Small World / ocean-only quad).
+        return None;
+    }
+
+    // Re-map UVs for the baked quad: the texture spans the whole 32×32-cell
+    // quad, so each vertex samples it by world position rather than the
+    // per-cell tiling the LTEX path uses. `world_y_zup = -position.z`.
+    if baked {
+        let q = LOD_TEXTURE_QUAD_CELLS;
+        let quad_origin_x = (bx0.div_euclid(q) * q) as f32 * EXTERIOR_CELL_UNITS;
+        let quad_origin_y = (by0.div_euclid(q) * q) as f32 * EXTERIOR_CELL_UNITS;
+        let quad_bu = q as f32 * EXTERIOR_CELL_UNITS;
+        for v in vertices.iter_mut() {
+            let wx = v.position[0];
+            let wy_zup = -v.position[2];
+            v.uv = [
+                (wx - quad_origin_x) / quad_bu,
+                1.0 - (wy_zup - quad_origin_y) / quad_bu,
+            ];
+        }
+    }
 
     // Upload into the global geometry pool only (#1370). LOD blocks
     // rasterize from the global vertex/index buffer and never enter the
@@ -496,6 +581,11 @@ fn spawn_lod_block(
         Ok(h) => h,
         Err(e) => {
             log::warn!("Failed to upload LOD terrain block ({},{}): {}", bi, bj, e);
+            // Release the texture acquired above so a failed upload doesn't
+            // pin the VkImage + bindless slot (the resolve bumped its refcount).
+            if tex_handle != 0 {
+                ctx.texture_registry.drop_texture(&ctx.device, tex_handle);
+            }
             return None;
         }
     };

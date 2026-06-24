@@ -619,6 +619,29 @@ pub(crate) fn stream_initial_radius(
         &mut state.placement_lod_blocks,
     );
 
+    // #1745 — flush the DDS textures the LOD streaming above enqueued. The
+    // per-cell `flush_pending_uploads` (references.rs) runs during cell load,
+    // which happens BEFORE this distant-LOD pass — so without an explicit flush
+    // here the baked `landscapelod\generated` quad textures stay pointed at the
+    // fallback (checker) slot until the player's first cell-boundary crossing
+    // triggers another cell load. In a static `--fly` / `--bench-hold` session
+    // that crossing never comes, so the distant terrain renders permanently
+    // checkered. Flush once now so the initial ring shows real textures.
+    if let Some(allocator) = ctx.allocator.as_ref() {
+        let pending = ctx.texture_registry.pending_dds_upload_count();
+        if pending > 0 {
+            if let Err(e) = ctx.texture_registry.flush_pending_uploads(
+                &ctx.device,
+                allocator,
+                &ctx.graphics_queue,
+                ctx.transfer_pool,
+                &ctx.transfer_fence,
+            ) {
+                log::warn!("Initial LOD texture flush failed ({pending} pending): {e}");
+            }
+        }
+    }
+
     center
 }
 
