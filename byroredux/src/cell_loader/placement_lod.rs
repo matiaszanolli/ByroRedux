@@ -195,6 +195,19 @@ pub(crate) fn far_nif_path(model_path: &str) -> Option<String> {
     }
 }
 
+/// Archive path of a base record's **full** model, used as the distant
+/// mesh when no `_far.nif` exists (the common case — only ~130 Oblivion
+/// objects ship a dedicated far mesh). Adds the `meshes\` prefix when the
+/// stored `model_path` is folder-relative, mirroring the REFR spawn path.
+pub(crate) fn full_model_path(model_path: &str) -> String {
+    let lower = model_path.to_ascii_lowercase();
+    if lower.starts_with("meshes\\") || lower.starts_with("meshes/") {
+        lower
+    } else {
+        format!("meshes\\{lower}")
+    }
+}
+
 /// Cells whose `.lod` should be resident this frame: within the LOD ring
 /// (`lod_radius`, Chebyshev) of the player **and** entirely beyond the
 /// full-detail ring (`full_radius_load`), so distant objects never overlap
@@ -368,17 +381,33 @@ fn spawn_placement_lod_cell(
     let mut texture_handles = Vec::new();
 
     for group in &groups {
-        // base FormID → STAT model → `_far.nif` (the same statics table the
-        // REFR spawn path reads).
+        // base FormID → STAT model (the same statics table the REFR spawn
+        // path reads).
         let Some(stat) = wctx.record_index.cells.statics.get(&group.base_form_id) else {
             continue;
         };
-        let Some(far) = far_nif_path(&stat.model_path) else {
+        if stat.model_path.is_empty() {
             continue;
+        }
+        // Prefer the dedicated `_far.nif`; fall back to the FULL model when
+        // none is shipped. Vanilla Oblivion ships a `_far.nif` for only ~130
+        // landmark objects (castle walls, towers, bridges) — every other
+        // VWD object in a `.lod` renders its full mesh at distance, which is
+        // what the real engine does. Skipping them (the pre-fix behaviour)
+        // left almost every cell with no distant geometry.
+        let (mesh_path, far_bytes) = match far_nif_path(&stat.model_path)
+            .and_then(|p| tex_provider.extract_mesh(&p).map(|b| (p, b)))
+        {
+            Some((p, b)) => (p, b),
+            None => {
+                let full = full_model_path(&stat.model_path);
+                match tex_provider.extract_mesh(&full) {
+                    Some(b) => (full, b),
+                    None => continue, // neither far nor full mesh resolvable
+                }
+            }
         };
-        let Some(far_bytes) = tex_provider.extract_mesh(&far) else {
-            continue; // no `_far.nif` shipped for this base — skip
-        };
+        let far = mesh_path;
         let scene = match byroredux_nif::parse_nif(&far_bytes) {
             Ok(s) => s,
             Err(e) => {
@@ -670,6 +699,20 @@ mod tests {
         // Non-.nif model (e.g. light-only record) → None.
         assert_eq!(far_nif_path(""), None);
         assert_eq!(far_nif_path("textures\\foo.dds"), None);
+    }
+
+    #[test]
+    fn full_model_derivation() {
+        // Folder-relative → meshes\ prefix, lowercased.
+        assert_eq!(
+            full_model_path("Architecture\\Anvil\\AnvilHouse01.nif"),
+            "meshes\\architecture\\anvil\\anvilhouse01.nif"
+        );
+        // Already prefixed → single prefix.
+        assert_eq!(
+            full_model_path("meshes\\clutter\\barrel01.nif"),
+            "meshes\\clutter\\barrel01.nif"
+        );
     }
 
     #[test]
