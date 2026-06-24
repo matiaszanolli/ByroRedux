@@ -30,7 +30,7 @@
 //! | 9     | GetActorValue  | `ActorStats[param_1.name]`|
 //! | 36    | GetDistance    | `GlobalTransform`         |
 //! | 58    | GetStage       | `QuestStageState[param_1]`|
-//! | 60    | GetFactionRank | (factions — stub today)   |
+//! | 60    | GetFactionRank | `FactionRanks`            |
 //! | 71    | GetIsID        | `FormIdComponent`         |
 //! | 99    | HasPerk        | `PerkList`                |
 //!
@@ -213,6 +213,26 @@ pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionC
     condition.comparator.apply(function_result, comparand)
 }
 
+/// Resolve a global-load-order FormID to the entity that carries it.
+///
+/// `World::find_by_form_id` keys by an interned [`FormId`] handle; a remapped
+/// CTDA `param_1` is a raw global `u32`, so this resolves through the
+/// [`FormIdPool`] instead — an entity matches when its `FormIdComponent`
+/// resolves to a pair whose `local` equals `form_id` (the cell loader stores
+/// the full global FormID as the `LocalFormId`). O(n) over entities carrying
+/// a `FormIdComponent`, which is fine for the rare condition-eval path.
+fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<EntityId> {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::FormIdPool;
+    let pool = world.try_resource::<FormIdPool>()?;
+    let q = world.query::<FormIdComponent>()?;
+    let found = q
+        .iter()
+        .find(|(_, fid)| pool.resolve(fid.0).is_some_and(|p| p.local.0 == form_id))
+        .map(|(eid, _)| eid);
+    found
+}
+
 /// Dispatch one of the M47.1-catalog functions against the supplied
 /// entity. Returns `0.0` for unknown indices (Bethesda safe-default)
 /// or when the function's backing ECS storage isn't registered.
@@ -235,15 +255,29 @@ pub fn evaluate_function(
             0.0
         }
         ConditionFunction::GetDistance => {
-            // param_1 is a raw u32 ESM FormID; find_by_form_id needs an interned FormId.
-            // FormID→EntityId resolver deferred.
-            log::trace!(
-                "M47.1: GetDistance(target={:08X}) — \
-                 FormID→EntityId resolver deferred",
-                condition.param_1,
-            );
-            let _ = entity;
-            0.0
+            // GetDistance(target_form_id) → ‖subject − target‖ in world units.
+            // `param_1` is the target FormID, already remapped to global
+            // load-order space at parse time (#1666) — the same space entity
+            // `FormIdComponent`s resolve to — so the resolve is exact.
+            use byroredux_core::ecs::components::GlobalTransform;
+            let Some(target) = resolve_entity_by_global_form_id(world, condition.param_1) else {
+                // Target not currently spawned (e.g. in an unloaded cell).
+                // Model an absent target as infinitely far so a proximity
+                // gate (`GetDistance < N`) correctly fails rather than
+                // reading a missing ref as "right here" (a 0.0 would).
+                return f32::MAX;
+            };
+            let Some(subject_pos) = world.get::<GlobalTransform>(entity).map(|t| t.translation)
+            else {
+                return f32::MAX;
+            };
+            // First `get` borrow has been dropped (translation is Copy) before
+            // the second — avoids holding two read guards on one storage lock.
+            let Some(target_pos) = world.get::<GlobalTransform>(target).map(|t| t.translation)
+            else {
+                return f32::MAX;
+            };
+            (subject_pos - target_pos).length()
         }
         ConditionFunction::GetStage => {
             // GetStage(quest_form_id). The current quest stage lives
@@ -273,15 +307,17 @@ pub fn evaluate_function(
             }
         }
         ConditionFunction::GetFactionRank => {
-            // FactionMembership ECS component not yet defined.
-            // Returns -1 (Bethesda's "not in faction" sentinel).
-            log::trace!(
-                "M47.1: GetFactionRank(faction={:08X}) — \
-                 FactionMembership component not yet plumbed",
-                condition.param_1,
-            );
-            let _ = entity;
-            -1.0
+            // GetFactionRank(faction_form_id) → the Run-On actor's rank in
+            // `param_1`'s faction, or -1.0 (Bethesda's "not in faction"
+            // sentinel) when the actor has no `FactionRanks` or isn't a
+            // member. Faction ids are compared in the NPC's source space —
+            // identity-equal to a remapped `param_1` in single-plugin loads
+            // (see `FactionRanks` docs).
+            use byroredux_core::ecs::components::FactionRanks;
+            world
+                .get::<FactionRanks>(entity)
+                .and_then(|f| f.rank(condition.param_1))
+                .map_or(-1.0, |rank| rank as f32)
         }
         ConditionFunction::GetIsID => {
             // Test the Run-On entity's identity against `param_1`. The CTDA
@@ -621,6 +657,97 @@ mod tests {
         let actor: EntityId = 3;
         let list = vec![cond(99, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F80)];
         assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    // ── GetDistance (#1664) ─────────────────────────────────────────────
+
+    #[test]
+    fn get_distance_measures_subject_to_target() {
+        use byroredux_core::ecs::components::{FormIdComponent, GlobalTransform};
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        use byroredux_core::math::{Quat, Vec3};
+
+        let mut world = World::new();
+        let mut pool = FormIdPool::new();
+        // Target carries global FormID 0x000159E2 (cell loader stores the
+        // full global id as the LocalFormId).
+        let target_fid = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV.esm"),
+            local: LocalFormId(0x0001_59E2),
+        });
+        world.insert_resource(pool);
+
+        let subject = world.spawn();
+        world.insert(
+            subject,
+            GlobalTransform::new(Vec3::new(0.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        let target = world.spawn();
+        world.insert(target, FormIdComponent(target_fid));
+        world.insert(
+            target,
+            GlobalTransform::new(Vec3::new(3.0, 4.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+
+        // GetDistance(0x000159E2) < 10 → 5.0 < 10 → true.
+        let mut lt = cond(36, ComparisonOp::Lt, 10.0, false).with_param_1(0x0001_59E2);
+        lt.comparand = ConditionValue::Literal(10.0);
+        assert!(evaluate(&vec![lt], &world, &ctx(subject)));
+
+        // GetDistance(0x000159E2) < 4 → 5.0 < 4 → false.
+        let lt = cond(36, ComparisonOp::Lt, 4.0, false).with_param_1(0x0001_59E2);
+        assert!(!evaluate(&vec![lt], &world, &ctx(subject)));
+    }
+
+    #[test]
+    fn get_distance_unresolved_target_is_far() {
+        use byroredux_core::ecs::components::GlobalTransform;
+        use byroredux_core::form_id::FormIdPool;
+        use byroredux_core::math::{Quat, Vec3};
+
+        let mut world = World::new();
+        world.insert_resource(FormIdPool::new());
+        let subject = world.spawn();
+        world.insert(
+            subject,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
+
+        // No entity carries 0x000159E2 → distance is f32::MAX, so a
+        // proximity gate `GetDistance < 100` fails.
+        let lt = cond(36, ComparisonOp::Lt, 100.0, false).with_param_1(0x0001_59E2);
+        assert!(!evaluate(&vec![lt], &world, &ctx(subject)));
+    }
+
+    // ── GetFactionRank (#1665) ──────────────────────────────────────────
+
+    #[test]
+    fn get_faction_rank_reads_membership() {
+        use byroredux_core::ecs::components::FactionRanks;
+
+        let mut world = World::new();
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            FactionRanks::from_pairs([(0x0001_38B8, 2), (0x0001_5FFB, 0)]),
+        );
+
+        // GetFactionRank(0x000138B8) == 2.
+        let eq = cond(60, ComparisonOp::Eq, 2.0, false).with_param_1(0x0001_38B8);
+        assert!(evaluate(&vec![eq], &world, &ctx(actor)));
+
+        // GetFactionRank(non-member) == -1.
+        let eq = cond(60, ComparisonOp::Eq, -1.0, false).with_param_1(0x0009_9999);
+        assert!(evaluate(&vec![eq], &world, &ctx(actor)));
+    }
+
+    #[test]
+    fn get_faction_rank_minus_one_without_component() {
+        // No FactionRanks component → -1.0 (not-in-faction sentinel).
+        let world = World::new();
+        let actor: EntityId = 4;
+        let eq = cond(60, ComparisonOp::Eq, -1.0, false).with_param_1(0x0001_38B8);
+        assert!(evaluate(&vec![eq], &world, &ctx(actor)));
     }
 
     // ── Global comparand (#1668) ────────────────────────────────────────

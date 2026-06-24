@@ -9,7 +9,7 @@
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
-    EquipmentSlots, GlobalTransform, Inventory, ItemStack, Name, Parent, Transform,
+    EquipmentSlots, FactionRanks, GlobalTransform, Inventory, ItemStack, Name, Parent, Transform,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
@@ -65,6 +65,20 @@ pub use byroredux_plugin::equip::Gender;
 ///
 /// Oblivion is not yet a target for NPC spawning (M41.0 closes on
 /// FNV first); the path is the same as FNV's by convention.
+/// Stamp a [`FactionRanks`] component on the NPC's placement root from its
+/// `NPC_` `SNAM` faction list, so the M47.1 `GetFactionRank` condition can
+/// read it (#1665). No-op when the NPC declares no factions. Faction ids are
+/// carried verbatim from the record (NPC source space) — see `FactionRanks`.
+fn stamp_faction_ranks(world: &mut World, placement_root: EntityId, npc: &NpcRecord) {
+    if npc.factions.is_empty() {
+        return;
+    }
+    world.insert(
+        placement_root,
+        FactionRanks::from_pairs(npc.factions.iter().map(|f| (f.faction_form_id, f.rank))),
+    );
+}
+
 pub fn humanoid_skeleton_path(game: GameKind) -> Option<&'static str> {
     match game {
         GameKind::Oblivion | GameKind::Fallout3NV => Some(r"meshes\characters\_male\skeleton.nif"),
@@ -439,6 +453,7 @@ pub fn spawn_npc_entity(
         drop(pool);
         world.insert(placement_root, Name(sym));
     }
+    stamp_faction_ranks(world, placement_root, npc);
 
     // 2. Skeleton. Owns the per-bone entities the body / head will
     //    skin against.
@@ -1227,6 +1242,7 @@ pub fn spawn_prebaked_npc_entity(
         drop(pool);
         world.insert(placement_root, Name(sym));
     }
+    stamp_faction_ranks(world, placement_root, npc);
 
     // 2. Equip state — built from the NPC record + ESM index alone
     //    so it lands on the placement root **before** any archive
